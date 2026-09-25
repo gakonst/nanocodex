@@ -44,6 +44,12 @@ final class MeetingLockedCoordinator {
         var activity: Activity<MeetingLockedActivityAttributes>?
         var observers: [AnyCancellable] = []
         var ticker: Task<Void, Never>?
+        var previewTask: Task<Void, Never>?
+        var previewNextIndex = 0
+        var previewPieceOffset = 0
+        var previewRevision = 0
+        var previewRetryAt = Date.distantPast
+        var recap: String?
         var pendingUpdate: Task<Void, Never>?
         var background: UIBackgroundTaskIdentifier = .invalid
         var phase = "preparing"
@@ -103,6 +109,9 @@ final class MeetingLockedCoordinator {
         current.observers.append(current.recorder.$transcript.dropFirst().sink { [weak self] text in
             Task { @MainActor in self?.checkpoint(id: id, text: text) }
         })
+        current.observers.append(current.recorder.$finalizedSegments.dropFirst().sink { [weak self] _ in
+            Task { @MainActor in self?.streamFinalizedText(id: id) }
+        })
         current.observers.append(NotificationCenter.default.publisher(for: AVAudioSession.interruptionNotification).sink { [weak self] notification in
             guard let type = notification.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
                   type == AVAudioSession.InterruptionType.began.rawValue else { return }
@@ -125,7 +134,10 @@ final class MeetingLockedCoordinator {
             while !Task.isCancelled {
                 do { try await Task.sleep(for: .seconds(10)) } catch { return }
                 guard let self, let current, self.capture === current else { return }
-                if current.recorder.recording { self.update(current, phase: "listening") }
+                if current.recorder.recording {
+                    self.update(current, phase: "listening")
+                    self.streamFinalizedText(id: current.id)
+                }
                 else if current.recorder.reviewing { self.becameReady(id: current.id); return }
                 else if !current.stopping {
                     self.beginFinishing(current)
@@ -230,6 +242,70 @@ final class MeetingLockedCoordinator {
         storeSnapshot(snapshot)
     }
 
+    /// Speech partials revise in place and never enter the preview endpoint. Only
+    /// segments settled in capture order are streamed. Retries reuse the same
+    /// revision and text; a failed preview never gates Stop or agent admission.
+    private func streamFinalizedText(id: String) {
+        guard let current = capture, current.id == id, current.previewTask == nil,
+              Date() >= current.previewRetryAt, let captureID = UUID(uuidString: id) else { return }
+        let settled = Set(current.recorder.settledSegmentIndices)
+        let finals = Dictionary(uniqueKeysWithValues: current.recorder.finalizedSegments.map { ($0.index, $0.text) })
+        var index = current.previewNextIndex
+        while settled.contains(index), finals[index]?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty != false { index += 1 }
+        current.previewNextIndex = index
+        guard let delta = finals[index], !delta.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        // Recognition segments are normally far below this limit. If a very long
+        // result exceeds it, send bounded UTF-8 chunks under consecutive revisions.
+        let pieces = boundedPreviewChunks(delta)
+        guard !pieces.isEmpty else { return }
+        let expectedScope = current.account
+        let firstUnsent = current.previewPieceOffset
+        guard firstUnsent < pieces.count else { return }
+        current.previewTask = Task { [weak self, weak current] in
+            guard let self, let current else { return }
+            for piece in pieces.dropFirst(firstUnsent) {
+                guard self.capture === current, !Task.isCancelled else { return }
+                let revision = current.previewRevision + 1
+                do {
+                    let result = try await self.model.updateMeetingPreview(captureID: captureID,
+                        revision: revision, delta: piece, accountScope: expectedScope)
+                    guard self.capture === current, !Task.isCancelled else { return }
+                    current.previewRevision = revision
+                    current.previewRetryAt = .distantPast
+                    current.previewPieceOffset += 1
+                    if !result.summary.isEmpty, result.summaryRevision > 0 {
+                        current.recap = String(result.summary.prefix(180))
+                        self.update(current, phase: current.phase)
+                    }
+                } catch {
+                    // Ambiguous admission: repeat this exact revision after a
+                    // bounded delay. Never advance the cursor on uncertain write.
+                    current.previewRetryAt = Date().addingTimeInterval(30)
+                    break
+                }
+            }
+            if current.previewPieceOffset == pieces.count {
+                current.previewNextIndex = index + 1
+                current.previewPieceOffset = 0
+            }
+            current.previewTask = nil
+            if current.previewNextIndex > index { self.streamFinalizedText(id: id) }
+        }
+    }
+
+    private func boundedPreviewChunks(_ text: String) -> [String] {
+        var chunks: [String] = [], current = "", size = 0
+        for character in text {
+            let bytes = String(character).utf8.count
+            if size + bytes > 4096, !current.isEmpty {
+                chunks.append(current); current = ""; size = 0
+            }
+            current.append(character); size += bytes
+        }
+        if !current.isEmpty { chunks.append(current) }
+        return chunks
+    }
+
     private var savedSnapshot: ReadySnapshot? {
         guard let scope = UserDefaults.standard.string(forKey: Self.scopePointerKey),
               let data = UserDefaults.standard.data(forKey: Self.snapshotKey(scope)),
@@ -318,7 +394,11 @@ final class MeetingLockedCoordinator {
         guard capture === current else { return }
         current.phase = phase
         let previous = current.pendingUpdate
-        let next = content(phase: phase, seconds: current.recorder.seconds, warning: warning)
+        let next = ActivityContent<MeetingLockedActivityAttributes.ContentState>(
+            state: .init(phase: phase, seconds: current.recorder.seconds, warning: warning,
+                         recap: phase == "listening" ? current.recap : nil),
+            staleDate: ["preparing", "listening", "transcribing", "sending"].contains(phase)
+                ? Date().addingTimeInterval(90) : nil)
         current.pendingUpdate = Task { [weak current] in
             await previous?.value
             await current?.activity?.update(next)
@@ -329,8 +409,12 @@ final class MeetingLockedCoordinator {
         guard capture === current else { return }
         capture = nil // Fence all recognizer callbacks before tearing down audio.
         current.ticker?.cancel()
+        current.previewTask?.cancel()
         current.observers.removeAll()
         let elapsed = current.recorder.seconds
+        if phase == "sent", let captureID = UUID(uuidString: current.id) {
+            Task { await model.closeMeetingPreview(captureID: captureID, accountScope: current.account) }
+        }
         current.recorder.discard()
         let previous = current.pendingUpdate
         let activity = current.activity

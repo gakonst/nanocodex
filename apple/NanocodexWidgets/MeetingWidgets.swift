@@ -20,16 +20,22 @@ struct MeetingLockedControl: ControlWidget {
 struct MeetingLockedActivityWidget: Widget {
     var body: some WidgetConfiguration {
         ActivityConfiguration(for: MeetingLockedActivityAttributes.self) { context in
-            HStack(spacing: 12) {
-                Image(systemName: context.state.phase == "sent" ? "checkmark.circle.fill" : "waveform")
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(label(context)).font(.headline)
-                    if context.state.phase == "listening" {
-                        Text(Duration.seconds(context.state.seconds).formatted()).font(.caption).monospacedDigit()
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(spacing: 12) {
+                    Image(systemName: context.state.phase == "sent" ? "checkmark.circle.fill" : "waveform")
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(label(context)).font(.headline)
+                        if context.state.phase == "listening" {
+                            Text(Duration.seconds(context.state.seconds).formatted()).font(.caption).monospacedDigit()
+                        }
                     }
+                    Spacer()
+                    actions(context)
                 }
-                Spacer()
-                actions(context)
+                if context.state.phase == "listening", let recap = context.state.recap, !recap.isEmpty {
+                    Text(recap).font(.caption).lineLimit(2)
+                        .privacySensitive()
+                }
             }
             .padding()
             .activityBackgroundTint(.black)

@@ -47,6 +47,26 @@ private final class MeetingAudioRouter: @unchecked Sendable {
     }
 }
 
+/// A value snapshot for foreground preview only. It is never copied to ActivityKit.
+/// The full text includes revisions of the current Speech partial; confirmed text
+/// contains only segments for which Speech returned isFinal while capturing;
+/// after review starts it reflects the user's editable transcript. A new capture ID
+/// fences stale asynchronous preview responses after a restart.
+struct MeetingFinalizedSegment: Equatable, Identifiable {
+    let index: Int
+    let text: String
+    var id: Int { index }
+}
+
+struct MeetingSummarySnapshot: Equatable {
+    let captureID: UUID
+    let revision: Int
+    let text: String
+    let confirmedText: String
+    let complete: Bool
+    let warning: Bool
+}
+
 /// Explicitly started foreground meeting capture. Audio keeps flowing through one
 /// AVAudioEngine tap while bounded Speech requests rotate (including after a
 /// recognizer's early final result). Recognition never implicitly sends a task.
@@ -54,6 +74,11 @@ private final class MeetingAudioRouter: @unchecked Sendable {
 final class MeetingRecorder: ObservableObject {
     static let shared = MeetingRecorder()
     @Published private(set) var transcript = ""
+    @Published private(set) var summarySnapshot: MeetingSummarySnapshot?
+    /// Final Speech results, indexed in capture order. They may arrive out of
+    /// order; callers must not treat the joined transcript as an append-only delta.
+    @Published private(set) var finalizedSegments: [MeetingFinalizedSegment] = []
+    @Published private(set) var settledSegmentIndices: [Int] = []
     @Published private(set) var status = "Ready to listen"
     @Published private(set) var recording = false
     @Published private(set) var working = false
@@ -67,6 +92,7 @@ final class MeetingRecorder: ObservableObject {
         var task: SFSpeechRecognitionTask?
         var sealed = false
         var settled = false
+        var latestText = ""
         init(index: Int, request: SFSpeechAudioBufferRecognitionRequest) { self.index = index; self.request = request }
     }
 
@@ -76,6 +102,9 @@ final class MeetingRecorder: ObservableObject {
     private var recognizer: SFSpeechRecognizer?
     private var segments: [Segment] = []
     private var ledger = MeetingSegmentPolicy()
+    private var confirmedSegments: [Int: String] = [:]
+    private(set) var captureID = UUID()
+    private var previewRevision = 0
     private var rotation: Task<Void, Never>?
     private var clock: Task<Void, Never>?
     private var completion: Task<Void, Never>?
@@ -88,7 +117,7 @@ final class MeetingRecorder: ObservableObject {
     /// timeout. Never auto-submit that text on the ordinary Stop path.
     var completedWithWarning: Bool { stopReason != nil }
     // Apple's Speech API documents a ~one-minute audio limit per recognition.
-    // 45 seconds leaves headroom for scheduling and processing delays.
+    // 25 seconds provides preview segments while leaving ample headroom.
     static let segmentSeconds = MeetingSegmentPolicy.segmentSeconds
 
     func start(locale: String, permissionsGranted: Bool = false) async {
@@ -176,7 +205,11 @@ final class MeetingRecorder: ObservableObject {
             let final = result?.isFinal == true
             Task { @MainActor in
                 guard let self, let segment, self.permissionRun == run, !segment.settled else { return }
-                if let text { self.ledger.update(segment.index, text: text); self.updateTranscript() }
+                if let text {
+                    segment.latestText = text
+                    self.ledger.update(segment.index, text: text)
+                    self.updateTranscript()
+                }
                 if let error {
                     let failure = error as NSError
                     self.log.error("Meeting speech failed: domain=\(failure.domain, privacy: .public) code=\(failure.code)")
@@ -185,7 +218,7 @@ final class MeetingRecorder: ObservableObject {
                     else { self.checkCompletion() }
                 } else if final {
                     let isCurrent = self.segments.last === segment
-                    self.settle(segment)
+                    self.settle(segment, confirmed: true)
                     if self.recording, isCurrent {
                         // A pause can finalize a task before the timer. It must not
                         // finish the meeting or submit anything.
@@ -283,12 +316,21 @@ final class MeetingRecorder: ObservableObject {
         reviewing = true
         updateTranscript()
         status = stopReason ?? (transcript.isEmpty ? "No words recognized. Edit the transcript or record again." : "Review and edit the transcript, then send it in a new conversation.")
+        publishPreviewSnapshot()
     }
 
-    private func settle(_ segment: Segment) {
+    private func settle(_ segment: Segment, confirmed: Bool = false) {
         guard !segment.settled else { return }
         segment.settled = true
         ledger.settle(segment.index)
+        settledSegmentIndices.append(segment.index)
+        settledSegmentIndices.sort()
+        if confirmed {
+            confirmedSegments[segment.index] = segment.latestText
+            finalizedSegments = confirmedSegments.sorted { $0.key < $1.key }
+                .map { MeetingFinalizedSegment(index: $0.key, text: $0.value) }
+        }
+        publishPreviewSnapshot()
         if segment.sealed { release(segment) }
     }
 
@@ -302,17 +344,41 @@ final class MeetingRecorder: ObservableObject {
         // Once in review, edits belong to the user, not late Speech callbacks.
         guard working else { return }
         transcript = ledger.transcript
+        publishPreviewSnapshot()
     }
 
-    func edit(_ text: String) { if reviewing && !working { transcript = text } }
+    private func publishPreviewSnapshot() {
+        // Avoid duplicate revisions for repeated recognition callbacks. The UI's
+        // debouncer will only preview a snapshot that remains unchanged long enough.
+        let confirmed = reviewing && !working ? transcript :
+            confirmedSegments.sorted { $0.key < $1.key }
+                .map(\.value).filter { !$0.isEmpty }.joined(separator: "\n")
+        let complete = reviewing && !working
+        guard summarySnapshot?.captureID != captureID || summarySnapshot?.text != transcript ||
+              summarySnapshot?.confirmedText != confirmed || summarySnapshot?.complete != complete ||
+              summarySnapshot?.warning != completedWithWarning else { return }
+        previewRevision += 1
+        summarySnapshot = .init(captureID: captureID, revision: previewRevision, text: transcript,
+                                confirmedText: confirmed, complete: complete, warning: completedWithWarning)
+    }
+
+    func edit(_ text: String) {
+        if reviewing && !working { transcript = text; publishPreviewSnapshot() }
+    }
 
     func discard() {
         permissionRun = UUID() // Invalidate permission continuations and callbacks.
+        captureID = permissionRun
         completion?.cancel(); completion = nil
         stopCapture()
         for segment in segments { segment.task?.cancel() }
         segments.removeAll()
         ledger = MeetingSegmentPolicy()
+        confirmedSegments = [:]
+        finalizedSegments = []
+        settledSegmentIndices = []
+        previewRevision = 0
+        summarySnapshot = nil
         recognizer = nil
         transcript = ""
         status = "Ready to listen"

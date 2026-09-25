@@ -3,6 +3,8 @@ import { durablePlacementOptions, withIngressPlacement } from "nanocodex/cloudfl
 import { routerDashboard } from "./router-dashboard";
 import { routeObservation } from "./router-telemetry";
 import { routeInferenceApi, type InferenceApiEnv } from "./inference-api";
+import { routeMeetingPreview, type MeetingPreviewEnv } from "./meeting-preview";
+export { MeetingPreview } from "./meeting-preview";
 export { InferenceKey, InferenceAccount } from "./inference-keys";
 export { InferenceSession } from "./inference-session";
 import { ProviderProbeCoordinator } from "./provider-probe-coordinator";
@@ -378,6 +380,7 @@ const MEMORY_TEAM_ASSERTION = "x-nanocodex-team-id";
 const MEMORY_SUBJECT_ASSERTION = "x-nanocodex-subject-id";
 export interface Env extends
   InferenceApiEnv,
+  MeetingPreviewEnv,
   ProviderProbeEnvironment,
   EmailConfig,
   AccountAuthEnv,
@@ -1480,6 +1483,8 @@ async function managedFetchRoute(
     const url = new URL(request.url);
     const inference = await routeInferenceApi(request, env, url, trustedAgentPrincipal, ctx);
     if (inference) return inference;
+    const meetingPreview = await routeMeetingPreview(request, env, url);
+    if (meetingPreview) return meetingPreview;
     if (url.pathname.startsWith("/v1/phone/bridge/")) {
       if (!env.NANOCODEX_PHONES || !env.NANOCODEX_PHONE_OWNER_ID || !phoneAdminConfigured(env)) return new Response("Not found", { status: 404 });
       const target = new URL(url);

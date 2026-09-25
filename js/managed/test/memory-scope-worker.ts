@@ -9,3 +9,5 @@ export { ProviderProbeCoordinator } from "./provider-probe-worker";
 
 export { InferenceKey, InferenceAccount } from "../src/inference-keys";
 export { InferenceSession } from "../src/inference-session";
+
+export { MeetingPreview } from "../src/meeting-preview";

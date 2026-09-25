@@ -542,3 +542,13 @@ test("memory routes forward only public file and Markdown operations", async () 
     assert.equal(isManagedRoutePath(path), false, path);
   }
 });
+
+
+test("meeting previews expose only the capture UUID endpoint", () => {
+  const capture = "a745f840-f68d-46ce-9d70-5daf9693a582";
+  for (const id of [capture, capture.toUpperCase()])
+    assert.equal(isManagedRoutePath(`/v1/meetings/${id}/preview`), true);
+  for (const path of ["/v1/meetings", "/v1/meetings/", "/v1/meetings/anything/preview",
+    `/v1/meetings/${capture}/preview/extra`, `/v1/meetings/${capture}/transcript`])
+    assert.equal(isManagedRoutePath(path), false, path);
+});

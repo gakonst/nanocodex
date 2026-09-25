@@ -3,7 +3,9 @@ import Foundation
 /// Recognition requests are short-lived; only their text and position survive
 /// completion. This ledger allows out-of-order results without retaining audio.
 public struct MeetingSegmentPolicy {
-    public static let segmentSeconds: TimeInterval = 45
+    // Shorter boundaries provide finalized text for live recaps without relying
+    // on Speech to issue an early final result during a long utterance.
+    public static let segmentSeconds: TimeInterval = 25
     public static let maxSealedPending = 3
     private var pieces: [String] = []
     private var pending: Set<Int> = []

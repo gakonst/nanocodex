@@ -725,6 +725,31 @@ final class InboxModel: ObservableObject {
         guard connected, !isDemo, scope == expected else { throw APIError.invalidCredential }
     }
 
+    /// The preview carries only finalized Speech text and does not create an agent
+    /// turn. The account scope is pinned before recording and checked again after
+    /// restoring or awaiting the network to fence an account switch.
+    func updateMeetingPreview(captureID: UUID, revision: Int, delta: String,
+                              accountScope expected: String) async throws -> MeetingPreview {
+        if !connected { try await restoreLockedVoiceAccount(scope: expected) }
+        guard connected, !isDemo, scope == expected, let client else { throw APIError.invalidCredential }
+        let preview = try await client.updateMeetingPreview(captureID: captureID, revision: revision, delta: delta)
+        guard connected, scope == expected else { throw APIError.invalidCredential }
+        return preview
+    }
+
+    func meetingPreview(captureID: UUID, accountScope expected: String) async throws -> MeetingPreview {
+        if !connected { try await restoreLockedVoiceAccount(scope: expected) }
+        guard connected, !isDemo, scope == expected, let client else { throw APIError.invalidCredential }
+        let preview = try await client.meetingPreview(captureID: captureID)
+        guard connected, scope == expected else { throw APIError.invalidCredential }
+        return preview
+    }
+
+    func closeMeetingPreview(captureID: UUID, accountScope expected: String) async {
+        guard connected, !isDemo, scope == expected, let client else { return }
+        try? await client.closeMeetingPreview(captureID: captureID)
+    }
+
     // Recovery has its own account-scoped journal until it can enter normal drafts.
     // It is never rendered by the Live Activity or exposed to another account.
     func retainLockedVoiceRecovery(_ text: String, captureID: String, accountScope: String) {
