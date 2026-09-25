@@ -162,3 +162,23 @@ after deployment, check unauthenticated `POST /v1/agents` returns 401, run an
 authorized create/turn/replay with `./managed2-demo`, and verify the original
 account `/api/health` still returns 200. Neither endpoint's success alone proves
 model completion; check the turn status and streamed answer.
+
+## Tool observability and sandbox-free tools
+
+`GET /v1/agents/:id/turns/:turn` includes `tool_timing` for each provider call ID: name,
+status, start/result offset, duration, and accumulated phase timings. These rows are
+persisted in Session SQLite without arguments, results, file contents, or search queries.
+The generic wrapper applies to every registered tool. `exec_command` lazily loads an
+in-process Bash interpreter and a per-agent durable `/brain` VFS; its phases are
+`setup`, `vfs_hydrate`, `execute`, `vfs_flush`, and outer `handler`. It does not
+start a sandbox or offer an unmediated network. `web__run` uses Egress2's private
+fixed search route and reports `preparation`, `egress_dispatch`, `parse`,
+`egress_credential`, `egress_upstream`, `egress_parse`, and outer `handler`.
+Nested spans are not additive (dispatch includes upstream).
+
+The `clock: "io_gated"` marker matters: deployed Cloudflare Workers freeze
+`performance.now()` and `Date.now()` during CPU-only work. Thus a `0ms` Bash
+setup/VFS/execute phase is **unmeasurable**, not proof that it was free. I/O
+spans such as search upstream are measurable. For CPU hotspots use workerd's
+local CPU profile plus Cloudflare invocation CPU metrics; client-side tool-call
+to-result elapsed includes event delivery and is not a pure handler duration.

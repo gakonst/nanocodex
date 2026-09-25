@@ -122,7 +122,7 @@ export class ToolTiming {
       const phases = this.sql.exec<PhaseRow>(`SELECT phase, duration_ms, count FROM managed2_tool_phase
         WHERE internal_turn_id = ? AND call_id = ? ORDER BY phase`,
       row.internal_turn_id, row.call_id).toArray();
-      return { call_id: row.call_id, tool: row.tool, started_at: row.started_at,
+      return { call_id: row.call_id, tool: row.tool, clock: "io_gated", started_at: row.started_at,
         started_ms: row.started_ms, result_ms: row.result_ms,
         duration_ms: row.duration_ms, status: row.status,
         phases: Object.fromEntries(phases.map(({ phase, duration_ms, count }) =>
