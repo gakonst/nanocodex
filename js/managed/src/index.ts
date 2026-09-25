@@ -1,3 +1,5 @@
+import { gmailPushConfig } from "./gmail-push-config";
+import { parseGmailPushWake, gmailPushPrompt, type GmailPushWakeResult } from "./gmail-push-wake";
 import { OutputCheckpoints } from "./output-checkpoints";
 import { turnCanUseExecutionNamespace, turnCanProvisionExecutionProvider, executionMountAllowed, executionMountPeers, executionMountOwner } from "./execution-policy";
 export { turnCanUseExecutionNamespace } from "./execution-policy";
@@ -2371,6 +2373,20 @@ async function managedFetchRoute(
     sessionHeaders.delete("x-nanocodex-vm-renewal");
     forwardPrincipalAssertions(sessionHeaders, principal);
     const publicOrigin = `public_origin=${encodeURIComponent(url.origin)}`;
+    if (resource.startsWith("gmail-push/")) {
+      if (!/^gmail-push\/[A-Za-z0-9_-]{1,256}$/.test(resource) || url.search) return json({error:"invalid_request"},{status:400});
+      if (!["GET", "PUT", "DELETE"].includes(request.method)) return json({error:"method_not_allowed"},{status:405});
+      if ((principal.kind !== "account_session" && principal.kind !== "api_key") || principal.connectGrant
+        || !principal.capabilities.includes(request.method === "GET" ? "agents:read" : "agents:write")
+        || !principal.capabilities.includes("tools:use")) return json({error:"forbidden"},{status:403});
+      if (request.method !== "GET") {
+        const failure = requireSameOriginMutation(request, url, principal);
+        if (failure) return failure;
+      }
+      return stub.fetch(`https://session.internal/${resource}`, {
+        method: request.method, headers: sessionHeaders, body: request.body, signal: request.signal,
+      });
+    }
     if (resource === "vm-host") {
       if (url.search !== "") return json({ error: "invalid_request" }, { status: 400 });
       if (request.method !== "GET" || request.headers.get("upgrade")?.toLowerCase() !== "websocket") {
@@ -3060,8 +3076,31 @@ function createManagedNamespaceRuntime(
 
 /** Private, ownership-only capability for the credential broker. */
 export class ManagedAgentOwnership extends WorkerEntrypoint<Env> {
+  /** Private account-service binding; deliberately absent from public HTTP routing. */
+  async gmailPushWake(value: unknown): Promise<GmailPushWakeResult> {
+    const input = parseGmailPushWake(value);
+    return this.env.NANOCODEX_SESSIONS.getByName(input.agentId).gmailPushWake(input);
+  }
+
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
+    if (request.method === "POST" && url.hostname === "managed-ownership.internal"
+      && url.pathname === "/v1/gmail-push/wake" && !url.search) {
+      let value: unknown;
+      try { value = parseGmailPushWake(await request.json()); }
+      catch { return json({ error: "invalid_gmail_push_wake" }, { status: 400 }); }
+      try { return json(await this.gmailPushWake(value)); }
+      catch (error) {
+        if (error instanceof Error && error.message === "gmail_push_owner_forbidden") {
+          return json({ error: "gmail_push_owner_forbidden" }, { status: 403 });
+        }
+        if (error instanceof Error && error.message.startsWith("gmail_push_idempotency_conflict:")) {
+          return json({ error: "idempotency_conflict" }, { status: 409 });
+        }
+        if (error instanceof ManagedRequestError) return json({ error: error.code }, { status: error.status });
+        throw error;
+      }
+    }
     if (request.method !== "GET" || url.hostname !== "managed-ownership.internal"
       || url.pathname !== "/v1/resolve" || request.body !== null
       || [...url.searchParams.keys()].some((key) => key !== "subject")
@@ -3646,6 +3685,48 @@ export class DurableAgentSession extends DurableComputerObject {
     });
   }
 
+  /** Account-bound, idempotent and idle-only Gmail event admission. */
+  async gmailPushWake(value: unknown): Promise<GmailPushWakeResult> {
+    const wake = parseGmailPushWake(value);
+    const assertOwner = (epoch?: number) => {
+      const session = this.#session();
+      if (!session || this.#deleting || this.#deleted || session.runtime_profile !== "managed"
+        || session.owner_id !== wake.userId || session.session_id !== wake.agentId
+        || (epoch !== undefined && session.authorization_epoch !== epoch)) {
+        throw new Error("gmail_push_owner_forbidden");
+      }
+      return session;
+    };
+    const epoch = assertOwner().authorization_epoch;
+    const id = `gmail:${await hashManagedInput(JSON.stringify([wake.userId, wake.agentId, wake.eventId]))}`;
+    const input = gmailPushPrompt(wake.input);
+    const requestHash = await hashManagedInput(input);
+    assertOwner(epoch);
+    try {
+      // Existing receipts are resolved before this fence, so a duplicate remains
+      // a duplicate while another turn is active. The fence runs in the same
+      // storage transaction as admission, including after archive lookup yields.
+      const submission = await this.#submitManagedTurn(id, input, requestHash, id, true,
+        { capabilities: ["agents:read", "agents:write", "tools:use"] }, () => {
+          assertOwner(epoch);
+          if (this.#recoverableTurnCount() > 0) {
+            throw new ManagedRequestError(409, "gmail_push_busy", "agent is busy");
+          }
+        }, undefined, "schedule", {}, false);
+      return { status: submission.created ? "accepted" : "duplicate", turnId: submission.row.id };
+    } catch (error) {
+      // Durable Object RPC preserves standard Error messages, not subclass fields.
+      if (error instanceof ManagedRequestError && error.code === "idempotency_conflict") {
+        throw new Error(`gmail_push_idempotency_conflict: ${error.message}`);
+      }
+      if (error instanceof ManagedRequestError && (error.code === "gmail_push_busy"
+        || error.code === "event_stream_failed" || error.code === "durability_transfer_pending")) {
+        return { status: "busy" };
+      }
+      throw error;
+    }
+  }
+
   /** Called only by the private EmailAgentBackend binding, never by fetch routing. */
   async resumeEmail(value: unknown): Promise<EmailResumeResult> {
     const input = parseEmailResume(value);
@@ -3777,6 +3858,31 @@ export class DurableAgentSession extends DurableComputerObject {
         const result = await tool.handler(input,{callId:crypto.randomUUID(),parentCallId:"",sessionId:session.session_id,model:this.#settings().model,signal:request.signal});
         return json(result, {headers:{"cache-control":"no-store"}});
       } catch (error) { return json({error:error instanceof TypeError ? "invalid_request" : "phone_request_failed"},{status:error instanceof TypeError ? 400 : 502}); }
+    }
+    const gmailConfig = /^\/gmail-push\/([A-Za-z0-9_-]{1,256})$/.exec(url.pathname);
+    if (gmailConfig) {
+      const session = this.#session();
+      if (!ownerAssertion || !session || session.runtime_profile !== "managed" || this.#deleting || this.#deleted)
+        return json({error:"not_found"},{status:404});
+      if (turnAuthorization.connectGrant) return json({error:"forbidden"},{status:403});
+      if (!["GET", "PUT", "DELETE"].includes(request.method)) return json({error:"method_not_allowed"},{status:405});
+      const target = `https://egress.internal/users/${encodeURIComponent(session.owner_id)}/gmail-push/${gmailConfig[1]}`;
+      let body: {email:string} | undefined;
+      if (request.method === "PUT") {
+        const parsed = await gmailPushConfig(request);
+        if (parsed instanceof Response) return parsed;
+        body = parsed;
+      }
+      if (request.method !== "PUT") {
+        const status = await this.env.NANOCODEX.fetch(new Request(target));
+        if (!status.ok) return status;
+        const config: unknown = await status.json();
+        if (!isRecord(config) || (config.enabled === true && config.agentId !== session.session_id))
+          return json({error:"not_found"},{status:404});
+        if (request.method === "GET") return json(config);
+      }
+      return this.env.NANOCODEX.fetch(new Request(target, {method:request.method,
+        headers:{"content-type":"application/json"}, body:JSON.stringify({...body,agentId:session.session_id})}));
     }
     if (request.method === "GET" && url.pathname === "/credential-subject") {
       // This public-worker-to-Session lookup still requires the caller's full

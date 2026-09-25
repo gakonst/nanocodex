@@ -118,6 +118,7 @@ type WorkerEnv = ElevenLabsEnv & GitStorageEnv & ThreadGitStorageEnv & EvalStora
   BYOK_SESSIONS?: DurableObjectNamespace;
   CHATGPT_SESSIONS?: DurableObjectNamespace;
   EGRESS?: Fetcher;
+  GMAIL_PUSH_EGRESS?: Fetcher;
   NANOCODEX_BACKEND?: Fetcher;
   NANOCODEX_ACCESS_SECRET?: string;
   NANOCODEX_HAND_BROKER?: DurableObjectNamespace;
@@ -155,6 +156,11 @@ export default {
     }
     const insecure = enforceHttps(request, env, url);
     if (insecure) return insecure;
+    // Only this fixed public path reaches the egress Pub/Sub JWT verifier.
+    if (/^\/v1\/gmail-push\/[^/]+\/[^/]+$/.test(url.pathname)) {
+      if (!env.GMAIL_PUSH_EGRESS) return json({ error: "gmail_push_unavailable" }, { status: 503 });
+      return env.GMAIL_PUSH_EGRESS.fetch(new Request(new URL(url.pathname, "https://gmail-push.internal"), request));
+    }
     const elevenLabs = await routeElevenLabs(request, env, url);
     if (elevenLabs != null) return elevenLabs;
     const connectorCallbackReturn = await routeLocalConnectorCallbackReturn(request, env, url);
