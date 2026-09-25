@@ -21,6 +21,8 @@ export const GOOGLE_PROVIDER = Object.freeze({
     "email",
     "profile",
     ...Object.values(GOOGLE_CAPABILITIES),
+    // Filter writes require this scope separately from full mailbox access.
+    "https://www.googleapis.com/auth/gmail.settings.basic",
   ]),
 });
 

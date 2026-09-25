@@ -7,6 +7,7 @@ export const GMAIL_PROVIDER = {
     "openid",
     "email",
     "https://mail.google.com/",
+    "https://www.googleapis.com/auth/gmail.settings.basic",
   ],
 } as const;
 
