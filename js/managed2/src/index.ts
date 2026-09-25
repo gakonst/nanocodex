@@ -418,7 +418,6 @@ export class Session extends DurableObject<Env> {
             status: response.status,
             route: marker === "openai_api" || marker === "chatgpt_subscription" ? marker : "unknown",
             ...(dispatch === undefined ? {} : { egress_dispatch_ms: Number(dispatch) }),
-            egress_timing: egressTiming,
           });
           return response;
         });
