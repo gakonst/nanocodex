@@ -110,7 +110,7 @@ final class LockedVoiceCoordinator {
                 self.beginCompletion(current)
                 if current.stopRequested, !current.recorder.completedWithWarning,
                    let text = QuickVoiceInput.finalText(current.recorder.transcript) {
-                    VoiceDiagnostic.note("speak.coordinator.finalTextReady")
+                    VoiceDiagnostic.note("speak.coordinator.finalTextReady.chars-\(text.count).segments-\(current.recorder.finalizedSegments.count)")
                     self.deliver(text, capture: current)
                 } else {
                     current.failure = current.recorder.completedWithWarning ? current.recorder.status :
@@ -172,7 +172,7 @@ final class LockedVoiceCoordinator {
             checkpoint(current, text: current.recorder.transcript, force: true)
             beginCompletion(current)
             update(current, phase: "transcribing")
-            VoiceDiagnostic.note("speak.coordinator.stopRequested")
+            VoiceDiagnostic.note("speak.coordinator.stopRequested.seconds-\(current.recorder.seconds).partialChars-\(current.recorder.transcript.count)")
             current.recorder.finish()
         }
         try await current.completion.wait()
