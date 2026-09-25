@@ -165,7 +165,7 @@ struct VoiceTaskWidget: Widget {
                 .containerBackground(for: .widget) { Color.clear }
         }
         .configurationDisplayName("Speak to Nanocodex")
-        .description("Start recording from the Lock Screen without opening the app. Grant microphone and speech permission in the app first.")
+        .description("A rectangular widget offers Speak and Meeting buttons. A circular widget starts Speak. Grant microphone and speech permission in the app first.")
         .supportedFamilies([.accessoryCircular, .accessoryRectangular])
     }
 }
@@ -173,29 +173,36 @@ struct VoiceTaskWidget: Widget {
 private struct VoiceTaskWidgetView: View {
     @Environment(\.widgetFamily) private var family
     var body: some View {
-        if family == .accessoryInline {
-            // Inline accessories cannot offer a tappable App Intent button.
-            Label("Speak to Nanocodex", systemImage: "mic.fill")
-                .widgetURL(URL(string: "nanocodex://voice/new")!)
+        if family == .accessoryRectangular {
+            // The already-pinned Speak widget gains meeting capture without
+            // requiring the user to discover and add a second Lock Screen widget.
+            // Keep two distinct hit targets; a tap on Speak must still record now.
+            VStack(alignment: .leading, spacing: 1) {
+                Button(intent: StartLockedVoiceIntent()) {
+                    Label("Speak", systemImage: "mic.fill")
+                        .frame(maxWidth: .infinity, minHeight: 27, alignment: .leading)
+                }
+                .accessibilityLabel("Speak to Nanocodex")
+                .accessibilityHint("Record one voice task")
+                Button(intent: StartMeetingLockedIntent()) {
+                    Label("Meeting", systemImage: "waveform")
+                        .frame(maxWidth: .infinity, minHeight: 27, alignment: .leading)
+                }
+                .accessibilityLabel("Listen to a meeting")
+                .accessibilityHint("Record and recap until you tap Stop Recording")
+            }
+            .font(.caption.weight(.semibold))
+            .lineLimit(1)
+            .buttonStyle(.plain)
         } else {
             Button(intent: StartLockedVoiceIntent()) {
-                if family == .accessoryRectangular {
-                    HStack(spacing: 8) {
-                        Image(systemName: "mic.fill").font(.title2)
-                        VStack(alignment: .leading) {
-                            Text("Speak to Nanocodex").font(.headline)
-                            Text("Tap to record").font(.caption)
-                        }
-                    }
-                } else {
-                    ZStack {
-                        AccessoryWidgetBackground()
-                        Image(systemName: "mic.fill").font(.title2)
-                    }
+                ZStack {
+                    AccessoryWidgetBackground()
+                    Image(systemName: "mic.fill").font(.title2)
                 }
             }
             .buttonStyle(.plain)
-            .accessibilityLabel("Record a voice task")
+            .accessibilityLabel("Speak to Nanocodex")
             .accessibilityHint("Starts recording without opening the app")
         }
     }
