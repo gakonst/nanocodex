@@ -93,7 +93,7 @@ export function accountConnectorsTool(
     name: "account_connectors",
     description: [
       "List, connect, reconnect, or disconnect account connectors without exposing credentials.",
-      "Google Workspace is one authorization identity whose connections list the exact Gmail, Drive, Calendar, Tasks, Docs, Sheets, Slides, and Contacts capabilities granted.",
+      "Google Workspace is one authorization identity whose connections list the exact Gmail, Drive, Calendar, Tasks, Docs, Sheets, Slides, and Contacts capabilities granted. Google connections also expose granted OAuth scopes; Gmail being connected does not imply settings consent. Inspect scopes before requesting a reconnect.",
       "Supports GitHub, Google Workspace, Slack, X, Spotify, SoundCloud and Stripe Link. Use tool_search for each service’s API tools. Stripe Link requests user spend approvals. Spotify and SoundCloud connect open the native Nanocodex app; other providers return authorization URLs.",
       "Connect returns a provider authorization URL. Give that exact URL to the user as a link; the provider may still require consent.",
       "Disconnect revokes one exact listed connection_id and is allowed only when the user explicitly asks to remove or replace it.",

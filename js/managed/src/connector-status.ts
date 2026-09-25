@@ -79,6 +79,8 @@ export type ConnectorConnection = Readonly<{
   label: string;
   accountId?: string;
   capabilities?: readonly ConnectorCapabilityId[];
+  /** Granted OAuth scopes, when supplied by the broker; absent on older brokers. */
+  scopes?: readonly string[];
 }>;
 export type ConnectorStatus = Readonly<{
   connected: boolean;
@@ -181,11 +183,13 @@ function publicConnectorConnection(value: unknown): ConnectorConnection {
   if (!id || !label || (value.account_id !== undefined && !accountId)) {
     throw new Error("connector status returned an invalid connection");
   }
+  const scopes = value.scopes === undefined ? undefined : connectorScopes(value.scopes);
   return {
     id,
     label,
     ...(accountId === undefined ? {} : { accountId }),
     ...(capabilities === undefined ? {} : { capabilities }),
+    ...(scopes === undefined ? {} : { scopes }),
   };
 }
 
@@ -209,4 +213,14 @@ function boundedString(value: unknown, maxLength: number): string | undefined {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function connectorScopes(value: unknown): readonly string[] {
+  if (!Array.isArray(value) || value.length > 64
+    || value.some((scope) => typeof scope !== "string" || scope.length === 0
+      || scope.length > 512 || /\s/.test(scope))
+    || new Set(value).size !== value.length) {
+    throw new Error("connector status returned invalid scopes");
+  }
+  return [...value];
 }

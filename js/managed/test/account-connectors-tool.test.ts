@@ -79,6 +79,24 @@ describe("managed account connector tool", () => {
     expect(JSON.stringify(result)).not.toMatch(/work@example.com|Acme/);
   });
 
+  it("preserves optional safe scope diagnostics without exposing credentials", async () => {
+    const result = await manageAccountConnectors({ ...base,
+      broker: { fetch: async () => Response.json(canonicalStatuses()) } as unknown as Fetcher,
+    }, { operation: "list" });
+    expect(result).toMatchObject({ connectors: { gmail: { connections: [
+      { id: A, scopes: ["openid", "https://mail.google.com/"] }, { id: B },
+    ] } } });
+    expect(JSON.stringify(result)).not.toContain("secret");
+  });
+
+  it("rejects malformed scope diagnostics", async () => {
+    const statuses = canonicalStatuses();
+    Object.assign(statuses.connectors.gmail.connections[0]!, { scopes: [42] });
+    await expect(manageAccountConnectors({ ...base,
+      broker: { fetch: async () => Response.json(statuses) } as unknown as Fetcher,
+    }, { operation: "list" })).rejects.toThrow();
+  });
+
   it("keeps legacy singleton readers without granting them a selector", async () => {
     const result = await manageAccountConnectors({
       ...base,
@@ -196,7 +214,7 @@ describe("managed account connector tool", () => {
 });
 
 function canonicalStatuses() {
-  const googleWork = { id: A, label: " work@example.com ", account_id: "google-1", capabilities: ["gmail", "gdrive"], access_token: "secret" };
+  const googleWork = { scopes: ["openid", "https://mail.google.com/"], id: A, label: " work@example.com ", account_id: "google-1", capabilities: ["gmail", "gdrive"], access_token: "secret" };
   return { connectors: {
     github: { connected: true, connections: [{ id: A, label: "octocat", account_id: "github-1", capabilities: ["github"], access_token: "secret" }] },
     gmail: { connected: true, connections: [googleWork, { id: B, label: "home@example.com", account_id: "google-2", capabilities: ["gmail"] }] },

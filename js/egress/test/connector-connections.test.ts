@@ -112,6 +112,43 @@ describe("provider-neutral connector identities", () => {
     expect(after.gdrive).toEqual({ connected: false, connections: [] });
   });
 
+  it("reports granted Google scopes through reconnect and refresh without losing mailbox access", async () => {
+    const user = "google-scope-journey";
+    const connection = await connect(user, "google", "google-alpha-code");
+    const settings = "https://www.googleapis.com/auth/gmail.settings.basic";
+    let status = await connectorStatus(user);
+    expect(status.gmail.connections[0]!.scopes).toEqual([
+      "openid", "email", GOOGLE_CAPABILITIES.gmail, GOOGLE_CAPABILITIES.gdrive,
+    ]);
+    expect(status.gmail.connections[0]!.scopes).not.toContain(settings);
+    const broker = workerEnv.USER_CONNECTORS.getByName(user);
+    expect((await broker.fetch("https://gmail.googleapis.com/gmail/v1/users/me/messages")).status).toBe(200);
+
+    // Reconnect upgrades this identity, preserving its selector and prior refresh token.
+    expect(await connect(user, "google", "google-scope-omit-expiring-code")).toBe(connection);
+    expect((await connectorStatus(user)).gmail.connections[0]!.scopes).toContain(settings);
+    expect((await broker.fetch("https://gmail.googleapis.com/gmail/v1/users/me/messages")).status).toBe(200);
+    status = await connectorStatus(user);
+    expect(status.gmail.connections[0]!.scopes).toEqual([
+      "openid", "email", GOOGLE_CAPABILITIES.gmail, settings,
+    ]);
+    expect(status.gdrive.connected).toBe(false);
+
+    // Explicit refresh scopes replace the callback grant, including loss of settings consent.
+    expect(await connect(user, "google", "google-scope-reduced-expiring-code")).toBe(connection);
+    expect((await broker.fetch("https://gmail.googleapis.com/gmail/v1/users/me/messages")).status).toBe(200);
+    status = await connectorStatus(user);
+    expect(status.gmail.connected).toBe(true);
+    expect(status.gmail.connections[0]!.scopes).toEqual(["openid", "email", GOOGLE_CAPABILITIES.gmail]);
+    // Inspect durable encrypted state as well as public projection.
+    await runInDurableObject(broker, async (_instance: UserConnectorBroker, state) => {
+      const row = await state.storage.get<{ envelope: EncryptedEnvelope }>("connector-state");
+      const vault = new CredentialVault(workerEnv, `connectors/${state.id.toString()}`);
+      const saved = await vault.open<{ connections: { google: Record<string, { scopes: string[] }> } }>(row!.envelope);
+      expect(saved.value.connections.google[connection]!.scopes).toEqual(["openid", "email", GOOGLE_CAPABILITIES.gmail]);
+    });
+  });
+
   it("allows the managed Google Calendar and People route matrix", async () => {
     const user = "google-route-matrix";
     const subject = "R".repeat(43);
@@ -294,6 +331,7 @@ type PublicConnection = {
   label: string;
   account_id: string;
   capabilities: string[];
+  scopes?: string[];
 };
 type PublicStatus = Record<string, { connected: boolean; connections: PublicConnection[] }>;
 
