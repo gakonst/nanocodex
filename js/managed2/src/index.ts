@@ -2,6 +2,9 @@ import { DurableObject } from "cloudflare:workers";
 import { Agent } from "nanocodex/cloudflare";
 import type { NamedTool } from "nanocodex";
 import { authenticate } from "./auth";
+import { ToolTiming } from "./toolTiming";
+import { managedWeb } from "./web";
+import { createJustBashTool } from "./just-bash";
 
 type ChatGptImport = Readonly<{
   access_token: string; refresh_token: string; account_id: string;
@@ -140,11 +143,14 @@ export default {
 
 export class Session extends DurableObject<Env> {
   #agent?: Promise<Agent.Agent>;
+  #bash = createJustBashTool(this.ctx.storage, (context, phase, durationMs) =>
+    this.#toolTiming.phase(context, phase, durationMs));
   #running = new Set<string>();
   #admissions = new Map<string, { input: string; outcome: Promise<{ status: number; body: string; headers: [string, string][] }> }>();
   #activeTraces = new Map<string, string>();
   #eventTurns = new Map<string, string>();
   #constructorMs: number;
+  #toolTiming: ToolTiming;
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
@@ -172,6 +178,7 @@ export class Session extends DurableObject<Env> {
     ]) {
       if (!timingColumns.has(column)) ctx.storage.sql.exec(`ALTER TABLE turn_timing ADD COLUMN ${column} ${type}`);
     }
+    this.#toolTiming = new ToolTiming(ctx.storage.sql);
     this.#constructorMs = performance.now() - constructorStart;
   }
 
@@ -212,6 +219,7 @@ export class Session extends DurableObject<Env> {
       const turn = this.#turn(turnId);
       const timing = turn && this.#timing(turnId);
       return turn ? reply(200, { turn_id: turnId, state: turn.state,
+        tool_timing: this.#toolTiming.list(turnId),
         ...(timing ? { timing: { trace_id: timing.trace_id,
           agent_init_ms: timing.agent_init_ms, accepted_ms: timing.accepted_ms,
           model_send_ms: timing.model_send_ms,
@@ -382,22 +390,24 @@ export class Session extends DurableObject<Env> {
       return;
     }
     if (event.type === "tool.call") {
+      this.#toolTiming.observe(internal as string, external, "tool.call", event.payload, timing.started_at);
       this.ctx.storage.sql.exec(
         "UPDATE turn_timing SET first_tool_call_ms = COALESCE(first_tool_call_ms, ?), tool_calls = COALESCE(tool_calls, 0) + 1 WHERE id = ?",
         elapsed, external,
       );
       console.info({ event: "managed2.tool_call", trace_id: timing.trace_id,
-        tool: event.payload.tool, elapsed_ms: elapsed });
+        call_id: event.payload.call_id, tool: event.payload.tool, elapsed_ms: elapsed });
       return;
     }
     if (event.type === "tool.result") {
+      this.#toolTiming.observe(internal as string, external, "tool.result", event.payload, timing.started_at);
       const durationMs = typeof event.payload.duration_ns === "number" ? event.payload.duration_ns / 1e6 : 0;
       this.ctx.storage.sql.exec(
         "UPDATE turn_timing SET first_tool_result_ms = COALESCE(first_tool_result_ms, ?), tool_duration_ms = COALESCE(tool_duration_ms, 0) + ? WHERE id = ?",
         elapsed, durationMs, external,
       );
       console.info({ event: "managed2.tool_result", trace_id: timing.trace_id,
-        tool: event.payload.tool, status: event.payload.status,
+        call_id: event.payload.call_id, tool: event.payload.tool, status: event.payload.status,
         elapsed_ms: elapsed, duration_ms: +durationMs.toFixed(1) });
       return;
     }
@@ -442,7 +452,11 @@ export class Session extends DurableObject<Env> {
     const initTrace = traceId ?? crypto.randomUUID();
     const initStart = performance.now();
     let initializing = true;
-    const options = { tools: [currentTime], instructions: "You are a concise assistant." };
+    const web = managedWeb({ egress: this.env.EGRESS, owner,
+      onTiming: (context, phase, durationMs) => this.#toolTiming.phase(context, phase, durationMs),
+    });
+    const options = { tools: [currentTime, this.#bash, web].map(tool => this.#toolTiming.instrument(tool)),
+      instructions: "You are a concise assistant. Use exec_command for shell tasks in /brain." };
     Object.defineProperty(options, Symbol.for("nanocodex.cloudflare.internalConfiguration"), { value: {
       model: "gpt-6-sol", thinking: "low", reasoning_mode: "standard", fast_mode: false,
     } });

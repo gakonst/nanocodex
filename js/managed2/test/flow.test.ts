@@ -29,12 +29,13 @@ it("admits a turn through API-key auth and the standard WASM Session DO", async 
   }, { timeout: 10_000 }).toMatchObject({ state: "completed", message: "hello from test model" });
   const timingResponse = await SELF.fetch(`https://api.test/v1/agents/${agent_id}/turns/${turn_id}`, { headers: { authorization } });
   const observed = await timingResponse.json<{ timing: { trace_id: string; agent_init_ms: number;
-    accepted_ms: number; first_delta_ms: number; first_answer_delta_ms: number | null; result_ms: number } }>();
+    accepted_ms: number; first_delta_ms: number; first_answer_delta_ms: number | null; result_ms: number }; tool_timing: unknown[] }>();
   expect(observed.timing.trace_id).toMatch(/^[0-9a-f-]{36}$/);
   expect(observed.timing.agent_init_ms).toBeGreaterThanOrEqual(0);
   expect(observed.timing.first_delta_ms).toBeGreaterThanOrEqual(observed.timing.accepted_ms);
   expect(observed.timing.result_ms).toBeGreaterThanOrEqual(observed.timing.first_delta_ms);
   expect(observed.timing.first_answer_delta_ms).toBeNull(); // Synthetic fixture has no final_answer phase.
+  expect(observed.tool_timing).toEqual([]);
   const repeat = await SELF.fetch(`https://api.test/v1/agents/${agent_id}/turns`, {
     method: "POST", headers: { authorization, "idempotency-key": key },
     body: JSON.stringify({ input: "Say hello" }),
@@ -192,7 +193,10 @@ it("completes a real model-tool-model turn and reports separate tool and continu
   });
   expect(created.status).toBe(202);
   const { agent_id, turn_id } = await created.json<{ agent_id: string; turn_id: string }>();
-  let status: { state: string; message?: string; timing: Record<string, number | null> } | undefined;
+  let status: { state: string; message?: string; timing: Record<string, number | null>;
+    tool_timing: { call_id: string; tool: string; started_at: number; started_ms: number;
+      result_ms: number; duration_ms: number; status: string;
+      phases: Record<string, { duration_ms: number; count: number }> }[] } | undefined;
   await expect.poll(async () => {
     const response = await SELF.fetch(`https://api.test/v1/agents/${agent_id}/turns/${turn_id}`, { headers: { authorization } });
     status = await response.json<typeof status>();
@@ -205,6 +209,18 @@ it("completes a real model-tool-model turn and reports separate tool and continu
   expect(status!.timing.post_tool_model_call_ms).toBeGreaterThanOrEqual(status!.timing.first_tool_result_ms!);
   expect(status!.timing.result_ms).toBeGreaterThanOrEqual(status!.timing.post_tool_model_call_ms!);
   expect(status!.timing.tool_duration_ms).toBeGreaterThanOrEqual(0);
+  expect(status!.tool_timing).toHaveLength(1);
+  const observedTool = status!.tool_timing[0]!;
+  expect(observedTool.tool).toBe("current_time");
+  expect(observedTool.started_at).toBeGreaterThan(0);
+  expect(observedTool.started_ms).toBeGreaterThanOrEqual(status!.timing.first_model_call_ms!);
+  expect(observedTool.result_ms).toBeGreaterThanOrEqual(observedTool.started_ms);
+  expect(observedTool.status).toBe("completed");
+  expect(observedTool.duration_ms).toBeGreaterThanOrEqual(0);
+  expect(observedTool.phases.handler.count).toBe(1);
+  expect(observedTool.phases.handler.duration_ms).toBeGreaterThanOrEqual(0);
+  expect(JSON.stringify(status!.tool_timing)).not.toContain("Use current_time");
+  expect(JSON.stringify(status!.tool_timing)).not.toContain("Current UTC:");
   const events = await SELF.fetch(`https://api.test/v1/agents/${agent_id}/events?cursor=0`, {
     headers: { authorization, upgrade: "websocket" },
   });
@@ -212,3 +228,48 @@ it("completes a real model-tool-model turn and reports separate tool and continu
   events.webSocket?.accept();
   events.webSocket?.close();
 });
+
+it("executes web__run end-to-end through credential-isolating Egress2 and resumes the model", async () => {
+  const authorization = `Bearer ${fixtureKeys["fixture-user"]}`;
+  expect((await SELF.fetch("https://api.test/v1/credentials/openai", {
+    method: "PUT", headers: { authorization }, body: JSON.stringify({ value: "sk-fixture-only" }),
+  })).status).toBe(204);
+  const created = await SELF.fetch("https://api.test/v1/agents", { method: "POST", headers: { authorization },
+    body: JSON.stringify({ input: "Use web__run once and summarize the search result." }) });
+  expect(created.status).toBe(202);
+  const { agent_id, turn_id } = await created.json<{ agent_id: string; turn_id: string }>();
+  let result: { state: string; message: string; timing: { tool_calls: number }; tool_timing: { tool: string; status: string; phases: Record<string, { duration_ms: number }> }[] } | undefined;
+  await expect.poll(async () => {
+    const response = await SELF.fetch(`https://api.test/v1/agents/${agent_id}/turns/${turn_id}`, { headers: { authorization } });
+    result = await response.json<typeof result>();
+    return result?.state;
+  }, { timeout: 15_000 }).toBe("completed");
+  expect(result?.message).toContain("[synthetic citation](https://example.org/source)");
+  expect(result?.message).not.toContain("provider-only");
+  expect(result?.timing.tool_calls).toBe(1);
+  expect(result?.tool_timing).toHaveLength(1);
+  expect(result?.tool_timing[0]?.tool).toBe("web__run");
+  expect(result?.tool_timing[0]?.status).toBe("completed");
+  for (const phase of ["handler", "preparation", "egress_dispatch", "egress_credential", "egress_upstream", "parse"]) {
+    expect(result?.tool_timing[0]?.phases[phase]?.duration_ms).toBeGreaterThanOrEqual(0);
+  }
+}, 20_000);
+
+it("routes subscription web__run through Egress2 without exposing account credentials to Managed2", async () => {
+  const authorization = `Bearer ${fixtureKeys["subscription-owner"]}`;
+  expect((await SELF.fetch("https://api.test/v1/credentials/chatgpt", {
+    method: "PUT", headers: { authorization, "content-type": "application/json" },
+    body: JSON.stringify({ access_token: "eyJhbGciOiJub25lIiwidHlwIjoiSldUIn0.eyJleHAiOjQxMDI0NDQ4MDAsImh0dHBzOi8vYXBpLm9wZW5haS5jb20vYXV0aCI6eyJjaGF0Z3B0X2FjY291bnRfaWQiOiJhY2NvdW50LWZpeHR1cmUiLCJjaGF0Z3B0X2FjY291bnRfaXNfZmVkcmFtcCI6ZmFsc2V9fQ.fixture",
+      refresh_token: "refresh-fixture-only", account_id: "account-fixture", expires_at: 4102444800000, fedramp: false }),
+  })).status).toBe(204);
+  const created = await SELF.fetch("https://api.test/v1/agents", { method: "POST", headers: { authorization },
+    body: JSON.stringify({ input: "Use web__run once and summarize the search result." }) });
+  expect(created.status).toBe(202);
+  const { agent_id, turn_id } = await created.json<{ agent_id: string; turn_id: string }>();
+  let result: { state: string; message: string } | undefined;
+  await expect.poll(async () => {
+    result = await (await SELF.fetch(`https://api.test/v1/agents/${agent_id}/turns/${turn_id}`, { headers: { authorization } })).json<typeof result>();
+    return result?.state;
+  }, { timeout: 15_000 }).toBe("completed");
+  expect(result?.message).toContain("[synthetic citation](https://example.org/source)");
+}, 20_000);

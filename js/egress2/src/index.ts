@@ -5,6 +5,7 @@ import { OwnerSubscription } from "./subscription";
 import { openChatGptSubscription } from "./subscriptionRuntime";
 import { CredentialCipher } from "./encryption";
 import { routeChatGpt } from "./relay";
+import { createSearchHandler } from "./search";
 
 interface Env {
   USER_CREDENTIALS: DurableObjectNamespace<UserCredentials>;
@@ -78,10 +79,17 @@ const handler = createEgressHandler<Env>({
   },
 });
 
+const search = createSearchHandler<Env>({
+  readCredential: (owner, env) => env.USER_CREDENTIALS.get(env.USER_CREDENTIALS.idFromName(owner)).getActiveCredential(),
+  upstreamFetch: (request, owner, env) => new URL(request.url).hostname === "chatgpt.com"
+    ? routeChatGpt(request, owner, env) : fetch(request),
+});
+
 /** Private service binding only. Caller must authenticate the user before asserting the owner header. */
 export default class Egress2 extends WorkerEntrypoint<Env> {
   fetch(request: Request): Promise<Response> {
-    return handler.fetch(request, this.env);
+    return request.url === "https://nanocodex.internal/v1/search"
+      ? search(request, this.env) : handler.fetch(request, this.env);
   }
 
   async putCredential(ownerId: string, provider: string = "openai", value: string): Promise<void> {
