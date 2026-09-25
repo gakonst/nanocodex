@@ -111,7 +111,7 @@ const MERCATOR_MCP_URL: &str = "https://mercator.sh/mcp";
     about = "Small managed Nanocodex client with local workspace tools"
 )]
 struct Cli {
-    /// Opt in to the separate Managed2 API (text-only interactive preview).
+    /// Opt in to the separate Managed2 API (limited text sessions in the standard TUI).
     #[arg(long, global = true)]
     managed2: bool,
     #[command(subcommand)]
@@ -636,9 +636,9 @@ fn run_with_runtime(
 async fn run(cli: Cli) -> Result<(), ManagedError> {
     if cli.managed2 {
         return match cli.command {
-            None => managed2::run(None, None, None).await,
+            None => tui::run_managed2(None).await,
             Some(Command::Attach(Attach { agent: Some(agent) })) if agent.managed_origin.is_none() => {
-                managed2::run(Some(agent.agent_id), None, None).await
+                tui::run_managed2(Some(agent.agent_id)).await
             }
             Some(Command::Run(command)) if !command.settings.is_explicit() => {
                 managed2::run(command.agent, Some(command.prompt), command.idempotency_key).await

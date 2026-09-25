@@ -30,6 +30,91 @@ const VAULT_ID: &str = "abcdefghijklmnopqrstuv";
 const VAULT_ORIGIN: &str = "https://vault-approval.example:8443";
 const TIMEOUT: Duration = Duration::from_secs(10);
 
+// The Managed2 API is intentionally smaller, but interactive sessions must keep
+// the same terminal presentation and render real streamed replies in that shell.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn managed2_uses_the_existing_tui_for_text_turns() {
+    use axum::{
+        extract::Path as AxumPath,
+        http::{HeaderMap, StatusCode},
+    };
+    let credential = format!("ncx2_{}", "A".repeat(43));
+    let state = Arc::new(Mutex::new((String::new(), false)));
+    let app = Router::new()
+        .route("/v1/agents", post({
+            let state = state.clone();
+            let credential = credential.clone();
+            move |headers: HeaderMap, Json(body): Json<Value>| {
+                let state = state.clone();
+                let credential = credential.clone();
+                async move {
+                    assert_eq!(headers.get("authorization").unwrap().to_str().unwrap(), format!("Bearer {credential}"));
+                    assert_eq!(body["input"], "Managed2 TUI prompt");
+                    let id = headers.get("idempotency-key").unwrap().to_str().unwrap().to_owned();
+                    state.lock().unwrap().0 = id.clone();
+                    (StatusCode::ACCEPTED, Json(json!({"agent_id":id,"turn_id":id,"state":"accepted"})))
+                }
+            }
+        }))
+        .route("/v1/agents/{agent}/turns/{turn}", get({
+            let state = state.clone();
+            move |AxumPath((_agent, turn)): AxumPath<(String, String)>| {
+                let state = state.clone();
+                async move {
+                    let (id, complete) = &*state.lock().unwrap();
+                    assert_eq!(&turn, id);
+                    Json(json!({"turn_id":turn,"state":if *complete {"completed"} else {"accepted"},
+                        "message":if *complete {Some("TUI_MANAGED2_REPLY")} else {None}}))
+                }
+            }
+        }))
+        .route("/v1/agents/{agent}/events", get({
+            let state = state.clone();
+            move |ws: WebSocketUpgrade, Query(query): Query<HashMap<String, String>>, AxumPath(agent): AxumPath<String>| {
+                let state = state.clone();
+                async move {
+                    assert_eq!(query.get("cursor").map(String::as_str), Some("0"));
+                    ws.on_upgrade(move |mut socket| async move {
+                        let id = state.lock().unwrap().0.clone();
+                        assert_eq!(agent, id);
+                        let events = [
+                            json!({"protocol_version":1,"request_id":agent,"seq":1,"type":"input.accepted",
+                                "payload":{"request_id":id,"turn_id":"internal-turn","input":"Managed2 TUI prompt"}}),
+                            json!({"protocol_version":1,"request_id":agent,"seq":2,"type":"assistant.delta",
+                                "payload":{"turn_id":"internal-turn","model_call_index":0,"item_id":"answer","phase":"final_answer","text":"TUI_MANAGED2_REPLY"}}),
+                            json!({"protocol_version":1,"request_id":agent,"seq":3,"type":"run.completed",
+                                "payload":{"turn_id":"internal-turn"}}),
+                        ];
+                        for (index, event) in events.into_iter().enumerate() {
+                            socket.send(Message::Text(json!({"cursor":(index+1).to_string(),"event":event}).to_string().into())).await.unwrap();
+                        }
+                        state.lock().unwrap().1 = true;
+                        while socket.recv().await.is_some() {}
+                    })
+                }
+            }
+        }));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin = format!("http://{}", listener.local_addr().unwrap());
+    let service = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let mut terminal = Terminal::start_with_command(&origin, false, None, |command| {
+        command.arg("--managed2");
+        command.env("NANOCODEX_MANAGED2_URL", &origin);
+        command.env("NANOCODEX_MANAGED2_API_KEY", &credential);
+    });
+    terminal.wait_output("\x1b[?1049h").await;
+    terminal.input("Managed2 TUI prompt");
+    terminal.wait_text("Managed2 TUI prompt").await;
+    terminal.input("\r");
+    terminal.wait_text("TUI_MANAGED2_REPLY").await;
+    let snapshot = terminal.screen.lock().unwrap().screen().contents();
+    assert!(snapshot.contains("Managed2 TUI prompt"));
+    assert!(snapshot.contains("TUI_MANAGED2_REPLY"));
+    terminal.input("\x03\x03");
+    terminal.wait_output("\x1b[?1049l").await;
+    service.abort();
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn terminal_empty_idle_stops_redrawing_and_still_accepts_input_and_live_updates() {
     let mut fixture = Fixture::start().await;

@@ -469,6 +469,7 @@ pub(crate) struct RootNode {
     pending_session_list: Option<u64>,
     next_session_list: u64,
     reflection_input: bool,
+    managed2_preview: bool,
 }
 
 impl RootNode {
@@ -550,7 +551,68 @@ impl RootNode {
             pending_session_list: None,
             next_session_list: 0,
             reflection_input: false,
+            managed2_preview: false,
         }
+    }
+
+    /// Keep the ordinary chat presentation while withholding controls that the
+    /// separate Managed2 text API cannot execute.
+    pub(crate) fn set_managed2_preview(&mut self) {
+        self.managed2_preview = true;
+        self.fork_available = false;
+        self.composer
+            .component_mut()
+            .set_backend_label("Managed2 · text only");
+    }
+
+    fn managed2_terminal(&mut self, event: Event) -> ComponentUpdate<RootEffect> {
+        if matches!(event, Event::Resize(_, _)) {
+            return ComponentUpdate::render(RenderRequest::Immediate);
+        }
+        if self.overlay.is_some() {
+            if matches!(&event, Event::Key(key) if key.kind == KeyEventKind::Press
+                && matches!(key.code, KeyCode::Esc | KeyCode::Enter))
+            {
+                self.overlay = None;
+                return ComponentUpdate::render(RenderRequest::Immediate);
+            }
+            return ComponentUpdate::none();
+        }
+        if matches!(&event, Event::Key(key) if key.kind == KeyEventKind::Press
+            && key.code == KeyCode::Char('c') && key.modifiers == KeyModifiers::CONTROL)
+        {
+            return ComponentUpdate {
+                effects: vec![RootEffect::Shutdown],
+                render: RenderRequest::None,
+            };
+        }
+        if let Event::Key(key) = &event {
+            if !matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat)
+                || matches!(key.code, KeyCode::BackTab | KeyCode::Esc)
+            {
+                return ComponentUpdate::none();
+            }
+            if key.code == KeyCode::Enter && key.modifiers.is_empty() {
+                let draft = self.composer.component().draft().trim();
+                if matches!(draft, "/exit" | "/quit") {
+                    return ComponentUpdate {
+                        effects: vec![RootEffect::Shutdown],
+                        render: RenderRequest::None,
+                    };
+                }
+                if (draft.starts_with('/') && draft != "/id") || draft.starts_with('!') {
+                    self.notification = Some(Notification::plain(
+                        "Managed2 accepts text, /id, and /exit only.".to_owned(),
+                        Color::Yellow,
+                    ));
+                    return ComponentUpdate::render(RenderRequest::Immediate);
+                }
+            }
+        }
+        if !matches!(&event, Event::Key(_) | Event::Paste(_)) {
+            return ComponentUpdate::none();
+        }
+        self.edit_composer(ComposerEvent::Terminal(event))
     }
 
     pub(crate) fn fork(&self, workspace: &Path, thinking: ReasoningEffort) -> Self {
@@ -1110,6 +1172,9 @@ impl RootNode {
     }
 
     fn update_terminal(&mut self, event: Event) -> ComponentUpdate<RootEffect> {
+        if self.managed2_preview {
+            return self.managed2_terminal(event);
+        }
         if self.voice_status.is_some() && is_control_key(&event, 'x') {
             if matches!(&event, Event::Key(key) if key.kind != KeyEventKind::Press) {
                 return ComponentUpdate::none();
@@ -2893,7 +2958,9 @@ impl RootNode {
         priority: RenderRequest,
     ) -> ComponentUpdate<RootEffect> {
         let update = self.composer.component_mut().update(event);
-        if let Some(ComposerEffect::Settings(command)) = &update.effect {
+        if !self.managed2_preview
+            && let Some(ComposerEffect::Settings(command)) = &update.effect
+        {
             return self.apply_settings_command(command.clone());
         }
         let delivered = matches!(
@@ -2927,10 +2994,17 @@ impl RootNode {
             // Goal controls are intercepted by the managed server and must not
             // wait behind active model work or an unacknowledged steer.
             Some(ComposerEffect::Submit(prompt))
-                if prompt.display_text().split_whitespace().next() == Some("/goal") =>
+                if !self.managed2_preview
+                    && prompt.display_text().split_whitespace().next() == Some("/goal") =>
             {
                 self.in_flight_turns = self.in_flight_turns.saturating_add(1);
                 vec![RootEffect::Submit(prompt)]
+            }
+            Some(ComposerEffect::Submit(prompt))
+                if self.managed2_preview && self.has_active_turns() =>
+            {
+                self.queue.component_mut().push(prompt);
+                Vec::new()
             }
             Some(ComposerEffect::Submit(prompt)) if self.has_active_turns() => {
                 let (id, prompt) = self.queue.component_mut().begin_steer(prompt);
