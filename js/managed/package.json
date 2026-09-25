@@ -10,7 +10,7 @@
     "build": "wrangler deploy --dry-run --outdir dist --config wrangler.jsonc",
     "check": "npm run typecheck && npm test && npm run build",
     "predeploy": "npm run prepare:code-evaluator",
-    "deploy": "wrangler deploy --env=\"\" --config wrangler.jsonc",
+    "deploy": "node ../../scripts/cloudflare/managed-crm.mjs deploy",
     "prebuild": "npm run prepare:code-evaluator",
     "prepare:code-evaluator": "node scripts/prepare-code-evaluator.mjs && node scripts/prepare-hand-image.mjs && node scripts/prepare-just-bash-lazy.mjs",
     "test": "vitest run && npm run test:rpc-lifecycle && npm run test:discovery-cache && npm run test:routing",
@@ -22,7 +22,9 @@
     "test:routing": "vitest run --config vitest.routing.config.ts && node --test test/provider-telemetry.test.mjs && npm run test:routing:wasm",
     "test:routing:wasm": "node --test test/thread-routing-wasm.test.mjs",
     "test:media": "node --test scripts/media/runtime.test.mjs",
-    "test:memory": "vitest run --config vitest.memory.config.ts"
+    "test:memory": "vitest run --config vitest.memory.config.ts",
+    "preview": "node ../../scripts/cloudflare/managed-crm.mjs preview",
+    "db:migrate:local": "wrangler d1 migrations apply NANOCODEX_CRM --local --env development --config wrangler.jsonc --persist-to ../account/.wrangler/state"
   },
   "dependencies": {
     "nanocodex-computer": "workspace:*",

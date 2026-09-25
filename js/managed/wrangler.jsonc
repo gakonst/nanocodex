@@ -49,6 +49,10 @@
       "entrypoint": "ChiefOfStaffEgress"
     }
   ],
+  // IDs are resolved during managed deployment before migrations and upload.
+  "d1_databases": [
+    { "binding": "NANOCODEX_CRM", "database_name": "nanocodex-crm-production", "migrations_dir": "migrations" }
+  ],
   "images": { "binding": "NANOCODEX_ATTACHMENT_IMAGES" },
   "worker_loaders": [
     {
@@ -203,6 +207,9 @@
   },
   "env": {
     "development": {
+      "d1_databases": [
+        { "binding": "NANOCODEX_CRM", "database_name": "nanocodex-crm-development", "database_id": "nanocodex-crm-development", "migrations_dir": "migrations", "remote": false }
+      ],
       "name": "nanocodex-durable-agent",
       "services": [
         { "binding": "NANOCODEX_MEDIA", "service": "nanocodex-media", "entrypoint": "MediaService", "remote": false },

@@ -1,0 +1,7 @@
+{
+  "name": "crm-persistence-test",
+  "main": "test/crm-worker.ts",
+  "compatibility_date": "2026-07-29",
+  "compatibility_flags": ["nodejs_compat"],
+  "d1_databases": [{ "binding": "NANOCODEX_CRM", "database_name": "crm-test", "database_id": "00000000-0000-0000-0000-000000000001", "migrations_dir": "migrations" }]
+}

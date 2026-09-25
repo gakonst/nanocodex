@@ -299,3 +299,10 @@ test('media must pass its own health and ledger phase before managed starts', as
   assert.ok(success.events.findIndex(row => row[0] === 'success' && row[1] === 'media') <
     success.events.findIndex(row => row[0] === 'start' && row[1] === 'managed'));
 });
+
+test('managed releases enter the CRM migration/upload boundary with their pinned image config', async () => {
+  const f = fixture(['managed']);
+  await f.release();
+  assert.deepEqual(f.calls[0].command.slice(0, 5), [process.execPath, '../../scripts/cloudflare/managed-crm.mjs', 'deploy', '--config', 'wrangler.ci.jsonc']);
+  assert.ok(f.calls[0].command.includes('--containers-rollout'));
+});

@@ -14,7 +14,7 @@ import { resolveReleasedImages } from './released-images.mjs';
 import { configureReleasedAccount } from './released-account-image.mjs';
 
 const commands=Object.fromEntries([...phases.infrastructure,...phases.consumers,
-  ['managed','js/managed',['npx','wrangler','deploy','--config','wrangler.ci.jsonc','--containers-rollout','immediate']],
+  ['managed','js/managed',[process.execPath,'../../scripts/cloudflare/managed-crm.mjs','deploy','--config','wrangler.ci.jsonc','--containers-rollout','immediate']],
   ['account','js/account',['npx','wrangler','deploy','--config','dist/nanocodex/wrangler.ci.json']],
 ].map(([name,directory,command])=>[name,{directory,command}]));
 export const releasePhases=[['egress','x'],['media'],['managed'],['email','dialog','connect-api','astra','chief-of-staff','playground'],['account']];

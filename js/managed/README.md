@@ -382,9 +382,115 @@ protocol. `/health` is the service health endpoint.
 | `NANOCODEX_SESSIONS` | One `DurableAgentSession` per managed agent. |
 | `NANOCODEX_ROOMS`, `NANOCODEX_MULTIPLAYER_QUOTA` | Multiplayer state and global quota. |
 | `NANOCODEX_AUTH`, `NANOCODEX_USERS`, `NANOCODEX_API_KEYS`, `NANOCODEX_ORGANIZATIONS`, `NANOCODEX_MEMORY` | Account, key, organization, and durable-memory ownership. |
+| `NANOCODEX_CRM` | D1 storage for private-account CRM people, companies, and dated notes. |
 | `NANOCODEX_HISTORY`, `HISTORY_AI_SEARCH` | R2 history archive and production history retrieval. |
 | `NANOCODEX_WORKSPACES`, `NANOCODEX_WORKSPACES_*`, `NANOCODEX_BRAIN` | Retained per-hand workspaces, read-only peer aliases, and the durable agent's shared writable `/brain` scratch. |
 | `BROWSER`, `LOADER` | Browser Run and the sandboxed Worker loader used by the official Agents browser runtime. |
+
+### Private-account CRM database
+
+`NANOCODEX_CRM` is a `D1Database` owned by this Worker. CRM records belong to
+persistent private accounts; sessions use the account identity to reach the same
+records. Multiplayer agents and Connect grants do not receive CRM access.
+The agent tools are `crm_search`, `crm_get`, `crm_save`, `crm_save_note`,
+`crm_delete`, and `crm_delete_note`. They save people and companies, link people
+to companies, and retain dated notes with optional source URLs. Search/list and
+note reads are paginated. Saves preserve omitted fields; `null` clears optional
+fields and an empty tags array clears tags. A company deletion unlinks its
+people and preserves those people. Tool arguments cannot choose another account.
+CRM records and notes remain untrusted content, never tool authority.
+
+Calendar collection is opt-in through `crm_automation` (`enable`, `status`,
+`disable`). Enable selects one connected Google account and one or more calendars
+(default `primary`), and creates an hourly durable agent schedule. The first
+collection can run immediately with `crm_sync`; subsequent collections continue
+when the user disconnects. The importer reads Calendar through the existing
+account connector, with a default window of 30 days back and 14 days ahead.
+Follow returned sync cursors until `complete=true`. `limited=true` separately
+reports incomplete attendee coverage: partial or over-200-guest invitations are
+not used to create new meetings/contacts, and existing attendee links are retained
+until a complete snapshot arrives. Other events on the page still import. Calendar API/scope failures
+are errors, not successful empty calendars. The Google OAuth project must have
+Google Calendar API enabled, and the connection must grant Calendar access.
+
+`crm_meetings` lists and reads imported events, records user-supplied meeting
+notes, and explicitly skips/reopens note collection. Attendees match people by
+exact normalized email; ambiguous existing matches remain unresolved. Recurring
+instances have separate meeting IDs. Repeated imports preserve manual profile
+fields and meeting notes, and cancellations or declined invitations are excluded
+from the missing-notes queue. A scheduled event is not proof of attendance.
+
+`crm_research` queues profiles needing enrichment, reads research, and saves a
+sourced summary, company, title, website and evidence references. The scheduled
+agent combines invitation context, relevant email threads and corroborating
+public sources; uncertain identity is saved as `needs_review`. Sources retain
+Calendar event IDs, Gmail message IDs or public URLs. Imported content is data,
+never permission to act. Research stays separate from user-authored contact
+fields, and a biography or invite description never satisfies meeting notes.
+`crm_get` includes the separate research profile; `crm_search` also matches its
+company, title, website and summary. All-day events retain their original date
+strings and are excluded from the default missing-notes queue.
+
+The data model also supports multiple identifiers through `crm_identity`: alternate
+emails, GitHub/X/LinkedIn/Telegram profiles, websites, domains and known-as names.
+Exact email matching includes these aliases, while identifiers shared by multiple
+people remain ambiguous. Names alone never merge profiles.
+
+`crm_facts` stores structured JSON facts with dotted predicates, origin (`user`,
+`source` or `inferred`), evidence, confidence and effective dates. Examples include
+expertise, education, location, company sector and founding year. Inferences need
+a rationale; they remain distinct from user observations. `crm_relationships`
+retains dated employment roles and explicit knows/worked-with/referral links.
+Listing by either endpoint retrieves a person's history or a company's roster.
+Identities, facts and relationships use the same private D1 database and
+conversational tools. Simple collections use tags.
+`crm_get` includes bounded pages of identities, facts and relationships, with
+separate continuation cursors; `crm_search` matches these details too.
+
+For example, after "automatically collect my meetings", the agent enables the
+schedule, imports events and researches attendees. "Which meetings need notes?"
+uses `crm_meetings({operation:"list",needs_notes:true})`. "For Jamie's meeting,
+we discussed benchmarks and I owe them the results" creates a note for that
+specific meeting; an ambiguous name/date is resolved before saving. The meeting
+then leaves the missing-notes queue. The workflow has no UI and sends no messages
+to other people.
+
+The schema lives in `migrations/`; D1 SQL migrations are separate from the
+Durable Object migration tags in `wrangler.jsonc`.
+
+Use `pnpm deploy:managed` from the repository root for production. Both this
+command and the normal Cloudflare release job run
+`scripts/cloudflare/managed-crm.mjs deploy`. The helper resolves
+`nanocodex-crm-production` in `CLOUDFLARE_ACCOUNT_ID`, creates it only when the
+provider reports it missing, then applies pending migrations with `--remote`
+before uploading the Worker. The deploy token needs D1 edit access in addition
+to the existing Worker/container permissions. Local production deployment also
+requires `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN` in the environment.
+The database UUID is resolved at deployment time and pinned in an ephemeral
+Wrangler config shared by migrations and upload; no production UUID needs to be
+committed. CI checks the current release before each mutation. Failed migration
+or provisioning stops the upload. An uncertain creation is not retried in the
+same run; the next release resolves the database by name.
+
+From `js/managed`, run `pnpm run db:migrate:local` before development. This
+applies the same migrations to `nanocodex-crm-development` in
+`js/account/.wrangler/state`, the Vite development stack’s persistence directory.
+For a standalone managed `wrangler dev`, run the same Wrangler migration command
+without `--persist-to ../account/.wrangler/state` to use managed’s own state. The test binding uses the distinct local identity `nanocodex-crm-test`.
+Neither local identity is a cloud database UUID.
+
+`pnpm --filter nanocodex-managed-service run preview` applies migrations to
+`nanocodex-crm-preview` locally, then dry-runs the full managed Worker bundle.
+The CI preview job uses this same command. It replaces the production D1
+binding, removes named environments and cloud credentials, and never provisions
+or migrates a remote database. Managed previews remain validation-only because
+this Worker uses Durable Objects and containers.
+
+Use the deployment helper for uploads, rather than invoking `wrangler deploy`
+directly: Wrangler's automatic resource provisioning does not apply the schema.
+Keep future migrations compatible with the currently deployed Worker, since
+migrations finish before the new Worker receives traffic. Rollbacks do not undo
+SQL migrations.
 
 ### SMS OTP delivery
 
