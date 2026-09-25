@@ -15,9 +15,10 @@ export function projectEnvironment(info, { runtime, default_cwd }) {
       ...(hand.vm_provider === undefined ? {} : { vm_provider: hand.vm_provider }),
     }])),
     accounts: Object.fromEntries([...services].map((service) => [service, {
-      connections: (info.connectorAccounts?.[service] ?? []).map(({ id, label, accountId, capabilities }) => ({
+      connections: (info.connectorAccounts?.[service] ?? []).map(({ id, label, accountId, capabilities, scopes }) => ({
         id, label, ...(accountId === undefined ? {} : { accountId }),
         ...(capabilities === undefined ? {} : { capabilities: [...capabilities] }),
+        ...(scopes === undefined ? {} : { scopes: [...scopes] }),
       })),
       ...(info.accounts?.[service] === undefined ? {} : { label: info.accounts[service] }),
       ...(info.connectorTools?.[service] === undefined ? {} : { ...info.connectorTools[service] }),

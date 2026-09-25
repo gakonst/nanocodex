@@ -4,6 +4,7 @@ export type EnvironmentHand = Readonly<{
 }>;
 export type EnvironmentConnection = Readonly<{
   id: string; label: string; accountId?: string; capabilities?: readonly string[];
+  scopes?: readonly string[];
 }>;
 export type EnvironmentAccount = Readonly<{
   connections: readonly EnvironmentConnection[]; label?: string;
