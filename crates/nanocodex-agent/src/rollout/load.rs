@@ -378,7 +378,7 @@ fn materialize_rollout(path: &Path, thread_id: &str) -> io::Result<MaterializedR
     let mut model = Model::Sol;
     for (index, line) in BufReader::new(File::open(path)?).lines().enumerate() {
         let line = line?;
-        let value: serde_json::Value = serde_json::from_str(&line).map_err(|error| {
+        let mut value: serde_json::Value = serde_json::from_str(&line).map_err(|error| {
             io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!(
@@ -430,7 +430,13 @@ fn materialize_rollout(path: &Path, thread_id: &str) -> io::Result<MaterializedR
                 if let Some(item) = visible_tool_call(&value["payload"]) {
                     transcript.push(item);
                 }
-                let item = serde_json::from_value(value["payload"].clone()).map_err(|error| {
+                // Move the parsed payload into the typed history rather than cloning
+                // the (potentially large) response item before deserializing it.
+                let payload = value
+                    .get_mut("payload")
+                    .map(serde_json::Value::take)
+                    .unwrap_or_default();
+                let item = serde_json::from_value(payload).map_err(|error| {
                     io::Error::new(
                         io::ErrorKind::InvalidData,
                         format!(
@@ -443,8 +449,12 @@ fn materialize_rollout(path: &Path, thread_id: &str) -> io::Result<MaterializedR
                 history.push(item);
             }
             Some("compacted") => {
-                history = serde_json::from_value(value["payload"]["replacement_history"].clone())
-                    .map_err(|error| {
+                let replacement_history = value
+                    .get_mut("payload")
+                    .and_then(|payload| payload.get_mut("replacement_history"))
+                    .map(serde_json::Value::take)
+                    .unwrap_or_default();
+                history = serde_json::from_value(replacement_history).map_err(|error| {
                     io::Error::new(
                         io::ErrorKind::InvalidData,
                         format!(
