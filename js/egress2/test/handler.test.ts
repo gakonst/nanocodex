@@ -47,6 +47,7 @@ describe("private credential egress", () => {
     const inbound = request();
     inbound.headers.set("x-managed2-agent", "private-agent");
     inbound.headers.set("x-nanocodex-egress-route", "spoofed");
+    inbound.headers.set("x-nanocodex-subject", "private-subject");
     inbound.headers.set("server-timing", "secret-private");
     const miss = await proxy.fetch(inbound, {});
     expect(miss.status).toBe(201);
@@ -55,6 +56,7 @@ describe("private credential egress", () => {
     expect(outbound?.headers.has("x-managed2-owner")).toBe(false);
     expect(outbound?.headers.has("x-managed2-agent")).toBe(false);
     expect(outbound?.headers.has("x-nanocodex-egress-route")).toBe(false);
+    expect(outbound?.headers.has("x-nanocodex-subject")).toBe(false);
     expect(outbound?.headers.has("server-timing")).toBe(false);
     expect(miss.headers.get("server-timing")).toBe('egress_credential;dur=7.0, egress_dispatch;dur=7.0, egress_upstream_headers;dur=23.0, egress_total;dur=30.0, egress_route;desc="openai_api", egress_cache;desc="miss"');
     expect(await miss.text()).toBe("streamed-body-secret");

@@ -118,7 +118,7 @@ export function createEgressHandler<Env>({
         // The host-only identity and observability metadata must never reach OpenAI.
         for (const name of [...headers.keys()]) {
           if (name.startsWith("x-managed2-") || name.startsWith("x-nanocodex-egress-")
-            || name === "server-timing") headers.delete(name);
+            || name === "x-nanocodex-subject" || name === "server-timing") headers.delete(name);
         }
         headers.delete("host");
         // Never let the caller spoof account metadata or originator.

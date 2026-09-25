@@ -62,5 +62,14 @@ describe("actual workerd UserCredentials + compiled Rust subscription", () => {
     const reread = await stub.getActiveCredential();
     expect(reread?.kind).toBe("chatgpt");
     if (reread?.kind === "chatgpt") expect(reread.secret).toBe(recovered.secret);
+    const replacement = jwt(futureExpiry / 1000 - 60);
+    await stub.putChatGptCredential({ access_token: replacement, refresh_token: "replacement-synthetic",
+      account_id: "synthetic-account", expires_at: futureExpiry - 60_000, fedramp: false });
+    const swapped = await stub.getActiveCredential();
+    expect(swapped?.kind).toBe("chatgpt");
+    if (swapped?.kind === "chatgpt") {
+      expect(swapped.secret).toBe(replacement);
+      expect(swapped.revision).not.toBe(recovered.revision);
+    }
   });
 });

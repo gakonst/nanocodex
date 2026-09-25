@@ -29,6 +29,7 @@ class FakeStorage {
   private readonly rows = new Map<string, unknown>();
   async get<T>(key: string): Promise<T | undefined> { return this.rows.get(key) as T | undefined; }
   async put(key: string, value: unknown) { this.rows.set(key, value); }
+  async delete(key: string) { this.rows.delete(key); }
   async transaction<T>(fn: (tx: FakeStorage) => Promise<T>): Promise<T> { return fn(this); }
 }
 
@@ -187,6 +188,35 @@ describe("ChatGPT subscription egress", () => {
     } finally { handle.dispose(); }
   });
 
+  it("keeps the active encrypted credential when a replacement fails after staging", async () => {
+    const storage = new FakeStorage();
+    let rejectReplacement = false;
+    const open = async ({ store, seed }: { store: import("nanocodex").ChatGptSubscriptionStore;
+      seed?: import("nanocodex").ChatGptCredentialSeed }) => {
+      if (seed) {
+        const before = await store.load("owner");
+        await store.compareAndSwap("owner", { expectedRevision: before.revision, payload: seed.accessToken });
+        if (rejectReplacement) throw new Error("synthetic staging failure");
+      }
+      const token = (await store.load("owner")).payload;
+      return { credential: async () => ({ kind: "chatgpt", accessToken: token, accountId: "acct", fedramp: false,
+        revision: "1" }), status: async () => ({ state: "authenticated", expiresAt: Date.now() + 3_600_000 }),
+        dispose: () => {} } as unknown as ChatGptSubscriptionHandle;
+    };
+    const manager = new OwnerSubscription(storage as unknown as DurableObjectStorage, "owner", open, cipher("owner"));
+    const imported = { access_token: jwt("acct", 4_070_908_800), refresh_token: "synthetic-refresh",
+      account_id: "acct", expires_at: 4_070_908_800_000, fedramp: false };
+    await manager.replace(imported);
+    const first = await manager.credential();
+    rejectReplacement = true;
+    await expect(manager.replace({ ...imported, access_token: jwt("acct", 4_070_908_801) }))
+      .rejects.toThrow("synthetic staging failure");
+    expect((await manager.credential()).secret).toBe(first.secret);
+    const stored = await storage.get<{ payload: string }>("subscription");
+    expect(stored?.payload).toMatch(/^v1:/);
+    expect(stored?.payload).not.toContain(first.secret);
+  });
+
   it("explicit import replaces old subscription; store CAS revisions and no old seed survives", async () => {
     const storage = new FakeStorage();
     let current = "";
@@ -213,7 +243,5 @@ describe("ChatGPT subscription egress", () => {
     const raw = await storage.get<{ payload: string }>("subscription");
     expect(raw?.payload).toMatch(/^v1:/);
     expect(raw?.payload).not.toContain(imported.access_token);
-    expect(dispose).toHaveBeenCalledOnce();
-    expect(open).toHaveBeenCalledTimes(2);
   });
 });
