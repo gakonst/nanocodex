@@ -67,6 +67,18 @@ Wrangler deploys, old-ref rollbacks, split traffic, interruptions and unknown st
 cannot masquerade as a current successful release. A source-identical manual deploy
 may therefore cause one deliberate reconciliation deployment on the next CI run.
 
+Managed's upload command also owns its private-account CRM D1 database. It
+resolves or creates `nanocodex-crm-production`, pins the returned UUID into the
+same generated config used by migration and upload, and applies pending SQL
+migrations before deployment. Each mutation rechecks current master; a failed
+migration stops the phase and dependent Workers. The production token requires
+D1 edit permission. Schema migration files and the preparation helper participate
+in managed's release fingerprint. See [managed database operations](../../js/managed/README.md#private-account-crm-database).
+
+Managed preview validation uses `pnpm run preview` in `js/managed`: an isolated
+local CRM migration followed by a Worker dry-run. It replaces production D1 IDs,
+removes named environments and cloud credentials, and creates no cloud database.
+
 Selected deployments preserve dependency phases: egress/X, private media, managed,
 consumers, then account. A scoped `RELEASE_ONLY=managed` also selects and redeploys
 media before managed; unchanged media is otherwise safely reused through the live

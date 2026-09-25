@@ -3,3 +3,6 @@ node_modules/
 .wrangler/
 src/quickjs.wasm
 .generated/
+
+# Ephemeral database-pinned deployment configs, removed after each command.
+wrangler.crm-*.jsonc

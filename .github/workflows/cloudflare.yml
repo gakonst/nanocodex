@@ -288,7 +288,7 @@ jobs:
         run: npx wrangler deploy --dry-run --config wrangler.jsonc
       - name: Validate managed Worker
         working-directory: js/managed
-        run: npx wrangler deploy --dry-run --config wrangler.jsonc --containers-rollout none
+        run: pnpm run preview
       - name: Validate Connect API Worker
         working-directory: js/connect-api
         run: npx wrangler deploy --dry-run --config wrangler.jsonc
