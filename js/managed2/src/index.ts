@@ -437,7 +437,7 @@ export class Session extends DurableObject<Env> {
 
   async #dispatch(id: string, input: string, owner: string): Promise<void> {
     if (this.#running.has(id)) return;
-    const agent = await this.#ready(owner);
+    const agent = await this.#ready(owner, this.#timing(id)?.trace_id);
     this.ctx.storage.sql.exec(
       "INSERT OR IGNORE INTO turn_timing (id, trace_id, started_at) VALUES (?, ?, ?)",
       id, crypto.randomUUID(), Date.now(),
