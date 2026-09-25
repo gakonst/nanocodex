@@ -26,23 +26,35 @@ async function productionDatabase({ env, request, guard }) {
     headers: { Authorization: `Bearer ${env.CLOUDFLARE_API_TOKEN}`, 'Content-Type': 'application/json' },
     ...(body ? { body: JSON.stringify(body) } : {}),
   });
+  let stage = 'lookup-request';
+  let status;
   try {
     // Wrangler 4.127.1 resolves names through this same endpoint. Only an actual
     // 404 permits creation; authorization/transient failures must stop release.
     let response = await call(`${base}/${productionName}`, 'GET');
+    status = response.status;
     if (response.status === 404) {
+      stage = 'create-guard';
       await guard();
       // Never retry an ambiguous creation. A later deployment looks up the name.
+      stage = 'create-request';
+      status = undefined;
       response = await call(base, 'POST', { name: productionName });
+      status = response.status;
     }
+    stage = stage === 'create-request' ? 'create-response' : 'lookup-response';
     assert.ok(response.ok);
     const body = await response.json();
+    stage = stage.replace('-response', '-validation');
     assert.equal(body.success, true);
     assert.equal(body.result?.name, productionName);
     assert.ok(providerIdValid(body.result?.uuid));
     return body.result.uuid;
   } catch {
-    throw new Error('CRM database lookup/create failed; deployment stopped (no automatic retry)');
+    // Only locally selected stages and numeric status are safe to log. Provider
+    // bodies, request headers and exception causes may contain credentials.
+    const http = Number.isInteger(status) && status >= 100 && status <= 599 ? status : 'unavailable';
+    throw new Error(`CRM database lookup/create failed (stage=${stage}, HTTP=${http}); deployment stopped (no automatic retry)`);
   }
 }
 

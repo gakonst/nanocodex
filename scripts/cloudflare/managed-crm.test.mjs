@@ -123,3 +123,34 @@ test('deployment cannot override database environment or config through trailing
     assert.equal(f.events.length, 0);
   }
 });
+
+test('database failures report safe stage and HTTP status without leaking provider or exception contents', async t => {
+  for (const scenario of ['bad-request', 'denied', 'create-denied', 'create-unknown', 'invalid-json', 'invalid-identity']) {
+    const f = fixture(t);
+    const methods = [];
+    f.options.request = async (_, init) => {
+      methods.push(init.method);
+      if (scenario.startsWith('create-') && init.method === 'GET') return Response.json({ success: false }, { status: 404 });
+      if (scenario === 'create-unknown') throw Error('synthetic-secret raw network details');
+      if (scenario === 'invalid-json') return new Response('synthetic-secret invalid JSON');
+      if (scenario === 'invalid-identity') return Response.json({ success: true, result: { name: 'synthetic-secret', uuid: f.database.uuid } });
+      return Response.json({ success: false, errors: [{ code: 10000, message: 'synthetic-secret provider details' }] }, { status: scenario === 'bad-request' ? 400 : 403 });
+    };
+    const expected = {
+      'bad-request': 'stage=lookup-response, HTTP=400',
+      denied: 'stage=lookup-response, HTTP=403',
+      'create-denied': 'stage=create-response, HTTP=403',
+      'create-unknown': 'stage=create-request, HTTP=unavailable',
+      'invalid-json': 'stage=lookup-response, HTTP=200',
+      'invalid-identity': 'stage=lookup-validation, HTTP=200',
+    }[scenario];
+    await assert.rejects(deployManaged('deploy', f.options), error => {
+      assert.ok(error.message.includes(expected), error.message);
+      assert.ok(!String(error.stack).includes('synthetic-secret'));
+      assert.equal(error.cause, undefined);
+      return true;
+    });
+    assert.deepEqual(methods, scenario.startsWith('create-') ? ['GET', 'POST'] : ['GET']);
+    assert.equal(f.generated.length, 0);
+  }
+});
