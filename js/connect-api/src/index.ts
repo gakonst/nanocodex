@@ -2897,6 +2897,11 @@ async function proxyManagedAgent(
   if (requestedAgentId !== grant.agentId || request.method === "DELETE") {
     throw new ApiFailure(403, "agent_not_granted", "This durable agent is outside the signed Connect authorization.");
   }
+  if (/^\/checkpoints(?:\/|$)/.test(suffix)) {
+    if (suffix !== "/checkpoints" || request.method !== "GET") throw new ApiFailure(405, "method_not_allowed", "Only checkpoint reads are supported.");
+    if (!grant.capabilities.includes("agent.output.final") || !(grant.capabilities.includes("agent.output.actions") || grant.capabilities.includes("agent.trace.read")))
+      throw new ApiFailure(403, "agent_output_not_granted", "Checkpoints require final output and actions or trace access.");
+  }
   if (/^\/artifacts(?:\/|$)/.test(suffix)) {
     const url = new URL(request.url);
     const list = suffix === "/artifacts"
@@ -2958,7 +2963,7 @@ async function projectManagedResponse(
   const responseHeaders = new Headers();
   // Downloaded JSON and event-stream files are opaque artifacts, not agent
   // protocol messages. Rewriting either would corrupt the bytes and digest.
-  const artifactContent = /^\/artifacts\/[^/]+\/content$/.test(resource);
+  const artifactContent = /^\/artifacts\/[^/]+\/content$/.test(resource) || resource === "/checkpoints";
   const headerNames = ["content-type", "retry-after", "x-nanocodex-realtime-location"];
   if (artifactContent) headerNames.push("content-length", "etag", "cache-control", "x-content-type-options", "content-disposition");
   for (const name of headerNames) {

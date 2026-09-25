@@ -2,7 +2,7 @@ export type OrganizationCapability = "agents:read" | "agents:portability" | "age
 export type ApiKeyBase = Readonly<{ id: string; label: string; prefix: string; createdAt: number; digest: string; userId: string }>;
 export type StoredApiKey = ApiKeyBase & Readonly<{ organizationId: string; teamId: string; role: "owner" | "writer" | "reader"; capabilities: readonly OrganizationCapability[]; authorizationEpoch: number }>;
 export type ApiKeyPrincipal = Readonly<{ kind: "api_key"; userId: string; organizationId: string; teamId: string; role: StoredApiKey["role"]; subjectId: `api_key:${string}`; credentialId: string; authorizationEpoch: number; capabilities: readonly OrganizationCapability[] }>;
-export type AdmissionPrincipal = Readonly<{ kind: "api_key" | "account_session" | "connect_grant" | "service"; userId: string; organizationId: string; teamId: string; authorizationEpoch: number; capabilities: readonly string[]; connectGrant?: Readonly<{ grantId: string; connectors: readonly string[]; connectorConnections?: unknown; mcpIds: readonly string[]; appToolCatalogDigest?: string; sandboxExecution?: true }> }>;
+export type AdmissionPrincipal = Readonly<{ kind: "api_key" | "account_session" | "connect_grant" | "service"; userId: string; organizationId: string; teamId: string; authorizationEpoch: number; capabilities: readonly string[]; connectGrant?: Readonly<{ grantId: string; connectors: readonly string[]; connectorConnections?: unknown; mcpIds: readonly string[]; appToolCatalogDigest?: string; sandboxExecution?: true; outputCheckpoints?: true }> }>;
 export const API_KEY: RegExp;
 export function isUserId(value: unknown): value is string;
 export function isOrganizationCapabilities(value: unknown): value is readonly OrganizationCapability[];

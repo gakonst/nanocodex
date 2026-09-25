@@ -117,6 +117,7 @@ export type ConnectGrantSlice = Readonly<{
   appToolCatalogDigest?: `0x${string}`;
   /** Set only by the Connect service after explicit signed resource approval. */
   sandboxExecution?: true;
+  outputCheckpoints?: true;
 }>;
 
 const OWNER_CAPABILITIES = [
@@ -2395,6 +2396,8 @@ function parseConnectGrantAssertions(headers: Headers): Readonly<{
     : parseConnectorConnectionSelection(encodedConnectorConnections);
   const mcpIds = parseUniqueJsonArray(headers.get(CONNECT_MCP_IDS_HEADER));
   const appToolCatalogDigest = headers.get(CONNECT_APP_TOOL_CATALOG_DIGEST_HEADER);
+  const outputCheckpoints = headers.get("x-nanocodex-connect-output-checkpoints");
+  if (outputCheckpoints !== null && outputCheckpoints !== "true") return undefined;
   const sandboxExecution = headers.get("x-nanocodex-connect-sandbox-execution");
   if ((sandboxExecution !== null && sandboxExecution !== "true")
     || !grantId || !CONNECT_GRANT_ID.test(grantId)
@@ -2418,6 +2421,7 @@ function parseConnectGrantAssertions(headers: Headers): Readonly<{
     slice: {
       grantId: grantId.toLowerCase(),
       ...(sandboxExecution === "true" ? { sandboxExecution: true as const } : {}),
+      ...(outputCheckpoints === "true" ? { outputCheckpoints: true as const } : {}),
       connectors,
       ...(connectorConnections === undefined ? {} : { connectorConnections }),
       mcpIds,
