@@ -145,6 +145,30 @@ describe("Cloudflare sandbox tools", () => {
     expect(cursors.size).toBe(0);
   });
 
+  it("does not reuse a retained process ID after the container forgets its processes", async () => {
+    const sandbox = fakeSandbox();
+    const process = fakeProcess({ status: "running" });
+    sandbox.getProcess.mockResolvedValue(null);
+    sandbox.startProcess.mockImplementation(async (_command: string, options: { processId: string }) => {
+      process.id = options.processId;
+      return process;
+    });
+    const cursors = new Map<string, unknown>([["sandbox-output-cursor:7", 12]]);
+    const candidates = [7, 8];
+    vi.spyOn(crypto, "getRandomValues").mockImplementation((buffer) => {
+      (buffer as Uint32Array)[0] = candidates.shift()!;
+      return buffer;
+    });
+    const tools = createCloudflareSandboxTools(async () => sandbox, undefined, {
+      get: (key) => cursors.get(key), put: (key, value) => { cursors.set(key, value); },
+      delete: (key) => { cursors.delete(key); },
+    });
+    await expect(tools.exec_command!.handler({ cmd: "replacement", yield_time_ms: 0 }, context))
+      .resolves.toMatchObject({ session_id: 8 });
+    expect(cursors.get("sandbox-output-cursor:7")).toBe(12);
+    expect(sandbox.startProcess).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ processId: "nanocodex-8" }));
+  });
+
   it("uses Ctrl-C as the canonical termination path for a yielded session", async () => {
     const sandbox = fakeSandbox();
     const process = fakeProcess({ id: "nanocodex-7", status: "killed", exitCode: 137 });

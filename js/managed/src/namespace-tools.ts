@@ -23,6 +23,8 @@ const DEFAULT_CWD = "/brain";
 export type RoutedTool = Readonly<{
   definition?: Readonly<{ description?: string; parameters?: Record<string, unknown>; [key: string]: unknown }>;
   handler(input: unknown, context: ToolContext): unknown | Promise<unknown>;
+  /** Present only when this exact provider resource can recover process IDs. */
+  processSessionKey?: string;
 }>;
 
 export type NamespaceMachine = Readonly<{
@@ -61,11 +63,26 @@ type CellBinding = Readonly<{
 
 type AuthorizedCellBinding = CellBinding & Readonly<{ authorizationKey: string }>;
 
+export type DurableProcessBinding = Readonly<{
+  ownerSessionId: string;
+  authorizationKey: string;
+  providerSessionId: number;
+  machineId: string;
+  processSessionKey: string;
+}>;
+
+export type NamespaceProcessStorage = Readonly<{
+  get(id: number): DurableProcessBinding | undefined;
+  put(id: number, binding: DurableProcessBinding): void;
+  delete(id: number): void;
+}>;
+
 type ProcessBinding = Readonly<{
   ownerSessionId: string;
   authorizationKey: string;
   providerSessionId: number;
   writeStdin: RoutedTool;
+  durable?: DurableProcessBinding;
 }>;
 
 function nativeScreenCua(screen: RoutedTool): Readonly<{ cua: RoutedTool; cuaReset: RoutedTool }> {
@@ -107,6 +124,7 @@ export function createNamespaceExecutionRuntime(
   brainExec?: RoutedTool,
   resolveScreenTool: ScreenToolResolver = () => undefined,
   authorizationKey: (context: ToolContext) => string = () => "account",
+  processStorage?: NamespaceProcessStorage,
 ): NamespaceExecutionRuntime {
   const brain = Object.freeze({
     mountId: "mount:brain",
@@ -261,12 +279,26 @@ export function createNamespaceExecutionRuntime(
           throw new Error(`namespace mount ${route.mount.root} cannot retain process sessions`);
         }
         const providerSessionId = positiveSessionId(structured.session_id);
-        const publicSessionId = reserveSessionId(sessions);
+        const publicSessionId = reserveSessionId({
+          has: (id) => sessions.has(id) || processStorage?.get(id) !== undefined,
+        });
+        const durable = processStorage !== undefined && hand.machineId !== undefined
+          && writeStdin.processSessionKey !== undefined ? Object.freeze({
+            ownerSessionId: context.sessionId,
+            authorizationKey: binding.authorizationKey,
+            providerSessionId,
+            machineId: hand.machineId,
+            processSessionKey: writeStdin.processSessionKey,
+          }) : undefined;
+        // Persist before publishing the public ID. Only providers advertising
+        // a recoverable, immutable resource identity cross runtime retirement.
+        if (durable !== undefined) processStorage!.put(publicSessionId, durable);
         sessions.set(publicSessionId, Object.freeze({
           ownerSessionId: context.sessionId,
           authorizationKey: binding.authorizationKey,
           providerSessionId,
           writeStdin,
+          durable,
         }));
         return replaceExecutionResult(result, { ...structured, session_id: publicSessionId });
       },
@@ -280,12 +312,22 @@ export function createNamespaceExecutionRuntime(
       handler: async (input, context) => {
         const value = record(input);
         const publicSessionId = positiveSessionId(value.session_id);
-        const binding = sessions.get(publicSessionId);
+        const retained = sessions.get(publicSessionId);
+        const durable = retained?.durable ?? processStorage?.get(publicSessionId);
+        const binding = durable ?? retained;
         if (binding === undefined || binding.ownerSessionId !== context.sessionId
           || binding.authorizationKey !== authorizationKey(context)) {
           throw new Error("unknown or stale namespace process session");
         }
-        const result = await binding.writeStdin.handler({
+        // Recheck mount authority and immutable provider identity on every
+        // durable poll. A matching path/machine ID alone cannot retarget it.
+        const writeStdin = durable === undefined ? retained?.writeStdin
+          : resolveMachineTool(durable.machineId, "write_stdin", context);
+        if (writeStdin === undefined || (durable !== undefined
+          && writeStdin.processSessionKey !== durable.processSessionKey)) {
+          throw new Error("unknown or stale namespace process session");
+        }
+        const result = await writeStdin.handler({
           ...without(value, "session_id"),
           session_id: binding.providerSessionId,
         }, context);
@@ -295,11 +337,13 @@ export function createNamespaceExecutionRuntime(
           // the process exited; keep the original Hand binding so polling can retry.
           if (structured !== undefined && (typeof structured.exit_code === "number" || structured.exit_code === null)) {
             sessions.delete(publicSessionId);
+            processStorage?.delete(publicSessionId);
           }
           return result;
         }
         if (positiveSessionId(structured.session_id) !== binding.providerSessionId) {
           sessions.delete(publicSessionId);
+          processStorage?.delete(publicSessionId);
           throw new Error("execution hand changed its bound process session");
         }
         return replaceExecutionResult(result, { ...structured, session_id: publicSessionId });
@@ -475,7 +519,7 @@ function isToolResult(value: unknown): value is Readonly<{
   return Boolean((value as Record<PropertyKey, unknown> | null)?.[TOOL_RESULT]);
 }
 
-function reserveSessionId(sessions: ReadonlyMap<number, unknown>): number {
+function reserveSessionId(sessions: Readonly<{ has(id: number): boolean }>): number {
   for (let attempt = 0; attempt < 64; attempt += 1) {
     const bytes = crypto.getRandomValues(new Uint32Array(1));
     const candidate = (bytes[0]! & 0x7fff_ffff) || 1;

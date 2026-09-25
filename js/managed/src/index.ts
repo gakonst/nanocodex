@@ -22,6 +22,7 @@ import { retireSessionProjects, isRetiredProjectCompletion } from "./retired-pro
 import { downloadPath, downloadBrainFile, downloadHandFile, fileDownloadFailure, FileDownloadError } from "./file-download";
 import { callerContext, type CallerContext } from "./request-origin";
 import { HandPaths } from "./hand-paths";
+import { NamespaceProcessSessions } from "./namespace-process-storage";
 import { memoryTarget, personalMemoryTeam, type MemoryVisibility } from "./memory-target";
 import { projectEnvironment } from "nanocodex/tools/environment";
 import { transportObservation } from "./transport-observation";
@@ -96,6 +97,7 @@ import {
 } from "./sandbox-tools";
 import {
   createNamespaceExecutionRuntime,
+  type NamespaceProcessStorage,
   prepareNamespaceHostMounts,
   type NamespaceCaptureFilter,
   isBrainExecution,
@@ -2951,6 +2953,7 @@ export function createManagedNamespaceTools(
   brain?: Readonly<{ tool: NamedTool; allowed(context: ToolContext): boolean }>,
   resolveScreenTool?: ScreenToolResolver,
   authorizationKey: (context: ToolContext) => string = () => "account",
+  processStorage?: NamespaceProcessStorage,
 ): NamedTool[] {
   return createManagedNamespaceRuntime(
     canUseExecutionNamespace,
@@ -2960,6 +2963,7 @@ export function createManagedNamespaceTools(
     brain,
     resolveScreenTool,
     authorizationKey,
+    processStorage,
   ).tools;
 }
 
@@ -2971,6 +2975,7 @@ function createManagedNamespaceRuntime(
   brain?: Readonly<{ tool: NamedTool; allowed(context: ToolContext): boolean }>,
   resolveScreenTool?: ScreenToolResolver,
   authorizationKey: (context: ToolContext) => string = () => "account",
+  processStorage?: NamespaceProcessStorage,
 ): Readonly<{ tools: NamedTool[]; capture(context: ToolContext): Promise<void> }> {
   const runtime = createNamespaceExecutionRuntime(
     machines,
@@ -2978,6 +2983,7 @@ function createManagedNamespaceRuntime(
     brain?.tool,
     resolveScreenTool,
     authorizationKey,
+    processStorage,
   );
   const captured = new Set<string>();
   const preparations = new Map<string, Promise<void>>();
@@ -3225,6 +3231,7 @@ const LazyWorkspaceOwner = withWorkspace(WorkspaceOwner, (self) => ({
 
 export class DurableAgentSession extends DurableComputerObject {
   #handPaths: HandPaths;
+  #processSessions: NamespaceProcessSessions;
   #workspaceHolder?: InstanceType<typeof LazyWorkspaceOwner>;
 
   async #workspace() {
@@ -3342,6 +3349,7 @@ export class DurableAgentSession extends DurableComputerObject {
     this.#goalRuntime = new GoalRuntime(ctx.storage, this.#goals);
     this.#startupContext = new ManagedStartupContext(ctx.storage);
     this.#handPaths = new HandPaths(ctx.storage);
+    this.#processSessions = new NamespaceProcessSessions(ctx.storage);
     const schemaStartedAt = performance.now();
     this.ctx.storage.sql.exec(`
       CREATE TABLE IF NOT EXISTS session_state (
@@ -8502,7 +8510,7 @@ export class DurableAgentSession extends DurableComputerObject {
             );
         }
         if (mount.provider !== "cloudflare") return undefined;
-        let tools = sandboxToolsByMount.get(mount.id);
+        let tools = sandboxToolsByMount.get(mount.provider_resource_id);
         if (tools === undefined) {
           tools = cloudflareSandboxTools(
             this.env.NANOCODEX_SANDBOXES,
@@ -8510,16 +8518,20 @@ export class DurableAgentSession extends DurableComputerObject {
             this.env.NANOCODEX_SANDBOX_LOCAL === "true",
             session.public_origin,
             this.env.NANOCODEX_ADMIN_TOKEN,
-            undefined,
+            this.#processSessions.outputCursors(mount.provider_resource_id),
             () => this.#cloudflareNamespaceMounts(mount, "mounted"),
             { resourceId: session.session_id },
             this.#credentialSubject(),
             this.env.NANOCODEX_SANDBOX_DESKTOPS === "true" && executionMountOwner(mount) === undefined ? { owner: session.owner_id, name: managedMountDisplayName(mount) } : undefined,
             executionMountOwner(mount) ?? undefined,
           );
-          sandboxToolsByMount.set(mount.id, tools);
+          sandboxToolsByMount.set(mount.provider_resource_id, tools);
         }
-        return tools[name];
+        const tool = tools[name];
+        return tool === undefined ? undefined : {
+          ...tool,
+          processSessionKey: JSON.stringify(["cloudflare", mount.id, mount.provider_resource_id]),
+        };
       }
       if (!machineId.startsWith("user:") || !this.#hasFullAccountAuthority(authorization)) {
         return undefined;
@@ -8565,7 +8577,12 @@ export class DurableAgentSession extends DurableComputerObject {
         }
         return undefined;
       },
-      (context) => this.#authorizationForToolContext(context)?.connectGrant?.grantId ?? "account",
+      (context) => JSON.stringify([
+        session.owner_id, session.organization_id, session.team_id,
+        this.#session()?.authorization_epoch,
+        this.#authorizationForToolContext(context)?.connectGrant?.grantId ?? "account",
+      ]),
+      this.#processSessions,
     );
     const cloudTools: NamedTool[] = [
       ...(multiplayer ? [computer.tool] : []),
