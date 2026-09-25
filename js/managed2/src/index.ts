@@ -170,7 +170,7 @@ export class Session extends DurableObject<Env> {
       if (request.body === null) return new Response(null, { status: 204 });
       const { input, turn_id: turnId } = await request.json<{ input: string; turn_id: string }>();
       const routeMs = performance.now() - fetchStart;
-      return withSessionTiming(await this.#admitTurn(owner, turnId, input), `do_route;dur=${routeMs.toFixed(1)}`);
+      return withSessionTiming(await this.#admitTurn(owner, turnId, input), `do_route;dur=${routeMs.toFixed(1)}, do_total;dur=${(performance.now() - fetchStart).toFixed(1)}`);
     }
     if (!row || row.owner !== owner || row.agent_id !== agentId) return reply(404, { error: "not_found" });
     if (url.pathname === "/state" && request.method === "GET") {
@@ -183,7 +183,7 @@ export class Session extends DurableObject<Env> {
       const key = request.headers.get("idempotency-key")!;
       const body = await request.json<{ input: string }>();
       const routeMs = performance.now() - fetchStart;
-      return withSessionTiming(await this.#admitTurn(owner, key, body.input), `do_route;dur=${routeMs.toFixed(1)}`);
+      return withSessionTiming(await this.#admitTurn(owner, key, body.input), `do_route;dur=${routeMs.toFixed(1)}, do_total;dur=${(performance.now() - fetchStart).toFixed(1)}`);
     }
     const turnId = /^\/turns\/([0-9a-f-]{36})$/.exec(url.pathname)?.[1];
     if (turnId && request.method === "GET") {

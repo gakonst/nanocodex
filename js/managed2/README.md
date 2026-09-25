@@ -74,11 +74,13 @@ requires its own end-to-end validation.
 Run `./managed2-demo "Reply with exactly: Timing check complete."` for a real
 create, replayable event stream, final-text TTFT, and durable turn-status check.
 The API returns `Server-Timing` for `auth`, `body_parse`, `session`,
-`api_total`, `do_route`, `agent_init`, and `admission`. `session` includes the
+`api_total`, `do_route`, `do_total`, `agent_init`, and `admission`. `session` includes the
 Session DO wake, constructor, routing, initialization and turn admission; it is
 **not** additive with `agent_init` or `admission`. `api_total` includes `session`
 and excludes pre-Worker startup/network. `do_route` is the time from DO fetch
-entry to the turn-dispatch path. A 101 upgrade cannot carry a constructed
+entry to the turn-dispatch path; `do_total` is the complete DO request. The
+`session - do_total` residual approximates DO routing/scheduling and RPC
+overhead, **not** a precise Worker cold-start measurement. A 101 upgrade cannot carry a constructed
 `Server-Timing` response; `managed2.events_connect` logs auth, Session upgrade,
 and total handshake time without owner IDs, prompts, or response contents.
 
