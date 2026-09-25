@@ -25,6 +25,11 @@ describe("Google connector account hints", () => {
       (await started.json<{ authorization_url: string }>()).authorization_url,
     );
     expect(authorization.searchParams.get("login_hint")).toBe("mail@example.test");
+    // Full mailbox access does not authorize filter writes; Google requires
+    // settings.basic explicitly even for an already connected Gmail account.
+    expect(authorization.searchParams.get("scope")?.split(" ")).toContain(
+      "https://www.googleapis.com/auth/gmail.settings.basic",
+    );
 
     const completed = await control(`/users/${user}/connectors/gmail/callback`, "POST", {
       code: "gmail-code",
