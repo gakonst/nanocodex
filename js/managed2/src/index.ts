@@ -1,5 +1,6 @@
 import { DurableObject } from "cloudflare:workers";
 import { Agent } from "nanocodex/cloudflare";
+import type { NamedTool } from "nanocodex";
 import { authenticate } from "./auth";
 
 type ChatGptImport = Readonly<{
@@ -13,6 +14,16 @@ type Egress = Fetcher & {
 type Env = { SESSIONS: DurableObjectNamespace<Session>; EGRESS: Egress; AUTH_API_KEY_HASHES: string; RESPONSES_TRANSPORT?: "websocket" };
 const AGENT_PATH = /^\/v1\/agents\/([0-9a-f-]{36})(?:\/(turns|turns\/([0-9a-f-]{36})|events))?$/;
 const OWNER_HEADER = "x-managed2-owner";
+
+// The first tool is intentionally independent of account services or a Hand.
+// Its observed turn includes a real model → tool → model continuation.
+const currentTime: NamedTool = {
+  name: "current_time",
+  description: "Get the current UTC date and time. Use when the answer depends on the present time.",
+  parameters: { type: "object", properties: {}, additionalProperties: false },
+  supportsParallelToolCalls: true,
+  handler: () => ({ utc: new Date().toISOString() }),
+};
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
@@ -151,6 +162,16 @@ export class Session extends DurableObject<Env> {
       first_provider_event_ms INTEGER, first_delta_ms INTEGER,
       first_answer_delta_ms INTEGER, result_ms INTEGER
     )`);
+    const timingColumns = new Set(ctx.storage.sql.exec<{ name: string }>("PRAGMA table_info(turn_timing)")
+      .toArray().map(row => row.name));
+    for (const [column, type] of [
+      ["first_tool_call_ms", "INTEGER"], ["first_tool_result_ms", "INTEGER"],
+      ["tool_calls", "INTEGER"], ["tool_duration_ms", "REAL"],
+      ["post_tool_model_send_ms", "INTEGER"],
+      ["first_model_call_ms", "INTEGER"], ["post_tool_model_call_ms", "INTEGER"],
+    ]) {
+      if (!timingColumns.has(column)) ctx.storage.sql.exec(`ALTER TABLE turn_timing ADD COLUMN ${column} ${type}`);
+    }
     this.#constructorMs = performance.now() - constructorStart;
   }
 
@@ -196,7 +217,11 @@ export class Session extends DurableObject<Env> {
           model_send_ms: timing.model_send_ms,
           first_provider_event_ms: timing.first_provider_event_ms,
           first_delta_ms: timing.first_delta_ms,
-          first_answer_delta_ms: timing.first_answer_delta_ms, result_ms: timing.result_ms } } : {}),
+          first_answer_delta_ms: timing.first_answer_delta_ms, result_ms: timing.result_ms,
+          first_tool_call_ms: timing.first_tool_call_ms, first_tool_result_ms: timing.first_tool_result_ms,
+          tool_calls: timing.tool_calls ?? 0, tool_duration_ms: timing.tool_duration_ms ?? 0,
+          post_tool_model_send_ms: timing.post_tool_model_send_ms,
+          first_model_call_ms: timing.first_model_call_ms, post_tool_model_call_ms: timing.post_tool_model_call_ms } } : {}),
         ...(turn.message === null ? {} : { message: turn.message }),
         ...(turn.error === null ? {} : { error: turn.error }) })
         : reply(404, { error: "not_found" });
@@ -246,7 +271,10 @@ export class Session extends DurableObject<Env> {
        started_at = excluded.started_at, agent_init_ms = NULL,
        accepted_ms = NULL, model_send_ms = NULL,
        first_provider_event_ms = NULL, first_delta_ms = NULL,
-       first_answer_delta_ms = NULL, result_ms = NULL`,
+       first_answer_delta_ms = NULL, result_ms = NULL,
+       first_tool_call_ms = NULL, first_tool_result_ms = NULL, tool_calls = NULL,
+       tool_duration_ms = NULL, post_tool_model_send_ms = NULL,
+       first_model_call_ms = NULL, post_tool_model_call_ms = NULL`,
       turnId, trace, Date.now(),
     );
     const traceId = this.#timing(turnId)!.trace_id;
@@ -300,8 +328,11 @@ export class Session extends DurableObject<Env> {
     return this.ctx.storage.sql.exec<{ trace_id: string; started_at: number;
       agent_init_ms: number | null; accepted_ms: number | null;
       model_send_ms: number | null; first_provider_event_ms: number | null;
-      first_delta_ms: number | null; first_answer_delta_ms: number | null; result_ms: number | null }>(
-      "SELECT trace_id, started_at, agent_init_ms, accepted_ms, model_send_ms, first_provider_event_ms, first_delta_ms, first_answer_delta_ms, result_ms FROM turn_timing WHERE id = ?", id,
+      first_delta_ms: number | null; first_answer_delta_ms: number | null; result_ms: number | null;
+      first_tool_call_ms: number | null; first_tool_result_ms: number | null;
+      tool_calls: number | null; tool_duration_ms: number | null; post_tool_model_send_ms: number | null;
+      first_model_call_ms: number | null; post_tool_model_call_ms: number | null }>(
+      "SELECT * FROM turn_timing WHERE id = ?", id,
     ).toArray()[0];
   }
 
@@ -311,12 +342,19 @@ export class Session extends DurableObject<Env> {
     if (this.#activeTraces.size !== 1) return;
     const external = this.#activeTraces.keys().next().value!;
     const timing = this.#timing(external);
-    if (!timing || timing.model_send_ms !== null) return;
+    if (!timing) return;
     const elapsed = Math.max(0, Date.now() - timing.started_at);
-    this.ctx.storage.sql.exec(
-      "UPDATE turn_timing SET model_send_ms = ? WHERE id = ? AND model_send_ms IS NULL", elapsed, external,
-    );
-    console.info({ event: "managed2.model_send", trace_id: timing.trace_id, model_send_ms: elapsed });
+    if (timing.model_send_ms === null) {
+      this.ctx.storage.sql.exec(
+        "UPDATE turn_timing SET model_send_ms = ? WHERE id = ? AND model_send_ms IS NULL", elapsed, external,
+      );
+      console.info({ event: "managed2.model_send", trace_id: timing.trace_id, model_send_ms: elapsed });
+    } else if (timing.first_tool_result_ms !== null && timing.post_tool_model_send_ms === null) {
+      this.ctx.storage.sql.exec(
+        "UPDATE turn_timing SET post_tool_model_send_ms = ? WHERE id = ? AND post_tool_model_send_ms IS NULL", elapsed, external,
+      );
+      console.info({ event: "managed2.post_tool_model_send", trace_id: timing.trace_id, post_tool_model_send_ms: elapsed });
+    }
   }
 
   #observeEvent(event: { type: string; payload: Record<string, unknown> }): void {
@@ -334,6 +372,35 @@ export class Session extends DurableObject<Env> {
     const timing = this.#timing(external);
     if (!timing) return;
     const elapsed = Math.max(0, Date.now() - timing.started_at);
+    if (event.type === "model.call.started") {
+      const column = timing.first_tool_result_ms !== null ? "post_tool_model_call_ms" : "first_model_call_ms";
+      this.ctx.storage.sql.exec(
+        `UPDATE turn_timing SET ${column} = COALESCE(${column}, ?) WHERE id = ?`, elapsed, external,
+      );
+      console.info({ event: "managed2.model_call_started", trace_id: timing.trace_id,
+        phase: timing.first_tool_result_ms !== null ? "after_tool" : "initial", elapsed_ms: elapsed });
+      return;
+    }
+    if (event.type === "tool.call") {
+      this.ctx.storage.sql.exec(
+        "UPDATE turn_timing SET first_tool_call_ms = COALESCE(first_tool_call_ms, ?), tool_calls = COALESCE(tool_calls, 0) + 1 WHERE id = ?",
+        elapsed, external,
+      );
+      console.info({ event: "managed2.tool_call", trace_id: timing.trace_id,
+        tool: event.payload.tool, elapsed_ms: elapsed });
+      return;
+    }
+    if (event.type === "tool.result") {
+      const durationMs = typeof event.payload.duration_ns === "number" ? event.payload.duration_ns / 1e6 : 0;
+      this.ctx.storage.sql.exec(
+        "UPDATE turn_timing SET first_tool_result_ms = COALESCE(first_tool_result_ms, ?), tool_duration_ms = COALESCE(tool_duration_ms, 0) + ? WHERE id = ?",
+        elapsed, durationMs, external,
+      );
+      console.info({ event: "managed2.tool_result", trace_id: timing.trace_id,
+        tool: event.payload.tool, status: event.payload.status,
+        elapsed_ms: elapsed, duration_ms: +durationMs.toFixed(1) });
+      return;
+    }
     if (event.type === "api.event" && event.payload.direction === "inbound") {
       if (timing.first_provider_event_ms === null) {
         this.ctx.storage.sql.exec(
@@ -375,7 +442,7 @@ export class Session extends DurableObject<Env> {
     const initTrace = traceId ?? crypto.randomUUID();
     const initStart = performance.now();
     let initializing = true;
-    const options = { tools: [], instructions: "You are a concise assistant." };
+    const options = { tools: [currentTime], instructions: "You are a concise assistant." };
     Object.defineProperty(options, Symbol.for("nanocodex.cloudflare.internalConfiguration"), { value: {
       model: "gpt-6-sol", thinking: "low", reasoning_mode: "standard", fast_mode: false,
     } });
@@ -470,7 +537,13 @@ export class Session extends DurableObject<Env> {
             first_provider_event_ms: observed?.first_provider_event_ms ?? null,
             first_delta_ms: observed?.first_delta_ms ?? null,
             first_answer_delta_ms: observed?.first_answer_delta_ms ?? null,
-            accepted_ms: observed?.accepted_ms ?? null });
+            accepted_ms: observed?.accepted_ms ?? null,
+            first_tool_call_ms: observed?.first_tool_call_ms ?? null,
+            first_tool_result_ms: observed?.first_tool_result_ms ?? null,
+            post_tool_model_send_ms: observed?.post_tool_model_send_ms ?? null,
+            tool_calls: observed?.tool_calls ?? 0, tool_duration_ms: observed?.tool_duration_ms ?? 0,
+            first_model_call_ms: observed?.first_model_call_ms ?? null,
+            post_tool_model_call_ms: observed?.post_tool_model_call_ms ?? null });
           result?.dispose();
           turn.dispose();
           this.#running.delete(id);

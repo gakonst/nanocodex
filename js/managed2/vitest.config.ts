@@ -50,27 +50,48 @@ export default defineConfig({
             if (!platform && !subscription) {
               return new Response("bad upstream authentication", { status: 401 });
             }
-            const message = { id: "fixture-message", type: "message", role: "assistant", status: "in_progress", content: [{ type: "output_text", text: "" }] };
-            const beginning = { type: "response.output_item.added", output_index: 0, item: message };
-            const delta = { type: "response.output_text.delta", output_index: 0, item_id: message.id, content_index: 0, delta: "hello from test model" };
-            if (request.method === "POST") return new Response("data: " + JSON.stringify(beginning) + "\\n\\n" + "data: " + JSON.stringify(delta) + "\\n\\n" + "data: " + JSON.stringify({ type: "response.completed", response: {
-              id: "fixture-response", status: "completed", end_turn: true,
-              output: [{ type: "message", role: "assistant", content: [
-                { type: "output_text", text: "hello from test model" }
-              ] }], usage: { input_tokens: 10, output_tokens: 4, total_tokens: 14 }
-            } }) + "\\n\\n", { status: 200, headers: { "content-type": "text/event-stream" } });
+            const respond = body => {
+              const input = body.input || [];
+              const continuation = input.find(item => item.type === "function_call_output" && item.call_id === "call-time");
+              const timeTool = input.find(item => item.type === "additional_tools")?.tools?.find(tool => tool.name === "current_time");
+              const requested = JSON.stringify(input).includes("Use current_time");
+              if (continuation) {
+                const utc = JSON.parse(continuation.output).utc;
+                const text = "Current UTC: " + utc;
+                return [
+                  { type: "response.output_item.added", output_index: 0, item: { id: "fixture-message", type: "message", role: "assistant", status: "in_progress", content: [{ type: "output_text", text: "" }] } },
+                  { type: "response.output_text.delta", output_index: 0, item_id: "fixture-message", content_index: 0, delta: text },
+                  { type: "response.completed", response: { id: "fixture-time-result", status: "completed", end_turn: true,
+                    output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text }] }],
+                    usage: { input_tokens: 10, output_tokens: 4, total_tokens: 14 } } },
+                ];
+              }
+              if (requested) {
+                if (!timeTool) throw new Error("current_time was not offered to the provider");
+                return [{ type: "response.completed", response: { id: "fixture-time-call", status: "completed", end_turn: false,
+                  output: [{ type: "function_call", call_id: "call-time", name: "current_time", arguments: "{}" }],
+                  usage: { input_tokens: 10, output_tokens: 4, total_tokens: 14 } } }];
+              }
+              const text = "hello from test model";
+              return [
+                { type: "response.output_item.added", output_index: 0, item: { id: "fixture-message", type: "message", role: "assistant", status: "in_progress", content: [{ type: "output_text", text: "" }] } },
+                { type: "response.output_text.delta", output_index: 0, item_id: "fixture-message", content_index: 0, delta: text },
+                { type: "response.completed", response: { id: "fixture-response", status: "completed", end_turn: true,
+                  output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text }] }],
+                  usage: { input_tokens: 10, output_tokens: 4, total_tokens: 14 } } },
+              ];
+            };
+            if (request.method === "POST") {
+              const frames = respond(await request.json());
+              return new Response(frames.map(frame => "data: " + JSON.stringify(frame) + "\\n\\n").join(""),
+                { status: 200, headers: { "content-type": "text/event-stream" } });
+            }
             const pair = new WebSocketPair();
             const [client, server] = Object.values(pair);
             server.accept();
-            server.addEventListener("message", () => {
-              server.send(JSON.stringify(beginning));
-              server.send(JSON.stringify(delta));
-              server.send(JSON.stringify({ type: "response.completed", response: {
-                id: "fixture-response", status: "completed", end_turn: true,
-                output: [{ type: "message", role: "assistant", content: [
-                  { type: "output_text", text: "hello from test model" }
-                ] }], usage: { input_tokens: 10, output_tokens: 4, total_tokens: 14 }
-              } }));
+            server.addEventListener("message", event => {
+              const frame = JSON.parse(event.data);
+              for (const reply of respond(frame.response ?? frame)) server.send(JSON.stringify(reply));
             });
             return new Response(null, { status: 101, webSocket: client });
           } }

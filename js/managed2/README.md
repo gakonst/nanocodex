@@ -65,9 +65,9 @@ The private Egress2 service binding must not be exposed as a public HTTP route.
 
 In a small staging two-tool trial, relay+WebSocket matched relay+HTTP at 6.53 s
 median first-turn completion and measured 5.19 s versus 5.94 s on the second
-turn. These samples do not prove a general latency improvement. This initial
-Managed2 service is deliberately configured with `tools: []`; adding tools
-requires its own end-to-end validation.
+turn. These samples do not prove a general latency improvement. Managed2 initially shipped with no tools. The first increment exposes only `current_time`
+(UTC, no account access or filesystem), with HTTP and persistent-WebSocket
+model→tool→model E2E coverage. Other tool families remain unavailable.
 
 ## Latency observation
 
@@ -88,7 +88,14 @@ The durable `GET /v1/agents/:id/turns/:turnId` response also includes a
 `timing` object with a random `trace_id`, `agent_init_ms` duration, and elapsed
 milliseconds since admission started for `accepted_ms`, `model_send_ms`,
 `first_provider_event_ms`, `first_delta_ms`, `first_answer_delta_ms`, and
-`result_ms`. The model-send observation runs just after the persistent socket
+`result_ms`. The tool increment also records `first_model_call_ms`,
+`first_tool_call_ms`, `first_tool_result_ms`, `post_tool_model_call_ms`,
+`post_tool_model_send_ms` (WebSocket only), `tool_calls`, and total
+`tool_duration_ms`. The model-call timestamps are logical Agent events, not
+wire-send observations. The post-tool send distinguishes local tool execution
+from the second provider round trip; null means unobserved, not zero.
+
+The model-send observation runs just after the persistent socket
 sends `response.create`. The first provider event is the first inbound
 `api.event` seen by the Agent, not a raw socket-read timestamp; the difference
 approximates upstream wait plus frame parsing. If concurrent turns make socket

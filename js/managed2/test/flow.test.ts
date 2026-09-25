@@ -180,3 +180,35 @@ it("admits a substantial prompt without an arbitrary JSON-body cap", async () =>
     return (await status.json<{ state: string }>()).state;
   }, { timeout: 15_000 }).toBe("completed");
 });
+
+it("completes a real model-tool-model turn and reports separate tool and continuation timings", async () => {
+  const authorization = `Bearer ${fixtureKeys["fixture-user"]}`;
+  expect((await SELF.fetch("https://api.test/v1/credentials/openai", {
+    method: "PUT", headers: { authorization }, body: JSON.stringify({ value: "sk-fixture-only" }),
+  })).status).toBe(204);
+  const created = await SELF.fetch("https://api.test/v1/agents", {
+    method: "POST", headers: { authorization, "content-type": "application/json" },
+    body: JSON.stringify({ input: "Use current_time exactly once and report the UTC timestamp it returns." }),
+  });
+  expect(created.status).toBe(202);
+  const { agent_id, turn_id } = await created.json<{ agent_id: string; turn_id: string }>();
+  let status: { state: string; message?: string; timing: Record<string, number | null> } | undefined;
+  await expect.poll(async () => {
+    const response = await SELF.fetch(`https://api.test/v1/agents/${agent_id}/turns/${turn_id}`, { headers: { authorization } });
+    status = await response.json<typeof status>();
+    return status?.state;
+  }, { timeout: 10_000 }).toBe("completed");
+  expect(status!.message).toMatch(/^Current UTC: \d{4}-\d\d-\d\dT/);
+  expect(status!.timing.tool_calls).toBe(1);
+  expect(status!.timing.first_tool_call_ms).toBeGreaterThanOrEqual(status!.timing.first_model_call_ms!);
+  expect(status!.timing.first_tool_result_ms).toBeGreaterThanOrEqual(status!.timing.first_tool_call_ms!);
+  expect(status!.timing.post_tool_model_call_ms).toBeGreaterThanOrEqual(status!.timing.first_tool_result_ms!);
+  expect(status!.timing.result_ms).toBeGreaterThanOrEqual(status!.timing.post_tool_model_call_ms!);
+  expect(status!.timing.tool_duration_ms).toBeGreaterThanOrEqual(0);
+  const events = await SELF.fetch(`https://api.test/v1/agents/${agent_id}/events?cursor=0`, {
+    headers: { authorization, upgrade: "websocket" },
+  });
+  expect(events.status).toBe(101);
+  events.webSocket?.accept();
+  events.webSocket?.close();
+});
