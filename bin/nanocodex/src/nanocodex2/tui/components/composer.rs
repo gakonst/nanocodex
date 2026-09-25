@@ -214,6 +214,7 @@ pub(crate) struct Composer {
     reasoning_mode: ReasoningMode,
     fast_mode: bool,
     input_mode: Option<String>,
+    backend_label: Option<String>,
     live_controls: bool,
     submission_paused: bool,
     activity_active: bool,
@@ -351,6 +352,10 @@ pub(crate) struct ComposerUpdate {
 }
 
 impl Composer {
+    pub(crate) fn set_backend_label(&mut self, label: &str) {
+        self.backend_label = Some(label.to_owned());
+    }
+
     pub(crate) fn control_snapshot(&self) -> serde_json::Value {
         serde_json::json!({"text":self.draft,"cursor":self.cursor,"input_mode":self.input_mode,
             "attachments":self.images.iter().enumerate().map(|(id,image)| serde_json::json!({"id":id,"range":{"start":image.range.start,"end":image.range.end}})).collect::<Vec<_>>()})
@@ -376,6 +381,7 @@ impl Composer {
             reasoning_mode: ReasoningMode::Standard,
             fast_mode: false,
             input_mode: None,
+            backend_label: None,
             live_controls: false,
             submission_paused: false,
             activity_active: false,
@@ -1574,10 +1580,15 @@ impl Composer {
         let content_start = area.x + 2;
         let content_width = usize::from(area.width - 4);
         let content_end = content_start + u16::try_from(content_width).unwrap_or(u16::MAX);
-        let usage_prefix = format!(" {}%/272k ", context_percent(self.context_tokens));
+        let usage_prefix = if self.backend_label.is_some() {
+            " ".to_owned() // Managed2 does not yet report context usage.
+        } else {
+            format!(" {}%/272k ", context_percent(self.context_tokens))
+        };
         let input_mode_segment = self
             .input_mode
             .as_ref()
+            .or(self.backend_label.as_ref())
             .map(|mode| format!("{mode} "))
             .unwrap_or_default();
         let review_segment = self

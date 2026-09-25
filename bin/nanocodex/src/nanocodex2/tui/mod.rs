@@ -15,6 +15,7 @@ mod editor;
 mod format;
 mod history;
 mod links;
+mod managed2;
 mod pane;
 mod prompt;
 mod scheduler;
@@ -28,6 +29,8 @@ mod tmux;
 mod transcript;
 mod vault;
 mod voice_clone;
+
+pub(crate) use self::managed2::run_managed2;
 
 use self::{
     components::{

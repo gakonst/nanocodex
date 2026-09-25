@@ -9,7 +9,10 @@ use std::{
 use futures_util::StreamExt;
 use nanocodex_managed::ManagedError;
 use serde::Deserialize;
-use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::{
+    io::{AsyncBufReadExt, BufReader},
+    sync::mpsc,
+};
 use tokio_tungstenite::{
     connect_async,
     tungstenite::{Message, client::IntoClientRequest as _, http::header::AUTHORIZATION},
@@ -29,24 +32,29 @@ struct Accepted {
     turn_id: String,
 }
 #[derive(Deserialize)]
-struct TurnStatus {
-    state: String,
-    message: Option<String>,
-    error: Option<String>,
+pub(super) struct TurnStatus {
+    pub(super) state: String,
+    pub(super) message: Option<String>,
+    pub(super) error: Option<String>,
+}
+
+/// Text-only Managed2 stream updates. Completed/Failed are authoritative turn
+/// status observations; deltas are provisional and may be replayed on reconnect.
+pub(super) enum WatchEvent {
+    /// Full correlated agent event; transport leaves its protocol fields intact.
+    AgentEvent(serde_json::Value),
+    Delta(String),
+    Completed(String),
+    Failed(String),
 }
 #[derive(Deserialize)]
 struct Frame {
     cursor: String,
-    event: Option<Event>,
-}
-#[derive(Deserialize)]
-struct Event {
-    #[serde(rename = "type")]
-    kind: String,
-    payload: serde_json::Value,
+    event: Option<serde_json::Value>,
 }
 
-struct Client {
+#[derive(Clone)]
+pub(super) struct Client {
     origin: Url,
     key: String,
     http: reqwest::Client,
@@ -57,7 +65,7 @@ fn error(message: impl Into<String>) -> ManagedError {
 }
 
 impl Client {
-    fn from_environment() -> Result<Self, ManagedError> {
+    pub(super) fn from_environment() -> Result<Self, ManagedError> {
         let origin =
             std::env::var("NANOCODEX_MANAGED2_URL").unwrap_or_else(|_| DEFAULT_ORIGIN.to_owned());
         let origin = Url::parse(&origin).map_err(|_| error("invalid Managed2 URL"))?;
@@ -113,7 +121,7 @@ impl Client {
             .map_err(|_| error("invalid Managed2 route"))
     }
 
-    async fn submit(
+    pub(super) async fn submit(
         &self,
         agent: Option<&str>,
         input: &str,
@@ -147,7 +155,7 @@ impl Client {
         }
     }
 
-    async fn status(&self, agent: &str, turn: &str) -> Result<TurnStatus, ManagedError> {
+    pub(super) async fn status(&self, agent: &str, turn: &str) -> Result<TurnStatus, ManagedError> {
         let response = self
             .http
             .get(self.url(&format!("v1/agents/{agent}/turns/{turn}"))?)
@@ -164,13 +172,16 @@ impl Client {
         response.json().await.map_err(ManagedError::Transport)
     }
 
-    async fn display_turn(
+    /// Watch one admitted external turn. The WebSocket cursor is advanced before
+    /// emitting updates, so a reconnect resumes from the last observed frame.
+    /// The durable turn status, rather than a stream terminal, ends the watch.
+    pub(super) async fn watch_turn(
         &self,
         agent: &str,
         turn: &str,
         cursor: &mut String,
+        updates: mpsc::UnboundedSender<WatchEvent>,
     ) -> Result<(), ManagedError> {
-        let mut printed = String::new();
         let mut active_turn: Option<String> = None;
         loop {
             let mut endpoint = self.url(&format!("v1/agents/{agent}/events"))?;
@@ -205,29 +216,33 @@ impl Client {
                     _ = poll.tick() => {
                         let state = self.status(agent, turn).await?;
                         if state.state == "completed" {
-                            let message = state.message.unwrap_or_default();
-                            if printed != message { print!("{}", message.strip_prefix(&printed).unwrap_or(&message)); }
-                            println!();
-                            io::stdout().flush().map_err(|e| error(e.to_string()))?;
+                            let _ = updates.send(WatchEvent::Completed(state.message.unwrap_or_default()));
                             return Ok(());
                         }
-                        if state.state == "failed" { return Err(error(format!("Managed2 turn failed: {}", state.error.unwrap_or_default()))); }
+                        if state.state == "failed" {
+                            let _ = updates.send(WatchEvent::Failed(state.error.unwrap_or_default()));
+                            return Ok(());
+                        }
                     }
                     frame = socket.next() => match frame {
                         Some(Ok(Message::Text(text))) => {
                             let frame: Frame = serde_json::from_str(&text).map_err(|_| error("invalid Managed2 event frame"))?;
                             *cursor = frame.cursor;
                             let Some(event) = frame.event else { break; }; // replay_paused fence
-                            if event.kind == "input.accepted" && event.payload["request_id"].as_str() == Some(turn) {
-                                active_turn = event.payload["turn_id"].as_str().map(str::to_owned);
+                            let payload = &event["payload"];
+                            if event["type"] == "input.accepted" && payload["request_id"].as_str() == Some(turn) {
+                                active_turn = payload["turn_id"].as_str().map(str::to_owned);
                             }
-                            if event.kind == "assistant.delta" && event.payload["phase"] == "final_answer"
-                                && active_turn.is_some()
-                                && active_turn.as_deref() == event.payload["turn_id"].as_str()
-                                && let Some(text) = event.payload["text"].as_str() {
-                                print!("{text}");
-                                io::stdout().flush().map_err(|e| error(e.to_string()))?;
-                                printed.push_str(text);
+                            let correlated = active_turn.as_deref() == payload["turn_id"].as_str()
+                                && active_turn.is_some() && event["type"] != "input.accepted";
+                            if correlated && updates.send(WatchEvent::AgentEvent(event.clone())).is_err() {
+                                return Ok(()); // The TUI was closed; do not keep a socket alive.
+                            }
+                            if correlated && event["type"] == "assistant.delta" && payload["phase"] == "final_answer"
+                                && let Some(text) = payload["text"].as_str() {
+                                if updates.send(WatchEvent::Delta(text.to_owned())).is_err() {
+                                    return Ok(());
+                                }
                             }
                         }
                         Some(Ok(Message::Close(_))) | None => break,
@@ -236,9 +251,45 @@ impl Client {
                     },
                 }
             }
-            // A replayable cursor survives WebSocket restarts, including DO eviction.
+            // The cursor survives WebSocket restarts, including DO eviction.
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
+    }
+
+    async fn display_turn(
+        &self,
+        agent: &str,
+        turn: &str,
+        cursor: &mut String,
+    ) -> Result<(), ManagedError> {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (watch, output) = tokio::join!(self.watch_turn(agent, turn, cursor, tx), async move {
+            let mut printed = String::new();
+            while let Some(event) = rx.recv().await {
+                match event {
+                    WatchEvent::AgentEvent(_) => {}
+                    WatchEvent::Delta(text) => {
+                        print!("{text}");
+                        io::stdout().flush().map_err(|e| error(e.to_string()))?;
+                        printed.push_str(&text);
+                    }
+                    WatchEvent::Completed(message) => {
+                        if printed != message {
+                            print!("{}", message.strip_prefix(&printed).unwrap_or(&message));
+                        }
+                        println!();
+                        io::stdout().flush().map_err(|e| error(e.to_string()))?;
+                        return Ok(());
+                    }
+                    WatchEvent::Failed(message) => {
+                        return Err(error(format!("Managed2 turn failed: {message}")));
+                    }
+                }
+            }
+            Ok(())
+        });
+        watch?;
+        output
     }
 }
 

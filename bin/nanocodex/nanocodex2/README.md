@@ -21,18 +21,20 @@ half-block images.
 
 ## Managed2 preview (explicit opt-in)
 
-`nanocodex2 --managed2` opens a text-only interactive session against the
-separate Managed2 API. `nanocodex2 --managed2 run "Say hello"` runs one prompt;
-`nanocodex2 --managed2 attach AGENT_UUID` resumes an existing Managed2 agent.
+`nanocodex2 --managed2` opens the familiar terminal UI against the separate
+Managed2 API. `nanocodex2 --managed2 run "Say hello"` prints one prompt's
+answer without opening the UI; `nanocodex2 --managed2 attach AGENT_UUID`
+resumes an existing Managed2 agent in the same terminal UI.
 The original managed service remains the default. Managed2 has its own
 `ncx2_` credential: supply `NANOCODEX_MANAGED2_API_KEY` or a private local
 `~/.config/nanocodex/managed2-api-key` file. The ordinary `nanocodex2 login`
 account key cannot authenticate to Managed2. Set `NANOCODEX_MANAGED2_URL`
 for an alternate HTTPS origin (loopback HTTP is permitted for local tests).
 
-This preview supports sequential text turns and streamed answers; it does not
-run the full legacy TUI, workspace tools, voice, agent listing, model changes,
-or steering. Legacy commands with `--managed2` fail explicitly rather than
+This preview keeps the standard terminal presentation and supports sequential
+text turns and streamed answers. Managed2 does not yet support workspace tools,
+voice, agent listing, model changes, or steering; unavailable actions are gated
+rather than sent to the legacy API. Legacy commands with `--managed2` fail explicitly rather than
 silently contacting the original service. If submission fails with uncertain
 admission, preserve the printed request ID before retrying.
 
