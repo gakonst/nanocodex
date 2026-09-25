@@ -265,6 +265,16 @@ jobs:
       - name: Validate egress Worker
         working-directory: js/egress
         run: npx wrangler deploy --dry-run --config wrangler.broker.jsonc
+      # These are separate Workers and do not replace the existing managed API.
+      - name: Validate parallel Managed2 and Egress2 Workers
+        run: |
+          pnpm --filter nanocodex-egress2-service typecheck
+          pnpm --filter nanocodex-egress2-service test
+          pnpm --filter nanocodex-managed2 typecheck
+          pnpm --filter nanocodex-managed2 test
+          pnpm --filter nanocodex-managed2 test:websocket
+          pnpm --filter nanocodex-egress2-service build
+          pnpm --filter nanocodex-managed2 build
       - name: Validate email Worker
         working-directory: js/email
         run: npx wrangler deploy --dry-run --env=""
