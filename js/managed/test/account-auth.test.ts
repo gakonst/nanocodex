@@ -3,6 +3,7 @@ import { env as workerEnv, runInDurableObject } from "cloudflare:test";
 
 import {
   authenticate,
+  forwardPrincipalAssertions,
   ensureAccount,
   ensureAccountWallet,
   resolveChiefOfStaffPrincipal,
@@ -197,6 +198,26 @@ describe("Connect grant assertions", () => {
         appToolCatalogDigest: APP_TOOL_CATALOG_DIGEST,
       },
     });
+  });
+
+  it("accepts only a trusted exact sandbox assertion and strips client assertions on forwarding", async () => {
+    const { env } = portableEnv();
+    const headers = connectHeaders({});
+    const read = (origin = "https://nanocodex.internal") => authenticate(new Request(`${origin}/v1/agents`, { headers }), env);
+    expect((await read())?.connectGrant).not.toHaveProperty("sandboxExecution");
+    headers.set("x-nanocodex-connect-sandbox-execution", "true");
+    const principal = await read();
+    expect(principal?.connectGrant).toMatchObject({ sandboxExecution: true });
+    expect(await read("https://public.example")).toBeUndefined();
+    const forwarded = new Headers({ "x-nanocodex-connect-sandbox-execution": "forged" });
+    forwardPrincipalAssertions(forwarded, principal!);
+    expect(forwarded.get("x-nanocodex-connect-sandbox-execution")).toBe("true");
+    forwardPrincipalAssertions(forwarded, { ...principal!, connectGrant: undefined });
+    expect(forwarded.has("x-nanocodex-connect-sandbox-execution")).toBe(false);
+    for (const invalid of ["false", "1", "true, true", "agent.execution.sandbox", ""]) {
+      headers.set("x-nanocodex-connect-sandbox-execution", invalid);
+      expect(await read()).toBeUndefined();
+    }
   });
 
   it("rejects incomplete, malformed, duplicate, or account-widening assertions", async () => {

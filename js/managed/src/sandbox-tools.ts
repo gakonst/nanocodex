@@ -152,12 +152,13 @@ export function cloudflareSandboxTools(
   brainWorkspace?: CloudflareBrainWorkspace,
   accountSubject?: string,
   desktop?: { owner: string; name: string },
+  connectGrantId?: string,
 ): ToolMap {
   return createCloudflareSandboxTools(
     async () => {
       // Bind before provisioning or running any user process. The SDK retains
       // this outbound handler across container sleep and Durable Object reload.
-      if (accountSubject !== undefined) await sandboxHandle(namespace, sessionId).bindAccountEgress(accountSubject);
+      if (accountSubject !== undefined) await sandboxHandle(namespace, sessionId).bindAccountEgress(accountSubject, connectGrantId);
       const sandbox = await (namespaceMounts === undefined
       ? prepareSandbox(namespace, sessionId, localBucket)
       : prepareSandboxNamespace(
@@ -213,8 +214,9 @@ async function prepareMeasuredCloudflareSandboxHand(
   brainWorkspace?: CloudflareBrainWorkspace,
   accountSubject?: string,
   desktop?: { owner: string; name: string },
+  connectGrantId?: string,
 ): Promise<void> {
-  if (accountSubject !== undefined) await performanceStage("sandbox.bind_egress", () => sandboxHandle(namespace, resourceId).bindAccountEgress(accountSubject));
+  if (accountSubject !== undefined) await performanceStage("sandbox.bind_egress", () => sandboxHandle(namespace, resourceId).bindAccountEgress(accountSubject, connectGrantId));
   const normalized = validateNamespaceMounts(mounts);
   if (brainWorkspace === undefined) {
     throw new Error("Cloudflare namespace requires a shared brain workspace");

@@ -97,6 +97,7 @@ export type VisibilityPermission = Readonly<{
     | "Memory write"
     | "Conversation"
     | "App tools"
+    | "Cloud sandbox"
     | "Browser cookie sync";
   detail: string;
 }>;
@@ -497,6 +498,10 @@ export function appVisibilityPermissions(resources: unknown): readonly Visibilit
   const visibility: VisibilityPermission[] = signedAppVisibility
     .filter(({ resource, name }) => requested.has(resource) || compact.has(name))
     .map(({ name: _name, ...permission }) => permission);
+  if (requested.has("urn:nanocodex:agent:execution:sandbox")) {
+    visibility.push({ resource: "urn:nanocodex:agent:execution:sandbox", label: "Cloud sandbox",
+      detail: "Run code and install packages in Cloudflare sandboxes dedicated to this app approval" });
+  }
   const conversations = [...requested].filter((resource) => resource.startsWith(agentConversationResourcePrefix));
   if (conversations.length === 1
     && agentConversationId.test(conversations[0].slice(agentConversationResourcePrefix.length))) {

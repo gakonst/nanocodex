@@ -41,13 +41,17 @@ export class Sandbox extends CloudflareSandbox<SandboxRuntimeEnv> {
   }
 
   /** Called over trusted Worker RPC, never derived from container headers. */
-  async bindAccountEgress(subject: string): Promise<void> {
+  async bindAccountEgress(subject: string, connectGrantId?: string): Promise<void> {
+    if (connectGrantId !== undefined && !/^0x[0-9a-f]{64}$/.test(connectGrantId)) throw new Error("invalid sandbox grant owner");
     if (!/^[A-Za-z0-9_-]{43,128}$/.test(subject)) throw new Error("invalid sandbox account subject");
     await this.ctx.blockConcurrencyWhile(async () => {
       const current = await this.ctx.storage.get<string>("nanocodex-egress-subject");
       if (current !== undefined && current !== subject) throw new Error("sandbox belongs to another account subject");
+      const owner = await this.ctx.storage.get<string>("nanocodex-egress-connect-grant");
+      if (current !== undefined && owner !== connectGrantId) throw new Error("sandbox belongs to another grant owner");
       if (current === subject) return;
-      await this.setOutboundHandler("account", { subject });
+      await this.setOutboundHandler("account", connectGrantId === undefined ? { subject } : {});
+      if (connectGrantId !== undefined) await this.ctx.storage.put("nanocodex-egress-connect-grant", connectGrantId);
       await this.ctx.storage.put("nanocodex-egress-subject", subject);
     });
   }

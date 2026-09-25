@@ -1,3 +1,5 @@
+import { turnCanUseExecutionNamespace, turnCanProvisionExecutionProvider, executionMountAllowed, executionMountPeers, executionMountOwner } from "./execution-policy";
+export { turnCanUseExecutionNamespace } from "./execution-policy";
 import { liveAgentSettings, liveAgentFailure, liveAgentRequest } from "nanocodex/cloudflare/managed-live";
 import { durablePlacementOptions, withIngressPlacement } from "nanocodex/cloudflare/durable-placement";
 import { routerDashboard } from "./router-dashboard";
@@ -538,6 +540,7 @@ type ManagedMountCallRow = {
 
 type ManagedMountConfiguration = Readonly<{
   namespace_slot?: number;
+  connect_grant_id?: string;
   vm_factory_name?: string;
   vm_pool_locator?: string;
   vm_host?: Readonly<{
@@ -978,6 +981,8 @@ function forwardedPrincipal(headers: Headers): Readonly<{
     const encodedConnectorConnections = headers.get(CONNECT_CONNECTOR_CONNECTIONS_ASSERTION);
     const encodedMcpIds = headers.get(CONNECT_MCP_IDS_ASSERTION);
     const appToolCatalogDigest = headers.get(CONNECT_APP_TOOL_CATALOG_DIGEST_ASSERTION);
+    const sandboxExecution = headers.get("x-nanocodex-connect-sandbox-execution");
+    if (sandboxExecution !== null && (grantId === null || sandboxExecution !== "true")) return undefined;
     const connectAssertions = [grantId, encodedConnectors, encodedMcpIds];
     if (connectAssertions.some((value) => value !== null)
       && connectAssertions.some((value) => value === null)) return undefined;
@@ -988,6 +993,7 @@ function forwardedPrincipal(headers: Headers): Readonly<{
       ...(grantId === null ? {} : {
         connectGrant: {
           grantId,
+          ...(sandboxExecution === "true" ? { sandboxExecution: true } : {}),
           connectors: JSON.parse(encodedConnectors!),
           ...(encodedConnectorConnections === null ? {} : {
             connectorConnections: JSON.parse(encodedConnectorConnections),
@@ -1199,16 +1205,6 @@ export function managedAuthorizationForRouting(
   catch { return undefined; }
 }
 
-export function turnCanUseExecutionNamespace(
-  authorization: Pick<TurnAuthorization, "capabilities"> & { connectGrant?: unknown } | undefined,
-): boolean {
-  return authorization !== undefined
-    // Retained execution hands are available only to full account authority.
-    && authorization.connectGrant === undefined
-    && authorization.capabilities.includes("agents:write")
-    && authorization.capabilities.includes("tools:use");
-}
-
 export function turnControlAuthorizationMatches(
   retained: TurnAuthorization,
   requester: TurnAuthorization,
@@ -1291,8 +1287,9 @@ function isConnectGrantSlice(value: unknown): value is ConnectGrantSlice {
   const grant = value as Partial<ConnectGrantSlice>;
   return Object.keys(value).every((key) => (
     key === "grantId" || key === "connectors" || key === "connectorConnections"
-    || key === "mcpIds" || key === "appToolCatalogDigest"
+    || key === "mcpIds" || key === "appToolCatalogDigest" || key === "sandboxExecution"
   ))
+    && (grant.sandboxExecution === undefined || grant.sandboxExecution === true)
     && typeof grant.grantId === "string" && /^0x[0-9a-f]{64}$/.test(grant.grantId)
     && isUniqueStringArray(grant.connectors)
     && grant.connectors.every((connector) => (
@@ -2922,6 +2919,7 @@ export function createManagedNamespaceTools(
   prepareNamespace: (context: ToolContext, toolName?: string) => Promise<void | NamespaceCaptureFilter> = async () => {},
   brain?: Readonly<{ tool: NamedTool; allowed(context: ToolContext): boolean }>,
   resolveScreenTool?: ScreenToolResolver,
+  authorizationKey: (context: ToolContext) => string = () => "account",
 ): NamedTool[] {
   return createManagedNamespaceRuntime(
     canUseExecutionNamespace,
@@ -2930,6 +2928,7 @@ export function createManagedNamespaceTools(
     prepareNamespace,
     brain,
     resolveScreenTool,
+    authorizationKey,
   ).tools;
 }
 
@@ -2940,12 +2939,14 @@ function createManagedNamespaceRuntime(
   prepareNamespace: (context: ToolContext, toolName?: string) => Promise<void | NamespaceCaptureFilter> = async () => {},
   brain?: Readonly<{ tool: NamedTool; allowed(context: ToolContext): boolean }>,
   resolveScreenTool?: ScreenToolResolver,
+  authorizationKey: (context: ToolContext) => string = () => "account",
 ): Readonly<{ tools: NamedTool[]; capture(context: ToolContext): Promise<void> }> {
   const runtime = createNamespaceExecutionRuntime(
     machines,
     resolveMachineTool,
     brain?.tool,
     resolveScreenTool,
+    authorizationKey,
   );
   const captured = new Set<string>();
   const preparations = new Map<string, Promise<void>>();
@@ -2957,9 +2958,10 @@ function createManagedNamespaceRuntime(
     if (captured.has(key)) return;
     const pending = preparations.get(key);
     if (pending !== undefined) return pending;
+    const authority = authorizationKey(context);
     const preparation = (async () => {
       const filter = await prepareNamespace(context, toolName);
-     if (!canUseExecutionNamespace(context)) {
+      if (!canUseExecutionNamespace(context) || authorizationKey(context) !== authority) {
         throw new ManagedRequestError(403, "namespace_forbidden", "the current authorization cannot use execution hands");
       }
       context.signal.throwIfAborted();
@@ -3961,9 +3963,9 @@ export class DurableAgentSession extends DurableComputerObject {
         // whichever model turn may currently be running (or absent).
         const provider = new AccountHostedToolsProvider(this.env.NANOCODEX_ACCOUNT_TOOLS, session.owner_id, () => true);
         await provider.refresh();
-        const mounts = this.#managedMounts();
+        const mounts = this.#managedMounts().filter(mount => executionMountOwner(mount) === undefined);
         const discovered = [...this.#hostedTools.machines(), ...provider.machines()];
-        const leased = new Set(mounts.flatMap(mount => mount.provider === "cloudflare"
+        const leased = new Set(this.#managedMounts().flatMap(mount => mount.provider === "cloudflare"
           ? [`cf:${mount.provider_resource_id}`] : [vmHostMountAllocation(mount)?.machine_id].filter((id): id is string => id !== undefined)));
         const machines = discovered.filter(machine => !leased.has(machine.id)
           && discovered.filter(candidate => candidate.id === machine.id).length === 1);
@@ -3982,7 +3984,7 @@ export class DurableAgentSession extends DurableComputerObject {
             workspace = "/workspace";
             exec = cloudflareSandboxTools(this.env.NANOCODEX_SANDBOXES, mount.provider_resource_id,
               this.env.NANOCODEX_SANDBOX_LOCAL === "true", session.public_origin, this.env.NANOCODEX_ADMIN_TOKEN,
-              undefined, () => this.#cloudflareNamespaceMounts("mounted"), { resourceId: session.session_id },
+              undefined, () => this.#cloudflareNamespaceMounts(mount, "mounted"), { resourceId: session.session_id },
               this.#credentialSubject()).exec_command;
           } else {
             const allocation = vmHostMountAllocation(mount);
@@ -8394,7 +8396,7 @@ export class DurableAgentSession extends DurableComputerObject {
       const userHands = this.#hasFullAccountAuthority(authorization) ? this.#userHandMachines(context) : [];
       const roots = this.#handPaths.assign(userHands, this.#managedMounts().map(mount => mount.root));
       return [
-        ...this.#availableManagedMounts().map((mount) => ({
+        ...this.#availableManagedMounts(authorization).map((mount) => ({
           id: `sandbox:${mount.id}`,
           root: mount.root,
           workspace: mount.provider === "host"
@@ -8415,7 +8417,7 @@ export class DurableAgentSession extends DurableComputerObject {
       if (machineId.startsWith("sandbox:")) {
         const mountId = machineId.slice("sandbox:".length);
         const mount = this.#managedMount(mountId);
-        if (mount?.state !== "mounted") return undefined;
+        if (mount?.state !== "mounted" || !executionMountAllowed(authorization, mount)) return undefined;
         if (mount.provider === "host") {
           const allocation = vmHostMountAllocation(mount);
           return allocation?.route_id === undefined
@@ -8437,10 +8439,11 @@ export class DurableAgentSession extends DurableComputerObject {
             session.public_origin,
             this.env.NANOCODEX_ADMIN_TOKEN,
             undefined,
-            () => this.#cloudflareNamespaceMounts("mounted"),
+            () => this.#cloudflareNamespaceMounts(mount, "mounted"),
             { resourceId: session.session_id },
             this.#credentialSubject(),
-            this.env.NANOCODEX_SANDBOX_DESKTOPS === "true" ? { owner: session.owner_id, name: managedMountDisplayName(mount) } : undefined,
+            this.env.NANOCODEX_SANDBOX_DESKTOPS === "true" && executionMountOwner(mount) === undefined ? { owner: session.owner_id, name: managedMountDisplayName(mount) } : undefined,
+            executionMountOwner(mount) ?? undefined,
           );
           sandboxToolsByMount.set(mount.id, tools);
         }
@@ -8482,7 +8485,7 @@ export class DurableAgentSession extends DurableComputerObject {
         }
         if (machineId.startsWith("sandbox:")) {
           const mount = this.#managedMount(machineId.slice("sandbox:".length));
-          if (mount?.state !== "mounted") return undefined;
+          if (mount?.state !== "mounted" || !executionMountAllowed(authorization, mount)) return undefined;
           if (mount.provider === "cloudflare") return this.#accountHostedTools?.screenTool(`cf:${mount.provider_resource_id}`, context);
           if (mount.provider !== "host") return undefined;
           const allocation = vmHostMountAllocation(mount);
@@ -8490,11 +8493,12 @@ export class DurableAgentSession extends DurableComputerObject {
         }
         return undefined;
       },
+      (context) => this.#authorizationForToolContext(context)?.connectGrant?.grantId ?? "account",
     );
     const cloudTools: NamedTool[] = [
       ...(multiplayer ? [computer.tool] : []),
       ...(multiplayer ? [] : [managedMountTool(async (request, context) => {
-        if (!this.#canUseExecutionNamespace(this.#authorizationForToolContext(context))) {
+        if (!turnCanProvisionExecutionProvider(this.#authorizationForToolContext(context), request.provider)) {
           throw new ManagedRequestError(
             403,
             "mount_forbidden",
@@ -9070,6 +9074,11 @@ export class DurableAgentSession extends DurableComputerObject {
     context: ToolContext,
     session: SessionRow,
   ): Promise<ManagedMountResult> {
+    const authorization = this.#authorizationForToolContext(context);
+    if (!turnCanProvisionExecutionProvider(authorization, request.provider)) {
+      throw new ManagedRequestError(403, "mount_forbidden", "the current authorization cannot provision this execution provider");
+    }
+    const grantId = authorization?.connectGrant?.grantId;
     const mountStarted = Date.now();
     const storageProvider = managedMountStorageProvider(request.provider);
     const replay = this.ctx.storage.sql.exec<ManagedMountCallRow>(
@@ -9101,6 +9110,9 @@ export class DurableAgentSession extends DurableComputerObject {
       ).toArray()[0];
       created = mount === undefined;
     }
+    if (mount !== undefined && !executionMountAllowed(authorization, mount)) {
+      throw new ManagedRequestError(403, "mount_forbidden", "mount belongs to another authorization");
+    }
     if (mount === undefined) {
       const id = uuidV7();
       const now = Date.now();
@@ -9111,13 +9123,13 @@ export class DurableAgentSession extends DurableComputerObject {
       const providerResourceId = managedMountProviderResourceId(
         session.session_id,
         id,
-        storageProvider === "host" ? 1 : providerCount,
+        storageProvider === "host" || grantId !== undefined ? 1 : providerCount,
       );
       const root = managedMountRoot(request.name, id, request.provider,
         [...this.#handPaths.roots(), ...this.#managedMounts().map(mount => mount.root),
           ...this.#userHandMachines().map(machine => machineMountRoot(machine.id))]);
       const configuration = storageProvider === "cloudflare"
-        ? JSON.stringify({ namespace_slot: this.#nextCloudflareNamespaceSlot() })
+        ? JSON.stringify({ namespace_slot: this.#nextCloudflareNamespaceSlot(), ...(grantId === undefined ? {} : { connect_grant_id: grantId }) })
         : JSON.stringify({ vm_factory_name: request.provider });
       this.ctx.storage.sql.exec(
         `INSERT INTO managed_mounts (
@@ -9207,11 +9219,12 @@ export class DurableAgentSession extends DurableComputerObject {
         await prepareCloudflareSandboxHand(
           this.env.NANOCODEX_SANDBOXES,
           mount.provider_resource_id,
-          this.#cloudflareNamespaceMountsForPreparation(mount.id),
+          this.#cloudflareNamespaceMountsForPreparation(mount),
           this.env.NANOCODEX_SANDBOX_LOCAL === "true",
           { resourceId: session.session_id },
           this.#credentialSubject(),
-          this.env.NANOCODEX_SANDBOX_DESKTOPS === "true" ? { owner: session.owner_id, name: managedMountDisplayName(mount) } : undefined,
+          this.env.NANOCODEX_SANDBOX_DESKTOPS === "true" && executionMountOwner(mount) === undefined ? { owner: session.owner_id, name: managedMountDisplayName(mount) } : undefined,
+          executionMountOwner(mount) ?? undefined,
         );
         return;
       }
@@ -9274,7 +9287,7 @@ export class DurableAgentSession extends DurableComputerObject {
     if (this.#deleting || this.#deleted) throw retryableError("agent is being deleted");
     const deletionGeneration = this.#deletionGeneration;
     const mounts = this.#managedMounts("mounted").filter((mount) => (
-      mount.provider === "host" && vmHostMountAllocation(mount) !== undefined
+      executionMountAllowed(authorization, mount) && mount.provider === "host" && vmHostMountAllocation(mount) !== undefined
     )).map(mount => ({ id: `sandbox:${mount.id}`, mount }));
     const filter = await prepareNamespaceHostMounts(mounts, async ({ mount }) => {
       const ready = await this.#probeMountedHostMount(mount);
@@ -9599,8 +9612,8 @@ export class DurableAgentSession extends DurableComputerObject {
     ).toArray();
   }
 
-  #availableManagedMounts(): readonly ManagedMountRow[] {
-    return this.#managedMounts("mounted").filter((mount) => (
+  #availableManagedMounts(authorization: TurnAuthorization | undefined): readonly ManagedMountRow[] {
+    return this.#managedMounts("mounted").filter(mount => executionMountAllowed(authorization, mount)).filter((mount) => (
       mount.provider === "cloudflare"
       || (vmHostFactoryName(mount) !== undefined && this.#hostMachineForMount(mount) !== undefined)
     ));
@@ -9614,27 +9627,29 @@ export class DurableAgentSession extends DurableComputerObject {
   }
 
   #cloudflareNamespaceMounts(
+    source: ManagedMountRow,
     ...states: readonly ManagedMountState[]
   ): readonly CloudflareSandboxNamespaceMount[] {
-    return this.#projectCloudflareNamespaceMounts((mount) => (
+    return this.#projectCloudflareNamespaceMounts(source, (mount) => (
       states.length === 0 || states.includes(mount.state)
     ));
   }
 
   #cloudflareNamespaceMountsForPreparation(
-    mountId: string,
+    source: ManagedMountRow,
   ): readonly CloudflareSandboxNamespaceMount[] {
-    return this.#projectCloudflareNamespaceMounts((mount) => (
-      mount.id === mountId || mount.state === "mounting" || mount.state === "mounted"
+    return this.#projectCloudflareNamespaceMounts(source, (mount) => (
+      mount.id === source.id || mount.state === "mounting" || mount.state === "mounted"
     ));
   }
 
   #projectCloudflareNamespaceMounts(
+    source: ManagedMountRow,
     include: (mount: ManagedMountRow) => boolean,
   ): readonly CloudflareSandboxNamespaceMount[] {
     const slots = this.#ensureCloudflareNamespaceSlots();
-    return this.#managedMounts()
-      .filter((mount) => mount.provider === "cloudflare" && include(mount))
+    return executionMountPeers(source, this.#managedMounts())
+      .filter(include)
       .map(({ id, provider_resource_id: resourceId, root }) => Object.freeze({
         resourceId,
         root,
@@ -9692,7 +9707,7 @@ export class DurableAgentSession extends DurableComputerObject {
     const userHands = this.#hasFullAccountAuthority(authorization) ? this.#userHandMachines(context) : [];
     const roots = this.#handPaths.assign(userHands, this.#managedMounts().map(mount => mount.root));
     return Object.freeze(projectHandProviders([
-      ...this.#availableManagedMounts().map((mount) => {
+      ...this.#availableManagedMounts(authorization).map((mount) => {
         const hostMachine = mount.provider === "host" ? this.#hostMachineForMount(mount) : undefined;
         return Object.freeze({
           id: `sandbox:${mount.id}`,

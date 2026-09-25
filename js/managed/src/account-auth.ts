@@ -115,6 +115,8 @@ export type ConnectGrantSlice = Readonly<{
   connectorConnections?: ConnectorConnectionSelection;
   mcpIds: readonly string[];
   appToolCatalogDigest?: `0x${string}`;
+  /** Set only by the Connect service after explicit signed resource approval. */
+  sandboxExecution?: true;
 }>;
 
 const OWNER_CAPABILITIES = [
@@ -2393,7 +2395,9 @@ function parseConnectGrantAssertions(headers: Headers): Readonly<{
     : parseConnectorConnectionSelection(encodedConnectorConnections);
   const mcpIds = parseUniqueJsonArray(headers.get(CONNECT_MCP_IDS_HEADER));
   const appToolCatalogDigest = headers.get(CONNECT_APP_TOOL_CATALOG_DIGEST_HEADER);
-  if (!grantId || !CONNECT_GRANT_ID.test(grantId)
+  const sandboxExecution = headers.get("x-nanocodex-connect-sandbox-execution");
+  if ((sandboxExecution !== null && sandboxExecution !== "true")
+    || !grantId || !CONNECT_GRANT_ID.test(grantId)
     || !capabilities || !capabilities.every((value): value is OrganizationCapability => (
       CONNECT_CAPABILITIES.has(value as OrganizationCapability)
     ))
@@ -2413,6 +2417,7 @@ function parseConnectGrantAssertions(headers: Headers): Readonly<{
     capabilities,
     slice: {
       grantId: grantId.toLowerCase(),
+      ...(sandboxExecution === "true" ? { sandboxExecution: true as const } : {}),
       connectors,
       ...(connectorConnections === undefined ? {} : { connectorConnections }),
       mcpIds,

@@ -59,8 +59,11 @@ type CellBinding = Readonly<{
   aliases: ReadonlyMap<string, string>;
 }>;
 
+type AuthorizedCellBinding = CellBinding & Readonly<{ authorizationKey: string }>;
+
 type ProcessBinding = Readonly<{
   ownerSessionId: string;
+  authorizationKey: string;
   providerSessionId: number;
   writeStdin: RoutedTool;
 }>;
@@ -103,6 +106,7 @@ export function createNamespaceExecutionRuntime(
   resolveMachineTool: MachineToolResolver = () => undefined,
   brainExec?: RoutedTool,
   resolveScreenTool: ScreenToolResolver = () => undefined,
+  authorizationKey: (context: ToolContext) => string = () => "account",
 ): NamespaceExecutionRuntime {
   const brain = Object.freeze({
     mountId: "mount:brain",
@@ -110,17 +114,24 @@ export function createNamespaceExecutionRuntime(
     workspace: "/brain",
     exec: brainExec,
   }) satisfies MountedHand;
-  const cells = new Map<string, CellBinding>();
+  const cells = new Map<string, AuthorizedCellBinding>();
   const sessions = new Map<number, ProcessBinding>();
   const computerQueues = new Map<string, Promise<unknown>>();
 
-  const cell = (context: ToolContext, filter?: NamespaceCaptureFilter): CellBinding => {
+  const cell = (context: ToolContext, filter?: NamespaceCaptureFilter): AuthorizedCellBinding => {
     // Direct tools have an empty parentCallId. Pin those to their own call,
     // while nested Code Mode tools keep sharing their parent's captured lease.
     const key = `${context.sessionId}\u0000${context.parentCallId || context.callId}`;
     const retained = cells.get(key);
-    if (retained !== undefined) return retained;
-    const created = createCellBinding(brain, machines(context).filter(filter ?? (() => true)), resolveMachineTool, context, key, resolveScreenTool);
+    const authority = authorizationKey(context);
+    if (retained !== undefined) {
+      if (retained.authorizationKey !== authority) throw new Error("namespace cell belongs to another authorization");
+      return retained;
+    }
+    const created = Object.freeze({
+      ...createCellBinding(brain, machines(context).filter(filter ?? (() => true)), resolveMachineTool, context, key, resolveScreenTool),
+      authorizationKey: authority,
+    });
     cells.set(key, created);
     return created;
   };
@@ -253,6 +264,7 @@ export function createNamespaceExecutionRuntime(
         const publicSessionId = reserveSessionId(sessions);
         sessions.set(publicSessionId, Object.freeze({
           ownerSessionId: context.sessionId,
+          authorizationKey: binding.authorizationKey,
           providerSessionId,
           writeStdin,
         }));
@@ -269,7 +281,8 @@ export function createNamespaceExecutionRuntime(
         const value = record(input);
         const publicSessionId = positiveSessionId(value.session_id);
         const binding = sessions.get(publicSessionId);
-        if (binding === undefined || binding.ownerSessionId !== context.sessionId) {
+        if (binding === undefined || binding.ownerSessionId !== context.sessionId
+          || binding.authorizationKey !== authorizationKey(context)) {
           throw new Error("unknown or stale namespace process session");
         }
         const result = await binding.writeStdin.handler({

@@ -71,3 +71,12 @@ test("managed existence probes replace only a definitive missing session", () =>
   assert.equal(managedAgentExistenceStatus(new Response(null, { status: 403 })), "unavailable");
   assert.equal(managedAgentExistenceStatus(new Response(null, { status: 503 })), "unavailable");
 });
+
+
+test("only the approved sandbox capability produces the managed sandbox assertion", () => {
+  const assertion = { brokerUserId: "user-1", connectors: [], grantId: `0x${"a".repeat(64)}`, mcpIds: [] };
+  for (const capabilities of [[], ["agent.run"], ["urn:nanocodex:agent:execution:sandbox"], ["agent.execution.sandbox:all"]]) {
+    assert.equal(managedGrantHeaders({ ...assertion, capabilities })["x-nanocodex-connect-sandbox-execution"], undefined);
+  }
+  assert.equal(managedGrantHeaders({ ...assertion, capabilities: ["agent.execution.sandbox"] })["x-nanocodex-connect-sandbox-execution"], "true");
+});
