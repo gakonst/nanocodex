@@ -48,6 +48,7 @@ function send(socket, opcode, payload) {
   socket.write(Buffer.concat([header, bytes]));
 }
 server.on('upgrade', (request, socket) => {
+  socket.on('error', () => {}); // Peer may reset after the 1013 replay fence.
   if (request.headers.authorization !== `Bearer ${key}`) { socket.destroy(); return; }
   const url = new URL(request.url, 'http://localhost');
   const match = /^\/v1\/agents\/([0-9a-f-]{36})\/events$/.exec(url.pathname);
