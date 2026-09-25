@@ -60,6 +60,13 @@ mod transport;
 use transport::JavaScriptResponsesHost;
 
 /// Prunes old replay receipts before the full Agent runtime is constructed.
+/// Capability marker checked against the actual bundled module before deployment.
+/// Older kernels reject the native child route emitted by the current host.
+#[wasm_bindgen(js_name = nativeSpawnContractVersion)]
+pub fn native_spawn_contract_version() -> u32 {
+    1
+}
+
 #[wasm_bindgen(js_name = pruneDurableReceipts)]
 pub async fn prune_durable_receipts(
     durability_host_id: &str,
