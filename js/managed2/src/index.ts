@@ -3,6 +3,7 @@ import { Agent } from "nanocodex/cloudflare";
 import type { NamedTool } from "nanocodex";
 import { authenticate } from "./auth";
 import { ToolTiming } from "./toolTiming";
+import { managedWeb } from "./web";
 
 type ChatGptImport = Readonly<{
   access_token: string; refresh_token: string; account_id: string;
@@ -448,7 +449,10 @@ export class Session extends DurableObject<Env> {
     const initTrace = traceId ?? crypto.randomUUID();
     const initStart = performance.now();
     let initializing = true;
-    const options = { tools: [this.#toolTiming.instrument(currentTime)], instructions: "You are a concise assistant." };
+const web = managedWeb({ egress: this.env.EGRESS, owner,
+      onTiming: (context, phase, durationMs) => this.#toolTiming.phase(context, phase, durationMs),
+    });
+    const options = { tools: [currentTime, web].map(tool => this.#toolTiming.instrument(tool)), instructions: "You are a concise assistant." };
     Object.defineProperty(options, Symbol.for("nanocodex.cloudflare.internalConfiguration"), { value: {
       model: "gpt-6-sol", thinking: "low", reasoning_mode: "standard", fast_mode: false,
     } });

@@ -36,6 +36,29 @@ export default defineConfig({
         { name: "test-provider", modules: true, script: `
           export default { async fetch(request) {
             const url = new URL(request.url);
+            if (url.href === "https://api.openai.com/v1/alpha/search" && request.method === "POST") {
+              if (request.headers.get("authorization") !== "Bearer sk-fixture-only"
+                || request.headers.has("x-managed2-owner") || request.headers.has("x-managed2-trace-id")) {
+                return Response.json({ error: "search authentication or privacy failure" }, { status: 401 });
+              }
+              const body = await request.json();
+              if (body.settings?.external_web_access !== true || body.settings?.allowed_callers?.[0] !== "direct"
+                || body.commands?.search_query?.[0]?.q !== "a synthetic question") {
+                return Response.json({ error: "invalid search body" }, { status: 400 });
+              }
+              return Response.json({ output: "Found [synthetic citation](https://example.org/source)", hidden: "provider-only" });
+            }
+            if (url.href === "https://chatgpt.com/backend-api/codex/alpha/search" && request.method === "POST") {
+              if (request.headers.get("chatgpt-account-id") !== "account-fixture"
+                || request.headers.has("x-managed2-owner") || !request.headers.get("authorization")?.startsWith("Bearer eyJ")) {
+                return Response.json({ error: "subscription search authentication failure" }, { status: 401 });
+              }
+              const body = await request.json();
+              if (body.commands?.search_query?.[0]?.q !== "a synthetic question") {
+                return Response.json({ error: "invalid search body" }, { status: 400 });
+              }
+              return Response.json({ output: "Found [synthetic citation](https://example.org/source)", hidden: "provider-only" });
+            }
             const platform = url.hostname === "api.openai.com"
               && url.pathname === "/v1/responses"
               && request.headers.get("authorization") === "Bearer sk-fixture-only"
@@ -54,6 +77,22 @@ export default defineConfig({
               const input = body.input || [];
               const continuation = input.find(item => item.type === "function_call_output" && item.call_id === "call-time");
               const timeTool = input.find(item => item.type === "additional_tools")?.tools?.find(tool => tool.name === "current_time");
+              const webTool = input.find(item => item.type === "additional_tools")?.tools?.find(tool => tool.name === "web__run");
+              const webContinuation = input.find(item => item.type === "function_call_output" && item.call_id === "call-web");
+              if (webContinuation) {
+                const result = webContinuation.output;
+                const text = "Search: " + result;
+                return [{ type: "response.completed", response: { id: "fixture-web-result", status: "completed", end_turn: true,
+                  output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text }] }],
+                  usage: { input_tokens: 10, output_tokens: 4, total_tokens: 14 } } }];
+              }
+              if (JSON.stringify(input).includes("Use web__run")) {
+                if (!webTool) throw new Error("web__run was not offered");
+                return [{ type: "response.completed", response: { id: "fixture-web-call", status: "completed", end_turn: false,
+                  output: [{ type: "function_call", call_id: "call-web", name: "web__run",
+                    arguments: JSON.stringify({ search_query: [{ q: "a synthetic question" }] }) }],
+                  usage: { input_tokens: 10, output_tokens: 4, total_tokens: 14 } } }];
+              }
               const requested = JSON.stringify(input).includes("Use current_time");
               if (continuation) {
                 const utc = JSON.parse(continuation.output).utc;

@@ -228,3 +228,42 @@ it("completes a real model-tool-model turn and reports separate tool and continu
   events.webSocket?.accept();
   events.webSocket?.close();
 });
+
+it("executes web__run end-to-end through credential-isolating Egress2 and resumes the model", async () => {
+  const authorization = `Bearer ${fixtureKeys["fixture-user"]}`;
+  expect((await SELF.fetch("https://api.test/v1/credentials/openai", {
+    method: "PUT", headers: { authorization }, body: JSON.stringify({ value: "sk-fixture-only" }),
+  })).status).toBe(204);
+  const created = await SELF.fetch("https://api.test/v1/agents", { method: "POST", headers: { authorization },
+    body: JSON.stringify({ input: "Use web__run once and summarize the search result." }) });
+  expect(created.status).toBe(202);
+  const { agent_id, turn_id } = await created.json<{ agent_id: string; turn_id: string }>();
+  let result: { state: string; message: string; timing: { tool_calls: number } } | undefined;
+  await expect.poll(async () => {
+    const response = await SELF.fetch(`https://api.test/v1/agents/${agent_id}/turns/${turn_id}`, { headers: { authorization } });
+    result = await response.json<typeof result>();
+    return result?.state;
+  }, { timeout: 15_000 }).toBe("completed");
+  expect(result?.message).toContain("[synthetic citation](https://example.org/source)");
+  expect(result?.message).not.toContain("provider-only");
+  expect(result?.timing.tool_calls).toBe(1);
+}, 20_000);
+
+it("routes subscription web__run through Egress2 without exposing account credentials to Managed2", async () => {
+  const authorization = `Bearer ${fixtureKeys["subscription-owner"]}`;
+  expect((await SELF.fetch("https://api.test/v1/credentials/chatgpt", {
+    method: "PUT", headers: { authorization, "content-type": "application/json" },
+    body: JSON.stringify({ access_token: "eyJhbGciOiJub25lIiwidHlwIjoiSldUIn0.eyJleHAiOjQxMDI0NDQ4MDAsImh0dHBzOi8vYXBpLm9wZW5haS5jb20vYXV0aCI6eyJjaGF0Z3B0X2FjY291bnRfaWQiOiJhY2NvdW50LWZpeHR1cmUiLCJjaGF0Z3B0X2FjY291bnRfaXNfZmVkcmFtcCI6ZmFsc2V9fQ.fixture",
+      refresh_token: "refresh-fixture-only", account_id: "account-fixture", expires_at: 4102444800000, fedramp: false }),
+  })).status).toBe(204);
+  const created = await SELF.fetch("https://api.test/v1/agents", { method: "POST", headers: { authorization },
+    body: JSON.stringify({ input: "Use web__run once and summarize the search result." }) });
+  expect(created.status).toBe(202);
+  const { agent_id, turn_id } = await created.json<{ agent_id: string; turn_id: string }>();
+  let result: { state: string; message: string } | undefined;
+  await expect.poll(async () => {
+    result = await (await SELF.fetch(`https://api.test/v1/agents/${agent_id}/turns/${turn_id}`, { headers: { authorization } })).json<typeof result>();
+    return result?.state;
+  }, { timeout: 15_000 }).toBe("completed");
+  expect(result?.message).toContain("[synthetic citation](https://example.org/source)");
+}, 20_000);
