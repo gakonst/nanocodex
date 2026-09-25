@@ -1,0 +1,100 @@
+#!/usr/bin/env node
+// One-call Managed2 create + first turn. No credential appears in this file or its output.
+import { readFileSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
+import { randomUUID } from 'node:crypto';
+import WebSocket from 'ws';
+
+const base = process.env.MANAGED2_BASE_URL || 'https://nanocodex-managed2.gakonst.workers.dev';
+const prompt = process.argv.slice(2).join(' ') || 'Say hello in one sentence.';
+const id = process.env.MANAGED2_REQUEST_ID || randomUUID();
+const token = readFileSync(join(homedir(), '.config/nanocodex/managed2-api-key'), 'utf8').trim();
+const authorization = `Bearer ${token}`;
+
+async function streamReply(agentId, started, deadline) {
+  let cursor = '0';
+  let firstTextMs;
+  let openMs;
+  let completedMs;
+  let reply = '';
+  let terminal = false;
+  let pages = 0;
+  while (!terminal && pages++ < 32 && Date.now() < deadline) {
+    const ws = new WebSocket(`${base.replace(/^http/, 'ws')}/v1/agents/${agentId}/events?cursor=${cursor}`, {
+      headers: { authorization }, handshakeTimeout: 15_000,
+    });
+    const closeCode = await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => { ws.terminate(); reject(new Error('Timed out waiting for reply events')); }, Math.max(1, deadline - Date.now()));
+      const fail = error => { clearTimeout(timer); reject(error); };
+      ws.once('open', () => { openMs ??= performance.now() - started; });
+      ws.on('message', bytes => {
+        let frame;
+        try { frame = JSON.parse(String(bytes)); } catch { return; }
+        if (frame.cursor) cursor = frame.cursor;
+        const event = frame.event;
+        if (event?.type === 'assistant.delta' && event.payload?.phase === 'final_answer'
+          && typeof event.payload.text === 'string') {
+          firstTextMs ??= performance.now() - started;
+          reply += event.payload.text;
+        }
+        if (event?.type === 'run.completed') {
+          completedMs = performance.now() - started;
+          terminal = true;
+          ws.terminate(); // Do not wait for a close handshake before reading durable status.
+        }
+        if (event?.type === 'run.failed') fail(new Error('Turn failed (check turn status for details)'));
+      });
+      ws.once('close', code => { clearTimeout(timer); resolve(code); });
+      ws.once('error', fail);
+      ws.once('unexpected-response', (_request, response) => fail(new Error(`Events HTTP ${response.statusCode}`)));
+    });
+    if (!terminal && closeCode !== 1013 && closeCode !== 1006)
+      throw new Error(`Events socket closed (${closeCode}) before completion`);
+  }
+  if (!terminal) throw new Error('Reply events did not reach completion');
+  return { openMs, firstTextMs, completedMs, reply, pages };
+}
+
+async function main() {
+  console.log(`Request ID: ${id} (reuse with MANAGED2_REQUEST_ID=${id} if this request times out)`);
+  const started = performance.now();
+  const response = await fetch(`${base}/v1/agents`, {
+    method: 'POST',
+    headers: { authorization, 'content-type': 'application/json', 'idempotency-key': id },
+    body: JSON.stringify({ input: prompt }),
+    signal: AbortSignal.timeout(30_000),
+  });
+  const created = await response.json();
+  const admittedMs = performance.now() - started;
+  if (response.status !== 202) throw new Error(`Create returned HTTP ${response.status}: ${JSON.stringify(created)}`);
+  console.log(`Agent: ${created.agent_id}\nTurn:  ${created.turn_id}\nState: ${created.state}`);
+
+  // Cursor zero catches text emitted before the WebSocket connects.
+  const deadline = Date.now() + 90_000;
+  const stream = await streamReply(created.agent_id, started, deadline);
+  let turn;
+  while (Date.now() < deadline) {
+    const status = await fetch(`${base}/v1/agents/${created.agent_id}/turns/${created.turn_id}`, {
+      headers: { authorization }, signal: AbortSignal.timeout(15_000),
+    });
+    if (!status.ok) throw new Error(`Turn status returned HTTP ${status.status}`);
+    turn = await status.json();
+    if (turn.state === 'completed' || turn.state === 'failed') break;
+    await new Promise(resolve => setTimeout(resolve, 250));
+  }
+  const statusMs = performance.now() - started;
+  if (turn?.state !== 'completed') throw new Error(`Turn state: ${turn?.state ?? 'timeout'}`);
+  console.log(`\nReply:\n${stream.reply || turn.message}`);
+  console.log('\nTimings (client elapsed from POST start):');
+  console.log(`  Create + turn accepted: ${admittedMs.toFixed(0)} ms`);
+  console.log(`  Events WebSocket open:  ${stream.openMs.toFixed(0)} ms`);
+  console.log(`  TTFT (reply text):     ${stream.firstTextMs?.toFixed(0) ?? 'not emitted'} ms${created.state === 'completed' ? ' (replay)' : ''}`);
+  console.log(`  run.completed event:    ${stream.completedMs.toFixed(0)} ms`);
+  console.log(`  Status GET completed:   ${statusMs.toFixed(0)} ms`);
+  console.log(`  Server-Timing: ${response.headers.get('server-timing') ?? 'unavailable'}`);
+  console.log(`  CF-Ray: ${response.headers.get('cf-ray') ?? 'unavailable'}`);
+  if (stream.reply && stream.reply !== turn.message) throw new Error('Replayed text differs from the saved final reply');
+}
+
+main().catch(error => { console.error(error.message); process.exitCode = 1; });
