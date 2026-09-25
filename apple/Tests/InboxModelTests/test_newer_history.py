@@ -26,7 +26,8 @@ enum TranscriptPreparation {
     var requests: [Cursor?] = []
     var duringRequest: (() -> Void)?
     func conversationHistory(_ id: String) async throws -> ConversationHistory {
-        .init(events: [AgentEvent(cursor: 8)], byteCounts: [1], latest: 8, hasMore: true)
+        duringRequest?(); duringRequest = nil
+        return .init(events: [AgentEvent(cursor: 8), AgentEvent(cursor: 9)], byteCounts: [1, 1], latest: 9, hasMore: true)
     }
     func history(_ id: String, after: Cursor?) async throws -> EventPage {
         requests.append(after)
@@ -44,7 +45,9 @@ enum TranscriptPreparation {
     var followingLatest = false
     var historyMutationRevision = UUID()
     var newerAfter: Cursor?
+    var additionalHistoryGaps: [Cursor] = []
     var newerCatchUp: Task<Void, Never>?
+    var readableHistoryRecovery: Task<Void, Never>?
     var latestJumpEvents: [(event: AgentEvent, bytes: Int)]?
     var events: [AgentEvent] = [AgentEvent(cursor: 1)]
     var eventBytes = [1], retainedBytes = 1, cursor = 1
@@ -55,6 +58,7 @@ enum TranscriptPreparation {
     var connection = "Live", streamReceivedFrame = false, threadLoading = false
     var threadError: String?
     var projected: [Int] = []
+    func recoverReadableHistory(id: String, epoch: UUID, token: UUID) {}
     func reconcilePending(id: String, events: [AgentEvent]) {}
     func trimMeasuredEvents(towardOlder: Bool) {}
     func cancelOlderHistoryPrefetch() {}
@@ -100,19 +104,36 @@ source += r'''
         jump.client!.pages = [.init(events: [8, 9].map(AgentEvent.init), latest: 9, hasMore: true)]
         jump.client!.duringRequest = { jump.ingest(10) }
         await jump.loadNewer(latest: true)
-        precondition(jump.client!.requests.count == 1 && jump.client!.requests[0] == nil)
+        precondition(jump.client!.requests.isEmpty)
         precondition(jump.projected == [8, 9, 10] && !jump.hasNewer && jump.followingLatest)
         jump.ingest(11)
         precondition(jump.projected == [8, 9, 10, 11])
 
+        // A refresh/navigation mutation invalidates an older in-flight page.
+        let stale = Model()
+        stale.hasNewer = true; stale.newerAfter = 1
+        stale.client!.pages = [.init(events: [AgentEvent(cursor: 2)], latest: 2, hasMore: false)]
+        stale.client!.duringRequest = { stale.historyMutationRevision = UUID() }
+        await stale.loadNewer()
+        precondition(stale.events.map(\.cursor) == [1] && stale.cursor == 1 && stale.hasNewer)
+
+        // A malformed forward page must neither close the gap nor advance SSE.
+        let stalled = Model()
+        stalled.hasNewer = true; stalled.newerAfter = 1
+        stalled.client!.pages = [.init(events: [AgentEvent(cursor: 1)], latest: 90, hasMore: true)]
+        await stalled.loadNewer()
+        precondition(stalled.cursor == 1 && stalled.hasNewer && stalled.threadError != nil)
+
         let paging = Model()
         paging.hasNewer = true; paging.newerAfter = 1; paging.cursor = 5
+        paging.additionalHistoryGaps = [3]
         paging.ingest(6)
         paging.client!.pages = [
             .init(events: [2, 3].map(AgentEvent.init), latest: 6, hasMore: true),
             .init(events: [4, 5, 6].map(AgentEvent.init), latest: 6, hasMore: false)
         ]
         await paging.loadNewer()
+        precondition(paging.newerAfter == 3 && paging.additionalHistoryGaps.isEmpty)
         await paging.loadNewer()
         precondition(paging.client!.requests == [1, 3])
         precondition(paging.projected == [1, 2, 3, 4, 5, 6] && !paging.hasNewer)

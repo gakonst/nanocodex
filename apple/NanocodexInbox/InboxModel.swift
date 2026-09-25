@@ -70,11 +70,14 @@ final class InboxModel: ObservableObject {
         var hasOlder: Bool
         var hasNewer: Bool = false
         var newerAfter: Cursor?
+        var additionalGaps: [Cursor] = []
         var bytes: [Int]
         var rows: [TranscriptRow]
         var retainedBytes: Int
         var projector: TranscriptStreamProjection
         var media = InboxMediaProjection()
+        var followingLatest = true
+        var protectedCursors: ClosedRange<Cursor>?
     }
     private var tabHistories: [String: TabHistory] = [:]
     private var recentTabs: [String] = []
@@ -203,7 +206,14 @@ final class InboxModel: ObservableObject {
     private var focusedHistoryLoaded = false
     private var streamReceivedFrame = false
     private var generation = UUID()
-    private var observation = UUID() { didSet { cancelOlderHistoryPrefetch() } }
+    private var additionalHistoryGaps: [Cursor] = []
+    private var readableHistoryRecovery: Task<Void, Never>?
+    private var observation = UUID() {
+        didSet {
+            cancelOlderHistoryPrefetch()
+            readableHistoryRecovery?.cancel(); readableHistoryRecovery = nil
+        }
+    }
     private var events: [AgentEvent] = [] { didSet { eventsRevision = UUID(); queueProjection.invalidateHistory() } }
     private var eventsRevision = UUID()
     private var projectedFirstCursor: Cursor?
@@ -1185,7 +1195,7 @@ final class InboxModel: ObservableObject {
         attachmentDrafts = [:]; attachmentURLs = [:]; attachmentMovieURLs = [:]; attachmentImports = [:]; attachmentErrors = [:]
         scope = ""; error = nil; notice = nil; busy = []; retries = [:]; refreshing = false
         newerAfter = nil; latestJumpEvents = nil
-        hasOlder = false; hasNewer = false; loadingOlder = false; loadingNewer = false; followingLatest = true; connection = "Disconnected"; pending = []; pinnedThreadID = nil; demoRows = [:]; demoFaults = []
+        hasOlder = false; hasNewer = false; additionalHistoryGaps = []; loadingOlder = false; loadingNewer = false; followingLatest = true; connection = "Disconnected"; pending = []; pinnedThreadID = nil; demoRows = [:]; demoFaults = []
     }
     func setActive(_ active: Bool) {
         let wasActive = isActive
@@ -1710,8 +1720,9 @@ final class InboxModel: ObservableObject {
         guard changed || restart else { return }
         if changed, let previous = observedAgentID, !isDemo, focusedHistoryLoaded {
             // Preserve loaded history along with each tab's draft.
-            tabHistories[previous] = TabHistory(events: events, cursor: cursor, hasOlder: hasOlder, hasNewer: hasNewer, newerAfter: newerAfter,
-                                                bytes: eventBytes, rows: rows, retainedBytes: retainedBytes, projector: streamProjector, media: mediaProjection)
+            tabHistories[previous] = TabHistory(events: events, cursor: cursor, hasOlder: hasOlder, hasNewer: hasNewer, newerAfter: newerAfter, additionalGaps: additionalHistoryGaps,
+                                                bytes: eventBytes, rows: rows, retainedBytes: retainedBytes, projector: streamProjector, media: mediaProjection,
+                                                followingLatest: followingLatest, protectedCursors: protectedHistoryCursors)
             recentTabs.removeAll { $0 == previous }; recentTabs.append(previous)
             trimTabCache()
         }
@@ -1722,13 +1733,12 @@ final class InboxModel: ObservableObject {
         streaming?.cancel(); streaming = nil; projection?.cancel(); projection = nil; observation = UUID(); projectedFirstCursor = nil; loadingOlder = false; loadingNewer = false; latestJumpEvents = nil
         threadError = nil
         if changed {
-            // Each cached reading window keeps its incremental projection. Tab
-            // switches and foregrounding only need to apply newly received events.
+            // Show a cached window immediately while refreshing the current tail.
             streamProjector = deck.focusedID.flatMap { tabHistories[$0]?.projector } ?? TranscriptStreamProjection()
             focusedHistoryLoaded = false
             mediaProjection = InboxMediaProjection()
             rows = []; events = []; eventBytes = []; retainedBytes = 0; cursor = .zero
-            olderBefore = nil; newerAfter = nil; hasOlder = false; hasNewer = false; followingLatest = true; protectedHistoryCursors = nil; selectedTurn = ""
+            olderBefore = nil; newerAfter = nil; additionalHistoryGaps = []; hasOlder = false; hasNewer = false; followingLatest = true; protectedHistoryCursors = nil; selectedTurn = ""
         }
         resumeOverview()
         guard let id = deck.focusedID else {
@@ -1745,8 +1755,10 @@ final class InboxModel: ObservableObject {
         if changed, let cached = tabHistories.removeValue(forKey: id) {
             recentTabs.removeAll { $0 == id }
             focusedHistoryLoaded = true
-            events = cached.events; cursor = cached.cursor; hasOlder = cached.hasOlder; newerAfter = cached.newerAfter; hasNewer = cached.hasNewer
+            events = cached.events; cursor = cached.cursor; hasOlder = cached.hasOlder; newerAfter = cached.newerAfter; hasNewer = cached.hasNewer; additionalHistoryGaps = cached.additionalGaps
             eventBytes = cached.bytes; retainedBytes = cached.retainedBytes
+            followingLatest = cached.followingLatest; protectedHistoryCursors = cached.protectedCursors
+            protectedHistorySelection = nil
             olderBefore = events.first?.cursor; publishPreparedRows(cached.rows, media: cached.media)
             os_signpost(.event, log: accountPerformanceLog, name: "CachedHistoryRowsPublished", "rows=%d", rows.count)
         }
@@ -1754,14 +1766,12 @@ final class InboxModel: ObservableObject {
         guard let client, isActive else { return }
         let epoch = generation, token = observation
         if !isDemo { Task { try? await client.prepare(id) } }
-        if !focusedHistoryLoaded {
-            if let opening = openingHistory, opening.id == id {
-                focusedHistoryRequest = opening.request
-            } else {
-                openingHistory?.request.cancel()
-                focusedHistoryRequest = Task { try await client.conversationHistory(id) }
-            }
-        } else { openingHistory?.request.cancel() }
+        if let opening = openingHistory, opening.id == id, !focusedHistoryLoaded {
+            focusedHistoryRequest = opening.request
+        } else {
+            openingHistory?.request.cancel()
+            focusedHistoryRequest = Task { try await client.conversationHistory(id) }
+        }
         openingHistory = nil
         // A frame received just before suspension may not have reached the
         // batched projection yet. Keep its text visible when observation resumes.
@@ -1783,39 +1793,23 @@ final class InboxModel: ObservableObject {
             guard let self else { return }
             defer { if self.observation == token { self.streaming = nil } }
             var delay = 1
-            var loaded = self.focusedHistoryLoaded
             while !Task.isCancelled, self.generation == epoch, self.observation == token {
                 let startedAt = Date()
                 do {
-                    if !loaded {
-                        let request = self.focusedHistoryRequest ?? Task { try await client.conversationHistory(id) }
-                        self.focusedHistoryRequest = request
-                        let prepared: ConversationHistory
-                        do { prepared = try await request.value }
-                        catch {
-                            if self.observation == token { self.focusedHistoryRequest = nil }
-                            throw error
-                        }
-                        guard self.generation == epoch, self.observation == token, !Task.isCancelled else { return }
-                        self.focusedHistoryRequest = nil
-                        self.events = prepared.events; self.newerAfter = prepared.hasNewer ? prepared.events.last?.cursor : nil; self.hasOlder = prepared.hasMore; self.hasNewer = prepared.hasNewer
-                        self.eventBytes = prepared.byteCounts; self.retainedBytes = prepared.byteCounts.reduce(0, +)
-                        self.cursor = prepared.latest; self.olderBefore = self.events.first?.cursor
-                        let media = await self.prepareMedia(prepared.rows)
-                        guard self.generation == epoch, self.observation == token, !Task.isCancelled else { return }
-                        self.streamProjector = prepared.projector
-                        self.publishPreparedRows(prepared.rows, media: media); self.projectedFirstCursor = self.events.first?.cursor
-                        self.focusedHistoryLoaded = true
-                        if let index = self.cards.firstIndex(where: { $0.id == id }) {
-                            var card = self.cards[index]
-                            card.apply(events: self.events, transcriptRows: self.rows)
-                            self.historyCursors[id] = max(self.historyCursors[id] ?? .zero, prepared.latest)
-                            if self.cards[index] != card { self.cards[index] = card }
-                            self.reconcilePending(id: id, events: self.events, state: card)
-                        }
-                        self.threadLoading = false; loaded = true
-                        os_signpost(.event, log: accountPerformanceLog, name: "HistoryRowsPublished", "rows=%d", self.rows.count)
+                    // Cached cursors can be arbitrarily old. Every connection gets
+                    // one bounded tail snapshot before subscribing from its watermark.
+                    let request = self.focusedHistoryRequest ?? Task { try await client.conversationHistory(id) }
+                    self.focusedHistoryRequest = request
+                    let prepared: ConversationHistory
+                    do { prepared = try await request.value }
+                    catch {
+                        if self.observation == token { self.focusedHistoryRequest = nil }
+                        throw error
                     }
+                    guard self.generation == epoch, self.observation == token, !Task.isCancelled else { return }
+                    self.focusedHistoryRequest = nil
+                    try self.applyFocusedTail(prepared, id: id, epoch: epoch, token: token)
+                    self.recoverReadableHistory(id: id, epoch: epoch, token: token)
                     self.streamReceivedFrame = false
                     try await client.stream(id, after: self.cursor) { [weak self] frame in
                         await self?.receive(frame, id: id, epoch: epoch, token: token)
@@ -1835,13 +1829,152 @@ final class InboxModel: ObservableObject {
                 if Date().timeIntervalSince(startedAt) >= 30 { delay = 1 }
                 // Transient reconnects retain content or the opening spinner.
                 // Authentication failures above still expose a sign-in action.
-                self.threadLoading = !loaded
+                self.threadLoading = !self.focusedHistoryLoaded
                 self.connection = "Reconnecting"
                 do { try await Task.sleep(for: .seconds(delay)) } catch { return }
                 delay = min(delay * 2, 15)
             }
         }
     }
+    private func applyFocusedTail(_ prepared: ConversationHistory, id: String, epoch: UUID, token: UUID) throws {
+        guard prepared.latest >= cursor else { throw APIError.invalidResponse }
+        readableHistoryRecovery?.cancel(); readableHistoryRecovery = nil
+        cancelOlderHistoryPrefetch()
+        historyMutationRevision = UUID()
+        projection?.cancel(); projection = nil
+        let preserveReading = !followingLatest && !events.isEmpty
+        // An overlapping cached tail contains the beginning of a streamed answer.
+        // Keep that contiguous prefix even when the viewport follows the latest row.
+        let preserveWindow = preserveReading || (!hasNewer && events.last.map { last in
+            prepared.events.contains { $0.cursor == last.cursor }
+        } == true)
+        if preserveWindow {
+            // Retain the viewport and expose any skipped middle range to forward
+            // paging. The stream watermark and the reading boundary are distinct.
+            let previousCursor = cursor
+            let previousLast = events.last!.cursor
+            let existing = Set(events.map { $0.cursor.rawValue })
+            let added = prepared.events.indices.filter { !existing.contains(prepared.events[$0].cursor.rawValue) }
+            let merged = (Array(zip(events, eventBytes)) + added.map { (prepared.events[$0], prepared.byteCounts[$0]) })
+                .sorted { $0.0.cursor < $1.0.cursor }
+            events = merged.map { $0.0 }; eventBytes = merged.map { $0.1 }
+            if prepared.events.first.map({ $0.cursor > previousCursor }) == true {
+                if hasNewer { additionalHistoryGaps.append(previousLast) }
+                newerAfter = min(newerAfter ?? previousLast, previousLast)
+                hasNewer = true
+            }
+            retainedBytes = eventBytes.reduce(0, +)
+            trimMeasuredEvents(towardOlder: false)
+        } else {
+            events = prepared.events; eventBytes = prepared.byteCounts
+            retainedBytes = eventBytes.reduce(0, +)
+            hasOlder = prepared.hasMore; hasNewer = prepared.hasNewer
+            newerAfter = prepared.hasNewer ? prepared.events.last?.cursor : nil
+            additionalHistoryGaps = []
+            protectedHistoryCursors = nil; protectedHistorySelection = nil
+            streamProjector = prepared.projector
+            // Publish text now. Image parsing must not delay the stream handshake.
+            publishPreparedRows(prepared.rows, media: mediaProjection)
+            scheduleMediaPreparation()
+            projectedFirstCursor = events.first?.cursor
+        }
+        cursor = prepared.latest; olderBefore = events.first?.cursor
+        focusedHistoryLoaded = true; threadLoading = false
+        if preserveWindow { scheduleProjection(id: id, epoch: epoch, token: token, delay: .zero) }
+        if let index = cards.firstIndex(where: { $0.id == id }) {
+            var card = cards[index]
+            card.apply(events: prepared.events, transcriptRows: prepared.rows)
+            historyCursors[id] = max(historyCursors[id] ?? .zero, prepared.latest)
+            if cards[index] != card { cards[index] = card }
+            reconcilePending(id: id, events: prepared.events, state: card)
+        }
+        os_signpost(.event, log: accountPerformanceLog, name: "HistoryRowsPublished", "rows=%d", rows.count)
+    }
+
+    private var needsHistoryPrefix: Bool {
+        // A delta is readable but can be only the suffix of an answer. Recover
+        // through its turn admission unless a durable completion already supplies
+        // the full answer. This also covers a fresh launch in the middle of a turn.
+        let complete = Set(events.filter {
+            $0.type == "turn_accepted" || ($0.type == "turn_completed" && !$0.data["final_message"].string.isEmpty)
+        }.map(\.turnID))
+        return events.contains {
+            $0.type == "event" && $0.data["event"]["type"].string == "assistant.delta" && !complete.contains($0.turnID)
+        }
+    }
+
+    private func recoverReadableHistory(id: String, epoch: UUID, token: UUID) {
+        guard followingLatest, needsHistoryPrefix || !rows.contains(where: { $0.role == "You" || $0.role == "Agent" }),
+              hasOlder, let initialBefore = olderBefore, let client else { return }
+        var revision = historyMutationRevision
+        readableHistoryRecovery = Task { [weak self] in
+            var before = initialBefore, retainedBefore = initialBefore, skipped = false
+            var retryDelay = 1
+            while !Task.isCancelled {
+                do {
+                    let page = try await client.history(id, before: before)
+                    try Task.checkCancellation()
+                    retryDelay = 1
+                    guard let first = page.events.first?.cursor, first < before,
+                          page.events.allSatisfy({ $0.cursor < before }) else { throw APIError.invalidResponse }
+                    // Internal-only searching uses one page of scratch space. A
+                    // partial answer instead retains every contiguous prefix page.
+                    let projected = try await TranscriptStreamProjection().rows(page.events)
+                    guard let self, self.generation == epoch, self.observation == token,
+                          self.historyMutationRevision == revision, self.olderBefore == retainedBefore,
+                          self.followingLatest, !Task.isCancelled else { return }
+                    let needsPrefix = self.needsHistoryPrefix
+                    if needsPrefix && skipped {
+                        // A newly streamed delta needs the pages scratch searching
+                        // discarded. Restart from the retained contiguous boundary.
+                        before = retainedBefore; skipped = false; continue
+                    }
+                    guard needsPrefix || !self.rows.contains(where: { $0.role == "You" || $0.role == "Agent" }) else { return }
+                    if needsPrefix || projected.contains(where: { $0.role == "You" || $0.role == "Agent" }) {
+                        let bytes = try await TranscriptPreparation.byteCounts(page.events)
+                        guard self.generation == epoch, self.observation == token,
+                              self.historyMutationRevision == revision, self.olderBefore == retainedBefore,
+                              self.followingLatest, !Task.isCancelled else { return }
+                        if self.needsHistoryPrefix && skipped {
+                            before = retainedBefore; skipped = false; continue
+                        }
+                        // Background recovery may retain one page beyond the byte
+                        // target, but never evicts the live tail or an active answer.
+                        // Explicit scrolling can continue an unusually large turn.
+                        guard self.retainedBytes < 16 * 1024 * 1024 else { return }
+                        revision = UUID(); self.historyMutationRevision = revision
+                        self.events.insert(contentsOf: page.events, at: 0)
+                        self.eventBytes.insert(contentsOf: bytes, at: 0)
+                        self.retainedBytes += bytes.reduce(0, +)
+                        self.hasOlder = page.hasMore
+                        if skipped {
+                            if let previous = self.newerAfter { self.additionalHistoryGaps.append(previous) }
+                            self.newerAfter = page.events.last?.cursor; self.hasNewer = true
+                            skipped = false
+                        }
+                        self.olderBefore = self.events.first?.cursor
+                        retainedBefore = first
+                        self.scheduleProjection(id: id, epoch: epoch, token: token, delay: .zero)
+                        guard self.needsHistoryPrefix else { return }
+                    } else { skipped = true }
+                    guard page.hasMore else { return }
+                    before = first
+                } catch {
+                    guard let self, self.generation == epoch, self.observation == token,
+                          self.historyMutationRevision == revision, self.olderBefore == retainedBefore,
+                          self.followingLatest, !Task.isCancelled else { return }
+                    if let apiError = error as? APIError, apiError == .invalidResponse {
+                        self.threadError = error.localizedDescription; return
+                    }
+                    // Retry transient history failures independently of a healthy
+                    // live stream, so an internal-only tail cannot remain stranded.
+                    do { try await Task.sleep(for: .seconds(retryDelay)) } catch { return }
+                    retryDelay = min(retryDelay * 2, 15)
+                }
+            }
+        }
+    }
+
     func overviewRows(for id: String) -> [TranscriptRow] {
         if focused?.id == id, !rows.isEmpty { return rows }
         if isDemo { return demoRows[id] ?? DemoContent.rows(id) }
@@ -2001,7 +2134,7 @@ final class InboxModel: ObservableObject {
             do { try await Task.sleep(for: delay) } catch { return }
             guard let self else { return }
             let more = await self.projectEvents(id: id, epoch: epoch, token: token)
-            if self.generation == epoch, self.observation == token {
+            if self.generation == epoch, self.observation == token, !Task.isCancelled {
                 self.projection = nil
                 if more { self.scheduleProjection(id: id, epoch: epoch, token: token) }
             }
@@ -2041,7 +2174,8 @@ final class InboxModel: ObservableObject {
     private func projectEvents(id: String, epoch: UUID, token: UUID) async -> Bool {
         guard generation == epoch, observation == token, !Task.isCancelled else { return false }
         let history = events, revision = eventsRevision
-        guard let projected = try? await streamProjector.rows(history),
+        let gaps = additionalHistoryGaps + (newerHistoryBoundary.map { [$0] } ?? [])
+        guard let projected = try? await streamProjector.rows(history, gapsAfter: gaps),
               generation == epoch, observation == token, !Task.isCancelled else { return false }
         // The retained window can exceed its byte target while an active turn or
         // reading anchor protects it. Keep every history-sized operation off the
@@ -2082,7 +2216,14 @@ final class InboxModel: ObservableObject {
     var newerHistoryBoundary: Cursor? { hasNewer ? newerAfter : nil }
     var needsLatestHistory: Bool { hasNewer && events.last?.cursor == newerAfter }
 
-    func setHistoryAtLatest(_ atLatest: Bool) { followingLatest = atLatest && !needsLatestHistory }
+    func setHistoryAtLatest(_ atLatest: Bool) {
+        let wasFollowing = followingLatest
+        followingLatest = atLatest && !needsLatestHistory
+        if followingLatest && !wasFollowing, let id = focused?.id, !isDemo {
+            readableHistoryRecovery?.cancel(); readableHistoryRecovery = nil
+            recoverReadableHistory(id: id, epoch: generation, token: observation)
+        }
+    }
 
     func protectHistoryRows(_ ids: Set<String>) {
         if let previous = protectedHistorySelection, previous.ids == ids, previous.revision == eventsRevision { return }
@@ -2117,10 +2258,17 @@ final class InboxModel: ObservableObject {
         if towardOlder {
             retainedBytes -= eventBytes.suffix(removed).reduce(0, +)
             events.removeLast(removed); eventBytes.removeLast(removed)
+            additionalHistoryGaps.removeAll { $0 >= events.last!.cursor }
             newerAfter = min(newerAfter ?? events.last!.cursor, events.last!.cursor); hasNewer = true
         } else {
             retainedBytes -= eventBytes.prefix(removed).reduce(0, +)
             events.removeFirst(removed); eventBytes.removeFirst(removed); hasOlder = true
+            additionalHistoryGaps.removeAll { $0 < events.first!.cursor }
+            if let boundary = newerAfter, boundary < events.first!.cursor {
+                newerAfter = additionalHistoryGaps.min()
+                if let newerAfter { additionalHistoryGaps.removeAll { $0 == newerAfter } }
+                hasNewer = newerAfter != nil
+            }
         }
     }
 
@@ -2128,7 +2276,8 @@ final class InboxModel: ObservableObject {
         guard let client, let id = focused?.id, !loadingOlder, !loadingNewer,
               latest || hasNewer, let after = newerAfter ?? events.last?.cursor else { return }
         cancelOlderHistoryPrefetch()
-        let token = observation, epoch = generation
+        readableHistoryRecovery?.cancel(); readableHistoryRecovery = nil
+        let token = observation, epoch = generation, revision = historyMutationRevision
         loadingNewer = true
         latestJumpEvents = latest ? [] : nil
         defer {
@@ -2138,42 +2287,40 @@ final class InboxModel: ObservableObject {
             }
         }
         do {
-            // Keep readable context, then fetch the actual tail: opening-history
-            // recovery can retain an older readable window when its tail is large.
             let opening = latest ? try await client.conversationHistory(id) : nil
-            let page = try await client.history(id, after: latest ? nil : after)
-            let loadedEvents = page.events
-            let loadedLatest = page.latest
-            let loadedMore = page.hasMore
+            let page = latest ? nil : try await client.history(id, after: after)
+            let loadedEvents = opening?.events ?? page!.events
+            let loadedLatest = opening?.latest ?? page!.latest
+            let loadedMore = opening?.hasMore ?? page!.hasMore
             let bytes = try await TranscriptPreparation.byteCounts(loadedEvents)
-            guard token == observation, generation == epoch, !Task.isCancelled else { return }
+            guard token == observation, generation == epoch, historyMutationRevision == revision,
+                  !Task.isCancelled else { return }
+            if !latest {
+                guard !loadedMore || loadedEvents.last.map({ $0.cursor > after }) == true else { throw APIError.invalidResponse }
+            }
             historyMutationRevision = UUID()
-            if latest {
-                let context = opening!
-                let existing = Set(context.events.map { $0.cursor.rawValue })
-                let added = loadedEvents.indices.filter { !existing.contains(loadedEvents[$0].cursor.rawValue) }
-                let merged = (Array(zip(context.events, context.byteCounts)) + added.map { (loadedEvents[$0], bytes[$0]) })
-                    .sorted { $0.0.cursor < $1.0.cursor }
-                events = merged.map { $0.0 }; eventBytes = merged.map { $0.1 }; hasOlder = context.hasMore
-                // The snapshot covers events through loadedLatest. Preserve SSE
-                // events received after it while the request was in flight.
+            if let context = opening {
+                events = context.events; eventBytes = context.byteCounts; hasOlder = context.hasMore
+                // Preserve frames admitted while the snapshot request was in flight.
                 let tail = (latestJumpEvents ?? []).filter { $0.event.cursor > loadedLatest }
                 events.append(contentsOf: tail.map(\.event))
                 eventBytes.append(contentsOf: tail.map(\.bytes))
-                let gap = context.hasNewer || (page.hasMore && loadedEvents.first.map { $0.cursor > context.latest } == true)
-                newerAfter = gap ? context.events.last?.cursor : nil
-                hasNewer = gap
+                newerAfter = context.hasNewer ? context.events.last?.cursor : nil
+                additionalHistoryGaps = []
+                hasNewer = context.hasNewer
                 followingLatest = true
                 protectedHistoryCursors = nil
                 protectedHistorySelection = nil
             } else {
-                guard !loadedMore || loadedEvents.last.map({ $0.cursor > after }) == true else { throw APIError.invalidResponse }
                 let existing = Set(events.map { $0.cursor.rawValue })
                 let added = loadedEvents.indices.filter { !existing.contains(loadedEvents[$0].cursor.rawValue) }
                 let merged = (Array(zip(events, eventBytes)) + added.map { (loadedEvents[$0], bytes[$0]) })
                     .sorted { $0.0.cursor < $1.0.cursor }
                 events = merged.map { $0.0 }; eventBytes = merged.map { $0.1 }
                 newerAfter = loadedMore ? loadedEvents.last?.cursor : nil
+                if let through = loadedEvents.last?.cursor, loadedMore {
+                    additionalHistoryGaps.removeAll { $0 <= through }
+                } else if !loadedMore { additionalHistoryGaps = [] }
                 // Live events are already rendered. A terminal page closes the
                 // historical gap even when its event array is empty.
                 hasNewer = loadedMore
@@ -2189,7 +2336,14 @@ final class InboxModel: ObservableObject {
             repeat { await projection?.value }
             while token == observation && generation == epoch && !Task.isCancelled
                 && projectedFirstCursor != events.first?.cursor && projection != nil
-        } catch { if token == observation { threadError = error.localizedDescription } }
+            if latest, token == observation, generation == epoch, !Task.isCancelled {
+                recoverReadableHistory(id: id, epoch: epoch, token: token)
+            }
+        } catch {
+            if token == observation, generation == epoch, historyMutationRevision == revision, !Task.isCancelled {
+                threadError = error.localizedDescription
+            }
+        }
     }
 
     private func cancelOlderHistoryPrefetch() {
@@ -2226,7 +2380,8 @@ final class InboxModel: ObservableObject {
             return
         }
         guard let client, let id = focused?.id, let before = olderBefore, hasOlder, !loadingOlder, !loadingNewer else { return }
-        let token = observation, epoch = generation
+        readableHistoryRecovery?.cancel(); readableHistoryRecovery = nil
+        let token = observation, epoch = generation, revision = historyMutationRevision
         prefetchOlder()
         let prefetched = olderHistoryPrefetch
         loadingOlder = true
@@ -2244,7 +2399,8 @@ final class InboxModel: ObservableObject {
                 page = try await client.history(id, before: before)
                 bytes = try await TranscriptPreparation.byteCounts(page.events)
             }
-            guard token == observation, generation == epoch, !Task.isCancelled else { return }
+            guard token == observation, generation == epoch, historyMutationRevision == revision,
+                  olderBefore == before, !Task.isCancelled else { return }
             guard !page.hasMore || page.events.first.map({ $0.cursor < before }) == true else { throw APIError.invalidResponse }
             historyMutationRevision = UUID()
             let inserted = page.events.indices.filter { page.events[$0].cursor < before }
@@ -2261,7 +2417,11 @@ final class InboxModel: ObservableObject {
                 && projectedFirstCursor != events.first?.cursor && projection != nil
             guard token == observation, generation == epoch, !Task.isCancelled else { return }
             if page.hasMore && olderBefore == before { throw APIError.invalidResponse }
-        } catch { if token == observation { self.threadError = error.localizedDescription } }
+        } catch {
+            if token == observation, generation == epoch, historyMutationRevision == revision, !Task.isCancelled {
+                threadError = error.localizedDescription
+            }
+        }
     }
     func voiceConfiguration(agentID: String) async throws -> VoiceConfiguration {
         guard connected, !isDemo else { throw ManagedError(code: "account_required", message: "Sign in to use interactive voice.") }

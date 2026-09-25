@@ -268,9 +268,11 @@ active turns get an explicit selector. Navigation never approves tools, stops an
 agent, or deletes history. No approval endpoints are invented by this client.
 
 The selected agent receives live updates. Other agents refresh in the background.
-The stream resumes from an exact decimal cursor with
-backoff after disconnect. Backgrounding detaches observation; agents continue
-on the service. Foregrounding reloads history and resumes. Active-turn state
+Opening or resuming a conversation fetches its latest history page and starts
+streaming from that snapshot’s exact decimal cursor. Older pages do not block
+live observation; they load independently in the background or as you scroll.
+Reconnects use backoff. Backgrounding detaches observation; agents continue
+on the service. Active-turn state
 reads cannot overwrite newer streamed events. Changing accounts invalidates old
 callbacks and cancels owned requests. Follow-up retries reuse the same turn ID
 and idempotency key. The compact queued-message row sits flush above the input inside the composer surface and survives navigation and relaunch.
@@ -678,7 +680,7 @@ The focused media journey is `InboxUITests/testNativeMediaPreviewZoomPlaybackAnd
 
 New conversations open synchronously as local drafts. Creation runs in the background using a persisted idempotency key; Send and voice share that request. Draft text, pending messages, attachments (including imports still in progress), context selections, and keyboard focus survive the server identity arriving. A late response never changes the selected conversation. Failed creation can be retried from the composer, and unfinished drafts survive relaunch.
 
-Conversation scroll targets retain the visible message across prepended history and new output, and new conversations open at the latest messages. Returning to the foreground resumes the existing cursor and transcript rather than clearing the screen. Conversation scrolling preserves the selected agent; navigation uses the searchable sidebar.
+Conversation scroll targets retain the visible message across prepended history and new output, and new conversations open at the latest messages. Returning to the foreground keeps cached content visible while fetching the latest page and reconnecting the stream. An older reading window retains its scroll anchor and exposes omitted newer history through forward pagination. Conversation scrolling preserves the selected agent; navigation uses the searchable sidebar.
 
 The conversation keeps the same agent composer fixed above the keyboard while you read older messages. Sending dismisses the iPhone/iPad keyboard. Sending to an idle conversation immediately displays the message and local attachment previews in the transcript, even while conversation creation or admission is pending. The bubble retains its identity through acknowledgement and execution; unconfirmed delivery shows Retry and Cancel beside that message. Follow-ups waiting behind another turn appear once in the queue above the composer; execution evidence promotes them into the conversation. API-accepted steering appears with an explicit steering label. The queue follows server order across devices and relaunch; messages whose content has not loaded retain a placeholder and queue position. Cancelling and retrying keep the same identity. “Steer now” injects the input through the active turn’s steering API without stopping that turn. With an empty draft and a running turn, the send button becomes Stop; adding text or an image restores Send in the same position. Drafts, queued follow-ups, steering, and stop controls belong to the selected agent. Switching conversations or opening the drawer preserves that work.
 

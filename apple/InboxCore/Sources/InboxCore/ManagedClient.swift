@@ -344,46 +344,29 @@ public final class ManagedClient: @unchecked Sendable {
         defer { os_signpost(.end, log: historyPerformanceLog, name: "HistoryEventPreparation", signpostID: signpostID) }
         return try EventPage(body)
     }
-    /// Find a readable opening window. Paging has no lifetime/event-count limit;
-    /// discarded newer pages remain addressable using the forward cursor.
+    /// Prepare the latest page so stream observation can begin without waiting
+    /// for older history. Callers backfill from the first retained event's cursor.
     public func conversationHistory(_ id: String) async throws -> ConversationHistory {
         let signpostID = OSSignpostID(log: historyPerformanceLog)
         os_signpost(.begin, log: historyPerformanceLog, name: "HistoryOpening", signpostID: signpostID)
         defer { os_signpost(.end, log: historyPerformanceLog, name: "HistoryOpening", signpostID: signpostID) }
-        var page = try await history(id)
-        let latest = page.latest
+        try Task.checkCancellation()
+        let page = try await history(id)
+        guard !page.hasMore || !page.events.isEmpty else { throw APIError.invalidResponse }
         var events = page.events
         var counts = try await TranscriptPreparation.byteCounts(events)
-        var retainedBytes = counts.reduce(0, +)
-        let projector = TranscriptStreamProjection()
-        var readable = events.contains(where: \.producesConversationRow)
-        var hasNewer = false
-        while page.hasMore, !readable {
-            try Task.checkCancellation()
-            guard let before = events.first?.cursor else { throw APIError.invalidResponse }
-            let older = try await history(id, before: before)
-            guard let first = older.events.first?.cursor, first < before,
-                  older.events.allSatisfy({ $0.cursor < before }) else { throw APIError.invalidResponse }
-            page = older
-            events.insert(contentsOf: older.events, at: 0)
-            let olderCounts = try await TranscriptPreparation.byteCounts(older.events)
-            counts.insert(contentsOf: olderCounts, at: 0)
-            retainedBytes += olderCounts.reduce(0, +)
-            let removed = TranscriptRetention.removableSuffixCount(byteCounts: counts,
-                retainedBytes: retainedBytes, byteLimit: 16 * 1024 * 1024)
-            if removed > 0 {
-                retainedBytes -= counts.suffix(removed).reduce(0, +)
-                events.removeLast(removed); counts.removeLast(removed); hasNewer = true
-            }
-            // Only the newly prepended prefix can introduce conversation text.
-            // Projecting the entire growing window here repeatedly rebuilt every
-            // tool row while walking a long tool-only tail.
-            readable = events.prefix(min(older.events.count, events.count)).contains(where: \.producesConversationRow)
+        // Keep the newest edge while allowing one oversized event to remain whole.
+        let removed = TranscriptRetention.removablePrefixCount(byteCounts: counts,
+            retainedBytes: counts.reduce(0, +), byteLimit: 16 * 1024 * 1024)
+        if removed > 0 {
+            events.removeFirst(removed)
+            counts.removeFirst(removed)
         }
+        let projector = TranscriptStreamProjection()
         let rows = try await projector.rows(events)
         try Task.checkCancellation()
-        return ConversationHistory(events: events, latest: latest, hasMore: page.hasMore,
-                                   byteCounts: counts, rows: rows, hasNewer: hasNewer, projector: projector)
+        return ConversationHistory(events: events, latest: page.latest, hasMore: page.hasMore || removed > 0,
+                                   byteCounts: counts, rows: rows, hasNewer: false, projector: projector)
     }
     @discardableResult
     public func command(_ command: AgentCommand) async throws -> JSON {
