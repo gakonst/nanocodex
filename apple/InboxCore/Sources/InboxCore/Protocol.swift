@@ -174,6 +174,15 @@ public struct TranscriptProjection: Sendable {
     private var cancellationRows: [StreamRole: Int] = [:]
     public init() {}
 
+    /// Omitted history breaks text continuity, but tool results and turn
+    /// completion still reconcile with rows admitted before the gap.
+    mutating func breakTextContinuity() {
+        for (stream, index) in lastStreamRow where stream.role == "Agent" || stream.role == "Thinking" {
+            rows[index].running = false
+        }
+        lastStreamRow = lastStreamRow.filter { $0.key.role != "Agent" && $0.key.role != "Thinking" }
+    }
+
     private mutating func finish(_ turn: String, cancelled: Bool) {
         for index in turnRows[turn] ?? [] {
             if rows[index].running, rows[index].tool != nil {

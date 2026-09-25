@@ -12,6 +12,75 @@ final class TranscriptStreamProjectionTests: XCTestCase {
             "text": .string(text), "phase": .string("final_answer"), "item_id": .string("answer")])])])
     }
 
+    func testHistoryGapSeparatesTextUntilMissingEventsAreLoaded() async throws {
+        let first = try delta(1, "Before")
+        let tail = try delta(4, " after")
+        let next = try delta(5, "!")
+        let projector = TranscriptStreamProjection()
+        let initial = try await projector.rows([first], gapAfter: first.cursor)
+        XCTAssertEqual(initial.map(\.text), ["Before"])
+
+        let disjoint = try await projector.rows([first, tail], gapAfter: first.cursor)
+        XCTAssertEqual(disjoint.map(\.text), ["Before", " after"])
+        XCTAssertFalse(disjoint.first!.running, "The older fragment cannot keep receiving live text")
+        XCTAssertTrue(disjoint.last!.running)
+        XCTAssertEqual(Set(disjoint.map(\.id)).count, disjoint.count)
+
+        let continued = try await projector.rows([first, tail, next], gapAfter: first.cursor)
+        XCTAssertEqual(continued.map(\.text), ["Before", " after!"], "Tail deltas after the boundary remain contiguous")
+        let filled = [first, try delta(2, " the"), try delta(3, " missing part"), tail, next]
+        let complete = try await projector.rows(filled)
+        XCTAssertEqual(complete.map(\.text), ["Before the missing part after!"])
+        XCTAssertEqual(complete, transcript(filled))
+    }
+
+    func testRepeatedTailRefreshSeparatesEveryGapAndRepairsEachRange() async throws {
+        let old = try delta(1, "A"), middle = try delta(90, "B"), middleEnd = try delta(100, "C")
+        let latest = try delta(190, "D"), streamed = try delta(191, "E")
+        let projector = TranscriptStreamProjection()
+        let islands = [old, middle, middleEnd, latest]
+        let separated = try await projector.rows(islands, gapsAfter: [old.cursor, middleEnd.cursor])
+        XCTAssertEqual(separated.map(\.text), ["A", "BC", "D"])
+        let continued = try await projector.rows(islands + [streamed], gapsAfter: [old.cursor, middleEnd.cursor])
+        XCTAssertEqual(continued.map(\.text), ["A", "BC", "DE"])
+        let firstFilled = [old, try delta(50, "x"), middle, middleEnd, latest, streamed]
+        let partlyFilled = try await projector.rows(firstFilled, gapsAfter: [middleEnd.cursor])
+        XCTAssertEqual(partlyFilled.map(\.text), ["AxBC", "DE"])
+        let allFilled = [old, try delta(50, "x"), middle, middleEnd, try delta(150, "y"), latest, streamed]
+        let complete = try await projector.rows(allFilled)
+        XCTAssertEqual(complete.map(\.text), ["AxBCyDE"])
+        XCTAssertEqual(complete, transcript(allFilled))
+    }
+
+    func testChangingGapRebuildsTextWithoutDuplicatingToolIdentity() async throws {
+        func tool(_ cursor: Int, _ type: String) throws -> AgentEvent {
+            try event(cursor, "event", ["event": .object(["type": .string(type), "payload": .object([
+                "tool": .string("exec_command"), "call_id": .string("same-call"),
+                "arguments": .object(["cmd": .string("date")]),
+                "result": .object(["output": .string("Synthetic tool output"), "exit_code": .number(0)])
+            ])])])
+        }
+        let events = [try delta(1, "Before"), try tool(2, "tool.call"),
+                      try delta(5, " after"), try tool(6, "tool.result")]
+        let projector = TranscriptStreamProjection()
+        _ = try await projector.rows(events)
+        let separated = try await projector.rows(events, gapAfter: events[1].cursor)
+        XCTAssertEqual(separated.filter { $0.role == "Agent" }.map(\.text), ["Before", " after"])
+        let tools = separated.filter { $0.role == "Tool" }
+        XCTAssertEqual(tools.count, 1, "Call and result across the gap must share one row")
+        XCTAssertEqual(tools.first?.cursor?.rawValue, "2")
+        XCTAssertEqual(tools.first?.completionCursor?.rawValue, "6")
+        XCTAssertTrue(tools.first?.tool?.output.contains { $0.value.contains("Synthetic tool output") } == true)
+        XCTAssertEqual(Set(separated.map(\.id)).count, separated.count)
+
+        let closed = try await projector.rows(events)
+        XCTAssertEqual(closed.filter { $0.role == "Agent" }.map(\.text), ["Before after"])
+        XCTAssertEqual(closed, transcript(events), "Changing only the gap marker must rebuild the projection")
+        let terminal = try await projector.rows(events + [try event(7, "turn_completed")], gapAfter: events[1].cursor)
+        XCTAssertEqual(terminal.filter { $0.role == "Tool" }.count, 1)
+        XCTAssertFalse(terminal.contains(where: \.running), "Turn completion must finish rows on both sides of the gap")
+    }
+
     func testOverlappingScreensRetainAdmissionAndRankByCompletionCursor() async throws {
         func tool(_ cursor: Int, _ type: String, _ call: String) throws -> AgentEvent {
             try event(cursor, "event", ["event": .object(["type": .string(type), "payload": .object([

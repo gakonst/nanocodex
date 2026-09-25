@@ -63,20 +63,37 @@ public actor TranscriptStreamProjection {
     private var first: Cursor?
     private var last: Cursor?
     private var count = 0
+    private var gapsAfter: [Cursor] = []
 
     public init() {}
 
-    public func rows(_ events: [AgentEvent]) throws -> [TranscriptRow] {
+    /// A known omitted range after this cursor starts a separate text fragment.
+    /// Changing or closing the gap rebuilds text from the retained events.
+    public func rows(_ events: [AgentEvent], gapAfter: Cursor? = nil) throws -> [TranscriptRow] {
+        try rows(events, gapsAfter: gapAfter.map { [$0] } ?? [])
+    }
+
+    /// Repeated latest-tail snapshots can leave more than one omitted range.
+    public func rows(_ events: [AgentEvent], gapsAfter: [Cursor]) throws -> [TranscriptRow] {
+        let gapsAfter = gapsAfter.sorted()
         let signpostID = OSSignpostID(log: transcriptPerformanceLog)
         os_signpost(.begin, log: transcriptPerformanceLog, name: "TranscriptProjection", signpostID: signpostID, "events=%d", events.count)
         defer { os_signpost(.end, log: transcriptPerformanceLog, name: "TranscriptProjection", signpostID: signpostID) }
         try Task.checkCancellation()
-        if first != events.first?.cursor || events.count < count
+        if self.gapsAfter != gapsAfter || first != events.first?.cursor || events.count < count
             || (count > 0 && events[count - 1].cursor != last) {
             projection = TranscriptProjection()
             count = 0
         }
-        projection.append(events.dropFirst(count))
+        var start = count
+        for gapAfter in gapsAfter where count == 0 || events[count - 1].cursor <= gapAfter {
+            guard let boundary = events[start...].firstIndex(where: { $0.cursor > gapAfter }) else { break }
+            projection.append(events[start..<boundary])
+            projection.breakTextContinuity()
+            start = boundary
+        }
+        projection.append(events[start...])
+        self.gapsAfter = gapsAfter
         first = events.first?.cursor
         last = events.last?.cursor
         count = events.count
