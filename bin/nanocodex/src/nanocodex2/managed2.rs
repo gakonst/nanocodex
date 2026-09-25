@@ -239,10 +239,10 @@ impl Client {
                                 return Ok(()); // The TUI was closed; do not keep a socket alive.
                             }
                             if correlated && event["type"] == "assistant.delta" && payload["phase"] == "final_answer"
-                                && let Some(text) = payload["text"].as_str() {
-                                if updates.send(WatchEvent::Delta(text.to_owned())).is_err() {
-                                    return Ok(());
-                                }
+                                && let Some(text) = payload["text"].as_str()
+                                && updates.send(WatchEvent::Delta(text.to_owned())).is_err()
+                            {
+                                return Ok(());
                             }
                         }
                         Some(Ok(Message::Close(_))) | None => break,
