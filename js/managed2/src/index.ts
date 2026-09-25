@@ -108,7 +108,7 @@ export default {
 export class Session extends DurableObject<Env> {
   #agent?: Promise<Agent.Agent>;
   #running = new Set<string>();
-  #admissions = new Map<string, { input: string; response: Promise<Response> }>();
+  #admissions = new Map<string, { input: string; outcome: Promise<{ status: number; body: string; headers: [string, string][] }> }>();
   #awaitingFirstModel = new Map<string, number>();
 
   constructor(ctx: DurableObjectState, env: Env) {
@@ -166,15 +166,22 @@ export class Session extends DurableObject<Env> {
     // DO requests can interleave while initialization awaits. Share the entire
     // acceptance result, not just the SQLite insert, with concurrent retries.
     const pending = this.#admissions.get(turnId);
-    if (pending) return pending.input === input ? pending.response
-      : Promise.resolve(reply(409, { error: "idempotency_conflict" }));
-    const response = this.#admitTurnOnce(owner, turnId, input);
-    this.#admissions.set(turnId, { input, response });
-    void response.then(
-      () => { if (this.#admissions.get(turnId)?.response === response) this.#admissions.delete(turnId); },
-      () => { if (this.#admissions.get(turnId)?.response === response) this.#admissions.delete(turnId); },
-    );
-    return response;
+    if (pending && pending.input !== input) return Promise.resolve(reply(409, { error: "idempotency_conflict" }));
+    const outcome = pending?.outcome ?? this.#admitTurnOnce(owner, turnId, input).then(async response => ({
+      status: response.status,
+      body: await response.text(),
+      headers: [...response.headers] as [string, string][],
+    }));
+    if (!pending) {
+      this.#admissions.set(turnId, { input, outcome });
+      void outcome.then(
+        () => { if (this.#admissions.get(turnId)?.outcome === outcome) this.#admissions.delete(turnId); },
+        () => { if (this.#admissions.get(turnId)?.outcome === outcome) this.#admissions.delete(turnId); },
+      );
+    }
+    // A Response body is single-use. Every concurrent DO fetch needs a fresh
+    // response even though all wait for the same durable acceptance outcome.
+    return outcome.then(({ status, body, headers }) => new Response(body, { status, headers }));
   }
 
   async #admitTurnOnce(owner: string, turnId: string, input: string): Promise<Response> {

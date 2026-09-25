@@ -139,11 +139,11 @@ it("validates combined create before allocating an agent and generates IDs when 
 it("retries simultaneous combined create requests without duplicate turns", async () => {
   const authorization = `Bearer ${fixtureKeys["fixture-user"]}`;
   const id = crypto.randomUUID();
-  const calls = await Promise.all(Array.from({ length: 2 }, () => SELF.fetch("https://api.test/v1/agents", {
+  const calls = await Promise.all(Array.from({ length: 8 }, () => SELF.fetch("https://api.test/v1/agents", {
     method: "POST", headers: { authorization, "idempotency-key": id },
     body: JSON.stringify({ input: "Simultaneous hello" }),
   })));
-  expect(calls.map(call => call.status)).toEqual([202, 202]);
+  expect(calls.map(call => call.status)).toEqual(Array(8).fill(202));
   for (const response of calls) expect(await response.json()).toMatchObject({ agent_id: id, turn_id: id });
 });
 
