@@ -1,6 +1,6 @@
 import { env } from "cloudflare:workers";
 import { runInDurableObject, SELF } from "cloudflare:test";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { UserCredentials } from "../src/index";
 
 const credentialEnv = env as unknown as { USER_CREDENTIALS: DurableObjectNamespace<UserCredentials> };
@@ -23,6 +23,43 @@ describe("actual workerd UserCredentials + compiled Rust subscription", () => {
     expect(await response.json()).toEqual({ authorized: true, leakedOwner: false, leakedSubject: false });
     expect((await request(`unknown-${crypto.randomUUID()}`)).status).toBe(403);
     expect((await request(owner, "Bearer wrong")).status).toBe(400);
+  });
+
+  it("reports safe timing and validates correlation through the Worker boundary", async () => {
+    const owner = `synthetic-timing-${crypto.randomUUID()}`;
+    await credentialEnv.USER_CREDENTIALS.getByName(owner).putCredential("openai", "sk-synthetic-only");
+    const info = vi.spyOn(console, "info").mockImplementation(() => {});
+    try {
+      const send = (trace: string) => SELF.fetch("https://api.openai.com/v1/responses", {
+        method: "POST", headers: { "x-managed2-owner": owner, "x-managed2-trace-id": trace,
+          "x-nanocodex-egress-request-id": "caller-must-not-pass-through",
+          authorization: "Bearer NANOCODEX_PROVIDER_CREDENTIAL", "content-type": "application/json" },
+        body: "{}",
+      });
+      const trace = "fc7b7fd4-48e8-4ccb-bfe2-058128da0131";
+      const first = await send(trace);
+      expect(first.status).toBe(200);
+      expect(first.headers.get("server-timing")).toMatch(/egress_credential;dur=\d+\.\d, .*egress_upstream_headers;dur=\d+\.\d, .*egress_route;desc="openai_api", egress_cache;desc="miss"/);
+      expect(await first.json()).toMatchObject({ authorized: true });
+      const second = await send("invalid-trace");
+      expect(second.status).toBe(200);
+      expect(second.headers.get("server-timing")).toContain('egress_cache;desc="hit"');
+      expect(await second.json()).toMatchObject({ authorized: true });
+      const events = info.mock.calls.map(([event]) => event).filter((event) =>
+        typeof event === "object" && event !== null && "event" in event && event.event === "responses_egress");
+      expect(events).toHaveLength(2);
+      expect(events[0]).toMatchObject({ trace_id: trace, egress_request_id: null,
+        route_kind: "openai_api", response_status: 200, upstream_status: 200,
+        credential_cache: "miss", recovery_outcome: "not_attempted", recovery_ms: null, retry_attempt: 0 });
+      expect(events[1]).toMatchObject({ trace_id: null, egress_request_id: null,
+        credential_cache: "hit", recovery_outcome: "not_attempted", retry_attempt: 0 });
+      for (const event of events as Record<string, unknown>[]) {
+        expect(event.credential_ms).toEqual(expect.any(Number));
+        expect(event.upstream_headers_ms).toEqual(expect.any(Number));
+        expect(JSON.stringify(event)).not.toContain(owner);
+        expect(JSON.stringify(event)).not.toContain("caller-must-not-pass-through");
+      }
+    } finally { info.mockRestore(); }
   });
 
   it("encrypts API keys in SQLite and rejects plaintext without fallback", async () => {

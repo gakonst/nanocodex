@@ -18,6 +18,8 @@ it("completes two subscription turns through Egress2's WebSocket transport", asy
     body: JSON.stringify({ input: "First greeting" }),
   });
   expect(created.status).toBe(202);
+  const trace = created.headers.get("x-managed2-trace-id");
+  expect(trace).toMatch(/^[0-9a-f-]{36}$/);
   const { agent_id, turn_id } = await created.json<{ agent_id: string; turn_id: string }>();
   async function completed(id: string): Promise<void> {
     await expect.poll(async () => {
@@ -26,9 +28,18 @@ it("completes two subscription turns through Egress2's WebSocket transport", asy
     }, { timeout: 15_000 }).toMatchObject({ state: "completed", message: "hello from test model" });
   }
   await completed(turn_id);
+  const firstStatus = await SELF.fetch(`https://api.test/v1/agents/${agent_id}/turns/${turn_id}`, { headers: { authorization } });
+  const firstTiming = (await firstStatus.json<{ timing: { trace_id: string; accepted_ms: number; first_delta_ms: number; result_ms: number } }>()).timing;
+  expect(firstTiming.trace_id).toBe(trace);
+  expect(firstTiming.result_ms).toBeGreaterThanOrEqual(firstTiming.accepted_ms);
   const next = await SELF.fetch(`https://api.test/v1/agents/${agent_id}/turns`, {
     method: "POST", headers: { authorization }, body: JSON.stringify({ input: "Second greeting" }),
   });
   expect(next.status).toBe(202);
-  await completed((await next.json<{ turn_id: string }>()).turn_id);
+  const nextId = (await next.json<{ turn_id: string }>()).turn_id;
+  await completed(nextId);
+  const secondStatus = await SELF.fetch(`https://api.test/v1/agents/${agent_id}/turns/${nextId}`, { headers: { authorization } });
+  const secondTiming = (await secondStatus.json<{ timing: { trace_id: string; accepted_ms: number; result_ms: number } }>()).timing;
+  expect(secondTiming.trace_id).not.toBe(firstTiming.trace_id);
+  expect(secondTiming.result_ms).toBeGreaterThanOrEqual(secondTiming.accepted_ms);
 });

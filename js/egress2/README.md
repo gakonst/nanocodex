@@ -36,3 +36,16 @@ trace context; inspect the Container DO and outbound-fetch spans plus Egress2
 header timings there. A create request, turn request, and an alarm-resumed
 execution can have distinct root traces. Search by the turn request CF-Ray;
 `0ms` spans can be timer-resolution artifacts.
+
+## Timing diagnostics
+
+`responses_egress` is emitted for both HTTP replies and WebSocket 101 upgrades.
+A validated, host-generated `trace_id` correlates it with Managed2; only the
+private ChatGPT relay receives a separately generated `egress_request_id`.
+Fixed fields include final response/upstream status, credential cache hit/miss,
+credential lookup, post-lookup dispatch, upstream handshake, total elapsed, and
+subscription 401 recovery/retry outcome and duration. HTTP `Server-Timing` has
+matching spans, but 101 cannot be rewrapped to add headers. These measurements
+end at headers/upgrade, not first model token or stream completion. Credential
+lookup can include a DO wake, decrypt, and refresh, not separately timed here.
+No secrets, prompts, owner IDs or upstream bodies are logged.

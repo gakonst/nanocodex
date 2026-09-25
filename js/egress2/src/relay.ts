@@ -11,7 +11,11 @@ export function routeChatGpt(
   ownerId: string,
   bindings: { GATEWAY?: Fetcher; CHATGPT_EGRESS?: DurableObjectNamespace },
 ): Promise<Response> {
-  if (bindings.GATEWAY) return bindings.GATEWAY.fetch(request);
+  if (bindings.GATEWAY) {
+    const headers = new Headers(request.headers);
+    headers.delete("x-nanocodex-egress-request-id"); // correlation stays on the private Container DO hop
+    return bindings.GATEWAY.fetch(new Request(request, { headers }));
+  }
   if (bindings.CHATGPT_EGRESS) return relayChatGpt(request, ownerId, bindings.CHATGPT_EGRESS);
   throw new Error("ChatGPT outbound route is unavailable");
 }

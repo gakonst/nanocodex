@@ -71,35 +71,46 @@ requires its own end-to-end validation.
 
 ## Latency observation
 
-`Server-Timing` on create and turn admission exposes `auth`, `session`,
-`agent_init`, and `admission` durations. The private Egress2 Responses reply
-adds `egress_credential`, `egress_dispatch`, `egress_upstream_headers`,
-`egress_total`, fixed `egress_route`, and cache hit/miss; its structured logs
-contain only route/status/durations. The Session emits a `managed2.model_route`
-log with time from prompt to Egress fetch and time until upstream headers.
-None of these logs contain keys, owners, prompts, or response text. Use
-`wrangler tail nanocodex-managed2` and `wrangler tail nanocodex-egress2`
-when diagnosing a turn. `0.0 ms` means below the runtime timer resolution,
-not mathematically zero. HTTP header timing stops before model generation.
+Run `./managed2-demo "Reply with exactly: Timing check complete."` for a real
+create, replayable event stream, final-text TTFT, and durable turn-status check.
+The API returns `Server-Timing` for `auth`, `body_parse`, `session`,
+`api_total`, `do_route`, `agent_init`, and `admission`. `session` includes the
+Session DO wake, constructor, routing, initialization and turn admission; it is
+**not** additive with `agent_init` or `admission`. `api_total` includes `session`
+and excludes pre-Worker startup/network. `do_route` is the time from DO fetch
+entry to the turn-dispatch path. A 101 upgrade cannot carry a constructed
+`Server-Timing` response; `managed2.events_connect` logs auth, Session upgrade,
+and total handshake time without owner IDs, prompts, or response contents.
 
-For lowest client-visible latency, open `/v1/agents/:id/events?cursor=0`
-**before** posting the turn and render `assistant.delta` as it arrives;
-polling turn status adds network and polling-delay overhead. With the current
-subscription, the outbound destination is ChatGPT Codex via the existing
-Linux relay, not the direct `api.openai.com` API-key endpoint.
+The durable `GET /v1/agents/:id/turns/:turnId` response also includes a
+`timing` object with a random `trace_id`, `agent_init_ms` duration, and elapsed
+milliseconds since admission started for `accepted_ms`, `first_delta_ms`,
+`first_answer_delta_ms`, and `result_ms`. Missing milestones remain `null`;
+rehydration may prevent a first-delta observation. The first-delta clock is
+server-side emission, **not** client receipt. On a cold agent `agent_init_ms`
+includes WASM restore/startup and the persistent Responses socket preconnect;
+it cannot separate them from this public Agent boundary. A warm turn can reuse
+that socket without a new Egress fetch. Client-to-server residuals include
+network, edge dispatch, and Worker activation, not just platform startup.
 
-Cloudflare Workers Logs are persisted at 100% sampling for this greenfield Worker.
-Open its **Observability → Logs** tab in Cloudflare to search for
-`managed2.model_route` or `responses_egress`; both are structured objects
-with fixed labels and timing fields. Live `wrangler tail` is separate from
-the persisted dashboard. Workers tracing is enabled at 100% sampling with
-retention in Cloudflare Observability. The trace follows service bindings and
-Durable Object calls across Managed2, Egress2, and the account-owned
-`ChatGptEgress` Container DO when that Worker also has tracing enabled.
-The external Linux container and ChatGPT provider do not propagate Cloudflare
-trace context; inspect the Container DO and outbound-fetch spans plus Egress2
-header timings there. A create request, turn request, and an alarm-resumed
-execution can have distinct root traces. Search by the turn request CF-Ray;
+`managed2.model_route`, `managed2.agent_ready`, `managed2.turn_first_delta`,
+`managed2.turn_first_answer_delta`, and `managed2.turn_result` share the trace
+ID. The initial model-route log is a socket **preconnect**, not a per-turn
+model request. Egress2 logs the same validated trace ID, its own relay request
+ID, credential cache/lookup, upstream handshake, and one 401 recovery/retry
+when applicable. The account-owned `ChatGptEgress` log links that relay request
+ID to its locally generated relay ID; the relay-container log reports DNS,
+TCP, TLS and upstream upgrade timings for the same relay ID. Egress `101`
+timing exists in logs, not headers. Egress header time ends at WebSocket
+handshake or HTTP response headers; none of these spans isolate model inference
+or first upstream token/frame on an already-open socket. Do not subtract an
+Egress preconnect span from a warm turn or claim these spans are all additive.
+
+No log contains keys, owner/account IDs, prompts, message text, upstream
+headers or bodies. Persistent Worker logs/traces are sampled at 100%; use
+Cloudflare Observability or `wrangler tail` to filter the fixed event names.
+External container/provider spans are not in the Cloudflare trace. A request,
+stream connection, and alarm-resumed turn may have separate trace roots;
 `0ms` spans can be timer-resolution artifacts.
 
 ## Parallel rollout
