@@ -21,7 +21,7 @@ in a private deployment config; `wrangler.jsonc` retains the relay route until
 the managed Worker and Egress2 are promoted together. API-key outbound uses
 neither subscription route. Test-only `wrangler.test.jsonc` never serves real credentials.
 
-This first slice has no credential provisioning HTTP endpoint, login UI, subscription account pool, or account failover. Deployment/service-binding wiring and trusted-host authentication are intentionally external to this package. `pnpm --filter nanocodex-egress2-service test`, `test:cloudflare` (actual workerd DO + Rust/WASM refresh with mocked outbound), `typecheck`, and `build` (dry-run only) run after installing workspace dependencies.
+This first slice has no credential provisioning HTTP endpoint, login UI, subscription account pool, or account failover. Deployment/service-binding wiring and trusted-host authentication are intentionally external to this package. `pnpm --filter nanocodex-egress2-service test` exercises the actual workerd Worker/DO and Rust/WASM refresh with a synthetic outbound provider. Run `typecheck` and `build` (dry-run only) after installing workspace dependencies.
 
 Cloudflare Workers Logs are persisted at 100% sampling for this greenfield Worker.
 Open its **Observability → Logs** tab in Cloudflare to search for

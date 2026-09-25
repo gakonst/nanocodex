@@ -270,7 +270,6 @@ jobs:
         run: |
           pnpm --filter nanocodex-egress2-service typecheck
           pnpm --filter nanocodex-egress2-service test
-          pnpm --filter nanocodex-egress2-service test:cloudflare
           pnpm --filter nanocodex-managed2 typecheck
           pnpm --filter nanocodex-managed2 test
           pnpm --filter nanocodex-managed2 test:websocket

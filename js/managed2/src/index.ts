@@ -34,7 +34,7 @@ export default {
     }
 
     if (credential) {
-      const body = await jsonBody(request, 64 * 1024);
+      const body = await jsonBody(request);
       if (url.pathname === "/v1/credentials/chatgpt") {
         if (!body || typeof body.access_token !== "string" || !body.access_token
           || typeof body.refresh_token !== "string" || !body.refresh_token
@@ -54,7 +54,7 @@ export default {
       // The optional first turn and agent initialization share one Session RPC.
       // Supplying an Idempotency-Key makes the agent address stable on retry.
       const hasBody = request.body !== null;
-      const body = hasBody ? await jsonBody(request, 64 * 1024) : undefined;
+      const body = hasBody ? await jsonBody(request) : undefined;
       if (hasBody && (!body || typeof body.input !== "string" || !body.input.trim())) {
         return reply(400, { error: "invalid_input" });
       }
@@ -88,7 +88,7 @@ export default {
     }
     if (match![2] === "turns") {
       if (request.method !== "POST") return reply(405, { error: "method_not_allowed" });
-      const body = await jsonBody(request, 64 * 1024);
+      const body = await jsonBody(request);
       if (!body || typeof body.input !== "string" || !body.input.trim()) {
         return reply(400, { error: "invalid_input" });
       }
@@ -315,9 +315,8 @@ export class Session extends DurableObject<Env> {
   }
 }
 
-async function jsonBody(request: Request, limit: number): Promise<Record<string, unknown> | undefined> {
+async function jsonBody(request: Request): Promise<Record<string, unknown> | undefined> {
   const text = await request.text();
-  if (text.length > limit) return undefined;
   try {
     const body: unknown = JSON.parse(text);
     return body && typeof body === "object" && !Array.isArray(body) ? body as Record<string, unknown> : undefined;

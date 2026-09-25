@@ -1,5 +1,5 @@
 import { env } from "cloudflare:workers";
-import { runInDurableObject } from "cloudflare:test";
+import { runInDurableObject, SELF } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 import type { UserCredentials } from "../src/index";
 
@@ -9,6 +9,22 @@ const jwt = (exp: number) => `e30.${btoa(JSON.stringify({ exp, "https://api.open
 } })).replaceAll("=", "").replaceAll("+", "-").replaceAll("/", "_")}.signature`;
 
 describe("actual workerd UserCredentials + compiled Rust subscription", () => {
+  it("routes only the authenticated owner's credential and strips internal headers", async () => {
+    const owner = `synthetic-api-${crypto.randomUUID()}`;
+    const stub = credentialEnv.USER_CREDENTIALS.getByName(owner);
+    await stub.putCredential("openai", "sk-synthetic-only");
+    const request = (id: string, authorization = "Bearer NANOCODEX_PROVIDER_CREDENTIAL") => SELF.fetch(
+      "https://api.openai.com/v1/responses", {
+        method: "POST", headers: { "x-managed2-owner": id, "x-nanocodex-subject": "private-user",
+          authorization, "content-type": "application/json" }, body: "{}",
+      });
+    const response = await request(owner);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ authorized: true, leakedOwner: false, leakedSubject: false });
+    expect((await request(`unknown-${crypto.randomUUID()}`)).status).toBe(403);
+    expect((await request(owner, "Bearer wrong")).status).toBe(400);
+  });
+
   it("encrypts API keys in SQLite and rejects plaintext without fallback", async () => {
     const stub = credentialEnv.USER_CREDENTIALS.getByName(`synthetic-api-${crypto.randomUUID()}`);
     await stub.putCredential("openai", "sk-synthetic-only");

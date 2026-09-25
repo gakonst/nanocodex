@@ -8,8 +8,7 @@
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "test": "vitest run",
-    "test:cloudflare": "vitest run --config vitest.cloudflare.config.ts",
+    "test": "vitest run --config vitest.cloudflare.config.ts",
     "build": "wrangler deploy --dry-run --outdir dist --config wrangler.jsonc",
     "deploy": "wrangler deploy --env=\"\" --config wrangler.jsonc"
   },

@@ -17,6 +17,11 @@ export default defineConfig({
           const access = `e30.${Buffer.from(JSON.stringify(payload)).toString("base64url")}.signature`;
           return Response.json({ access_token: access, refresh_token: "synthetic-rotated" });
         }
+        if (url.href === "https://api.openai.com/v1/responses") {
+          return Response.json({ authorized: request.headers.get("authorization") === "Bearer sk-synthetic-only",
+            leakedOwner: request.headers.has("x-managed2-owner"),
+            leakedSubject: request.headers.has("x-nanocodex-subject") });
+        }
         if (url.href === "https://chatgpt.com/backend-api/codex/responses") {
           return Response.json({ routed: true, account: request.headers.get("chatgpt-account-id"),
             authorization: request.headers.get("authorization")?.startsWith("Bearer ") ? "bearer" : null });

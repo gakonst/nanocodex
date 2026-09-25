@@ -146,3 +146,28 @@ it("retries simultaneous combined create requests without duplicate turns", asyn
   expect(calls.map(call => call.status)).toEqual([202, 202]);
   for (const response of calls) expect(await response.json()).toMatchObject({ agent_id: id, turn_id: id });
 });
+
+it("rejects missing, malformed, and wrong API keys at the public Worker boundary", async () => {
+  const url = "https://api.test/v1/agents";
+  for (const authorization of [undefined, "Bearer invalid", `Bearer ncx2_${"Z".repeat(43)}`]) {
+    const response = await SELF.fetch(url, {
+      method: "POST", ...(authorization ? { headers: { authorization } } : {}),
+    });
+    expect(response.status).toBe(401);
+    expect(await response.json()).toEqual({ error: "unauthorized" });
+  }
+});
+
+it("admits a substantial prompt without an arbitrary JSON-body cap", async () => {
+  const authorization = `Bearer ${fixtureKeys["fixture-user"]}`;
+  const id = crypto.randomUUID();
+  const response = await SELF.fetch("https://api.test/v1/agents", {
+    method: "POST", headers: { authorization, "idempotency-key": id },
+    body: JSON.stringify({ input: `summarize: ${"a".repeat(70_000)}` }),
+  });
+  expect(response.status).toBe(202);
+  await expect.poll(async () => {
+    const status = await SELF.fetch(`https://api.test/v1/agents/${id}/turns/${id}`, { headers: { authorization } });
+    return (await status.json<{ state: string }>()).state;
+  }, { timeout: 15_000 }).toBe("completed");
+});
