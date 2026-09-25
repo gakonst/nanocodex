@@ -17,6 +17,9 @@ async function streamReply(agentId, started, deadline) {
   let firstTextMs;
   let openMs;
   let completedMs;
+  let firstToolCallMs;
+  let firstToolResultMs;
+  let toolCalls = 0;
   let reply = '';
   let terminal = false;
   let pages = 0;
@@ -38,6 +41,11 @@ async function streamReply(agentId, started, deadline) {
           firstTextMs ??= performance.now() - started;
           reply += event.payload.text;
         }
+        if (event?.type === 'tool.call') {
+          firstToolCallMs ??= performance.now() - started;
+          toolCalls++;
+        }
+        if (event?.type === 'tool.result') firstToolResultMs ??= performance.now() - started;
         if (event?.type === 'run.completed') {
           completedMs = performance.now() - started;
           terminal = true;
@@ -53,7 +61,7 @@ async function streamReply(agentId, started, deadline) {
       throw new Error(`Events socket closed (${closeCode}) before completion`);
   }
   if (!terminal) throw new Error('Reply events did not reach completion');
-  return { openMs, firstTextMs, completedMs, reply, pages };
+  return { openMs, firstTextMs, completedMs, firstToolCallMs, firstToolResultMs, toolCalls, reply, pages };
 }
 
 async function main() {
@@ -90,6 +98,9 @@ async function main() {
   console.log(`  Create + turn accepted: ${admittedMs.toFixed(0)} ms`);
   console.log(`  Events WebSocket open:  ${stream.openMs.toFixed(0)} ms`);
   console.log(`  TTFT (reply text):     ${stream.firstTextMs?.toFixed(0) ?? 'not emitted'} ms${created.state === 'completed' ? ' (replay)' : ''}`);
+  console.log(`  First tool call:       ${stream.firstToolCallMs?.toFixed(0) ?? 'none'} ms`);
+  console.log(`  First tool result:     ${stream.firstToolResultMs?.toFixed(0) ?? 'none'} ms`);
+  console.log(`  Tool calls (events):   ${stream.toolCalls}`);
   console.log(`  run.completed event:    ${stream.completedMs.toFixed(0)} ms`);
   console.log(`  Status GET completed:   ${statusMs.toFixed(0)} ms`);
   console.log(`  Server-Timing: ${response.headers.get('server-timing') ?? 'unavailable'}`);
@@ -102,7 +113,13 @@ async function main() {
     console.log(`  Agent initialization: ${ms(t.agent_init_ms)} (duration; includes model socket preconnect on cold starts)`);
     console.log(`  Turn accepted:        ${ms(t.accepted_ms)}`);
     console.log(`  Model request sent:   ${ms(t.model_send_ms)}`);
+    console.log(`  First model call:     ${ms(t.first_model_call_ms)} (logical call start)`);
     console.log(`  First provider event: ${ms(t.first_provider_event_ms)}`);
+    console.log(`  First tool call:      ${ms(t.first_tool_call_ms)}`);
+    console.log(`  First tool result:    ${ms(t.first_tool_result_ms)}`);
+    console.log(`  Tool calls/duration:  ${t.tool_calls ?? 0} / ${ms(t.tool_duration_ms)}`);
+    console.log(`  Post-tool model call: ${ms(t.post_tool_model_call_ms)}`);
+    console.log(`  Post-tool model sent: ${ms(t.post_tool_model_send_ms)} (WebSocket only)`);
     console.log(`  First emitted text:   ${ms(t.first_delta_ms)}`);
     console.log(`  First final text:     ${ms(t.first_answer_delta_ms)}`);
     console.log(`  Result persisted:     ${ms(t.result_ms)}`);
@@ -110,6 +127,10 @@ async function main() {
       console.log(`  Accepted → model send: ${ms(t.model_send_ms - t.accepted_ms)}`);
     if (t.first_provider_event_ms !== null && t.model_send_ms !== null)
       console.log(`  Model send → provider event: ${ms(t.first_provider_event_ms - t.model_send_ms)}`);
+    if (t.first_tool_result_ms !== null && t.first_tool_call_ms !== null)
+      console.log(`  Tool call → result:   ${ms(t.first_tool_result_ms - t.first_tool_call_ms)}`);
+    if (t.post_tool_model_send_ms !== null && t.first_tool_result_ms !== null)
+      console.log(`  Tool result → send:   ${ms(t.post_tool_model_send_ms - t.first_tool_result_ms)}`);
     if (t.first_answer_delta_ms !== null && t.first_provider_event_ms !== null)
       console.log(`  Provider event → final text: ${ms(t.first_answer_delta_ms - t.first_provider_event_ms)}`);
   }
