@@ -247,7 +247,7 @@ struct LockedVoiceActivity: Widget {
                 } else {
                     HStack(spacing: 9) {
                         Image(systemName: symbol(displayPhase(context)))
-                            .foregroundStyle(displayPhase(context) == "sent" ? .green : .red)
+                            .foregroundStyle(statusTint(displayPhase(context)))
                         Text(headline(displayPhase(context), failure: context.state.failure))
                             .font(.headline)
                         Spacer()
@@ -265,7 +265,8 @@ struct LockedVoiceActivity: Widget {
         } dynamicIsland: { context in
             DynamicIsland {
                 DynamicIslandExpandedRegion(.leading) {
-                    Image(systemName: "waveform").foregroundStyle(.red)
+                    Image(systemName: symbol(displayPhase(context)))
+                        .foregroundStyle(statusTint(displayPhase(context)))
                 }
                 DynamicIslandExpandedRegion(.center) {
                     if context.state.phase == "listening", let startedAt = context.state.startedAt {
@@ -283,7 +284,8 @@ struct LockedVoiceActivity: Widget {
                     }
                 }
             } compactLeading: {
-                Image(systemName: "waveform").foregroundStyle(.red)
+                Image(systemName: symbol(displayPhase(context)))
+                    .foregroundStyle(statusTint(displayPhase(context)))
             } compactTrailing: {
                 if context.state.phase == "listening", let startedAt = context.state.startedAt {
                     Text(startedAt, style: .timer).monospacedDigit().font(.caption2)
@@ -335,7 +337,18 @@ struct LockedVoiceActivity: Widget {
         switch phase {
         case "sent": "checkmark.circle.fill"
         case "preparing", "listening": "waveform"
+        case "transcribing": "text.bubble"
+        case "sending": "arrow.up.circle.fill"
         default: "exclamationmark.circle"
+        }
+    }
+
+    private func statusTint(_ phase: String) -> Color {
+        switch phase {
+        case "sent": .green
+        case "preparing", "listening": .red
+        case "transcribing", "sending": .white
+        default: .red
         }
     }
 }
