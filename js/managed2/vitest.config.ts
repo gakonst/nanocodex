@@ -75,6 +75,25 @@ export default defineConfig({
             }
             const respond = body => {
               const input = body.input || [];
+              const latestUser = input.findLastIndex(item => item.role === "user");
+              const currentTurn = input.slice(Math.max(0, latestUser));
+              const shellContinuation = currentTurn.find(item => item.type === "function_call_output" && item.call_id === "call-shell");
+              const shellTool = input.find(item => item.type === "additional_tools")?.tools?.find(tool => tool.name === "exec_command");
+              const shellMatch = JSON.stringify(currentTurn).match(/Use exec_command: ([^"\\\\]+)/);
+              if (shellContinuation) {
+                let result;
+                try { result = JSON.parse(shellContinuation.output); } catch { result = shellContinuation.output; }
+                const text = "Shell: " + JSON.stringify(result);
+                return [{ type: "response.completed", response: { id: "fixture-shell-result", status: "completed", end_turn: true,
+                  output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text }] }],
+                  usage: { input_tokens: 10, output_tokens: 4, total_tokens: 14 } } }];
+              }
+              if (shellMatch) {
+                if (!shellTool) throw new Error("exec_command was not offered to the provider");
+                return [{ type: "response.completed", response: { id: "fixture-shell-call", status: "completed", end_turn: false,
+                  output: [{ type: "function_call", call_id: "call-shell", name: "exec_command", arguments: JSON.stringify({ cmd: shellMatch[1] }) }],
+                  usage: { input_tokens: 10, output_tokens: 4, total_tokens: 14 } } }];
+              }
               const continuation = input.find(item => item.type === "function_call_output" && item.call_id === "call-time");
               const timeTool = input.find(item => item.type === "additional_tools")?.tools?.find(tool => tool.name === "current_time");
               const webTool = input.find(item => item.type === "additional_tools")?.tools?.find(tool => tool.name === "web__run");

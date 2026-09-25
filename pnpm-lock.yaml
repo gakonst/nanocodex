@@ -550,6 +550,9 @@ importers:
       nanocodex:
         specifier: workspace:*
         version: link:../nanocodex
+      nanocodex-tools:
+        specifier: workspace:*
+        version: link:../nanocodex-tools
     devDependencies:
       '@cloudflare/vitest-pool-workers':
         specifier: ^0.19.0
