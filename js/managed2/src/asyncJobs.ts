@@ -1,6 +1,7 @@
 import type { NamedTool, ToolContext } from "nanocodex";
 
 /** Only explicitly registered read-only tools may outlive a model call. */
+export const UNREAL_RUNNING_OUTPUT = "Tool call is still running. Its result arrives in a later turn: continue with independent work, or end your turn to wait for it.";
 const MAX_INPUT = 64_000;
 const MAX_RESULT = 8_192;
 const LEASE_MS = 30_000;
@@ -12,7 +13,7 @@ const bound = (value: string) => value.length > MAX_RESULT ? `${value.slice(0, M
 
 type Job = { id: string; invocation: string; original_turn: string; execution_turn: string | null; call_id: string | null;
   tool: string; args: string; state: string; result: string | null; attempts: number; started_at: number | null;
-  terminal_state: string | null; delivered_at: number | null };
+  terminal_state: string | null; delivered_at: number | null; lease_id: string | null };
 /** Durable intent, NOT a provider output. ToolContext.turnId identifies a JS
  * execution; it must not be assumed to identify a Rust Agent turn. */
 export type FinalToolResultIntent = Readonly<{ originalTurn: string; executionTurn: string; callId: string;
@@ -38,14 +39,14 @@ export class AsyncJobs {
       id TEXT PRIMARY KEY, invocation TEXT NOT NULL UNIQUE, original_turn TEXT NOT NULL,
       execution_turn TEXT, call_id TEXT, tool TEXT NOT NULL, args TEXT NOT NULL,
       state TEXT NOT NULL, result TEXT, terminal_state TEXT, attempts INTEGER NOT NULL DEFAULT 0,
-      started_at INTEGER, created_at INTEGER NOT NULL, delivered_at INTEGER
+      started_at INTEGER, created_at INTEGER NOT NULL, delivered_at INTEGER, lease_id TEXT
     )`);
     // Pilot rows used synthetic user turns, not typed tool results. Preserve
     // their status but never replay them into the new same-call-ID path.
     const columns = new Set(storage.sql.exec<{ name: string }>("PRAGMA table_info(async_jobs)")
       .toArray().map(column => column.name));
     this.legacyContinuationColumn = columns.has("continuation_turn");
-    for (const [name, kind] of [["execution_turn", "TEXT"], ["call_id", "TEXT"], ["delivered_at", "INTEGER"]] as const) {
+    for (const [name, kind] of [["execution_turn", "TEXT"], ["call_id", "TEXT"], ["delivered_at", "INTEGER"], ["lease_id", "TEXT"]] as const) {
       if (!columns.has(name)) storage.sql.exec(`ALTER TABLE async_jobs ADD COLUMN ${name} ${kind}`);
     }
     storage.sql.exec("UPDATE async_jobs SET state = 'legacy_uninjectable' WHERE execution_turn IS NULL");
@@ -99,9 +100,11 @@ export class AsyncJobs {
         id, invocation, originalTurn, context.turnId, context.callId, tool.name, input, Date.now());
         job = this.get(id)!;
       }
-      this.waitUntil(this.run(job.id));
+      // Never execute the tool inline while its provisional response is being
+      // returned. The durable alarm resumes the queued intent independently of
+      // the model turn (and survives an isolate restart).
       this.waitUntil(this.storage.setAlarm(Date.now() + 1_000));
-      return { job_id: job.id, state: "in_progress", status_tool: "async_job_status" };
+      return UNREAL_RUNNING_OUTPUT;
     } };
   }
 
@@ -121,14 +124,19 @@ export class AsyncJobs {
     if (!job || (job.state !== "queued" && !(job.state === "running" &&
       job.started_at !== null && job.started_at + LEASE_MS < Date.now()))) return;
     if (job.attempts >= MAX_ATTEMPTS) {
-      this.storage.sql.exec("UPDATE async_jobs SET state = 'failed', terminal_state = 'failed', result = ? WHERE id = ?",
-        "Read-only job retry limit reached", id);
+      this.storage.sql.exec(`UPDATE async_jobs SET state = 'failed', terminal_state = 'failed', result = ?
+        WHERE id = ? AND (state = 'queued' OR (state = 'running' AND started_at + ? < ?))`,
+        "Read-only job retry limit reached", id, LEASE_MS, Date.now());
       await this.storage.setAlarm(Date.now() + 1_000);
       return;
     }
     this.active.add(id);
-    this.storage.sql.exec("UPDATE async_jobs SET state = 'running', attempts = attempts + 1, started_at = ? WHERE id = ?",
-      Date.now(), id);
+    const attempt = job.attempts + 1;
+    const leaseId = crypto.randomUUID();
+    this.storage.sql.exec(`UPDATE async_jobs SET state = 'running', attempts = ?, started_at = ?, lease_id = ?
+      WHERE id = ? AND attempts = ? AND (state = 'queued' OR (state = 'running' AND started_at + ? < ?))`,
+      attempt, Date.now(), leaseId, id, job.attempts, LEASE_MS, Date.now());
+    if (this.get(id)?.lease_id !== leaseId) { this.active.delete(id); return; }
     try {
       const tool = this.readonlyTools[job.tool];
       if (!tool) throw new Error("read-only tool no longer allowlisted");
@@ -137,11 +145,11 @@ export class AsyncJobs {
       const context = { callId: job.call_id!, parentCallId: "", sessionId: "async-job",
         turnId: job.execution_turn!, model: "async-job", signal: new AbortController().signal };
       const output = await tool.handler(JSON.parse(job.args), context);
-      this.storage.sql.exec("UPDATE async_jobs SET state = 'completed', terminal_state = 'completed', result = ? WHERE id = ? AND state = 'running'",
-        bound(JSON.stringify(output) ?? "null"), id);
+      this.storage.sql.exec("UPDATE async_jobs SET state = 'completed', terminal_state = 'completed', result = ? WHERE id = ? AND state = 'running' AND attempts = ? AND lease_id = ?",
+        bound(JSON.stringify(output) ?? "null"), id, attempt, leaseId);
     } catch {
-      this.storage.sql.exec("UPDATE async_jobs SET state = 'failed', terminal_state = 'failed', result = ? WHERE id = ? AND state = 'running'",
-        "Read-only job failed (details withheld)", id);
+      this.storage.sql.exec("UPDATE async_jobs SET state = 'failed', terminal_state = 'failed', result = ? WHERE id = ? AND state = 'running' AND attempts = ? AND lease_id = ?",
+        "Read-only job failed (details withheld)", id, attempt, leaseId);
     } finally {
       this.active.delete(id);
       await this.storage.setAlarm(Date.now() + 1_000);

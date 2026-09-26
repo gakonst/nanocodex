@@ -365,6 +365,10 @@ export class Session extends DurableObject<Env> {
       "SELECT owner FROM session_meta WHERE singleton = 1",
     ).toArray()[0];
     if (!row) return;
+    // An async tool can finish while the original model turn is still active.
+    // Run/reconcile it before awaiting any turn redispatch; typed admission
+    // queues its output for the next model boundary independently of this alarm.
+    if (this.#asyncEnabled()) await this.#jobs(row.owner).reconcile();
     const turns = this.ctx.storage.sql.exec<{ id: string; input: string }>(
       "SELECT id, input FROM turns WHERE state IN ('pending', 'accepted')",
     ).toArray();
@@ -373,7 +377,6 @@ export class Session extends DurableObject<Env> {
       try { await this.#dispatch(turn.id, turn.input, row.owner); }
       catch { /* A later alarm retries with the same Rust durable turn ID. */ }
     }
-    if (this.#asyncEnabled()) await this.#jobs(row.owner).reconcile();
     if (this.ctx.storage.sql.exec<{ n: number }>(
       "SELECT COUNT(*) AS n FROM turns WHERE state IN ('pending', 'accepted')",
     ).toArray()[0]!.n > 0) await this.ctx.storage.setAlarm(Date.now() + 10_000);
@@ -541,7 +544,7 @@ export class Session extends DurableObject<Env> {
     });
     const jobs = this.#asyncEnabled() ? this.#jobs(owner, web) : undefined;
     const tools = jobs
-      ? [jobs.tool(currentTime), this.#bash, jobs.tool(web), jobs.statusTool]
+      ? [jobs.tool(currentTime), this.#bash, jobs.tool(web)]
       : [currentTime, this.#bash, web];
     const options = { tools: tools.map(tool => this.#toolTiming.instrument(tool,
       context => this.#toolTiming.correlation(context))),
