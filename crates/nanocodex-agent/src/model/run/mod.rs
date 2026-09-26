@@ -158,6 +158,14 @@ pub(crate) struct LateWakeJob {
     pub(crate) call_id: String,
 }
 
+/// Persisted ordered terminal-output intent; never infer a cohort from only a
+/// prefix of individually completed journal operations after a crash.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct PendingLateBatch {
+    pub(crate) outputs: Vec<crate::agent::LateFunctionOutput>,
+}
+
 #[derive(Clone)]
 pub(crate) struct ModelCheckpoint {
     workspace: String,
@@ -170,6 +178,7 @@ pub(crate) struct ModelCheckpoint {
     context_baseline: ContextBaseline,
     pending_late_wake: Option<String>,
     pending_late_jobs: Vec<LateWakeJob>,
+    pending_late_batch: Option<PendingLateBatch>,
 }
 
 pub(crate) struct PreparedCheckpoint {
@@ -258,6 +267,14 @@ impl ModelCheckpoint {
         self.pending_late_jobs = jobs;
     }
 
+    pub(crate) const fn late_batch(&self) -> Option<&PendingLateBatch> {
+        self.pending_late_batch.as_ref()
+    }
+
+    pub(crate) fn restore_late_batch(&mut self, batch: Option<PendingLateBatch>) {
+        self.pending_late_batch = batch;
+    }
+
     pub(crate) fn snapshot_history(&self) -> Vec<ResponseItem> {
         self.conversation.flattened_history()
     }
@@ -300,6 +317,7 @@ impl ModelCheckpoint {
             context_baseline,
             pending_late_wake: None,
             pending_late_jobs: Vec::new(),
+            pending_late_batch: None,
         })
     }
 }
@@ -417,6 +435,7 @@ impl<S> ModelRun<S> {
                 preserve_inherited_delta: checkpoint.preserve_inherited_delta,
                 pending_late_wake: checkpoint.pending_late_wake,
                 pending_late_jobs: checkpoint.pending_late_jobs,
+                pending_late_batch: checkpoint.pending_late_batch,
             }),
             active_tools: Some(active_tools),
             active_tool_calls: Vec::new(),
@@ -501,7 +520,66 @@ impl<S> ModelRun<S> {
             context_baseline: session.context.baseline(),
             pending_late_wake: session.pending_late_wake.clone(),
             pending_late_jobs: session.pending_late_jobs.clone(),
+            pending_late_batch: session.pending_late_batch.clone(),
         })
+    }
+
+    /// Durably fence the complete ordered batch *before* starting any per-job
+    /// journal. Recovery stages missing members before admitting the wake.
+    pub(crate) fn begin_late_batch(
+        &mut self,
+        outputs: Vec<crate::agent::LateFunctionOutput>,
+        completed: &std::collections::HashSet<String>,
+        requested_workspace: Option<&str>,
+    ) -> Result<ModelCheckpoint>
+    where
+        S: Service<ResponsesAttempt, Response = ResponsesServiceResponse> + AgentSend + 'static,
+        S::Error: Into<nanocodex_oai_api::ResponseError>,
+        S::Future: AgentSend,
+    {
+        self.validate_late_function_outputs(&outputs, completed, requested_workspace)?;
+        let session = self.session.as_mut().ok_or_else(|| {
+            NanocodexError::InvalidRequest("no model session for late function output".into())
+        })?;
+        if session.pending_late_batch.is_some() {
+            return Err(NanocodexError::InvalidRequest(
+                "another idle late output batch is not yet settled".into(),
+            ));
+        }
+        session.pending_late_batch = Some(PendingLateBatch { outputs });
+        Ok(Self::checkpoint_from_session(
+            session,
+            true,
+            self.global_instructions.clone(),
+        ))
+    }
+
+    pub(crate) fn finish_late_batch(&self) -> Result<ModelCheckpoint>
+    where
+        S: Service<ResponsesAttempt, Response = ResponsesServiceResponse> + AgentSend + 'static,
+        S::Error: Into<nanocodex_oai_api::ResponseError>,
+        S::Future: AgentSend,
+    {
+        let session = self.session.as_ref().ok_or_else(|| {
+            NanocodexError::InvalidSessionSnapshot("late batch lost its model session".into())
+        })?;
+        if session.pending_late_batch.is_none() {
+            return Err(NanocodexError::InvalidSessionSnapshot(
+                "late batch completion has no persisted intent".into(),
+            ));
+        }
+        let mut checkpoint =
+            Self::checkpoint_from_session(session, true, self.global_instructions.clone());
+        checkpoint.restore_late_batch(None);
+        Ok(checkpoint)
+    }
+
+    /// Only publish the cleared in-memory fence after its standalone durable
+    /// checkpoint has succeeded. An ambiguous failure must retain the fence.
+    pub(crate) fn publish_finished_late_batch(&mut self) {
+        if let Some(session) = &mut self.session {
+            session.pending_late_batch = None;
+        }
     }
 
     /// Preflight an entire trusted idle cohort on a disposable transcript copy.
@@ -510,6 +588,7 @@ impl<S> ModelRun<S> {
     pub(crate) fn validate_late_function_outputs(
         &self,
         outputs: &[crate::agent::LateFunctionOutput],
+        completed: &std::collections::HashSet<String>,
         requested_workspace: Option<&str>,
     ) -> Result<()> {
         let session = self.session.as_ref().ok_or_else(|| {
@@ -524,6 +603,12 @@ impl<S> ModelRun<S> {
         let mut conversation = session.conversation.clone();
         conversation.commit_tail();
         for entry in outputs {
+            // An exact completed journal receipt survives transcript compaction.
+            // Never require its original call to remain in model history, and
+            // never append a second output for that historical operation.
+            if completed.contains(&entry.operation_id) {
+                continue;
+            }
             let receipt_id = late_receipt_id(&entry.operation_id);
             let existing = conversation
                 .managed
@@ -703,6 +788,7 @@ impl<S> ModelRun<S> {
             preserve_inherited_delta: false,
             pending_late_wake: None,
             pending_late_jobs: Vec::new(),
+            pending_late_batch: None,
         })
     }
 

@@ -96,7 +96,8 @@ where
         let mut logical_turn_index = 0_u64;
         let mut latest_fork_checkpoint = inherited_checkpoint;
         let mut queued_turns = VecDeque::new();
-        let mut pending_compact = None;
+        let mut pending_compact: Option<(Option<tracing::Span>, oneshot::Sender<Result<()>>)> =
+            None;
         let mut pending_developer_messages: Vec<(
             String,
             oneshot::Sender<Result<AgentSessionContext>>,
@@ -111,6 +112,44 @@ where
         let mut commands_open = true;
         let mut shutdown_failures = Vec::new();
         'driver: loop {
+            // A persisted cohort is an all-member delivery fence. Resume its
+            // exact journals before a prefix wake, queued prompt or new command.
+            if commands_open
+                && model
+                    .current_checkpoint()
+                    .is_some_and(|snapshot| snapshot.late_batch().is_some())
+            {
+                let outcome = finish_pending_late_batch(
+                    &mut model,
+                    &self.execution,
+                    (Arc::clone(&self.spawner.lineage_id), thread_model),
+                    self.workspace.as_deref(),
+                    &mut latest_fork_checkpoint,
+                )
+                .await;
+                if let Err(error) = outcome {
+                    shutdown_failures.push(error.to_string());
+                    begin_shutdown(
+                        &mut self.commands,
+                        &mut queued_turns,
+                        default_thinking,
+                        default_fast_mode,
+                    )
+                    .await;
+                    mark_all_queued_turns_cancelled(&mut queued_turns);
+                    if let Some((_, result)) = pending_compact.take() {
+                        drop(result.send(Err(NanocodexError::AgentStopped)));
+                    }
+                    for (_, result) in pending_developer_messages.drain(..) {
+                        drop(result.send(Err(NanocodexError::AgentStopped)));
+                    }
+                    for (_, _, _, result) in pending_late_outputs.drain(..) {
+                        drop(result.send(Err(NanocodexError::AgentStopped)));
+                    }
+                    commands_open = false;
+                }
+                continue;
+            }
             if commands_open
                 && pending_late_outputs.is_empty()
                 && pending_developer_messages.is_empty()
@@ -578,49 +617,59 @@ where
                         ))));
                         continue;
                     }
-                    if let Err(error) =
-                        model.validate_late_function_outputs(&outputs, self.workspace.as_deref())
-                    {
-                        drop(result.send(Err(error)));
-                        continue;
-                    }
-                    let mut receipts = Vec::with_capacity(outputs.len());
-                    let mut failure = None;
-                    for entry in outputs {
-                        let outcome = commit_late_function_output(
-                            &mut model,
-                            &self.execution,
-                            (Arc::clone(&self.spawner.lineage_id), thread_model),
-                            entry.call_id,
-                            entry.output,
-                            entry.operation_id,
+                    // Checkpoint the whole ordered intent before *any* per-job
+                    // admission. On an uncertain write, close this owner and
+                    // let journal recovery decide whether the fence landed.
+                    let inspection = inspect_late_batch(
+                        &self.execution,
+                        &outputs,
+                        &self.spawner.lineage_id,
+                        thread_model,
+                        self.workspace.as_deref(),
+                        false,
+                    )
+                    .await;
+                    let outcome = match inspection {
+                        Ok(completed) => match model.begin_late_batch(
+                            outputs,
+                            &completed,
                             self.workspace.as_deref(),
-                        )
-                        .await;
-                        match outcome {
-                            Ok((checkpoint, receipt)) => {
-                                // Historical replay must not undo a newer batch stage.
-                                if !receipt.replayed {
-                                    latest_fork_checkpoint = Some(checkpoint);
+                        ) {
+                            Ok(snapshot) => {
+                                let committed = Arc::new(CommittedSession::new(
+                                    Arc::clone(&self.spawner.lineage_id),
+                                    thread_model,
+                                    snapshot,
+                                ));
+                                match self.execution.commit_checkpoint(&committed).await {
+                                    Ok(()) => {
+                                        latest_fork_checkpoint = Some(committed);
+                                        finish_pending_late_batch(
+                                            &mut model,
+                                            &self.execution,
+                                            (Arc::clone(&self.spawner.lineage_id), thread_model),
+                                            self.workspace.as_deref(),
+                                            &mut latest_fork_checkpoint,
+                                        )
+                                        .await
+                                    }
+                                    Err(error) => Err(error),
                                 }
-                                receipts.push(receipt);
                             }
-                            Err(error) => {
-                                model = model_from_checkpoint(
-                                    &self.events,
-                                    &self.transport_stats,
-                                    &self.tools,
-                                    &self.spawner,
-                                    &prompt_cache,
-                                    latest_fork_checkpoint.as_deref(),
-                                );
-                                failure = Some(error);
-                                break;
-                            }
-                        }
+                            Err(error) => Err(error),
+                        },
+                        Err(error) => Err(error),
+                    };
+                    let unsafe_to_continue = outcome.is_err()
+                        && model
+                            .current_checkpoint()
+                            .is_some_and(|snapshot| snapshot.late_batch().is_some());
+                    let reopen = unsafe_to_continue || outcome_requires_reopen(&outcome);
+                    if unsafe_to_continue {
+                        shutdown_failures.push(
+                            "late output cohort requires recovery before any model wake".into(),
+                        );
                     }
-                    let outcome = failure.map_or_else(|| Ok(receipts), Err);
-                    let reopen = outcome_requires_reopen(&outcome);
                     drop(result.send(outcome));
                     if reopen {
                         begin_shutdown(
@@ -2184,6 +2233,124 @@ async fn accept_turn_steer(
     ));
     steers.lock().await.push_back(steer);
     Ok(())
+}
+
+/// Compare all member IDs and bodies against the authoritative journal
+/// without accepting operations ahead of the durable all-member fence.
+async fn inspect_late_batch(
+    execution: &Execution,
+    outputs: &[LateFunctionOutput],
+    lineage_id: &str,
+    model: Model,
+    workspace: Option<&str>,
+    recovering: bool,
+) -> Result<std::collections::HashSet<String>> {
+    let mut completed = std::collections::HashSet::new();
+    for entry in outputs {
+        match execution
+            .inspect_late_output(&entry.operation_id, &entry.call_id, &entry.output)
+            .await?
+        {
+            Some(AdmittedExecution::Completed { snapshot, .. }) => {
+                // An exact body under a reused ID from a different lineage or
+                // model must not strand a newly persisted cohort intent.
+                snapshot.into_replayed_checkpoint(lineage_id, model, workspace)?;
+                completed.insert(entry.operation_id.clone());
+            }
+            Some(AdmittedExecution::Execute) => {
+                return Err(NanocodexError::InvalidExecutionPolicy(
+                    "read-only lookup attempted to admit a late output".into(),
+                ));
+            }
+            Some(AdmittedExecution::Resume) if !recovering => {
+                return Err(NanocodexError::InvalidRequest(
+                    "late output ID is already pending outside this cohort".into(),
+                ));
+            }
+            Some(AdmittedExecution::Failed { error }) => {
+                return Err(NanocodexError::ReplayedExecutionFailed(error));
+            }
+            Some(AdmittedExecution::Cancelled) => return Err(NanocodexError::TurnCancelled),
+            Some(AdmittedExecution::Resume) | None => {}
+        }
+    }
+    Ok(completed)
+}
+
+/// Settle the persisted entire cohort before clearing its delivery fence.
+/// Completed old members replay from their own journals but never rewind the
+/// newer live checkpoint. A failed member leaves the fence in durable state;
+/// its owner must close, not wake a prefix of the cohort.
+async fn finish_pending_late_batch<S>(
+    model: &mut ModelRun<S>,
+    execution: &Execution,
+    identity: (Arc<str>, Model),
+    workspace: Option<&str>,
+    latest_checkpoint: &mut Option<Arc<CommittedSession>>,
+) -> Result<Vec<LateFunctionOutputReceipt>>
+where
+    S: Service<ResponsesAttempt, Response = ResponsesServiceResponse> + AgentSend + 'static,
+    S::Error: Into<ResponseError>,
+    S::Future: AgentSend,
+{
+    let outputs = model
+        .current_checkpoint()
+        .and_then(|checkpoint| checkpoint.late_batch().cloned())
+        .ok_or_else(|| {
+            NanocodexError::InvalidSessionSnapshot("late batch lost its durable intent".into())
+        })?
+        .outputs;
+    let mut calls = std::collections::HashSet::new();
+    let mut operations = std::collections::HashSet::new();
+    if !(1..=8).contains(&outputs.len())
+        || outputs.iter().any(|entry| {
+            entry.call_id.trim().is_empty()
+                || entry.operation_id.trim().is_empty()
+                || !calls.insert(&entry.call_id)
+                || !operations.insert(&entry.operation_id)
+                || matches!(&entry.output, nanocodex_oai_api::responses::FunctionOutputBody::Content(items) if items.is_empty())
+        })
+    {
+        return Err(NanocodexError::InvalidSessionSnapshot(
+            "late batch has invalid or duplicate cohort entries".into(),
+        ));
+    }
+    let completed = inspect_late_batch(
+        execution,
+        &outputs,
+        &identity.0,
+        identity.1,
+        workspace,
+        true,
+    )
+    .await?;
+    model.validate_late_function_outputs(&outputs, &completed, workspace)?;
+    let mut receipts = Vec::with_capacity(outputs.len());
+    for entry in outputs {
+        let (checkpoint, receipt) = commit_late_function_output(
+            model,
+            execution,
+            (Arc::clone(&identity.0), identity.1),
+            entry.call_id,
+            entry.output,
+            entry.operation_id,
+            workspace,
+        )
+        .await?;
+        if !receipt.replayed {
+            *latest_checkpoint = Some(checkpoint);
+        }
+        receipts.push(receipt);
+    }
+    let checkpoint = Arc::new(CommittedSession::new(
+        identity.0,
+        identity.1,
+        model.finish_late_batch()?,
+    ));
+    execution.commit_checkpoint(&checkpoint).await?;
+    model.publish_finished_late_batch();
+    *latest_checkpoint = Some(checkpoint);
+    Ok(receipts)
 }
 
 async fn commit_late_function_output<S>(

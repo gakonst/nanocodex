@@ -324,7 +324,7 @@ async fn serialized_session_and_codex_rollout_share_committed_history() -> Resul
     drop((agent, events, first));
 
     let mut unsupported: Value = serde_json::from_slice(&encoded)?;
-    unsupported["version"] = json!(2);
+    unsupported["version"] = json!(3);
     let unsupported: SessionSnapshot = serde_json::from_value(unsupported)?;
     let unsupported = Nanocodex::builder(openai()?).resume(unsupported).build();
     assert!(matches!(

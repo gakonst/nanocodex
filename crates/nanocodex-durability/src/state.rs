@@ -706,17 +706,28 @@ impl DurableState {
 
     fn retain_terminal_operations(operations: &mut BTreeMap<String, OperationState>, limit: usize) {
         let mut terminal_orders = operations
-            .values()
-            .filter(|operation| operation.status.is_terminal())
-            .map(|operation| operation.accepted_order)
+            .iter()
+            .filter(|(id, operation)| {
+                !id.starts_with("late-output:") && operation.status.is_terminal()
+            })
+            .map(|(_, operation)| operation.accepted_order)
             .collect::<Vec<_>>();
         terminal_orders.sort_unstable_by(|left, right| right.cmp(left));
         terminal_orders.truncate(limit);
         let retained = terminal_orders
             .into_iter()
             .collect::<std::collections::BTreeSet<_>>();
-        operations.retain(|_, operation| {
-            !operation.status.is_terminal() || retained.contains(&operation.accepted_order)
+        operations.retain(|operation_id, operation| {
+            // A late-output ID is the original caller's identity, not a
+            // generated turn ID. Its terminal receipt is both the exact-input
+            // deduplication ledger and the recovery checkpoint for a fenced
+            // cohort. Pruning it would permit the same ID (even with a
+            // different body) to execute again after transcript compaction,
+            // or strand a cohort between two member commits. Retain these
+            // receipts independently of the ordinary bounded turn policy.
+            operation_id.starts_with("late-output:")
+                || !operation.status.is_terminal()
+                || retained.contains(&operation.accepted_order)
         });
     }
 

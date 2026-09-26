@@ -693,6 +693,7 @@ where
                 preserve_inherited_delta: false,
                 pending_late_wake: None,
                 pending_late_jobs: Vec::new(),
+                pending_late_batch: None,
             };
             session
                 .conversation
@@ -932,6 +933,7 @@ where
             preserve_inherited_delta,
             pending_late_wake: session.pending_late_wake.clone(),
             pending_late_jobs: session.pending_late_jobs.clone(),
+            pending_late_batch: session.pending_late_batch.clone(),
             global_instructions,
             context_baseline: session.context.baseline(),
         }
@@ -952,6 +954,7 @@ where
             preserve_inherited_delta: true,
             pending_late_wake: session.pending_late_wake.clone(),
             pending_late_jobs: session.pending_late_jobs.clone(),
+            pending_late_batch: session.pending_late_batch.clone(),
             global_instructions: global_instructions.cloned(),
             context_baseline: session.context.baseline(),
         }));

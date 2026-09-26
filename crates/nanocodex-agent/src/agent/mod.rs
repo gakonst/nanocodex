@@ -118,7 +118,7 @@ pub struct LateFunctionOutputReceipt {
 }
 
 /// One typed terminal result within a bounded, trusted idle cohort.
-#[derive(Clone, Debug, serde::Deserialize)]
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct LateFunctionOutput {
     /// Original function-call identity, not a generated surrogate.

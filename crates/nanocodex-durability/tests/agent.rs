@@ -4978,8 +4978,238 @@ async fn idle_wake_shutdown_reacquires_same_pending_operation_and_delivers_outpu
     })
     .await??;
     assert!(serde_json::to_value(restarted.snapshot().await?)?["pending_late_wake"].is_null());
+    restarted.compact().await?;
+    let compacted = serde_json::to_value(restarted.snapshot().await?)?;
+    assert!(
+        !compacted["history"]
+            .to_string()
+            .contains("terminal wake recovery"),
+        "compaction must remove the transcript receipt so only the journal proves replay"
+    );
+    let replayed = restarted
+        .submit_late_function_outputs(vec![nanocodex_agent::LateFunctionOutput {
+            call_id: "job-wake-recovery".into(),
+            operation_id: "job-wake-recovery-id".into(),
+            output: FunctionOutputBody::Text("terminal wake recovery".into()),
+        }])
+        .await?;
+    assert_eq!(replayed.len(), 1);
+    assert!(replayed[0].replayed);
+    assert!(
+        requests.try_recv().is_err(),
+        "historical replay cannot start another wake"
+    );
+    // Reusing an old member ID with different terminal data must be rejected
+    // before writing a cohort fence (otherwise every cold reopen would retry
+    // the same permanently conflicting intent).
+    let before_conflict = reopened.state().await?.revision();
+    let conflict = restarted
+        .submit_late_function_outputs(vec![
+            nanocodex_agent::LateFunctionOutput {
+                call_id: "job-wake-recovery".into(),
+                operation_id: "job-wake-recovery-id".into(),
+                output: FunctionOutputBody::Text("contradictory terminal".into()),
+            },
+            nanocodex_agent::LateFunctionOutput {
+                call_id: "another-job".into(),
+                operation_id: "another-operation".into(),
+                output: FunctionOutputBody::Text("never admitted".into()),
+            },
+        ])
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(conflict, NanocodexError::InvalidRequest(_)),
+        "{conflict}"
+    );
+    assert_eq!(reopened.state().await?.revision(), before_conflict);
+    assert!(serde_json::to_value(restarted.snapshot().await?)?["pending_late_batch"].is_null());
+    assert!(requests.try_recv().is_err());
     restarted.shutdown().await?;
     drop(events);
+    std::fs::remove_dir_all(workspace)?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn idle_cohort_fault_matrix_never_wakes_only_a_committed_prefix() -> Result<()> {
+    use nanocodex_agent::LateFunctionOutput;
+    use nanocodex_oai_api::responses::FunctionOutputBody;
+    let workspace = temporary_workspace("unreal-idle-cohort-faults")?;
+    let seed_openai = OpenAi::builder("test-key")
+        .service(|| DurableReplayService {
+            generations: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        })
+        .build()?;
+    let (seed, seed_events) = Nanocodex::builder(seed_openai)
+        .workspace(&workspace)
+        .tools(Tools::builder().without_defaults().build()?)
+        .build()?;
+    seed.prompt("seed").await?.result().await?;
+    let mut seed_snapshot = serde_json::to_value(seed.snapshot().await?)?;
+    seed.shutdown().await?;
+    drop(seed_events);
+    seed_snapshot["unreal_function_outputs"] = json!(true);
+    let history = seed_snapshot["history"].as_array_mut().unwrap();
+    for call in ["cohort-a", "cohort-b"] {
+        history.push(json!({
+            "type":"function_call", "call_id":call, "name":"job", "arguments":"{}"
+        }));
+        history.push(json!({
+            "type":"function_call_output", "call_id":call, "output":
+            "Tool call is still running. Its result arrives in a later turn: continue with independent work, or end your turn to wait for it."
+        }));
+    }
+    let outputs = || {
+        vec![
+            LateFunctionOutput {
+                call_id: "cohort-a".into(),
+                operation_id: "cohort-operation-a".into(),
+                output: FunctionOutputBody::Text("terminal a".into()),
+            },
+            LateFunctionOutput {
+                call_id: "cohort-b".into(),
+                operation_id: "cohort-operation-b".into(),
+                output: FunctionOutputBody::Text("terminal b".into()),
+            },
+        ]
+    };
+    // Include zero receipt retention: member A's journal must survive B's
+    // commit and cold reopen even when ordinary turn receipts are pruned.
+    for retention in [0, 16] {
+        for after_commit in [false, true] {
+            for revision in 1..=5 {
+                let store = CrashAtReplace {
+                    inner: MemoryStore::new()?,
+                    revision,
+                    after_commit,
+                    fired: Arc::new(AtomicBool::new(false)),
+                };
+                let state = DurableSession::open_with_terminal_receipt_limit(
+                    store.clone(),
+                    "cohort-fault-matrix",
+                    retention,
+                )
+                .await?;
+                let (tx, mut requests) = tokio::sync::mpsc::unbounded_channel();
+                let service = {
+                    let tx = tx.clone();
+                    move || BoundaryProbeService {
+                        requests: tx.clone(),
+                        generations: Arc::new(std::sync::atomic::AtomicUsize::new(1)),
+                        release_first: Arc::new(tokio::sync::Notify::new()),
+                    }
+                };
+                let openai = OpenAi::builder("test-key")
+                    .service(service.clone())
+                    .build()?;
+                let tools = Tools::builder().without_defaults().build()?;
+                let (first, first_events) = Nanocodex::builder(openai)
+                    .resume(serde_json::from_value(seed_snapshot.clone())?)
+                    .workspace(&workspace)
+                    .tools(tools.clone())
+                    .durability(state.clone())
+                    .await?
+                    .build()?;
+                let first_result = first.submit_late_function_outputs(outputs()).await;
+                assert!(
+                    store.fired.load(Ordering::SeqCst),
+                    "fault {revision}/{after_commit} not reached"
+                );
+                assert!(
+                    first_result.is_err(),
+                    "fault {revision}/{after_commit} was acknowledged"
+                );
+                assert!(
+                    requests.try_recv().is_err(),
+                    "fault {revision}/{after_commit} exposed prefix wake"
+                );
+                let _ = first.shutdown().await;
+                drop((first, first_events));
+
+                let reopened = DurableSession::open_with_terminal_receipt_limit(
+                    store,
+                    "cohort-fault-matrix",
+                    retention,
+                )
+                .await?;
+                let has_intent = reopened.state().await?.latest_checkpoint().is_some();
+                if let Some(snapshot) = reopened.agent_snapshot().await? {
+                    let mut snapshot = serde_json::to_value(snapshot)?;
+                    if revision == 5 {
+                        assert_eq!(
+                            snapshot["pending_late_batch"].is_null(),
+                            after_commit,
+                            "revision 5 is the fence-clear write ({after_commit})"
+                        );
+                    }
+                    if !snapshot["pending_late_batch"].is_null() {
+                        assert_eq!(
+                            snapshot["version"], 2,
+                            "a v1 reader would skip the delivery fence"
+                        );
+                        snapshot["version"] = json!(1);
+                        let old_version = Nanocodex::builder(
+                            OpenAi::builder("test-key")
+                                .service(service.clone())
+                                .build()?,
+                        )
+                        .resume(serde_json::from_value(snapshot)?)
+                        .workspace(&workspace)
+                        .build();
+                        assert!(
+                            matches!(old_version, Err(NanocodexError::InvalidSessionSnapshot(_))),
+                            "a v1 snapshot must not contain an all-member delivery fence"
+                        );
+                    }
+                }
+                let openai = OpenAi::builder("test-key").service(service).build()?;
+                let builder = Nanocodex::builder(openai)
+                    .workspace(&workspace)
+                    .tools(tools);
+                let builder = if has_intent {
+                    builder
+                } else {
+                    builder.resume(serde_json::from_value(seed_snapshot.clone())?)
+                };
+                let (restarted, events) = builder.durability(reopened).await?.build()?;
+                if !has_intent {
+                    restarted.submit_late_function_outputs(outputs()).await?;
+                }
+                let wake = match tokio::time::timeout(Duration::from_secs(5), requests.recv()).await
+                {
+                    Ok(Some(value)) => value,
+                    observed => {
+                        return Err(eyre!(
+                            "fault {revision}/{after_commit} wake={observed:?}, shutdown={:?}",
+                            restarted.shutdown().await
+                        ));
+                    }
+                };
+                for (call, result) in [("cohort-a", "terminal a"), ("cohort-b", "terminal b")] {
+                    assert_eq!(
+                        wake.iter()
+                            .filter(|item| item["type"] == "function_call_output"
+                                && item["call_id"] == call
+                                && item["output"] == result)
+                            .count(),
+                        1,
+                        "fault {revision}/{after_commit} lost {call}"
+                    );
+                }
+                let snapshot = restarted.snapshot().await?;
+                let snapshot = serde_json::to_value(snapshot)?;
+                assert!(snapshot["pending_late_batch"].is_null());
+                assert!(snapshot["pending_late_wake"].is_null());
+                assert!(
+                    requests.try_recv().is_err(),
+                    "fault {revision}/{after_commit} duplicated wake"
+                );
+                restarted.shutdown().await?;
+                drop(events);
+            }
+        }
+    }
     std::fs::remove_dir_all(workspace)?;
     Ok(())
 }

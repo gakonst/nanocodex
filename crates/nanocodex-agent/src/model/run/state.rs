@@ -9,6 +9,7 @@ pub(super) struct ModelSessionState {
     pub(super) preserve_inherited_delta: bool,
     pub(super) pending_late_wake: Option<String>,
     pub(super) pending_late_jobs: Vec<LateWakeJob>,
+    pub(super) pending_late_batch: Option<PendingLateBatch>,
 }
 
 impl ModelSessionState {

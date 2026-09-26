@@ -177,6 +177,20 @@ pub trait ExecutionPolicy: Send + Sync {
         input_json: String,
     ) -> ExecutionFuture<'a, Result<ExecutionAdmission>>;
 
+    /// Read-only exact-input lookup before an idle cohort intent is written.
+    /// Policies without an authoritative journal fail closed for batches.
+    fn inspect_operation<'a>(
+        &'a self,
+        _operation_id: String,
+        _input_json: String,
+    ) -> ExecutionFuture<'a, Result<Option<ExecutionAdmission>>> {
+        Box::pin(async {
+            Err(NanocodexError::ExecutionPolicyCapabilityUnsupported {
+                capability: "inspect_operation",
+            })
+        })
+    }
+
     /// Admits an automatically identified operation, recovering an unfinished
     /// compatible operation when the policy selects one.
     fn admit_automatic<'a>(
@@ -447,6 +461,18 @@ pub trait ExecutionPolicy: Send + Sync {
         operation_id: String,
         input_json: String,
     ) -> ExecutionFuture<'a, Result<ExecutionAdmission>>;
+    /// Read-only exact-input lookup before an idle cohort is persisted.
+    fn inspect_operation<'a>(
+        &'a self,
+        _operation_id: String,
+        _input_json: String,
+    ) -> ExecutionFuture<'a, Result<Option<ExecutionAdmission>>> {
+        Box::pin(async {
+            Err(NanocodexError::ExecutionPolicyCapabilityUnsupported {
+                capability: "inspect_operation",
+            })
+        })
+    }
     /// Admits or recovers an automatically identified operation.
     fn admit_automatic<'a>(
         &'a self,
@@ -966,6 +992,28 @@ impl Execution {
                 .admit(format!("late-output:{operation_id}"), input)
                 .await?,
         ))
+    }
+
+    /// Look up exact member input without creating a pending operation before
+    /// the all-member intent is durably fenced.
+    pub(crate) async fn inspect_late_output(
+        &self,
+        operation_id: &str,
+        call_id: &str,
+        output: &nanocodex_oai_api::responses::FunctionOutputBody,
+    ) -> Result<Option<AdmittedExecution>> {
+        let Some(policy) = &self.policy else {
+            return Ok(None);
+        };
+        let input = encode(&serde_json::json!({
+            "kind": "late_function_output",
+            "call_id": call_id,
+            "output": output,
+        }))?;
+        policy
+            .inspect_operation(format!("late-output:{operation_id}"), input)
+            .await
+            .map(|admission| admission.map(map_admission))
     }
 
     pub(crate) fn start_late_output(

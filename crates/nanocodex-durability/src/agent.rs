@@ -183,6 +183,25 @@ impl ExecutionPolicy for DurableExecution {
         })
     }
 
+    fn inspect_operation<'a>(
+        &'a self,
+        operation_id: String,
+        input_json: String,
+    ) -> ExecutionFuture<'a, AgentResult<Option<ExecutionAdmission>>> {
+        Box::pin(async move {
+            let input = raw(input_json)?;
+            let found = self
+                .owner
+                .inspect_typed::<_, crate::context::Snapshot, ExecutionOutput>(operation_id, &input)
+                .await
+                .map_err(agent_error)?;
+            match found {
+                Some(admission) => map_admission(&self.owner, admission).await.map(Some),
+                None => Ok(None),
+            }
+        })
+    }
+
     fn admit_automatic<'a>(
         &'a self,
         candidate_operation_id: String,
@@ -603,7 +622,8 @@ fn agent_error(error: Error) -> NanocodexError {
     }
     if matches!(
         error,
-        Error::SteerConflict { .. }
+        Error::OperationConflict { .. }
+            | Error::SteerConflict { .. }
             | Error::SteerWithdrawn { .. }
             | Error::BoundaryOutputConflict { .. }
     ) {

@@ -199,6 +199,12 @@ enum Command {
         operation_id: String,
         result: oneshot::Sender<Result<Option<OperationStatus>>>,
     },
+    InspectOperation {
+        caller: Caller,
+        operation_id: String,
+        input: EncodedPayload,
+        result: oneshot::Sender<Result<Option<StoredAdmission>>>,
+    },
     State {
         result: oneshot::Sender<DurableState>,
     },
@@ -519,6 +525,45 @@ impl Driver {
                         }
                         Ok(operation.map(|operation| operation.status.clone()))
                     });
+                    drop(result.send(outcome));
+                }
+                Command::InspectOperation {
+                    caller,
+                    operation_id,
+                    input,
+                    result,
+                } => {
+                    let outcome = self.authorize(&caller).and_then(|()| {
+                        let Some(operation) = self.state.operation(&operation_id) else {
+                            return Ok(None);
+                        };
+                        if operation.input != input {
+                            return Err(Error::OperationConflict { operation_id });
+                        }
+                        Ok(Some(operation.status.clone()))
+                    });
+                    let outcome = match outcome {
+                        Ok(None) => Ok(None),
+                        Ok(Some(OperationStatus::Pending)) => Ok(Some(StoredAdmission::Pending)),
+                        Ok(Some(OperationStatus::Cancelled { .. })) => {
+                            Ok(Some(StoredAdmission::Cancelled))
+                        }
+                        Ok(Some(OperationStatus::Completed { checkpoint, output })) => {
+                            let checkpoint =
+                                checkpoint.load(&mut *self.store, &self.state_id).await;
+                            let output = output.load(&mut *self.store, &self.state_id).await;
+                            checkpoint.and_then(|checkpoint| {
+                                output.map(|output| {
+                                    Some(StoredAdmission::Completed { checkpoint, output })
+                                })
+                            })
+                        }
+                        Ok(Some(OperationStatus::Failed { checkpoint, error })) => checkpoint
+                            .load(&mut *self.store, &self.state_id)
+                            .await
+                            .map(|checkpoint| Some(StoredAdmission::Failed { checkpoint, error })),
+                        Err(error) => Err(error),
+                    };
                     drop(result.send(outcome));
                 }
                 Command::State { result } => drop(result.send(self.state.clone())),
@@ -1822,11 +1867,15 @@ impl DurableSession {
     }
 
     /// Loads a durable session whose compacted checkpoint retains at most the
-    /// newest `limit` terminal replay receipts.
+    /// newest `limit` ordinary terminal replay receipts. Terminal
+    /// `late-output:` journals are exempt: they bind caller-owned IDs and
+    /// exact inputs across compaction and may be needed to recover a fenced
+    /// multi-output cohort. They currently grow with the number of distinct
+    /// late outputs; callers must not treat this as a total state-size bound.
     ///
-    /// The embedding application must preserve older exact-ID results before
-    /// selecting this policy. Unresolved operations and the latest resumable
-    /// model checkpoint are always retained.
+    /// The embedding application must preserve older ordinary exact-ID results
+    /// before selecting this policy. Unresolved operations and the latest
+    /// resumable model checkpoint are always retained.
     pub async fn open_with_terminal_receipt_limit<S>(
         store: S,
         state_id: impl Into<String>,
@@ -2569,6 +2618,30 @@ impl DurableOwner {
             .send(command)
             .await
             .map_err(|_| Error::DriverStopped)
+    }
+
+    pub(crate) async fn inspect_typed<I, C, O>(
+        &self,
+        operation_id: String,
+        input: &I,
+    ) -> Result<Option<Admission<C, O>>>
+    where
+        I: Serialize + ?Sized,
+        C: DeserializeOwned,
+        O: DeserializeOwned,
+    {
+        let (result, receiver) = oneshot::channel();
+        self.send(Command::InspectOperation {
+            caller: self.caller()?,
+            operation_id,
+            input: EncodedPayload::encode(input)?,
+            result,
+        })
+        .await?;
+        receive(receiver)
+            .await?
+            .map(StoredAdmission::decode)
+            .transpose()
     }
 
     pub(crate) async fn admit_typed<I, C, O>(
@@ -3973,6 +4046,84 @@ mod tests {
                 .unwrap(),
             21
         );
+    }
+
+    #[tokio::test]
+    async fn late_output_identity_survives_zero_retention_compaction_and_reopen() {
+        let store = MemoryStore::new().unwrap();
+        let session = DurableSession::open_with_terminal_receipt_limit(
+            store.clone(),
+            "late-output-zero-retention",
+            0,
+        )
+        .await
+        .unwrap();
+        let (owner, _) = session.acquire_agent().await.unwrap();
+        let input = serde_json::json!({"kind": "late_function_output", "call_id": "call-a", "output": "body-a"});
+        let id = "late-output:caller-a".to_owned();
+        assert!(matches!(
+            owner
+                .admit_typed::<_, u32, String>(id.clone(), &input)
+                .await,
+            Ok(Admission::Accepted)
+        ));
+        owner.begin_attempt(id.clone()).await.unwrap();
+        owner
+            .complete(
+                id.clone(),
+                EncodedPayload::encode(&1_u32).unwrap(),
+                &"receipt".to_owned(),
+            )
+            .await
+            .unwrap();
+        // A later terminal turn would normally prune the first receipt.
+        assert!(matches!(
+            owner
+                .admit_typed::<_, u32, String>("ordinary".into(), &"later")
+                .await,
+            Ok(Admission::Accepted)
+        ));
+        owner.begin_attempt("ordinary".into()).await.unwrap();
+        owner
+            .complete(
+                "ordinary".into(),
+                EncodedPayload::encode(&2_u32).unwrap(),
+                &"later".to_owned(),
+            )
+            .await
+            .unwrap();
+        owner.shutdown().await.unwrap();
+        session.prune_receipts().await.unwrap();
+        let retained = session.state().await.unwrap();
+        assert!(retained.operation(&id).is_some());
+        assert!(retained.operation("ordinary").is_none());
+        drop((owner, session));
+
+        let reopened = DurableSession::open_with_terminal_receipt_limit(
+            store,
+            "late-output-zero-retention",
+            0,
+        )
+        .await
+        .unwrap();
+        let (owner, _) = reopened.acquire_agent().await.unwrap();
+        assert!(matches!(
+            owner.inspect_typed::<_, u32, String>(id.clone(), &input).await,
+            Ok(Some(Admission::Completed { output, .. })) if output == "receipt"
+        ));
+        assert!(matches!(
+            owner.admit_typed::<_, u32, String>(id.clone(), &input).await,
+            Ok(Admission::Completed { output, .. }) if output == "receipt"
+        ));
+        let conflicting = serde_json::json!({"kind": "late_function_output", "call_id": "call-a", "output": "body-b"});
+        assert!(matches!(
+            owner.inspect_typed::<_, u32, String>(id.clone(), &conflicting).await,
+            Err(Error::OperationConflict { operation_id }) if operation_id == id
+        ));
+        assert!(matches!(
+            owner.admit_typed::<_, u32, String>(id.clone(), &conflicting).await,
+            Err(Error::OperationConflict { operation_id }) if operation_id == id
+        ));
     }
 
     #[tokio::test]
