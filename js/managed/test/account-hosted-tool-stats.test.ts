@@ -2,6 +2,7 @@ import { createExecutionContext, env, runInDurableObject } from "cloudflare:test
 import { describe, expect, it } from "vitest";
 import worker, { type AccountHostedTools } from "../src/index";
 import type { Principal } from "../src/account-auth";
+import { SqlHostedToolsPersistence } from "../src/hosted-tools-broker";
 
 function fixture() {
   const owner = crypto.randomUUID();
@@ -47,6 +48,8 @@ describe("owner hosted tool statistics", () => {
       insert("c", "exec_command", "ambiguous", now - 500, now - 460);
       insert("d", "exec_command", "dispatched", now - 400, now - 300);
       insert("e", "mcp__cua_repl__js", "unavailable", now - 200, now - 190);
+      insert("f", "mcp__cua_repl__js", "unavailable", now - 160, now - 140);
+      state.storage.sql.exec("UPDATE hosted_tool_calls SET dispatched_at = ? WHERE call_id = ?", now - 155, "f");
       insert("old", "exec_command", "completed", now - 86_400_100, now - 86_400_000);
       insert("future", "exec_command", "completed", now + 60_000, now + 60_100);
       expect(() => insert("a", "exec_command", "completed", now - 1000, now - 900)).toThrow();
@@ -58,16 +61,20 @@ describe("owner hosted tool statistics", () => {
       window: { from: number; to: number }; total_calls: number; data: Record<string, unknown>[];
     }>();
     expect(payload.window.to - payload.window.from).toBe(86_400_000);
-    expect(payload.total_calls).toBe(5);
+    expect(payload.total_calls).toBe(6);
     expect(payload.data).toEqual([
-      { name: "exec_command", state: "ambiguous", calls: 1, tool_failed: 0, late_receipts: 1, duration_count: 1,
+      { name: "exec_command", state: "ambiguous", calls: 1, tool_failed: 0, late_receipts: 1,
+        pre_dispatch_unavailable: 0, post_dispatch_unavailable: 0, unknown_dispatch_unavailable: 0, duration_count: 1,
         total_duration_ms: 40, avg_duration_ms: 40, min_duration_ms: 40, max_duration_ms: 40 },
-      { name: "exec_command", state: "completed", calls: 2, tool_failed: 1, late_receipts: 0, duration_count: 2,
+      { name: "exec_command", state: "completed", calls: 2, tool_failed: 1, late_receipts: 0,
+        pre_dispatch_unavailable: 0, post_dispatch_unavailable: 0, unknown_dispatch_unavailable: 0, duration_count: 2,
         total_duration_ms: 300, avg_duration_ms: 150, min_duration_ms: 100, max_duration_ms: 200 },
-      { name: "exec_command", state: "dispatched", calls: 1, tool_failed: 0, late_receipts: 0, duration_count: 0,
+      { name: "exec_command", state: "dispatched", calls: 1, tool_failed: 0, late_receipts: 0,
+        pre_dispatch_unavailable: 0, post_dispatch_unavailable: 0, unknown_dispatch_unavailable: 0, duration_count: 0,
         total_duration_ms: null, avg_duration_ms: null, min_duration_ms: null, max_duration_ms: null },
-      { name: "mcp__cua_repl__js", state: "unavailable", calls: 1, tool_failed: 0, late_receipts: 0, duration_count: 1,
-        total_duration_ms: 10, avg_duration_ms: 10, min_duration_ms: 10, max_duration_ms: 10 },
+      { name: "mcp__cua_repl__js", state: "unavailable", calls: 2, tool_failed: 0, late_receipts: 0,
+        pre_dispatch_unavailable: 1, post_dispatch_unavailable: 1, unknown_dispatch_unavailable: 0, duration_count: 2,
+        total_duration_ms: 30, avg_duration_ms: 15, min_duration_ms: 10, max_duration_ms: 20 },
     ]);
     const serialized = JSON.stringify(payload);
     for (const privateValue of ["private-session", "private-host", "private-lease", "PRIVATE_INPUT",
@@ -79,6 +86,30 @@ describe("owner hosted tool statistics", () => {
       headers: { "x-nanocodex-owner-id": crypto.randomUUID() },
     });
     expect(forged.status).toBe(404);
+  });
+
+  it("keeps legacy dispatch status unknown rather than misclassifying pre-dispatch", async () => {
+    const { stub, call } = fixture();
+    expect((await call()).status).toBe(200);
+    const now = Date.now();
+    await runInDurableObject(stub, async (_, state) => {
+      state.storage.sql.exec("ALTER TABLE hosted_tool_calls DROP COLUMN dispatched_at");
+      state.storage.sql.exec(`INSERT INTO hosted_tool_calls
+        (call_id, session_id, source_call_id, host_id, lease_id, generation, model, name,
+         input_json, output_token_budget, output_byte_budget, deadline_at, cancel_requested,
+         state, result_json, receipt_json, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, 1, 1, ?, 0, 'unavailable', ?, NULL, ?, ?)`,
+        "legacy", "private-session", "legacy", "private-host", "private-lease", "fixture", "exec_command",
+        "PRIVATE_INPUT", now + 1000, JSON.stringify({ status: "unavailable", message: "PRIVATE_RESULT" }), now - 100, now - 50);
+      new SqlHostedToolsPersistence(state.storage).initialize(now);
+      expect(state.storage.sql.exec<{ dispatched_at: number | null }>(
+        "SELECT dispatched_at FROM hosted_tool_calls WHERE call_id = 'legacy'",
+      ).toArray()[0]?.dispatched_at).toBeNull();
+    });
+    const payload = await (await call()).json<{ data: { name: string; state: string;
+      pre_dispatch_unavailable: number; post_dispatch_unavailable: number; unknown_dispatch_unavailable: number }[] }>();
+    expect(payload.data).toContainEqual(expect.objectContaining({ name: "exec_command", state: "unavailable",
+      pre_dispatch_unavailable: 0, post_dispatch_unavailable: 0, unknown_dispatch_unavailable: 1 }));
   });
 
   it("rejects unauthenticated readers, Connect grants, missing permissions, writes and selectors", async () => {

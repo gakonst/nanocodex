@@ -209,13 +209,18 @@ export class AccountHostedTools extends DurableObject<AccountHostedToolsEnv> {
       // One persisted row per (session_id, source_call_id). Aggregate in SQL;
       // never fetch input, result, receipt, machine or call identities.
       const data = this.ctx.storage.sql.exec<{
-        name: string; state: string; calls: number; tool_failed: number; late_receipts: number; duration_count: number;
+        name: string; state: string; calls: number; tool_failed: number; late_receipts: number;
+        pre_dispatch_unavailable: number; post_dispatch_unavailable: number; unknown_dispatch_unavailable: number;
+        duration_count: number;
         total_duration_ms: number | null; avg_duration_ms: number | null;
         min_duration_ms: number | null; max_duration_ms: number | null;
       }>(`SELECT name, state, COUNT(*) AS calls,
           SUM(CASE WHEN state = 'completed' AND json_valid(result_json)
             AND json_extract(result_json, '$.output.success') = 0 THEN 1 ELSE 0 END) AS tool_failed,
           SUM(CASE WHEN state = 'ambiguous' AND receipt_json IS NOT NULL THEN 1 ELSE 0 END) AS late_receipts,
+          SUM(CASE WHEN state = 'unavailable' AND dispatched_at = 0 THEN 1 ELSE 0 END) AS pre_dispatch_unavailable,
+          SUM(CASE WHEN state = 'unavailable' AND dispatched_at > 0 THEN 1 ELSE 0 END) AS post_dispatch_unavailable,
+          SUM(CASE WHEN state = 'unavailable' AND dispatched_at IS NULL THEN 1 ELSE 0 END) AS unknown_dispatch_unavailable,
           COUNT(CASE WHEN state IN ('completed', 'unavailable', 'ambiguous', 'cancelled') THEN 1 END) AS duration_count,
           SUM(CASE WHEN state IN ('completed', 'unavailable', 'ambiguous', 'cancelled')
             THEN MAX(0, updated_at - created_at) END) AS total_duration_ms,
