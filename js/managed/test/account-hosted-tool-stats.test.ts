@@ -44,12 +44,21 @@ describe("owner hosted tool statistics", () => {
       insert("a", "exec_command", "completed", now - 1000, now - 900);
       insert("b", "exec_command", "completed", now - 900, now - 700);
       state.storage.sql.exec("UPDATE hosted_tool_calls SET result_json = ? WHERE call_id = ?",
-        JSON.stringify({ status: "completed", output: { success: false, output: "PRIVATE_RESULT" } }), "b");
+        JSON.stringify({ status: "completed", output: { success: false, output: "PRIVATE_RESULT",
+          structured_result: { status: "ambiguous" } } }), "b");
       insert("c", "exec_command", "ambiguous", now - 500, now - 460);
       insert("d", "exec_command", "dispatched", now - 400, now - 300);
       insert("e", "mcp__cua_repl__js", "unavailable", now - 200, now - 190);
       insert("f", "mcp__cua_repl__js", "unavailable", now - 160, now - 140);
       state.storage.sql.exec("UPDATE hosted_tool_calls SET dispatched_at = ? WHERE call_id = ?", now - 155, "f");
+      insert("g", "mcp__cua_repl__js", "completed", now - 120, now - 100);
+      state.storage.sql.exec("UPDATE hosted_tool_calls SET result_json = ? WHERE call_id = ?",
+        JSON.stringify({ status: "completed", output: { success: false, output: "PRIVATE_RESULT",
+          structured_result: { status: "unavailable" } } }), "g");
+      insert("h", "mcp__cua_repl__js", "completed", now - 80, now - 70);
+      state.storage.sql.exec("UPDATE hosted_tool_calls SET result_json = ? WHERE call_id = ?",
+        JSON.stringify({ status: "completed", output: { success: false, output: "PRIVATE_RESULT",
+          structured_result: { status: "provider_error" } } }), "h");
       insert("old", "exec_command", "completed", now - 86_400_100, now - 86_400_000);
       insert("future", "exec_command", "completed", now + 60_000, now + 60_100);
       expect(() => insert("a", "exec_command", "completed", now - 1000, now - 900)).toThrow();
@@ -61,18 +70,26 @@ describe("owner hosted tool statistics", () => {
       window: { from: number; to: number }; total_calls: number; data: Record<string, unknown>[];
     }>();
     expect(payload.window.to - payload.window.from).toBe(86_400_000);
-    expect(payload.total_calls).toBe(6);
+    expect(payload.total_calls).toBe(8);
     expect(payload.data).toEqual([
-      { name: "exec_command", state: "ambiguous", calls: 1, tool_failed: 0, late_receipts: 1,
+      { name: "exec_command", state: "ambiguous", calls: 1, tool_failed: 0,
+        tool_ambiguous: 0, tool_unavailable: 0, tool_failed_other: 0, late_receipts: 1,
         pre_dispatch_unavailable: 0, post_dispatch_unavailable: 0, unknown_dispatch_unavailable: 0, duration_count: 1,
         total_duration_ms: 40, avg_duration_ms: 40, min_duration_ms: 40, max_duration_ms: 40 },
-      { name: "exec_command", state: "completed", calls: 2, tool_failed: 1, late_receipts: 0,
+      { name: "exec_command", state: "completed", calls: 2, tool_failed: 1,
+        tool_ambiguous: 1, tool_unavailable: 0, tool_failed_other: 0, late_receipts: 0,
         pre_dispatch_unavailable: 0, post_dispatch_unavailable: 0, unknown_dispatch_unavailable: 0, duration_count: 2,
         total_duration_ms: 300, avg_duration_ms: 150, min_duration_ms: 100, max_duration_ms: 200 },
-      { name: "exec_command", state: "dispatched", calls: 1, tool_failed: 0, late_receipts: 0,
+      { name: "exec_command", state: "dispatched", calls: 1, tool_failed: 0,
+        tool_ambiguous: 0, tool_unavailable: 0, tool_failed_other: 0, late_receipts: 0,
         pre_dispatch_unavailable: 0, post_dispatch_unavailable: 0, unknown_dispatch_unavailable: 0, duration_count: 0,
         total_duration_ms: null, avg_duration_ms: null, min_duration_ms: null, max_duration_ms: null },
-      { name: "mcp__cua_repl__js", state: "unavailable", calls: 2, tool_failed: 0, late_receipts: 0,
+      { name: "mcp__cua_repl__js", state: "completed", calls: 2, tool_failed: 2,
+        tool_ambiguous: 0, tool_unavailable: 1, tool_failed_other: 1, late_receipts: 0,
+        pre_dispatch_unavailable: 0, post_dispatch_unavailable: 0, unknown_dispatch_unavailable: 0, duration_count: 2,
+        total_duration_ms: 30, avg_duration_ms: 15, min_duration_ms: 10, max_duration_ms: 20 },
+      { name: "mcp__cua_repl__js", state: "unavailable", calls: 2, tool_failed: 0,
+        tool_ambiguous: 0, tool_unavailable: 0, tool_failed_other: 0, late_receipts: 0,
         pre_dispatch_unavailable: 1, post_dispatch_unavailable: 1, unknown_dispatch_unavailable: 0, duration_count: 2,
         total_duration_ms: 30, avg_duration_ms: 15, min_duration_ms: 10, max_duration_ms: 20 },
     ]);
