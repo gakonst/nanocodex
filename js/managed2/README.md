@@ -44,13 +44,13 @@ owner's active provider credential, with a 60-second isolate credential cache;
 the credential DO encrypts the stored key and opaque Rust subscription payload.
 
 This slice pins `gpt-6-sol`/low. It runs alongside, rather than replacing,
-the existing managed API. The selected subscription path reuses the existing
-account-owned Linux `ChatGptEgress` relay/container. Managed2 uses a persistent
-Responses WebSocket (`RESPONSES_TRANSPORT=websocket`); Egress2 has no `GATEWAY`
-VPC binding in its checked-in deployment config.
+the existing managed API. The subscription path uses Egress2’s Cloudflare Gateway VPC binding and skips
+the account-owned `ChatGptEgress` relay/container. That regional relay remains
+a rollback route if the VPC binding is removed from Egress2. Managed2 uses a persistent
+Responses WebSocket (`RESPONSES_TRANSPORT=websocket`).
 
 ```text
-Client → Managed2 API → Session DO → Egress2 → ChatGptEgress relay/container → ChatGPT
+Client → Managed2 API → Session DO → Egress2 → VPC/Gateway → ChatGPT
                           state          │
                                     UserCredentials DO (cache miss/refresh)
 ```
