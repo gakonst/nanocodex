@@ -622,6 +622,7 @@ function toolOutcome(result: unknown): "ok" | "failed" | "unavailable" | "ambigu
   if (!result || typeof result !== "object") return "ok";
   const value = result as Record<PropertyKey, unknown>;
   if (value[TOOL_RESULT] !== true) {
+    if (value.isError === true || value.success === false) return "failed";
     if (typeof value.exit_code === "number" && value.exit_code !== 0) return "failed";
     return "ok";
   }
