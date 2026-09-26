@@ -1034,7 +1034,7 @@ impl DurableState {
                         .and_then(|n| n.parse::<u32>().ok());
                     if !operation_id.starts_with("late-continuation:")
                         || index.is_none_or(|n| n == 0)
-                        || response_id.is_empty()
+                        || response_id.trim().is_empty()
                     {
                         return Err(Error::InvalidState(
                             "invalid late wake model receipt".into(),

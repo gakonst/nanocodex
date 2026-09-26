@@ -1563,7 +1563,7 @@ impl Driver {
                             .get("response")
                             .and_then(|response| response.get("id"))
                             .and_then(serde_json::Value::as_str)
-                            .filter(|id| !id.is_empty())
+                            .filter(|id| !id.trim().is_empty())
                             .ok_or_else(|| {
                                 Error::InvalidState(
                                     "late wake model step lacks a provider response ID".into(),
@@ -1997,7 +1997,8 @@ impl DurableSession {
                 continue;
             }
             if let Some((index, response_id)) = &operation.late_model_response
-                && *index > 0 && !response_id.is_empty()
+                && *index > 0
+                && !response_id.is_empty()
             {
                 return Ok(ActiveBoundaryOutputStatus::Confirmed {
                     model_call_index: *index,
@@ -4192,6 +4193,8 @@ mod tests {
                 model_call_index: 1
             }
         );
+        assert!(owner.complete_step(id.into(), "model-1".into(),
+            &serde_json::json!({"response":{"id":"   "}})).await.is_err());
         owner
             .complete_step(
                 id.into(),
