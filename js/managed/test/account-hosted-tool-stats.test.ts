@@ -36,10 +36,12 @@ describe("owner hosted tool statistics", () => {
            state, result_json, receipt_json, created_at, updated_at)
           VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, 1, 1, ?, 0, ?, ?, ?, ?, ?)`,
           source, "private-session", source, "private-host", "private-lease", "fixture", name,
-          'PRIVATE_INPUT', created + 10_000, callState, 'PRIVATE_RESULT', 'PRIVATE_RECEIPT', created, updated);
+          'PRIVATE_INPUT', created + 10_000, callState, JSON.stringify({ status: 'completed', output: { success: true, output: 'PRIVATE_RESULT' } }), 'PRIVATE_RECEIPT', created, updated);
       };
       insert("a", "exec_command", "completed", now - 1000, now - 900);
       insert("b", "exec_command", "completed", now - 900, now - 700);
+      state.storage.sql.exec("UPDATE hosted_tool_calls SET result_json = ? WHERE call_id = ?",
+        JSON.stringify({ status: "completed", output: { success: false, output: "PRIVATE_RESULT" } }), "b");
       insert("c", "exec_command", "ambiguous", now - 500, now - 460);
       insert("d", "exec_command", "dispatched", now - 400, now - 300);
       insert("e", "mcp__cua_repl__js", "unavailable", now - 200, now - 190);
@@ -56,13 +58,13 @@ describe("owner hosted tool statistics", () => {
     expect(payload.window.to - payload.window.from).toBe(86_400_000);
     expect(payload.total_calls).toBe(5);
     expect(payload.data).toEqual([
-      { name: "exec_command", state: "ambiguous", calls: 1, duration_count: 1,
+      { name: "exec_command", state: "ambiguous", calls: 1, tool_failed: 0, late_receipts: 1, duration_count: 1,
         total_duration_ms: 40, avg_duration_ms: 40, min_duration_ms: 40, max_duration_ms: 40 },
-      { name: "exec_command", state: "completed", calls: 2, duration_count: 2,
+      { name: "exec_command", state: "completed", calls: 2, tool_failed: 1, late_receipts: 0, duration_count: 2,
         total_duration_ms: 300, avg_duration_ms: 150, min_duration_ms: 100, max_duration_ms: 200 },
-      { name: "exec_command", state: "dispatched", calls: 1, duration_count: 0,
+      { name: "exec_command", state: "dispatched", calls: 1, tool_failed: 0, late_receipts: 0, duration_count: 0,
         total_duration_ms: null, avg_duration_ms: null, min_duration_ms: null, max_duration_ms: null },
-      { name: "mcp__cua_repl__js", state: "unavailable", calls: 1, duration_count: 1,
+      { name: "mcp__cua_repl__js", state: "unavailable", calls: 1, tool_failed: 0, late_receipts: 0, duration_count: 1,
         total_duration_ms: 10, avg_duration_ms: 10, min_duration_ms: 10, max_duration_ms: 10 },
     ]);
     const serialized = JSON.stringify(payload);
