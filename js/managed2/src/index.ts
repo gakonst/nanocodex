@@ -6,7 +6,7 @@ import { authenticate } from "./auth";
 import { ToolTiming } from "./toolTiming";
 import { managedWeb } from "./web";
 import { createJustBashTool } from "./just-bash";
-import { AsyncJobs } from "./asyncJobs";
+import { AsyncJobs, TypedIngestionUnavailable } from "./asyncJobs";
 
 type ChatGptImport = Readonly<{
   access_token: string; refresh_token: string; account_id: string;
@@ -86,6 +86,10 @@ export default {
         || (body.async_tools !== undefined && typeof body.async_tools !== "boolean"))) {
         return reply(400, { error: "invalid_input" });
       }
+      // The Rust state has internal staging but the JS/WASM Agent exposes no
+      // typed late-result ingestion. Reject opt-in rather than silently sending
+      // a synthetic user turn or claiming same-call-ID semantics.
+      if (body?.async_tools === true) return reply(501, { error: "typed_async_tool_ingestion_unavailable" });
       const key = request.headers.get("idempotency-key");
       if (key !== null && !/^[0-9a-f-]{36}$/.test(key)) return reply(400, { error: "invalid_idempotency_key" });
       const id = key ?? crypto.randomUUID();
@@ -218,6 +222,7 @@ export class Session extends DurableObject<Env> {
         "SELECT owner, agent_id, async_tools FROM session_meta WHERE singleton = 1").toArray()[0];
       if (current && (current.owner !== owner || current.agent_id !== agentId)) return reply(403, { error: "forbidden" });
       const enabled = body?.async_tools === true;
+      if (enabled && !current) return reply(501, { error: "typed_async_tool_ingestion_unavailable" });
       if (current && Boolean(current.async_tools) !== enabled) return reply(409, { error: "idempotency_conflict" });
       if (!current) this.ctx.storage.sql.exec(
         "INSERT INTO session_meta (singleton, owner, agent_id, relay_region, async_tools) VALUES (1, ?, ?, ?, ?)",
@@ -300,6 +305,7 @@ export class Session extends DurableObject<Env> {
   }
 
   async #admitTurnOnce(owner: string, turnId: string, input: string): Promise<Response> {
+    if (this.#asyncEnabled()) return reply(501, { error: "typed_async_tool_ingestion_unavailable" });
     const existing = this.#turn(turnId);
     if (existing) {
       if (existing.input !== input) return reply(409, { error: "idempotency_conflict" });
@@ -515,14 +521,7 @@ export class Session extends DurableObject<Env> {
             "SELECT relay_region FROM session_meta WHERE singleton = 1").toArray()[0]?.relay_region }) };
       this.#asyncJobs = new AsyncJobs(this.ctx.storage, readonlyTools,
         context => this.#toolTiming.externalTurn(context),
-        id => this.#turn(id)?.state,
-        async (id, input) => {
-          const existing = this.#turn(id);
-          if (existing && existing.input !== input) throw new Error("continuation conflict");
-          if (!existing) this.ctx.storage.sql.exec("INSERT INTO turns (id, input, state) VALUES (?, ?, 'pending')", id, input);
-          if (existing?.state === "completed" || existing?.state === "failed") return;
-          await this.#dispatch(id, input, owner);
-        },
+        async () => { throw new TypedIngestionUnavailable(); },
         work => this.ctx.waitUntil(work));
     }
     return this.#asyncJobs;

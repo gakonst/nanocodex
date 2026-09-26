@@ -194,38 +194,29 @@ account-owned regional Container class and identity for ChatGPT subscription
 calls; API-key calls remain direct. This is not a claim that OpenAI inference
 occurs in the selected region or that provider response time will improve.
 
-## Experimental asynchronous read-only tools (opt-in)
+## Experimental asynchronous read-only tools (not yet available)
 
-Create with `POST /v1/agents` and `{ "async_tools": true, "input": "..." }`,
-or `{ "async_tools": true }` without a first turn. This setting persists on the
-Session Durable Object and an idempotent create with a different setting returns
-409. Existing agents default to synchronous tools. For opted-in agents only,
-`current_time` and `web__run` return `{job_id, state:"in_progress",
-status_tool:"async_job_status"}` immediately; `exec_command` remains synchronous
-and is **never** admitted to the background ledger. New side-effecting tools
-must not be added without a separate reviewed execution/replay design.
+`POST /v1/agents` with `{ "async_tools": true }` returns HTTP 501
+`typed_async_tool_ingestion_unavailable` before creating a Session. Ordinary
+agents still use synchronous tools; `exec_command` is never eligible for the
+read-only background ledger. The prior opt-in pilot delivered a tagged *new
+user turn*, which was not the Unreal same-call-ID behavior. That route has been
+removed. Older pilot rows are quarantined rather than replayed as tool output.
 
-The DO persists the job, arguments (at most 64,000 characters), initial turn ID,
-and stable continuation turn ID before starting read-only work. It retains an
-8,192-character capped result, with a retry lease after interrupted read-only
-work and a limit of three attempts. Each Session permits at most eight queued/running
-jobs and 100 retained jobs; terminal jobs older than seven days are pruned. An alarm reconciles incomplete jobs and,
-only after the original turn ends, admits a **new tagged user turn** containing
-the bounded final result; it is visible in events and turn status. Inspect
-`GET /v1/agents/:id/jobs` (latest 50) or `/jobs/:jobId`, or call the
-`async_job_status` named tool. Normal owner authentication applies and cross-owner
-IDs cannot read these jobs. Tool errors are not persisted verbatim, to avoid
-capturing credentials or headers; failures carry generic messages. Background
-web traffic still uses the owner-scoped private Egress2 binding. An interrupted
-read-only search may run twice; search is allowlisted precisely because it has
-no intended mutation. The ledger does not pretend exactly-once upstream reads.
+The dormant, opt-in-only `AsyncJobs` ledger records a stable original turn,
+JavaScript execution turn, provider call ID, job ID, arguments and bounded
+result before attempting delivery. It permits only `current_time` and
+`web__run`, with an eight-active-job cap, three read-only retry attempts, and
+seven-day retention after acknowledged delivery. It does not assert exactly-once
+upstream reads. When typed ingestion is unavailable, the terminal row remains
+`awaiting_integration` with no synthetic continuation and no tight alarm loop.
 
-**This is not the exact Unreal AI async protocol.** The original function call
-gets one immediate receipt, not two `function_call_output` records sharing its
-call ID. The final result is a separate turn tagged `async_job_final`, rather
-than late injection into the old model call. The Rust core currently rejects duplicate same-call-ID outputs, and provider
-acceptance is not established; Unreal reports some non-OpenAI providers reject
-that pattern. The continuation's search content
-is untrusted source data, not authorization to perform actions; the model must
-not obey instructions embedded within it. This pilot does not guarantee model
-quality, ordering relative to unrelated new turns, or precisely-once egress.
+Enabling the feature requires a **trusted JS/WASM Agent API** that stages a
+pending output for the original tool call and durably ingests its later terminal
+result. That API must resolve the actual Rust Agent turn (the JS execution turn
+is not interchangeable), decide at the serialized model-request boundary
+whether to replace the unsent pending output or append a same-ID terminal
+output, and deduplicate retries by job ID. The current Rust-only transcript
+methods are not callable from this Worker. Provider acceptance of committed
+same-call-ID duplicate outputs also needs live HTTP/WebSocket validation; do
+not treat local mock acceptance as a provider guarantee.

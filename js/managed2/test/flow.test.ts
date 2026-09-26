@@ -291,56 +291,21 @@ it("anchors a new session relay to trusted SF ingress rather than an asserted cl
   expect(region).toBe("wnam");
 });
 
-it("opt-in async read finishes original turn before delayed web egress, then emits a tagged continuation", async () => {
+it("fails closed on exact async opt-in while typed JS/WASM ingestion is unavailable", async () => {
   const authorization = `Bearer ${fixtureKeys["fixture-user"]}`;
-  expect((await SELF.fetch("https://api.test/v1/credentials/openai", {
-    method: "PUT", headers: { authorization }, body: JSON.stringify({ value: "sk-fixture-only" }),
-  })).status).toBe(204);
   const agentId = crypto.randomUUID();
-  const create = () => SELF.fetch("https://api.test/v1/agents", { method: "POST",
+  const requested = await SELF.fetch("https://api.test/v1/agents", { method: "POST",
     headers: { authorization, "idempotency-key": agentId },
-    body: JSON.stringify({ input: "Use async web__run once and summarize the search result.", async_tools: true }) });
-  const created = await create();
-  expect(created.status).toBe(202);
-  expect((await create()).status).toBe(202);
-  const changed = await SELF.fetch("https://api.test/v1/agents", { method: "POST",
-    headers: { authorization, "idempotency-key": agentId },
-    body: JSON.stringify({ input: "Use async web__run once and summarize the search result.", async_tools: false }) });
-  expect(changed.status).toBe(409);
-  await expect.poll(async () => {
-    const status = await SELF.fetch(`https://api.test/v1/agents/${agentId}/turns/${agentId}`, { headers: { authorization } });
-    return (await status.json<{ state: string; message: string }>()).state;
-  }, { timeout: 10_000 }).toBe("completed");
-  const original = await (await SELF.fetch(`https://api.test/v1/agents/${agentId}/turns/${agentId}`,
-    { headers: { authorization } })).json<{ message: string }>();
-  expect(original.message).toContain("in_progress");
-  const jobsUrl = `https://api.test/v1/agents/${agentId}/jobs`;
-  const jobs = await (await SELF.fetch(jobsUrl, { headers: { authorization } })).json<{
-    job_id: string; state: string; result?: string }[]>();
-  expect(jobs).toHaveLength(1);
-  expect(["queued", "running"]).toContain(jobs[0]!.state);
-  expect(jobs[0]!.result).toBeUndefined();
-  const jobId = jobs[0]!.job_id;
-  const foreign = `Bearer ${fixtureKeys["owner-no-key"]}`;
-  expect((await SELF.fetch(`${jobsUrl}/${jobId}`, { headers: { authorization: foreign } })).status).toBe(404);
-  const status = `${jobsUrl}/${jobId}`;
-  let final: { job_id: string; state: string; result?: string; continuation_turn_id?: string } | undefined;
-  await expect.poll(async () => {
-    final = await (await SELF.fetch(status, { headers: { authorization } })).json<typeof final>();
-    return final?.state;
-  }, { timeout: 15_000, interval: 250 }).toBe("continued");
-  expect(final?.result).toContain("synthetic citation");
-  expect(final?.result).not.toContain("provider-only");
-  await expect.poll(async () => {
-    const turn = await SELF.fetch(`https://api.test/v1/agents/${agentId}/turns/${final!.continuation_turn_id}`,
-      { headers: { authorization } });
-    const state = await turn.json<{ state: string; message?: string }>();
-    return state.state === "completed" ? state.message : state.state;
-  }, { timeout: 10_000 }).toContain("Background search finished");
-  // Stable replay cannot launch another egress operation or create another job.
-  expect((await create()).status).toBe(202);
-  expect(await (await SELF.fetch(jobsUrl, { headers: { authorization } })).json()).toHaveLength(1);
-}, 30_000);
+    body: JSON.stringify({ input: "Use async web__run once.", async_tools: true }) });
+  expect(requested.status).toBe(501);
+  expect(await requested.json()).toEqual({ error: "typed_async_tool_ingestion_unavailable" });
+  // Failure precedes Session initialization, so retrying normally under the
+  // same key creates an ordinary synchronous agent with no jobs endpoint.
+  const ordinary = await SELF.fetch("https://api.test/v1/agents", { method: "POST",
+    headers: { authorization, "idempotency-key": agentId }, body: JSON.stringify({ async_tools: false }) });
+  expect(ordinary.status).toBe(201);
+  expect((await SELF.fetch(`https://api.test/v1/agents/${agentId}/jobs`, { headers: { authorization } })).status).toBe(404);
+});
 
 it("does not activate async tool jobs by default and rejects non-boolean opt-in", async () => {
   const authorization = `Bearer ${fixtureKeys["fixture-user"]}`;
@@ -352,20 +317,10 @@ it("does not activate async tool jobs by default and rejects non-boolean opt-in"
   expect((await SELF.fetch(`https://api.test/v1/agents/${agent_id}/jobs`, { headers: { authorization } })).status).toBe(404);
 });
 
-it("runs the second allowlisted read-only tool as a durable async job", async () => {
+it("refuses exact async opt-in even without an initial turn", async () => {
   const authorization = `Bearer ${fixtureKeys["fixture-user"]}`;
-  const created = await SELF.fetch("https://api.test/v1/agents", { method: "POST", headers: { authorization },
-    body: JSON.stringify({ async_tools: true, input: "Use current_time exactly once and report the UTC timestamp it returns." }) });
-  expect(created.status).toBe(202);
-  const { agent_id, turn_id } = await created.json<{ agent_id: string; turn_id: string }>();
-  await expect.poll(async () => (await (await SELF.fetch(`https://api.test/v1/agents/${agent_id}/turns/${turn_id}`,
-    { headers: { authorization } })).json<{ state: string }>()).state, { timeout: 10_000 }).toBe("completed");
-  let jobs: { state: string; tool: string; result?: string }[] = [];
-  await expect.poll(async () => {
-    jobs = await (await SELF.fetch(`https://api.test/v1/agents/${agent_id}/jobs`, { headers: { authorization } })).json<typeof jobs>();
-    return jobs[0]?.state;
-  }, { timeout: 10_000 }).toBe("continued");
-  expect(jobs).toHaveLength(1);
-  expect(jobs[0]!.tool).toBe("current_time");
-  expect(jobs[0]!.result).toMatch(/utc.*\d{4}-\d{2}-\d{2}T/);
+  const response = await SELF.fetch("https://api.test/v1/agents", { method: "POST", headers: { authorization },
+    body: JSON.stringify({ async_tools: true }) });
+  expect(response.status).toBe(501);
+  expect(await response.json()).toEqual({ error: "typed_async_tool_ingestion_unavailable" });
 });
