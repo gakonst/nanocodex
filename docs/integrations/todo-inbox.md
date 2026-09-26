@@ -22,4 +22,6 @@ These images and the recording use `--demo --todo-ui-fixture`; names and email c
 | --- | --- | --- | --- |
 | ![Decision list](media/todo-mobile/decisions.png) | ![Decision detail](media/todo-mobile/decision-detail.png) | ![Captured thought](media/todo-mobile/captured.png) | ![Chat dock](media/todo-mobile/chat-dock.png) |
 
-[Watch the interaction recording](media/todo-mobile/walkthrough.mp4) · [Leading swipe](media/todo-mobile/swipe-primary.png) · [Trailing swipe](media/todo-mobile/swipe-secondary.png)
+![Animated fixture walkthrough](media/todo-mobile/walkthrough.gif)
+
+[Watch the full-quality interaction recording](media/todo-mobile/walkthrough.mp4) · [Leading swipe](media/todo-mobile/swipe-primary.png) · [Trailing swipe](media/todo-mobile/swipe-secondary.png)
