@@ -270,6 +270,33 @@ impl SessionSnapshot {
         &self.workspace
     }
 
+    /// Resolve a completed journal admission from its saved boundary, never
+    /// from the driver's potentially newer or compacted in-memory checkpoint.
+    #[cfg(feature = "openai")]
+    pub(crate) fn into_replayed_checkpoint(
+        self,
+        lineage_id: &str,
+        model: Model,
+        workspace: Option<&str>,
+    ) -> Result<ModelCheckpoint> {
+        let resumed = self.into_resume()?;
+        if resumed.lineage_id.as_ref() != lineage_id || resumed.model != model {
+            return Err(NanocodexError::InvalidSessionSnapshot(
+                "replayed operation belongs to another lineage or model".into(),
+            ));
+        }
+        if workspace.is_some_and(|expected| expected != resumed.workspace) {
+            return Err(NanocodexError::InvalidSessionSnapshot(
+                "replayed operation belongs to another workspace".into(),
+            ));
+        }
+        resumed.checkpoint.ok_or_else(|| {
+            NanocodexError::InvalidSessionSnapshot(
+                "replayed operation has no exact model checkpoint".into(),
+            )
+        })
+    }
+
     #[cfg(feature = "openai")]
     pub(crate) fn into_resume(self) -> Result<SessionResume> {
         if self.version != SESSION_SNAPSHOT_VERSION {

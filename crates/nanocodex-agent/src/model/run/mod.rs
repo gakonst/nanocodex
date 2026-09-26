@@ -538,7 +538,7 @@ impl<S> ModelRun<S> {
         // receipt returns above without advancing the identity a second time.
         session.pending_late_wake = Some(advance_late_wake(
             session.pending_late_wake.as_deref(),
-            &receipt_id.to_string(),
+            receipt_id.as_ref(),
         ));
         session.preserve_inherited_delta = true;
         Ok((
@@ -826,7 +826,27 @@ mod context_accounting_snapshot_tests {
         let encoded = serde_json::to_value(snapshot).unwrap();
         assert_eq!(encoded["pending_late_wake"], second);
         let restored: SessionSnapshot = serde_json::from_value(encoded).unwrap();
-        let mut replay = restored.into_resume().unwrap().checkpoint.unwrap();
+        assert!(
+            restored
+                .clone()
+                .into_replayed_checkpoint("other", Model::Astra, Some("."))
+                .is_err()
+        );
+        assert!(
+            restored
+                .clone()
+                .into_replayed_checkpoint("lineage", Model::Sol, Some("."))
+                .is_err()
+        );
+        assert!(
+            restored
+                .clone()
+                .into_replayed_checkpoint("lineage", Model::Astra, Some("/other"))
+                .is_err()
+        );
+        let mut replay = restored
+            .into_replayed_checkpoint("lineage", Model::Astra, Some("."))
+            .unwrap();
         assert_eq!(replay.late_wake_id(), Some(second.as_str()));
         replay.conversation.append([ResponseItem::message(
             MessageRole::Developer,

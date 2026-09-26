@@ -332,8 +332,12 @@ where
                         )
                         .await;
                         let reopens = outcome_requires_reopen(&outcome);
-                        if let Ok((checkpoint, _)) = &outcome {
-                            latest_fork_checkpoint = Some(Arc::clone(checkpoint));
+                        if let Ok((checkpoint, receipt)) = &outcome {
+                            // Replayed output describes its historical operation;
+                            // it must not roll a newer live driver back.
+                            if !receipt.replayed {
+                                latest_fork_checkpoint = Some(Arc::clone(checkpoint));
+                            }
                         } else {
                             model = model_from_checkpoint(
                                 &self.events,
@@ -518,8 +522,10 @@ where
                     )
                     .await;
                     let reopen = outcome_requires_reopen(&outcome);
-                    if let Ok((checkpoint, _)) = &outcome {
-                        latest_fork_checkpoint = Some(Arc::clone(checkpoint));
+                    if let Ok((checkpoint, receipt)) = &outcome {
+                        if !receipt.replayed {
+                            latest_fork_checkpoint = Some(Arc::clone(checkpoint));
+                        }
                     } else {
                         model = model_from_checkpoint(
                             &self.events,
@@ -1969,50 +1975,67 @@ where
     S::Error: Into<ResponseError>,
     S::Future: AgentSend,
 {
+    let journal_id = format!("late-output:{operation_id}");
     let admitted = execution
-        .admit_late_output(&operation_id, &call_id, &output)
+        .recover_failure(
+            Some(&journal_id),
+            execution
+                .admit_late_output(&operation_id, &call_id, &output)
+                .await,
+        )
         .await?;
-    if matches!(admitted, AdmittedExecution::Completed { .. }) {
-        // The journal is authoritative even if compaction removed the terminal
-        // output from the current transcript. Never append it a second time.
-        let snapshot = model.current_checkpoint().ok_or_else(|| {
-            NanocodexError::InvalidSessionSnapshot(
-                "replayed late output has no model checkpoint".into(),
-            )
-        })?;
-        return Ok((
-            Arc::new(CommittedSession::new(identity.0, identity.1, snapshot)),
-            LateFunctionOutputReceipt {
-                operation_id,
-                call_id,
-                replayed: true,
-                continuation_started: false,
-            },
-        ));
-    }
-    if !matches!(
-        admitted,
-        AdmittedExecution::Execute | AdmittedExecution::Resume
-    ) {
-        return Err(NanocodexError::InvalidExecutionPolicy(
-            "late output operation is not executable".into(),
-        ));
+    match admitted {
+        AdmittedExecution::Completed { snapshot, .. } => {
+            // The journal is authoritative even if the current model advanced
+            // or compaction removed the receipt from its transcript.
+            let checkpoint =
+                snapshot
+                    .clone()
+                    .into_replayed_checkpoint(&identity.0, identity.1, workspace)?;
+            return Ok((
+                Arc::new(
+                    CommittedSession::new(identity.0, identity.1, checkpoint)
+                        .with_retained_snapshot(Some(snapshot)),
+                ),
+                LateFunctionOutputReceipt {
+                    operation_id,
+                    call_id,
+                    replayed: true,
+                    continuation_started: false,
+                },
+            ));
+        }
+        AdmittedExecution::Execute | AdmittedExecution::Resume => {}
+        AdmittedExecution::Failed { error } => {
+            return Err(NanocodexError::ReplayedExecutionFailed(error));
+        }
+        AdmittedExecution::Cancelled => return Err(NanocodexError::TurnCancelled),
     }
     let turn = execution.start_late_output(nanocodex_oai_api::Thinking::Medium, &operation_id);
-    turn.begin().await?;
+    if let Err(error) = turn.begin().await {
+        execution.release_claim(&journal_id).await;
+        return execution
+            .recover_failure(Some(&journal_id), Err(error))
+            .await;
+    }
     let (snapshot, replayed) =
         match model.submit_late_function_output(&call_id, output, &operation_id, workspace) {
             Ok(value) => value,
             Err(error) => {
-                execution
-                    .release_claim(&format!("late-output:{operation_id}"))
+                execution.release_claim(&journal_id).await;
+                return execution
+                    .recover_failure(Some(&journal_id), Err(error))
                     .await;
-                return Err(error);
             }
         };
     let checkpoint = Arc::new(CommittedSession::new(identity.0, identity.1, snapshot));
     execution
-        .persist(&checkpoint, turn.completed_without_message())
+        .recover_failure(
+            Some(&journal_id),
+            execution
+                .persist(&checkpoint, turn.completed_without_message())
+                .await,
+        )
         .await?;
     Ok((
         checkpoint,
