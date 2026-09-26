@@ -70,7 +70,7 @@ describe("owner hosted tool statistics", () => {
       "PRIVATE_RESULT", "PRIVATE_RECEIPT", "source_call_id", "call_id", "future", "old"]) {
       expect(serialized).not.toContain(privateValue);
     }
-    expect((await (await call({ ...principal, userId: crypto.randomUUID() })).json()).total_calls).toBe(0);
+    expect(await (await call({ ...principal, userId: crypto.randomUUID() })).json()).toMatchObject({ total_calls: 0 });
     const forged = await namespace.getByName(owner).fetch("https://account-tools.internal/hosted-tool-stats", {
       headers: { "x-nanocodex-owner-id": crypto.randomUUID() },
     });
@@ -79,7 +79,8 @@ describe("owner hosted tool statistics", () => {
 
   it("rejects unauthenticated readers, Connect grants, missing permissions, writes and selectors", async () => {
     const { principal, call } = fixture();
-    expect((await call(undefined)).status).toBe(401);
+    expect((await worker.fetch(new Request("https://nanocodex.example/v1/account/hosted-tool-stats"),
+      env as Parameters<typeof worker.fetch>[1], createExecutionContext())).status).toBe(401);
     expect((await call({ ...principal, kind: "connect_grant" })).status).toBe(403);
     expect((await call({ ...principal, connectGrant: { grantId: "grant" } as NonNullable<Principal["connectGrant"]> })).status).toBe(403);
     for (const capabilities of [[], ["agents:read"], ["tools:use"]] as Principal["capabilities"][]) {
