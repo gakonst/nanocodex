@@ -197,6 +197,36 @@ export class AccountHostedTools extends DurableObject<AccountHostedToolsEnv> {
       }
       return this.#remote.fetch(request, vm);
     }
+    if (url.pathname === "/hosted-tool-stats") {
+      if (request.method !== "GET" || url.search) return Response.json({ error: "invalid_request" }, { status: 400 });
+      const ownerId = request.headers.get(OWNER_ASSERTION);
+      if (!isUserId(ownerId) || !await this.#claim(ownerId)) {
+        return Response.json({ error: "not_found" }, { status: 404 });
+      }
+      const to = Date.now();
+      const from = to - 24 * 60 * 60 * 1000;
+      // One persisted row per (session_id, source_call_id). Aggregate in SQL;
+      // never fetch input, result, receipt, machine or call identities.
+      const data = this.ctx.storage.sql.exec<{
+        name: string; state: string; calls: number; duration_count: number;
+        total_duration_ms: number | null; avg_duration_ms: number | null;
+        min_duration_ms: number | null; max_duration_ms: number | null;
+      }>(`SELECT name, state, COUNT(*) AS calls,
+          COUNT(CASE WHEN state IN ('completed', 'unavailable', 'ambiguous', 'cancelled') THEN 1 END) AS duration_count,
+          SUM(CASE WHEN state IN ('completed', 'unavailable', 'ambiguous', 'cancelled')
+            THEN MAX(0, updated_at - created_at) END) AS total_duration_ms,
+          AVG(CASE WHEN state IN ('completed', 'unavailable', 'ambiguous', 'cancelled')
+            THEN MAX(0, updated_at - created_at) END) AS avg_duration_ms,
+          MIN(CASE WHEN state IN ('completed', 'unavailable', 'ambiguous', 'cancelled')
+            THEN MAX(0, updated_at - created_at) END) AS min_duration_ms,
+          MAX(CASE WHEN state IN ('completed', 'unavailable', 'ambiguous', 'cancelled')
+            THEN MAX(0, updated_at - created_at) END) AS max_duration_ms
+        FROM hosted_tool_calls
+        WHERE created_at >= ? AND created_at <= ?
+        GROUP BY name, state ORDER BY name, state`, from, to).toArray();
+      return Response.json({ window: { from, to }, total_calls: data.reduce((sum, row) => sum + row.calls, 0), data },
+        { headers: { "cache-control": "no-store" } });
+    }
     if (request.method === "GET" && url.pathname === "/tool-host") {
       if (request.headers.get("upgrade")?.toLowerCase() !== "websocket") {
         return new Response("Expected WebSocket upgrade", { status: 426 });
