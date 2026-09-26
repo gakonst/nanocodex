@@ -25,8 +25,8 @@ export function duplicateRequest(call) {
     { type: 'function_call_output', call_id: call.call_id, output: 'canary_noop complete: ACK' },
   ], tools: [TOOL], tool_choice: 'none', store: false, stream: false, max_output_tokens: 128 };
 }
-function checkResult(result, phase) {
-  if (!result || result.provenance !== 'provider' || result.provider !== 'chatgpt_subscription' || ![200, 201].includes(result.httpStatus) || result.response?.status !== 'completed' || !Array.isArray(result.response.output)) {
+function checkResult(result, phase, provider) {
+  if (!result || result.provenance !== 'provider' || result.provider !== provider || ![200, 201].includes(result.httpStatus) || result.response?.status !== 'completed' || !Array.isArray(result.response.output)) {
     throw new Error(`${phase}: provider response not attested/completed (status ${Number.isInteger(result?.httpStatus) ? result.httpStatus : 'unknown'})`);
   }
   return result.response;
@@ -34,15 +34,18 @@ function checkResult(result, phase) {
 export async function runCanary(adapter) {
   if (typeof adapter?.create !== 'function' || adapter.liveProvider !== true) throw new Error('trusted live provider adapter required');
   const outcomes = [];
-  for (const transport of ['http', 'websocket']) {
-    const first = await adapter.create({ transport, request: initialRequest() });
-    const response = checkResult(first, `${transport} initial`);
+  for (const [provider, transport] of [
+    ['openai_api', 'http'], ['chatgpt_subscription', 'http'], ['chatgpt_subscription', 'websocket'],
+  ]) {
+    const phase = `${provider}/${transport}`;
+    const first = await adapter.create({ provider, transport, request: initialRequest() });
+    const response = checkResult(first, `${phase} initial`, provider);
     const calls = response.output.filter(item => item.type === 'function_call' && item.name === 'canary_noop');
-    if (calls.length !== 1) throw new Error(`${transport}: expected exactly one provider-origin canary_noop call`);
+    if (calls.length !== 1) throw new Error(`${phase}: expected exactly one provider-origin canary_noop call`);
     const continuation = duplicateRequest(calls[0]);
-    const second = await adapter.create({ transport, request: continuation });
-    checkResult(second, `${transport} duplicate continuation`);
-    outcomes.push({ transport, accepted: true, providerRequestId: second.requestId ?? null, responseId: second.response?.id ?? null });
+    const second = await adapter.create({ provider, transport, request: continuation });
+    checkResult(second, `${phase} duplicate continuation`, provider);
+    outcomes.push({ provider, transport, accepted: true, providerRequestId: second.requestId ?? null, responseId: second.response?.id ?? null });
   }
   return outcomes;
 }
@@ -56,7 +59,7 @@ if (process.argv[1] && resolve(process.argv[1]) === new URL(import.meta.url).pat
     console.log(JSON.stringify({ liveProviderAcceptance: true, results }));
   } catch (error) {
     // Never print arbitrary provider errors: they may contain request bodies or authorization.
-    console.error(error instanceof Error && /^(trusted live|requires --live|provider did not|http:|websocket:)/.test(error.message) ? error.message : 'provider canary failed (consult trusted adapter telemetry)');
+    console.error(error instanceof Error && /^(trusted live|requires --live|provider did not|openai_api\/|chatgpt_subscription\/)/.test(error.message) ? error.message : 'provider canary failed (consult trusted adapter telemetry)');
     process.exitCode = 1;
   }
 }

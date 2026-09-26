@@ -21,16 +21,18 @@ test('no synthetic fixture can establish live acceptance', async () => {
   await assert.rejects(() => runCanary(adapter), /not attested\/completed/);
 });
 
-test('both paths require a provider call before duplicate continuation', async () => {
+test('all three paths require a provider call before duplicate continuation', async () => {
   const modes = [];
-  const adapter = { liveProvider: true, async create({ transport, request }) {
-    modes.push([transport, request]);
+  const adapter = { liveProvider: true, async create({ provider, transport, request }) {
+    modes.push([provider, transport, request]);
     const first = request.input.length === 1;
-    return { provenance: 'provider', provider: 'chatgpt_subscription', httpStatus: 200, response: { status: 'completed', id: 'test', output: first ? [{ type: 'function_call', name: 'canary_noop', call_id: 'provider-id', arguments: '{}' }] : [] } };
+    return { provenance: 'provider', provider, httpStatus: 200, response: { status: 'completed', id: 'test', output: first ? [{ type: 'function_call', name: 'canary_noop', call_id: 'provider-id', arguments: '{}' }] : [] } };
   } };
   const outcomes = await runCanary(adapter);
-  assert.deepEqual(outcomes.map(x => x.transport), ['http', 'websocket']);
-  assert.equal(modes.length, 4);
-  assert.deepEqual(modes.map(x => x[0]), ['http', 'http', 'websocket', 'websocket']);
+  assert.deepEqual(outcomes.map(x => [x.provider, x.transport]), [
+    ['openai_api', 'http'], ['chatgpt_subscription', 'http'], ['chatgpt_subscription', 'websocket'],
+  ]);
+  assert.equal(modes.length, 6);
+  assert.deepEqual(modes.map(x => x[1]), ['http', 'http', 'http', 'http', 'websocket', 'websocket']);
   // This fixture tests sequencing only; no live-provider claim follows from the test.
 });
