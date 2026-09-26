@@ -406,10 +406,12 @@ test("meeting previews expose only the capture UUID endpoint", () => {
 
 // The account proxy previously returned no route, causing public TODO calls to
 // fall through to 404 before managed authentication or persistence could run.
-test("TODO reads, captures and decision responses retain the exact managed request and response", async () => {
+test("TODO reads, captures, diagnostics and decision responses retain the exact managed request and response", async () => {
   const decision = "11111111-1111-4111-8111-111111111111";
   for (const [method, path, body] of [
     ["GET", "/v1/todo", undefined],
+    ["GET", "/v1/todo/traces?limit=50&before=fixture-cursor", undefined],
+    ["POST", "/v1/todo/decision-backtest", JSON.stringify({ samples: [{ id: "fixture-1", expected: "reply", from: "sender@example.test", subject: "Scheduling", body: "Please reply with a time." }] })],
     ["POST", "/v1/todo", JSON.stringify({ body: "Follow up", operation_id: decision })],
     ["POST", `/v1/todo/decisions/${decision}/respond`, JSON.stringify({ version: 1, choice_id: "yes", operation_id: decision })],
   ] as const) {
@@ -438,7 +440,7 @@ test("TODO reads, captures and decision responses retain the exact managed reque
 });
 
 test("TODO forwarding excludes unsupported adjacent endpoints", async () => {
-  for (const path of ["/v1/todos", "/v1/todo/", "/v1/todo/decisions", "/v1/todo/decisions/invalid/respond",
+  for (const path of ["/v1/todo/traces/extra", "/v1/todo/decision-backtest/extra", "/v1/todos", "/v1/todo/", "/v1/todo/decisions", "/v1/todo/decisions/invalid/respond",
     "/v1/todo/decisions/11111111-1111-4111-8111-111111111111/respond/extra"]) {
     const request = new Request(`https://nanocodex.example${path}`);
     assert.equal(await routeManaged(request, { NANOCODEX_BACKEND: {
