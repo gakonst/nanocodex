@@ -35,6 +35,32 @@ it("returns same-ID pending without waiting for a slow tool, then wakes for same
   })).json<{ state: string; continuation_started?: boolean; result?: string }>();
   await expect.poll(async () => (await job()).state, { timeout: 30_000, interval: 100 }).toBe("delivered");
   expect(await job()).toMatchObject({ state: "delivered", continuation_started: true });
+  // Cursor-zero replay must expose the prompt-less terminal answer to a
+  // newly connected client, not only to internal model history/job status.
+  const events = await SELF.fetch(`https://api.test/v1/agents/${agentId}/events?cursor=0`, {
+    headers: { authorization, upgrade: "websocket" },
+  });
+  expect(events.status).toBe(101);
+  const socket = events.webSocket!;
+  const frames: unknown[] = [];
+  socket.addEventListener("message", event => {
+    try { frames.push(JSON.parse(String(event.data))); } catch { /* ignore malformed frame */ }
+  });
+  socket.accept();
+  try {
+    await expect.poll(() => frames.some(frame => {
+      const event = (frame as { event?: { type?: string; payload?: { text?: string } } }).event;
+      return event?.type === "assistant.message"
+        && event.payload?.text?.includes("Background search finished:");
+    }), { timeout: 3000, interval: 50 }).toBe(true);
+  } finally { socket.close(); }
+  const replayed = frames.map(frame => (frame as { event?: { type?: string; payload?: { text?: string } } }).event);
+  expect(replayed.filter(event => event?.type === "input.accepted")).toHaveLength(1);
+  expect(replayed.filter(event => event?.type === "assistant.message")
+    .map(event => event?.payload?.text)).toEqual([
+      "Waiting for background search",
+      expect.stringContaining("Background search finished:"),
+    ]);
   const rows = await runInDurableObject(stub, (_session, state) => ({
     source: state.storage.sql.exec<{ state: string; message: string }>(
       "SELECT state, message FROM turns WHERE id = ?", turnId).toArray()[0],
