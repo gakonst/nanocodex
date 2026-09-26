@@ -7,8 +7,9 @@
 pub use nanocodex_agent::NanocodexBuilder;
 pub use nanocodex_agent::{
     AgentEvents, AgentSessionContext, CostStatus, EstimatedUsdCost, ExecutionPolicyDisposition,
-    Nanocodex, NanocodexError, PromptRequest, PromptRoute, ReportedTurnUsage, ServiceTier, Turn,
-    TurnControl, TurnResult, TurnUsage, UsdAmount,
+    LateFunctionOutput, LateFunctionOutputReceipt, Nanocodex, NanocodexError, PromptRequest,
+    PromptRoute, ReportedTurnUsage, ServiceTier, Turn, TurnControl, TurnResult, TurnUsage,
+    UsdAmount,
 };
 #[cfg(feature = "durability")]
 #[cfg_attr(docsrs, doc(cfg(feature = "durability")))]

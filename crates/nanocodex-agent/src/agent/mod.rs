@@ -117,6 +117,18 @@ pub struct LateFunctionOutputReceipt {
     pub continuation_started: bool,
 }
 
+/// One typed terminal result within a bounded, trusted idle cohort.
+#[derive(Clone, Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LateFunctionOutput {
+    /// Original function-call identity, not a generated surrogate.
+    pub call_id: String,
+    /// Stable caller-owned identity for the per-job journal.
+    pub operation_id: String,
+    /// Typed terminal function output.
+    pub output: nanocodex_oai_api::responses::FunctionOutputBody,
+}
+
 pub mod backend;
 #[cfg(feature = "openai")]
 mod builder;

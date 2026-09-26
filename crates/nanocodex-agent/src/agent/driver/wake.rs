@@ -162,6 +162,11 @@ where
                             shutdown_requested = true;
                         }
                     }
+                    Some(Command::SubmitLateFunctionOutputs { result, .. }) => {
+                        drop(result.send(Err(NanocodexError::InvalidRequest(
+                            "batch late outputs require an idle driver".into(),
+                        ))));
+                    }
                     Some(Command::SubmitLateFunctionOutput { call_id, output, operation_id, result }) => {
                         pending_outputs.push((call_id, output, operation_id, result));
                     }

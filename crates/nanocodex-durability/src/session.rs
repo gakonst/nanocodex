@@ -4193,8 +4193,16 @@ mod tests {
                 model_call_index: 1
             }
         );
-        assert!(owner.complete_step(id.into(), "model-1".into(),
-            &serde_json::json!({"response":{"id":"   "}})).await.is_err());
+        assert!(
+            owner
+                .complete_step(
+                    id.into(),
+                    "model-1".into(),
+                    &serde_json::json!({"response":{"id":"   "}})
+                )
+                .await
+                .is_err()
+        );
         owner
             .complete_step(
                 id.into(),

@@ -482,6 +482,35 @@ impl Nanocodex {
             .await
     }
 
+    /// Stages a bounded idle cohort before admitting a prompt-less continuation.
+    /// Active turns are deliberately rejected rather than using a mutable handler.
+    pub async fn submit_late_function_outputs(
+        &self,
+        outputs: Vec<super::LateFunctionOutput>,
+    ) -> Result<Vec<LateFunctionOutputReceipt>> {
+        use std::collections::HashSet;
+        if !(1..=8).contains(&outputs.len()) {
+            return Err(NanocodexError::InvalidRequest(
+                "late output batch requires 1..8 entries".into(),
+            ));
+        }
+        let mut calls = HashSet::new();
+        let mut operations = HashSet::new();
+        for entry in &outputs {
+            if entry.call_id.trim().is_empty()
+                || entry.operation_id.trim().is_empty()
+                || !calls.insert(&entry.call_id)
+                || !operations.insert(&entry.operation_id)
+                || matches!(&entry.output, nanocodex_oai_api::responses::FunctionOutputBody::Content(items) if items.is_empty())
+            {
+                return Err(NanocodexError::InvalidRequest(
+                    "invalid or duplicate late output batch entry".into(),
+                ));
+            }
+        }
+        self.backend.submit_late_function_outputs(outputs).await
+    }
+
     /// Appends adapter-owned developer context at the next safe model boundary.
     ///
     /// The returned read-only view is captured from the latest safe boundary

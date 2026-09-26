@@ -37,7 +37,6 @@ pub mod backend {
     pub use crate::agent::backend::*;
 }
 
-pub use agent::LateFunctionOutputReceipt;
 #[cfg(feature = "openai")]
 #[cfg_attr(docsrs, doc(cfg(feature = "openai")))]
 pub use agent::{AgentHandle, ExecutionEnvironment, NanocodexBuilder};
@@ -45,6 +44,7 @@ pub use agent::{
     AgentSessionContext, BuilderBackend, ChildRuntimeSnapshot, Nanocodex, PromptRequest,
     PromptRoute, SpawnOptions, Turn, TurnControl, TurnResult,
 };
+pub use agent::{LateFunctionOutput, LateFunctionOutputReceipt};
 #[cfg(feature = "openai")]
 pub use error::CompactionRecovery;
 pub use error::{ExecutionPolicyDisposition, NanocodexError, Result};

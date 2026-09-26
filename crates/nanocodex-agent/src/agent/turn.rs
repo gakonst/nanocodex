@@ -533,6 +533,10 @@ pub(super) enum Command {
         operation_id: String,
         result: oneshot::Sender<Result<LateFunctionOutputReceipt>>,
     },
+    SubmitLateFunctionOutputs {
+        outputs: Vec<LateFunctionOutput>,
+        result: oneshot::Sender<Result<Vec<LateFunctionOutputReceipt>>>,
+    },
     AppendDeveloperMessage {
         text: String,
         result: oneshot::Sender<Result<AgentSessionContext>>,

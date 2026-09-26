@@ -569,6 +569,65 @@ where
                     drop(result.send(Ok(())));
                     continue;
                 }
+                if let Command::SubmitLateFunctionOutputs { outputs, result } = command {
+                    // One command fences the cohort: no model continuation starts
+                    // until every per-job journal has landed.
+                    if !pending_developer_messages.is_empty() || !pending_late_outputs.is_empty() {
+                        drop(result.send(Err(NanocodexError::InvalidRequest(
+                            "batch late outputs require an idle, unencumbered boundary".into(),
+                        ))));
+                        continue;
+                    }
+                    let mut receipts = Vec::with_capacity(outputs.len());
+                    let mut failure = None;
+                    for entry in outputs {
+                        let outcome = commit_late_function_output(
+                            &mut model,
+                            &self.execution,
+                            (Arc::clone(&self.spawner.lineage_id), thread_model),
+                            entry.call_id,
+                            entry.output,
+                            entry.operation_id,
+                            self.workspace.as_deref(),
+                        )
+                        .await;
+                        match outcome {
+                            Ok((checkpoint, receipt)) => {
+                                // Historical replay must not undo a newer batch stage.
+                                if !receipt.replayed {
+                                    latest_fork_checkpoint = Some(checkpoint);
+                                }
+                                receipts.push(receipt);
+                            }
+                            Err(error) => {
+                                model = model_from_checkpoint(
+                                    &self.events,
+                                    &self.transport_stats,
+                                    &self.tools,
+                                    &self.spawner,
+                                    &prompt_cache,
+                                    latest_fork_checkpoint.as_deref(),
+                                );
+                                failure = Some(error);
+                                break;
+                            }
+                        }
+                    }
+                    let outcome = failure.map_or_else(|| Ok(receipts), Err);
+                    let reopen = outcome_requires_reopen(&outcome);
+                    drop(result.send(outcome));
+                    if reopen {
+                        begin_shutdown(
+                            &mut self.commands,
+                            &mut queued_turns,
+                            default_thinking,
+                            default_fast_mode,
+                        )
+                        .await;
+                        commands_open = false;
+                    }
+                    continue;
+                }
                 if let Command::SubmitLateFunctionOutput {
                     call_id,
                     output,
@@ -994,6 +1053,11 @@ where
                                     }
                                     Some(Command::SetModel { result, .. }) => {
                                         drop(result.send(Err(model_change_locked())));
+                                    }
+                                    Some(Command::SubmitLateFunctionOutputs { result, .. }) => {
+                                        drop(result.send(Err(NanocodexError::InvalidRequest(
+                                            "batch late outputs require an idle driver".into(),
+                                        ))));
                                     }
                                     Some(Command::SubmitLateFunctionOutput { call_id, output, operation_id, result }) => {
                                         pending_late_outputs.push((call_id, output, operation_id, result));
@@ -1686,6 +1750,11 @@ where
                             }
                             Some(Command::SetModel { result, .. }) => {
                                 drop(result.send(Err(model_change_locked())));
+                            }
+                            Some(Command::SubmitLateFunctionOutputs { result, .. }) => {
+                                drop(result.send(Err(NanocodexError::InvalidRequest(
+                                    "batch late outputs require an idle driver".into(),
+                                ))));
                             }
                             Some(Command::SubmitLateFunctionOutput { call_id, output, operation_id, result }) => {
                                 if execution_operation.is_none() {

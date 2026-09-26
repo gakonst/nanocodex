@@ -9,9 +9,9 @@ use std::{
 
 use js_sys::Promise;
 use nanocodex::{
-    AgentEvents, AgentSessionContext, DurableAgentExt, Model, Nanocodex as RustNanocodex,
-    NanocodexError, OpenAi, PromptRoute, ReasoningMode, Thinking, Tools, Turn, TurnControl,
-    TurnResult,
+    AgentEvents, AgentSessionContext, DurableAgentExt, LateFunctionOutput, Model,
+    Nanocodex as RustNanocodex, NanocodexError, OpenAi, PromptRoute, ReasoningMode, Thinking,
+    Tools, Turn, TurnControl, TurnResult,
     agent::{
         AgentHandle, ExecutionEnvironment, PromptRequest, SpawnOptions,
         durability::{
@@ -2026,6 +2026,23 @@ impl WasmNanocodex {
             .await
             .map_err(js_error)?;
         serde_json::to_string(&receipt).map_err(js_error)
+    }
+
+    /// Accepts 1..8 call-bound outputs as one idle driver command. The driver
+    /// journals each job and stages the whole cohort before any model wake.
+    #[wasm_bindgen(js_name = submitFunctionCallOutputs)]
+    pub async fn submit_function_call_outputs(
+        &self,
+        encoded_json: &str,
+    ) -> Result<String, JsValue> {
+        let outputs: Vec<LateFunctionOutput> =
+            serde_json::from_str(encoded_json).map_err(js_error)?;
+        let receipts = self
+            .inner
+            .submit_late_function_outputs(outputs)
+            .await
+            .map_err(js_error)?;
+        serde_json::to_string(&receipts).map_err(js_error)
     }
 
     /// Reads the durable status of an active-turn terminal output by its exact

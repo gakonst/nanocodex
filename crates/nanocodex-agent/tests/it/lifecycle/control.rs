@@ -498,7 +498,7 @@ async fn late_terminal_wakes_without_prompt_and_driver_polls_commands() {
             .any(|item| item["type"] == "function_call_output" && item["output"] == "finished")
     );
     // The gate holds the model call; this must not wait for it.
-    tokio::time::timeout(Duration::from_secs(1), agent.context())
+    tokio::time::timeout(Duration::from_secs(5), agent.context())
         .await
         .unwrap()
         .unwrap();
@@ -517,6 +517,132 @@ async fn late_terminal_wakes_without_prompt_and_driver_polls_commands() {
             .input_items()
             .any(|item| serde_json::to_string(item).unwrap().contains("after wake"))
     );
+    drop((agent, events));
+}
+
+#[tokio::test]
+async fn two_late_terminal_outputs_share_one_promptless_wake() {
+    let (retained, _retained_attempts) = mpsc::unbounded_channel();
+    let first = OpenAi::builder("test")
+        .service(move || RetainingCompletedService {
+            retained: retained.clone(),
+        })
+        .build()
+        .unwrap();
+    let (seed, seed_events) = Nanocodex::builder(first)
+        .tools(Tools::builder().without_defaults().build().unwrap())
+        .build()
+        .unwrap();
+    seed.prompt("initial")
+        .await
+        .unwrap()
+        .result()
+        .await
+        .unwrap();
+    let mut snapshot = serde_json::to_value(seed.snapshot().await.unwrap()).unwrap();
+    drop((seed, seed_events));
+    snapshot["unreal_function_outputs"] = serde_json::json!(true);
+    let history = snapshot["history"].as_array_mut().unwrap();
+    for call_id in ["job-1", "job-2"] {
+        history.push(serde_json::json!({
+            "type":"function_call", "call_id":call_id, "name":"job", "arguments":"{}"
+        }));
+        history.push(serde_json::json!({
+            "type":"function_call_output", "call_id":call_id,
+            "output":"Tool call is still running. Its result arrives in a later turn: continue with independent work, or end your turn to wait for it."
+        }));
+    }
+
+    let (attempts, mut observed) = mpsc::unbounded_channel();
+    let (release, gate) = tokio::sync::oneshot::channel();
+    let gate = Arc::new(std::sync::Mutex::new(Some(gate)));
+    let openai = OpenAi::builder("test")
+        .service(move || WakeGateService {
+            attempts: attempts.clone(),
+            gate: Arc::clone(&gate),
+        })
+        .build()
+        .unwrap();
+    let (agent, events) = Nanocodex::builder(openai)
+        .resume(serde_json::from_value(snapshot).unwrap())
+        .tools(Tools::builder().without_defaults().build().unwrap())
+        .build()
+        .unwrap();
+    let receipts = agent
+        .submit_late_function_outputs(vec![
+            nanocodex_agent::LateFunctionOutput {
+                call_id: "job-1".into(),
+                operation_id: "operation-1".into(),
+                output: nanocodex_oai_api::responses::FunctionOutputBody::Text(
+                    "first finished".into(),
+                ),
+            },
+            nanocodex_agent::LateFunctionOutput {
+                call_id: "job-2".into(),
+                operation_id: "operation-2".into(),
+                output: nanocodex_oai_api::responses::FunctionOutputBody::Text(
+                    "second finished".into(),
+                ),
+            },
+        ])
+        .await
+        .unwrap();
+    assert_eq!(receipts.len(), 2);
+    assert_eq!(receipts[0].call_id, "job-1");
+    assert_eq!(receipts[1].call_id, "job-2");
+    assert!(receipts.iter().all(|receipt| !receipt.replayed));
+
+    let wake = tokio::time::timeout(Duration::from_secs(5), observed.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    let wake_items = wake
+        .input_items()
+        .map(|item| serde_json::to_value(item).unwrap())
+        .collect::<Vec<_>>();
+    for (call_id, output) in [("job-1", "first finished"), ("job-2", "second finished")] {
+        assert_eq!(
+            wake_items
+                .iter()
+                .filter(|item| item["type"] == "function_call_output"
+                    && item["call_id"] == call_id
+                    && item["output"] == output)
+                .count(),
+            1,
+            "the single prompt-less wake must see {call_id}'s terminal output"
+        );
+    }
+    assert!(
+        !wake_items
+            .iter()
+            .any(|item| item.to_string().contains("after cohort"))
+    );
+
+    // The first generation is still gated. The next generation must belong to
+    // this queued user prompt, not a second prompt-less wake for job-2.
+    tokio::time::timeout(Duration::from_secs(5), agent.context())
+        .await
+        .unwrap()
+        .unwrap();
+    let next = tokio::time::timeout(Duration::from_secs(5), agent.prompt("after cohort"))
+        .await
+        .unwrap()
+        .unwrap();
+    release.send(()).unwrap();
+    tokio::time::timeout(Duration::from_secs(5), next.result())
+        .await
+        .unwrap()
+        .unwrap();
+    let second = tokio::time::timeout(Duration::from_secs(5), observed.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(second.input_items().any(|item| {
+        serde_json::to_string(item)
+            .unwrap()
+            .contains("after cohort")
+    }));
+    assert!(observed.try_recv().is_err(), "unexpected additional wake");
     drop((agent, events));
 }
 

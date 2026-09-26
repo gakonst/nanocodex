@@ -296,6 +296,9 @@ pub(super) async fn begin_shutdown(
             Command::SpawnBatch { result, .. } => {
                 drop(result.send(Err(NanocodexError::AgentStopped)));
             }
+            Command::SubmitLateFunctionOutputs { result, .. } => {
+                drop(result.send(Err(NanocodexError::AgentStopped)));
+            }
             Command::SubmitLateFunctionOutput { result, .. } => {
                 drop(result.send(Err(NanocodexError::AgentStopped)));
             }
@@ -454,6 +457,9 @@ pub(super) fn handle_idle_command<S>(
         }
         Command::Shutdown => {}
         Command::Compact { result, .. } => {
+            drop(result.send(Err(NanocodexError::AgentStopped)));
+        }
+        Command::SubmitLateFunctionOutputs { result, .. } => {
             drop(result.send(Err(NanocodexError::AgentStopped)));
         }
         Command::SubmitLateFunctionOutput { result, .. } => {
