@@ -293,7 +293,7 @@ impl ToolOutput {
     /// output and metadata must not opt a conversation into duplicate IDs.
     #[doc(hidden)]
     #[must_use]
-    pub fn with_trusted_unreal_pending(mut self) -> Self {
+    pub const fn with_trusted_unreal_pending(mut self) -> Self {
         self.trusted_unreal_pending = true;
         self
     }
