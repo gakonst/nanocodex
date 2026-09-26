@@ -21,6 +21,8 @@ struct WakeJournal {
     completed: Mutex<Option<(SessionSnapshot, ExecutionOutput)>>,
     lose_completion_ack: AtomicBool,
     recovered_failures: AtomicUsize,
+    retriable_wake_attempts: AtomicUsize,
+    cancelled_wake: AtomicBool,
 }
 
 impl ExecutionPolicy for WakeJournal {
@@ -45,6 +47,9 @@ impl ExecutionPolicy for WakeJournal {
         Box::pin(async move {
             if operation_id.starts_with("late-continuation:") {
                 *self.wake_input.lock().unwrap() = Some(serde_json::from_str(&input).unwrap());
+                if self.cancelled_wake.load(Ordering::SeqCst) {
+                    return Ok(ExecutionAdmission::Cancelled);
+                }
             }
             if operation_id.starts_with("late-continuation:")
                 && let Some((snapshot, output)) = self.completed.lock().unwrap().clone()
@@ -139,12 +144,30 @@ impl ExecutionPolicy for WakeJournal {
         })
     }
 
+    fn cancel<'a>(
+        &'a self,
+        operation_id: String,
+        _snapshot: Option<SessionSnapshot>,
+    ) -> ExecutionFuture<'a, nanocodex_agent::Result<()>> {
+        Box::pin(async move {
+            if operation_id.starts_with("late-continuation:") {
+                self.cancelled_wake.store(true, Ordering::SeqCst);
+            }
+            Ok(())
+        })
+    }
+
     fn fail_attempt<'a>(
         &'a self,
-        _operation_id: String,
+        operation_id: String,
         _error: String,
     ) -> ExecutionFuture<'a, nanocodex_agent::Result<()>> {
-        Box::pin(async { Ok(()) })
+        Box::pin(async move {
+            if operation_id.starts_with("late-continuation:") {
+                self.retriable_wake_attempts.fetch_add(1, Ordering::SeqCst);
+            }
+            Ok(())
+        })
     }
 
     fn fail<'a>(
@@ -155,6 +178,117 @@ impl ExecutionPolicy for WakeJournal {
     ) -> ExecutionFuture<'a, nanocodex_agent::Result<()>> {
         Box::pin(async { Ok(()) })
     }
+}
+
+#[tokio::test]
+async fn shutdown_before_wake_response_preserves_retriable_same_id_delivery() {
+    let (seed_attempts, _seed_rx) = mpsc::unbounded_channel();
+    let openai = OpenAi::builder("test")
+        .service(move || RetainingCompletedService {
+            retained: seed_attempts.clone(),
+        })
+        .build()
+        .unwrap();
+    let (seed, seed_events) = Nanocodex::builder(openai)
+        .tools(Tools::builder().without_defaults().build().unwrap())
+        .build()
+        .unwrap();
+    seed.prompt("seed").await.unwrap().result().await.unwrap();
+    let mut snapshot = serde_json::to_value(seed.snapshot().await.unwrap()).unwrap();
+    seed.shutdown().await.unwrap();
+    drop(seed_events);
+    snapshot["unreal_function_outputs"] = serde_json::json!(true);
+    snapshot["history"].as_array_mut().unwrap().extend([
+        serde_json::json!({
+            "type":"function_call", "call_id":"job-shutdown", "name":"job", "arguments":"{}"
+        }),
+        serde_json::json!({
+            "type":"function_call_output", "call_id":"job-shutdown",
+            "output":"Tool call is still running. Its result arrives in a later turn: continue with independent work, or end your turn to wait for it."
+        }),
+    ]);
+    let journal = Arc::new(WakeJournal::default());
+    let started = Arc::new(AtomicBool::new(false));
+    let dropped = Arc::new(AtomicBool::new(false));
+    let pending_openai = OpenAi::builder("test")
+        .service({
+            let started = Arc::clone(&started);
+            let dropped = Arc::clone(&dropped);
+            move || DropPendingService {
+                started: Arc::clone(&started),
+                dropped: Arc::clone(&dropped),
+            }
+        })
+        .build()
+        .unwrap();
+    let tools = Tools::builder().without_defaults().build().unwrap();
+    let (first, first_events) = Nanocodex::builder(pending_openai)
+        .resume(serde_json::from_value(snapshot).unwrap())
+        .execution_policy(journal.clone())
+        .tools(tools.clone())
+        .build()
+        .unwrap();
+    first
+        .submit_late_function_output(
+            "job-shutdown",
+            FunctionOutputBody::Text("terminal after crash".into()),
+            "operation-shutdown",
+        )
+        .await
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while !started.load(Ordering::Acquire) {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("wake request should begin before shutdown");
+    let staged = journal.pending_snapshot.lock().unwrap().clone().unwrap();
+    let wake_id = serde_json::to_value(&staged).unwrap()["pending_late_wake"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    tokio::time::timeout(Duration::from_secs(5), first.shutdown())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(dropped.load(Ordering::Acquire));
+    assert_eq!(journal.retriable_wake_attempts.load(Ordering::SeqCst), 1);
+    assert!(!journal.cancelled_wake.load(Ordering::SeqCst));
+    assert!(journal.completed.lock().unwrap().is_none());
+    drop(first_events);
+
+    let (attempts, mut observed) = mpsc::unbounded_channel();
+    let openai = OpenAi::builder("test")
+        .service(move || RetainingCompletedService {
+            retained: attempts.clone(),
+        })
+        .build()
+        .unwrap();
+    let (restarted, events) = Nanocodex::builder(openai)
+        .resume(staged)
+        .execution_policy(journal.clone())
+        .tools(tools)
+        .build()
+        .unwrap();
+    let request = tokio::time::timeout(Duration::from_secs(5), observed.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(request.input_items().any(|item| {
+        serde_json::to_string(item)
+            .unwrap()
+            .contains("terminal after crash")
+    }));
+    let restored = restarted.snapshot().await.unwrap();
+    let restored = serde_json::to_value(restored).unwrap();
+    assert!(restored["pending_late_wake"].is_null());
+    assert_eq!(
+        journal.wake_input.lock().unwrap().as_ref().unwrap()["wake_id"],
+        wake_id
+    );
+    restarted.shutdown().await.unwrap();
+    drop(events);
 }
 
 #[tokio::test]

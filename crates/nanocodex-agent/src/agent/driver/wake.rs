@@ -224,17 +224,16 @@ where
             }
             persisted
         }
-        Ok(ModelTurnOutcome::Cancelled(snapshot)) => {
-            let committed = Arc::new(CommittedSession::new(
-                Arc::clone(&spawner.lineage_id),
-                defaults.model,
-                snapshot,
-            ));
-            let persisted = execution.persist(&committed, turn.interrupted()).await;
-            if persisted.is_ok() {
-                *checkpoint = Some(committed);
-            }
-            persisted.and(Err(NanocodexError::TurnCancelled))
+        Ok(ModelTurnOutcome::Cancelled(_snapshot)) => {
+            // The wake owns the only delivery attempt for these late outputs.
+            // A terminal cancellation would permanently fence its deterministic
+            // journal ID even though no completed response acknowledged them.
+            // Retain the previous staged checkpoint and the operation's steps;
+            // reacquisition can resume this same wake without re-running tools.
+            execution
+                .fail_without_checkpoint(turn)
+                .await
+                .and(Err(NanocodexError::TurnCancelled))
         }
         Ok(ModelTurnOutcome::Failed {
             error,
