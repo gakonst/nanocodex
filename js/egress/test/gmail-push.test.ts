@@ -359,3 +359,15 @@ it("preserves successful hydration while retrying another message's transient fa
   expect(JSON.parse(f.wakes[0]!.input as string).messages.map((m:any)=>m.body)).toEqual(["original","later"]);
   expect(f.calls.filter(r=>new URL(r.url).pathname.endsWith("/messages/good"))).toHaveLength(1);
 });
+it("uses a declared related root and recovers a malformed plain alternative", async () => {
+  const f=fixture();await f.request("/configure","POST",config);
+  f.message(()=>Response.json({id:"m1",payload:{mimeType:"multipart/alternative",parts:[
+    {mimeType:"text/plain",body:{data:"%%%"}},
+    {mimeType:"multipart/related",headers:[{name:"Content-Type",value:'multipart/related; start="<root>"'}],parts:[
+      {mimeType:"text/plain",headers:[{name:"Content-ID",value:"<resource>"}],body:{data:btoa("resource")}},
+      {mimeType:"text/html",headers:[{name:"Content-ID",value:"<root>"}],body:{data:btoa("<p>Actual body</p>")}}
+    ]}
+  ]}}));
+  await f.request("/notify","POST",notify);await f.alarmRun();
+  expect(JSON.parse(f.wakes[0]!.input as string).messages[0]).toMatchObject({status:"ok",body:"Actual body"});
+});

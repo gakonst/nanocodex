@@ -17,7 +17,7 @@ function htmlText(html: string): string {
       return n > 0 && n <= 0x10ffff && !(n >= 0xd800 && n <= 0xdfff) ? String.fromCodePoint(n) : "�";
     }).replace(/\s+/g," ").trim();
 }
-async function extract(payload: unknown, external: (id: string) => Promise<string>): Promise<{ body: string; truncated: boolean; available: boolean }> {
+async function extract(payload: unknown, external: (id: string) => Promise<string>, signal: AbortSignal): Promise<{ body: string; truncated: boolean; available: boolean }> {
   let nodes=0, truncated=false;
   async function visit(part: any, depth: number): Promise<{text:string; available:boolean}> {
     if (++nodes>200 || depth>20) {truncated=true; return {text:"",available:false};}
@@ -29,13 +29,22 @@ async function extract(payload: unknown, external: (id: string) => Promise<strin
       let parts=part.parts;
       if (mime==="multipart/alternative") {
         const preferred = [...parts.filter((p:any)=>p?.mimeType==="text/plain"), ...parts.filter((p:any)=>p?.mimeType!=="text/plain").reverse()];
+        let failure: unknown;
         for (const candidate of preferred.slice(0,200)) {
-          const result=await visit(candidate,depth+1);
-          if(result.available && result.text.trim()) return result;
+          try {
+            const result=await visit(candidate,depth+1);
+            if(result.available && result.text.trim()) return result;
+          } catch (error) {signal.throwIfAborted();truncated=true;failure=error;}
         }
+        if(failure) throw failure;
         return {text:"",available:false};
       }
-      if (mime==="multipart/related") parts=parts.slice(0,1);
+      if (mime==="multipart/related") {
+        const contentType=headers.find((h:any)=>typeof h?.name==="string" && h.name.toLowerCase()==="content-type")?.value??"";
+        const start=/\bstart\s*=\s*(?:"([^"]+)"|([^;\s]+))/i.exec(contentType);
+        const root=start?.[1]??start?.[2];
+        parts=[(root && parts.find((p:any)=>Array.isArray(p?.headers) && p.headers.some((h:any)=>typeof h?.name==="string" && h.name.toLowerCase()==="content-id" && h.value===root))) || parts[0]].filter(Boolean);
+      }
       const results=[]; for (const p of parts.slice(0,200)) results.push(await visit(p,depth+1));
       if(parts.length>200) truncated=true;
       return {text:results.map(r=>r.text).filter(Boolean).join("\n\n"),available:results.some(r=>r.available)};
@@ -81,7 +90,7 @@ export async function hydrateGmailMessage(id:string, fetchMessage:(signal:AbortS
         const response=await fetchMessage(controller.signal,attachmentId);
         if(!response.ok) {await response.body?.cancel();retryable=response.status===429 || response.status>=500;throw new Error("external_body_unavailable");}
         const data=await read(response);return data.data;
-      });const headers:Record<string,string>={};let truncated=text.truncated;
+      }, controller.signal);const headers:Record<string,string>={};let truncated=text.truncated;
       for(const h of Array.isArray(raw.payload.headers)?raw.payload.headers:[]) {
         if(typeof h?.name!=="string"||typeof h?.value!=="string")continue;
         const name=h.name.toLowerCase();if(!["from","to","cc","subject","date","message-id","reply-to"].includes(name)||name in headers)continue;
