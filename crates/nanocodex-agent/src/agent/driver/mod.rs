@@ -149,6 +149,16 @@ where
                             default_fast_mode,
                         )
                         .await;
+                        mark_all_queued_turns_cancelled(&mut queued_turns);
+                        if let Some((_, result)) = pending_compact.take() {
+                            drop(result.send(Err(NanocodexError::AgentStopped)));
+                        }
+                        for (_, result) in pending_developer_messages.drain(..) {
+                            drop(result.send(Err(NanocodexError::AgentStopped)));
+                        }
+                        for (_, _, _, result) in pending_late_outputs.drain(..) {
+                            drop(result.send(Err(NanocodexError::AgentStopped)));
+                        }
                         commands_open = false;
                     }
                 }
