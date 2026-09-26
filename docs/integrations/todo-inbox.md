@@ -12,7 +12,7 @@ The API is authenticated to the user account. Connect grants and service callers
 
 ## Remaining integration
 
-The firehose → bounded Jev classifier → decision producer, workflow response consumer, push notification/deep link, capture monitoring status transitions, pagination, and server-side edit/archive controls are **not** present in this slice. Do not represent the current Gmail push wake or one-shot Jev model router as this pipeline. Any workflow consumer needs durable cursors, dedupe, exact action/version approval, stale-data checks, and explicit external-write outcomes.
+Only the experimental owner-gated Gmail → bounded Jev classifier → TODO decision producer described below is present. A workflow response consumer, push notification/deep link, capture monitoring status transitions, pagination, and server-side edit/archive controls are **not** present. Do not conflate the one-shot Jev model router with this triage policy or represent it as a universal firehose. Any workflow consumer needs durable cursors, dedupe, exact action/version approval, stale-data checks, and explicit external-write outcomes.
 
 Reference: [Muse from Meta’s official App Store preview](https://apps.apple.com/us/app/muse-from-meta/id6760173601).
 
