@@ -17,6 +17,7 @@ function fixture() {
   };
   const calls: Request[] = [], wakes: Record<string, unknown>[] = [];
   let history: (url: URL) => Response = () => Response.json({ historyId: "12", history: [{ id: "12", messagesAdded: [{ message: { id: "m1", threadId: "t1", labelIds: ["INBOX"] } }] }] });
+  let message: (url: URL) => Response = url => Response.json({ id: url.pathname.split("/").pop(), payload: { mimeType: "text/plain", headers: [], body: { data: btoa("Full message body") } } });
   let watchStatus = 200;
   let wakeStatus = 202;
   let wakeBody: unknown;
@@ -29,6 +30,7 @@ function fixture() {
       if (url.pathname.endsWith("/watch") && watchStatus !== 200) return new Response(null, { status: watchStatus });
       if (url.pathname.endsWith("/watch")) return Response.json({ historyId: "10", expiration: String(Date.now() + 7 * 86400000) });
       if (url.pathname.endsWith("/stop")) return new Response(null, { status: 204 });
+      if (url.pathname.includes("/messages/")) return message(url);
       return history(url);
     } }) },
     MANAGED_AGENT_OWNERSHIP: { fetch: async (request: Request) => {
@@ -40,6 +42,7 @@ function fixture() {
   let object = new GmailPushMailbox(state, env);
   return {
     calls, wakes, env, get alarm() { return alarm; },
+    message: (fn: typeof message) => { message = fn; },
     history: (fn: typeof history) => { history = fn; },
     watchStatus: (status: number) => { watchStatus = status; },
     wakeStatus: (status: number) => { wakeStatus = status; },
@@ -180,8 +183,8 @@ describe("Gmail push history protocol", () => {
     await f.request("/notify", "POST", { ...notify, historyId: "30" }); await f.alarmRun();
     expect(f.wakes.length).toBe(1);
     expect(await (await f.request("/status")).json()).toMatchObject({ cursor: "10" });
-    for (let i = 0; i < 6; i++) { f.restart(); await f.alarmRun(); }
-    expect(f.wakes).toHaveLength(2);
+    for (let i = 0; i < 21; i++) { f.restart(); await f.alarmRun(); }
+    expect(f.wakes).toHaveLength(21);
     const delivered = f.wakes.flatMap(w => JSON.parse(w.input as string).messageIds as string[]);
     expect(new Set(delivered).size).toBe(105);
     expect(delivered).toHaveLength(105);
@@ -261,7 +264,7 @@ it("persists only explicit CRM opt-in and forwards it identically across busy re
 it("continues bounded CRM work promptly without committing its event or increasing busy backoff", async () => {
   const f = fixture();
   await f.request("/configure", "POST", { ...config, crm: true });
-  f.history(() => Response.json({ historyId: "12", history: [{id:"12",messagesAdded:Array.from({length:100},(_,i)=>({message:{id:`m${i}`,labelIds:["INBOX"]}}))}] }));
+  f.history(() => Response.json({ historyId: "12", history: [{id:"12",messagesAdded:Array.from({length:5},(_,i)=>({message:{id:`m${i}`,labelIds:["INBOX"]}}))}] }));
   await f.request("/notify", "POST", notify);
   const { vi } = await import("vitest"); const now = Date.now();
   const clock = vi.spyOn(Date,"now").mockReturnValue(now);
@@ -278,4 +281,71 @@ it("continues bounded CRM work promptly without committing its event or increasi
     f.wakeBody({status:"accepted"}); await f.alarmRun();
     expect(await (await f.request("/status")).json()).toMatchObject({cursor:"12",pending:false});
   } finally { clock.mockRestore(); }
+});
+
+// Failure modes defined before implementation: changed provider data on retry,
+// MIME alternatives/attachments, deleted/denied/malformed responses, prompt overflow.
+it("hydrates MIME alternatives before wake and persists the snapshot across busy eviction", async () => {
+  const f = fixture(); await f.request("/configure", "POST", config);
+  f.message(url => {
+    expect(url.searchParams.get("format")).toBe("full");
+    return Response.json({id:"m1", payload:{mimeType:"multipart/mixed",headers:[{name:"Subject",value:"Synthetic subject"}],parts:[
+      {mimeType:"multipart/alternative",parts:[{mimeType:"text/html",body:{data:btoa("<p>Duplicate HTML</p>")}},{mimeType:"text/plain",body:{data:btoa("Complete plain body")}}]},
+      {mimeType:"text/plain",filename:"attachment.txt",body:{attachmentId:"secret",data:btoa("Attachment content")}}
+    ]}});
+  });
+  f.wakeStatus(200); await f.request("/notify", "POST", notify); await f.alarmRun();
+  const input = JSON.parse(f.wakes[0]!.input as string);
+  expect(input.messages[0]).toMatchObject({id:"m1",status:"ok",body:"Complete plain body",headers:{subject:"Synthetic subject"}});
+  expect(JSON.stringify(input)).not.toContain("Duplicate HTML");
+  expect(JSON.stringify(input)).not.toContain("Attachment content");
+  f.message(() => { throw new Error("must not refetch"); }); f.restart(); f.wakeStatus(202); await f.alarmRun();
+  expect(f.wakes[1]).toEqual(f.wakes[0]);
+  expect(f.calls.filter(r=>r.url.includes("/messages/"))).toHaveLength(1);
+  expect(f.calls.every(r=>r.headers.get("x-nanocodex-connector-connection")===config.connectionId)).toBe(true);
+});
+it("reports unavailable bodies explicitly and bounds Unicode/HTML content without fetching attachments", async () => {
+  const f=fixture(); await f.request("/configure","POST",config);
+  const ids=["html","missing","denied","bad","large","external"];
+  f.history(()=>Response.json({historyId:"12",history:[{messagesAdded:ids.map(id=>({message:{id}}))}]}));
+  f.message(url=> {
+    const id=url.pathname.split("/").pop();
+    if(id==="missing") return new Response(null,{status:404});
+    if(id==="denied") return new Response("private provider error",{status:403});
+    if(id==="bad") return Response.json({id,payload:{mimeType:"text/plain",body:{data:"%%%"}}});
+    if(id==="external") return Response.json({id,payload:{mimeType:"text/plain",body:{attachmentId:"not-downloaded",size:123}}});
+    if(id==="not-downloaded") return Response.json({data:btoa("External body")});
+    const body=id==="html"?"<style>hidden</style><script>bad()</script><p>Hello &amp; goodbye</p>":"😀".repeat(40000);
+    return Response.json({id,payload:{mimeType:id==="html"?"text/html":"text/plain",headers:[],body:{data:Buffer.from(body).toString("base64url")}}});
+  });
+  await f.request("/notify","POST",notify); await f.alarmRun();
+  const input=JSON.parse(f.wakes[0]!.input as string);
+  expect(input.messages[0].body).toBe("Hello & goodbye");
+  expect(input.messages.slice(1,4).map((m:any)=>m.status)).toEqual(["missing","error","error"]);
+  expect(input.messages[4].truncated).toBe(true);
+  await f.alarmRun();
+  expect(JSON.parse(f.wakes[1]!.input as string).messages[0]).toMatchObject({status:"ok",body:"External body"});
+  expect(new TextEncoder().encode(f.wakes[0]!.input as string).length).toBeLessThanOrEqual(32768);
+  expect(JSON.stringify(input)).not.toContain("private provider error");
+  expect(f.calls.filter(r=>r.url.includes("/attachments/"))).toHaveLength(1);
+});
+it("decodes declared charsets and falls back from an empty plain alternative without related-resource duplication", async () => {
+  const f=fixture(); await f.request("/configure","POST",config);
+  f.message(()=>Response.json({id:"m1",payload:{mimeType:"multipart/mixed",parts:[
+    {mimeType:"text/plain",headers:[{name:"Content-Type",value:"text/plain; charset=windows-1252"}],body:{data:btoa("caf\xe9 \x80")}},
+    {mimeType:"multipart/alternative",parts:[{mimeType:"text/plain",body:{data:""}},{mimeType:"multipart/related",parts:[
+      {mimeType:"text/html",body:{data:Buffer.from("<p>日本語</p>").toString("base64url")}},
+      {mimeType:"text/plain",body:{data:btoa("resource")}}
+    ]}]}
+  ]}}));
+  await f.request("/notify","POST",notify);await f.alarmRun();
+  expect(JSON.parse(f.wakes[0]!.input as string).messages[0].body).toBe("café €\n\n日本語");
+});
+it("retries transient body failures before waking and eventually reports a persistent failure", async () => {
+  const f=fixture();await f.request("/configure","POST",config);
+  f.message(()=>new Response(null,{status:429}));
+  await f.request("/notify","POST",notify);await f.alarmRun();
+  expect(f.wakes).toHaveLength(0);f.restart();await f.alarmRun();
+  expect(f.wakes).toHaveLength(0);f.restart();await f.alarmRun();
+  expect(JSON.parse(f.wakes[0]!.input as string).messages[0].status).toBe("error");
 });

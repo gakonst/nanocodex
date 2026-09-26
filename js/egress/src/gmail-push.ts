@@ -1,3 +1,4 @@
+import { hydrateGmailMessage, jsonBytes, type GmailMessageSnapshot } from "./gmail-message";
 /** Gmail notifications are hints; the durable history cursor is authoritative. */
 export interface GmailPushEnv {
   USER_CONNECTORS: DurableObjectNamespace;
@@ -7,7 +8,7 @@ export interface GmailPushEnv {
 
 type Config = { crm?: true; userId: string; connectionId: string; agentId: string; email: string };
 type Event = { type: "gmail.history" | "gmail.resync"; startHistoryId: string; historyId: string; messageIds: string[]; truncated: boolean };
-type Pending = { eventId: string; event: Event };
+type Pending = { eventId: string; event: Event; hydrate?: true; input?: string };
 type Page = { type: Event["type"]; historyId: string; chunks: number; index: number; nextPageToken?: string; commitCursor?: string };
 type Mailbox = {
   config: Config; cursor: string; target: string; renewAt: number; expiration: string;
@@ -18,7 +19,8 @@ type Mailbox = {
 const DAY = 86_400_000;
 const HOUR = 3_600_000;
 const MAX_PAGES = 4;
-const MAX_MESSAGES = 100;
+// Small durable chunks leave useful body space per message within the wake cap.
+const MAX_MESSAGES = 5;
 const historyId = (value: unknown): value is string => typeof value === "string" && /^[0-9]{1,40}$/.test(value);
 const newer = (a: string, b: string) => BigInt(a) > BigInt(b);
 const email = (value: unknown): value is string => typeof value === "string" && value.length <= 320 && /^[^\s@]+@[^\s@]+$/.test(value);
@@ -155,7 +157,7 @@ export class GmailPushMailbox {
               }
               const event: Event = { type: page.type, startHistoryId: box.cursor, historyId: page.historyId,
                 messageIds, truncated: page.type === "gmail.resync" };
-              box.pending = { event, eventId: await this.eventId(box.config, event) };
+              box.pending = { event, eventId: await this.eventId(box.config, event), hydrate: true };
               await this.save(box);
             }
             if (delivered) break;
@@ -201,10 +203,10 @@ export class GmailPushMailbox {
       ? Date.now() + 1000 : Math.min(box.renewAt, box.checkAt));
   }
   private save(box: Mailbox) { return this.state.storage.put("mailbox", box); }
-  private gmail(config: Config, path: string, body?: unknown): Promise<Response> {
+  private gmail(config: Config, path: string, body?: unknown, signal = AbortSignal.timeout(20_000)): Promise<Response> {
     return this.env.USER_CONNECTORS.get(this.env.USER_CONNECTORS.idFromName(config.userId)).fetch(new Request(
       `https://gmail.googleapis.com/gmail/v1/users/me/${path}`, {
-        method: body === undefined ? "GET" : "POST", signal: AbortSignal.timeout(20_000),
+        method: body === undefined ? "GET" : "POST", signal, redirect: "manual",
         headers: { "x-nanocodex-connector-connection": config.connectionId, "content-type": "application/json" },
         ...(body === undefined ? {} : { body: JSON.stringify(body) }),
       }));
@@ -286,10 +288,29 @@ export class GmailPushMailbox {
   }
   private async deliver(box: Mailbox): Promise<boolean> {
     const pending = box.pending!;
+    if (!pending.input) {
+      const envelope = { connectionId: box.config.connectionId, email: box.config.email, ...(box.config.crm === true ? { crm: true } : {}), ...pending.event };
+      if (pending.hydrate) {
+        const messages: GmailMessageSnapshot[] = new Array(pending.event.messageIds.length);
+        const budget = Math.min(16000, Math.floor((32000 - jsonBytes(envelope) - 32) / Math.max(1,messages.length)) - 1);
+        let next = 0;
+        const results = await Promise.allSettled(Array.from({length: Math.min(5,messages.length)}, async () => {
+          for (;;) {
+            const index = next++; if (index >= messages.length) return;
+            const id = pending.event.messageIds[index]!;
+            messages[index] = await hydrateGmailMessage(id, (signal, attachmentId) => this.gmail(box.config, attachmentId ? `messages/${id}/attachments/${attachmentId}` : `messages/${id}?format=full`, undefined, signal), budget, box.retry >= 2);
+          }
+        }));
+        if (results.some(result => result.status === "rejected")) throw new Error("gmail_body_retry");
+        pending.input = JSON.stringify({...envelope, messages});
+        if (new TextEncoder().encode(pending.input).length > 32768) throw new Error("hydration_budget");
+      } else pending.input = JSON.stringify(envelope); // Legacy outboxes may already have been admitted.
+      await this.save(box); // Freeze before first admission, including ambiguous responses.
+    }
     const response = await this.env.MANAGED_AGENT_OWNERSHIP.fetch(new Request("https://managed-ownership.internal/v1/gmail-push/wake", {
       method: "POST", signal: AbortSignal.timeout(20_000), headers: { "content-type": "application/json" },
       body: JSON.stringify({ userId: box.config.userId, agentId: box.config.agentId, eventId: pending.eventId,
-        input: JSON.stringify({ connectionId: box.config.connectionId, email: box.config.email, ...(box.config.crm === true ? { crm: true } : {}), ...pending.event }) }),
+        input: pending.input }),
     }));
     if (!response.ok) throw new Error("wake_retry");
     const result = await response.json() as { status?: string; progress?: unknown };

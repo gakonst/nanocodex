@@ -3787,7 +3787,7 @@ export class DurableAgentSession extends DurableComputerObject {
         authorize: () => { assertOwner(epoch); },
         fetch: request => handleManagedEgress(request, this.env.NANOCODEX, this.#credentialSubject(),
           (capability, connectionId) => capability === "gmail" && connectionId === selected),
-      }, wake.input);
+      }, JSON.stringify(Object.fromEntries(Object.entries(emailEvent).filter(([key]) => key !== "messages"))));
       assertOwner(epoch);
       if (!imported.complete) return { status: "busy", progress: true };
     }
