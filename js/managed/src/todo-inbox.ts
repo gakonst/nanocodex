@@ -1,3 +1,4 @@
+import { initializeGmailDecisionTraces, readGmailDecisionTraces } from "./gmail-firehose-traces";
 import { durablePlacementOptions } from "nanocodex/cloudflare/durable-placement";
 import type { AccountAuthEnv, Principal } from "./account-auth";
 
@@ -7,6 +8,7 @@ const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-
 
 type ItemRow = { id: string; body: string; watch_hint: string; status: string; version: number; created_at: string; operation_id: string };
 type DecisionRow = { id: string; todo_id: string | null; workflow_id: string | null; title: string; context: string; source_label: string; source_url: string; status: string; version: number; choices: string; created_at: string };
+type DecisionView = Omit<DecisionRow, "workflow_id">;
 type Choice = { id: string; title: string };
 
 async function boundedBody(request: Request): Promise<Record<string, unknown> | undefined> {
@@ -50,16 +52,20 @@ export function initializeTodoInbox(storage: DurableObjectStorage): void {
     operation_id TEXT PRIMARY KEY, decision_id TEXT NOT NULL, version INTEGER NOT NULL,
     choice_id TEXT, text TEXT, recorded_at TEXT NOT NULL
   );`);
+  initializeGmailDecisionTraces(storage);
 }
 
 export async function handleTodoInbox(request: Request, storage: DurableObjectStorage): Promise<Response> {
   const url = new URL(request.url), path = url.pathname;
-  if (url.search || request.method === "HEAD") return reply({ error: "invalid_request" }, 400);
+  if (request.method === "HEAD") return reply({ error: "invalid_request" }, 400);
+  if (path === "/todo/traces" && request.method === "GET") return readGmailDecisionTraces(storage, url.searchParams);
+  if (url.search) return reply({ error: "invalid_request" }, 400);
   if (path === "/todo" && request.method === "GET") {
     const items = storage.sql.exec<ItemRow>("SELECT * FROM todo_captures ORDER BY created_at DESC LIMIT 200").toArray();
     // Completed activity must never crowd an older unanswered choice out.
-    const open = storage.sql.exec<DecisionRow>("SELECT * FROM todo_decisions WHERE status = 'needs_you' ORDER BY created_at DESC LIMIT 200").toArray();
-    const activity = storage.sql.exec<DecisionRow>("SELECT * FROM todo_decisions WHERE status != 'needs_you' ORDER BY created_at DESC LIMIT 200").toArray();
+    const projection = "id, todo_id, title, context, source_label, source_url, choices, status, version, created_at";
+    const open = storage.sql.exec<DecisionView>(`SELECT ${projection} FROM todo_decisions WHERE status = 'needs_you' ORDER BY created_at DESC LIMIT 200`).toArray();
+    const activity = storage.sql.exec<DecisionView>(`SELECT ${projection} FROM todo_decisions WHERE status != 'needs_you' ORDER BY created_at DESC LIMIT 200`).toArray();
     const decisions = [...open, ...activity].map(({ choices, ...rest }) => ({ ...rest, choices: JSON.parse(choices) as Choice[] }));
     return reply({ items, decisions });
   }
@@ -127,11 +133,11 @@ export async function routeTodoRequest(request: Request, env: Pick<AccountAuthEn
     if (principal.kind === "account_session" && request.headers.get("origin") !== url.origin)
       return reply({ error: "forbidden_origin" }, 403);
   }
-  if (url.search || !/^\/v1\/todo(?:$|\/decisions\/[0-9a-f-]{36}\/respond$)/i.test(url.pathname))
-    return reply({ error: "not_found" }, 404);
+  if (!/^\/v1\/todo(?:$|\/traces$|\/decisions\/[0-9a-f-]{36}\/respond$)/i.test(url.pathname)
+    || url.search && url.pathname !== "/v1/todo/traces") return reply({ error: "not_found" }, 404);
   const path = url.pathname.slice(3);
   return env.NANOCODEX_USERS.getByName(principal.userId, durablePlacementOptions(env.trustedClientIngressColo)).fetch(
-    `https://user.internal${path}`, new Request(request, { headers: { "content-type": "application/json" } }),
+    `https://user.internal${path}${url.search}`, new Request(request, { headers: { "content-type": "application/json" } }),
   );
 }
 
@@ -166,7 +172,12 @@ export function proposeTodoDecision(storage: DurableObjectStorage, input: TodoDe
   input.source_key, input.todo_id ?? null, input.workflow_id ?? null,
   input.title, input.context, input.source_label, input.source_url,
   JSON.stringify(input.choices), new Date().toISOString());
-  const existing = storage.sql.exec<DecisionRow>("SELECT id, status, version FROM todo_decisions WHERE source_key = ?", input.source_key).toArray()[0];
+  const existing = storage.sql.exec<DecisionRow>("SELECT * FROM todo_decisions WHERE source_key = ?", input.source_key).toArray()[0];
   if (!existing) throw new Error("todo proposal persistence failed");
+  // A replay cannot silently redefine an already presented approval or its choices.
+  if (existing.todo_id !== (input.todo_id ?? null) || existing.workflow_id !== (input.workflow_id ?? null)
+    || existing.title !== input.title || existing.context !== input.context
+    || existing.source_label !== input.source_label || existing.source_url !== input.source_url
+    || existing.choices !== JSON.stringify(input.choices)) throw new Error("todo_source_conflict");
   return { id: existing.id, status: existing.status, version: existing.version };
 }

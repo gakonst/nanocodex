@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { env as workerEnv } from "cloudflare:test";
+import { env as workerEnv, runInDurableObject } from "cloudflare:test";
 import { ensureAccount, type AccountAuthEnv, type Principal } from "../src/account-auth";
-import { routeTodoRequest } from "../src/todo-inbox";
+import { routeTodoRequest, proposeTodoDecision } from "../src/todo-inbox";
 
 const env = workerEnv as unknown as AccountAuthEnv;
 const owner = (userId: string, capabilities: Principal["capabilities"] = ["agents:read", "agents:write"]): Principal => ({
@@ -48,13 +48,42 @@ describe("account-owned TODO inbox", () => {
       source_url: "https://mail.google.com/", choices: [{ id: "draft", title: "Draft a reply" }, { id: "later", title: "Not now" }] };
     const proposed = await producer.proposeTodoDecision(payload);
     expect((await producer.proposeTodoDecision(payload)).id).toBe(proposed.id);
+    await runInDurableObject(producer, (_, state) => {
+      expect(() => proposeTodoDecision(state.storage, { ...payload,
+        choices: [{ id: "send", title: "Send now" }] })).toThrow("todo_source_conflict");
+    });
     expect((await (await f.call(me, "GET", ""))!.json() as { decisions: Array<{ id: string; todo_id: string }> }).decisions[0]).toMatchObject({ id: proposed.id, todo_id: captureID });
+    const visible = await (await f.call(me, "GET", ""))!.json() as { decisions: Record<string, unknown>[] };
+    expect(visible.decisions[0]).not.toHaveProperty("source_key");
+    expect(visible.decisions[0]).not.toHaveProperty("workflow_id");
     const op = crypto.randomUUID(), response = { version: 1, choice_id: "draft", text: null, operation_id: op };
     expect((await f.call(me, "POST", `/decisions/${proposed.id}/respond`, response))?.status).toBe(200);
     expect((await f.call(me, "POST", `/decisions/${proposed.id}/respond`, { ...response, operation_id: op.toUpperCase() }))?.status).toBe(200);
     expect((await f.call(me, "POST", `/decisions/${proposed.id}/respond`, { ...response, operation_id: crypto.randomUUID() }))?.status).toBe(409);
     expect((await (await f.call(me, "GET", ""))!.json() as { decisions: Array<{ status: string }> }).decisions[0]?.status).toBe("answered");
     expect((await (await f.call(owner(f.other), "GET", ""))!.json() as { decisions: unknown[] }).decisions).toHaveLength(0);
+  });
+
+  it("exposes only bounded owner-scoped metadata traces with cursor pagination", async () => {
+    const f = await fixture(), producer = env.NANOCODEX_USERS.getByName(f.user);
+    const proposal = (index:number) => ({source_key:`gmail:gmail-reply-triage-v1:${index.toString(16).padStart(64,"0")}`,
+      policy_version:"gmail-reply-triage-v1", outcome:"no_reply", reason:"no_reply",
+      classifier_outcome:"success", confidence:0.94, reply_probability:0.06, duration_ms:12,
+      decision_id:null} as const);
+    await producer.recordTodoDecisionTrace(proposal(1));
+    await producer.recordTodoDecisionTrace(proposal(2));
+    const first = await (await f.call(owner(f.user),"GET","/traces?limit=1"))!.json() as any;
+    expect(first.traces).toHaveLength(1);
+    expect(first.next_cursor).toBeTruthy();
+    expect(first.traces[0]).toMatchObject({outcome:"no_reply",confidence:0.94});
+    expect(JSON.stringify(first)).not.toContain("@example.test");
+    const second = await (await f.call(owner(f.user),"GET",`/traces?limit=1&before=${first.next_cursor}`))!.json() as any;
+    expect(second.traces).toHaveLength(1);
+    expect(second.traces[0].id).not.toBe(first.traces[0].id);
+    expect((await f.call(owner(f.other),"GET","/traces"))?.status).toBe(200);
+    const other = await (await f.call(owner(f.other),"GET","/traces"))!.json() as any;
+    expect(other.traces).toHaveLength(0);
+    expect((await f.call(owner(f.user),"GET","?before=1"))?.status).toBe(404);
   });
 
   it("does not hide an older open decision behind 200 newer answered items", async () => {

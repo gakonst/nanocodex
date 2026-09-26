@@ -5,6 +5,7 @@ import { durablePlacementOptions, placementHeaders, TRUSTED_INGRESS_HEADER, type
 import { LAST_USER_PROMPT_LIMIT, type AgentPresentation } from "./agent-presentation";
 import { retireAccountProjects } from "./retired-projects";
 import { initializeTodoInbox, handleTodoInbox, proposeTodoDecision, type TodoDecisionProposal } from "./todo-inbox";
+import { recordGmailDecisionTrace, type GmailDecisionTrace } from "./gmail-firehose-traces";
 import { recordHandTiming } from "./hand-timing";
 import { configurationCatalog } from "./agent-configuration";
 import { performanceState } from "./performance";
@@ -1787,6 +1788,11 @@ export class UserAccount extends DurableObject<AccountAuthEnv> {
   /** Accepts proposals only from trusted Worker code with this account's DO stub. */
   async proposeTodoDecision(input: TodoDecisionProposal): Promise<{ id: string; status: string; version: number }> {
     return proposeTodoDecision(this.ctx.storage, input);
+  }
+
+  /** Internal, privacy-safe audit; never accepts mail text or model output. */
+  async recordTodoDecisionTrace(input: GmailDecisionTrace): Promise<void> {
+    recordGmailDecisionTrace(this.ctx.storage, input);
   }
 
   // Live storage read in a single RPC reply, without a streamed HTTP body.
