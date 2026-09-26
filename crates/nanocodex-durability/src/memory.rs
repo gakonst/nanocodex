@@ -267,7 +267,7 @@ mod tests {
                 &owned.owner,
                 0,
                 "first",
-                &[record.clone()],
+                std::slice::from_ref(&record),
             )
             .await
             .unwrap();

@@ -25,7 +25,9 @@ export default defineConfig({
   plugins: [cloudflareTest({
     wrangler: { configPath: "./wrangler.jsonc" },
     miniflare: {
-      bindings: { RESPONSES_TRANSPORT: process.env.MANAGED2_TEST_TRANSPORT === "websocket" ? "websocket" : "http", AUTH_API_KEY_HASHES: JSON.stringify(Object.fromEntries(
+      bindings: { RESPONSES_TRANSPORT: process.env.MANAGED2_TEST_TRANSPORT === "websocket" ? "websocket" : "http",
+        ...(process.env.MANAGED2_TEST_ASYNC_TOOLS === "true" ? { NANOCODEX_TEST_ASYNC_TOOLS: "true" } : {}),
+        AUTH_API_KEY_HASHES: JSON.stringify(Object.fromEntries(
         Object.entries(fixtureKeys).map(([owner, key]) => [createHash("sha256").update(key).digest("base64url"), owner]),
       )) },
       serviceBindings: { EGRESS: { name: "nanocodex-egress2" } },
@@ -48,7 +50,8 @@ export default defineConfig({
               }
               if (body.commands?.search_query?.[0]?.q === "a synthetic async question")
                 await new Promise(resolve => setTimeout(resolve, 2500));
-              return Response.json({ output: "Found [synthetic citation](https://example.org/source)", hidden: "provider-only" });
+              return Response.json({ output: "Found [synthetic citation](https://example.org/source)"
+                + (body.commands?.search_query?.[0]?.q === "a synthetic async question" ? " [async fixture]" : ""), hidden: "provider-only" });
             }
             if (url.href === "https://chatgpt.com/backend-api/codex/alpha/search" && request.method === "POST") {
               if (request.headers.get("chatgpt-account-id") !== "account-fixture"
@@ -61,7 +64,8 @@ export default defineConfig({
               }
               if (body.commands?.search_query?.[0]?.q === "a synthetic async question")
                 await new Promise(resolve => setTimeout(resolve, 2500));
-              return Response.json({ output: "Found [synthetic citation](https://example.org/source)", hidden: "provider-only" });
+              return Response.json({ output: "Found [synthetic citation](https://example.org/source)"
+                + (body.commands?.search_query?.[0]?.q === "a synthetic async question" ? " [async fixture]" : ""), hidden: "provider-only" });
             }
             const platform = url.hostname === "api.openai.com"
               && url.pathname === "/v1/responses"
@@ -101,20 +105,32 @@ export default defineConfig({
               const continuation = input.find(item => item.type === "function_call_output" && item.call_id === "call-time");
               const timeTool = input.find(item => item.type === "additional_tools")?.tools?.find(tool => tool.name === "current_time");
               const webTool = input.find(item => item.type === "additional_tools")?.tools?.find(tool => tool.name === "web__run");
-              const webContinuation = input.find(item => item.type === "function_call_output" && item.call_id === "call-web");
-              if (JSON.stringify(currentTurn).includes("[async_job_final job_id=")) {
-                return [{ type: "response.completed", response: { id: "fixture-async-final", status: "completed", end_turn: true,
-                  output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: "Background search finished: [synthetic citation](https://example.org/source)" }] }],
-                  usage: { input_tokens: 10, output_tokens: 4, total_tokens: 14 } } }];
-              }
-              if (webContinuation) {
-                const result = webContinuation.output;
-                const text = "Search: " + result;
-                return [{ type: "response.completed", response: { id: "fixture-web-result", status: "completed", end_turn: true,
+              const webOutputs = input.filter(item => item.type === "function_call_output" && item.call_id === "call-web");
+              const webTerminal = webOutputs.findLast(item => String(item.output).includes("synthetic citation"));
+              const webPending = webOutputs.find(item => String(item.output).includes("Tool call is still running."));
+              // WebSocket continuation sends only the new output and may omit
+              // the original user text; an original-call-ID pending marker is
+              // the deterministic async fixture discriminator in that path.
+              const asyncWeb = JSON.stringify(input).includes("Use async web__run")
+                || Boolean(webPending) || Boolean(webTerminal && String(webTerminal.output).includes("[async fixture]"));
+              // A pending result must be attached to the original provider
+              // call ID; terminal delivery must use that ID again rather than
+              // a forged user turn or a different synthetic call. This fixture
+              // deliberately distinguishes pending and terminal requests.
+              if (webTerminal || webPending) {
+                const text = asyncWeb
+                  ? webTerminal ? "Background search finished: " + webTerminal.output : "Waiting for background search"
+                  : "Search: " + (webTerminal ?? webOutputs[0]).output;
+                return [{ type: "response.completed", response: { id: webTerminal ? "fixture-web-terminal" : "fixture-web-pending", status: "completed", end_turn: true,
                   output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text }] }],
                   usage: { input_tokens: 10, output_tokens: 4, total_tokens: 14 } } }];
               }
-              if (JSON.stringify(input).includes("Use async web__run")) {
+              if (asyncWeb) {
+                // A second provider request without the original call's
+                // pending or terminal output is a protocol violation, not a
+                // license to invent a second call or pass a forged user turn.
+                if (input.some(item => item.type === "function_call" && item.call_id === "call-web"))
+                  throw new Error("async provider continuation lacked original-call-ID output");
                 if (!webTool) throw new Error("web__run was not offered");
                 return [{ type: "response.completed", response: { id: "fixture-async-web-call", status: "completed", end_turn: false,
                   output: [{ type: "function_call", call_id: "call-web", name: "web__run",

@@ -396,7 +396,7 @@ mod tests {
                 &owned.owner,
                 0,
                 "first",
-                &[old.clone()],
+                std::slice::from_ref(&old),
                 || {},
             )
             .unwrap();

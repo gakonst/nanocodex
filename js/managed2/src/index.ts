@@ -18,7 +18,9 @@ type Egress = Fetcher & {
   putCredential(owner: string, provider: string, value: string): Promise<void>;
   putChatGptCredential(owner: string, value: ChatGptImport): Promise<void>;
 };
-type Env = { SESSIONS: DurableObjectNamespace<Session>; EGRESS: Egress; AUTH_API_KEY_HASHES: string; RESPONSES_TRANSPORT?: "websocket" };
+type Env = { SESSIONS: DurableObjectNamespace<Session>; EGRESS: Egress; AUTH_API_KEY_HASHES: string; RESPONSES_TRANSPORT?: "websocket";
+  /** Present only in isolated Miniflare E2E tests, never in deployment config. */
+  NANOCODEX_TEST_ASYNC_TOOLS?: "true"; };
 const AGENT_PATH = /^\/v1\/agents\/([0-9a-f-]{36})(?:\/(turns|turns\/([0-9a-f-]{36})|events|jobs|jobs\/([0-9a-f-]{36})))?$/;
 const OWNER_HEADER = "x-managed2-owner";
 
@@ -88,10 +90,12 @@ export default {
         || (body.async_tools !== undefined && typeof body.async_tools !== "boolean"))) {
         return reply(400, { error: "invalid_input" });
       }
-      // The Rust state has internal staging but the JS/WASM Agent exposes no
-      // typed late-result ingestion. Reject opt-in rather than silently sending
-      // a synthetic user turn or claiming same-call-ID semantics.
-      if (body?.async_tools === true) return reply(501, { error: "typed_async_tool_ingestion_unavailable" });
+      // Production remains fail-closed until real-route provider validation,
+      // crash/recovery E2E, and release gates prove the typed JS/WASM path.
+      // Only isolated Miniflare E2E tests supply this server-side binding;
+      // never fall back to a synthetic user turn.
+      if (body?.async_tools === true && env.NANOCODEX_TEST_ASYNC_TOOLS !== "true")
+        return reply(501, { error: "typed_async_tool_ingestion_unavailable" });
       const key = request.headers.get("idempotency-key");
       if (key !== null && !/^[0-9a-f-]{36}$/.test(key)) return reply(400, { error: "invalid_idempotency_key" });
       const id = key ?? crypto.randomUUID();
@@ -226,7 +230,8 @@ export class Session extends DurableObject<Env> {
         "SELECT owner, agent_id, async_tools FROM session_meta WHERE singleton = 1").toArray()[0];
       if (current && (current.owner !== owner || current.agent_id !== agentId)) return reply(403, { error: "forbidden" });
       const enabled = body?.async_tools === true;
-      if (enabled && !current) return reply(501, { error: "typed_async_tool_ingestion_unavailable" });
+      if (enabled && this.env.NANOCODEX_TEST_ASYNC_TOOLS !== "true")
+        return reply(501, { error: "typed_async_tool_ingestion_unavailable" });
       if (current && Boolean(current.async_tools) !== enabled) return reply(409, { error: "idempotency_conflict" });
       if (!current) this.ctx.storage.sql.exec(
         "INSERT INTO session_meta (singleton, owner, agent_id, relay_region, async_tools) VALUES (1, ?, ?, ?, ?)",
@@ -314,7 +319,8 @@ export class Session extends DurableObject<Env> {
   }
 
   async #admitTurnOnce(owner: string, turnId: string, input: string): Promise<Response> {
-    if (this.#asyncEnabled()) return reply(501, { error: "typed_async_tool_ingestion_unavailable" });
+    if (this.#asyncEnabled() && this.env.NANOCODEX_TEST_ASYNC_TOOLS !== "true")
+      return reply(501, { error: "typed_async_tool_ingestion_unavailable" });
     const existing = this.#turn(turnId);
     if (existing) {
       if (existing.input !== input) return reply(409, { error: "idempotency_conflict" });
