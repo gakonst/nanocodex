@@ -27,6 +27,15 @@ describe("Google Pub/Sub authentication", () => {
       expect(await verifyGooglePushToken(token, config, fetchKeys)).toBe(false);
     }
   });
+  it("reports bounded authentication failures without exposing token claims", async () => {
+    const { token, fetchKeys } = await fixture({ aud: "private-invalid-audience" });
+    const reasons: string[] = [];
+    expect(await verifyGooglePushToken(token, config, fetchKeys, reason => reasons.push(reason))).toBe(false);
+    expect(reasons).toEqual(["audience_mismatch"]);
+    const valid = await fixture();
+    expect(await verifyGooglePushToken(valid.token, config, async () => { throw new Error("private-provider-error"); }, reason => reasons.push(reason))).toBe(false);
+    expect(reasons).toEqual(["audience_mismatch", "key_fetch_failed"]);
+  });
   it("rejects unconfigured or unauthenticated ingress without touching mailbox", async () => {
     const request = new Request("https://app.example/v1/gmail-push/user/connection", { method: "POST", body: "{}" });
     expect((await handleGmailPush(request, {})).status).toBe(503);
