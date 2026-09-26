@@ -65,6 +65,7 @@ impl ConversationState {
     pub(super) fn resume(
         mut canonical_context: ResponseItem,
         history: Vec<ResponseItem>,
+        unreal_function_outputs: bool,
     ) -> Result<Self> {
         if !canonical_context.is_user_message() {
             return Err(NanocodexError::InvalidSessionSnapshot(
@@ -72,8 +73,12 @@ impl ConversationState {
             ));
         }
         assign_missing_response_item_id(&mut canonical_context);
-        let managed = ManagedSessionState::resume(history)
-            .map_err(|error| NanocodexError::InvalidSessionSnapshot(error.to_string()))?;
+        let managed = if unreal_function_outputs {
+            ManagedSessionState::resume_unreal_function_outputs(history)
+        } else {
+            ManagedSessionState::resume(history)
+        }
+        .map_err(|error| NanocodexError::InvalidSessionSnapshot(error.to_string()))?;
         let mut state = Self {
             canonical_context: Arc::new(canonical_context),
             managed,

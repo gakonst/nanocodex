@@ -112,6 +112,7 @@ pub struct ManagedSessionState {
     previous_response_id: Option<String>,
     history_revision: u64,
     server_reasoning_included: bool,
+    unreal_function_outputs: bool,
 }
 
 impl ManagedSessionState {
@@ -126,6 +127,7 @@ impl ManagedSessionState {
             previous_response_id: None,
             history_revision: 0,
             server_reasoning_included: false,
+            unreal_function_outputs: false,
         }
     }
 
@@ -183,6 +185,7 @@ impl ManagedSessionState {
         }
         state.context.commit_tail();
         state.delta_start = state.context.len();
+        state.unreal_function_outputs = true;
         Ok(state)
     }
 
@@ -207,6 +210,7 @@ impl ManagedSessionState {
             call_id.to_owned(),
             FunctionOutputBody::Text(UNREAL_RUNNING_OUTPUT.into()),
         )]);
+        self.unreal_function_outputs = true;
         Ok(())
     }
 
@@ -236,7 +240,15 @@ impl ManagedSessionState {
             ResponseItem::FunctionCallOutput { call_id: id, output, .. }
                 if id.as_ref() == call_id && !is_unreal_running_output(output))
         });
-        if pending != 1 || terminal {
+        let original_call = self
+            .context
+            .iter()
+            .filter(|item| {
+                matches!(item, ResponseItem::FunctionCall { call_id: id, .. }
+                if id.as_ref() == call_id)
+            })
+            .count();
+        if original_call != 1 || pending != 1 || terminal {
             return Err(ManagedSessionStateError::MalformedToolCalls);
         }
         let result = ResponseItem::function_call_output(call_id.to_owned(), output);
@@ -247,6 +259,12 @@ impl ManagedSessionState {
             self.append([result]);
         }
         Ok(())
+    }
+
+    /// Whether this transcript was explicitly opted into Unreal pending output replay.
+    #[must_use]
+    pub const fn unreal_function_outputs(&self) -> bool {
+        self.unreal_function_outputs
     }
 
     /// Returns the number of retained typed history items.
@@ -801,6 +819,21 @@ mod unreal_function_output_tests {
             json!({"type":"function_call_output", "call_id":"orphan", "output":"done"})
         ]));
         assert!(session().stage_unreal_function_output("orphan").is_err());
+    }
+
+    #[test]
+    fn completion_rejects_a_placeholder_without_its_original_function_call() {
+        let mut state = session();
+        state.append([ResponseItem::function_call_output(
+            "orphan".to_owned(),
+            text(UNREAL_RUNNING_OUTPUT),
+        )]);
+        assert!(
+            state
+                .complete_unreal_function_output("orphan", text("done"))
+                .is_err()
+        );
+        assert_eq!(state.flattened_history().len(), 3);
     }
 
     #[test]

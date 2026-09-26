@@ -218,6 +218,7 @@ where
                             canonical_context: resume.canonical_context,
                             history: resume.history,
                             client_authored: resume.client_authored,
+                            unreal_function_outputs: resume.unreal_function_outputs,
                             prompt_cache_key: resume.prompt_cache_key,
                             context_baseline: resume.context_baseline,
                         }))

@@ -117,10 +117,15 @@ impl CommittedSession {
             canonical_context: self.model.canonical_context().clone(),
             history: self.model.snapshot_history(),
             client_authored: self.model.client_authored().clone(),
+            unreal_function_outputs: self.model.unreal_function_outputs(),
             context_snapshot: Some(self.model.context_baseline().clone()),
             context_usage: Some(self.model.context_usage()),
         }
     }
+}
+
+fn is_false(value: &bool) -> bool {
+    !value
 }
 
 /// Accounting basis for exactly the history retained at a durable boundary.
@@ -158,6 +163,8 @@ pub struct SessionSnapshot {
     history: Vec<ResponseItem>,
     #[serde(default, skip_serializing_if = "std::collections::BTreeSet::is_empty")]
     client_authored: std::collections::BTreeSet<String>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    unreal_function_outputs: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     context_snapshot: Option<ContextBaseline>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -241,6 +248,7 @@ impl SessionSnapshot {
             canonical_context,
             history,
             client_authored,
+            unreal_function_outputs: false,
             context_snapshot,
             context_usage: None,
         })
@@ -318,6 +326,7 @@ impl SessionSnapshot {
                     self.canonical_context.clone(),
                     self.history.clone(),
                     self.client_authored.clone(),
+                    self.unreal_function_outputs,
                     None,
                     self.context_snapshot.clone(),
                 )?;
@@ -335,6 +344,7 @@ impl SessionSnapshot {
             canonical_context: self.canonical_context,
             history: self.history,
             client_authored: self.client_authored,
+            unreal_function_outputs: self.unreal_function_outputs,
             context_baseline: self.context_snapshot,
             checkpoint,
         })
@@ -350,6 +360,7 @@ pub(crate) struct SessionResume {
     pub(crate) canonical_context: ResponseItem,
     pub(crate) history: Vec<ResponseItem>,
     pub(crate) client_authored: std::collections::BTreeSet<String>,
+    pub(crate) unreal_function_outputs: bool,
     pub(crate) context_baseline: Option<ContextBaseline>,
     pub(crate) checkpoint: Option<ModelCheckpoint>,
 }

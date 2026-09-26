@@ -29,7 +29,10 @@ use nanocodex_oai_api::{
     Model, Prompt, Thinking,
     events::AgentEventKind,
     pricing::{ServiceTier, estimate_for_model},
-    responses::{ContentItem, MessageRole, RequestProfile, ResponseItem, ToolDefinition, Usage},
+    responses::{
+        ContentItem, FunctionOutputBody, MessageRole, RequestProfile, ResponseItem, ToolDefinition,
+        Usage,
+    },
     tower::{
         CodeCall, CodeCallKind, GenerationOutput as TurnResult, ResponsesAttempt, ResponsesClient,
         ResponsesOutput, ResponsesServiceResponse,
@@ -157,6 +160,7 @@ pub(crate) struct HistoryCheckpoint {
     pub(crate) canonical_context: ResponseItem,
     pub(crate) history: Vec<ResponseItem>,
     pub(crate) client_authored: std::collections::BTreeSet<String>,
+    pub(crate) unreal_function_outputs: bool,
     pub(crate) prompt_cache_key: Arc<str>,
     pub(crate) context_baseline: Option<ContextBaseline>,
 }
@@ -207,6 +211,10 @@ impl ModelCheckpoint {
         );
     }
 
+    pub(crate) fn unreal_function_outputs(&self) -> bool {
+        self.conversation.managed.unreal_function_outputs()
+    }
+
     pub(crate) fn snapshot_history(&self) -> Vec<ResponseItem> {
         self.conversation.flattened_history()
     }
@@ -227,12 +235,14 @@ impl ModelCheckpoint {
         canonical_context: ResponseItem,
         history: Vec<ResponseItem>,
         client_authored: std::collections::BTreeSet<String>,
+        unreal_function_outputs: bool,
         global_instructions: Option<Arc<str>>,
         context_baseline: Option<ContextBaseline>,
     ) -> Result<Self> {
         let context_baseline =
             context_baseline.unwrap_or_else(|| ContextBaseline::reconstruct(&history));
-        let mut conversation = ConversationState::resume(canonical_context, history)?;
+        let mut conversation =
+            ConversationState::resume(canonical_context, history, unreal_function_outputs)?;
         conversation
             .managed
             .restore_client_authored(client_authored);
@@ -445,6 +455,42 @@ impl<S> ModelRun<S> {
         })
     }
 
+    /// Finishes a previously staged Unreal function call at an idle model boundary.
+    /// A sent pending item is immutable; its terminal output is a second typed
+    /// output with the same call ID and will be replayed from the checkpoint.
+    pub(crate) fn submit_late_function_output(
+        &mut self,
+        call_id: &str,
+        output: FunctionOutputBody,
+        requested_workspace: Option<&str>,
+    ) -> Result<ModelCheckpoint>
+    where
+        S: Service<ResponsesAttempt, Response = ResponsesServiceResponse> + AgentSend + 'static,
+        S::Error: Into<nanocodex_oai_api::ResponseError>,
+        S::Future: AgentSend,
+    {
+        let session = self.session.as_mut().ok_or_else(|| {
+            NanocodexError::InvalidRequest("no model session for late function output".into())
+        })?;
+        session.validate_workspace(requested_workspace)?;
+        // Validate against an isolated clone before sealing the original tail.
+        // Do not risk partially changing the driver's mutable session on error.
+        let mut conversation = session.conversation.clone();
+        conversation.commit_tail();
+        conversation
+            .managed
+            .complete_unreal_function_output(call_id, output)
+            .map_err(|error| NanocodexError::InvalidRequest(error.to_string()))?;
+        conversation.commit_tail();
+        session.conversation = conversation;
+        session.preserve_inherited_delta = true;
+        Ok(Self::checkpoint_from_session(
+            session,
+            true,
+            self.global_instructions.clone(),
+        ))
+    }
+
     fn empty_session(&mut self, requested_workspace: Option<&str>) -> Result<ModelSessionState> {
         let workspace = requested_workspace.map_or_else(
             || self.context_source.resolve_workspace(None),
@@ -568,6 +614,7 @@ pub(crate) fn prepare_history_checkpoint(
         canonical_context,
         history,
         client_authored,
+        unreal_function_outputs,
         prompt_cache_key,
         context_baseline,
     } = resume;
@@ -593,6 +640,7 @@ pub(crate) fn prepare_history_checkpoint(
         canonical_context,
         history,
         client_authored,
+        unreal_function_outputs,
         context_source.global_instructions(),
         context_baseline,
     )?;
@@ -608,6 +656,64 @@ pub(crate) fn prepare_history_checkpoint(
 mod context_accounting_snapshot_tests {
     use super::*;
     use crate::session::{CommittedSession, SessionSnapshot};
+
+    #[test]
+    fn unreal_pending_terminal_snapshot_replays_only_when_opted_in() {
+        let history: Vec<ResponseItem> = serde_json::from_value(serde_json::json!([
+            {"type":"message", "role":"user", "content":[{"type":"input_text", "text":"task"}]},
+            {"type":"function_call", "call_id":"job-1", "name":"job", "arguments":"{}"},
+            {"type":"function_call_output", "call_id":"job-1", "output": "Tool call is still running. Its result arrives in a later turn: continue with independent work, or end your turn to wait for it."}
+        ]))
+        .unwrap();
+        let prefix = serde_json::from_value(serde_json::json!([
+            {"type":"additional_tools", "role":"developer", "tools":[]},
+            {"type":"message", "role":"developer", "content":[{"type":"input_text", "text":"instructions"}]}
+        ])).unwrap();
+        let mut checkpoint = ModelCheckpoint::resume(
+            ".".into(),
+            Arc::from("lineage"),
+            prefix,
+            Arc::from("cache"),
+            history[0].clone(),
+            history,
+            Default::default(),
+            true,
+            None,
+            None,
+        )
+        .unwrap();
+        checkpoint.conversation.commit_tail();
+        checkpoint
+            .conversation
+            .managed
+            .complete_unreal_function_output(
+                "job-1",
+                nanocodex_oai_api::responses::FunctionOutputBody::Text("done".into()),
+            )
+            .unwrap();
+        let snapshot =
+            CommittedSession::new(Arc::from("lineage"), Model::Astra, checkpoint).snapshot();
+        let encoded = serde_json::to_value(snapshot).unwrap();
+        assert_eq!(encoded["unreal_function_outputs"], true);
+        let restored: SessionSnapshot = serde_json::from_value(encoded.clone()).unwrap();
+        assert_eq!(
+            restored
+                .into_resume()
+                .unwrap()
+                .checkpoint
+                .unwrap()
+                .snapshot_history()
+                .len(),
+            4
+        );
+        let mut ordinary = encoded;
+        ordinary
+            .as_object_mut()
+            .unwrap()
+            .remove("unreal_function_outputs");
+        let ordinary: SessionSnapshot = serde_json::from_value(ordinary).unwrap();
+        assert!(ordinary.into_resume().is_err());
+    }
 
     #[test]
     fn snapshot_preserves_context_accounting_and_accepts_legacy_snapshots() {
@@ -628,6 +734,7 @@ mod context_accounting_snapshot_tests {
             history[1].clone(),
             history,
             Default::default(),
+            false,
             None,
             None,
         )
