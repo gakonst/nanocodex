@@ -4348,18 +4348,69 @@ mod tests {
         ));
     }
 
-    /// Isolated storage-head characterization, not end-to-end model latency.
+    /// Isolated immutable-record and head growth characterization, not a
+    /// production memory/SQL or end-to-end model latency benchmark.
     #[tokio::test]
     #[ignore = "run manually to characterize long-lived exact-ID journal growth"]
     async fn late_output_retention_storage_profile() {
-        use std::time::Instant;
+        use std::{sync::Mutex, time::Instant};
 
-        let store = MemoryStore::new().unwrap();
-        let session = DurableSession::open_with_terminal_receipt_limit(store, "late-profile", 0)
-            .await
-            .unwrap();
+        #[derive(Clone)]
+        struct MeasuredStore {
+            inner: MemoryStore,
+            // MemoryStore uses immutable keys; count committed distinct records.
+            published: Arc<Mutex<HashMap<String, usize>>>,
+        }
+        impl StateStore for MeasuredStore {
+            fn read_record<'a>(
+                &'a mut self,
+                state_id: &'a str,
+                key: &'a str,
+            ) -> crate::StoreFuture<'a, std::result::Result<Option<String>, StoreError>>
+            {
+                self.inner.read_record(state_id, key)
+            }
+            fn acquire<'a>(
+                &'a mut self,
+                state_id: &'a str,
+                owner_id: OwnerId,
+            ) -> crate::StoreFuture<'a, std::result::Result<crate::OwnedState, StoreError>>
+            {
+                self.inner.acquire(state_id, owner_id)
+            }
+            fn replace<'a>(
+                &'a mut self,
+                state_id: &'a str,
+                owner: &'a OwnerToken,
+                expected_revision: u64,
+                payload: &'a str,
+                records: &'a [crate::StoreRecord],
+            ) -> crate::StoreFuture<'a, std::result::Result<u64, StoreError>> {
+                Box::pin(async move {
+                    let revision = self
+                        .inner
+                        .replace(state_id, owner, expected_revision, payload, records)
+                        .await?;
+                    let mut published = self.published.lock().unwrap();
+                    for record in records {
+                        published
+                            .entry(record.key.clone())
+                            .or_insert(record.key.len() + record.value.len());
+                    }
+                    Ok(revision)
+                })
+            }
+        }
+
+        let store = MeasuredStore {
+            inner: MemoryStore::new().unwrap(),
+            published: Arc::new(Mutex::new(HashMap::new())),
+        };
+        let session =
+            DurableSession::open_with_terminal_receipt_limit(store.clone(), "late-profile", 0)
+                .await
+                .unwrap();
         let (owner, _) = session.acquire_agent().await.unwrap();
-        let payload = "x".repeat(8_192);
         let mut previous = Instant::now();
         for index in 0..250 {
             let id = format!("late-output:profile-{index}");
@@ -4375,7 +4426,9 @@ mod tests {
                     id,
                     EncodedPayload::encode(&serde_json::json!({
                         "model": "gpt-6-sol", "lineage_id": "profile", "workspace": "/test",
-                        "history": payload,
+                        // Distinct large checkpoints prevent content-addressed
+                        // deduplication from hiding per-completion growth.
+                        "history": format!("{index:08}{}", "x".repeat(8_184)),
                     }))
                     .unwrap(),
                     &"receipt".to_owned(),
@@ -4385,15 +4438,35 @@ mod tests {
             if [9, 99, 249].contains(&index) {
                 let state = session.state().await.unwrap();
                 let head_bytes = state.checkpoint_payload().unwrap().len();
+                let published = store.published.lock().unwrap();
+                let record_bytes = published.values().sum::<usize>();
                 println!(
-                    "late_journal_count={} retained_head_bytes={} last_segment_ms={}",
+                    "late_journal_count={} retained_head_bytes={} immutable_records={} immutable_record_bytes={} last_segment_ms={}",
                     index + 1,
                     head_bytes,
-                    previous.elapsed().as_millis()
+                    published.len(),
+                    record_bytes,
+                    previous.elapsed().as_millis(),
                 );
+                drop(published);
                 previous = Instant::now();
             }
         }
+        drop(owner);
+        drop(session);
+        let start = Instant::now();
+        let reopened =
+            DurableSession::open_with_terminal_receipt_limit(store.clone(), "late-profile", 0)
+                .await
+                .unwrap();
+        println!(
+            "late_journal_cold_reopen_ms={}",
+            start.elapsed().as_millis()
+        );
+        assert!(matches!(
+            reopened.admit("late-output:profile-249", &249).await,
+            Ok(Admission::Completed { .. })
+        ));
     }
 
     #[tokio::test]

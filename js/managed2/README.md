@@ -241,3 +241,15 @@ three asynchronous runs of a 2500-ms fixture search through both Workers and
 records original-turn completion, host job `completed`/`checkpointed`/`delivered`
 observations, and end-to-end terminal uptake. Do not interpret its fixture
 model/tool timings as live provider performance or as a release gate.
+
+Durability's ignored manual `late_output_retention_storage_profile` measures
+committed immutable record bytes as well as head size using 250 distinct 8 KiB
+checkpoint payloads (`cargo test -p nanocodex-durability --lib
+late_output_retention_storage_profile -- --ignored --nocapture`). In the
+in-memory store, zero terminal head retention held the head to 143 bytes but
+immutable records grew from 88,140 bytes at 10 completions to 881,001 bytes
+at 100 and 2,202,801 bytes at 250 (751 records). These are logical key+value
+bytes, not SQLite/R2 physical size or RSS, and do not establish a sustainable
+production retention policy. Exact-ID replay receipts currently have no
+bounded archival lifetime; operational storage-growth review remains a release
+gate for long-lived sessions.
