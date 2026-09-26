@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { handleGmailPush, verifyGooglePushToken } from "../src/gmail-push-ingress";
+import { handleGmailPush, normalizePushHistoryId, verifyGooglePushToken } from "../src/gmail-push-ingress";
 
 // Boundary failures: forged/expired/wrong-audience or wrong-identity JWTs must
 // never reach a mailbox; authenticated malformed payloads must not be acked.
@@ -13,7 +13,7 @@ async function fixture(overrides: Record<string, unknown> = {}) {
   const unsigned = `${encode({ alg: "RS256", kid: "fixture" })}.${encode({ iss: "https://accounts.google.com", aud: config.GMAIL_PUSH_AUDIENCE, email: config.GMAIL_PUSH_SERVICE_ACCOUNT, email_verified: true, sub: "123", iat: now, exp: now + 3600, ...overrides })}`;
   const signature = new Uint8Array(await crypto.subtle.sign("RSASSA-PKCS1-v1_5", keys.privateKey, new TextEncoder().encode(unsigned)));
   const token = `${unsigned}.${btoa(String.fromCharCode(...signature)).replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", "")}`;
-  return { token, fetchKeys: async () => Response.json({ keys: [{ ...jwk, kid: "fixture", alg: "RS256", use: "sig" }] }) };
+  return { token, fetchKeys: async (url: RequestInfo | URL, init?: RequestInit) => { new Request(url, init); return Response.json({ keys: [{ ...jwk, kid: "fixture", alg: "RS256", use: "sig" }] }); } };
 }
 describe("Google Pub/Sub authentication", () => {
   it("accepts Google-signed configured identity and rejects forged signatures", async () => {
@@ -27,9 +27,40 @@ describe("Google Pub/Sub authentication", () => {
       expect(await verifyGooglePushToken(token, config, fetchKeys)).toBe(false);
     }
   });
+  it("does not follow redirects while fetching signing keys", async () => {
+    const { token } = await fixture();
+    let calls = 0;
+    const redirected = async (url: RequestInfo | URL, init?: RequestInit) => {
+      const request = new Request(url, init);
+      expect(request.redirect).toBe("manual");
+      calls++;
+      return new Response(null, {status: 302, headers: {location: "https://other.example/keys"}});
+    };
+    expect(await verifyGooglePushToken(token, config, redirected)).toBe(false);
+    expect(calls).toBe(1);
+  });
+  it("reports bounded authentication failures without exposing token claims", async () => {
+    const { token, fetchKeys } = await fixture({ aud: "private-invalid-audience" });
+    const reasons: string[] = [];
+    expect(await verifyGooglePushToken(token, config, fetchKeys, reason => reasons.push(reason))).toBe(false);
+    expect(reasons).toEqual(["audience_mismatch"]);
+    const valid = await fixture();
+    expect(await verifyGooglePushToken(valid.token, config, async () => { throw new Error("private-provider-error"); }, reason => reasons.push(reason))).toBe(false);
+    expect(reasons).toEqual(["audience_mismatch", "key_fetch_failed"]);
+  });
   it("rejects unconfigured or unauthenticated ingress without touching mailbox", async () => {
     const request = new Request("https://app.example/v1/gmail-push/user/connection", { method: "POST", body: "{}" });
     expect((await handleGmailPush(request, {})).status).toBe(503);
     expect((await handleGmailPush(request, config)).status).toBe(401);
+  });
+});
+
+describe("Gmail push cursor decoding", () => {
+  it("normalizes numeric push IDs and preserves string IDs without precision loss", () => {
+    expect(normalizePushHistoryId(2337213)).toBe("2337213");
+    expect(normalizePushHistoryId("18446744073709551615")).toBe("18446744073709551615");
+    for (const invalid of [9007199254740992, -1, 1.5, null, true, {}, "1e3", "", Infinity]) {
+      expect(normalizePushHistoryId(invalid)).toBeNull();
+    }
   });
 });
