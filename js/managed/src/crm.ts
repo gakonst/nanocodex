@@ -13,6 +13,22 @@ type NoteRow = { id: string; record_id: string; body: string; source_url: string
 type Cursor = { v: 1; scope: string; at: number; id: string };
 type SqlValue = string | number | null;
 const recordColumns = "id,kind,name,email,phone,website,title,company_id,tags,created_at,updated_at";
+// Keep manual columns intact. Complete research fills empty display fields;
+// a company ID additionally requires an explicit current employment edge.
+const sourcedCompanyId = `(SELECT CASE WHEN count(DISTINCT l.to_id) = 1 THEN min(l.to_id) END
+  FROM crm_relationships l JOIN crm_records c ON c.owner_id = l.owner_id AND c.id = l.to_id AND c.kind = 'company'
+  WHERE l.owner_id = r.owner_id AND l.from_id = r.id AND l.type = 'works_at'
+    AND l.origin IN ('user','source') AND (l.effective_to IS NULL OR l.effective_to >= date('now'))
+    AND p.status = 'complete' AND p.company IS NOT NULL AND lower(trim(c.name)) = lower(trim(p.company)))`;
+const effectiveColumns = `r.id,r.kind,r.name,r.email,r.phone,
+  coalesce(r.website,CASE WHEN p.status = 'complete' THEN p.website END) AS website,
+  coalesce(r.title,CASE WHEN p.status = 'complete' THEN p.title END) AS title,
+  coalesce(r.company_id,${sourcedCompanyId}) AS company_id,
+  r.tags,r.created_at,r.updated_at,
+  CASE WHEN r.website IS NULL AND p.status = 'complete' AND p.website IS NOT NULL THEN 'research' END AS website_origin,
+  CASE WHEN r.title IS NULL AND p.status = 'complete' AND p.title IS NOT NULL THEN 'research' END AS title_origin,
+  CASE WHEN r.company_id IS NULL AND ${sourcedCompanyId} IS NOT NULL THEN 'relationship' END AS company_id_origin`;
+const effectiveJoin = `FROM crm_records r LEFT JOIN crm_research p ON p.owner_id = r.owner_id AND p.record_id = r.id`;
 const noteColumns = "id,record_id,body,source_url,created_at,updated_at";
 const recordFields = ["kind", "name", "email", "phone", "website", "title", "company_id", "tags"] as const;
 const noteFields = ["record_id", "body", "source_url"] as const;
@@ -78,7 +94,14 @@ function notePatch(input: Input): Record<string, SqlValue> {
   if (has(input, "source_url")) patch.source_url = input.source_url === null ? null : url(input.source_url, "source_url");
   return patch;
 }
-function record(row: RecordRow) { return { ...row, tags: JSON.parse(row.tags) as string[] }; }
+type EffectiveRecordRow = RecordRow & { website_origin?: string | null; title_origin?: string | null; company_id_origin?: string | null };
+function record(row: EffectiveRecordRow) {
+  const { website_origin, title_origin, company_id_origin, ...fields } = row;
+  const field_origins = { ...(website_origin ? { website: website_origin } : {}),
+    ...(title_origin ? { title: title_origin } : {}),
+    ...(company_id_origin ? { company_id: company_id_origin } : {}) };
+  return { ...fields, tags: JSON.parse(row.tags) as string[], ...(Object.keys(field_origins).length ? { field_origins } : {}) };
+}
 async function scope(parts: unknown[]): Promise<string> {
   const hash = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify(parts)));
   return Array.from(new Uint8Array(hash), byte => byte.toString(16).padStart(2, "0")).join("");
@@ -121,7 +144,7 @@ export async function crmRequest(db: D1Database, ownerId: string, operation: Crm
         const values: SqlValue[] = [ownerId];
         if (filterKind) { conditions.push("r.kind = ?"); values.push(filterKind); }
         if (tag) { conditions.push("EXISTS (SELECT 1 FROM json_each(r.tags) WHERE value = ?)"); values.push(tag); }
-        if (companyId) { conditions.push("r.company_id = ?"); values.push(companyId); }
+        if (companyId) { conditions.push(`coalesce(r.company_id,${sourcedCompanyId}) = ?`); values.push(companyId); }
         if (q) {
           // instr treats %, _ and backslashes literally; no LIKE metacharacters.
           conditions.push(`(instr(lower(r.name), lower(?)) > 0 OR instr(lower(coalesce(r.email,'')), lower(?)) > 0
@@ -145,7 +168,7 @@ export async function crmRequest(db: D1Database, ownerId: string, operation: Crm
           values.push(q, q, q, q, q, q, ownerId, q, q, ownerId, q, q, q, q, q, q, q, q, q, q, q, q);
         }
         if (cursor) { conditions.push("(r.created_at > ? OR (r.created_at = ? AND r.id > ?))"); values.push(cursor.at, cursor.at, cursor.id); }
-        const result = await session.prepare(`SELECT ${recordColumns.split(",").map(column => `r.${column}`).join(",")} FROM crm_records r WHERE ${conditions.join(" AND ")} ORDER BY r.created_at, r.id LIMIT ?`).bind(...values, size + 1).all<RecordRow>();
+        const result = await session.prepare(`SELECT ${effectiveColumns} ${effectiveJoin} WHERE ${conditions.join(" AND ")} ORDER BY r.created_at, r.id LIMIT ?`).bind(...values, size + 1).all<EffectiveRecordRow>();
         const resultPage = page(result.results, size, queryScope);
         return { records: resultPage.items.map(record), next_cursor: resultPage.next_cursor };
       }
@@ -158,10 +181,10 @@ export async function crmRequest(db: D1Database, ownerId: string, operation: Crm
         const values: SqlValue[] = [ownerId, recordId];
         if (cursor) values.push(cursor.at, cursor.at, cursor.id);
         const results = await session.batch([
-          session.prepare(`SELECT ${recordColumns} FROM crm_records WHERE owner_id = ? AND id = ?`).bind(ownerId, recordId),
+          session.prepare(`SELECT ${effectiveColumns} ${effectiveJoin} WHERE r.owner_id = ? AND r.id = ?`).bind(ownerId, recordId),
           session.prepare(`SELECT ${noteColumns} FROM crm_notes WHERE owner_id = ? AND record_id = ? ${cursor ? "AND (created_at > ? OR (created_at = ? AND id > ?))" : ""} ORDER BY created_at, id LIMIT ?`).bind(...values, size + 1),
         ]);
-        const row = results[0].results[0] as RecordRow | undefined;
+        const row = results[0].results[0] as EffectiveRecordRow | undefined;
         if (!row) notFound();
         const notes = page(results[1].results as NoteRow[], size, queryScope);
         return { record: record(row), notes: notes.items, next_cursor: notes.next_cursor };
@@ -175,7 +198,9 @@ export async function crmRequest(db: D1Database, ownerId: string, operation: Crm
           const fields = Object.keys(patch);
           const row = await session.prepare(`UPDATE crm_records SET ${fields.map(field => `${field} = ?, `).join("")}updated_at = max(updated_at, ?) WHERE owner_id = ? AND id = ? RETURNING ${recordColumns}`).bind(...Object.values(patch), now, ownerId, recordId).first<RecordRow>();
           if (!row) notFound();
-          return { record: record(row) };
+          const visible = await session.prepare(`SELECT ${effectiveColumns} ${effectiveJoin} WHERE r.owner_id = ? AND r.id = ?`)
+            .bind(ownerId, recordId).first<EffectiveRecordRow>();
+          return { record: record(visible!) };
         }
         if (!has(args, "kind") || !has(args, "name")) invalid("Creating a record requires kind and name.");
         const recordId = id(createId, "create ID");
@@ -185,7 +210,9 @@ export async function crmRequest(db: D1Database, ownerId: string, operation: Crm
             ON CONFLICT (owner_id,id) DO NOTHING`).bind(ownerId, recordId, patch.kind, patch.name, patch.email ?? null, patch.phone ?? null, patch.website ?? null, patch.title ?? null, patch.company_id ?? null, patch.tags ?? "[]", now, now, ownerId, recordId),
           session.prepare(`SELECT ${recordColumns} FROM crm_records WHERE owner_id = ? AND id = ?`).bind(ownerId, recordId),
         ]);
-        return { record: record(results[1].results[0] as RecordRow) };
+        const visible = await session.prepare(`SELECT ${effectiveColumns} ${effectiveJoin} WHERE r.owner_id = ? AND r.id = ?`)
+          .bind(ownerId, recordId).first<EffectiveRecordRow>();
+        return { record: record(visible!) };
       }
       case "save_note": {
         const args = object(input, ["id", ...noteFields]);
