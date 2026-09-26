@@ -36,6 +36,7 @@ export type FinalToolResultReceipt = Readonly<{ operation_id: string; call_id: s
 // The host bridge returns an unverified JSON object; only a checked receipt
 // may advance the durable job, regardless of its permissive TypeScript type.
 export type DeliverFinalToolResult = (intent: FinalToolResultIntent) => Promise<unknown>;
+export type ActiveOutputStatus = (intent: FinalToolResultIntent) => Promise<unknown>;
 export class TypedIngestionUnavailable extends Error {
   constructor() { super("typed same-call-ID result ingestion is not available"); }
 }
@@ -54,7 +55,8 @@ export class AsyncJobs {
     private readonly deliverFinal: DeliverFinalToolResult,
     private readonly waitUntil: (work: Promise<unknown>) => void,
     private readonly replaySafeTools: ReadonlySet<string> = new Set(),
-    private readonly wakeGeneration: number = WAKE_GENERATION) {
+    private readonly wakeGeneration: number = WAKE_GENERATION,
+    private readonly activeOutputStatus?: ActiveOutputStatus) {
     storage.sql.exec(`CREATE TABLE IF NOT EXISTS async_jobs (
       id TEXT PRIMARY KEY, invocation TEXT NOT NULL UNIQUE, original_turn TEXT NOT NULL,
       execution_turn TEXT, call_id TEXT, tool TEXT NOT NULL, args TEXT NOT NULL,
@@ -72,10 +74,11 @@ export class AsyncJobs {
     storage.sql.exec("UPDATE async_jobs SET state = 'legacy_uninjectable' WHERE execution_turn IS NULL");
     storage.sql.exec("CREATE INDEX IF NOT EXISTS async_jobs_state ON async_jobs(state)");
     // Deployment alone does not wake an idle DO. On its next construction,
-    // schedule one reconciliation for rows from an older wake-capable adapter.
+    // recheck one old checkpoint or an output parked against an older kernel.
+    // If the capability is still absent, park again without a polling alarm.
     if (storage.sql.exec<{ n: number }>(
-       `SELECT COUNT(*) AS n FROM async_jobs WHERE state = 'checkpointed'
-        AND wake_generation < ? AND ${terminalOrigin}`,
+      `SELECT COUNT(*) AS n FROM async_jobs WHERE state = 'awaiting_integration'
+        OR (state = 'checkpointed' AND wake_generation < ? AND ${terminalOrigin})`,
       this.wakeGeneration).toArray()[0]!.n > 0) {
       this.waitUntil((async () => {
         const nextAt = Date.now() + 1_000;
@@ -251,6 +254,31 @@ export class AsyncJobs {
       if (this.delivering.has(job.id)) continue;
       this.delivering.add(job.id);
       try {
+        const intent: FinalToolResultIntent = { originalTurn: job.original_turn, executionTurn: job.execution_turn,
+          callId: job.call_id, tool: job.tool, jobId: job.id, terminalState, output: job.result };
+        if (job.state === "checkpointed" && this.activeOutputStatus) {
+          const status = await this.activeOutputStatus(intent) as {
+            state?: unknown; model_call_index?: unknown; response_id?: unknown
+          } | null;
+          if (status?.state === "confirmed"
+            && Number.isSafeInteger(status.model_call_index) && (status.model_call_index as number) > 0
+            && typeof status.response_id === "string" && status.response_id.length > 0) {
+            // Only the durable completed model step and exact job/call receipt
+            // prove uptake; a false submission receipt never does.
+            this.storage.sql.exec(`UPDATE async_jobs SET state = 'delivered', continuation_started = 1,
+              delivered_at = ?, wake_generation = ? WHERE id = ? AND state = 'checkpointed'`,
+              Date.now(), this.wakeGeneration, job.id);
+            continue;
+          }
+          if (status?.state !== "discarded") {
+            // Bound is not consumed. Pruned/unknown is not safe to replay.
+            this.storage.sql.exec("UPDATE async_jobs SET wake_generation = ? WHERE id = ? AND state = 'checkpointed'",
+              this.wakeGeneration, job.id);
+            continue;
+          }
+          // The active operation discarded this output. The identical job ID
+          // is now retried at idle, where the Rust journal deduplicates it.
+        }
         // Capture settlement before awaiting the Rust adapter. A cancellation
         // can race a slow receipt; observing only afterwards would suppress
         // the necessary idle reconciliation of that active acceptance.
@@ -259,9 +287,7 @@ export class AsyncJobs {
         ).toArray()[0]!.n > 0;
         // Stable intent across ambiguous failures; only the Rust adapter can
         // decide whether the pending output was sent and dedupe terminal output.
-        const rawReceipt = await this.deliverFinal({ originalTurn: job.original_turn, executionTurn: job.execution_turn,
-          callId: job.call_id, tool: job.tool, jobId: job.id,
-          terminalState, output: job.result });
+        const rawReceipt = await this.deliverFinal(intent);
         // A false receipt is acceptance, never proof of provider uptake. If
         // accepted during the original active turn, leave it eligible for one
         // identical-operation reconciliation after that turn settles. The
@@ -275,7 +301,9 @@ export class AsyncJobs {
         this.storage.sql.exec(`UPDATE async_jobs SET state = ?, delivered_at = ?, continuation_started = ?, wake_generation = ?
           WHERE id = ? AND state IN ('completed', 'failed', 'uncertain', 'cancelled', 'awaiting_integration', 'checkpointed')`,
           receipt.continuation_started ? "delivered" : "checkpointed", Date.now(),
-          receipt.continuation_started ? 1 : 0, settledBefore ? this.wakeGeneration : 0, job.id);
+          receipt.continuation_started ? 1 : 0,
+          receipt.continuation_started || (job.state === "checkpointed" && settledBefore)
+            ? this.wakeGeneration : 0, job.id);
       } catch (error) {
         if (error instanceof TypedIngestionUnavailable) {
           this.storage.sql.exec("UPDATE async_jobs SET state = 'awaiting_integration' WHERE id = ?", job.id);

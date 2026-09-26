@@ -24,8 +24,8 @@ use nanocodex_agent::{
 use serde_json::json;
 
 use nanocodex_durability::{
-    DurableAgentExt, DurableSession, MemoryStore, OperationStatus, OwnedState, OwnerId, OwnerToken,
-    StateStore, StoreError, StoreFuture,
+    ActiveBoundaryOutputStatus, DurableAgentExt, DurableSession, MemoryStore, OperationStatus,
+    OwnedState, OwnerId, OwnerToken, StateStore, StoreError, StoreFuture,
 };
 
 fn temporary_workspace(label: &str) -> Result<PathBuf> {
@@ -4626,6 +4626,10 @@ async fn accepted_terminal_crosses_active_model_boundary_with_original_call_id()
         .push(json!({"type":"function_call", "call_id":"job-1", "name":"job", "arguments":"{}"}));
     history.push(json!({"type":"function_call_output", "call_id":"job-1", "output":
         "Tool call is still running. Its result arrives in a later turn: continue with independent work, or end your turn to wait for it."}));
+    history
+        .push(json!({"type":"function_call", "call_id":"job-2", "name":"job", "arguments":"{}"}));
+    history.push(json!({"type":"function_call_output", "call_id":"job-2", "output":
+        "Tool call is still running. Its result arrives in a later turn: continue with independent work, or end your turn to wait for it."}));
 
     let store = MemoryStore::new()?;
     let state = DurableSession::open(store.clone(), "unreal-active-boundary").await?;
@@ -4679,6 +4683,14 @@ async fn accepted_terminal_crosses_active_model_boundary_with_original_call_id()
         )
         .await?;
     assert!(duplicate.replayed);
+    let second_receipt = agent
+        .submit_late_function_output(
+            "job-2",
+            FunctionOutputBody::Text("second terminal".into()),
+            "job-identity-2",
+        )
+        .await?;
+    assert!(!second_receipt.replayed && !second_receipt.continuation_started);
     release_first.notify_one();
     let second = tokio::time::timeout(Duration::from_secs(5), requests.recv())
         .await?
@@ -4695,6 +4707,16 @@ async fn accepted_terminal_crosses_active_model_boundary_with_original_call_id()
         terminal, 1,
         "exact original-call-ID terminal must enter next request once"
     );
+    assert_eq!(
+        second
+            .iter()
+            .filter(|item| item["type"] == "function_call_output"
+                && item["call_id"] == "job-2"
+                && item["output"] == "second terminal")
+            .count(),
+        1,
+        "two completed jobs before the boundary must coalesce into one request"
+    );
     tokio::time::timeout(Duration::from_secs(5), turn.result()).await??;
     assert_eq!(generations.load(Ordering::SeqCst), 2);
     let operation = state
@@ -4707,6 +4729,23 @@ async fn accepted_terminal_crosses_active_model_boundary_with_original_call_id()
     let confirmed = &operation.boundary_output_receipts["job-identity-1"];
     assert_eq!(confirmed.confirmed_model_call_index, Some(2));
     assert_eq!(confirmed.response_id.as_deref(), Some("durable-response"));
+    assert_eq!(
+        state
+            .active_boundary_output_status_for_call(
+                "active-boundary-turn",
+                "job-identity-1",
+                "job-1"
+            )
+            .await?,
+        ActiveBoundaryOutputStatus::Confirmed {
+            model_call_index: 2,
+            response_id: "durable-response".into()
+        }
+    );
+    assert_eq!(
+        operation.boundary_output_receipts["job-identity-2"].confirmed_model_call_index,
+        Some(2)
+    );
     assert!(operation.boundary_outputs.is_empty());
     agent.shutdown().await?;
     drop(events);
@@ -4786,6 +4825,12 @@ async fn active_terminal_cancelled_before_uptake_requires_idle_reconciliation() 
     assert_eq!(
         operation.boundary_output_receipts["job-identity-1"].confirmed_model_call_index,
         None
+    );
+    assert_eq!(
+        state
+            .active_boundary_output_status_for_call("cancelled-turn", "job-identity-1", "job-1")
+            .await?,
+        ActiveBoundaryOutputStatus::Discarded
     );
     // The original active receipt was only an acceptance, not delivery. A
     // durable host must reconcile the identical job ID after turn settlement.

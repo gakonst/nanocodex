@@ -146,6 +146,33 @@ export async function submitFunctionCallOutput(agent, callId, options) {
   return freezeJson(receipt);
 }
 
+/** Private read-only status; a staged idle result is never counted as model uptake. */
+export async function activeFunctionCallOutputStatus(agent, callId, options) {
+  const state = agentState(agent);
+  if (!options || typeof options !== "object" || Array.isArray(options)
+    || Object.keys(options).some((key) => !["originalTurnId", "operationId"].includes(key))) {
+    throw new TypeError("active output status requires originalTurnId and operationId");
+  }
+  const { originalTurnId, operationId } = options;
+  for (const [name, value] of [["callId", callId], ["originalTurnId", originalTurnId], ["operationId", operationId]]) {
+    if (typeof value !== "string" || !value.trim()) throw new TypeError(`${name} must be a non-empty string`);
+  }
+  if (typeof state.raw.activeFunctionOutputStatus !== "function") {
+    throw new Error("this Nanocodex runtime does not support active function-call status");
+  }
+  const encoded = await state.raw.activeFunctionOutputStatus(originalTurnId, operationId, callId);
+  if (typeof encoded !== "string") throw new TypeError("the runtime returned invalid active output status");
+  const status = JSON.parse(encoded);
+  if (!status || typeof status !== "object" || Array.isArray(status)
+    || !["accepted_unbound", "bound_unconfirmed", "confirmed", "discarded", "pruned_or_unknown"].includes(status.state)
+    || ((status.state === "confirmed" || status.state === "bound_unconfirmed")
+      && (!Number.isSafeInteger(status.model_call_index) || status.model_call_index < 1))
+    || (status.state === "confirmed" && (typeof status.response_id !== "string" || !status.response_id))) {
+    throw new TypeError("the runtime returned invalid active output status");
+  }
+  return freezeJson(status);
+}
+
 function encodeFunctionCallOutput(output) {
   if (typeof output === "string") return JSON.stringify(output);
   if (!Array.isArray(output) || output.length === 0) {

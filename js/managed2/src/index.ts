@@ -549,7 +549,21 @@ export class Session extends DurableObject<Env> {
             throw error;
           }
         },
-        work => this.ctx.waitUntil(work), new Set(["current_time", "web__run"]));
+        work => this.ctx.waitUntil(work), new Set(["current_time", "web__run"]), undefined,
+        async intent => {
+          const agent = await this.#ready(owner);
+          try {
+            return await functionCallOutputCapability(agent, intent.callId).activeStatus({
+              originalTurnId: intent.originalTurn, operationId: intent.jobId,
+            });
+          } catch (error) {
+            if (error instanceof Error && error.message ===
+                "this Nanocodex runtime does not support active function-call status") {
+              throw new TypedIngestionUnavailable();
+            }
+            throw error;
+          }
+        });
     }
     return this.#asyncJobs;
   }

@@ -461,8 +461,9 @@ impl Nanocodex {
     }
 
     /// Commits a trusted terminal output for an opted-in, staged function call.
-    /// Does not impersonate a user or itself start a model turn. An active turn
-    /// settles first; a returned receipt means the checkpoint was committed.
+    /// Does not impersonate a user. An active turn may accept this before its
+    /// next model request; a receipt alone does not prove model uptake. An idle
+    /// submission checkpoints the output and schedules a prompt-less wake.
     pub async fn submit_late_function_output(
         &self,
         call_id: impl Into<String>,

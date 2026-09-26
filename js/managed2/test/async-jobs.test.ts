@@ -133,6 +133,61 @@ it("keeps a terminal-racing active receipt eligible for idle retry", async () =>
   });
 });
 
+it("only a matching durable completed model-step status marks an active output delivered", async () => {
+  await runInDurableObject(stub(), async (_session, state) => {
+    state.storage.sql.exec("INSERT INTO turns (id, input, state) VALUES ('original-turn', 'work', 'accepted')");
+    const tasks: Promise<unknown>[] = [];
+    const intents: FinalToolResultIntent[] = [];
+    let status: string = "bound_unconfirmed";
+    const read: NamedTool = { name: "current_time", description: "test read", handler: () => ({ utc: "now" }) };
+    const jobs = new AsyncJobs(state.storage, { current_time: read }, () => "original-turn",
+      async intent => { intents.push(intent); return accepted(intent); }, work => { tasks.push(work); },
+      new Set(["current_time"]), undefined, async () => ({ state: status, model_call_index: 2,
+        ...(status === "confirmed" ? { response_id: "resp-2" } : {}) }));
+    jobs.tool(read).handler({}, context("call-confirmed"));
+    const id = jobId(state, "call-confirmed");
+    await Promise.all(tasks);
+    await jobs.reconcile();
+    expect(jobs.status(id)).toMatchObject({ state: "checkpointed", continuation_started: false });
+    await jobs.reconcile();
+    expect(intents).toHaveLength(1);
+    state.storage.sql.exec("UPDATE turns SET state = 'completed' WHERE id = 'original-turn'");
+    status = "confirmed";
+    await jobs.reconcile();
+    expect(jobs.status(id)).toMatchObject({ state: "delivered", continuation_started: true });
+    expect(intents).toHaveLength(1); // never resubmit a confirmed active output
+  });
+});
+
+it("only an authoritative discarded status retries the original job at idle", async () => {
+  await runInDurableObject(stub(), async (_session, state) => {
+    state.storage.sql.exec("INSERT INTO turns (id, input, state) VALUES ('original-turn', 'work', 'accepted')");
+    const tasks: Promise<unknown>[] = [];
+    const intents: FinalToolResultIntent[] = [];
+    let status = "bound_unconfirmed";
+    const read: NamedTool = { name: "current_time", description: "test read", handler: () => ({ utc: "now" }) };
+    const jobs = new AsyncJobs(state.storage, { current_time: read }, () => "original-turn",
+      async intent => { intents.push(intent); return accepted(intent); }, work => { tasks.push(work); },
+      new Set(["current_time"]), undefined, async () => ({ state: status }));
+    jobs.tool(read).handler({}, context("call-discarded"));
+    const id = jobId(state, "call-discarded");
+    await Promise.all(tasks);
+    await jobs.reconcile();
+    state.storage.sql.exec("UPDATE turns SET state = 'failed' WHERE id = 'original-turn'");
+    await jobs.reconcile(); // bound is not consumed, and must not be replayed
+    expect(intents).toHaveLength(1);
+    // Simulate a later status discovery after a cold restart/version bump.
+    state.storage.sql.exec("UPDATE async_jobs SET wake_generation = 0 WHERE id = ?", id);
+    status = "discarded";
+    await jobs.reconcile();
+    expect(intents).toHaveLength(2);
+    expect(intents[1]).toEqual(intents[0]);
+    expect(jobs.status(id)).toMatchObject({ state: "checkpointed", continuation_started: false });
+    await jobs.reconcile();
+    expect(intents).toHaveLength(2);
+  });
+});
+
 it("retries the identical terminal intent after uncertain delivery", async () => {
   await runInDurableObject(stub(), async (_session, state) => {
     const tasks: Promise<unknown>[] = [];
@@ -179,6 +234,13 @@ it("holds a terminal intent without a typed ingestion adapter or a synthetic con
       async (): Promise<FinalToolResultReceipt> => { throw new TypedIngestionUnavailable(); }, () => {});
     await restored.reconcile();
     expect(restored.status(first.job_id)).toMatchObject({ state: "awaiting_integration" });
+    await state.storage.deleteAlarm();
+    const rearm: Promise<unknown>[] = [];
+    new AsyncJobs(state.storage, { current_time: read }, () => "original-turn",
+      async (): Promise<FinalToolResultReceipt> => { throw new TypedIngestionUnavailable(); },
+      task => { rearm.push(task); });
+    await Promise.all(rearm);
+    expect(await state.storage.getAlarm()).not.toBeNull(); // next cold adapter can recover
   });
 });
 

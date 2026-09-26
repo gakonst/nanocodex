@@ -1,4 +1,4 @@
-import { submitFunctionCallOutput } from "../internal.mjs";
+import { activeFunctionCallOutputStatus, submitFunctionCallOutput } from "../internal.mjs";
 import { trustedStagedUnrealOutput } from "../runtime/code-runtime.mjs";
 
 /**
@@ -12,6 +12,7 @@ export function functionCallOutputCapability(agent, callId) {
   }
   return Object.freeze({
     submit: (options) => submitFunctionCallOutput(agent, callId, options),
+    activeStatus: (options) => activeFunctionCallOutputStatus(agent, callId, options),
   });
 }
 

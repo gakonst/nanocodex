@@ -64,6 +64,31 @@ impl<C, O> AutomaticAdmission<C, O> {
     }
 }
 
+/// Read-only status of a typed output for one exact active-source operation and job message.
+/// This does not describe standalone/idle delivery. Binding alone is not model uptake.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum ActiveBoundaryOutputStatus {
+    /// Accepted, but not assigned to a model request.
+    AcceptedUnbound,
+    /// Assigned to a request, without a durable completed response boundary.
+    BoundUnconfirmed {
+        /// Model request ordinal selected for this output.
+        model_call_index: u32,
+    },
+    /// Confirmed by the durable completed model step and its provider response.
+    Confirmed {
+        /// Completed model request ordinal.
+        model_call_index: u32,
+        /// Provider response identity for that request.
+        response_id: String,
+    },
+    /// Terminal failure or cancellation discarded this output without confirmation.
+    Discarded,
+    /// No matching retained receipt, including a pruned operation or identity mismatch.
+    PrunedOrUnknown,
+}
+
 /// Result of beginning a replayable step.
 #[derive(Clone, Debug)]
 pub enum BeginStep<O = EncodedPayload> {
@@ -241,6 +266,12 @@ enum Command {
         model_call_index: u32,
         response_id: String,
         result: oneshot::Sender<Result<()>>,
+    },
+    ActiveBoundaryOutputStatus {
+        operation_id: String,
+        message_id: String,
+        expected_call_id: Option<String>,
+        result: oneshot::Sender<ActiveBoundaryOutputStatus>,
     },
     RetainedBoundaryOutputs {
         caller: Caller,
@@ -675,6 +706,18 @@ impl Driver {
                         Err(error) => Err(error),
                     };
                     drop(result.send(outcome));
+                }
+                Command::ActiveBoundaryOutputStatus {
+                    operation_id,
+                    message_id,
+                    expected_call_id,
+                    result,
+                } => {
+                    drop(result.send(self.active_boundary_output_status(
+                        &operation_id,
+                        &message_id,
+                        expected_call_id.as_deref(),
+                    )));
                 }
                 Command::RetainedBoundaryOutputs {
                     caller,
@@ -1275,6 +1318,48 @@ impl Driver {
         .await
     }
 
+    fn active_boundary_output_status(
+        &self,
+        operation_id: &str,
+        message_id: &str,
+        expected_call_id: Option<&str>,
+    ) -> ActiveBoundaryOutputStatus {
+        let Some(receipt) = self
+            .state
+            .operation(operation_id)
+            .and_then(|operation| operation.boundary_output_receipts.get(message_id))
+        else {
+            return ActiveBoundaryOutputStatus::PrunedOrUnknown;
+        };
+        // The optional exact terminal call identity must survive body retirement.
+        // An older receipt without this field cannot establish a match.
+        if expected_call_id.is_some_and(|expected| {
+            expected.is_empty() || receipt.call_id.as_deref() != Some(expected)
+        }) {
+            return ActiveBoundaryOutputStatus::PrunedOrUnknown;
+        }
+        if let Some(model_call_index) = receipt.confirmed_model_call_index {
+            return match &receipt.response_id {
+                Some(response_id) if !response_id.is_empty() => {
+                    ActiveBoundaryOutputStatus::Confirmed {
+                        model_call_index,
+                        response_id: response_id.clone(),
+                    }
+                }
+                _ => ActiveBoundaryOutputStatus::PrunedOrUnknown,
+            };
+        }
+        if receipt.discarded {
+            return ActiveBoundaryOutputStatus::Discarded;
+        }
+        match receipt.bound_model_call_index {
+            Some(model_call_index) => {
+                ActiveBoundaryOutputStatus::BoundUnconfirmed { model_call_index }
+            }
+            None => ActiveBoundaryOutputStatus::AcceptedUnbound,
+        }
+    }
+
     fn retained_boundary_outputs(
         &self,
         caller: &Caller,
@@ -1798,6 +1883,49 @@ impl DurableSession {
     #[must_use]
     pub fn state_id(&self) -> &str {
         &self.state_id
+    }
+
+    /// Queries the owner's current authoritative active-path receipt for an exact
+    /// source operation and job message identity, without changing durable state.
+    /// A bound output is not confirmed until its model step completes. Missing
+    /// (including pruned) receipts fail closed. This does not query idle delivery.
+    pub async fn active_boundary_output_status(
+        &self,
+        operation_id: &str,
+        message_id: &str,
+    ) -> Result<ActiveBoundaryOutputStatus> {
+        self.query_active_boundary_output_status(operation_id, message_id, None)
+            .await
+    }
+
+    /// Like [`Self::active_boundary_output_status`], but additionally requires
+    /// that the retained output's exact terminal function-call ID matches.
+    /// Older receipts without a retained call ID fail closed.
+    pub async fn active_boundary_output_status_for_call(
+        &self,
+        operation_id: &str,
+        message_id: &str,
+        call_id: &str,
+    ) -> Result<ActiveBoundaryOutputStatus> {
+        self.query_active_boundary_output_status(operation_id, message_id, Some(call_id))
+            .await
+    }
+
+    async fn query_active_boundary_output_status(
+        &self,
+        operation_id: &str,
+        message_id: &str,
+        expected_call_id: Option<&str>,
+    ) -> Result<ActiveBoundaryOutputStatus> {
+        let (result, receiver) = oneshot::channel();
+        self.send(Command::ActiveBoundaryOutputStatus {
+            operation_id: operation_id.to_owned(),
+            message_id: message_id.to_owned(),
+            expected_call_id: expected_call_id.map(str::to_owned),
+            result,
+        })
+        .await?;
+        receiver.await.map_err(|_| Error::DriverStopped)
     }
 
     /// Copies the current reduced state from the owning driver.
@@ -3059,6 +3187,22 @@ mod tests {
         owner.begin_attempt("turn".into()).await.unwrap();
         let revision = reopened.state().await.unwrap().revision();
         assert_eq!(
+            reopened
+                .active_boundary_output_status("turn", "output-1")
+                .await
+                .unwrap(),
+            ActiveBoundaryOutputStatus::AcceptedUnbound
+        );
+        // Legacy or non-terminal typed bodies cannot prove a terminal call identity.
+        assert_eq!(
+            reopened
+                .active_boundary_output_status_for_call("turn", "output-1", "call-1")
+                .await
+                .unwrap(),
+            ActiveBoundaryOutputStatus::PrunedOrUnknown
+        );
+        assert_eq!(revision, reopened.state().await.unwrap().revision());
+        assert_eq!(
             owner
                 .accept_boundary_output("turn".into(), 9, &payload, "output-1".into(), false)
                 .await
@@ -3117,6 +3261,286 @@ mod tests {
                 .boundary_outputs
                 .len(),
             1
+        );
+    }
+
+    #[tokio::test]
+    async fn active_output_status_tracks_confirmation_across_retirement_and_reopen() {
+        use nanocodex_agent::execution::ExecutionBoundaryOutput;
+        use nanocodex_oai_api::responses::FunctionOutputBody;
+
+        let store = MemoryStore::new().unwrap();
+        let session = DurableSession::open(store.clone(), "active-output-status")
+            .await
+            .unwrap();
+        let (owner, _) = session.acquire_agent().await.unwrap();
+        owner
+            .admit_typed::<_, u32, String>("turn".into(), &"prompt")
+            .await
+            .unwrap();
+        owner.begin_attempt("turn".into()).await.unwrap();
+        let output = ExecutionBoundaryOutput::TerminalOutput {
+            call_id: "call-1".into(),
+            output: FunctionOutputBody::Text("result".into()),
+        };
+        let initial_revision = session.state().await.unwrap().revision();
+        assert_eq!(
+            session
+                .active_boundary_output_status("turn", "job-1")
+                .await
+                .unwrap(),
+            ActiveBoundaryOutputStatus::PrunedOrUnknown
+        );
+        assert_eq!(initial_revision, session.state().await.unwrap().revision());
+        assert_eq!(
+            owner
+                .accept_boundary_output("turn".into(), 1, &output, "job-1".into(), true)
+                .await
+                .unwrap(),
+            Some(1)
+        );
+        assert_eq!(
+            session
+                .active_boundary_output_status_for_call("turn", "job-1", "call-1")
+                .await
+                .unwrap(),
+            ActiveBoundaryOutputStatus::AcceptedUnbound
+        );
+        assert_eq!(
+            session
+                .active_boundary_output_status_for_call("turn", "job-1", "other-call")
+                .await
+                .unwrap(),
+            ActiveBoundaryOutputStatus::PrunedOrUnknown
+        );
+        assert_eq!(
+            session
+                .active_boundary_output_status("other-turn", "job-1")
+                .await
+                .unwrap(),
+            ActiveBoundaryOutputStatus::PrunedOrUnknown
+        );
+        owner
+            .bind_boundary_output("turn".into(), 1, 2)
+            .await
+            .unwrap();
+        assert_eq!(
+            session
+                .active_boundary_output_status_for_call("turn", "job-1", "call-1")
+                .await
+                .unwrap(),
+            ActiveBoundaryOutputStatus::BoundUnconfirmed {
+                model_call_index: 2
+            }
+        );
+        owner
+            .begin_step(
+                "turn".into(),
+                "model-2".into(),
+                "model_call".into(),
+                &"input",
+            )
+            .await
+            .unwrap();
+        owner
+            .complete_step("turn".into(), "model-2".into(), &"response")
+            .await
+            .unwrap();
+        // A completed step alone is not an output confirmation.
+        assert_eq!(
+            session
+                .active_boundary_output_status("turn", "job-1")
+                .await
+                .unwrap(),
+            ActiveBoundaryOutputStatus::BoundUnconfirmed {
+                model_call_index: 2
+            }
+        );
+        owner
+            .confirm_boundary_output("turn".into(), 1, 2, "resp-2".into())
+            .await
+            .unwrap();
+        let confirmed = ActiveBoundaryOutputStatus::Confirmed {
+            model_call_index: 2,
+            response_id: "resp-2".into(),
+        };
+        assert_eq!(
+            serde_json::to_value(&confirmed).unwrap(),
+            serde_json::json!({"state": "confirmed", "model_call_index": 2, "response_id": "resp-2"})
+        );
+        assert_eq!(
+            session
+                .active_boundary_output_status("turn", "job-1")
+                .await
+                .unwrap(),
+            confirmed
+        );
+        owner
+            .advance(
+                "turn".into(),
+                EncodedPayload::encode(&"conversation").unwrap(),
+            )
+            .await
+            .unwrap();
+        assert!(
+            session
+                .state()
+                .await
+                .unwrap()
+                .operation("turn")
+                .unwrap()
+                .boundary_outputs
+                .is_empty()
+        );
+        assert_eq!(
+            session
+                .active_boundary_output_status_for_call("turn", "job-1", "call-1")
+                .await
+                .unwrap(),
+            confirmed
+        );
+        let revision = session.state().await.unwrap().revision();
+        assert_eq!(
+            session
+                .active_boundary_output_status("turn", "job-1")
+                .await
+                .unwrap(),
+            confirmed
+        );
+        assert_eq!(revision, session.state().await.unwrap().revision());
+        owner.shutdown().await.unwrap();
+        drop((owner, session));
+        let reopened = DurableSession::open(store, "active-output-status")
+            .await
+            .unwrap();
+        assert_eq!(
+            reopened
+                .active_boundary_output_status_for_call("turn", "job-1", "call-1")
+                .await
+                .unwrap(),
+            confirmed
+        );
+    }
+
+    #[tokio::test]
+    async fn active_output_bound_without_confirmation_stays_unconfirmed_after_cold_reopen() {
+        use nanocodex_agent::execution::ExecutionBoundaryOutput;
+        use nanocodex_oai_api::responses::FunctionOutputBody;
+
+        let store = MemoryStore::new().unwrap();
+        let session = DurableSession::open(store.clone(), "active-bound-reopen")
+            .await
+            .unwrap();
+        let (owner, _) = session.acquire_agent().await.unwrap();
+        owner
+            .admit_typed::<_, u32, String>("turn".into(), &"prompt")
+            .await
+            .unwrap();
+        owner.begin_attempt("turn".into()).await.unwrap();
+        let output = ExecutionBoundaryOutput::TerminalOutput {
+            call_id: "call".into(),
+            output: FunctionOutputBody::Text("body".into()),
+        };
+        owner
+            .accept_boundary_output("turn".into(), 1, &output, "job".into(), true)
+            .await
+            .unwrap();
+        owner
+            .bind_boundary_output("turn".into(), 1, 2)
+            .await
+            .unwrap();
+        owner.shutdown().await.unwrap();
+        drop((owner, session));
+        let reopened = DurableSession::open(store, "active-bound-reopen")
+            .await
+            .unwrap();
+        assert_eq!(
+            reopened
+                .active_boundary_output_status_for_call("turn", "job", "call")
+                .await
+                .unwrap(),
+            ActiveBoundaryOutputStatus::BoundUnconfirmed {
+                model_call_index: 2
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn active_output_status_discards_terminal_output_and_fails_closed_after_pruning() {
+        use nanocodex_agent::execution::ExecutionBoundaryOutput;
+        use nanocodex_oai_api::responses::FunctionOutputBody;
+
+        let store = MemoryStore::new().unwrap();
+        let session = DurableSession::open_with_terminal_receipt_limit(
+            store.clone(),
+            "active-output-prune",
+            1,
+        )
+        .await
+        .unwrap();
+        let (owner, _) = session.acquire_agent().await.unwrap();
+        owner
+            .admit_typed::<_, u32, String>("cancelled".into(), &"prompt")
+            .await
+            .unwrap();
+        owner.begin_attempt("cancelled".into()).await.unwrap();
+        let output = ExecutionBoundaryOutput::TerminalOutput {
+            call_id: "call-cancelled".into(),
+            output: FunctionOutputBody::Text("body".into()),
+        };
+        owner
+            .accept_boundary_output("cancelled".into(), 1, &output, "job".into(), true)
+            .await
+            .unwrap();
+        owner
+            .cancel(
+                "cancelled".into(),
+                Some(EncodedPayload::encode(&"snapshot").unwrap()),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            session
+                .active_boundary_output_status_for_call("cancelled", "job", "call-cancelled")
+                .await
+                .unwrap(),
+            ActiveBoundaryOutputStatus::Discarded
+        );
+        owner.shutdown().await.unwrap();
+        drop((owner, session));
+        let reopened = DurableSession::open_with_terminal_receipt_limit(
+            store.clone(),
+            "active-output-prune",
+            1,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            reopened
+                .active_boundary_output_status_for_call("cancelled", "job", "call-cancelled")
+                .await
+                .unwrap(),
+            ActiveBoundaryOutputStatus::Discarded
+        );
+        let (owner, _) = reopened.acquire_agent().await.unwrap();
+        owner
+            .admit_typed::<_, u32, String>("later".into(), &"prompt")
+            .await
+            .unwrap();
+        owner.begin_attempt("later".into()).await.unwrap();
+        owner
+            .cancel(
+                "later".into(),
+                Some(EncodedPayload::encode(&"snapshot").unwrap()),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            reopened
+                .active_boundary_output_status("cancelled", "job")
+                .await
+                .unwrap(),
+            ActiveBoundaryOutputStatus::PrunedOrUnknown
         );
     }
 

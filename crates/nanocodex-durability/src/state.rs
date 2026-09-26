@@ -429,6 +429,10 @@ pub struct BoundaryOutputState {
 pub struct BoundaryOutputReceipt {
     /// Content fingerprint for exact duplicate detection.
     pub input_key: String,
+    /// Exact original terminal function-call ID, if the accepted payload was typed.
+    /// Missing on legacy/generic receipts; a call-validated lookup then fails closed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub call_id: Option<String>,
     /// Original one-based queue position.
     pub index: u32,
     /// Assignment alone does not prove model uptake.
@@ -1340,6 +1344,16 @@ impl DurableState {
                     message_id.clone(),
                     BoundaryOutputReceipt {
                         input_key: input.key.to_string(),
+                        call_id: input
+                            .decode::<nanocodex_agent::execution::ExecutionBoundaryOutput>()
+                            .ok()
+                            .and_then(|output| match output {
+                                nanocodex_agent::execution::ExecutionBoundaryOutput::TerminalOutput {
+                                    call_id,
+                                    ..
+                                } if !call_id.is_empty() => Some(call_id),
+                                _ => None,
+                            }),
                         index: output_index,
                         bound_model_call_index: None,
                         confirmed_model_call_index: None,

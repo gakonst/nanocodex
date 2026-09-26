@@ -1341,6 +1341,8 @@ fn encode_subscription_credential(
 pub struct WasmNanocodex {
     inner: RustNanocodex,
     subagents: Option<WasmSubagents>,
+    // Host-only read view of the same durable actor; no model-facing access.
+    durable_status: Option<nanocodex::agent::durability::DurableSession>,
     event_forwarding: Rc<Cell<bool>>,
 }
 
@@ -1589,6 +1591,7 @@ impl WasmNanocodex {
         if let Some(resume) = config.resume {
             builder = builder.resume(resume);
         }
+        let mut durable_status = None;
         if let (Some(route_id), Some(state_id)) = (config.durability_host_id, config.durability_id)
         {
             let store = JavaScriptDurabilityStore { route_id };
@@ -1606,10 +1609,13 @@ impl WasmNanocodex {
                 nanocodex::agent::durability::DurableSession::open(store, state_id).await
             }
             .map_err(js_error)?;
+            durable_status = Some(durable_state.clone());
             builder = builder.durability(durable_state).await.map_err(js_error)?;
         }
         let (inner, events) = builder.build().map_err(js_error)?;
-        Ok(Self::from_parts(inner, events, subagents))
+        let mut agent = Self::from_parts(inner, events, subagents);
+        agent.durable_status = durable_status;
+        Ok(agent)
     }
 
     /// Returns the stable Agent identity.
@@ -2022,6 +2028,31 @@ impl WasmNanocodex {
         serde_json::to_string(&receipt).map_err(js_error)
     }
 
+    /// Reads the durable status of an active-turn terminal output by its exact
+    /// original operation, job and function-call identities. This private host
+    /// seam cannot infer idle wake consumption from a staged checkpoint.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a non-durable runtime or a failed durable-state query.
+    #[wasm_bindgen(js_name = activeFunctionOutputStatus)]
+    pub async fn active_function_output_status(
+        &self,
+        original_turn_id: &str,
+        job_id: &str,
+        call_id: &str,
+    ) -> Result<String, JsValue> {
+        let state = self
+            .durable_status
+            .as_ref()
+            .ok_or_else(|| js_error("durable active function-call status is unavailable"))?;
+        let status = state
+            .active_boundary_output_status_for_call(original_turn_id, job_id, call_id)
+            .await
+            .map_err(js_error)?;
+        serde_json::to_string(&status).map_err(js_error)
+    }
+
     /// Appends adapter-owned developer context at the next safe model boundary.
     ///
     /// Returns the complete read-only session context captured at that boundary.
@@ -2132,6 +2163,7 @@ impl WasmNanocodex {
         Self {
             inner,
             subagents,
+            durable_status: None,
             event_forwarding,
         }
     }

@@ -133,3 +133,40 @@ test("Rust rejection is propagated without retrying as a user prompt", async () 
   assert.equal(prompts, 0);
   agent.dispose();
 });
+
+test("host-only active status reads the exact durable turn/job/call receipt without a prompt", async () => {
+  const calls = [];
+  const agent = await makeAgent({
+    agentId: "agent", sessionId: "session",
+    prompt() { throw new Error("not a prompt"); },
+    async activeFunctionOutputStatus(...args) {
+      calls.push(args);
+      return JSON.stringify({ state: "confirmed", model_call_index: 2, response_id: "resp-2" });
+    },
+    free() {},
+  });
+  const capability = functionCallOutputCapability(agent, "original-call");
+  assert.equal(agent.extend(Actions.agentActions()).turn.activeStatus, undefined);
+  const status = await capability.activeStatus({ originalTurnId: "source-turn", operationId: "job-immutable" });
+  assert.deepEqual(calls, [["source-turn", "job-immutable", "original-call"]]);
+  assert.deepEqual(status, { state: "confirmed", model_call_index: 2, response_id: "resp-2" });
+  assert.ok(Object.isFrozen(status));
+  await assert.rejects(capability.activeStatus({ originalTurnId: "", operationId: "job" }), /originalTurnId/);
+  await assert.rejects(capability.activeStatus({ originalTurnId: "source-turn", operationId: "job", callId: "forged" }), /requires/);
+  agent.dispose();
+});
+
+test("active status rejects missing or false model-uptake receipts", async () => {
+  const agent = await makeAgent({ agentId: "agent", sessionId: "session", free() {}, prompt() {},
+    async activeFunctionOutputStatus() { return JSON.stringify({ state: "confirmed" }); },
+  });
+  await assert.rejects(functionCallOutputCapability(agent, "call").activeStatus({
+    originalTurnId: "turn", operationId: "job",
+  }), /invalid active output status/);
+  agent.dispose();
+  const older = await makeAgent({ agentId: "agent", sessionId: "session", free() {}, prompt() {} });
+  await assert.rejects(functionCallOutputCapability(older, "call").activeStatus({
+    originalTurnId: "turn", operationId: "job",
+  }), /does not support active/);
+  older.dispose();
+});
