@@ -289,7 +289,7 @@ it("hydrates MIME alternatives before wake and persists the snapshot across busy
   const f = fixture(); await f.request("/configure", "POST", config);
   f.message(url => {
     expect(url.searchParams.get("format")).toBe("full");
-    return Response.json({id:"m1", payload:{mimeType:"multipart/mixed",headers:[{name:"Subject",value:"Synthetic subject"}],parts:[
+    return Response.json({id:"m1", threadId:"thread-1", payload:{mimeType:"multipart/mixed",headers:[{name:"Subject",value:"Synthetic subject"},{name:"In-Reply-To",value:"<prior@example.test>"},{name:"References",value:"<first@example.test> <prior@example.test>"}],parts:[
       {mimeType:"multipart/alternative",parts:[{mimeType:"text/html",body:{data:btoa("<p>Duplicate HTML</p>")}},{mimeType:"text/plain",body:{data:btoa("Complete plain body")}}]},
       {mimeType:"text/plain",filename:"attachment.txt",body:{attachmentId:"secret",size:123,data:btoa("Attachment content")}}
     ]}});
@@ -297,6 +297,7 @@ it("hydrates MIME alternatives before wake and persists the snapshot across busy
   f.wakeStatus(200); await f.request("/notify", "POST", notify); await f.alarmRun();
   const input = JSON.parse(f.wakes[0]!.input as string);
   expect(input.messages[0]).toMatchObject({id:"m1",status:"ok",body:"Complete plain body",headers:{subject:"Synthetic subject"}});
+  expect(input.messages[0]).toMatchObject({threadId:"thread-1",headers:{"in-reply-to":"<prior@example.test>",references:"<first@example.test> <prior@example.test>"}});
   expect(JSON.stringify(input)).not.toContain("Duplicate HTML");
   expect(JSON.stringify(input)).not.toContain("Attachment content");
   expect(input.messages[0].attachments).toEqual([{filename:"attachment.txt",mimeType:"text/plain",size:123,attachmentId:"secret"}]);

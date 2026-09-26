@@ -1,7 +1,7 @@
 /** Bounded, text-only Gmail snapshots. Email content is always untrusted data. */
 type GmailAttachmentReference = { filename?: string; mimeType?: string; size?: number; attachmentId?: string };
 export type GmailMessageSnapshot = {
-  id: string; status: "ok" | "missing" | "error" | "body_unavailable";
+  id: string; threadId?: string; status: "ok" | "missing" | "error" | "body_unavailable";
   headers?: Record<string, string>; body?: string; truncated?: boolean; attachments?: GmailAttachmentReference[];
 };
 const encoder = new TextEncoder();
@@ -115,15 +115,16 @@ export async function hydrateGmailMessage(id:string, fetchMessage:(signal:AbortS
       }, controller.signal);const headers:Record<string,string>={};let truncated=text.truncated;
       for(const h of Array.isArray(raw.payload.headers)?raw.payload.headers:[]) {
         if(typeof h?.name!=="string"||typeof h?.value!=="string")continue;
-        const name=h.name.toLowerCase();if(!["from","to","cc","subject","date","message-id","reply-to"].includes(name)||name in headers)continue;
+        const name=h.name.toLowerCase();if(!["from","to","cc","subject","date","message-id","reply-to","in-reply-to","references"].includes(name)||name in headers)continue;
         headers[name]=h.value.slice(0,512);if(h.value.length>512)truncated=true;
       }
-      const result:GmailMessageSnapshot={id,status:text.available?"ok":"body_unavailable",headers,body:text.body,truncated,...(text.attachments.length?{attachments:text.attachments}:{})};
+      const result:GmailMessageSnapshot={id,...(typeof raw.threadId==="string" && /^[A-Za-z0-9_-]{1,128}$/.test(raw.threadId)?{threadId:raw.threadId}:{}),status:text.available?"ok":"body_unavailable",headers,body:text.body,truncated,...(text.attachments.length?{attachments:text.attachments}:{})};
       while(result.attachments?.length && jsonBytes(result.attachments)>Math.floor(budget/4)) {result.attachments.pop();result.truncated=true;}
       // Measure serialized UTF-8 including escapes, leaving space for the flag.
       while(jsonBytes(result)>budget && result.body) {result.truncated=true;result.body=result.body.slice(0,Math.max(0,Math.floor(result.body.length*.75)));}
       for(const key of Object.keys(headers).reverse()) {if(jsonBytes(result)<=budget)break;delete headers[key];result.truncated=true;}
-      if (jsonBytes(result)>budget) {delete result.headers;delete result.body;delete result.attachments;result.truncated=true;}
+      if (jsonBytes(result)>budget) {delete result.headers;delete result.body;delete result.attachments;result.truncated=true;
+        if(jsonBytes(result)>budget) delete result.threadId;}
       return result;
     })()]);
   } catch {if(retryable && !finalAttempt) throw new Error("gmail_body_retry");return {id,status:"error"};} finally {clearTimeout(timer!);}
