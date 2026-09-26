@@ -324,8 +324,7 @@ where
                         let outcome = commit_late_function_output(
                             &mut model,
                             &self.execution,
-                            Arc::clone(&self.spawner.lineage_id),
-                            thread_model,
+                            (Arc::clone(&self.spawner.lineage_id), thread_model),
                             call_id,
                             output,
                             operation_id,
@@ -511,8 +510,7 @@ where
                     let outcome = commit_late_function_output(
                         &mut model,
                         &self.execution,
-                        Arc::clone(&self.spawner.lineage_id),
-                        thread_model,
+                        (Arc::clone(&self.spawner.lineage_id), thread_model),
                         call_id,
                         output,
                         operation_id,
@@ -1960,8 +1958,7 @@ async fn accept_turn_steer(
 async fn commit_late_function_output<S>(
     model: &mut ModelRun<S>,
     execution: &Execution,
-    lineage_id: Arc<str>,
-    model_name: Model,
+    identity: (Arc<str>, Model),
     call_id: String,
     output: nanocodex_oai_api::responses::FunctionOutputBody,
     operation_id: String,
@@ -1974,7 +1971,7 @@ where
 {
     let (snapshot, replayed) =
         model.submit_late_function_output(&call_id, output, &operation_id, workspace)?;
-    let checkpoint = Arc::new(CommittedSession::new(lineage_id, model_name, snapshot));
+    let checkpoint = Arc::new(CommittedSession::new(identity.0, identity.1, snapshot));
     if !replayed {
         execution.commit_checkpoint(&checkpoint).await?;
     }
