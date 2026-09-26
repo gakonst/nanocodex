@@ -9,6 +9,15 @@ const record = (v: any): v is Record<string, any> => !!v && typeof v === "object
 function htmlText(html: string): string {
   return html.replace(/<!--[^]*?(?:-->|$)/g, "")
     .replace(/<(script|style|head)\b[^>]*>[^]*?(?:<\/\1\s*>|$)/gi, "")
+    .replace(/<a\b([^>]*)>([^]*?)<\/a\s*>/gi, (_all, attributes: string, label: string) => {
+      const match=/(?:^|\s)href\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/i.exec(attributes);
+      const href=match?.[1]??match?.[2]??match?.[3];
+      if(!href) return label;
+      try {
+        const url=new URL(href);
+        return ["http:","https:","mailto:"].includes(url.protocol) ? `${label} (${url.href})` : label;
+      } catch {return label;}
+    })
     .replace(/<[^>]*>/g, " ")
     .replace(/&(#x[\da-f]+|#\d+|amp|lt|gt|quot|apos|nbsp);/gi, (all, entity: string) => {
       const names: Record<string,string> = {amp:"&",lt:"<",gt:">",quot:'"',apos:"'",nbsp:" "};

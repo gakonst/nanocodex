@@ -371,3 +371,12 @@ it("uses a declared related root and recovers a malformed plain alternative", as
   await f.request("/notify","POST",notify);await f.alarmRun();
   expect(JSON.parse(f.wakes[0]!.input as string).messages[0]).toMatchObject({status:"ok",body:"Actual body"});
 });
+it("preserves safe HTML anchor destinations without loading remote resources", async () => {
+  const f=fixture();await f.request("/configure","POST",config);
+  f.message(()=>Response.json({id:"m1",payload:{mimeType:"text/html",body:{data:btoa('<p><a href="https://example.test/doc?a=1&amp;b=2">Review document</a> <a href="mailto:team@example.test">Email</a><a href="javascript:alert(1)">unsafe</a><img src="https://example.test/tracker"></p>')}}}));
+  await f.request("/notify","POST",notify);await f.alarmRun();
+  const body=JSON.parse(f.wakes[0]!.input as string).messages[0].body;
+  expect(body).toContain("Review document (https://example.test/doc?a=1&b=2)");
+  expect(body).toContain("Email (mailto:team@example.test)");expect(body).not.toContain("javascript:");expect(body).not.toContain("tracker");
+  expect(f.calls.every(r=>new URL(r.url).hostname==="gmail.googleapis.com")).toBe(true);
+});
