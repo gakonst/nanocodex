@@ -12,7 +12,8 @@ final class InboxUITests: XCTestCase {
         app.launchEnvironment = ["NANOCODEX_DEMO_PROFILE": UUID().uuidString]
         app.launch()
         XCTAssertTrue(app.buttons["main-tab-todo"].waitForExistence(timeout: 10))
-        XCTAssertTrue(app.staticTexts["Needs you"].exists)
+        XCTAssertFalse(app.staticTexts["Decisions"].exists)
+        XCTAssertFalse(app.buttons["todo-filter"].exists)
         XCTAssertTrue(app.buttons["decision-card:fixture-email"].exists)
         XCTAssertTrue(app.buttons["todo-watch-toggle"].exists)
         capture(app, "todo-decision-first")

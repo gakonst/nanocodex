@@ -7,93 +7,44 @@ struct TodoBoardView: View {
     @ObservedObject var model: InboxModel
     @Environment(\.scenePhase) private var scenePhase
     @State private var selectedDecision: TodoDecision?
-    @State private var filter: Filter = .needsYou
-    private enum Filter: String, CaseIterable { case needsYou = "Needs you", all = "All" }
 
     var body: some View {
         List {
-            HStack {
-                Text("Decisions").font(.system(size: 34, weight: .bold, design: .rounded))
-                Spacer()
-                if model.todoLoading { ProgressView() }
-                else {
-                    Button { Task { await model.refreshTodo() } } label: {
-                        Image(systemName: "arrow.clockwise").frame(width: 44, height: 44)
-                    }.accessibilityLabel("Refresh decisions").accessibilityIdentifier("todo-refresh")
-                }
-            }
-            .padding(.top, 8)
-            .listRowSeparator(.hidden)
-            .listRowBackground(Color.clear)
-            Section {
-                let visible = model.todoDecisions.filter { filter == .all || $0.status == "needs_you" }
-                if visible.isEmpty && !model.todoLoaded {
-                    Text(model.todoError == nil ? "Loading decisions…" : "Decisions couldn't be loaded. Tap refresh.")
-                        .font(.subheadline).foregroundStyle(.secondary)
+            let visible = model.todoDecisions.filter { $0.status == "needs_you" }
+            if visible.isEmpty && !model.todoLoaded {
+                Text(model.todoError == nil ? "Loading decisions…" : "Decisions couldn't be loaded. Pull down to retry.")
+                    .font(.subheadline).foregroundStyle(.secondary)
+                    .listRowSeparator(.hidden)
+            } else if visible.isEmpty {
+                Label("Nothing needs your decision right now", systemImage: "checkmark.circle")
+                    .foregroundStyle(.secondary)
+                    .listRowSeparator(.hidden)
+                    .accessibilityIdentifier("todo-no-decisions")
+            } else {
+                ForEach(visible) { decision in
+                    decisionCard(decision)
+                        .listRowInsets(EdgeInsets(top: 6, leading: 18, bottom: 6, trailing: 18))
                         .listRowSeparator(.hidden)
-                } else if visible.isEmpty {
-                    Label("Nothing needs your decision right now", systemImage: "checkmark.circle")
-                        .foregroundStyle(.secondary)
-                        .listRowSeparator(.hidden)
-                        .accessibilityIdentifier("todo-no-decisions")
-                } else {
-                    ForEach(visible) { decision in
-                        decisionCard(decision)
-                            .listRowInsets(EdgeInsets(top: 6, leading: 18, bottom: 6, trailing: 18))
-                            .listRowSeparator(.hidden)
-                            .listRowBackground(Color.clear)
-                            .swipeActions(edge: .leading, allowsFullSwipe: false) {
-                                if decision.status == "needs_you", let choice = decision.choices.first {
-                                    Button {
-                                        Task { _ = await model.respondTodo(to: decision, choiceID: choice.id, text: nil) }
-                                    } label: { Label(choice.title, systemImage: "checkmark") }
-                                        .tint(.green).disabled(model.todoResponding)
-                                        .accessibilityIdentifier("decision-swipe-primary:\(decision.id)")
-                                }
-                            }
-                            .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-                                if decision.status == "needs_you", decision.choices.count > 1 {
-                                    let choice = decision.choices[1]
-                                    Button {
-                                        Task { _ = await model.respondTodo(to: decision, choiceID: choice.id, text: nil) }
-                                    } label: { Label(choice.title, systemImage: "arrow.uturn.backward") }
-                                        .tint(.orange).disabled(model.todoResponding)
-                                        .accessibilityIdentifier("decision-swipe-secondary:\(decision.id)")
-                                }
-                            }
-                    }
-                }
-            } header: {
-                HStack {
-                    Text("Needs you")
-                    if model.pendingTodoDecisionCount > 0 {
-                        Text("\(model.pendingTodoDecisionCount)")
-                            .padding(.horizontal, 7).padding(.vertical, 2)
-                            .background(.primary.opacity(0.08), in: Capsule())
-                    }
-                    Spacer()
-                    Menu {
-                        ForEach(Filter.allCases, id: \.self) { option in
-                            Button {
-                                filter = option
-                            } label: {
-                                if filter == option { Label(option.rawValue, systemImage: "checkmark") }
-                                else { Text(option.rawValue) }
+                        .listRowBackground(Color.clear)
+                        .swipeActions(edge: .leading, allowsFullSwipe: false) {
+                            if decision.status == "needs_you", let choice = decision.choices.first {
+                                Button {
+                                    Task { _ = await model.respondTodo(to: decision, choiceID: choice.id, text: nil) }
+                                } label: { Label(choice.title, systemImage: "checkmark") }
+                                    .tint(.green).disabled(model.todoResponding)
+                                    .accessibilityIdentifier("decision-swipe-primary:\(decision.id)")
                             }
                         }
-                    } label: {
-                        Image(systemName: "line.3.horizontal.decrease")
-                            .frame(width: 44, height: 36)
-                    }
-                    .accessibilityLabel("Filter decisions")
-                    .accessibilityValue(filter.rawValue)
-                    .accessibilityIdentifier("todo-filter")
-                }
-                .font(.subheadline.weight(.semibold)).textCase(nil)
-            } footer: {
-                if model.pendingTodoDecisionCount > 0 {
-                    Text("Swipe for quick choices · Tap to review or edit")
-                        .font(.caption).textCase(nil)
+                        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                            if decision.status == "needs_you", decision.choices.count > 1 {
+                                let choice = decision.choices[1]
+                                Button {
+                                    Task { _ = await model.respondTodo(to: decision, choiceID: choice.id, text: nil) }
+                                } label: { Label(choice.title, systemImage: "arrow.uturn.backward") }
+                                    .tint(.orange).disabled(model.todoResponding)
+                                    .accessibilityIdentifier("decision-swipe-secondary:\(decision.id)")
+                            }
+                        }
                 }
             }
             if !model.todoItems.isEmpty {
