@@ -492,6 +492,46 @@ mod tests {
         assert_eq!(voice.sideband_opened().frames, speech.frames);
     }
     #[test]
+    fn evicting_an_old_utterance_marks_remaining_evidence_incomplete() {
+        let mut voice = voice();
+        voice.realtime_message(&utterance(&"x".repeat(10_000)));
+        voice.realtime_message(&utterance("I prefer quiet places."));
+        let next = voice
+            .realtime_message(&delegation("after-truncation", "Find a place"))
+            .delegation
+            .unwrap();
+        let rendered = format_delegation(&next);
+        assert!(
+            rendered
+                .contains(r#"<transcript_json>{"truncated":true,"entries":[]}</transcript_json>"#)
+        );
+    }
+
+    #[test]
+    fn provider_handoff_is_never_promoted_to_user_transcript() {
+        let mut voice = voice();
+        let first = voice
+            .realtime_message(&delegation("provider-only", "I prefer purple."))
+            .delegation
+            .unwrap();
+        assert!(first.transcript.is_empty());
+        assert!(!format_delegation(&first).contains("<transcript_json>"));
+        voice.realtime_message(&utterance("I prefer quiet places."));
+        let next = voice
+            .realtime_message(&delegation("with-user", "Find a quiet place."))
+            .delegation
+            .unwrap();
+        assert_eq!(
+            next.transcript,
+            vec![crate::TranscriptEntry::new(
+                "user",
+                "I prefer quiet places."
+            )]
+        );
+        assert!(format_delegation(&next).contains("<transcript_json>"));
+    }
+
+    #[test]
     fn provider_handoff_preserves_lookup_and_transcript_without_synthetic_bootstrap() {
         let mut voice = voice();
         voice.realtime_message(&utterance("When is Elena's birthday?"));

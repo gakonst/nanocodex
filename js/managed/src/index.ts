@@ -31,6 +31,7 @@ import { callerContext, type CallerContext } from "./request-origin";
 import { HandPaths } from "./hand-paths";
 import { NamespaceProcessSessions } from "./namespace-process-storage";
 import { memoryTarget, personalMemoryTeam, type MemoryVisibility } from "./memory-target";
+import { scheduleMemoryCapture } from "./managed-memory-capture";
 import { projectEnvironment } from "nanocodex/tools/environment";
 import { transportObservation } from "./transport-observation";
 import { handRequestFailure, handBrokerRequest } from "nanocodex/cloudflare/managed-access";
@@ -5716,7 +5717,7 @@ export class DurableAgentSession extends DurableComputerObject {
       try {
         const attachment = socket.deserializeAttachment() as SessionSocketAttachment | null;
         await this.#steerManagedTurn(
-          command.id, command.input, attachment?.authorization ?? { capabilities: [] },
+          command.id, command.input, attachment?.authorization ?? { capabilities: [] }, undefined, attachment?.caller,
         );
       } catch (error) {
         const failure = managedHttpError(error, "steer_failed");
@@ -6680,6 +6681,8 @@ export class DurableAgentSession extends DurableComputerObject {
           );
         }
         this.#sidebarPresentation().recordUserMessage(`voice:${request.voiceSessionId}:${request.operationId}`, Date.now(), promptInputText(request.input!));
+        this.#captureUserMemory(`voice:${request.voiceSessionId}:${request.operationId}`, authorization,
+          { input: request.input!, createdAt: Date.now(), voice: true }, caller);
         return {
           operation_id: request.operationId,
           route: "steered",
@@ -6695,7 +6698,7 @@ export class DurableAgentSession extends DurableComputerObject {
           throw new Error("durable routed turn did not return an operation id");
         }
         turnId = acceptedTurnId;
-        await this.#acceptRoutedTurn(turnId, request.input!, requestHash, request, authorization);
+        await this.#acceptRoutedTurn(turnId, request.input!, requestHash, request, authorization, caller);
         this.#turns.set(turnId, turn);
         this.#turnInputs.set(turnId, request.input!);
         this.#eventTurnQueue.push(turnId);
@@ -6750,7 +6753,7 @@ export class DurableAgentSession extends DurableComputerObject {
       }
       const execute = async () => {
         try {
-          await this.#steerManagedTurn(id, value.input as PromptInput, authorization, value.message_id as string | undefined);
+          await this.#steerManagedTurn(id, value.input as PromptInput, authorization, value.message_id as string | undefined, callerContext(request.headers));
           return json({ turn_id: id, state: "steering" }, { status: 202 });
         } catch (error) { return managedErrorResponse(error, "steer_failed"); }
       };
@@ -6777,6 +6780,7 @@ export class DurableAgentSession extends DurableComputerObject {
     input: PromptInput,
     authorization: TurnAuthorization,
     messageId?: string,
+    caller: CallerContext = {},
   ): Promise<void> {
     const command = parseGoalCommand(input);
     if (messageId && command === null && await this.#replaySteerReceipt(id, input, authorization, messageId)) return;
@@ -6813,7 +6817,10 @@ export class DurableAgentSession extends DurableComputerObject {
     try {
       const turn = await this.#steerableManagedTurn(id, authorization);
       await turn.steer({ input, messageId });
-      this.#sidebarPresentation().recordUserMessage(`steer:${messageId ?? crypto.randomUUID()}`, Date.now(), promptInputText(input));
+      const receiptId = messageId ?? crypto.randomUUID();
+      const sourceKey = `steer:${id}:${receiptId}`;
+      this.#sidebarPresentation().recordUserMessage(`steer:${receiptId}`, Date.now(), promptInputText(input));
+      this.#captureUserMemory(sourceKey, authorization, { input, createdAt: Date.now() }, caller);
     } catch (error) {
       // A concurrent request may have committed after our first lookup; also
       // reconcile a lost storage ACK before classifying its transport error.
@@ -6847,6 +6854,7 @@ export class DurableAgentSession extends DurableComputerObject {
         throw error;
       });
       const withdrawn = turn ? await turn.withdrawSteer({ messageId: value.message_id }) : false;
+      if (withdrawn) this.#captureUserMemory(`steer:${id}:${value.message_id}`, authorization, { cancel: true });
       return json({ turn_id: id, message_id: value.message_id, withdrawn });
     } catch (error) {
       if (error instanceof SyntaxError) return json({ error: "invalid_json" }, { status: 400 });
@@ -6955,6 +6963,7 @@ export class DurableAgentSession extends DurableComputerObject {
     requestHash: string,
     request: ManagedRealtimeRequest,
     authorization: TurnAuthorization,
+    caller: CallerContext = {},
   ): Promise<ManagedTurnRow> {
     this.#assertRealtimeRouteAvailable();
     const requestKey = `realtime:${request.voiceSessionId}:${request.operationId}`;
@@ -7033,6 +7042,7 @@ export class DurableAgentSession extends DurableComputerObject {
     });
     this.#publish(event!);
     this.#sidebarPresentation().recordUserMessage(`turn:${id}`, now, promptInputText(input));
+    this.#captureUserMemory(`turn:${id}`, authorization, { input, createdAt: now, voice: true }, caller);
     this.#observe("managed.turn.accepted", {
       turn_id: id,
       transport: "realtime",
@@ -7228,7 +7238,10 @@ export class DurableAgentSession extends DurableComputerObject {
       );
     });
     this.#publish(event!);
-    if (userInitiated) this.#sidebarPresentation().recordUserMessage(`turn:${id}`, now, promptInputText(input));
+    if (userInitiated) {
+      this.#sidebarPresentation().recordUserMessage(`turn:${id}`, now, promptInputText(input));
+      this.#captureUserMemory(`turn:${id}`, authorization, { input, createdAt: now, voice: transport === "voice" }, caller);
+    }
     if (cancellingEvent) this.#publish(cancellingEvent);
     this.#observe("managed.turn.accepted", {
       turn_id: id,
@@ -9222,6 +9235,24 @@ export class DurableAgentSession extends DurableComputerObject {
           throw new ManagedRequestError(403, "memory_root_only", "memory writes are available only to the root agent");
       },
     }))];
+  }
+
+  #captureUserMemory(sourceKey: string, authorization: TurnAuthorization,
+    source: { input: PromptInput; createdAt: number; voice?: boolean } | { cancel: true }, caller: CallerContext = {}): void {
+    // Scheduling only: memory work has no place in the live turn transaction or recovery loop.
+    try {
+      const session = this.#session();
+      if (!session || session.runtime_profile !== "managed" || (!("cancel" in source) && caller.principal?.kind === "service")) return;
+      scheduleMemoryCapture({
+        organizationId: session.organization_id, teamId: session.team_id, ownerId: session.owner_id,
+        sessionId: session.session_id, capabilities: authorization.capabilities, connectGrant: authorization.connectGrant,
+        memories: this.env.NANOCODEX_MEMORY, clientIngressColo: this.#routingOrigin().clientIngressColo,
+        waitUntil: task => this.ctx.waitUntil(task),
+        active: () => !this.#deleting && !this.#deleted && !this.#durabilityExported
+          && this.#session()?.authorization_epoch === session.authorization_epoch,
+        allowed: () => this.env.NANOCODEX_MEMORY_AUTOMATION !== "false" && this.#personalizationAllowed(authorization),
+      }, sourceKey, source);
+    } catch { /* Best-effort capture never changes live admission. */ }
   }
 
   #personalizationScope(session: SessionRow): PersonalizationScope {

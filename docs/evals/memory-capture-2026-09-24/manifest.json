@@ -1,0 +1,22 @@
+{
+  "created_at": "2026-09-24T00:38:15.208Z",
+  "commit": "90165603602425cfaafc5404a430cfbe1d1679de",
+  "source_hashes": {
+    "js/managed/src/jev-reliability.ts": "eb67f25142a9ee922e1c302e043df959b2f5958b2f23df910c3277fe065afd5e",
+    "js/managed/src/markdown-memory.ts": "a28aee5dc826459a187c0fb521b6ff3761dbf90f9b479c7cb2d89055406e9fb5",
+    "js/managed/src/markdown-memory-ai.ts": "9a8036d525f35dc900789b21ea9c374e78ba704e7fa6d9df180dc97cff12c904",
+    "js/managed/src/markdown-memory-flush.ts": "ab683e8921f08efcbfab56a9e463c9084c38e46f54600cecb8d63c43d6b073a5",
+    "js/managed/src/markdown-memory-selection.ts": "b83419c6cf58f6283f38537e5746909897115f2275962216afcd9ce50429ac6d"
+  },
+  "bundle_sha256": "c5f4ecadbcb790dba0fc5481a5b837a5139ed9566048926f098c4ad49692fcf6",
+  "fixture_sha256": "2bda99b2aee9c9a3ef83180f9c7adbb9cedcd4540c96b37471f8779a57bb6cfa",
+  "cases": 20,
+  "classification_attempt_cap": 20,
+  "per_case_attempt_cap": 1,
+  "retries": 0,
+  "downstream_generations": 0,
+  "confidence_threshold": 0.9,
+  "location": "Existing Wrangler remote AI binding from native development host; not production Worker latency",
+  "interpretation": "Frozen synthetic task-specific evaluation; not an independent calibrated benchmark; no tuning or repeat calls",
+  "estimated_usd": null
+}
