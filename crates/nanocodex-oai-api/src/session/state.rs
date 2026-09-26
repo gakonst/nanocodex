@@ -545,12 +545,21 @@ impl ManagedSessionState {
         request_prefix: &[ResponseItem],
     ) {
         let initial_context = initial_context.into_iter().collect::<Vec<_>>();
-        let history = compaction::install_history_with_provenance(
-            &self.context.flattened_items(),
+        let source = self.context.flattened_items();
+        // Compaction must not discard an opted-in call awaiting its terminal
+        // result. Keep its original call and exact pending output for replay.
+        let pending = if self.unreal_function_outputs {
+            open_unreal_function_calls(&source)
+        } else {
+            Vec::new()
+        };
+        let mut history = compaction::install_history_with_provenance(
+            &source,
             &initial_context,
             item,
             &self.client_authored,
         );
+        history.extend(pending);
         self.context.replace_and_recompute(history, request_prefix);
         let provenance = std::mem::take(&mut self.client_authored);
         self.restore_client_authored(provenance);
@@ -703,6 +712,44 @@ mod tests {
         ));
         assert_eq!(state.previous_response_id(), None);
     }
+}
+
+/// Retain provider-visible original call and running output for each open
+/// asynchronous operation. Terminal receipts need a separate durable ledger.
+fn open_unreal_function_calls(history: &[ResponseItem]) -> Vec<ResponseItem> {
+    use std::collections::{HashMap, HashSet};
+    let mut originals = HashMap::new();
+    let mut pending = HashMap::new();
+    let mut terminal = HashSet::new();
+    for (index, item) in history.iter().enumerate() {
+        match item {
+            ResponseItem::FunctionCall { call_id, .. } => {
+                originals.insert(call_id.as_ref(), index);
+            }
+            ResponseItem::FunctionCallOutput {
+                call_id, output, ..
+            } if is_unreal_running_output(output) => {
+                pending.insert(call_id.as_ref(), index);
+            }
+            ResponseItem::FunctionCallOutput { call_id, .. } => {
+                terminal.insert(call_id.as_ref());
+            }
+            _ => {}
+        }
+    }
+    let mut pairs = originals
+        .into_iter()
+        .filter_map(|(id, call)| {
+            (!terminal.contains(id))
+                .then(|| pending.get(id).copied().map(|output| (call, output)))
+                .flatten()
+        })
+        .collect::<Vec<_>>();
+    pairs.sort_unstable_by_key(|(call, _)| *call);
+    pairs
+        .into_iter()
+        .flat_map(|(call, output)| [history[call].clone(), history[output].clone()])
+        .collect()
 }
 
 #[cfg(test)]
@@ -883,6 +930,43 @@ mod unreal_function_output_tests {
         );
         let replay = ManagedSessionState::resume_unreal_function_outputs(items).unwrap();
         assert!(!replay.prompt_history_with_repair().1);
+    }
+
+    #[test]
+    fn compaction_retains_open_opted_in_call_and_pending_output() {
+        let mut state = session();
+        state.append([serde_json::from_value(json!({
+            "type": "function_call", "call_id": "job-2", "name": "job", "arguments": "{}"
+        }))
+        .unwrap()]);
+        state.stage_unreal_function_output("job-1").unwrap();
+        state.stage_unreal_function_output("job-2").unwrap();
+        state.commit_tail();
+        state
+            .complete_unreal_function_output("job-1", text("already done"))
+            .unwrap();
+        state.install_compaction(
+            serde_json::from_value(json!({"type": "compaction", "encrypted_content": "opaque"}))
+                .unwrap(),
+            [],
+            &[],
+        );
+        let history = state.flattened_history();
+        assert_eq!(history.len(), 4); // user, summary, live call and placeholder
+        assert_eq!(
+            serde_json::to_value(&history[2]).unwrap()["call_id"],
+            "job-2"
+        );
+        assert_eq!(
+            serde_json::to_value(&history[3]).unwrap()["output"],
+            UNREAL_RUNNING_OUTPUT
+        );
+        assert!(!state.prompt_history_with_repair().1);
+        state.commit_tail(); // provider has now seen the compacted pending call
+        state
+            .complete_unreal_function_output("job-2", text("done later"))
+            .unwrap();
+        assert_eq!(state.flattened_history().len(), 5);
     }
 
     #[test]
