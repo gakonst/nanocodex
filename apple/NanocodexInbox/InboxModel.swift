@@ -96,6 +96,21 @@ final class InboxModel: ObservableObject {
     @Published var error: String?
     @Published var notice: String?
     @Published var musicConnectorToOpen: MusicLoopbackProvider?
+    @Published private(set) var todoItems: [TodoCapture] = []
+    @Published private(set) var todoDecisions: [TodoDecision] = []
+    @Published private(set) var todoLoading = false
+    @Published private(set) var todoLoaded = false
+    private var todoRevision = 0
+    private var todoRefreshRequested = false
+    private var todoFixtureLoaded = false
+    @Published var todoError: String?
+    @Published var todoDraft = ""
+    @Published var todoWatchHint = ""
+    @Published private(set) var todoSaving = false
+    @Published private(set) var todoResponding = false
+    private var todoCaptureOperation: (body: String, hint: String, id: UUID)?
+    private var todoResponseOperations: [String: UUID] = [:]
+    var pendingTodoDecisionCount: Int { todoDecisions.filter { $0.status == "needs_you" }.count }
     @Published var connected = false
     @Published private(set) var restoringAccount = true
     @Published private(set) var restorationError: String?
@@ -891,6 +906,115 @@ final class InboxModel: ObservableObject {
         }
     }
 
+    func refreshTodo() async {
+        guard connected else { return }
+        if todoLoading { todoRefreshRequested = true; return }
+        if isDemo {
+            #if DEBUG
+            if ProcessInfo.processInfo.arguments.contains("--todo-ui-fixture"), !todoFixtureLoaded {
+                todoFixtureLoaded = true
+                todoDecisions = (try? [TodoDecision(.object([
+                    "id": .string("fixture-email"), "title": .string("How should we reply to Maya?"),
+                    "context": .string("Maya accepted Tuesday, but the offered slot is no longer free. Review an alternative before anything is sent."),
+                    "source_label": .string("Email thread"), "source_url": .string(""),
+                    "status": .string("needs_you"), "version": .number(1),
+                    "choices": .array([
+                        .object(["id": .string("draft"), "title": .string("Draft another time")]),
+                        .object(["id": .string("defer"), "title": .string("Not now")]),
+                    ]),
+                ]))]) ?? []
+            }
+            #endif
+            todoLoaded = true
+            return
+        }
+        guard let client else { return }
+        let epoch = generation, revision = todoRevision
+        todoLoading = true; todoError = nil
+        do {
+            let result = try await client.todoSnapshot()
+            guard generation == epoch, connected else { return }
+            if revision == todoRevision {
+                todoItems = result.captures; todoDecisions = result.decisions; todoLoaded = true
+            } else { todoRefreshRequested = true }
+        } catch {
+            guard generation == epoch, connected else { return }
+            todoError = error.localizedDescription
+        }
+        if generation == epoch {
+            todoLoading = false
+            if todoRefreshRequested {
+                todoRefreshRequested = false
+                await refreshTodo()
+            }
+        }
+    }
+
+    func saveTodo() async {
+        let text = todoDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty, text.utf8.count <= 4096, !todoSaving else { return }
+        if isDemo {
+            let result = try? TodoCapture(.object([
+                "id": .string(UUID().uuidString), "body": .string(text),
+                "watch_hint": .string(todoWatchHint), "status": .string("captured"),
+                "version": .number(1), "created_at": .string(Date.now.ISO8601Format()),
+            ]))
+            if let result { todoItems.insert(result, at: 0); todoDraft = ""; todoWatchHint = "" }
+            return
+        }
+        guard let client, connected else { return }
+        let epoch = generation, hint = todoWatchHint
+        let operationID: UUID
+        if let prior = todoCaptureOperation, prior.body == text, prior.hint == hint {
+            operationID = prior.id
+        } else {
+            operationID = UUID()
+            todoCaptureOperation = (text, hint, operationID)
+        }
+        todoSaving = true; todoError = nil
+        do {
+            let result = try await client.captureTodo(text, watchHint: hint, operationID: operationID)
+            guard generation == epoch, connected else { return }
+            todoRevision &+= 1
+            if todoLoading { todoRefreshRequested = true }
+            if !todoItems.contains(where: { $0.id == result.id }) { todoItems.insert(result, at: 0) }
+            todoCaptureOperation = nil
+            // Preserve new keystrokes made while the request was in flight.
+            if todoDraft == text && todoWatchHint == hint { todoDraft = ""; todoWatchHint = "" }
+        } catch {
+            if generation == epoch { todoError = "Couldn't save. Your text is still here. " + error.localizedDescription }
+        }
+        if generation == epoch { todoSaving = false }
+    }
+
+    func respondTodo(to decision: TodoDecision, choiceID: String?, text: String?) async -> Bool {
+        guard !todoResponding, decision.status == "needs_you" else { return false }
+        if isDemo {
+            todoDecisions.removeAll { $0.id == decision.id }
+            return true
+        }
+        guard connected, let client else { return false }
+        let epoch = generation
+        let operationKey = "\(decision.id):\(decision.version):\(choiceID ?? ""):\(text ?? "")"
+        let operationID = todoResponseOperations[operationKey] ?? UUID()
+        todoResponseOperations[operationKey] = operationID
+        todoResponding = true; todoError = nil
+        do {
+            try await client.respondToTodoDecision(decision, choiceID: choiceID, text: text, operationID: operationID)
+            todoResponseOperations.removeValue(forKey: operationKey)
+            guard generation == epoch, connected else { return false }
+            // The recorded answer leaves Needs you even if the follow-up read fails.
+            todoRevision &+= 1
+            todoDecisions.removeAll { $0.id == decision.id }
+            await refreshTodo()
+            todoResponding = false
+            return true
+        } catch {
+            if generation == epoch { todoError = error.localizedDescription; todoResponding = false }
+            return false
+        }
+    }
+
     func start() async {
         guard !didStart else { return }; didStart = true
         do { try ContextStore.shared().activate(nil) } catch { contextError = error.localizedDescription }
@@ -1189,7 +1313,7 @@ final class InboxModel: ObservableObject {
         projection?.cancel(); projection = nil; eventBytes = []; retainedBytes = 0; navigation = []; deferred = [:]
         observedAgentID = nil; threadLoading = false; threadError = nil
         connected = false; restoringAccount = false; restorationError = nil
-        isDemo = false; cards = []; deck = InboxDeck(); mediaProjection = InboxMediaProjection(); rows = []; events = []; drafts = [:]; seen = [:]
+        isDemo = false; todoItems = []; todoDecisions = []; todoDraft = ""; todoWatchHint = ""; todoCaptureOperation = nil; todoResponseOperations.removeAll(); todoError = nil; todoLoading = false; todoLoaded = false; todoRevision = 0; todoRefreshRequested = false; todoFixtureLoaded = false; todoSaving = false; todoResponding = false; cards = []; deck = InboxDeck(); mediaProjection = InboxMediaProjection(); rows = []; events = []; drafts = [:]; seen = [:]
         for task in attachmentProviderTasks.values { task.cancel() }
         attachmentProviderTasks = [:]
         attachmentDrafts = [:]; attachmentURLs = [:]; attachmentMovieURLs = [:]; attachmentImports = [:]; attachmentErrors = [:]

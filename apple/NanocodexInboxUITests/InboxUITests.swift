@@ -6,6 +6,31 @@ final class InboxUITests: XCTestCase {
     }
     override func setUp() { super.setUp(); continueAfterFailure = false }
 
+    func testDecisionFirstTodoCaptureAndChatNavigation() {
+        let app = XCUIApplication()
+        app.launchArguments = ["--demo", "--todo-ui-fixture"]
+        app.launchEnvironment = ["NANOCODEX_DEMO_PROFILE": UUID().uuidString]
+        app.launch()
+        XCTAssertTrue(app.buttons["main-tab-todo"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.staticTexts["Needs you"].exists)
+        XCTAssertTrue(app.buttons["decision-card:fixture-email"].exists)
+        capture(app, "todo-decision-first")
+        app.buttons["decision-card:fixture-email"].tap()
+        XCTAssertTrue(app.buttons["decision-choice:fixture-email:draft"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.textViews["decision-instructions"].exists)
+        app.buttons["decision-detail-close"].tap()
+        let input = app.textViews["todo-capture"]
+        input.tap(); input.typeText("Check whether Alex can meet next week")
+        XCTAssertTrue(app.buttons["todo-capture-save"].isEnabled)
+        app.buttons["todo-capture-save"].tap()
+        XCTAssertTrue(app.staticTexts["Check whether Alex can meet next week"].waitForExistence(timeout: 5))
+        capture(app, "todo-captured")
+        app.buttons["main-tab-chat"].tap()
+        XCTAssertTrue(app.buttons["conversation-drawer-open"].waitForExistence(timeout: 5))
+        app.buttons["main-tab-todo"].tap()
+        XCTAssertTrue(app.staticTexts["Check whether Alex can meet next week"].exists)
+    }
+
     func testRunningAgentsToolbarFiltersAndShowsLastPrompt() {
         let originalAppearance = XCUIDevice.shared.appearance
         addTeardownBlock { XCUIDevice.shared.appearance = originalAppearance }

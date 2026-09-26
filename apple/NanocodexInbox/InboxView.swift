@@ -58,6 +58,10 @@ private enum Ink {
 
 struct InboxView: View {
     @ObservedObject var model: InboxModel
+    @State private var mainSurface: MainSurface = (ProcessInfo.processInfo.arguments.contains("--demo")
+        && !ProcessInfo.processInfo.arguments.contains("--todo-ui-fixture")) ? .chat : .todo
+    @State private var todoInputFocused = false
+    private enum MainSurface { case todo, chat }
     @State private var showConversations = false
     @State private var showRunningAgents = false
     @State private var drawerTranslation: CGFloat = 0
@@ -81,7 +85,11 @@ struct InboxView: View {
 
     var body: some View {
         NavigationStack {
-            inbox
+            Group {
+                if model.connected && mainSurface == .todo {
+                    TodoBoardView(model: model, inputFocused: $todoInputFocused)
+                } else { inbox }
+            }
                 #if os(iOS)
                 .navigationTitle("Conversations")
                 .navigationBarTitleDisplayMode(.inline)
@@ -104,6 +112,11 @@ struct InboxView: View {
                         .navigationBarTitleDisplayMode(.inline)
                         #endif
                 }
+        }
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            if model.connected && !composerFocused && !todoInputFocused && !showConversations && !showScreens && !showScheduledJobs && !showConnectors {
+                mainNavigation
+            }
         }
         .safeAreaInset(edge: .top, spacing: 0) {
             if !model.isDemo, let update = appUpdates.update {
@@ -175,16 +188,58 @@ struct InboxView: View {
         }
         .onChange(of: model.focusedConversationIdentity, initial: true) { _, _ in
             composerFocused = false
-            if model.focused != nil { model.openThread() }
+            if mainSurface == .chat && model.focused != nil { model.openThread() }
+        }
+        .onChange(of: mainSurface) { _, surface in
+            if surface == .chat && model.focused != nil { model.openThread() }
         }
         .onChange(of: model.musicConnectorToOpen) { _, provider in
             if provider != nil && model.connected { showSettings = false; showConnectors = true }
         }
         .onChange(of: model.connected) { _, connected in
             if connected && model.musicConnectorToOpen != nil { showConnectors = true }
-            if !connected { screenThreads.removeAll(); screenExpanded = false; showConversations = false; showScreens = false; showScheduledJobs = false; showConnectors = false; showSettings = false; readingPositions.values.removeAll() }
+            if !connected { mainSurface = .todo; screenThreads.removeAll(); screenExpanded = false; showConversations = false; showScreens = false; showScheduledJobs = false; showConnectors = false; showSettings = false; readingPositions.values.removeAll() }
         }
 
+    }
+
+    private var mainNavigation: some View {
+        HStack(spacing: 6) {
+            mainNavigationButton(.todo, title: "TODO", symbol: "checkmark.square", identifier: "main-tab-todo")
+            mainNavigationButton(.chat, title: "Chat", symbol: "bubble.left", identifier: "main-tab-chat")
+        }
+        .padding(5)
+        .background(.regularMaterial, in: Capsule())
+        .overlay(Capsule().strokeBorder(.primary.opacity(0.08)))
+        .shadow(color: .black.opacity(0.09), radius: 12, y: 4)
+        .padding(.bottom, 7)
+    }
+
+    private func mainNavigationButton(_ surface: MainSurface, title: String, symbol: String, identifier: String) -> some View {
+        Button {
+            composerFocused = false
+            todoInputFocused = false
+            mainSurface = surface
+            if surface == .todo { Task { await model.refreshTodo() } }
+        } label: {
+            HStack(spacing: 8) {
+                Image(systemName: symbol).font(.system(size: 18, weight: .medium))
+                Text(title).font(.subheadline.weight(.semibold))
+                if surface == .todo && model.pendingTodoDecisionCount > 0 {
+                    Text("\(model.pendingTodoDecisionCount)")
+                        .font(.caption2.weight(.bold))
+                        .padding(.horizontal, 5).padding(.vertical, 2)
+                        .background(.primary.opacity(0.1), in: Capsule())
+                }
+            }
+            .frame(minWidth: 115, minHeight: 42)
+            .background(mainSurface == surface ? Color.primary.opacity(0.09) : .clear, in: Capsule())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(title)
+        .accessibilityValue(surface == .todo ? "\(model.pendingTodoDecisionCount) decisions need you" : "")
+        .accessibilityAddTraits(mainSurface == surface ? [.isSelected] : [])
+        .accessibilityIdentifier(identifier)
     }
 
     private var inbox: some View {
