@@ -3525,10 +3525,6 @@ export class DurableAgentSession extends DurableComputerObject {
         stream_error TEXT,
         last_active INTEGER NOT NULL
       );
-      CREATE TABLE IF NOT EXISTS gmail_firehose_decision_receipts (
-        source_key TEXT PRIMARY KEY, outcome TEXT NOT NULL CHECK (outcome IN ('reply', 'no_reply')),
-        created_at INTEGER NOT NULL
-      );
       CREATE TABLE IF NOT EXISTS session_initialization_ownership (
         singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
         session_id TEXT,
@@ -3894,6 +3890,11 @@ export class DurableAgentSession extends DurableComputerObject {
     let emailEvent: unknown;
     try { emailEvent = JSON.parse(wake.input); } catch { /* legacy text */ }
     if (this.env.AI && this.env.NANOCODEX_FIREHOSE_DECISIONS_OWNER_ID === wake.userId) {
+      // Leave general session startup unchanged while this producer is opt-in.
+      this.ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS gmail_firehose_decision_receipts (
+        source_key TEXT PRIMARY KEY, outcome TEXT NOT NULL CHECK (outcome IN ('reply', 'no_reply')),
+        created_at INTEGER NOT NULL
+      )`);
       await proposeGmailReplyDecisions(wake.input, this.env.AI,
         this.env.NANOCODEX_USERS.getByName(wake.userId), () => { assertOwner(epoch); }, {
           has: sourceKey => this.ctx.storage.sql.exec<{source_key:string}>(
