@@ -25,7 +25,7 @@ use nanocodex::{
         SubscriptionCommit, SubscriptionFuture, SubscriptionHostError, SubscriptionHttpRequest,
         SubscriptionHttpResponse, SubscriptionStoreValue,
     },
-    oai::responses::ResponseItem,
+    oai::responses::{FunctionOutputBody, ResponseItem},
     oai::transport::{ResponsesHistory, ResponsesTransport},
     tools::{
         ToolContext, ToolDefinition, ToolInput, ToolOutput,
@@ -1970,6 +1970,34 @@ impl WasmNanocodex {
     /// Throws when compaction or the agent driver fails.
     pub async fn compact(&self) -> Result<(), JsValue> {
         self.inner.compact().await.map_err(js_error)
+    }
+
+    /// Checkpoints a typed terminal result for an opted-in staged function call.
+    /// This accepts only the trusted host's operation identity and never creates
+    /// a user prompt. A receipt reports whether a model continuation was started.
+    ///
+    /// # Errors
+    ///
+    /// Rejects malformed typed output, an unstaged call, conflicting replay,
+    /// failure to commit a durable checkpoint, or a stopped driver.
+    #[wasm_bindgen(js_name = submitFunctionCallOutput)]
+    pub async fn submit_function_call_output(
+        &self,
+        call_id: &str,
+        encoded_output_json: &str,
+        operation_id: &str,
+    ) -> Result<String, JsValue> {
+        let output: FunctionOutputBody =
+            serde_json::from_str(encoded_output_json).map_err(js_error)?;
+        if matches!(&output, FunctionOutputBody::Content(items) if items.is_empty()) {
+            return Err(js_error("function output content must not be empty"));
+        }
+        let receipt = self
+            .inner
+            .submit_late_function_output(call_id, output, operation_id)
+            .await
+            .map_err(js_error)?;
+        serde_json::to_string(&receipt).map_err(js_error)
     }
 
     /// Appends adapter-owned developer context at the next safe model boundary.
