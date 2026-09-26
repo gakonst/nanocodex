@@ -1,4 +1,5 @@
 import type { NamedTool, ToolContext } from "nanocodex";
+import { tracing } from "cloudflare:workers";
 
 type Sql = DurableObjectStorage["sql"];
 type ToolRow = {
@@ -36,15 +37,34 @@ export class ToolTiming {
     return performance.now() - start;
   }
 
-  instrument(tool: NamedTool): NamedTool {
+  instrument(tool: NamedTool, correlation: (context: ToolContext) => string | undefined): NamedTool {
     return {
       ...tool,
-      handler: async (input, context) => {
+      handler: (input, context) => tracing.enterSpan("managed2.tool", async span => {
+        // Tool names are from this fixed local registration, never model input.
+        span.setAttribute("managed2.tool.name", tool.name);
+        const traceId = correlation(context);
+        if (traceId) span.setAttribute("managed2.trace_id", traceId);
         const began = performance.now();
-        try { return await tool.handler(input, context); }
-        finally { this.phase(context, "handler", performance.now() - began); }
-      },
+        try {
+          const result = await tool.handler(input, context);
+          span.setAttribute("managed2.outcome", "completed");
+          return result;
+        } catch (error) {
+          span.setAttribute("managed2.outcome", "failed");
+          throw error;
+        } finally { this.phase(context, "handler", performance.now() - began); }
+      }),
     };
+  }
+
+  /** Use a unique in-flight provider call ID, never a DO-wide active-turn guess. */
+  correlation(context: ToolContext): string | undefined {
+    if (this.schema === "absent") return undefined;
+    const rows = this.sql.exec<{ trace_id: string }>(`SELECT t.trace_id FROM managed2_tool_timing AS c
+      JOIN turn_timing AS t ON t.id = c.external_turn_id
+      WHERE c.call_id = ? AND c.status IS NULL`, context.callId).toArray();
+    return rows.length === 1 ? rows[0]!.trace_id : undefined;
   }
 
   phase(context: ToolContext, phase: string, durationMs: number): void {

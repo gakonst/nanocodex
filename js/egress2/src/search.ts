@@ -1,4 +1,5 @@
 import type { ActiveCredential } from "./handler";
+import { tracing } from "cloudflare:workers";
 
 const SEARCH_ROUTE = "https://nanocodex.internal/v1/search";
 const API_URL = "https://api.openai.com/v1/alpha/search";
@@ -22,6 +23,9 @@ export function createSearchHandler<Env>({ readCredential, upstreamFetch, clock 
     const owner = request.headers.get("x-managed2-owner")?.trim();
     if (!owner || request.headers.get("authorization") !== PLACEHOLDER) return error(403, "forbidden");
     const started = clock();
+    const supplied = request.headers.get("x-managed2-trace-id");
+    const traceId = supplied && /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(supplied)
+      ? supplied : null;
     let prepareMs = 0, credentialMs = 0, upstreamMs = 0, parseMs = 0;
     let route: "openai_api" | "chatgpt_subscription" | "unknown" = "unknown";
     let upstreamStatus: number | null = null;
@@ -36,13 +40,18 @@ export function createSearchHandler<Env>({ readCredential, upstreamFetch, clock 
       return response;
     };
     try {
-      const raw = await boundedText(request, MAX_REQUEST_BYTES);
-      const decoded: unknown = JSON.parse(raw);
-      const body = searchBody(decoded);
+      const body = await tracing.enterSpan("egress2.search.prepare", async span => {
+        if (traceId) span.setAttribute("managed2.trace_id", traceId);
+        const raw = await boundedText(request, MAX_REQUEST_BYTES);
+        return searchBody(JSON.parse(raw) as unknown);
+      });
       prepareMs = clock() - started;
       const credentialStart = clock();
       let credential: ActiveCredential | null;
-      try { credential = await readCredential(owner, env); }
+      try { credential = await tracing.enterSpan("egress2.credential", async span => {
+        if (traceId) span.setAttribute("managed2.trace_id", traceId);
+        return readCredential(owner, env);
+      }); }
       catch { return finish(error(502, "credential_unavailable")); }
       credentialMs = clock() - credentialStart;
       if (!credential || !credential.secret) return finish(error(403, "credential_unavailable"));
@@ -57,18 +66,27 @@ export function createSearchHandler<Env>({ readCredential, upstreamFetch, clock 
       const target = credential.kind === "chatgpt" ? SUBSCRIPTION_URL : API_URL;
       const upstreamStart = clock();
       let upstream: Response;
-      try { upstream = await upstreamFetch(new Request(target, {
-        method: "POST", headers, body: JSON.stringify(body), redirect: "manual",
-      }), owner, env); }
+      try { upstream = await tracing.enterSpan("egress2.upstream", async span => {
+        if (traceId) span.setAttribute("managed2.trace_id", traceId);
+        span.setAttribute("egress2.route", route);
+        const response = await upstreamFetch(new Request(target, {
+          method: "POST", headers, body: JSON.stringify(body), redirect: "manual",
+        }), owner, env);
+        span.setAttribute("http.response.status_code", response.status);
+        return response;
+      }); }
       catch { upstreamMs = clock() - upstreamStart; return finish(error(502, "search_unavailable")); }
       upstreamMs = clock() - upstreamStart;
       upstreamStatus = upstream.status;
       if (!upstream.ok) { await upstream.body?.cancel().catch(() => {}); return finish(error(502, "search_unavailable")); }
       const parseStart = clock();
       try {
-        const data: unknown = JSON.parse(await boundedText(upstream, MAX_RESPONSE_BYTES));
-        if (!data || typeof data !== "object" || typeof (data as { output?: unknown }).output !== "string") throw new Error("invalid search output");
-        const output = (data as { output: string }).output;
+        const output = await tracing.enterSpan("egress2.search.parse", async span => {
+          if (traceId) span.setAttribute("managed2.trace_id", traceId);
+          const data: unknown = JSON.parse(await boundedText(upstream, MAX_RESPONSE_BYTES));
+          if (!data || typeof data !== "object" || typeof (data as { output?: unknown }).output !== "string") throw new Error("invalid search output");
+          return (data as { output: string }).output;
+        });
         // Return only the bounded, model-facing output, not arbitrary provider metadata.
         const result = Response.json({ output }, { headers: { "cache-control": "no-store" } });
         parseMs = clock() - parseStart;
