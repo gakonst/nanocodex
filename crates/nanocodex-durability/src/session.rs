@@ -1996,13 +1996,13 @@ impl DurableSession {
             {
                 continue;
             }
-            if let Some((index, response_id)) = &operation.late_model_response {
-                if *index > 0 && !response_id.is_empty() {
-                    return Ok(ActiveBoundaryOutputStatus::Confirmed {
-                        model_call_index: *index,
-                        response_id: response_id.clone(),
-                    });
-                }
+            if let Some((index, response_id)) = &operation.late_model_response
+                && *index > 0 && !response_id.is_empty()
+            {
+                return Ok(ActiveBoundaryOutputStatus::Confirmed {
+                    model_call_index: *index,
+                    response_id: response_id.clone(),
+                });
             }
             if let Some(index) = operation
                 .steps
