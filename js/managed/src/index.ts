@@ -2519,6 +2519,67 @@ async function managedFetchRoute(
         body: JSON.stringify(payload), signal: request.signal,
       });
     }
+    if (resource === "forks") {
+      if (request.method !== "POST") return json({ error: "method_not_allowed" }, { status: 405 });
+      if (url.search || await hasRequestBody(request)) return json({ error: "invalid_request" }, { status: 400 });
+      const key = request.headers.get("idempotency-key");
+      if (!key || !IDEMPOTENCY_KEY.test(key)) return json({ error: "invalid_idempotency_key" }, { status: 400 });
+      if (principal.connectGrant || !["agents:read", "agents:write", "tools:use"].every(
+        capability => principal.capabilities.includes(capability as OrganizationCapability)))
+        return json({ error: "forbidden" }, { status: 403 });
+      const originFailure = requireSameOriginMutation(request, url, principal);
+      if (originFailure) return originFailure;
+      // The fork key is scoped to both the caller and parent. Never send the
+      // typed checkpoint through a client-visible response.
+      const creationKey = `fork:${await hashText(JSON.stringify([agentId, key]))}`;
+      const childId = await idempotentAgentId(principal.userId, creationKey);
+      const child = env.NANOCODEX_SESSIONS.getByName(childId, durablePlacementOptions(clientIngressColo));
+      const done = await child.fetch("https://session.internal/fork/status", { headers: sessionHeaders });
+      if (done.ok) {
+        const retained = await done.json<{ parent_agent_id: string; request_key: string; settings: ManagedAgentSettings }>();
+        if (retained.parent_agent_id !== agentId || retained.request_key !== creationKey)
+          return json({ error: "fork_seed_conflict" }, { status: 409 });
+        return forkCreationResponse(url, childId, agentId, retained.settings);
+      }
+      await done.body?.cancel();
+      if (done.status !== 404) return done;
+      const source = await stub.fetch("https://session.internal/fork/snapshot", {
+        method: "POST", headers: sessionHeaders,
+      });
+      if (!source.ok) return source;
+      const checkpoint = await source.json<{snapshot: unknown; settings: ManagedAgentSettings}>();
+      if (!checkpoint.snapshot || !isRecord(checkpoint.snapshot))
+        return json({ error: "checkpoint_unavailable" }, { status: 409 });
+      const encodedSeed = JSON.stringify({ snapshot: checkpoint.snapshot,
+        parent_agent_id: agentId, request_key: creationKey });
+      if (encodedSeed.length > 16_000_000)
+        return json({ error: "checkpoint_too_large" }, { status: 413 });
+      const created = await managedFetch(new Request(new URL("/v1/agents", url), {
+        method: "POST", headers: { "content-type": "application/json", "idempotency-key": creationKey, "origin": url.origin },
+        body: JSON.stringify({ settings: checkpoint.settings }),
+      }), env, ctx, principal, clientIngressColo);
+      if (!created.ok) return created;
+      await created.body?.cancel();
+      const seeded = await child.fetch("https://session.internal/fork/seed", {
+        method: "POST", headers: sessionHeaders,
+        body: encodedSeed,
+      });
+      if (!seeded.ok) {
+        // An earlier attempt may have published the same seed while this
+        // replay fetched a newer parent boundary. The first seed wins.
+        if (seeded.status === 409) {
+          const retained = await child.fetch("https://session.internal/fork/status", { headers: sessionHeaders });
+          if (retained.ok) {
+            const row = await retained.json<{ parent_agent_id: string; request_key: string; settings: ManagedAgentSettings }>();
+            if (row.parent_agent_id === agentId && row.request_key === creationKey)
+              return forkCreationResponse(url, childId, agentId, row.settings);
+          } else await retained.body?.cancel();
+        }
+        return seeded;
+      }
+      await seeded.body?.cancel();
+      return forkCreationResponse(url, childId, agentId, checkpoint.settings);
+    }
     if (resource === "durability") {
       if (request.method !== "POST") {
         return json({ error: "method_not_allowed" }, { status: 405 });
@@ -3243,6 +3304,19 @@ async function chiefManagedFailure(response: Response): Promise<Error> {
     await response.body?.cancel();
   }
   return new Error(`chief_managed_${code}`);
+}
+
+function forkCreationResponse(url: URL, agentId: string, parentAgentId: string, settings: ManagedAgentSettings): Response {
+  const websocketUrl = new URL(`/v1/agents/${agentId}/ws`, url);
+  websocketUrl.protocol = websocketUrl.protocol === "https:" ? "wss:" : "ws:";
+  return json({ agent_id: agentId, session_id: agentId, parent_agent_id: parentAgentId,
+    events_url: new URL(`/v1/agents/${agentId}/events`, url).href,
+    websocket_url: websocketUrl.href,
+    initial_state: { agent_id: agentId, session_id: agentId, has_snapshot: true,
+      completed_turns: 0, last_active: Date.now(), active_turns: [],
+      agent_loaded: false, connected_clients: 0, capabilities: AGENT_CAPABILITIES,
+      latest_event_cursor: "1", stream_error: null, settings },
+  }, { status: 201 });
 }
 
 function agentCreationResponse(url: URL, agentId: string, settings: ManagedAgentSettings,
@@ -4179,6 +4253,67 @@ export class DurableAgentSession extends DurableComputerObject {
     if (this.#durabilityExported
       && !(request.method === "DELETE" && url.pathname === "/session")) {
       return json({ error: "durability_exported" }, { status: 409 });
+    }
+    if (url.pathname === "/fork/status" || url.pathname === "/fork/seed"
+      || url.pathname === "/fork/snapshot") {
+      if (!ownerAssertion || !this.#hasFullAccountAuthority(turnAuthorization)
+        || !["agents:read", "agents:write", "tools:use"].every(
+          capability => turnAuthorization.capabilities.includes(capability as OrganizationCapability)))
+        return json({ error: "forbidden" }, { status: 403 });
+      if (!this.#sessionId() || this.#deleting || this.#deleted || this.#durabilityExported)
+        return json({ error: "not_found" }, { status: 404 });
+      this.ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS managed_fork_seed (
+        singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+        parent_agent_id TEXT NOT NULL, request_key TEXT NOT NULL, snapshot_json TEXT NOT NULL
+      )`);
+      const current = this.ctx.storage.sql.exec<{ parent_agent_id: string; request_key: string; snapshot_json: string }>(
+        "SELECT parent_agent_id,request_key,snapshot_json FROM managed_fork_seed WHERE singleton = 1",
+      ).toArray()[0];
+      if (url.pathname === "/fork/status") {
+        if (request.method !== "GET") return json({ error: "method_not_allowed" }, { status: 405 });
+        return current ? json({ parent_agent_id: current.parent_agent_id, request_key: current.request_key, settings: this.#settings() })
+          : json({ error: "not_found" }, { status: 404 });
+      }
+      if (request.method !== "POST") return json({ error: "method_not_allowed" }, { status: 405 });
+      if (url.pathname === "/fork/seed") {
+        const encoded = await request.text();
+        if (encoded.length > 16_000_000) return json({ error: "checkpoint_too_large" }, { status: 413 });
+        let seed: {snapshot: unknown; parent_agent_id: unknown; request_key: unknown};
+        try { seed = JSON.parse(encoded); }
+        catch { return json({ error: "invalid_request" }, { status: 400 }); }
+        if (!isRecord(seed.snapshot) || typeof seed.parent_agent_id !== "string"
+          || !SESSION_ID.test(seed.parent_agent_id) || seed.parent_agent_id === this.#sessionId()
+          || typeof seed.request_key !== "string" || !IDEMPOTENCY_KEY.test(seed.request_key))
+          return json({ error: "invalid_request" }, { status: 400 });
+        const snapshot = JSON.stringify(seed.snapshot);
+        if (current) return current.parent_agent_id === seed.parent_agent_id
+            && current.request_key === seed.request_key && current.snapshot_json === snapshot
+          ? json({ seeded: true }) : json({ error: "fork_seed_conflict" }, { status: 409 });
+        // A seed must precede *all* turn admissions and runtime construction.
+        // SQLite serializes concurrent seed/admission in this Durable Object.
+        if (this.#agent || this.#agentPromise || this.#agentConstructions.size
+          || this.#turns.size || this.#pendingTurnIds.size || this.#recoverableTurnCount() > 0
+          || this.ctx.storage.sql.exec<{ accepted_turns: number }>(
+            "SELECT accepted_turns FROM session_state WHERE singleton = 1").one().accepted_turns !== 0)
+          return json({ error: "fork_seed_conflict" }, { status: 409 });
+        this.ctx.storage.sql.exec(
+          "INSERT INTO managed_fork_seed(singleton,parent_agent_id,request_key,snapshot_json) VALUES (1,?,?,?)",
+          seed.parent_agent_id, seed.request_key, snapshot);
+        return json({ seeded: true });
+      }
+      if (this.#configuration().model_routing || this.#threadRoute()
+        || this.#goals.get() || this.#cronTriggers.hasTriggers()
+        || Object.keys(this.#configuration()).length)
+        return json({ error: "checkpoint_fork_unsupported" }, { status: 409 });
+      // Current Rust checkpoint owns typed model/tool history; never infer it
+      // from rendered events, including while a turn is executing.
+      try {
+        const agent = await this.#ensureAgent();
+        const snapshot = await CloudflareAgent.checkpoint(agent);
+        return json({ snapshot, settings: this.#settings() }, { headers: { "cache-control": "no-store" } });
+      } catch (error) {
+        return json({ error: "checkpoint_unavailable", message: errorMessage(error) }, { status: 409 });
+      }
     }
     if (url.pathname === "/required-actions" || url.pathname.startsWith("/required-actions/")) {
       if (!this.#sessionId() || this.#deleting || this.#deleted) return json({ error: "not_found" }, { status: 404 });
@@ -7929,6 +8064,7 @@ export class DurableAgentSession extends DurableComputerObject {
     CloudflareAgent.destroy(this);
     this.ctx.storage.transactionSync(() => {
       for (const table of ["managed_configuration", "managed_environment_setup", "managed_webhook", "managed_webhook_deliveries", "managed_turn_usage", "managed_model_usage", "managed_artifacts", "managed_artifact_publications", "managed_output_checkpoints", "managed_output_checkpoint_chunks", "managed_turn_file_owners", "managed_connect_inputs"]) this.ctx.storage.sql.exec(`DELETE FROM ${table}`);
+      this.ctx.storage.sql.exec("DROP TABLE IF EXISTS managed_fork_seed");
       this.ctx.storage.sql.exec("DELETE FROM managed_turn_dispatch_chunks");
       this.ctx.storage.sql.exec("DELETE FROM managed_turn_input_chunks");
       this.ctx.storage.sql.exec("DELETE FROM managed_turn_terminal_chunks");
@@ -8478,6 +8614,20 @@ export class DurableAgentSession extends DurableComputerObject {
         ).toArray()[0]?.state_id ?? durabilityId;
       } catch { /* The adapter creates its identity on first construction. */ }
       const options = { durabilityId, eventPersistence: "caller" as const };
+      const hasForkSeedTable = this.ctx.storage.sql.exec<{ name: string }>(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='managed_fork_seed'",
+      ).toArray().length > 0;
+      const forkSeed = hasForkSeedTable ? this.ctx.storage.sql.exec<{ snapshot_json: string }>(
+        "SELECT snapshot_json FROM managed_fork_seed WHERE singleton = 1",
+      ).toArray()[0] : undefined;
+      const hasHead = this.ctx.storage.sql.exec<{ name: string }>(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='nanocodex_durable_states'",
+      ).toArray().length > 0 && this.ctx.storage.sql.exec<{ revision: string; payload: string | null }>(
+        "SELECT revision, payload FROM nanocodex_durable_states WHERE state_id = ?", durabilityId,
+      ).toArray().some(row => row.revision !== "0" || row.payload !== null);
+      if (forkSeed && !hasHead) Object.defineProperty(options,
+        Symbol.for("nanocodex.cloudflare.internalForkResume"),
+        { value: JSON.parse(forkSeed.snapshot_json) });
       Object.defineProperty(options, Symbol.for("nanocodex.cloudflare.internalConfiguration"), { value: this.#settings() });
       Object.defineProperty(options, Symbol.for("nanocodex.cloudflare.internalRuntime"), {
         value: { prepare: complete, preparationSignal: signal },
@@ -9134,6 +9284,23 @@ export class DurableAgentSession extends DurableComputerObject {
             ? managedPromptCacheKey(session) : undefined,
         },
       } });
+      const hasForkSeedTable = this.ctx.storage.sql.exec<{ name: string }>(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='managed_fork_seed'",
+      ).toArray().length > 0;
+      const forkSeed = hasForkSeedTable ? this.ctx.storage.sql.exec<{ snapshot_json: string }>(
+        "SELECT snapshot_json FROM managed_fork_seed WHERE singleton = 1",
+      ).toArray()[0] : undefined;
+      // Resume only while the child has no committed durable head. Once a
+      // fork advances, its own Rust checkpoint supersedes the inherited seed.
+      const hasHead = this.ctx.storage.sql.exec<{ name: string }>(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='nanocodex_durable_states'",
+      ).toArray().length > 0 && this.ctx.storage.sql.exec<{ revision: string; payload: string | null }>(
+        "SELECT revision, payload FROM nanocodex_durable_states WHERE state_id = ?",
+        durabilityId,
+      ).toArray().some(row => row.revision !== "0" || row.payload !== null);
+      if (forkSeed && !hasHead) Object.defineProperty(agentOptions,
+        Symbol.for("nanocodex.cloudflare.internalForkResume"),
+        { value: JSON.parse(forkSeed.snapshot_json) });
       Object.defineProperty(agentOptions, internalConfiguration, { value: this.#settings() });
       phaseStartedAt = performance.now();
       const owner = this.#credentialBinding?.strategy === "session_v1" || configuration.chatgpt_account_id ? {

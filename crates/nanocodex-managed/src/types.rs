@@ -140,6 +140,9 @@ pub struct AgentReceipt {
     pub events_url: String,
     /// Managed live endpoint.
     pub websocket_url: String,
+    /// Source agent for a checkpoint fork, absent on an ordinary creation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_agent_id: Option<String>,
     /// Initial durable state when the service can return it atomically with creation.
     #[serde(default)]
     pub initial_state: Option<AgentState>,

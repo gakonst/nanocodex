@@ -1846,6 +1846,16 @@ impl WasmNanocodex {
         Ok(Self::from_parts(inner, events, self.subagents.clone()))
     }
 
+    /// Exports the exact latest committed model boundary without mutating this agent.
+    ///
+    /// # Errors
+    ///
+    /// Rejects before the first safe boundary or after the driver stops.
+    #[wasm_bindgen(js_name = checkpoint)]
+    pub async fn checkpoint(&self) -> Result<String, JsValue> {
+        serde_json::to_string(&self.inner.snapshot().await.map_err(js_error)?).map_err(js_error)
+    }
+
     /// Starts a clean sibling with the same private agent policy.
     ///
     /// # Errors

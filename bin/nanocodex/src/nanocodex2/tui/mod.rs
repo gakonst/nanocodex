@@ -6,6 +6,7 @@
 //! orchestration and hosted tools; this module owns only presentation, terminal
 //! interaction, and the caller-local shell convenience.
 
+mod btw;
 mod bug;
 mod clipboard;
 mod components;
@@ -503,8 +504,17 @@ struct PendingVoice {
     muted: bool,
 }
 
+struct BtwConnection {
+    pane: PaneId,
+    agent_id: Option<String>,
+    commands: mpsc::UnboundedSender<btw::Request>,
+    task: tokio::task::JoinHandle<()>,
+}
+
 struct DriverRuntime {
     control_bridge: Option<nanocodex_tui_control::Bridge>,
+    btw: Option<BtwConnection>,
+    btw_events: mpsc::UnboundedSender<btw::Event>,
     screen: screen::Controller,
     pending_voice: Option<PendingVoice>,
     voice_selection: crate::voice::Selection,
@@ -1868,7 +1878,6 @@ async fn run_inner(
     let initial_effort = effort_from_thinking(initial_settings.thinking);
     let initial_reasoning_mode = reasoning_mode_from_managed(initial_settings.reasoning_mode);
     let mut root = RootNode::new(&workspace, initial_effort);
-    root.set_fork_available(false);
     root.set_reasoning_modes(initial_reasoning_mode, initial_reasoning_mode);
     root.set_fast_mode(initial_settings.fast_mode);
     root.set_model(initial_settings.model);
@@ -1879,8 +1888,11 @@ async fn run_inner(
     let mut terminal = TerminalSession::enter().await.map_err(terminal_error)?;
     let mut input = EventStream::new();
     let mut scheduler = RenderScheduler::new(STREAM_FRAME_INTERVAL, Instant::now());
+    let (btw_events, mut btw_updates) = mpsc::unbounded_channel();
     let mut runtime = DriverRuntime {
         control_bridge: None,
+        btw: None,
+        btw_events,
         screen: screen::Controller::new(None),
         client: client.clone(),
         pending_voice: None,
@@ -2519,6 +2531,30 @@ async fn run_inner(
                     }
                     None => runtime.begin_recovery(&mut app, &mut scheduler, true),
                 }
+            }
+            Some(event) = btw_updates.recv() => {
+                let pane = match &event {
+                    btw::Event::Ready { pane, .. } | btw::Event::Record { pane, .. } | btw::Event::Finished(pane) | btw::Event::Failed { pane, .. } => *pane,
+                };
+                if runtime.btw.as_ref().is_none_or(|btw| btw.pane != pane) { continue; }
+                let update = match event {
+                    btw::Event::Ready { pane, agent_id, settings } => {
+                        if let Some(btw) = &mut runtime.btw { btw.agent_id = Some(agent_id); }
+                        let update = app.update(AppEvent::SettingsHydrated { pane,
+                            effort: effort_from_thinking(settings.thinking), fast_mode: settings.fast_mode,
+                            model: settings.model });
+                        request_render(update, &mut scheduler);
+                        app.update(AppEvent::ForkReady { pane })
+                    }
+                    btw::Event::Record { pane, record } => app.update(AppEvent::Transcript { pane, record }),
+                    btw::Event::Finished(pane) => app.update(AppEvent::WorkerTurnFinished { pane, terminal_expected: false }),
+                    btw::Event::Failed { pane, error, opening: true } => {
+                        runtime.btw.take();
+                        app.update(AppEvent::ForkFailed { pane, error })
+                    }
+                    btw::Event::Failed { pane, error, opening: false } => app.update(AppEvent::NotifyError { pane, error }),
+                };
+                stopping = apply_update(update, &mut app, &mut runtime, &mut terminal, &mut scheduler).await?;
             }
             Some(result) = runtime.session_searches.join_next(), if !runtime.session_searches.is_empty() => {
                 if let Ok(search) = result {
@@ -3420,17 +3456,124 @@ async fn apply_update(
             AppEffect::Shutdown => stopping = true,
             AppEffect::SetTheme(_) => scheduler.request_immediate(Instant::now()),
             AppEffect::OpenFork { pane, .. } => {
-                absorb(
-                    app.update(AppEvent::ForkFailed {
-                        pane,
-                        error: "Hosted agents do not expose client-side forks.".to_owned(),
-                    }),
-                    &mut effects,
-                    scheduler,
-                );
+                if runtime.agent_id.is_empty() {
+                    absorb(
+                        app.update(AppEvent::ForkFailed {
+                            pane,
+                            error: "Wait for the main agent to connect before opening /btw".into(),
+                        }),
+                        &mut effects,
+                        scheduler,
+                    );
+                    continue;
+                }
+                let (commands, requests) = mpsc::unbounded_channel();
+                let task = tokio::spawn(btw::run(
+                    pane,
+                    runtime.client.clone(),
+                    runtime.agent_id.clone(),
+                    fresh_thread_settings(
+                        runtime.routing_enabled || runtime.settings.model == Model::Glm53,
+                        runtime.settings,
+                    ),
+                    runtime.workspace.clone(),
+                    runtime.sequence.saturating_add(1),
+                    requests,
+                    runtime.btw_events.clone(),
+                ));
+                runtime.btw = Some(BtwConnection {
+                    pane,
+                    agent_id: None,
+                    commands,
+                    task,
+                });
             }
-            AppEffect::ClosePane(_) => {}
+            AppEffect::ClosePane(pane) => {
+                if runtime.btw.as_ref().is_some_and(|btw| btw.pane == pane)
+                    && let Some(btw) = runtime.btw.take()
+                {
+                    btw.task.abort();
+                }
+            }
             AppEffect::Pane { pane, effect } => {
+                if pane != PaneId::Main {
+                    match effect {
+                        RootEffect::Submit(prompt) | RootEffect::ContinueSubagent(prompt) => {
+                            if runtime
+                                .btw
+                                .as_ref()
+                                .filter(|btw| btw.pane == pane)
+                                .is_none_or(|btw| {
+                                    btw.commands.send(btw::Request::Submit(prompt)).is_err()
+                                })
+                            {
+                                absorb(
+                                    app.update(AppEvent::NotifyError {
+                                        pane,
+                                        error: "Side agent is no longer connected".into(),
+                                    }),
+                                    &mut effects,
+                                    scheduler,
+                                );
+                                absorb(
+                                    app.update(AppEvent::WorkerTurnFinished {
+                                        pane,
+                                        terminal_expected: false,
+                                    }),
+                                    &mut effects,
+                                    scheduler,
+                                );
+                            }
+                        }
+                        RootEffect::CancelTurns => {
+                            if let Some(btw) = runtime.btw.as_ref().filter(|btw| btw.pane == pane) {
+                                let _ = btw.commands.send(btw::Request::Cancel);
+                            }
+                        }
+                        RootEffect::ShowAgentId => {
+                            let id = runtime
+                                .btw
+                                .as_ref()
+                                .filter(|btw| btw.pane == pane)
+                                .and_then(|btw| btw.agent_id.clone())
+                                .unwrap_or_else(|| "connecting".into());
+                            absorb(
+                                app.update(AppEvent::ShowAgentId { pane, id }),
+                                &mut effects,
+                                scheduler,
+                            );
+                        }
+                        RootEffect::Copy(text) => {
+                            if let Err(error) = clipboard::copy_text(&text) {
+                                absorb(
+                                    app.update(AppEvent::NotifyError {
+                                        pane,
+                                        error: format!("Clipboard copy failed: {error}"),
+                                    }),
+                                    &mut effects,
+                                    scheduler,
+                                );
+                            }
+                        }
+                        RootEffect::Steer { id, .. } => {
+                            absorb(
+                                app.update(AppEvent::SteerFailed { pane, id }),
+                                &mut effects,
+                                scheduler,
+                            );
+                            absorb(app.update(AppEvent::NotifyError { pane, error: "Queue a follow-up with Tab in /btw; steering is not available".into() }), &mut effects, scheduler);
+                        }
+                        _ => absorb(
+                            app.update(AppEvent::NotifyError {
+                                pane,
+                                error: "This command is unavailable in /btw".into(),
+                            }),
+                            &mut effects,
+                            scheduler,
+                        ),
+                    }
+                    continue;
+                }
                 // Keep the hosted effect boundary visually separate from app-level routing.
                 match effect {
                     RootEffect::Reload => {
@@ -3440,7 +3583,7 @@ async fn apply_update(
                         };
                         absorb(update, &mut effects, scheduler);
                     }
-                    RootEffect::Screen | RootEffect::Zoom => {
+                    RootEffect::Screen | RootEffect::Zoom | RootEffect::Btw(_) | RootEffect::CloseBtw => {
                         unreachable!("workspace commands are handled by AppNode")
                     }
                     RootEffect::Voice(command) => {
@@ -4765,6 +4908,8 @@ mod tests {
                 .unwrap();
         DriverRuntime {
             control_bridge: None,
+            btw: None,
+            btw_events: tokio::sync::mpsc::unbounded_channel().0,
             screen: crate::tui::screen::Controller::new(Some(
                 ratatui_image::picker::Picker::halfblocks(),
             )),

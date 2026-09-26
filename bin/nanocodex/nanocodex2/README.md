@@ -38,6 +38,22 @@ rather than sent to the legacy API. Legacy commands with `--managed2` fail expli
 silently contacting the original service. If submission fails with uncertain
 admission, preserve the printed request ID before retrying.
 
+## Side exploration
+
+`/btw [question]` opens one independent side pane; enter a question after opening
+with bare `/btw`, or ask it immediately. Tab switches between main and side;
+`/close` in the side pane closes it without stopping the main conversation.
+The hosted service creates a separate managed agent from the parent's latest
+committed model boundary. No transcript is copied into a new prompt; the side
+question is submitted only to the child, never the parent. Uncommitted work
+beyond that safe boundary is excluded; before the first committed boundary,
+forking returns an error. Accepted side turns remain durable in their own agent
+after you close the pane; use `/id` there if you want its agent ID before closing.
+Side follow-ups run sequentially; queue them with Tab while a reply is active.
+The side agent runs through hosted tools; the main thread's local tool-host connection
+is not cloned into it. Conversations are separate, but account tools and hosted
+workspace effects are not isolated. The Managed2 text-only preview does not support `/btw` yet.
+
 ## Hand screens
 
 Type `/screen`, filter by Hand name, then press Enter to watch its live screen

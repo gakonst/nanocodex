@@ -284,6 +284,9 @@ pub(super) async fn begin_shutdown(
             Command::Snapshot { result } => {
                 drop(result.send(Err(NanocodexError::AgentStopped)));
             }
+            Command::ChildSnapshot { result } => {
+                drop(result.send(Err(NanocodexError::AgentStopped)));
+            }
             Command::Fork { result, .. } => {
                 drop(result.send(Err(NanocodexError::AgentStopped)));
             }
@@ -338,6 +341,15 @@ pub(super) fn handle_idle_command<S>(
 {
     match command {
         Command::Snapshot { result } => {
+            drop(
+                result.send(
+                    latest
+                        .ok_or(NanocodexError::ForkBeforeCompletedTurn)
+                        .map(|checkpoint| checkpoint.snapshot()),
+                ),
+            );
+        }
+        Command::ChildSnapshot { result } => {
             drop(result.send(Ok(ChildRuntimeSnapshot {
                 session_id: session_id.to_owned(),
                 model: defaults.model,

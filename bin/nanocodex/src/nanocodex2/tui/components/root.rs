@@ -361,6 +361,8 @@ pub(crate) enum RootEffect {
     SetMaxSubagents(usize),
     SetTheme(ThemeMode),
     Fork,
+    Btw(String),
+    CloseBtw,
     CancelTurns,
     CancelReview,
     CancelHandoff,
@@ -453,6 +455,7 @@ pub(crate) struct RootNode {
     blocking_task: Option<BlockingTask>,
     review_url: Option<String>,
     fork_available: bool,
+    side_pane: bool,
     skills: Arc<[Skill]>,
     interactive: bool,
     resuming_session: bool,
@@ -535,6 +538,7 @@ impl RootNode {
             blocking_task: None,
             review_url: None,
             fork_available: true,
+            side_pane: false,
             skills: Arc::from([]),
             interactive: true,
             resuming_session: false,
@@ -618,11 +622,6 @@ impl RootNode {
     pub(crate) fn fork(&self, workspace: &Path, thinking: ReasoningEffort) -> Self {
         let mut root = Self::new(workspace, thinking);
         root.transcript = Node::new(self.transcript.component().fork_snapshot());
-        root.composer
-            .component_mut()
-            .update(ComposerEvent::ContextTokens(
-                self.composer.component().context_tokens(),
-            ));
         root.set_fast_mode(self.composer.component().fast_mode());
         root.set_model(self.composer.component().model());
         root.set_reasoning_modes(
@@ -632,15 +631,15 @@ impl RootNode {
         root.set_max_subagents(self.subagents.max_subagents());
         root.thread = ThreadState::Started;
         root.fork_available = false;
+        root.side_pane = true;
         root.set_skills(Arc::clone(&self.skills));
         root.theme_mode = self.theme_mode;
-        root.context_diagnostics = self.context_diagnostics.clone();
         root.interactive = false;
         root.composer
             .component_mut()
             .update(ComposerEvent::Activity {
                 active: true,
-                status: Some("Forking session…".to_owned()),
+                status: Some("Opening /btw…".to_owned()),
                 now: Instant::now(),
             });
         root
@@ -2080,6 +2079,21 @@ impl RootNode {
             return ComponentUpdate::none();
         };
         let update = actions.update(ActionsEvent::Terminal(event));
+        if self.side_pane {
+            match update.effects.first() {
+                Some(ActionsEffect::Dismiss | ActionsEffect::Trigger(Action::Keybindings))
+                | Some(ActionsEffect::Trigger(Action::AgentId | Action::Zoom))
+                | Some(ActionsEffect::Settings(
+                    SettingsCommand::CloseBtw | SettingsCommand::Zoom,
+                )) => {}
+                Some(_) => {
+                    self.overlay = None;
+                    self.notification = Some(Notification::plain("Use /btw for questions and /close to leave; other controls belong to the main thread".into(), Color::Yellow));
+                    return ComponentUpdate::render(RenderRequest::Immediate);
+                }
+                None => {}
+            }
+        }
         match update.effects.into_iter().next() {
             Some(ActionsEffect::Dismiss) => self.overlay = None,
             Some(ActionsEffect::Submit(command)) => return self.submit_action_command(command),
@@ -3006,6 +3020,10 @@ impl RootNode {
                 self.queue.component_mut().push(prompt);
                 Vec::new()
             }
+            Some(ComposerEffect::Submit(prompt)) if self.side_pane && self.has_active_turns() => {
+                self.queue.component_mut().push(prompt);
+                Vec::new()
+            }
             Some(ComposerEffect::Submit(prompt)) if self.has_active_turns() => {
                 let (id, prompt) = self.queue.component_mut().begin_steer(prompt);
                 vec![RootEffect::Steer { id, prompt }]
@@ -3023,6 +3041,16 @@ impl RootNode {
                 let queued = self.submit_next_queued();
                 render = render.max(queued.render);
                 queued.effects
+            }
+            Some(ComposerEffect::RunShell(command)) if self.side_pane => {
+                self.composer
+                    .component_mut()
+                    .replace_draft(format!("!{command}"));
+                self.notification = Some(Notification::plain(
+                    "Local shell commands belong to the main thread".into(),
+                    Color::Yellow,
+                ));
+                Vec::new()
             }
             Some(ComposerEffect::RunShell(command)) => {
                 self.in_flight_shells = self.in_flight_shells.saturating_add(1);
@@ -3061,7 +3089,50 @@ impl RootNode {
     }
 
     fn apply_settings_command(&mut self, command: SettingsCommand) -> ComponentUpdate<RootEffect> {
+        if self.side_pane
+            && !matches!(
+                &command,
+                SettingsCommand::CloseBtw | SettingsCommand::Btw(_) | SettingsCommand::Zoom
+            )
+        {
+            self.notification = Some(Notification::plain(
+                "This control belongs to the main thread".into(),
+                Color::Yellow,
+            ));
+            return ComponentUpdate::render(RenderRequest::Immediate);
+        }
         match command {
+            SettingsCommand::Btw(question) => {
+                if self.side_pane {
+                    self.notification =
+                        Some(Notification::plain("Already in /btw".into(), Color::Yellow));
+                    return ComponentUpdate::render(RenderRequest::Immediate);
+                }
+                if !self.can_fork() {
+                    self.notification = Some(Notification::plain(
+                        "A /btw pane is already open".into(),
+                        Color::Yellow,
+                    ));
+                    return ComponentUpdate::render(RenderRequest::Immediate);
+                }
+                ComponentUpdate {
+                    effects: vec![RootEffect::Btw(question)],
+                    render: RenderRequest::Immediate,
+                }
+            }
+            SettingsCommand::CloseBtw => {
+                if !self.side_pane {
+                    self.notification = Some(Notification::plain(
+                        "/close is only available in /btw".into(),
+                        Color::Yellow,
+                    ));
+                    return ComponentUpdate::render(RenderRequest::Immediate);
+                }
+                ComponentUpdate {
+                    effects: vec![RootEffect::CloseBtw],
+                    render: RenderRequest::Immediate,
+                }
+            }
             SettingsCommand::Bug(description) => ComponentUpdate {
                 effects: vec![RootEffect::Bug(description)],
                 render: RenderRequest::Immediate,

@@ -111,6 +111,7 @@ impl ManagedSocket {
             session_id: agent_id.clone(),
             events_url,
             websocket_url: endpoint.to_string(),
+            parent_agent_id: None,
             initial_state: Some(AgentState {
                 agent_id: agent_id.clone(),
                 session_id: agent_id.clone(),

@@ -20,13 +20,14 @@ use ratatui::{
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
-const ACTIONS: [Action; 17] = [
+const ACTIONS: [Action; 18] = [
     Action::Effort,
     Action::FastMode,
     Action::Goal,
     Action::Theme,
     Action::NewSession,
     Action::ResumeSession,
+    Action::Fork,
     Action::Keybindings,
     Action::DebugContext,
     Action::Bug,
@@ -315,7 +316,7 @@ impl ActionsMenu {
             Action::ResumeSession if !self.availability.new_session => {
                 "Resume session · finish active work first"
             }
-            Action::Fork if !self.availability.fork => "Fork session · one fork at a time",
+            Action::Fork if !self.availability.fork => "Open /btw · one at a time",
             Action::Review if !self.availability.new_session => {
                 "Review changes · finish active work first"
             }
@@ -353,7 +354,7 @@ impl Action {
             Self::Theme => "Select theme",
             Self::NewSession => "New session",
             Self::ResumeSession => "Resume session",
-            Self::Fork => "Fork session",
+            Self::Fork => "Open /btw pane",
             Self::Keybindings => "Keyboard shortcuts",
             Self::Reload => "Reload local terminals",
             Self::ReloadConfig => "Reload config",

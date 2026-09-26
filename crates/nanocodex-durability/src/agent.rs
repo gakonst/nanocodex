@@ -48,7 +48,9 @@ impl<F> DurableAgentExt for NanocodexBuilder<F> {
             }
             known_records = keys;
             builder = builder.resume(restored);
-        } else {
+        } else if builder.resume_snapshot().is_none() {
+            // A fork's explicitly supplied completed snapshot owns its cache
+            // lineage. A fresh durable root alone defaults to its state ID.
             builder = builder.default_prompt_cache_key(state_id);
         }
         let owner = Arc::new(Mutex::new(Some((owner, known_records))));

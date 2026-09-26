@@ -224,6 +224,18 @@ without rewriting baseline instructions, cache keys, or the conversation prefix.
   Agent routes create later turns, read state,
   cancel or steer work, delete an agent, and support explicit durability import
   and export. Stable `Idempotency-Key` values make create and turn retries safe.
+- `POST /v1/agents/:id/forks` accepts an empty body and a required stable
+  `Idempotency-Key`. Full account `agents:read`, `agents:write` and `tools:use`
+  authority is required; Connect grants and configured/routed sessions are not
+  supported. It copies the latest Rust-owned committed model boundary into a
+  separate durable child; no rendered event transcript or parent prompt is
+  replayed. It returns `201` with an ordinary agent receipt plus
+  `parent_agent_id`, or `409` if no safe boundary is available. Retry an
+  uncertain response with the *same* key. Partial model output and unfinished
+  tool effects are not inherited. Forks share account tools and `/brain`, so
+  independent conversations do not isolate external side effects.
+  The JavaScript managed SDK exposes `agent.fork({idempotencyKey})` and the
+  native Rust SDK exposes `ManagedClient::fork(parent_id, key)`.
 - `GET /v1/agents/:id/capacity` requires `agents:read` for that agent and returns
   storage byte counts, hot receipt counts, and archive counts without loading
   the runtime or returning conversation contents.

@@ -4,6 +4,7 @@ import { test } from "node:test";
 
 import {
   bindAgent,
+  checkpoint,
   pruneDurableReceipts,
   create,
   createEphemeral,
@@ -33,6 +34,7 @@ class MemoryStorage {
     this.meta = { total_bytes: 0, stream_error: null };
     this.sessionId = undefined;
     this.stateId = undefined;
+    this.forkResume = undefined;
     this.sql = { exec: (sql, ...args) => this.#exec(sql, args) };
   }
 
@@ -48,6 +50,8 @@ class MemoryStorage {
     let rowsWritten = 0;
     if (statement.startsWith("CREATE TABLE")) {
       // Schema setup is idempotent.
+    } else if (statement === "DROP TABLE IF EXISTS nanocodex_cloudflare_fork_resume") {
+      this.forkResume = undefined;
     } else if (statement === "DROP TABLE IF EXISTS nanocodex_cloudflare_subagents") {
       this.subagents.clear();
     } else if (statement === "DROP TABLE IF EXISTS nanocodex_cloudflare_subagent_checkpoints") {
@@ -88,6 +92,10 @@ class MemoryStorage {
     } else if (statement.startsWith("INSERT INTO nanocodex_cloudflare_durability")) {
       if (this.stateId !== undefined) throw new Error("duplicate Cloudflare durability identity");
       this.stateId = args[0];
+    } else if (statement.startsWith("SELECT state_id, digest FROM nanocodex_cloudflare_fork_resume")) {
+      rows = this.forkResume === undefined ? [] : [{ ...this.forkResume }];
+    } else if (statement.startsWith("INSERT OR IGNORE INTO nanocodex_cloudflare_fork_resume")) {
+      this.forkResume ??= { state_id: args[0], digest: args[1] };
     } else if (statement.startsWith("SELECT owner_id, fence FROM nanocodex_durable_owners")) {
       const owner = this.owners.get(args[0]);
       rows = owner === undefined ? [] : [{ owner_id: owner.ownerId, fence: owner.fence }];
@@ -430,6 +438,22 @@ test("a failed speculative connection does not authorize a later managed text tu
   } finally {
     await agent.session.shutdown();
   }
+});
+
+test("Cloudflare checkpoint rejects before the first safe boundary and fork resume requires pristine storage", async () => {
+  const module = await readFile(new URL("../pkg-web/nanocodex_bg.wasm", import.meta.url));
+  const storage = new MemoryStorage();
+  const owner = durableOwner(storage);
+  const agent = await create(module, owner);
+  try {
+    await assert.rejects(checkpoint(agent), /safe conversation boundary/);
+    await assert.rejects(create(module, durableOwner(new MemoryStorage(), egressBinding(), SECOND_OBJECT_ID), {
+      resume: {},
+    }), /does not accept resume/);
+  } finally { await agent.session.shutdown(); }
+  await assert.rejects(create(module, owner, {
+    [Symbol.for("nanocodex.cloudflare.internalForkResume")]: {},
+  }), /pristine Durable Object/);
 });
 
 test("Cloudflare Agent isolates states per Durable Object and can recreate after shutdown", async () => {
@@ -1148,6 +1172,76 @@ for (const provider of ["openrouter", "vercel"]) {
     } finally {await agent.session.shutdown();}
   });
 }
+
+test("Cloudflare checkpoint copies committed history and seeds only a pristine durable fork", { timeout: 30_000 }, async () => {
+  const module = await readFile(new URL("../pkg-web/nanocodex_bg.wasm", import.meta.url));
+  let calls = 0;
+  const gateway = {
+    provider: "vercel", model: "gpt-6-astra", reasoningEffort: "low", apiKey: "synthetic-fixture-key",
+    async fetch(_url, init) {
+      const body = JSON.parse(init.body);
+      calls += 1;
+      if (calls === 2) assert.ok(body.messages.some(message => message.content?.includes("PARENT_DONE")));
+      return gatewayFixtureResponse(body, { choices: [{ finish_reason: "stop", message: { content: calls === 1 ? "PARENT_DONE" : "CHILD_DONE" } }] });
+    },
+  };
+  const config = { model: gateway.model, thinking: "low", reasoning_mode: "standard", fast_mode: false };
+  const options = {
+    [Symbol.for("nanocodex.cloudflare.internalConfiguration")]: config,
+    [Symbol.for("nanocodex.cloudflare.internalRuntime")]: { gateway, subagentsEnabled: false },
+  };
+  const parent = await create(module, durableOwner(new MemoryStorage()), options);
+  const childOwner = durableOwner(new MemoryStorage(), egressBinding(), SECOND_OBJECT_ID);
+  let child;
+  try {
+    assert.equal((await parent.turn.prompt({ input: "Say PARENT_DONE" }).result()).finalMessage, "PARENT_DONE");
+    const copied = await checkpoint(parent);
+    assert.equal(copied.version, 1);
+    assert.ok(copied.history.some(item => JSON.stringify(item).includes("PARENT_DONE")));
+    assert.deepEqual(await checkpoint(parent), copied);
+    // A failed managed preparation must pin the seed *before* catalog/tools
+    // discovery so a cold retry can use the same fork without re-admission.
+    await assert.rejects(create(module, childOwner, {
+      durabilityId: "child-durable", eventPersistence: "caller",
+      [Symbol.for("nanocodex.cloudflare.internalConfiguration")]: config,
+      [Symbol.for("nanocodex.cloudflare.internalRuntime")]: {
+        prepare: async () => { throw new Error("synthetic tool discovery failure"); },
+      },
+      [Symbol.for("nanocodex.cloudflare.internalForkResume")]: copied,
+    }), /synthetic tool discovery failure/);
+    child = await create(module, childOwner, {
+      ...options, durabilityId: "child-durable",
+      [Symbol.for("nanocodex.cloudflare.internalForkResume")]: copied,
+    });
+    assert.notEqual(parent.sessionId, child.sessionId);
+    // A fork can be opened and then cold-restarted before its first prompt.
+    await child.session.shutdown();
+    await assert.rejects(create(module, childOwner, {
+      ...options,
+      [Symbol.for("nanocodex.cloudflare.internalForkResume")]: {
+        ...copied, prompt_cache_key: "forged-cache-lineage",
+      },
+    }), /pristine Durable Object|retained seed/);
+    child = await create(module, childOwner, {
+      ...options,
+      [Symbol.for("nanocodex.cloudflare.internalForkResume")]: copied,
+    });
+    assert.equal((await child.turn.prompt({ input: "Say CHILD_DONE" }).result()).finalMessage, "CHILD_DONE");
+    const childBoundary = await checkpoint(child);
+    assert.ok(childBoundary.history.some(item => JSON.stringify(item).includes("CHILD_DONE")));
+    await child.session.shutdown();
+    child = await create(module, childOwner, options);
+    const recoveredChild = await checkpoint(child);
+    assert.equal(recoveredChild.lineage_id, childBoundary.lineage_id);
+    assert.equal(recoveredChild.prompt_cache_key, childBoundary.prompt_cache_key);
+    assert.ok(recoveredChild.history.some(item => JSON.stringify(item).includes("CHILD_DONE")),
+      "child cold recovery keeps its own committed model history");
+    assert.deepEqual(await checkpoint(parent), copied, "fork does not mutate the parent history");
+  } finally {
+    if (child) await child.session.shutdown();
+    await parent.session.shutdown();
+  }
+});
 
 test("live child continuation preserves schema, history, routing, and spawning authorization until shutdown", { timeout: 30_000 }, async () => {
   const module = await readFile(new URL("../pkg-web/nanocodex_bg.wasm", import.meta.url));

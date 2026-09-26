@@ -11,6 +11,55 @@ async fn forking_before_a_completed_turn_is_typed() {
 }
 
 #[tokio::test]
+async fn live_snapshot_requires_a_safe_boundary_and_does_not_change_parent() {
+    let (retained, _retained_attempts) = mpsc::unbounded_channel();
+    let openai = OpenAi::builder("test")
+        .service(move || RetainingCompletedService {
+            retained: retained.clone(),
+        })
+        .build()
+        .unwrap();
+    let tools = Tools::builder().without_defaults().build().unwrap();
+    let (agent, events) = Nanocodex::builder(openai).tools(tools).build().unwrap();
+    assert!(matches!(
+        agent.snapshot().await,
+        Err(NanocodexError::ForkBeforeCompletedTurn)
+    ));
+
+    let first = agent
+        .prompt("first request")
+        .await
+        .unwrap()
+        .result()
+        .await
+        .unwrap();
+    let first_snapshot = serde_json::to_value(first.snapshot().unwrap()).unwrap();
+    let copied = serde_json::to_value(agent.snapshot().await.unwrap()).unwrap();
+    assert_eq!(copied, first_snapshot);
+    assert_eq!(
+        serde_json::to_value(agent.snapshot().await.unwrap()).unwrap(),
+        copied
+    );
+
+    // A second turn must still be accepted by the unchanged parent, and the
+    // exported boundary must advance rather than inheriting its old value.
+    let second = agent
+        .prompt("second request")
+        .await
+        .unwrap()
+        .result()
+        .await
+        .unwrap();
+    let second_snapshot = serde_json::to_value(second.snapshot().unwrap()).unwrap();
+    assert_eq!(
+        serde_json::to_value(agent.snapshot().await.unwrap()).unwrap(),
+        second_snapshot
+    );
+    assert_ne!(copied["history"], second_snapshot["history"]);
+    drop((agent, events));
+}
+
+#[tokio::test]
 async fn steering_without_an_active_turn_is_typed() {
     let openai = OpenAi::builder("test")
         .service(|| PendingService)

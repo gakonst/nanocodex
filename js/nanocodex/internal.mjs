@@ -229,6 +229,11 @@ export function compact(agent) {
   return agentState(agent).raw.compact();
 }
 
+/** Copies the live agent's latest committed, resumable model boundary. */
+export async function checkpoint(agent) {
+  return JSON.parse(await agentState(agent).raw.checkpoint());
+}
+
 export async function context(agent) {
   return parseSessionContext(await agentState(agent).raw.context());
 }
