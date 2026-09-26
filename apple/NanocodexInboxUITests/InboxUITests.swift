@@ -29,6 +29,70 @@ final class InboxUITests: XCTestCase {
         }
     }
 
+    // Failures: compressed touch targets, truncated controls, landscape safe-area
+    // clipping, and a drawer that loses its controls after a size change.
+    func testAdaptiveChromeFitsRotationAndLargeText() {
+        defer { XCUIDevice.shared.orientation = .portrait }
+        for largeText in [false, true] {
+            XCUIDevice.shared.orientation = .portrait
+            let app = launch(["NANOCODEX_DEMO_PROFILE": UUID().uuidString], arguments:
+                largeText ? ["-UIPreferredContentSizeCategoryName", "UICTContentSizeCategoryAccessibilityM"] : [])
+            selectTab(app, id: largeText ? "data" : "durability",
+                      title: largeText ? "Tighten the fuel forecast" : "Make long sessions bulletproof")
+            for orientation in [UIDeviceOrientation.portrait, .landscapeLeft, .landscapeRight] {
+                XCUIDevice.shared.orientation = orientation
+                let rotated = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+                    orientation == .portrait ? app.frame.width < app.frame.height : app.frame.width > app.frame.height
+                }, object: nil)
+                XCTAssertEqual(XCTWaiter.wait(for: [rotated], timeout: 5), .completed)
+                let sizeName = orientation == .portrait ? "portrait" : (orientation == .landscapeLeft ? "landscape-left" : "landscape-right")
+                let dock = app.descendants(matching: .any)["main-selection-bar"].firstMatch
+                let controls = ["main-tab-todo", "main-tab-chat", "model-picker", "effort-dial", "auto-route"].map { app.buttons[$0] }
+                XCTAssertTrue(dock.waitForExistence(timeout: 5))
+                for control in controls {
+                    XCTAssertTrue(control.isHittable, control.identifier)
+                    XCTAssertGreaterThanOrEqual(control.frame.width, 44 - 0.01, control.identifier)
+                    XCTAssertGreaterThanOrEqual(control.frame.height, 44 - 0.01, control.identifier)
+                    XCTAssertTrue(dock.frame.insetBy(dx: -1, dy: -1).contains(control.frame), control.identifier)
+                }
+                XCTAssertTrue(app.frame.contains(dock.frame))
+                for (index, control) in controls.enumerated() {
+                    for other in controls.dropFirst(index + 1) {
+                        XCTAssertFalse(control.frame.intersects(other.frame), "Controls must not overlap")
+                    }
+                }
+                capture(app, "adaptive-chrome-\(largeText ? "large" : "standard")-\(sizeName)")
+                if orientation == .landscapeLeft {
+                    composer(app).tap()
+                    composer(app).typeText("Keep my landscape draft")
+                    XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5))
+                    XCTAssertLessThanOrEqual(dock.frame.maxY, app.keyboards.firstMatch.frame.minY)
+                    capture(app, "adaptive-chrome-\(largeText ? "large" : "standard")-landscape-keyboard")
+                }
+                if orientation == .landscapeLeft {
+                    // Start at the usable leading edge, beyond the camera safe
+                    // inset. Rotation must not strand the drawer's edge gesture.
+                    let header = app.buttons["conversation-drawer-open"].frame
+                    let edge = app.coordinate(withNormalizedOffset: .zero)
+                        .withOffset(CGVector(dx: header.minX + 2, dy: header.midY))
+                    edge.press(forDuration: 0.01, thenDragTo: edge.withOffset(CGVector(dx: app.frame.width * 0.65, dy: 0)))
+                    XCTAssertTrue(app.scrollViews["conversation-list"].waitForExistence(timeout: 5))
+                } else { app.buttons["conversation-drawer-open"].tap() }
+                for id in ["conversation-drawer-close", "drawer-new-conversation"] {
+                    XCTAssertTrue(app.buttons[id].isHittable)
+                    XCTAssertTrue(app.frame.contains(app.buttons[id].frame))
+                }
+                capture(app, "adaptive-drawer-\(largeText ? "large" : "standard")-\(sizeName)")
+                app.buttons["conversation-drawer-close"].tap()
+                XCTAssertTrue(app.buttons["model-picker"].isHittable)
+            }
+            XCUIDevice.shared.orientation = .portrait
+            let portrait = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in app.frame.width < app.frame.height }, object: nil)
+            XCTAssertEqual(XCTWaiter.wait(for: [portrait], timeout: 5), .completed)
+            app.terminate()
+        }
+    }
+
     func testDecisionFirstTodoCaptureAndChatNavigation() {
         let app = XCUIApplication()
         app.launchArguments = ["--demo", "--todo-ui-fixture"]
@@ -3662,7 +3726,10 @@ final class InboxUITests: XCTestCase {
         // Native sheet/disclosure animations can outlive accessibility queries.
         // Capture their settled layout, not an intermediate clipped frame.
         Thread.sleep(forTimeInterval: 0.4)
-        let attachment = XCTAttachment(screenshot: app.screenshot())
+        // App-window capture on iOS 18 can retain portrait crop coordinates
+        // after rotation. Screen capture uses the actual display bounds.
+        let screenshot = XCUIDevice.shared.orientation.isLandscape ? XCUIScreen.main.screenshot() : app.screenshot()
+        let attachment = XCTAttachment(screenshot: screenshot)
         attachment.name = name; attachment.lifetime = .keepAlways; add(attachment)
     }
     private func scrollVisibleConversation(_ app: XCUIApplication, upward: Bool) {

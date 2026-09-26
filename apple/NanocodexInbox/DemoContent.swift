@@ -63,6 +63,9 @@ enum DemoContent {
                 card.preview = (1...30).map { "Progress note \($0). Checking the reconnect boundary and preserving your draft while you read." }.joined(separator: "\n\n")
             }
             card.status = value.2; if !longPreview { card.preview = value.3 }; card.model = "gpt-6-astra"; card.checked = true
+            // Exercise the catalog's longer labels in the normal demo journey.
+            if card.id == "data" { card.model = "mimo-v2.6-pro"; card.thinking = "medium" }
+            if card.id == "durability" { card.thinking = "xhigh" }
             if ProcessInfo.processInfo.environment["NANOCODEX_DEMO_MARKDOWN"] == "1" {
                 card.preview = """
                 # Markdown check
