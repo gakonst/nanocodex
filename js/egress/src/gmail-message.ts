@@ -61,12 +61,14 @@ export async function hydrateGmailMessage(id:string, fetchMessage:(signal:AbortS
     return await Promise.race([timeout,(async()=>{
       let response:Response;
       try {response=await fetchMessage(controller.signal);} catch {retryable=true;throw new Error("transport");}
+      if(controller.signal.aborted) {await response.body?.cancel();controller.signal.throwIfAborted();}
       if(response.status===404 || response.status===410) {await response.body?.cancel();return {id,status:"missing" as const};}
       if(!response.ok) {await response.body?.cancel();if(response.status===429 || response.status>=500){retryable=true;throw new Error("transient");}return {id,status:"error" as const};}
       const read = async (response: Response) => {
+        if(controller.signal.aborted) {await response.body?.cancel();controller.signal.throwIfAborted();}
         reader=response.body?.getReader(); if(!reader) throw new Error("empty");
         let size=0;const chunks:Uint8Array[]=[];
-        for(;;) {controller.signal.throwIfAborted();const chunk=await reader.read();if(chunk.done)break;size+=chunk.value.byteLength;if(size>1048576){await reader.cancel();throw new Error("oversize");}chunks.push(chunk.value);}
+        for(;;) {controller.signal.throwIfAborted();const chunk=await reader.read();controller.signal.throwIfAborted();if(chunk.done)break;size+=chunk.value.byteLength;if(size>1048576){await reader.cancel();throw new Error("oversize");}chunks.push(chunk.value);}
         const bytes=new Uint8Array(size);let offset=0;for(const chunk of chunks){bytes.set(chunk,offset);offset+=chunk.length;}
         return JSON.parse(new TextDecoder("utf-8",{fatal:true,ignoreBOM:true}).decode(bytes));
       };
