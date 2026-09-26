@@ -6,6 +6,9 @@ import { authenticate } from "./auth";
 import { ToolTiming } from "./toolTiming";
 import { managedWeb } from "./web";
 import { createJustBashTool } from "./just-bash";
+import { AsyncJobs, TypedIngestionUnavailable } from "./asyncJobs";
+// Host-only capability: absent from model-visible Actions and public Agent exports.
+import { batchFunctionCallOutputCapability, functionCallOutputCapability } from "../../nanocodex/host/internal-Agent.mjs";
 
 type ChatGptImport = Readonly<{
   access_token: string; refresh_token: string; account_id: string;
@@ -15,8 +18,10 @@ type Egress = Fetcher & {
   putCredential(owner: string, provider: string, value: string): Promise<void>;
   putChatGptCredential(owner: string, value: ChatGptImport): Promise<void>;
 };
-type Env = { SESSIONS: DurableObjectNamespace<Session>; EGRESS: Egress; AUTH_API_KEY_HASHES: string; RESPONSES_TRANSPORT?: "websocket" };
-const AGENT_PATH = /^\/v1\/agents\/([0-9a-f-]{36})(?:\/(turns|turns\/([0-9a-f-]{36})|events))?$/;
+type Env = { SESSIONS: DurableObjectNamespace<Session>; EGRESS: Egress; AUTH_API_KEY_HASHES: string; RESPONSES_TRANSPORT?: "websocket";
+  /** Present only in isolated Miniflare E2E tests, never in deployment config. */
+  NANOCODEX_TEST_ASYNC_TOOLS?: "true"; };
+const AGENT_PATH = /^\/v1\/agents\/([0-9a-f-]{36})(?:\/(turns|turns\/([0-9a-f-]{36})|events|jobs|jobs\/([0-9a-f-]{36})))?$/;
 const OWNER_HEADER = "x-managed2-owner";
 
 // The first tool is intentionally independent of account services or a Hand.
@@ -81,9 +86,16 @@ export default {
       const parseStart = performance.now();
       const body = hasBody ? await jsonBody(request) : undefined;
       const bodyTiming = `body_parse;dur=${(performance.now() - parseStart).toFixed(1)}`;
-      if (hasBody && (!body || typeof body.input !== "string" || !body.input.trim())) {
+      if (hasBody && (!body || (body.input !== undefined && (typeof body.input !== "string" || !body.input.trim()))
+        || (body.async_tools !== undefined && typeof body.async_tools !== "boolean"))) {
         return reply(400, { error: "invalid_input" });
       }
+      // Production remains fail-closed until real-route provider validation,
+      // crash/recovery E2E, and release gates prove the typed JS/WASM path.
+      // Only isolated Miniflare E2E tests supply this server-side binding;
+      // never fall back to a synthetic user turn.
+      if (body?.async_tools === true && env.NANOCODEX_TEST_ASYNC_TOOLS !== "true")
+        return reply(501, { error: "typed_async_tool_ingestion_unavailable" });
       const key = request.headers.get("idempotency-key");
       if (key !== null && !/^[0-9a-f-]{36}$/.test(key)) return reply(400, { error: "invalid_idempotency_key" });
       const id = key ?? crypto.randomUUID();
@@ -93,11 +105,12 @@ export default {
       const region = placementRegion(request.cf?.colo);
       if (region) headers.set("x-managed2-relay-region", region);
       if (body) headers.set("content-type", "application/json");
+      const firstTurn = typeof body?.input === "string";
       const response = await timedSessionFetch(stub, "https://session.internal/init", {
-        method: "POST", headers, ...(body ? { body: JSON.stringify({ input: body.input, turn_id: id }) } : {}),
+        method: "POST", headers, ...(body ? { body: JSON.stringify({ input: body.input, turn_id: id, async_tools: body.async_tools === true }) } : {}),
       }, `${authTiming}, ${bodyTiming}`, requestStart);
       if (!response.ok) return response;
-      const created = reply(body ? 202 : 201, body
+      const created = reply(firstTurn ? 202 : 201, firstTurn
         ? { agent_id: id, ...await response.json<{ turn_id: string; state: string }>() }
         : { agent_id: id });
       created.headers.set("server-timing", response.headers.get("server-timing") ?? "");
@@ -123,6 +136,12 @@ export default {
           session_ms: +(performance.now() - began).toFixed(1),
           total_ms: +(performance.now() - requestStart).toFixed(1) });
       }
+    }
+    if (match![2] === "jobs" || match![4]) {
+      if (request.method !== "GET" && !(match![4] && request.method === "DELETE"))
+        return reply(405, { error: "method_not_allowed" });
+      return timedSessionFetch(stub, `https://session.internal/jobs${match![4] ? `/${match![4]}` : ""}`,
+        { headers, method: request.method }, authTiming, requestStart);
     }
     if (match![3]) {
       if (request.method !== "GET") return reply(405, { error: "method_not_allowed" });
@@ -151,6 +170,7 @@ export default {
 
 export class Session extends DurableObject<Env> {
   #agent?: Promise<Agent.Agent>;
+  #asyncJobs?: AsyncJobs;
   #bash = createJustBashTool(this.ctx.storage, (context, phase, durationMs) =>
     this.#toolTiming.phase(context, phase, durationMs));
   #running = new Set<string>();
@@ -164,7 +184,7 @@ export class Session extends DurableObject<Env> {
     super(ctx, env);
     const constructorStart = performance.now();
     ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS session_meta (
-      singleton INTEGER PRIMARY KEY CHECK (singleton = 1), owner TEXT NOT NULL, agent_id TEXT NOT NULL, relay_region TEXT
+      singleton INTEGER PRIMARY KEY CHECK (singleton = 1), owner TEXT NOT NULL, agent_id TEXT NOT NULL, relay_region TEXT, async_tools INTEGER NOT NULL DEFAULT 0
     )`);
     ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS turns (
       id TEXT PRIMARY KEY, input TEXT NOT NULL, state TEXT NOT NULL,
@@ -188,6 +208,8 @@ export class Session extends DurableObject<Env> {
     }
     if (!ctx.storage.sql.exec<{ name: string }>("PRAGMA table_info(session_meta)").toArray()
       .some(column => column.name === "relay_region")) ctx.storage.sql.exec("ALTER TABLE session_meta ADD COLUMN relay_region TEXT");
+    if (!ctx.storage.sql.exec<{ name: string }>("PRAGMA table_info(session_meta)").toArray()
+      .some(column => column.name === "async_tools")) ctx.storage.sql.exec("ALTER TABLE session_meta ADD COLUMN async_tools INTEGER NOT NULL DEFAULT 0");
     this.#toolTiming = new ToolTiming(ctx.storage.sql);
     this.#constructorMs = performance.now() - constructorStart;
   }
@@ -198,21 +220,41 @@ export class Session extends DurableObject<Env> {
     const owner = request.headers.get(OWNER_HEADER);
     const agentId = request.headers.get("x-managed2-agent");
     if (!owner || !agentId) return reply(403, { error: "forbidden" });
-    const row = this.ctx.storage.sql.exec<{ owner: string; agent_id: string }>(
-      "SELECT owner, agent_id FROM session_meta WHERE singleton = 1",
+    const row = this.ctx.storage.sql.exec<{ owner: string; agent_id: string; async_tools: number }>(
+      "SELECT owner, agent_id, async_tools FROM session_meta WHERE singleton = 1",
     ).toArray()[0];
     if (url.pathname === "/init" && request.method === "POST") {
-      if (row && (row.owner !== owner || row.agent_id !== agentId)) return reply(403, { error: "forbidden" });
-      if (!row) this.ctx.storage.sql.exec(
-        "INSERT INTO session_meta (singleton, owner, agent_id, relay_region) VALUES (1, ?, ?, ?)",
-        owner, agentId, request.headers.get("x-managed2-relay-region"),
+      const body = request.body === null ? undefined : await request.json<{ input?: string; turn_id: string; async_tools?: boolean }>();
+      // Read after the await: concurrent create requests can interleave while parsing.
+      const current = this.ctx.storage.sql.exec<{ owner: string; agent_id: string; async_tools: number }>(
+        "SELECT owner, agent_id, async_tools FROM session_meta WHERE singleton = 1").toArray()[0];
+      if (current && (current.owner !== owner || current.agent_id !== agentId)) return reply(403, { error: "forbidden" });
+      const enabled = body?.async_tools === true;
+      if (enabled && this.env.NANOCODEX_TEST_ASYNC_TOOLS !== "true")
+        return reply(501, { error: "typed_async_tool_ingestion_unavailable" });
+      if (current && Boolean(current.async_tools) !== enabled) return reply(409, { error: "idempotency_conflict" });
+      if (!current) this.ctx.storage.sql.exec(
+        "INSERT INTO session_meta (singleton, owner, agent_id, relay_region, async_tools) VALUES (1, ?, ?, ?, ?)",
+        owner, agentId, request.headers.get("x-managed2-relay-region"), enabled ? 1 : 0,
       );
-      if (request.body === null) return new Response(null, { status: 204 });
-      const { input, turn_id: turnId } = await request.json<{ input: string; turn_id: string }>();
+      if (body?.input === undefined) return new Response(null, { status: 204 });
+      const { input, turn_id: turnId } = body;
       const routeMs = performance.now() - fetchStart;
       return withSessionTiming(await this.#admitTurn(owner, turnId, input), `do_route;dur=${routeMs.toFixed(1)}, do_total;dur=${(performance.now() - fetchStart).toFixed(1)}`);
     }
     if (!row || row.owner !== owner || row.agent_id !== agentId) return reply(404, { error: "not_found" });
+    if ((url.pathname === "/jobs" || /^\/jobs\/[0-9a-f-]{36}$/.test(url.pathname)) && request.method === "GET") {
+      if (!row.async_tools) return reply(404, { error: "not_found" });
+      const jobs = this.#jobs(owner);
+      const id = url.pathname === "/jobs" ? null : url.pathname.slice(6);
+      const found = id ? jobs.status(id) : jobs.list();
+      return found ? reply(200, found) : reply(404, { error: "not_found" });
+    }
+    if (/^\/jobs\/[0-9a-f-]{36}$/.test(url.pathname) && request.method === "DELETE") {
+      if (!row.async_tools) return reply(404, { error: "not_found" });
+      const result = await this.#jobs(owner).cancel(url.pathname.slice(6));
+      return result ? reply(200, result) : reply(404, { error: "not_found" });
+    }
     if (url.pathname === "/state" && request.method === "GET") {
       return reply(200, { agent_id: agentId });
     }
@@ -277,6 +319,8 @@ export class Session extends DurableObject<Env> {
   }
 
   async #admitTurnOnce(owner: string, turnId: string, input: string): Promise<Response> {
+    if (this.#asyncEnabled() && this.env.NANOCODEX_TEST_ASYNC_TOOLS !== "true")
+      return reply(501, { error: "typed_async_tool_ingestion_unavailable" });
     const existing = this.#turn(turnId);
     if (existing) {
       if (existing.input !== input) return reply(409, { error: "idempotency_conflict" });
@@ -336,6 +380,10 @@ export class Session extends DurableObject<Env> {
       "SELECT owner FROM session_meta WHERE singleton = 1",
     ).toArray()[0];
     if (!row) return;
+    // An async tool can finish while the original model turn is still active.
+    // Run/reconcile it before awaiting any turn redispatch; typed admission
+    // queues its output for the next model boundary independently of this alarm.
+    if (this.#asyncEnabled()) await this.#jobs(row.owner).reconcile();
     const turns = this.ctx.storage.sql.exec<{ id: string; input: string }>(
       "SELECT id, input FROM turns WHERE state IN ('pending', 'accepted')",
     ).toArray();
@@ -478,6 +526,82 @@ export class Session extends DurableObject<Env> {
     ).toArray()[0];
   }
 
+  #asyncEnabled(): boolean {
+    return this.ctx.storage.sql.exec<{ async_tools: number }>("SELECT async_tools FROM session_meta WHERE singleton = 1")
+      .toArray()[0]?.async_tools === 1;
+  }
+
+  #jobs(owner: string, web?: NamedTool): AsyncJobs {
+    if (!this.#asyncJobs) {
+      const registeredTools = { current_time: currentTime, exec_command: this.#bash,
+        web__run: web ?? managedWeb({ egress: this.env.EGRESS, owner,
+          relayRegion: this.ctx.storage.sql.exec<{ relay_region: string | null }>(
+            "SELECT relay_region FROM session_meta WHERE singleton = 1").toArray()[0]?.relay_region }) };
+      this.#asyncJobs = new AsyncJobs(this.ctx.storage, registeredTools,
+        context => this.#toolTiming.externalTurn(context),
+        async intent => {
+          const agent = await this.#ready(owner);
+          try {
+            return await functionCallOutputCapability(agent, intent.callId).submit({
+              output: intent.output, operationId: intent.jobId,
+            });
+          } catch (error) {
+            // A session restored on an old kernel must not downgrade a typed
+            // tool result to a forged user message or spin an alarm forever.
+            if (error instanceof Error && error.message ===
+                "this Nanocodex runtime does not support late function-call output") {
+              throw new TypedIngestionUnavailable();
+            }
+            throw error;
+          }
+        },
+        work => this.ctx.waitUntil(work), new Set(["current_time", "web__run"]), undefined,
+        async intent => {
+          const agent = await this.#ready(owner);
+          try {
+            return await functionCallOutputCapability(agent, intent.callId).activeStatus({
+              originalTurnId: intent.originalTurn, operationId: intent.jobId,
+            });
+          } catch (error) {
+            if (error instanceof Error && error.message ===
+                "this Nanocodex runtime does not support active function-call status") {
+              throw new TypedIngestionUnavailable();
+            }
+            throw error;
+          }
+        },
+        async intent => {
+          const agent = await this.#ready(owner);
+          try {
+            return await functionCallOutputCapability(agent, intent.callId).idleStatus({
+              operationId: intent.jobId,
+            });
+          } catch (error) {
+            if (error instanceof Error && error.message ===
+                "this Nanocodex runtime does not support idle function-call status") {
+              throw new TypedIngestionUnavailable();
+            }
+            throw error;
+          }
+        },
+        async intents => {
+          const agent = await this.#ready(owner);
+          try {
+            return await batchFunctionCallOutputCapability(agent).submit(intents.map(intent => ({
+              callId: intent.callId, operationId: intent.jobId, output: intent.output,
+            })));
+          } catch (error) {
+            if (error instanceof Error && error.message ===
+                "this Nanocodex runtime does not support batch function-call output") {
+              throw new TypedIngestionUnavailable();
+            }
+            throw error;
+          }
+        });
+    }
+    return this.#asyncJobs;
+  }
+
   #ready(owner: string, traceId?: string): Promise<Agent.Agent> {
     if (this.#agent) return this.#agent;
     const initTrace = traceId ?? crypto.randomUUID();
@@ -490,7 +614,11 @@ export class Session extends DurableObject<Env> {
       onTiming: (context, phase, durationMs) => this.#toolTiming.phase(context, phase, durationMs),
       correlation: context => this.#toolTiming.correlation(context),
     });
-    const options = { tools: [currentTime, this.#bash, web].map(tool => this.#toolTiming.instrument(tool,
+    const jobs = this.#asyncEnabled() ? this.#jobs(owner, web) : undefined;
+    const tools = jobs
+      ? [jobs.tool(currentTime), jobs.tool(this.#bash), jobs.tool(web)]
+      : [currentTime, this.#bash, web];
+    const options = { tools: tools.map(tool => this.#toolTiming.instrument(tool,
       context => this.#toolTiming.correlation(context))),
       instructions: "You are a concise assistant. Use exec_command for shell tasks in /brain." };
     Object.defineProperty(options, Symbol.for("nanocodex.cloudflare.internalConfiguration"), { value: {
@@ -572,29 +700,47 @@ export class Session extends DurableObject<Env> {
     const timing = this.#timing(id)!;
     this.#activeTraces.set(id, timing.trace_id);
     let turn: ReturnType<typeof agent.turn.prompt> | undefined;
+    let observerInstalled = false;
     try {
       turn = agent.turn.prompt({ id, input });
       await tracing.enterSpan("managed2.turn.admission", async admission => {
         admission.setAttribute("managed2.trace_id", timing.trace_id);
         await turn!.accepted();
       });
-      this.ctx.storage.sql.exec("UPDATE turn_timing SET accepted_ms = COALESCE(accepted_ms, ?) WHERE id = ?",
-        Math.max(0, Date.now() - timing.started_at), id);
-      this.ctx.storage.sql.exec("UPDATE turns SET state = 'accepted' WHERE id = ?", id);
       this.#running.add(id);
-      await this.ctx.storage.setAlarm(Date.now() + 10_000);
       this.ctx.waitUntil((async () => {
         let result: Awaited<ReturnType<NonNullable<typeof turn>["result"]>> | undefined;
+        let executionError: unknown;
         try {
           result = await tracing.enterSpan("managed2.turn.result", async span => {
             span.setAttribute("managed2.trace_id", timing.trace_id);
             return turn!.result();
           });
-          this.ctx.storage.sql.exec("UPDATE turns SET state = 'completed', message = ? WHERE id = ?", result.finalMessage, id);
+        } catch (error) { executionError = error; }
+        try {
+          // A failed alarm write is not a model/tool failure. Persist the
+          // observed result independently so the source turn never regresses
+          // from completed to failed when only its wake needs another try.
+          if (result) this.ctx.storage.sql.exec(
+            "UPDATE turns SET state = 'completed', message = ? WHERE id = ?", result.finalMessage, id);
+          else this.ctx.storage.sql.exec("UPDATE turns SET state = 'failed', error = ? WHERE id = ?",
+            executionError instanceof Error ? executionError.message : String(executionError), id);
         } catch (error) {
-          this.ctx.storage.sql.exec("UPDATE turns SET state = 'failed', error = ? WHERE id = ?",
-            error instanceof Error ? error.message : String(error), id);
-        } finally {
+          // Leave the accepted row recoverable under its stable native ID.
+          console.warn("managed2 turn state persistence unavailable", error instanceof Error ? error.name : "error");
+        }
+        try {
+          if (this.#asyncEnabled()) {
+            // Retry a transient alarm write once. Cold construction and the
+            // ordinary health alarm also reconcile any retained jobs.
+            for (let attempt = 0; attempt < 2; attempt++) {
+              try { await this.ctx.storage.setAlarm(Date.now() + 1); break; }
+              catch (error) {
+                if (attempt === 1) console.warn("managed2 async wake unavailable",
+                  error instanceof Error ? error.name : "error");
+              }
+            }
+          }
           const resultMs = Math.max(0, Date.now() - timing.started_at);
           this.ctx.storage.sql.exec("UPDATE turn_timing SET result_ms = ? WHERE id = ?", resultMs, id);
           const observed = this.#timing(id);
@@ -611,20 +757,46 @@ export class Session extends DurableObject<Env> {
             tool_calls: observed?.tool_calls ?? 0, tool_duration_ms: observed?.tool_duration_ms ?? 0,
             first_model_call_ms: observed?.first_model_call_ms ?? null,
             post_tool_model_call_ms: observed?.post_tool_model_call_ms ?? null });
-          result?.dispose();
-          turn?.dispose();
-          this.#running.delete(id);
-          this.#activeTraces.delete(id);
-          for (const [internal, external] of this.#eventTurns) {
-            if (external === id) {
-              this.#eventTurns.delete(internal);
+        } finally {
+          try { result?.dispose(); }
+          finally {
+            try { turn?.dispose(); }
+            finally {
+              this.#running.delete(id);
+              this.#activeTraces.delete(id);
+              for (const [internal, external] of this.#eventTurns) {
+                if (external === id) this.#eventTurns.delete(internal);
+              }
             }
           }
         }
       })());
+      observerInstalled = true;
+      this.ctx.storage.sql.exec("UPDATE turn_timing SET accepted_ms = COALESCE(accepted_ms, ?) WHERE id = ?",
+        Math.max(0, Date.now() - timing.started_at), id);
+      this.ctx.storage.sql.exec("UPDATE turns SET state = 'accepted' WHERE id = ? AND state = 'pending'", id);
+      // A cold async ledger may already have a terminal output ready for this
+      // turn's next model boundary. Do not replace its one-second recovery
+      // alarm with the ordinary ten-second turn health check. The constructor
+      // alarm runs under waitUntil and can race this admission.
+      const asyncWork = this.#asyncEnabled() && this.ctx.storage.sql.exec<{ n: number }>(
+        `SELECT 1 AS n FROM async_jobs WHERE state NOT IN ('delivered', 'legacy_uninjectable') LIMIT 1`,
+      ).toArray().length > 0;
+      const nextAlarm = Date.now() + (asyncWork ? 1_000 : 10_000);
+      const existingAlarm = await this.ctx.storage.getAlarm();
+      if (existingAlarm === null || existingAlarm > nextAlarm) await this.ctx.storage.setAlarm(nextAlarm);
     } catch (error) {
-      turn?.dispose();
-      this.#activeTraces.delete(id);
+      // After acceptance, the result observer owns the live Rust turn even if
+      // the alarm read/write fails. Do not discard that observer or redispatch
+      // a potentially side-effecting turn while it is still running.
+      if (!observerInstalled) {
+        turn?.dispose();
+        this.#running.delete(id);
+        this.#activeTraces.delete(id);
+        for (const [internal, external] of this.#eventTurns) {
+          if (external === id) this.#eventTurns.delete(internal);
+        }
+      }
       throw error;
     }
   }

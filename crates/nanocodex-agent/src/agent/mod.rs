@@ -45,8 +45,8 @@ use crate::{NanocodexError, Result, session::SessionSnapshot, usage::TurnUsage};
 use crate::{
     model::run::{
         CompletedModelTurn, HistoryCheckpoint, ModelCheckpoint, ModelCompactOutcome, ModelRun,
-        ModelTurnOutcome, PreparedCheckpoint, TurnSteering, prepare_checkpoint,
-        prepare_history_checkpoint, prepare_resumed_checkpoint,
+        ModelTurnOutcome, PreparedCheckpoint, QueuedBoundaryOutput, TurnSteering,
+        prepare_checkpoint, prepare_history_checkpoint, prepare_resumed_checkpoint,
     },
     session::{CommittedSession, SessionResume},
 };
@@ -101,6 +101,32 @@ impl ToolsConfiguration {
             Self::PerAgent(factory) => factory(agent_handle).map_err(Into::into),
         }
     }
+}
+
+/// Receipt for a trusted, typed late function output. Model continuation is
+/// deliberately reported separately from durable checkpoint acceptance.
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct LateFunctionOutputReceipt {
+    /// Caller-owned stable idempotency identity.
+    pub operation_id: String,
+    /// The exact staged function call completed.
+    pub call_id: String,
+    /// Whether this identical operation was previously checkpointed.
+    pub replayed: bool,
+    /// Whether a genuine prompt-less model continuation was started.
+    pub continuation_started: bool,
+}
+
+/// One typed terminal result within a bounded, trusted idle cohort.
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct LateFunctionOutput {
+    /// Original function-call identity, not a generated surrogate.
+    pub call_id: String,
+    /// Stable caller-owned identity for the per-job journal.
+    pub operation_id: String,
+    /// Typed terminal function output.
+    pub output: nanocodex_oai_api::responses::FunctionOutputBody,
 }
 
 pub mod backend;

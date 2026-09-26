@@ -235,10 +235,72 @@ where
         self.emit_terminal("failed")
     }
 
+    #[allow(dead_code, reason = "staged until the opt-in driver wake is complete")]
+    pub(crate) fn current_checkpoint(&self) -> Option<ModelCheckpoint> {
+        self.session.as_ref().map(|session| {
+            Self::checkpoint_from_session(session, true, self.global_instructions.clone())
+        })
+    }
+
+    /// Continue a durable terminal function output without creating user input.
+    #[allow(clippy::too_many_arguments)]
+    #[allow(dead_code, reason = "staged until the opt-in driver wake is complete")]
+    pub(crate) async fn continue_late(
+        &mut self,
+        workspace: Option<Arc<str>>,
+        thinking: Thinking,
+        fast_mode: bool,
+        logical_turn: u64,
+        steering: TurnSteering,
+        cancel: tokio::sync::oneshot::Receiver<()>,
+        fork_snapshots: watch::Sender<Option<ModelCheckpoint>>,
+        execution_steps: Option<ExecutionSteps>,
+    ) -> Result<ModelTurnOutcome> {
+        self.execute_inner(
+            None,
+            workspace,
+            thinking,
+            fast_mode,
+            logical_turn,
+            steering,
+            cancel,
+            fork_snapshots,
+            execution_steps,
+        )
+        .await
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn execute(
         &mut self,
         task: Prompt,
+        workspace: Option<Arc<str>>,
+        thinking: Thinking,
+        fast_mode: bool,
+        logical_turn: u64,
+        steering: TurnSteering,
+        cancel: tokio::sync::oneshot::Receiver<()>,
+        fork_snapshots: watch::Sender<Option<ModelCheckpoint>>,
+        execution_steps: Option<ExecutionSteps>,
+    ) -> Result<ModelTurnOutcome> {
+        self.execute_inner(
+            Some(task),
+            workspace,
+            thinking,
+            fast_mode,
+            logical_turn,
+            steering,
+            cancel,
+            fork_snapshots,
+            execution_steps,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn execute_inner(
+        &mut self,
+        task: Option<Prompt>,
         workspace: Option<Arc<str>>,
         thinking: Thinking,
         fast_mode: bool,
@@ -249,7 +311,9 @@ where
         execution_steps: Option<ExecutionSteps>,
     ) -> Result<ModelTurnOutcome> {
         self.execution_steps = execution_steps;
-        self.instruction_revision = task.instruction_revision();
+        if let Some(task) = &task {
+            self.instruction_revision = task.instruction_revision();
+        }
         self.thinking = thinking;
         self.fast_mode = fast_mode;
         self.started_at = Instant::now();
@@ -269,13 +333,13 @@ where
                 orchestration: ModelConfig::orchestration(),
                 websocket_url: display_endpoint(self.responses_endpoint()),
                 workspace: workspace.as_deref(),
-                instruction_bytes: task.text_bytes(),
+                instruction_bytes: task.as_ref().map_or(0, Prompt::text_bytes),
             },
         )?;
 
         let configured = (Arc::clone(&self.config), self.model);
-        let outcome = self
-            .execute_task(
+        let outcome = if let Some(task) = task {
+            self.execute_task(
                 task,
                 workspace,
                 logical_turn,
@@ -283,10 +347,24 @@ where
                 &mut cancel,
                 &fork_snapshots,
             )
-            .await;
+            .await
+        } else {
+            self.continue_late_task(
+                workspace,
+                logical_turn,
+                steering,
+                &mut cancel,
+                &fork_snapshots,
+            )
+            .await
+        };
         self.restore_runtime(configured, logical_turn)?;
         match outcome {
             Ok(ModelTaskOutcome::Completed(message)) => {
+                if let Some(session) = &mut self.session {
+                    session.pending_late_wake = None;
+                    session.pending_late_jobs.clear();
+                }
                 self.record_transport();
                 let usage = self.stats.turn_usage();
                 record_turn_usage(&tracing::Span::current(), &usage);
@@ -471,6 +549,73 @@ where
         Ok(true)
     }
 
+    /// The checkpoint already contains the typed terminal output. On a retry,
+    /// restore the request journal's Generate phase rather than adding it again.
+    async fn continue_late_task(
+        &mut self,
+        requested_workspace: Option<Arc<str>>,
+        logical_turn: u64,
+        steering: TurnSteering,
+        cancel: &mut tokio::sync::oneshot::Receiver<()>,
+        fork_snapshots: &watch::Sender<Option<ModelCheckpoint>>,
+    ) -> Result<ModelTaskOutcome> {
+        let restored = self
+            .restore_execution(requested_workspace.as_deref(), logical_turn)
+            .await?;
+        let resumed = restored.is_some();
+        let mut session = if let Some((session, ExecutionPhase::Generate)) = restored {
+            session
+        } else if restored.is_some() {
+            return Err(NanocodexError::InvalidExecutionPolicy(
+                "invalid late output continuation".into(),
+            ));
+        } else {
+            let mut session = self.session.take().ok_or_else(|| {
+                NanocodexError::InvalidSessionSnapshot("late output has no model session".into())
+            })?;
+            session.validate_workspace(requested_workspace.as_deref())?;
+            session.factory = session.factory.for_logical_turn(logical_turn);
+            session
+                .conversation
+                .prepare_request_policy(self.continuation_policy());
+            session
+        };
+        if !resumed {
+            self.retain_execution(&session, ExecutionPhase::Generate)
+                .await?;
+        }
+        let TurnSteering {
+            receiver,
+            retained,
+            model_call_index,
+            boundary_outputs,
+            retained_boundary_outputs,
+        } = steering;
+        let outcome = {
+            let run = self.drive_session(
+                &mut session,
+                receiver,
+                retained,
+                resumed,
+                model_call_index,
+                boundary_outputs,
+                retained_boundary_outputs,
+                fork_snapshots,
+            );
+            tokio::pin!(run);
+            tokio::select! {
+                biased;
+                _ = &mut *cancel => None,
+                outcome = &mut run => Some(outcome),
+            }
+        };
+        self.session = Some(session);
+        match outcome {
+            Some(outcome) => outcome.map(ModelTaskOutcome::Completed),
+            None => Ok(ModelTaskOutcome::Cancelled),
+        }
+    }
+
     pub(super) async fn execute_task(
         &mut self,
         task: Prompt,
@@ -546,6 +691,9 @@ where
                 conversation,
                 context,
                 preserve_inherited_delta: false,
+                pending_late_wake: None,
+                pending_late_jobs: Vec::new(),
+                pending_late_batch: None,
             };
             session
                 .conversation
@@ -640,6 +788,8 @@ where
                 receiver,
                 retained,
                 model_call_index,
+                boundary_outputs,
+                retained_boundary_outputs,
             } = steering;
             let task = self.drive_session(
                 &mut session,
@@ -647,6 +797,8 @@ where
                 retained,
                 resumed && phase == ExecutionPhase::Generate,
                 model_call_index,
+                boundary_outputs,
+                retained_boundary_outputs,
                 fork_snapshots,
             );
             tokio::pin!(task);
@@ -704,7 +856,10 @@ where
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .take();
             if let Some(completed) = completed {
-                aborted_outputs.extend(self.finish_completed_tool_call(completed, &call.progress)?);
+                let call_id = completed.call_id.clone();
+                let staged = completed.trusted_unreal_pending;
+                let items = self.finish_completed_tool_call(completed, &call.progress)?;
+                aborted_outputs.push((call_id, staged, items));
                 continue;
             }
             let active_nested_tool_calls = self.finish_active_tool_progress(&call.progress);
@@ -728,11 +883,13 @@ where
                 call.shell_abort_format,
                 Some(&call.span),
             )?;
-            aborted_outputs.push(match call.kind {
+            let call_id = call.call_id.clone();
+            let item = match call.kind {
                 CodeCallKind::Custom => custom_tool_output(call.call_id, output),
                 CodeCallKind::Function => function_tool_output(call.call_id, output),
                 CodeCallKind::ToolSearch => tool_search_output(call.call_id.clone(), Vec::new()),
-            });
+            };
+            aborted_outputs.push((call_id, false, vec![item]));
         }
         self.finish_active_tool_batch_wall();
         let session = self
@@ -741,7 +898,14 @@ where
             .ok_or(NanocodexError::InvalidAttemptState {
                 detail: "interrupted turn did not have a model session",
             })?;
-        session.conversation.append(aborted_outputs);
+        for (call_id, staged, items) in aborted_outputs {
+            super::tool_calls::append_tool_result(
+                &mut session.conversation,
+                &call_id,
+                staged,
+                items,
+            )?;
+        }
         session.conversation.append([turn_aborted()]);
         session.conversation.commit_interrupted();
         Ok(Self::checkpoint_from_session(
@@ -767,6 +931,9 @@ where
             request_prefix: session.factory.profile().shared_prefix(),
             prompt_cache_key: Arc::from(session.factory.profile().prompt_cache_key()),
             preserve_inherited_delta,
+            pending_late_wake: session.pending_late_wake.clone(),
+            pending_late_jobs: session.pending_late_jobs.clone(),
+            pending_late_batch: session.pending_late_batch.clone(),
             global_instructions,
             context_baseline: session.context.baseline(),
         }
@@ -785,11 +952,18 @@ where
             request_prefix: session.factory.profile().shared_prefix(),
             prompt_cache_key: Arc::from(session.factory.profile().prompt_cache_key()),
             preserve_inherited_delta: true,
+            pending_late_wake: session.pending_late_wake.clone(),
+            pending_late_jobs: session.pending_late_jobs.clone(),
+            pending_late_batch: session.pending_late_batch.clone(),
             global_instructions: global_instructions.cloned(),
             context_baseline: session.context.baseline(),
         }));
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "keep independent steer and terminal-output lanes explicit at model boundaries"
+    )]
     pub(super) async fn drive_session(
         &mut self,
         session: &mut ModelSessionState,
@@ -797,6 +971,8 @@ where
         retained_steers: Vec<QueuedSteer>,
         resumed: bool,
         model_call_index: Arc<tokio::sync::Mutex<u32>>,
+        boundary_outputs: BoundaryOutputQueue,
+        retained_boundary_outputs: Vec<QueuedBoundaryOutput>,
         fork_snapshots: &watch::Sender<Option<ModelCheckpoint>>,
     ) -> Result<String> {
         // Match Codex's ordering: always sample the turn's initial prompt once
@@ -812,19 +988,69 @@ where
                         .is_some_and(|index| index <= next_call)
             })
             .collect::<VecDeque<_>>();
-        *model_call_index.lock().await = next_call;
+        // Never discard a bound-but-unacknowledged output merely because its
+        // model ordinal precedes the restored call. Recovery must establish
+        // provider uptake from the recorded step first, or fail closed.
+        let mut pending_boundary_outputs: VecDeque<QueuedBoundaryOutput> =
+            retained_boundary_outputs.into();
+        if resumed
+            && pending_boundary_outputs
+                .iter()
+                .any(|output: &QueuedBoundaryOutput| {
+                    output
+                        .model_call_index
+                        .is_some_and(|index| index < next_call)
+                })
+        {
+            return Err(NanocodexError::InvalidExecutionPolicy(
+                "restored boundary output lacks a verified model uptake receipt".into(),
+            ));
+        }
         let mut first_batch = true;
         loop {
             let call_index = self.stats.model_calls + 1;
-            if can_drain_steers {
+            // Linearize request admission with driver acceptance. An output
+            // accepted while request N is in flight can only enter N+1.
+            // Unlike user steers, trusted terminal outputs also cross a
+            // post-compaction boundary: they must never be silently postponed.
+            let mut bound_for_request = Vec::new();
+            {
                 let mut current_call_index = model_call_index.lock().await;
                 *current_call_index = call_index;
-                pending_steers.extend(steers.lock().await.drain(..));
-                drop(current_call_index);
-                self.drain_steers(&mut session.conversation, &mut pending_steers, call_index)
-                    .await?;
+                pending_boundary_outputs.extend(boundary_outputs.lock().await.drain(..));
+                while pending_boundary_outputs.front().is_some_and(|output| {
+                    output.model_call_index == Some(call_index)
+                        || (output.model_call_index.is_none()
+                            && output.accepted_after_model_call_index < call_index)
+                }) {
+                    let output = pending_boundary_outputs
+                        .front()
+                        .expect("eligible output disappeared");
+                    if output.model_call_index.is_none()
+                        && let Some(steps) = &self.execution_steps
+                    {
+                        steps
+                            .bind_boundary_output(output.durable_index, call_index)
+                            .await?;
+                    }
+                    Self::append_late_output_to_session(
+                        session,
+                        &output.call_id,
+                        output.output.clone(),
+                        &output.operation_id,
+                        false,
+                        self.global_instructions.clone(),
+                    )?;
+                    bound_for_request.push(output.durable_index);
+                    pending_boundary_outputs.pop_front();
+                }
+                if can_drain_steers {
+                    pending_steers.extend(steers.lock().await.drain(..));
+                    self.drain_steers(&mut session.conversation, &mut pending_steers, call_index)
+                        .await?;
+                }
             }
-            if !first_batch {
+            if !first_batch || !bound_for_request.is_empty() {
                 self.retain_execution(session, ExecutionPhase::Generate)
                     .await?;
             }
@@ -837,6 +1063,16 @@ where
                 response,
                 transport_continuation_valid,
             } = model_call;
+            // A durable model-{call_index} response (including replay of a
+            // completed step) is the first evidence of provider uptake. Binding
+            // a queue entry before request dispatch is deliberately not an ack.
+            if let Some(steps) = &self.execution_steps {
+                for index in bound_for_request {
+                    steps
+                        .confirm_boundary_output(index, call_index, response.id.to_string())
+                        .await?;
+                }
+            }
             session
                 .conversation
                 .update_token_info(response.usage.as_ref());
@@ -902,6 +1138,18 @@ where
                     )
                     .await?;
                     continue;
+                }
+                // A completion accepted before finalization must not be
+                // stranded in a finished operation; give it a fresh model
+                // boundary. Anything accepted afterward is handled by the
+                // driver's idle promptless continuation.
+                {
+                    let _boundary = model_call_index.lock().await;
+                    pending_boundary_outputs.extend(boundary_outputs.lock().await.drain(..));
+                    if !pending_boundary_outputs.is_empty() {
+                        session.conversation.clear_delta();
+                        continue;
+                    }
                 }
                 if let Some(message) = final_message {
                     return Ok(if message.trim().is_empty() {

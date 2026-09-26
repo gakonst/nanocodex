@@ -67,6 +67,14 @@ export class ToolTiming {
     return rows.length === 1 ? rows[0]!.trace_id : undefined;
   }
 
+  externalTurn(context: ToolContext): string | undefined {
+    this.ensureSchema();
+    const rows = this.sql.exec<{ external_turn_id: string }>(
+      "SELECT external_turn_id FROM managed2_tool_timing WHERE call_id = ? AND status IS NULL",
+      context.callId).toArray();
+    return rows.length === 1 ? rows[0]!.external_turn_id : undefined;
+  }
+
   phase(context: ToolContext, phase: string, durationMs: number): void {
     // ToolContext.turnId identifies a JS execution, not the Rust Agent event
     // turn_id. Pair through the call ID emitted by tool.call, never by guessing

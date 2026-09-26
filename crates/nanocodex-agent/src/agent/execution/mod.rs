@@ -91,6 +91,35 @@ pub struct ExecutionSteer {
 /// Optional caller identity paired with a retained steering input.
 pub type IdentifiedExecutionSteer = (Option<String>, ExecutionSteer);
 
+/// Typed delivery admitted for the next model request boundary.
+/// Acceptance alone is not proof that a model request received this output.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ExecutionBoundaryOutput {
+    /// Typed output of the original terminal invocation, preserving the exact call identity.
+    TerminalOutput {
+        /// Exact original function-call ID.
+        call_id: String,
+        /// Original typed terminal body.
+        output: nanocodex_oai_api::responses::FunctionOutputBody,
+    },
+}
+
+/// Pending boundary delivery recovered from durable state.
+#[derive(Clone, Debug)]
+pub struct RetainedExecutionBoundaryOutput {
+    /// Original one-based acceptance position.
+    pub index: u32,
+    /// Caller idempotency identity.
+    pub message_id: String,
+    /// Model request current on acceptance.
+    pub accepted_after_model_call_index: u32,
+    /// Model-call ordinal assigned at the request boundary, if any.
+    pub model_call_index: Option<u32>,
+    /// Typed output not yet durably consumed.
+    pub output: ExecutionBoundaryOutput,
+}
+
 /// Serializable result retained at a completed agent boundary.
 #[derive(Clone, Deserialize, Serialize)]
 pub struct ExecutionOutput {
@@ -147,6 +176,20 @@ pub trait ExecutionPolicy: Send + Sync {
         operation_id: String,
         input_json: String,
     ) -> ExecutionFuture<'a, Result<ExecutionAdmission>>;
+
+    /// Read-only exact-input lookup before an idle cohort intent is written.
+    /// Policies without an authoritative journal fail closed for batches.
+    fn inspect_operation<'a>(
+        &'a self,
+        _operation_id: String,
+        _input_json: String,
+    ) -> ExecutionFuture<'a, Result<Option<ExecutionAdmission>>> {
+        Box::pin(async {
+            Err(NanocodexError::ExecutionPolicyCapabilityUnsupported {
+                capability: "inspect_operation",
+            })
+        })
+    }
 
     /// Admits an automatically identified operation, recovering an unfinished
     /// compatible operation when the policy selects one.
@@ -213,6 +256,63 @@ pub trait ExecutionPolicy: Send + Sync {
                 .await
                 .map(Some)
         })
+    }
+
+    /// Durably admits a typed output and independent caller receipt. A duplicate
+    /// identity with identical input returns None, even if capacity is exhausted.
+    fn accept_identified_boundary_output<'a>(
+        &'a self,
+        _operation_id: String,
+        _message_id: String,
+        _accepted_after_model_call_index: u32,
+        _output: ExecutionBoundaryOutput,
+        _capacity_available: bool,
+    ) -> ExecutionFuture<'a, Result<Option<u32>>> {
+        Box::pin(async {
+            Err(NanocodexError::ExecutionPolicyCapabilityUnsupported {
+                capability: "accept_identified_boundary_output",
+            })
+        })
+    }
+
+    /// Binds one FIFO output to the model request receiving it; idempotent for the same boundary.
+    fn bind_boundary_output<'a>(
+        &'a self,
+        _operation_id: String,
+        _output_index: u32,
+        _model_call_index: u32,
+    ) -> ExecutionFuture<'a, Result<()>> {
+        Box::pin(async {
+            Err(NanocodexError::ExecutionPolicyCapabilityUnsupported {
+                capability: "bind_boundary_output",
+            })
+        })
+    }
+
+    /// Confirms an output only after its model step has been durably completed.
+    /// Replays of the same confirmation (including after retirement) are idempotent.
+    fn confirm_boundary_output<'a>(
+        &'a self,
+        _operation_id: String,
+        _output_index: u32,
+        _model_call_index: u32,
+        _response_id: String,
+    ) -> ExecutionFuture<'a, Result<()>> {
+        Box::pin(async {
+            Err(NanocodexError::ExecutionPolicyCapabilityUnsupported {
+                capability: "confirm_boundary_output",
+            })
+        })
+    }
+
+    /// Recover typed outputs not yet delivered to a model request.
+    fn retained_boundary_outputs<'a>(
+        &'a self,
+        _operation_id: String,
+    ) -> ExecutionFuture<'a, Result<Vec<RetainedExecutionBoundaryOutput>>> {
+        // Older policies could never accept this opt-in output, so their
+        // recovery queue is necessarily empty. Acceptance itself fails closed.
+        Box::pin(async { Ok(Vec::new()) })
     }
 
     /// Returns steering inputs retained for the current operation attempt.
@@ -361,6 +461,18 @@ pub trait ExecutionPolicy: Send + Sync {
         operation_id: String,
         input_json: String,
     ) -> ExecutionFuture<'a, Result<ExecutionAdmission>>;
+    /// Read-only exact-input lookup before an idle cohort is persisted.
+    fn inspect_operation<'a>(
+        &'a self,
+        _operation_id: String,
+        _input_json: String,
+    ) -> ExecutionFuture<'a, Result<Option<ExecutionAdmission>>> {
+        Box::pin(async {
+            Err(NanocodexError::ExecutionPolicyCapabilityUnsupported {
+                capability: "inspect_operation",
+            })
+        })
+    }
     /// Admits or recovers an automatically identified operation.
     fn admit_automatic<'a>(
         &'a self,
@@ -419,6 +531,62 @@ pub trait ExecutionPolicy: Send + Sync {
                 .await
                 .map(Some)
         })
+    }
+
+    /// Durably admits a typed output and independent caller receipt. A duplicate
+    /// identity with identical input returns None, even if capacity is exhausted.
+    fn accept_identified_boundary_output<'a>(
+        &'a self,
+        _operation_id: String,
+        _message_id: String,
+        _accepted_after_model_call_index: u32,
+        _output: ExecutionBoundaryOutput,
+        _capacity_available: bool,
+    ) -> ExecutionFuture<'a, Result<Option<u32>>> {
+        Box::pin(async {
+            Err(NanocodexError::ExecutionPolicyCapabilityUnsupported {
+                capability: "accept_identified_boundary_output",
+            })
+        })
+    }
+
+    /// Binds one FIFO output to the model request receiving it.
+    fn bind_boundary_output<'a>(
+        &'a self,
+        _operation_id: String,
+        _output_index: u32,
+        _model_call_index: u32,
+    ) -> ExecutionFuture<'a, Result<()>> {
+        Box::pin(async {
+            Err(NanocodexError::ExecutionPolicyCapabilityUnsupported {
+                capability: "bind_boundary_output",
+            })
+        })
+    }
+
+    /// Confirms an output only after its model step has been durably completed.
+    fn confirm_boundary_output<'a>(
+        &'a self,
+        _operation_id: String,
+        _output_index: u32,
+        _model_call_index: u32,
+        _response_id: String,
+    ) -> ExecutionFuture<'a, Result<()>> {
+        Box::pin(async {
+            Err(NanocodexError::ExecutionPolicyCapabilityUnsupported {
+                capability: "confirm_boundary_output",
+            })
+        })
+    }
+
+    /// Recover typed outputs not yet delivered to a model request.
+    fn retained_boundary_outputs<'a>(
+        &'a self,
+        _operation_id: String,
+    ) -> ExecutionFuture<'a, Result<Vec<RetainedExecutionBoundaryOutput>>> {
+        // Older policies could never accept this opt-in output, so their
+        // recovery queue is necessarily empty. Acceptance itself fails closed.
+        Box::pin(async { Ok(Vec::new()) })
     }
 
     /// Returns steering inputs retained for the current operation attempt.
@@ -803,6 +971,107 @@ impl Execution {
         ))
     }
 
+    /// Bind a terminal tool receipt to its exact call/body in the durable
+    /// operation journal. A compacted transcript is not a receipt ledger.
+    pub(crate) async fn admit_late_output(
+        &self,
+        operation_id: &str,
+        call_id: &str,
+        output: &nanocodex_oai_api::responses::FunctionOutputBody,
+    ) -> Result<AdmittedExecution> {
+        let Some(policy) = &self.policy else {
+            return Ok(AdmittedExecution::Execute);
+        };
+        let input = encode(&serde_json::json!({
+            "kind": "late_function_output",
+            "call_id": call_id,
+            "output": output,
+        }))?;
+        Ok(map_admission(
+            policy
+                .admit(format!("late-output:{operation_id}"), input)
+                .await?,
+        ))
+    }
+
+    /// Look up exact member input without creating a pending operation before
+    /// the all-member intent is durably fenced.
+    pub(crate) async fn inspect_late_output(
+        &self,
+        operation_id: &str,
+        call_id: &str,
+        output: &nanocodex_oai_api::responses::FunctionOutputBody,
+    ) -> Result<Option<AdmittedExecution>> {
+        let Some(policy) = &self.policy else {
+            return Ok(None);
+        };
+        let input = encode(&serde_json::json!({
+            "kind": "late_function_output",
+            "call_id": call_id,
+            "output": output,
+        }))?;
+        policy
+            .inspect_operation(format!("late-output:{operation_id}"), input)
+            .await
+            .map(|admission| admission.map(map_admission))
+    }
+
+    pub(crate) fn start_late_output(
+        &self,
+        effort: nanocodex_oai_api::Thinking,
+        operation_id: &str,
+    ) -> ExecutionTurn {
+        ExecutionTurn {
+            platform: self.platform.start_compaction(effort),
+            policy: self.policy.clone(),
+            operation_id: self
+                .policy
+                .as_ref()
+                .map(|_| format!("late-output:{operation_id}")),
+            operation_input: None,
+            outcome: ExecutionOutcome::Started,
+        }
+    }
+
+    /// Admit one internal model continuation for a durable set of terminal outputs.
+    /// Its identity is derived from the checkpoint, never from caller-provided text.
+    #[allow(dead_code, reason = "staged until the opt-in driver wake is complete")]
+    pub(crate) async fn admit_late_continuation(
+        &self,
+        lineage_id: &str,
+        wake_id: &str,
+        jobs: &[crate::model::run::LateWakeJob],
+    ) -> Result<(Option<String>, Option<String>, AdmittedExecution)> {
+        let Some(policy) = &self.policy else {
+            return Ok((None, None, AdmittedExecution::Execute));
+        };
+        let operation_id = format!("late-continuation:{lineage_id}:{wake_id}");
+        let input = encode(&serde_json::json!({
+            "kind": "late_function_output_continuation",
+            "lineage_id": lineage_id,
+            "wake_id": wake_id,
+            "jobs": jobs,
+        }))?;
+        let admission = policy.admit(operation_id.clone(), input.clone()).await?;
+        Ok((Some(operation_id), Some(input), map_admission(admission)))
+    }
+
+    #[allow(dead_code, reason = "staged until the opt-in driver wake is complete")]
+    pub(crate) fn start_late_continuation(
+        &self,
+        effort: nanocodex_oai_api::Thinking,
+        operation_id: Option<String>,
+        operation_input: Option<String>,
+    ) -> ExecutionTurn {
+        ExecutionTurn {
+            platform: self.platform.start_compaction(effort),
+            policy: self.policy.clone(),
+            operation_id,
+            operation_input: operation_input.map(ExecutionInput::Encoded),
+            outcome: ExecutionOutcome::Started,
+        }
+    }
+
     #[cfg_attr(target_family = "wasm", allow(clippy::missing_const_for_fn))]
     pub(crate) fn start_compaction(
         &self,
@@ -982,6 +1251,40 @@ impl ExecutionSteps {
             .await
     }
 
+    #[allow(
+        dead_code,
+        reason = "consumed by the active model boundary integration"
+    )]
+    pub(crate) async fn bind_boundary_output(
+        &self,
+        output_index: u32,
+        model_call_index: u32,
+    ) -> Result<()> {
+        self.policy
+            .bind_boundary_output(self.operation_id.clone(), output_index, model_call_index)
+            .await
+    }
+
+    #[allow(
+        dead_code,
+        reason = "consumed by the active model boundary integration"
+    )]
+    pub(crate) async fn confirm_boundary_output(
+        &self,
+        output_index: u32,
+        model_call_index: u32,
+        response_id: String,
+    ) -> Result<()> {
+        self.policy
+            .confirm_boundary_output(
+                self.operation_id.clone(),
+                output_index,
+                model_call_index,
+                response_id,
+            )
+            .await
+    }
+
     pub(crate) async fn bind_steer(&self, steer_index: u32, model_call_index: u32) -> Result<()> {
         self.policy
             .bind_steer(self.operation_id.clone(), steer_index, model_call_index)
@@ -1059,6 +1362,42 @@ impl ExecutionTurn {
             policy.begin_attempt(operation_id.clone()).await?;
         }
         self.retained_steers().await
+    }
+
+    /// Returns accepted terminal outputs not yet confirmed by a completed model step.
+    pub(crate) async fn retained_boundary_outputs(
+        &self,
+    ) -> Result<Vec<RetainedExecutionBoundaryOutput>> {
+        let (Some(policy), Some(operation_id)) = (&self.policy, &self.operation_id) else {
+            return Ok(Vec::new());
+        };
+        policy.retained_boundary_outputs(operation_id.clone()).await
+    }
+
+    /// Atomically retains a trusted typed completion with the running operation.
+    /// Identical caller retries replay their original receipt without enqueuing twice.
+    pub(crate) async fn accept_boundary_output(
+        &self,
+        call_id: String,
+        output: nanocodex_oai_api::responses::FunctionOutputBody,
+        message_id: String,
+        accepted_after_model_call_index: u32,
+        capacity_available: bool,
+    ) -> Result<Option<u32>> {
+        let (Some(policy), Some(operation_id)) = (&self.policy, &self.operation_id) else {
+            return Err(NanocodexError::ExecutionPolicyCapabilityUnsupported {
+                capability: "active_boundary_output",
+            });
+        };
+        policy
+            .accept_identified_boundary_output(
+                operation_id.clone(),
+                message_id,
+                accepted_after_model_call_index,
+                ExecutionBoundaryOutput::TerminalOutput { call_id, output },
+                capacity_available,
+            )
+            .await
     }
 
     pub(crate) fn steps(&self) -> Option<ExecutionSteps> {

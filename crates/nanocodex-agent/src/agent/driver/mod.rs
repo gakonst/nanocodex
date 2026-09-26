@@ -1,9 +1,12 @@
 mod branch;
 mod control;
 mod telemetry;
+mod wake;
+use wake::drive_late_wake;
 
 use super::execution::{
-    AdmittedExecution, ExecutionTurn, SteerDelivery, SteerQueue, SteerReceipt, SteerSender,
+    AdmittedExecution, ExecutionBoundaryOutput, ExecutionTurn, SteerDelivery, SteerQueue,
+    SteerReceipt, SteerSender,
 };
 use super::spawn::{validate_model_reasoning_mode, validate_model_thinking};
 use super::*;
@@ -93,20 +96,125 @@ where
         let mut logical_turn_index = 0_u64;
         let mut latest_fork_checkpoint = inherited_checkpoint;
         let mut queued_turns = VecDeque::new();
-        let mut pending_compact = None;
+        let mut pending_compact: Option<(Option<tracing::Span>, oneshot::Sender<Result<()>>)> =
+            None;
         let mut pending_developer_messages: Vec<(
             String,
             oneshot::Sender<Result<AgentSessionContext>>,
         )> = Vec::new();
+        let mut pending_late_outputs: Vec<(
+            String,
+            nanocodex_oai_api::responses::FunctionOutputBody,
+            String,
+            oneshot::Sender<Result<LateFunctionOutputReceipt>>,
+        )> = Vec::new();
         let mut developer_checkpoint_ready = true;
         let mut commands_open = true;
         let mut shutdown_failures = Vec::new();
-        loop {
+        'driver: loop {
+            // A persisted cohort is an all-member delivery fence. Resume its
+            // exact journals before a prefix wake, queued prompt or new command.
+            if commands_open
+                && model
+                    .current_checkpoint()
+                    .is_some_and(|snapshot| snapshot.late_batch().is_some())
+            {
+                let outcome = finish_pending_late_batch(
+                    &mut model,
+                    &self.execution,
+                    (Arc::clone(&self.spawner.lineage_id), thread_model),
+                    self.workspace.as_deref(),
+                    &mut latest_fork_checkpoint,
+                )
+                .await;
+                if let Err(error) = outcome {
+                    shutdown_failures.push(error.to_string());
+                    begin_shutdown(
+                        &mut self.commands,
+                        &mut queued_turns,
+                        default_thinking,
+                        default_fast_mode,
+                    )
+                    .await;
+                    mark_all_queued_turns_cancelled(&mut queued_turns);
+                    if let Some((_, result)) = pending_compact.take() {
+                        drop(result.send(Err(NanocodexError::AgentStopped)));
+                    }
+                    for (_, result) in pending_developer_messages.drain(..) {
+                        drop(result.send(Err(NanocodexError::AgentStopped)));
+                    }
+                    for (_, _, _, result) in pending_late_outputs.drain(..) {
+                        drop(result.send(Err(NanocodexError::AgentStopped)));
+                    }
+                    commands_open = false;
+                }
+                continue;
+            }
+            if commands_open
+                && pending_late_outputs.is_empty()
+                && pending_developer_messages.is_empty()
+                && model
+                    .current_checkpoint()
+                    .is_some_and(|snapshot| snapshot.late_wake_id().is_some())
+            {
+                logical_turn_index = logical_turn_index.saturating_add(1);
+                let wake = drive_late_wake(
+                    &mut self.commands,
+                    &self.execution,
+                    &self.spawner,
+                    &self.events,
+                    &self.transport_stats,
+                    &self.tools,
+                    &prompt_cache,
+                    self.workspace.clone(),
+                    &mut model,
+                    &mut latest_fork_checkpoint,
+                    &mut queued_turns,
+                    &mut pending_compact,
+                    &mut pending_developer_messages,
+                    &mut pending_late_outputs,
+                    TurnDefaults {
+                        model: thread_model,
+                        thinking: default_thinking,
+                        fast_mode: default_fast_mode,
+                    },
+                    &session_id,
+                    logical_turn_index,
+                )
+                .await;
+                match wake {
+                    Ok(open) => commands_open = open,
+                    Err(error) => {
+                        shutdown_failures.push(error.to_string());
+                        begin_shutdown(
+                            &mut self.commands,
+                            &mut queued_turns,
+                            default_thinking,
+                            default_fast_mode,
+                        )
+                        .await;
+                        mark_all_queued_turns_cancelled(&mut queued_turns);
+                        if let Some((_, result)) = pending_compact.take() {
+                            drop(result.send(Err(NanocodexError::AgentStopped)));
+                        }
+                        for (_, result) in pending_developer_messages.drain(..) {
+                            drop(result.send(Err(NanocodexError::AgentStopped)));
+                        }
+                        for (_, _, _, result) in pending_late_outputs.drain(..) {
+                            drop(result.send(Err(NanocodexError::AgentStopped)));
+                        }
+                        commands_open = false;
+                    }
+                }
+                continue;
+            }
             let command = loop {
                 if let Some((parent, result)) = pending_compact.take() {
                     break Command::Compact { parent, result };
                 }
-                if let Some(queued) = queued_turns.pop_front() {
+                if (!developer_checkpoint_ready || pending_late_outputs.is_empty())
+                    && let Some(queued) = queued_turns.pop_front()
+                {
                     match queued {
                         QueuedTurn::Pending {
                             key,
@@ -260,7 +368,9 @@ where
                 // Standalone checkpoints cannot overtake any admitted turn, including
                 // cancelled turns awaiting settlement. Retryable operations keep this
                 // barrier closed even after their in-memory queue has drained.
+                let mut processed_checkpoint = false;
                 if developer_checkpoint_ready && !pending_developer_messages.is_empty() {
+                    processed_checkpoint = true;
                     let mut developer_messages = pending_developer_messages.drain(..);
                     while let Some((text, message_result)) = developer_messages.next() {
                         let committed = commit_developer_message(
@@ -313,6 +423,53 @@ where
                         }
                     }
                 }
+                if developer_checkpoint_ready && !pending_late_outputs.is_empty() {
+                    processed_checkpoint = true;
+                    for (call_id, output, operation_id, result) in pending_late_outputs.drain(..) {
+                        let outcome = commit_late_function_output(
+                            &mut model,
+                            &self.execution,
+                            (Arc::clone(&self.spawner.lineage_id), thread_model),
+                            call_id,
+                            output,
+                            operation_id,
+                            self.workspace.as_deref(),
+                        )
+                        .await;
+                        let reopens = outcome_requires_reopen(&outcome);
+                        if let Ok((checkpoint, receipt)) = &outcome {
+                            // Replayed output describes its historical operation;
+                            // it must not roll a newer live driver back.
+                            if !receipt.replayed {
+                                latest_fork_checkpoint = Some(Arc::clone(checkpoint));
+                            }
+                        } else {
+                            model = model_from_checkpoint(
+                                &self.events,
+                                &self.transport_stats,
+                                &self.tools,
+                                &self.spawner,
+                                &prompt_cache,
+                                latest_fork_checkpoint.as_deref(),
+                            );
+                        }
+                        drop(result.send(outcome.map(|(_, receipt)| receipt)));
+                        if reopens {
+                            begin_shutdown(
+                                &mut self.commands,
+                                &mut queued_turns,
+                                default_thinking,
+                                default_fast_mode,
+                            )
+                            .await;
+                            commands_open = false;
+                            break;
+                        }
+                    }
+                }
+                if processed_checkpoint {
+                    continue 'driver;
+                }
                 if commands_open {
                     let Some(command) = self.commands.recv().await else {
                         commands_open = false;
@@ -352,6 +509,9 @@ where
                         continue;
                     }
                     break command;
+                }
+                for (_, _, _, result) in pending_late_outputs.drain(..) {
+                    drop(result.send(Err(NanocodexError::AgentStopped)));
                 }
                 model.shutdown().await;
                 return if shutdown_failures.is_empty() {
@@ -446,6 +606,130 @@ where
                 if let Command::SetFastMode { enabled, result } = command {
                     default_fast_mode = enabled;
                     drop(result.send(Ok(())));
+                    continue;
+                }
+                if let Command::SubmitLateFunctionOutputs { outputs, result } = command {
+                    // One command fences the cohort: no model continuation starts
+                    // until every per-job journal has landed.
+                    if !pending_developer_messages.is_empty() || !pending_late_outputs.is_empty() {
+                        drop(result.send(Err(NanocodexError::InvalidRequest(
+                            "batch late outputs require an idle, unencumbered boundary".into(),
+                        ))));
+                        continue;
+                    }
+                    // Checkpoint the whole ordered intent before *any* per-job
+                    // admission. On an uncertain write, close this owner and
+                    // let journal recovery decide whether the fence landed.
+                    let inspection = inspect_late_batch(
+                        &self.execution,
+                        &outputs,
+                        &self.spawner.lineage_id,
+                        thread_model,
+                        self.workspace.as_deref(),
+                        false,
+                    )
+                    .await;
+                    let outcome = match inspection {
+                        Ok(completed) => match model.begin_late_batch(
+                            outputs,
+                            &completed,
+                            self.workspace.as_deref(),
+                        ) {
+                            Ok(snapshot) => {
+                                let committed = Arc::new(CommittedSession::new(
+                                    Arc::clone(&self.spawner.lineage_id),
+                                    thread_model,
+                                    snapshot,
+                                ));
+                                match self.execution.commit_checkpoint(&committed).await {
+                                    Ok(()) => {
+                                        latest_fork_checkpoint = Some(committed);
+                                        finish_pending_late_batch(
+                                            &mut model,
+                                            &self.execution,
+                                            (Arc::clone(&self.spawner.lineage_id), thread_model),
+                                            self.workspace.as_deref(),
+                                            &mut latest_fork_checkpoint,
+                                        )
+                                        .await
+                                    }
+                                    Err(error) => Err(error),
+                                }
+                            }
+                            Err(error) => Err(error),
+                        },
+                        Err(error) => Err(error),
+                    };
+                    let unsafe_to_continue = outcome.is_err()
+                        && model
+                            .current_checkpoint()
+                            .is_some_and(|snapshot| snapshot.late_batch().is_some());
+                    let reopen = unsafe_to_continue || outcome_requires_reopen(&outcome);
+                    if unsafe_to_continue {
+                        shutdown_failures.push(
+                            "late output cohort requires recovery before any model wake".into(),
+                        );
+                    }
+                    drop(result.send(outcome));
+                    if reopen {
+                        begin_shutdown(
+                            &mut self.commands,
+                            &mut queued_turns,
+                            default_thinking,
+                            default_fast_mode,
+                        )
+                        .await;
+                        commands_open = false;
+                    }
+                    continue;
+                }
+                if let Command::SubmitLateFunctionOutput {
+                    call_id,
+                    output,
+                    operation_id,
+                    result,
+                } = command
+                {
+                    if !pending_developer_messages.is_empty() || !pending_late_outputs.is_empty() {
+                        pending_late_outputs.push((call_id, output, operation_id, result));
+                        continue;
+                    }
+                    let outcome = commit_late_function_output(
+                        &mut model,
+                        &self.execution,
+                        (Arc::clone(&self.spawner.lineage_id), thread_model),
+                        call_id,
+                        output,
+                        operation_id,
+                        self.workspace.as_deref(),
+                    )
+                    .await;
+                    let reopen = outcome_requires_reopen(&outcome);
+                    if let Ok((checkpoint, receipt)) = &outcome {
+                        if !receipt.replayed {
+                            latest_fork_checkpoint = Some(Arc::clone(checkpoint));
+                        }
+                    } else {
+                        model = model_from_checkpoint(
+                            &self.events,
+                            &self.transport_stats,
+                            &self.tools,
+                            &self.spawner,
+                            &prompt_cache,
+                            latest_fork_checkpoint.as_deref(),
+                        );
+                    }
+                    drop(result.send(outcome.map(|(_, receipt)| receipt)));
+                    if reopen {
+                        begin_shutdown(
+                            &mut self.commands,
+                            &mut queued_turns,
+                            default_thinking,
+                            default_fast_mode,
+                        )
+                        .await;
+                        commands_open = false;
+                    }
                     continue;
                 }
                 if let Command::AppendDeveloperMessage { text, result } = command {
@@ -825,6 +1109,14 @@ where
                                     Some(Command::SetModel { result, .. }) => {
                                         drop(result.send(Err(model_change_locked())));
                                     }
+                                    Some(Command::SubmitLateFunctionOutputs { result, .. }) => {
+                                        drop(result.send(Err(NanocodexError::InvalidRequest(
+                                            "batch late outputs require an idle driver".into(),
+                                        ))));
+                                    }
+                                    Some(Command::SubmitLateFunctionOutput { call_id, output, operation_id, result }) => {
+                                        pending_late_outputs.push((call_id, output, operation_id, result));
+                                    }
                                     Some(Command::AppendDeveloperMessage { text, result }) => {
                                         pending_developer_messages.push((text, result));
                                     }
@@ -994,6 +1286,11 @@ where
                                 )),
                             )));
                         }
+                        for (_, _, _, late_result) in pending_late_outputs.drain(..) {
+                            drop(late_result.send(Err(NanocodexError::InvalidExecutionPolicy(format!(
+                                "late function output was not committed because preceding compaction failed: {detail}"
+                            )))));
+                        }
                     }
                     drop(result.send(outcome));
                     if commands_open && reopen_after_compaction {
@@ -1140,12 +1437,48 @@ where
                     continue;
                 }
             };
+            let retained_boundary_outputs = match if latest_fork_checkpoint
+                .as_ref()
+                .is_some_and(|checkpoint| checkpoint.model().unreal_function_outputs())
+            {
+                execution_turn.retained_boundary_outputs().await
+            } else {
+                Ok(Vec::new())
+            } {
+                Ok(outputs) => outputs
+                    .into_iter()
+                    .map(|entry| {
+                        let ExecutionBoundaryOutput::TerminalOutput { call_id, output } =
+                            entry.output;
+                        QueuedBoundaryOutput {
+                            call_id,
+                            output,
+                            operation_id: entry.message_id,
+                            durable_index: entry.index,
+                            accepted_after_model_call_index: entry.accepted_after_model_call_index,
+                            model_call_index: entry.model_call_index,
+                        }
+                    })
+                    .collect::<Vec<_>>(),
+                Err(error) => {
+                    if let Some(operation_id) = &execution_operation {
+                        self.execution.release_claim(operation_id).await;
+                    }
+                    let outcome = self
+                        .execution
+                        .recover_failure(execution_operation.as_deref(), Err(error))
+                        .await;
+                    drop(result.send(outcome));
+                    continue;
+                }
+            };
             let execution_base_checkpoint = execution_operation
                 .as_ref()
                 .map(|_| latest_fork_checkpoint.clone());
             let execution_steps = execution_turn.steps();
             let steer_rx: SteerQueue = Arc::new(tokio::sync::Mutex::new(VecDeque::new()));
             let steers = Arc::downgrade(&steer_rx);
+            let boundary_outputs = Arc::new(tokio::sync::Mutex::new(VecDeque::new()));
             let mut accepted_steers = retained_steers
                 .iter()
                 .filter(|steer| steer.model_call_index.is_none())
@@ -1160,7 +1493,7 @@ where
                 })
                 .collect();
             let mut steer_ids = std::collections::HashSet::new();
-            let model_call_index = Arc::new(tokio::sync::Mutex::new(1_u32));
+            let model_call_index = Arc::new(tokio::sync::Mutex::new(0_u32));
             let (cancel, cancel_rx) = oneshot::channel();
             let (fork_snapshots, mut fork_snapshot_rx) = watch::channel(None);
             let mut fork_snapshots_open = true;
@@ -1183,6 +1516,8 @@ where
                             receiver: steer_rx,
                             retained: retained_steers,
                             model_call_index: Arc::clone(&model_call_index),
+                            boundary_outputs: Arc::clone(&boundary_outputs),
+                            retained_boundary_outputs,
                         },
                         cancel_rx,
                         fork_snapshots,
@@ -1471,6 +1806,52 @@ where
                             Some(Command::SetModel { result, .. }) => {
                                 drop(result.send(Err(model_change_locked())));
                             }
+                            Some(Command::SubmitLateFunctionOutputs { result, .. }) => {
+                                drop(result.send(Err(NanocodexError::InvalidRequest(
+                                    "batch late outputs require an idle driver".into(),
+                                ))));
+                            }
+                            Some(Command::SubmitLateFunctionOutput { call_id, output, operation_id, result }) => {
+                                if execution_operation.is_none() {
+                                    // Existing nondurable hosts keep the idle fallback.
+                                    pending_late_outputs.push((call_id, output, operation_id, result));
+                                    continue;
+                                }
+                                // The lock fences acceptance against the next model
+                                // request admission. No model output is acknowledged
+                                // merely because its durable receipt was accepted.
+                                let call_index = model_call_index.lock().await;
+                                let available = execution_turn.retained_boundary_outputs().await
+                                    .map(|pending| pending.len() < 8);
+                                let admitted = match available {
+                                    Ok(available) => execution_turn.accept_boundary_output(
+                                        call_id.clone(), output.clone(), operation_id.clone(),
+                                        *call_index, available,
+                                    ).await,
+                                    Err(error) => Err(error),
+                                };
+                                let outcome = match admitted {
+                                    Ok(index) => {
+                                        let replayed = index.is_none();
+                                        if let Some(index) = index {
+                                            // Enqueue after durable acceptance, while still
+                                            // fencing request admission with the same lock.
+                                            boundary_outputs.lock().await.push_back(QueuedBoundaryOutput {
+                                                call_id: call_id.clone(), output,
+                                                operation_id: operation_id.clone(), durable_index: index,
+                                                accepted_after_model_call_index: *call_index,
+                                                model_call_index: None,
+                                            });
+                                        }
+                                        Ok(LateFunctionOutputReceipt {
+                                            operation_id, call_id, replayed, continuation_started: false,
+                                        })
+                                    }
+                                    Err(error) => Err(error),
+                                };
+                                drop(call_index);
+                                drop(result.send(outcome));
+                            }
                             Some(Command::AppendDeveloperMessage { text, result }) => {
                                 pending_developer_messages.push((text, result));
                             }
@@ -1725,9 +2106,19 @@ where
                 for (_, message_result) in pending_developer_messages.drain(..) {
                     drop(message_result.send(Err(NanocodexError::AgentStopped)));
                 }
+                for (_, _, _, late_result) in pending_late_outputs.drain(..) {
+                    drop(late_result.send(Err(NanocodexError::AgentStopped)));
+                }
             }
             developer_checkpoint_ready =
                 !reopen_after_turn && (terminal_failure_committed || execution_operation.is_none());
+            if !developer_checkpoint_ready {
+                for (_, _, _, late_result) in pending_late_outputs.drain(..) {
+                    drop(late_result.send(Err(NanocodexError::InvalidExecutionPolicy(
+                        "late function output was not committed: preceding turn has no durable checkpoint".into(),
+                    ))));
+                }
+            }
             if commands_open && reopen_after_turn {
                 begin_shutdown(
                     &mut self.commands,
@@ -1820,7 +2211,12 @@ async fn accept_turn_steer(
     // before either this model-call drain or the following one.
     let call_index = model_call_index.lock().await;
     let Some(steer) = execution_turn
-        .accept_steer(prompt.clone(), id.clone(), *call_index, capacity_available)
+        .accept_steer(
+            prompt.clone(),
+            id.clone(),
+            (*call_index).max(1),
+            capacity_available,
+        )
         .await?
     else {
         return Ok(());
@@ -1837,6 +2233,211 @@ async fn accept_turn_steer(
     ));
     steers.lock().await.push_back(steer);
     Ok(())
+}
+
+/// Compare all member IDs and bodies against the authoritative journal
+/// without accepting operations ahead of the durable all-member fence.
+async fn inspect_late_batch(
+    execution: &Execution,
+    outputs: &[LateFunctionOutput],
+    lineage_id: &str,
+    model: Model,
+    workspace: Option<&str>,
+    recovering: bool,
+) -> Result<std::collections::HashSet<String>> {
+    let mut completed = std::collections::HashSet::new();
+    for entry in outputs {
+        match execution
+            .inspect_late_output(&entry.operation_id, &entry.call_id, &entry.output)
+            .await?
+        {
+            Some(AdmittedExecution::Completed { snapshot, .. }) => {
+                // An exact body under a reused ID from a different lineage or
+                // model must not strand a newly persisted cohort intent.
+                snapshot.into_replayed_checkpoint(lineage_id, model, workspace)?;
+                completed.insert(entry.operation_id.clone());
+            }
+            Some(AdmittedExecution::Execute) => {
+                return Err(NanocodexError::InvalidExecutionPolicy(
+                    "read-only lookup attempted to admit a late output".into(),
+                ));
+            }
+            Some(AdmittedExecution::Resume) if !recovering => {
+                return Err(NanocodexError::InvalidRequest(
+                    "late output ID is already pending outside this cohort".into(),
+                ));
+            }
+            Some(AdmittedExecution::Failed { error }) => {
+                return Err(NanocodexError::ReplayedExecutionFailed(error));
+            }
+            Some(AdmittedExecution::Cancelled) => return Err(NanocodexError::TurnCancelled),
+            Some(AdmittedExecution::Resume) | None => {}
+        }
+    }
+    Ok(completed)
+}
+
+/// Settle the persisted entire cohort before clearing its delivery fence.
+/// Completed old members replay from their own journals but never rewind the
+/// newer live checkpoint. A failed member leaves the fence in durable state;
+/// its owner must close, not wake a prefix of the cohort.
+async fn finish_pending_late_batch<S>(
+    model: &mut ModelRun<S>,
+    execution: &Execution,
+    identity: (Arc<str>, Model),
+    workspace: Option<&str>,
+    latest_checkpoint: &mut Option<Arc<CommittedSession>>,
+) -> Result<Vec<LateFunctionOutputReceipt>>
+where
+    S: Service<ResponsesAttempt, Response = ResponsesServiceResponse> + AgentSend + 'static,
+    S::Error: Into<ResponseError>,
+    S::Future: AgentSend,
+{
+    let outputs = model
+        .current_checkpoint()
+        .and_then(|checkpoint| checkpoint.late_batch().cloned())
+        .ok_or_else(|| {
+            NanocodexError::InvalidSessionSnapshot("late batch lost its durable intent".into())
+        })?
+        .outputs;
+    let mut calls = std::collections::HashSet::new();
+    let mut operations = std::collections::HashSet::new();
+    if !(1..=8).contains(&outputs.len())
+        || outputs.iter().any(|entry| {
+            entry.call_id.trim().is_empty()
+                || entry.operation_id.trim().is_empty()
+                || !calls.insert(&entry.call_id)
+                || !operations.insert(&entry.operation_id)
+                || matches!(&entry.output, nanocodex_oai_api::responses::FunctionOutputBody::Content(items) if items.is_empty())
+        })
+    {
+        return Err(NanocodexError::InvalidSessionSnapshot(
+            "late batch has invalid or duplicate cohort entries".into(),
+        ));
+    }
+    let completed = inspect_late_batch(
+        execution,
+        &outputs,
+        &identity.0,
+        identity.1,
+        workspace,
+        true,
+    )
+    .await?;
+    model.validate_late_function_outputs(&outputs, &completed, workspace)?;
+    let mut receipts = Vec::with_capacity(outputs.len());
+    for entry in outputs {
+        let (checkpoint, receipt) = commit_late_function_output(
+            model,
+            execution,
+            (Arc::clone(&identity.0), identity.1),
+            entry.call_id,
+            entry.output,
+            entry.operation_id,
+            workspace,
+        )
+        .await?;
+        if !receipt.replayed {
+            *latest_checkpoint = Some(checkpoint);
+        }
+        receipts.push(receipt);
+    }
+    let checkpoint = Arc::new(CommittedSession::new(
+        identity.0,
+        identity.1,
+        model.finish_late_batch()?,
+    ));
+    execution.commit_checkpoint(&checkpoint).await?;
+    model.publish_finished_late_batch();
+    *latest_checkpoint = Some(checkpoint);
+    Ok(receipts)
+}
+
+async fn commit_late_function_output<S>(
+    model: &mut ModelRun<S>,
+    execution: &Execution,
+    identity: (Arc<str>, Model),
+    call_id: String,
+    output: nanocodex_oai_api::responses::FunctionOutputBody,
+    operation_id: String,
+    workspace: Option<&str>,
+) -> Result<(Arc<CommittedSession>, LateFunctionOutputReceipt)>
+where
+    S: Service<ResponsesAttempt, Response = ResponsesServiceResponse> + AgentSend + 'static,
+    S::Error: Into<ResponseError>,
+    S::Future: AgentSend,
+{
+    let journal_id = format!("late-output:{operation_id}");
+    let admitted = execution
+        .recover_failure(
+            Some(&journal_id),
+            execution
+                .admit_late_output(&operation_id, &call_id, &output)
+                .await,
+        )
+        .await?;
+    match admitted {
+        AdmittedExecution::Completed { snapshot, .. } => {
+            // The journal is authoritative even if the current model advanced
+            // or compaction removed the receipt from its transcript.
+            let checkpoint =
+                snapshot
+                    .clone()
+                    .into_replayed_checkpoint(&identity.0, identity.1, workspace)?;
+            return Ok((
+                Arc::new(
+                    CommittedSession::new(identity.0, identity.1, checkpoint)
+                        .with_retained_snapshot(Some(snapshot)),
+                ),
+                LateFunctionOutputReceipt {
+                    operation_id,
+                    call_id,
+                    replayed: true,
+                    continuation_started: false,
+                },
+            ));
+        }
+        AdmittedExecution::Execute | AdmittedExecution::Resume => {}
+        AdmittedExecution::Failed { error } => {
+            return Err(NanocodexError::ReplayedExecutionFailed(error));
+        }
+        AdmittedExecution::Cancelled => return Err(NanocodexError::TurnCancelled),
+    }
+    let turn = execution.start_late_output(nanocodex_oai_api::Thinking::Medium, &operation_id);
+    if let Err(error) = turn.begin().await {
+        execution.release_claim(&journal_id).await;
+        return execution
+            .recover_failure(Some(&journal_id), Err(error))
+            .await;
+    }
+    let (snapshot, replayed) =
+        match model.submit_late_function_output(&call_id, output, &operation_id, workspace) {
+            Ok(value) => value,
+            Err(error) => {
+                execution.release_claim(&journal_id).await;
+                return execution
+                    .recover_failure(Some(&journal_id), Err(error))
+                    .await;
+            }
+        };
+    let checkpoint = Arc::new(CommittedSession::new(identity.0, identity.1, snapshot));
+    execution
+        .recover_failure(
+            Some(&journal_id),
+            execution
+                .persist(&checkpoint, turn.completed_without_message())
+                .await,
+        )
+        .await?;
+    Ok((
+        checkpoint,
+        LateFunctionOutputReceipt {
+            operation_id,
+            call_id,
+            replayed,
+            continuation_started: false,
+        },
+    ))
 }
 
 async fn commit_developer_message<S>(

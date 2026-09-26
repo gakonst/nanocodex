@@ -15,6 +15,7 @@ export type {
   DurabilitySqliteTransaction,
   DurabilitySqliteValue,
   DurabilityStore,
+  DurabilityStagedImportStore,
   DurabilityStoredState,
   MemoryDurabilityStore,
   SqliteDurabilityStoreOptions,
@@ -82,4 +83,4 @@ export declare function createMemoryDurabilityStore(
 
 export declare function createSqliteDurabilityStore(
   options: import("../types.mjs").SqliteDurabilityStoreOptions,
-): import("../types.mjs").DurabilityPortableStore;
+): import("../types.mjs").DurabilityStagedImportStore;

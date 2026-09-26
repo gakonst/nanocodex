@@ -193,3 +193,104 @@ best-effort placement hint, not a residency guarantee. Egress2 picks a fresh
 account-owned regional Container class and identity for ChatGPT subscription
 calls; API-key calls remain direct. This is not a claim that OpenAI inference
 occurs in the selected region or that provider response time will improve.
+
+## Experimental asynchronous tools (disabled)
+
+`POST /v1/agents` with `{ "async_tools": true }` returns HTTP 501
+`typed_async_tool_ingestion_unavailable` before creating a Session. Ordinary
+agents still use synchronous tools. The old pilot's synthetic *user turn* has
+been removed; old rows are quarantined, never replayed as typed tool output.
+
+The dormant `AsyncJobs` ledger persists a stable turn, original provider call
+ID, job ID, arguments, correlation, and bounded result before dispatch. It
+registers `current_time`, `web__run`, and the local Just Bash `exec_command`,
+with eight active jobs and seven-day payload retention measured from
+**confirmed model-step delivery**, not tool creation. An expired confirmed delivery becomes a compact permanent invocation tombstone:
+its status is `archived`, the original payload is no longer available from
+`/jobs`, and a replay of the same invocation fails closed rather than
+executing a mutable tool a second time. New jobs also fail closed when the
+sampled session SQL database-size high-water reaches 192 MiB (256 MiB
+budget minus 64 MiB admission headroom). The sampler observes native Rust
+journals and permanent tombstones before delivered-job archival, after
+reconciliation, and at new admission; its recorded peak survives restarts.
+Existing-ID status, recovery, and terminal delivery bypass the throttle.
+This is **not** a hard database or lifetime cap: native writes can grow between
+samples, other turns can grow the same database after the gate, and 64 MiB is
+not a proven maximum for in-flight checkpoints. Precise cumulative metering
+and long-term immutable-receipt archival remain production release gates.
+Results checkpointed without a model wake remain durable and visible but may
+consume capacity. The read-only
+operations may be retried after a stale lease (at most three attempts),
+even if an older read-only handler remains hung in the same DO; its lease
+cannot overwrite the winning result. A cold DO construction rearms alarms
+for persisted queued, running and terminal jobs whose prior alarm was lost.
+A concurrent newly admitted user turn preserves the urgent one-second async
+reconciliation deadline rather than replacing it with the ordinary ten-second
+turn-health alarm. The result observer is attached immediately after native
+acceptance, before alarm-storage reads. A failed alarm read must not discard
+the still-live turn or its in-memory running fence: the accepted turn can
+complete while the admission response reports uncertainty. A failed
+post-result wake-alarm write is retried once without reclassifying a
+completed model turn as failed.
+An uncertain or cancelled shell execution **must not be rerun**: its terminal
+result explicitly says the side effect may have happened. Cancel is a durable
+fence, not rollback. The exact Unreal pending text is staged under the original
+function-call ID; the job ID is available through the jobs status API and is
+not appended to that provider-visible text. Managed2 currently exposes no
+CUA or remote Hands tool; they are not covered by this ledger.
+
+The private JS/WASM bridge stages the original-call pending output and
+admits terminal output under that same call ID. The Rust driver can inject a
+settled result at the original turn's next model-request boundary, or start a
+prompt-less idle continuation when the turn has ended. Same-source idle
+results are staged in a bounded cohort of at most eight before one wake.
+A ninth already-completed result cannot join that in-flight wake: it remains
+durable, then is retried under its original ID for a later prompt-less wake.
+Host reconciliation reserves capacity for all queued/running jobs and rotates
+a durable (created_at, ID) keyset over the other eligible jobs in a 25-row
+page. A same-source checkpoint outside the page still fences the spill until
+its exact uptake status is checked, rather than repeatedly invoking a busy
+driver. Parked old-kernel outputs are probed once per DO construction, across
+all pages, without an indefinite alarm loop.
+Thus coalescing is bounded, not a promise of one model call for any number of
+completed jobs. Host SQL marks a job
+`delivered` only after the exact native active/idle receipt identifies a
+completed model step, not merely after checkpoint submission. A durable Rust
+journal supports replay through transcript compaction and cold recovery.
+
+**This is still not a usable production async mode.** The Worker E2E suite
+(`test:async-e2e` and `test:async-e2e:websocket`) exercises synthetic Egress2
+provider fixtures, including nonblocking pending/terminal, active-boundary
+uptake, two-result idle coalescing, mixed completed/cancelled cohort fencing, and HTTP lost-SQL
+completion replay after DO eviction. These do not establish real provider
+acceptance of duplicate original-call-ID outputs, all crash/compaction
+interleavings through the Worker, or production end-to-end performance. The
+API stays 501 pending authorized live API/subscription HTTP/WS compatibility,
+full correctness/performance review and green exact-head CI. A gated
+three-route canary lives in `scripts/provider-canary`; its structural fixture
+tests do not establish upstream acceptance.
+
+A separate opt-in **synthetic-only** latency probe is available with
+`pnpm run test:async-perf-fixture` (optionally
+`MANAGED2_TEST_TRANSPORT=websocket`). It alternates three synchronous and
+three asynchronous runs of a 2500-ms fixture search through both Workers and
+records original-turn completion, host job `completed`/`checkpointed`/`delivered`
+observations, and end-to-end terminal uptake. Do not interpret its fixture
+model/tool timings as live provider performance or as a release gate.
+
+Durability's ignored manual `late_output_retention_storage_profile` measures
+committed immutable record bytes as well as head size using 250 distinct 8 KiB
+checkpoint payloads (`cargo test -p nanocodex-durability --lib
+late_output_retention_storage_profile -- --ignored --nocapture`). In the
+in-memory store, zero terminal head retention held the head to 143 bytes but
+immutable records grew from 88,140 bytes at 10 completions to 881,001 bytes
+at 100 and 2,202,801 bytes at 250 (751 records). These are logical key+value
+bytes, not SQLite/R2 physical size or RSS, and do not establish a sustainable
+production retention policy. A separate ignored SQLite run (`cargo test
+-p nanocodex-durability --features sqlite --lib
+late_output_retention_sqlite_profile -- --ignored --nocapture`) with unique 8
+KiB checkpoints measured 118,784 physical database bytes at 10, 974,848 at
+100, and 2,383,872 at 250 completions. This is local SQLite, not Cloudflare
+DO SQLite/R2 or RSS. Exact-ID replay receipts currently have no bounded
+archival lifetime; operational storage-growth review remains a release gate
+for long-lived sessions.

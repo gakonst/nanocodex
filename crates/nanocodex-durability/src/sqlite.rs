@@ -141,10 +141,21 @@ impl SqliteStore {
             StoreError::NotCommitted("SQLite durability revision overflow".to_owned())
         })?;
         for record in records {
-            transaction.execute(
+            let inserted = transaction.execute(
                 "INSERT INTO nanocodex_durable_records (state_id, key, value) VALUES (?1, ?2, ?3)
                  ON CONFLICT (state_id, key) DO NOTHING", params![state_id, record.key, record.value],
             ).map_err(backend)?;
+            if inserted == 0 {
+                let previous: String = transaction.query_row(
+                    "SELECT value FROM nanocodex_durable_records WHERE state_id = ?1 AND key = ?2",
+                    params![state_id, record.key], |row| row.get(0),
+                ).map_err(backend)?;
+                if previous != record.value {
+                    return Err(StoreError::Backend(
+                        "immutable durability record conflict".into(),
+                    ));
+                }
+            }
         }
         let sql_revision = sql_counter(revision, "SQLite durability revision overflow")?;
         transaction
@@ -367,6 +378,52 @@ mod tests {
     use std::{path::Path, sync::mpsc, thread, time::Duration};
 
     use super::*;
+
+    #[test]
+    fn immutable_record_conflict_rolls_back_head_and_record() {
+        let mut store =
+            SqliteStore::from_connection(Connection::open_in_memory().unwrap()).unwrap();
+        let owned = store
+            .acquire_transactional("record-conflict", OwnerId::new(), || {})
+            .unwrap();
+        let old = crate::StoreRecord {
+            key: "late-receipt:test".into(),
+            value: "old".into(),
+        };
+        store
+            .replace_transactional(
+                "record-conflict",
+                &owned.owner,
+                0,
+                "first",
+                std::slice::from_ref(&old),
+                || {},
+            )
+            .unwrap();
+        let new = crate::StoreRecord {
+            value: "new".into(),
+            ..old.clone()
+        };
+        assert!(
+            matches!(store.replace_transactional("record-conflict", &owned.owner, 1, "bad", &[new], || {}),
+            Err(StoreError::Backend(message)) if message.contains("immutable"))
+        );
+        assert_eq!(
+            load_state(&store.connection, "record-conflict")
+                .unwrap()
+                .revision,
+            1
+        );
+        let retained: String = store
+            .connection
+            .query_row(
+                "SELECT value FROM nanocodex_durable_records WHERE state_id = ?1 AND key = ?2",
+                rusqlite::params!["record-conflict", old.key],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(retained, "old");
+    }
 
     fn open_concurrent_store(path: &Path) -> SqliteStore {
         let connection = Connection::open(path).unwrap();

@@ -44,6 +44,7 @@ pub use agent::{
     AgentSessionContext, BuilderBackend, ChildRuntimeSnapshot, Nanocodex, PromptRequest,
     PromptRoute, SpawnOptions, Turn, TurnControl, TurnResult,
 };
+pub use agent::{LateFunctionOutput, LateFunctionOutputReceipt};
 #[cfg(feature = "openai")]
 pub use error::CompactionRecovery;
 pub use error::{ExecutionPolicyDisposition, NanocodexError, Result};

@@ -159,10 +159,21 @@ impl StateStore for PostgresStore {
                 });
             }
             for record in records {
-                transaction.execute(
+                let inserted = transaction.execute(
                     "INSERT INTO nanocodex_durable_records (state_id, key, value) VALUES ($1, $2, $3)
                      ON CONFLICT (state_id, key) DO NOTHING", &[&state_id, &record.key, &record.value],
                 ).await.map_err(backend)?;
+                if inserted == 0 {
+                    let previous = transaction.query_one(
+                        "SELECT value FROM nanocodex_durable_records WHERE state_id = $1 AND key = $2 FOR UPDATE",
+                        &[&state_id, &record.key],
+                    ).await.map_err(backend)?;
+                    if previous.get::<_, String>(0) != record.value {
+                        return Err(StoreError::Backend(
+                            "immutable durability record conflict".into(),
+                        ));
+                    }
+                }
             }
             let revision = actual.checked_add(1).ok_or_else(|| {
                 StoreError::NotCommitted("Postgres durability revision overflow".to_owned())

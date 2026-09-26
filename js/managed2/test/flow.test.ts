@@ -290,3 +290,37 @@ it("anchors a new session relay to trusted SF ingress rather than an asserted cl
   ).toArray()[0]?.relay_region);
   expect(region).toBe("wnam");
 });
+
+it("fails closed on exact async opt-in while typed JS/WASM ingestion is unavailable", async () => {
+  const authorization = `Bearer ${fixtureKeys["fixture-user"]}`;
+  const agentId = crypto.randomUUID();
+  const requested = await SELF.fetch("https://api.test/v1/agents", { method: "POST",
+    headers: { authorization, "idempotency-key": agentId },
+    body: JSON.stringify({ input: "Use async web__run once.", async_tools: true }) });
+  expect(requested.status).toBe(501);
+  expect(await requested.json()).toEqual({ error: "typed_async_tool_ingestion_unavailable" });
+  // Failure precedes Session initialization, so retrying normally under the
+  // same key creates an ordinary synchronous agent with no jobs endpoint.
+  const ordinary = await SELF.fetch("https://api.test/v1/agents", { method: "POST",
+    headers: { authorization, "idempotency-key": agentId }, body: JSON.stringify({ async_tools: false }) });
+  expect(ordinary.status).toBe(201);
+  expect((await SELF.fetch(`https://api.test/v1/agents/${agentId}/jobs`, { headers: { authorization } })).status).toBe(404);
+});
+
+it("does not activate async tool jobs by default and rejects non-boolean opt-in", async () => {
+  const authorization = `Bearer ${fixtureKeys["fixture-user"]}`;
+  const invalid = await SELF.fetch("https://api.test/v1/agents", { method: "POST", headers: { authorization },
+    body: JSON.stringify({ input: "hello", async_tools: "yes" }) });
+  expect(invalid.status).toBe(400);
+  const ordinary = await SELF.fetch("https://api.test/v1/agents", { method: "POST", headers: { authorization } });
+  const { agent_id } = await ordinary.json<{ agent_id: string }>();
+  expect((await SELF.fetch(`https://api.test/v1/agents/${agent_id}/jobs`, { headers: { authorization } })).status).toBe(404);
+});
+
+it("refuses exact async opt-in even without an initial turn", async () => {
+  const authorization = `Bearer ${fixtureKeys["fixture-user"]}`;
+  const response = await SELF.fetch("https://api.test/v1/agents", { method: "POST", headers: { authorization },
+    body: JSON.stringify({ async_tools: true }) });
+  expect(response.status).toBe(501);
+  expect(await response.json()).toEqual({ error: "typed_async_tool_ingestion_unavailable" });
+});

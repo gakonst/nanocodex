@@ -76,7 +76,7 @@ export function bindAgent(module, hostAgent = HostAgent) {
     destroy,
     exportDurabilityState,
     exportDurabilityHead,
-    importDurabilityState: (owner, archive) => importDurabilityState(owner, archive, module),
+    importDurabilityState: (owner, archive, options) => importDurabilityState(owner, archive, module, options),
     route,
   });
 }
@@ -126,6 +126,10 @@ export function destroy(owner) {
         stateId,
       );
       storage.sql.exec(
+        "DELETE FROM nanocodex_durable_staged_records WHERE state_id = ?",
+        stateId,
+      );
+      storage.sql.exec(
         "DELETE FROM nanocodex_durable_states WHERE state_id = ?",
         stateId,
       );
@@ -158,7 +162,7 @@ export async function exportDurabilityState(owner, request, headOnly = false) {
 export function exportDurabilityHead(owner) { return exportDurabilityState(owner, undefined, true); }
 
 /** Imports provider-neutral state into a pristine Cloudflare Agent owner. */
-export async function importDurabilityState(owner, archive, module) {
+export async function importDurabilityState(owner, archive, module, options = {}) {
   const context = reserveInactiveLifecycle(owner, "importing durability state");
   try {
     const storage = context.storage;
@@ -204,7 +208,10 @@ export async function importDurabilityState(owner, archive, module) {
     // Publish identity and the imported head together. Records staged by a
     // bounded host transfer survive rollback and can be reused on retry.
     return storage.transactionSync(() => {
-      const imported = durability.importState(archive.stateId, validated, { records: archive.records });
+      const imported = durability.importState(archive.stateId, validated, {
+        records: archive.records,
+        ...(options.stagedImportId === undefined ? {} : { stagedImportId: options.stagedImportId }),
+      });
       storage.sql.exec(
         "INSERT INTO nanocodex_cloudflare_agent (singleton, session_id) VALUES (1, ?)", sessionId,
       );

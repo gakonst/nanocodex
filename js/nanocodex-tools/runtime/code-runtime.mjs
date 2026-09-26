@@ -10,6 +10,15 @@ import {
 } from "./tool-router.mjs";
 
 const CANCELLATION_MESSAGE = "Code Mode execution was cancelled";
+// A host-only object identity, not a model-visible field or a tool-output
+// substring. JSON, metadata, and a tool's own object properties cannot forge it.
+const stagedUnrealOutputs = new WeakSet();
+export function trustedStagedUnrealOutput(output) {
+  const staged = Object.freeze({ output });
+  stagedUnrealOutputs.add(staged);
+  return staged;
+}
+
 
 export function createCodeRuntime(toolConfiguration = {}, extras = {}) {
   const activeExecutions = new Set();
@@ -74,6 +83,11 @@ export function createCodeRuntime(toolConfiguration = {}, extras = {}) {
         signal: controller.signal,
         subagent: subagentBindingsBySession.get(sessionId)?.descriptor,
       });
+      if (stagedUnrealOutputs.has(result)) {
+        // The Rust original-call validator makes this a typed pending output.
+        // Only direct host tool execution crosses this bridge, never Code Mode.
+        return encodeToolOutput(outputBody(result.output), true, null, null, true);
+      }
       return encodeToolOutput(
         outputBody(result),
         toolSucceeded(result),
@@ -663,13 +677,14 @@ async function evaluateNative(source, environment) {
   );
 }
 
-function encodeToolOutput(output, success, structuredResult, metadata = null) {
+function encodeToolOutput(output, success, structuredResult, metadata = null, trustedPending = false) {
   return JSON.stringify({
     output,
     success,
     structured_result: structuredResult,
     metadata,
     process_trace: null,
+    ...(trustedPending ? { trusted_unreal_pending: true } : {}),
   });
 }
 

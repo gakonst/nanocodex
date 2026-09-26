@@ -10,9 +10,10 @@ use serde::{Serialize, de::DeserializeOwned};
 use tokio::sync::{mpsc, oneshot};
 
 use crate::{
-    DurableState, EncodedPayload, Error, OperationStatus, OwnerId, OwnerToken, Result, StateStore,
-    SteerState, StepStatus, StoreError, StoredState, Transition, shared_store::SharedStore,
-    state::RetainedCheckpoint,
+    BoundaryOutputState, DurableState, EncodedPayload, Error, OperationStatus, OwnerId, OwnerToken,
+    Result, StateStore, SteerState, StepStatus, StoreError, StoredState, Transition,
+    shared_store::SharedStore,
+    state::{RetainedCheckpoint, RetiredLateReceipt, late_receipt_key},
 };
 
 const COMMAND_CAPACITY: usize = 64;
@@ -62,6 +63,31 @@ impl<C, O> AutomaticAdmission<C, O> {
     pub fn into_parts(self) -> (String, Admission<C, O>) {
         (self.operation_id, self.admission)
     }
+}
+
+/// Read-only status of a typed output for one exact active-source operation and job message.
+/// Also used for exact idle-wake receipts. Binding alone is not model uptake.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum ActiveBoundaryOutputStatus {
+    /// Accepted, but not assigned to a model request.
+    AcceptedUnbound,
+    /// Assigned to a request, without a durable completed response boundary.
+    BoundUnconfirmed {
+        /// Model request ordinal selected for this output.
+        model_call_index: u32,
+    },
+    /// Confirmed by the durable completed model step and its provider response.
+    Confirmed {
+        /// Completed model request ordinal.
+        model_call_index: u32,
+        /// Provider response identity for that request.
+        response_id: String,
+    },
+    /// Terminal failure or cancellation discarded this output without confirmation.
+    Discarded,
+    /// No matching retained receipt, including a pruned operation or identity mismatch.
+    PrunedOrUnknown,
 }
 
 /// Result of beginning a replayable step.
@@ -125,6 +151,12 @@ enum StoredBeginStep {
 }
 
 #[derive(Clone)]
+pub(crate) struct StoredBoundaryOutput {
+    pub(crate) index: u32,
+    pub(crate) state: BoundaryOutputState,
+}
+
+#[derive(Clone)]
 pub(crate) struct StoredSteer {
     pub(crate) index: u32,
     pub(crate) state: SteerState,
@@ -167,6 +199,12 @@ enum Command {
         caller: Caller,
         operation_id: String,
         result: oneshot::Sender<Result<Option<OperationStatus>>>,
+    },
+    InspectOperation {
+        caller: Caller,
+        operation_id: String,
+        input: EncodedPayload,
+        result: oneshot::Sender<Result<Option<StoredAdmission>>>,
     },
     State {
         result: oneshot::Sender<DurableState>,
@@ -211,6 +249,41 @@ enum Command {
         accepted_after_model_call_index: u32,
         input: EncodedPayload,
         result: oneshot::Sender<Result<Option<u32>>>,
+    },
+    AcceptBoundaryOutput {
+        capacity_available: bool,
+        message_id: String,
+        caller: Caller,
+        operation_id: String,
+        accepted_after_model_call_index: u32,
+        input: EncodedPayload,
+        result: oneshot::Sender<Result<Option<u32>>>,
+    },
+    BindBoundaryOutput {
+        caller: Caller,
+        operation_id: String,
+        output_index: u32,
+        model_call_index: u32,
+        result: oneshot::Sender<Result<()>>,
+    },
+    ConfirmBoundaryOutput {
+        caller: Caller,
+        operation_id: String,
+        output_index: u32,
+        model_call_index: u32,
+        response_id: String,
+        result: oneshot::Sender<Result<()>>,
+    },
+    ActiveBoundaryOutputStatus {
+        operation_id: String,
+        message_id: String,
+        expected_call_id: Option<String>,
+        result: oneshot::Sender<ActiveBoundaryOutputStatus>,
+    },
+    RetainedBoundaryOutputs {
+        caller: Caller,
+        operation_id: String,
+        result: oneshot::Sender<Result<Vec<StoredBoundaryOutput>>>,
     },
     RetainedSteers {
         caller: Caller,
@@ -440,7 +513,8 @@ impl Driver {
                     operation_id,
                     result,
                 } => {
-                    let outcome = self.authorize(&caller).and_then(|()| {
+                    let outcome = async {
+                        self.authorize(&caller)?;
                         let operation = self.state.operation(&operation_id);
                         if operation.is_some_and(|operation| !operation.status.is_terminal())
                             && let Some((pending_id, _)) = self.state.first_pending_operation()
@@ -451,8 +525,59 @@ impl Driver {
                                 pending_id: pending_id.to_owned(),
                             });
                         }
-                        Ok(operation.map(|operation| operation.status.clone()))
-                    });
+                        if let Some(operation) = operation {
+                            return Ok(Some(operation.status.clone()));
+                        }
+                        Ok(self
+                            .retired_late_receipt(&operation_id, None)
+                            .await?
+                            .map(|receipt| receipt.status))
+                    }
+                    .await;
+                    drop(result.send(outcome));
+                }
+                Command::InspectOperation {
+                    caller,
+                    operation_id,
+                    input,
+                    result,
+                } => {
+                    let outcome = async {
+                        self.authorize(&caller)?;
+                        if let Some(operation) = self.state.operation(&operation_id) {
+                            if operation.input != input {
+                                return Err(Error::OperationConflict { operation_id });
+                            }
+                            return Ok(Some(operation.status.clone()));
+                        }
+                        Ok(self
+                            .retired_late_receipt(&operation_id, Some(&input))
+                            .await?
+                            .map(|receipt| receipt.status))
+                    }
+                    .await;
+                    let outcome = match outcome {
+                        Ok(None) => Ok(None),
+                        Ok(Some(OperationStatus::Pending)) => Ok(Some(StoredAdmission::Pending)),
+                        Ok(Some(OperationStatus::Cancelled { .. })) => {
+                            Ok(Some(StoredAdmission::Cancelled))
+                        }
+                        Ok(Some(OperationStatus::Completed { checkpoint, output })) => {
+                            let checkpoint =
+                                checkpoint.load(&mut *self.store, &self.state_id).await;
+                            let output = output.load(&mut *self.store, &self.state_id).await;
+                            checkpoint.and_then(|checkpoint| {
+                                output.map(|output| {
+                                    Some(StoredAdmission::Completed { checkpoint, output })
+                                })
+                            })
+                        }
+                        Ok(Some(OperationStatus::Failed { checkpoint, error })) => checkpoint
+                            .load(&mut *self.store, &self.state_id)
+                            .await
+                            .map(|checkpoint| Some(StoredAdmission::Failed { checkpoint, error })),
+                        Err(error) => Err(error),
+                    };
                     drop(result.send(outcome));
                 }
                 Command::State { result } => drop(result.send(self.state.clone())),
@@ -567,6 +692,118 @@ impl Driver {
                                 capacity_available,
                             )
                             .await
+                        }
+                        Err(error) => Err(error),
+                    };
+                    drop(result.send(outcome));
+                }
+                Command::AcceptBoundaryOutput {
+                    capacity_available,
+                    message_id,
+                    caller,
+                    operation_id,
+                    accepted_after_model_call_index,
+                    input,
+                    result,
+                } => {
+                    let outcome = match self.authorize(&caller) {
+                        Ok(()) => {
+                            self.accept_boundary_output(
+                                &caller,
+                                operation_id,
+                                accepted_after_model_call_index,
+                                input,
+                                message_id,
+                                capacity_available,
+                            )
+                            .await
+                        }
+                        Err(error) => Err(error),
+                    };
+                    drop(result.send(outcome));
+                }
+                Command::BindBoundaryOutput {
+                    caller,
+                    operation_id,
+                    output_index,
+                    model_call_index,
+                    result,
+                } => {
+                    let outcome = match self.authorize(&caller) {
+                        Ok(()) => {
+                            self.bind_boundary_output(
+                                &caller,
+                                operation_id,
+                                output_index,
+                                model_call_index,
+                            )
+                            .await
+                        }
+                        Err(error) => Err(error),
+                    };
+                    drop(result.send(outcome));
+                }
+                Command::ConfirmBoundaryOutput {
+                    caller,
+                    operation_id,
+                    output_index,
+                    model_call_index,
+                    response_id,
+                    result,
+                } => {
+                    let outcome = match self.authorize(&caller) {
+                        Ok(()) => {
+                            self.confirm_boundary_output(
+                                &caller,
+                                operation_id,
+                                output_index,
+                                model_call_index,
+                                response_id,
+                            )
+                            .await
+                        }
+                        Err(error) => Err(error),
+                    };
+                    drop(result.send(outcome));
+                }
+                Command::ActiveBoundaryOutputStatus {
+                    operation_id,
+                    message_id,
+                    expected_call_id,
+                    result,
+                } => {
+                    drop(result.send(self.active_boundary_output_status(
+                        &operation_id,
+                        &message_id,
+                        expected_call_id.as_deref(),
+                    )));
+                }
+                Command::RetainedBoundaryOutputs {
+                    caller,
+                    operation_id,
+                    result,
+                } => {
+                    let outcome = self
+                        .authorize(&caller)
+                        .and_then(|()| self.retained_boundary_outputs(&caller, &operation_id));
+                    let outcome = match outcome {
+                        Ok(mut outputs) => {
+                            let mut error = None;
+                            for output in &mut outputs {
+                                match output
+                                    .state
+                                    .input
+                                    .load(&mut *self.store, &self.state_id)
+                                    .await
+                                {
+                                    Ok(value) => output.state.input = value,
+                                    Err(failure) => {
+                                        error = Some(failure);
+                                        break;
+                                    }
+                                }
+                            }
+                            error.map_or(Ok(outputs), Err)
                         }
                         Err(error) => Err(error),
                     };
@@ -915,6 +1152,12 @@ impl Driver {
                 OperationStatus::Cancelled { .. } => Ok(StoredAdmission::Cancelled),
             };
         }
+        if let Some(receipt) = self
+            .retired_late_receipt(&operation_id, Some(&input))
+            .await?
+        {
+            return self.admission_from_status(receipt.status).await;
+        }
         self.apply(Transition::OperationAccepted {
             operation_id: operation_id.clone(),
             input,
@@ -922,6 +1165,43 @@ impl Driver {
         .await?;
         self.claimed.insert(operation_id, caller.clone());
         Ok(StoredAdmission::Accepted)
+    }
+
+    async fn retired_late_receipt(
+        &mut self,
+        operation_id: &str,
+        input: Option<&EncodedPayload>,
+    ) -> Result<Option<RetiredLateReceipt>> {
+        let Some(key) = late_receipt_key(operation_id) else {
+            return Ok(None);
+        };
+        let Some(value) = self.store.read_record(&self.state_id, &key).await? else {
+            return Ok(None);
+        };
+        let receipt = RetiredLateReceipt::from_record(operation_id, self.state.revision(), &value)?;
+        if input.is_some_and(|input| receipt.input != *input) {
+            return Err(Error::OperationConflict {
+                operation_id: operation_id.to_owned(),
+            });
+        }
+        Ok(Some(receipt))
+    }
+
+    async fn admission_from_status(&mut self, status: OperationStatus) -> Result<StoredAdmission> {
+        match status {
+            OperationStatus::Pending => Err(Error::InvalidState(
+                "retired late operation is pending".into(),
+            )),
+            OperationStatus::Completed { checkpoint, output } => Ok(StoredAdmission::Completed {
+                checkpoint: checkpoint.load(&mut *self.store, &self.state_id).await?,
+                output: output.load(&mut *self.store, &self.state_id).await?,
+            }),
+            OperationStatus::Failed { checkpoint, error } => Ok(StoredAdmission::Failed {
+                checkpoint: checkpoint.load(&mut *self.store, &self.state_id).await?,
+                error,
+            }),
+            OperationStatus::Cancelled { .. } => Ok(StoredAdmission::Cancelled),
+        }
     }
 
     async fn admit_automatic(
@@ -1025,6 +1305,197 @@ impl Driver {
         })
         .await?;
         Ok(Some(steer_index))
+    }
+
+    async fn accept_boundary_output(
+        &mut self,
+        caller: &Caller,
+        operation_id: String,
+        accepted_after_model_call_index: u32,
+        input: EncodedPayload,
+        message_id: String,
+        capacity_available: bool,
+    ) -> Result<Option<u32>> {
+        let operation = self.state.operation(&operation_id).ok_or_else(|| {
+            Error::InvalidState(format!("operation `{operation_id}` was not accepted"))
+        })?;
+        if let Some(receipt) = operation.boundary_output_receipts.get(&message_id) {
+            if !operation.status.is_terminal() {
+                self.require_claimed(caller, &operation_id)?;
+            }
+            if receipt.input_key != input.key.as_ref() {
+                return Err(Error::BoundaryOutputConflict { message_id });
+            }
+            return Ok(None);
+        }
+        self.require_claimed(caller, &operation_id)?;
+        self.require_running(&operation_id)?;
+        if !capacity_available {
+            return Err(Error::BoundaryOutputQueueFull);
+        }
+        let output_index = u32::try_from(operation.boundary_outputs.len())
+            .ok()
+            .and_then(|n| n.checked_add(operation.retired_boundary_outputs))
+            .and_then(|n| n.checked_add(1))
+            .ok_or_else(|| Error::InvalidState("boundary output index overflow".into()))?;
+        self.apply(Transition::BoundaryOutputAccepted {
+            operation_id,
+            output_index,
+            accepted_after_model_call_index,
+            input,
+            message_id,
+        })
+        .await?;
+        Ok(Some(output_index))
+    }
+
+    async fn bind_boundary_output(
+        &mut self,
+        caller: &Caller,
+        operation_id: String,
+        output_index: u32,
+        model_call_index: u32,
+    ) -> Result<()> {
+        self.require_claimed(caller, &operation_id)?;
+        self.require_running(&operation_id)?;
+        let operation = self.state.operation(&operation_id).ok_or_else(|| {
+            Error::InvalidState(format!("operation `{operation_id}` was not accepted"))
+        })?;
+        if let Some(bound) = output_index
+            .checked_sub(operation.retired_boundary_outputs)
+            .and_then(|index| index.checked_sub(1))
+            .and_then(|index| usize::try_from(index).ok())
+            .and_then(|index| operation.boundary_outputs.get(index))
+            .and_then(|entry| entry.model_call_index)
+        {
+            if bound == model_call_index {
+                return Ok(());
+            }
+            return Err(Error::InvalidState(format!(
+                "boundary output {output_index} changed model boundary from {bound} to {model_call_index}"
+            )));
+        }
+        self.apply(Transition::BoundaryOutputBound {
+            operation_id,
+            output_index,
+            model_call_index,
+        })
+        .await
+    }
+
+    async fn confirm_boundary_output(
+        &mut self,
+        caller: &Caller,
+        operation_id: String,
+        output_index: u32,
+        model_call_index: u32,
+        response_id: String,
+    ) -> Result<()> {
+        self.require_claimed(caller, &operation_id)?;
+        self.require_running(&operation_id)?;
+        let operation = self.state.operation(&operation_id).ok_or_else(|| {
+            Error::InvalidState(format!("operation `{operation_id}` was not accepted"))
+        })?;
+        // A lost acknowledgement must be replayable even after the live body was retired.
+        if let Some(receipt) = operation
+            .boundary_output_receipts
+            .values()
+            .find(|receipt| receipt.index == output_index)
+            && let Some(confirmed) = receipt.confirmed_model_call_index
+        {
+            if confirmed == model_call_index && receipt.response_id.as_deref() == Some(&response_id)
+            {
+                return Ok(());
+            }
+            return Err(Error::InvalidState(
+                "boundary output confirmation conflicts with receipt".into(),
+            ));
+        }
+        self.apply(Transition::BoundaryOutputConfirmed {
+            operation_id,
+            output_index,
+            model_call_index,
+            response_id,
+        })
+        .await
+    }
+
+    fn active_boundary_output_status(
+        &self,
+        operation_id: &str,
+        message_id: &str,
+        expected_call_id: Option<&str>,
+    ) -> ActiveBoundaryOutputStatus {
+        let Some(receipt) = self
+            .state
+            .operation(operation_id)
+            .and_then(|operation| operation.boundary_output_receipts.get(message_id))
+        else {
+            return ActiveBoundaryOutputStatus::PrunedOrUnknown;
+        };
+        // The optional exact terminal call identity must survive body retirement.
+        // An older receipt without this field cannot establish a match.
+        if expected_call_id.is_some_and(|expected| {
+            expected.is_empty() || receipt.call_id.as_deref() != Some(expected)
+        }) {
+            return ActiveBoundaryOutputStatus::PrunedOrUnknown;
+        }
+        if let Some(model_call_index) = receipt.confirmed_model_call_index {
+            return match &receipt.response_id {
+                Some(response_id) if !response_id.is_empty() => {
+                    ActiveBoundaryOutputStatus::Confirmed {
+                        model_call_index,
+                        response_id: response_id.clone(),
+                    }
+                }
+                _ => ActiveBoundaryOutputStatus::PrunedOrUnknown,
+            };
+        }
+        if receipt.discarded {
+            return ActiveBoundaryOutputStatus::Discarded;
+        }
+        match receipt.bound_model_call_index {
+            Some(model_call_index) => {
+                ActiveBoundaryOutputStatus::BoundUnconfirmed { model_call_index }
+            }
+            None => ActiveBoundaryOutputStatus::AcceptedUnbound,
+        }
+    }
+
+    fn retained_boundary_outputs(
+        &self,
+        caller: &Caller,
+        operation_id: &str,
+    ) -> Result<Vec<StoredBoundaryOutput>> {
+        self.require_claimed(caller, operation_id)?;
+        self.require_running(operation_id)?;
+        let operation = self.state.operation(operation_id).ok_or_else(|| {
+            Error::InvalidState(format!("operation `{operation_id}` was not accepted"))
+        })?;
+        operation
+            .boundary_outputs
+            .iter()
+            .cloned()
+            .enumerate()
+            .filter(|(_, state)| {
+                operation
+                    .boundary_output_receipts
+                    .get(&state.message_id)
+                    .is_some_and(|receipt| receipt.confirmed_model_call_index.is_none())
+            })
+            .map(|(offset, state)| {
+                Ok(StoredBoundaryOutput {
+                    index: u32::try_from(offset)
+                        .ok()
+                        .and_then(|n| n.checked_add(operation.retired_boundary_outputs))
+                        .and_then(|n| n.checked_add(1))
+                        .ok_or_else(|| {
+                            Error::InvalidState("boundary output index overflow".into())
+                        })?,
+                    state,
+                })
+            })
+            .collect()
     }
 
     fn retained_steers(&self, caller: &Caller, operation_id: &str) -> Result<Vec<StoredSteer>> {
@@ -1183,10 +1654,35 @@ impl Driver {
                 "step `{step_id}` in operation `{operation_id}` already completed"
             ))),
             StepStatus::EffectPending => {
+                let late_response_id = if operation_id.starts_with("late-continuation:") {
+                    let step = self
+                        .state
+                        .operation(&operation_id)
+                        .and_then(|op| op.steps.get(&step_id));
+                    if step.is_some_and(|step| step.kind == "model_call") {
+                        let json: serde_json::Value = output.decode()?;
+                        let id = json
+                            .get("response")
+                            .and_then(|response| response.get("id"))
+                            .and_then(serde_json::Value::as_str)
+                            .filter(|id| !id.trim().is_empty())
+                            .ok_or_else(|| {
+                                Error::InvalidState(
+                                    "late wake model step lacks a provider response ID".into(),
+                                )
+                            })?;
+                        Some(id.to_owned())
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
                 self.apply(Transition::StepCompleted {
                     operation_id,
                     step_id,
                     output,
+                    late_response_id,
                 })
                 .await
             }
@@ -1298,7 +1794,7 @@ impl Driver {
                 next.revision()
             )));
         }
-        let records = next.stage_records();
+        let records = next.stage_records()?;
         let payload = next.checkpoint_payload()?;
         let revision = match self
             .store
@@ -1428,11 +1924,15 @@ impl DurableSession {
     }
 
     /// Loads a durable session whose compacted checkpoint retains at most the
-    /// newest `limit` terminal replay receipts.
+    /// newest `limit` ordinary terminal replay receipts. Terminal
+    /// `late-output:` journals are archived atomically to immutable per-ID
+    /// records, preserving exact replay across compaction and fenced cohorts
+    /// without growing the execution head. Total immutable storage still grows
+    /// with the number of distinct late outputs.
     ///
-    /// The embedding application must preserve older exact-ID results before
-    /// selecting this policy. Unresolved operations and the latest resumable
-    /// model checkpoint are always retained.
+    /// The embedding application must preserve older ordinary exact-ID results
+    /// before selecting this policy. Unresolved operations and the latest
+    /// resumable model checkpoint are always retained.
     pub async fn open_with_terminal_receipt_limit<S>(
         store: S,
         state_id: impl Into<String>,
@@ -1514,6 +2014,128 @@ impl DurableSession {
     #[must_use]
     pub fn state_id(&self) -> &str {
         &self.state_id
+    }
+
+    /// Queries the owner's current authoritative active-path receipt for an exact
+    /// source operation and job message identity, without changing durable state.
+    /// A bound output is not confirmed until its model step completes. Missing
+    /// (including pruned) receipts fail closed. This does not query idle delivery.
+    pub async fn active_boundary_output_status(
+        &self,
+        operation_id: &str,
+        message_id: &str,
+    ) -> Result<ActiveBoundaryOutputStatus> {
+        self.query_active_boundary_output_status(operation_id, message_id, None)
+            .await
+    }
+
+    /// Like [`Self::active_boundary_output_status`], but additionally requires
+    /// that the retained output's exact terminal function-call ID matches.
+    /// Older receipts without a retained call ID fail closed.
+    pub async fn active_boundary_output_status_for_call(
+        &self,
+        operation_id: &str,
+        message_id: &str,
+        call_id: &str,
+    ) -> Result<ActiveBoundaryOutputStatus> {
+        self.query_active_boundary_output_status(operation_id, message_id, Some(call_id))
+            .await
+    }
+
+    async fn query_active_boundary_output_status(
+        &self,
+        operation_id: &str,
+        message_id: &str,
+        expected_call_id: Option<&str>,
+    ) -> Result<ActiveBoundaryOutputStatus> {
+        let (result, receiver) = oneshot::channel();
+        self.send(Command::ActiveBoundaryOutputStatus {
+            operation_id: operation_id.to_owned(),
+            message_id: message_id.to_owned(),
+            expected_call_id: expected_call_id.map(str::to_owned),
+            result,
+        })
+        .await?;
+        receiver.await.map_err(|_| Error::DriverStopped)
+    }
+
+    /// Reads the exact idle-wake job/call's uptake from its retained journal.
+    /// Neither checkpoint submission nor a started model request is confirmation.
+    /// Missing, mismatched, or pruned evidence fails closed.
+    pub async fn idle_function_output_status_for_call(
+        &self,
+        job_id: &str,
+        call_id: &str,
+    ) -> Result<ActiveBoundaryOutputStatus> {
+        if job_id.is_empty() || call_id.is_empty() {
+            return Ok(ActiveBoundaryOutputStatus::PrunedOrUnknown);
+        }
+        let state = self.state().await?;
+        let mut result = ActiveBoundaryOutputStatus::PrunedOrUnknown;
+        for (id, operation) in state.operations() {
+            if !id.starts_with("late-continuation:") {
+                continue;
+            }
+            let input = self.resolve(&operation.input).await?;
+            let Ok(value) = input.decode::<serde_json::Value>() else {
+                continue;
+            };
+            let Some(lineage) = value.get("lineage_id").and_then(serde_json::Value::as_str) else {
+                continue;
+            };
+            let Some(wake) = value.get("wake_id").and_then(serde_json::Value::as_str) else {
+                continue;
+            };
+            if value.get("kind").and_then(serde_json::Value::as_str)
+                != Some("late_function_output_continuation")
+                || id != &format!("late-continuation:{lineage}:{wake}")
+                || !value
+                    .get("jobs")
+                    .and_then(serde_json::Value::as_array)
+                    .is_some_and(|jobs| {
+                        jobs.iter().any(|job| {
+                            job.get("job_id").and_then(serde_json::Value::as_str) == Some(job_id)
+                                && job.get("call_id").and_then(serde_json::Value::as_str)
+                                    == Some(call_id)
+                        })
+                    })
+            {
+                continue;
+            }
+            if let Some((index, response_id)) = &operation.late_model_response
+                && *index > 0
+                && !response_id.is_empty()
+            {
+                return Ok(ActiveBoundaryOutputStatus::Confirmed {
+                    model_call_index: *index,
+                    response_id: response_id.clone(),
+                });
+            }
+            if let Some(index) = operation
+                .steps
+                .iter()
+                .filter_map(|(step_id, step)| {
+                    (step.kind == "model_call")
+                        .then(|| {
+                            step_id
+                                .strip_prefix("model-")
+                                .and_then(|n| n.parse::<u32>().ok())
+                        })
+                        .flatten()
+                        .filter(|index| *index > 0)
+                })
+                .min()
+            {
+                result = ActiveBoundaryOutputStatus::BoundUnconfirmed {
+                    model_call_index: index,
+                };
+            } else if operation.status.is_terminal() {
+                result = ActiveBoundaryOutputStatus::Discarded;
+            } else if !matches!(result, ActiveBoundaryOutputStatus::BoundUnconfirmed { .. }) {
+                result = ActiveBoundaryOutputStatus::AcceptedUnbound;
+            }
+        }
+        Ok(result)
     }
 
     /// Copies the current reduced state from the owning driver.
@@ -2055,6 +2677,30 @@ impl DurableOwner {
             .map_err(|_| Error::DriverStopped)
     }
 
+    pub(crate) async fn inspect_typed<I, C, O>(
+        &self,
+        operation_id: String,
+        input: &I,
+    ) -> Result<Option<Admission<C, O>>>
+    where
+        I: Serialize + ?Sized,
+        C: DeserializeOwned,
+        O: DeserializeOwned,
+    {
+        let (result, receiver) = oneshot::channel();
+        self.send(Command::InspectOperation {
+            caller: self.caller()?,
+            operation_id,
+            input: EncodedPayload::encode(input)?,
+            result,
+        })
+        .await?;
+        receive(receiver)
+            .await?
+            .map(StoredAdmission::decode)
+            .transpose()
+    }
+
     pub(crate) async fn admit_typed<I, C, O>(
         &self,
         operation_id: String,
@@ -2148,6 +2794,80 @@ impl DurableOwner {
             operation_id,
             accepted_after_model_call_index,
             input: EncodedPayload::encode(input)?,
+            result,
+        })
+        .await?;
+        receive(receiver).await
+    }
+
+    pub(crate) async fn accept_boundary_output<I: Serialize + ?Sized>(
+        &self,
+        operation_id: String,
+        accepted_after_model_call_index: u32,
+        input: &I,
+        message_id: String,
+        capacity_available: bool,
+    ) -> Result<Option<u32>> {
+        let (result, receiver) = oneshot::channel();
+        self.send(Command::AcceptBoundaryOutput {
+            capacity_available,
+            message_id,
+            caller: self.caller()?,
+            operation_id,
+            accepted_after_model_call_index,
+            input: EncodedPayload::encode(input)?,
+            result,
+        })
+        .await?;
+        receive(receiver).await
+    }
+
+    pub(crate) async fn bind_boundary_output(
+        &self,
+        operation_id: String,
+        output_index: u32,
+        model_call_index: u32,
+    ) -> Result<()> {
+        let (result, receiver) = oneshot::channel();
+        self.send(Command::BindBoundaryOutput {
+            caller: self.caller()?,
+            operation_id,
+            output_index,
+            model_call_index,
+            result,
+        })
+        .await?;
+        receive(receiver).await
+    }
+
+    pub(crate) async fn confirm_boundary_output(
+        &self,
+        operation_id: String,
+        output_index: u32,
+        model_call_index: u32,
+        response_id: String,
+    ) -> Result<()> {
+        let (result, receiver) = oneshot::channel();
+        self.send(Command::ConfirmBoundaryOutput {
+            caller: self.caller()?,
+            operation_id,
+            output_index,
+            model_call_index,
+            response_id,
+            result,
+        })
+        .await?;
+        receive(receiver).await
+    }
+
+    pub(crate) async fn retained_boundary_outputs(
+        &self,
+        operation_id: String,
+    ) -> Result<Vec<StoredBoundaryOutput>> {
+        let (result, receiver) = oneshot::channel();
+        self.send(Command::RetainedBoundaryOutputs {
+            caller: self.caller()?,
+            operation_id,
             result,
         })
         .await?;
@@ -2651,6 +3371,414 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn boundary_output_receipt_survives_ack_loss_and_cold_reopen_without_completion() {
+        let store = MemoryStore::new().unwrap();
+        let session = DurableSession::open(store.clone(), "boundary-receipt")
+            .await
+            .unwrap();
+        let (owner, _) = session.acquire_agent().await.unwrap();
+        owner
+            .admit_typed::<_, u32, String>("turn".into(), &"prompt")
+            .await
+            .unwrap();
+        owner.begin_attempt("turn".into()).await.unwrap();
+        let payload = serde_json::json!({"terminal_output": {"text": "hello"}});
+        let (result, lost_ack) = oneshot::channel();
+        drop(lost_ack);
+        owner
+            .send(Command::AcceptBoundaryOutput {
+                capacity_available: true,
+                message_id: "output-1".into(),
+                caller: owner.caller().unwrap(),
+                operation_id: "turn".into(),
+                accepted_after_model_call_index: 1,
+                input: EncodedPayload::encode(&payload).unwrap(),
+                result,
+            })
+            .await
+            .unwrap();
+        let state = session.state().await.unwrap();
+        assert_eq!(state.operation("turn").unwrap().boundary_outputs.len(), 1);
+        assert_eq!(
+            state
+                .operation("turn")
+                .unwrap()
+                .boundary_output_receipts
+                .len(),
+            1
+        );
+        owner.shutdown().await.unwrap();
+        drop((owner, session));
+
+        let reopened = DurableSession::open(store, "boundary-receipt")
+            .await
+            .unwrap();
+        let (owner, _) = reopened.acquire_agent().await.unwrap();
+        owner
+            .admit_typed::<_, u32, String>("turn".into(), &"prompt")
+            .await
+            .unwrap();
+        owner.begin_attempt("turn".into()).await.unwrap();
+        let revision = reopened.state().await.unwrap().revision();
+        assert_eq!(
+            reopened
+                .active_boundary_output_status("turn", "output-1")
+                .await
+                .unwrap(),
+            ActiveBoundaryOutputStatus::AcceptedUnbound
+        );
+        // Legacy or non-terminal typed bodies cannot prove a terminal call identity.
+        assert_eq!(
+            reopened
+                .active_boundary_output_status_for_call("turn", "output-1", "call-1")
+                .await
+                .unwrap(),
+            ActiveBoundaryOutputStatus::PrunedOrUnknown
+        );
+        assert_eq!(revision, reopened.state().await.unwrap().revision());
+        assert_eq!(
+            owner
+                .accept_boundary_output("turn".into(), 9, &payload, "output-1".into(), false)
+                .await
+                .unwrap(),
+            None
+        );
+        assert_eq!(revision, reopened.state().await.unwrap().revision());
+        let outputs = owner
+            .retained_boundary_outputs("turn".into())
+            .await
+            .unwrap();
+        assert_eq!(outputs.len(), 1);
+        assert_eq!(outputs[0].index, 1);
+        assert_eq!(
+            outputs[0]
+                .state
+                .input
+                .decode::<serde_json::Value>()
+                .unwrap(),
+            payload
+        );
+        // Caller ids for steering and outputs are intentionally independent.
+        assert_eq!(
+            owner
+                .accept_steer("turn".into(), 1, &"steer", Some("output-1".into()), true)
+                .await
+                .unwrap(),
+            Some(1)
+        );
+        assert_eq!(owner.retained_steers("turn".into()).await.unwrap().len(), 1);
+        assert!(matches!(
+            owner
+                .accept_boundary_output("turn".into(), 9, &"different", "output-1".into(), false)
+                .await,
+            Err(Error::BoundaryOutputConflict { .. })
+        ));
+        assert!(matches!(
+            owner
+                .accept_boundary_output("turn".into(), 9, &payload, "output-2".into(), false)
+                .await,
+            Err(Error::BoundaryOutputQueueFull)
+        ));
+        assert!(
+            owner
+                .complete("turn".into(), EncodedPayload::encode(&1).unwrap(), &"done")
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            reopened
+                .state()
+                .await
+                .unwrap()
+                .operation("turn")
+                .unwrap()
+                .boundary_outputs
+                .len(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn active_output_status_tracks_confirmation_across_retirement_and_reopen() {
+        use nanocodex_agent::execution::ExecutionBoundaryOutput;
+        use nanocodex_oai_api::responses::FunctionOutputBody;
+
+        let store = MemoryStore::new().unwrap();
+        let session = DurableSession::open(store.clone(), "active-output-status")
+            .await
+            .unwrap();
+        let (owner, _) = session.acquire_agent().await.unwrap();
+        owner
+            .admit_typed::<_, u32, String>("turn".into(), &"prompt")
+            .await
+            .unwrap();
+        owner.begin_attempt("turn".into()).await.unwrap();
+        let output = ExecutionBoundaryOutput::TerminalOutput {
+            call_id: "call-1".into(),
+            output: FunctionOutputBody::Text("result".into()),
+        };
+        let initial_revision = session.state().await.unwrap().revision();
+        assert_eq!(
+            session
+                .active_boundary_output_status("turn", "job-1")
+                .await
+                .unwrap(),
+            ActiveBoundaryOutputStatus::PrunedOrUnknown
+        );
+        assert_eq!(initial_revision, session.state().await.unwrap().revision());
+        assert_eq!(
+            owner
+                .accept_boundary_output("turn".into(), 1, &output, "job-1".into(), true)
+                .await
+                .unwrap(),
+            Some(1)
+        );
+        assert_eq!(
+            session
+                .active_boundary_output_status_for_call("turn", "job-1", "call-1")
+                .await
+                .unwrap(),
+            ActiveBoundaryOutputStatus::AcceptedUnbound
+        );
+        assert_eq!(
+            session
+                .active_boundary_output_status_for_call("turn", "job-1", "other-call")
+                .await
+                .unwrap(),
+            ActiveBoundaryOutputStatus::PrunedOrUnknown
+        );
+        assert_eq!(
+            session
+                .active_boundary_output_status("other-turn", "job-1")
+                .await
+                .unwrap(),
+            ActiveBoundaryOutputStatus::PrunedOrUnknown
+        );
+        owner
+            .bind_boundary_output("turn".into(), 1, 2)
+            .await
+            .unwrap();
+        assert_eq!(
+            session
+                .active_boundary_output_status_for_call("turn", "job-1", "call-1")
+                .await
+                .unwrap(),
+            ActiveBoundaryOutputStatus::BoundUnconfirmed {
+                model_call_index: 2
+            }
+        );
+        owner
+            .begin_step(
+                "turn".into(),
+                "model-2".into(),
+                "model_call".into(),
+                &"input",
+            )
+            .await
+            .unwrap();
+        owner
+            .complete_step("turn".into(), "model-2".into(), &"response")
+            .await
+            .unwrap();
+        // A completed step alone is not an output confirmation.
+        assert_eq!(
+            session
+                .active_boundary_output_status("turn", "job-1")
+                .await
+                .unwrap(),
+            ActiveBoundaryOutputStatus::BoundUnconfirmed {
+                model_call_index: 2
+            }
+        );
+        owner
+            .confirm_boundary_output("turn".into(), 1, 2, "resp-2".into())
+            .await
+            .unwrap();
+        let confirmed = ActiveBoundaryOutputStatus::Confirmed {
+            model_call_index: 2,
+            response_id: "resp-2".into(),
+        };
+        assert_eq!(
+            serde_json::to_value(&confirmed).unwrap(),
+            serde_json::json!({"state": "confirmed", "model_call_index": 2, "response_id": "resp-2"})
+        );
+        assert_eq!(
+            session
+                .active_boundary_output_status("turn", "job-1")
+                .await
+                .unwrap(),
+            confirmed
+        );
+        owner
+            .advance(
+                "turn".into(),
+                EncodedPayload::encode(&"conversation").unwrap(),
+            )
+            .await
+            .unwrap();
+        assert!(
+            session
+                .state()
+                .await
+                .unwrap()
+                .operation("turn")
+                .unwrap()
+                .boundary_outputs
+                .is_empty()
+        );
+        assert_eq!(
+            session
+                .active_boundary_output_status_for_call("turn", "job-1", "call-1")
+                .await
+                .unwrap(),
+            confirmed
+        );
+        let revision = session.state().await.unwrap().revision();
+        assert_eq!(
+            session
+                .active_boundary_output_status("turn", "job-1")
+                .await
+                .unwrap(),
+            confirmed
+        );
+        assert_eq!(revision, session.state().await.unwrap().revision());
+        owner.shutdown().await.unwrap();
+        drop((owner, session));
+        let reopened = DurableSession::open(store, "active-output-status")
+            .await
+            .unwrap();
+        assert_eq!(
+            reopened
+                .active_boundary_output_status_for_call("turn", "job-1", "call-1")
+                .await
+                .unwrap(),
+            confirmed
+        );
+    }
+
+    #[tokio::test]
+    async fn active_output_bound_without_confirmation_stays_unconfirmed_after_cold_reopen() {
+        use nanocodex_agent::execution::ExecutionBoundaryOutput;
+        use nanocodex_oai_api::responses::FunctionOutputBody;
+
+        let store = MemoryStore::new().unwrap();
+        let session = DurableSession::open(store.clone(), "active-bound-reopen")
+            .await
+            .unwrap();
+        let (owner, _) = session.acquire_agent().await.unwrap();
+        owner
+            .admit_typed::<_, u32, String>("turn".into(), &"prompt")
+            .await
+            .unwrap();
+        owner.begin_attempt("turn".into()).await.unwrap();
+        let output = ExecutionBoundaryOutput::TerminalOutput {
+            call_id: "call".into(),
+            output: FunctionOutputBody::Text("body".into()),
+        };
+        owner
+            .accept_boundary_output("turn".into(), 1, &output, "job".into(), true)
+            .await
+            .unwrap();
+        owner
+            .bind_boundary_output("turn".into(), 1, 2)
+            .await
+            .unwrap();
+        owner.shutdown().await.unwrap();
+        drop((owner, session));
+        let reopened = DurableSession::open(store, "active-bound-reopen")
+            .await
+            .unwrap();
+        assert_eq!(
+            reopened
+                .active_boundary_output_status_for_call("turn", "job", "call")
+                .await
+                .unwrap(),
+            ActiveBoundaryOutputStatus::BoundUnconfirmed {
+                model_call_index: 2
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn active_output_status_discards_terminal_output_and_fails_closed_after_pruning() {
+        use nanocodex_agent::execution::ExecutionBoundaryOutput;
+        use nanocodex_oai_api::responses::FunctionOutputBody;
+
+        let store = MemoryStore::new().unwrap();
+        let session = DurableSession::open_with_terminal_receipt_limit(
+            store.clone(),
+            "active-output-prune",
+            1,
+        )
+        .await
+        .unwrap();
+        let (owner, _) = session.acquire_agent().await.unwrap();
+        owner
+            .admit_typed::<_, u32, String>("cancelled".into(), &"prompt")
+            .await
+            .unwrap();
+        owner.begin_attempt("cancelled".into()).await.unwrap();
+        let output = ExecutionBoundaryOutput::TerminalOutput {
+            call_id: "call-cancelled".into(),
+            output: FunctionOutputBody::Text("body".into()),
+        };
+        owner
+            .accept_boundary_output("cancelled".into(), 1, &output, "job".into(), true)
+            .await
+            .unwrap();
+        owner
+            .cancel(
+                "cancelled".into(),
+                Some(EncodedPayload::encode(&"snapshot").unwrap()),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            session
+                .active_boundary_output_status_for_call("cancelled", "job", "call-cancelled")
+                .await
+                .unwrap(),
+            ActiveBoundaryOutputStatus::Discarded
+        );
+        owner.shutdown().await.unwrap();
+        drop((owner, session));
+        let reopened = DurableSession::open_with_terminal_receipt_limit(
+            store.clone(),
+            "active-output-prune",
+            1,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            reopened
+                .active_boundary_output_status_for_call("cancelled", "job", "call-cancelled")
+                .await
+                .unwrap(),
+            ActiveBoundaryOutputStatus::Discarded
+        );
+        let (owner, _) = reopened.acquire_agent().await.unwrap();
+        owner
+            .admit_typed::<_, u32, String>("later".into(), &"prompt")
+            .await
+            .unwrap();
+        owner.begin_attempt("later".into()).await.unwrap();
+        owner
+            .cancel(
+                "later".into(),
+                Some(EncodedPayload::encode(&"snapshot").unwrap()),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            reopened
+                .active_boundary_output_status("cancelled", "job")
+                .await
+                .unwrap(),
+            ActiveBoundaryOutputStatus::PrunedOrUnknown
+        );
+    }
+
+    #[tokio::test]
     async fn stale_agent_capability_cannot_mutate_or_release_its_successor() {
         let store = MemoryStore::new().unwrap();
         let session = DurableSession::open(store, "local-owner-aba")
@@ -2978,6 +4106,460 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn late_output_identity_survives_zero_retention_compaction_and_reopen() {
+        let store = MemoryStore::new().unwrap();
+        let session = DurableSession::open_with_terminal_receipt_limit(
+            store.clone(),
+            "late-output-zero-retention",
+            0,
+        )
+        .await
+        .unwrap();
+        let (owner, _) = session.acquire_agent().await.unwrap();
+        let input = serde_json::json!({"kind": "late_function_output", "call_id": "call-a", "output": "body-a"});
+        let id = "late-output:caller-a".to_owned();
+        assert!(matches!(
+            owner
+                .admit_typed::<_, u32, String>(id.clone(), &input)
+                .await,
+            Ok(Admission::Accepted)
+        ));
+        owner.begin_attempt(id.clone()).await.unwrap();
+        owner
+            .complete(
+                id.clone(),
+                EncodedPayload::encode(&1_u32).unwrap(),
+                &"receipt".to_owned(),
+            )
+            .await
+            .unwrap();
+        // A later terminal turn would normally prune the first receipt.
+        assert!(matches!(
+            owner
+                .admit_typed::<_, u32, String>("ordinary".into(), &"later")
+                .await,
+            Ok(Admission::Accepted)
+        ));
+        owner.begin_attempt("ordinary".into()).await.unwrap();
+        owner
+            .complete(
+                "ordinary".into(),
+                EncodedPayload::encode(&2_u32).unwrap(),
+                &"later".to_owned(),
+            )
+            .await
+            .unwrap();
+        owner.shutdown().await.unwrap();
+        session.prune_receipts().await.unwrap();
+        let retained = session.state().await.unwrap();
+        assert!(
+            retained.operation(&id).is_none(),
+            "the exact receipt lives in an immutable per-ID record"
+        );
+        assert!(retained.operation("ordinary").is_none());
+        drop((owner, session));
+
+        let reopened = DurableSession::open_with_terminal_receipt_limit(
+            store,
+            "late-output-zero-retention",
+            0,
+        )
+        .await
+        .unwrap();
+        let (owner, _) = reopened.acquire_agent().await.unwrap();
+        assert!(matches!(
+            owner.inspect_typed::<_, u32, String>(id.clone(), &input).await,
+            Ok(Some(Admission::Completed { output, .. })) if output == "receipt"
+        ));
+        assert!(matches!(
+            owner.admit_typed::<_, u32, String>(id.clone(), &input).await,
+            Ok(Admission::Completed { output, .. }) if output == "receipt"
+        ));
+        let conflicting = serde_json::json!({"kind": "late_function_output", "call_id": "call-a", "output": "body-b"});
+        assert!(matches!(
+            owner.inspect_typed::<_, u32, String>(id.clone(), &conflicting).await,
+            Err(Error::OperationConflict { operation_id }) if operation_id == id
+        ));
+        assert!(matches!(
+            owner.admit_typed::<_, u32, String>(id.clone(), &conflicting).await,
+            Err(Error::OperationConflict { operation_id }) if operation_id == id
+        ));
+        // The operation ID alone is not permission to substitute another
+        // provider call. Changing only the original call ID is also a conflict.
+        let wrong_call = serde_json::json!({"kind": "late_function_output", "call_id": "call-b", "output": "body-a"});
+        assert!(matches!(
+            owner.inspect_typed::<_, u32, String>(id.clone(), &wrong_call).await,
+            Err(Error::OperationConflict { operation_id }) if operation_id == id
+        ));
+        assert!(matches!(
+            owner.admit_typed::<_, u32, String>(id.clone(), &wrong_call).await,
+            Err(Error::OperationConflict { operation_id }) if operation_id == id
+        ));
+    }
+
+    #[tokio::test]
+    async fn archived_failed_and_cancelled_late_ids_never_reexecute() {
+        let store = MemoryStore::new().unwrap();
+        let session =
+            DurableSession::open_with_terminal_receipt_limit(store.clone(), "late-errors", 0)
+                .await
+                .unwrap();
+        let failure = "late-output:failed";
+        assert!(matches!(
+            session.admit(failure, &"input").await,
+            Ok(Admission::Accepted)
+        ));
+        session.begin_attempt(failure).await.unwrap();
+        session
+            .fail(failure, &"safe checkpoint", "effect outcome uncertain")
+            .await
+            .unwrap();
+        let cancelled = "late-output:cancelled";
+        assert!(matches!(
+            session.admit(cancelled, &"input").await,
+            Ok(Admission::Accepted)
+        ));
+        session.cancel(cancelled).await.unwrap();
+        assert!(session.state().await.unwrap().operations().is_empty());
+        drop(session);
+        let reopened = DurableSession::open_with_terminal_receipt_limit(store, "late-errors", 0)
+            .await
+            .unwrap();
+        assert!(matches!(reopened.admit(failure, &"input").await,
+            Ok(Admission::Failed { error, .. }) if error == "effect outcome uncertain"));
+        let (owner, _) = reopened.acquire_agent().await.unwrap();
+        assert!(matches!(
+            owner
+                .inspect_typed::<_, String, String>(cancelled.into(), &"input")
+                .await,
+            Ok(Some(Admission::Cancelled))
+        ));
+        assert!(matches!(
+            owner
+                .admit_typed::<_, String, String>(cancelled.into(), &"input")
+                .await,
+            Ok(Admission::Cancelled)
+        ));
+        assert!(matches!(
+            owner
+                .admit_typed::<_, String, String>(cancelled.into(), &"other")
+                .await,
+            Err(Error::OperationConflict { .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn uncommitted_imported_late_receipt_is_not_a_new_operation() {
+        use crate::{
+            StoreRecord,
+            state::{RetiredLateReceipt, late_receipt_key},
+        };
+        let mut store = MemoryStore::new().unwrap();
+        let owned = store
+            .acquire("orphan-receipt", OwnerId::new())
+            .await
+            .unwrap();
+        let id = "late-output:orphan";
+        let input = "same-id-and-body";
+        let record = RetiredLateReceipt {
+            format: 1,
+            archived_revision: 2,
+            operation_id: id.into(),
+            input: EncodedPayload::encode(&input).unwrap(),
+            status: OperationStatus::Cancelled { checkpoint: None },
+        };
+        store
+            .replace(
+                "orphan-receipt",
+                &owned.owner,
+                0,
+                &DurableState::default().checkpoint_payload().unwrap(),
+                &[StoreRecord {
+                    key: late_receipt_key(id).unwrap(),
+                    value: serde_json::to_string(&record).unwrap(),
+                }],
+            )
+            .await
+            .unwrap();
+        let session = DurableSession::open_with_terminal_receipt_limit(store, "orphan-receipt", 0)
+            .await
+            .unwrap();
+        let (owner, _) = session.acquire_agent().await.unwrap();
+        assert!(matches!(
+            owner.admit_typed::<_, u32, String>(id.into(), &input).await,
+            Err(Error::InvalidState(_))
+        ));
+        assert_eq!(session.state().await.unwrap().revision(), 1);
+    }
+
+    #[tokio::test]
+    async fn version_four_terminal_late_journal_migrates_atomically() {
+        let store = MemoryStore::new().unwrap();
+        let session = DurableSession::open(store.clone(), "late-v4-migrate")
+            .await
+            .unwrap();
+        let id = "late-output:old".to_owned();
+        assert!(matches!(
+            session.admit(id.clone(), &"body").await,
+            Ok(Admission::Accepted)
+        ));
+        session.begin_attempt(id.clone()).await.unwrap();
+        session
+            .complete(id.clone(), &"old checkpoint", &"old output")
+            .await
+            .unwrap();
+        drop(session);
+        let mut raw = store.clone();
+        let owned = raw
+            .acquire("late-v4-migrate", OwnerId::new())
+            .await
+            .unwrap();
+        let mut legacy: serde_json::Value =
+            serde_json::from_str(owned.state.payload.as_ref().unwrap()).unwrap();
+        legacy["nanocodex_durable_state"]["format"] = serde_json::json!(4);
+        raw.replace(
+            "late-v4-migrate",
+            &owned.owner,
+            owned.state.revision,
+            &legacy.to_string(),
+            &[],
+        )
+        .await
+        .unwrap();
+        drop(raw);
+        let migrated =
+            DurableSession::open_with_terminal_receipt_limit(store.clone(), "late-v4-migrate", 0)
+                .await
+                .unwrap();
+        migrated.prune_receipts().await.unwrap();
+        assert!(migrated.state().await.unwrap().operation(&id).is_none());
+        drop(migrated);
+        let reopened =
+            DurableSession::open_with_terminal_receipt_limit(store, "late-v4-migrate", 0)
+                .await
+                .unwrap();
+        let replay = reopened.admit(id.clone(), &"body").await.unwrap();
+        assert!(
+            matches!(replay, Admission::Completed { output, .. } if output.decode::<String>().unwrap() == "old output")
+        );
+        assert!(matches!(
+            reopened.admit(id, &"different").await,
+            Err(Error::OperationConflict { .. })
+        ));
+    }
+
+    /// Isolated immutable-record and head growth characterization, not a
+    /// production memory/SQL or end-to-end model latency benchmark.
+    #[tokio::test]
+    #[ignore = "run manually to characterize long-lived exact-ID journal growth"]
+    async fn late_output_retention_storage_profile() {
+        use std::{sync::Mutex, time::Instant};
+
+        #[derive(Clone)]
+        struct MeasuredStore {
+            inner: MemoryStore,
+            // MemoryStore uses immutable keys; count committed distinct records.
+            published: Arc<Mutex<HashMap<String, usize>>>,
+        }
+        impl StateStore for MeasuredStore {
+            fn read_record<'a>(
+                &'a mut self,
+                state_id: &'a str,
+                key: &'a str,
+            ) -> crate::StoreFuture<'a, std::result::Result<Option<String>, StoreError>>
+            {
+                self.inner.read_record(state_id, key)
+            }
+            fn acquire<'a>(
+                &'a mut self,
+                state_id: &'a str,
+                owner_id: OwnerId,
+            ) -> crate::StoreFuture<'a, std::result::Result<crate::OwnedState, StoreError>>
+            {
+                self.inner.acquire(state_id, owner_id)
+            }
+            fn replace<'a>(
+                &'a mut self,
+                state_id: &'a str,
+                owner: &'a OwnerToken,
+                expected_revision: u64,
+                payload: &'a str,
+                records: &'a [crate::StoreRecord],
+            ) -> crate::StoreFuture<'a, std::result::Result<u64, StoreError>> {
+                Box::pin(async move {
+                    let revision = self
+                        .inner
+                        .replace(state_id, owner, expected_revision, payload, records)
+                        .await?;
+                    let mut published = self.published.lock().unwrap();
+                    for record in records {
+                        published
+                            .entry(record.key.clone())
+                            .or_insert(record.key.len() + record.value.len());
+                    }
+                    Ok(revision)
+                })
+            }
+        }
+
+        let store = MeasuredStore {
+            inner: MemoryStore::new().unwrap(),
+            published: Arc::new(Mutex::new(HashMap::new())),
+        };
+        let session =
+            DurableSession::open_with_terminal_receipt_limit(store.clone(), "late-profile", 0)
+                .await
+                .unwrap();
+        let (owner, _) = session.acquire_agent().await.unwrap();
+        let mut previous = Instant::now();
+        for index in 0..250 {
+            let id = format!("late-output:profile-{index}");
+            assert!(matches!(
+                owner
+                    .admit_typed::<_, u32, String>(id.clone(), &index)
+                    .await,
+                Ok(Admission::Accepted)
+            ));
+            owner.begin_attempt(id.clone()).await.unwrap();
+            owner
+                .complete(
+                    id,
+                    EncodedPayload::encode(&serde_json::json!({
+                        "model": "gpt-6-sol", "lineage_id": "profile", "workspace": "/test",
+                        // Distinct large checkpoints prevent content-addressed
+                        // deduplication from hiding per-completion growth.
+                        "history": format!("{index:08}{}", "x".repeat(8_184)),
+                    }))
+                    .unwrap(),
+                    &"receipt".to_owned(),
+                )
+                .await
+                .unwrap();
+            if [9, 99, 249].contains(&index) {
+                let state = session.state().await.unwrap();
+                let head_bytes = state.checkpoint_payload().unwrap().len();
+                let published = store.published.lock().unwrap();
+                let record_bytes = published.values().sum::<usize>();
+                println!(
+                    "late_journal_count={} retained_head_bytes={} immutable_records={} immutable_record_bytes={} last_segment_ms={}",
+                    index + 1,
+                    head_bytes,
+                    published.len(),
+                    record_bytes,
+                    previous.elapsed().as_millis(),
+                );
+                drop(published);
+                previous = Instant::now();
+            }
+        }
+        drop(owner);
+        drop(session);
+        let start = Instant::now();
+        let reopened =
+            DurableSession::open_with_terminal_receipt_limit(store.clone(), "late-profile", 0)
+                .await
+                .unwrap();
+        println!(
+            "late_journal_cold_reopen_ms={}",
+            start.elapsed().as_millis()
+        );
+        assert!(matches!(
+            reopened.admit("late-output:profile-249", &249).await,
+            Ok(Admission::Completed { .. })
+        ));
+    }
+
+    /// Measure an actual SQLite host store with unique checkpoint payloads.
+    /// Deliberately ignored: this is a scale characterization, not a CI SLA.
+    #[cfg(feature = "sqlite")]
+    #[tokio::test]
+    #[ignore = "run manually to characterize SQLite physical late-journal storage"]
+    async fn late_output_retention_sqlite_profile() {
+        use std::time::Instant;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("late-profile.sqlite");
+        let store = crate::SqliteStore::open(&path).unwrap();
+        let session =
+            DurableSession::open_with_terminal_receipt_limit(store, "late-sqlite-profile", 0)
+                .await
+                .unwrap();
+        let (owner, _) = session.acquire_agent().await.unwrap();
+        let mut previous = Instant::now();
+        for index in 0..250 {
+            let id = format!("late-output:sqlite-profile-{index}");
+            assert!(matches!(
+                owner
+                    .admit_typed::<_, u32, String>(id.clone(), &index)
+                    .await,
+                Ok(Admission::Accepted)
+            ));
+            owner.begin_attempt(id.clone()).await.unwrap();
+            owner
+                .complete(
+                    id,
+                    EncodedPayload::encode(&serde_json::json!({
+                        "history": format!("{index:08}{}", "x".repeat(8_184)),
+                    }))
+                    .unwrap(),
+                    &"receipt".to_owned(),
+                )
+                .await
+                .unwrap();
+            if [9, 99, 249].contains(&index) {
+                let head = session
+                    .state()
+                    .await
+                    .unwrap()
+                    .checkpoint_payload()
+                    .unwrap()
+                    .len();
+                let db = rusqlite::Connection::open(&path).unwrap();
+                let (records, logical_bytes): (i64, i64) = db
+                    .query_row(
+                        "SELECT COUNT(*), COALESCE(SUM(LENGTH(key) + LENGTH(value)), 0) \
+                     FROM nanocodex_durable_records WHERE state_id = 'late-sqlite-profile'",
+                        [],
+                        |row| Ok((row.get(0)?, row.get(1)?)),
+                    )
+                    .unwrap();
+                let pages: i64 = db
+                    .query_row("PRAGMA page_count", [], |row| row.get(0))
+                    .unwrap();
+                let page_size: i64 = db
+                    .query_row("PRAGMA page_size", [], |row| row.get(0))
+                    .unwrap();
+                println!(
+                    "sqlite_late_count={} head_bytes={} records={} logical_record_bytes={} db_pages_bytes={} file_bytes={} segment_ms={}",
+                    index + 1,
+                    head,
+                    records,
+                    logical_bytes,
+                    pages * page_size,
+                    std::fs::metadata(&path).unwrap().len(),
+                    previous.elapsed().as_millis(),
+                );
+                previous = Instant::now();
+            }
+        }
+        drop(owner);
+        drop(session);
+        let start = Instant::now();
+        let reopened = DurableSession::open_with_terminal_receipt_limit(
+            crate::SqliteStore::open(&path).unwrap(),
+            "late-sqlite-profile",
+            0,
+        )
+        .await
+        .unwrap();
+        println!("sqlite_late_cold_reopen_ms={}", start.elapsed().as_millis());
+        assert!(matches!(
+            reopened.admit("late-output:sqlite-profile-249", &249).await,
+            Ok(Admission::Completed { .. })
+        ));
+    }
+
+    #[tokio::test]
     async fn zero_retention_is_atomic_with_terminal_state() {
         let store = MemoryStore::new().unwrap();
         let session =
@@ -3092,6 +4674,160 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn idle_wake_failed_without_model_step_is_discarded_and_pruning_fails_closed() {
+        let store = crate::MemoryStore::new().unwrap();
+        let session =
+            DurableSession::open_with_terminal_receipt_limit(store.clone(), "idle-failed", 1)
+                .await
+                .unwrap();
+        let (owner, _) = session.acquire_agent().await.unwrap();
+        let id = "late-continuation:lineage:failed-wake";
+        let input = serde_json::json!({"kind":"late_function_output_continuation",
+            "lineage_id":"lineage", "wake_id":"failed-wake",
+            "jobs":[{"job_id":"job-failed", "call_id":"call-failed"}]});
+        owner
+            .admit_typed::<_, String, String>(id.into(), &input)
+            .await
+            .unwrap();
+        owner.begin_attempt(id.into()).await.unwrap();
+        owner
+            .fail(
+                id.into(),
+                EncodedPayload::encode(&"checkpoint").unwrap(),
+                "error".into(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            session
+                .idle_function_output_status_for_call("job-failed", "call-failed")
+                .await
+                .unwrap(),
+            ActiveBoundaryOutputStatus::Discarded
+        );
+        owner.shutdown().await.unwrap();
+        drop((owner, session));
+        let pruned = DurableSession::open_with_terminal_receipt_limit(store, "idle-failed", 0)
+            .await
+            .unwrap();
+        pruned.prune_receipts().await.unwrap();
+        assert_eq!(
+            pruned
+                .idle_function_output_status_for_call("job-failed", "call-failed")
+                .await
+                .unwrap(),
+            ActiveBoundaryOutputStatus::PrunedOrUnknown
+        );
+    }
+
+    #[tokio::test]
+    async fn idle_wake_status_requires_exact_job_call_and_completed_step_after_reopen() {
+        let store = crate::MemoryStore::new().unwrap();
+        let session = DurableSession::open(store.clone(), "idle-status")
+            .await
+            .unwrap();
+        let (owner, _) = session.acquire_agent().await.unwrap();
+        let id = "late-continuation:lineage:wake";
+        let input = serde_json::json!({"kind":"late_function_output_continuation",
+            "lineage_id":"lineage", "wake_id":"wake", "jobs":[
+                {"job_id":"job-1", "call_id":"call-1"},
+                {"job_id":"job-2", "call_id":"call-2"}]});
+        let status = |job, call| session.idle_function_output_status_for_call(job, call);
+        assert_eq!(
+            status("job-1", "call-1").await.unwrap(),
+            ActiveBoundaryOutputStatus::PrunedOrUnknown
+        );
+        owner
+            .admit_typed::<_, String, String>(id.into(), &input)
+            .await
+            .unwrap();
+        owner.begin_attempt(id.into()).await.unwrap();
+        assert_eq!(
+            status("job-1", "call-1").await.unwrap(),
+            ActiveBoundaryOutputStatus::AcceptedUnbound
+        );
+        assert_eq!(
+            status("job-1", "call-2").await.unwrap(),
+            ActiveBoundaryOutputStatus::PrunedOrUnknown
+        );
+        owner
+            .begin_step(id.into(), "model-1".into(), "model_call".into(), &"input")
+            .await
+            .unwrap();
+        assert_eq!(
+            status("job-2", "call-2").await.unwrap(),
+            ActiveBoundaryOutputStatus::BoundUnconfirmed {
+                model_call_index: 1
+            }
+        );
+        assert!(
+            owner
+                .complete_step(
+                    id.into(),
+                    "model-1".into(),
+                    &serde_json::json!({"response":{"id":""}})
+                )
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            status("job-1", "call-1").await.unwrap(),
+            ActiveBoundaryOutputStatus::BoundUnconfirmed {
+                model_call_index: 1
+            }
+        );
+        assert!(
+            owner
+                .complete_step(
+                    id.into(),
+                    "model-1".into(),
+                    &serde_json::json!({"response":{"id":"   "}})
+                )
+                .await
+                .is_err()
+        );
+        owner
+            .complete_step(
+                id.into(),
+                "model-1".into(),
+                &serde_json::json!({"response":{"id":"provider-response"}}),
+            )
+            .await
+            .unwrap();
+        let confirmed = ActiveBoundaryOutputStatus::Confirmed {
+            model_call_index: 1,
+            response_id: "provider-response".into(),
+        };
+        assert_eq!(status("job-1", "call-1").await.unwrap(), confirmed);
+        assert_eq!(status("job-2", "call-2").await.unwrap(), confirmed);
+        owner
+            .complete(
+                id.into(),
+                EncodedPayload::encode(&"checkpoint").unwrap(),
+                &"done",
+            )
+            .await
+            .unwrap();
+        owner.shutdown().await.unwrap();
+        drop((owner, session));
+        let reopened = DurableSession::open(store, "idle-status").await.unwrap();
+        assert_eq!(
+            reopened
+                .idle_function_output_status_for_call("job-2", "call-2")
+                .await
+                .unwrap(),
+            confirmed
+        );
+        assert_eq!(
+            reopened
+                .idle_function_output_status_for_call("job-2", "call-1")
+                .await
+                .unwrap(),
+            ActiveBoundaryOutputStatus::PrunedOrUnknown
+        );
+    }
+
     #[test]
     fn compacted_steer_state_rejects_impossible_boundaries_and_terminal_shapes() {
         fn steer(accepted_after: u32, bound_to: Option<u32>) -> SteerState {
@@ -3106,6 +4842,10 @@ mod tests {
         fn operation(status: OperationStatus, steers: Vec<SteerState>) -> OperationState {
             OperationState {
                 steer_receipts: Default::default(),
+                boundary_output_receipts: Default::default(),
+                boundary_outputs: Default::default(),
+                late_model_response: None,
+                retired_boundary_outputs: 0,
                 continuation: None,
                 retired_model_calls: 0,
                 retired_steers: 0,

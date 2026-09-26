@@ -3,7 +3,7 @@ use std::{collections::BTreeMap, sync::Arc};
 use crate::{Error, Result};
 use serde::{Serialize, de::DeserializeOwned};
 
-const STATE_FORMAT: u8 = 4;
+const STATE_FORMAT: u8 = 5;
 const RECORD_BYTES: usize = 256_000;
 
 /// An immutable payload reference. Content is loaded only for its consumer.
@@ -219,6 +219,9 @@ pub enum Transition {
         step_id: String,
         /// Opaque typed output returned during replay.
         output: EncodedPayload,
+        /// Provider response ID extracted from a completed late-wake model step.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        late_response_id: Option<String>,
     },
     /// Live steering input was accepted for an active operation.
     SteerAccepted {
@@ -249,6 +252,39 @@ pub enum Transition {
         steer_index: u32,
         /// Model-call ordinal before which the steer is applied.
         model_call_index: u32,
+    },
+    /// A typed output accepted for delivery at a future model request boundary.
+    BoundaryOutputAccepted {
+        /// Admitted operation.
+        operation_id: String,
+        /// One-based queue position.
+        output_index: u32,
+        /// Current model request when accepted.
+        accepted_after_model_call_index: u32,
+        /// Caller idempotency identity.
+        message_id: String,
+        /// Typed serialized output.
+        input: EncodedPayload,
+    },
+    /// A typed output is assigned to its consuming model request.
+    BoundaryOutputBound {
+        /// Admitted operation.
+        operation_id: String,
+        /// Original one-based acceptance position.
+        output_index: u32,
+        /// Request ordinal consuming this output.
+        model_call_index: u32,
+    },
+    /// A completed model step confirms that a bound output reached a response boundary.
+    BoundaryOutputConfirmed {
+        /// Admitted operation.
+        operation_id: String,
+        /// Original one-based acceptance position.
+        output_index: u32,
+        /// Request ordinal consuming this output.
+        model_call_index: u32,
+        /// Actual provider response ID of the completed model step.
+        response_id: String,
     },
     /// An operation completed and advanced the durable session checkpoint.
     OperationCompleted {
@@ -375,6 +411,47 @@ pub struct IdentifiedSteerReceipt {
     pub withdrawn: bool,
 }
 
+/// A typed output waiting for a future model request (never a completed delivery).
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct BoundaryOutputState {
+    /// Caller idempotency identity.
+    pub message_id: String,
+    /// Encoded typed output.
+    pub input: EncodedPayload,
+    /// Current model request when accepted.
+    pub accepted_after_model_call_index: u32,
+    /// Request ordinal selected for delivery, or none before binding.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_call_index: Option<u32>,
+}
+
+/// Caller receipt independent of steering receipts.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct BoundaryOutputReceipt {
+    /// Content fingerprint for exact duplicate detection.
+    pub input_key: String,
+    /// Exact original terminal function-call ID, if the accepted payload was typed.
+    /// Missing on legacy/generic receipts; a call-validated lookup then fails closed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub call_id: Option<String>,
+    /// Original one-based queue position.
+    pub index: u32,
+    /// Assignment alone does not prove model uptake.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bound_model_call_index: Option<u32>,
+    /// A durable completed model step confirms this response boundary.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confirmed_model_call_index: Option<u32>,
+    /// Provider response ID corresponding to the confirmed model call.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub response_id: Option<String>,
+    /// Terminal failure/cancellation discarded the live output without model uptake.
+    #[serde(default)]
+    pub discarded: bool,
+}
+
 /// Reduced durable operation state.
 #[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
@@ -382,6 +459,18 @@ pub struct OperationState {
     /// Caller receipts survive retirement of live steering bodies.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub steer_receipts: BTreeMap<String, IdentifiedSteerReceipt>,
+    /// Independent idempotency namespace for typed boundary outputs.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub boundary_output_receipts: BTreeMap<String, BoundaryOutputReceipt>,
+    /// Accepted but not yet delivered typed outputs.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub boundary_outputs: Vec<BoundaryOutputState>,
+    /// Number of confirmed FIFO bodies removed after a durable advance.
+    #[serde(default)]
+    pub retired_boundary_outputs: u32,
+    /// First completed provider model step of an idle wake; retained after step retirement.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub late_model_response: Option<(u32, String)>,
     /// Current conversation and execution position; settled batches are retired atomically.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub continuation: Option<EncodedPayload>,
@@ -408,6 +497,7 @@ impl OperationState {
             || self.retired_model_calls != 0
             || !self.steps.is_empty()
             || !self.steers.is_empty()
+            || !self.boundary_outputs.is_empty()
     }
 
     fn retire_steps(&mut self) {
@@ -434,6 +524,77 @@ impl OperationState {
         // Accepted indexes already fit u32; retirement preserves that total.
         self.retired_steers += consumed as u32;
         self.steers.drain(..consumed);
+        let consumed = self
+            .boundary_outputs
+            .iter()
+            .take_while(|output| {
+                self.boundary_output_receipts
+                    .get(&output.message_id)
+                    .is_some_and(|receipt| {
+                        receipt
+                            .confirmed_model_call_index
+                            .is_some_and(|index| index <= self.retired_model_calls)
+                    })
+            })
+            .count();
+        self.retired_boundary_outputs += consumed as u32;
+        self.boundary_outputs.drain(..consumed);
+    }
+}
+
+/// Immutable per-ID terminal journal stored outside the revisioned state head.
+/// Its deterministic key is scoped by StateStore's state_id and the exact ID;
+/// the payload record references remain content-addressed.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct RetiredLateReceipt {
+    pub(crate) format: u8,
+    pub(crate) archived_revision: u64,
+    pub(crate) operation_id: String,
+    pub(crate) input: EncodedPayload,
+    pub(crate) status: OperationStatus,
+}
+
+pub(crate) fn late_receipt_key(operation_id: &str) -> Option<String> {
+    operation_id
+        .starts_with("late-output:")
+        .then(|| format!("late-receipt:{}", record_key(operation_id)))
+}
+
+impl RetiredLateReceipt {
+    pub(crate) fn from_record(operation_id: &str, revision: u64, record: &str) -> Result<Self> {
+        let receipt: Self = serde_json::from_str(record).map_err(Error::InvalidPayload)?;
+        if receipt.format != 1
+            || receipt.archived_revision == 0
+            || receipt.archived_revision > revision
+            || receipt.operation_id != operation_id
+            || !receipt.status.is_terminal()
+        {
+            return Err(Error::InvalidState(
+                "late receipt identity or status mismatch".into(),
+            ));
+        }
+        Ok(receipt)
+    }
+
+    fn stage(&mut self, records: &mut Vec<crate::StoreRecord>) -> Result<()> {
+        self.input.stage(records);
+        match &mut self.status {
+            OperationStatus::Completed { checkpoint, output } => {
+                checkpoint.stage(records);
+                output.stage(records);
+            }
+            OperationStatus::Failed { checkpoint, .. } => checkpoint.stage(records),
+            OperationStatus::Cancelled {
+                checkpoint: Some(checkpoint),
+            } => checkpoint.stage(records),
+            OperationStatus::Cancelled { checkpoint: None } | OperationStatus::Pending => {}
+        }
+        records.push(crate::StoreRecord {
+            key: late_receipt_key(&self.operation_id).expect("late journal ID"),
+            value: serde_json::to_string(self).map_err(Error::InvalidPayload)?,
+        });
+        Ok(())
     }
 }
 
@@ -443,6 +604,8 @@ pub struct DurableState {
     revision: u64,
     operations: BTreeMap<String, OperationState>,
     latest_checkpoint: Option<(u64, EncodedPayload)>,
+    // Pending one-transaction publications, never part of the durable head.
+    late_receipts_to_stage: Vec<RetiredLateReceipt>,
 }
 
 #[derive(serde::Deserialize, serde::Serialize)]
@@ -472,7 +635,7 @@ struct RetainedCheckpointRef<'a> {
 }
 
 impl DurableState {
-    pub(crate) fn stage_records(&mut self) -> Vec<crate::StoreRecord> {
+    pub(crate) fn stage_records(&mut self) -> Result<Vec<crate::StoreRecord>> {
         let mut records = Vec::new();
         for operation in self.operations.values_mut() {
             operation.input.stage(&mut records);
@@ -499,13 +662,28 @@ impl DurableState {
             for steer in &mut operation.steers {
                 steer.input.stage(&mut records);
             }
+            for output in &mut operation.boundary_outputs {
+                output.input.stage(&mut records);
+            }
         }
         if let Some((_, value)) = &mut self.latest_checkpoint {
             value.stage(&mut records);
         }
+        for receipt in &mut self.late_receipts_to_stage {
+            receipt.stage(&mut records)?;
+        }
+        self.late_receipts_to_stage.clear();
         records.sort_unstable_by(|a, b| a.key.cmp(&b.key));
+        if records
+            .windows(2)
+            .any(|pair| pair[0].key == pair[1].key && pair[0].value != pair[1].value)
+        {
+            return Err(Error::InvalidState(
+                "same immutable durability record key has conflicting values".into(),
+            ));
+        }
         records.dedup_by(|a, b| a.key == b.key);
-        records
+        Ok(records)
     }
 
     /// Current optimistic store revision.
@@ -575,7 +753,7 @@ impl DurableState {
 
     pub(crate) fn retain_terminal_receipts(&mut self, limit: usize) -> bool {
         let before = self.operations.len();
-        Self::retain_terminal_operations(&mut self.operations, limit);
+        self.retain_terminal_operations(limit);
         let mut changed = self.operations.len() != before;
         for operation in self
             .operations
@@ -585,26 +763,44 @@ impl DurableState {
             // Terminal replay uses only input, result, and checkpoint. Keeping
             // every intermediate full-history model request multiplies memory
             // and write volume across long conversations.
-            changed |= !operation.steps.is_empty() || !operation.steers.is_empty();
+            changed |= !operation.steps.is_empty()
+                || !operation.steers.is_empty()
+                || !operation.boundary_outputs.is_empty();
             operation.steps.clear();
             changed |= operation.continuation.take().is_some();
             operation.steers.clear();
+            operation.boundary_outputs.clear();
         }
         changed
     }
 
-    fn retain_terminal_operations(operations: &mut BTreeMap<String, OperationState>, limit: usize) {
-        let mut terminal_orders = operations
-            .values()
-            .filter(|operation| operation.status.is_terminal())
-            .map(|operation| operation.accepted_order)
+    fn retain_terminal_operations(&mut self, limit: usize) {
+        let mut terminal_orders = self
+            .operations
+            .iter()
+            .filter(|(id, operation)| {
+                !id.starts_with("late-output:") && operation.status.is_terminal()
+            })
+            .map(|(_, operation)| operation.accepted_order)
             .collect::<Vec<_>>();
         terminal_orders.sort_unstable_by(|left, right| right.cmp(left));
         terminal_orders.truncate(limit);
         let retained = terminal_orders
             .into_iter()
             .collect::<std::collections::BTreeSet<_>>();
-        operations.retain(|_, operation| {
+        self.operations.retain(|operation_id, operation| {
+            if operation_id.starts_with("late-output:") && operation.status.is_terminal() {
+                // Publish the complete exact-ID receipt outside the bounded
+                // head in the *same* replace that removes this operation.
+                self.late_receipts_to_stage.push(RetiredLateReceipt {
+                    format: 1,
+                    archived_revision: self.revision,
+                    operation_id: operation_id.clone(),
+                    input: operation.input.clone(),
+                    status: operation.status.clone(),
+                });
+                return false;
+            }
             !operation.status.is_terminal() || retained.contains(&operation.accepted_order)
         });
     }
@@ -615,7 +811,9 @@ impl DurableState {
                 "a compacted state checkpoint must have a positive revision".to_owned(),
             ));
         }
-        if checkpoint.format != STATE_FORMAT {
+        // V4 is an existing receipt-bearing head; its terminal late operations
+        // are migrated into per-ID records by the next compacting replacement.
+        if checkpoint.format != 4 && checkpoint.format != STATE_FORMAT {
             return Err(Error::InvalidState(format!(
                 "unsupported state format {}",
                 checkpoint.format
@@ -654,6 +852,22 @@ impl DurableState {
                     )));
                 }
             }
+            if let Some((index, response_id)) = &operation.late_model_response {
+                let step_id = format!("model-{index}");
+                if !operation_id.starts_with("late-continuation:")
+                    || *index == 0
+                    || response_id.is_empty()
+                    || (*index > operation.retired_model_calls
+                        && !operation.steps.get(&step_id).is_some_and(|step| {
+                            step.kind == "model_call"
+                                && matches!(step.status, StepStatus::Completed(_))
+                        }))
+                {
+                    return Err(Error::InvalidState(
+                        "invalid retained late wake model receipt".into(),
+                    ));
+                }
+            }
             let mut previous_model_call_index = None;
             let mut saw_unbound_steer = false;
             for (offset, steer) in operation.steers.iter().enumerate() {
@@ -686,8 +900,52 @@ impl DurableState {
                     None => saw_unbound_steer = true,
                 }
             }
+            let mut previous_output_boundary = None;
+            let mut saw_unbound_output = false;
+            for (offset, output) in operation.boundary_outputs.iter().enumerate() {
+                if output.message_id.is_empty()
+                    || operation
+                        .boundary_output_receipts
+                        .get(&output.message_id)
+                        .is_none_or(|receipt| {
+                            receipt.index as usize
+                                != offset + 1 + operation.retired_boundary_outputs as usize
+                                || receipt.input_key != output.input.key.as_ref()
+                        })
+                {
+                    return Err(Error::InvalidState(format!(
+                        "invalid boundary output in operation `{operation_id}`"
+                    )));
+                }
+                let receipt = &operation.boundary_output_receipts[&output.message_id];
+                if receipt.bound_model_call_index != output.model_call_index
+                    || receipt
+                        .confirmed_model_call_index
+                        .is_some_and(|index| Some(index) != output.model_call_index)
+                    || receipt.response_id.is_some() != receipt.confirmed_model_call_index.is_some()
+                {
+                    return Err(Error::InvalidState(
+                        "boundary output receipt disagrees with live output".into(),
+                    ));
+                }
+                match output.model_call_index {
+                    Some(current)
+                        if current <= output.accepted_after_model_call_index
+                            || saw_unbound_output
+                            || previous_output_boundary
+                                .is_some_and(|previous| current < previous) =>
+                    {
+                        return Err(Error::InvalidState(
+                            "invalid boundary output binding".into(),
+                        ));
+                    }
+                    Some(current) => previous_output_boundary = Some(current),
+                    None => saw_unbound_output = true,
+                }
+            }
             if matches!(operation.status, OperationStatus::Completed { .. }) {
                 ensure_completed_steers_consumed(operation_id, operation)?;
+                ensure_completed_boundary_outputs_consumed(operation_id, operation)?;
             }
             if matches!(
                 &operation.status,
@@ -721,6 +979,7 @@ impl DurableState {
             revision,
             operations: checkpoint.operations,
             latest_checkpoint,
+            late_receipts_to_stage: Vec::new(),
         };
         for (operation_id, operation) in &state.operations {
             if matches!(
@@ -788,6 +1047,23 @@ impl DurableState {
                         "operation `{operation_id}` cannot advance past an unsettled effect"
                     )));
                 }
+                for output in &operation.boundary_outputs {
+                    if let Some(index) = output.model_call_index {
+                        let step_id = format!("model-{index}");
+                        if operation
+                            .steps
+                            .get(&step_id)
+                            .is_some_and(|step| matches!(step.status, StepStatus::Completed(_)))
+                            && operation.boundary_output_receipts[&output.message_id]
+                                .confirmed_model_call_index
+                                != Some(index)
+                        {
+                            return Err(Error::InvalidState(format!(
+                                "operation `{operation_id}` cannot retire unconfirmed output at `{step_id}`"
+                            )));
+                        }
+                    }
+                }
             }
             Transition::OperationAccepted { operation_id, .. } => {
                 if self.operations.contains_key(operation_id) {
@@ -838,7 +1114,21 @@ impl DurableState {
                 operation_id,
                 step_id,
                 output: _,
+                late_response_id,
             } => {
+                if let Some(response_id) = late_response_id {
+                    let index = step_id
+                        .strip_prefix("model-")
+                        .and_then(|n| n.parse::<u32>().ok());
+                    if !operation_id.starts_with("late-continuation:")
+                        || index.is_none_or(|n| n == 0)
+                        || response_id.trim().is_empty()
+                    {
+                        return Err(Error::InvalidState(
+                            "invalid late wake model receipt".into(),
+                        ));
+                    }
+                }
                 ensure_nonempty(step_id, "step ID")?;
                 self.ensure_prior_operations_terminal(operation_id)?;
                 let operation = self.pending_operation(operation_id)?;
@@ -847,6 +1137,11 @@ impl DurableState {
                         "step `{step_id}` in operation `{operation_id}` completed before start"
                     ))
                 })?;
+                if late_response_id.is_some() && step.kind != "model_call" {
+                    return Err(Error::InvalidState(
+                        "late wake receipt requires a model step".into(),
+                    ));
+                }
                 match &step.status {
                     StepStatus::EffectPending => {}
                     StepStatus::Completed(_) => {
@@ -967,6 +1262,92 @@ impl DurableState {
                     }
                 }
             }
+            Transition::BoundaryOutputAccepted {
+                operation_id,
+                output_index,
+                accepted_after_model_call_index: _,
+                message_id,
+                ..
+            } => {
+                self.ensure_prior_operations_terminal(operation_id)?;
+                let operation = self.pending_operation(operation_id)?;
+                let expected = u32::try_from(operation.boundary_outputs.len())
+                    .ok()
+                    .and_then(|n| n.checked_add(operation.retired_boundary_outputs))
+                    .and_then(|n| n.checked_add(1))
+                    .ok_or_else(|| Error::InvalidState("boundary output index overflow".into()))?;
+                if message_id.is_empty()
+                    || operation.boundary_output_receipts.contains_key(message_id)
+                    || *output_index != expected
+                {
+                    return Err(Error::InvalidState(
+                        "invalid or duplicate boundary output acceptance".into(),
+                    ));
+                }
+            }
+            Transition::BoundaryOutputBound {
+                operation_id,
+                output_index,
+                model_call_index,
+            } => {
+                self.ensure_prior_operations_terminal(operation_id)?;
+                let operation = self.pending_operation(operation_id)?;
+                let index = output_index
+                    .checked_sub(operation.retired_boundary_outputs)
+                    .and_then(|index| index.checked_sub(1))
+                    .and_then(|index| usize::try_from(index).ok())
+                    .ok_or_else(|| {
+                        Error::InvalidState("boundary output index was retired".into())
+                    })?;
+                let output = operation.boundary_outputs.get(index).ok_or_else(|| {
+                    Error::InvalidState("boundary output was not accepted".into())
+                })?;
+                if *model_call_index <= output.accepted_after_model_call_index
+                    || output.model_call_index.is_some()
+                    || operation.boundary_outputs[..index].iter().any(|earlier| {
+                        earlier
+                            .model_call_index
+                            .is_none_or(|bound| bound > *model_call_index)
+                    })
+                {
+                    return Err(Error::InvalidState(
+                        "invalid boundary output binding or FIFO order".into(),
+                    ));
+                }
+            }
+            Transition::BoundaryOutputConfirmed {
+                operation_id,
+                output_index,
+                model_call_index,
+                response_id,
+            } => {
+                self.ensure_prior_operations_terminal(operation_id)?;
+                let operation = self.pending_operation(operation_id)?;
+                let output = output_index
+                    .checked_sub(operation.retired_boundary_outputs)
+                    .and_then(|index| index.checked_sub(1))
+                    .and_then(|index| usize::try_from(index).ok())
+                    .and_then(|index| operation.boundary_outputs.get(index))
+                    .ok_or_else(|| {
+                        Error::InvalidState(
+                            "boundary output was not retained for confirmation".into(),
+                        )
+                    })?;
+                let step_id = format!("model-{model_call_index}");
+                if response_id.is_empty()
+                    || output.model_call_index != Some(*model_call_index)
+                    || operation.boundary_output_receipts[&output.message_id]
+                        .confirmed_model_call_index
+                        .is_some()
+                    || !operation.steps.get(&step_id).is_some_and(|step| {
+                        step.kind == "model_call" && matches!(step.status, StepStatus::Completed(_))
+                    })
+                {
+                    return Err(Error::InvalidState(
+                        "boundary output confirmed without completed matching model step".into(),
+                    ));
+                }
+            }
             Transition::OperationCompleted { operation_id, .. } => {
                 self.ensure_prior_operations_terminal(operation_id)?;
                 let operation = self.pending_operation(operation_id)?;
@@ -980,6 +1361,7 @@ impl DurableState {
                     )));
                 }
                 ensure_completed_steers_consumed(operation_id, operation)?;
+                ensure_completed_boundary_outputs_consumed(operation_id, operation)?;
             }
             Transition::OperationFailed { operation_id, .. } => {
                 self.ensure_prior_operations_terminal(operation_id)?;
@@ -1027,6 +1409,10 @@ impl DurableState {
                     operation_id,
                     OperationState {
                         steer_receipts: BTreeMap::new(),
+                        boundary_output_receipts: BTreeMap::new(),
+                        boundary_outputs: Vec::new(),
+                        late_model_response: None,
+                        retired_boundary_outputs: 0,
                         continuation: None,
                         retired_model_calls: 0,
                         retired_steers: 0,
@@ -1067,14 +1453,92 @@ impl DurableState {
                 operation_id,
                 step_id,
                 output,
+                late_response_id,
             } => {
                 let operation = self.pending_operation_mut(&operation_id)?;
+                if let Some(response_id) = late_response_id {
+                    let index = step_id
+                        .strip_prefix("model-")
+                        .unwrap()
+                        .parse::<u32>()
+                        .unwrap();
+                    if operation.late_model_response.is_none() {
+                        operation.late_model_response = Some((index, response_id));
+                    }
+                }
                 let step = operation.steps.get_mut(&step_id).ok_or_else(|| {
                     Error::InvalidState(format!(
                         "step `{step_id}` in operation `{operation_id}` completed before start"
                     ))
                 })?;
                 step.status = StepStatus::Completed(output);
+            }
+            Transition::BoundaryOutputAccepted {
+                operation_id,
+                output_index,
+                accepted_after_model_call_index,
+                message_id,
+                input,
+            } => {
+                let operation = self.pending_operation_mut(&operation_id)?;
+                operation.boundary_output_receipts.insert(
+                    message_id.clone(),
+                    BoundaryOutputReceipt {
+                        input_key: input.key.to_string(),
+                        call_id: input
+                            .decode::<nanocodex_agent::execution::ExecutionBoundaryOutput>()
+                            .ok()
+                            .and_then(|output| match output {
+                                nanocodex_agent::execution::ExecutionBoundaryOutput::TerminalOutput {
+                                    call_id,
+                                    ..
+                                } if !call_id.is_empty() => Some(call_id),
+                                _ => None,
+                            }),
+                        index: output_index,
+                        bound_model_call_index: None,
+                        confirmed_model_call_index: None,
+                        response_id: None,
+                        discarded: false,
+                    },
+                );
+                operation.boundary_outputs.push(BoundaryOutputState {
+                    message_id,
+                    input,
+                    accepted_after_model_call_index,
+                    model_call_index: None,
+                });
+            }
+            Transition::BoundaryOutputBound {
+                operation_id,
+                output_index,
+                model_call_index,
+            } => {
+                let operation = self.pending_operation_mut(&operation_id)?;
+                let output = &mut operation.boundary_outputs
+                    [(output_index - operation.retired_boundary_outputs - 1) as usize];
+                output.model_call_index = Some(model_call_index);
+                operation
+                    .boundary_output_receipts
+                    .get_mut(&output.message_id)
+                    .unwrap()
+                    .bound_model_call_index = Some(model_call_index);
+            }
+            Transition::BoundaryOutputConfirmed {
+                operation_id,
+                output_index,
+                model_call_index,
+                response_id,
+            } => {
+                let operation = self.pending_operation_mut(&operation_id)?;
+                let output = &operation.boundary_outputs
+                    [(output_index - operation.retired_boundary_outputs - 1) as usize];
+                let receipt = operation
+                    .boundary_output_receipts
+                    .get_mut(&output.message_id)
+                    .unwrap();
+                receipt.confirmed_model_call_index = Some(model_call_index);
+                receipt.response_id = Some(response_id);
             }
             Transition::SteerAccepted {
                 operation_id,
@@ -1130,9 +1594,8 @@ impl DurableState {
                 output,
             } => {
                 let operation = self.pending_operation_mut(&operation_id)?;
-                if operation.continuation.take().is_some() {
-                    operation.retire_steps();
-                }
+                operation.continuation.take();
+                operation.retire_steps();
                 operation.status = OperationStatus::Completed {
                     checkpoint: checkpoint.clone(),
                     output,
@@ -1148,6 +1611,16 @@ impl DurableState {
                 if operation.continuation.take().is_some() {
                     operation.retire_steps();
                 }
+                for output in &operation.boundary_outputs {
+                    if let Some(receipt) = operation
+                        .boundary_output_receipts
+                        .get_mut(&output.message_id)
+                        && receipt.confirmed_model_call_index.is_none()
+                    {
+                        receipt.discarded = true;
+                    }
+                }
+                operation.boundary_outputs.clear();
                 operation.status = OperationStatus::Failed {
                     checkpoint: checkpoint.clone(),
                     error,
@@ -1162,6 +1635,16 @@ impl DurableState {
                 if operation.continuation.take().is_some() {
                     operation.retire_steps();
                 }
+                for output in &operation.boundary_outputs {
+                    if let Some(receipt) = operation
+                        .boundary_output_receipts
+                        .get_mut(&output.message_id)
+                        && receipt.confirmed_model_call_index.is_none()
+                    {
+                        receipt.discarded = true;
+                    }
+                }
+                operation.boundary_outputs.clear();
                 operation.status = OperationStatus::Cancelled {
                     checkpoint: checkpoint.clone(),
                 };
@@ -1217,6 +1700,23 @@ impl DurableState {
     }
 }
 
+fn ensure_completed_boundary_outputs_consumed(
+    operation_id: &str,
+    operation: &OperationState,
+) -> Result<()> {
+    for output in &operation.boundary_outputs {
+        let receipt = &operation.boundary_output_receipts[&output.message_id];
+        if receipt.confirmed_model_call_index != output.model_call_index
+            || receipt.confirmed_model_call_index.is_none()
+        {
+            return Err(Error::InvalidState(format!(
+                "operation `{operation_id}` completed with output not confirmed by a durable model step"
+            )));
+        }
+    }
+    Ok(())
+}
+
 fn ensure_completed_steers_consumed(operation_id: &str, operation: &OperationState) -> Result<()> {
     for (offset, steer) in operation.steers.iter().enumerate() {
         let steer_index = offset + 1 + operation.retired_steers as usize;
@@ -1246,6 +1746,9 @@ impl Transition {
             | Self::OperationAccepted { operation_id, .. }
             | Self::StepStarted { operation_id, .. }
             | Self::StepCompleted { operation_id, .. }
+            | Self::BoundaryOutputAccepted { operation_id, .. }
+            | Self::BoundaryOutputBound { operation_id, .. }
+            | Self::BoundaryOutputConfirmed { operation_id, .. }
             | Self::SteerAccepted { operation_id, .. }
             | Self::SteerBound { operation_id, .. }
             | Self::SteerWithdrawn { operation_id, .. }
@@ -1308,6 +1811,7 @@ mod continuation_tests {
                 operation_id: id.clone(),
                 step_id: format!("model-{model_call}"),
                 output: payload.clone(),
+                late_response_id: None,
             })?;
             apply(Transition::ExecutionAdvanced {
                 operation_id: id.clone(),
@@ -1348,6 +1852,7 @@ mod continuation_tests {
             operation_id: id.clone(),
             step_id: "model-1".into(),
             output: payload.clone(),
+            late_response_id: None,
         })?;
         apply(Transition::ExecutionAdvanced {
             operation_id: id.clone(),
@@ -1375,6 +1880,7 @@ mod continuation_tests {
             operation_id: id.clone(),
             step_id: "model-2".into(),
             output: payload.clone(),
+            late_response_id: None,
         })?;
         apply(Transition::ExecutionAdvanced {
             operation_id: id.clone(),
@@ -1501,6 +2007,7 @@ mod withdrawal_tests {
             operation_id: "turn".into(),
             step_id: "model-2".into(),
             output: payload.clone(),
+            late_response_id: None,
         })?;
         apply(Transition::ExecutionAdvanced {
             operation_id: "turn".into(),
@@ -1549,6 +2056,232 @@ mod withdrawal_tests {
             replay.operation("turn").unwrap().steers[0].model_call_index,
             Some(3)
         );
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod boundary_output_lifecycle_tests {
+    use super::*;
+
+    #[test]
+    fn ordered_outputs_bind_to_one_boundary_and_retire_only_with_persisted_conversation()
+    -> Result<()> {
+        let mut state = DurableState::default();
+        let payload = EncodedPayload::encode(&"terminal")?;
+        fn apply(state: &mut DurableState, entry: Transition) -> Result<()> {
+            state.apply_transition(state.revision() + 1, entry)
+        }
+        apply(
+            &mut state,
+            Transition::OperationAccepted {
+                operation_id: "turn".into(),
+                input: payload.clone(),
+            },
+        )?;
+        for index in 1..=2 {
+            apply(
+                &mut state,
+                Transition::BoundaryOutputAccepted {
+                    operation_id: "turn".into(),
+                    output_index: index,
+                    accepted_after_model_call_index: 1,
+                    message_id: format!("msg-{index}"),
+                    input: payload.clone(),
+                },
+            )?;
+        }
+        assert!(
+            apply(
+                &mut state,
+                Transition::BoundaryOutputBound {
+                    operation_id: "turn".into(),
+                    output_index: 2,
+                    model_call_index: 2
+                }
+            )
+            .is_err()
+        );
+        for index in 1..=2 {
+            apply(
+                &mut state,
+                Transition::BoundaryOutputBound {
+                    operation_id: "turn".into(),
+                    output_index: index,
+                    model_call_index: 2,
+                },
+            )?;
+        }
+        assert!(
+            apply(
+                &mut state,
+                Transition::OperationCompleted {
+                    operation_id: "turn".into(),
+                    checkpoint: payload.clone(),
+                    output: payload.clone()
+                }
+            )
+            .is_err()
+        );
+        apply(
+            &mut state,
+            Transition::StepStarted {
+                operation_id: "turn".into(),
+                step_id: "model-2".into(),
+                kind: "model_call".into(),
+                input: payload.clone(),
+            },
+        )?;
+        apply(
+            &mut state,
+            Transition::StepCompleted {
+                operation_id: "turn".into(),
+                step_id: "model-2".into(),
+                output: payload.clone(),
+                late_response_id: None,
+            },
+        )?;
+        assert_eq!(state.operation("turn").unwrap().boundary_outputs.len(), 2);
+        assert!(
+            apply(
+                &mut state,
+                Transition::ExecutionAdvanced {
+                    operation_id: "turn".into(),
+                    continuation: payload.clone(),
+                }
+            )
+            .is_err()
+        );
+        for index in 1..=2 {
+            apply(
+                &mut state,
+                Transition::BoundaryOutputConfirmed {
+                    operation_id: "turn".into(),
+                    output_index: index,
+                    model_call_index: 2,
+                    response_id: "resp-2".into(),
+                },
+            )?;
+        }
+        apply(
+            &mut state,
+            Transition::ExecutionAdvanced {
+                operation_id: "turn".into(),
+                continuation: payload.clone(),
+            },
+        )?;
+        let operation = state.operation("turn").unwrap();
+        assert!(operation.boundary_outputs.is_empty());
+        assert_eq!(operation.retired_boundary_outputs, 2);
+        assert_eq!(operation.boundary_output_receipts["msg-1"].index, 1);
+        assert!(
+            apply(
+                &mut state,
+                Transition::BoundaryOutputBound {
+                    operation_id: "turn".into(),
+                    output_index: 1,
+                    model_call_index: 3
+                }
+            )
+            .is_err()
+        );
+        apply(
+            &mut state,
+            Transition::OperationCompleted {
+                operation_id: "turn".into(),
+                checkpoint: payload.clone(),
+                output: payload,
+            },
+        )?;
+        Ok(())
+    }
+
+    #[test]
+    fn completion_retires_consumed_output_and_cancel_discards_live_body_but_keeps_receipt()
+    -> Result<()> {
+        for cancel in [false, true] {
+            let mut state = DurableState::default();
+            let payload = EncodedPayload::encode(&"terminal")?;
+            fn apply(state: &mut DurableState, entry: Transition) -> Result<()> {
+                state.apply_transition(state.revision() + 1, entry)
+            }
+            apply(
+                &mut state,
+                Transition::OperationAccepted {
+                    operation_id: "turn".into(),
+                    input: payload.clone(),
+                },
+            )?;
+            apply(
+                &mut state,
+                Transition::BoundaryOutputAccepted {
+                    operation_id: "turn".into(),
+                    output_index: 1,
+                    accepted_after_model_call_index: 1,
+                    message_id: "msg".into(),
+                    input: payload.clone(),
+                },
+            )?;
+            if !cancel {
+                apply(
+                    &mut state,
+                    Transition::BoundaryOutputBound {
+                        operation_id: "turn".into(),
+                        output_index: 1,
+                        model_call_index: 2,
+                    },
+                )?;
+                apply(
+                    &mut state,
+                    Transition::StepStarted {
+                        operation_id: "turn".into(),
+                        step_id: "model-2".into(),
+                        kind: "model_call".into(),
+                        input: payload.clone(),
+                    },
+                )?;
+                apply(
+                    &mut state,
+                    Transition::StepCompleted {
+                        operation_id: "turn".into(),
+                        step_id: "model-2".into(),
+                        output: payload.clone(),
+                        late_response_id: None,
+                    },
+                )?;
+                apply(
+                    &mut state,
+                    Transition::BoundaryOutputConfirmed {
+                        operation_id: "turn".into(),
+                        output_index: 1,
+                        model_call_index: 2,
+                        response_id: "resp-2".into(),
+                    },
+                )?;
+                apply(
+                    &mut state,
+                    Transition::OperationCompleted {
+                        operation_id: "turn".into(),
+                        checkpoint: payload.clone(),
+                        output: payload.clone(),
+                    },
+                )?;
+            } else {
+                apply(
+                    &mut state,
+                    Transition::OperationCancelled {
+                        operation_id: "turn".into(),
+                        checkpoint: Some(payload.clone()),
+                    },
+                )?;
+            }
+            let operation = state.operation("turn").unwrap();
+            assert!(operation.boundary_outputs.is_empty());
+            assert_eq!(operation.boundary_output_receipts["msg"].index, 1);
+            if !cancel {
+                assert_eq!(operation.retired_boundary_outputs, 1);
+            }
+        }
         Ok(())
     }
 }

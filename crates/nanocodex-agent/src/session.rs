@@ -14,6 +14,10 @@ use crate::{NanocodexError, Result, model::run::ModelCheckpoint};
 
 #[cfg(feature = "openai")]
 const SESSION_SNAPSHOT_VERSION: u32 = 1;
+// V1 readers ignore unknown fields. A persisted all-member delivery fence
+// must therefore use an incompatible version until the cohort is settled.
+#[cfg(feature = "openai")]
+const FENCED_LATE_BATCH_SNAPSHOT_VERSION: u32 = 2;
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
 pub(crate) struct ContextSnapshot {
@@ -107,7 +111,11 @@ impl CommittedSession {
             return snapshot.clone();
         }
         SessionSnapshot {
-            version: SESSION_SNAPSHOT_VERSION,
+            version: if self.model.late_batch().is_some() {
+                FENCED_LATE_BATCH_SNAPSHOT_VERSION
+            } else {
+                SESSION_SNAPSHOT_VERSION
+            },
             model: self.selected_model.as_str().to_owned(),
             lineage_id: self.lineage_id.to_string(),
             prompt_cache_key: self.model.prompt_cache_key().to_owned(),
@@ -117,10 +125,18 @@ impl CommittedSession {
             canonical_context: self.model.canonical_context().clone(),
             history: self.model.snapshot_history(),
             client_authored: self.model.client_authored().clone(),
+            unreal_function_outputs: self.model.unreal_function_outputs(),
             context_snapshot: Some(self.model.context_baseline().clone()),
             context_usage: Some(self.model.context_usage()),
+            pending_late_wake: self.model.late_wake_id().map(str::to_owned),
+            pending_late_jobs: self.model.late_wake_jobs().to_vec(),
+            pending_late_batch: self.model.late_batch().cloned(),
         }
     }
+}
+
+fn is_false(value: &bool) -> bool {
+    !value
 }
 
 /// Accounting basis for exactly the history retained at a durable boundary.
@@ -158,10 +174,18 @@ pub struct SessionSnapshot {
     history: Vec<ResponseItem>,
     #[serde(default, skip_serializing_if = "std::collections::BTreeSet::is_empty")]
     client_authored: std::collections::BTreeSet<String>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    unreal_function_outputs: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     context_snapshot: Option<ContextBaseline>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     context_usage: Option<ContextUsage>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pending_late_wake: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pending_late_jobs: Vec<super::model::run::LateWakeJob>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pending_late_batch: Option<super::model::run::PendingLateBatch>,
 }
 
 /// Session metadata separated from independently persisted conversation items.
@@ -241,8 +265,12 @@ impl SessionSnapshot {
             canonical_context,
             history,
             client_authored,
+            unreal_function_outputs: false,
             context_snapshot,
             context_usage: None,
+            pending_late_wake: None,
+            pending_late_jobs: Vec::new(),
+            pending_late_batch: None,
         })
     }
 
@@ -258,13 +286,48 @@ impl SessionSnapshot {
         &self.workspace
     }
 
+    /// Resolve a completed journal admission from its saved boundary, never
+    /// from the driver's potentially newer or compacted in-memory checkpoint.
+    #[cfg(feature = "openai")]
+    pub(crate) fn into_replayed_checkpoint(
+        self,
+        lineage_id: &str,
+        model: Model,
+        workspace: Option<&str>,
+    ) -> Result<ModelCheckpoint> {
+        let resumed = self.into_resume()?;
+        if resumed.lineage_id.as_ref() != lineage_id || resumed.model != model {
+            return Err(NanocodexError::InvalidSessionSnapshot(
+                "replayed operation belongs to another lineage or model".into(),
+            ));
+        }
+        if workspace.is_some_and(|expected| expected != resumed.workspace) {
+            return Err(NanocodexError::InvalidSessionSnapshot(
+                "replayed operation belongs to another workspace".into(),
+            ));
+        }
+        resumed.checkpoint.ok_or_else(|| {
+            NanocodexError::InvalidSessionSnapshot(
+                "replayed operation has no exact model checkpoint".into(),
+            )
+        })
+    }
+
     #[cfg(feature = "openai")]
     pub(crate) fn into_resume(self) -> Result<SessionResume> {
-        if self.version != SESSION_SNAPSHOT_VERSION {
+        if !matches!(
+            (self.version, self.pending_late_batch.is_some()),
+            (SESSION_SNAPSHOT_VERSION, false) | (FENCED_LATE_BATCH_SNAPSHOT_VERSION, true)
+        ) {
             return Err(NanocodexError::InvalidSessionSnapshot(format!(
-                "unsupported format version {}; expected {SESSION_SNAPSHOT_VERSION}",
+                "unsupported format version {} or inconsistent late batch fence",
                 self.version
             )));
+        }
+        if self.pending_late_batch.is_some() && self.request_prefix.is_none() {
+            return Err(NanocodexError::InvalidSessionSnapshot(
+                "fenced late batch has no resumable request prefix".into(),
+            ));
         }
         let model = self.model.parse::<Model>().map_err(|error| {
             NanocodexError::InvalidSessionSnapshot(format!(
@@ -318,9 +381,13 @@ impl SessionSnapshot {
                     self.canonical_context.clone(),
                     self.history.clone(),
                     self.client_authored.clone(),
+                    self.unreal_function_outputs,
                     None,
                     self.context_snapshot.clone(),
                 )?;
+                checkpoint.restore_late_wake(self.pending_late_wake.clone());
+                checkpoint.restore_late_wake_jobs(self.pending_late_jobs.clone());
+                checkpoint.restore_late_batch(self.pending_late_batch.clone());
                 if let Some(usage) = self.context_usage.as_ref() {
                     checkpoint.restore_context_usage(usage);
                 }
@@ -335,6 +402,7 @@ impl SessionSnapshot {
             canonical_context: self.canonical_context,
             history: self.history,
             client_authored: self.client_authored,
+            unreal_function_outputs: self.unreal_function_outputs,
             context_baseline: self.context_snapshot,
             checkpoint,
         })
@@ -350,6 +418,7 @@ pub(crate) struct SessionResume {
     pub(crate) canonical_context: ResponseItem,
     pub(crate) history: Vec<ResponseItem>,
     pub(crate) client_authored: std::collections::BTreeSet<String>,
+    pub(crate) unreal_function_outputs: bool,
     pub(crate) context_baseline: Option<ContextBaseline>,
     pub(crate) checkpoint: Option<ModelCheckpoint>,
 }

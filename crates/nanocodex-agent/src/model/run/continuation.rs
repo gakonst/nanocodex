@@ -11,6 +11,8 @@ struct CurrentExecution {
     canonical_context: ResponseItem,
     #[serde(default)]
     client_authored: std::collections::BTreeSet<String>,
+    #[serde(default)]
+    unreal_function_outputs: bool,
     context_baseline: ContextBaseline,
     #[serde(default)]
     context_usage: Option<Usage>,
@@ -100,7 +102,11 @@ where
         session.conversation = if history.is_empty() && saved.phase == ExecutionPhase::Compact {
             ConversationState::empty(saved.canonical_context)
         } else {
-            ConversationState::resume(saved.canonical_context, history)?
+            ConversationState::resume(
+                saved.canonical_context,
+                history,
+                saved.unreal_function_outputs,
+            )?
         };
         session
             .conversation
@@ -185,6 +191,7 @@ where
             workspace: session.workspace.clone(),
             canonical_context: (*session.conversation.canonical_context).clone(),
             client_authored: session.conversation.managed.client_authored().clone(),
+            unreal_function_outputs: session.conversation.managed.unreal_function_outputs(),
             context_baseline: session.context.baseline(),
             context_usage: session.conversation.managed.context_usage().0.cloned(),
             server_reasoning_included: session.conversation.managed.context_usage().1,
@@ -231,6 +238,7 @@ mod tests {
                 [ContentItem::input_text("task")],
             ),
             client_authored: Default::default(),
+            unreal_function_outputs: false,
             context_baseline: ContextBaseline::Missing,
             context_usage: Some(Usage {
                 total_tokens: 150007,

@@ -21,13 +21,16 @@ pub use memory::MemoryStore;
     doc(cfg(all(feature = "postgres", not(target_family = "wasm"))))
 )]
 pub use postgres::PostgresStore;
-pub use session::{Admission, AutomaticAdmission, BeginStep, DurableSession};
+pub use session::{
+    ActiveBoundaryOutputStatus, Admission, AutomaticAdmission, BeginStep, DurableSession,
+};
 #[cfg(all(feature = "sqlite", not(target_family = "wasm")))]
 #[cfg_attr(docsrs, doc(cfg(all(feature = "sqlite", not(target_family = "wasm")))))]
 pub use sqlite::SqliteStore;
 pub use state::{
-    DurableState, EncodedPayload, IdentifiedSteerReceipt, OperationState, OperationStatus,
-    SteerState, StepState, StepStatus, Transition,
+    BoundaryOutputReceipt, BoundaryOutputState, DurableState, EncodedPayload,
+    IdentifiedSteerReceipt, OperationState, OperationStatus, SteerState, StepState, StepStatus,
+    Transition,
 };
 pub use store::{
     OwnedState, OwnerId, OwnerToken, StateStore, StoreError, StoreFuture, StoreRecord, StoredState,
@@ -52,6 +55,15 @@ pub enum Error {
     #[error("steering message `{message_id}` was withdrawn")]
     SteerWithdrawn {
         /// Withdrawn caller identity.
+        message_id: String,
+    },
+    /// Pending boundary output queue lacks capacity.
+    #[error("boundary output queue is full")]
+    BoundaryOutputQueueFull,
+    /// A boundary output caller identity was reused with different payload.
+    #[error("boundary output `{message_id}` already has different input")]
+    BoundaryOutputConflict {
+        /// Reused caller identity.
         message_id: String,
     },
     /// The host store rejected or failed an operation.

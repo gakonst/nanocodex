@@ -24,8 +24,8 @@ use nanocodex_agent::{
 use serde_json::json;
 
 use nanocodex_durability::{
-    DurableAgentExt, DurableSession, MemoryStore, OperationStatus, OwnedState, OwnerId, OwnerToken,
-    StateStore, StoreError, StoreFuture,
+    ActiveBoundaryOutputStatus, DurableAgentExt, DurableSession, MemoryStore, OperationStatus,
+    OwnedState, OwnerId, OwnerToken, StateStore, StoreError, StoreFuture,
 };
 
 fn temporary_workspace(label: &str) -> Result<PathBuf> {
@@ -4556,4 +4556,861 @@ async fn deterministic_hosted_stream_failure_is_terminal_across_cold_reopen() ->
 #[tokio::test]
 async fn transient_hosted_stream_failure_remains_retryable_across_cold_reopen() -> Result<()> {
     assert_hosted_stream_failure_recovery(false).await
+}
+
+#[derive(Clone)]
+struct BoundaryProbeService {
+    requests: tokio::sync::mpsc::UnboundedSender<Vec<serde_json::Value>>,
+    generations: Arc<std::sync::atomic::AtomicUsize>,
+    release_first: Arc<tokio::sync::Notify>,
+}
+
+impl tower::Service<nanocodex_oai_api::tower::ResponsesAttempt> for BoundaryProbeService {
+    type Response = nanocodex_oai_api::tower::ResponsesServiceResponse;
+    type Error = ResponseError;
+    type Future =
+        Pin<Box<dyn Future<Output = std::result::Result<Self::Response, Self::Error>> + Send>>;
+
+    fn poll_ready(
+        &mut self,
+        _: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::result::Result<(), Self::Error>> {
+        std::task::Poll::Ready(Ok(()))
+    }
+
+    fn call(&mut self, request: nanocodex_oai_api::tower::ResponsesAttempt) -> Self::Future {
+        let kind = request.kind();
+        let first = if matches!(
+            kind,
+            nanocodex_oai_api::tower::ResponsesAttemptKind::Generation
+        ) {
+            let items = request
+                .input_items()
+                .map(|item| serde_json::to_value(item).unwrap())
+                .collect();
+            self.requests.send(items).unwrap();
+            self.generations.fetch_add(1, Ordering::SeqCst) == 0
+        } else {
+            false
+        };
+        let gate = Arc::clone(&self.release_first);
+        Box::pin(async move {
+            if first {
+                gate.notified().await;
+            }
+            Ok(successful_attempt(kind))
+        })
+    }
+}
+
+#[tokio::test]
+async fn accepted_terminal_crosses_active_model_boundary_with_original_call_id() -> Result<()> {
+    use nanocodex_oai_api::responses::FunctionOutputBody;
+    let workspace = temporary_workspace("unreal-active-boundary")?;
+    let seed_openai = OpenAi::builder("test-key")
+        .service(|| DurableReplayService {
+            generations: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        })
+        .build()?;
+    let (seed, seed_events) = Nanocodex::builder(seed_openai)
+        .workspace(&workspace)
+        .tools(Tools::builder().without_defaults().build()?)
+        .build()?;
+    seed.prompt("seed").await?.result().await?;
+    let mut value = serde_json::to_value(seed.snapshot().await?)?;
+    seed.shutdown().await?;
+    drop(seed_events);
+    value["unreal_function_outputs"] = json!(true);
+    let history = value["history"].as_array_mut().unwrap();
+    history
+        .push(json!({"type":"function_call", "call_id":"job-1", "name":"job", "arguments":"{}"}));
+    history.push(json!({"type":"function_call_output", "call_id":"job-1", "output":
+        "Tool call is still running. Its result arrives in a later turn: continue with independent work, or end your turn to wait for it."}));
+    history
+        .push(json!({"type":"function_call", "call_id":"job-2", "name":"job", "arguments":"{}"}));
+    history.push(json!({"type":"function_call_output", "call_id":"job-2", "output":
+        "Tool call is still running. Its result arrives in a later turn: continue with independent work, or end your turn to wait for it."}));
+
+    let store = MemoryStore::new()?;
+    let state = DurableSession::open(store.clone(), "unreal-active-boundary").await?;
+    let (tx, mut requests) = tokio::sync::mpsc::unbounded_channel();
+    let generations = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let release_first = Arc::new(tokio::sync::Notify::new());
+    let openai = OpenAi::builder("test-key")
+        .service({
+            let generations = Arc::clone(&generations);
+            let release_first = Arc::clone(&release_first);
+            move || BoundaryProbeService {
+                requests: tx.clone(),
+                generations: Arc::clone(&generations),
+                release_first: Arc::clone(&release_first),
+            }
+        })
+        .build()?;
+    let (agent, events) = Nanocodex::builder(openai)
+        .resume(serde_json::from_value(value)?)
+        .workspace(&workspace)
+        .tools(Tools::builder().without_defaults().build()?)
+        .durability(state.clone())
+        .await?
+        .build()?;
+    let turn = agent
+        .prompt(PromptRequest::new("independent work").request_id("active-boundary-turn"))
+        .await?;
+    let initial = tokio::time::timeout(Duration::from_secs(5), requests.recv())
+        .await?
+        .unwrap();
+    assert!(
+        !initial
+            .iter()
+            .any(|item| item["output"] == "terminal result")
+    );
+    let receipt = tokio::time::timeout(
+        Duration::from_secs(5),
+        agent.submit_late_function_output(
+            "job-1",
+            FunctionOutputBody::Text("terminal result".into()),
+            "job-identity-1",
+        ),
+    )
+    .await??;
+    assert!(!receipt.replayed && !receipt.continuation_started);
+    let duplicate = agent
+        .submit_late_function_output(
+            "job-1",
+            FunctionOutputBody::Text("terminal result".into()),
+            "job-identity-1",
+        )
+        .await?;
+    assert!(duplicate.replayed);
+    let second_receipt = agent
+        .submit_late_function_output(
+            "job-2",
+            FunctionOutputBody::Text("second terminal".into()),
+            "job-identity-2",
+        )
+        .await?;
+    assert!(!second_receipt.replayed && !second_receipt.continuation_started);
+    release_first.notify_one();
+    let second = tokio::time::timeout(Duration::from_secs(5), requests.recv())
+        .await?
+        .unwrap();
+    let terminal = second
+        .iter()
+        .filter(|item| {
+            item["type"] == "function_call_output"
+                && item["call_id"] == "job-1"
+                && item["output"] == "terminal result"
+        })
+        .count();
+    assert_eq!(
+        terminal, 1,
+        "exact original-call-ID terminal must enter next request once"
+    );
+    assert_eq!(
+        second
+            .iter()
+            .filter(|item| item["type"] == "function_call_output"
+                && item["call_id"] == "job-2"
+                && item["output"] == "second terminal")
+            .count(),
+        1,
+        "two completed jobs before the boundary must coalesce into one request"
+    );
+    tokio::time::timeout(Duration::from_secs(5), turn.result()).await??;
+    assert_eq!(generations.load(Ordering::SeqCst), 2);
+    let operation = state
+        .state()
+        .await?
+        .operations()
+        .get("active-boundary-turn")
+        .unwrap()
+        .clone();
+    let confirmed = &operation.boundary_output_receipts["job-identity-1"];
+    assert_eq!(confirmed.confirmed_model_call_index, Some(2));
+    assert_eq!(confirmed.response_id.as_deref(), Some("durable-response"));
+    assert_eq!(
+        state
+            .active_boundary_output_status_for_call(
+                "active-boundary-turn",
+                "job-identity-1",
+                "job-1"
+            )
+            .await?,
+        ActiveBoundaryOutputStatus::Confirmed {
+            model_call_index: 2,
+            response_id: "durable-response".into()
+        }
+    );
+    assert_eq!(
+        operation.boundary_output_receipts["job-identity-2"].confirmed_model_call_index,
+        Some(2)
+    );
+    assert!(operation.boundary_outputs.is_empty());
+    agent.shutdown().await?;
+    drop(events);
+    std::fs::remove_dir_all(workspace)?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn active_terminal_cancelled_before_uptake_requires_idle_reconciliation() -> Result<()> {
+    use nanocodex_oai_api::responses::FunctionOutputBody;
+    let workspace = temporary_workspace("unreal-cancelled-boundary")?;
+    let seed_openai = OpenAi::builder("test-key")
+        .service(|| DurableReplayService {
+            generations: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        })
+        .build()?;
+    let (seed, seed_events) = Nanocodex::builder(seed_openai)
+        .workspace(&workspace)
+        .tools(Tools::builder().without_defaults().build()?)
+        .build()?;
+    seed.prompt("seed").await?.result().await?;
+    let mut value = serde_json::to_value(seed.snapshot().await?)?;
+    seed.shutdown().await?;
+    drop(seed_events);
+    value["unreal_function_outputs"] = json!(true);
+    let history = value["history"].as_array_mut().unwrap();
+    history
+        .push(json!({"type":"function_call", "call_id":"job-1", "name":"job", "arguments":"{}"}));
+    history.push(json!({"type":"function_call_output", "call_id":"job-1", "output":
+        "Tool call is still running. Its result arrives in a later turn: continue with independent work, or end your turn to wait for it."}));
+
+    let state = DurableSession::open(MemoryStore::new()?, "unreal-cancelled-boundary").await?;
+    let (tx, mut requests) = tokio::sync::mpsc::unbounded_channel();
+    let generations = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let release_first = Arc::new(tokio::sync::Notify::new());
+    let openai = OpenAi::builder("test-key")
+        .service({
+            let generations = Arc::clone(&generations);
+            let release_first = Arc::clone(&release_first);
+            move || BoundaryProbeService {
+                requests: tx.clone(),
+                generations: Arc::clone(&generations),
+                release_first: Arc::clone(&release_first),
+            }
+        })
+        .build()?;
+    let (agent, events) = Nanocodex::builder(openai)
+        .resume(serde_json::from_value(value)?)
+        .workspace(&workspace)
+        .tools(Tools::builder().without_defaults().build()?)
+        .durability(state.clone())
+        .await?
+        .build()?;
+    let turn = agent
+        .prompt(PromptRequest::new("independent work").request_id("cancelled-turn"))
+        .await?;
+    tokio::time::timeout(Duration::from_secs(5), requests.recv())
+        .await?
+        .unwrap();
+    let terminal = FunctionOutputBody::Text("terminal result".into());
+    let receipt = agent
+        .submit_late_function_output("job-1", terminal.clone(), "job-identity-1")
+        .await?;
+    assert!(!receipt.replayed && !receipt.continuation_started);
+    turn.cancel().await?;
+    assert!(matches!(
+        turn.result().await,
+        Err(NanocodexError::TurnCancelled)
+    ));
+    let retained = state.state().await?;
+    let operation = &retained.operations()["cancelled-turn"];
+    assert!(matches!(
+        operation.status,
+        OperationStatus::Cancelled { .. }
+    ));
+    assert!(operation.boundary_output_receipts["job-identity-1"].discarded);
+    assert_eq!(
+        operation.boundary_output_receipts["job-identity-1"].confirmed_model_call_index,
+        None
+    );
+    assert_eq!(
+        state
+            .active_boundary_output_status_for_call("cancelled-turn", "job-identity-1", "job-1")
+            .await?,
+        ActiveBoundaryOutputStatus::Discarded
+    );
+    // The original active receipt was only an acceptance, not delivery. A
+    // durable host must reconcile the identical job ID after turn settlement.
+    let retried = agent
+        .submit_late_function_output("job-1", terminal, "job-identity-1")
+        .await?;
+    assert!(!retried.replayed);
+    let wake = tokio::time::timeout(Duration::from_secs(5), requests.recv())
+        .await?
+        .unwrap();
+    assert_eq!(
+        wake.iter()
+            .filter(|item| item["type"] == "function_call_output"
+                && item["call_id"] == "job-1"
+                && item["output"] == "terminal result")
+            .count(),
+        1
+    );
+    agent.shutdown().await?;
+    drop(events);
+    std::fs::remove_dir_all(workspace)?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn idle_wake_shutdown_reacquires_same_pending_operation_and_delivers_output() -> Result<()> {
+    use nanocodex_oai_api::responses::FunctionOutputBody;
+    let workspace = temporary_workspace("unreal-idle-wake-recovery")?;
+    let seed_openai = OpenAi::builder("test-key")
+        .service(|| DurableReplayService {
+            generations: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        })
+        .build()?;
+    let (seed, seed_events) = Nanocodex::builder(seed_openai)
+        .workspace(&workspace)
+        .tools(Tools::builder().without_defaults().build()?)
+        .build()?;
+    seed.prompt("seed").await?.result().await?;
+    let mut snapshot = serde_json::to_value(seed.snapshot().await?)?;
+    seed.shutdown().await?;
+    drop(seed_events);
+    snapshot["unreal_function_outputs"] = json!(true);
+    let history = snapshot["history"].as_array_mut().unwrap();
+    history.push(json!({
+        "type":"function_call", "call_id":"job-wake-recovery", "name":"job", "arguments":"{}"
+    }));
+    history.push(json!({
+        "type":"function_call_output", "call_id":"job-wake-recovery", "output":
+            "Tool call is still running. Its result arrives in a later turn: continue with independent work, or end your turn to wait for it."
+    }));
+    let store = MemoryStore::new()?;
+    let state = DurableSession::open(store.clone(), "unreal-idle-wake-recovery").await?;
+    let (tx, mut requests) = tokio::sync::mpsc::unbounded_channel();
+    let gate = Arc::new(tokio::sync::Notify::new());
+    let openai = OpenAi::builder("test-key")
+        .service({
+            let tx = tx.clone();
+            let gate = Arc::clone(&gate);
+            move || BoundaryProbeService {
+                requests: tx.clone(),
+                generations: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+                release_first: Arc::clone(&gate),
+            }
+        })
+        .build()?;
+    let tools = Tools::builder().without_defaults().build()?;
+    let (first, first_events) = Nanocodex::builder(openai)
+        .resume(serde_json::from_value(snapshot)?)
+        .workspace(&workspace)
+        .tools(tools.clone())
+        .durability(state.clone())
+        .await?
+        .build()?;
+    let receipt = first
+        .submit_late_function_output(
+            "job-wake-recovery",
+            FunctionOutputBody::Text("terminal wake recovery".into()),
+            "job-wake-recovery-id",
+        )
+        .await?;
+    assert!(!receipt.replayed);
+    let first_request = tokio::time::timeout(Duration::from_secs(5), requests.recv())
+        .await?
+        .unwrap();
+    assert_eq!(
+        first_request
+            .iter()
+            .filter(|item| item["type"] == "function_call_output"
+                && item["call_id"] == "job-wake-recovery"
+                && item["output"] == "terminal wake recovery")
+            .count(),
+        1
+    );
+    // Snapshot the acknowledged terminal-output boundary, which contains the
+    // wake marker but not a provider response. This models cold rehydration.
+    let staged = first.snapshot().await?;
+    // Cancel a request that never produced a provider response. The operation
+    // must remain pending (not terminally Cancelled), allowing exact same-ID
+    // journal reacquisition after the driver and owner close.
+    tokio::time::timeout(Duration::from_secs(5), first.shutdown()).await??;
+    drop((first, first_events));
+    let pending = state.state().await?;
+    let (wake_id, wake_operation) = pending
+        .operations()
+        .iter()
+        .find(|(key, _)| key.starts_with("late-continuation:"))
+        .ok_or_else(|| eyre!("idle wake journal missing after shutdown"))?;
+    assert!(matches!(wake_operation.status, OperationStatus::Pending));
+    let wake_id = wake_id.clone();
+    let openai = OpenAi::builder("test-key")
+        .service({
+            let tx = tx.clone();
+            move || BoundaryProbeService {
+                requests: tx.clone(),
+                generations: Arc::new(std::sync::atomic::AtomicUsize::new(1)),
+                release_first: Arc::new(tokio::sync::Notify::new()),
+            }
+        })
+        .build()?;
+    let reopened = DurableSession::open(store, "unreal-idle-wake-recovery").await?;
+    let (restarted, events) = Nanocodex::builder(openai)
+        .resume(staged)
+        .workspace(&workspace)
+        .tools(tools)
+        .durability(reopened.clone())
+        .await?
+        .build()?;
+    let second_request = tokio::time::timeout(Duration::from_secs(5), requests.recv())
+        .await?
+        .unwrap();
+    assert_eq!(
+        second_request, first_request,
+        "recovery must reuse original request history"
+    );
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if matches!(
+                reopened.state().await?.operations()[&wake_id].status,
+                OperationStatus::Completed { .. }
+            ) {
+                break Ok::<(), eyre::Report>(());
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await??;
+    assert!(serde_json::to_value(restarted.snapshot().await?)?["pending_late_wake"].is_null());
+    restarted.compact().await?;
+    let compacted = serde_json::to_value(restarted.snapshot().await?)?;
+    assert!(
+        !compacted["history"]
+            .to_string()
+            .contains("terminal wake recovery"),
+        "compaction must remove the transcript receipt so only the journal proves replay"
+    );
+    let replayed = restarted
+        .submit_late_function_outputs(vec![nanocodex_agent::LateFunctionOutput {
+            call_id: "job-wake-recovery".into(),
+            operation_id: "job-wake-recovery-id".into(),
+            output: FunctionOutputBody::Text("terminal wake recovery".into()),
+        }])
+        .await?;
+    assert_eq!(replayed.len(), 1);
+    assert!(replayed[0].replayed);
+    assert!(
+        requests.try_recv().is_err(),
+        "historical replay cannot start another wake"
+    );
+    // Reusing an old member ID with different terminal data must be rejected
+    // before writing a cohort fence (otherwise every cold reopen would retry
+    // the same permanently conflicting intent).
+    let before_conflict = reopened.state().await?.revision();
+    let conflict = restarted
+        .submit_late_function_outputs(vec![
+            nanocodex_agent::LateFunctionOutput {
+                call_id: "job-wake-recovery".into(),
+                operation_id: "job-wake-recovery-id".into(),
+                output: FunctionOutputBody::Text("contradictory terminal".into()),
+            },
+            nanocodex_agent::LateFunctionOutput {
+                call_id: "another-job".into(),
+                operation_id: "another-operation".into(),
+                output: FunctionOutputBody::Text("never admitted".into()),
+            },
+        ])
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(conflict, NanocodexError::InvalidRequest(_)),
+        "{conflict}"
+    );
+    assert_eq!(reopened.state().await?.revision(), before_conflict);
+    assert!(serde_json::to_value(restarted.snapshot().await?)?["pending_late_batch"].is_null());
+    assert!(requests.try_recv().is_err());
+    restarted.shutdown().await?;
+    drop(events);
+    std::fs::remove_dir_all(workspace)?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn idle_cohort_fault_matrix_never_wakes_only_a_committed_prefix() -> Result<()> {
+    use nanocodex_agent::LateFunctionOutput;
+    use nanocodex_oai_api::responses::FunctionOutputBody;
+    let workspace = temporary_workspace("unreal-idle-cohort-faults")?;
+    let seed_openai = OpenAi::builder("test-key")
+        .service(|| DurableReplayService {
+            generations: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        })
+        .build()?;
+    let (seed, seed_events) = Nanocodex::builder(seed_openai)
+        .workspace(&workspace)
+        .tools(Tools::builder().without_defaults().build()?)
+        .build()?;
+    seed.prompt("seed").await?.result().await?;
+    let mut seed_snapshot = serde_json::to_value(seed.snapshot().await?)?;
+    seed.shutdown().await?;
+    drop(seed_events);
+    seed_snapshot["unreal_function_outputs"] = json!(true);
+    let history = seed_snapshot["history"].as_array_mut().unwrap();
+    for call in ["cohort-a", "cohort-b"] {
+        history.push(json!({
+            "type":"function_call", "call_id":call, "name":"job", "arguments":"{}"
+        }));
+        history.push(json!({
+            "type":"function_call_output", "call_id":call, "output":
+            "Tool call is still running. Its result arrives in a later turn: continue with independent work, or end your turn to wait for it."
+        }));
+    }
+    let outputs = || {
+        vec![
+            LateFunctionOutput {
+                call_id: "cohort-a".into(),
+                operation_id: "cohort-operation-a".into(),
+                output: FunctionOutputBody::Text("terminal a".into()),
+            },
+            LateFunctionOutput {
+                call_id: "cohort-b".into(),
+                operation_id: "cohort-operation-b".into(),
+                output: FunctionOutputBody::Text("terminal b".into()),
+            },
+        ]
+    };
+    // Include zero receipt retention: member A's journal must survive B's
+    // commit and cold reopen even when ordinary turn receipts are pruned.
+    for retention in [0, 16] {
+        for after_commit in [false, true] {
+            for revision in 0..=5 {
+                let store = CrashAtReplace {
+                    inner: MemoryStore::new()?,
+                    revision,
+                    after_commit,
+                    fired: Arc::new(AtomicBool::new(false)),
+                };
+                let state = DurableSession::open_with_terminal_receipt_limit(
+                    store.clone(),
+                    "cohort-fault-matrix",
+                    retention,
+                )
+                .await?;
+                let (tx, mut requests) = tokio::sync::mpsc::unbounded_channel();
+                let service = {
+                    let tx = tx.clone();
+                    move || BoundaryProbeService {
+                        requests: tx.clone(),
+                        generations: Arc::new(std::sync::atomic::AtomicUsize::new(1)),
+                        release_first: Arc::new(tokio::sync::Notify::new()),
+                    }
+                };
+                let openai = OpenAi::builder("test-key")
+                    .service(service.clone())
+                    .build()?;
+                let tools = Tools::builder().without_defaults().build()?;
+                let (first, first_events) = Nanocodex::builder(openai)
+                    .resume(serde_json::from_value(seed_snapshot.clone())?)
+                    .workspace(&workspace)
+                    .tools(tools.clone())
+                    .durability(state.clone())
+                    .await?
+                    .build()?;
+                let first_result = first.submit_late_function_outputs(outputs()).await;
+                assert!(
+                    store.fired.load(Ordering::SeqCst),
+                    "fault {revision}/{after_commit} not reached"
+                );
+                assert!(
+                    first_result.is_err(),
+                    "fault {revision}/{after_commit} was acknowledged"
+                );
+                assert!(
+                    requests.try_recv().is_err(),
+                    "fault {revision}/{after_commit} exposed prefix wake"
+                );
+                let _ = first.shutdown().await;
+                drop((first, first_events));
+
+                let reopened = DurableSession::open_with_terminal_receipt_limit(
+                    store,
+                    "cohort-fault-matrix",
+                    retention,
+                )
+                .await?;
+                let has_intent = reopened.state().await?.latest_checkpoint().is_some();
+                if let Some(snapshot) = reopened.agent_snapshot().await? {
+                    let mut snapshot = serde_json::to_value(snapshot)?;
+                    if revision == 5 {
+                        assert_eq!(
+                            snapshot["pending_late_batch"].is_null(),
+                            after_commit,
+                            "revision 5 is the fence-clear write ({after_commit})"
+                        );
+                    }
+                    if !snapshot["pending_late_batch"].is_null() {
+                        assert_eq!(
+                            snapshot["version"], 2,
+                            "a v1 reader would skip the delivery fence"
+                        );
+                        snapshot["version"] = json!(1);
+                        let old_version = Nanocodex::builder(
+                            OpenAi::builder("test-key")
+                                .service(service.clone())
+                                .build()?,
+                        )
+                        .resume(serde_json::from_value(snapshot)?)
+                        .workspace(&workspace)
+                        .build();
+                        assert!(
+                            matches!(old_version, Err(NanocodexError::InvalidSessionSnapshot(_))),
+                            "a v1 snapshot must not contain an all-member delivery fence"
+                        );
+                    }
+                }
+                let openai = OpenAi::builder("test-key").service(service).build()?;
+                let builder = Nanocodex::builder(openai)
+                    .workspace(&workspace)
+                    .tools(tools);
+                let builder = if has_intent {
+                    builder
+                } else {
+                    builder.resume(serde_json::from_value(seed_snapshot.clone())?)
+                };
+                let (restarted, events) = builder.durability(reopened).await?.build()?;
+                if !has_intent {
+                    restarted.submit_late_function_outputs(outputs()).await?;
+                }
+                let wake = match tokio::time::timeout(Duration::from_secs(5), requests.recv()).await
+                {
+                    Ok(Some(value)) => value,
+                    observed => {
+                        return Err(eyre!(
+                            "fault {revision}/{after_commit} wake={observed:?}, shutdown={:?}",
+                            restarted.shutdown().await
+                        ));
+                    }
+                };
+                for (call, result) in [("cohort-a", "terminal a"), ("cohort-b", "terminal b")] {
+                    assert_eq!(
+                        wake.iter()
+                            .filter(|item| item["type"] == "function_call_output"
+                                && item["call_id"] == call
+                                && item["output"] == result)
+                            .count(),
+                        1,
+                        "fault {revision}/{after_commit} lost {call}"
+                    );
+                }
+                let snapshot = restarted.snapshot().await?;
+                let snapshot = serde_json::to_value(snapshot)?;
+                assert!(snapshot["pending_late_batch"].is_null());
+                assert!(snapshot["pending_late_wake"].is_null());
+                assert!(
+                    requests.try_recv().is_err(),
+                    "fault {revision}/{after_commit} duplicated wake"
+                );
+                restarted.shutdown().await?;
+                drop(events);
+            }
+        }
+    }
+    std::fs::remove_dir_all(workspace)?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn compacted_open_cohort_recovers_both_original_ids_after_ambiguous_write() -> Result<()> {
+    use nanocodex_agent::LateFunctionOutput;
+    use nanocodex_oai_api::responses::FunctionOutputBody;
+    let workspace = temporary_workspace("unreal-compacted-open-cohort")?;
+    let seed_openai = OpenAi::builder("test-key")
+        .service(|| DurableReplayService {
+            generations: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        })
+        .build()?;
+    let (seed, seed_events) = Nanocodex::builder(seed_openai)
+        .workspace(&workspace)
+        .tools(Tools::builder().without_defaults().build()?)
+        .build()?;
+    seed.prompt("seed").await?.result().await?;
+    let mut seed_snapshot = serde_json::to_value(seed.snapshot().await?)?;
+    seed.shutdown().await?;
+    drop(seed_events);
+    seed_snapshot["unreal_function_outputs"] = json!(true);
+    for call in ["compacted-a", "compacted-b"] {
+        seed_snapshot["history"].as_array_mut().unwrap().extend([
+            json!({"type":"function_call", "call_id":call, "name":"job", "arguments":"{}"}),
+            json!({"type":"function_call_output", "call_id":call, "output":
+                "Tool call is still running. Its result arrives in a later turn: continue with independent work, or end your turn to wait for it."}),
+        ]);
+    }
+    let outputs = || {
+        vec![
+            LateFunctionOutput {
+                call_id: "compacted-a".into(),
+                operation_id: "compacted-op-a".into(),
+                output: FunctionOutputBody::Text("completed result".into()),
+            },
+            LateFunctionOutput {
+                call_id: "compacted-b".into(),
+                operation_id: "compacted-op-b".into(),
+                output: FunctionOutputBody::Text(
+                    "outcome uncertain; do not retry side effect".into(),
+                ),
+            },
+        ]
+    };
+    for after_commit in [false, true] {
+        let id = format!("compacted-open-cohort-{after_commit}");
+        let store = MemoryStore::new()?;
+        let state = DurableSession::open(store.clone(), &id).await?;
+        let (tx, mut requests) = tokio::sync::mpsc::unbounded_channel();
+        let service = {
+            let tx = tx.clone();
+            move || BoundaryProbeService {
+                requests: tx.clone(),
+                generations: Arc::new(std::sync::atomic::AtomicUsize::new(1)),
+                release_first: Arc::new(tokio::sync::Notify::new()),
+            }
+        };
+        let tools = Tools::builder().without_defaults().build()?;
+        let (before, before_events) = Nanocodex::builder(
+            OpenAi::builder("test-key")
+                .service(service.clone())
+                .build()?,
+        )
+        .resume(serde_json::from_value(seed_snapshot.clone())?)
+        .workspace(&workspace)
+        .tools(tools.clone())
+        .durability(state.clone())
+        .await?
+        .build()?;
+        before.compact().await?;
+        let compacted = serde_json::to_value(before.snapshot().await?)?;
+        assert!(
+            compacted["history"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|item| item["type"] == "compaction")
+        );
+        for call in ["compacted-a", "compacted-b"] {
+            assert_eq!(
+                compacted["history"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .filter(|item| item["type"] == "function_call" && item["call_id"] == call)
+                    .count(),
+                1
+            );
+            assert_eq!(
+                compacted["history"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .filter(|item| item["type"] == "function_call_output"
+                        && item["call_id"] == call
+                        && item["output"]
+                            .as_str()
+                            .unwrap()
+                            .starts_with("Tool call is still running."))
+                    .count(),
+                1
+            );
+        }
+        assert!(requests.try_recv().is_err());
+        let saved = state
+            .agent_snapshot()
+            .await?
+            .ok_or_else(|| eyre!("compacted open-call checkpoint was not persisted"))?;
+        assert_eq!(serde_json::to_value(saved)?, compacted);
+        before.shutdown().await?;
+        drop((before, before_events));
+        let base = state.state().await?.revision();
+        let crashing = CrashAtReplace {
+            inner: store.clone(),
+            revision: base + 4,
+            after_commit,
+            fired: Arc::new(AtomicBool::new(false)),
+        };
+        let fault_state = DurableSession::open(crashing.clone(), &id).await?;
+        let (first, first_events) = Nanocodex::builder(
+            OpenAi::builder("test-key")
+                .service(service.clone())
+                .build()?,
+        )
+        .workspace(&workspace)
+        .tools(tools.clone())
+        .durability(fault_state)
+        .await?
+        .build()?;
+        let failure = first.submit_late_function_outputs(outputs()).await;
+        assert!(
+            failure.is_err(),
+            "second member's ambiguous write must be reported"
+        );
+        assert!(crashing.fired.load(Ordering::SeqCst));
+        assert!(
+            requests.try_recv().is_err(),
+            "a partial cohort reached provider"
+        );
+        let _ = first.shutdown().await;
+        drop((first, first_events));
+        let reopened = DurableSession::open(store.clone(), &id).await?;
+        let (restarted, events) =
+            Nanocodex::builder(OpenAi::builder("test-key").service(service).build()?)
+                .workspace(&workspace)
+                .tools(tools)
+                .durability(reopened.clone())
+                .await?
+                .build()?;
+        let wake = tokio::time::timeout(Duration::from_secs(5), requests.recv())
+            .await?
+            .ok_or_else(|| eyre!("compacted cohort did not wake"))?;
+        for (call, terminal) in [
+            ("compacted-a", "completed result"),
+            ("compacted-b", "outcome uncertain; do not retry side effect"),
+        ] {
+            assert_eq!(
+                wake.iter()
+                    .filter(|item| item["type"] == "function_call" && item["call_id"] == call)
+                    .count(),
+                1
+            );
+            assert_eq!(
+                wake.iter()
+                    .filter(|item| item["type"] == "function_call_output"
+                        && item["call_id"] == call
+                        && item["output"]
+                            .as_str()
+                            .unwrap()
+                            .starts_with("Tool call is still running."))
+                    .count(),
+                1
+            );
+            assert_eq!(
+                wake.iter()
+                    .filter(|item| item["type"] == "function_call_output"
+                        && item["call_id"] == call
+                        && item["output"] == terminal
+                        && item.get("status").is_none())
+                    .count(),
+                1
+            );
+        }
+        assert!(
+            requests.try_recv().is_err(),
+            "one cohort must yield exactly one wake"
+        );
+        let replay = restarted.submit_late_function_outputs(outputs()).await?;
+        assert_eq!(replay.len(), 2);
+        assert!(replay.iter().all(|receipt| receipt.replayed));
+        assert!(
+            requests.try_recv().is_err(),
+            "historical replay cannot wake again"
+        );
+        let final_snapshot = serde_json::to_value(restarted.snapshot().await?)?;
+        assert!(final_snapshot["pending_late_batch"].is_null());
+        restarted.shutdown().await?;
+        drop(events);
+    }
+    std::fs::remove_dir_all(workspace)?;
+    Ok(())
 }

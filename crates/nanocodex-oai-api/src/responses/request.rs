@@ -1044,6 +1044,46 @@ mod tests {
     }
 
     #[test]
+    fn late_receipt_item_id_is_private_to_checkpoint_and_not_on_provider_wire() {
+        let mut output = ResponseItem::function_call_output(
+            "job-1".into(),
+            super::super::FunctionOutputBody::Text("done".into()),
+        );
+        output.set_id(Some(super::super::ResponseItemId::from_server(
+            "late:stable-receipt",
+        )));
+        let history = ResponseHistory::new(vec![output]);
+        let profile = RequestProfile::new("agent", "lineage", Arc::from([]));
+        for store_responses in [false, true] {
+            let config = ModelConfig {
+                store_responses,
+                ..ModelConfig::default()
+            };
+            let request = serde_json::to_value(ResponseCreate::generation_with_policy(
+                &config,
+                CreatePolicy::new(
+                    config.responses_transport,
+                    Model::Sol,
+                    Thinking::Medium,
+                    false,
+                ),
+                ResponsesInput::history(&[], &history, None),
+                None,
+                &profile,
+                None,
+            ))
+            .unwrap();
+            assert_eq!(request["input"][0]["call_id"], "job-1");
+            assert_eq!(request["input"][0]["output"], "done");
+            assert!(request["input"][0].get("id").is_none());
+            assert_eq!(
+                history.iter().next().unwrap().id().unwrap().as_str(),
+                "late:stable-receipt"
+            );
+        }
+    }
+
+    #[test]
     fn request_serialization_matches_codex_item_id_policy_without_mutating_history() {
         let mut client_item = ResponseItem::message(
             MessageRole::User,
@@ -1119,6 +1159,55 @@ mod tests {
                 .map(super::super::ResponseItemId::as_str),
             Some("server-item-id"),
             "outbound preparation must not mutate authoritative history"
+        );
+    }
+
+    #[test]
+    fn unreal_running_and_terminal_outputs_use_exact_wire_shape_without_changing_default_status() {
+        let pending: ResponseItem = serde_json::from_value(json!({
+            "type": "function_call_output", "call_id": "job-1",
+            "output": crate::session::context::UNREAL_RUNNING_OUTPUT
+        }))
+        .unwrap();
+        let terminal: ResponseItem = serde_json::from_value(json!({
+            "type": "function_call_output", "call_id": "job-1", "output": "done"
+        }))
+        .unwrap();
+        let ordinary: ResponseItem = serde_json::from_value(json!({
+            "type": "function_call_output", "call_id": "job-2", "status": "completed", "output": "other"
+        }))
+        .unwrap();
+        let history = ResponseHistory::new(vec![pending, terminal, ordinary]);
+        let profile = RequestProfile::new("agent", "lineage", Arc::from([]));
+        let config = ModelConfig::default();
+        let request = serde_json::to_value(ResponseCreate::generation_with_policy(
+            &config,
+            CreatePolicy::new(
+                config.responses_transport,
+                Model::Sol,
+                Thinking::Medium,
+                false,
+            ),
+            ResponsesInput::history(&[], &history, None),
+            None,
+            &profile,
+            None,
+        ))
+        .unwrap();
+        assert_eq!(
+            request["input"][0]["output"],
+            crate::session::context::UNREAL_RUNNING_OUTPUT
+        );
+        assert!(request["input"][0].get("status").is_none());
+        assert_eq!(
+            request["input"][0]["call_id"],
+            request["input"][1]["call_id"]
+        );
+        assert_eq!(request["input"][1]["output"], "done");
+        assert!(request["input"][1].get("status").is_none());
+        assert_eq!(
+            request["input"][2]["status"], "completed",
+            "default serialization must remain unchanged"
         );
     }
 

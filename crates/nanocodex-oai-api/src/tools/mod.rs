@@ -97,6 +97,8 @@ pub struct ToolOutput {
     pub metadata: Option<Box<RawValue>>,
     structured_result: Option<Value>,
     process_trace: Option<ToolProcessTrace>,
+    // Set only by a trusted host adapter, never deserialized from tool output.
+    trusted_unreal_pending: bool,
 }
 
 /// Lossless process-boundary representation of a tool output.
@@ -155,6 +157,7 @@ impl ToolOutput {
             metadata: None,
             structured_result: None,
             process_trace: None,
+            trusted_unreal_pending: false,
         }
     }
 
@@ -167,6 +170,7 @@ impl ToolOutput {
             metadata: None,
             structured_result: None,
             process_trace: None,
+            trusted_unreal_pending: false,
         }
     }
 
@@ -192,6 +196,7 @@ impl ToolOutput {
                 metadata: None,
                 structured_result: Some(output),
                 process_trace: None,
+                trusted_unreal_pending: false,
             },
             Err(error) => Self::error(format!("failed to encode tool result: {error}")),
         }
@@ -206,6 +211,7 @@ impl ToolOutput {
             metadata: None,
             structured_result: None,
             process_trace: None,
+            trusted_unreal_pending: false,
         }
     }
 
@@ -282,6 +288,23 @@ impl ToolOutput {
         self.process_trace.as_ref()
     }
 
+    /// Marks a pending output issued by the trusted host tool adapter. This
+    /// bit is deliberately absent from `ToolOutputWire`: process-supplied tool
+    /// output and metadata must not opt a conversation into duplicate IDs.
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn with_trusted_unreal_pending(mut self) -> Self {
+        self.trusted_unreal_pending = true;
+        self
+    }
+
+    /// Whether this execution was explicitly staged by its trusted host.
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn trusted_unreal_pending(&self) -> bool {
+        self.trusted_unreal_pending
+    }
+
     /// Converts this output into its lossless process-boundary form.
     ///
     /// # Errors
@@ -317,6 +340,7 @@ impl ToolOutput {
                 .map(|value| serde_json::from_str(value.get()))
                 .transpose()?,
             process_trace: wire.process_trace.map(Into::into),
+            trusted_unreal_pending: false,
         })
     }
 }

@@ -272,6 +272,8 @@ jobs:
           pnpm --filter nanocodex-egress2-service test
           pnpm --filter nanocodex-managed2 typecheck
           pnpm --filter nanocodex-managed2 test
+          pnpm --filter nanocodex-managed2 test:async-e2e
+          pnpm --filter nanocodex-managed2 test:async-e2e:websocket
           pnpm --filter nanocodex-managed2 test:websocket
           pnpm --filter nanocodex-egress2-service build
           pnpm --filter nanocodex-managed2 build

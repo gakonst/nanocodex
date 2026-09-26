@@ -113,6 +113,32 @@ pub trait LifecycleBackend: Send + Sync + 'static {
     /// Compacts retained context.
     fn compact(&self) -> BackendFuture<Result<()>>;
 
+    /// Submits a trusted terminal function output, never a user prompt.
+    fn submit_late_function_output(
+        &self,
+        _call_id: String,
+        _output: nanocodex_oai_api::responses::FunctionOutputBody,
+        _operation_id: String,
+    ) -> BackendFuture<Result<LateFunctionOutputReceipt>> {
+        Box::pin(async {
+            Err(NanocodexError::InvalidRequest(
+                "late function output is not supported by this backend".into(),
+            ))
+        })
+    }
+
+    /// Stages a bounded cohort at one idle driver boundary; no prompt fallback.
+    fn submit_late_function_outputs(
+        &self,
+        _outputs: Vec<LateFunctionOutput>,
+    ) -> BackendFuture<Result<Vec<LateFunctionOutputReceipt>>> {
+        Box::pin(async {
+            Err(NanocodexError::InvalidRequest(
+                "batch late function output is not supported by this backend".into(),
+            ))
+        })
+    }
+
     /// Appends adapter-owned developer context.
     fn append_developer_message(&self, text: String) -> BackendFuture<Result<AgentSessionContext>>;
 
@@ -495,6 +521,41 @@ impl LifecycleBackend for LocalLifecycle {
             request_command(&commands, &shutdown, |result| Command::Compact {
                 parent,
                 result,
+            })
+            .await
+        })
+    }
+
+    fn submit_late_function_output(
+        &self,
+        call_id: String,
+        output: nanocodex_oai_api::responses::FunctionOutputBody,
+        operation_id: String,
+    ) -> BackendFuture<Result<LateFunctionOutputReceipt>> {
+        let commands = self.commands.clone();
+        let shutdown = self.shutdown.clone();
+        Box::pin(async move {
+            request_command(&commands, &shutdown, |result| {
+                Command::SubmitLateFunctionOutput {
+                    call_id,
+                    output,
+                    operation_id,
+                    result,
+                }
+            })
+            .await
+        })
+    }
+
+    fn submit_late_function_outputs(
+        &self,
+        outputs: Vec<LateFunctionOutput>,
+    ) -> BackendFuture<Result<Vec<LateFunctionOutputReceipt>>> {
+        let commands = self.commands.clone();
+        let shutdown = self.shutdown.clone();
+        Box::pin(async move {
+            request_command(&commands, &shutdown, |result| {
+                Command::SubmitLateFunctionOutputs { outputs, result }
             })
             .await
         })

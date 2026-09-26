@@ -6,7 +6,7 @@ import { durabilityRevision } from "nanocodex/durability";
 import type { DurableAgentSession } from "../src/index";
 
 describe("Cloudflare execution records", () => {
-  it("publishes imported identity and head atomically while preserving staged records on failure", async () => {
+  it("hides staged imported receipts until identity and head commit atomically", async () => {
     const sessions = (env as unknown as { NANOCODEX_SESSIONS: DurableObjectNamespace<DurableAgentSession> }).NANOCODEX_SESSIONS;
     await runInDurableObject(sessions.getByName(crypto.randomUUID()), async (_session, state) => {
       let fail = true;
@@ -18,15 +18,59 @@ describe("Cloudflare execution records", () => {
         transactionSync<T>(callback: () => T) { return state.storage.transactionSync(callback); },
       };
       const store = createCloudflareDurabilityStore(storage);
-      await store.importRecords("import-fixture", [{ key: "staged", value: "exact retained content" }]);
+      await store.stageImportRecords("import-fixture", "manifest-a", [{ key: "staged", value: "exact retained content" }]);
+      expect(await store.readRecord("import-fixture", "staged")).toBeNull();
       const archive = { format: "nanocodex-durability-state-v2" as const, stateId: "import-fixture", revision: durabilityRevision("1"), payload: JSON.stringify({ nanocodex_durable_state: { format: 4, operations: {}, latest_checkpoint: null } }), records: [] };
       const owner = { ctx: { storage, acceptWebSocket() {}, getWebSockets() { return []; } } };
-      await expect(CloudflareAgent.importDurabilityState(owner, archive)).rejects.toThrow("fixture identity interruption");
+      await expect(CloudflareAgent.importDurabilityState(owner, archive, { stagedImportId: "manifest-a" })).rejects.toThrow("fixture identity interruption");
       expect(await store.load(archive.stateId)).toEqual({ revision: "0", payload: null });
-      expect(await store.readRecord(archive.stateId, "staged")).toBe("exact retained content");
+      expect(await store.readRecord(archive.stateId, "staged")).toBeNull();
+      // A failed import cannot impersonate a prior completed call even if an
+      // unrelated session advances to the archived revision later.
       fail = false;
-      await CloudflareAgent.importDurabilityState(owner, archive);
+      await CloudflareAgent.importDurabilityState(owner, archive, { stagedImportId: "manifest-a" });
       expect(await store.load(archive.stateId)).toEqual({ revision: "1", payload: archive.payload });
+      expect(await store.readRecord(archive.stateId, "staged")).toBe("exact retained content");
+      expect(state.storage.sql.exec("SELECT * FROM nanocodex_durable_staged_records").toArray()).toEqual([]);
+    });
+  });
+  it("an interrupted managed import cannot surface an orphan receipt after unrelated head advancement", async () => {
+    const sessions = (env as unknown as { NANOCODEX_SESSIONS: DurableObjectNamespace<DurableAgentSession> }).NANOCODEX_SESSIONS;
+    await runInDurableObject(sessions.getByName(crypto.randomUUID()), async (_session, state) => {
+      const store = createCloudflareDurabilityStore(state.storage);
+      const id = "interrupted-late-import";
+      const key = `late-receipt:${"a".repeat(64)}`;
+      const receipt = JSON.stringify({
+        format: 1, archived_revision: 1, operation_id: "late-output:old-call-id",
+        input: { inline: "old-input" }, status: { Cancelled: { checkpoint: null } },
+      });
+      await store.stageImportRecords(id, "manifest-interrupted", [{ key, value: receipt }]);
+      expect(await store.readRecord(id, key)).toBeNull();
+      const owner = await store.acquire(id, { ownerId: "unrelated-live-agent" });
+      expect(await store.replace(id, {
+        ...owner, expectedRevision: durabilityRevision("0"), payload: "unrelated-live-head", records: [],
+      })).toEqual({ status: "replaced", revision: "1" });
+      expect(await store.readRecord(id, key)).toBeNull();
+      expect(store.scanRecords(id, "", 16)).toEqual([]);
+      expect(state.storage.sql.exec("SELECT import_id FROM nanocodex_durable_staged_records WHERE state_id = ?", id).toArray()).toEqual([
+        { import_id: "manifest-interrupted" },
+      ]);
+    });
+  });
+  it("staged receipt collisions roll back import without publishing a head", async () => {
+    const sessions = (env as unknown as { NANOCODEX_SESSIONS: DurableObjectNamespace<DurableAgentSession> }).NANOCODEX_SESSIONS;
+    await runInDurableObject(sessions.getByName(crypto.randomUUID()), async (_session, state) => {
+      const store = createCloudflareDurabilityStore(state.storage);
+      const id = "staged-conflict";
+      await store.importRecords(id, [{ key: "late-receipt:original", value: "original" }]);
+      await store.stageImportRecords(id, "manifest-a", [{ key: "late-receipt:original", value: "altered" }]);
+      const head = { revision: durabilityRevision("1"), payload: "new-head" };
+      expect(() => store.importState(id, head, { stagedImportId: "manifest-a" })).toThrow(/immutable record conflict/);
+      expect(await store.load(id)).toEqual({ revision: "0", payload: null });
+      expect(await store.readRecord(id, "late-receipt:original")).toBe("original");
+      expect(state.storage.sql.exec("SELECT value FROM nanocodex_durable_staged_records WHERE state_id = ?", id).toArray()).toEqual([
+        { value: "altered" },
+      ]);
     });
   });
   it("publishes records and their execution head in one transaction", async () => {

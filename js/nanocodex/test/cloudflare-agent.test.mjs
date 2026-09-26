@@ -123,6 +123,8 @@ class MemoryStorage {
       this.records.set(JSON.stringify(args.slice(0, 2)), args[2]);
     } else if (statement.startsWith("DELETE FROM nanocodex_durable_records")) {
       for (const key of this.records.keys()) if (!args.length || JSON.parse(key)[0] === args[0]) this.records.delete(key);
+    } else if (statement.startsWith("DELETE FROM nanocodex_durable_staged_records")) {
+      // The fixture has no staged import; destroy still clears the table.
     } else if (statement.startsWith("INSERT INTO nanocodex_durable_states")) {
       this.stateRevisions.set(args[0], args[1]);
       this.states = this.states.filter((batch) => batch.stateId !== args[0]);

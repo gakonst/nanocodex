@@ -460,6 +460,57 @@ impl Nanocodex {
         self.backend.compact().await
     }
 
+    /// Commits a trusted terminal output for an opted-in, staged function call.
+    /// Does not impersonate a user. An active turn may accept this before its
+    /// next model request; a receipt alone does not prove model uptake. An idle
+    /// submission checkpoints the output and schedules a prompt-less wake.
+    pub async fn submit_late_function_output(
+        &self,
+        call_id: impl Into<String>,
+        output: nanocodex_oai_api::responses::FunctionOutputBody,
+        operation_id: impl Into<String>,
+    ) -> Result<LateFunctionOutputReceipt> {
+        let call_id = call_id.into();
+        let operation_id = operation_id.into();
+        if call_id.trim().is_empty() || operation_id.trim().is_empty() {
+            return Err(NanocodexError::InvalidRequest(
+                "late function output requires a call ID and operation ID".into(),
+            ));
+        }
+        self.backend
+            .submit_late_function_output(call_id, output, operation_id)
+            .await
+    }
+
+    /// Stages a bounded idle cohort before admitting a prompt-less continuation.
+    /// Active turns are deliberately rejected rather than using a mutable handler.
+    pub async fn submit_late_function_outputs(
+        &self,
+        outputs: Vec<super::LateFunctionOutput>,
+    ) -> Result<Vec<LateFunctionOutputReceipt>> {
+        use std::collections::HashSet;
+        if !(1..=8).contains(&outputs.len()) {
+            return Err(NanocodexError::InvalidRequest(
+                "late output batch requires 1..8 entries".into(),
+            ));
+        }
+        let mut calls = HashSet::new();
+        let mut operations = HashSet::new();
+        for entry in &outputs {
+            if entry.call_id.trim().is_empty()
+                || entry.operation_id.trim().is_empty()
+                || !calls.insert(&entry.call_id)
+                || !operations.insert(&entry.operation_id)
+                || matches!(&entry.output, nanocodex_oai_api::responses::FunctionOutputBody::Content(items) if items.is_empty())
+            {
+                return Err(NanocodexError::InvalidRequest(
+                    "invalid or duplicate late output batch entry".into(),
+                ));
+            }
+        }
+        self.backend.submit_late_function_outputs(outputs).await
+    }
+
     /// Appends adapter-owned developer context at the next safe model boundary.
     ///
     /// The returned read-only view is captured from the latest safe boundary

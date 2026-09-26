@@ -7829,6 +7829,9 @@ export class DurableAgentSession extends DurableComputerObject {
       const imported = await CloudflareAgent.importDurabilityState(
         this,
         archive.durability as Parameters<typeof CloudflareAgent.importDurabilityState>[1],
+        archive.turn_archive_adoption === undefined ? {} : {
+          stagedImportId: archive.turn_archive_adoption.durability_records.digest,
+        },
       );
       this.#assertDurabilityImportOwnership(ownership);
       try {

@@ -8,6 +8,13 @@ use crate::{
 use super::compaction;
 
 const TOOL_OUTPUT_TOKEN_LIMIT: usize = 12_000;
+/// Exact Unreal running-result payload. Only the opt-in path treats this text
+/// as a pending marker; ordinary transcript handling is unchanged.
+pub(crate) const UNREAL_RUNNING_OUTPUT: &str = "Tool call is still running. Its result arrives in a later turn: continue with independent work, or end your turn to wait for it.";
+
+pub(crate) fn is_unreal_running_output(output: &FunctionOutputBody) -> bool {
+    matches!(output, FunctionOutputBody::Text(text) if text.as_ref() == UNREAL_RUNNING_OUTPUT)
+}
 const REQUEST_PREFIX_ID_NAMESPACE: uuid::Uuid =
     uuid::Uuid::from_u128(0x3e203f80_1cd8_4938_9588_0990bb023db5);
 // Changing this value would change model-visible IDs and invalidate prompt caches.
@@ -109,6 +116,37 @@ impl ContextManager {
             }
             self.items.push(item);
         }
+    }
+
+    /// Replace a staged placeholder only while it remains in the unsent tail.
+    pub(crate) fn replace_staged_unreal_output(
+        &mut self,
+        call_id: &str,
+        mut terminal: ResponseItem,
+    ) -> bool {
+        let Some(index) = self.items.tail().iter().position(|item| {
+            matches!(item,
+            ResponseItem::FunctionCallOutput { call_id: id, output, .. }
+                if id.as_ref() == call_id && is_unreal_running_output(output))
+        }) else {
+            return false;
+        };
+        terminal = truncate_tool_output(terminal);
+        assign_missing_response_item_id(&mut terminal);
+        let old_tokens = compaction::estimate_item_tokens(&self.items.tail()[index]);
+        let new_tokens = compaction::estimate_item_tokens(&terminal);
+        self.items.tail_mut()[index] = terminal;
+        self.calls = CallIds::from_items(self.items.iter());
+        // Preserve the committed/unsent boundary while adjusting the estimate.
+        if self.token_usage_is_estimate
+            && let Some(usage) = &mut self.last_token_usage
+        {
+            usage.total_tokens = usage
+                .total_tokens
+                .saturating_sub(old_tokens)
+                .saturating_add(new_tokens);
+        }
+        true
     }
 
     pub fn commit_tail(&mut self) {
@@ -540,6 +578,78 @@ fn synthetic_output_id(prefix: &str, source_id: Option<&ResponseItemId>) -> Opti
         prefix,
         uuid::Uuid::new_v5(&SYNTHETIC_OUTPUT_ID_NAMESPACE, name.as_bytes()),
     ))
+}
+
+/// Opt-in validator for an ordered pending and terminal function output on
+/// exactly one call ID. The default validator still rejects duplicate outputs.
+#[must_use]
+pub fn has_well_formed_unreal_function_outputs(items: &[ResponseItem]) -> bool {
+    use std::collections::HashMap;
+    let mut calls = HashSet::new();
+    let mut outputs = HashMap::<&str, bool>::new();
+    let mut custom_calls = HashSet::new();
+    let mut custom_outputs = HashSet::new();
+    let mut search_calls = HashSet::new();
+    let mut search_outputs = HashSet::new();
+    let mut non_server_search_outputs = HashSet::new();
+    for item in items {
+        let valid = match item {
+            ResponseItem::FunctionCall { call_id, .. }
+            | ResponseItem::LocalShellCall {
+                call_id: Some(call_id),
+                ..
+            } => calls.insert(call_id.as_ref()),
+            ResponseItem::FunctionCallOutput {
+                call_id,
+                output,
+                status,
+                ..
+            } => {
+                if !calls.contains(call_id.as_ref()) || status.is_some() {
+                    return false;
+                }
+                let running = is_unreal_running_output(output);
+                match outputs.entry(call_id.as_ref()) {
+                    std::collections::hash_map::Entry::Vacant(slot) => {
+                        slot.insert(running);
+                        true
+                    }
+                    std::collections::hash_map::Entry::Occupied(mut slot)
+                        if *slot.get() && !running =>
+                    {
+                        slot.insert(false);
+                        true
+                    }
+                    _ => false,
+                }
+            }
+            ResponseItem::CustomToolCall { call_id, .. } => custom_calls.insert(call_id.as_ref()),
+            ResponseItem::CustomToolCallOutput { call_id, name, .. } => {
+                custom_calls.contains(call_id.as_ref())
+                    && (name.is_some() || custom_outputs.insert(call_id.as_ref()))
+            }
+            ResponseItem::ToolSearchCall {
+                call_id: Some(call_id),
+                ..
+            } => search_calls.insert(call_id.as_ref()),
+            ResponseItem::ToolSearchOutput {
+                call_id: Some(call_id),
+                execution,
+                ..
+            } => {
+                search_outputs.insert(call_id.as_ref());
+                execution.as_ref() == "server" || non_server_search_outputs.insert(call_id.as_ref())
+            }
+            _ => true,
+        };
+        if !valid {
+            return false;
+        }
+    }
+    calls.len() == outputs.len()
+        && custom_calls == custom_outputs
+        && search_calls.is_subset(&search_outputs)
+        && non_server_search_outputs.is_subset(&search_calls)
 }
 
 #[must_use]

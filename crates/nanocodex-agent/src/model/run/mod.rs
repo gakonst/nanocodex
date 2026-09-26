@@ -29,7 +29,10 @@ use nanocodex_oai_api::{
     Model, Prompt, Thinking,
     events::AgentEventKind,
     pricing::{ServiceTier, estimate_for_model},
-    responses::{ContentItem, MessageRole, RequestProfile, ResponseItem, ToolDefinition, Usage},
+    responses::{
+        ContentItem, FunctionOutputBody, MessageRole, RequestProfile, ResponseItem, ResponseItemId,
+        ToolDefinition, Usage,
+    },
     tower::{
         CodeCall, CodeCallKind, GenerationOutput as TurnResult, ResponsesAttempt, ResponsesClient,
         ResponsesOutput, ResponsesServiceResponse,
@@ -102,7 +105,23 @@ pub(crate) struct ModelRun<S> {
     before_compaction: Option<Arc<dyn crate::execution::BeforeCompaction>>,
 }
 
+/// One trusted terminal output accepted during a running turn. The durable
+/// operation remains authoritative; this queue only accelerates delivery.
+#[derive(Clone)]
+pub(crate) struct QueuedBoundaryOutput {
+    pub(crate) call_id: String,
+    pub(crate) output: FunctionOutputBody,
+    pub(crate) operation_id: String,
+    pub(crate) durable_index: u32,
+    pub(crate) accepted_after_model_call_index: u32,
+    pub(crate) model_call_index: Option<u32>,
+}
+
+pub(crate) type BoundaryOutputQueue = Arc<tokio::sync::Mutex<VecDeque<QueuedBoundaryOutput>>>;
+
 pub(crate) struct TurnSteering {
+    pub(crate) boundary_outputs: BoundaryOutputQueue,
+    pub(crate) retained_boundary_outputs: Vec<QueuedBoundaryOutput>,
     pub(crate) receiver: crate::agent::execution::SteerQueue,
     pub(crate) retained: Vec<QueuedSteer>,
     pub(crate) model_call_index: Arc<tokio::sync::Mutex<u32>>,
@@ -132,6 +151,21 @@ pub(crate) struct CompletedModelTurn {
     pub(crate) checkpoint: ModelCheckpoint,
 }
 
+/// Exact idle terminal receipt identities carried into one durable wake.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+pub(crate) struct LateWakeJob {
+    pub(crate) job_id: String,
+    pub(crate) call_id: String,
+}
+
+/// Persisted ordered terminal-output intent; never infer a cohort from only a
+/// prefix of individually completed journal operations after a crash.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct PendingLateBatch {
+    pub(crate) outputs: Vec<crate::agent::LateFunctionOutput>,
+}
+
 #[derive(Clone)]
 pub(crate) struct ModelCheckpoint {
     workspace: String,
@@ -142,6 +176,9 @@ pub(crate) struct ModelCheckpoint {
     preserve_inherited_delta: bool,
     global_instructions: Option<Arc<str>>,
     context_baseline: ContextBaseline,
+    pending_late_wake: Option<String>,
+    pending_late_jobs: Vec<LateWakeJob>,
+    pending_late_batch: Option<PendingLateBatch>,
 }
 
 pub(crate) struct PreparedCheckpoint {
@@ -157,6 +194,7 @@ pub(crate) struct HistoryCheckpoint {
     pub(crate) canonical_context: ResponseItem,
     pub(crate) history: Vec<ResponseItem>,
     pub(crate) client_authored: std::collections::BTreeSet<String>,
+    pub(crate) unreal_function_outputs: bool,
     pub(crate) prompt_cache_key: Arc<str>,
     pub(crate) context_baseline: Option<ContextBaseline>,
 }
@@ -207,6 +245,36 @@ impl ModelCheckpoint {
         );
     }
 
+    pub(crate) const fn unreal_function_outputs(&self) -> bool {
+        self.conversation.managed.unreal_function_outputs()
+    }
+
+    /// A durable wake marker is independent of the transcript tail: compaction,
+    /// developer context, and replay may all rewrite that tail before admission.
+    pub(crate) fn late_wake_id(&self) -> Option<&str> {
+        self.pending_late_wake.as_deref()
+    }
+
+    pub(crate) fn restore_late_wake(&mut self, wake: Option<String>) {
+        self.pending_late_wake = wake;
+    }
+
+    pub(crate) fn late_wake_jobs(&self) -> &[LateWakeJob] {
+        &self.pending_late_jobs
+    }
+
+    pub(crate) fn restore_late_wake_jobs(&mut self, jobs: Vec<LateWakeJob>) {
+        self.pending_late_jobs = jobs;
+    }
+
+    pub(crate) const fn late_batch(&self) -> Option<&PendingLateBatch> {
+        self.pending_late_batch.as_ref()
+    }
+
+    pub(crate) fn restore_late_batch(&mut self, batch: Option<PendingLateBatch>) {
+        self.pending_late_batch = batch;
+    }
+
     pub(crate) fn snapshot_history(&self) -> Vec<ResponseItem> {
         self.conversation.flattened_history()
     }
@@ -227,12 +295,14 @@ impl ModelCheckpoint {
         canonical_context: ResponseItem,
         history: Vec<ResponseItem>,
         client_authored: std::collections::BTreeSet<String>,
+        unreal_function_outputs: bool,
         global_instructions: Option<Arc<str>>,
         context_baseline: Option<ContextBaseline>,
     ) -> Result<Self> {
         let context_baseline =
             context_baseline.unwrap_or_else(|| ContextBaseline::reconstruct(&history));
-        let mut conversation = ConversationState::resume(canonical_context, history)?;
+        let mut conversation =
+            ConversationState::resume(canonical_context, history, unreal_function_outputs)?;
         conversation
             .managed
             .restore_client_authored(client_authored);
@@ -245,6 +315,9 @@ impl ModelCheckpoint {
             preserve_inherited_delta: false,
             global_instructions,
             context_baseline,
+            pending_late_wake: None,
+            pending_late_jobs: Vec::new(),
+            pending_late_batch: None,
         })
     }
 }
@@ -360,6 +433,9 @@ impl<S> ModelRun<S> {
                 conversation: checkpoint.conversation,
                 context: ContextState::new(selected_agents_md, checkpoint.context_baseline),
                 preserve_inherited_delta: checkpoint.preserve_inherited_delta,
+                pending_late_wake: checkpoint.pending_late_wake,
+                pending_late_jobs: checkpoint.pending_late_jobs,
+                pending_late_batch: checkpoint.pending_late_batch,
             }),
             active_tools: Some(active_tools),
             active_tool_calls: Vec::new(),
@@ -442,7 +518,244 @@ impl<S> ModelRun<S> {
             preserve_inherited_delta: true,
             global_instructions: self.global_instructions.clone(),
             context_baseline: session.context.baseline(),
+            pending_late_wake: session.pending_late_wake.clone(),
+            pending_late_jobs: session.pending_late_jobs.clone(),
+            pending_late_batch: session.pending_late_batch.clone(),
         })
+    }
+
+    /// Durably fence the complete ordered batch *before* starting any per-job
+    /// journal. Recovery stages missing members before admitting the wake.
+    pub(crate) fn begin_late_batch(
+        &mut self,
+        outputs: Vec<crate::agent::LateFunctionOutput>,
+        completed: &std::collections::HashSet<String>,
+        requested_workspace: Option<&str>,
+    ) -> Result<ModelCheckpoint>
+    where
+        S: Service<ResponsesAttempt, Response = ResponsesServiceResponse> + AgentSend + 'static,
+        S::Error: Into<nanocodex_oai_api::ResponseError>,
+        S::Future: AgentSend,
+    {
+        self.validate_late_function_outputs(&outputs, completed, requested_workspace)?;
+        let session = self.session.as_mut().ok_or_else(|| {
+            NanocodexError::InvalidRequest("no model session for late function output".into())
+        })?;
+        if session.pending_late_batch.is_some() {
+            return Err(NanocodexError::InvalidRequest(
+                "another idle late output batch is not yet settled".into(),
+            ));
+        }
+        session.pending_late_batch = Some(PendingLateBatch { outputs });
+        Ok(Self::checkpoint_from_session(
+            session,
+            true,
+            self.global_instructions.clone(),
+        ))
+    }
+
+    pub(crate) fn finish_late_batch(&self) -> Result<ModelCheckpoint>
+    where
+        S: Service<ResponsesAttempt, Response = ResponsesServiceResponse> + AgentSend + 'static,
+        S::Error: Into<nanocodex_oai_api::ResponseError>,
+        S::Future: AgentSend,
+    {
+        let session = self.session.as_ref().ok_or_else(|| {
+            NanocodexError::InvalidSessionSnapshot("late batch lost its model session".into())
+        })?;
+        if session.pending_late_batch.is_none() {
+            return Err(NanocodexError::InvalidSessionSnapshot(
+                "late batch completion has no persisted intent".into(),
+            ));
+        }
+        let mut checkpoint =
+            Self::checkpoint_from_session(session, true, self.global_instructions.clone());
+        checkpoint.restore_late_batch(None);
+        Ok(checkpoint)
+    }
+
+    /// Only publish the cleared in-memory fence after its standalone durable
+    /// checkpoint has succeeded. An ambiguous failure must retain the fence.
+    pub(crate) fn publish_finished_late_batch(&mut self) {
+        if let Some(session) = &mut self.session {
+            session.pending_late_batch = None;
+        }
+    }
+
+    /// Preflight an entire trusted idle cohort on a disposable transcript copy.
+    /// A malformed later member must not checkpoint an earlier member and then
+    /// accidentally wake only that prefix when the caller sees an error.
+    pub(crate) fn validate_late_function_outputs(
+        &self,
+        outputs: &[crate::agent::LateFunctionOutput],
+        completed: &std::collections::HashSet<String>,
+        requested_workspace: Option<&str>,
+    ) -> Result<()> {
+        let session = self.session.as_ref().ok_or_else(|| {
+            NanocodexError::InvalidRequest("no model session for late function output".into())
+        })?;
+        session.validate_workspace(requested_workspace)?;
+        if !session.conversation.managed.unreal_function_outputs() {
+            return Err(NanocodexError::InvalidRequest(
+                "Unreal function outputs are not enabled for this session".into(),
+            ));
+        }
+        let mut conversation = session.conversation.clone();
+        conversation.commit_tail();
+        for entry in outputs {
+            // An exact completed journal receipt survives transcript compaction.
+            // Never require its original call to remain in model history, and
+            // never append a second output for that historical operation.
+            if completed.contains(&entry.operation_id) {
+                continue;
+            }
+            let receipt_id = late_receipt_id(&entry.operation_id);
+            let existing = conversation
+                .managed
+                .flattened_history()
+                .into_iter()
+                .find_map(|item| {
+                    if let ResponseItem::FunctionCallOutput {
+                        id: Some(id),
+                        call_id,
+                        output,
+                        ..
+                    } = item
+                        && id == receipt_id
+                    {
+                        return Some((call_id, output));
+                    }
+                    None
+                });
+            if let Some((call_id, output)) = existing {
+                if call_id.as_ref() != entry.call_id
+                    || serde_json::to_value(output).ok() != serde_json::to_value(&entry.output).ok()
+                {
+                    return Err(NanocodexError::InvalidRequest(
+                        "late output operation ID reused with different call or body".into(),
+                    ));
+                }
+                continue;
+            }
+            conversation
+                .managed
+                .complete_unreal_function_output_with_id(
+                    &entry.call_id,
+                    entry.output.clone(),
+                    Some(receipt_id),
+                )
+                .map_err(|error| NanocodexError::InvalidRequest(error.to_string()))?;
+            conversation.commit_tail();
+        }
+        Ok(())
+    }
+
+    /// Finishes a previously staged Unreal function call at an idle model boundary.
+    /// A sent pending item is immutable; its terminal output is a second typed
+    /// output with the same call ID and will be replayed from the checkpoint.
+    pub(crate) fn submit_late_function_output(
+        &mut self,
+        call_id: &str,
+        output: FunctionOutputBody,
+        operation_id: &str,
+        requested_workspace: Option<&str>,
+    ) -> Result<(ModelCheckpoint, bool)>
+    where
+        S: Service<ResponsesAttempt, Response = ResponsesServiceResponse> + AgentSend + 'static,
+        S::Error: Into<nanocodex_oai_api::ResponseError>,
+        S::Future: AgentSend,
+    {
+        let session = self.session.as_mut().ok_or_else(|| {
+            NanocodexError::InvalidRequest("no model session for late function output".into())
+        })?;
+        session.validate_workspace(requested_workspace)?;
+        Self::append_late_output_to_session(
+            session,
+            call_id,
+            output,
+            operation_id,
+            true,
+            self.global_instructions.clone(),
+        )
+    }
+
+    /// Shared transcript mutation for an idle wake and an active model boundary.
+    /// The active caller must serialize this with model-request admission and
+    /// persist the returned checkpoint before acknowledging model uptake.
+    fn append_late_output_to_session(
+        session: &mut ModelSessionState,
+        call_id: &str,
+        output: FunctionOutputBody,
+        operation_id: &str,
+        idle_wake: bool,
+        global_instructions: Option<Arc<str>>,
+    ) -> Result<(ModelCheckpoint, bool)>
+    where
+        S: Service<ResponsesAttempt, Response = ResponsesServiceResponse> + AgentSend + 'static,
+        S::Error: Into<nanocodex_oai_api::ResponseError>,
+        S::Future: AgentSend,
+    {
+        if !session.conversation.managed.unreal_function_outputs() {
+            return Err(NanocodexError::InvalidRequest(
+                "Unreal function outputs are not enabled for this session".into(),
+            ));
+        }
+        let receipt_id = late_receipt_id(operation_id);
+        for item in session.conversation.managed.flattened_history() {
+            if let ResponseItem::FunctionCallOutput {
+                id: Some(id),
+                call_id: stored_call,
+                output: stored_output,
+                ..
+            } = item
+                && id == receipt_id
+            {
+                if stored_call.as_ref() != call_id
+                    || serde_json::to_value(stored_output).ok()
+                        != serde_json::to_value(&output).ok()
+                {
+                    return Err(NanocodexError::InvalidRequest(
+                        "late output operation ID reused with different call or body".into(),
+                    ));
+                }
+                return Ok((
+                    Self::checkpoint_from_session(session, true, global_instructions),
+                    true,
+                ));
+            }
+        }
+        // Validate against an isolated clone before sealing the original tail.
+        // Do not risk partially changing the driver's mutable session on error.
+        let mut conversation = session.conversation.clone();
+        // At an active boundary, an unsent placeholder is replaceable rather
+        // than a second same-ID output. The idle path lacks that request fence
+        // and conservatively seals its existing tail before completion.
+        if idle_wake {
+            conversation.commit_tail();
+        }
+        conversation
+            .managed
+            .complete_unreal_function_output_with_id(call_id, output, Some(receipt_id.clone()))
+            .map_err(|error| NanocodexError::InvalidRequest(error.to_string()))?;
+        conversation.commit_tail();
+        session.conversation = conversation;
+        // Chain all unconsumed outputs into the same wake. Replay of the same
+        // receipt returns above without advancing the identity a second time.
+        if idle_wake {
+            session.pending_late_jobs.push(LateWakeJob {
+                job_id: operation_id.to_owned(),
+                call_id: call_id.to_owned(),
+            });
+            session.pending_late_wake = Some(advance_late_wake(
+                session.pending_late_wake.as_deref(),
+                receipt_id.as_ref(),
+            ));
+        }
+        session.preserve_inherited_delta = true;
+        Ok((
+            Self::checkpoint_from_session(session, true, global_instructions),
+            false,
+        ))
     }
 
     fn empty_session(&mut self, requested_workspace: Option<&str>) -> Result<ModelSessionState> {
@@ -473,6 +786,9 @@ impl<S> ModelRun<S> {
             conversation: ConversationState::empty(canonical_context),
             context,
             preserve_inherited_delta: false,
+            pending_late_wake: None,
+            pending_late_jobs: Vec::new(),
+            pending_late_batch: None,
         })
     }
 
@@ -493,6 +809,16 @@ impl<S> ModelRun<S> {
             ResponsesTransport::Https => &self.config.api_base_url,
         }
     }
+}
+
+/// Stable typed receipt identity shared by preflight and the journal mutation.
+fn late_receipt_id(operation_id: &str) -> ResponseItemId {
+    const RECEIPT_NAMESPACE: uuid::Uuid =
+        uuid::Uuid::from_u128(0x0d46ca1e_90ac_4c9a_ab23_14f66b19b5ea);
+    ResponseItemId::from_server(format!(
+        "late:{}",
+        uuid::Uuid::new_v5(&RECEIPT_NAMESPACE, operation_id.as_bytes()),
+    ))
 }
 
 pub(crate) fn prepare_checkpoint(
@@ -568,6 +894,7 @@ pub(crate) fn prepare_history_checkpoint(
         canonical_context,
         history,
         client_authored,
+        unreal_function_outputs,
         prompt_cache_key,
         context_baseline,
     } = resume;
@@ -593,6 +920,7 @@ pub(crate) fn prepare_history_checkpoint(
         canonical_context,
         history,
         client_authored,
+        unreal_function_outputs,
         context_source.global_instructions(),
         context_baseline,
     )?;
@@ -604,10 +932,178 @@ pub(crate) fn prepare_history_checkpoint(
     })
 }
 
+/// Stable identity across admission, replay and transcript rewrites. A model
+/// completion clears the marker; only new terminal receipts advance it.
+fn advance_late_wake(previous: Option<&str>, receipt_id: &str) -> String {
+    const WAKE_NAMESPACE: uuid::Uuid =
+        uuid::Uuid::from_u128(0xa01b8f32_68bf_49a0_b138_99ec17efca31);
+    let wake_input = format!("{}:{receipt_id}", previous.unwrap_or(""));
+    uuid::Uuid::new_v5(&WAKE_NAMESPACE, wake_input.as_bytes()).to_string()
+}
+
 #[cfg(test)]
 mod context_accounting_snapshot_tests {
     use super::*;
     use crate::session::{CommittedSession, SessionSnapshot};
+
+    #[test]
+    fn unreal_pending_terminal_snapshot_replays_only_when_opted_in() {
+        let history: Vec<ResponseItem> = serde_json::from_value(serde_json::json!([
+            {"type":"message", "role":"user", "content":[{"type":"input_text", "text":"task"}]},
+            {"type":"function_call", "call_id":"job-1", "name":"job", "arguments":"{}"},
+            {"type":"function_call_output", "call_id":"job-1", "output": "Tool call is still running. Its result arrives in a later turn: continue with independent work, or end your turn to wait for it."}
+        ]))
+        .unwrap();
+        let prefix = serde_json::from_value(serde_json::json!([
+            {"type":"additional_tools", "role":"developer", "tools":[]},
+            {"type":"message", "role":"developer", "content":[{"type":"input_text", "text":"instructions"}]}
+        ])).unwrap();
+        let mut checkpoint = ModelCheckpoint::resume(
+            ".".into(),
+            Arc::from("lineage"),
+            prefix,
+            Arc::from("cache"),
+            history[0].clone(),
+            history,
+            Default::default(),
+            true,
+            None,
+            None,
+        )
+        .unwrap();
+        checkpoint.conversation.commit_tail();
+        checkpoint
+            .conversation
+            .managed
+            .complete_unreal_function_output(
+                "job-1",
+                nanocodex_oai_api::responses::FunctionOutputBody::Text("done".into()),
+            )
+            .unwrap();
+        let snapshot =
+            CommittedSession::new(Arc::from("lineage"), Model::Astra, checkpoint).snapshot();
+        let encoded = serde_json::to_value(snapshot).unwrap();
+        assert_eq!(encoded["unreal_function_outputs"], true);
+        let restored: SessionSnapshot = serde_json::from_value(encoded.clone()).unwrap();
+        assert_eq!(
+            restored
+                .into_resume()
+                .unwrap()
+                .checkpoint
+                .unwrap()
+                .snapshot_history()
+                .len(),
+            4
+        );
+        let mut ordinary = encoded;
+        ordinary
+            .as_object_mut()
+            .unwrap()
+            .remove("unreal_function_outputs");
+        let ordinary: SessionSnapshot = serde_json::from_value(ordinary).unwrap();
+        assert!(ordinary.into_resume().is_err());
+    }
+
+    #[test]
+    fn wake_marker_survives_snapshot_replay_and_transcript_tail_changes() {
+        let history: Vec<ResponseItem> = serde_json::from_value(serde_json::json!([
+            {"type":"message", "role":"user", "content":[{"type":"input_text", "text":"task"}]},
+            {"type":"function_call", "call_id":"job-1", "name":"job", "arguments":"{}"},
+            {"type":"function_call_output", "call_id":"job-1", "output":"Tool call is still running. Its result arrives in a later turn: continue with independent work, or end your turn to wait for it."}
+        ]))
+        .unwrap();
+        let prefix = serde_json::from_value(serde_json::json!([
+            {"type":"additional_tools", "role":"developer", "tools":[]},
+            {"type":"message", "role":"developer", "content":[{"type":"input_text", "text":"instructions"}]}
+        ])).unwrap();
+        let mut checkpoint = ModelCheckpoint::resume(
+            ".".into(),
+            Arc::from("lineage"),
+            prefix,
+            Arc::from("cache"),
+            history[0].clone(),
+            history,
+            Default::default(),
+            true,
+            None,
+            None,
+        )
+        .unwrap();
+        checkpoint.conversation.commit_tail();
+        checkpoint
+            .conversation
+            .managed
+            .complete_unreal_function_output_with_id(
+                "job-1",
+                FunctionOutputBody::Text("finished".into()),
+                Some(ResponseItemId::from_server("late:first")),
+            )
+            .unwrap();
+        let first = advance_late_wake(None, "late:first");
+        let second = advance_late_wake(Some(&first), "late:second");
+        assert_ne!(first, second);
+        assert_eq!(second, advance_late_wake(Some(&first), "late:second"));
+        checkpoint.restore_late_wake(Some(second.clone()));
+        checkpoint.restore_late_wake_jobs(vec![
+            LateWakeJob {
+                job_id: "job-1".into(),
+                call_id: "job-1".into(),
+            },
+            LateWakeJob {
+                job_id: "job-2".into(),
+                call_id: "call-2".into(),
+            },
+        ]);
+        let snapshot =
+            CommittedSession::new(Arc::from("lineage"), Model::Astra, checkpoint).snapshot();
+        let encoded = serde_json::to_value(snapshot).unwrap();
+        assert_eq!(encoded["pending_late_wake"], second);
+        assert_eq!(
+            encoded["pending_late_jobs"],
+            serde_json::json!([
+                {"job_id":"job-1", "call_id":"job-1"},
+                {"job_id":"job-2", "call_id":"call-2"}
+            ])
+        );
+        let restored: SessionSnapshot = serde_json::from_value(encoded).unwrap();
+        assert!(
+            restored
+                .clone()
+                .into_replayed_checkpoint("other", Model::Astra, Some("."))
+                .is_err()
+        );
+        assert!(
+            restored
+                .clone()
+                .into_replayed_checkpoint("lineage", Model::Sol, Some("."))
+                .is_err()
+        );
+        assert!(
+            restored
+                .clone()
+                .into_replayed_checkpoint("lineage", Model::Astra, Some("/other"))
+                .is_err()
+        );
+        let mut replay = restored
+            .into_replayed_checkpoint("lineage", Model::Astra, Some("."))
+            .unwrap();
+        assert_eq!(replay.late_wake_id(), Some(second.as_str()));
+        assert_eq!(replay.late_wake_jobs().len(), 2);
+        assert_eq!(replay.late_wake_jobs()[1].call_id, "call-2");
+        replay.conversation.append([ResponseItem::message(
+            MessageRole::Developer,
+            [ContentItem::InputText {
+                text: "later developer context".into(),
+            }],
+        )]);
+        replay.conversation.commit_tail();
+        assert_eq!(replay.late_wake_id(), Some(second.as_str()));
+        let replayed = CommittedSession::new(Arc::from("lineage"), Model::Astra, replay).snapshot();
+        assert_eq!(
+            serde_json::to_value(replayed).unwrap()["pending_late_wake"],
+            second
+        );
+    }
 
     #[test]
     fn snapshot_preserves_context_accounting_and_accepts_legacy_snapshots() {
@@ -628,6 +1124,7 @@ mod context_accounting_snapshot_tests {
             history[1].clone(),
             history,
             Default::default(),
+            false,
             None,
             None,
         )

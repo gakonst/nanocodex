@@ -6,8 +6,9 @@ use std::{
 use nanocodex_agent::{
     ExecutionPolicyDisposition, NanocodexBuilder, NanocodexError, Result as AgentResult,
     execution::{
-        ExecutionAdmission, ExecutionContinuation, ExecutionFuture, ExecutionOutput,
-        ExecutionPolicy, ExecutionSteer, ExecutionStepAdmission, IdentifiedExecutionSteer,
+        ExecutionAdmission, ExecutionBoundaryOutput, ExecutionContinuation, ExecutionFuture,
+        ExecutionOutput, ExecutionPolicy, ExecutionSteer, ExecutionStepAdmission,
+        IdentifiedExecutionSteer, RetainedExecutionBoundaryOutput,
     },
     session::SessionSnapshot,
 };
@@ -182,6 +183,25 @@ impl ExecutionPolicy for DurableExecution {
         })
     }
 
+    fn inspect_operation<'a>(
+        &'a self,
+        operation_id: String,
+        input_json: String,
+    ) -> ExecutionFuture<'a, AgentResult<Option<ExecutionAdmission>>> {
+        Box::pin(async move {
+            let input = raw(input_json)?;
+            let found = self
+                .owner
+                .inspect_typed::<_, crate::context::Snapshot, ExecutionOutput>(operation_id, &input)
+                .await
+                .map_err(agent_error)?;
+            match found {
+                Some(admission) => map_admission(&self.owner, admission).await.map(Some),
+                None => Ok(None),
+            }
+        })
+    }
+
     fn admit_automatic<'a>(
         &'a self,
         candidate_operation_id: String,
@@ -287,6 +307,85 @@ impl ExecutionPolicy for DurableExecution {
                     capacity_available,
                 )
                 .await
+                .map_err(agent_error)
+        })
+    }
+
+    fn accept_identified_boundary_output<'a>(
+        &'a self,
+        operation_id: String,
+        message_id: String,
+        accepted_after_model_call_index: u32,
+        output: ExecutionBoundaryOutput,
+        capacity_available: bool,
+    ) -> ExecutionFuture<'a, AgentResult<Option<u32>>> {
+        Box::pin(async move {
+            self.owner
+                .accept_boundary_output(
+                    operation_id,
+                    accepted_after_model_call_index,
+                    &output,
+                    message_id,
+                    capacity_available,
+                )
+                .await
+                .map_err(agent_error)
+        })
+    }
+
+    fn bind_boundary_output<'a>(
+        &'a self,
+        operation_id: String,
+        output_index: u32,
+        model_call_index: u32,
+    ) -> ExecutionFuture<'a, AgentResult<()>> {
+        Box::pin(async move {
+            self.owner
+                .bind_boundary_output(operation_id, output_index, model_call_index)
+                .await
+                .map_err(agent_error)
+        })
+    }
+
+    fn confirm_boundary_output<'a>(
+        &'a self,
+        operation_id: String,
+        output_index: u32,
+        model_call_index: u32,
+        response_id: String,
+    ) -> ExecutionFuture<'a, AgentResult<()>> {
+        Box::pin(async move {
+            self.owner
+                .confirm_boundary_output(operation_id, output_index, model_call_index, response_id)
+                .await
+                .map_err(agent_error)
+        })
+    }
+
+    fn retained_boundary_outputs<'a>(
+        &'a self,
+        operation_id: String,
+    ) -> ExecutionFuture<'a, AgentResult<Vec<RetainedExecutionBoundaryOutput>>> {
+        Box::pin(async move {
+            self.owner
+                .retained_boundary_outputs(operation_id)
+                .await
+                .and_then(|outputs| {
+                    outputs
+                        .into_iter()
+                        .map(|entry| {
+                            Ok(RetainedExecutionBoundaryOutput {
+                                index: entry.index,
+                                message_id: entry.state.message_id,
+                                accepted_after_model_call_index: entry
+                                    .state
+                                    .accepted_after_model_call_index,
+                                model_call_index: entry.state.model_call_index,
+                                output: entry.state.input.decode()?,
+                            })
+                        })
+                        .collect()
+                })
                 .map_err(agent_error)
         })
     }
@@ -518,9 +617,15 @@ fn agent_error(error: Error) -> NanocodexError {
     if matches!(error, Error::SteerQueueFull) {
         return NanocodexError::SteerQueueFull;
     }
+    if matches!(error, Error::BoundaryOutputQueueFull) {
+        return NanocodexError::BoundaryOutputQueueFull;
+    }
     if matches!(
         error,
-        Error::SteerConflict { .. } | Error::SteerWithdrawn { .. }
+        Error::OperationConflict { .. }
+            | Error::SteerConflict { .. }
+            | Error::SteerWithdrawn { .. }
+            | Error::BoundaryOutputConflict { .. }
     ) {
         return NanocodexError::InvalidRequest(error.to_string());
     }

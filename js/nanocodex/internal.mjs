@@ -110,6 +110,159 @@ export async function routePrompt(agent, options) {
   return raw === undefined ? undefined : createTurn(raw, agent);
 }
 
+/** Trusted host seam: admits an original-call-ID tool result, never a user prompt or steer. */
+export async function submitFunctionCallOutput(agent, callId, options) {
+  const state = agentState(agent);
+  if (!options || typeof options !== "object" || Array.isArray(options)) {
+    throw new TypeError("function-call output options must be an object");
+  }
+  if ("callId" in options) {
+    throw new TypeError("callId cannot be supplied when submitting a call-bound output");
+  }
+  if (Object.keys(options).some((key) => !["output", "operationId"].includes(key))) {
+    throw new TypeError("function-call output options contain unknown fields");
+  }
+  const { output, operationId } = options;
+  if (typeof callId !== "string" || !callId.trim()) {
+    throw new TypeError("callId must be a non-empty string");
+  }
+  if (typeof operationId !== "string" || !operationId.trim()) {
+    throw new TypeError("operationId must be a non-empty stable string");
+  }
+  const encodedOutput = encodeFunctionCallOutput(output);
+  // No prompt/steer fallback. The Rust method owns durable admission and wakeup;
+  // an older kernel cannot safely accept a deferred tool result.
+  if (typeof state.raw.submitFunctionCallOutput !== "function") {
+    throw new Error("this Nanocodex runtime does not support late function-call output");
+  }
+  const encoded = await state.raw.submitFunctionCallOutput(callId, encodedOutput, operationId);
+  if (typeof encoded !== "string") {
+    throw new TypeError("the runtime returned an invalid function-call output receipt");
+  }
+  const receipt = JSON.parse(encoded);
+  if (!receipt || typeof receipt !== "object" || Array.isArray(receipt)) {
+    throw new TypeError("the runtime returned an invalid function-call output receipt");
+  }
+  return freezeJson(receipt);
+}
+
+/** Private bounded batch of original-call-ID outputs; never routes through prompt. */
+export async function submitFunctionCallOutputs(agent, outputs) {
+  const state = agentState(agent);
+  if (!Array.isArray(outputs) || outputs.length < 1 || outputs.length > 8) {
+    throw new TypeError("function-call output batch requires 1..8 entries");
+  }
+  const identities = new Set();
+  const encoded = outputs.map(entry => {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)
+      || Object.keys(entry).some(key => !["callId", "operationId", "output"].includes(key))) {
+      throw new TypeError("invalid function-call output batch entry");
+    }
+    const { callId, operationId, output } = entry;
+    if (typeof callId !== "string" || !callId.trim()
+      || typeof operationId !== "string" || !operationId.trim()) {
+      throw new TypeError("batch callId and operationId must be non-empty strings");
+    }
+    // No duplicate job or call within a batch, even if outputs appear equal.
+    if (identities.has(`call:${callId}`) || identities.has(`job:${operationId}`)) {
+      throw new TypeError("duplicate function-call output batch identity");
+    }
+    identities.add(`call:${callId}`);
+    identities.add(`job:${operationId}`);
+    return { call_id: callId, operation_id: operationId, output: JSON.parse(encodeFunctionCallOutput(output)) };
+  });
+  if (typeof state.raw.submitFunctionCallOutputs !== "function") {
+    throw new Error("this Nanocodex runtime does not support batch function-call output");
+  }
+  const result = await state.raw.submitFunctionCallOutputs(JSON.stringify(encoded));
+  if (typeof result !== "string") throw new TypeError("the runtime returned invalid batch function-call output receipts");
+  const receipts = JSON.parse(result);
+  if (!Array.isArray(receipts) || receipts.length !== encoded.length || receipts.some((receipt, index) =>
+    !receipt || typeof receipt !== "object" || Array.isArray(receipt)
+    || receipt.operation_id !== encoded[index].operation_id || receipt.call_id !== encoded[index].call_id
+    || typeof receipt.replayed !== "boolean" || typeof receipt.continuation_started !== "boolean")) {
+    throw new TypeError("the runtime returned invalid batch function-call output receipts");
+  }
+  return freezeJson(receipts);
+}
+
+/** A checkpointed idle result only counts after its exact wake model step settles. */
+export async function idleFunctionCallOutputStatus(agent, callId, options) {
+  const state = agentState(agent);
+  if (!options || typeof options !== "object" || Array.isArray(options)
+    || Object.keys(options).some((key) => key !== "operationId")) {
+    throw new TypeError("idle output status requires operationId");
+  }
+  const { operationId } = options;
+  for (const [name, value] of [["callId", callId], ["operationId", operationId]]) {
+    if (typeof value !== "string" || !value.trim()) throw new TypeError(`${name} must be a non-empty string`);
+  }
+  if (typeof state.raw.idleFunctionOutputStatus !== "function") {
+    throw new Error("this Nanocodex runtime does not support idle function-call status");
+  }
+  const encoded = await state.raw.idleFunctionOutputStatus(operationId, callId);
+  return parseFunctionOutputStatus(encoded, "idle");
+}
+
+/** Private read-only status; a staged idle result is never counted as model uptake. */
+export async function activeFunctionCallOutputStatus(agent, callId, options) {
+  const state = agentState(agent);
+  if (!options || typeof options !== "object" || Array.isArray(options)
+    || Object.keys(options).some((key) => !["originalTurnId", "operationId"].includes(key))) {
+    throw new TypeError("active output status requires originalTurnId and operationId");
+  }
+  const { originalTurnId, operationId } = options;
+  for (const [name, value] of [["callId", callId], ["originalTurnId", originalTurnId], ["operationId", operationId]]) {
+    if (typeof value !== "string" || !value.trim()) throw new TypeError(`${name} must be a non-empty string`);
+  }
+  if (typeof state.raw.activeFunctionOutputStatus !== "function") {
+    throw new Error("this Nanocodex runtime does not support active function-call status");
+  }
+  const encoded = await state.raw.activeFunctionOutputStatus(originalTurnId, operationId, callId);
+  return parseFunctionOutputStatus(encoded, "active");
+}
+
+function parseFunctionOutputStatus(encoded, path) {
+  if (typeof encoded !== "string") throw new TypeError(`the runtime returned invalid ${path} output status`);
+  const status = JSON.parse(encoded);
+  if (!status || typeof status !== "object" || Array.isArray(status)
+    || !["accepted_unbound", "bound_unconfirmed", "confirmed", "discarded", "pruned_or_unknown"].includes(status.state)
+    || ((status.state === "confirmed" || status.state === "bound_unconfirmed")
+      && (!Number.isSafeInteger(status.model_call_index) || status.model_call_index < 1))
+    || (status.state === "confirmed" && (typeof status.response_id !== "string" || !status.response_id))) {
+    throw new TypeError(`the runtime returned invalid ${path} output status`);
+  }
+  return freezeJson(status);
+}
+
+function encodeFunctionCallOutput(output) {
+  if (typeof output === "string") return JSON.stringify(output);
+  if (!Array.isArray(output) || output.length === 0) {
+    throw new TypeError("function-call output must be text or non-empty typed content");
+  }
+  const content = output.map((item) => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) {
+      throw new TypeError("function-call output content must be typed objects");
+    }
+    switch (item.type) {
+      case "input_text":
+        if (typeof item.text !== "string" || Object.keys(item).some((key) => !["type", "text"].includes(key))) break;
+        return { type: "input_text", text: item.text };
+      case "input_image":
+        if (typeof item.image_url !== "string" || !item.image_url ||
+          (item.detail !== undefined && !["auto", "low", "high", "original"].includes(item.detail)) ||
+          Object.keys(item).some((key) => !["type", "image_url", "detail"].includes(key))) break;
+        return { type: "input_image", image_url: item.image_url, ...(item.detail === undefined ? {} : { detail: item.detail }) };
+      case "input_audio":
+        if (typeof item.audio_url !== "string" || !item.audio_url || Object.keys(item).some((key) => !["type", "audio_url"].includes(key))) break;
+        return { type: "input_audio", audio_url: item.audio_url };
+      default: break;
+    }
+    throw new TypeError("invalid function-call output content");
+  });
+  return JSON.stringify(content);
+}
+
 export function getTurnResult(turn) {
   const state = turnState(turn);
   if (!state.result) {
