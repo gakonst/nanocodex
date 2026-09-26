@@ -23,9 +23,11 @@ gh workflow run "$workflow" --repo "$repo" --ref "$ref" \
 
 run_id=""
 for _ in $(seq 1 60); do
-  run_id=$(gh run list --repo "$repo" --workflow "$workflow" --event workflow_dispatch \
-    --created ">=$started" --json databaseId,displayTitle \
-    --jq ".[] | select(.displayTitle == \"Nanocodex iPhone update $request_id\") | .databaseId" | head -n 1)
+  # The scoped sandbox gh supports only the basic run-list flags and names
+  # the run via `name` rather than GitHub CLI's `displayTitle` field.
+  run_id=$(gh run list --repo "$repo" --workflow "$workflow" --limit 100 \
+    --json databaseId,name,event,createdAt \
+    --jq ".[] | select(.event == \"workflow_dispatch\" and .createdAt >= \"$started\" and .name == \"Nanocodex iPhone update $request_id\") | .databaseId" | head -n 1)
   [[ -n "$run_id" ]] && break
   sleep 2
 done
