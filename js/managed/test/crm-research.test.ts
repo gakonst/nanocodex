@@ -87,6 +87,36 @@ describe("private research profiles and refresh queue in D1", () => {
     expect((await call(account, "queue", {})).records).toEqual([]);
   });
 
+  it("projects completed research onto empty person fields without rewriting manual data", async () => {
+    const { crmRelationshipRequest } = await import("../src/crm-context");
+    const account = owner();
+    const company = (await create(account, { kind: "company", name: "Synthetic Works" }, "employer")).record;
+    const person = (await create(account, { kind: "person", name: "Synthetic Guest" }, "guest")).record;
+    const evidence = [{ kind: "web", reference: "https://synthetic.example/team" }];
+    await call(account, "save", complete(person.id));
+    let viewed: any = await crmRequest(db, account, "get", { id: person.id }, "unused");
+    expect(viewed.record).toMatchObject({ title: "Designer", website: "https://synthetic.example/team", company_id: null,
+      field_origins: { title: "research", website: "research" } });
+    await crmRelationshipRequest(db, account, "save", {
+      from_id: person.id, to_id: company.id, type: "works_at", role: "Designer", origin: "source", sources: evidence, confidence: "high",
+    }, "employment");
+    viewed = await crmRequest(db, account, "get", { id: person.id }, "unused");
+    expect(viewed.record).toMatchObject({ company_id: company.id, field_origins: { company_id: "relationship" } });
+    expect((await crmRequest(db, account, "search", { company_id: company.id }, "unused") as any).records.map((r: any) => r.id)).toEqual([person.id]);
+    expect((await db.prepare("SELECT title,website,company_id FROM crm_records WHERE owner_id=? AND id=?")
+      .bind(account, person.id).first())!).toMatchObject({ title: null, website: null, company_id: null });
+    const saved: any = await crmRequest(db, account, "save", { id: person.id, title: "User title", website: "https://manual.example", company_id: company.id }, "unused");
+    expect(saved.record).toMatchObject({ title: "User title", website: "https://manual.example", company_id: company.id });
+    expect(saved.record.field_origins).toBeUndefined();
+    await call(account, "save", { ...complete(person.id), title: "Changed research", website: "https://synthetic.example/new" });
+    expect((await crmRequest(db, account, "get", { id: person.id }, "unused") as any).record).toMatchObject({ title: "User title", website: "https://manual.example" });
+    await crmRequest(db, account, "save", { id: person.id, title: null, website: null, company_id: null }, "unused");
+    await call(account, "save", { record_id: person.id, summary: "Identity uncertain", company: "Synthetic Works", title: "Guess",
+      website: "https://synthetic.example/guess", sources: evidence, status: "needs_review" });
+    expect((await crmRequest(db, account, "get", { id: person.id }, "unused") as any).record)
+      .toMatchObject({ title: null, website: null, company_id: null });
+  });
+
   it("refreshes only complete profiles older than 30 days and retains review reasons until explicit correction", async () => {
     const account = owner();
     for (const id of ["stale", "recent", "review"]) await create(account, { kind: "person", name: `Synthetic ${id}` }, id);

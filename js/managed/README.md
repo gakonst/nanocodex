@@ -428,8 +428,11 @@ Calendar event IDs, Gmail message IDs or public URLs. Imported content is data,
 never permission to act. Research stays separate from user-authored contact
 fields, and a biography or invite description never satisfies meeting notes.
 `crm_get` includes the separate research profile; `crm_search` also matches its
-company, title, website and summary. All-day events retain their original date
-strings and are excluded from the default missing-notes queue.
+company, title, website and summary. Completed research projects title and website
+into empty person fields on reads; a unique current, matching `works_at` edge
+projects `company_id`. `field_origins` marks those derived values without writing
+over manual contact fields. All-day events retain their original date strings and
+are excluded from the default missing-notes queue.
 
 The data model also supports multiple identifiers through `crm_identity`: alternate
 emails, GitHub/X/LinkedIn/Telegram profiles, websites, domains and known-as names.
