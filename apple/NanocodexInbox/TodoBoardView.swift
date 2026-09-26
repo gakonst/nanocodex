@@ -7,16 +7,27 @@ struct TodoBoardView: View {
     @ObservedObject var model: InboxModel
     @Environment(\.scenePhase) private var scenePhase
     @State private var selectedDecision: TodoDecision?
+    private var filter: TodoFeedFilter { model.todoFilter }
 
     var body: some View {
         List {
-            let visible = model.todoDecisions.filter { $0.status == "needs_you" }
-            if visible.isEmpty && !model.todoLoaded {
+            let feed = TodoFeed(captures: model.todoItems, decisions: model.todoDecisions,
+                                traces: model.todoTraces, filter: filter)
+            Picker("Show", selection: $model.todoFilter) {
+                ForEach(TodoFeedFilter.allCases, id: \.self) { value in
+                    Text(value.rawValue).tag(value)
+                }
+            }
+            .pickerStyle(.segmented)
+            .accessibilityIdentifier("todo-filter")
+            .listRowSeparator(.hidden)
+            let visible = feed.decisions
+            if visible.isEmpty && feed.traces.isEmpty && !model.todoLoaded {
                 Text(model.todoError == nil ? "Loading decisions…" : "Decisions couldn't be loaded. Pull down to retry.")
                     .font(.subheadline).foregroundStyle(.secondary)
                     .listRowSeparator(.hidden)
-            } else if visible.isEmpty {
-                Label("Nothing needs your decision right now", systemImage: "checkmark.circle")
+            } else if visible.isEmpty && feed.traces.isEmpty {
+                Label(filter == .ignore ? "No ignored results in the recent feed" : "Nothing needs your decision right now", systemImage: "checkmark.circle")
                     .foregroundStyle(.secondary)
                     .listRowSeparator(.hidden)
                     .accessibilityIdentifier("todo-no-decisions")
@@ -47,9 +58,32 @@ struct TodoBoardView: View {
                         }
                 }
             }
-            if !model.todoItems.isEmpty {
+            if !feed.traces.isEmpty {
+                Section {
+                    ForEach(feed.traces) { trace in
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text(trace.outcomeLabel).font(.caption.weight(.medium)).foregroundStyle(.secondary)
+                            Text(trace.title).font(.headline)
+                            if !trace.sender.isEmpty { Text(trace.sender).font(.subheadline).foregroundStyle(.secondary) }
+                            Text(trace.reasonLabel).font(.subheadline).foregroundStyle(.secondary)
+                            if trace.subject.isEmpty && trace.sender.isEmpty {
+                                Text("Message details were not recorded for this result.").font(.caption).foregroundStyle(.secondary)
+                            }
+                            if let date = trace.observedAt { Text(date, style: .date).font(.caption2).foregroundStyle(.secondary) }
+                            if let url = trace.sourceURL {
+                                Link("Open source", destination: url).font(.caption)
+                            }
+                        }
+                        .padding(.vertical, 5)
+                        .accessibilityElement(children: .contain)
+                        .accessibilityIdentifier("todo-trace:\(trace.id)")
+                    }
+                } header: { Text("Recent email results") }
+                  footer: { Text("Up to 100 recent results from the last 90 days.") }
+            }
+            if !feed.captures.isEmpty {
                 Section("Captured") {
-                    ForEach(model.todoItems) { item in
+                    ForEach(feed.captures) { item in
                         VStack(alignment: .leading, spacing: 4) {
                             Text(item.body).font(.body)
                             if !item.watchHint.isEmpty {

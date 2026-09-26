@@ -1,4 +1,4 @@
-import { initializeGmailDecisionTraces, readGmailDecisionTraces } from "./gmail-firehose-traces";
+import { initializeGmailDecisionTraces, readGmailDecisionTraces, recentGmailTodoTraces } from "./gmail-firehose-traces";
 import { durablePlacementOptions } from "nanocodex/cloudflare/durable-placement";
 import type { AccountAuthEnv, Principal } from "./account-auth";
 
@@ -67,7 +67,8 @@ export async function handleTodoInbox(request: Request, storage: DurableObjectSt
     const open = storage.sql.exec<DecisionView>(`SELECT ${projection} FROM todo_decisions WHERE status = 'needs_you' ORDER BY created_at DESC LIMIT 200`).toArray();
     const activity = storage.sql.exec<DecisionView>(`SELECT ${projection} FROM todo_decisions WHERE status != 'needs_you' ORDER BY created_at DESC LIMIT 200`).toArray();
     const decisions = [...open, ...activity].map(({ choices, ...rest }) => ({ ...rest, choices: JSON.parse(choices) as Choice[] }));
-    return reply({ items, decisions });
+    return reply({ items, decisions, traces: recentGmailTodoTraces(storage),
+      feed_bounds: { traces: "recent", trace_limit: 100 } });
   }
   if (path === "/todo" && request.method === "POST") {
     const input = await boundedBody(request);

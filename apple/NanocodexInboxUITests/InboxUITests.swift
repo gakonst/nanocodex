@@ -35,7 +35,7 @@ final class InboxUITests: XCTestCase {
         app.launch()
         XCTAssertTrue(app.buttons["main-tab-todo"].waitForExistence(timeout: 10))
         XCTAssertFalse(app.staticTexts["Decisions"].exists)
-        XCTAssertFalse(app.buttons["todo-filter"].exists)
+        XCTAssertTrue(app.segmentedControls["todo-filter"].exists)
         XCTAssertTrue(app.buttons["decision-card:fixture-email"].exists)
         XCTAssertTrue(app.buttons["todo-watch-toggle"].exists)
         capture(app, "todo-decision-first")
@@ -68,6 +68,36 @@ final class InboxUITests: XCTestCase {
         capture(app, "todo-swipe-primary")
         app.buttons["decision-swipe-primary:fixture-email"].tap()
         XCTAssertTrue(app.staticTexts["Nothing needs your decision right now"].waitForExistence(timeout: 5))
+    }
+
+    func testTodoFiltersKeepIgnoredContextAndActionableChoicesSeparate() {
+        let app = XCUIApplication()
+        app.launchArguments = ["--demo", "--todo-ui-fixture", "--todo-filter-fixture"]
+        app.launchEnvironment = ["NANOCODEX_DEMO_PROFILE": UUID().uuidString]
+        app.launch()
+        let filters = app.segmentedControls["todo-filter"]
+        XCTAssertTrue(filters.waitForExistence(timeout: 10))
+        XCTAssertTrue(filters.buttons["All"].isSelected)
+        XCTAssertTrue(app.buttons["decision-card:fixture-email"].exists)
+        filters.buttons["Ignore"].tap()
+        XCTAssertTrue(app.staticTexts["Weekly digest"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["Updates <updates@example.test>"].exists)
+        XCTAssertTrue(app.staticTexts["No reply requested."].exists)
+        XCTAssertFalse(app.buttons["decision-card:fixture-email"].exists)
+        XCTAssertFalse(app.staticTexts["Classification unavailable"].exists)
+        XCTAssertFalse(app.staticTexts["Remember the agenda"].exists)
+        capture(app, "todo-ignore-filter")
+        filters.buttons["Actionable"].tap()
+        XCTAssertTrue(app.buttons["decision-card:fixture-email"].exists)
+        XCTAssertFalse(app.staticTexts["Weekly digest"].exists)
+        app.buttons["decision-card:fixture-email"].tap()
+        XCTAssertTrue(app.buttons["decision-choice:fixture-email:draft"].waitForExistence(timeout: 5))
+        app.buttons["decision-detail-close"].tap()
+        filters.buttons["All"].tap()
+        app.swipeUp()
+        XCTAssertTrue(app.staticTexts["Classification unavailable"].exists)
+        XCTAssertTrue(app.staticTexts["Remember the agenda"].exists)
+        capture(app, "todo-all-filter")
     }
 
     func testDecisionSecondarySwipeChoice() {
