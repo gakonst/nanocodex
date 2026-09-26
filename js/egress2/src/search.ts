@@ -13,7 +13,7 @@ export function createSearchHandler<Env>({ readCredential, upstreamFetch, clock 
   log = (event: Record<string, string | number | null>) => console.info(event),
 }: {
   readCredential: (owner: string, env: Env) => Promise<ActiveCredential | null>;
-  upstreamFetch: (request: Request, owner: string, env: Env) => Promise<Response>;
+  upstreamFetch: (request: Request, owner: string, env: Env, region: string | null) => Promise<Response>;
   clock?: () => number;
   log?: (event: Record<string, string | number | null>) => void;
 }) {
@@ -71,7 +71,7 @@ export function createSearchHandler<Env>({ readCredential, upstreamFetch, clock 
         span.setAttribute("egress2.route", route);
         const response = await upstreamFetch(new Request(target, {
           method: "POST", headers, body: JSON.stringify(body), redirect: "manual",
-        }), owner, env);
+        }), owner, env, request.headers.get("x-managed2-relay-region"));
         span.setAttribute("http.response.status_code", response.status);
         return response;
       }); }

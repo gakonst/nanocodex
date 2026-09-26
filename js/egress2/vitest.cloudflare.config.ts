@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { cloudflareTest } from "@cloudflare/vitest-pool-workers";
 import { defineConfig } from "vitest/config";
 
@@ -6,6 +7,13 @@ export default defineConfig({
     wrangler: { configPath: "./wrangler.test.jsonc" },
     miniflare: {
       bindings: { CREDENTIAL_ENCRYPTION_KEY: btoa("0123456789abcdef0123456789abcdef") },
+      durableObjects: {
+        CHATGPT_EGRESS: { className: "RelayLegacy", scriptName: "relay-fixture" },
+        CHATGPT_EGRESS_WNAM: { className: "RelayWnam", scriptName: "relay-fixture" },
+      },
+      workers: [{ name: "relay-fixture", modules: true,
+        script: readFileSync(new URL("./test/fixtures/relay.mjs", import.meta.url), "utf8"),
+        compatibilityDate: "2026-07-29" }],
       outboundService: async (request) => {
         const url = new URL(request.url);
         if (url.href === "https://auth.openai.com/oauth/token" && request.method === "POST") {

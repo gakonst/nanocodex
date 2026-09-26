@@ -11,6 +11,13 @@ interface Env {
   USER_CREDENTIALS: DurableObjectNamespace<UserCredentials>;
   CREDENTIAL_ENCRYPTION_KEY: string;
   CHATGPT_EGRESS?: DurableObjectNamespace;
+  CHATGPT_EGRESS_WNAM?: DurableObjectNamespace;
+  CHATGPT_EGRESS_ENAM?: DurableObjectNamespace;
+  CHATGPT_EGRESS_WEUR?: DurableObjectNamespace;
+  CHATGPT_EGRESS_EEUR?: DurableObjectNamespace;
+  CHATGPT_EGRESS_APAC?: DurableObjectNamespace;
+  CHATGPT_EGRESS_SAM?: DurableObjectNamespace;
+  CHATGPT_EGRESS_OC?: DurableObjectNamespace;
   GATEWAY?: Fetcher;
 }
 
@@ -73,16 +80,16 @@ export class UserCredentials extends DurableObject<Env> {
 const handler = createEgressHandler<Env>({
   readCredential: (ownerId, env) => env.USER_CREDENTIALS.get(env.USER_CREDENTIALS.idFromName(ownerId)).getActiveCredential(),
   recoverCredential: (ownerId, revision, env) => env.USER_CREDENTIALS.get(env.USER_CREDENTIALS.idFromName(ownerId)).recoverChatGptCredential(revision),
-  upstreamFetch: (request, ownerId, env) => {
+  upstreamFetch: (request, ownerId, env, region) => {
     return new URL(request.url).hostname === "chatgpt.com"
-      ? routeChatGpt(request, ownerId, env) : fetch(request);
+      ? routeChatGpt(request, ownerId, env, region) : fetch(request);
   },
 });
 
 const search = createSearchHandler<Env>({
   readCredential: (owner, env) => env.USER_CREDENTIALS.get(env.USER_CREDENTIALS.idFromName(owner)).getActiveCredential(),
-  upstreamFetch: (request, owner, env) => new URL(request.url).hostname === "chatgpt.com"
-    ? routeChatGpt(request, owner, env) : fetch(request),
+  upstreamFetch: (request, owner, env, region) => new URL(request.url).hostname === "chatgpt.com"
+    ? routeChatGpt(request, owner, env, region) : fetch(request),
 });
 
 /** Private service binding only. Caller must authenticate the user before asserting the owner header. */

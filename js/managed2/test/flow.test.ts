@@ -273,3 +273,20 @@ it("routes subscription web__run through Egress2 without exposing account creden
   }, { timeout: 15_000 }).toBe("completed");
   expect(result?.message).toContain("[synthetic citation](https://example.org/source)");
 }, 20_000);
+
+it("anchors a new session relay to trusted SF ingress rather than an asserted client header", async () => {
+  const authorization = `Bearer ${fixtureKeys["fixture-user"]}`;
+  const created = await SELF.fetch("https://api.test/v1/agents", {
+    method: "POST", headers: { authorization, "x-managed2-relay-region": "eeur" },
+    cf: { colo: "SJC" },
+  } as RequestInit);
+  expect(created.status).toBe(201);
+  const { agent_id: agentId } = await created.json<{ agent_id: string }>();
+  const { env, runInDurableObject } = await import("cloudflare:test");
+  const sessions = (env as unknown as { SESSIONS: DurableObjectNamespace }).SESSIONS;
+  const stub = sessions.getByName(`fixture-user:${agentId}`);
+  const region = await runInDurableObject(stub, (_session, state) => state.storage.sql.exec<{ relay_region: string | null }>(
+    "SELECT relay_region FROM session_meta WHERE singleton = 1",
+  ).toArray()[0]?.relay_region);
+  expect(region).toBe("wnam");
+});
