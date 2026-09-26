@@ -220,8 +220,10 @@ prompt-less idle continuation when the turn has ended. Same-source idle
 results are staged in a bounded cohort of at most eight before one wake.
 A ninth already-completed result cannot join that in-flight wake: it remains
 durable, then is retried under its original ID for a later prompt-less wake.
-Host reconciliation defers the spill while an earlier same-source wake has an
-unconfirmed durable receipt, rather than repeatedly invoking a busy driver.
+Host reconciliation checks checkpointed uptake before ready work, even with
+a full 25-row page, and defers the spill while an earlier same-source wake
+has an unconfirmed durable receipt rather than repeatedly invoking a busy
+driver.
 Thus coalescing is bounded, not a promise of one model call for any number of
 completed jobs. Host SQL marks a job
 `delivered` only after the exact native active/idle receipt identifies a

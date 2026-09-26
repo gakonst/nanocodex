@@ -589,40 +589,46 @@ it("spills a ninth terminal across the bounded wake without losing or falsely de
   });
 });
 
-it("finds an unconfirmed same-source wake beyond the bounded reconciliation page", async () => {
+it("prioritizes a same-source wake receipt ahead of a full page of completed jobs", async () => {
   await runInDurableObject(stub(), async (_session, state) => {
-    state.storage.sql.exec("INSERT INTO turns (id, input, state) VALUES ('other', 'work', 'completed')");
     state.storage.sql.exec("INSERT INTO turns (id, input, state) VALUES ('source', 'work', 'completed')");
     const read: NamedTool = { name: "current_time", description: "read", handler: () => "ok" };
     new AsyncJobs(state.storage, { current_time: read }, () => "source", async () => {}, () => {});
-    const insert = (id: string, source: string, call: string, stateName: string, at: number) => {
+    const insert = (id: string, call: string, stateName: string, at: number) => {
       state.storage.sql.exec(`INSERT INTO async_jobs
         (id, invocation, original_turn, execution_turn, call_id, tool, args, state, result,
-          terminal_state, created_at, wake_generation) VALUES (?, ?, ?, 'turn-1', ?,
+          terminal_state, created_at, wake_generation) VALUES (?, ?, 'source', 'turn-1', ?,
           'current_time', '{}', ?, '"ready"', 'completed', ?, 0)`,
-      id, `turn-1:${call}`, source, call, stateName, at);
+      id, `turn-1:${call}`, call, stateName, at);
     };
-    for (let index = 0; index < 24; index++) insert(crypto.randomUUID(), "other", `call-other-${index}`, "completed", index);
-    const next = crypto.randomUUID();
-    insert(next, "source", "call-source-new", "completed", 24);
-    // Twenty-five completed rows fill the page, hiding this older native
-    // checkpoint from the per-row status loop. SQL must still fence source.
-    insert(crypto.randomUUID(), "source", "call-source-inflight", "checkpointed", 25);
+    const ready = Array.from({ length: 25 }, () => crypto.randomUUID());
+    for (let index = 0; index < ready.length; index++) insert(ready[index]!, `call-source-${index}`, "completed", index);
+    const inFlight = crypto.randomUUID();
+    insert(inFlight, "call-source-inflight", "checkpointed", 25);
+    let confirmed = false;
+    let statusReads = 0;
     const batches: string[][] = [];
     const jobs = new AsyncJobs(state.storage, { current_time: read }, () => "source",
       async () => { throw new Error("unexpected individual output"); }, () => {},
       new Set(["current_time"]), undefined, async () => ({ state: "pruned_or_unknown" }),
-      async () => ({ state: "accepted_unbound" }),
+      async () => {
+        statusReads++;
+        return confirmed ? { state: "confirmed", model_call_index: 3, response_id: "model-3" }
+          : { state: "accepted_unbound" };
+      },
       async intents => {
         batches.push(intents.map(intent => intent.callId));
-        if (intents.some(intent => intent.callId === "call-source-new"))
-          throw new Error("would race in-flight source wake");
         return intents.map(intent => accepted(intent, true));
       });
     await jobs.reconcile();
-    expect(batches).toHaveLength(1);
-    expect(batches[0]).toEqual(Array.from({ length: 8 }, (_, i) => `call-other-${i}`));
-    expect(jobs.status(next)).toMatchObject({ state: "completed" });
+    expect(statusReads).toBe(1); // row 26 was processed despite LIMIT 25
+    expect(batches).toHaveLength(0);
+    expect(jobs.status(ready[0]!)).toMatchObject({ state: "completed" });
+    confirmed = true;
+    await jobs.reconcile();
+    expect(jobs.status(inFlight)).toMatchObject({ state: "delivered", continuation_started: true });
+    expect(batches).toEqual([Array.from({ length: 8 }, (_, i) => `call-source-${i}`)]);
+    expect(jobs.status(ready[0]!)).toMatchObject({ state: "checkpointed", continuation_started: false });
   });
 });
 

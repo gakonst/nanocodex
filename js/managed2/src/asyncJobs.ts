@@ -239,7 +239,9 @@ export class AsyncJobs {
     const rows = this.storage.sql.exec<Job>(
       `SELECT * FROM async_jobs WHERE state NOT IN ('delivered', 'legacy_uninjectable')
         AND (state != 'checkpointed' OR (wake_generation < ? AND ${terminalOrigin}))
-        ORDER BY (state = 'checkpointed'), (state = 'awaiting_integration'), created_at, id LIMIT 25`,
+        -- Process exact uptake receipts before ready jobs: a page of ready
+        -- jobs from the same source must not indefinitely hide its wake.
+        ORDER BY (state != 'checkpointed'), (state = 'awaiting_integration'), created_at, id LIMIT 25`,
       this.wakeGeneration,
     ).toArray();
     let retry = false;
