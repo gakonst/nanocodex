@@ -101,6 +101,8 @@ export class SqlHostedToolsPersistence implements HostedToolsBrokerPersistence {
         ON hosted_tool_calls(session_id, source_call_id);
       CREATE INDEX IF NOT EXISTS hosted_tool_calls_attachment
         ON hosted_tool_calls(lease_id, generation, state);
+      CREATE INDEX IF NOT EXISTS hosted_tool_calls_created_at
+        ON hosted_tool_calls(created_at);
     `);
     const columns = this.storage.sql.exec<{ name: string }>("PRAGMA table_info(hosted_tool_calls)").toArray();
     if (!columns.some((column) => column.name === "turn_id")) {

@@ -29,6 +29,8 @@ describe("owner hosted tool statistics", () => {
     expect(await empty.json()).toMatchObject({ total_calls: 0, data: [] });
     const now = Date.now();
     await runInDurableObject(stub, async (_, state) => {
+      expect(state.storage.sql.exec<{ name: string }>("PRAGMA index_list(hosted_tool_calls)")
+        .toArray().map(index => index.name)).toContain("hosted_tool_calls_created_at");
       const insert = (source: string, name: string, callState: string, created: number, updated: number) => {
         state.storage.sql.exec(`INSERT INTO hosted_tool_calls
           (call_id, session_id, source_call_id, host_id, lease_id, generation, model, name,
