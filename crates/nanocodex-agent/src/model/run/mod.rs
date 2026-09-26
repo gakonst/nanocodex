@@ -30,8 +30,8 @@ use nanocodex_oai_api::{
     events::AgentEventKind,
     pricing::{ServiceTier, estimate_for_model},
     responses::{
-        ContentItem, FunctionOutputBody, MessageRole, RequestProfile, ResponseItem, ToolDefinition,
-        Usage,
+        ContentItem, FunctionOutputBody, MessageRole, RequestProfile, ResponseItem, ResponseItemId,
+        ToolDefinition, Usage,
     },
     tower::{
         CodeCall, CodeCallKind, GenerationOutput as TurnResult, ResponsesAttempt, ResponsesClient,
@@ -462,8 +462,9 @@ impl<S> ModelRun<S> {
         &mut self,
         call_id: &str,
         output: FunctionOutputBody,
+        operation_id: &str,
         requested_workspace: Option<&str>,
-    ) -> Result<ModelCheckpoint>
+    ) -> Result<(ModelCheckpoint, bool)>
     where
         S: Service<ResponsesAttempt, Response = ResponsesServiceResponse> + AgentSend + 'static,
         S::Error: Into<nanocodex_oai_api::ResponseError>,
@@ -473,21 +474,56 @@ impl<S> ModelRun<S> {
             NanocodexError::InvalidRequest("no model session for late function output".into())
         })?;
         session.validate_workspace(requested_workspace)?;
+        if !session.conversation.managed.unreal_function_outputs() {
+            return Err(NanocodexError::InvalidRequest(
+                "Unreal function outputs are not enabled for this session".into(),
+            ));
+        }
+        // Deterministic operation identity is retained on the typed output
+        // itself, surviving snapshots. The raw ID never enters the transcript.
+        const RECEIPT_NAMESPACE: uuid::Uuid =
+            uuid::Uuid::from_u128(0x0d46ca1e_90ac_4c9a_ab23_14f66b19b5ea);
+        let receipt_id = ResponseItemId::from_server(format!(
+            "late:{}",
+            uuid::Uuid::new_v5(&RECEIPT_NAMESPACE, operation_id.as_bytes()),
+        ));
+        for item in session.conversation.managed.flattened_history() {
+            if let ResponseItem::FunctionCallOutput {
+                id: Some(id),
+                call_id: stored_call,
+                output: stored_output,
+                ..
+            } = item
+                && id == receipt_id
+            {
+                if stored_call.as_ref() != call_id
+                    || serde_json::to_value(stored_output).ok()
+                        != serde_json::to_value(&output).ok()
+                {
+                    return Err(NanocodexError::InvalidRequest(
+                        "late output operation ID reused with different call or body".into(),
+                    ));
+                }
+                return Ok((
+                    Self::checkpoint_from_session(session, true, self.global_instructions.clone()),
+                    true,
+                ));
+            }
+        }
         // Validate against an isolated clone before sealing the original tail.
         // Do not risk partially changing the driver's mutable session on error.
         let mut conversation = session.conversation.clone();
         conversation.commit_tail();
         conversation
             .managed
-            .complete_unreal_function_output(call_id, output)
+            .complete_unreal_function_output_with_id(call_id, output, Some(receipt_id))
             .map_err(|error| NanocodexError::InvalidRequest(error.to_string()))?;
         conversation.commit_tail();
         session.conversation = conversation;
         session.preserve_inherited_delta = true;
-        Ok(Self::checkpoint_from_session(
-            session,
-            true,
-            self.global_instructions.clone(),
+        Ok((
+            Self::checkpoint_from_session(session, true, self.global_instructions.clone()),
+            false,
         ))
     }
 

@@ -460,6 +460,27 @@ impl Nanocodex {
         self.backend.compact().await
     }
 
+    /// Commits a trusted terminal output for an opted-in, staged function call.
+    /// Does not impersonate a user or itself start a model turn. An active turn
+    /// settles first; a returned receipt means the checkpoint was committed.
+    pub async fn submit_late_function_output(
+        &self,
+        call_id: impl Into<String>,
+        output: nanocodex_oai_api::responses::FunctionOutputBody,
+        operation_id: impl Into<String>,
+    ) -> Result<LateFunctionOutputReceipt> {
+        let call_id = call_id.into();
+        let operation_id = operation_id.into();
+        if call_id.trim().is_empty() || operation_id.trim().is_empty() {
+            return Err(NanocodexError::InvalidRequest(
+                "late function output requires a call ID and operation ID".into(),
+            ));
+        }
+        self.backend
+            .submit_late_function_output(call_id, output, operation_id)
+            .await
+    }
+
     /// Appends adapter-owned developer context at the next safe model boundary.
     ///
     /// The returned read-only view is captured from the latest safe boundary

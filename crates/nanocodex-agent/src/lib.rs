@@ -37,6 +37,7 @@ pub mod backend {
     pub use crate::agent::backend::*;
 }
 
+pub use agent::LateFunctionOutputReceipt;
 #[cfg(feature = "openai")]
 #[cfg_attr(docsrs, doc(cfg(feature = "openai")))]
 pub use agent::{AgentHandle, ExecutionEnvironment, NanocodexBuilder};

@@ -223,6 +223,17 @@ impl ManagedSessionState {
         call_id: &str,
         output: FunctionOutputBody,
     ) -> Result<(), ManagedSessionStateError> {
+        self.complete_unreal_function_output_with_id(call_id, output, None)
+    }
+
+    /// Completes a staged call with an optional stable host-owned receipt ID.
+    /// The ID survives checkpoint serialization and is used to recognize replay.
+    pub fn complete_unreal_function_output_with_id(
+        &mut self,
+        call_id: &str,
+        output: FunctionOutputBody,
+        receipt_id: Option<crate::ResponseItemId>,
+    ) -> Result<(), ManagedSessionStateError> {
         if is_unreal_running_output(&output) {
             return Err(ManagedSessionStateError::MalformedToolCalls);
         }
@@ -251,7 +262,10 @@ impl ManagedSessionState {
         if original_call != 1 || pending != 1 || terminal {
             return Err(ManagedSessionStateError::MalformedToolCalls);
         }
-        let result = ResponseItem::function_call_output(call_id.to_owned(), output);
+        let mut result = ResponseItem::function_call_output(call_id.to_owned(), output);
+        if let Some(receipt_id) = receipt_id {
+            result.set_id(Some(receipt_id));
+        }
         if !self
             .context
             .replace_staged_unreal_output(call_id, result.clone())
@@ -708,6 +722,35 @@ mod unreal_function_output_tests {
 
     fn text(text: &str) -> FunctionOutputBody {
         FunctionOutputBody::Text(text.into())
+    }
+
+    #[test]
+    fn late_receipt_id_survives_checkpoint_replay() {
+        let mut state = session();
+        state.stage_unreal_function_output("job-1").unwrap();
+        state.commit_tail();
+        let receipt_id = crate::ResponseItemId::from_server("late:stable-receipt");
+        state
+            .complete_unreal_function_output_with_id(
+                "job-1",
+                text("done"),
+                Some(receipt_id.clone()),
+            )
+            .unwrap();
+        let encoded = serde_json::to_value(state.flattened_history()).unwrap();
+        let mut replay = ManagedSessionState::resume_unreal_function_outputs(
+            serde_json::from_value(encoded).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            replay.flattened_history().last().unwrap().id(),
+            Some(&receipt_id)
+        );
+        assert!(
+            replay
+                .complete_unreal_function_output("job-1", text("again"))
+                .is_err()
+        );
     }
 
     #[test]

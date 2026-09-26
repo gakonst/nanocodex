@@ -373,3 +373,20 @@ fn building_requires_a_tokio_runtime() {
         Err(NanocodexError::TokioRuntimeUnavailable)
     ));
 }
+
+#[tokio::test]
+async fn late_function_output_without_opted_in_staged_call_fails_closed() {
+    let (agent, events) = Nanocodex::builder(test_openai()).build().unwrap();
+    let output = nanocodex_oai_api::responses::FunctionOutputBody::Text("done".into());
+    assert!(matches!(
+        agent
+            .submit_late_function_output("job-1", output.clone(), "op-1")
+            .await,
+        Err(NanocodexError::InvalidRequest(_))
+    ));
+    assert!(matches!(
+        agent.submit_late_function_output("", output, "op-1").await,
+        Err(NanocodexError::InvalidRequest(_))
+    ));
+    drop((agent, events));
+}

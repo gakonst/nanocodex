@@ -527,6 +527,12 @@ pub(super) enum Command {
         parent: Option<tracing::Span>,
         result: oneshot::Sender<Result<()>>,
     },
+    SubmitLateFunctionOutput {
+        call_id: String,
+        output: nanocodex_oai_api::responses::FunctionOutputBody,
+        operation_id: String,
+        result: oneshot::Sender<Result<LateFunctionOutputReceipt>>,
+    },
     AppendDeveloperMessage {
         text: String,
         result: oneshot::Sender<Result<AgentSessionContext>>,

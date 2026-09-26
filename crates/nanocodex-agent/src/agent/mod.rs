@@ -103,6 +103,20 @@ impl ToolsConfiguration {
     }
 }
 
+/// Receipt for a trusted, typed late function output. Model continuation is
+/// deliberately reported separately from durable checkpoint acceptance.
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct LateFunctionOutputReceipt {
+    /// Caller-owned stable idempotency identity.
+    pub operation_id: String,
+    /// The exact staged function call completed.
+    pub call_id: String,
+    /// Whether this identical operation was previously checkpointed.
+    pub replayed: bool,
+    /// Whether a genuine prompt-less model continuation was started.
+    pub continuation_started: bool,
+}
+
 pub mod backend;
 #[cfg(feature = "openai")]
 mod builder;
