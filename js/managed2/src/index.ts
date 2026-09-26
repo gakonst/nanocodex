@@ -700,26 +700,14 @@ export class Session extends DurableObject<Env> {
     const timing = this.#timing(id)!;
     this.#activeTraces.set(id, timing.trace_id);
     let turn: ReturnType<typeof agent.turn.prompt> | undefined;
+    let observerInstalled = false;
     try {
       turn = agent.turn.prompt({ id, input });
       await tracing.enterSpan("managed2.turn.admission", async admission => {
         admission.setAttribute("managed2.trace_id", timing.trace_id);
         await turn!.accepted();
       });
-      this.ctx.storage.sql.exec("UPDATE turn_timing SET accepted_ms = COALESCE(accepted_ms, ?) WHERE id = ?",
-        Math.max(0, Date.now() - timing.started_at), id);
-      this.ctx.storage.sql.exec("UPDATE turns SET state = 'accepted' WHERE id = ?", id);
       this.#running.add(id);
-      // A cold async ledger may already have a terminal output ready for this
-      // turn's next model boundary. Do not replace its one-second recovery
-      // alarm with the ordinary ten-second turn health check. The constructor
-      // alarm runs under waitUntil and can race this admission.
-      const asyncWork = this.#asyncEnabled() && this.ctx.storage.sql.exec<{ n: number }>(
-        `SELECT 1 AS n FROM async_jobs WHERE state NOT IN ('delivered', 'legacy_uninjectable') LIMIT 1`,
-      ).toArray().length > 0;
-      const nextAlarm = Date.now() + (asyncWork ? 1_000 : 10_000);
-      const existingAlarm = await this.ctx.storage.getAlarm();
-      if (existingAlarm === null || existingAlarm > nextAlarm) await this.ctx.storage.setAlarm(nextAlarm);
       this.ctx.waitUntil((async () => {
         let result: Awaited<ReturnType<NonNullable<typeof turn>["result"]>> | undefined;
         try {
@@ -761,9 +749,32 @@ export class Session extends DurableObject<Env> {
           }
         }
       })());
+      observerInstalled = true;
+      this.ctx.storage.sql.exec("UPDATE turn_timing SET accepted_ms = COALESCE(accepted_ms, ?) WHERE id = ?",
+        Math.max(0, Date.now() - timing.started_at), id);
+      this.ctx.storage.sql.exec("UPDATE turns SET state = 'accepted' WHERE id = ? AND state = 'pending'", id);
+      // A cold async ledger may already have a terminal output ready for this
+      // turn's next model boundary. Do not replace its one-second recovery
+      // alarm with the ordinary ten-second turn health check. The constructor
+      // alarm runs under waitUntil and can race this admission.
+      const asyncWork = this.#asyncEnabled() && this.ctx.storage.sql.exec<{ n: number }>(
+        `SELECT 1 AS n FROM async_jobs WHERE state NOT IN ('delivered', 'legacy_uninjectable') LIMIT 1`,
+      ).toArray().length > 0;
+      const nextAlarm = Date.now() + (asyncWork ? 1_000 : 10_000);
+      const existingAlarm = await this.ctx.storage.getAlarm();
+      if (existingAlarm === null || existingAlarm > nextAlarm) await this.ctx.storage.setAlarm(nextAlarm);
     } catch (error) {
-      turn?.dispose();
-      this.#activeTraces.delete(id);
+      // After acceptance, the result observer owns the live Rust turn even if
+      // the alarm read/write fails. Do not discard that observer or redispatch
+      // a potentially side-effecting turn while it is still running.
+      if (!observerInstalled) {
+        turn?.dispose();
+        this.#running.delete(id);
+        this.#activeTraces.delete(id);
+        for (const [internal, external] of this.#eventTurns) {
+          if (external === id) this.#eventTurns.delete(internal);
+        }
+      }
       throw error;
     }
   }
