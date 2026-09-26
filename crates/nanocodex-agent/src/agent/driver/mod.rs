@@ -1,6 +1,8 @@
 mod branch;
 mod control;
 mod telemetry;
+mod wake;
+use wake::drive_late_wake;
 
 use super::execution::{
     AdmittedExecution, ExecutionTurn, SteerDelivery, SteerQueue, SteerReceipt, SteerSender,
@@ -107,12 +109,58 @@ where
         let mut developer_checkpoint_ready = true;
         let mut commands_open = true;
         let mut shutdown_failures = Vec::new();
-        loop {
+        'driver: loop {
+            if commands_open
+                && pending_late_outputs.is_empty()
+                && pending_developer_messages.is_empty()
+                && model
+                    .current_checkpoint()
+                    .is_some_and(|snapshot| snapshot.late_wake_id().is_some())
+            {
+                logical_turn_index = logical_turn_index.saturating_add(1);
+                let wake = drive_late_wake(
+                    &mut self.commands,
+                    &self.execution,
+                    &self.spawner,
+                    self.workspace.clone(),
+                    &mut model,
+                    &mut latest_fork_checkpoint,
+                    &mut queued_turns,
+                    &mut pending_compact,
+                    &mut pending_developer_messages,
+                    &mut pending_late_outputs,
+                    TurnDefaults {
+                        model: thread_model,
+                        thinking: default_thinking,
+                        fast_mode: default_fast_mode,
+                    },
+                    &session_id,
+                    logical_turn_index,
+                )
+                .await;
+                match wake {
+                    Ok(open) => commands_open = open,
+                    Err(error) => {
+                        shutdown_failures.push(error.to_string());
+                        begin_shutdown(
+                            &mut self.commands,
+                            &mut queued_turns,
+                            default_thinking,
+                            default_fast_mode,
+                        )
+                        .await;
+                        commands_open = false;
+                    }
+                }
+                continue;
+            }
             let command = loop {
                 if let Some((parent, result)) = pending_compact.take() {
                     break Command::Compact { parent, result };
                 }
-                if let Some(queued) = queued_turns.pop_front() {
+                if (!developer_checkpoint_ready || pending_late_outputs.is_empty())
+                    && let Some(queued) = queued_turns.pop_front()
+                {
                     match queued {
                         QueuedTurn::Pending {
                             key,
@@ -266,7 +314,9 @@ where
                 // Standalone checkpoints cannot overtake any admitted turn, including
                 // cancelled turns awaiting settlement. Retryable operations keep this
                 // barrier closed even after their in-memory queue has drained.
+                let mut processed_checkpoint = false;
                 if developer_checkpoint_ready && !pending_developer_messages.is_empty() {
+                    processed_checkpoint = true;
                     let mut developer_messages = pending_developer_messages.drain(..);
                     while let Some((text, message_result)) = developer_messages.next() {
                         let committed = commit_developer_message(
@@ -320,6 +370,7 @@ where
                     }
                 }
                 if developer_checkpoint_ready && !pending_late_outputs.is_empty() {
+                    processed_checkpoint = true;
                     for (call_id, output, operation_id, result) in pending_late_outputs.drain(..) {
                         let outcome = commit_late_function_output(
                             &mut model,
@@ -361,6 +412,9 @@ where
                             break;
                         }
                     }
+                }
+                if processed_checkpoint {
+                    continue 'driver;
                 }
                 if commands_open {
                     let Some(command) = self.commands.recv().await else {

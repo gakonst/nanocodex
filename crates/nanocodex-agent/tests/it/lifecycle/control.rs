@@ -390,3 +390,244 @@ async fn late_function_output_without_opted_in_staged_call_fails_closed() {
     ));
     drop((agent, events));
 }
+
+#[derive(Clone)]
+struct WakeGateService {
+    attempts: mpsc::UnboundedSender<ResponsesAttempt>,
+    gate: Arc<std::sync::Mutex<Option<tokio::sync::oneshot::Receiver<()>>>>,
+}
+
+impl Service<ResponsesAttempt> for WakeGateService {
+    type Response = ResponsesServiceResponse;
+    type Error = ResponseError;
+    type Future =
+        Pin<Box<dyn Future<Output = std::result::Result<Self::Response, Self::Error>> + Send>>;
+
+    fn poll_ready(&mut self, _: &mut Context<'_>) -> Poll<std::result::Result<(), Self::Error>> {
+        Poll::Ready(Ok(()))
+    }
+
+    fn call(&mut self, request: ResponsesAttempt) -> Self::Future {
+        let gate = if matches!(request.kind(), ResponsesAttemptKind::Generation) {
+            self.gate.lock().unwrap().take()
+        } else {
+            None
+        };
+        if matches!(request.kind(), ResponsesAttemptKind::Generation) {
+            self.attempts.send(request.clone()).unwrap();
+        }
+        let (unused, keep) = mpsc::unbounded_channel();
+        let mut completed = RetainingCompletedService { retained: unused };
+        Box::pin(async move {
+            if let Some(gate) = gate {
+                gate.await.unwrap();
+            }
+            let _keep = keep;
+            completed.call(request).await
+        })
+    }
+}
+
+#[tokio::test]
+async fn late_terminal_wakes_without_prompt_and_driver_polls_commands() {
+    let (retained, _retained_attempts) = mpsc::unbounded_channel();
+    let first = OpenAi::builder("test")
+        .service(move || RetainingCompletedService {
+            retained: retained.clone(),
+        })
+        .build()
+        .unwrap();
+    let (agent, events) = Nanocodex::builder(first)
+        .tools(Tools::builder().without_defaults().build().unwrap())
+        .build()
+        .unwrap();
+    agent
+        .prompt("initial")
+        .await
+        .unwrap()
+        .result()
+        .await
+        .unwrap();
+    let mut snapshot = serde_json::to_value(agent.snapshot().await.unwrap()).unwrap();
+    drop((agent, events));
+    snapshot["unreal_function_outputs"] = serde_json::json!(true);
+    let history = snapshot["history"].as_array_mut().unwrap();
+    history.push(serde_json::json!({
+        "type":"function_call", "call_id":"job-1", "name":"job", "arguments":"{}"
+    }));
+    history.push(serde_json::json!({
+        "type":"function_call_output", "call_id":"job-1",
+        "output":"Tool call is still running. Its result arrives in a later turn: continue with independent work, or end your turn to wait for it."
+    }));
+    let snapshot = serde_json::from_value(snapshot).unwrap();
+    let (attempts, mut observed) = mpsc::unbounded_channel();
+    let (release, gate) = tokio::sync::oneshot::channel();
+    let gate = Arc::new(std::sync::Mutex::new(Some(gate)));
+    let openai = OpenAi::builder("test")
+        .service(move || WakeGateService {
+            attempts: attempts.clone(),
+            gate: Arc::clone(&gate),
+        })
+        .build()
+        .unwrap();
+    let (agent, events) = Nanocodex::builder(openai)
+        .resume(snapshot)
+        .tools(Tools::builder().without_defaults().build().unwrap())
+        .build()
+        .unwrap();
+    let receipt = agent
+        .submit_late_function_output(
+            "job-1",
+            nanocodex_oai_api::responses::FunctionOutputBody::Text("finished".into()),
+            "operation-1",
+        )
+        .await
+        .unwrap();
+    assert!(!receipt.replayed);
+    let wake = tokio::time::timeout(Duration::from_secs(5), observed.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    let wake_items = wake
+        .input_items()
+        .map(|item| serde_json::to_value(item).unwrap())
+        .collect::<Vec<_>>();
+    assert!(
+        wake_items
+            .iter()
+            .any(|item| item["type"] == "function_call_output" && item["output"] == "finished")
+    );
+    // The gate holds the model call; this must not wait for it.
+    tokio::time::timeout(Duration::from_secs(1), agent.context())
+        .await
+        .unwrap()
+        .unwrap();
+    let next = tokio::time::timeout(Duration::from_secs(1), agent.prompt("after wake"))
+        .await
+        .unwrap()
+        .unwrap();
+    release.send(()).unwrap();
+    tokio::time::timeout(Duration::from_secs(5), next.result())
+        .await
+        .unwrap()
+        .unwrap();
+    let second = observed.recv().await.unwrap();
+    assert!(
+        second
+            .input_items()
+            .any(|item| serde_json::to_string(item).unwrap().contains("after wake"))
+    );
+    drop((agent, events));
+}
+
+#[tokio::test]
+async fn late_terminal_submitted_during_active_turn_wakes_before_queued_prompt() {
+    let (retained, _retained_attempts) = mpsc::unbounded_channel();
+    let first = OpenAi::builder("test")
+        .service(move || RetainingCompletedService {
+            retained: retained.clone(),
+        })
+        .build()
+        .unwrap();
+    let (agent, events) = Nanocodex::builder(first)
+        .tools(Tools::builder().without_defaults().build().unwrap())
+        .build()
+        .unwrap();
+    agent
+        .prompt("initial")
+        .await
+        .unwrap()
+        .result()
+        .await
+        .unwrap();
+    let mut snapshot = serde_json::to_value(agent.snapshot().await.unwrap()).unwrap();
+    drop((agent, events));
+    snapshot["unreal_function_outputs"] = serde_json::json!(true);
+    let history = snapshot["history"].as_array_mut().unwrap();
+    history.push(serde_json::json!({
+        "type":"function_call", "call_id":"job-1", "name":"job", "arguments":"{}"
+    }));
+    history.push(serde_json::json!({
+        "type":"function_call_output", "call_id":"job-1",
+        "output":"Tool call is still running. Its result arrives in a later turn: continue with independent work, or end your turn to wait for it."
+    }));
+    let (attempts, mut observed) = mpsc::unbounded_channel();
+    let (release, gate) = tokio::sync::oneshot::channel();
+    let gate = Arc::new(std::sync::Mutex::new(Some(gate)));
+    let openai = OpenAi::builder("test")
+        .service(move || WakeGateService {
+            attempts: attempts.clone(),
+            gate: Arc::clone(&gate),
+        })
+        .build()
+        .unwrap();
+    let (agent, events) = Nanocodex::builder(openai)
+        .resume(serde_json::from_value(snapshot).unwrap())
+        .tools(Tools::builder().without_defaults().build().unwrap())
+        .build()
+        .unwrap();
+    let active = agent.prompt("active").await.unwrap();
+    let first = tokio::time::timeout(Duration::from_secs(5), observed.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        first
+            .input_items()
+            .any(|item| serde_json::to_string(item).unwrap().contains("active"))
+    );
+    let queued = agent.prompt("queued").await.unwrap();
+    let late_agent = agent.clone();
+    let late = tokio::spawn(async move {
+        late_agent
+            .submit_late_function_output(
+                "job-1",
+                nanocodex_oai_api::responses::FunctionOutputBody::Text("finished".into()),
+                "operation-1",
+            )
+            .await
+    });
+    tokio::task::yield_now().await;
+    // A command received after the submission confirms its position in the driver queue.
+    agent.context().await.unwrap();
+    release.send(()).unwrap();
+    tokio::time::timeout(Duration::from_secs(5), active.result())
+        .await
+        .unwrap()
+        .unwrap();
+    let receipt = tokio::time::timeout(Duration::from_secs(5), late)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert!(!receipt.replayed);
+    let wake = tokio::time::timeout(Duration::from_secs(5), observed.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    let wake_items = wake
+        .input_items()
+        .map(|item| serde_json::to_value(item).unwrap())
+        .collect::<Vec<_>>();
+    assert!(
+        wake_items
+            .iter()
+            .any(|item| item["type"] == "function_call_output" && item["output"] == "finished")
+    );
+    assert!(
+        !wake_items
+            .iter()
+            .any(|item| item.to_string().contains("queued"))
+    );
+    tokio::time::timeout(Duration::from_secs(5), queued.result())
+        .await
+        .unwrap()
+        .unwrap();
+    let after = observed.recv().await.unwrap();
+    assert!(
+        after
+            .input_items()
+            .any(|item| serde_json::to_string(item).unwrap().contains("queued"))
+    );
+    drop((agent, events));
+}
