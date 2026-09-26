@@ -710,7 +710,16 @@ export class Session extends DurableObject<Env> {
         Math.max(0, Date.now() - timing.started_at), id);
       this.ctx.storage.sql.exec("UPDATE turns SET state = 'accepted' WHERE id = ?", id);
       this.#running.add(id);
-      await this.ctx.storage.setAlarm(Date.now() + 10_000);
+      // A cold async ledger may already have a terminal output ready for this
+      // turn's next model boundary. Do not replace its one-second recovery
+      // alarm with the ordinary ten-second turn health check. The constructor
+      // alarm runs under waitUntil and can race this admission.
+      const asyncWork = this.#asyncEnabled() && this.ctx.storage.sql.exec<{ n: number }>(
+        `SELECT 1 AS n FROM async_jobs WHERE state NOT IN ('delivered', 'legacy_uninjectable') LIMIT 1`,
+      ).toArray().length > 0;
+      const nextAlarm = Date.now() + (asyncWork ? 1_000 : 10_000);
+      const existingAlarm = await this.ctx.storage.getAlarm();
+      if (existingAlarm === null || existingAlarm > nextAlarm) await this.ctx.storage.setAlarm(nextAlarm);
       this.ctx.waitUntil((async () => {
         let result: Awaited<ReturnType<NonNullable<typeof turn>["result"]>> | undefined;
         try {

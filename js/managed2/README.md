@@ -215,6 +215,9 @@ operations may be retried after a stale lease (at most three attempts),
 even if an older read-only handler remains hung in the same DO; its lease
 cannot overwrite the winning result. A cold DO construction rearms alarms
 for persisted queued, running and terminal jobs whose prior alarm was lost.
+A concurrent newly admitted user turn preserves the urgent one-second async
+reconciliation deadline rather than replacing it with the ordinary ten-second
+turn-health alarm.
 An uncertain or cancelled shell execution **must not be rerun**: its terminal
 result explicitly says the side effect may have happened. Cancel is a durable
 fence, not rollback. The exact Unreal pending text is staged under the original

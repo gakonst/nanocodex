@@ -99,6 +99,13 @@ export default defineConfig({
               const input = body.input || [];
               const latestUser = input.findLastIndex(item => item.role === "user");
               const currentTurn = input.slice(Math.max(0, latestUser));
+              if (JSON.stringify(input).includes("Hold fixture response without tools")) {
+                await new Promise(resolve => setTimeout(resolve, 2200));
+                return [{ type: "response.completed", response: { id: "fixture-held-response", status: "completed", end_turn: true,
+                  output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: "Held response complete" }] }],
+                  usage: { input_tokens: 10, output_tokens: 4, total_tokens: 14 } } }];
+              }
+
               const shellContinuation = currentTurn.find(item => item.type === "function_call_output" && item.call_id === "call-shell");
               const shellTool = input.find(item => item.type === "additional_tools")?.tools?.find(tool => tool.name === "exec_command");
               const shellMatch = JSON.stringify(currentTurn).match(/Use exec_command: ([^"\\\\]+)/);

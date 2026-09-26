@@ -96,3 +96,43 @@ it("rearms a lost terminal-job alarm on real DO eviction and dedupes the origina
   expect(final.row).toMatchObject({ call_id: "call-web", original_turn: turnId });
   expect(final.turns).toBe(1);
 }, 45_000);
+
+it("keeps a cold pending terminal alarm urgent when a new active turn is admitted", async () => {
+  const authorization = `Bearer ${fixtureKeys["fixture-user"]}`;
+  expect((await SELF.fetch("https://api.test/v1/credentials/openai", {
+    method: "PUT", headers: { authorization }, body: JSON.stringify({ value: "sk-fixture-only" }),
+  })).status).toBe(204);
+  const created = await SELF.fetch("https://api.test/v1/agents", {
+    method: "POST", headers: { authorization, "content-type": "application/json" },
+    body: JSON.stringify({ input: "Use async web__run once, then report its result.", async_tools: true }),
+  });
+  expect(created.status).toBe(202);
+  const { agent_id: agentId } = await created.json<{ agent_id: string }>();
+  const stub = (env as unknown as { SESSIONS: DurableObjectNamespace<Session> }).SESSIONS
+    .getByName(`fixture-user:${agentId}`);
+  const jobsUrl = `https://api.test/v1/agents/${agentId}/jobs`;
+  await expect.poll(async () => (await (await SELF.fetch(jobsUrl, { headers: { authorization } }))
+    .json<{ job_id: string }[]>()).length, { timeout: 15_000, interval: 100 }).toBe(1);
+  const [job] = await (await SELF.fetch(jobsUrl, { headers: { authorization } }))
+    .json<{ job_id: string }[]>();
+  await expect.poll(async () => (await (await SELF.fetch(`${jobsUrl}/${job!.job_id}`, {
+    headers: { authorization },
+  })).json<{ state: string }>()).state, { timeout: 30_000, interval: 100 }).toBe("delivered");
+  await runInDurableObject(stub, async (_session, state) => {
+    state.storage.sql.exec("UPDATE async_jobs SET state = 'completed', wake_generation = -1 WHERE id = ?", job!.job_id);
+    await state.storage.deleteAlarm();
+  });
+  await evictDurableObject(stub);
+  const secondTurn = crypto.randomUUID();
+  const admitted = await SELF.fetch(`https://api.test/v1/agents/${agentId}/turns`, {
+    method: "POST", headers: { authorization, "content-type": "application/json", "idempotency-key": secondTurn },
+    body: JSON.stringify({ input: "Hold fixture response without tools." }),
+  });
+  expect(admitted.status).toBe(202);
+  const alarm = await runInDurableObject(stub, async (_session, state) => state.storage.getAlarm());
+  expect(alarm).not.toBeNull();
+  expect(alarm! - Date.now()).toBeLessThan(2_000);
+  await expect.poll(async () => (await (await SELF.fetch(
+    `https://api.test/v1/agents/${agentId}/turns/${secondTurn}`, { headers: { authorization } },
+  )).json<{ state: string }>()).state, { timeout: 20_000, interval: 100 }).toBe("completed");
+}, 60_000);
