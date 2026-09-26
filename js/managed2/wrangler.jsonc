@@ -6,6 +6,7 @@
   "compatibility_flags": [
     "nodejs_compat"
   ],
+  "secrets": { "required": ["AUTH_API_KEY_HASHES"] },
   "workers_dev": true,
   "alias": { "node-rsa": "../nanocodex/tools/browser/unsupportedNodeRsa.mjs" },
   "find_additional_modules": true,

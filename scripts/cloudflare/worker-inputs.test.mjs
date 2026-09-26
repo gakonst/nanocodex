@@ -34,7 +34,7 @@ test('Worker inputs isolate services and follow dependencies, assets, config and
   await put('js/email/build.mjs', 'const asset = new URL("../../assets/", import.meta.url);');
   await put('assets/template.html', 'hello');
   let previous = await fingerprintWorkers(root);
-  assert.equal(Object.keys(previous).length, 11);
+  assert.equal(Object.keys(previous).length, 13);
   assert.deepEqual(await fingerprintWorkers(root), previous);
   const change = async (path, text, expected) => {
     await put(path, text);
@@ -45,6 +45,9 @@ test('Worker inputs isolate services and follow dependencies, assets, config and
   await change('js/media/src/index.ts', 'export const value = 2;', ['media']);
   await change('js/media/src/media/generated/ffmpeg.wasm.bin', 'fixture binary', ['media']);
   await change('js/managed/src/index.ts', 'export const value = 2;', ['managed']);
+  await change('js/egress2/src/index.ts', 'export const value = 2;', ['egress2']);
+  await change('js/managed2/src/index.ts', 'export const value = 2;', ['managed2']);
+  await change('js/managed2/scripts/prepare-just-bash-lazy.mjs', '// generated module policy', ['managed2']);
   await change('js/fixture-protocol/index.ts', 'export const version = 2;', ['x']);
   await change('js/shared-inner.mjs', 'export const value = 2;', ['egress']);
   await change('assets/template.html', 'changed', ['email']);

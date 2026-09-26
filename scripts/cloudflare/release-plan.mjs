@@ -72,6 +72,7 @@ export function buildSelected(plan, run=execFileSync, completedTargets=new Set()
       for (const name of selected) completedTargets.add(name);
     }
   }
+  if(plan.selected.includes('managed2'))run(process.execPath,['js/managed2/scripts/prepare-just-bash-lazy.mjs'],{stdio:'inherit'});
   if(plan.selected.includes('managed')){
     run(process.execPath,['js/managed/scripts/prepare-code-evaluator.mjs'],{stdio:'inherit'});
     // The production Wrangler deploy bypasses npm predeploy/prebuild; generate

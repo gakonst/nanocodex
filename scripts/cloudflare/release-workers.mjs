@@ -16,8 +16,12 @@ import { configureReleasedAccount } from './released-account-image.mjs';
 const commands=Object.fromEntries([...phases.infrastructure,...phases.consumers,
   ['managed','js/managed',[process.execPath,'../../scripts/cloudflare/managed-crm.mjs','deploy','--config','wrangler.ci.jsonc','--containers-rollout','immediate']],
   ['account','js/account',['npx','wrangler','deploy','--config','dist/nanocodex/wrangler.ci.json']],
+  ['egress2','js/egress2',['npx','wrangler','deploy','--env=','--config','wrangler.jsonc']],
+  ['managed2','js/managed2',['npx','wrangler','deploy','--env=','--config','wrangler.jsonc']],
 ].map(([name,directory,command])=>[name,{directory,command}]));
-export const releasePhases=[['egress','x'],['media'],['managed'],['email','dialog','connect-api','astra','chief-of-staff','playground'],['account']];
+// Keep the existing service release independent and complete before rolling out
+// the opt-in pair. Egress2 binds account's relay DO; Managed2 binds Egress2.
+export const releasePhases=[['egress','x'],['media'],['managed'],['email','dialog','connect-api','astra','chief-of-staff','playground'],['account'],['egress2'],['managed2']];
 
 export async function guardedCommand(command, {cwd=process.cwd(),directory='.',env=process.env,input,launch=spawn}={}) {
   const temporary=mkdtempSync(join(tmpdir(),'nanocodex-release-'));
