@@ -158,8 +158,9 @@ struct InboxView: View {
                     .frame(height: drawerVisible ? 0 : nil)
                     .opacity(drawerVisible ? 0 : 1)
                     .allowsHitTesting(!drawerVisible).accessibilityHidden(drawerVisible)
-                    if !drawerVisible && !composerFocused && !todoInputFocused { mainNavigation }
+                    if !drawerVisible { mainNavigation }
                 }
+                .frame(maxWidth: 620)
                 .frame(maxWidth: .infinity)
                 .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { bottomDockHeight = $0 }
                 .onDisappear { bottomDockHeight = 0 }
@@ -257,12 +258,13 @@ struct InboxView: View {
             if model.focused != nil {
                 Rectangle().fill(.primary.opacity(0.10))
                     .frame(width: 1, height: 22).padding(.horizontal, 5)
-                Spacer(minLength: 0)
                 MobileModelControls(model: model)
+                    .frame(maxWidth: .infinity)
             } else { Spacer(minLength: 0) }
         }
         .padding(.horizontal, 5).padding(.vertical, 3)
-        .frame(maxWidth: 620)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("main-selection-bar")
         .background(.regularMaterial, in: Capsule())
         .overlay(Capsule().strokeBorder(.primary.opacity(0.08)))
         .shadow(color: .black.opacity(0.08), radius: 8, y: 2)
@@ -3706,7 +3708,7 @@ private struct MobileModelControls: View {
                                 .font(.system(size: 9))
                         }
                     }
-                    .frame(maxWidth: 80, minHeight: 44)
+                    .frame(maxWidth: .infinity, minHeight: 44)
                     .contentShape(Rectangle())
                 }
                 .disabled(model.modelChoiceLocked || waiting)
@@ -3724,7 +3726,7 @@ private struct MobileModelControls: View {
                 } label: {
                     Text(ModelChoice.effortName(card.thinking.isEmpty ? "low" : card.thinking))
                         .lineLimit(1).minimumScaleFactor(0.8)
-                        .frame(maxWidth: 89, minHeight: 44)
+                        .frame(maxWidth: .infinity, minHeight: 44)
                         .contentShape(Rectangle())
                 }
                 .disabled(waiting || card.effortLocked || card.routingAutomatic)
@@ -3732,7 +3734,7 @@ private struct MobileModelControls: View {
                 .accessibilityIdentifier("effort-dial")
 
                 Button { model.toggleAutoRoute() } label: {
-                    Text("Auto").frame(minWidth: 42, minHeight: 40)
+                    Text("Auto").frame(maxWidth: .infinity, minHeight: 44)
                         .background(card.routingAutomatic ? Color.primary.opacity(0.09) : .clear, in: Capsule())
                         .contentShape(Rectangle())
                 }

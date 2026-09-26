@@ -6,6 +6,28 @@ final class InboxUITests: XCTestCase {
     }
     override func setUp() { super.setUp(); continueAfterFailure = false }
 
+    func testSelectionBarStaysBelowComposerWhileTyping() {
+        let app = launch()
+        let input = composer(app)
+        for typing in [false, true] {
+            if typing { input.tap(); input.typeText("Keep the controls below this draft") }
+            let dock = app.descendants(matching: .any)["main-selection-bar"].firstMatch
+            XCTAssertTrue(dock.waitForExistence(timeout: 5))
+            let controls = [app.buttons["model-picker"], app.buttons["effort-dial"], app.buttons["auto-route"]]
+            for control in controls {
+                XCTAssertTrue(control.exists)
+                XCTAssertGreaterThanOrEqual(control.frame.minY, input.frame.maxY)
+                XCTAssertEqual(control.frame.midY, controls[0].frame.midY, accuracy: 1)
+            }
+            XCTAssertEqual(dock.frame.midX, app.frame.midX, accuracy: 1)
+            if typing {
+                XCTAssertTrue(app.keyboards.firstMatch.exists)
+                XCTAssertLessThanOrEqual(dock.frame.maxY, app.keyboards.firstMatch.frame.minY)
+            }
+            capture(app, typing ? "selection-bar-keyboard" : "selection-bar-idle")
+        }
+    }
+
     func testDecisionFirstTodoCaptureAndChatNavigation() {
         let app = XCUIApplication()
         app.launchArguments = ["--demo", "--todo-ui-fixture"]
