@@ -194,6 +194,7 @@ export function createNamespaceExecutionRuntime(
     }
     const hand = binding.hands.get(route.mount.mountId);
     if (!hand?.cua || !hand.cuaReset) {
+      observeHandCall("namespace.invoke", name, routeStarted, "unavailable", context.callId);
       throw new Error(`namespace mount ${route.mount.root} has no CUA runtime or controllable native screen. Use environment to find a CUA-capable Hand.`);
     }
     const providerInput = without(value, "workdir");
@@ -291,6 +292,7 @@ export function createNamespaceExecutionRuntime(
         }
         const hand = binding.hands.get(route.mount.mountId);
         if (hand?.exec === undefined) {
+          observeHandCall("namespace.invoke", "exec_command", routedAt, "unavailable", context.callId);
           throw new Error(`namespace mount ${route.mount.root} is not executable`);
         }
         const invokedAt = performance.now();

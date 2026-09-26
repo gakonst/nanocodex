@@ -328,8 +328,11 @@ export class AccountHostedTools extends DurableObject<AccountHostedToolsEnv> {
         throw error;
       }
       const branded = result as Record<PropertyKey, unknown>;
+      const failureStatus = (branded.structuredResult as { status?: unknown } | null)?.status;
       observeHandCall("account.handler", invocation.name, resolvedAt, branded.success === true ? "ok"
-        : branded[HOSTED_TOOLS_PRE_ADMISSION_UNAVAILABLE] === true ? "unavailable" : "failed", invocation.call_id);
+        : branded[HOSTED_TOOLS_PRE_ADMISSION_UNAVAILABLE] === true ? "unavailable"
+        : failureStatus === "ambiguous" ? "ambiguous"
+        : failureStatus === "unavailable" ? "unavailable" : "failed", invocation.call_id);
       console.info({ type: "hand.call.account", session_id: invocation.session_id, source_call_id: invocation.call_id,
         ownership_ms: ownedAt - startedAt, resolve_ms: resolvedAt - ownedAt,
         handler_ms: performance.now() - resolvedAt, total_ms: performance.now() - startedAt });
