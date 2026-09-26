@@ -209,6 +209,16 @@ where
     };
     if shutdown_requested {
         begin_shutdown(commands, queued, defaults.thinking, defaults.fast_mode).await;
+        mark_all_queued_turns_cancelled(queued);
+        if let Some((_, result)) = pending_compact.take() {
+            drop(result.send(Err(NanocodexError::AgentStopped)));
+        }
+        for (_, result) in pending_developer.drain(..) {
+            drop(result.send(Err(NanocodexError::AgentStopped)));
+        }
+        for (_, _, _, result) in pending_outputs.drain(..) {
+            drop(result.send(Err(NanocodexError::AgentStopped)));
+        }
     }
     // A cancelled continuation remains journalled for recovery; closing this
     // driver must not turn an orderly shutdown into a reported failure.
