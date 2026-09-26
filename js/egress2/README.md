@@ -10,16 +10,18 @@ Private Cloudflare Worker, inspired by [iron-proxy](https://github.com/paradigmx
 
 Set the **required** Worker secret `CREDENTIAL_ENCRYPTION_KEY` before deployment to a random 32-byte key encoded as standard padded base64 (44 characters, e.g. generate with `openssl rand -base64 32`). Never put the key in `wrangler.jsonc`, source, or logs. The API key in SQLite and the opaque Rust-owned subscription payload in DO storage are sealed independently using AES-256-GCM with fresh 96-bit IVs and owner/record-bound authenticated data (`v1` envelope). No plaintext fallback or migration exists: existing unencrypted test records must be discarded, and losing/changing the key renders stored credentials unreadable. Non-secret active selection and CAS revision metadata remain unencrypted. The Workerd test supplies only a synthetic key. Do not deploy or set the secret as part of local tests.
 
-For subscription egress, a configured `GATEWAY` VPC Network binding takes the
-exact authorized request directly to ChatGPT and passes WebSocket upgrades
-through unchanged. The `CHATGPT_EGRESS` binding to the existing account-owned
-relay DO is used only when `GATEWAY` is absent. Direct public Worker fetches
-received provider HTTP 403 in live tests. The VPC route was verified in a
-service-binding-only staging Worker using this same Egress2 implementation and
-the existing credential DO via an external binding. Keep the network identifier
-in a private deployment config; `wrangler.jsonc` retains the relay route until
-the managed Worker and Egress2 are promoted together. API-key outbound uses
-neither subscription route. Test-only `wrangler.test.jsonc` never serves real credentials.
+Subscription egress uses the `GATEWAY` VPC Network binding (`cf1:network`)
+to reach ChatGPT through Cloudflare Gateway, passing WebSocket upgrades through
+unchanged. This skips the account relay Durable Object and Linux container.
+The regional `CHATGPT_EGRESS_*` and legacy `CHATGPT_EGRESS` bindings remain as a
+rollback path: remove `GATEWAY` from the Egress2 deployment config and redeploy;
+no credentials, Session IDs, or relay identities migrate. Direct public Worker
+fetches received provider HTTP 403 in live tests. The Gateway route succeeded
+in a separate canary Worker/Managed2 session before activation. Gateway policies
+can change independently; monitor HTTP 101/401/403/502 and first-answer latency.
+This is a hop reduction, not a proven first-token speedup. API-key outbound uses
+neither subscription route. Test-only `wrangler.test.jsonc` keeps exercising
+the Container DO fallback and never serves real credentials.
 
 This first slice has no credential provisioning HTTP endpoint, login UI, subscription account pool, or account failover. Deployment/service-binding wiring and trusted-host authentication are intentionally external to this package. `pnpm --filter nanocodex-egress2-service test` exercises the actual workerd Worker/DO and Rust/WASM refresh with a synthetic outbound provider. Run `typecheck` and `build` (dry-run only) after installing workspace dependencies.
 
@@ -53,16 +55,17 @@ No secrets, prompts, owner IDs or upstream bodies are logged.
 ## Regional subscription relay
 
 Managed2 records a new agent's trusted Cloudflare ingress colo as a coarse
-relay region. For recognized colos, its model WebSocket and web-search requests
+relay region for Container fallback. For recognized colos, its model WebSocket and web-search requests
 carry that fixed region over the private Egress2 service binding. Egress2 strips
 all Managed2 headers before forwarding to ChatGPT, selects the matching existing
 account-owned regional Container class, and creates `text-v2:<region>:<owner>`
 with a best-effort Cloudflare location hint. `text-v2` is a fresh identity,
 not a migration of the immobile legacy `user-v1` relay. Agents created before
-this change (or at an unmapped ingress colo) continue to use the legacy relay;
-existing agent and credential records are not migrated. A missing regional
-binding or invalid region fails closed. A configured VPC `GATEWAY` remains the
-preferred direct route and bypasses the Container DO. The Egress2 relay span
+this change (or at an unmapped ingress colo) use the legacy relay only if
+Gateway is disabled; existing agent and credential records are not migrated.
+A missing regional binding or invalid region fails closed when that fallback is
+active. The production VPC `GATEWAY` is the direct route and bypasses the
+Container DO; regional classes remain available for rollback. The Egress2 relay span
 records only a fixed region label, never owner or prompt content.
 
 The hint and container region constraint do not guarantee a specific city,

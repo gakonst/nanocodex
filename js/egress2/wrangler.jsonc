@@ -19,6 +19,7 @@
       "persist": true
     }
   },
+  "vpc_networks": [{ "binding": "GATEWAY", "network_id": "cf1:network", "remote": true }],
   "workers_dev": false,
   "durable_objects": {
     "bindings": [
