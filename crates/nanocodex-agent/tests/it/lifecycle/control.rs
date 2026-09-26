@@ -521,6 +521,79 @@ async fn late_terminal_wakes_without_prompt_and_driver_polls_commands() {
 }
 
 #[tokio::test]
+async fn invalid_later_cohort_member_never_checkpoints_or_wakes_valid_prefix() {
+    let (seed_attempts, _seed_rx) = mpsc::unbounded_channel();
+    let openai = OpenAi::builder("test")
+        .service(move || RetainingCompletedService {
+            retained: seed_attempts.clone(),
+        })
+        .build()
+        .unwrap();
+    let (seed, seed_events) = Nanocodex::builder(openai)
+        .tools(Tools::builder().without_defaults().build().unwrap())
+        .build()
+        .unwrap();
+    seed.prompt("seed").await.unwrap().result().await.unwrap();
+    let mut snapshot = serde_json::to_value(seed.snapshot().await.unwrap()).unwrap();
+    seed.shutdown().await.unwrap();
+    drop(seed_events);
+    snapshot["unreal_function_outputs"] = serde_json::json!(true);
+    snapshot["history"].as_array_mut().unwrap().extend([
+        serde_json::json!({
+            "type":"function_call", "call_id":"valid-call", "name":"job", "arguments":"{}"
+        }),
+        serde_json::json!({
+            "type":"function_call_output", "call_id":"valid-call", "output":
+            "Tool call is still running. Its result arrives in a later turn: continue with independent work, or end your turn to wait for it."
+        }),
+    ]);
+    let (attempts, mut observed) = mpsc::unbounded_channel();
+    let openai = OpenAi::builder("test")
+        .service(move || RetainingCompletedService {
+            retained: attempts.clone(),
+        })
+        .build()
+        .unwrap();
+    let (agent, events) = Nanocodex::builder(openai)
+        .resume(serde_json::from_value(snapshot).unwrap())
+        .tools(Tools::builder().without_defaults().build().unwrap())
+        .build()
+        .unwrap();
+    let error = agent
+        .submit_late_function_outputs(vec![
+            nanocodex_agent::LateFunctionOutput {
+                call_id: "valid-call".into(),
+                operation_id: "valid-operation".into(),
+                output: nanocodex_oai_api::responses::FunctionOutputBody::Text(
+                    "valid result".into(),
+                ),
+            },
+            nanocodex_agent::LateFunctionOutput {
+                call_id: "unknown-call".into(),
+                operation_id: "unknown-operation".into(),
+                output: nanocodex_oai_api::responses::FunctionOutputBody::Text(
+                    "invalid result".into(),
+                ),
+            },
+        ])
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(error, NanocodexError::InvalidRequest(_)),
+        "{error}"
+    );
+    let saved = serde_json::to_value(agent.snapshot().await.unwrap()).unwrap();
+    assert!(saved["pending_late_wake"].is_null());
+    assert!(!saved["history"].to_string().contains("valid result"));
+    assert!(
+        observed.try_recv().is_err(),
+        "no partial prefix may reach the provider"
+    );
+    agent.shutdown().await.unwrap();
+    drop(events);
+}
+
+#[tokio::test]
 async fn two_late_terminal_outputs_share_one_promptless_wake() {
     let (retained, _retained_attempts) = mpsc::unbounded_channel();
     let first = OpenAi::builder("test")

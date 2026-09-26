@@ -504,6 +504,67 @@ impl<S> ModelRun<S> {
         })
     }
 
+    /// Preflight an entire trusted idle cohort on a disposable transcript copy.
+    /// A malformed later member must not checkpoint an earlier member and then
+    /// accidentally wake only that prefix when the caller sees an error.
+    pub(crate) fn validate_late_function_outputs(
+        &self,
+        outputs: &[crate::agent::LateFunctionOutput],
+        requested_workspace: Option<&str>,
+    ) -> Result<()> {
+        let session = self.session.as_ref().ok_or_else(|| {
+            NanocodexError::InvalidRequest("no model session for late function output".into())
+        })?;
+        session.validate_workspace(requested_workspace)?;
+        if !session.conversation.managed.unreal_function_outputs() {
+            return Err(NanocodexError::InvalidRequest(
+                "Unreal function outputs are not enabled for this session".into(),
+            ));
+        }
+        let mut conversation = session.conversation.clone();
+        conversation.commit_tail();
+        for entry in outputs {
+            let receipt_id = late_receipt_id(&entry.operation_id);
+            let existing = conversation
+                .managed
+                .flattened_history()
+                .into_iter()
+                .find_map(|item| {
+                    if let ResponseItem::FunctionCallOutput {
+                        id: Some(id),
+                        call_id,
+                        output,
+                        ..
+                    } = item
+                        && id == receipt_id
+                    {
+                        return Some((call_id, output));
+                    }
+                    None
+                });
+            if let Some((call_id, output)) = existing {
+                if call_id.as_ref() != entry.call_id
+                    || serde_json::to_value(output).ok() != serde_json::to_value(&entry.output).ok()
+                {
+                    return Err(NanocodexError::InvalidRequest(
+                        "late output operation ID reused with different call or body".into(),
+                    ));
+                }
+                continue;
+            }
+            conversation
+                .managed
+                .complete_unreal_function_output_with_id(
+                    &entry.call_id,
+                    entry.output.clone(),
+                    Some(receipt_id),
+                )
+                .map_err(|error| NanocodexError::InvalidRequest(error.to_string()))?;
+            conversation.commit_tail();
+        }
+        Ok(())
+    }
+
     /// Finishes a previously staged Unreal function call at an idle model boundary.
     /// A sent pending item is immutable; its terminal output is a second typed
     /// output with the same call ID and will be replayed from the checkpoint.
@@ -554,14 +615,7 @@ impl<S> ModelRun<S> {
                 "Unreal function outputs are not enabled for this session".into(),
             ));
         }
-        // Deterministic operation identity is retained on the typed output
-        // itself, surviving snapshots. The raw ID never enters the transcript.
-        const RECEIPT_NAMESPACE: uuid::Uuid =
-            uuid::Uuid::from_u128(0x0d46ca1e_90ac_4c9a_ab23_14f66b19b5ea);
-        let receipt_id = ResponseItemId::from_server(format!(
-            "late:{}",
-            uuid::Uuid::new_v5(&RECEIPT_NAMESPACE, operation_id.as_bytes()),
-        ));
+        let receipt_id = late_receipt_id(operation_id);
         for item in session.conversation.managed.flattened_history() {
             if let ResponseItem::FunctionCallOutput {
                 id: Some(id),
@@ -669,6 +723,16 @@ impl<S> ModelRun<S> {
             ResponsesTransport::Https => &self.config.api_base_url,
         }
     }
+}
+
+/// Stable typed receipt identity shared by preflight and the journal mutation.
+fn late_receipt_id(operation_id: &str) -> ResponseItemId {
+    const RECEIPT_NAMESPACE: uuid::Uuid =
+        uuid::Uuid::from_u128(0x0d46ca1e_90ac_4c9a_ab23_14f66b19b5ea);
+    ResponseItemId::from_server(format!(
+        "late:{}",
+        uuid::Uuid::new_v5(&RECEIPT_NAMESPACE, operation_id.as_bytes()),
+    ))
 }
 
 pub(crate) fn prepare_checkpoint(

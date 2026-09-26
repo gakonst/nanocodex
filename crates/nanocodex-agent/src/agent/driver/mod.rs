@@ -578,6 +578,12 @@ where
                         ))));
                         continue;
                     }
+                    if let Err(error) =
+                        model.validate_late_function_outputs(&outputs, self.workspace.as_deref())
+                    {
+                        drop(result.send(Err(error)));
+                        continue;
+                    }
                     let mut receipts = Vec::with_capacity(outputs.len());
                     let mut failure = None;
                     for entry in outputs {

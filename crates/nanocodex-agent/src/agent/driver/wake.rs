@@ -263,6 +263,12 @@ where
             }
         }
     };
+    // A successful fail_attempt leaves this wake Pending. Its recovery policy
+    // correctly classifies TurnCancelled as retryable, but an orderly owner
+    // shutdown is not itself a failed shutdown just because the wake must be
+    // reacquired by the next owner.
+    let shutdown_retryable_wake =
+        shutdown_requested && matches!(&persisted, Err(NanocodexError::TurnCancelled));
     let persisted = execution
         .recover_failure(operation_id.as_deref(), persisted)
         .await;
@@ -303,6 +309,7 @@ where
     // A cancelled continuation remains journalled for recovery; closing this
     // driver must not turn an orderly shutdown into a reported failure.
     match persisted {
+        Err(_) if shutdown_retryable_wake => Ok(false),
         Ok(()) | Err(NanocodexError::TurnCancelled) if shutdown_requested => Ok(false),
         Ok(()) => Ok(commands_open),
         Err(error) => Err(error),

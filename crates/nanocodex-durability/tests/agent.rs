@@ -4854,3 +4854,132 @@ async fn active_terminal_cancelled_before_uptake_requires_idle_reconciliation() 
     std::fs::remove_dir_all(workspace)?;
     Ok(())
 }
+
+#[tokio::test]
+async fn idle_wake_shutdown_reacquires_same_pending_operation_and_delivers_output() -> Result<()> {
+    use nanocodex_oai_api::responses::FunctionOutputBody;
+    let workspace = temporary_workspace("unreal-idle-wake-recovery")?;
+    let seed_openai = OpenAi::builder("test-key")
+        .service(|| DurableReplayService {
+            generations: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        })
+        .build()?;
+    let (seed, seed_events) = Nanocodex::builder(seed_openai)
+        .workspace(&workspace)
+        .tools(Tools::builder().without_defaults().build()?)
+        .build()?;
+    seed.prompt("seed").await?.result().await?;
+    let mut snapshot = serde_json::to_value(seed.snapshot().await?)?;
+    seed.shutdown().await?;
+    drop(seed_events);
+    snapshot["unreal_function_outputs"] = json!(true);
+    let history = snapshot["history"].as_array_mut().unwrap();
+    history.push(json!({
+        "type":"function_call", "call_id":"job-wake-recovery", "name":"job", "arguments":"{}"
+    }));
+    history.push(json!({
+        "type":"function_call_output", "call_id":"job-wake-recovery", "output":
+            "Tool call is still running. Its result arrives in a later turn: continue with independent work, or end your turn to wait for it."
+    }));
+    let store = MemoryStore::new()?;
+    let state = DurableSession::open(store.clone(), "unreal-idle-wake-recovery").await?;
+    let (tx, mut requests) = tokio::sync::mpsc::unbounded_channel();
+    let gate = Arc::new(tokio::sync::Notify::new());
+    let openai = OpenAi::builder("test-key")
+        .service({
+            let tx = tx.clone();
+            let gate = Arc::clone(&gate);
+            move || BoundaryProbeService {
+                requests: tx.clone(),
+                generations: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+                release_first: Arc::clone(&gate),
+            }
+        })
+        .build()?;
+    let tools = Tools::builder().without_defaults().build()?;
+    let (first, first_events) = Nanocodex::builder(openai)
+        .resume(serde_json::from_value(snapshot)?)
+        .workspace(&workspace)
+        .tools(tools.clone())
+        .durability(state.clone())
+        .await?
+        .build()?;
+    let receipt = first
+        .submit_late_function_output(
+            "job-wake-recovery",
+            FunctionOutputBody::Text("terminal wake recovery".into()),
+            "job-wake-recovery-id",
+        )
+        .await?;
+    assert!(!receipt.replayed);
+    let first_request = tokio::time::timeout(Duration::from_secs(5), requests.recv())
+        .await?
+        .unwrap();
+    assert_eq!(
+        first_request
+            .iter()
+            .filter(|item| item["type"] == "function_call_output"
+                && item["call_id"] == "job-wake-recovery"
+                && item["output"] == "terminal wake recovery")
+            .count(),
+        1
+    );
+    // Snapshot the acknowledged terminal-output boundary, which contains the
+    // wake marker but not a provider response. This models cold rehydration.
+    let staged = first.snapshot().await?;
+    // Cancel a request that never produced a provider response. The operation
+    // must remain pending (not terminally Cancelled), allowing exact same-ID
+    // journal reacquisition after the driver and owner close.
+    tokio::time::timeout(Duration::from_secs(5), first.shutdown()).await??;
+    drop((first, first_events));
+    let pending = state.state().await?;
+    let (wake_id, wake_operation) = pending
+        .operations()
+        .iter()
+        .find(|(key, _)| key.starts_with("late-continuation:"))
+        .ok_or_else(|| eyre!("idle wake journal missing after shutdown"))?;
+    assert!(matches!(wake_operation.status, OperationStatus::Pending));
+    let wake_id = wake_id.clone();
+    let openai = OpenAi::builder("test-key")
+        .service({
+            let tx = tx.clone();
+            move || BoundaryProbeService {
+                requests: tx.clone(),
+                generations: Arc::new(std::sync::atomic::AtomicUsize::new(1)),
+                release_first: Arc::new(tokio::sync::Notify::new()),
+            }
+        })
+        .build()?;
+    let reopened = DurableSession::open(store, "unreal-idle-wake-recovery").await?;
+    let (restarted, events) = Nanocodex::builder(openai)
+        .resume(staged)
+        .workspace(&workspace)
+        .tools(tools)
+        .durability(reopened.clone())
+        .await?
+        .build()?;
+    let second_request = tokio::time::timeout(Duration::from_secs(5), requests.recv())
+        .await?
+        .unwrap();
+    assert_eq!(
+        second_request, first_request,
+        "recovery must reuse original request history"
+    );
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if matches!(
+                reopened.state().await?.operations()[&wake_id].status,
+                OperationStatus::Completed { .. }
+            ) {
+                break Ok::<(), eyre::Report>(());
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await??;
+    assert!(serde_json::to_value(restarted.snapshot().await?)?["pending_late_wake"].is_null());
+    restarted.shutdown().await?;
+    drop(events);
+    std::fs::remove_dir_all(workspace)?;
+    Ok(())
+}
