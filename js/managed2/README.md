@@ -220,7 +220,9 @@ reconciliation deadline rather than replacing it with the ordinary ten-second
 turn-health alarm. The result observer is attached immediately after native
 acceptance, before alarm-storage reads. A failed alarm read must not discard
 the still-live turn or its in-memory running fence: the accepted turn can
-complete while the admission response reports uncertainty.
+complete while the admission response reports uncertainty. A failed
+post-result wake-alarm write is retried once without reclassifying a
+completed model turn as failed.
 An uncertain or cancelled shell execution **must not be rerun**: its terminal
 result explicitly says the side effect may have happened. Cancel is a durable
 fence, not rollback. The exact Unreal pending text is staged under the original

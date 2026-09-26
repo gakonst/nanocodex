@@ -710,18 +710,37 @@ export class Session extends DurableObject<Env> {
       this.#running.add(id);
       this.ctx.waitUntil((async () => {
         let result: Awaited<ReturnType<NonNullable<typeof turn>["result"]>> | undefined;
+        let executionError: unknown;
         try {
           result = await tracing.enterSpan("managed2.turn.result", async span => {
             span.setAttribute("managed2.trace_id", timing.trace_id);
             return turn!.result();
           });
-          this.ctx.storage.sql.exec("UPDATE turns SET state = 'completed', message = ? WHERE id = ?", result.finalMessage, id);
-          if (this.#asyncEnabled()) await this.ctx.storage.setAlarm(Date.now() + 1);
+        } catch (error) { executionError = error; }
+        try {
+          // A failed alarm write is not a model/tool failure. Persist the
+          // observed result independently so the source turn never regresses
+          // from completed to failed when only its wake needs another try.
+          if (result) this.ctx.storage.sql.exec(
+            "UPDATE turns SET state = 'completed', message = ? WHERE id = ?", result.finalMessage, id);
+          else this.ctx.storage.sql.exec("UPDATE turns SET state = 'failed', error = ? WHERE id = ?",
+            executionError instanceof Error ? executionError.message : String(executionError), id);
         } catch (error) {
-          this.ctx.storage.sql.exec("UPDATE turns SET state = 'failed', error = ? WHERE id = ?",
-            error instanceof Error ? error.message : String(error), id);
-          if (this.#asyncEnabled()) await this.ctx.storage.setAlarm(Date.now() + 1);
-        } finally {
+          // Leave the accepted row recoverable under its stable native ID.
+          console.warn("managed2 turn state persistence unavailable", error instanceof Error ? error.name : "error");
+        }
+        try {
+          if (this.#asyncEnabled()) {
+            // Retry a transient alarm write once. Cold construction and the
+            // ordinary health alarm also reconcile any retained jobs.
+            for (let attempt = 0; attempt < 2; attempt++) {
+              try { await this.ctx.storage.setAlarm(Date.now() + 1); break; }
+              catch (error) {
+                if (attempt === 1) console.warn("managed2 async wake unavailable",
+                  error instanceof Error ? error.name : "error");
+              }
+            }
+          }
           const resultMs = Math.max(0, Date.now() - timing.started_at);
           this.ctx.storage.sql.exec("UPDATE turn_timing SET result_ms = ? WHERE id = ?", resultMs, id);
           const observed = this.#timing(id);
@@ -738,13 +757,16 @@ export class Session extends DurableObject<Env> {
             tool_calls: observed?.tool_calls ?? 0, tool_duration_ms: observed?.tool_duration_ms ?? 0,
             first_model_call_ms: observed?.first_model_call_ms ?? null,
             post_tool_model_call_ms: observed?.post_tool_model_call_ms ?? null });
-          result?.dispose();
-          turn?.dispose();
-          this.#running.delete(id);
-          this.#activeTraces.delete(id);
-          for (const [internal, external] of this.#eventTurns) {
-            if (external === id) {
-              this.#eventTurns.delete(internal);
+        } finally {
+          try { result?.dispose(); }
+          finally {
+            try { turn?.dispose(); }
+            finally {
+              this.#running.delete(id);
+              this.#activeTraces.delete(id);
+              for (const [internal, external] of this.#eventTurns) {
+                if (external === id) this.#eventTurns.delete(internal);
+              }
             }
           }
         }
