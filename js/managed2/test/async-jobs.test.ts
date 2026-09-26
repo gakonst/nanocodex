@@ -143,7 +143,9 @@ it("only a matching durable completed model-step status marks an active output d
     const jobs = new AsyncJobs(state.storage, { current_time: read }, () => "original-turn",
       async intent => { intents.push(intent); return accepted(intent); }, work => { tasks.push(work); },
       new Set(["current_time"]), undefined, async () => ({ state: status, model_call_index: 2,
-        ...(status === "confirmed" ? { response_id: "resp-2" } : {}) }));
+        ...(status === "confirmed" ? { response_id: "resp-2" } : {}) }),
+      async () => { if (status === "confirmed") throw new TypedIngestionUnavailable();
+        return { state: "pruned_or_unknown" }; });
     jobs.tool(read).handler({}, context("call-confirmed"));
     const id = jobId(state, "call-confirmed");
     await Promise.all(tasks);
@@ -156,6 +158,52 @@ it("only a matching durable completed model-step status marks an active output d
     await jobs.reconcile();
     expect(jobs.status(id)).toMatchObject({ state: "delivered", continuation_started: true });
     expect(intents).toHaveLength(1); // never resubmit a confirmed active output
+  });
+});
+
+it("idle wake uptake requires the exact durable model step, not the submission hint", async () => {
+  await runInDurableObject(stub(), async (_session, state) => {
+    state.storage.sql.exec("INSERT INTO turns (id, input, state) VALUES ('original-turn', 'work', 'completed')");
+    const tasks: Promise<unknown>[] = [];
+    let receipts = 0;
+    let idleState: string = "accepted_unbound";
+    const read: NamedTool = { name: "current_time", description: "test", handler: () => ({ utc: "now" }) };
+    const jobs = new AsyncJobs(state.storage, { current_time: read }, () => "original-turn",
+      async intent => { receipts++; return accepted(intent, true); }, task => { tasks.push(task); },
+      new Set(["current_time"]), undefined,
+      async () => ({ state: "pruned_or_unknown" }),
+      async () => idleState === "confirmed"
+        ? { state: idleState, model_call_index: 1, response_id: "wake-response" }
+        : { state: idleState });
+    jobs.tool(read).handler({}, context("call-idle"));
+    const id = jobId(state, "call-idle");
+    await Promise.all(tasks);
+    await jobs.reconcile();
+    expect(jobs.status(id)).toMatchObject({ state: "checkpointed", continuation_started: false });
+    await jobs.reconcile();
+    expect(receipts).toBe(1);
+    idleState = "bound_unconfirmed";
+    await jobs.reconcile();
+    expect(jobs.status(id)).toMatchObject({ state: "checkpointed" });
+    // A crash after staging but before an alarm write still re-arms from the
+    // durable unconfirmed row; never strands an in-flight idle wake.
+    await state.storage.deleteAlarm();
+    const rearmed: Promise<unknown>[] = [];
+    new AsyncJobs(state.storage, { current_time: read }, () => "original-turn",
+      async intent => accepted(intent), task => { rearmed.push(task); },
+      new Set(["current_time"]), undefined, async () => ({ state: "pruned_or_unknown" }),
+      async () => ({ state: "bound_unconfirmed" }));
+    await Promise.all(rearmed);
+    expect(await state.storage.getAlarm()).not.toBeNull();
+    idleState = "confirmed";
+    await jobs.reconcile();
+    expect(jobs.status(id)).toMatchObject({ state: "delivered", continuation_started: true });
+    expect(receipts).toBe(1);
+    const restarted = new AsyncJobs(state.storage, { current_time: read }, () => "original-turn",
+      async intent => { receipts++; return accepted(intent); }, () => {});
+    await restarted.reconcile();
+    expect(restarted.status(id)).toMatchObject({ state: "delivered" });
+    expect(receipts).toBe(1);
   });
 });
 
@@ -412,7 +460,9 @@ it("fences concurrent reconciliation of one terminal call while a core acknowled
     expect(deliveries).toBe(1);
     release();
     await Promise.all([first, second]);
-    expect(jobs.status(id)).toMatchObject({ state: "delivered", continuation_started: true });
+    // Even a host hint claiming a started continuation is not an authoritative
+    // provider uptake receipt; the concurrent fence still prevents duplicates.
+    expect(jobs.status(id)).toMatchObject({ state: "checkpointed", continuation_started: false });
   });
 });
 
@@ -451,7 +501,7 @@ it("retains a checkpoint without a model continuation and reconciles the same op
     woke = true;
     const upgraded = make(1);
     await upgraded.reconcile();
-    expect(upgraded.status(id)).toMatchObject({ state: "delivered", continuation_started: true });
+    expect(upgraded.status(id)).toMatchObject({ state: "checkpointed", continuation_started: false });
     expect(intents).toHaveLength(2);
     expect(intents[0]).toEqual(intents[1]);
     expect(executions).toBe(1);

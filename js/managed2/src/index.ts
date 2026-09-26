@@ -563,6 +563,20 @@ export class Session extends DurableObject<Env> {
             }
             throw error;
           }
+        },
+        async intent => {
+          const agent = await this.#ready(owner);
+          try {
+            return await functionCallOutputCapability(agent, intent.callId).idleStatus({
+              operationId: intent.jobId,
+            });
+          } catch (error) {
+            if (error instanceof Error && error.message ===
+                "this Nanocodex runtime does not support idle function-call status") {
+              throw new TypedIngestionUnavailable();
+            }
+            throw error;
+          }
         });
     }
     return this.#asyncJobs;

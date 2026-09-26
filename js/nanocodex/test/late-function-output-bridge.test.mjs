@@ -170,3 +170,32 @@ test("active status rejects missing or false model-uptake receipts", async () =>
   }), /does not support active/);
   older.dispose();
 });
+
+
+test("host-only idle status requires the exact job/call and a completed wake model step", async () => {
+  const calls = [];
+  const agent = await makeAgent({ agentId: "agent", sessionId: "session", free() {},
+    prompt() { throw new Error("not a prompt"); },
+    async idleFunctionOutputStatus(...args) {
+      calls.push(args);
+      return JSON.stringify({ state: "confirmed", model_call_index: 1, response_id: "wake-resp" });
+    },
+  });
+  const capability = functionCallOutputCapability(agent, "call-original");
+  assert.equal(agent.extend(Actions.agentActions()).turn.idleStatus, undefined);
+  assert.deepEqual(await capability.idleStatus({ operationId: "job-immutable" }),
+    { state: "confirmed", model_call_index: 1, response_id: "wake-resp" });
+  assert.deepEqual(calls, [["job-immutable", "call-original"]]);
+  await assert.rejects(capability.idleStatus({ operationId: "", callId: "forged" }), /requires/);
+  agent.dispose();
+  const falseReceipt = await makeAgent({ agentId: "agent", sessionId: "session", free() {}, prompt() {},
+    async idleFunctionOutputStatus() { return JSON.stringify({ state: "confirmed" }); },
+  });
+  await assert.rejects(functionCallOutputCapability(falseReceipt, "call").idleStatus({ operationId: "job" }),
+    /invalid idle output status/);
+  falseReceipt.dispose();
+  const older = await makeAgent({ agentId: "agent", sessionId: "session", free() {}, prompt() {} });
+  await assert.rejects(functionCallOutputCapability(older, "call").idleStatus({ operationId: "job" }),
+    /does not support idle/);
+  older.dispose();
+});

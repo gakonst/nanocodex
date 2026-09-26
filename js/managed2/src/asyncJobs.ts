@@ -36,7 +36,7 @@ export type FinalToolResultReceipt = Readonly<{ operation_id: string; call_id: s
 // The host bridge returns an unverified JSON object; only a checked receipt
 // may advance the durable job, regardless of its permissive TypeScript type.
 export type DeliverFinalToolResult = (intent: FinalToolResultIntent) => Promise<unknown>;
-export type ActiveOutputStatus = (intent: FinalToolResultIntent) => Promise<unknown>;
+export type OutputStatus = (intent: FinalToolResultIntent) => Promise<unknown>;
 export class TypedIngestionUnavailable extends Error {
   constructor() { super("typed same-call-ID result ingestion is not available"); }
 }
@@ -56,7 +56,8 @@ export class AsyncJobs {
     private readonly waitUntil: (work: Promise<unknown>) => void,
     private readonly replaySafeTools: ReadonlySet<string> = new Set(),
     private readonly wakeGeneration: number = WAKE_GENERATION,
-    private readonly activeOutputStatus?: ActiveOutputStatus) {
+    private readonly activeOutputStatus?: OutputStatus,
+    private readonly idleOutputStatus?: OutputStatus) {
     storage.sql.exec(`CREATE TABLE IF NOT EXISTS async_jobs (
       id TEXT PRIMARY KEY, invocation TEXT NOT NULL UNIQUE, original_turn TEXT NOT NULL,
       execution_turn TEXT, call_id TEXT, tool TEXT NOT NULL, args TEXT NOT NULL,
@@ -257,27 +258,48 @@ export class AsyncJobs {
         const intent: FinalToolResultIntent = { originalTurn: job.original_turn, executionTurn: job.execution_turn,
           callId: job.call_id, tool: job.tool, jobId: job.id, terminalState, output: job.result };
         if (job.state === "checkpointed" && this.activeOutputStatus) {
-          const status = await this.activeOutputStatus(intent) as {
+          const active = await this.activeOutputStatus(intent) as {
             state?: unknown; model_call_index?: unknown; response_id?: unknown
           } | null;
-          if (status?.state === "confirmed"
+          const activeConfirmed = active?.state === "confirmed"
+            && Number.isSafeInteger(active.model_call_index) && (active.model_call_index as number) > 0
+            && typeof active.response_id === "string" && active.response_id.length > 0;
+          const idle = !activeConfirmed && this.idleOutputStatus ? await this.idleOutputStatus(intent) as {
+            state?: unknown; model_call_index?: unknown; response_id?: unknown
+          } | null : null;
+          const confirmed = [active, idle].some(status => status?.state === "confirmed"
             && Number.isSafeInteger(status.model_call_index) && (status.model_call_index as number) > 0
-            && typeof status.response_id === "string" && status.response_id.length > 0) {
-            // Only the durable completed model step and exact job/call receipt
-            // prove uptake; a false submission receipt never does.
+            && typeof status.response_id === "string" && status.response_id.length > 0);
+          if (confirmed) {
+            // Exactly this job/call was consumed by an authoritative completed
+            // active or idle model step, never merely submitted to the actor.
             this.storage.sql.exec(`UPDATE async_jobs SET state = 'delivered', continuation_started = 1,
               delivered_at = ?, wake_generation = ? WHERE id = ? AND state = 'checkpointed'`,
               Date.now(), this.wakeGeneration, job.id);
             continue;
           }
-          if (status?.state !== "discarded") {
-            // Bound is not consumed. Pruned/unknown is not safe to replay.
+          if ([active, idle].some(status => status?.state === "accepted_unbound"
+            || status?.state === "bound_unconfirmed")) {
+            // The provider is still working. Do not re-submit while either
+            // durable owner retains an unconfirmed exact receipt.
+            retry = true;
+            continue;
+          }
+          if (idle?.state === "discarded") {
+            // An old completed late-output journal may make a retry return a
+            // stale checkpoint. Keep the explicit failure of uptake visible.
             this.storage.sql.exec("UPDATE async_jobs SET wake_generation = ? WHERE id = ? AND state = 'checkpointed'",
               this.wakeGeneration, job.id);
             continue;
           }
-          // The active operation discarded this output. The identical job ID
-          // is now retried at idle, where the Rust journal deduplicates it.
+          if (active?.state !== "discarded" || (this.idleOutputStatus && idle?.state !== "pruned_or_unknown")) {
+            // Pruned/unknown is not safe to replay. Never infer consumption.
+            this.storage.sql.exec("UPDATE async_jobs SET wake_generation = ? WHERE id = ? AND state = 'checkpointed'",
+              this.wakeGeneration, job.id);
+            continue;
+          }
+          // The active owner explicitly discarded the output, with no idle
+          // receipt. Re-submit the identical operation at an idle boundary.
         }
         // Capture settlement before awaiting the Rust adapter. A cancellation
         // can race a slow receipt; observing only afterwards would suppress
@@ -300,10 +322,15 @@ export class AsyncJobs {
         }
         this.storage.sql.exec(`UPDATE async_jobs SET state = ?, delivered_at = ?, continuation_started = ?, wake_generation = ?
           WHERE id = ? AND state IN ('completed', 'failed', 'uncertain', 'cancelled', 'awaiting_integration', 'checkpointed')`,
-          receipt.continuation_started ? "delivered" : "checkpointed", Date.now(),
-          receipt.continuation_started ? 1 : 0,
-          receipt.continuation_started || (job.state === "checkpointed" && settledBefore)
+          "checkpointed", Date.now(), 0,
+          // An idle status check is still needed after a cold DO restart if
+          // this invocation dies between the SQL commit and alarm rearm.
+          this.idleOutputStatus ? 0 : job.state === "checkpointed" && settledBefore
             ? this.wakeGeneration : 0, job.id);
+        // A continuation-start hint is not an uptake receipt. Reconcile the
+        // exact durable model step on the next alarm, including after cold DO
+        // restart; don't claim delivery on a successful submission alone.
+        if (this.idleOutputStatus && settledBefore) retry = true;
       } catch (error) {
         if (error instanceof TypedIngestionUnavailable) {
           this.storage.sql.exec("UPDATE async_jobs SET state = 'awaiting_integration' WHERE id = ?", job.id);

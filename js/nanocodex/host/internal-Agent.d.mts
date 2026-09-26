@@ -12,6 +12,12 @@ export function functionCallOutputCapability(agent: object, callId: string): Rea
     model_call_index?: number;
     response_id?: string;
   }>>;
+  /** Exact job/call idle-wake uptake, confirmed only by a durable completed model step. */
+  idleStatus(options: Readonly<{ operationId: string }>): Promise<Readonly<{
+    state: "accepted_unbound" | "bound_unconfirmed" | "confirmed" | "discarded" | "pruned_or_unknown";
+    model_call_index?: number;
+    response_id?: string;
+  }>>;
 }>;
 
 /** Host-only typed pending result; never made available to model code. */

@@ -146,6 +146,24 @@ export async function submitFunctionCallOutput(agent, callId, options) {
   return freezeJson(receipt);
 }
 
+/** A checkpointed idle result only counts after its exact wake model step settles. */
+export async function idleFunctionCallOutputStatus(agent, callId, options) {
+  const state = agentState(agent);
+  if (!options || typeof options !== "object" || Array.isArray(options)
+    || Object.keys(options).some((key) => key !== "operationId")) {
+    throw new TypeError("idle output status requires operationId");
+  }
+  const { operationId } = options;
+  for (const [name, value] of [["callId", callId], ["operationId", operationId]]) {
+    if (typeof value !== "string" || !value.trim()) throw new TypeError(`${name} must be a non-empty string`);
+  }
+  if (typeof state.raw.idleFunctionOutputStatus !== "function") {
+    throw new Error("this Nanocodex runtime does not support idle function-call status");
+  }
+  const encoded = await state.raw.idleFunctionOutputStatus(operationId, callId);
+  return parseFunctionOutputStatus(encoded, "idle");
+}
+
 /** Private read-only status; a staged idle result is never counted as model uptake. */
 export async function activeFunctionCallOutputStatus(agent, callId, options) {
   const state = agentState(agent);
@@ -161,14 +179,18 @@ export async function activeFunctionCallOutputStatus(agent, callId, options) {
     throw new Error("this Nanocodex runtime does not support active function-call status");
   }
   const encoded = await state.raw.activeFunctionOutputStatus(originalTurnId, operationId, callId);
-  if (typeof encoded !== "string") throw new TypeError("the runtime returned invalid active output status");
+  return parseFunctionOutputStatus(encoded, "active");
+}
+
+function parseFunctionOutputStatus(encoded, path) {
+  if (typeof encoded !== "string") throw new TypeError(`the runtime returned invalid ${path} output status`);
   const status = JSON.parse(encoded);
   if (!status || typeof status !== "object" || Array.isArray(status)
     || !["accepted_unbound", "bound_unconfirmed", "confirmed", "discarded", "pruned_or_unknown"].includes(status.state)
     || ((status.state === "confirmed" || status.state === "bound_unconfirmed")
       && (!Number.isSafeInteger(status.model_call_index) || status.model_call_index < 1))
     || (status.state === "confirmed" && (typeof status.response_id !== "string" || !status.response_id))) {
-    throw new TypeError("the runtime returned invalid active output status");
+    throw new TypeError(`the runtime returned invalid ${path} output status`);
   }
   return freezeJson(status);
 }
