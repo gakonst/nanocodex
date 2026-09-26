@@ -36,13 +36,27 @@ private extension EnvironmentValues {
 /// Shared visual treatment for Chat and TODO, including identical outer spacing.
 struct InboxComposerShell: ViewModifier {
     let focused: Bool
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+
     func body(content: Content) -> some View {
-        content
-            .background(ChatPalette.composer, in: RoundedRectangle(cornerRadius: 28))
-            .overlay(RoundedRectangle(cornerRadius: 28).strokeBorder(Color.primary.opacity(focused ? 0.18 : 0.1)))
-            .shadow(color: .black.opacity(0.035), radius: 8, y: 2)
+        surface(content)
             .padding(.horizontal, 12).padding(.top, 2).padding(.bottom, 2)
-            .background(Color(uiColor: .systemBackground))
+    }
+
+    @ViewBuilder
+    private func surface(_ content: Content) -> some View {
+        let shape = RoundedRectangle(cornerRadius: 28)
+        if reduceTransparency {
+            content
+                .background(ChatPalette.composer, in: shape)
+                .overlay(shape.strokeBorder(Color.primary.opacity(focused ? 0.18 : 0.1)))
+        } else if #available(iOS 26.0, *) {
+            // Keep the editor and controls opaque; only the surface is translucent.
+            content.glassEffect(.regular, in: shape)
+        } else {
+            content.background(.ultraThinMaterial, in: shape)
+                .overlay(shape.strokeBorder(Color.primary.opacity(focused ? 0.12 : 0.06)))
+        }
     }
 }
 
@@ -94,14 +108,17 @@ struct InboxView: View {
     @State private var screenViewerRevision = UUID()
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var composerFocused = false
+    @State private var bottomDockHeight: CGFloat = 0
 
     var body: some View {
         NavigationStack {
             Group {
                 if model.connected && mainSurface == .todo {
                     TodoBoardView(model: model)
+                        .contentMargins(.bottom, bottomDockHeight, for: .scrollContent)
                 } else { inbox }
             }
+                .environment(\.conversationComposerHeight, bottomDockHeight)
                 #if os(iOS)
                 .navigationTitle("Conversations")
                 .navigationBarTitleDisplayMode(.inline)
@@ -125,7 +142,7 @@ struct InboxView: View {
                         #endif
                 }
         }
-        .safeAreaInset(edge: .bottom, spacing: 0) {
+        .overlay(alignment: .bottom) {
             if model.connected && !showScreens && !showScheduledJobs && !showConnectors {
                 let drawerVisible = showConversations || drawerTranslation != 0
                 VStack(spacing: 0) {
@@ -144,7 +161,8 @@ struct InboxView: View {
                     if !drawerVisible && !composerFocused && !todoInputFocused { mainNavigation }
                 }
                 .frame(maxWidth: .infinity)
-                .background(Ink.background)
+                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { bottomDockHeight = $0 }
+                .onDisappear { bottomDockHeight = 0 }
             }
         }
         .safeAreaInset(edge: .top, spacing: 0) {
@@ -406,7 +424,8 @@ struct InboxView: View {
                     .id(model.screenScope + identity + screenViewerRevision.uuidString)
                     .frame(height: screenExpanded ? nil : 220)
                     .frame(maxHeight: screenExpanded ? .infinity : nil)
-                    .padding(.horizontal, 12).padding(.bottom, 8)
+                    .padding(.horizontal, 12)
+                    .padding(.bottom, screenExpanded ? bottomDockHeight + 8 : 8)
                     .zIndex(1)
             }
             Group {
