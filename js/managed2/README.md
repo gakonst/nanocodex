@@ -225,7 +225,7 @@ journal supports replay through transcript compaction and cold recovery.
 **This is still not a usable production async mode.** The Worker E2E suite
 (`test:async-e2e` and `test:async-e2e:websocket`) exercises synthetic Egress2
 provider fixtures, including nonblocking pending/terminal, active-boundary
-uptake, two-result idle coalescing, cancellation fencing and HTTP lost-SQL
+uptake, two-result idle coalescing, mixed completed/cancelled cohort fencing, and HTTP lost-SQL
 completion replay after DO eviction. These do not establish real provider
 acceptance of duplicate original-call-ID outputs, all crash/compaction
 interleavings through the Worker, or production end-to-end performance. The

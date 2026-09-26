@@ -45,17 +45,20 @@ export default defineConfig({
               }
               const body = await request.json();
               if (body.settings?.external_web_access !== true || body.settings?.allowed_callers?.[0] !== "direct"
-                || !(["a synthetic question", "a synthetic async question", "a synthetic active question", "a synthetic cohort question"].includes(body.commands?.search_query?.[0]?.q))) {
+                || !(["a synthetic question", "a synthetic async question", "a synthetic active question", "a synthetic cohort question", "a synthetic mixed fast question", "a synthetic mixed slow question"].includes(body.commands?.search_query?.[0]?.q))) {
                 return Response.json({ error: "invalid search body" }, { status: 400 });
               }
-              if (body.commands?.search_query?.[0]?.q === "a synthetic async question")
+              if (["a synthetic async question", "a synthetic mixed slow question"].includes(body.commands?.search_query?.[0]?.q))
                 await new Promise(resolve => setTimeout(resolve, 2500));
               if (body.commands?.search_query?.[0]?.q === "a synthetic active question")
                 await new Promise(resolve => setTimeout(resolve, 120));
+              if (body.commands?.search_query?.[0]?.q === "a synthetic mixed fast question")
+                await new Promise(resolve => setTimeout(resolve, 400));
               return Response.json({ output: "Found [synthetic citation](https://example.org/source)"
                 + (body.commands?.search_query?.[0]?.q === "a synthetic async question" ? " [async fixture]" : "")
                 + (body.commands?.search_query?.[0]?.q === "a synthetic active question" ? " [active fixture]" : "")
-                + (body.commands?.search_query?.[0]?.q === "a synthetic cohort question" ? " [cohort fixture]" : ""), hidden: "provider-only" });
+                + (body.commands?.search_query?.[0]?.q === "a synthetic cohort question" ? " [cohort fixture]" : "")
+                + (body.commands?.search_query?.[0]?.q === "a synthetic mixed fast question" ? " [mixed-fast fixture]" : ""), hidden: "provider-only" });
             }
             if (url.href === "https://chatgpt.com/backend-api/codex/alpha/search" && request.method === "POST") {
               if (request.headers.get("chatgpt-account-id") !== "account-fixture"
@@ -63,17 +66,20 @@ export default defineConfig({
                 return Response.json({ error: "subscription search authentication failure" }, { status: 401 });
               }
               const body = await request.json();
-              if (!(["a synthetic question", "a synthetic async question", "a synthetic active question", "a synthetic cohort question"].includes(body.commands?.search_query?.[0]?.q))) {
+              if (!(["a synthetic question", "a synthetic async question", "a synthetic active question", "a synthetic cohort question", "a synthetic mixed fast question", "a synthetic mixed slow question"].includes(body.commands?.search_query?.[0]?.q))) {
                 return Response.json({ error: "invalid search body" }, { status: 400 });
               }
-              if (body.commands?.search_query?.[0]?.q === "a synthetic async question")
+              if (["a synthetic async question", "a synthetic mixed slow question"].includes(body.commands?.search_query?.[0]?.q))
                 await new Promise(resolve => setTimeout(resolve, 2500));
               if (body.commands?.search_query?.[0]?.q === "a synthetic active question")
                 await new Promise(resolve => setTimeout(resolve, 120));
+              if (body.commands?.search_query?.[0]?.q === "a synthetic mixed fast question")
+                await new Promise(resolve => setTimeout(resolve, 400));
               return Response.json({ output: "Found [synthetic citation](https://example.org/source)"
                 + (body.commands?.search_query?.[0]?.q === "a synthetic async question" ? " [async fixture]" : "")
                 + (body.commands?.search_query?.[0]?.q === "a synthetic active question" ? " [active fixture]" : "")
-                + (body.commands?.search_query?.[0]?.q === "a synthetic cohort question" ? " [cohort fixture]" : ""), hidden: "provider-only" });
+                + (body.commands?.search_query?.[0]?.q === "a synthetic cohort question" ? " [cohort fixture]" : "")
+                + (body.commands?.search_query?.[0]?.q === "a synthetic mixed fast question" ? " [mixed-fast fixture]" : ""), hidden: "provider-only" });
             }
             const platform = url.hostname === "api.openai.com"
               && url.pathname === "/v1/responses"
@@ -108,6 +114,30 @@ export default defineConfig({
                 if (!shellTool) throw new Error("exec_command was not offered to the provider");
                 return [{ type: "response.completed", response: { id: "fixture-shell-call", status: "completed", end_turn: false,
                   output: [{ type: "function_call", call_id: "call-shell", name: "exec_command", arguments: JSON.stringify({ cmd: shellMatch[1] }) }],
+                  usage: { input_tokens: 10, output_tokens: 4, total_tokens: 14 } } }];
+              }
+              // A fast completed job and a cancelled in-flight job must be
+              // delivered together; late upstream completion cannot overwrite
+              // the uncertain cancellation result.
+              const mixedA = input.filter(item => item.type === "function_call_output" && item.call_id === "call-mixed-a");
+              const mixedB = input.filter(item => item.type === "function_call_output" && item.call_id === "call-mixed-b");
+              if (mixedA.length || mixedB.length) {
+                const complete = mixedA.some(item => String(item.output).includes("[mixed-fast fixture]"));
+                const uncertain = mixedB.some(item => String(item.output).includes("Cancellation requested after dispatch"));
+                const pendingA = mixedA.some(item => String(item.output).includes("Tool call is still running."));
+                const pendingB = mixedB.some(item => String(item.output).includes("Tool call is still running."));
+                if (complete !== uncertain) throw new Error("mixed terminal cohort was split across requests");
+                if (!complete && (!pendingA || !pendingB)) throw new Error("mixed pending cohort was incomplete");
+                const text = complete ? "Mixed cohort complete and uncertain together"
+                  : "Waiting for mixed cohort";
+                return [{ type: "response.completed", response: { id: "fixture-mixed-result", status: "completed", end_turn: true,
+                  output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text }] }],
+                  usage: { input_tokens: 10, output_tokens: 4, total_tokens: 14 } } }];
+              }
+              if (JSON.stringify(input).includes("Use async mixed cohort")) {
+                return [{ type: "response.completed", response: { id: "fixture-mixed-calls", status: "completed", end_turn: false,
+                  output: ["fast", "slow"].map(kind => ({ type: "function_call", call_id: "call-mixed-" + (kind === "fast" ? "a" : "b"),
+                    name: "web__run", arguments: JSON.stringify({ search_query: [{ q: "a synthetic mixed " + kind + " question" }] }) })),
                   usage: { input_tokens: 10, output_tokens: 4, total_tokens: 14 } } }];
               }
               // Two independently completed, read-only jobs from one source
