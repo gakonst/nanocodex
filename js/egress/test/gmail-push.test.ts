@@ -291,7 +291,7 @@ it("hydrates MIME alternatives before wake and persists the snapshot across busy
     expect(url.searchParams.get("format")).toBe("full");
     return Response.json({id:"m1", payload:{mimeType:"multipart/mixed",headers:[{name:"Subject",value:"Synthetic subject"}],parts:[
       {mimeType:"multipart/alternative",parts:[{mimeType:"text/html",body:{data:btoa("<p>Duplicate HTML</p>")}},{mimeType:"text/plain",body:{data:btoa("Complete plain body")}}]},
-      {mimeType:"text/plain",filename:"attachment.txt",body:{attachmentId:"secret",data:btoa("Attachment content")}}
+      {mimeType:"text/plain",filename:"attachment.txt",body:{attachmentId:"secret",size:123,data:btoa("Attachment content")}}
     ]}});
   });
   f.wakeStatus(200); await f.request("/notify", "POST", notify); await f.alarmRun();
@@ -299,6 +299,7 @@ it("hydrates MIME alternatives before wake and persists the snapshot across busy
   expect(input.messages[0]).toMatchObject({id:"m1",status:"ok",body:"Complete plain body",headers:{subject:"Synthetic subject"}});
   expect(JSON.stringify(input)).not.toContain("Duplicate HTML");
   expect(JSON.stringify(input)).not.toContain("Attachment content");
+  expect(input.messages[0].attachments).toEqual([{filename:"attachment.txt",mimeType:"text/plain",size:123,attachmentId:"secret"}]);
   f.message(() => { throw new Error("must not refetch"); }); f.restart(); f.wakeStatus(202); await f.alarmRun();
   expect(f.wakes[1]).toEqual(f.wakes[0]);
   expect(f.calls.filter(r=>r.url.includes("/messages/"))).toHaveLength(1);

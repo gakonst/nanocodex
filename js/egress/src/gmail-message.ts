@@ -1,7 +1,8 @@
 /** Bounded, text-only Gmail snapshots. Email content is always untrusted data. */
+type GmailAttachmentReference = { filename?: string; mimeType?: string; size?: number; attachmentId?: string };
 export type GmailMessageSnapshot = {
   id: string; status: "ok" | "missing" | "error" | "body_unavailable";
-  headers?: Record<string, string>; body?: string; truncated?: boolean;
+  headers?: Record<string, string>; body?: string; truncated?: boolean; attachments?: GmailAttachmentReference[];
 };
 const encoder = new TextEncoder();
 export const jsonBytes = (value: unknown) => encoder.encode(JSON.stringify(value)).length;
@@ -26,13 +27,25 @@ function htmlText(html: string): string {
       return n > 0 && n <= 0x10ffff && !(n >= 0xd800 && n <= 0xdfff) ? String.fromCodePoint(n) : "�";
     }).replace(/\s+/g," ").trim();
 }
-async function extract(payload: unknown, external: (id: string) => Promise<string>, signal: AbortSignal): Promise<{ body: string; truncated: boolean; available: boolean }> {
+async function extract(payload: unknown, external: (id: string) => Promise<string>, signal: AbortSignal): Promise<{ body: string; truncated: boolean; available: boolean; attachments: GmailAttachmentReference[] }> {
   let nodes=0, truncated=false;
+  const attachments: GmailAttachmentReference[]=[];
   async function visit(part: any, depth: number): Promise<{text:string; available:boolean}> {
     if (++nodes>200 || depth>20) {truncated=true; return {text:"",available:false};}
     if (!record(part)) throw new Error("invalid_mime");
     const headers=Array.isArray(part.headers)?part.headers:[];
-    if (part.filename || headers.some((h:any)=>typeof h?.name==="string" && h.name.toLowerCase()==="content-disposition" && /^attachment\b/i.test(h.value))) return {text:"",available:false};
+    if (part.filename || headers.some((h:any)=>typeof h?.name==="string" && h.name.toLowerCase()==="content-disposition" && /^\s*attachment\b/i.test(h.value))) {
+      if(attachments.length>=10) truncated=true;
+      else {
+        const reference:GmailAttachmentReference={};
+        for(const [key,value,max] of [["filename",part.filename,512],["mimeType",part.mimeType,128],["attachmentId",part.body?.attachmentId,512]] as const) {
+          if(typeof value==="string") {reference[key]=value.slice(0,max);if(value.length>max)truncated=true;}
+        }
+        if(Number.isSafeInteger(part.body?.size) && part.body.size>=0) reference.size=part.body.size;
+        attachments.push(reference);
+      }
+      return {text:"",available:false};
+    }
     const mime=String(part.mimeType??"").toLowerCase();
     if (mime.startsWith("multipart/") && Array.isArray(part.parts)) {
       let parts=part.parts;
@@ -68,7 +81,7 @@ async function extract(payload: unknown, external: (id: string) => Promise<strin
     return {text:mime==="text/html"?htmlText(text):text,available:true};
   }
   const result=await visit(payload,0);
-  return {body:result.text,truncated,available:result.available};
+  return {body:result.text,truncated,available:result.available,attachments};
 }
 export async function hydrateGmailMessage(id:string, fetchMessage:(signal:AbortSignal, attachmentId?:string)=>Promise<Response>, budget:number, finalAttempt=false):Promise<GmailMessageSnapshot> {
   let retryable=false;
@@ -105,11 +118,12 @@ export async function hydrateGmailMessage(id:string, fetchMessage:(signal:AbortS
         const name=h.name.toLowerCase();if(!["from","to","cc","subject","date","message-id","reply-to"].includes(name)||name in headers)continue;
         headers[name]=h.value.slice(0,512);if(h.value.length>512)truncated=true;
       }
-      const result:GmailMessageSnapshot={id,status:text.available?"ok":"body_unavailable",headers,body:text.body,truncated};
+      const result:GmailMessageSnapshot={id,status:text.available?"ok":"body_unavailable",headers,body:text.body,truncated,...(text.attachments.length?{attachments:text.attachments}:{})};
+      while(result.attachments?.length && jsonBytes(result.attachments)>Math.floor(budget/4)) {result.attachments.pop();result.truncated=true;}
       // Measure serialized UTF-8 including escapes, leaving space for the flag.
       while(jsonBytes(result)>budget && result.body) {result.truncated=true;result.body=result.body.slice(0,Math.max(0,Math.floor(result.body.length*.75)));}
       for(const key of Object.keys(headers).reverse()) {if(jsonBytes(result)<=budget)break;delete headers[key];result.truncated=true;}
-      if (jsonBytes(result)>budget) {delete result.headers;delete result.body;result.truncated=true;}
+      if (jsonBytes(result)>budget) {delete result.headers;delete result.body;delete result.attachments;result.truncated=true;}
       return result;
     })()]);
   } catch {if(retryable && !finalAttempt) throw new Error("gmail_body_retry");return {id,status:"error"};} finally {clearTimeout(timer!);}
