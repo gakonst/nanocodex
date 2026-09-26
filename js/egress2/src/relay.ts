@@ -17,6 +17,12 @@ export function relayChatGpt(request: Request, ownerId: string, bindings: Relays
   const stub = namespace.get(namespace.idFromName(name), region ? { locationHint: region } : undefined);
   return tracing.enterSpan("egress2.relay", async span => {
     span.setAttribute("egress2.relay.region", region ?? "legacy");
+    // Egress2 overwrites this private ID before dispatch; it joins this span to
+    // responses_egress and the account Container DO without logging owner data.
+    const requestId = request.headers.get("x-nanocodex-egress-request-id");
+    if (requestId && /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(requestId)) {
+      span.setAttribute("egress2.request_id", requestId);
+    }
     const response = await stub.fetch(new Request(`https://chatgpt-egress.internal${target.pathname}${target.search}`, request));
     span.setAttribute("http.response.status_code", response.status);
     return response;
