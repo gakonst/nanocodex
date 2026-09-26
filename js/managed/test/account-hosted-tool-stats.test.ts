@@ -58,7 +58,7 @@ describe("owner hosted tool statistics", () => {
       insert("h", "mcp__cua_repl__js", "completed", now - 80, now - 70);
       state.storage.sql.exec("UPDATE hosted_tool_calls SET result_json = ? WHERE call_id = ?",
         JSON.stringify({ status: "completed", output: { success: false, output: "PRIVATE_RESULT",
-          structured_result: { status: "provider_error" } } }), "h");
+          structured_result: { status: "provider_error", content: [{ type: "text", text: "CDP operation exceeded its deadline before command dispatch; js execution timed out; kernel reset" }] } } }), "h");
       insert("old", "exec_command", "completed", now - 86_400_100, now - 86_400_000);
       insert("future", "exec_command", "completed", now + 60_000, now + 60_100);
       expect(() => insert("a", "exec_command", "completed", now - 1000, now - 900)).toThrow();
@@ -73,23 +73,23 @@ describe("owner hosted tool statistics", () => {
     expect(payload.total_calls).toBe(8);
     expect(payload.data).toEqual([
       { name: "exec_command", state: "ambiguous", calls: 1, tool_failed: 0,
-        tool_ambiguous: 0, tool_unavailable: 0, tool_failed_other: 0, late_receipts: 1,
+        tool_ambiguous: 0, tool_unavailable: 0, tool_failed_other: 0, cua_cdp_dispatch_deadline: 0, cua_js_kernel_timeout: 0, late_receipts: 1,
         pre_dispatch_unavailable: 0, post_dispatch_unavailable: 0, unknown_dispatch_unavailable: 0, duration_count: 1,
         total_duration_ms: 40, avg_duration_ms: 40, min_duration_ms: 40, max_duration_ms: 40 },
       { name: "exec_command", state: "completed", calls: 2, tool_failed: 1,
-        tool_ambiguous: 1, tool_unavailable: 0, tool_failed_other: 0, late_receipts: 0,
+        tool_ambiguous: 1, tool_unavailable: 0, tool_failed_other: 0, cua_cdp_dispatch_deadline: 0, cua_js_kernel_timeout: 0, late_receipts: 0,
         pre_dispatch_unavailable: 0, post_dispatch_unavailable: 0, unknown_dispatch_unavailable: 0, duration_count: 2,
         total_duration_ms: 300, avg_duration_ms: 150, min_duration_ms: 100, max_duration_ms: 200 },
       { name: "exec_command", state: "dispatched", calls: 1, tool_failed: 0,
-        tool_ambiguous: 0, tool_unavailable: 0, tool_failed_other: 0, late_receipts: 0,
+        tool_ambiguous: 0, tool_unavailable: 0, tool_failed_other: 0, cua_cdp_dispatch_deadline: 0, cua_js_kernel_timeout: 0, late_receipts: 0,
         pre_dispatch_unavailable: 0, post_dispatch_unavailable: 0, unknown_dispatch_unavailable: 0, duration_count: 0,
         total_duration_ms: null, avg_duration_ms: null, min_duration_ms: null, max_duration_ms: null },
       { name: "mcp__cua_repl__js", state: "completed", calls: 2, tool_failed: 2,
-        tool_ambiguous: 0, tool_unavailable: 1, tool_failed_other: 1, late_receipts: 0,
+        tool_ambiguous: 0, tool_unavailable: 1, tool_failed_other: 1, cua_cdp_dispatch_deadline: 1, cua_js_kernel_timeout: 1, late_receipts: 0,
         pre_dispatch_unavailable: 0, post_dispatch_unavailable: 0, unknown_dispatch_unavailable: 0, duration_count: 2,
         total_duration_ms: 30, avg_duration_ms: 15, min_duration_ms: 10, max_duration_ms: 20 },
       { name: "mcp__cua_repl__js", state: "unavailable", calls: 2, tool_failed: 0,
-        tool_ambiguous: 0, tool_unavailable: 0, tool_failed_other: 0, late_receipts: 0,
+        tool_ambiguous: 0, tool_unavailable: 0, tool_failed_other: 0, cua_cdp_dispatch_deadline: 0, cua_js_kernel_timeout: 0, late_receipts: 0,
         pre_dispatch_unavailable: 1, post_dispatch_unavailable: 1, unknown_dispatch_unavailable: 0, duration_count: 2,
         total_duration_ms: 30, avg_duration_ms: 15, min_duration_ms: 10, max_duration_ms: 20 },
     ]);
