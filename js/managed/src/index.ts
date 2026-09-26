@@ -6,7 +6,7 @@ import { importCrmEmailPush } from "./crm-email";
 import { gmailPushConfig } from "./gmail-push-config";
 import { parseGmailPushWake, gmailPushPrompt, type GmailPushWakeResult } from "./gmail-push-wake";
 import { proposeGmailReplyDecisions } from "./gmail-firehose-decisions";
-import { jevGatewayBinding, routeGmailDecisionBacktest } from "./gmail-firehose-backtest";
+import { enabledGmailDecisionOwner, jevGatewayBinding, routeGmailDecisionBacktest } from "./gmail-firehose-backtest";
 import { OutputCheckpoints } from "./output-checkpoints";
 import { turnCanUseExecutionNamespace, turnCanProvisionExecutionProvider, executionMountAllowed, executionMountPeers, executionMountOwner } from "./execution-policy";
 export { turnCanUseExecutionNamespace } from "./execution-policy";
@@ -409,6 +409,7 @@ export interface Env extends
   AI?: RoutingAi;
   /** Restrict experimental email decision triage to one explicitly enabled owner. */
   NANOCODEX_FIREHOSE_DECISIONS_OWNER_ID?: string;
+  NANOCODEX_FIREHOSE_DECISIONS_ADMIN_ENABLED?: string;
   /** AI Gateway name; its provider credential stays in Cloudflare, never here. */
   NANOCODEX_JEV_GATEWAY_ID?: string;
   NANOCODEX_CRM?: D1Database;
@@ -1680,7 +1681,7 @@ async function managedFetchRoute(
       const principal = trustedAgentPrincipal ?? await authenticate(request, env, url);
       return routeGmailDecisionBacktest(request, env.AI
         ? jevGatewayBinding(env.AI, env.NANOCODEX_JEV_GATEWAY_ID ?? "default") : undefined,
-        principal, env.NANOCODEX_FIREHOSE_DECISIONS_OWNER_ID);
+        principal, enabledGmailDecisionOwner(env));
     }
     if (url.pathname === "/v1/todo" || url.pathname.startsWith("/v1/todo/")) {
       const principal = trustedAgentPrincipal ?? await authenticate(request, env, url);
@@ -3898,7 +3899,7 @@ export class DurableAgentSession extends DurableComputerObject {
     // Generic/legacy notification text continues to use normal wake admission.
     let emailEvent: unknown;
     try { emailEvent = JSON.parse(wake.input); } catch { /* legacy text */ }
-    if (this.env.AI && this.env.NANOCODEX_FIREHOSE_DECISIONS_OWNER_ID === wake.userId) {
+    if (this.env.AI && enabledGmailDecisionOwner(this.env) === wake.userId) {
       // Leave general session startup unchanged while this producer is opt-in.
       this.ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS gmail_firehose_decision_receipts (
         source_key TEXT PRIMARY KEY, outcome TEXT NOT NULL CHECK (outcome IN ('reply', 'no_reply', 'filtered')),

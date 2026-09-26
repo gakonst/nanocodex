@@ -8,6 +8,11 @@ export function jevGatewayBinding(ai: RoutingAi, id = "default"): RoutingAi {
   return {run: (model, input) => (ai as RoutingAi & {run(model: string, input: unknown,
     options: {gateway:{id:string;collectLog:boolean;skipCache:boolean}}):Promise<unknown>}).run(model,input,{gateway:{id,collectLog:false,skipCache:true}})};
 }
+export function enabledGmailDecisionOwner(env: {NANOCODEX_FIREHOSE_DECISIONS_OWNER_ID?:string;
+  NANOCODEX_FIREHOSE_DECISIONS_ADMIN_ENABLED?:string; NANOCODEX_ADMIN_USER_ID?:string}): string | undefined {
+  return env.NANOCODEX_FIREHOSE_DECISIONS_OWNER_ID
+    ?? (env.NANOCODEX_FIREHOSE_DECISIONS_ADMIN_ENABLED === "true" ? env.NANOCODEX_ADMIN_USER_ID : undefined);
+}
 const thresholds = [0.65, 0.75, 0.85, 0.9, 0.95] as const;
 const reply = (data: unknown, status = 200) => Response.json(data,{status,headers:{"cache-control":"no-store"}});
 type Sample = {id:string;expected:"reply"|"no_reply";from:string;subject:string;body:string};
