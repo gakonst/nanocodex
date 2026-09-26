@@ -143,28 +143,7 @@ struct InboxView: View {
                 }
         }
         .overlay(alignment: .bottom) {
-            if model.connected && !showScreens && !showScheduledJobs && !showConnectors {
-                let drawerVisible = showConversations || drawerTranslation != 0
-                VStack(spacing: 0) {
-                    Group {
-                        if mainSurface == .todo {
-                            TodoCaptureComposer(model: model, inputFocused: $todoInputFocused)
-                        } else {
-                            conversationBottomControls
-                        }
-                    }
-                    // Keep the composer mounted while the drawer slides; its local
-                    // attachment/editor state must survive without covering the list.
-                    .frame(height: drawerVisible ? 0 : nil)
-                    .opacity(drawerVisible ? 0 : 1)
-                    .allowsHitTesting(!drawerVisible).accessibilityHidden(drawerVisible)
-                    if !drawerVisible { mainNavigation }
-                }
-                .frame(maxWidth: 620)
-                .frame(maxWidth: .infinity)
-                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { bottomDockHeight = $0 }
-                .onDisappear { bottomDockHeight = 0 }
-            }
+            if model.connected && mainSurface == .todo { bottomDock }
         }
         .safeAreaInset(edge: .top, spacing: 0) {
             if !model.isDemo, let update = appUpdates.update {
@@ -251,6 +230,23 @@ struct InboxView: View {
 
     }
 
+    @ViewBuilder
+    private var bottomDock: some View {
+        if !showScreens && !showScheduledJobs && !showConnectors {
+            VStack(spacing: 0) {
+                if mainSurface == .todo {
+                    TodoCaptureComposer(model: model, inputFocused: $todoInputFocused)
+                } else {
+                    conversationBottomControls
+                }
+                mainNavigation
+            }
+            .frame(maxWidth: 620)
+            .frame(maxWidth: .infinity)
+            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { bottomDockHeight = $0 }
+        }
+    }
+
     private var mainNavigation: some View {
         HStack(spacing: 2) {
             mainNavigationButton(.todo, title: "TODO", symbol: "checkmark.square", identifier: "main-tab-todo")
@@ -325,6 +321,8 @@ struct InboxView: View {
                     }, close: { setConversationsVisible(false) }, create: createAgent,
                     settings: { showSettings = true })
                     .frame(width: width, height: geometry.size.height)
+                    .padding(.bottom, geometry.safeAreaInsets.bottom)
+                    .background(ChatPalette.sidebar)
                     // Slide the conversation above a stationary list. Moving
                     // a newly inserted native scroll view can strand its rows
                     // offscreen when the same drag dismisses the keyboard.
@@ -340,6 +338,10 @@ struct InboxView: View {
                     // transactions must not animate transcript layout or restoration.
                     .transaction { $0.animation = nil }
                     .frame(width: geometry.size.width, height: geometry.size.height)
+                    .overlay(alignment: .bottom) { bottomDock }
+                    // The controls remain inside the keyboard-aware safe viewport;
+                    // the moving panel and its clip continue through the home area.
+                    .padding(.bottom, geometry.safeAreaInsets.bottom)
                     .background(Ink.background)
                     .clipShape(RoundedRectangle(cornerRadius: reveal > 0 ? 28 : 0))
                     .shadow(color: .black.opacity(reveal > 0 ? 0.12 : 0), radius: 16, x: -4)
@@ -352,6 +354,7 @@ struct InboxView: View {
                     .accessibilityHidden(showConversations)
                     .offset(x: reveal)
             }
+            .frame(height: geometry.size.height + geometry.safeAreaInsets.bottom, alignment: .top)
             .clipped()
             .contentShape(Rectangle())
             .simultaneousGesture(DragGesture(minimumDistance: 16)

@@ -1,4 +1,5 @@
 import XCTest
+import UIKit
 
 final class InboxUITests: XCTestCase {
     private func selectedConversationTab(_ app: XCUIApplication) -> XCUIElement {
@@ -189,16 +190,49 @@ final class InboxUITests: XCTestCase {
         openDrawerFromEdge(app)
         XCTAssertFalse(app.keyboards.firstMatch.exists)
         capture(app, "edge-swipe-open")
+        // Compare the unobstructed left edge above and inside the home area.
+        // The drawer surface must reach the screen bottom without a white strip.
+        let screenshot = app.screenshot().image
+        func edgePixel(_ y: CGFloat) -> [UInt8] {
+            guard let pixel = screenshot.cgImage?.cropping(to: CGRect(
+                x: 4 * screenshot.scale, y: y * screenshot.scale, width: 1, height: 1
+            )) else { XCTFail("Expected drawer screenshot pixels"); return [] }
+            var bytes = [UInt8](repeating: 0, count: 4)
+            bytes.withUnsafeMutableBytes { buffer in
+                let context = CGContext(data: buffer.baseAddress, width: 1, height: 1,
+                    bitsPerComponent: 8, bytesPerRow: 4, space: CGColorSpaceCreateDeviceRGB(),
+                    bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+                context.draw(pixel, in: CGRect(x: 0, y: 0, width: 1, height: 1))
+            }
+            return bytes
+        }
+        let sidebar = edgePixel(screenshot.size.height / 2)
+        let homeArea = edgePixel(screenshot.size.height - 10)
+        for (above, below) in zip(sidebar, homeArea) {
+            XCTAssertEqual(Double(above), Double(below), accuracy: 3,
+                           "The drawer background must continue through the home area")
+        }
         app.scrollViews["conversation-list"].swipeLeft()
         gone(app.scrollViews["conversation-list"])
         XCTAssertTrue(app.buttons["conversation-title:inbox"].isSelected)
         XCTAssertEqual(composer(app).value as? String, "Keep my edge swipe draft")
+        let dock = app.descendants(matching: .any)["main-selection-bar"].firstMatch
+        XCTAssertTrue(dock.exists)
+        let dockFrame = dock.frame
+        let inputFrame = composer(app).frame
         // A short pull that is released slowly must return to the conversation.
         let edge = app.coordinate(withNormalizedOffset: CGVector(dx: 0.015, dy: 0.45))
         edge.press(forDuration: 0.01, thenDragTo: edge.withOffset(CGVector(dx: 35, dy: 0)),
                    withVelocity: .slow, thenHoldForDuration: 0.5)
         gone(app.scrollViews["conversation-list"])
         XCTAssertTrue(app.buttons["conversation-title:inbox"].isSelected)
+        XCTAssertEqual(composer(app).value as? String, "Keep my edge swipe draft")
+        XCTAssertEqual(dock.frame.minY, dockFrame.minY, accuracy: 2)
+        XCTAssertEqual(composer(app).frame.minY, inputFrame.minY, accuracy: 2)
+        capture(app, "edge-swipe-cancelled-dock")
+        composer(app).tap()
+        XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5))
+        XCTAssertLessThanOrEqual(dock.frame.maxY, app.keyboards.firstMatch.frame.minY)
         openDrawerFromEdge(app)
         app.buttons["conversation-row:data"].tap()
         XCTAssertTrue(app.buttons["conversation-title:data"].waitForExistence(timeout: 5))
