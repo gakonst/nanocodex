@@ -12,6 +12,12 @@ const inside = (fn: (state: DurableObjectState) => Promise<void>) => runInDurabl
 const req = (path: string, method = "GET", body?: unknown) => new Request(`https://session.internal${path}`, { method, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
 
 describe("agent configuration", () => {
+  it("requires an explicit boolean to opt in to background tool calls", () => {
+    expect(parseConfiguration({}).async_tools).toBeUndefined();
+    expect(parseConfiguration({ async_tools: true }).async_tools).toBe(true);
+    expect(parseConfiguration({ async_tools: false }).async_tools).toBe(false);
+    for (const value of ["true", 1, null, {}]) expect(() => parseConfiguration({ async_tools: value })).toThrow();
+  });
   it("validates explicit ChatGPT account pins", () => {
     expect(parseConfiguration({ chatgpt_account_id: "account-a" }).chatgpt_account_id).toBe("account-a");
     for (const chatgpt_account_id of [null, 42, "", "with space", "line\nbreak", "é", "x".repeat(257)]) {

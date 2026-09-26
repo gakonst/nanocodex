@@ -33,6 +33,8 @@ export const configurationSchema = z.object({
   }).strict().refine(s => s.model !== "gpt-6-astra" || s.thinking !== "none" && s.reasoning_mode !== "pro").optional(),
   instructions: z.string().max(65_536).optional(),
   tools: z.array(name).max(128).optional(),
+  /** Opt-in experimental background web lookups; no side-effecting tools. */
+  async_tools: z.boolean().optional(),
   multi_agent: z.discriminatedUnion("enabled", [
     z.object({ enabled: z.literal(false) }).strict(),
     z.object({ enabled: z.literal(true), max_concurrent_subagents: z.number().int().positive().max(0xffff_ffff).optional() }).strict(),

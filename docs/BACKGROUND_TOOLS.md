@@ -1,0 +1,10 @@
+# Opt-in background read tools (experimental)
+
+Set `async_tools: true` in an original managed agent's configuration. The default is off. This pilot exposes `start_background_web_search({search_query:[{q:"..."}]})` and `background_tool_status({job_id:"bg-..."})` in addition to the ordinary synchronous `web__run`. Only public `search_query` reads (1–4 queries) are permitted; no CUA, Hands, connector access, payments, or mutating tools are dispatched in background. Restricted-network, multiplayer, subagent, and Connect-granted turns cannot use the pilot.
+
+`start_background_web_search` durably stores the search intent and returns a stable job ID before the network request finishes. The Durable Object owns the request, independently of the Code Mode cell. A completion persists a bounded result and is delivered once as a **new** tagged input, not a second output on the original tool-call ID. If the original turn is still active, an identified steer makes the result available at its next model boundary; if it has completed, an idempotent follow-up turn wakes the agent. `background_tool_status` provides a fallback result read. Alarm recovery may repeat an uncertain **read-only** request under the same job ID; it never retries arbitrary writes.
+
+Limitations before broad rollout:
+- Same-turn delivery is not guaranteed when the model finishes before the search. The late-result path creates a separate continuation turn, currently represented as a tagged input in managed turn history rather than a dedicated `tool_task_result` role. Do not describe it as a tool-role transcript item.
+- Results are untrusted web source content, JSON-encoded and explicitly labelled; a dedicated lower-trust transcript item and model-finalization barrier remain follow-up work. Do not widen to side-effecting tools without an exact-once operation receipt, scoped authorization, and cancellation/fencing design.
+- The feature is opt-in per agent, not enabled globally. Disabling it with pending jobs pauses their recovery; re-enabling permits completion. Model latency improvements require controlled real-world measurement, not merely a quick task-ID receipt.
