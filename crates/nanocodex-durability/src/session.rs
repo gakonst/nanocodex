@@ -4469,6 +4469,96 @@ mod tests {
         ));
     }
 
+    /// Measure an actual SQLite host store with unique checkpoint payloads.
+    /// Deliberately ignored: this is a scale characterization, not a CI SLA.
+    #[cfg(feature = "sqlite")]
+    #[tokio::test]
+    #[ignore = "run manually to characterize SQLite physical late-journal storage"]
+    async fn late_output_retention_sqlite_profile() {
+        use std::time::Instant;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("late-profile.sqlite");
+        let store = crate::SqliteStore::open(&path).unwrap();
+        let session =
+            DurableSession::open_with_terminal_receipt_limit(store, "late-sqlite-profile", 0)
+                .await
+                .unwrap();
+        let (owner, _) = session.acquire_agent().await.unwrap();
+        let mut previous = Instant::now();
+        for index in 0..250 {
+            let id = format!("late-output:sqlite-profile-{index}");
+            assert!(matches!(
+                owner
+                    .admit_typed::<_, u32, String>(id.clone(), &index)
+                    .await,
+                Ok(Admission::Accepted)
+            ));
+            owner.begin_attempt(id.clone()).await.unwrap();
+            owner
+                .complete(
+                    id,
+                    EncodedPayload::encode(&serde_json::json!({
+                        "history": format!("{index:08}{}", "x".repeat(8_184)),
+                    }))
+                    .unwrap(),
+                    &"receipt".to_owned(),
+                )
+                .await
+                .unwrap();
+            if [9, 99, 249].contains(&index) {
+                let head = session
+                    .state()
+                    .await
+                    .unwrap()
+                    .checkpoint_payload()
+                    .unwrap()
+                    .len();
+                let db = rusqlite::Connection::open(&path).unwrap();
+                let (records, logical_bytes): (i64, i64) = db
+                    .query_row(
+                        "SELECT COUNT(*), COALESCE(SUM(LENGTH(key) + LENGTH(value)), 0) \
+                     FROM nanocodex_durable_records WHERE state_id = 'late-sqlite-profile'",
+                        [],
+                        |row| Ok((row.get(0)?, row.get(1)?)),
+                    )
+                    .unwrap();
+                let pages: i64 = db
+                    .query_row("PRAGMA page_count", [], |row| row.get(0))
+                    .unwrap();
+                let page_size: i64 = db
+                    .query_row("PRAGMA page_size", [], |row| row.get(0))
+                    .unwrap();
+                println!(
+                    "sqlite_late_count={} head_bytes={} records={} logical_record_bytes={} db_pages_bytes={} file_bytes={} segment_ms={}",
+                    index + 1,
+                    head,
+                    records,
+                    logical_bytes,
+                    pages * page_size,
+                    std::fs::metadata(&path).unwrap().len(),
+                    previous.elapsed().as_millis(),
+                );
+                previous = Instant::now();
+            }
+        }
+        drop(owner);
+        drop(session);
+        let start = Instant::now();
+        let reopened = DurableSession::open_with_terminal_receipt_limit(
+            crate::SqliteStore::open(&path).unwrap(),
+            "late-sqlite-profile",
+            0,
+        )
+        .await
+        .unwrap();
+        println!("sqlite_late_cold_reopen_ms={}", start.elapsed().as_millis());
+        assert!(matches!(
+            reopened.admit("late-output:sqlite-profile-249", &249).await,
+            Ok(Admission::Completed { .. })
+        ));
+    }
+
     #[tokio::test]
     async fn zero_retention_is_atomic_with_terminal_state() {
         let store = MemoryStore::new().unwrap();

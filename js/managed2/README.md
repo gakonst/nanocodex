@@ -250,6 +250,11 @@ in-memory store, zero terminal head retention held the head to 143 bytes but
 immutable records grew from 88,140 bytes at 10 completions to 881,001 bytes
 at 100 and 2,202,801 bytes at 250 (751 records). These are logical key+value
 bytes, not SQLite/R2 physical size or RSS, and do not establish a sustainable
-production retention policy. Exact-ID replay receipts currently have no
-bounded archival lifetime; operational storage-growth review remains a release
-gate for long-lived sessions.
+production retention policy. A separate ignored SQLite run (`cargo test
+-p nanocodex-durability --features sqlite --lib
+late_output_retention_sqlite_profile -- --ignored --nocapture`) with unique 8
+KiB checkpoints measured 118,784 physical database bytes at 10, 974,848 at
+100, and 2,383,872 at 250 completions. This is local SQLite, not Cloudflare
+DO SQLite/R2 or RSS. Exact-ID replay receipts currently have no bounded
+archival lifetime; operational storage-growth review remains a release gate
+for long-lived sessions.
