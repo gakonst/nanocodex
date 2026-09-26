@@ -2,11 +2,17 @@ use std::{collections::BTreeSet, fmt};
 
 use serde::{Deserialize, Serialize};
 
-use crate::{ResponseItem, Usage, responses::ResponseHistory};
+use crate::{
+    ResponseItem, Usage,
+    responses::{FunctionOutputBody, ItemStatus, ResponseHistory},
+};
 
 use super::{
     compaction,
-    context::{ContextManager, assign_missing_response_item_ids, has_well_formed_tool_calls},
+    context::{
+        ContextManager, assign_missing_response_item_ids, has_well_formed_tool_calls,
+        has_well_formed_unreal_function_outputs,
+    },
 };
 
 /// Stable client-owned identity for one managed conversation.
@@ -152,6 +158,89 @@ impl ManagedSessionState {
         state.context.commit_tail();
         state.delta_start = state.context.len();
         Ok(state)
+    }
+
+    /// Explicit opt-in replay of the Unreal duplicate-ID pending/terminal extension.
+    /// Normal `resume` still rejects duplicate outputs.
+    pub fn resume_unreal_function_outputs(
+        mut items: Vec<ResponseItem>,
+    ) -> Result<Self, ManagedSessionStateError> {
+        if items.is_empty() {
+            return Err(ManagedSessionStateError::EmptyHistory);
+        }
+        assign_missing_response_item_ids(&mut items);
+        if !has_well_formed_unreal_function_outputs(&items) {
+            return Err(ManagedSessionStateError::MalformedToolCalls);
+        }
+        let len = items.len();
+        let mut state = Self::new(items);
+        if state.context.len() != len {
+            return Err(ManagedSessionStateError::UnsupportedHistoryItem);
+        }
+        if state.context.replace_invalid_tool_images() > 0 {
+            state.history_revision = state.history_revision.saturating_add(1);
+        }
+        state.context.commit_tail();
+        state.delta_start = state.context.len();
+        Ok(state)
+    }
+
+    /// Stage an in-progress function output. The caller must supply a trusted
+    /// progress message and call ID, never an instruction from tool text.
+    pub fn stage_unreal_function_output(
+        &mut self,
+        call_id: &str,
+        message: &str,
+    ) -> Result<(), ManagedSessionStateError> {
+        let history = self.flattened_history();
+        if !history.iter().any(|item| {
+            matches!(item, ResponseItem::FunctionCall { call_id: id, .. }
+                if id.as_ref() == call_id)
+        }) || history.iter().any(|item| {
+            matches!(item, ResponseItem::FunctionCallOutput { call_id: id, .. }
+                if id.as_ref() == call_id)
+        }) {
+            return Err(ManagedSessionStateError::MalformedToolCalls);
+        }
+        let mut pending = ResponseItem::function_call_output(
+            call_id.to_owned(),
+            FunctionOutputBody::Text(message.into()),
+        );
+        if let ResponseItem::FunctionCallOutput { status, .. } = &mut pending {
+            *status = Some(ItemStatus::InProgress);
+        }
+        self.append([pending]);
+        Ok(())
+    }
+
+    /// Complete the exact staged call. If the pending placeholder has not been
+    /// sent to the model, remove it; otherwise append a second same-ID output.
+    /// The caller derives `pending_sent` from a trusted request boundary.
+    pub fn complete_unreal_function_output(
+        &mut self,
+        call_id: &str,
+        output: FunctionOutputBody,
+        pending_sent: bool,
+    ) -> Result<(), ManagedSessionStateError> {
+        let history = self.flattened_history();
+        let pending = history.iter().filter(|item| matches!(item,
+            ResponseItem::FunctionCallOutput { call_id: id, status: Some(ItemStatus::InProgress), .. }
+                if id.as_ref() == call_id)).count();
+        let terminal = history.iter().any(|item| {
+            matches!(item,
+            ResponseItem::FunctionCallOutput { call_id: id, status, .. }
+                if id.as_ref() == call_id && *status != Some(ItemStatus::InProgress))
+        });
+        if pending != 1 || terminal {
+            return Err(ManagedSessionStateError::MalformedToolCalls);
+        }
+        let result = ResponseItem::function_call_output(call_id.to_owned(), output);
+        if pending_sent {
+            self.append([result]);
+        } else if !self.context.replace_staged_unreal_output(call_id, result) {
+            return Err(ManagedSessionStateError::MalformedToolCalls);
+        }
+        Ok(())
     }
 
     /// Returns the number of retained typed history items.
@@ -575,5 +664,174 @@ mod tests {
             Err(ManagedSessionStateError::MissingResponseId)
         ));
         assert_eq!(state.previous_response_id(), None);
+    }
+}
+
+#[cfg(test)]
+mod unreal_function_output_tests {
+    use super::*;
+    use serde_json::{Value, json};
+
+    fn session() -> ManagedSessionState {
+        ManagedSessionState::new(
+            serde_json::from_value(json!([
+                {"type":"message", "role":"user", "content":[{"type":"input_text", "text":"task"}]},
+                {"type":"function_call", "call_id":"job-1", "name":"job", "arguments":"{}"}
+            ]))
+            .unwrap(),
+        )
+    }
+
+    fn text(text: &str) -> FunctionOutputBody {
+        FunctionOutputBody::Text(text.into())
+    }
+
+    #[test]
+    fn completed_before_request_commit_replaces_staged_placeholder() {
+        let mut state = session();
+        state
+            .stage_unreal_function_output("job-1", "working")
+            .unwrap();
+        assert!(
+            state
+                .stage_unreal_function_output("job-1", "again")
+                .is_err()
+        );
+        state
+            .complete_unreal_function_output("job-1", text("done"), false)
+            .unwrap();
+        let items = state.flattened_history();
+        assert_eq!(items.len(), 3);
+        assert_eq!(serde_json::to_value(&items[2]).unwrap()["output"], "done");
+        assert!(crate::session::context::has_well_formed_tool_calls(&items));
+        assert!(
+            state
+                .complete_unreal_function_output("job-1", text("duplicate"), true)
+                .is_err()
+        );
+        ManagedSessionState::resume(
+            serde_json::from_value(serde_json::to_value(items).unwrap()).unwrap(),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn replacing_an_unsent_pending_preserves_other_calls_and_committed_boundary() {
+        let mut state = session();
+        state.commit_tail();
+        state.append([serde_json::from_value(json!({
+            "type": "function_call", "call_id": "job-2", "name": "job", "arguments": "{}"
+        }))
+        .unwrap()]);
+        state
+            .stage_unreal_function_output("job-1", "working")
+            .unwrap();
+        state
+            .stage_unreal_function_output("job-2", "working")
+            .unwrap();
+        state
+            .complete_unreal_function_output("job-1", text("done"), false)
+            .unwrap();
+        let items = state.flattened_history();
+        assert_eq!(serde_json::to_value(&items[3]).unwrap()["call_id"], "job-1");
+        assert_eq!(serde_json::to_value(&items[4]).unwrap()["call_id"], "job-2");
+        assert_eq!(serde_json::to_value(&items[3]).unwrap()["output"], "done");
+        assert_eq!(
+            serde_json::to_value(&items[4]).unwrap()["status"],
+            "in_progress"
+        );
+        state.commit_tail();
+        assert!(
+            state
+                .complete_unreal_function_output("job-2", text("done"), false)
+                .is_err()
+        );
+        state
+            .complete_unreal_function_output("job-2", text("done"), true)
+            .unwrap();
+        assert_eq!(state.flattened_history().len(), 6);
+    }
+
+    #[test]
+    fn completed_after_request_commit_keeps_ordered_same_id_pair_for_opt_in_replay() {
+        let mut state = session();
+        state
+            .stage_unreal_function_output("job-1", "working")
+            .unwrap();
+        // The client is responsible for marking this request boundary before
+        // completing the job. The committed tail cannot be rewritten.
+        state.commit_tail();
+        state
+            .complete_unreal_function_output("job-1", text("done"), true)
+            .unwrap();
+        let encoded = serde_json::to_value(state.flattened_history()).unwrap();
+        let outputs: Vec<&Value> = encoded
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|item| item["type"] == "function_call_output")
+            .collect();
+        assert_eq!(outputs.len(), 2);
+        assert_eq!(outputs[0]["call_id"], "job-1");
+        assert_eq!(outputs[0]["status"], "in_progress");
+        assert_eq!(outputs[1]["call_id"], "job-1");
+        assert_eq!(outputs[1]["output"], "done");
+        let decoded: Vec<ResponseItem> = serde_json::from_value(encoded).unwrap();
+        assert!(ManagedSessionState::resume(decoded.clone()).is_err());
+        let replay = ManagedSessionState::resume_unreal_function_outputs(decoded).unwrap();
+        assert_eq!(
+            serde_json::to_value(replay.flattened_history()).unwrap()[2]["status"],
+            "in_progress"
+        );
+        assert!(!replay.prompt_history_with_repair().1);
+    }
+
+    #[test]
+    fn rejects_orphans_reversed_pairs_and_duplicate_terminals() {
+        let base = serde_json::to_value(session().flattened_history()).unwrap();
+        let check = |extra: Vec<Value>| {
+            let mut items = base.as_array().unwrap().clone();
+            items.extend(extra);
+            ManagedSessionState::resume_unreal_function_outputs(
+                serde_json::from_value(Value::Array(items)).unwrap(),
+            )
+            .is_err()
+        };
+        let pending = json!({"type":"function_call_output", "call_id":"job-1", "status":"in_progress", "output":"working"});
+        let terminal = json!({"type":"function_call_output", "call_id":"job-1", "output":"done"});
+        assert!(check(vec![terminal.clone(), pending.clone()]));
+        assert!(check(vec![pending.clone(), pending.clone()]));
+        assert!(check(vec![pending.clone(), terminal.clone(), terminal]));
+        assert!(check(vec![
+            json!({"type":"function_call_output", "call_id":"orphan", "output":"done"})
+        ]));
+        assert!(
+            session()
+                .stage_unreal_function_output("orphan", "working")
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn pending_only_replays_opt_in_without_synthetic_aborted_repair() {
+        let mut state = session();
+        state
+            .stage_unreal_function_output("job-1", "working")
+            .unwrap();
+        let encoded = serde_json::to_value(state.flattened_history()).unwrap();
+        let typed: Vec<ResponseItem> = serde_json::from_value(encoded).unwrap();
+        assert!(ManagedSessionState::resume(typed.clone()).is_err());
+        let mut resumed = ManagedSessionState::resume_unreal_function_outputs(typed).unwrap();
+        assert!(!resumed.prompt_history_with_repair().1);
+        // Recovery has sealed the old tail, so completion must append, never rewrite.
+        assert!(
+            resumed
+                .complete_unreal_function_output("job-1", text("wrong"), false)
+                .is_err()
+        );
+        resumed
+            .complete_unreal_function_output("job-1", text("done"), true)
+            .unwrap();
+        assert_eq!(resumed.flattened_history().len(), 4);
     }
 }

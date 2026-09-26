@@ -2,7 +2,8 @@ use std::collections::HashSet;
 
 use crate::{
     ContentItem, FunctionOutputBody, FunctionOutputContent, MessageRole, ResponseItem,
-    ResponseItemId, Usage, responses::ResponseHistory,
+    ResponseItemId, Usage,
+    responses::{ItemStatus, ResponseHistory},
 };
 
 use super::compaction;
@@ -109,6 +110,33 @@ impl ContextManager {
             }
             self.items.push(item);
         }
+    }
+
+    /// Replace a staged placeholder only while it remains in the unsent tail.
+    pub(crate) fn replace_staged_unreal_output(
+        &mut self,
+        call_id: &str,
+        mut terminal: ResponseItem,
+    ) -> bool {
+        let Some(index) = self.items.tail().iter().position(|item| matches!(item,
+            ResponseItem::FunctionCallOutput { call_id: id, status: Some(ItemStatus::InProgress), .. }
+                if id.as_ref() == call_id)) else { return false; };
+        terminal = truncate_tool_output(terminal);
+        assign_missing_response_item_id(&mut terminal);
+        let old_tokens = compaction::estimate_item_tokens(&self.items.tail()[index]);
+        let new_tokens = compaction::estimate_item_tokens(&terminal);
+        self.items.tail_mut()[index] = terminal;
+        self.calls = CallIds::from_items(self.items.iter());
+        // Preserve the committed/unsent boundary while adjusting the estimate.
+        if self.token_usage_is_estimate
+            && let Some(usage) = &mut self.last_token_usage
+        {
+            usage.total_tokens = usage
+                .total_tokens
+                .saturating_sub(old_tokens)
+                .saturating_add(new_tokens);
+        }
+        true
     }
 
     pub fn commit_tail(&mut self) {
@@ -542,6 +570,74 @@ fn synthetic_output_id(prefix: &str, source_id: Option<&ResponseItemId>) -> Opti
     ))
 }
 
+/// Opt-in validator for an ordered pending and terminal function output on
+/// exactly one call ID. The default validator still rejects duplicate outputs.
+#[must_use]
+pub fn has_well_formed_unreal_function_outputs(items: &[ResponseItem]) -> bool {
+    use std::collections::HashMap;
+    let mut calls = HashSet::new();
+    let mut outputs = HashMap::<&str, bool>::new();
+    let mut custom_calls = HashSet::new();
+    let mut custom_outputs = HashSet::new();
+    let mut search_calls = HashSet::new();
+    let mut search_outputs = HashSet::new();
+    let mut non_server_search_outputs = HashSet::new();
+    for item in items {
+        let valid = match item {
+            ResponseItem::FunctionCall { call_id, .. }
+            | ResponseItem::LocalShellCall {
+                call_id: Some(call_id),
+                ..
+            } => calls.insert(call_id.as_ref()),
+            ResponseItem::FunctionCallOutput {
+                call_id, status, ..
+            } => {
+                if !calls.contains(call_id.as_ref()) {
+                    return false;
+                }
+                match outputs.entry(call_id.as_ref()) {
+                    std::collections::hash_map::Entry::Vacant(slot) => {
+                        slot.insert(*status == Some(ItemStatus::InProgress));
+                        true
+                    }
+                    std::collections::hash_map::Entry::Occupied(mut slot)
+                        if *slot.get() && *status != Some(ItemStatus::InProgress) =>
+                    {
+                        slot.insert(false);
+                        true
+                    }
+                    _ => false,
+                }
+            }
+            ResponseItem::CustomToolCall { call_id, .. } => custom_calls.insert(call_id.as_ref()),
+            ResponseItem::CustomToolCallOutput { call_id, name, .. } => {
+                custom_calls.contains(call_id.as_ref())
+                    && (name.is_some() || custom_outputs.insert(call_id.as_ref()))
+            }
+            ResponseItem::ToolSearchCall {
+                call_id: Some(call_id),
+                ..
+            } => search_calls.insert(call_id.as_ref()),
+            ResponseItem::ToolSearchOutput {
+                call_id: Some(call_id),
+                execution,
+                ..
+            } => {
+                search_outputs.insert(call_id.as_ref());
+                execution.as_ref() == "server" || non_server_search_outputs.insert(call_id.as_ref())
+            }
+            _ => true,
+        };
+        if !valid {
+            return false;
+        }
+    }
+    calls.len() == outputs.len()
+        && custom_calls == custom_outputs
+        && search_calls.is_subset(&search_outputs)
+        && non_server_search_outputs.is_subset(&search_calls)
+}
+
 #[must_use]
 pub fn has_well_formed_tool_calls(items: &[ResponseItem]) -> bool {
     let mut function_calls = HashSet::new();
@@ -558,8 +654,11 @@ pub fn has_well_formed_tool_calls(items: &[ResponseItem]) -> bool {
                 call_id: Some(call_id),
                 ..
             } => function_calls.insert(call_id.as_ref()),
-            ResponseItem::FunctionCallOutput { call_id, .. } => {
-                function_calls.contains(call_id.as_ref())
+            ResponseItem::FunctionCallOutput {
+                call_id, status, ..
+            } => {
+                *status != Some(ItemStatus::InProgress)
+                    && function_calls.contains(call_id.as_ref())
                     && function_outputs.insert(call_id.as_ref())
             }
             ResponseItem::CustomToolCall { call_id, .. } => custom_calls.insert(call_id.as_ref()),
