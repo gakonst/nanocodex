@@ -33,6 +33,19 @@ private extension EnvironmentValues {
     }
 }
 
+/// Shared visual treatment for Chat and TODO, including identical outer spacing.
+struct InboxComposerShell: ViewModifier {
+    let focused: Bool
+    func body(content: Content) -> some View {
+        content
+            .background(ChatPalette.composer, in: RoundedRectangle(cornerRadius: 28))
+            .overlay(RoundedRectangle(cornerRadius: 28).strokeBorder(Color.primary.opacity(focused ? 0.18 : 0.1)))
+            .shadow(color: .black.opacity(0.035), radius: 8, y: 2)
+            .padding(.horizontal, 12).padding(.top, 2).padding(.bottom, 2)
+            .background(Color(uiColor: .systemBackground))
+    }
+}
+
 private enum Ink {
     static let background = Color(uiColor: .systemBackground)
     static let card = Color(uiColor: .secondarySystemGroupedBackground)
@@ -58,6 +71,10 @@ private enum Ink {
 
 struct InboxView: View {
     @ObservedObject var model: InboxModel
+    @State private var mainSurface: MainSurface = (ProcessInfo.processInfo.arguments.contains("--demo")
+        && !ProcessInfo.processInfo.arguments.contains("--todo-ui-fixture")) ? .chat : .todo
+    @State private var todoInputFocused = false
+    private enum MainSurface { case todo, chat }
     @State private var showConversations = false
     @State private var showRunningAgents = false
     @State private var drawerTranslation: CGFloat = 0
@@ -77,11 +94,14 @@ struct InboxView: View {
     @State private var screenViewerRevision = UUID()
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var composerFocused = false
-    @State private var composerHeight: CGFloat = 80
 
     var body: some View {
         NavigationStack {
-            inbox
+            Group {
+                if model.connected && mainSurface == .todo {
+                    TodoBoardView(model: model)
+                } else { inbox }
+            }
                 #if os(iOS)
                 .navigationTitle("Conversations")
                 .navigationBarTitleDisplayMode(.inline)
@@ -104,6 +124,28 @@ struct InboxView: View {
                         .navigationBarTitleDisplayMode(.inline)
                         #endif
                 }
+        }
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            if model.connected && !showScreens && !showScheduledJobs && !showConnectors {
+                let drawerVisible = showConversations || drawerTranslation != 0
+                VStack(spacing: 0) {
+                    Group {
+                        if mainSurface == .todo {
+                            TodoCaptureComposer(model: model, inputFocused: $todoInputFocused)
+                        } else {
+                            conversationBottomControls
+                        }
+                    }
+                    // Keep the composer mounted while the drawer slides; its local
+                    // attachment/editor state must survive without covering the list.
+                    .frame(height: drawerVisible ? 0 : nil)
+                    .clipped().opacity(drawerVisible ? 0 : 1)
+                    .allowsHitTesting(!drawerVisible).accessibilityHidden(drawerVisible)
+                    if !drawerVisible && !composerFocused && !todoInputFocused { mainNavigation }
+                }
+                .frame(maxWidth: .infinity)
+                .background(Ink.background)
+            }
         }
         .safeAreaInset(edge: .top, spacing: 0) {
             if !model.isDemo, let update = appUpdates.update {
@@ -175,16 +217,70 @@ struct InboxView: View {
         }
         .onChange(of: model.focusedConversationIdentity, initial: true) { _, _ in
             composerFocused = false
-            if model.focused != nil { model.openThread() }
+            if mainSurface == .chat && model.focused != nil { model.openThread() }
+        }
+        .onChange(of: mainSurface) { _, surface in
+            if surface == .chat && model.focused != nil { model.openThread() }
         }
         .onChange(of: model.musicConnectorToOpen) { _, provider in
             if provider != nil && model.connected { showSettings = false; showConnectors = true }
         }
         .onChange(of: model.connected) { _, connected in
             if connected && model.musicConnectorToOpen != nil { showConnectors = true }
-            if !connected { screenThreads.removeAll(); screenExpanded = false; showConversations = false; showScreens = false; showScheduledJobs = false; showConnectors = false; showSettings = false; readingPositions.values.removeAll() }
+            if !connected { mainSurface = .todo; screenThreads.removeAll(); screenExpanded = false; showConversations = false; showScreens = false; showScheduledJobs = false; showConnectors = false; showSettings = false; readingPositions.values.removeAll() }
         }
 
+    }
+
+    private var mainNavigation: some View {
+        HStack(spacing: 2) {
+            mainNavigationButton(.todo, title: "TODO", symbol: "checkmark.square", identifier: "main-tab-todo")
+            mainNavigationButton(.chat, title: "Chat", symbol: "bubble.left", identifier: "main-tab-chat")
+            if model.focused != nil {
+                Rectangle().fill(.primary.opacity(0.10))
+                    .frame(width: 1, height: 22).padding(.horizontal, 5)
+                Spacer(minLength: 0)
+                MobileModelControls(model: model)
+            } else { Spacer(minLength: 0) }
+        }
+        .padding(.horizontal, 5).padding(.vertical, 3)
+        .frame(maxWidth: 620)
+        .background(.regularMaterial, in: Capsule())
+        .overlay(Capsule().strokeBorder(.primary.opacity(0.08)))
+        .shadow(color: .black.opacity(0.08), radius: 8, y: 2)
+        .padding(.horizontal, 12).padding(.top, 4).padding(.bottom, 2)
+    }
+
+    private func mainNavigationButton(_ surface: MainSurface, title: String, symbol: String, identifier: String) -> some View {
+        Button {
+            composerFocused = false
+            todoInputFocused = false
+            mainSurface = surface
+            if surface == .todo { Task { await model.refreshTodo() } }
+        } label: {
+            Image(systemName: symbol)
+                .font(.system(size: 19, weight: .medium))
+                .frame(width: 44, height: 40)
+                .background(mainSurface == surface ? Color.primary.opacity(0.09) : .clear, in: Capsule())
+                .overlay(alignment: .topTrailing) {
+                    if surface == .todo && model.pendingTodoDecisionCount > 0 {
+                        Text("\(model.pendingTodoDecisionCount)")
+                            .font(.system(size: 10, weight: .bold))
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 4).frame(minWidth: 16, minHeight: 16)
+                            .background(.orange, in: Capsule())
+                            .offset(x: 3, y: -2)
+                            .accessibilityHidden(true)
+                    }
+                }
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(title)
+        .accessibilityValue(surface == .todo ? "\(model.pendingTodoDecisionCount) decisions need you" : "")
+        .accessibilityAddTraits(mainSurface == surface ? [.isSelected] : [])
+        .accessibilityRemoveTraits(mainSurface == surface ? [] : [.isSelected])
+        .accessibilityIdentifier(identifier)
     }
 
     private var inbox: some View {
@@ -316,7 +412,6 @@ struct InboxView: View {
             Group {
                     if let identity = model.focusedConversationIdentity {
                         ConversationView(model: model, identity: identity, readingPositions: readingPositions).id(identity)
-                            .environment(\.conversationComposerHeight, composerHeight)
                     } else { emptyState.frame(maxWidth: .infinity, maxHeight: .infinity) }
             }
             .frame(maxHeight: screenExpanded && screenThreads.contains(model.focusedConversationIdentity ?? "") ? 0 : .infinity)
@@ -330,28 +425,28 @@ struct InboxView: View {
                     .padding(.horizontal, 16)
             }
         }
-        .overlay(alignment: .bottom) {
-            VStack(spacing: 0) {
-                if let error = model.error {
-                    HStack(alignment: .top) {
-                        Text(error).font(.caption).foregroundStyle(Ink.amber)
-                        Spacer(minLength: 4)
-                        Button { model.error = nil } label: { Image(systemName: "xmark") }
-                            .accessibilityLabel("Dismiss error")
-                    }
-                    .padding(12).background(Ink.card, in: RoundedRectangle(cornerRadius: 12)).padding(.horizontal, 12)
-                } else if let notice = model.notice, !composerFocused {
-                    Text(notice).font(.caption).foregroundStyle(Ink.muted).accessibilityIdentifier("notice")
+    }
+
+    private var conversationBottomControls: some View {
+        VStack(spacing: 0) {
+            if let error = model.error {
+                HStack(alignment: .top) {
+                    Text(error).font(.caption).foregroundStyle(Ink.amber)
+                    Spacer(minLength: 4)
+                    Button { model.error = nil } label: { Image(systemName: "xmark") }
+                        .accessibilityLabel("Dismiss error")
                 }
-                if model.focused != nil {
-                    AgentComposerView(model: model, focused: $composerFocused, onVoiceChat: {
-                        composerFocused = false
-                    }).frame(maxWidth: 620)
-                }
+                .padding(12).background(Ink.card, in: RoundedRectangle(cornerRadius: 12)).padding(.horizontal, 12)
+            } else if let notice = model.notice, !composerFocused {
+                Text(notice).font(.caption).foregroundStyle(Ink.muted).accessibilityIdentifier("notice")
             }
-            .padding(.bottom, 4)
-            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { composerHeight = $0 }
+            if model.focused != nil {
+                AgentComposerView(model: model, focused: $composerFocused, onVoiceChat: {
+                    composerFocused = false
+                }).frame(maxWidth: 620)
+            }
         }
+        .padding(.bottom, 0)
     }
 
     private var conversationHeader: some View {
@@ -795,7 +890,6 @@ private struct AgentComposerView: View {
         let stopRequest = sendShowsStop ? card.flatMap { model.cancellation(agentID: $0.id, turnID: stopTarget) } : nil
         let canSend = model.canSend
         VStack(spacing: 0) {
-            MobileModelControls(model: model)
             if let error = model.creationError {
                 HStack {
                     Text(error).font(.caption).foregroundStyle(Ink.muted)
@@ -961,10 +1055,7 @@ private struct AgentComposerView: View {
                 }
                 .padding(.horizontal, 4).padding(.bottom, 4).padding(.top, visiblePending.isEmpty ? 4 : 0).accessibilityElement(children: .contain).accessibilityIdentifier("composer-input")
 
-        }.background(ChatPalette.composer, in: RoundedRectangle(cornerRadius: 28))
-            .overlay(RoundedRectangle(cornerRadius: 28).strokeBorder(Color.primary.opacity(focused ? 0.18 : 0.1)))
-            .shadow(color: .black.opacity(0.035), radius: 8, y: 2)
-            .padding(.horizontal, 12).padding(.top, 4).padding(.bottom, 6).background(Ink.background)
+        }.modifier(InboxComposerShell(focused: focused))
             .onChange(of: model.focusedConversationIdentity) { _, _ in
                 showExpandedEditor = false
                 focused = false
@@ -3566,65 +3657,73 @@ private struct NativeAppUpdateSection: View {
 }
 
 
-/// Compact controls remain visible while the selected route is pinned.
+/// The full-width dock keeps Chat routing one tap away without another composer row.
+/// These controls apply to the selected conversation, not to TODO processing.
 private struct MobileModelControls: View {
     @ObservedObject var model: InboxModel
     var body: some View {
         if let card = model.focused {
             let selected = ModelChoice.find(card.model.isEmpty ? "gpt-6-astra" : card.model)
             let waiting = model.modelSettingsBusy.contains(card.id)
-            VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: 12) {
-                    Menu {
-                        ForEach(ModelChoice.all) { choice in
-                            Button { model.chooseModel(choice.id) } label: {
-                                if card.model == choice.id { Label(choice.name, systemImage: "checkmark") }
-                                else { Text(choice.name) }
-                            }
+            HStack(spacing: 2) {
+                Menu {
+                    ForEach(ModelChoice.all) { choice in
+                        Button { model.chooseModel(choice.id) } label: {
+                            if card.model == choice.id { Label(choice.name, systemImage: "checkmark") }
+                            else { Text(choice.name) }
                         }
-                    } label: {
-                        HStack(spacing: 5) {
-                            Text(card.routingAutomatic && !card.modelPinned ? "Auto" : selected?.name ?? card.model)
-                                .lineLimit(1)
-                            Image(systemName: model.modelChoiceLocked ? "lock.fill" : "chevron.down").font(.caption2)
-                        }.frame(minHeight: 44)
                     }
-                    .disabled(model.modelChoiceLocked || waiting)
-                    .accessibilityLabel("Model: \(selected?.name ?? card.model)")
-                    .accessibilityIdentifier("model-picker")
-                    Spacer(minLength: 0)
-                    Menu {
-                        ForEach(selected?.efforts ?? [], id: \.self) { effort in
-                            Button { model.chooseEffort(effort) } label: {
-                                if effort == card.thinking { Label(ModelChoice.effortName(effort), systemImage: "checkmark") }
-                                else { Text(ModelChoice.effortName(effort)) }
-                            }
+                    if !card.provider.isEmpty {
+                        Divider()
+                        Text(card.provider + " · " + (card.modelLocked ? "Pinned to this conversation" : "Ready"))
+                    }
+                    if let error = model.modelSettingsError { Text(error) }
+                } label: {
+                    HStack(spacing: 3) {
+                        if waiting { ProgressView().controlSize(.mini) }
+                        else {
+                            Text(selected?.name ?? card.model).lineLimit(1).minimumScaleFactor(0.8)
+                            Image(systemName: model.modelChoiceLocked ? "lock.fill" : "chevron.down")
+                                .font(.system(size: 9))
                         }
-                    } label: {
-                        Label(ModelChoice.effortName(card.thinking.isEmpty ? "low" : card.thinking), systemImage: "dial.low")
-                            .lineLimit(1).frame(minHeight: 44)
                     }
-                    .disabled(waiting || card.effortLocked || card.routingAutomatic)
-                    .accessibilityLabel("Thinking effort: \(card.thinking)")
-                    .accessibilityIdentifier("effort-dial")
-                    Button { model.toggleAutoRoute() } label: {
-                        Label("Auto", systemImage: "arrow.triangle.branch").frame(minWidth: 60, minHeight: 44)
-                            .background(card.routingAutomatic ? Color.accentColor.opacity(0.12) : .clear, in: Capsule())
-                    }
-                    .disabled(model.modelChoiceLocked || waiting)
-                    .accessibilityLabel(card.routingAutomatic ? "Disable auto route" : "Enable auto route")
-                    .accessibilityValue(card.routingAutomatic ? "On" : "Off")
-                    .accessibilityIdentifier("auto-route")
-                }.font(.caption.weight(.medium)).buttonStyle(.plain)
-                if waiting { ProgressView().controlSize(.mini).accessibilityLabel("Updating model settings") }
-                else if !card.provider.isEmpty {
-                    Text(card.provider + " · " + (card.modelLocked ? "Pinned to this conversation" : "Ready"))
-                        .font(.caption2).foregroundStyle(.secondary).accessibilityIdentifier("selected-provider")
-                } else if card.routingEnabled {
-                    Text("Provider chosen on first message").font(.caption2).foregroundStyle(.secondary)
+                    .frame(maxWidth: 80, minHeight: 44)
+                    .contentShape(Rectangle())
                 }
-                if let error = model.modelSettingsError { Text(error).font(.caption).foregroundStyle(.red) }
-            }.padding(.horizontal, 16).padding(.bottom, 4)
+                .disabled(model.modelChoiceLocked || waiting)
+                .accessibilityLabel("Chat model: \(selected?.name ?? card.model)")
+                .accessibilityHint("Changes the selected Chat conversation, not TODO decisions")
+                .accessibilityIdentifier("model-picker")
+
+                Menu {
+                    ForEach(selected?.efforts ?? [], id: \.self) { effort in
+                        Button { model.chooseEffort(effort) } label: {
+                            if effort == card.thinking { Label(ModelChoice.effortName(effort), systemImage: "checkmark") }
+                            else { Text(ModelChoice.effortName(effort)) }
+                        }
+                    }
+                } label: {
+                    Text(ModelChoice.effortName(card.thinking.isEmpty ? "low" : card.thinking))
+                        .lineLimit(1).minimumScaleFactor(0.8)
+                        .frame(maxWidth: 89, minHeight: 44)
+                        .contentShape(Rectangle())
+                }
+                .disabled(waiting || card.effortLocked || card.routingAutomatic)
+                .accessibilityLabel("Chat thinking effort: \(card.thinking)")
+                .accessibilityIdentifier("effort-dial")
+
+                Button { model.toggleAutoRoute() } label: {
+                    Text("Auto").frame(minWidth: 42, minHeight: 40)
+                        .background(card.routingAutomatic ? Color.primary.opacity(0.09) : .clear, in: Capsule())
+                        .contentShape(Rectangle())
+                }
+                .disabled(model.modelChoiceLocked || waiting)
+                .accessibilityLabel(card.routingAutomatic ? "Disable Chat auto route" : "Enable Chat auto route")
+                .accessibilityValue(card.routingAutomatic ? "On" : "Off")
+                .accessibilityIdentifier("auto-route")
+            }
+            .font(.caption.weight(.medium))
+            .buttonStyle(.plain)
         }
     }
 }

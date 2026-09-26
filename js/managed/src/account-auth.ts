@@ -4,6 +4,7 @@ export { isOrganizationCapabilities, forwardPrincipalAssertions };
 import { durablePlacementOptions, placementHeaders, TRUSTED_INGRESS_HEADER, type IngressPlacement } from "nanocodex/cloudflare/durable-placement";
 import { LAST_USER_PROMPT_LIMIT, type AgentPresentation } from "./agent-presentation";
 import { retireAccountProjects } from "./retired-projects";
+import { initializeTodoInbox, handleTodoInbox, proposeTodoDecision, type TodoDecisionProposal } from "./todo-inbox";
 import { recordHandTiming } from "./hand-timing";
 import { configurationCatalog } from "./agent-configuration";
 import { performanceState } from "./performance";
@@ -1741,6 +1742,7 @@ export async function revokeApiKey(
   return true;
 }
 
+
 export class UserAccount extends DurableObject<AccountAuthEnv> {
   constructor(ctx: DurableObjectState, env: AccountAuthEnv) {
     super(ctx, env);
@@ -1764,6 +1766,7 @@ export class UserAccount extends DurableObject<AccountAuthEnv> {
       id TEXT PRIMARY KEY, expires_at INTEGER NOT NULL
     )`);
     retireAccountProjects(ctx.storage);
+    initializeTodoInbox(ctx.storage);
     // Existing agents stay candidates until their first schedule read. New
     // registrations supply their actual presence; omitted legacy values stay unknown.
     const columns = new Set(ctx.storage.sql.exec<{ name: string }>("PRAGMA table_info(agent_registry)").toArray().map(({ name }) => name));
@@ -1781,6 +1784,11 @@ export class UserAccount extends DurableObject<AccountAuthEnv> {
     if (next !== null && next !== undefined) await this.ctx.storage.setAlarm(next);
   }
 
+  /** Accepts proposals only from trusted Worker code with this account's DO stub. */
+  async proposeTodoDecision(input: TodoDecisionProposal): Promise<{ id: string; status: string; version: number }> {
+    return proposeTodoDecision(this.ctx.storage, input);
+  }
+
   // Live storage read in a single RPC reply, without a streamed HTTP body.
   async readAccount(): Promise<UserRecord | undefined> {
     return this.ctx.storage.get<UserRecord>("account");
@@ -1788,6 +1796,9 @@ export class UserAccount extends DurableObject<AccountAuthEnv> {
 
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
+    if (url.pathname === "/todo" || url.pathname.startsWith("/todo/")) {
+      return handleTodoInbox(request, this.ctx.storage);
+    }
     if (/^\/(agent-definitions|environment-templates)(?:\/|$)/.test(url.pathname)) {
       return configurationCatalog(request, this.ctx.storage);
     }

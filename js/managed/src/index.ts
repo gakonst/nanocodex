@@ -53,6 +53,7 @@ import { parseEmailResume, resumeEmailWorkflow, type EmailResumeResult } from ".
 import { phoneControlInput } from "./phone-control";
 import { accountAdmin } from "./account-admin";
 import { accountCommunication } from "./account-communication";
+import { routeTodoRequest } from "./todo-inbox";
 import { phoneAdminConfigured } from "./phone-admin";
 import { phoneTools } from "./phone-tool";
 import { emailTools, type EmailConfig } from "./email-tool";
@@ -1668,6 +1669,10 @@ async function managedFetchRoute(
         "https://account-tools.internal/tool-host",
         new Request(request, { headers }),
       );
+    }
+    if (url.pathname === "/v1/todo" || url.pathname.startsWith("/v1/todo/")) {
+      const principal = trustedAgentPrincipal ?? await authenticate(request, env, url);
+      return (await routeTodoRequest(request, env, url, principal))!;
     }
     if (url.pathname === "/v1/router") {
       const principal = trustedAgentPrincipal ?? await authenticate(request, env, url);

@@ -11,15 +11,17 @@ public struct ChatComposerEditor: UIViewRepresentable {
     private let visibleLines: Int
     private let expandsToFill: Bool
     private let onPasteImages: (([NSItemProvider]) -> Void)?
+    private let accessibilityLabel: String
 
     public init(text: Binding<String>, focused: Binding<Bool>, overflowing: Binding<Bool>, visibleLines: Int = 5, expandsToFill: Bool = false,
-                onPasteImages: (([NSItemProvider]) -> Void)? = nil) {
+                onPasteImages: (([NSItemProvider]) -> Void)? = nil, accessibilityLabel: String = "Ask Nanocodex") {
         _text = text
         _focused = focused
         _overflowing = overflowing
         self.visibleLines = max(1, visibleLines)
         self.expandsToFill = expandsToFill
         self.onPasteImages = onPasteImages
+        self.accessibilityLabel = accessibilityLabel
     }
 
     public func makeCoordinator() -> Coordinator { Coordinator(self) }
@@ -37,12 +39,13 @@ public struct ChatComposerEditor: UIViewRepresentable {
         view.textContainer.lineFragmentPadding = 0
         view.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         view.delegate = context.coordinator
-        view.accessibilityLabel = "Ask Nanocodex"
+        view.accessibilityLabel = accessibilityLabel
         return view
     }
 
     public func updateUIView(_ view: UITextView, context: Context) {
         context.coordinator.parent = self
+        view.accessibilityLabel = accessibilityLabel
         (view as? ComposerTextView)?.visibleLines = visibleLines
         (view as? ComposerTextView)?.onPasteImages = onPasteImages
         // Reassigning text on every streamed response resets native selection and scrolling.
