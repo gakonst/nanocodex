@@ -6,6 +6,7 @@ import { importCrmEmailPush } from "./crm-email";
 import { gmailPushConfig } from "./gmail-push-config";
 import { parseGmailPushWake, gmailPushPrompt, type GmailPushWakeResult } from "./gmail-push-wake";
 import { proposeGmailReplyDecisions } from "./gmail-firehose-decisions";
+import { jevGatewayBinding, routeGmailDecisionBacktest } from "./gmail-firehose-backtest";
 import { OutputCheckpoints } from "./output-checkpoints";
 import { turnCanUseExecutionNamespace, turnCanProvisionExecutionProvider, executionMountAllowed, executionMountPeers, executionMountOwner } from "./execution-policy";
 export { turnCanUseExecutionNamespace } from "./execution-policy";
@@ -408,6 +409,8 @@ export interface Env extends
   AI?: RoutingAi;
   /** Restrict experimental email decision triage to one explicitly enabled owner. */
   NANOCODEX_FIREHOSE_DECISIONS_OWNER_ID?: string;
+  /** AI Gateway name; its provider credential stays in Cloudflare, never here. */
+  NANOCODEX_JEV_GATEWAY_ID?: string;
   NANOCODEX_CRM?: D1Database;
   NANOCODEX_CALENDAR_PUSH?: DurableObjectNamespace<CalendarPushDelivery>;
   /** Deployment-owned provider secrets; never accepted in thread configuration. */
@@ -1672,6 +1675,12 @@ async function managedFetchRoute(
         "https://account-tools.internal/tool-host",
         new Request(request, { headers }),
       );
+    }
+    if (url.pathname === "/v1/todo/decision-backtest") {
+      const principal = trustedAgentPrincipal ?? await authenticate(request, env, url);
+      return routeGmailDecisionBacktest(request, env.AI
+        ? jevGatewayBinding(env.AI, env.NANOCODEX_JEV_GATEWAY_ID ?? "default") : undefined,
+        principal, env.NANOCODEX_FIREHOSE_DECISIONS_OWNER_ID);
     }
     if (url.pathname === "/v1/todo" || url.pathname.startsWith("/v1/todo/")) {
       const principal = trustedAgentPrincipal ?? await authenticate(request, env, url);
@@ -3892,17 +3901,18 @@ export class DurableAgentSession extends DurableComputerObject {
     if (this.env.AI && this.env.NANOCODEX_FIREHOSE_DECISIONS_OWNER_ID === wake.userId) {
       // Leave general session startup unchanged while this producer is opt-in.
       this.ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS gmail_firehose_decision_receipts (
-        source_key TEXT PRIMARY KEY, outcome TEXT NOT NULL CHECK (outcome IN ('reply', 'no_reply')),
+        source_key TEXT PRIMARY KEY, outcome TEXT NOT NULL CHECK (outcome IN ('reply', 'no_reply', 'filtered')),
         created_at INTEGER NOT NULL
       )`);
-      await proposeGmailReplyDecisions(wake.input, this.env.AI,
+      await proposeGmailReplyDecisions(wake.input,
+        jevGatewayBinding(this.env.AI, this.env.NANOCODEX_JEV_GATEWAY_ID ?? "default"),
         this.env.NANOCODEX_USERS.getByName(wake.userId), () => { assertOwner(epoch); }, {
           has: sourceKey => this.ctx.storage.sql.exec<{source_key:string}>(
             "SELECT source_key FROM gmail_firehose_decision_receipts WHERE source_key = ?", sourceKey).toArray().length > 0,
           mark: (sourceKey, outcome) => this.ctx.storage.sql.exec(
             "INSERT INTO gmail_firehose_decision_receipts(source_key,outcome,created_at) VALUES(?,?,?) ON CONFLICT(source_key) DO NOTHING",
             sourceKey, outcome, Date.now()),
-        });
+        }, trace => this.env.NANOCODEX_USERS.getByName(wake.userId).recordTodoDecisionTrace(trace));
       assertOwner(epoch);
     }
     if (isRecord(emailEvent) && emailEvent.crm === true) {

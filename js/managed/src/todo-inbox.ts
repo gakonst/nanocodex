@@ -1,3 +1,4 @@
+import { initializeGmailDecisionTraces, readGmailDecisionTraces } from "./gmail-firehose-traces";
 import { durablePlacementOptions } from "nanocodex/cloudflare/durable-placement";
 import type { AccountAuthEnv, Principal } from "./account-auth";
 
@@ -51,11 +52,14 @@ export function initializeTodoInbox(storage: DurableObjectStorage): void {
     operation_id TEXT PRIMARY KEY, decision_id TEXT NOT NULL, version INTEGER NOT NULL,
     choice_id TEXT, text TEXT, recorded_at TEXT NOT NULL
   );`);
+  initializeGmailDecisionTraces(storage);
 }
 
 export async function handleTodoInbox(request: Request, storage: DurableObjectStorage): Promise<Response> {
   const url = new URL(request.url), path = url.pathname;
-  if (url.search || request.method === "HEAD") return reply({ error: "invalid_request" }, 400);
+  if (request.method === "HEAD") return reply({ error: "invalid_request" }, 400);
+  if (path === "/todo/traces" && request.method === "GET") return readGmailDecisionTraces(storage, url.searchParams);
+  if (url.search) return reply({ error: "invalid_request" }, 400);
   if (path === "/todo" && request.method === "GET") {
     const items = storage.sql.exec<ItemRow>("SELECT * FROM todo_captures ORDER BY created_at DESC LIMIT 200").toArray();
     // Completed activity must never crowd an older unanswered choice out.
@@ -129,11 +133,11 @@ export async function routeTodoRequest(request: Request, env: Pick<AccountAuthEn
     if (principal.kind === "account_session" && request.headers.get("origin") !== url.origin)
       return reply({ error: "forbidden_origin" }, 403);
   }
-  if (url.search || !/^\/v1\/todo(?:$|\/decisions\/[0-9a-f-]{36}\/respond$)/i.test(url.pathname))
-    return reply({ error: "not_found" }, 404);
+  if (!/^\/v1\/todo(?:$|\/traces$|\/decisions\/[0-9a-f-]{36}\/respond$)/i.test(url.pathname)
+    || url.search && url.pathname !== "/v1/todo/traces") return reply({ error: "not_found" }, 404);
   const path = url.pathname.slice(3);
   return env.NANOCODEX_USERS.getByName(principal.userId, durablePlacementOptions(env.trustedClientIngressColo)).fetch(
-    `https://user.internal${path}`, new Request(request, { headers: { "content-type": "application/json" } }),
+    `https://user.internal${path}${url.search}`, new Request(request, { headers: { "content-type": "application/json" } }),
   );
 }
 

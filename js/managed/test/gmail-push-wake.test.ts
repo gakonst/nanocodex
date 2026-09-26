@@ -170,5 +170,10 @@ it("proposes an account-owned intent-only card after a confident Gmail classific
       {decisions: Array<{title:string;choices:unknown[];source_url:string}>};
     expect(inbox.decisions).toHaveLength(1);
     expect(inbox.decisions[0]).toMatchObject({title:"Reply requested: Please reply",source_url:"https://mail.google.com/"});
+    const audit = await (await (env as unknown as Env).NANOCODEX_USERS.getByName(userId)
+      .fetch("https://user.internal/todo/traces?limit=5")).json() as {traces: Array<{outcome:string;decision_id:string}>};
+    expect(audit.traces).toHaveLength(1);
+    expect(audit.traces[0]).toMatchObject({outcome:"reply",decision_id:expect.any(String)});
+    expect(JSON.stringify(audit)).not.toContain("sender@example.test");
   });
 });
