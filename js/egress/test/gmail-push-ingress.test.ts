@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { handleGmailPush, verifyGooglePushToken } from "../src/gmail-push-ingress";
+import { handleGmailPush, normalizePushHistoryId, verifyGooglePushToken } from "../src/gmail-push-ingress";
 
 // Boundary failures: forged/expired/wrong-audience or wrong-identity JWTs must
 // never reach a mailbox; authenticated malformed payloads must not be acked.
@@ -52,5 +52,15 @@ describe("Google Pub/Sub authentication", () => {
     const request = new Request("https://app.example/v1/gmail-push/user/connection", { method: "POST", body: "{}" });
     expect((await handleGmailPush(request, {})).status).toBe(503);
     expect((await handleGmailPush(request, config)).status).toBe(401);
+  });
+});
+
+describe("Gmail push cursor decoding", () => {
+  it("normalizes numeric push IDs and preserves string IDs without precision loss", () => {
+    expect(normalizePushHistoryId(2337213)).toBe("2337213");
+    expect(normalizePushHistoryId("18446744073709551615")).toBe("18446744073709551615");
+    for (const invalid of [9007199254740992, -1, 1.5, null, true, {}, "1e3", "", Infinity]) {
+      expect(normalizePushHistoryId(invalid)).toBeNull();
+    }
   });
 });

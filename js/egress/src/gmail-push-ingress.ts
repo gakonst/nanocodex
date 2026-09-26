@@ -28,6 +28,12 @@ async function keys(fetchKeys: typeof fetch): Promise<GoogleKey[]> {
   if (fetchKeys === fetch) cachedKeys = { keys: body.keys, until: Date.now() + 300_000 };
   return body.keys;
 }
+// Gmail may encode the push cursor as a JSON number, unlike REST history IDs.
+export function normalizePushHistoryId(value: unknown): string | null {
+  if (typeof value === "string" && /^[0-9]{1,30}$/.test(value)) return value;
+  if (typeof value === "number" && Number.isSafeInteger(value) && value >= 0) return String(value);
+  return null;
+}
 type PushAuthFailure = "missing_configuration" | "malformed_token" | "invalid_algorithm" | "issuer_mismatch" | "audience_mismatch" | "identity_mismatch" | "unverified_identity" | "invalid_subject" | "expired_token" | "future_token" | "invalid_lifetime" | "key_fetch_failed" | "unknown_key" | "key_import_failed" | "invalid_signature";
 export async function verifyGooglePushToken(token: string, env: GmailPushIngressEnv, fetchKeys: typeof fetch = fetch, report?: (reason: PushAuthFailure) => void): Promise<boolean> {
   const reject = (reason: PushAuthFailure) => { report?.(reason); return false; };
@@ -86,12 +92,13 @@ export async function handleGmailPush(request: Request, env: GmailPushIngressEnv
     if (typeof envelope.subscription !== "string" || !/^projects\/[^/]+\/subscriptions\/[^/]+$/.test(envelope.subscription)
       || envelope.subscription !== env.GMAIL_PUSH_SUBSCRIPTION
       || typeof envelope.message?.messageId !== "string" || typeof envelope.message?.data !== "string"
-      || envelope.message.data.length > 8192) return new Response(null, { status: 400 });
+      || envelope.message.data.length > 8192) { console.warn("gmail_push_payload_rejected", "envelope"); return new Response(null, { status: 400 }); }
     const data = JSON.parse(atob(envelope.message.data.replaceAll("-", "+").replaceAll("_", "/")));
+    const historyId = normalizePushHistoryId(data.historyId);
     if (typeof data.emailAddress !== "string" || data.emailAddress.length > 320
-      || typeof data.historyId !== "string" || !/^[0-9]{1,30}$/.test(data.historyId)) return new Response(null, { status: 400 });
+      || historyId === null) { console.warn("gmail_push_payload_rejected", "payload"); return new Response(null, { status: 400 }); }
     return await env.GMAIL_PUSH_MAILBOXES.getByName(gmailMailboxName(match[1]!, match[2]!)).fetch("https://gmail-push.internal/notify", {
-      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(data),
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ emailAddress: data.emailAddress, historyId }),
     });
   } catch { return new Response(null, { status: 503 }); }
 }
