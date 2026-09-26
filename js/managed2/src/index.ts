@@ -1,5 +1,6 @@
 import { DurableObject, tracing } from "cloudflare:workers";
 import { Agent } from "nanocodex/cloudflare";
+import { placementRegion } from "nanocodex/cloudflare/durable-placement";
 import type { NamedTool } from "nanocodex";
 import { authenticate } from "./auth";
 import { ToolTiming } from "./toolTiming";
@@ -88,6 +89,9 @@ export default {
       const id = key ?? crypto.randomUUID();
       const stub = env.SESSIONS.getByName(`${principal.sub}:${id}`);
       const headers = new Headers({ [OWNER_HEADER]: principal.sub, "x-managed2-agent": id });
+      // Never trust a caller-supplied region. Persist the platform ingress choice with this Session.
+      const region = placementRegion(request.cf?.colo);
+      if (region) headers.set("x-managed2-relay-region", region);
       if (body) headers.set("content-type", "application/json");
       const response = await timedSessionFetch(stub, "https://session.internal/init", {
         method: "POST", headers, ...(body ? { body: JSON.stringify({ input: body.input, turn_id: id }) } : {}),
@@ -160,7 +164,7 @@ export class Session extends DurableObject<Env> {
     super(ctx, env);
     const constructorStart = performance.now();
     ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS session_meta (
-      singleton INTEGER PRIMARY KEY CHECK (singleton = 1), owner TEXT NOT NULL, agent_id TEXT NOT NULL
+      singleton INTEGER PRIMARY KEY CHECK (singleton = 1), owner TEXT NOT NULL, agent_id TEXT NOT NULL, relay_region TEXT
     )`);
     ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS turns (
       id TEXT PRIMARY KEY, input TEXT NOT NULL, state TEXT NOT NULL,
@@ -182,6 +186,8 @@ export class Session extends DurableObject<Env> {
     ]) {
       if (!timingColumns.has(column)) ctx.storage.sql.exec(`ALTER TABLE turn_timing ADD COLUMN ${column} ${type}`);
     }
+    if (!ctx.storage.sql.exec<{ name: string }>("PRAGMA table_info(session_meta)").toArray()
+      .some(column => column.name === "relay_region")) ctx.storage.sql.exec("ALTER TABLE session_meta ADD COLUMN relay_region TEXT");
     this.#toolTiming = new ToolTiming(ctx.storage.sql);
     this.#constructorMs = performance.now() - constructorStart;
   }
@@ -198,7 +204,8 @@ export class Session extends DurableObject<Env> {
     if (url.pathname === "/init" && request.method === "POST") {
       if (row && (row.owner !== owner || row.agent_id !== agentId)) return reply(403, { error: "forbidden" });
       if (!row) this.ctx.storage.sql.exec(
-        "INSERT INTO session_meta (singleton, owner, agent_id) VALUES (1, ?, ?)", owner, agentId,
+        "INSERT INTO session_meta (singleton, owner, agent_id, relay_region) VALUES (1, ?, ?, ?)",
+        owner, agentId, request.headers.get("x-managed2-relay-region"),
       );
       if (request.body === null) return new Response(null, { status: 204 });
       const { input, turn_id: turnId } = await request.json<{ input: string; turn_id: string }>();
@@ -476,7 +483,10 @@ export class Session extends DurableObject<Env> {
     const initTrace = traceId ?? crypto.randomUUID();
     const initStart = performance.now();
     let initializing = true;
-    const web = managedWeb({ egress: this.env.EGRESS, owner,
+    const relayRegion = this.ctx.storage.sql.exec<{ relay_region: string | null }>(
+      "SELECT relay_region FROM session_meta WHERE singleton = 1",
+    ).toArray()[0]?.relay_region ?? null;
+    const web = managedWeb({ egress: this.env.EGRESS, owner, relayRegion,
       onTiming: (context, phase, durationMs) => this.#toolTiming.phase(context, phase, durationMs),
       correlation: context => this.#toolTiming.correlation(context),
     });
@@ -503,6 +513,7 @@ export class Session extends DurableObject<Env> {
         }
         const headers = new Headers(source.headers);
         headers.set(OWNER_HEADER, owner);
+        if (relayRegion) headers.set("x-managed2-relay-region", relayRegion);
         // The initial fetch is the persistent socket preconnection, not a
         // per-turn model request. A reconnect is correlated only if one turn
         // owns this DO at the moment of the fetch.

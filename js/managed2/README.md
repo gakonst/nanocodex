@@ -182,3 +182,14 @@ setup/VFS/execute phase is **unmeasurable**, not proof that it was free. I/O
 spans such as search upstream are measurable. For CPU hotspots use workerd's
 local CPU profile plus Cloudflare invocation CPU metrics; client-side tool-call
 to-result elapsed includes event delivery and is not a pure handler duration.
+
+## Regional subscription relay placement
+
+Only new agents record a relay region derived from `request.cf.colo` at the
+authenticated create endpoint. Caller-supplied region headers are ignored.
+The selection persists in the Session SQLite row for alarm/reconnect traffic;
+preexisting agents keep their legacy route. The region is only a Cloudflare
+best-effort placement hint, not a residency guarantee. Egress2 picks a fresh
+account-owned regional Container class and identity for ChatGPT subscription
+calls; API-key calls remain direct. This is not a claim that OpenAI inference
+occurs in the selected region or that provider response time will improve.

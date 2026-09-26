@@ -137,3 +137,43 @@ describe("actual workerd UserCredentials + compiled Rust subscription", () => {
     if (afterRejection?.kind === "chatgpt") expect(afterRejection.secret).toBe(replacement);
   });
 });
+
+describe("subscription relay through real Worker and fixture Durable Objects", () => {
+  it("routes WNAM to a fresh regional class and leaves legacy traffic on its old class", async () => {
+    const owner = `synthetic-regional-${crypto.randomUUID()}`;
+    const future = 4_070_908_800_000;
+    await credentialEnv.USER_CREDENTIALS.getByName(owner).putChatGptCredential({
+      access_token: jwt(future / 1000), refresh_token: "synthetic-refresh",
+      account_id: "synthetic-account", expires_at: future, fedramp: false,
+    });
+    const send = (region?: string) => SELF.fetch("https://api.openai.com/v1/responses", {
+      method: "POST", headers: { "x-managed2-owner": owner,
+        ...(region ? { "x-managed2-relay-region": region } : {}),
+        authorization: "Bearer NANOCODEX_PROVIDER_CREDENTIAL", "content-type": "application/json" },
+      body: "{}",
+    });
+    const regional = await send("wnam");
+    expect(regional.status).toBe(200);
+    expect(await regional.json()).toEqual({ relay: "wnam" });
+    const legacy = await send();
+    expect(legacy.status).toBe(200);
+    expect(await legacy.json()).toEqual({ relay: "legacy" });
+    const search = await SELF.fetch("https://nanocodex.internal/v1/search", {
+      method: "POST", headers: { "x-managed2-owner": owner, "x-managed2-relay-region": "wnam",
+        authorization: "Bearer NANOCODEX_PROVIDER_CREDENTIAL", "content-type": "application/json" },
+      body: JSON.stringify({ session_id: "synthetic", commands: { search_query: [{ q: "fixture" }] } }),
+    });
+    expect(search.status).toBe(200);
+    expect(await search.json()).toEqual({ output: "wnam" });
+    const upgrade = await SELF.fetch("https://api.openai.com/v1/responses", {
+      method: "GET", headers: { "x-managed2-owner": owner, "x-managed2-relay-region": "wnam",
+        authorization: "Bearer NANOCODEX_PROVIDER_CREDENTIAL", upgrade: "websocket" },
+    });
+    expect(upgrade.status).toBe(101);
+    expect(upgrade.webSocket).toBeDefined();
+    upgrade.webSocket?.accept();
+    upgrade.webSocket?.close();
+    const invalid = await send("invented");
+    expect(invalid.status).toBe(502); // Invalid placement never silently reroutes to legacy.
+  });
+});

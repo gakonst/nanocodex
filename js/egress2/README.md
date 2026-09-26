@@ -49,3 +49,25 @@ matching spans, but 101 cannot be rewrapped to add headers. These measurements
 end at headers/upgrade, not first model token or stream completion. Credential
 lookup can include a DO wake, decrypt, and refresh, not separately timed here.
 No secrets, prompts, owner IDs or upstream bodies are logged.
+
+## Regional subscription relay
+
+Managed2 records a new agent's trusted Cloudflare ingress colo as a coarse
+relay region. For recognized colos, its model WebSocket and web-search requests
+carry that fixed region over the private Egress2 service binding. Egress2 strips
+all Managed2 headers before forwarding to ChatGPT, selects the matching existing
+account-owned regional Container class, and creates `text-v2:<region>:<owner>`
+with a best-effort Cloudflare location hint. `text-v2` is a fresh identity,
+not a migration of the immobile legacy `user-v1` relay. Agents created before
+this change (or at an unmapped ingress colo) continue to use the legacy relay;
+existing agent and credential records are not migrated. A missing regional
+binding or invalid region fails closed. A configured VPC `GATEWAY` remains the
+preferred direct route and bypasses the Container DO. The Egress2 relay span
+records only a fixed region label, never owner or prompt content.
+
+The hint and container region constraint do not guarantee a specific city,
+identify OpenAI's inference region, or prove an end-to-end win. Compare same
+subscription and prompts in interleaved warm/cold live cohorts using the
+Cloudflare trace's actual DO/Container locations, Egress2 upstream-header time,
+model first provider event and first answer delta. HTTP search duration and
+long-lived WebSocket span duration are not interchangeable with TTFT.
