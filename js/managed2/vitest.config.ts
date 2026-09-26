@@ -106,22 +106,26 @@ export default defineConfig({
               const timeTool = input.find(item => item.type === "additional_tools")?.tools?.find(tool => tool.name === "current_time");
               const webTool = input.find(item => item.type === "additional_tools")?.tools?.find(tool => tool.name === "web__run");
               const webOutputs = input.filter(item => item.type === "function_call_output" && item.call_id === "call-web");
-              const webTerminal = webOutputs.findLast(item => String(item.output).includes("synthetic citation"));
+              const webTerminal = webOutputs.findLast(item => String(item.output).includes("synthetic citation")
+                || String(item.output).includes("Cancellation requested after dispatch; side effect may have occurred"));
               const webPending = webOutputs.find(item => String(item.output).includes("Tool call is still running."));
               // WebSocket continuation sends only the new output and may omit
               // the original user text; an original-call-ID pending marker is
               // the deterministic async fixture discriminator in that path.
               const asyncWeb = JSON.stringify(input).includes("Use async web__run")
-                || Boolean(webPending) || Boolean(webTerminal && String(webTerminal.output).includes("[async fixture]"));
+                || Boolean(webPending) || Boolean(webTerminal && (String(webTerminal.output).includes("[async fixture]")
+                  || String(webTerminal.output).includes("Cancellation requested after dispatch")));
               // A pending result must be attached to the original provider
               // call ID; terminal delivery must use that ID again rather than
               // a forged user turn or a different synthetic call. This fixture
               // deliberately distinguishes pending and terminal requests.
               if (webTerminal || webPending) {
+                const uncertain = Boolean(webTerminal && String(webTerminal.output).includes("Cancellation requested after dispatch"));
                 const text = asyncWeb
-                  ? webTerminal ? "Background search finished: " + webTerminal.output : "Waiting for background search"
+                  ? uncertain ? "Background job uncertain: " + webTerminal.output
+                    : webTerminal ? "Background search finished: " + webTerminal.output : "Waiting for background search"
                   : "Search: " + (webTerminal ?? webOutputs[0]).output;
-                return [{ type: "response.completed", response: { id: webTerminal ? "fixture-web-terminal" : "fixture-web-pending", status: "completed", end_turn: true,
+                return [{ type: "response.completed", response: { id: uncertain ? "fixture-web-uncertain" : webTerminal ? "fixture-web-terminal" : "fixture-web-pending", status: "completed", end_turn: true,
                   output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text }] }],
                   usage: { input_tokens: 10, output_tokens: 4, total_tokens: 14 } } }];
               }
