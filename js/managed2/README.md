@@ -211,12 +211,16 @@ seven-day retention after acknowledged delivery. It does not assert exactly-once
 upstream reads. When typed ingestion is unavailable, the terminal row remains
 `awaiting_integration` with no synthetic continuation and no tight alarm loop.
 
-Enabling the feature requires a **trusted JS/WASM Agent API** that stages a
-pending output for the original tool call and durably ingests its later terminal
-result. That API must resolve the actual Rust Agent turn (the JS execution turn
-is not interchangeable), decide at the serialized model-request boundary
-whether to replace the unsent pending output or append a same-ID terminal
-output, and deduplicate retries by job ID. The current Rust-only transcript
-methods are not callable from this Worker. Provider acceptance of committed
-same-call-ID duplicate outputs also needs live HTTP/WebSocket validation; do
+The private JS/WASM Agent bridge now provides typed same-call-ID *checkpoint
+admission* with a stable replay receipt; the ledger supplies Unreal's exact
+running-output text instead of a job-ID receipt. This is still **not a usable
+async mode**: active terminal submissions wait until the full model turn ends,
+and an idle terminal does not wake a prompt-less model continuation. The Rust
+checkpoint path therefore acknowledges `continuation_started=false`; the API
+keeps the opt-in at HTTP 501. A complete scheduler must surface results at the
+next safe model boundary and start a real prompt-less continuation after idle
+completion, without changing the result into a user message. Non-idempotent
+shell/Hands/CUA operations also need distinct uncertain-outcome handling.
+Provider acceptance of committed same-call-ID duplicate outputs needs live
+HTTP/WebSocket validation; local mocks are not a provider guarantee.
 not treat local mock acceptance as a provider guarantee.
