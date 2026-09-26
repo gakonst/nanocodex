@@ -21,7 +21,7 @@ const WAKE_GENERATION = 1;
 const bound = (value: string) => value.length > MAX_STATUS_RESULT ? `${value.slice(0, MAX_STATUS_RESULT)}\n[truncated in status; original output retained]` : value;
 
 type Job = { id: string; invocation: string; original_turn: string; execution_turn: string | null; call_id: string | null;
-  tool: string; args: string; state: string; result: string | null; attempts: number; started_at: number | null;
+  tool: string; args: string; state: string; result: string | null; attempts: number; started_at: number | null; created_at: number;
   terminal_state: string | null; delivered_at: number | null; continuation_started: number | null; wake_generation: number; lease_id: string | null; context_json: string | null; replay_safe: number; };
 /** Durable intent, NOT a provider output. ToolContext.turnId identifies a JS
  * execution; it must not be assumed to identify a Rust Agent turn. */
@@ -36,6 +36,7 @@ export type FinalToolResultReceipt = Readonly<{ operation_id: string; call_id: s
 // The host bridge returns an unverified JSON object; only a checked receipt
 // may advance the durable job, regardless of its permissive TypeScript type.
 export type DeliverFinalToolResult = (intent: FinalToolResultIntent) => Promise<unknown>;
+export type DeliverFinalToolResults = (intents: readonly FinalToolResultIntent[]) => Promise<unknown>;
 export type OutputStatus = (intent: FinalToolResultIntent) => Promise<unknown>;
 export class TypedIngestionUnavailable extends Error {
   constructor() { super("typed same-call-ID result ingestion is not available"); }
@@ -57,7 +58,8 @@ export class AsyncJobs {
     private readonly replaySafeTools: ReadonlySet<string> = new Set(),
     private readonly wakeGeneration: number = WAKE_GENERATION,
     private readonly activeOutputStatus?: OutputStatus,
-    private readonly idleOutputStatus?: OutputStatus) {
+    private readonly idleOutputStatus?: OutputStatus,
+    private readonly deliverIdleBatch?: DeliverFinalToolResults) {
     storage.sql.exec(`CREATE TABLE IF NOT EXISTS async_jobs (
       id TEXT PRIMARY KEY, invocation TEXT NOT NULL UNIQUE, original_turn TEXT NOT NULL,
       execution_turn TEXT, call_id TEXT, tool TEXT NOT NULL, args TEXT NOT NULL,
@@ -237,10 +239,11 @@ export class AsyncJobs {
     const rows = this.storage.sql.exec<Job>(
       `SELECT * FROM async_jobs WHERE state NOT IN ('delivered', 'legacy_uninjectable')
         AND (state != 'checkpointed' OR (wake_generation < ? AND ${terminalOrigin}))
-        ORDER BY (state = 'checkpointed'), (state = 'awaiting_integration'), created_at LIMIT 25`,
+        ORDER BY (state = 'checkpointed'), (state = 'awaiting_integration'), created_at, id LIMIT 25`,
       this.wakeGeneration,
     ).toArray();
     let retry = false;
+    const idleCohort: { job: Job; intent: FinalToolResultIntent }[] = [];
     for (const job of rows) {
       if (job.state === "queued" || job.state === "running") {
         this.waitUntil(this.run(job.id));
@@ -254,6 +257,7 @@ export class AsyncJobs {
           && terminalState !== "uncertain" && terminalState !== "cancelled")) continue;
       if (this.delivering.has(job.id)) continue;
       this.delivering.add(job.id);
+      let heldForBatch = false;
       try {
         const intent: FinalToolResultIntent = { originalTurn: job.original_turn, executionTurn: job.execution_turn,
           callId: job.call_id, tool: job.tool, jobId: job.id, terminalState, output: job.result };
@@ -307,6 +311,21 @@ export class AsyncJobs {
         const settledBefore = this.storage.sql.exec<{ n: number }>(
           `SELECT COUNT(*) AS n FROM async_jobs WHERE id = ? AND ${terminalOrigin}`, job.id,
         ).toArray()[0]!.n > 0;
+        if (this.deliverIdleBatch && settledBefore) {
+          // A SQL terminal source alone is insufficient if another user turn
+          // is pending/accepted. Native admission proves actual actor idleness
+          // again, closing the race with turn admission across this await.
+          const activeTurns = this.storage.sql.exec<{ n: number }>(
+            "SELECT COUNT(*) AS n FROM turns WHERE state IN ('pending', 'accepted')",
+          ).toArray()[0]!.n;
+          if (activeTurns === 0) {
+            idleCohort.push({ job, intent });
+            heldForBatch = true;
+            continue;
+          }
+          retry = true;
+          continue;
+        }
         // Stable intent across ambiguous failures; only the Rust adapter can
         // decide whether the pending output was sent and dedupe terminal output.
         const rawReceipt = await this.deliverFinal(intent);
@@ -336,7 +355,51 @@ export class AsyncJobs {
           this.storage.sql.exec("UPDATE async_jobs SET state = 'awaiting_integration' WHERE id = ?", job.id);
         } else retry = true;
       } finally {
-        this.delivering.delete(job.id);
+        if (!heldForBatch) this.delivering.delete(job.id);
+      }
+    }
+    // Cohorts are source-turn-local and ordered by creation time and job ID;
+    // each native call is bounded to eight outputs and has only original IDs.
+    // The native batch validates/stages all members before one idle wake. No
+    // individual fallback is allowed for an idle candidate on an old kernel.
+    const cohorts = new Map<string, typeof idleCohort>();
+    for (const entry of idleCohort) {
+      const cohort = cohorts.get(entry.job.original_turn) ?? [];
+      cohort.push(entry);
+      cohorts.set(entry.job.original_turn, cohort);
+    }
+    for (const cohort of cohorts.values()) {
+      cohort.sort((a, b) => a.job.created_at - b.job.created_at || a.job.id.localeCompare(b.job.id));
+      for (let start = 0; start < cohort.length; start += 8) {
+        const batch = cohort.slice(start, start + 8);
+        try {
+          const result = await this.deliverIdleBatch!(batch.map(row => row.intent));
+          const receipts = result as Partial<FinalToolResultReceipt>[] | null;
+          if (!Array.isArray(receipts) || receipts.length !== batch.length
+            || receipts.some((receipt, index) => receipt?.operation_id !== batch[index]!.job.id
+              || receipt.call_id !== batch[index]!.job.call_id
+              || typeof receipt.replayed !== "boolean"
+              || typeof receipt.continuation_started !== "boolean")) {
+            throw new Error("invalid terminal output batch checkpoint receipts");
+          }
+          // Keep the local cohort transition all-or-nothing across a DO crash;
+          // only exact durable uptake status may later mark each job delivered.
+          this.storage.transactionSync(() => {
+            for (const { job } of batch) this.storage.sql.exec(`UPDATE async_jobs SET
+              state = 'checkpointed', delivered_at = ?, continuation_started = 0,
+              wake_generation = 0 WHERE id = ?
+              AND state IN ('completed', 'failed', 'uncertain', 'cancelled', 'awaiting_integration', 'checkpointed')`,
+              Date.now(), job.id);
+          });
+          if (this.idleOutputStatus) retry = true;
+        } catch (error) {
+          if (error instanceof TypedIngestionUnavailable) {
+            for (const { job } of batch) this.storage.sql.exec(
+              "UPDATE async_jobs SET state = 'awaiting_integration' WHERE id = ?", job.id);
+          } else retry = true;
+        } finally {
+          for (const { job } of batch) this.delivering.delete(job.id);
+        }
       }
     }
     // A checkpointed active acceptance is retried only after its source turn

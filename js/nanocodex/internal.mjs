@@ -146,6 +146,46 @@ export async function submitFunctionCallOutput(agent, callId, options) {
   return freezeJson(receipt);
 }
 
+/** Private bounded batch of original-call-ID outputs; never routes through prompt. */
+export async function submitFunctionCallOutputs(agent, outputs) {
+  const state = agentState(agent);
+  if (!Array.isArray(outputs) || outputs.length < 1 || outputs.length > 8) {
+    throw new TypeError("function-call output batch requires 1..8 entries");
+  }
+  const identities = new Set();
+  const encoded = outputs.map(entry => {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)
+      || Object.keys(entry).some(key => !["callId", "operationId", "output"].includes(key))) {
+      throw new TypeError("invalid function-call output batch entry");
+    }
+    const { callId, operationId, output } = entry;
+    if (typeof callId !== "string" || !callId.trim()
+      || typeof operationId !== "string" || !operationId.trim()) {
+      throw new TypeError("batch callId and operationId must be non-empty strings");
+    }
+    // No duplicate job or call within a batch, even if outputs appear equal.
+    if (identities.has(`call:${callId}`) || identities.has(`job:${operationId}`)) {
+      throw new TypeError("duplicate function-call output batch identity");
+    }
+    identities.add(`call:${callId}`);
+    identities.add(`job:${operationId}`);
+    return { call_id: callId, operation_id: operationId, output: JSON.parse(encodeFunctionCallOutput(output)) };
+  });
+  if (typeof state.raw.submitFunctionCallOutputs !== "function") {
+    throw new Error("this Nanocodex runtime does not support batch function-call output");
+  }
+  const result = await state.raw.submitFunctionCallOutputs(JSON.stringify(encoded));
+  if (typeof result !== "string") throw new TypeError("the runtime returned invalid batch function-call output receipts");
+  const receipts = JSON.parse(result);
+  if (!Array.isArray(receipts) || receipts.length !== encoded.length || receipts.some((receipt, index) =>
+    !receipt || typeof receipt !== "object" || Array.isArray(receipt)
+    || receipt.operation_id !== encoded[index].operation_id || receipt.call_id !== encoded[index].call_id
+    || typeof receipt.replayed !== "boolean" || typeof receipt.continuation_started !== "boolean")) {
+    throw new TypeError("the runtime returned invalid batch function-call output receipts");
+  }
+  return freezeJson(receipts);
+}
+
 /** A checkpointed idle result only counts after its exact wake model step settles. */
 export async function idleFunctionCallOutputStatus(agent, callId, options) {
   const state = agentState(agent);

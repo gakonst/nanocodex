@@ -8,7 +8,7 @@ import { managedWeb } from "./web";
 import { createJustBashTool } from "./just-bash";
 import { AsyncJobs, TypedIngestionUnavailable } from "./asyncJobs";
 // Host-only capability: absent from model-visible Actions and public Agent exports.
-import { functionCallOutputCapability } from "../../nanocodex/host/internal-Agent.mjs";
+import { batchFunctionCallOutputCapability, functionCallOutputCapability } from "../../nanocodex/host/internal-Agent.mjs";
 
 type ChatGptImport = Readonly<{
   access_token: string; refresh_token: string; account_id: string;
@@ -573,6 +573,20 @@ export class Session extends DurableObject<Env> {
           } catch (error) {
             if (error instanceof Error && error.message ===
                 "this Nanocodex runtime does not support idle function-call status") {
+              throw new TypedIngestionUnavailable();
+            }
+            throw error;
+          }
+        },
+        async intents => {
+          const agent = await this.#ready(owner);
+          try {
+            return await batchFunctionCallOutputCapability(agent).submit(intents.map(intent => ({
+              callId: intent.callId, operationId: intent.jobId, output: intent.output,
+            })));
+          } catch (error) {
+            if (error instanceof Error && error.message ===
+                "this Nanocodex runtime does not support batch function-call output") {
               throw new TypedIngestionUnavailable();
             }
             throw error;

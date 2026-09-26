@@ -1,4 +1,4 @@
-import { activeFunctionCallOutputStatus, idleFunctionCallOutputStatus, submitFunctionCallOutput } from "../internal.mjs";
+import { activeFunctionCallOutputStatus, idleFunctionCallOutputStatus, submitFunctionCallOutput, submitFunctionCallOutputs } from "../internal.mjs";
 import { trustedStagedUnrealOutput } from "../runtime/code-runtime.mjs";
 
 /**
@@ -20,4 +20,9 @@ export function functionCallOutputCapability(agent, callId) {
 /** Host-only pending result for an original direct function call. */
 export function stageFunctionCallOutput(output) {
   return trustedStagedUnrealOutput(output);
+}
+
+/** Trusted host-only multi-call bridge. Rust validates all identities and idle admission. */
+export function batchFunctionCallOutputCapability(agent) {
+  return Object.freeze({ submit: (outputs) => submitFunctionCallOutputs(agent, outputs) });
 }

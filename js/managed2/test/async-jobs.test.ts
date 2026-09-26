@@ -535,3 +535,73 @@ it("wraps exec_command as a mutable background tool and checkpoints its single r
     expect(intents).toHaveLength(1);
   });
 });
+
+it("batches a deterministic idle source cohort in chunks of at most eight, with no false uptake", async () => {
+  await runInDurableObject(stub(), async (_session, state) => {
+    state.storage.sql.exec("INSERT INTO turns (id, input, state) VALUES ('source', 'work', 'completed')");
+    const read: NamedTool = { name: "current_time", description: "read", handler: () => "ok" };
+    new AsyncJobs(state.storage, { current_time: read }, () => "source", async () => {}, () => {});
+    const ids = Array.from({ length: 9 }, (_, i) => crypto.randomUUID());
+    for (let i = 0; i < ids.length; i++) state.storage.sql.exec(`INSERT INTO async_jobs
+      (id, invocation, original_turn, execution_turn, call_id, tool, args, state, result,
+        terminal_state, created_at) VALUES (?, ?, 'source', 'turn-1', ?, 'current_time', '{}',
+        'completed', '"ready"', 'completed', ?)`, ids[i], `turn-1:call-${i}`, `call-${i}`, i);
+    const batches: (readonly FinalToolResultIntent[])[] = [];
+    let uptaken = false;
+    const jobs = new AsyncJobs(state.storage, { current_time: read }, () => "source",
+      async () => { throw new Error("must not submit separately while idle"); }, () => {},
+      new Set(["current_time"]), undefined, async () => ({ state: "pruned_or_unknown" }),
+      async () => uptaken ? { state: "confirmed", model_call_index: 3, response_id: "model-3" }
+        : { state: "accepted_unbound" },
+      async intents => {
+        batches.push([...intents]);
+        return intents.map(intent => accepted(intent, true));
+      });
+    await jobs.reconcile();
+    expect(batches.map(batch => batch.length)).toEqual([8, 1]);
+    expect(batches.flat().map(intent => intent.jobId)).toEqual(ids);
+    expect(batches.flat().map(intent => intent.callId)).toEqual(ids.map((_, i) => `call-${i}`));
+    for (const id of ids) expect(jobs.status(id)).toMatchObject({ state: "checkpointed", continuation_started: false });
+    await jobs.reconcile();
+    expect(batches).toHaveLength(2); // staging acknowledgement did not trigger a replay
+    uptaken = true;
+    await jobs.reconcile();
+    for (const id of ids) expect(jobs.status(id)).toMatchObject({ state: "delivered", continuation_started: true });
+  });
+});
+
+it("does not stage a batch while another turn is active and fails a mismatched receipt closed", async () => {
+  await runInDurableObject(stub(), async (_session, state) => {
+    state.storage.sql.exec("INSERT INTO turns (id, input, state) VALUES ('source', 'work', 'completed')");
+    state.storage.sql.exec("INSERT INTO turns (id, input, state) VALUES ('other', 'busy', 'accepted')");
+    const read: NamedTool = { name: "current_time", description: "read", handler: () => "ok" };
+    new AsyncJobs(state.storage, { current_time: read }, () => "source", async () => {}, () => {});
+    const ids = [crypto.randomUUID(), crypto.randomUUID()];
+    ids.forEach((id, index) => state.storage.sql.exec(`INSERT INTO async_jobs
+      (id, invocation, original_turn, execution_turn, call_id, tool, args, state, result,
+        terminal_state, created_at) VALUES (?, ?, 'source', 'turn-1', ?, 'current_time', '{}',
+        'completed', '"ready"', 'completed', ?)`, id, `turn-1:call-${index}`, `call-${index}`, index));
+    const batches: (readonly FinalToolResultIntent[])[] = [];
+    let wrong = true;
+    const jobs = new AsyncJobs(state.storage, { current_time: read }, () => "source",
+      async () => { throw new Error("no individual fallback"); }, () => {}, new Set(["current_time"]),
+      undefined, async () => ({ state: "pruned_or_unknown" }),
+      async () => ({ state: "accepted_unbound" }),
+      async intents => {
+        batches.push([...intents]);
+        return intents.map((intent, i) => ({ ...accepted(intent),
+          operation_id: wrong && i === 1 ? "forged" : intent.jobId }));
+      });
+    await jobs.reconcile();
+    expect(batches).toHaveLength(0);
+    state.storage.sql.exec("UPDATE turns SET state = 'completed' WHERE id = 'other'");
+    await jobs.reconcile();
+    expect(batches).toHaveLength(1);
+    ids.forEach(id => expect(jobs.status(id)).toMatchObject({ state: "completed" }));
+    wrong = false;
+    await jobs.reconcile();
+    expect(batches).toHaveLength(2);
+    expect(batches[1]).toEqual(batches[0]);
+    ids.forEach(id => expect(jobs.status(id)).toMatchObject({ state: "checkpointed", continuation_started: false }));
+  });
+});

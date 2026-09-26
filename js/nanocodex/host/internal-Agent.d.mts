@@ -22,3 +22,12 @@ export function functionCallOutputCapability(agent: object, callId: string): Rea
 
 /** Host-only typed pending result; never made available to model code. */
 export function stageFunctionCallOutput(output: string): object;
+
+/** Private 1..8 call-bound batch. Returns exact stable per-job/call receipts. */
+export function batchFunctionCallOutputCapability(agent: object): Readonly<{
+  submit(outputs: ReadonlyArray<Readonly<{
+    callId: string;
+    operationId: string;
+    output: FunctionCallOutput;
+  }>>): Promise<ReadonlyArray<FunctionCallOutputReceipt>>;
+}>;

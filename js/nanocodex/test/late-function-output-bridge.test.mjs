@@ -199,3 +199,47 @@ test("host-only idle status requires the exact job/call and a completed wake mod
     /does not support idle/);
   older.dispose();
 });
+
+test("private bounded batch stages exact typed outputs without prompts and rejects forged receipts", async () => {
+  const calls = [];
+  const agent = await makeAgent({ agentId: "agent", sessionId: "session", free() {},
+    prompt() { throw new Error("never prompt"); },
+    async submitFunctionCallOutputs(encoded) {
+      calls.push(JSON.parse(encoded));
+      return JSON.stringify(JSON.parse(encoded).map(item => ({ operation_id: item.operation_id,
+        call_id: item.call_id, replayed: false, continuation_started: false })));
+    },
+  });
+  const { batchFunctionCallOutputCapability } = await import("../host/internal-Agent.mjs");
+  assert.equal(Host.Agent.batchFunctionCallOutputCapability, undefined);
+  assert.equal(agent.extend(Actions.agentActions()).turn.submitFunctionCallOutputs, undefined);
+  const capability = batchFunctionCallOutputCapability(agent);
+  assert.ok(Object.isFrozen(capability));
+  const rows = [{ callId: "call-b", operationId: "job-b", output: "B" },
+    { callId: "call-a", operationId: "job-a", output: [{ type: "input_text", text: "A" }] }];
+  const receipts = await capability.submit(rows);
+  assert.deepEqual(calls, [[{ call_id: "call-b", operation_id: "job-b", output: "B" },
+    { call_id: "call-a", operation_id: "job-a", output: [{ type: "input_text", text: "A" }] }]]);
+  assert.deepEqual(receipts.map(row => [row.operation_id, row.call_id]),
+    [["job-b", "call-b"], ["job-a", "call-a"]]);
+  assert.ok(Object.isFrozen(receipts) && receipts.every(Object.isFrozen));
+  await assert.rejects(capability.submit([]), /1\.\.8/);
+  await assert.rejects(capability.submit(Array(9).fill(rows[0])), /1\.\.8/);
+  await assert.rejects(capability.submit([rows[0], rows[0]]), /duplicate/);
+  await assert.rejects(capability.submit([{ ...rows[0], callId: "other" }, rows[0]]), /duplicate/);
+  await assert.rejects(capability.submit([{ ...rows[0], role: "user" }]), /invalid.*entry/);
+  await assert.rejects(capability.submit([{ ...rows[0], output: [] }]), /non-empty/);
+  assert.equal(calls.length, 1);
+  agent.dispose();
+  const mismatched = await makeAgent({ agentId: "agent", sessionId: "session", free() {},
+    prompt() { throw new Error("never prompt"); },
+    async submitFunctionCallOutputs() { return JSON.stringify([{ operation_id: "other", call_id: "call-b",
+      replayed: false, continuation_started: false }]); },
+  });
+  await assert.rejects(batchFunctionCallOutputCapability(mismatched).submit([rows[0]]), /invalid batch/);
+  mismatched.dispose();
+  const older = await makeAgent({ agentId: "agent", sessionId: "session", free() {},
+    prompt() { throw new Error("never prompt"); } });
+  await assert.rejects(batchFunctionCallOutputCapability(older).submit([rows[0]]), /does not support batch/);
+  older.dispose();
+});
