@@ -349,3 +349,13 @@ it("retries transient body failures before waking and eventually reports a persi
   expect(f.wakes).toHaveLength(0);f.restart();await f.alarmRun();
   expect(JSON.parse(f.wakes[0]!.input as string).messages[0].status).toBe("error");
 });
+it("preserves successful hydration while retrying another message's transient failure", async () => {
+  const f=fixture();await f.request("/configure","POST",config);
+  f.history(()=>Response.json({historyId:"12",history:[{messagesAdded:[{message:{id:"good"}},{message:{id:"retry"}}]}]}));
+  let first=true;
+  f.message(url=>{const id=url.pathname.split("/").pop();return id==="retry" && first ? new Response(null,{status:503}) : Response.json({id,payload:{mimeType:"text/plain",body:{data:btoa(first?"original":"later")}}});});
+  await f.request("/notify","POST",notify);await f.alarmRun();expect(f.wakes).toHaveLength(0);
+  first=false;f.restart();await f.alarmRun();
+  expect(JSON.parse(f.wakes[0]!.input as string).messages.map((m:any)=>m.body)).toEqual(["original","later"]);
+  expect(f.calls.filter(r=>new URL(r.url).pathname.endsWith("/messages/good"))).toHaveLength(1);
+});

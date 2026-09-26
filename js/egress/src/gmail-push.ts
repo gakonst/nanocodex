@@ -8,7 +8,7 @@ export interface GmailPushEnv {
 
 type Config = { crm?: true; userId: string; connectionId: string; agentId: string; email: string };
 type Event = { type: "gmail.history" | "gmail.resync"; startHistoryId: string; historyId: string; messageIds: string[]; truncated: boolean };
-type Pending = { eventId: string; event: Event; hydrate?: true; input?: string };
+type Pending = { eventId: string; event: Event; hydrate?: true; input?: string; snapshots?: (GmailMessageSnapshot | null)[] };
 type Page = { type: Event["type"]; historyId: string; chunks: number; index: number; nextPageToken?: string; commitCursor?: string };
 type Mailbox = {
   config: Config; cursor: string; target: string; renewAt: number; expiration: string;
@@ -291,18 +291,20 @@ export class GmailPushMailbox {
     if (!pending.input) {
       const envelope = { connectionId: box.config.connectionId, email: box.config.email, ...(box.config.crm === true ? { crm: true } : {}), ...pending.event };
       if (pending.hydrate) {
-        const messages: GmailMessageSnapshot[] = new Array(pending.event.messageIds.length);
+        const messages = pending.snapshots ??= Array.from({length: pending.event.messageIds.length}, () => null);
         const budget = Math.min(16000, Math.floor((32000 - jsonBytes(envelope) - 32) / Math.max(1,messages.length)) - 1);
         let next = 0;
         const results = await Promise.allSettled(Array.from({length: Math.min(5,messages.length)}, async () => {
           for (;;) {
             const index = next++; if (index >= messages.length) return;
+            if (messages[index]) continue;
             const id = pending.event.messageIds[index]!;
             messages[index] = await hydrateGmailMessage(id, (signal, attachmentId) => this.gmail(box.config, attachmentId ? `messages/${id}/attachments/${attachmentId}` : `messages/${id}?format=full`, undefined, signal), budget, box.retry >= 2);
           }
         }));
         if (results.some(result => result.status === "rejected")) throw new Error("gmail_body_retry");
         pending.input = JSON.stringify({...envelope, messages});
+        delete pending.snapshots;
         if (new TextEncoder().encode(pending.input).length > 32768) throw new Error("hydration_budget");
       } else pending.input = JSON.stringify(envelope); // Legacy outboxes may already have been admitted.
       await this.save(box); // Freeze before first admission, including ambiguous responses.
