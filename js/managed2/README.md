@@ -194,34 +194,30 @@ account-owned regional Container class and identity for ChatGPT subscription
 calls; API-key calls remain direct. This is not a claim that OpenAI inference
 occurs in the selected region or that provider response time will improve.
 
-## Experimental asynchronous read-only tools (not yet available)
+## Experimental asynchronous tools (disabled)
 
 `POST /v1/agents` with `{ "async_tools": true }` returns HTTP 501
 `typed_async_tool_ingestion_unavailable` before creating a Session. Ordinary
-agents still use synchronous tools; `exec_command` is never eligible for the
-read-only background ledger. The prior opt-in pilot delivered a tagged *new
-user turn*, which was not the Unreal same-call-ID behavior. That route has been
-removed. Older pilot rows are quarantined rather than replayed as tool output.
+agents still use synchronous tools. The old pilot's synthetic *user turn* has
+been removed; old rows are quarantined, never replayed as typed tool output.
 
-The dormant, opt-in-only `AsyncJobs` ledger records a stable original turn,
-JavaScript execution turn, provider call ID, job ID, arguments and bounded
-result before attempting delivery. It permits only `current_time` and
-`web__run`, with an eight-active-job cap, three read-only retry attempts, and
-seven-day retention after acknowledged delivery. It does not assert exactly-once
-upstream reads. When typed ingestion is unavailable, the terminal row remains
-`awaiting_integration` with no synthetic continuation and no tight alarm loop.
+The dormant `AsyncJobs` ledger persists a stable turn, original provider call
+ID, job ID, arguments, correlation, and bounded result before dispatch. It
+registers `current_time`, `web__run`, and the local Just Bash `exec_command`,
+with eight active jobs and seven-day completed-row retention. The read-only
+operations may be retried after a stale lease (at most three attempts). An
+uncertain or cancelled shell execution **must not be rerun**: its terminal
+result explicitly says the side effect may have happened. Cancel is a durable
+fence, not rollback. The exact Unreal pending text is staged under the original
+function-call ID; the job ID is available through the jobs status API and is
+not appended to that provider-visible text. Managed2 currently exposes no
+CUA or remote Hands tool; they are not covered by this ledger.
 
-The private JS/WASM Agent bridge now stages a trusted original-call pending
-output and provides typed same-call-ID *checkpoint admission* with a stable
-replay receipt; the ledger supplies Unreal's exact running-output text instead
-of a job-ID receipt. This is still **not a usable
-async mode**: active terminal submissions wait until the full model turn ends,
-and an idle terminal does not wake a prompt-less model continuation. The Rust
-checkpoint path therefore acknowledges `continuation_started=false`; the API
-keeps the opt-in at HTTP 501. A complete scheduler must surface results at the
-next safe model boundary and start a real prompt-less continuation after idle
-completion, without changing the result into a user message. Non-idempotent
-shell/Hands/CUA operations also need distinct uncertain-outcome handling.
-Provider acceptance of committed same-call-ID duplicate outputs needs live
-HTTP/WebSocket validation; local mocks are not a provider guarantee.
-not treat local mock acceptance as a provider guarantee.
+The private JS/WASM bridge stages the original-call pending output and admits
+one terminal same-call-ID checkpoint. **This is not yet a usable async mode**:
+active terminal results wait until the entire model turn ends, idle terminal
+results do not wake a prompt-less model continuation, and terminal receipts are
+not independently durable after context compaction. The API remains 501 until
+those scheduler/replay issues and live HTTP/WebSocket provider compatibility
+are resolved. A gated three-route canary is in `scripts/provider-canary`;
+its fixture tests do not establish live provider acceptance.
