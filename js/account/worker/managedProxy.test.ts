@@ -115,7 +115,7 @@ test("direct broker failure and stale generation never replay through the manage
 });
 
 test("inference credentials cannot reach account, connector, agent or hand proxy paths", async () => {
-  for (const path of ["/v1/me", "/v1/agents", "/v1/api-keys", "/v1/connectors/github", "/v1/credentials",
+  for (const path of ["/v1/todo", "/v1/todo/decisions/11111111-1111-4111-8111-111111111111/respond", "/v1/me", "/v1/agents", "/v1/api-keys", "/v1/connectors/github", "/v1/credentials",
     "/v1/account/hands", "/v1/account/hands/screens", "/v1/account/hosted-tool-stats", "/v1/account/tool-host", "/v1/history", "/v1/memories/list", "/v1/memories/write", "/v1/memories/status", "/v1/markdown-memory/get", "/v1/egress", "/v1/wallet"]) {
     const request = new Request("https://nanocodex.example" + path, {
       headers: { authorization: "Bearer nci_live_synthetic", cookie: "synthetic=account", upgrade: "websocket", "x-nanocodex-managed-access": "synthetic" },
@@ -402,4 +402,47 @@ test("meeting previews expose only the capture UUID endpoint", () => {
   for (const path of ["/v1/meetings", "/v1/meetings/", "/v1/meetings/anything/preview",
     `/v1/meetings/${capture}/preview/extra`, `/v1/meetings/${capture}/transcript`])
     assert.equal(isManagedRoutePath(path), false, path);
+});
+
+// The account proxy previously returned no route, causing public TODO calls to
+// fall through to 404 before managed authentication or persistence could run.
+test("TODO reads, captures and decision responses retain the exact managed request and response", async () => {
+  const decision = "11111111-1111-4111-8111-111111111111";
+  for (const [method, path, body] of [
+    ["GET", "/v1/todo", undefined],
+    ["POST", "/v1/todo", JSON.stringify({ body: "Follow up", operation_id: decision })],
+    ["POST", `/v1/todo/decisions/${decision}/respond`, JSON.stringify({ version: 1, choice_id: "yes", operation_id: decision })],
+  ] as const) {
+    for (const status of [200, 401, 403]) {
+      const request = new Request(`https://nanocodex.example${path}`, {
+        method, body, headers: { authorization: "Bearer fixture", cookie: "nanocodex_account=fixture", "content-type": "application/json" },
+      });
+      const backendResponse = Response.json({ status }, { status, headers: { "x-nanocodex-access-rejected": "1" } });
+      let calls = 0;
+      const response = await routeManaged(request, { NANOCODEX_BACKEND: {
+        async fetch(forwarded: Request) {
+          calls++;
+          assert.equal(forwarded, request);
+          assert.equal(forwarded.bodyUsed, false);
+          if (body) assert.equal(await forwarded.text(), body);
+          return backendResponse;
+        },
+        connect() { throw Error("unused"); },
+      } }, new URL(request.url));
+      assert.equal(calls, 1, `${method} ${path}: ${status}`);
+      assert.equal(response, backendResponse);
+      assert.equal(response.bodyUsed, false);
+      assert.equal(response.headers.get("x-nanocodex-access-rejected"), "1");
+    }
+  }
+});
+
+test("TODO forwarding excludes unsupported adjacent endpoints", async () => {
+  for (const path of ["/v1/todos", "/v1/todo/", "/v1/todo/decisions", "/v1/todo/decisions/invalid/respond",
+    "/v1/todo/decisions/11111111-1111-4111-8111-111111111111/respond/extra"]) {
+    const request = new Request(`https://nanocodex.example${path}`);
+    assert.equal(await routeManaged(request, { NANOCODEX_BACKEND: {
+      async fetch() { throw Error("unsupported route reached managed"); }, connect() { throw Error("unused"); },
+    } }, new URL(request.url)), undefined, path);
+  }
 });
