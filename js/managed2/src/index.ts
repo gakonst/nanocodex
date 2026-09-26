@@ -7,6 +7,8 @@ import { ToolTiming } from "./toolTiming";
 import { managedWeb } from "./web";
 import { createJustBashTool } from "./just-bash";
 import { AsyncJobs, TypedIngestionUnavailable } from "./asyncJobs";
+// Host-only capability: absent from model-visible Actions and public Agent exports.
+import { functionCallOutputCapability } from "../../nanocodex/host/internal-Agent.mjs";
 
 type ChatGptImport = Readonly<{
   access_token: string; refresh_token: string; account_id: string;
@@ -524,7 +526,22 @@ export class Session extends DurableObject<Env> {
             "SELECT relay_region FROM session_meta WHERE singleton = 1").toArray()[0]?.relay_region }) };
       this.#asyncJobs = new AsyncJobs(this.ctx.storage, readonlyTools,
         context => this.#toolTiming.externalTurn(context),
-        async () => { throw new TypedIngestionUnavailable(); },
+        async intent => {
+          const agent = await this.#ready(owner);
+          try {
+            await functionCallOutputCapability(agent, intent.callId).submit({
+              output: intent.output, operationId: intent.jobId,
+            });
+          } catch (error) {
+            // A session restored on an old kernel must not downgrade a typed
+            // tool result to a forged user message or spin an alarm forever.
+            if (error instanceof Error && error.message ===
+                "this Nanocodex runtime does not support late function-call output") {
+              throw new TypedIngestionUnavailable();
+            }
+            throw error;
+          }
+        },
         work => this.ctx.waitUntil(work));
     }
     return this.#asyncJobs;
