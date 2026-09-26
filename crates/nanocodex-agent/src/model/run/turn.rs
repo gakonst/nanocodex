@@ -359,6 +359,9 @@ where
         self.restore_runtime(configured, logical_turn)?;
         match outcome {
             Ok(ModelTaskOutcome::Completed(message)) => {
+                if let Some(session) = &mut self.session {
+                    session.pending_late_wake = None;
+                }
                 self.record_transport();
                 let usage = self.stats.turn_usage();
                 record_turn_usage(&tracing::Span::current(), &usage);
@@ -681,6 +684,7 @@ where
                 conversation,
                 context,
                 preserve_inherited_delta: false,
+                pending_late_wake: None,
             };
             session
                 .conversation
@@ -914,6 +918,7 @@ where
             request_prefix: session.factory.profile().shared_prefix(),
             prompt_cache_key: Arc::from(session.factory.profile().prompt_cache_key()),
             preserve_inherited_delta,
+            pending_late_wake: session.pending_late_wake.clone(),
             global_instructions,
             context_baseline: session.context.baseline(),
         }
@@ -932,6 +937,7 @@ where
             request_prefix: session.factory.profile().shared_prefix(),
             prompt_cache_key: Arc::from(session.factory.profile().prompt_cache_key()),
             preserve_inherited_delta: true,
+            pending_late_wake: session.pending_late_wake.clone(),
             global_instructions: global_instructions.cloned(),
             context_baseline: session.context.baseline(),
         }));

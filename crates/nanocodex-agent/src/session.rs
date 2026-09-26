@@ -120,6 +120,7 @@ impl CommittedSession {
             unreal_function_outputs: self.model.unreal_function_outputs(),
             context_snapshot: Some(self.model.context_baseline().clone()),
             context_usage: Some(self.model.context_usage()),
+            pending_late_wake: self.model.late_wake_id().map(str::to_owned),
         }
     }
 }
@@ -169,6 +170,8 @@ pub struct SessionSnapshot {
     context_snapshot: Option<ContextBaseline>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     context_usage: Option<ContextUsage>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pending_late_wake: Option<String>,
 }
 
 /// Session metadata separated from independently persisted conversation items.
@@ -251,6 +254,7 @@ impl SessionSnapshot {
             unreal_function_outputs: false,
             context_snapshot,
             context_usage: None,
+            pending_late_wake: None,
         })
     }
 
@@ -330,6 +334,7 @@ impl SessionSnapshot {
                     None,
                     self.context_snapshot.clone(),
                 )?;
+                checkpoint.restore_late_wake(self.pending_late_wake.clone());
                 if let Some(usage) = self.context_usage.as_ref() {
                     checkpoint.restore_context_usage(usage);
                 }

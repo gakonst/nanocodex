@@ -7,6 +7,7 @@ pub(super) struct ModelSessionState {
     pub(super) conversation: ConversationState,
     pub(super) context: ContextState,
     pub(super) preserve_inherited_delta: bool,
+    pub(super) pending_late_wake: Option<String>,
 }
 
 impl ModelSessionState {

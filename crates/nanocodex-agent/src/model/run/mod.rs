@@ -145,6 +145,7 @@ pub(crate) struct ModelCheckpoint {
     preserve_inherited_delta: bool,
     global_instructions: Option<Arc<str>>,
     context_baseline: ContextBaseline,
+    pending_late_wake: Option<String>,
 }
 
 pub(crate) struct PreparedCheckpoint {
@@ -215,33 +216,14 @@ impl ModelCheckpoint {
         self.conversation.managed.unreal_function_outputs()
     }
 
-    /// Stable wake identity while terminal outputs are the checkpoint tail.
-    /// A model response or real input after them closes this wake window.
-    pub(crate) fn late_wake_id(&self) -> Option<String> {
-        if !self.unreal_function_outputs() {
-            return None;
-        }
-        Self::late_wake_id_from_history(&self.snapshot_history())
+    /// A durable wake marker is independent of the transcript tail: compaction,
+    /// developer context, and replay may all rewrite that tail before admission.
+    pub(crate) fn late_wake_id(&self) -> Option<&str> {
+        self.pending_late_wake.as_deref()
     }
 
-    fn late_wake_id_from_history(history: &[ResponseItem]) -> Option<String> {
-        let mut receipts = Vec::new();
-        for item in history.iter().rev() {
-            match item {
-                ResponseItem::FunctionCallOutput { id: Some(id), .. }
-                    if id.as_ref().starts_with("late:") =>
-                {
-                    receipts.push(id.to_string())
-                }
-                _ => break,
-            }
-        }
-        if receipts.is_empty() {
-            return None;
-        }
-        receipts.reverse();
-        const NAMESPACE: uuid::Uuid = uuid::Uuid::from_u128(0xa01b8f32_68bf_49a0_b138_99ec17efca31);
-        Some(uuid::Uuid::new_v5(&NAMESPACE, receipts.join("\n").as_bytes()).to_string())
+    pub(crate) fn restore_late_wake(&mut self, wake: Option<String>) {
+        self.pending_late_wake = wake;
     }
 
     pub(crate) fn snapshot_history(&self) -> Vec<ResponseItem> {
@@ -284,6 +266,7 @@ impl ModelCheckpoint {
             preserve_inherited_delta: false,
             global_instructions,
             context_baseline,
+            pending_late_wake: None,
         })
     }
 }
@@ -399,6 +382,7 @@ impl<S> ModelRun<S> {
                 conversation: checkpoint.conversation,
                 context: ContextState::new(selected_agents_md, checkpoint.context_baseline),
                 preserve_inherited_delta: checkpoint.preserve_inherited_delta,
+                pending_late_wake: checkpoint.pending_late_wake,
             }),
             active_tools: Some(active_tools),
             active_tool_calls: Vec::new(),
@@ -481,6 +465,7 @@ impl<S> ModelRun<S> {
             preserve_inherited_delta: true,
             global_instructions: self.global_instructions.clone(),
             context_baseline: session.context.baseline(),
+            pending_late_wake: session.pending_late_wake.clone(),
         })
     }
 
@@ -545,10 +530,16 @@ impl<S> ModelRun<S> {
         conversation.commit_tail();
         conversation
             .managed
-            .complete_unreal_function_output_with_id(call_id, output, Some(receipt_id))
+            .complete_unreal_function_output_with_id(call_id, output, Some(receipt_id.clone()))
             .map_err(|error| NanocodexError::InvalidRequest(error.to_string()))?;
         conversation.commit_tail();
         session.conversation = conversation;
+        // Chain all unconsumed outputs into the same wake. Replay of the same
+        // receipt returns above without advancing the identity a second time.
+        session.pending_late_wake = Some(advance_late_wake(
+            session.pending_late_wake.as_deref(),
+            &receipt_id.to_string(),
+        ));
         session.preserve_inherited_delta = true;
         Ok((
             Self::checkpoint_from_session(session, true, self.global_instructions.clone()),
@@ -584,6 +575,7 @@ impl<S> ModelRun<S> {
             conversation: ConversationState::empty(canonical_context),
             context,
             preserve_inherited_delta: false,
+            pending_late_wake: None,
         })
     }
 
@@ -717,6 +709,15 @@ pub(crate) fn prepare_history_checkpoint(
     })
 }
 
+/// Stable identity across admission, replay and transcript rewrites. A model
+/// completion clears the marker; only new terminal receipts advance it.
+fn advance_late_wake(previous: Option<&str>, receipt_id: &str) -> String {
+    const WAKE_NAMESPACE: uuid::Uuid =
+        uuid::Uuid::from_u128(0xa01b8f32_68bf_49a0_b138_99ec17efca31);
+    let wake_input = format!("{}:{receipt_id}", previous.unwrap_or(""));
+    uuid::Uuid::new_v5(&WAKE_NAMESPACE, wake_input.as_bytes()).to_string()
+}
+
 #[cfg(test)]
 mod context_accounting_snapshot_tests {
     use super::*;
@@ -778,6 +779,68 @@ mod context_accounting_snapshot_tests {
             .remove("unreal_function_outputs");
         let ordinary: SessionSnapshot = serde_json::from_value(ordinary).unwrap();
         assert!(ordinary.into_resume().is_err());
+    }
+
+    #[test]
+    fn wake_marker_survives_snapshot_replay_and_transcript_tail_changes() {
+        let history: Vec<ResponseItem> = serde_json::from_value(serde_json::json!([
+            {"type":"message", "role":"user", "content":[{"type":"input_text", "text":"task"}]},
+            {"type":"function_call", "call_id":"job-1", "name":"job", "arguments":"{}"},
+            {"type":"function_call_output", "call_id":"job-1", "output":"Tool call is still running. Its result arrives in a later turn: continue with independent work, or end your turn to wait for it."}
+        ]))
+        .unwrap();
+        let prefix = serde_json::from_value(serde_json::json!([
+            {"type":"additional_tools", "role":"developer", "tools":[]},
+            {"type":"message", "role":"developer", "content":[{"type":"input_text", "text":"instructions"}]}
+        ])).unwrap();
+        let mut checkpoint = ModelCheckpoint::resume(
+            ".".into(),
+            Arc::from("lineage"),
+            prefix,
+            Arc::from("cache"),
+            history[0].clone(),
+            history,
+            Default::default(),
+            true,
+            None,
+            None,
+        )
+        .unwrap();
+        checkpoint.conversation.commit_tail();
+        checkpoint
+            .conversation
+            .managed
+            .complete_unreal_function_output_with_id(
+                "job-1",
+                FunctionOutputBody::Text("finished".into()),
+                Some(ResponseItemId::from_server("late:first")),
+            )
+            .unwrap();
+        let first = advance_late_wake(None, "late:first");
+        let second = advance_late_wake(Some(&first), "late:second");
+        assert_ne!(first, second);
+        assert_eq!(second, advance_late_wake(Some(&first), "late:second"));
+        checkpoint.restore_late_wake(Some(second.clone()));
+        let snapshot =
+            CommittedSession::new(Arc::from("lineage"), Model::Astra, checkpoint).snapshot();
+        let encoded = serde_json::to_value(snapshot).unwrap();
+        assert_eq!(encoded["pending_late_wake"], second);
+        let restored: SessionSnapshot = serde_json::from_value(encoded).unwrap();
+        let mut replay = restored.into_resume().unwrap().checkpoint.unwrap();
+        assert_eq!(replay.late_wake_id(), Some(second.as_str()));
+        replay.conversation.append([ResponseItem::message(
+            MessageRole::Developer,
+            [ContentItem::InputText {
+                text: "later developer context".into(),
+            }],
+        )]);
+        replay.conversation.commit_tail();
+        assert_eq!(replay.late_wake_id(), Some(second.as_str()));
+        let replayed = CommittedSession::new(Arc::from("lineage"), Model::Astra, replay).snapshot();
+        assert_eq!(
+            serde_json::to_value(replayed).unwrap()["pending_late_wake"],
+            second
+        );
     }
 
     #[test]
@@ -846,42 +909,5 @@ mod context_accounting_snapshot_tests {
         legacy.as_object_mut().unwrap().remove("context_usage");
         let legacy: SessionSnapshot = serde_json::from_value(legacy).unwrap();
         assert!(legacy.into_resume().is_ok());
-    }
-}
-
-#[cfg(test)]
-mod late_wake_tests {
-    use super::*;
-
-    #[test]
-    fn wake_identity_tracks_only_the_terminal_receipt_tail() {
-        let terminal = |id: &str| {
-            let mut item = ResponseItem::function_call_output(
-                "job-1".to_owned(),
-                FunctionOutputBody::Text("done".into()),
-            );
-            item.set_id(Some(ResponseItemId::from_server(id.to_owned())));
-            item
-        };
-        let first = terminal("late:first");
-        let second = terminal("late:second");
-        let initial = ModelCheckpoint::late_wake_id_from_history(&[first.clone()]).unwrap();
-        let grouped =
-            ModelCheckpoint::late_wake_id_from_history(&[first.clone(), second.clone()]).unwrap();
-        assert_ne!(initial, grouped);
-        assert_eq!(
-            grouped,
-            ModelCheckpoint::late_wake_id_from_history(&[first, second]).unwrap()
-        );
-        let response = ResponseItem::message(
-            MessageRole::Assistant,
-            [ContentItem::InputText {
-                text: "finished".into(),
-            }],
-        );
-        assert!(
-            ModelCheckpoint::late_wake_id_from_history(&[terminal("late:first"), response])
-                .is_none()
-        );
     }
 }
