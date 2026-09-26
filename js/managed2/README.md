@@ -220,9 +220,10 @@ terminal result and remain responsive to commands during that provider call.
 But a terminal arriving in an active turn still waits until the *whole turn*
 ends rather than entering the next model-request boundary; queued user turns
 are then ordered after the wake. The execution journal recognizes completed
-results after compaction, but recovering a completed wake from an older
-checkpoint and notifying the Managed2 job ledger of model uptake are not
-complete. Its `checkpointed` status is not proof the model saw the output.
-The API remains 501 pending those recovery tests and live HTTP/WebSocket
-provider compatibility checks. A gated three-route canary is in `scripts/provider-canary`;
+results after compaction, and a completed wake can recover its authoritative
+journal snapshot after a lost acknowledgment. Notifying the Managed2 job ledger
+of actual model uptake is still incomplete; its `checkpointed` status is not
+proof the model saw the output. The API remains 501 pending active-boundary
+delivery, broader crash/replay tests, and live HTTP/WebSocket provider
+compatibility checks. A gated three-route canary is in `scripts/provider-canary`;
 its fixture tests do not establish live provider acceptance.
