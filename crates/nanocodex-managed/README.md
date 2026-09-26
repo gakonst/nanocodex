@@ -10,6 +10,12 @@ credentials or application environment variables.
 The existing `set_model`, `set_thinking`, `set_reasoning_mode`, and
 `set_fast_mode` methods patch individual fields for subsequent turns.
 
+`ManagedClient::fork(parent_agent_id, idempotency_key)` posts an empty body to
+`/v1/agents/{parent_agent_id}/forks`. The service returns a child `AgentReceipt`
+from the parent's latest committed model boundary. Reuse the same key to
+reconcile uncertain admission; no transcript or side prompt is submitted to the
+parent.
+
 Durable schedules are exposed through `triggers`, `trigger`, `put_trigger`,
 and `delete_trigger`. `CronTriggerConfig` contains the complete cron expression,
 timezone, prompt, enabled state, and `CronSessionMode` (`New` or `Continue`).

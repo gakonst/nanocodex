@@ -119,6 +119,15 @@ pub trait LifecycleBackend: Send + Sync + 'static {
     /// Reads the latest safe model-visible context.
     fn context(&self) -> BackendFuture<Result<AgentSessionContext>>;
 
+    /// Copies the latest safe committed model boundary for external resumption.
+    fn snapshot(&self) -> BackendFuture<Result<SessionSnapshot>> {
+        Box::pin(async {
+            Err(NanocodexError::InvalidRequest(
+                "backend cannot snapshot model boundaries".into(),
+            ))
+        })
+    }
+
     /// Captures a reconstructable local child driver boundary.
     fn child_snapshot(&self) -> BackendFuture<Result<ChildRuntimeSnapshot>> {
         Box::pin(async {
@@ -510,11 +519,22 @@ impl LifecycleBackend for LocalLifecycle {
         })
     }
 
-    fn child_snapshot(&self) -> BackendFuture<Result<ChildRuntimeSnapshot>> {
+    fn snapshot(&self) -> BackendFuture<Result<SessionSnapshot>> {
         let commands = self.commands.clone();
         let shutdown = self.shutdown.clone();
         Box::pin(async move {
             request_command(&commands, &shutdown, |result| Command::Snapshot { result }).await
+        })
+    }
+
+    fn child_snapshot(&self) -> BackendFuture<Result<ChildRuntimeSnapshot>> {
+        let commands = self.commands.clone();
+        let shutdown = self.shutdown.clone();
+        Box::pin(async move {
+            request_command(&commands, &shutdown, |result| Command::ChildSnapshot {
+                result,
+            })
+            .await
         })
     }
 

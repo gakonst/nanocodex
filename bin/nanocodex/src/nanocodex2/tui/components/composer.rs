@@ -63,6 +63,8 @@ pub(crate) enum ComposerEffect {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum SettingsCommand {
     Bug(String),
+    Btw(String),
+    CloseBtw,
     Attach,
     AutoRoute,
     Reload,
@@ -81,6 +83,14 @@ impl SettingsCommand {
         let mut parts = input.split_whitespace();
         let command = parts.next()?;
         match command {
+            "/btw" => Some(Self::Btw(
+                input.trim_start()[command.len()..].trim().to_owned(),
+            )),
+            "/close" => Some(if parts.next().is_some() {
+                Self::Invalid("Usage: /close".into())
+            } else {
+                Self::CloseBtw
+            }),
             "/bug" => Some(Self::Bug(
                 input.trim_start()[command.len()..].trim().to_owned(),
             )),
@@ -1088,6 +1098,15 @@ impl Composer {
                 return Some(ComposerUpdate::effect(
                     ComposerEffect::Settings(SettingsCommand::Invalid(
                         "Usage: /autoroute without attachments".into(),
+                    )),
+                    false,
+                ));
+            }
+            if self.draft.split_whitespace().next() == Some("/btw") {
+                return Some(ComposerUpdate::effect(
+                    ComposerEffect::Settings(SettingsCommand::Invalid(
+                        "Use /btw with text only; attach images in the side pane after it opens."
+                            .into(),
                     )),
                     false,
                 ));

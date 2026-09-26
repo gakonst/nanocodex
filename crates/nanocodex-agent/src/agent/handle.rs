@@ -496,6 +496,14 @@ impl Nanocodex {
         self.backend.context().await
     }
 
+    /// Copies the latest committed model boundary without changing this agent.
+    ///
+    /// The caller owns its unredacted model-visible history. This fails before
+    /// the first safe boundary or after the driver stops, even during a turn.
+    pub async fn snapshot(&self) -> Result<SessionSnapshot> {
+        self.backend.snapshot().await
+    }
+
     /// Rehydrates a child driver from this runtime's in-memory identity and history.
     #[doc(hidden)]
     pub async fn restore_child(

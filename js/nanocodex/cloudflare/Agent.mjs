@@ -6,6 +6,7 @@ import { responseControlsBody, responseControlsSocket } from "../runtime/respons
 import * as HostAgent from "../host/Agent.mjs";
 import {
   CLOUDFLARE_SESSION_RESERVATION,
+  checkpoint as checkpointAgent,
   commitCloudflareAgentSession,
   installHostBridge,
   loadDurabilityRuntime,
@@ -38,6 +39,7 @@ import {
 const STARTUP_TIMEOUT_MS = 10_000;
 const INTERNAL_RUNTIME = Symbol.for("nanocodex.cloudflare.internalRuntime");
 const INTERNAL_CONFIGURATION = Symbol.for("nanocodex.cloudflare.internalConfiguration");
+const INTERNAL_FORK_RESUME = Symbol.for("nanocodex.cloudflare.internalForkResume");
 const EPHEMERAL_APPLICATION_OPTIONS = new Set([
   "beforeCompaction",
   "additionalInstructions",
@@ -70,12 +72,18 @@ export function bindAgent(module, hostAgent = HostAgent) {
     pruneDurableReceipts: (owner, options) => pruneDurableReceipts(module, owner, options),
     create: (owner, options) => create(module, owner, options, hostAgent),
     createEphemeral: (owner, options) => createEphemeral(module, owner, options),
+    checkpoint,
     destroy,
     exportDurabilityState,
     exportDurabilityHead,
     importDurabilityState: (owner, archive) => importDurabilityState(owner, archive, module),
     route,
   });
+}
+
+/** Copies the latest safe committed boundary as a resumable SessionSnapshot. */
+export function checkpoint(agent) {
+  return checkpointAgent(agent);
 }
 
 /** Atomically steers an active Cloudflare Agent turn or starts a new turn. */
@@ -122,6 +130,7 @@ export function destroy(owner) {
         stateId,
       );
     }
+    storage.sql.exec("DROP TABLE IF EXISTS nanocodex_cloudflare_fork_resume");
     clearCloudflareEventSocket(context);
   });
 }
@@ -304,7 +313,37 @@ async function createPrepared(module, resolved, options, hostAgent, lifecycle, p
   const signal = runtime.preparationSignal;
   signal?.throwIfAborted();
   createCloudflareDurabilityStore(resolved.context.storage);
+  initializeAgentStorage(resolved.context.storage);
+  const pristineAtStart = storedSessionId(resolved.context.storage) === undefined
+    && storedStateId(resolved.context.storage) === undefined;
+  const initialForkResume = options?.[INTERNAL_FORK_RESUME];
+  let initialForkDigest;
+  if (initialForkResume !== undefined) {
+    if (!initialForkResume || typeof initialForkResume !== "object" || Array.isArray(initialForkResume))
+      throw new TypeError("Cloudflare Agent fork resume must be a SessionSnapshot");
+    const bytes = new Uint8Array(await crypto.subtle.digest("SHA-256",
+      new TextEncoder().encode(JSON.stringify(initialForkResume))));
+    initialForkDigest = [...bytes].map(byte => byte.toString(16).padStart(2, "0")).join("");
+  }
   const { sessionId, stateId } = durableIdentity(resolved.context.storage, options.durabilityId);
+  if (initialForkDigest !== undefined) {
+    // Pin the seed before optional tool discovery/transport preparation. A
+    // failed preparation can reopen the exact fork with the same snapshot.
+    resolved.context.storage.sql.exec(`CREATE TABLE IF NOT EXISTS nanocodex_cloudflare_fork_resume (
+      singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+      state_id TEXT NOT NULL, digest TEXT NOT NULL
+    )`);
+    const previous = resolved.context.storage.sql.exec(
+      "SELECT state_id, digest FROM nanocodex_cloudflare_fork_resume WHERE singleton = 1",
+    ).toArray()[0];
+    if ((!pristineAtStart && !previous) || (previous
+      && (previous.state_id !== stateId || previous.digest !== initialForkDigest))) {
+      throw new Error("Cloudflare Agent fork resume conflicts with its retained seed");
+    }
+    resolved.context.storage.sql.exec(
+      "INSERT OR IGNORE INTO nanocodex_cloudflare_fork_resume(singleton,state_id,digest) VALUES (1,?,?)",
+      stateId, initialForkDigest);
+  }
   const endpoint = cloudflareEgress({ binding: scopeCloudflareEgress(resolved.egress, resolved.subject) });
   const connection = prepareConnection(endpoint, sessionId, signal);
   let completing;
@@ -328,10 +367,12 @@ async function createPrepared(module, resolved, options, hostAgent, lifecycle, p
         if (prepared?.durabilityId !== stateId
           || ["model", "reasoning_mode"].some(key => pinned?.[key] !== configuration[key])
           || runtime?.prepare !== undefined || runtime?.workersAi !== undefined || runtime?.gateway !== undefined
-          || (runtime?.inferenceForSession !== undefined && runtime?.preserveRootTransport !== true)) {
+          || (runtime?.inferenceForSession !== undefined && runtime?.preserveRootTransport !== true)
+          || (initialForkDigest !== undefined && JSON.stringify(prepared?.[INTERNAL_FORK_RESUME]) !== JSON.stringify(initialForkResume))) {
           throw new Error("Cloudflare Agent preparation changed its pinned transport or configuration");
         }
-        return createOwned(module, resolved, prepared, hostAgent, lifecycle, connection);
+        return createOwned(module, resolved, prepared, hostAgent, lifecycle, connection,
+          pristineAtStart ? { sessionId, stateId } : undefined);
       });
       void completing.catch(() => {});
       return completing;
@@ -350,7 +391,7 @@ async function createPrepared(module, resolved, options, hostAgent, lifecycle, p
   }
 }
 
-async function createOwned(module, resolved, options, hostAgent, lifecycle, preparedConnection) {
+async function createOwned(module, resolved, options, hostAgent, lifecycle, preparedConnection, pristinePreparedIdentity) {
   const { context, egress, subject } = resolved;
   const configured = applicationOptions(options);
   const {
@@ -358,6 +399,7 @@ async function createOwned(module, resolved, options, hostAgent, lifecycle, prep
     eventPersistence = "durable",
     [INTERNAL_RUNTIME]: internalRuntime,
     [INTERNAL_CONFIGURATION]: internalConfiguration,
+    [INTERNAL_FORK_RESUME]: forkResume,
     ...agentOptions
   } = configured;
   if (internalRuntime !== undefined
@@ -401,7 +443,54 @@ async function createOwned(module, resolved, options, hostAgent, lifecycle, prep
     : undefined;
   if (eventPersistence === "caller") clearCloudflareEventSocket(context);
   const durability = createCloudflareDurabilityStore(context.storage);
+  let resumeDigest;
+  if (forkResume !== undefined) {
+    if (!forkResume || typeof forkResume !== "object" || Array.isArray(forkResume)) {
+      throw new TypeError("Cloudflare Agent fork resume must be a SessionSnapshot");
+    }
+    initializeAgentStorage(context.storage);
+    context.storage.sql.exec(`CREATE TABLE IF NOT EXISTS nanocodex_cloudflare_fork_resume (
+      singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+      state_id TEXT NOT NULL, digest TEXT NOT NULL
+    )`);
+    const digestBytes = new Uint8Array(await crypto.subtle.digest("SHA-256",
+      new TextEncoder().encode(JSON.stringify(forkResume))));
+    resumeDigest = [...digestBytes].map(byte => byte.toString(16).padStart(2, "0")).join("");
+    const recordedSeed = context.storage.sql.exec(
+      "SELECT state_id, digest FROM nanocodex_cloudflare_fork_resume WHERE singleton = 1",
+    ).toArray()[0];
+    const existingSessionId = storedSessionId(context.storage);
+    const existingStateId = storedStateId(context.storage);
+    // The preparation barrier may have installed the new identity already. A
+    // failed/restarted child construction may retain that identity and a
+    // revision-zero owner fence, but still has no executed checkpoint. The
+    // durable seed is unchanged; allow that cold retry and reject any real head.
+    if ((existingSessionId !== undefined || existingStateId !== undefined)
+      && !((pristinePreparedIdentity?.sessionId === existingSessionId
+          && pristinePreparedIdentity?.stateId === existingStateId)
+        || (existingSessionId !== undefined && existingStateId !== undefined
+          && (durabilityId === undefined || existingStateId === durabilityId)
+          && recordedSeed?.state_id === existingStateId
+          && recordedSeed?.digest === resumeDigest))) {
+      throw new Error("Cloudflare Agent fork resume requires a pristine Durable Object");
+    }
+    if (recordedSeed && (recordedSeed.digest !== resumeDigest
+      || (existingStateId !== undefined && recordedSeed.state_id !== existingStateId))) {
+      throw new Error("Cloudflare Agent fork resume conflicts with its retained seed");
+    }
+    const checkStateId = existingStateId ?? durabilityId;
+    if (checkStateId !== undefined && context.storage.sql.exec(
+      "SELECT revision, payload FROM nanocodex_durable_states WHERE state_id = ?", checkStateId,
+    ).toArray().some(row => row.revision !== "0" || row.payload !== null)) {
+      throw new Error("Cloudflare Agent fork resume requires pristine durability state");
+    }
+  }
   const { sessionId, stateId } = durableIdentity(context.storage, durabilityId);
+  if (resumeDigest !== undefined) {
+    context.storage.sql.exec(
+      "INSERT OR IGNORE INTO nanocodex_cloudflare_fork_resume(singleton,state_id,digest) VALUES (1,?,?)",
+      stateId, resumeDigest);
+  }
   const workersAi = internalRuntime?.workersAi;
   const gateway = internalRuntime?.gateway;
   if (gateway !== undefined && (workersAi !== undefined
@@ -546,6 +635,7 @@ async function createOwned(module, resolved, options, hostAgent, lifecycle, prep
       sessionId,
       durability,
       durabilityId: stateId,
+      ...(forkResume === undefined ? {} : { resume: forkResume }),
     });
     // Managed voice needs the durable session before the separate Responses
     // relay is ready. Its preconnection remains owned by the host and a later

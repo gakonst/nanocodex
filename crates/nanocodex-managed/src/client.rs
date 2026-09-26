@@ -215,6 +215,55 @@ impl ManagedClient {
         validate_agent_receipt(receipt)
     }
 
+    /// Forks a managed agent at the service's latest committed model boundary.
+    ///
+    /// The fork request contains no prompt or copied transcript. The supplied
+    /// idempotency key must be reused when reconciling an uncertain admission;
+    /// transport retries reuse that same key. A fork is a separate agent and
+    /// submitting to it does not submit to the parent.
+    ///
+    /// # Errors
+    ///
+    /// Returns validation, transport, HTTP, or response-schema failures.
+    pub async fn fork(
+        &self,
+        parent_agent_id: &str,
+        idempotency_key: &str,
+    ) -> Result<AgentReceipt, ManagedError> {
+        validate_id("agent", parent_agent_id)?;
+        validate_idempotency_key(idempotency_key)?;
+        let path = format!("{}/forks", agent_path(parent_agent_id));
+        let mut last_transport = None;
+        for _ in 0..SUBMIT_ATTEMPTS {
+            match self
+                .request(Method::POST, &path, None, Some(idempotency_key))
+                .await
+            {
+                Ok(response) => match decode_response(response).await {
+                    Ok(receipt) => {
+                        let receipt = validate_agent_receipt(receipt)?;
+                        if receipt.agent_id == parent_agent_id
+                            || receipt.parent_agent_id.as_deref() != Some(parent_agent_id)
+                            || validate_id("agent", &receipt.agent_id).is_err()
+                        {
+                            return Err(ManagedError::InvalidResponse(
+                                "fork response did not identify a separate child of the requested parent",
+                            ));
+                        }
+                        return Ok(receipt);
+                    }
+                    Err(ManagedError::Transport(error)) => last_transport = Some(error),
+                    Err(error) => return Err(error),
+                },
+                Err(ManagedError::Transport(error)) => last_transport = Some(error),
+                Err(error) => return Err(error),
+            }
+        }
+        Err(ManagedError::Transport(last_transport.ok_or(
+            ManagedError::InvalidResponse("fork retry lost its transport error"),
+        )?))
+    }
+
     /// Creates an agent with its initial model and reasoning policy.
     ///
     /// # Errors

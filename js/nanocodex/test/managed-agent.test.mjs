@@ -63,6 +63,28 @@ test("managed Agent retries creation with one stable identity", async () => {
   assert.match(keys[0], /^managed-create:[0-9a-f-]{36}$/);
 });
 
+test("managed Agent checkpoint fork creates a separate child with no prompt body", async () => {
+  const childId = "0198d3f0-8844-7000-8000-000000000002";
+  const calls = [];
+  const parent = Agent.open(agentId, { baseUrl: origin, apiKey, fetch: async (input, init) => {
+    const request = new Request(input, init);
+    calls.push({ path: new URL(request.url).pathname, body: await request.text(),
+      key: request.headers.get("idempotency-key") });
+    return Response.json({ agent_id: childId, session_id: childId, parent_agent_id: agentId }, { status: 201 });
+  }});
+  const child = await parent.fork({ idempotencyKey: "stable-side-fork" });
+  assert.equal(child.id, childId);
+  assert.equal(calls.length, 1);
+  assert.deepEqual(calls[0], {
+    path: `/v1/agents/${agentId}/forks`, body: "", key: "stable-side-fork",
+  });
+  await assert.rejects(parent.fork({ idempotencyKey: "bad key" }), /idempotency key/);
+  assert.equal(calls.length, 1);
+  const forged = Agent.open(agentId, { baseUrl: origin, apiKey, fetch: async () =>
+    Response.json({ agent_id: agentId, parent_agent_id: agentId }, { status: 201 }) });
+  await assert.rejects(forged.fork({ idempotencyKey: "safe" }), /separate child/);
+});
+
 test("managed server authentication sends only an ncx_live bearer and omits cookies", async () => {
   let captured;
   const agents = await Agent.list({

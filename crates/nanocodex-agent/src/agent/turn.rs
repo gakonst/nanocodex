@@ -492,7 +492,11 @@ pub(super) enum Command {
         checkpoint: Option<Arc<CommittedSession>>,
         result: oneshot::Sender<Result<(Nanocodex, AgentEvents)>>,
     },
+    /// Captures the latest committed, resumable model boundary without mutating the driver.
     Snapshot {
+        result: oneshot::Sender<Result<SessionSnapshot>>,
+    },
+    ChildSnapshot {
         result: oneshot::Sender<Result<ChildRuntimeSnapshot>>,
     },
     Spawn {

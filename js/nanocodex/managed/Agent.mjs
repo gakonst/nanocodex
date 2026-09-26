@@ -285,6 +285,22 @@ function agentHandle(client, id, summary, retainedEventStream) {
     id,
     ...(summary === undefined ? {} : { summary }),
     events,
+    fork: async (options) => {
+      if (!options || typeof options !== "object" || Array.isArray(options)
+        || Object.keys(options).some(key => !["idempotencyKey", "signal"].includes(key))
+        || typeof options.idempotencyKey !== "string"
+        || !IDEMPOTENCY_KEY.test(options.idempotencyKey)) {
+        throw new TypeError("managed fork requires a valid idempotency key");
+      }
+      if (options.signal !== undefined && !(options.signal instanceof AbortSignal))
+        throw new TypeError("managed fork signal must be an AbortSignal");
+      const receipt = await retryCreateMutation(client, `${agentPath(id)}/forks`,
+        options.idempotencyKey, undefined, options.signal);
+      const childId = requiredString(receipt, "agent_id");
+      if (!SESSION_ID.test(childId) || childId === id || receipt.parent_agent_id !== id)
+        throw new ManagedError("invalid_response", "managed fork response did not identify a separate child");
+      return agentHandle(client, childId);
+    },
     // Activation is explicit: passive event/history readers never warm a model.
     prepare: (options = {}) => client.json(`${agentPath(id)}/prepare`, {
       method: "POST", ...(options.signal === undefined ? {} : { signal: options.signal }),
