@@ -1,6 +1,7 @@
 -- Existing watches establish a silent snapshot baseline on their next full scan.
 ALTER TABLE crm_calendar_push_sources ADD COLUMN notifications_initialized INTEGER NOT NULL DEFAULT 0;
-UPDATE crm_calendar_push_sources SET sync_token=NULL,page_token=NULL,check_at=0;
+-- Invalidate prior seen rows so missing-event repair cannot skip stale entries.
+UPDATE crm_calendar_push_sources SET sync_token=NULL,page_token=NULL,check_at=0,generation=lower(hex(randomblob(16)));
 CREATE TABLE calendar_notification_snapshots (
  source_id TEXT NOT NULL REFERENCES crm_calendar_push_sources(id) ON DELETE CASCADE,
  event_id TEXT NOT NULL,
