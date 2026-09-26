@@ -1,3 +1,5 @@
+import { handleGmailPush, gmailMailboxName, type GmailPushIngressEnv } from "./gmail-push-ingress";
+export { GmailPushMailbox } from "./gmail-push";
 import { cachedAccountMetadata, validDiscoveryOptions } from "./metadata-cache";
 import { consumeRpcData } from "nanocodex/cloudflare/rpc";
 import type { CloudflareAccountCatalogResult, CloudflareAccountVaultResult, CloudflareAccountDiscoveryResult } from "nanocodex/cloudflare/egress";
@@ -215,7 +217,7 @@ const CONNECTOR_OPERATIONS: readonly ConnectorOperation[] = [
   },
 ];
 
-export interface EgressEnv extends BrokerEnv, ConnectorBrokerEnv, IngressPlacement {
+export interface EgressEnv extends BrokerEnv, ConnectorBrokerEnv, IngressPlacement, GmailPushIngressEnv {
   trustedPlacementRegion?: DurableObjectLocationHint;
   USER_CREDENTIALS: DurableObjectNamespace<UserCredentialBroker>;
   USER_CONNECTORS: DurableObjectNamespace<UserConnectorBroker>;
@@ -426,6 +428,7 @@ const OPERATIONS: readonly ModelOperation[] = [
 
 export default class Egress extends WorkerEntrypoint<EgressEnv> {
   fetch(request: Request): Promise<Response> {
+    if (new URL(request.url).pathname.startsWith("/v1/gmail-push/")) return handleGmailPush(request, this.env);
     return handleEgress(request, this.env, this.ctx);
   }
 
@@ -2003,6 +2006,22 @@ function closeSponsoredSocket(socket: WebSocket, code: number, reason: string): 
 async function handleControl(request: Request, url: URL, env: EgressEnv): Promise<Response> {
   // This control API is service-binding only; public model egress never enters it.
   env = { ...env, trustedClientIngressColo: ingressColo(request.headers.get(TRUSTED_INGRESS_HEADER)) };
+  const gmailPush = /^\/users\/([A-Za-z0-9][A-Za-z0-9._:-]{0,127})\/gmail-push\/([A-Za-z0-9][A-Za-z0-9._:-]{0,127})$/.exec(url.pathname);
+  if (gmailPush) {
+    if (!env.GMAIL_PUSH_MAILBOXES) return jsonError(503, "gmail_push_unavailable");
+    if (!["PUT", "GET", "DELETE"].includes(request.method)) return jsonError(405, "method_not_allowed");
+    const userId = gmailPush[1]!;
+    const connectionId = gmailPush[2]!;
+    if (!env.GMAIL_PUSH_OWNER_ID || !env.GMAIL_PUSH_CONNECTION_ID || !env.GMAIL_PUSH_AUDIENCE
+      || !env.GMAIL_PUSH_SERVICE_ACCOUNT || !env.GMAIL_PUSH_SUBSCRIPTION) return jsonError(503, "gmail_push_unconfigured");
+    if (userId !== env.GMAIL_PUSH_OWNER_ID || connectionId !== env.GMAIL_PUSH_CONNECTION_ID) return jsonError(403, "gmail_push_mailbox_denied");
+    const body = request.method === "PUT" || request.method === "DELETE" ? await readJson(request, MAX_CONTROL_BODY_BYTES) : undefined;
+    return env.GMAIL_PUSH_MAILBOXES.getByName(gmailMailboxName(userId, connectionId)).fetch("https://gmail-push.internal/configure", {
+      method: request.method,
+      headers: { "content-type": "application/json" },
+      ...(body ? { body: JSON.stringify({ ...body, userId, connectionId }) } : {}),
+    });
+  }
   const subjectMatch = url.pathname.match(/^\/subjects\/([A-Za-z0-9_-]{43,128})$/);
   if (subjectMatch) {
     // Versioned subjects are owned and revoked by their Session DO. Never

@@ -56,6 +56,7 @@
     ]
   },
   "services": [
+    { "binding": "GMAIL_PUSH_EGRESS", "service": "nanocodex-egress" },
     { "binding": "NANOCODEX_X", "service": "nanocodex-x" },
     {
       "binding": "NANOCODEX_BACKEND",
@@ -217,6 +218,7 @@
     "development": {
       "name": "nanocodex",
       "services": [
+        { "binding": "GMAIL_PUSH_EGRESS", "service": "nanocodex-egress", "remote": false },
         { "binding": "NANOCODEX_X", "service": "nanocodex-x", "remote": false },
         {
           "binding": "NANOCODEX_BACKEND",

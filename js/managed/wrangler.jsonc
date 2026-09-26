@@ -97,6 +97,7 @@
   ],
   "durable_objects": {
     "bindings": [
+      { "name": "NANOCODEX_CALENDAR_PUSH", "class_name": "CalendarPushDelivery" },
       { "name": "NANOCODEX_INFERENCE_KEYS", "class_name": "InferenceKey" },
       { "name": "NANOCODEX_INFERENCE_ACCOUNTS", "class_name": "InferenceAccount" },
       { "name": "NANOCODEX_INFERENCE_SESSIONS", "class_name": "InferenceSession" },
@@ -187,7 +188,8 @@
     { "tag": "v9", "new_sqlite_classes": ["PhoneContainer"] },
     { "tag": "v10", "new_sqlite_classes": ["ProviderProbeCoordinator"] },
     { "tag": "v11", "new_sqlite_classes": ["InferenceKey", "InferenceAccount", "InferenceSession"] },
-    { "tag": "v12", "new_sqlite_classes": ["MeetingPreview"] }
+    { "tag": "v12", "new_sqlite_classes": ["MeetingPreview"] },
+    { "tag": "v13", "new_sqlite_classes": ["CalendarPushDelivery"] }
   ],
   "vars": {
     "NANOCODEX_THREAD_ROUTING": "true",
@@ -249,6 +251,7 @@
       "ai_search": [],
       "durable_objects": {
         "bindings": [
+          { "name": "NANOCODEX_CALENDAR_PUSH", "class_name": "CalendarPushDelivery" },
           { "name": "NANOCODEX_SESSIONS", "class_name": "DurableAgentSession" },
           { "name": "NANOCODEX_ACCOUNT_TOOLS", "class_name": "AccountHostedTools" },
           { "name": "NANOCODEX_VM_HOST_POOLS", "class_name": "VmHostPool" },

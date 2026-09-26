@@ -1,3 +1,10 @@
+import { calendarPushConfig } from "./calendar-push-config";
+import { configureCalendarPush, receiveCalendarPush, reconcileCalendarPush, renewCalendarPush, disableCalendarPush } from "./calendar-push";
+import { CalendarPushDelivery } from "./calendar-push-delivery";
+export { CalendarPushDelivery };
+import { importCrmEmailPush } from "./crm-email";
+import { gmailPushConfig } from "./gmail-push-config";
+import { parseGmailPushWake, gmailPushPrompt, type GmailPushWakeResult } from "./gmail-push-wake";
 import { OutputCheckpoints } from "./output-checkpoints";
 import { turnCanUseExecutionNamespace, turnCanProvisionExecutionProvider, executionMountAllowed, executionMountPeers, executionMountOwner } from "./execution-policy";
 export { turnCanUseExecutionNamespace } from "./execution-policy";
@@ -83,6 +90,7 @@ import { managedCodeEvaluator } from "./code-evaluator";
 import { CronTriggers, CRON_TRIGGER_ID, cronTriggerView, nextCronRun, parseCronTrigger, type CronTriggerConfig } from "./cron-triggers";
 import { createCronTool, cronManagementTools, type CronManagementInput } from "./cron-tool";
 import { crmTools, CRM_INSTRUCTIONS } from "./crm-tools";
+import { workspacePushTools } from "./workspace-push-tools";
 import { Goals, goalContinuation } from "./goals";
 import { createGoalTools } from "./goal-tools";
 import { GoalRuntime, parseGoalCommand } from "./goal-runtime";
@@ -397,6 +405,7 @@ export interface Env extends
   HostPrincipalEnv {
   AI?: RoutingAi;
   NANOCODEX_CRM?: D1Database;
+  NANOCODEX_CALENDAR_PUSH?: DurableObjectNamespace<CalendarPushDelivery>;
   /** Deployment-owned provider secrets; never accepted in thread configuration. */
   OPENROUTER_API_KEY?: string;
   AI_GATEWAY_API_KEY?: string;
@@ -1492,6 +1501,10 @@ async function managedFetchRoute(
 ): Promise<Response> {
     env = withIngressPlacement(env, clientIngressColo);
     const url = new URL(request.url);
+    if (url.pathname === "/v1/calendar-push/callback" && !url.search) {
+      if (!env.NANOCODEX_CRM || !env.NANOCODEX_CALENDAR_PUSH) return new Response(null, { status: 503 });
+      return receiveCalendarPush(env.NANOCODEX_CRM, request, (source, agent) => env.NANOCODEX_CALENDAR_PUSH!.getByName(source).enqueue(source, agent));
+    }
     const inference = await routeInferenceApi(request, env, url, trustedAgentPrincipal, ctx);
     if (inference) return inference;
     const meetingPreview = await routeMeetingPreview(request, env, url);
@@ -2371,6 +2384,29 @@ async function managedFetchRoute(
     sessionHeaders.delete("x-nanocodex-vm-renewal");
     forwardPrincipalAssertions(sessionHeaders, principal);
     const publicOrigin = `public_origin=${encodeURIComponent(url.origin)}`;
+    if (resource.startsWith("calendar-push/")) {
+      if (!/^calendar-push\/[A-Za-z0-9_-]{43}$/.test(resource) || [...url.searchParams.keys()].some(k => k !== "calendar_id") || url.searchParams.getAll("calendar_id").length > 1) return json({error:"invalid_request"},{status:400});
+      if (!["GET", "PUT", "DELETE"].includes(request.method)) return json({error:"method_not_allowed"},{status:405});
+      if ((principal.kind !== "account_session" && principal.kind !== "api_key") || principal.connectGrant
+        || !principal.capabilities.includes(request.method === "GET" ? "agents:read" : "agents:write")
+        || !principal.capabilities.includes("tools:use")) return json({error:"forbidden"},{status:403});
+      if (request.method !== "GET") { const failure = requireSameOriginMutation(request, url, principal); if (failure) return failure; }
+      return stub.fetch(`https://session.internal/${resource}${url.search}`, {method:request.method, headers:sessionHeaders, body:request.body, signal:request.signal});
+    }
+    if (resource.startsWith("gmail-push/")) {
+      if (!/^gmail-push\/[A-Za-z0-9_-]{1,256}$/.test(resource) || url.search) return json({error:"invalid_request"},{status:400});
+      if (!["GET", "PUT", "DELETE"].includes(request.method)) return json({error:"method_not_allowed"},{status:405});
+      if ((principal.kind !== "account_session" && principal.kind !== "api_key") || principal.connectGrant
+        || !principal.capabilities.includes(request.method === "GET" ? "agents:read" : "agents:write")
+        || !principal.capabilities.includes("tools:use")) return json({error:"forbidden"},{status:403});
+      if (request.method !== "GET") {
+        const failure = requireSameOriginMutation(request, url, principal);
+        if (failure) return failure;
+      }
+      return stub.fetch(`https://session.internal/${resource}`, {
+        method: request.method, headers: sessionHeaders, body: request.body, signal: request.signal,
+      });
+    }
     if (resource === "vm-host") {
       if (url.search !== "") return json({ error: "invalid_request" }, { status: 400 });
       if (request.method !== "GET" || request.headers.get("upgrade")?.toLowerCase() !== "websocket") {
@@ -3060,8 +3096,31 @@ function createManagedNamespaceRuntime(
 
 /** Private, ownership-only capability for the credential broker. */
 export class ManagedAgentOwnership extends WorkerEntrypoint<Env> {
+  /** Private account-service binding; deliberately absent from public HTTP routing. */
+  async gmailPushWake(value: unknown): Promise<GmailPushWakeResult> {
+    const input = parseGmailPushWake(value);
+    return this.env.NANOCODEX_SESSIONS.getByName(input.agentId).gmailPushWake(input);
+  }
+
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
+    if (request.method === "POST" && url.hostname === "managed-ownership.internal"
+      && url.pathname === "/v1/gmail-push/wake" && !url.search) {
+      let value: unknown;
+      try { value = parseGmailPushWake(await request.json()); }
+      catch { return json({ error: "invalid_gmail_push_wake" }, { status: 400 }); }
+      try { return json(await this.gmailPushWake(value)); }
+      catch (error) {
+        if (error instanceof Error && error.message === "gmail_push_owner_forbidden") {
+          return json({ error: "gmail_push_owner_forbidden" }, { status: 403 });
+        }
+        if (error instanceof Error && error.message.startsWith("gmail_push_idempotency_conflict:")) {
+          return json({ error: "idempotency_conflict" }, { status: 409 });
+        }
+        if (error instanceof ManagedRequestError) return json({ error: error.code }, { status: error.status });
+        throw error;
+      }
+    }
     if (request.method !== "GET" || url.hostname !== "managed-ownership.internal"
       || url.pathname !== "/v1/resolve" || request.body !== null
       || [...url.searchParams.keys()].some((key) => key !== "subject")
@@ -3646,6 +3705,117 @@ export class DurableAgentSession extends DurableComputerObject {
     });
   }
 
+  #calendarPushQueue: Promise<unknown> = Promise.resolve();
+  #calendarPushSerial<T>(run: () => Promise<T>): Promise<T> {
+    const result = this.#calendarPushQueue.then(run);
+    this.#calendarPushQueue = result.catch(() => {});
+    return result;
+  }
+
+  /** Private delivery RPC. The persisted source binds agent, owner and connection;
+   * callbacks cannot choose any of those authorities. No model turn is started. */
+  async calendarPushReconcile(id: string): Promise<{ enabled: boolean; complete: boolean; nextAt?: number }> {
+    return this.#calendarPushSerial(() => this.#reconcileCalendarPush(id));
+  }
+  async #reconcileCalendarPush(id: string): Promise<{ enabled: boolean; complete: boolean; nextAt?: number }> {
+    const session = this.#session();
+    if (!session || this.#deleting || this.#deleted || session.runtime_profile !== "managed" || !this.env.NANOCODEX_CRM) return {enabled:false,complete:true};
+    const row = await this.env.NANOCODEX_CRM.withSession("first-primary").prepare("SELECT connection_id FROM crm_calendar_push_sources WHERE id=? AND owner_id=? AND agent_id=? AND enabled=1")
+      .bind(id,session.owner_id,session.session_id).first<{connection_id:string}>();
+    if (!row) return {enabled:false,complete:true};
+    const options = this.#calendarPushOptions(row.connection_id);
+    try { await renewCalendarPush(options,id); } catch { /* Renewal persists its own backoff/error; data sync still runs. */ }
+    let result: Awaited<ReturnType<typeof reconcileCalendarPush>>;
+    try { result = await reconcileCalendarPush(options,id); }
+    catch (error) {
+      await this.env.NANOCODEX_CRM.prepare("UPDATE crm_calendar_push_sources SET last_error='calendar_sync_failed' WHERE id=?").bind(id).run();
+      throw error;
+    }
+    await this.env.NANOCODEX_CRM.prepare("UPDATE crm_calendar_push_sources SET last_error=renewal_error WHERE id=?").bind(id).run();
+    const state = await this.env.NANOCODEX_CRM.prepare("SELECT dirty,check_at,renew_at FROM crm_calendar_push_sources WHERE id=?").bind(id).first<{dirty:number;check_at:number;renew_at:number}>();
+    return {enabled:true,complete:result.complete,nextAt:state && !state.dirty && result.complete ? Math.min(state.check_at,state.renew_at) : Date.now()+1000};
+  }
+
+  #calendarPushOptions(connectionId: string) {
+    const session = this.#session()!;
+    const epoch = session.authorization_epoch, owner = session.owner_id, agent = session.session_id;
+    const authorize = () => {
+      const current = this.#session();
+      if (!current || current.owner_id !== owner || current.session_id !== agent || current.authorization_epoch !== epoch || this.#deleting || this.#deleted) throw new Error("calendar_push_owner_forbidden");
+    };
+    let prepared=false;
+    return {db:this.env.NANOCODEX_CRM!,ownerId:owner,agentId:agent,authorize,
+      callbackUrl:new URL("/v1/calendar-push/callback",session.public_origin).href,
+      enqueue:(source:string,agentId:string) => this.env.NANOCODEX_CALENDAR_PUSH!.getByName(source).enqueue(source,agentId),
+      fetch:async(request:Request) => {
+        authorize();
+        if(!prepared) {await this.#ensureCredentialBinding(session,1000);authorize();prepared=true;}
+        return handleManagedEgress(request,this.env.NANOCODEX,this.#credentialSubject(),(capability,connection) => capability === "gcalendar" && connection === connectionId);
+      }};
+  }
+
+  /** Account-bound, idempotent and idle-only Gmail event admission. */
+  async gmailPushWake(value: unknown): Promise<GmailPushWakeResult> {
+    const wake = parseGmailPushWake(value);
+    const assertOwner = (epoch?: number) => {
+      const session = this.#session();
+      if (!session || this.#deleting || this.#deleted || session.runtime_profile !== "managed"
+        || session.owner_id !== wake.userId || session.session_id !== wake.agentId
+        || (epoch !== undefined && session.authorization_epoch !== epoch)) {
+        throw new Error("gmail_push_owner_forbidden");
+      }
+      return session;
+    };
+    const epoch = assertOwner().authorization_epoch;
+    const id = `gmail:${await hashManagedInput(JSON.stringify([wake.userId, wake.agentId, wake.eventId]))}`;
+    const input = gmailPushPrompt(wake.input);
+    const requestHash = await hashManagedInput(input);
+    assertOwner(epoch);
+    // Only the authenticated broker's explicit configuration opt-in enables CRM.
+    // Generic/legacy notification text continues to use normal wake admission.
+    let emailEvent: unknown;
+    try { emailEvent = JSON.parse(wake.input); } catch { /* legacy text */ }
+    if (isRecord(emailEvent) && emailEvent.crm === true) {
+      if (!this.env.NANOCODEX_CRM) throw new Error("gmail_push_crm_unavailable");
+      const selected = emailEvent.connectionId;
+      // Fresh agents may not have prepared their credential subject yet. Bound
+      // binding attempts here leave room inside the broker's 20-second wake.
+      await this.#ensureCredentialBinding(assertOwner(epoch), 1_000);
+      assertOwner(epoch);
+      const imported = await importCrmEmailPush({
+        db: this.env.NANOCODEX_CRM, ownerId: wake.userId,
+        authorize: () => { assertOwner(epoch); },
+        fetch: request => handleManagedEgress(request, this.env.NANOCODEX, this.#credentialSubject(),
+          (capability, connectionId) => capability === "gmail" && connectionId === selected),
+      }, wake.input);
+      assertOwner(epoch);
+      if (!imported.complete) return { status: "busy", progress: true };
+    }
+    try {
+      // Existing receipts are resolved before this fence, so a duplicate remains
+      // a duplicate while another turn is active. The fence runs in the same
+      // storage transaction as admission, including after archive lookup yields.
+      const submission = await this.#submitManagedTurn(id, input, requestHash, id, true,
+        { capabilities: ["agents:read", "agents:write", "tools:use"] }, () => {
+          assertOwner(epoch);
+          if (this.#recoverableTurnCount() > 0) {
+            throw new ManagedRequestError(409, "gmail_push_busy", "agent is busy");
+          }
+        }, undefined, "schedule", {}, false);
+      return { status: submission.created ? "accepted" : "duplicate", turnId: submission.row.id };
+    } catch (error) {
+      // Durable Object RPC preserves standard Error messages, not subclass fields.
+      if (error instanceof ManagedRequestError && error.code === "idempotency_conflict") {
+        throw new Error(`gmail_push_idempotency_conflict: ${error.message}`);
+      }
+      if (error instanceof ManagedRequestError && (error.code === "gmail_push_busy"
+        || error.code === "event_stream_failed" || error.code === "durability_transfer_pending")) {
+        return { status: "busy" };
+      }
+      throw error;
+    }
+  }
+
   /** Called only by the private EmailAgentBackend binding, never by fetch routing. */
   async resumeEmail(value: unknown): Promise<EmailResumeResult> {
     const input = parseEmailResume(value);
@@ -3777,6 +3947,57 @@ export class DurableAgentSession extends DurableComputerObject {
         const result = await tool.handler(input,{callId:crypto.randomUUID(),parentCallId:"",sessionId:session.session_id,model:this.#settings().model,signal:request.signal});
         return json(result, {headers:{"cache-control":"no-store"}});
       } catch (error) { return json({error:error instanceof TypeError ? "invalid_request" : "phone_request_failed"},{status:error instanceof TypeError ? 400 : 502}); }
+    }
+    const calendarConfig = /^\/calendar-push\/([A-Za-z0-9_-]{43})$/.exec(url.pathname);
+    if (calendarConfig) return this.#calendarPushSerial(async () => {
+      const session = this.#session();
+      if (!ownerAssertion || !session || session.runtime_profile !== "managed" || this.#deleting || this.#deleted) return json({error:"not_found"},{status:404});
+      if (turnAuthorization.connectGrant) return json({error:"forbidden"},{status:403});
+      if (!["GET","PUT","DELETE"].includes(request.method)) return json({error:"method_not_allowed"},{status:405});
+      const calendar = url.searchParams.get("calendar_id") ?? "primary";
+      if (!calendar.trim() || calendar.length>1024 || /[\u0000-\u001f\u007f]/.test(calendar)) return json({error:"invalid_request"},{status:400});
+      if (request.method === "PUT") {
+        const parsed = await calendarPushConfig(request);
+        if (parsed instanceof Response) return parsed;
+      }
+      if (!this.env.NANOCODEX_CRM || !this.env.NANOCODEX_CALENDAR_PUSH) return json({error:"calendar_push_unavailable"},{status:503});
+      const options = this.#calendarPushOptions(calendarConfig[1]);
+      if (request.method === "PUT") {
+        const configured = await configureCalendarPush(options,{connection_id:calendarConfig[1],calendar_id:calendar});
+        await this.env.NANOCODEX_CALENDAR_PUSH.getByName(configured.id).enqueue(configured.id,session.session_id);
+        return json(configured);
+      }
+      const row = await this.env.NANOCODEX_CRM.withSession("first-primary").prepare("SELECT id,enabled,check_at,renew_at,last_error,(sync_token IS NOT NULL AND page_token IS NULL) AS synchronized FROM crm_calendar_push_sources WHERE owner_id=? AND agent_id=? AND connection_id=? AND calendar_id=?")
+        .bind(session.owner_id,session.session_id,calendarConfig[1],calendar).first<{id:string;enabled:number;check_at:number;renew_at:number;last_error:string|null;synchronized:number}>();
+      if (!row) return json({enabled:false});
+      if (request.method === "DELETE") { await disableCalendarPush(options,row.id); return json({enabled:false}); }
+      return json({...row,enabled:Boolean(row.enabled),synchronized:Boolean(row.synchronized)},{headers:{"cache-control":"no-store"}});
+    });
+    const gmailConfig = /^\/gmail-push\/([A-Za-z0-9_-]{1,256})$/.exec(url.pathname);
+    if (gmailConfig) {
+      const session = this.#session();
+      if (!ownerAssertion || !session || session.runtime_profile !== "managed" || this.#deleting || this.#deleted)
+        return json({error:"not_found"},{status:404});
+      if (turnAuthorization.connectGrant) return json({error:"forbidden"},{status:403});
+      if (!["GET", "PUT", "DELETE"].includes(request.method)) return json({error:"method_not_allowed"},{status:405});
+      const target = `https://egress.internal/users/${encodeURIComponent(session.owner_id)}/gmail-push/${gmailConfig[1]}`;
+      let body: {email:string;crm?:boolean} | undefined;
+      if (request.method === "PUT") {
+        const parsed = await gmailPushConfig(request);
+        if (parsed instanceof Response) return parsed;
+        if (parsed.crm === true && !this.env.NANOCODEX_CRM) return json({error:"crm_unavailable"},{status:503});
+        body = parsed;
+      }
+      if (request.method !== "PUT") {
+        const status = await this.env.NANOCODEX.fetch(new Request(target));
+        if (!status.ok) return status;
+        const config: unknown = await status.json();
+        if (!isRecord(config) || (config.enabled === true && config.agentId !== session.session_id))
+          return json({error:"not_found"},{status:404});
+        if (request.method === "GET") return json(config);
+      }
+      return this.env.NANOCODEX.fetch(new Request(target, {method:request.method,
+        headers:{"content-type":"application/json"}, body:JSON.stringify({...body,agentId:session.session_id})}));
     }
     if (request.method === "GET" && url.pathname === "/credential-subject") {
       // This public-worker-to-Session lookup still requires the caller's full
@@ -8695,6 +8916,24 @@ export class DurableAgentSession extends DurableComputerObject {
         if (tool.name === "create_goal") this.#goalRuntime.bind(id, this.#session()!.authorization_epoch);
         return result;
       } }))),
+      ...(multiplayer ? [] : workspacePushTools({
+        sessionId: session.session_id, ownerId: session.owner_id,
+        authorizationEpoch: session.authorization_epoch, origin: session.public_origin,
+        authorization: context => {
+          const current = this.#session();
+          const authorization = this.#authorizationForToolContext(context);
+          if (!current || this.#deleting || this.#deleted || !authorization
+            || authorization.connectGrant !== undefined || current.owner_id !== session.owner_id
+            || current.authorization_epoch !== session.authorization_epoch) return undefined;
+          return { kind: "account_session", userId: current.owner_id,
+            organizationId: current.organization_id, teamId: current.team_id,
+            authorizationEpoch: current.authorization_epoch, role: "writer",
+            subjectId: `user:${current.owner_id}`, credentialId: `watch-tool:${context.callId}`,
+            capabilities: authorization.capabilities };
+        },
+        request: (request, principal) => managedFetch(request, this.env, this.ctx, principal,
+          this.#routingOrigin().clientIngressColo),
+      })),
       ...(multiplayer ? [] : crmTools({
         db: this.env.NANOCODEX_CRM, ownerId: session.owner_id,
         authorization: context => this.#authorizationForToolContext(context),
@@ -8905,7 +9144,7 @@ export class DurableAgentSession extends DurableComputerObject {
     return agent;
   }
 
-  async #ensureCredentialBinding(session: SessionRow): Promise<void> {
+  async #ensureCredentialBinding(session: SessionRow, timeoutMs = this.#ownershipIoTimeoutMs()): Promise<void> {
     if (this.#deleting) throw retryableError("agent is being deleted");
     let ownership = this.#credentialBinding;
     if (!ownership) {
@@ -8931,7 +9170,7 @@ export class DurableAgentSession extends DurableComputerObject {
       this.env.NANOCODEX,
       ownership.subject,
       ownership.owner_id,
-      this.#ownershipIoTimeoutMs(),
+      timeoutMs,
     );
     if (this.#deleting) throw retryableError("agent is being deleted");
   }

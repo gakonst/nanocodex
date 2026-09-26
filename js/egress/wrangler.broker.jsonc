@@ -36,6 +36,7 @@
   },
   "durable_objects": {
     "bindings": [
+      { "name": "GMAIL_PUSH_MAILBOXES", "class_name": "GmailPushMailbox" },
       {
         "name": "USER_CREDENTIALS",
         "class_name": "UserCredentialBroker"
@@ -94,7 +95,8 @@
     {
       "tag": "v6",
       "new_sqlite_classes": ["SpotifyRateLimit"]
-    }
+    },
+    { "tag": "v7", "new_sqlite_classes": ["GmailPushMailbox"] }
   ],
   "env": {
     "development": {
@@ -113,6 +115,7 @@
       },
       "durable_objects": {
         "bindings": [
+          { "name": "GMAIL_PUSH_MAILBOXES", "class_name": "GmailPushMailbox" },
           { "name": "USER_CREDENTIALS", "class_name": "UserCredentialBroker" },
           { "name": "AGENT_SUBJECTS", "class_name": "AgentSubjectDirectory" },
           { "name": "SPOTIFY_RATE_LIMITS", "class_name": "SpotifyRateLimit" },
