@@ -1,4 +1,5 @@
 import type { ToolMap } from "nanocodex";
+import { observeHandCall } from "./hand-call-observation";
 import { CUA_JS_NAME, CUA_RESET_NAME } from "nanocodex-computer/contract";
 import {
   createNamespaceManifest,
@@ -180,8 +181,17 @@ export function createNamespaceExecutionRuntime(
     const value = record(input);
     const workdir = optionalString(value.workdir, "workdir");
     if (!workdir) throw new Error('CUA requires an explicit Hand workdir, like exec_command. First call mcp__cua_repl__js({workdir: "/<hand>"}) to read that provider’s contract, then add its arguments to each call.');
-    const binding = cell(context);
-    const route = routeNamespaceCwd(binding.scope, canonicalCwd(binding, workdir), "namespace.discover");
+    const routeStarted = performance.now();
+    let binding: AuthorizedCellBinding;
+    let route: ReturnType<typeof routeNamespaceCwd>;
+    try {
+      binding = cell(context);
+      route = routeNamespaceCwd(binding.scope, canonicalCwd(binding, workdir), "namespace.discover");
+      observeHandCall("namespace.route", name, routeStarted, "ok", context.callId);
+    } catch (error) {
+      observeHandCall("namespace.route", name, routeStarted, "unavailable", context.callId);
+      throw error;
+    }
     const hand = binding.hands.get(route.mount.mountId);
     if (!hand?.cua || !hand.cuaReset) {
       throw new Error(`namespace mount ${route.mount.root} has no CUA runtime or controllable native screen. Use environment to find a CUA-capable Hand.`);
@@ -210,9 +220,19 @@ export function createNamespaceExecutionRuntime(
     // queue shared by JS and reset, independent of every other Hand's queue.
     const key = `${context.sessionId}\u0000${hand.mountId}`;
     const previous = computerQueues.get(key) ?? Promise.resolve();
-    const pending = previous.catch(() => {}).then(() => {
+    const queuedAt = performance.now();
+    const pending = previous.catch(() => {}).then(async () => {
+      observeHandCall("namespace.cua.queue", name, queuedAt, "ok", context.callId);
       context.signal.throwIfAborted();
-      return tool.handler(providerInput, context);
+      const invokedAt = performance.now();
+      try {
+        const result = await tool.handler(providerInput, context);
+        observeHandCall("namespace.invoke", name, invokedAt, toolOutcome(result), context.callId);
+        return result;
+      } catch (error) {
+        observeHandCall("namespace.invoke", name, invokedAt, context.signal.aborted ? "cancelled" : "failed", context.callId);
+        throw error;
+      }
     });
     computerQueues.set(key, pending);
     const cleanup = () => { if (computerQueues.get(key) === pending) computerQueues.delete(key); };
@@ -258,16 +278,33 @@ export function createNamespaceExecutionRuntime(
             workdir: resolveNamespaceCwd(DEFAULT_CWD, workdir),
           }, context);
         }
-        const binding = cell(context);
-        const route = routeNamespaceCwd(binding.scope, canonicalCwd(binding, workdir));
+        const routedAt = performance.now();
+        let binding: AuthorizedCellBinding;
+        let route: ReturnType<typeof routeNamespaceCwd>;
+        try {
+          binding = cell(context);
+          route = routeNamespaceCwd(binding.scope, canonicalCwd(binding, workdir));
+          observeHandCall("namespace.route", "exec_command", routedAt, "ok", context.callId);
+        } catch (error) {
+          observeHandCall("namespace.route", "exec_command", routedAt, "unavailable", context.callId);
+          throw error;
+        }
         const hand = binding.hands.get(route.mount.mountId);
         if (hand?.exec === undefined) {
           throw new Error(`namespace mount ${route.mount.root} is not executable`);
         }
-        const result = await hand.exec.handler({
-          ...without(value, "workdir"),
-          workdir: nativeWorkdir(hand.workspace, route.relativePath),
-        }, context);
+        const invokedAt = performance.now();
+        let result: unknown;
+        try {
+          result = await hand.exec.handler({
+            ...without(value, "workdir"),
+            workdir: nativeWorkdir(hand.workspace, route.relativePath),
+          }, context);
+          observeHandCall("namespace.invoke", "exec_command", invokedAt, toolOutcome(result), context.callId);
+        } catch (error) {
+          observeHandCall("namespace.invoke", "exec_command", invokedAt, context.signal.aborted ? "cancelled" : "failed", context.callId);
+          throw error;
+        }
         const structured = executionResult(result);
         if (structured?.session_id === undefined) return result;
         // Account routing can refresh an unstarted exec before dispatch. Bind
@@ -577,4 +614,17 @@ export async function prepareNamespaceHostMounts<T extends Readonly<{ id: string
     return [mount.id, result.status === "fulfilled" ? result.value : undefined] as const;
   }));
   return machine => !checks.has(machine.id) || checks.get(machine.id)?.(machine) === true;
+}
+
+function toolOutcome(result: unknown): "ok" | "failed" | "unavailable" | "ambiguous" {
+  if (!result || typeof result !== "object") return "ok";
+  const value = result as Record<PropertyKey, unknown>;
+  if (value[TOOL_RESULT] !== true) return "ok";
+  if (value.success === true) return "ok";
+  const structured = value.structuredResult;
+  if (structured && typeof structured === "object") {
+    const status = (structured as { status?: unknown }).status;
+    if (status === "ambiguous" || status === "unavailable") return status;
+  }
+  return "failed";
 }
