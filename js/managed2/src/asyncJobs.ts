@@ -50,6 +50,7 @@ export class AsyncJobs {
   private readonly active = new Set<string>();
   private readonly delivering = new Set<string>();
   private readonly legacyContinuationColumn: boolean;
+  private readonly probeEpoch = crypto.randomUUID();
   constructor(private readonly storage: DurableObjectStorage,
     private readonly registeredTools: Record<string, NamedTool>,
     private readonly externalTurn: (context: ToolContext) => string | undefined,
@@ -64,25 +65,32 @@ export class AsyncJobs {
       id TEXT PRIMARY KEY, invocation TEXT NOT NULL UNIQUE, original_turn TEXT NOT NULL,
       execution_turn TEXT, call_id TEXT, tool TEXT NOT NULL, args TEXT NOT NULL,
       state TEXT NOT NULL, result TEXT, terminal_state TEXT, attempts INTEGER NOT NULL DEFAULT 0,
-      started_at INTEGER, created_at INTEGER NOT NULL, delivered_at INTEGER, continuation_started INTEGER, wake_generation INTEGER NOT NULL DEFAULT -1, lease_id TEXT, context_json TEXT, replay_safe INTEGER NOT NULL DEFAULT 0
+      started_at INTEGER, created_at INTEGER NOT NULL, delivered_at INTEGER, continuation_started INTEGER, wake_generation INTEGER NOT NULL DEFAULT -1, lease_id TEXT, context_json TEXT, replay_safe INTEGER NOT NULL DEFAULT 0,
+      integration_probe_epoch TEXT
     )`);
     // Pilot rows used synthetic user turns, not typed tool results. Preserve
     // their status but never replay them into the new same-call-ID path.
     const columns = new Set(storage.sql.exec<{ name: string }>("PRAGMA table_info(async_jobs)")
       .toArray().map(column => column.name));
     this.legacyContinuationColumn = columns.has("continuation_turn");
-    for (const [name, kind] of [["execution_turn", "TEXT"], ["call_id", "TEXT"], ["delivered_at", "INTEGER"], ["continuation_started", "INTEGER"], ["wake_generation", "INTEGER NOT NULL DEFAULT -1"], ["lease_id", "TEXT"], ["context_json", "TEXT"], ["replay_safe", "INTEGER NOT NULL DEFAULT 0"]] as const) {
+    for (const [name, kind] of [["execution_turn", "TEXT"], ["call_id", "TEXT"], ["delivered_at", "INTEGER"], ["continuation_started", "INTEGER"], ["wake_generation", "INTEGER NOT NULL DEFAULT -1"], ["lease_id", "TEXT"], ["context_json", "TEXT"], ["replay_safe", "INTEGER NOT NULL DEFAULT 0"],
+      ["integration_probe_epoch", "TEXT"]] as const) {
       if (!columns.has(name)) storage.sql.exec(`ALTER TABLE async_jobs ADD COLUMN ${name} ${kind}`);
     }
     storage.sql.exec("UPDATE async_jobs SET state = 'legacy_uninjectable' WHERE execution_turn IS NULL");
     storage.sql.exec("CREATE INDEX IF NOT EXISTS async_jobs_state ON async_jobs(state)");
+    storage.sql.exec(`CREATE TABLE IF NOT EXISTS async_jobs_reconcile_cursor (
+      singleton INTEGER PRIMARY KEY CHECK (singleton = 1), created_at INTEGER NOT NULL, id TEXT NOT NULL
+    )`);
+    storage.sql.exec("INSERT OR IGNORE INTO async_jobs_reconcile_cursor VALUES (1, -1, '')");
     // Deployment alone does not wake an idle DO. On its next construction,
     // recheck one old checkpoint or an output parked against an older kernel.
     // If the capability is still absent, park again without a polling alarm.
     if (storage.sql.exec<{ n: number }>(
-      `SELECT COUNT(*) AS n FROM async_jobs WHERE state = 'awaiting_integration'
+      `SELECT COUNT(*) AS n FROM async_jobs WHERE
+        (state = 'awaiting_integration' AND (integration_probe_epoch IS NULL OR integration_probe_epoch != ?))
         OR (state = 'checkpointed' AND wake_generation < ? AND ${terminalOrigin})`,
-      this.wakeGeneration).toArray()[0]!.n > 0) {
+      this.probeEpoch, this.wakeGeneration).toArray()[0]!.n > 0) {
       this.waitUntil((async () => {
         const nextAt = Date.now() + 1_000;
         const alarm = await storage.getAlarm();
@@ -236,14 +244,42 @@ export class AsyncJobs {
   public async reconcile(): Promise<void> {
     this.storage.sql.exec("DELETE FROM async_jobs WHERE state = 'delivered' AND created_at < ?",
       Date.now() - RETENTION_MS);
-    const rows = this.storage.sql.exec<Job>(
-      `SELECT * FROM async_jobs WHERE state NOT IN ('delivered', 'legacy_uninjectable')
-        AND (state != 'checkpointed' OR (wake_generation < ? AND ${terminalOrigin}))
-        -- Process exact uptake receipts before ready jobs: a page of ready
-        -- jobs from the same source must not indefinitely hide its wake.
-        ORDER BY (state != 'checkpointed'), (state = 'awaiting_integration'), created_at, id LIMIT 25`,
-      this.wakeGeneration,
+    // All running work is examined on every tick. Terminal records rotate
+    // through a durable keyset, so neither a page of unconfirmed checkpoints
+    // nor a page of ready results can starve the other after DO eviction.
+    const activeRows = this.storage.sql.exec<Job>(
+      "SELECT * FROM async_jobs WHERE state IN ('queued', 'running') ORDER BY created_at, id LIMIT ?",
+      MAX_ACTIVE).toArray();
+    const cursor = this.storage.sql.exec<{ created_at: number; id: string }>(
+      "SELECT created_at, id FROM async_jobs_reconcile_cursor WHERE singleton = 1",
+    ).toArray()[0]!;
+    const eligible = `state NOT IN ('queued', 'running', 'delivered', 'legacy_uninjectable')
+      AND (state != 'checkpointed' OR (wake_generation < ? AND ${terminalOrigin}))
+      AND (state != 'awaiting_integration' OR integration_probe_epoch IS NULL OR integration_probe_epoch != ?)`;
+    const capacity = 25 - activeRows.length;
+    const terminalRows = this.storage.sql.exec<Job>(
+      `SELECT * FROM async_jobs WHERE ${eligible}
+        AND (created_at > ? OR (created_at = ? AND id > ?))
+        ORDER BY created_at, id LIMIT ?`,
+      this.wakeGeneration, this.probeEpoch, cursor.created_at, cursor.created_at, cursor.id, capacity,
     ).toArray();
+    if (terminalRows.length < capacity) {
+      terminalRows.push(...this.storage.sql.exec<Job>(
+        `SELECT * FROM async_jobs WHERE ${eligible}
+          AND (created_at < ? OR (created_at = ? AND id <= ?))
+          ORDER BY created_at, id LIMIT ?`,
+        this.wakeGeneration, this.probeEpoch, cursor.created_at, cursor.created_at, cursor.id,
+        capacity - terminalRows.length,
+      ).toArray());
+    }
+    if (terminalRows.length > 0) {
+      const last = terminalRows.at(-1)!;
+      // Commit the cursor before any adapter await; a crash can delay a job
+      // one finite rotation, but cannot pin the scan to a hot prefix.
+      this.storage.sql.exec("UPDATE async_jobs_reconcile_cursor SET created_at = ?, id = ? WHERE singleton = 1",
+        last.created_at, last.id);
+    }
+    const rows = [...activeRows, ...terminalRows];
     let retry = false;
     const idleCohort: { job: Job; intent: FinalToolResultIntent }[] = [];
     const wakingSources = new Set<string>();
@@ -357,7 +393,8 @@ export class AsyncJobs {
         if (this.idleOutputStatus && settledBefore) retry = true;
       } catch (error) {
         if (error instanceof TypedIngestionUnavailable) {
-          this.storage.sql.exec("UPDATE async_jobs SET state = 'awaiting_integration' WHERE id = ?", job.id);
+          this.storage.sql.exec("UPDATE async_jobs SET state = 'awaiting_integration', integration_probe_epoch = ? WHERE id = ?",
+            this.probeEpoch, job.id);
         } else retry = true;
       } finally {
         if (!heldForBatch) this.delivering.delete(job.id);
@@ -420,7 +457,8 @@ export class AsyncJobs {
       } catch (error) {
         if (error instanceof TypedIngestionUnavailable) {
           for (const { job } of batch) this.storage.sql.exec(
-            "UPDATE async_jobs SET state = 'awaiting_integration' WHERE id = ?", job.id);
+            "UPDATE async_jobs SET state = 'awaiting_integration', integration_probe_epoch = ? WHERE id = ?",
+            this.probeEpoch, job.id);
         } else retry = true;
       } finally {
         for (const { job } of batch) this.delivering.delete(job.id);
@@ -432,7 +470,9 @@ export class AsyncJobs {
     if (retry || this.storage.sql.exec<{ n: number }>(
       `SELECT COUNT(*) AS n FROM async_jobs WHERE state IN
         ('queued', 'running', 'completed', 'failed', 'uncertain', 'cancelled')
-        OR (state = 'checkpointed' AND wake_generation < ? AND ${terminalOrigin})`, this.wakeGeneration,
+        OR (state = 'checkpointed' AND wake_generation < ? AND ${terminalOrigin})
+        OR (state = 'awaiting_integration' AND (integration_probe_epoch IS NULL OR integration_probe_epoch != ?))`,
+      this.wakeGeneration, this.probeEpoch,
     ).toArray()[0]!.n > 0) await this.storage.setAlarm(Date.now() + 1_000);
   }
 }

@@ -621,14 +621,109 @@ it("prioritizes a same-source wake receipt ahead of a full page of completed job
         return intents.map(intent => accepted(intent, true));
       });
     await jobs.reconcile();
-    expect(statusReads).toBe(1); // row 26 was processed despite LIMIT 25
+    expect(statusReads).toBe(0); // first page saw ready rows, but the SQL fence held them
     expect(batches).toHaveLength(0);
     expect(jobs.status(ready[0]!)).toMatchObject({ state: "completed" });
     confirmed = true;
     await jobs.reconcile();
+    expect(statusReads).toBe(1); // durable keyset rotated to the hidden receipt
     expect(jobs.status(inFlight)).toMatchObject({ state: "delivered", continuation_started: true });
     expect(batches).toEqual([Array.from({ length: 8 }, (_, i) => `call-source-${i}`)]);
     expect(jobs.status(ready[0]!)).toMatchObject({ state: "checkpointed", continuation_started: false });
+  });
+});
+
+it("runs queued work despite a full page of unconfirmed checkpointed receipts", async () => {
+  await runInDurableObject(stub(), async (_session, state) => {
+    state.storage.sql.exec("INSERT INTO turns (id, input, state) VALUES ('source', 'work', 'completed')");
+    const tasks: Promise<unknown>[] = [];
+    let executions = 0;
+    const read: NamedTool = { name: "current_time", description: "read", handler: () => { executions++; return "now"; } };
+    new AsyncJobs(state.storage, { current_time: read }, () => "source", async () => {}, () => {});
+    for (let index = 0; index < 25; index++) state.storage.sql.exec(`INSERT INTO async_jobs
+      (id, invocation, original_turn, execution_turn, call_id, tool, args, state,
+       result, terminal_state, created_at, wake_generation) VALUES (?, ?, 'source',
+       'turn-1', ?, 'current_time', '{}', 'checkpointed', '"ready"', 'completed', ?, 0)`,
+    crypto.randomUUID(), `turn-1:old-${index}`, `old-${index}`, index);
+    const queued = crypto.randomUUID();
+    state.storage.sql.exec(`INSERT INTO async_jobs
+      (id, invocation, original_turn, execution_turn, call_id, tool, args, state,
+       created_at, context_json, replay_safe) VALUES (?, 'turn-1:queued', 'source',
+       'turn-1', 'queued', 'current_time', '{}', 'queued', 25, '{}', 1)`, queued);
+    const jobs = new AsyncJobs(state.storage, { current_time: read }, () => "source",
+      async intent => accepted(intent), work => { tasks.push(work); },
+      new Set(["current_time"]), undefined, async () => ({ state: "pruned_or_unknown" }),
+      async () => ({ state: "accepted_unbound" }));
+    await jobs.reconcile();
+    await Promise.all(tasks);
+    expect(executions).toBe(1);
+    expect(jobs.status(queued)).toMatchObject({ state: "completed" });
+  });
+});
+
+it("probes every parked integration receipt once per construction across pages and tied timestamps", async () => {
+  await runInDurableObject(stub(), async (_session, state) => {
+    state.storage.sql.exec("INSERT INTO turns (id, input, state) VALUES ('source', 'work', 'completed')");
+    const read: NamedTool = { name: "current_time", description: "read", handler: () => "ok" };
+    new AsyncJobs(state.storage, { current_time: read }, () => "source", async () => {}, () => {});
+    const ids = Array.from({ length: 30 }, () => crypto.randomUUID());
+    ids.forEach((id, index) => state.storage.sql.exec(`INSERT INTO async_jobs
+      (id, invocation, original_turn, execution_turn, call_id, tool, args, state,
+       result, terminal_state, created_at) VALUES (?, ?, 'source', 'turn-1', ?,
+       'current_time', '{}', 'awaiting_integration', '"ready"', 'completed', 0)`,
+    id, `turn-1:parked-${index}`, `parked-${index}`));
+    let attempts = 0;
+    const makeJobs = () => new AsyncJobs(state.storage, { current_time: read }, () => "source",
+      async () => { attempts++; throw new TypedIngestionUnavailable(); }, () => {});
+    const jobs = makeJobs();
+    await jobs.reconcile();
+    expect(attempts).toBe(25);
+    await jobs.reconcile();
+    expect(attempts).toBe(30);
+    await jobs.reconcile();
+    expect(attempts).toBe(30); // no perpetual poll on the old capability
+    const parked = state.storage.sql.exec<{ n: number }>(
+      "SELECT COUNT(*) AS n FROM async_jobs WHERE state = 'awaiting_integration' AND integration_probe_epoch IS NOT NULL",
+    ).toArray()[0]!.n;
+    expect(parked).toBe(30);
+    const restored = makeJobs(); // a new kernel/DO construction may retry once
+    await restored.reconcile();
+    await restored.reconcile();
+    expect(attempts).toBe(60);
+    expect(ids.every(id => restored.status(id)?.state === "awaiting_integration")).toBe(true);
+  });
+});
+
+it("rotates nearly full terminal capacity across rehydration without false uptake", async () => {
+  await runInDurableObject(stub(), async (_session, state) => {
+    state.storage.sql.exec("INSERT INTO turns (id, input, state) VALUES ('busy-source', 'work', 'completed')");
+    state.storage.sql.exec("INSERT INTO turns (id, input, state) VALUES ('ready-source', 'work', 'completed')");
+    const read: NamedTool = { name: "current_time", description: "read", handler: () => "ok" };
+    new AsyncJobs(state.storage, { current_time: read }, () => "ready-source", async () => {}, () => {});
+    const checkpointed = Array.from({ length: 90 }, () => crypto.randomUUID());
+    const ready = Array.from({ length: 9 }, () => crypto.randomUUID());
+    for (const [index, id] of [...checkpointed, ...ready].entries()) state.storage.sql.exec(`INSERT INTO async_jobs
+      (id, invocation, original_turn, execution_turn, call_id, tool, args, state,
+       result, terminal_state, created_at, wake_generation) VALUES (?, ?, ?,
+       'turn-1', ?, 'current_time', '{}', ?, '"ready"', 'completed', 0, 0)`,
+    id, `turn-1:nearly-full-${index}`, index < 90 ? "busy-source" : "ready-source",
+    `nearly-full-${index}`, index < 90 ? "checkpointed" : "completed");
+    const inspected = new Set<string>();
+    let readyAttempts = 0;
+    const makeJobs = () => new AsyncJobs(state.storage, { current_time: read }, () => "ready-source",
+      async () => { throw new Error("unexpected individual submission"); }, () => {},
+      new Set(["current_time"]), undefined, async () => ({ state: "pruned_or_unknown" }),
+      async intent => { inspected.add(intent.jobId); return { state: "accepted_unbound" }; },
+      async () => { readyAttempts++; throw new Error("native wake still active"); });
+    let jobs = makeJobs();
+    for (let tick = 0; tick < 6; tick++) {
+      if (tick === 2) jobs = makeJobs(); // durable cursor survives DO/host rehydration
+      await jobs.reconcile();
+    }
+    expect(inspected.size).toBe(checkpointed.length);
+    expect(readyAttempts).toBeGreaterThan(0);
+    expect(checkpointed.every(id => jobs.status(id)?.state === "checkpointed")).toBe(true);
+    expect(ready.every(id => jobs.status(id)?.state === "completed")).toBe(true);
   });
 });
 
