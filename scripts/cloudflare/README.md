@@ -5,8 +5,8 @@ planning, Docker publication, native/phone builds or CI tests. It selects change
 Workers inside its serialized deployment job, then installs/builds only their
 packages. There is no Docker builder or image recovery build in this path.
 
-Only managed, account and playground require the Rust SDK WASM build. The private media
-Worker bundles its own checked-in FFmpeg WASM; it, egress, X, email, Connect API,
+Managed, account, playground, Egress2 and Managed2 require the Rust SDK
+WASM build. The private media Worker bundles its own checked-in FFmpeg WASM; it, egress, X, email, Connect API,
 Connect dialog, Astra and Chief of Staff do not schedule a Rust SDK build. Explicit build tiers avoid
 Turbo's general SDK-to-WASM build edge while preserving compiled dependency order.
 When adding a runtime import or generated asset, update `workerSpecs`/build targets
@@ -80,8 +80,14 @@ local CRM migration followed by a Worker dry-run. It replaces production D1 IDs,
 removes named environments and cloud credentials, and creates no cloud database.
 
 Selected deployments preserve dependency phases: egress/X, private media, managed,
-consumers, then account. A scoped `RELEASE_ONLY=managed` also selects and redeploys
-media before managed; unchanged media is otherwise safely reused through the live
+consumers, then account. The opt-in parallel pair follows the existing services:
+Egress2 (private, bound to the account relay DO), then Managed2 (bound to Egress2).
+Both use their own live-deployment ledger entries; neither replaces legacy managed
+or egress. Wrangler requires pre-provisioned `CREDENTIAL_ENCRYPTION_KEY` on Egress2
+and `AUTH_API_KEY_HASHES` on Managed2. The workflow does not create, change or
+read their secret values; missing secrets fail deployment. Validate the
+Managed2 authenticated create/turn/replay path separately after rollout.
+A scoped `RELEASE_ONLY=managed` also selects and redeploys media before managed; unchanged media is otherwise safely reused through the live
 Worker deployment ledger. Independent members run concurrently. Every mutation rechecks current
 master; failed phases prevent later ones. Astra secrets are applied additively in
 its tagged deploy using a temporary private secrets file, then removed locally.

@@ -44,6 +44,9 @@ test('release phases reuse successfully completed targets and never cache failed
     [process.execPath, ['js/managed/scripts/prepare-code-evaluator.mjs']],
     [process.execPath, ['js/managed/scripts/prepare-just-bash-lazy.mjs']],
   ]);
+  const parallel = commands(buildSelected, ['egress2', 'managed2']);
+  assert.ok(parallel.some(([, args]) => args.includes('nanocodex')));
+  assert.ok(parallel.some(([, args]) => args[0] === 'js/managed2/scripts/prepare-just-bash-lazy.mjs'));
   const failed = new Set();
   assert.throws(() => buildSelected({ selected: ['account'] }, (_, args) => {
     if (args.includes('nanocodex-terminal')) throw Error('second tier failed');

@@ -19,10 +19,10 @@ function fixture(selected, overrides = {}) {
   return { plan, options, events, calls, release: () => releaseWorkers(plan, options) };
 }
 
-test('all selected Workers preserve dependency barriers, literal arguments and account-last health', async () => {
+test('all selected Workers preserve dependency barriers, literal arguments and legacy account health', async () => {
   const f = fixture(releasePhases.flat());
   const results = await f.release();
-  assert.equal(results.length, 11); assert.ok(results.every(row => row.state === 'success'));
+  assert.equal(results.length, 13); assert.ok(results.every(row => row.state === 'success'));
   for (let i = 1; i < releasePhases.length; i++) {
     const previous = releasePhases[i - 1].map(name => f.events.findIndex(row => row[0] === 'success' && row[1] === name));
     const next = releasePhases[i].map(name => f.events.findIndex(row => row[0] === 'start' && row[1] === name));
@@ -33,13 +33,13 @@ test('all selected Workers preserve dependency barriers, literal arguments and a
     assert.equal(command[command.indexOf('--tag') + 1], `nc-ci-${'a'.repeat(64)}`);
   }
   assert.equal(f.events.filter(row => row[0] === 'health').length, releasePhases.length);
-  assert.equal(f.calls.filter(({ command }) => command.includes('--env=')).length, 3);
+  assert.equal(f.calls.filter(({ command }) => command.includes('--env=')).length, 5);
   assert.equal(f.calls.find(({ options }) => options.directory === 'js/media').command.slice(0, 6).join(' '), 'npx wrangler deploy --config wrangler.jsonc --message');
-  assert.equal(f.calls.at(-1).options.directory, 'js/account');
-  const account = f.calls.at(-1).command;
+  assert.deepEqual(f.calls.slice(-3).map(({ options }) => options.directory), ['js/account', 'js/egress2', 'js/managed2']);
+  const account = f.calls.at(-3).command;
   assert.equal(account[account.indexOf('--config') + 1], 'dist/nanocodex/wrangler.ci.json');
   assert.equal(account[account.indexOf('--var') + 1], `DEPLOYMENT_SHA:${f.plan.revision}`);
-  assert.deepEqual(f.events.slice(-2), [['health'], ['success', 'account']]);
+  assert.deepEqual(f.events.slice(-2), [['health'], ['success', 'managed2']]);
 });
 
 test('phase failure waits for siblings, records failure, and blocks dependent deployments', async () => {
@@ -49,6 +49,20 @@ test('phase failure waits for siblings, records failure, and blocks dependent de
   assert.ok(f.events.some(row => row[0] === 'failure' && row[1] === 'egress'));
   assert.ok(f.events.some(row => row[0] === 'success' && row[1] === 'x'));
   assert.ok(!f.events.some(row => ['managed', 'account'].includes(row[1])));
+});
+
+test('parallel Workers deploy only after the existing account and in binding order', async () => {
+  const f = fixture(['account', 'egress2', 'managed2']);
+  await f.release();
+  assert.deepEqual(f.events.filter(([state]) => state === 'success').map(([, name]) => name),
+    ['account', 'egress2', 'managed2']);
+  assert.deepEqual(f.calls.map(({ options }) => options.directory), ['js/account', 'js/egress2', 'js/managed2']);
+  const failed = fixture(['account', 'egress2', 'managed2'], {
+    run: async (_, { directory }) => { if (directory === 'js/egress2') throw Error('deploy failed'); return true; },
+  });
+  await assert.rejects(failed.release(), /Release phase failed/);
+  assert.deepEqual(failed.events.filter(([state]) => state === 'success').map(([, name]) => name), ['account']);
+  assert.ok(!failed.events.some(([, name]) => name === 'managed2'));
 });
 
 test('supersession before deployment avoids ledger writes and guarded skips cannot become successes', async () => {

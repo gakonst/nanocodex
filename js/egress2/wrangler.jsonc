@@ -19,6 +19,7 @@
       "persist": true
     }
   },
+  "secrets": { "required": ["CREDENTIAL_ENCRYPTION_KEY"] },
   "workers_dev": false,
   "durable_objects": {
     "bindings": [

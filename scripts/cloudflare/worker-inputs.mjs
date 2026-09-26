@@ -17,6 +17,8 @@ export const workerSpecs = Object.fromEntries([
   ['chief-of-staff', 'js/chief-of-staff', '@nanocodex/chief-of-staff', false],
   ['playground', 'js/connect-playground', '@nanocodex/connect-playground', true],
   ['account', 'js/account', 'nanocodex-web', true],
+  ['egress2', 'js/egress2', 'nanocodex-egress2-service', true],
+  ['managed2', 'js/managed2', 'nanocodex-managed2', true],
 ].map(([name, directory, pkg, needsWasm]) => [name, { directory, package: pkg, needsWasm }]));
 
 const buildTargets = {
@@ -27,6 +29,8 @@ const buildTargets = {
   astra: ['nanocodex-tools'], 'chief-of-staff': ['nanocodex-tools'],
   playground: ['nanocodex-tools', 'nanocodex', 'nanocodex-terminal', '@nanocodex/connect-playground'],
   account: ['nanocodex-tools', 'nanocodex-connect-protocol', 'nanocodex', 'nanocodex-connect-ui', 'nanocodex-terminal', 'nanocodex-web'],
+  egress2: ['nanocodex-tools', 'nanocodex'],
+  managed2: ['nanocodex-tools', 'nanocodex'],
 };
 
 for (const [name, targets] of Object.entries(buildTargets)) workerSpecs[name].buildTargets = targets;
@@ -99,6 +103,7 @@ export async function fingerprintWorkers(cwd = process.cwd()) {
     }
     visit(spec.package);
     if (name === 'managed') files.add('js/managed/scripts/prepare-code-evaluator.mjs');
+    if (name === 'managed2') files.add('js/managed2/scripts/prepare-just-bash-lazy.mjs');
     if (name === 'account') files.add('scripts/cloudflare/released-account-image.mjs');
     if (name === 'managed') {
       files.add('scripts/cloudflare/released-images.mjs');

@@ -535,7 +535,7 @@ jobs:
        (github.event_name == 'workflow_dispatch' && inputs.target == 'production'))
     name: build and deploy changed Cloudflare Workers
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
     concurrency:
       group: cloudflare-production
       cancel-in-progress: false

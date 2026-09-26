@@ -4,7 +4,7 @@ export const workerScripts = Object.freeze({
   email: 'nanocodex-email', dialog: 'nanocodex-connect-dialog',
   'connect-api': 'nanocodex-connect-api', astra: 'nanocodex-astra-mpp-trial',
   'chief-of-staff': 'nanocodex-chief-of-staff', playground: 'nanocodex-connect-playground',
-  account: 'nanocodex',
+  account: 'nanocodex', egress2: 'nanocodex-egress2', managed2: 'nanocodex-managed2',
 });
 export const accountValid = value => typeof value === 'string' && /^[a-f0-9]{32}$/.test(value) && value.length === 32;
 export const providerIdValid = value => typeof value === 'string' && /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(value) && value.length === 36;
