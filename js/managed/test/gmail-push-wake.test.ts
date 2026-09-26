@@ -1,6 +1,7 @@
 import { env, runInDurableObject, createExecutionContext, abortAllDurableObjects, applyD1Migrations } from "cloudflare:test";
 import { beforeAll, afterEach, describe, expect, it } from "vitest";
 import { ManagedAgentOwnership, type Env, type DurableAgentSession } from "../src/index";
+import { ensureAccount } from "../src/account-auth";
 
 // Boundary failure modes: foreign ownership, invalid/unbounded payloads, duplicate
 // deliveries (including races), conflicting replay, and active-turn backpressure.
@@ -24,7 +25,7 @@ afterEach(async () => {
 });
 const input = (agentId: string) => ({ userId: "gmail-fixture-owner", agentId,
   eventId: "gmail:connection:history:123", input: "A new message arrived. Summarize it." });
-function initialize(state: DurableObjectState, agentId: string, session: DurableAgentSession) {
+function initialize(state: DurableObjectState, agentId: string, session: DurableAgentSession, ownerId = "gmail-fixture-owner") {
   fixtureAgents.add(agentId);
   // Gate mandatory credential-subject startup, not optional account discovery.
   // This suite owns admission and stops before model execution.
@@ -37,7 +38,7 @@ function initialize(state: DurableObjectState, agentId: string, session: Durable
   }}}});
   state.storage.sql.exec(`INSERT INTO session_state(singleton,session_id,owner_id,organization_id,team_id,
     authorization_epoch,public_origin,runtime_profile,last_active)
-    VALUES(1,?,'gmail-fixture-owner','org','team',1,'https://nanocodex.example','managed',?)`, agentId, Date.now());
+    VALUES(1,? ,?,'org','team',1,'https://nanocodex.example','managed',?)`, agentId, ownerId, Date.now());
 }
 
 describe("private Gmail wake admission", () => {
@@ -145,5 +146,29 @@ it("rejects opted-in wakes when CRM is unavailable while preserving legacy admis
     await expect(session.gmailPushWake({...input(agentId),input:JSON.stringify({crm:true})})).rejects.toThrow("gmail_push_crm_unavailable");
     expect(state.storage.sql.exec("SELECT id FROM managed_turns").toArray()).toHaveLength(0);
     expect(await session.gmailPushWake(input(agentId))).toMatchObject({status:"accepted"});
+  });
+});
+
+// The producer is behind an exact owner flag; normal wake/CRM paths stay intact.
+it("proposes an account-owned intent-only card after a confident Gmail classification", async () => {
+  const agentId = crypto.randomUUID(), userId = crypto.randomUUID();
+  await ensureAccount(env as unknown as Env, userId, true);
+  await runInDurableObject(sessions().getByName(agentId), async (session, state) => {
+    initialize(state, agentId, session, userId);
+    const current = (session as unknown as {env:Env}).env;
+    Object.defineProperty(session, "env", {value: { ...current, NANOCODEX_FIREHOSE_DECISIONS_OWNER_ID:userId,
+      AI: {run:async () => ({state:"Completed",result:{answers:{action:{choice:"reply_requested",confidence:0.95}}}})} }});
+    const inputValue = JSON.stringify({connectionId:"fixture-connection",email:"self@example.test",type:"gmail.history",
+      messageIds:["m1"],messages:[{id:"m1",status:"ok",headers:{from:"Sender <sender@example.test>",
+        subject:"Please reply"},body:"Can you reply to me?"}]});
+    const wake = {...input(agentId), userId, input:inputValue};
+    expect(await session.gmailPushWake(wake)).toMatchObject({status:"accepted"});
+    expect(await session.gmailPushWake(wake)).toMatchObject({status:"duplicate"});
+    expect(state.storage.sql.exec("SELECT source_key, outcome FROM gmail_firehose_decision_receipts").toArray())
+      .toMatchObject([{outcome:"reply"}]);
+    const inbox = await (await (env as unknown as Env).NANOCODEX_USERS.getByName(userId).fetch("https://user.internal/todo")).json() as
+      {decisions: Array<{title:string;choices:unknown[];source_url:string}>};
+    expect(inbox.decisions).toHaveLength(1);
+    expect(inbox.decisions[0]).toMatchObject({title:"Reply requested: Please reply",source_url:"https://mail.google.com/"});
   });
 });

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { env as workerEnv } from "cloudflare:test";
+import { env as workerEnv, runInDurableObject } from "cloudflare:test";
 import { ensureAccount, type AccountAuthEnv, type Principal } from "../src/account-auth";
-import { routeTodoRequest } from "../src/todo-inbox";
+import { routeTodoRequest, proposeTodoDecision } from "../src/todo-inbox";
 
 const env = workerEnv as unknown as AccountAuthEnv;
 const owner = (userId: string, capabilities: Principal["capabilities"] = ["agents:read", "agents:write"]): Principal => ({
@@ -48,7 +48,14 @@ describe("account-owned TODO inbox", () => {
       source_url: "https://mail.google.com/", choices: [{ id: "draft", title: "Draft a reply" }, { id: "later", title: "Not now" }] };
     const proposed = await producer.proposeTodoDecision(payload);
     expect((await producer.proposeTodoDecision(payload)).id).toBe(proposed.id);
+    await runInDurableObject(producer, (_, state) => {
+      expect(() => proposeTodoDecision(state.storage, { ...payload,
+        choices: [{ id: "send", title: "Send now" }] })).toThrow("todo_source_conflict");
+    });
     expect((await (await f.call(me, "GET", ""))!.json() as { decisions: Array<{ id: string; todo_id: string }> }).decisions[0]).toMatchObject({ id: proposed.id, todo_id: captureID });
+    const visible = await (await f.call(me, "GET", ""))!.json() as { decisions: Record<string, unknown>[] };
+    expect(visible.decisions[0]).not.toHaveProperty("source_key");
+    expect(visible.decisions[0]).not.toHaveProperty("workflow_id");
     const op = crypto.randomUUID(), response = { version: 1, choice_id: "draft", text: null, operation_id: op };
     expect((await f.call(me, "POST", `/decisions/${proposed.id}/respond`, response))?.status).toBe(200);
     expect((await f.call(me, "POST", `/decisions/${proposed.id}/respond`, { ...response, operation_id: op.toUpperCase() }))?.status).toBe(200);

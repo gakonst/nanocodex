@@ -5,6 +5,7 @@ export { CalendarPushDelivery };
 import { importCrmEmailPush } from "./crm-email";
 import { gmailPushConfig } from "./gmail-push-config";
 import { parseGmailPushWake, gmailPushPrompt, type GmailPushWakeResult } from "./gmail-push-wake";
+import { proposeGmailReplyDecisions } from "./gmail-firehose-decisions";
 import { OutputCheckpoints } from "./output-checkpoints";
 import { turnCanUseExecutionNamespace, turnCanProvisionExecutionProvider, executionMountAllowed, executionMountPeers, executionMountOwner } from "./execution-policy";
 export { turnCanUseExecutionNamespace } from "./execution-policy";
@@ -405,6 +406,8 @@ export interface Env extends
   ChiefOfStaffPrincipalEnv,
   HostPrincipalEnv {
   AI?: RoutingAi;
+  /** Restrict experimental email decision triage to one explicitly enabled owner. */
+  NANOCODEX_FIREHOSE_DECISIONS_OWNER_ID?: string;
   NANOCODEX_CRM?: D1Database;
   NANOCODEX_CALENDAR_PUSH?: DurableObjectNamespace<CalendarPushDelivery>;
   /** Deployment-owned provider secrets; never accepted in thread configuration. */
@@ -3522,6 +3525,10 @@ export class DurableAgentSession extends DurableComputerObject {
         stream_error TEXT,
         last_active INTEGER NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS gmail_firehose_decision_receipts (
+        source_key TEXT PRIMARY KEY, outcome TEXT NOT NULL CHECK (outcome IN ('reply', 'no_reply')),
+        created_at INTEGER NOT NULL
+      );
       CREATE TABLE IF NOT EXISTS session_initialization_ownership (
         singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
         session_id TEXT,
@@ -3886,6 +3893,17 @@ export class DurableAgentSession extends DurableComputerObject {
     // Generic/legacy notification text continues to use normal wake admission.
     let emailEvent: unknown;
     try { emailEvent = JSON.parse(wake.input); } catch { /* legacy text */ }
+    if (this.env.AI && this.env.NANOCODEX_FIREHOSE_DECISIONS_OWNER_ID === wake.userId) {
+      await proposeGmailReplyDecisions(wake.input, this.env.AI,
+        this.env.NANOCODEX_USERS.getByName(wake.userId), () => { assertOwner(epoch); }, {
+          has: sourceKey => this.ctx.storage.sql.exec<{source_key:string}>(
+            "SELECT source_key FROM gmail_firehose_decision_receipts WHERE source_key = ?", sourceKey).toArray().length > 0,
+          mark: (sourceKey, outcome) => this.ctx.storage.sql.exec(
+            "INSERT INTO gmail_firehose_decision_receipts(source_key,outcome,created_at) VALUES(?,?,?) ON CONFLICT(source_key) DO NOTHING",
+            sourceKey, outcome, Date.now()),
+        });
+      assertOwner(epoch);
+    }
     if (isRecord(emailEvent) && emailEvent.crm === true) {
       if (!this.env.NANOCODEX_CRM) throw new Error("gmail_push_crm_unavailable");
       const selected = emailEvent.connectionId;
