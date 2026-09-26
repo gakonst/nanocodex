@@ -235,6 +235,7 @@ where
         self.emit_terminal("failed")
     }
 
+    #[allow(dead_code, reason = "staged until the opt-in driver wake is complete")]
     pub(crate) fn current_checkpoint(&self) -> Option<ModelCheckpoint> {
         self.session.as_ref().map(|session| {
             Self::checkpoint_from_session(session, true, self.global_instructions.clone())
@@ -243,6 +244,7 @@ where
 
     /// Continue a durable terminal function output without creating user input.
     #[allow(clippy::too_many_arguments)]
+    #[allow(dead_code, reason = "staged until the opt-in driver wake is complete")]
     pub(crate) async fn continue_late(
         &mut self,
         workspace: Option<Arc<str>>,

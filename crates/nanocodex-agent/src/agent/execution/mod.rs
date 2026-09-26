@@ -845,6 +845,7 @@ impl Execution {
 
     /// Admit one internal model continuation for a durable set of terminal outputs.
     /// Its identity is derived from the checkpoint, never from caller-provided text.
+    #[allow(dead_code, reason = "staged until the opt-in driver wake is complete")]
     pub(crate) async fn admit_late_continuation(
         &self,
         lineage_id: &str,
@@ -863,6 +864,7 @@ impl Execution {
         Ok((Some(operation_id), Some(input), map_admission(admission)))
     }
 
+    #[allow(dead_code, reason = "staged until the opt-in driver wake is complete")]
     pub(crate) fn start_late_continuation(
         &self,
         effort: nanocodex_oai_api::Thinking,
