@@ -95,16 +95,23 @@ export class SqlHostedToolsPersistence implements HostedToolsBrokerPersistence {
         result_json TEXT,
         receipt_json TEXT,
         created_at INTEGER NOT NULL,
-        updated_at INTEGER NOT NULL
+        updated_at INTEGER NOT NULL,
+        dispatched_at INTEGER NOT NULL DEFAULT 0
       );
       CREATE UNIQUE INDEX IF NOT EXISTS hosted_tool_calls_source
         ON hosted_tool_calls(session_id, source_call_id);
       CREATE INDEX IF NOT EXISTS hosted_tool_calls_attachment
         ON hosted_tool_calls(lease_id, generation, state);
+      CREATE INDEX IF NOT EXISTS hosted_tool_calls_created_at
+        ON hosted_tool_calls(created_at);
     `);
     const columns = this.storage.sql.exec<{ name: string }>("PRAGMA table_info(hosted_tool_calls)").toArray();
     if (!columns.some((column) => column.name === "turn_id")) {
       this.storage.sql.exec("ALTER TABLE hosted_tool_calls ADD COLUMN turn_id TEXT");
+    }
+    // Legacy rows remain NULL (dispatch history unknown); new admissions use 0.
+    if (!columns.some((column) => column.name === "dispatched_at")) {
+      this.storage.sql.exec("ALTER TABLE hosted_tool_calls ADD COLUMN dispatched_at INTEGER");
     }
     return this.transaction(() => {
       const retired = this.states().filter((state) => state.lease_id !== null);
@@ -211,8 +218,8 @@ export class SqlHostedToolsPersistence implements HostedToolsBrokerPersistence {
       `INSERT INTO hosted_tool_calls
          (call_id, session_id, source_call_id, turn_id, host_id, lease_id, generation,
           model, name, input_json, output_token_budget, output_byte_budget, deadline_at,
-          cancel_requested, state, result_json, receipt_json, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          cancel_requested, state, result_json, receipt_json, created_at, updated_at, dispatched_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)`,
       row.call_id,
       row.session_id,
       row.source_call_id,
@@ -255,13 +262,16 @@ export class SqlHostedToolsPersistence implements HostedToolsBrokerPersistence {
     if (from.length === 0) return this.call(callId);
     const placeholders = from.map(() => "?").join(", ");
     const updated = this.storage.sql.exec<HostedToolsCallRow>(
-      `UPDATE hosted_tool_calls SET state = ?, result_json = ?, updated_at = ?
+      `UPDATE hosted_tool_calls SET state = ?, result_json = ?, updated_at = ?,
+         dispatched_at = CASE WHEN ? = 'dispatched' THEN ? ELSE dispatched_at END
        WHERE call_id = ? AND state IN (${placeholders})
        RETURNING call_id, session_id, source_call_id, turn_id, host_id, lease_id, generation,
                  model, name, input_json, output_token_budget, output_byte_budget,
                  deadline_at, cancel_requested, state, result_json, receipt_json`,
       state,
       resultJson || null,
+      now,
+      state,
       now,
       callId,
       ...from,

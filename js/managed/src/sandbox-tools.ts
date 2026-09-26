@@ -1,3 +1,4 @@
+import { observeHandCall } from "./hand-call-observation";
 import { getSandbox, type ProcessOptions } from "@cloudflare/sandbox";
 import { performanceScope, performanceStage } from "./performance";
 import type { ToolMap } from "nanocodex";
@@ -316,7 +317,14 @@ export function createCloudflareSandboxTools(
         context?.signal.throwIfAborted();
         const sandbox = await createSandbox();
         context?.signal.throwIfAborted();
-        await assertSandboxWorkdirAvailable(sandbox, cwd);
+        const preflightAt = performance.now();
+        try {
+          await assertSandboxWorkdirAvailable(sandbox, cwd);
+          observeHandCall("sandbox.preflight", "exec_command", preflightAt, "ok", context?.callId);
+        } catch (error) {
+          observeHandCall("sandbox.preflight", "exec_command", preflightAt, "unavailable", context?.callId);
+          throw error;
+        }
         context?.signal.throwIfAborted();
         const sessionId = await availableSessionId(sandbox, outputCursorStorage);
         outputCursorStorage.put(`${OUTPUT_CURSOR_PREFIX}${sessionId}`, 0);

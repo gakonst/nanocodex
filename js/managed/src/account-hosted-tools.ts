@@ -20,6 +20,7 @@ import type { SubagentToolContext } from "nanocodex-tools";
 import { isUserId } from "./account-auth";
 import { fetchResponseWithDeadline } from "./deadline";
 import { HostedToolsBroker } from "./hosted-tools-broker";
+import { observeHandCall } from "./hand-call-observation";
 
 const OWNER_ASSERTION = "x-nanocodex-owner-id";
 const TOOL_RESULT = Symbol.for("nanocodex.toolResult");
@@ -197,6 +198,44 @@ export class AccountHostedTools extends DurableObject<AccountHostedToolsEnv> {
       }
       return this.#remote.fetch(request, vm);
     }
+    if (url.pathname === "/hosted-tool-stats") {
+      if (request.method !== "GET" || url.search) return Response.json({ error: "invalid_request" }, { status: 400 });
+      const ownerId = request.headers.get(OWNER_ASSERTION);
+      if (!isUserId(ownerId) || !await this.#claim(ownerId)) {
+        return Response.json({ error: "not_found" }, { status: 404 });
+      }
+      const to = Date.now();
+      const from = to - 24 * 60 * 60 * 1000;
+      // One persisted row per (session_id, source_call_id). Aggregate in SQL;
+      // never fetch input, result, receipt, machine or call identities.
+      const data = this.ctx.storage.sql.exec<{
+        name: string; state: string; calls: number; tool_failed: number; late_receipts: number;
+        pre_dispatch_unavailable: number; post_dispatch_unavailable: number; unknown_dispatch_unavailable: number;
+        duration_count: number;
+        total_duration_ms: number | null; avg_duration_ms: number | null;
+        min_duration_ms: number | null; max_duration_ms: number | null;
+      }>(`SELECT name, state, COUNT(*) AS calls,
+          SUM(CASE WHEN state = 'completed' AND json_valid(result_json)
+            AND json_extract(result_json, '$.output.success') = 0 THEN 1 ELSE 0 END) AS tool_failed,
+          SUM(CASE WHEN state = 'ambiguous' AND receipt_json IS NOT NULL THEN 1 ELSE 0 END) AS late_receipts,
+          SUM(CASE WHEN state = 'unavailable' AND dispatched_at = 0 THEN 1 ELSE 0 END) AS pre_dispatch_unavailable,
+          SUM(CASE WHEN state = 'unavailable' AND dispatched_at > 0 THEN 1 ELSE 0 END) AS post_dispatch_unavailable,
+          SUM(CASE WHEN state = 'unavailable' AND dispatched_at IS NULL THEN 1 ELSE 0 END) AS unknown_dispatch_unavailable,
+          COUNT(CASE WHEN state IN ('completed', 'unavailable', 'ambiguous', 'cancelled') THEN 1 END) AS duration_count,
+          SUM(CASE WHEN state IN ('completed', 'unavailable', 'ambiguous', 'cancelled')
+            THEN MAX(0, updated_at - created_at) END) AS total_duration_ms,
+          AVG(CASE WHEN state IN ('completed', 'unavailable', 'ambiguous', 'cancelled')
+            THEN MAX(0, updated_at - created_at) END) AS avg_duration_ms,
+          MIN(CASE WHEN state IN ('completed', 'unavailable', 'ambiguous', 'cancelled')
+            THEN MAX(0, updated_at - created_at) END) AS min_duration_ms,
+          MAX(CASE WHEN state IN ('completed', 'unavailable', 'ambiguous', 'cancelled')
+            THEN MAX(0, updated_at - created_at) END) AS max_duration_ms
+        FROM hosted_tool_calls
+        WHERE created_at >= ? AND created_at <= ?
+        GROUP BY name, state ORDER BY name, state`, from, to).toArray();
+      return Response.json({ window: { from, to }, total_calls: data.reduce((sum, row) => sum + row.calls, 0), data },
+        { headers: { "cache-control": "no-store" } });
+    }
     if (request.method === "GET" && url.pathname === "/tool-host") {
       if (request.headers.get("upgrade")?.toLowerCase() !== "websocket") {
         return new Response("Expected WebSocket upgrade", { status: 426 });
@@ -255,6 +294,7 @@ export class AccountHostedTools extends DurableObject<AccountHostedToolsEnv> {
         return Response.json({ error: "not_found" }, { status: 404 });
       }
       const ownedAt = performance.now();
+      observeHandCall("account.ownership", invocation.name, startedAt, "ok", invocation.call_id);
       if (invocation.machine_id === undefined) {
         const remote = await this.#remote.invoke(invocation.name, invocation.route_token,
           invocation.input, invocation.session_id, request.signal);
@@ -266,8 +306,12 @@ export class AccountHostedTools extends DurableObject<AccountHostedToolsEnv> {
         : machineName === undefined
           ? undefined
           : this.#broker.machineTool(invocation.machine_id, machineName);
-      if (!tool) return Response.json({ error: "tool_unavailable" }, { status: 404 });
+      if (!tool) {
+        observeHandCall("account.resolve", invocation.name, ownedAt, "unavailable", invocation.call_id);
+        return Response.json({ error: "tool_unavailable" }, { status: 404 });
+      }
       if (tool.routeToken !== invocation.route_token) {
+        observeHandCall("account.resolve", invocation.name, ownedAt, "unavailable", invocation.call_id);
         return Response.json({ error: "stale_catalog" }, { status: 409 });
       }
       // Capture the process owner's route before invoking. Exec can wait while
@@ -276,17 +320,27 @@ export class AccountHostedTools extends DurableObject<AccountHostedToolsEnv> {
       const processRoute = invocation.machine_id !== undefined && invocation.name === "exec_command"
         ? this.#broker.machineTool(invocation.machine_id, "write_stdin")?.routeToken : undefined;
       const resolvedAt = performance.now();
-      const result = await tool.handler(invocation.input, {
+      observeHandCall("account.resolve", invocation.name, ownedAt, "ok", invocation.call_id);
+      let result;
+      try { result = await tool.handler(invocation.input, {
         sessionId: invocation.session_id,
         ...(invocation.turn_id === undefined ? {} : { turnId: invocation.turn_id }),
         callId: invocation.call_id,
         model: invocation.model,
         signal: request.signal,
-      });
+      }); } catch (error) {
+        observeHandCall("account.handler", invocation.name, resolvedAt, request.signal.aborted ? "cancelled" : "failed", invocation.call_id);
+        throw error;
+      }
+      const branded = result as Record<PropertyKey, unknown>;
+      const failureStatus = (branded.structuredResult as { status?: unknown } | null)?.status;
+      observeHandCall("account.handler", invocation.name, resolvedAt, branded.success === true ? "ok"
+        : branded[HOSTED_TOOLS_PRE_ADMISSION_UNAVAILABLE] === true ? "unavailable"
+        : failureStatus === "ambiguous" ? "ambiguous"
+        : failureStatus === "unavailable" ? "unavailable" : "failed", invocation.call_id);
       console.info({ type: "hand.call.account", session_id: invocation.session_id, source_call_id: invocation.call_id,
         ownership_ms: ownedAt - startedAt, resolve_ms: resolvedAt - ownedAt,
         handler_ms: performance.now() - resolvedAt, total_ms: performance.now() - startedAt });
-      const branded = result as Record<PropertyKey, unknown>;
       return Response.json({
         output: branded.output,
         structured_result: branded.structuredResult,
@@ -583,10 +637,14 @@ export class AccountHostedToolsProvider implements HostedToolsDynamicProvider {
     machineId?: string,
     routePolicy: "refresh" | "fixed" | "screen" = "refresh",
   ): Promise<unknown> {
-    if (!this.#allowed(context)) {
-      return failedToolResult("Account hand is outside the active grant", "unavailable", true);
-    }
+    const failed = (message: string, status: "ambiguous" | "unavailable", preAdmission = false): unknown => {
+      observeHandCall("account.fetch", name, startedAt, status, context.callId);
+      return failedToolResult(message, status, preAdmission);
+    };
     const startedAt = performance.now();
+    if (!this.#allowed(context)) {
+      return failed("Account hand is outside the active grant", "unavailable", true);
+    }
     let response: Response;
     try {
       response = await this.#namespace.getByName(this.#ownerId).fetch("https://account-tools.internal/invoke", {
@@ -606,9 +664,10 @@ export class AccountHostedToolsProvider implements HostedToolsDynamicProvider {
         signal: context.signal,
       });
     } catch {
-      return failedToolResult("Hand connection failed after possible dispatch; execution outcome is unknown. The command was not resent.", "ambiguous");
+      return failed("Hand connection failed after possible dispatch; execution outcome is unknown. The command was not resent.", "ambiguous");
     }
     const responseAt = performance.now();
+    if (response.ok) observeHandCall("account.fetch", name, startedAt, "ok", context.callId);
     if (!response.ok) {
       try { await response.body?.cancel(); } catch { /* No call was admitted for 404/409. */ }
       const preAdmission = response.status === 404 || response.status === 409;
@@ -616,7 +675,7 @@ export class AccountHostedToolsProvider implements HostedToolsDynamicProvider {
         // Screen routes fence one exact publication generation. Redirecting a
         // stale click to a replacement publisher would turn a safe routing
         // rejection into a new side effect on a different desktop.
-        return failedToolResult(
+        return failed(
           "The selected screen was disconnected or replaced before this action began. Observe the current screen before sending input.",
           "unavailable",
           true,
@@ -629,7 +688,7 @@ export class AccountHostedToolsProvider implements HostedToolsDynamicProvider {
         this.invalidate();
         try { await this.refresh(); }
         catch {
-          return failedToolResult("Hand route refresh failed; execution outcome is unknown. The command was not resent.", "ambiguous");
+          return failed("Hand route refresh failed; execution outcome is unknown. The command was not resent.", "ambiguous");
         }
         // Personal/MCP tools use exposed names; shell tools use machine keys.
         const route = machineId === undefined
@@ -643,11 +702,11 @@ export class AccountHostedToolsProvider implements HostedToolsDynamicProvider {
         // A modern process route is stable across transport reconnects. A
         // changed token means a different runtime (or a legacy host without
         // continuity proof), whose numeric process IDs may have been reused.
-        return failedToolResult("The Hand process runtime changed or cannot prove session continuity. This saved process session cannot be routed to the replacement; any earlier poll or stdin outcome remains unknown. The command and stdin were not resent.", "ambiguous");
+        return failed("The Hand process runtime changed or cannot prove session continuity. This saved process session cannot be routed to the replacement; any earlier poll or stdin outcome remains unknown. The command and stdin were not resent.", "ambiguous");
       }
       // HTTP status alone cannot exclude an earlier dispatch of this call ID.
       // Preserve uncertainty locally instead of interrupting the agent runtime.
-      return failedToolResult(`Hand request failed (HTTP ${response.status}); execution outcome is unknown. The command was not resent after possible dispatch.`, "ambiguous");
+      return failed(`Hand request failed (HTTP ${response.status}); execution outcome is unknown. The command was not resent after possible dispatch.`, "ambiguous");
     }
     let result: InvocationResult;
     try {
@@ -658,8 +717,11 @@ export class AccountHostedToolsProvider implements HostedToolsDynamicProvider {
         throw new Error("invalid account hand result");
       }
     } catch {
-      return failedToolResult("Hand response could not be decoded; execution outcome is unknown. The command was not resent.", "ambiguous");
+      observeHandCall("account.decode", name, responseAt, "ambiguous", context.callId);
+      return failed("Hand response could not be decoded; execution outcome is unknown. The command was not resent.", "ambiguous");
     }
+    observeHandCall("account.decode", name, responseAt, result.pre_admission_unavailable === true ? "unavailable"
+      : result.success ? "ok" : "failed", context.callId);
     if (machineId !== undefined && result.pre_admission_unavailable === true) {
       // The broker checked its call ledger: this invocation was never admitted.
       // Let the agent recover the hand instead of indefinitely replaying the turn.

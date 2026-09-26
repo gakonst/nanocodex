@@ -1690,6 +1690,21 @@ async function managedFetchRoute(
         return json({ error: "communication_unavailable" }, { status: 503, headers: { "cache-control": "no-store" } });
       }
     }
+    if (url.pathname === "/v1/account/hosted-tool-stats") {
+      if (url.search !== "") return json({ error: "invalid_request" }, { status: 400 });
+      if (request.method !== "GET") return json({ error: "method_not_allowed" }, { status: 405 });
+      const principal = trustedAgentPrincipal ?? await authenticate(request, env, url);
+      if (!principal) return json({ error: "unauthorized" }, { status: 401 });
+      if (principal.kind === "connect_grant" || principal.connectGrant
+        || !principal.capabilities.includes("agents:read") || !principal.capabilities.includes("tools:use")) {
+        return json({ error: "forbidden" }, { status: 403 });
+      }
+      const response = await env.NANOCODEX_ACCOUNT_TOOLS.getByName(principal.userId).fetch(
+        "https://account-tools.internal/hosted-tool-stats",
+        { headers: { [SESSION_OWNER_ASSERTION]: principal.userId } },
+      );
+      return response;
+    }
     if (url.pathname === "/v1/account/hands") {
       if (url.search !== "") return json({ error: "invalid_request" }, { status: 400 });
       if (request.method !== "GET") return json({ error: "method_not_allowed" }, { status: 405 });
