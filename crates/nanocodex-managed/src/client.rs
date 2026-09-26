@@ -321,6 +321,17 @@ impl ManagedClient {
         self.json(Method::GET, "v1/agents", None, None).await
     }
 
+    /// Reads owner-only aggregate Hand tool statistics for the rolling 24 hours.
+    /// Never returns tool inputs, outputs, machine identities, or credentials.
+    ///
+    /// # Errors
+    ///
+    /// Returns a transport, HTTP, size, or response-schema failure.
+    pub async fn hosted_tool_stats(&self) -> Result<serde_json::Value, ManagedError> {
+        self.json(Method::GET, "v1/account/hosted-tool-stats", None, None)
+            .await
+    }
+
     /// Reads the current durable state of one managed agent.
     ///
     /// # Errors

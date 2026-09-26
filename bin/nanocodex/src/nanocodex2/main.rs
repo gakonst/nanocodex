@@ -169,6 +169,8 @@ enum Command {
     Cron(control::Cron),
     /// List account-owned managed agents as JSON.
     List,
+    /// Read owner-only rolling 24-hour Hand tool statistics as JSON.
+    HandStats,
     /// Read one managed agent's durable state as JSON.
     State(AgentId),
     /// Read one managed turn's durable state as JSON.
@@ -775,6 +777,7 @@ async fn run(cli: Cli) -> Result<(), ManagedError> {
         Some(Command::Settings(command)) => command.run(&client).await,
         Some(Command::Cron(command)) => command.run(&client).await,
         Some(Command::List) => write_json(&client.list().await?),
+        Some(Command::HandStats) => write_json(&client.hosted_tool_stats().await?),
         Some(Command::State(command)) => write_json(&client.state(&command.agent_id).await?),
         Some(Command::Turn(command)) => write_json(
             &client
@@ -1373,6 +1376,13 @@ mod tests {
                 ));
             }
         }
+    }
+
+    #[test]
+    fn hand_stats_is_a_read_only_standard_managed_command() {
+        let cli = Cli::try_parse_from(["nanocodex2", "hand-stats"]).unwrap();
+        assert!(!cli.managed2);
+        assert!(matches!(cli.command, Some(Command::HandStats)));
     }
 
     #[test]
