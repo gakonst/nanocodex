@@ -91,14 +91,27 @@ ID so an uncertain admission response cannot start a second turn. Work per alarm
 and the message IDs included in each event are bounded. Renewal catches up from
 the existing cursor; it never replaces an unprocessed cursor with the watch result.
 An hourly backend-only history check recovers missed pushes; empty changes do not
-wake the agent. Each alarm admits at most one turn with up to 100 message IDs;
+wake the agent. Each alarm admits at most one turn with up to five new message IDs;
 remaining chunks stay durable and retry after the agent becomes idle.
 An expired history cursor produces an explicit resynchronization event rather
 than silently claiming all intervening changes were delivered.
 
 Only newly added INBOX messages wake the agent. Draft, sent-only and label-only
-changes do not trigger turns. Self-addressed mail delivered to INBOX remains eligible. Events carry message identifiers and history metadata, not email bodies. They are
-untrusted context. Receiving an event does not authorize sending email or other
+changes do not trigger turns. Self-addressed mail delivered to INBOX remains eligible.
+Before admitting a turn, the backend resolves the event's message IDs through the
+selected Gmail connection and includes message headers and decoded body text in
+the agent input. Ordinary messages therefore do not need a model-initiated Gmail
+read. The backend prefers the plain-text MIME alternative and converts HTML-only
+mail to inert text. Selected text bodies stored separately by Gmail are resolved
+through the same connection. File contents are not downloaded. Resolution is
+bounded: an event fits within 32 KiB, a single message snapshot is at most 16,000
+serialized UTF-8 bytes, and multi-message events share the available budget.
+Missing messages, unavailable content, and truncation are explicit in the payload.
+
+The resolved envelope is persisted before its first admission attempt, so a busy
+agent or ambiguous admission response reuses identical content. Outboxes created
+before this feature retain their original identifier-only input for replay safety.
+Email content remains untrusted context. Receiving an event does not authorize sending email or other
 external actions; existing explicit user authorization is still required.
 Disabling stops local wakes immediately and attempts `users.stop`; inspect the
 returned `watchStopped` value. Delete the associated Pub/Sub subscription when

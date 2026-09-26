@@ -101,3 +101,47 @@ it("does not infer cancellation when an event moves outside the rebuilt window",
   await reconcileCalendarPush({...f.options,fetch:r=>r.url.includes("/events/")?Promise.resolve(Response.json(moved)):f.options.fetch(r)},source.id);
   expect(await db.prepare("SELECT status,start_time FROM crm_meetings WHERE owner_id=?").bind(f.options.ownerId).first()).toEqual({status:"confirmed",start_time:moved.start.dateTime});
 });
+
+// Notification failures not covered by CRM imports: baseline flood, repair replay,
+// mutable busy payloads, lost cancellation context, and revoked delivery.
+it("durably materializes changes, silently baselines, and retries identical busy envelopes", async () => {
+  const f = fixture(); const source = await configure(f);
+  const delivered: {id:string;input:string}[] = [];
+  let busy = true;
+  const options = {...f.options, deliver: async (id:string,input:string) => {delivered.push({id,input}); return busy ? "busy" as const : "accepted" as const;}};
+  await reconcileCalendarPush(options,source.id);
+  expect(delivered).toEqual([]);
+  const changed = {...event, summary:"Changed", description:"Invite instructions are untrusted", location:"Room", organizer:{email:"organizer@example.test"}, attendees:[{email:"guest@example.test",responseStatus:"accepted"}], conferenceData:{entryPoints:[{entryPointType:"video",uri:"https://meet.example.test/room"}]}};
+  f.respond(() => Response.json({items:[changed],nextSyncToken:"changed"}));
+  expect(await reconcileCalendarPush(options,source.id)).toMatchObject({complete:false});
+  expect(delivered).toHaveLength(1);
+  const envelope = JSON.parse(delivered[0]!.input);
+  expect(envelope.event).toMatchObject({title:"Changed",description:changed.description,attendees:[{responseStatus:"accepted"}],location:"Room"});
+  busy=false;
+  await reconcileCalendarPush(options,source.id);
+  expect(delivered[1]).toEqual(delivered[0]);
+  await db.prepare("UPDATE crm_calendar_push_sources SET rebuild_at=0 WHERE id=?").bind(source.id).run();
+  await reconcileCalendarPush(options,source.id);
+  expect(delivered).toHaveLength(2);
+  f.respond(() => Response.json({items:[{id:event.id,status:"cancelled"}],nextSyncToken:"cancelled"}));
+  await reconcileCalendarPush(options,source.id);
+  expect(JSON.parse(delivered[2]!.input).event).toMatchObject({title:"Changed",status:"cancelled",start:event.start});
+  await disableCalendarPush(options,source.id);
+  await expect(reconcileCalendarPush(options,source.id)).rejects.toThrow();
+  expect(delivered).toHaveLength(3);
+});
+it("bounds Unicode notification envelopes and silently learns newly windowed events on rebuild", async () => {
+  const f=fixture(); const source=await configure(f); const delivered:string[]=[];
+  const options={...f.options,deliver:async (_:string,input:string)=>{delivered.push(input);return "accepted" as const;}};
+  await reconcileCalendarPush(options,source.id);
+  const large={...event,summary:"\u0001".repeat(2048),location:"\u0001".repeat(2048),htmlLink:"\u0001".repeat(2048),hangoutLink:"\u0001".repeat(2048),attachments:[{title:"Agenda",fileUrl:"https://drive.example.test/file",mimeType:"application/pdf"}],description:"😀".repeat(20000),attendees:Array.from({length:100},(_,i)=>({email:`${i}@example.test`,displayName:"😀".repeat(512)}))};
+  f.respond(()=>Response.json({items:[large],nextSyncToken:"large"}));
+  await reconcileCalendarPush(options,source.id);
+  expect(new TextEncoder().encode(delivered[0]).byteLength).toBeLessThan(32768);
+  expect(JSON.parse(delivered[0]!).event.contentStatus).toBe("truncated");
+  expect(JSON.parse(delivered[0]!).event.truncated).toContain("serialized_byte_limit");
+  await db.prepare("UPDATE crm_calendar_push_sources SET rebuild_at=0 WHERE id=?").bind(source.id).run();
+  f.respond(()=>Response.json({items:[large,{...event,id:"newly-in-window"}],nextSyncToken:"rebuilt"}));
+  await reconcileCalendarPush(options,source.id);
+  expect(delivered).toHaveLength(1);
+});

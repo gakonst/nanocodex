@@ -1,4 +1,5 @@
 import { createHash, timingSafeEqual } from "node:crypto";
+import { stageCalendarNotifications, drainCalendarNotifications } from "./calendar-notifications";
 import { importCalendarEvents } from "./crm-meetings";
 
 /** All provider calls must use an owner-scoped managed connector egress capability.
@@ -14,9 +15,10 @@ export type CalendarPushOptions = {
   fetch(request: Request): Promise<Response>;
   /** Trusted deployment configuration, never a request-provided URL. */
   callbackUrl: string;
+  deliver?(id: string, input: string): Promise<"accepted" | "duplicate" | "busy">;
   enqueue?(sourceId: string, agentId: string): Promise<void>;
 };
-type Source = { id: string; owner_id: string; agent_id: string; window_from: number; window_to: number; rebuild_at: number; connection_id: string; calendar_id: string;
+type Source = { notifications_initialized: number; id: string; owner_id: string; agent_id: string; window_from: number; window_to: number; rebuild_at: number; connection_id: string; calendar_id: string;
   enabled: number; sync_token: string | null; page_token: string | null; generation: string;
   dirty: number; check_at: number; renew_at: number; lease: string | null; lease_until: number };
 const HOUR = 3600000;
@@ -151,13 +153,18 @@ export async function receiveCalendarPush(db: D1Database, request: Request, enqu
 /** Bounded pages, durable continuation, and periodic repair even without hints.
  * Cursor commits follow idempotent CRM imports: a crash replays the unfinished
  * page. New attendees enter the existing crm_research queue automatically. */
-export async function reconcileCalendarPush(o: CalendarPushOptions, id: string, maxPages = 5): Promise<{ complete: boolean; busy?: boolean; reset?: boolean }> {
+export async function reconcileCalendarPush(o: CalendarPushOptions, id: string, maxPages = 5, respectSchedule = false): Promise<{ complete: boolean; busy?: boolean; reset?: boolean }> {
   if (!Number.isInteger(maxPages) || maxPages < 1 || maxPages > 5) throw new Error("calendar_push_invalid_budget");
   await source(o, id);
   const lease = await acquire(o, id);
   if (!lease) return { complete: false, busy: true };
   try {
     let s = await source(o, id);
+    const drain = () => o.deliver ? drainCalendarNotifications(o.db,id,()=>fence(o,id,lease),o.deliver) : Promise.resolve(true);
+    const drained = await drain();
+    // Delivery retries must not turn a clean sync token into one provider poll
+    // per second. Callback hints and scheduled repair still bypass this gate.
+    if (respectSchedule && !s.dirty && !s.page_token && s.check_at > Date.now() && s.rebuild_at > Date.now()) return {complete:drained};
     if (!s.page_token && s.rebuild_at <= Date.now()) {
       await o.db.prepare("UPDATE crm_calendar_push_sources SET sync_token=NULL,generation=?,window_from=?,window_to=?,rebuild_at=? WHERE id=? AND lease=?")
         .bind(crypto.randomUUID(), Date.now()-30*24*HOUR, Date.now()+14*24*HOUR, Date.now()+24*HOUR, id, lease).run();
@@ -186,6 +193,7 @@ export async function reconcileCalendarPush(o: CalendarPushOptions, id: string, 
         (next === undefined && !opaque(sync)) || (next !== undefined && sync !== undefined)) throw new Error("calendar_push_invalid_page");
       await importCalendarEvents(o.db, o.ownerId, { connection_id: s.connection_id, calendar_id: s.calendar_id, events: items });
       await fence(o, id, lease);
+      await stageCalendarNotifications(o.db,s,items,()=>fence(o,id,lease));
       const statements = items.map(item => o.db.prepare(`INSERT INTO crm_calendar_push_seen(source_id,event_id,generation) VALUES(?,?,?)
         ON CONFLICT(source_id,event_id) DO UPDATE SET generation=excluded.generation`).bind(id, (item as { id: string }).id, s.generation));
       if (statements.length) await o.db.batch(statements);
@@ -202,16 +210,17 @@ export async function reconcileCalendarPush(o: CalendarPushOptions, id: string, 
           if (event.id !== absent.event_id) throw new Error("calendar_push_invalid_event");
           await importCalendarEvents(o.db,o.ownerId,{connection_id:s.connection_id,calendar_id:s.calendar_id,events:[event]});
           await fence(o,id,lease);
+          await stageCalendarNotifications(o.db,s,[event],()=>fence(o,id,lease));
           await o.db.prepare(`INSERT INTO crm_calendar_push_seen(source_id,event_id,generation) VALUES(?,?,?) ON CONFLICT(source_id,event_id) DO UPDATE SET generation=excluded.generation`).bind(id,absent.event_id,s.generation).run();
         }
         if (missing.length === 20) return {complete:false};
       }
       statements.length = 0;
-      statements.push(o.db.prepare(`UPDATE crm_calendar_push_sources SET page_token=?,sync_token=?,check_at=?,dirty=CASE WHEN dirty=? AND ?=1 THEN 0 ELSE dirty END
-        WHERE id=? AND lease=?`).bind(next ?? null, next === undefined ? sync : s.sync_token,
+      statements.push(o.db.prepare(`UPDATE crm_calendar_push_sources SET notifications_initialized=CASE WHEN ?=1 THEN 1 ELSE notifications_initialized END,page_token=?,sync_token=?,check_at=?,dirty=CASE WHEN dirty=? AND ?=1 THEN 0 ELSE dirty END
+        WHERE id=? AND lease=?`).bind(Number(next === undefined), next ?? null, next === undefined ? sync : s.sync_token,
         next === undefined ? Date.now() + HOUR : 0, dirty, Number(next === undefined), id, lease));
       await o.db.batch(statements);
-      if (next === undefined) return { complete: true };
+      if (next === undefined) return { complete: drained && await drain() };
       tokens.add(next as string); s = { ...s, page_token: next as string };
     }
     return { complete: false };
