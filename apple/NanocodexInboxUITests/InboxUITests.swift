@@ -34,10 +34,9 @@ final class InboxUITests: XCTestCase {
         XCTAssertTrue(app.buttons["conversation-drawer-open"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.buttons["send"].exists)
         capture(app, "todo-chat-dock")
-        app.buttons["app-menu"].tap()
-        app.buttons["conversation-model-controls"].tap()
-        XCTAssertTrue(app.buttons["model-picker"].waitForExistence(timeout: 5))
-        app.buttons["Done"].tap()
+        XCTAssertTrue(app.buttons["model-picker"].exists)
+        XCTAssertTrue(app.buttons["effort-dial"].exists)
+        XCTAssertTrue(app.buttons["auto-route"].exists)
         app.buttons["main-tab-todo"].tap()
         XCTAssertTrue(app.staticTexts["Check whether Alex can meet next week"].exists)
         let card = app.buttons["decision-card:fixture-email"]

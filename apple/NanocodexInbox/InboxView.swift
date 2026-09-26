@@ -84,7 +84,6 @@ struct InboxView: View {
     @State private var showScheduledJobs = false
     @State private var showConnectors = false
     @State private var showSettings = false
-    @State private var showModelControls = false
     @State private var showMeeting = false
     @StateObject private var appUpdates = NativeAppUpdateModel()
     @Environment(\.scenePhase) private var updateScenePhase
@@ -182,20 +181,6 @@ struct InboxView: View {
         }
         .foregroundStyle(Ink.text)
         .tint(Ink.accent)
-        .sheet(isPresented: $showModelControls) {
-            NavigationStack {
-                VStack(alignment: .leading, spacing: 12) {
-                    MobileModelControls(model: model)
-                    Spacer()
-                }
-                .padding(.top, 18)
-                .navigationTitle("Model & routing")
-                .navigationBarTitleDisplayMode(.inline)
-                .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { showModelControls = false } } }
-            }
-            .presentationDetents([.medium])
-            .presentationDragIndicator(.visible)
-        }
         .sheet(isPresented: $showSettings) {
             NavigationStack {
                 settings
@@ -251,12 +236,19 @@ struct InboxView: View {
         HStack(spacing: 2) {
             mainNavigationButton(.todo, title: "TODO", symbol: "checkmark.square", identifier: "main-tab-todo")
             mainNavigationButton(.chat, title: "Chat", symbol: "bubble.left", identifier: "main-tab-chat")
+            if model.focused != nil {
+                Rectangle().fill(.primary.opacity(0.10))
+                    .frame(width: 1, height: 22).padding(.horizontal, 5)
+                Spacer(minLength: 0)
+                MobileModelControls(model: model)
+            } else { Spacer(minLength: 0) }
         }
-        .padding(3)
+        .padding(.horizontal, 5).padding(.vertical, 3)
+        .frame(maxWidth: 620)
         .background(.regularMaterial, in: Capsule())
         .overlay(Capsule().strokeBorder(.primary.opacity(0.08)))
         .shadow(color: .black.opacity(0.08), radius: 8, y: 2)
-        .padding(.top, 4).padding(.bottom, 2)
+        .padding(.horizontal, 12).padding(.top, 4).padding(.bottom, 2)
     }
 
     private func mainNavigationButton(_ surface: MainSurface, title: String, symbol: String, identifier: String) -> some View {
@@ -525,9 +517,6 @@ struct InboxView: View {
                 Label("Context from other apps", systemImage: "tray")
             }.accessibilityIdentifier("conversation-context")
             Divider()
-            Button { composerFocused = false; showModelControls = true } label: {
-                Label("Model & routing", systemImage: "slider.horizontal.3")
-            }.disabled(model.focused == nil).accessibilityIdentifier("conversation-model-controls")
             Button { composerFocused = false; showScheduledJobs = true } label: {
                 Label("Scheduled jobs", systemImage: "clock")
             }.accessibilityIdentifier("inbox-scheduled-jobs")
@@ -3726,65 +3715,73 @@ private struct NativeAppUpdateSection: View {
 }
 
 
-/// Compact controls remain visible while the selected route is pinned.
+/// The full-width dock keeps Chat routing one tap away without another composer row.
+/// These controls apply to the selected conversation, not to TODO processing.
 private struct MobileModelControls: View {
     @ObservedObject var model: InboxModel
     var body: some View {
         if let card = model.focused {
             let selected = ModelChoice.find(card.model.isEmpty ? "gpt-6-astra" : card.model)
             let waiting = model.modelSettingsBusy.contains(card.id)
-            VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: 12) {
-                    Menu {
-                        ForEach(ModelChoice.all) { choice in
-                            Button { model.chooseModel(choice.id) } label: {
-                                if card.model == choice.id { Label(choice.name, systemImage: "checkmark") }
-                                else { Text(choice.name) }
-                            }
+            HStack(spacing: 2) {
+                Menu {
+                    ForEach(ModelChoice.all) { choice in
+                        Button { model.chooseModel(choice.id) } label: {
+                            if card.model == choice.id { Label(choice.name, systemImage: "checkmark") }
+                            else { Text(choice.name) }
                         }
-                    } label: {
-                        HStack(spacing: 5) {
-                            Text(card.routingAutomatic && !card.modelPinned ? "Auto" : selected?.name ?? card.model)
-                                .lineLimit(1)
-                            Image(systemName: model.modelChoiceLocked ? "lock.fill" : "chevron.down").font(.caption2)
-                        }.frame(minHeight: 44)
                     }
-                    .disabled(model.modelChoiceLocked || waiting)
-                    .accessibilityLabel("Model: \(selected?.name ?? card.model)")
-                    .accessibilityIdentifier("model-picker")
-                    Spacer(minLength: 0)
-                    Menu {
-                        ForEach(selected?.efforts ?? [], id: \.self) { effort in
-                            Button { model.chooseEffort(effort) } label: {
-                                if effort == card.thinking { Label(ModelChoice.effortName(effort), systemImage: "checkmark") }
-                                else { Text(ModelChoice.effortName(effort)) }
-                            }
+                    if !card.provider.isEmpty {
+                        Divider()
+                        Text(card.provider + " · " + (card.modelLocked ? "Pinned to this conversation" : "Ready"))
+                    }
+                    if let error = model.modelSettingsError { Text(error) }
+                } label: {
+                    HStack(spacing: 3) {
+                        if waiting { ProgressView().controlSize(.mini) }
+                        else {
+                            Text(selected?.name ?? card.model).lineLimit(1).minimumScaleFactor(0.8)
+                            Image(systemName: model.modelChoiceLocked ? "lock.fill" : "chevron.down")
+                                .font(.system(size: 9))
                         }
-                    } label: {
-                        Label(ModelChoice.effortName(card.thinking.isEmpty ? "low" : card.thinking), systemImage: "dial.low")
-                            .lineLimit(1).frame(minHeight: 44)
                     }
-                    .disabled(waiting || card.effortLocked || card.routingAutomatic)
-                    .accessibilityLabel("Thinking effort: \(card.thinking)")
-                    .accessibilityIdentifier("effort-dial")
-                    Button { model.toggleAutoRoute() } label: {
-                        Label("Auto", systemImage: "arrow.triangle.branch").frame(minWidth: 60, minHeight: 44)
-                            .background(card.routingAutomatic ? Color.accentColor.opacity(0.12) : .clear, in: Capsule())
-                    }
-                    .disabled(model.modelChoiceLocked || waiting)
-                    .accessibilityLabel(card.routingAutomatic ? "Disable auto route" : "Enable auto route")
-                    .accessibilityValue(card.routingAutomatic ? "On" : "Off")
-                    .accessibilityIdentifier("auto-route")
-                }.font(.caption.weight(.medium)).buttonStyle(.plain)
-                if waiting { ProgressView().controlSize(.mini).accessibilityLabel("Updating model settings") }
-                else if !card.provider.isEmpty {
-                    Text(card.provider + " · " + (card.modelLocked ? "Pinned to this conversation" : "Ready"))
-                        .font(.caption2).foregroundStyle(.secondary).accessibilityIdentifier("selected-provider")
-                } else if card.routingEnabled {
-                    Text("Provider chosen on first message").font(.caption2).foregroundStyle(.secondary)
+                    .frame(maxWidth: 80, minHeight: 44)
+                    .contentShape(Rectangle())
                 }
-                if let error = model.modelSettingsError { Text(error).font(.caption).foregroundStyle(.red) }
-            }.padding(.horizontal, 16).padding(.bottom, 4)
+                .disabled(model.modelChoiceLocked || waiting)
+                .accessibilityLabel("Chat model: \(selected?.name ?? card.model)")
+                .accessibilityHint("Changes the selected Chat conversation, not TODO decisions")
+                .accessibilityIdentifier("model-picker")
+
+                Menu {
+                    ForEach(selected?.efforts ?? [], id: \.self) { effort in
+                        Button { model.chooseEffort(effort) } label: {
+                            if effort == card.thinking { Label(ModelChoice.effortName(effort), systemImage: "checkmark") }
+                            else { Text(ModelChoice.effortName(effort)) }
+                        }
+                    }
+                } label: {
+                    Text(ModelChoice.effortName(card.thinking.isEmpty ? "low" : card.thinking))
+                        .lineLimit(1).minimumScaleFactor(0.8)
+                        .frame(maxWidth: 89, minHeight: 44)
+                        .contentShape(Rectangle())
+                }
+                .disabled(waiting || card.effortLocked || card.routingAutomatic)
+                .accessibilityLabel("Chat thinking effort: \(card.thinking)")
+                .accessibilityIdentifier("effort-dial")
+
+                Button { model.toggleAutoRoute() } label: {
+                    Text("Auto").frame(minWidth: 42, minHeight: 40)
+                        .background(card.routingAutomatic ? Color.primary.opacity(0.09) : .clear, in: Capsule())
+                        .contentShape(Rectangle())
+                }
+                .disabled(model.modelChoiceLocked || waiting)
+                .accessibilityLabel(card.routingAutomatic ? "Disable Chat auto route" : "Enable Chat auto route")
+                .accessibilityValue(card.routingAutomatic ? "On" : "Off")
+                .accessibilityIdentifier("auto-route")
+            }
+            .font(.caption.weight(.medium))
+            .buttonStyle(.plain)
         }
     }
 }
