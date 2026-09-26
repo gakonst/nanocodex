@@ -28,6 +28,139 @@ pub(super) enum Event {
     },
 }
 
+pub(super) async fn run(
+    pane: PaneId,
+    client: ManagedClient,
+    parent_agent_id: String,
+    settings: nanocodex_managed::AgentSettings,
+    workspace: PathBuf,
+    start_sequence: u64,
+    mut requests: mpsc::UnboundedReceiver<Request>,
+    events: mpsc::UnboundedSender<Event>,
+) {
+    if let Err(error) = run_inner(
+        pane,
+        client,
+        parent_agent_id,
+        settings,
+        workspace,
+        start_sequence,
+        &mut requests,
+        &events,
+    )
+    .await
+    {
+        let _ = events.send(Event::Failed {
+            pane,
+            error: error.to_string(),
+            opening: false,
+        });
+        let _ = events.send(Event::Finished(pane));
+    }
+}
+
+async fn run_inner(
+    pane: PaneId,
+    client: ManagedClient,
+    parent_agent_id: String,
+    settings: nanocodex_managed::AgentSettings,
+    workspace: PathBuf,
+    start_sequence: u64,
+    requests: &mut mpsc::UnboundedReceiver<Request>,
+    events: &mpsc::UnboundedSender<Event>,
+) -> Result<(), ManagedError> {
+    // A stable identity survives internal transport retries. The server decides
+    // the committed boundary atomically; never reconstruct it from SSE/history.
+    let request_id = uuid::Uuid::now_v7().to_string();
+    let receipt = match client.fork(&parent_agent_id, &request_id).await {
+        Ok(receipt) => receipt,
+        Err(error) => {
+            let message = if matches!(error, ManagedError::Transport(_)) {
+                format!(
+                    "Fork admission may be uncertain (key {request_id}): {error}. Check managed agents before retrying."
+                )
+            } else {
+                error.to_string()
+            };
+            let _ = events.send(Event::Failed {
+                pane,
+                error: message,
+                opening: true,
+            });
+            return Ok(());
+        }
+    };
+    let settings = receipt
+        .initial_state
+        .as_ref()
+        .map_or(settings, |state| state.settings);
+    let agent_id = receipt.agent_id;
+    let mut stream = client.events(&agent_id, EventCursor::parse("0")?)?;
+    if events
+        .send(Event::Ready {
+            pane,
+            agent_id: agent_id.clone(),
+            settings,
+        })
+        .is_err()
+    {
+        return Ok(());
+    }
+    let mut active: Option<String> = None;
+    // The pane initially shows the parent's transcript snapshot. New local IDs
+    // must not reuse any sequence from that snapshot.
+    let mut sequence = start_sequence.max(1);
+    loop {
+        tokio::select! {
+            request = requests.recv() => match request {
+                Some(Request::Submit(prompt)) => {
+                    let display = prompt.display_text().to_owned();
+                    let id = uuid::Uuid::now_v7().to_string();
+                    let input = prompt.managed_prompt();
+                    let record = TranscriptRecord::from_local(sequence, history::unix_ms(),
+                        super::transcript::LocalEvent::UserSubmitted { id: super::transcript::TurnId::new(sequence), text: display })
+                        .map_err(|error| ManagedError::Configuration(error.to_string()))?;
+                    sequence += 1;
+                    let _ = events.send(Event::Record { pane, record: Arc::new(record) });
+                    match client.submit(&agent_id, Some(&id), &id, &input).await {
+                        Ok(_) => active = Some(id),
+                        Err(error) => {
+                            let message = if matches!(error, ManagedError::Transport(_)) {
+                                format!("Side-turn admission may be uncertain: {error}. Check /id and its durable history before retrying.")
+                            } else { error.to_string() };
+                            let _ = events.send(Event::Failed { pane, error: message, opening: false });
+                            let _ = events.send(Event::Finished(pane));
+                        }
+                    }
+                }
+                Some(Request::Cancel) => {
+                    if let Some(id) = active.as_deref()
+                        && let Err(error) = client.cancel(&agent_id, id).await
+                    {
+                        let _ = events.send(Event::Failed { pane, error: error.to_string(), opening: false });
+                    }
+                }
+                None => return Ok(()),
+            },
+            event = stream.next() => {
+                let event = event?;
+                // The local question is already displayed. Avoid a duplicate acceptance.
+                if matches!(event.data, ManagedEventData::TurnAccepted { .. } | ManagedEventData::AgentCreated { .. }) { continue; }
+                let terminal = matches!(&event.data,
+                    ManagedEventData::TurnCompleted { id, .. } | ManagedEventData::TurnFailed { id, .. } | ManagedEventData::TurnCancelled { id }
+                    if active.as_deref() == Some(id));
+                if let Some((record, _)) = history::live_managed_projection(event, &agent_id, &workspace, &mut sequence)? {
+                    let _ = events.send(Event::Record { pane, record });
+                }
+                if terminal {
+                    active = None;
+                    let _ = events.send(Event::Finished(pane));
+                }
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -151,138 +284,5 @@ mod tests {
         );
         task.abort();
         server.abort();
-    }
-}
-
-pub(super) async fn run(
-    pane: PaneId,
-    client: ManagedClient,
-    parent_agent_id: String,
-    settings: nanocodex_managed::AgentSettings,
-    workspace: PathBuf,
-    start_sequence: u64,
-    mut requests: mpsc::UnboundedReceiver<Request>,
-    events: mpsc::UnboundedSender<Event>,
-) {
-    if let Err(error) = run_inner(
-        pane,
-        client,
-        parent_agent_id,
-        settings,
-        workspace,
-        start_sequence,
-        &mut requests,
-        &events,
-    )
-    .await
-    {
-        let _ = events.send(Event::Failed {
-            pane,
-            error: error.to_string(),
-            opening: false,
-        });
-        let _ = events.send(Event::Finished(pane));
-    }
-}
-
-async fn run_inner(
-    pane: PaneId,
-    client: ManagedClient,
-    parent_agent_id: String,
-    settings: nanocodex_managed::AgentSettings,
-    workspace: PathBuf,
-    start_sequence: u64,
-    requests: &mut mpsc::UnboundedReceiver<Request>,
-    events: &mpsc::UnboundedSender<Event>,
-) -> Result<(), ManagedError> {
-    // A stable identity survives internal transport retries. The server decides
-    // the committed boundary atomically; never reconstruct it from SSE/history.
-    let request_id = uuid::Uuid::now_v7().to_string();
-    let receipt = match client.fork(&parent_agent_id, &request_id).await {
-        Ok(receipt) => receipt,
-        Err(error) => {
-            let message = if matches!(error, ManagedError::Transport(_)) {
-                format!(
-                    "Fork admission may be uncertain (key {request_id}): {error}. Check managed agents before retrying."
-                )
-            } else {
-                error.to_string()
-            };
-            let _ = events.send(Event::Failed {
-                pane,
-                error: message,
-                opening: true,
-            });
-            return Ok(());
-        }
-    };
-    let settings = receipt
-        .initial_state
-        .as_ref()
-        .map_or(settings, |state| state.settings);
-    let agent_id = receipt.agent_id;
-    let mut stream = client.events(&agent_id, EventCursor::parse("0")?)?;
-    if events
-        .send(Event::Ready {
-            pane,
-            agent_id: agent_id.clone(),
-            settings,
-        })
-        .is_err()
-    {
-        return Ok(());
-    }
-    let mut active: Option<String> = None;
-    // The pane initially shows the parent's transcript snapshot. New local IDs
-    // must not reuse any sequence from that snapshot.
-    let mut sequence = start_sequence.max(1);
-    loop {
-        tokio::select! {
-            request = requests.recv() => match request {
-                Some(Request::Submit(prompt)) => {
-                    let display = prompt.display_text().to_owned();
-                    let id = uuid::Uuid::now_v7().to_string();
-                    let input = prompt.managed_prompt();
-                    let record = TranscriptRecord::from_local(sequence, history::unix_ms(),
-                        super::transcript::LocalEvent::UserSubmitted { id: super::transcript::TurnId::new(sequence), text: display })
-                        .map_err(|error| ManagedError::Configuration(error.to_string()))?;
-                    sequence += 1;
-                    let _ = events.send(Event::Record { pane, record: Arc::new(record) });
-                    match client.submit(&agent_id, Some(&id), &id, &input).await {
-                        Ok(_) => active = Some(id),
-                        Err(error) => {
-                            let message = if matches!(error, ManagedError::Transport(_)) {
-                                format!("Side-turn admission may be uncertain: {error}. Check /id and its durable history before retrying.")
-                            } else { error.to_string() };
-                            let _ = events.send(Event::Failed { pane, error: message, opening: false });
-                            let _ = events.send(Event::Finished(pane));
-                        }
-                    }
-                }
-                Some(Request::Cancel) => {
-                    if let Some(id) = active.as_deref() {
-                        if let Err(error) = client.cancel(&agent_id, id).await {
-                            let _ = events.send(Event::Failed { pane, error: error.to_string(), opening: false });
-                        }
-                    }
-                }
-                None => return Ok(()),
-            },
-            event = stream.next() => {
-                let event = event?;
-                // The local question is already displayed. Avoid a duplicate acceptance.
-                if matches!(event.data, ManagedEventData::TurnAccepted { .. } | ManagedEventData::AgentCreated { .. }) { continue; }
-                let terminal = matches!(&event.data,
-                    ManagedEventData::TurnCompleted { id, .. } | ManagedEventData::TurnFailed { id, .. } | ManagedEventData::TurnCancelled { id }
-                    if active.as_deref() == Some(id));
-                if let Some((record, _)) = history::live_managed_projection(event, &agent_id, &workspace, &mut sequence)? {
-                    let _ = events.send(Event::Record { pane, record });
-                }
-                if terminal {
-                    active = None;
-                    let _ = events.send(Event::Finished(pane));
-                }
-            }
-        }
     }
 }

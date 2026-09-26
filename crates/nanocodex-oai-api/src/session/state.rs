@@ -857,7 +857,7 @@ mod unreal_function_output_tests {
         let terminal = json!({"type":"function_call_output", "call_id":"job-1", "output":"done"});
         assert!(check(vec![terminal.clone(), pending.clone()]));
         assert!(check(vec![pending.clone(), pending.clone()]));
-        assert!(check(vec![pending.clone(), terminal.clone(), terminal]));
+        assert!(check(vec![pending, terminal.clone(), terminal]));
         assert!(check(vec![
             json!({"type":"function_call_output", "call_id":"orphan", "output":"done"})
         ]));
