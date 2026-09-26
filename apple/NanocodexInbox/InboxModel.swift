@@ -98,6 +98,8 @@ final class InboxModel: ObservableObject {
     @Published var musicConnectorToOpen: MusicLoopbackProvider?
     @Published private(set) var todoItems: [TodoCapture] = []
     @Published private(set) var todoDecisions: [TodoDecision] = []
+    @Published private(set) var todoTraces: [TodoTrace] = []
+    @Published var todoFilter: TodoFeedFilter = .all
     @Published private(set) var todoLoading = false
     @Published private(set) var todoLoaded = false
     private var todoRevision = 0
@@ -923,6 +925,17 @@ final class InboxModel: ObservableObject {
                         .object(["id": .string("defer"), "title": .string("Not now")]),
                     ]),
                 ]))]) ?? []
+                if ProcessInfo.processInfo.arguments.contains("--todo-filter-fixture") {
+                    todoTraces = (try? [
+                        TodoTrace(.object(["id": .number(1), "outcome": .string("no_reply"),
+                            "reason": .string("no_reply"), "sender": .string("Updates <updates@example.test>"),
+                            "subject": .string("Weekly digest"), "source_url": .string("https://mail.google.com/")])),
+                        TodoTrace(.object(["id": .number(2), "outcome": .string("unavailable"),
+                            "reason": .string("timeout")])),
+                    ]) ?? []
+                    todoItems = (try? [TodoCapture(.object(["id": .string("fixture-capture"),
+                        "body": .string("Remember the agenda"), "status": .string("captured"), "version": .number(1)]))]) ?? []
+                }
             }
             #endif
             todoLoaded = true
@@ -935,7 +948,7 @@ final class InboxModel: ObservableObject {
             let result = try await client.todoSnapshot()
             guard generation == epoch, connected else { return }
             if revision == todoRevision {
-                todoItems = result.captures; todoDecisions = result.decisions; todoLoaded = true
+                todoItems = result.captures; todoDecisions = result.decisions; todoTraces = result.traces; todoLoaded = true
             } else { todoRefreshRequested = true }
         } catch {
             guard generation == epoch, connected else { return }
@@ -1318,7 +1331,7 @@ final class InboxModel: ObservableObject {
         projection?.cancel(); projection = nil; eventBytes = []; retainedBytes = 0; navigation = []; deferred = [:]
         observedAgentID = nil; threadLoading = false; threadError = nil
         connected = false; restoringAccount = false; restorationError = nil
-        isDemo = false; todoItems = []; todoDecisions = []; todoDraft = ""; todoWatchHint = ""; todoCaptureOperation = nil; todoResponseOperations.removeAll(); todoError = nil; todoLoading = false; todoLoaded = false; todoRevision = 0; todoRefreshRequested = false; todoFixtureLoaded = false; todoSaving = false; todoResponding = false; cards = []; deck = InboxDeck(); mediaProjection = InboxMediaProjection(); rows = []; events = []; drafts = [:]; seen = [:]
+        isDemo = false; todoItems = []; todoDecisions = []; todoTraces = []; todoFilter = .all; todoDraft = ""; todoWatchHint = ""; todoCaptureOperation = nil; todoResponseOperations.removeAll(); todoError = nil; todoLoading = false; todoLoaded = false; todoRevision = 0; todoRefreshRequested = false; todoFixtureLoaded = false; todoSaving = false; todoResponding = false; cards = []; deck = InboxDeck(); mediaProjection = InboxMediaProjection(); rows = []; events = []; drafts = [:]; seen = [:]
         for task in attachmentProviderTasks.values { task.cancel() }
         attachmentProviderTasks = [:]
         attachmentDrafts = [:]; attachmentURLs = [:]; attachmentMovieURLs = [:]; attachmentImports = [:]; attachmentErrors = [:]

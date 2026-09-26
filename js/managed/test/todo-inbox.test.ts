@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { env as workerEnv, runInDurableObject } from "cloudflare:test";
 import { ensureAccount, type AccountAuthEnv, type Principal } from "../src/account-auth";
+import { initializeGmailDecisionTraces, recordGmailDecisionTrace } from "../src/gmail-firehose-traces";
 import { routeTodoRequest, proposeTodoDecision } from "../src/todo-inbox";
 
 const env = workerEnv as unknown as AccountAuthEnv;
@@ -84,6 +85,60 @@ describe("account-owned TODO inbox", () => {
     const other = await (await f.call(owner(f.other),"GET","/traces"))!.json() as any;
     expect(other.traces).toHaveLength(0);
     expect((await f.call(owner(f.user),"GET","?before=1"))?.status).toBe(404);
+  });
+
+  it("adds recent private diagnostics without duplicating decisions or changing old arrays", async () => {
+    const f = await fixture(), producer = env.NANOCODEX_USERS.getByName(f.user);
+    const trace = (index: number) => ({ source_key: `gmail:gmail-reply-triage-v1:${index.toString(16).padStart(64,"0")}`,
+      policy_version: "gmail-reply-triage-v1", outcome: "no_reply", reason: "no_reply", classifier_outcome: "success",
+      confidence: 0.95, reply_probability: 0.05, duration_ms: 10, decision_id: null,
+      sender: "Person <person@example.test>", subject: "News", source_url: "https://mail.google.com/mail/u/0/#all/abc123" } as const);
+    for (let i = 0; i < 103; i++) await producer.recordTodoDecisionTrace(trace(i));
+    const decision = await producer.proposeTodoDecision({ source_key: trace(102).source_key, title: "Reply?", context: "Review",
+      source_label: "Gmail", source_url: "https://mail.google.com/", choices: [{id:"later",title:"Later"}] });
+    await producer.recordTodoDecisionTrace({...trace(101),outcome:"reply",reason:"explicit_reply",decision_id:decision.id});
+    await producer.recordTodoDecisionTrace({...trace(100),outcome:"unavailable",reason:"low_confidence"});
+    // A rolling-deployment retry from an older producer must not erase headers.
+    const {sender,subject,source_url,...legacyRetry} = {...trace(100),outcome:"unavailable" as const,reason:"low_confidence" as const};
+    await producer.recordTodoDecisionTrace(legacyRetry);
+    const response = (await f.call(owner(f.user),"GET",""))!;
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    const feed = await response.json() as any;
+    expect(feed.items).toEqual([]); expect(feed.decisions).toHaveLength(1);
+    expect(feed.traces).toHaveLength(100);
+    expect(feed.feed_bounds).toEqual({traces:"recent",trace_limit:100});
+    expect(feed.traces[0]).toMatchObject({sender:trace(0).sender,subject:"News",outcome:"unavailable",reason:"low_confidence"});
+    expect(feed.traces.every((t:any)=>t.outcome!=="reply")).toBe(true);
+    expect(feed.traces[0]).not.toHaveProperty("source_key");
+    expect((await (await f.call(owner(f.other),"GET",""))!.json() as any).traces).toEqual([]);
+    expect((await f.call({...owner(f.user),connectGrant:{} as any},"GET",""))?.status).toBe(403);
+    expect((await f.call(owner(f.user,[]),"GET",""))?.status).toBe(403);
+    await runInDurableObject(producer, (_, state) => {
+      expect(()=>recordGmailDecisionTrace(state.storage,{...trace(200),source_url:"https://evil.test/"})).toThrow();
+      expect(()=>recordGmailDecisionTrace(state.storage,{...trace(200),sender:"x".repeat(257)})).toThrow();
+      expect(()=>recordGmailDecisionTrace(state.storage,{...trace(200),body:"private"} as any)).toThrow();
+      state.storage.sql.exec("UPDATE gmail_decision_traces SET observed_at = 1");
+    });
+    expect((await (await f.call(owner(f.user),"GET",""))!.json() as any).traces).toEqual([]);
+  });
+
+  it("migrates old trace storage idempotently and reads missing display metadata", async () => {
+    const f = await fixture(), producer = env.NANOCODEX_USERS.getByName(f.user);
+    await runInDurableObject(producer, (_, state) => {
+      state.storage.sql.exec("DROP TABLE gmail_decision_traces");
+      state.storage.sql.exec(`CREATE TABLE gmail_decision_traces (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, source_key TEXT NOT NULL UNIQUE, policy_version TEXT NOT NULL,
+        outcome TEXT NOT NULL, reason TEXT NOT NULL, classifier_outcome TEXT NOT NULL, confidence REAL,
+        reply_probability REAL, duration_ms INTEGER NOT NULL, decision_id TEXT, first_at INTEGER NOT NULL,
+        observed_at INTEGER NOT NULL, seen_count INTEGER NOT NULL DEFAULT 1)`);
+      state.storage.sql.exec(`INSERT INTO gmail_decision_traces (source_key,policy_version,outcome,reason,classifier_outcome,duration_ms,first_at,observed_at)
+        VALUES ('legacy','gmail-reply-triage-v1','filtered','missing_body','not_requested',0,?,?)`,Date.now(),Date.now());
+      initializeGmailDecisionTraces(state.storage); initializeGmailDecisionTraces(state.storage);
+    });
+    const feed = await (await f.call(owner(f.user),"GET",""))!.json() as any;
+    expect(feed.traces).toMatchObject([{sender:"",subject:"",source_url:"",outcome:"filtered",reason:"missing_body"}]);
+    const audit = await (await f.call(owner(f.user),"GET","/traces"))!.json() as any;
+    expect(audit.traces[0]).toMatchObject({source_key:"legacy",sender:"",subject:""});
   });
 
   it("does not hide an older open decision behind 200 newer answered items", async () => {

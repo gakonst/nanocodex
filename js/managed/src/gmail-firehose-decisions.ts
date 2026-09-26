@@ -17,11 +17,16 @@ function utf8Prefix(value: string, maxBytes: number): string {
 }
 type Message = { id: string; threadId?: string; status: string; truncated?: boolean;
   headers?: Record<string, string>; body?: string };
+function displayMetadata(message: Message) {
+  const header = (value: unknown) => typeof value === "string"
+    ? utf8Prefix(value.replace(/[\u0000-\u001f\u007f]/g, " "), 256) : "";
+  return {sender: header(message.headers?.from), subject: header(message.headers?.subject), source_url: `https://mail.google.com/mail/u/0/#all/${message.id}`};
+}
 type Producer = { proposeTodoDecision(input: TodoDecisionProposal): Promise<{id: string}> };
 
 /** Gmail's authenticated outbox freezes this envelope; all mail fields are still untrusted. */
 export function gmailDecisionCandidates(input: string): { connectionId: string; messages: Message[];
-  skipped: {id: string; reason: "missing_body" | "truncated" | "missing_headers"}[] } | null {
+  skipped: {id: string; sender: string; subject: string; source_url: string; reason: "missing_body" | "truncated" | "missing_headers"}[] } | null {
   let parsed: unknown;
   try { parsed = JSON.parse(input); } catch { return null; }
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
@@ -30,7 +35,7 @@ export function gmailDecisionCandidates(input: string): { connectionId: string; 
     || !event.connectionId || event.connectionId.length > 64 || !Array.isArray(event.messages)
     || event.messages.length > 5) return null;
   const messages: Message[] = [];
-  const skipped: {id: string; reason: "missing_body" | "truncated" | "missing_headers"}[] = [];
+  const skipped: {id: string; sender: string; subject: string; source_url: string; reason: "missing_body" | "truncated" | "missing_headers"}[] = [];
   for (const value of event.messages) {
     if (!value || typeof value !== "object" || Array.isArray(value)) continue;
     const msg = value as Message;
@@ -40,7 +45,7 @@ export function gmailDecisionCandidates(input: string): { connectionId: string; 
         ? "truncated" : !msg.headers || typeof msg.headers !== "object"
           || typeof msg.headers.from !== "string" || typeof msg.headers.subject !== "string"
           ? "missing_headers" : null;
-    if (reason) skipped.push({id: msg.id, reason});
+    if (reason) skipped.push({id: msg.id, reason, ...displayMetadata(msg)});
     else messages.push(msg);
   }
   return { connectionId: event.connectionId, messages, skipped };
@@ -119,7 +124,7 @@ export async function proposeGmailReplyDecisions(input: string, ai: RoutingAi, p
     if (receipts.has(key)) continue;
     const audited = await publish({source_key:key,policy_version:GMAIL_DECISION_POLICY,outcome:"filtered",
       reason:skipped.reason,classifier_outcome:"not_requested",confidence:null,reply_probability:null,
-      duration_ms:0,decision_id:null});
+      duration_ms:0,decision_id:null,sender:skipped.sender,subject:skipped.subject,source_url:skipped.source_url});
     authorize();
     if (audited) receipts.mark(key,"filtered");
   }
@@ -147,7 +152,7 @@ export async function proposeGmailReplyDecisions(input: string, ai: RoutingAi, p
     const audited = await publish({source_key:key,policy_version:GMAIL_DECISION_POLICY,
       outcome:classification.outcome,reason:classification.reason,classifier_outcome:classification.classifier_outcome,
       confidence:classification.confidence,reply_probability:classification.reply_probability,
-      duration_ms:classification.duration_ms,decision_id:decisionId});
+      duration_ms:classification.duration_ms,decision_id:decisionId,...displayMetadata(message)});
     authorize();
     if (classification.outcome !== "unavailable" && audited) receipts.mark(key,classification.outcome);
   }

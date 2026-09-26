@@ -62,7 +62,7 @@ describe("Gmail firehose decision producer", () => {
     expect(JSON.stringify([...saved.values()])).not.toContain("send money");
   });
 
-  it("audits ineligible and negative messages without copying email or calling Jev for skips", async () => {
+  it("audits ineligible and negative messages with bounded headers but no bodies or calling Jev for skips", async () => {
     let calls = 0;
     const traces: unknown[] = [], receipts = new Map<string,string>();
     const input = envelope([{...message,id:"skip",truncated:true}, {...message,id:"no"}]);
@@ -74,7 +74,7 @@ describe("Gmail firehose decision producer", () => {
     expect(count).toBe(0);expect(calls).toBe(1);
     expect(traces).toMatchObject([{outcome:"filtered",reason:"truncated"},{outcome:"no_reply",reason:"no_reply"}]);
     expect([...receipts.values()]).toEqual(["filtered","no_reply"]);
-    expect(JSON.stringify(traces)).not.toContain("person@example.test");
+    expect(traces).toMatchObject([{sender:message.headers.from,subject:message.headers.subject,source_url:"https://mail.google.com/mail/u/0/#all/skip"}, {sender:message.headers.from,subject:message.headers.subject,source_url:"https://mail.google.com/mail/u/0/#all/no"}]);
     expect(JSON.stringify(traces)).not.toContain(message.body);
   });
 
