@@ -843,6 +843,49 @@ mod unreal_function_output_tests {
     }
 
     #[test]
+    fn out_of_order_late_results_survive_intervening_model_turn_and_replay() {
+        let mut state = session();
+        state.append([serde_json::from_value(json!({
+            "type": "function_call", "call_id": "job-2", "name": "job", "arguments": "{}"
+        }))
+        .unwrap()]);
+        state.stage_unreal_function_output("job-1").unwrap();
+        state.stage_unreal_function_output("job-2").unwrap();
+        // Both original placeholders have crossed a provider request boundary.
+        state.commit_tail();
+        state
+            .complete_unreal_function_output("job-2", text("second finished first"))
+            .unwrap();
+        state.commit_tail();
+        state.append([serde_json::from_value(json!({
+            "type": "message", "role": "assistant",
+            "content": [{"type": "output_text", "text": "I can continue independently"}]
+        }))
+        .unwrap()]);
+        state.commit_tail();
+        state
+            .complete_unreal_function_output("job-1", text("first finished later"))
+            .unwrap();
+        let items = state.flattened_history();
+        let output_ids: Vec<_> = items
+            .iter()
+            .filter_map(|item| match item {
+                ResponseItem::FunctionCallOutput { call_id, .. } => Some(call_id.as_ref()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(output_ids, ["job-1", "job-2", "job-2", "job-1"]);
+        assert!(
+            items
+                .iter()
+                .filter(|item| matches!(item, ResponseItem::FunctionCallOutput { .. }))
+                .all(|item| serde_json::to_value(item).unwrap().get("status").is_none())
+        );
+        let replay = ManagedSessionState::resume_unreal_function_outputs(items).unwrap();
+        assert!(!replay.prompt_history_with_repair().1);
+    }
+
+    #[test]
     fn rejects_orphans_reversed_pairs_and_duplicate_terminals() {
         let base = serde_json::to_value(session().flattened_history()).unwrap();
         let check = |extra: Vec<Value>| {
