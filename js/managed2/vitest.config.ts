@@ -43,9 +43,11 @@ export default defineConfig({
               }
               const body = await request.json();
               if (body.settings?.external_web_access !== true || body.settings?.allowed_callers?.[0] !== "direct"
-                || body.commands?.search_query?.[0]?.q !== "a synthetic question") {
+                || !(["a synthetic question", "a synthetic async question"].includes(body.commands?.search_query?.[0]?.q))) {
                 return Response.json({ error: "invalid search body" }, { status: 400 });
               }
+              if (body.commands?.search_query?.[0]?.q === "a synthetic async question")
+                await new Promise(resolve => setTimeout(resolve, 2500));
               return Response.json({ output: "Found [synthetic citation](https://example.org/source)", hidden: "provider-only" });
             }
             if (url.href === "https://chatgpt.com/backend-api/codex/alpha/search" && request.method === "POST") {
@@ -54,9 +56,11 @@ export default defineConfig({
                 return Response.json({ error: "subscription search authentication failure" }, { status: 401 });
               }
               const body = await request.json();
-              if (body.commands?.search_query?.[0]?.q !== "a synthetic question") {
+              if (!(["a synthetic question", "a synthetic async question"].includes(body.commands?.search_query?.[0]?.q))) {
                 return Response.json({ error: "invalid search body" }, { status: 400 });
               }
+              if (body.commands?.search_query?.[0]?.q === "a synthetic async question")
+                await new Promise(resolve => setTimeout(resolve, 2500));
               return Response.json({ output: "Found [synthetic citation](https://example.org/source)", hidden: "provider-only" });
             }
             const platform = url.hostname === "api.openai.com"
@@ -98,11 +102,23 @@ export default defineConfig({
               const timeTool = input.find(item => item.type === "additional_tools")?.tools?.find(tool => tool.name === "current_time");
               const webTool = input.find(item => item.type === "additional_tools")?.tools?.find(tool => tool.name === "web__run");
               const webContinuation = input.find(item => item.type === "function_call_output" && item.call_id === "call-web");
+              if (JSON.stringify(currentTurn).includes("[async_job_final job_id=")) {
+                return [{ type: "response.completed", response: { id: "fixture-async-final", status: "completed", end_turn: true,
+                  output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: "Background search finished: [synthetic citation](https://example.org/source)" }] }],
+                  usage: { input_tokens: 10, output_tokens: 4, total_tokens: 14 } } }];
+              }
               if (webContinuation) {
                 const result = webContinuation.output;
                 const text = "Search: " + result;
                 return [{ type: "response.completed", response: { id: "fixture-web-result", status: "completed", end_turn: true,
                   output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text }] }],
+                  usage: { input_tokens: 10, output_tokens: 4, total_tokens: 14 } } }];
+              }
+              if (JSON.stringify(input).includes("Use async web__run")) {
+                if (!webTool) throw new Error("web__run was not offered");
+                return [{ type: "response.completed", response: { id: "fixture-async-web-call", status: "completed", end_turn: false,
+                  output: [{ type: "function_call", call_id: "call-web", name: "web__run",
+                    arguments: JSON.stringify({ search_query: [{ q: "a synthetic async question" }] }) }],
                   usage: { input_tokens: 10, output_tokens: 4, total_tokens: 14 } } }];
               }
               if (JSON.stringify(input).includes("Use web__run")) {

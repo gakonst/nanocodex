@@ -6,6 +6,7 @@ import { authenticate } from "./auth";
 import { ToolTiming } from "./toolTiming";
 import { managedWeb } from "./web";
 import { createJustBashTool } from "./just-bash";
+import { AsyncJobs } from "./asyncJobs";
 
 type ChatGptImport = Readonly<{
   access_token: string; refresh_token: string; account_id: string;
@@ -16,7 +17,7 @@ type Egress = Fetcher & {
   putChatGptCredential(owner: string, value: ChatGptImport): Promise<void>;
 };
 type Env = { SESSIONS: DurableObjectNamespace<Session>; EGRESS: Egress; AUTH_API_KEY_HASHES: string; RESPONSES_TRANSPORT?: "websocket" };
-const AGENT_PATH = /^\/v1\/agents\/([0-9a-f-]{36})(?:\/(turns|turns\/([0-9a-f-]{36})|events))?$/;
+const AGENT_PATH = /^\/v1\/agents\/([0-9a-f-]{36})(?:\/(turns|turns\/([0-9a-f-]{36})|events|jobs|jobs\/([0-9a-f-]{36})))?$/;
 const OWNER_HEADER = "x-managed2-owner";
 
 // The first tool is intentionally independent of account services or a Hand.
@@ -81,7 +82,8 @@ export default {
       const parseStart = performance.now();
       const body = hasBody ? await jsonBody(request) : undefined;
       const bodyTiming = `body_parse;dur=${(performance.now() - parseStart).toFixed(1)}`;
-      if (hasBody && (!body || typeof body.input !== "string" || !body.input.trim())) {
+      if (hasBody && (!body || (body.input !== undefined && (typeof body.input !== "string" || !body.input.trim()))
+        || (body.async_tools !== undefined && typeof body.async_tools !== "boolean"))) {
         return reply(400, { error: "invalid_input" });
       }
       const key = request.headers.get("idempotency-key");
@@ -93,11 +95,12 @@ export default {
       const region = placementRegion(request.cf?.colo);
       if (region) headers.set("x-managed2-relay-region", region);
       if (body) headers.set("content-type", "application/json");
+      const firstTurn = typeof body?.input === "string";
       const response = await timedSessionFetch(stub, "https://session.internal/init", {
-        method: "POST", headers, ...(body ? { body: JSON.stringify({ input: body.input, turn_id: id }) } : {}),
+        method: "POST", headers, ...(body ? { body: JSON.stringify({ input: body.input, turn_id: id, async_tools: body.async_tools === true }) } : {}),
       }, `${authTiming}, ${bodyTiming}`, requestStart);
       if (!response.ok) return response;
-      const created = reply(body ? 202 : 201, body
+      const created = reply(firstTurn ? 202 : 201, firstTurn
         ? { agent_id: id, ...await response.json<{ turn_id: string; state: string }>() }
         : { agent_id: id });
       created.headers.set("server-timing", response.headers.get("server-timing") ?? "");
@@ -123,6 +126,10 @@ export default {
           session_ms: +(performance.now() - began).toFixed(1),
           total_ms: +(performance.now() - requestStart).toFixed(1) });
       }
+    }
+    if (match![2] === "jobs" || match![4]) {
+      if (request.method !== "GET") return reply(405, { error: "method_not_allowed" });
+      return timedSessionFetch(stub, `https://session.internal/jobs${match![4] ? `/${match![4]}` : ""}`, { headers }, authTiming, requestStart);
     }
     if (match![3]) {
       if (request.method !== "GET") return reply(405, { error: "method_not_allowed" });
@@ -151,6 +158,7 @@ export default {
 
 export class Session extends DurableObject<Env> {
   #agent?: Promise<Agent.Agent>;
+  #asyncJobs?: AsyncJobs;
   #bash = createJustBashTool(this.ctx.storage, (context, phase, durationMs) =>
     this.#toolTiming.phase(context, phase, durationMs));
   #running = new Set<string>();
@@ -164,7 +172,7 @@ export class Session extends DurableObject<Env> {
     super(ctx, env);
     const constructorStart = performance.now();
     ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS session_meta (
-      singleton INTEGER PRIMARY KEY CHECK (singleton = 1), owner TEXT NOT NULL, agent_id TEXT NOT NULL, relay_region TEXT
+      singleton INTEGER PRIMARY KEY CHECK (singleton = 1), owner TEXT NOT NULL, agent_id TEXT NOT NULL, relay_region TEXT, async_tools INTEGER NOT NULL DEFAULT 0
     )`);
     ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS turns (
       id TEXT PRIMARY KEY, input TEXT NOT NULL, state TEXT NOT NULL,
@@ -188,6 +196,8 @@ export class Session extends DurableObject<Env> {
     }
     if (!ctx.storage.sql.exec<{ name: string }>("PRAGMA table_info(session_meta)").toArray()
       .some(column => column.name === "relay_region")) ctx.storage.sql.exec("ALTER TABLE session_meta ADD COLUMN relay_region TEXT");
+    if (!ctx.storage.sql.exec<{ name: string }>("PRAGMA table_info(session_meta)").toArray()
+      .some(column => column.name === "async_tools")) ctx.storage.sql.exec("ALTER TABLE session_meta ADD COLUMN async_tools INTEGER NOT NULL DEFAULT 0");
     this.#toolTiming = new ToolTiming(ctx.storage.sql);
     this.#constructorMs = performance.now() - constructorStart;
   }
@@ -198,21 +208,34 @@ export class Session extends DurableObject<Env> {
     const owner = request.headers.get(OWNER_HEADER);
     const agentId = request.headers.get("x-managed2-agent");
     if (!owner || !agentId) return reply(403, { error: "forbidden" });
-    const row = this.ctx.storage.sql.exec<{ owner: string; agent_id: string }>(
-      "SELECT owner, agent_id FROM session_meta WHERE singleton = 1",
+    const row = this.ctx.storage.sql.exec<{ owner: string; agent_id: string; async_tools: number }>(
+      "SELECT owner, agent_id, async_tools FROM session_meta WHERE singleton = 1",
     ).toArray()[0];
     if (url.pathname === "/init" && request.method === "POST") {
-      if (row && (row.owner !== owner || row.agent_id !== agentId)) return reply(403, { error: "forbidden" });
-      if (!row) this.ctx.storage.sql.exec(
-        "INSERT INTO session_meta (singleton, owner, agent_id, relay_region) VALUES (1, ?, ?, ?)",
-        owner, agentId, request.headers.get("x-managed2-relay-region"),
+      const body = request.body === null ? undefined : await request.json<{ input?: string; turn_id: string; async_tools?: boolean }>();
+      // Read after the await: concurrent create requests can interleave while parsing.
+      const current = this.ctx.storage.sql.exec<{ owner: string; agent_id: string; async_tools: number }>(
+        "SELECT owner, agent_id, async_tools FROM session_meta WHERE singleton = 1").toArray()[0];
+      if (current && (current.owner !== owner || current.agent_id !== agentId)) return reply(403, { error: "forbidden" });
+      const enabled = body?.async_tools === true;
+      if (current && Boolean(current.async_tools) !== enabled) return reply(409, { error: "idempotency_conflict" });
+      if (!current) this.ctx.storage.sql.exec(
+        "INSERT INTO session_meta (singleton, owner, agent_id, relay_region, async_tools) VALUES (1, ?, ?, ?, ?)",
+        owner, agentId, request.headers.get("x-managed2-relay-region"), enabled ? 1 : 0,
       );
-      if (request.body === null) return new Response(null, { status: 204 });
-      const { input, turn_id: turnId } = await request.json<{ input: string; turn_id: string }>();
+      if (body?.input === undefined) return new Response(null, { status: 204 });
+      const { input, turn_id: turnId } = body;
       const routeMs = performance.now() - fetchStart;
       return withSessionTiming(await this.#admitTurn(owner, turnId, input), `do_route;dur=${routeMs.toFixed(1)}, do_total;dur=${(performance.now() - fetchStart).toFixed(1)}`);
     }
     if (!row || row.owner !== owner || row.agent_id !== agentId) return reply(404, { error: "not_found" });
+    if ((url.pathname === "/jobs" || /^\/jobs\/[0-9a-f-]{36}$/.test(url.pathname)) && request.method === "GET") {
+      if (!row.async_tools) return reply(404, { error: "not_found" });
+      const jobs = this.#jobs(owner);
+      const id = url.pathname === "/jobs" ? null : url.pathname.slice(6);
+      const found = id ? jobs.status(id) : jobs.list();
+      return found ? reply(200, found) : reply(404, { error: "not_found" });
+    }
     if (url.pathname === "/state" && request.method === "GET") {
       return reply(200, { agent_id: agentId });
     }
@@ -344,6 +367,7 @@ export class Session extends DurableObject<Env> {
       try { await this.#dispatch(turn.id, turn.input, row.owner); }
       catch { /* A later alarm retries with the same Rust durable turn ID. */ }
     }
+    if (this.#asyncEnabled()) await this.#jobs(row.owner).reconcile();
     if (this.ctx.storage.sql.exec<{ n: number }>(
       "SELECT COUNT(*) AS n FROM turns WHERE state IN ('pending', 'accepted')",
     ).toArray()[0]!.n > 0) await this.ctx.storage.setAlarm(Date.now() + 10_000);
@@ -478,6 +502,32 @@ export class Session extends DurableObject<Env> {
     ).toArray()[0];
   }
 
+  #asyncEnabled(): boolean {
+    return this.ctx.storage.sql.exec<{ async_tools: number }>("SELECT async_tools FROM session_meta WHERE singleton = 1")
+      .toArray()[0]?.async_tools === 1;
+  }
+
+  #jobs(owner: string, web?: NamedTool): AsyncJobs {
+    if (!this.#asyncJobs) {
+      const readonlyTools = { current_time: currentTime,
+        web__run: web ?? managedWeb({ egress: this.env.EGRESS, owner,
+          relayRegion: this.ctx.storage.sql.exec<{ relay_region: string | null }>(
+            "SELECT relay_region FROM session_meta WHERE singleton = 1").toArray()[0]?.relay_region }) };
+      this.#asyncJobs = new AsyncJobs(this.ctx.storage, readonlyTools,
+        context => this.#toolTiming.externalTurn(context),
+        id => this.#turn(id)?.state,
+        async (id, input) => {
+          const existing = this.#turn(id);
+          if (existing && existing.input !== input) throw new Error("continuation conflict");
+          if (!existing) this.ctx.storage.sql.exec("INSERT INTO turns (id, input, state) VALUES (?, ?, 'pending')", id, input);
+          if (existing?.state === "completed" || existing?.state === "failed") return;
+          await this.#dispatch(id, input, owner);
+        },
+        work => this.ctx.waitUntil(work));
+    }
+    return this.#asyncJobs;
+  }
+
   #ready(owner: string, traceId?: string): Promise<Agent.Agent> {
     if (this.#agent) return this.#agent;
     const initTrace = traceId ?? crypto.randomUUID();
@@ -490,7 +540,11 @@ export class Session extends DurableObject<Env> {
       onTiming: (context, phase, durationMs) => this.#toolTiming.phase(context, phase, durationMs),
       correlation: context => this.#toolTiming.correlation(context),
     });
-    const options = { tools: [currentTime, this.#bash, web].map(tool => this.#toolTiming.instrument(tool,
+    const jobs = this.#asyncEnabled() ? this.#jobs(owner, web) : undefined;
+    const tools = jobs
+      ? [jobs.tool(currentTime), this.#bash, jobs.tool(web), jobs.statusTool]
+      : [currentTime, this.#bash, web];
+    const options = { tools: tools.map(tool => this.#toolTiming.instrument(tool,
       context => this.#toolTiming.correlation(context))),
       instructions: "You are a concise assistant. Use exec_command for shell tasks in /brain." };
     Object.defineProperty(options, Symbol.for("nanocodex.cloudflare.internalConfiguration"), { value: {
@@ -591,9 +645,11 @@ export class Session extends DurableObject<Env> {
             return turn!.result();
           });
           this.ctx.storage.sql.exec("UPDATE turns SET state = 'completed', message = ? WHERE id = ?", result.finalMessage, id);
+          if (this.#asyncEnabled()) await this.ctx.storage.setAlarm(Date.now() + 1);
         } catch (error) {
           this.ctx.storage.sql.exec("UPDATE turns SET state = 'failed', error = ? WHERE id = ?",
             error instanceof Error ? error.message : String(error), id);
+          if (this.#asyncEnabled()) await this.ctx.storage.setAlarm(Date.now() + 1);
         } finally {
           const resultMs = Math.max(0, Date.now() - timing.started_at);
           this.ctx.storage.sql.exec("UPDATE turn_timing SET result_ms = ? WHERE id = ?", resultMs, id);

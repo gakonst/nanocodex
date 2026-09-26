@@ -193,3 +193,39 @@ best-effort placement hint, not a residency guarantee. Egress2 picks a fresh
 account-owned regional Container class and identity for ChatGPT subscription
 calls; API-key calls remain direct. This is not a claim that OpenAI inference
 occurs in the selected region or that provider response time will improve.
+
+## Experimental asynchronous read-only tools (opt-in)
+
+Create with `POST /v1/agents` and `{ "async_tools": true, "input": "..." }`,
+or `{ "async_tools": true }` without a first turn. This setting persists on the
+Session Durable Object and an idempotent create with a different setting returns
+409. Existing agents default to synchronous tools. For opted-in agents only,
+`current_time` and `web__run` return `{job_id, state:"in_progress",
+status_tool:"async_job_status"}` immediately; `exec_command` remains synchronous
+and is **never** admitted to the background ledger. New side-effecting tools
+must not be added without a separate reviewed execution/replay design.
+
+The DO persists the job, arguments (at most 64,000 characters), initial turn ID,
+and stable continuation turn ID before starting read-only work. It retains an
+8,192-character capped result, with a retry lease after interrupted read-only
+work and a limit of three attempts. Each Session permits at most eight queued/running
+jobs and 100 retained jobs; terminal jobs older than seven days are pruned. An alarm reconciles incomplete jobs and,
+only after the original turn ends, admits a **new tagged user turn** containing
+the bounded final result; it is visible in events and turn status. Inspect
+`GET /v1/agents/:id/jobs` (latest 50) or `/jobs/:jobId`, or call the
+`async_job_status` named tool. Normal owner authentication applies and cross-owner
+IDs cannot read these jobs. Tool errors are not persisted verbatim, to avoid
+capturing credentials or headers; failures carry generic messages. Background
+web traffic still uses the owner-scoped private Egress2 binding. An interrupted
+read-only search may run twice; search is allowlisted precisely because it has
+no intended mutation. The ledger does not pretend exactly-once upstream reads.
+
+**This is not the exact Unreal AI async protocol.** The original function call
+gets one immediate receipt, not two `function_call_output` records sharing its
+call ID. The final result is a separate turn tagged `async_job_final`, rather
+than late injection into the old model call. The Rust core currently rejects duplicate same-call-ID outputs, and provider
+acceptance is not established; Unreal reports some non-OpenAI providers reject
+that pattern. The continuation's search content
+is untrusted source data, not authorization to perform actions; the model must
+not obey instructions embedded within it. This pilot does not guarantee model
+quality, ordering relative to unrelated new turns, or precisely-once egress.
