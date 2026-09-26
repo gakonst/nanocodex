@@ -11,7 +11,7 @@ const jobId = (state: DurableObjectState, call: string) => state.storage.sql.exe
 const stub = () => (env as unknown as { SESSIONS: DurableObjectNamespace })
   .SESSIONS.getByName(`jobs-test:${crypto.randomUUID()}`);
 
-it("keys background jobs by stable turn+call, caps active jobs, and never admits a mutating tool", async () => {
+it("keys background jobs by stable turn+call, caps active jobs, and rejects tools absent from the registered catalog", async () => {
   await runInDurableObject(stub(), (_session, state) => {
     const read: NamedTool = { name: "web__run", description: "test read", handler: () => new Promise(() => {}) };
     const jobs = new AsyncJobs(state.storage, { web__run: read }, () => "original-turn",
@@ -24,7 +24,7 @@ it("keys background jobs by stable turn+call, caps active jobs, and never admits
     for (let n = 2; n <= 8; n++) expect(handler({ q: `q${n}` }, context(`call-${n}`))).toEqual({ output: UNREAL_RUNNING_OUTPUT });
     expect(() => handler({ q: "over capacity" }, context("call-9"))).toThrow("capacity reached");
     expect(() => jobs.tool({ name: "exec_command", description: "mutable", handler: () => "" }))
-      .toThrow("not allowlisted");
+      .toThrow("not registered");
     expect(jobs.status(first.job_id)).toMatchObject({ job_id: first.job_id, tool: "web__run", state: "queued" });
     const restored = new AsyncJobs(state.storage, { web__run: read }, () => "original-turn",
       async () => {}, () => {});
@@ -160,7 +160,7 @@ it("fences stale results from a crashed lease and delivers the winning retry onc
     const sent: FinalToolResultIntent[] = [];
     const deliver = async (result: FinalToolResultIntent) => { sent.push(result); };
     const jobs = new AsyncJobs(state.storage, { current_time: read }, () => "original-turn", deliver,
-      work => { tasks.push(work); });
+      work => { tasks.push(work); }, new Set(["current_time"]));
     expect(jobs.tool(read).handler({}, context("call-restarted"))).toEqual({ output: UNREAL_RUNNING_OUTPUT });
     const id = jobId(state, "call-restarted");
     expect(attempts).toBe(0);
@@ -170,7 +170,7 @@ it("fences stale results from a crashed lease and delivers the winning retry onc
     // is still in flight, just as a stale worker could finish after recovery.
     state.storage.sql.exec("UPDATE async_jobs SET started_at = ? WHERE id = ?", Date.now() - 31_000, id);
     const restored = new AsyncJobs(state.storage, { current_time: read }, () => "original-turn", deliver,
-      work => { tasks.push(work); });
+      work => { tasks.push(work); }, new Set(["current_time"]));
     await restored.reconcile();
     expect(attempts).toBe(2);
     await Promise.resolve();
@@ -182,5 +182,59 @@ it("fences stale results from a crashed lease and delivers the winning retry onc
     await restored.reconcile();
     expect(sent).toHaveLength(1);
     expect(sent[0]).toMatchObject({ callId: "call-restarted", output: '{"fresh":true}' });
+  });
+});
+
+it("never replays a mutable tool after its lease becomes uncertain", async () => {
+  await runInDurableObject(stub(), async (_session, state) => {
+    const tasks: Promise<unknown>[] = [];
+    let resolveFirst!: (value: unknown) => void;
+    const first = new Promise<unknown>(resolve => { resolveFirst = resolve; });
+    let executions = 0;
+    const mutate: NamedTool = { name: "exec_command", description: "test mutation", handler: () => {
+      executions++;
+      expect(state.storage.sql.exec<{ state: string }>("SELECT state FROM async_jobs").toArray()[0]?.state)
+        .toBe("running");
+      return first;
+    } };
+    const delivered: FinalToolResultIntent[] = [];
+    const make = () => new AsyncJobs(state.storage, { exec_command: mutate }, () => "turn",
+      async result => { delivered.push(result); }, work => { tasks.push(work); });
+    const jobs = make();
+    expect(jobs.tool(mutate).handler({ cmd: "touch /brain/sentinel" }, context("call-mutable")))
+      .toEqual({ output: UNREAL_RUNNING_OUTPUT });
+    const id = jobId(state, "call-mutable");
+    await jobs.reconcile();
+    expect(executions).toBe(1);
+    state.storage.sql.exec("UPDATE async_jobs SET started_at = ? WHERE id = ?", Date.now() - 31_000, id);
+    const restored = make();
+    await restored.reconcile();
+    expect(executions).toBe(1);
+    expect(restored.status(id)).toMatchObject({ state: "uncertain" });
+    await restored.reconcile();
+    expect(delivered).toHaveLength(1);
+    expect(delivered[0]).toMatchObject({ callId: "call-mutable", terminalState: "uncertain" });
+    resolveFirst("late success");
+    await Promise.all(tasks);
+    expect(restored.status(id)).toMatchObject({ state: "delivered" });
+  });
+});
+
+it("cancels a queued mutable operation without dispatching it", async () => {
+  await runInDurableObject(stub(), async (_session, state) => {
+    let executions = 0;
+    const mutate: NamedTool = { name: "exec_command", description: "test mutation",
+      handler: () => { executions++; return "unexpected"; } };
+    const delivered: FinalToolResultIntent[] = [];
+    const jobs = new AsyncJobs(state.storage, { exec_command: mutate }, () => "turn",
+      async result => { delivered.push(result); }, () => {});
+    jobs.tool(mutate).handler({ cmd: "touch /brain/sentinel" }, context("queued-mutable"));
+    const id = jobId(state, "queued-mutable");
+    await jobs.cancel(id);
+    await jobs.reconcile();
+    expect(executions).toBe(0);
+    expect(delivered).toHaveLength(1);
+    expect(delivered[0]).toMatchObject({ terminalState: "cancelled" });
+    expect(jobs.status(id)).toMatchObject({ state: "delivered" });
   });
 });

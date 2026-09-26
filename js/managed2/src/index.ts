@@ -134,8 +134,10 @@ export default {
       }
     }
     if (match![2] === "jobs" || match![4]) {
-      if (request.method !== "GET") return reply(405, { error: "method_not_allowed" });
-      return timedSessionFetch(stub, `https://session.internal/jobs${match![4] ? `/${match![4]}` : ""}`, { headers }, authTiming, requestStart);
+      if (request.method !== "GET" && !(match![4] && request.method === "DELETE"))
+        return reply(405, { error: "method_not_allowed" });
+      return timedSessionFetch(stub, `https://session.internal/jobs${match![4] ? `/${match![4]}` : ""}`,
+        { headers, method: request.method }, authTiming, requestStart);
     }
     if (match![3]) {
       if (request.method !== "GET") return reply(405, { error: "method_not_allowed" });
@@ -242,6 +244,11 @@ export class Session extends DurableObject<Env> {
       const id = url.pathname === "/jobs" ? null : url.pathname.slice(6);
       const found = id ? jobs.status(id) : jobs.list();
       return found ? reply(200, found) : reply(404, { error: "not_found" });
+    }
+    if (/^\/jobs\/[0-9a-f-]{36}$/.test(url.pathname) && request.method === "DELETE") {
+      if (!row.async_tools) return reply(404, { error: "not_found" });
+      const result = await this.#jobs(owner).cancel(url.pathname.slice(6));
+      return result ? reply(200, result) : reply(404, { error: "not_found" });
     }
     if (url.pathname === "/state" && request.method === "GET") {
       return reply(200, { agent_id: agentId });
@@ -520,11 +527,11 @@ export class Session extends DurableObject<Env> {
 
   #jobs(owner: string, web?: NamedTool): AsyncJobs {
     if (!this.#asyncJobs) {
-      const readonlyTools = { current_time: currentTime,
+      const registeredTools = { current_time: currentTime, exec_command: this.#bash,
         web__run: web ?? managedWeb({ egress: this.env.EGRESS, owner,
           relayRegion: this.ctx.storage.sql.exec<{ relay_region: string | null }>(
             "SELECT relay_region FROM session_meta WHERE singleton = 1").toArray()[0]?.relay_region }) };
-      this.#asyncJobs = new AsyncJobs(this.ctx.storage, readonlyTools,
+      this.#asyncJobs = new AsyncJobs(this.ctx.storage, registeredTools,
         context => this.#toolTiming.externalTurn(context),
         async intent => {
           const agent = await this.#ready(owner);
@@ -542,7 +549,7 @@ export class Session extends DurableObject<Env> {
             throw error;
           }
         },
-        work => this.ctx.waitUntil(work));
+        work => this.ctx.waitUntil(work), new Set(["current_time", "web__run"]));
     }
     return this.#asyncJobs;
   }
