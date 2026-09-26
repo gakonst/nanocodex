@@ -619,7 +619,10 @@ export async function prepareNamespaceHostMounts<T extends Readonly<{ id: string
 function toolOutcome(result: unknown): "ok" | "failed" | "unavailable" | "ambiguous" {
   if (!result || typeof result !== "object") return "ok";
   const value = result as Record<PropertyKey, unknown>;
-  if (value[TOOL_RESULT] !== true) return "ok";
+  if (value[TOOL_RESULT] !== true) {
+    if (typeof value.exit_code === "number" && value.exit_code !== 0) return "failed";
+    return "ok";
+  }
   if (value.success === true) return "ok";
   const structured = value.structuredResult;
   if (structured && typeof structured === "object") {

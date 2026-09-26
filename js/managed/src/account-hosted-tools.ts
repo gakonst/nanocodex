@@ -20,6 +20,7 @@ import type { SubagentToolContext } from "nanocodex-tools";
 import { isUserId } from "./account-auth";
 import { fetchResponseWithDeadline } from "./deadline";
 import { HostedToolsBroker } from "./hosted-tools-broker";
+import { observeHandCall } from "./hand-call-observation";
 
 const OWNER_ASSERTION = "x-nanocodex-owner-id";
 const TOOL_RESULT = Symbol.for("nanocodex.toolResult");
@@ -288,6 +289,7 @@ export class AccountHostedTools extends DurableObject<AccountHostedToolsEnv> {
         return Response.json({ error: "not_found" }, { status: 404 });
       }
       const ownedAt = performance.now();
+      observeHandCall("account.ownership", invocation.name, startedAt, "ok", invocation.call_id);
       if (invocation.machine_id === undefined) {
         const remote = await this.#remote.invoke(invocation.name, invocation.route_token,
           invocation.input, invocation.session_id, request.signal);
@@ -299,8 +301,12 @@ export class AccountHostedTools extends DurableObject<AccountHostedToolsEnv> {
         : machineName === undefined
           ? undefined
           : this.#broker.machineTool(invocation.machine_id, machineName);
-      if (!tool) return Response.json({ error: "tool_unavailable" }, { status: 404 });
+      if (!tool) {
+        observeHandCall("account.resolve", invocation.name, ownedAt, "unavailable", invocation.call_id);
+        return Response.json({ error: "tool_unavailable" }, { status: 404 });
+      }
       if (tool.routeToken !== invocation.route_token) {
+        observeHandCall("account.resolve", invocation.name, ownedAt, "unavailable", invocation.call_id);
         return Response.json({ error: "stale_catalog" }, { status: 409 });
       }
       // Capture the process owner's route before invoking. Exec can wait while
@@ -309,17 +315,24 @@ export class AccountHostedTools extends DurableObject<AccountHostedToolsEnv> {
       const processRoute = invocation.machine_id !== undefined && invocation.name === "exec_command"
         ? this.#broker.machineTool(invocation.machine_id, "write_stdin")?.routeToken : undefined;
       const resolvedAt = performance.now();
-      const result = await tool.handler(invocation.input, {
+      observeHandCall("account.resolve", invocation.name, ownedAt, "ok", invocation.call_id);
+      let result;
+      try { result = await tool.handler(invocation.input, {
         sessionId: invocation.session_id,
         ...(invocation.turn_id === undefined ? {} : { turnId: invocation.turn_id }),
         callId: invocation.call_id,
         model: invocation.model,
         signal: request.signal,
-      });
+      }); } catch (error) {
+        observeHandCall("account.handler", invocation.name, resolvedAt, request.signal.aborted ? "cancelled" : "failed", invocation.call_id);
+        throw error;
+      }
+      const branded = result as Record<PropertyKey, unknown>;
+      observeHandCall("account.handler", invocation.name, resolvedAt, branded.success === true ? "ok"
+        : branded[HOSTED_TOOLS_PRE_ADMISSION_UNAVAILABLE] === true ? "unavailable" : "failed", invocation.call_id);
       console.info({ type: "hand.call.account", session_id: invocation.session_id, source_call_id: invocation.call_id,
         ownership_ms: ownedAt - startedAt, resolve_ms: resolvedAt - ownedAt,
         handler_ms: performance.now() - resolvedAt, total_ms: performance.now() - startedAt });
-      const branded = result as Record<PropertyKey, unknown>;
       return Response.json({
         output: branded.output,
         structured_result: branded.structuredResult,
@@ -616,10 +629,14 @@ export class AccountHostedToolsProvider implements HostedToolsDynamicProvider {
     machineId?: string,
     routePolicy: "refresh" | "fixed" | "screen" = "refresh",
   ): Promise<unknown> {
-    if (!this.#allowed(context)) {
-      return failedToolResult("Account hand is outside the active grant", "unavailable", true);
-    }
+    const failed = (message: string, status: "ambiguous" | "unavailable", preAdmission = false): unknown => {
+      observeHandCall("account.fetch", name, startedAt, status, context.callId);
+      return failedToolResult(message, status, preAdmission);
+    };
     const startedAt = performance.now();
+    if (!this.#allowed(context)) {
+      return failed("Account hand is outside the active grant", "unavailable", true);
+    }
     let response: Response;
     try {
       response = await this.#namespace.getByName(this.#ownerId).fetch("https://account-tools.internal/invoke", {
@@ -639,9 +656,10 @@ export class AccountHostedToolsProvider implements HostedToolsDynamicProvider {
         signal: context.signal,
       });
     } catch {
-      return failedToolResult("Hand connection failed after possible dispatch; execution outcome is unknown. The command was not resent.", "ambiguous");
+      return failed("Hand connection failed after possible dispatch; execution outcome is unknown. The command was not resent.", "ambiguous");
     }
     const responseAt = performance.now();
+    if (response.ok) observeHandCall("account.fetch", name, startedAt, "ok", context.callId);
     if (!response.ok) {
       try { await response.body?.cancel(); } catch { /* No call was admitted for 404/409. */ }
       const preAdmission = response.status === 404 || response.status === 409;
@@ -649,7 +667,7 @@ export class AccountHostedToolsProvider implements HostedToolsDynamicProvider {
         // Screen routes fence one exact publication generation. Redirecting a
         // stale click to a replacement publisher would turn a safe routing
         // rejection into a new side effect on a different desktop.
-        return failedToolResult(
+        return failed(
           "The selected screen was disconnected or replaced before this action began. Observe the current screen before sending input.",
           "unavailable",
           true,
@@ -662,7 +680,7 @@ export class AccountHostedToolsProvider implements HostedToolsDynamicProvider {
         this.invalidate();
         try { await this.refresh(); }
         catch {
-          return failedToolResult("Hand route refresh failed; execution outcome is unknown. The command was not resent.", "ambiguous");
+          return failed("Hand route refresh failed; execution outcome is unknown. The command was not resent.", "ambiguous");
         }
         // Personal/MCP tools use exposed names; shell tools use machine keys.
         const route = machineId === undefined
@@ -676,11 +694,11 @@ export class AccountHostedToolsProvider implements HostedToolsDynamicProvider {
         // A modern process route is stable across transport reconnects. A
         // changed token means a different runtime (or a legacy host without
         // continuity proof), whose numeric process IDs may have been reused.
-        return failedToolResult("The Hand process runtime changed or cannot prove session continuity. This saved process session cannot be routed to the replacement; any earlier poll or stdin outcome remains unknown. The command and stdin were not resent.", "ambiguous");
+        return failed("The Hand process runtime changed or cannot prove session continuity. This saved process session cannot be routed to the replacement; any earlier poll or stdin outcome remains unknown. The command and stdin were not resent.", "ambiguous");
       }
       // HTTP status alone cannot exclude an earlier dispatch of this call ID.
       // Preserve uncertainty locally instead of interrupting the agent runtime.
-      return failedToolResult(`Hand request failed (HTTP ${response.status}); execution outcome is unknown. The command was not resent after possible dispatch.`, "ambiguous");
+      return failed(`Hand request failed (HTTP ${response.status}); execution outcome is unknown. The command was not resent after possible dispatch.`, "ambiguous");
     }
     let result: InvocationResult;
     try {
@@ -691,8 +709,11 @@ export class AccountHostedToolsProvider implements HostedToolsDynamicProvider {
         throw new Error("invalid account hand result");
       }
     } catch {
-      return failedToolResult("Hand response could not be decoded; execution outcome is unknown. The command was not resent.", "ambiguous");
+      observeHandCall("account.decode", name, responseAt, "ambiguous", context.callId);
+      return failed("Hand response could not be decoded; execution outcome is unknown. The command was not resent.", "ambiguous");
     }
+    observeHandCall("account.decode", name, responseAt, result.pre_admission_unavailable === true ? "unavailable"
+      : result.success ? "ok" : "failed", context.callId);
     if (machineId !== undefined && result.pre_admission_unavailable === true) {
       // The broker checked its call ledger: this invocation was never admitted.
       // Let the agent recover the hand instead of indefinitely replaying the turn.

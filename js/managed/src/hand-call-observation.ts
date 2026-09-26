@@ -28,7 +28,7 @@ export function observeHandCall(
     console.info({ type: "hand.tool.stage", stage, tool: handToolKind(name), outcome,
       duration_ms: Number.isFinite(duration) ? Math.max(0, duration) : 0,
       // Tool contexts normally issue opaque IDs. Do not emit arbitrary strings.
-      ...(callId && /^[A-Za-z0-9_-]{1,128}$/.test(callId) ? { call_id: callId } : {}),
+      ...(callId && /^[A-Za-z0-9_./:-]{1,128}$/.test(callId) ? { call_id: callId } : {}),
     });
   } catch { /* Observation must not alter the tool's outcome. */ }
 }
