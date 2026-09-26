@@ -830,3 +830,79 @@ it("does not stage a batch while another turn is active and fails a mismatched r
     ids.forEach(id => expect(jobs.status(id)).toMatchObject({ state: "checkpointed", continuation_started: false }));
   });
 });
+
+it("caps lifetime SQLite growth after archived invocations without blocking old-ID replay or reconciliation", async () => {
+  await runInDurableObject(stub(), async (_session, state) => {
+    state.storage.sql.exec("INSERT INTO turns (id, input, state) VALUES ('source', 'work', 'completed')");
+    const tasks: Promise<unknown>[] = [];
+    let executions = 0;
+    const shell: NamedTool = { name: "exec_command", description: "mutable", handler: () => {
+      executions++;
+      return { output: "written" };
+    } };
+    const deliver = async (intent: FinalToolResultIntent) => accepted(intent);
+    const waitUntil = (task: Promise<unknown>) => { tasks.push(task); };
+    const initial = new AsyncJobs(state.storage, { exec_command: shell }, () => "source", deliver, waitUntil);
+    const initialBytes = state.storage.sql.databaseSize;
+    // The production limit is 256 MiB with 64 MiB headroom. A tiny test
+    // budget lets 101 historical delivered receipts cross the same real SQL
+    // databaseSize gate without allocating hundreds of megabytes.
+    const limit = initialBytes + 64 * 1024 * 1024 + 64 * 1024;
+    const jobs = new AsyncJobs(state.storage, { exec_command: shell }, () => "source", deliver,
+      waitUntil, undefined, undefined,
+      async () => ({ state: "confirmed", model_call_index: 2, response_id: "step-2" }),
+      undefined, undefined, limit);
+    expect(jobs.tool(shell).handler({ cmd: "once" }, context("call-first")))
+      .toEqual({ output: UNREAL_RUNNING_OUTPUT });
+    const first = jobId(state, "call-first");
+    await Promise.all(tasks.splice(0));
+    await jobs.reconcile(); // submit exact terminal receipt
+    await jobs.reconcile(); // provider-step confirmation
+    expect(jobs.status(first)).toMatchObject({ state: "delivered" });
+    state.storage.sql.exec("UPDATE async_jobs SET delivered_at = ? WHERE id = ?",
+      Date.now() - 8 * 24 * 60 * 60 * 1000, first);
+    await jobs.reconcile();
+    expect(jobs.status(first)).toMatchObject({ state: "archived" });
+
+    // Keep a second job live while old confirmed jobs are archived. Its
+    // existing-ID invocation and reconciliation must remain available even
+    // when new work is no longer admitted.
+    expect(jobs.tool(shell).handler({ cmd: "existing" }, context("call-existing")))
+      .toEqual({ output: UNREAL_RUNNING_OUTPUT });
+    const existing = jobId(state, "call-existing");
+    const old = Date.now() - 8 * 24 * 60 * 60 * 1000;
+    for (let n = 0; n < 101; n++) state.storage.sql.exec(`INSERT INTO async_jobs
+      (id, invocation, original_turn, execution_turn, call_id, tool, args, state,
+       result, terminal_state, created_at, delivered_at)
+      VALUES (?, ?, 'source', 'turn-1', ?, 'exec_command', '{}', 'delivered', ?, 'completed', ?, ?)`,
+    crypto.randomUUID(), `turn-1:historical-${n}`, `historical-${n}`, "X".repeat(8192), old, old);
+    await jobs.reconcile(); // archive old payloads into permanent fences
+    expect(state.storage.sql.exec<{ n: number }>(
+      "SELECT COUNT(*) AS n FROM async_job_tombstones").toArray()[0]!.n).toBe(102);
+    const liveBytesAfterArchive = state.storage.sql.databaseSize;
+    const restored = new AsyncJobs(state.storage, { exec_command: shell }, () => "source", deliver,
+      waitUntil, undefined, undefined,
+      async () => ({ state: "confirmed", model_call_index: 2, response_id: "step-2" }),
+      undefined, undefined, limit);
+    expect(() => restored.tool(shell).handler({ cmd: "new" }, context("call-new")))
+      .toThrow("async session storage budget reached");
+    const peak = state.storage.sql.exec<{ peak_bytes: number }>(
+      "SELECT peak_bytes FROM async_jobs_storage_budget").toArray()[0]!.peak_bytes;
+    expect(peak).toBeGreaterThan(limit - 64 * 1024 * 1024);
+    expect(liveBytesAfterArchive).toBeLessThan(peak);
+    expect(() => restored.tool(shell).handler({ cmd: "once" }, context("call-first")))
+      .toThrow("async invocation archived; unsafe to replay");
+    expect(restored.tool(shell).handler({ cmd: "existing" }, context("call-existing")))
+      .toEqual({ output: UNREAL_RUNNING_OUTPUT });
+    await Promise.all(tasks.splice(0));
+    await restored.reconcile();
+    await restored.reconcile();
+    expect(restored.status(existing)).toMatchObject({ state: "delivered" });
+    expect(executions).toBe(2);
+    const restarted = new AsyncJobs(state.storage, { exec_command: shell }, () => "source", deliver,
+      waitUntil, undefined, undefined, undefined, undefined, undefined, limit);
+    expect(() => restarted.tool(shell).handler({ cmd: "another" }, context("call-another")))
+      .toThrow("async session storage budget reached");
+    expect(restarted.status(first)).toMatchObject({ state: "archived" });
+  });
+});

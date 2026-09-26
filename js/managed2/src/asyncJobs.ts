@@ -12,6 +12,11 @@ const LEASE_MS = 30_000;
 const MAX_ATTEMPTS = 3;
 const MAX_JOBS = 100;
 const MAX_ACTIVE = 8;
+// Sample SQL databaseSize, which includes native journals and host tombstones.
+// This is a protective admission throttle, not a hard size bound: native
+// writes can grow between samples and the reserve is not an enforced maximum.
+const MAX_ASYNC_DATABASE_BYTES = 256 * 1024 * 1024;
+const ASYNC_ADMISSION_HEADROOM_BYTES = 64 * 1024 * 1024;
 const RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 // Once the originating turn settles, replay the identical stable operation
 // once at an idle boundary. An active-turn acceptance may be discarded by
@@ -60,7 +65,8 @@ export class AsyncJobs {
     private readonly wakeGeneration: number = WAKE_GENERATION,
     private readonly activeOutputStatus?: OutputStatus,
     private readonly idleOutputStatus?: OutputStatus,
-    private readonly deliverIdleBatch?: DeliverFinalToolResults) {
+    private readonly deliverIdleBatch?: DeliverFinalToolResults,
+    private readonly maxDatabaseBytes = MAX_ASYNC_DATABASE_BYTES) {
     storage.sql.exec(`CREATE TABLE IF NOT EXISTS async_jobs (
       id TEXT PRIMARY KEY, invocation TEXT NOT NULL UNIQUE, original_turn TEXT NOT NULL,
       execution_turn TEXT, call_id TEXT, tool TEXT NOT NULL, args TEXT NOT NULL,
@@ -83,6 +89,10 @@ export class AsyncJobs {
       singleton INTEGER PRIMARY KEY CHECK (singleton = 1), created_at INTEGER NOT NULL, id TEXT NOT NULL
     )`);
     storage.sql.exec("INSERT OR IGNORE INTO async_jobs_reconcile_cursor VALUES (1, -1, '')");
+    storage.sql.exec(`CREATE TABLE IF NOT EXISTS async_jobs_storage_budget (
+      singleton INTEGER PRIMARY KEY CHECK (singleton = 1), peak_bytes INTEGER NOT NULL
+    )`);
+    storage.sql.exec("INSERT OR IGNORE INTO async_jobs_storage_budget VALUES (1, 0)");
     // Keep an immutable, compact replay fence after delivered payloads expire.
     // An old tool invocation must never become a new mutable side effect.
     storage.sql.exec(`CREATE TABLE IF NOT EXISTS async_job_tombstones (
@@ -106,7 +116,19 @@ export class AsyncJobs {
     }
   }
 
+  private recordHighWater(): number {
+    const bytes = this.storage.sql.databaseSize;
+    if (!Number.isSafeInteger(bytes) || bytes < 0) throw new Error("async storage size unavailable");
+    this.storage.sql.exec("UPDATE async_jobs_storage_budget SET peak_bytes = ? WHERE singleton = 1 AND peak_bytes < ?", bytes, bytes);
+    return this.storage.sql.exec<{ peak_bytes: number }>(
+      "SELECT peak_bytes FROM async_jobs_storage_budget WHERE singleton = 1").toArray()[0]!.peak_bytes;
+  }
+
   private archiveDelivered(): void {
+    // Capture growth from native journals and finished payloads *before*
+    // archival releases their pages; a cold reconcile must not forget the
+    // high-water even when its live DB size subsequently shrinks.
+    this.recordHighWater();
     const cutoff = Date.now() - RETENTION_MS;
     this.storage.transactionSync(() => {
       this.storage.sql.exec(`INSERT INTO async_job_tombstones (id, invocation, tool, archived_at)
@@ -159,6 +181,13 @@ export class AsyncJobs {
         if (this.storage.sql.exec<{ n: number }>(
           "SELECT COUNT(*) AS n FROM async_job_tombstones WHERE invocation = ?", invocation,
         ).toArray()[0]!.n > 0) throw new Error("async invocation archived; unsafe to replay");
+        // Check only *new* invocations after existing-ID and tombstone lookup.
+        // A sampled high-water survives restarts and later database shrinkage;
+        // over-budget sessions continue delivering/recovering older jobs, but
+        // never dispatch another mutable side effect to grow the journal.
+        const peak = this.recordHighWater();
+        if (peak + ASYNC_ADMISSION_HEADROOM_BYTES >= this.maxDatabaseBytes)
+          throw new Error("async session storage budget reached; existing results remain recoverable");
         if (this.storage.sql.exec<{ n: number }>("SELECT COUNT(*) AS n FROM async_jobs")
           .toArray()[0]!.n >= MAX_JOBS || this.storage.sql.exec<{ n: number }>(
           "SELECT COUNT(*) AS n FROM async_jobs WHERE state IN ('queued', 'running')"
@@ -491,6 +520,10 @@ export class AsyncJobs {
         for (const { job } of batch) this.delivering.delete(job.id);
       }
     }
+    // Capture the Rust journal's growth after output admission/model wake,
+    // not only the host job payload before archival. This high-water remains
+    // even if a later native compaction reduces the live database size.
+    this.recordHighWater();
     // A checkpointed active acceptance is retried only after its source turn
     // settles. One post-settlement attempt is parked without a poll loop;
     // its false receipt still cannot prove model uptake.

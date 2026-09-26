@@ -208,9 +208,18 @@ with eight active jobs and seven-day payload retention measured from
 **confirmed model-step delivery**, not tool creation. An expired confirmed delivery becomes a compact permanent invocation tombstone:
 its status is `archived`, the original payload is no longer available from
 `/jobs`, and a replay of the same invocation fails closed rather than
-executing a mutable tool a second time. This is a safety fence, not a
-complete long-term output archival policy. Results checkpointed without a
-model wake remain durable and visible but may consume capacity. The read-only
+executing a mutable tool a second time. New jobs also fail closed when the
+sampled session SQL database-size high-water reaches 192 MiB (256 MiB
+budget minus 64 MiB admission headroom). The sampler observes native Rust
+journals and permanent tombstones before delivered-job archival, after
+reconciliation, and at new admission; its recorded peak survives restarts.
+Existing-ID status, recovery, and terminal delivery bypass the throttle.
+This is **not** a hard database or lifetime cap: native writes can grow between
+samples, other turns can grow the same database after the gate, and 64 MiB is
+not a proven maximum for in-flight checkpoints. Precise cumulative metering
+and long-term immutable-receipt archival remain production release gates.
+Results checkpointed without a model wake remain durable and visible but may
+consume capacity. The read-only
 operations may be retried after a stale lease (at most three attempts),
 even if an older read-only handler remains hung in the same DO; its lease
 cannot overwrite the winning result. A cold DO construction rearms alarms
