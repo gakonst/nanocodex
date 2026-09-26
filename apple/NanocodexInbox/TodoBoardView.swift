@@ -175,23 +175,26 @@ struct TodoCaptureComposer: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.horizontal, 16).padding(.top, 10)
             }
-            HStack(spacing: 10) {
-                if hintExpanded || !model.todoWatchHint.isEmpty {
+            if hintExpanded || !model.todoWatchHint.isEmpty {
+                HStack(spacing: 8) {
+                    Image(systemName: "eye").foregroundStyle(.secondary)
                     TextField("Watch for…", text: $model.todoWatchHint)
                         .focused($hintFocused).font(.subheadline)
                         .accessibilityIdentifier("todo-watch-hint")
-                } else { Spacer(minLength: 0) }
+                    Button { hintFocused = false; hintExpanded = false; model.todoWatchHint = "" } label: {
+                        Image(systemName: "xmark").frame(width: 44, height: 44)
+                    }.accessibilityLabel("Clear watch hint")
+                }
+                .padding(.leading, 16).padding(.trailing, 4)
+            }
+            HStack(alignment: .bottom, spacing: 2) {
                 Button { hintExpanded.toggle(); if hintExpanded { hintFocused = true } } label: {
-                    Label("Watch for", systemImage: hintExpanded ? "eye.fill" : "eye")
-                        .font(.caption).frame(minHeight: 44)
+                    Image(systemName: hintExpanded || !model.todoWatchHint.isEmpty ? "eye.fill" : "plus")
+                        .frame(width: 44, height: 44).contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel("Watch for a signal")
                 .accessibilityIdentifier("todo-watch-toggle")
-            }
-            .padding(.horizontal, 16).frame(minHeight: 44)
-            HStack(alignment: .bottom, spacing: 2) {
-                Image(systemName: "square.and.pencil")
-                    .frame(width: 44, height: 44).accessibilityHidden(true)
                 ChatComposerEditor(text: $model.todoDraft, focused: $captureFocused,
                                    overflowing: $overflowing, accessibilityLabel: "On your mind")
                     .accessibilityIdentifier("todo-capture")

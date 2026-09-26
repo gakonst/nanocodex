@@ -1,6 +1,6 @@
 # Decision-first mobile TODO
 
-The iPhone app opens the decision list for signed-in accounts. A compact “On your mind…” composer and the TODO/Chat switch share a pinned bottom dock; Chat’s composer stacks above the switch instead of overlapping it. Both modes use the same native growing text editor, shell, sizing, and send-button geometry; their controls differ only where the operation does (Chat model/attachments/voice vs. TODO watch trigger/save). Decision rows offer the first choice on a leading swipe and the second on a trailing swipe (tap the revealed button; a full swipe does not auto-approve). Tapping a card opens context, all choices, and free-text editing. TODO lists account-owned captures and decision proposals, keeps a local unsent draft while switching tabs, and refreshes while visible in the foreground. The app never synthesizes production decision cards; its sample email decision exists only behind the debug `--todo-ui-fixture` launch argument.
+The iPhone app opens the decision list for signed-in accounts. A single-row “On your mind…” composer and a small, icon-only TODO/Chat pill share a pinned bottom dock; Chat’s composer stacks just above the switch instead of overlapping it. The pill uses Muse’s floating outlined-icon navigation grammar, soft selected capsule and accessible labels, not an exact five-tab replica. Optional TODO watch instructions expand only when tapped; Chat model/routing controls live in the conversation menu rather than taking a permanent bottom row. Both modes use the same native growing text editor, shell, sizing, and send-button geometry; their controls differ only where the operation does (Chat model/attachments/voice vs. TODO watch trigger/save). Decision rows offer the first choice on a leading swipe and the second on a trailing swipe (tap the revealed button; a full swipe does not auto-approve). Tapping a card opens context, all choices, and free-text editing. TODO lists account-owned captures and decision proposals, keeps a local unsent draft while switching tabs, and refreshes while visible in the foreground. The app never synthesizes production decision cards; its sample email decision exists only behind the debug `--todo-ui-fixture` launch argument.
 
 ## Account API
 
@@ -13,6 +13,8 @@ The API is authenticated to the user account. Connect grants and service callers
 ## Remaining integration
 
 The firehose → bounded Jev classifier → decision producer, workflow response consumer, push notification/deep link, capture monitoring status transitions, pagination, and server-side edit/archive controls are **not** present in this slice. Do not represent the current Gmail push wake or one-shot Jev model router as this pipeline. Any workflow consumer needs durable cursors, dedupe, exact action/version approval, stale-data checks, and explicit external-write outcomes.
+
+Reference: [Muse from Meta’s official App Store preview](https://apps.apple.com/us/app/muse-from-meta/id6760173601).
 
 ## iPhone fixture preview
 

@@ -41,7 +41,7 @@ struct InboxComposerShell: ViewModifier {
             .background(ChatPalette.composer, in: RoundedRectangle(cornerRadius: 28))
             .overlay(RoundedRectangle(cornerRadius: 28).strokeBorder(Color.primary.opacity(focused ? 0.18 : 0.1)))
             .shadow(color: .black.opacity(0.035), radius: 8, y: 2)
-            .padding(.horizontal, 12).padding(.top, 4).padding(.bottom, 6)
+            .padding(.horizontal, 12).padding(.top, 2).padding(.bottom, 2)
             .background(Color(uiColor: .systemBackground))
     }
 }
@@ -84,6 +84,7 @@ struct InboxView: View {
     @State private var showScheduledJobs = false
     @State private var showConnectors = false
     @State private var showSettings = false
+    @State private var showModelControls = false
     @State private var showMeeting = false
     @StateObject private var appUpdates = NativeAppUpdateModel()
     @Environment(\.scenePhase) private var updateScenePhase
@@ -181,6 +182,20 @@ struct InboxView: View {
         }
         .foregroundStyle(Ink.text)
         .tint(Ink.accent)
+        .sheet(isPresented: $showModelControls) {
+            NavigationStack {
+                VStack(alignment: .leading, spacing: 12) {
+                    MobileModelControls(model: model)
+                    Spacer()
+                }
+                .padding(.top, 18)
+                .navigationTitle("Model & routing")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { showModelControls = false } } }
+            }
+            .presentationDetents([.medium])
+            .presentationDragIndicator(.visible)
+        }
         .sheet(isPresented: $showSettings) {
             NavigationStack {
                 settings
@@ -233,15 +248,15 @@ struct InboxView: View {
     }
 
     private var mainNavigation: some View {
-        HStack(spacing: 6) {
+        HStack(spacing: 2) {
             mainNavigationButton(.todo, title: "TODO", symbol: "checkmark.square", identifier: "main-tab-todo")
             mainNavigationButton(.chat, title: "Chat", symbol: "bubble.left", identifier: "main-tab-chat")
         }
-        .padding(5)
+        .padding(3)
         .background(.regularMaterial, in: Capsule())
         .overlay(Capsule().strokeBorder(.primary.opacity(0.08)))
-        .shadow(color: .black.opacity(0.09), radius: 12, y: 4)
-        .padding(.bottom, 7)
+        .shadow(color: .black.opacity(0.08), radius: 8, y: 2)
+        .padding(.top, 4).padding(.bottom, 2)
     }
 
     private func mainNavigationButton(_ surface: MainSurface, title: String, symbol: String, identifier: String) -> some View {
@@ -251,18 +266,22 @@ struct InboxView: View {
             mainSurface = surface
             if surface == .todo { Task { await model.refreshTodo() } }
         } label: {
-            HStack(spacing: 8) {
-                Image(systemName: symbol).font(.system(size: 18, weight: .medium))
-                Text(title).font(.subheadline.weight(.semibold))
-                if surface == .todo && model.pendingTodoDecisionCount > 0 {
-                    Text("\(model.pendingTodoDecisionCount)")
-                        .font(.caption2.weight(.bold))
-                        .padding(.horizontal, 5).padding(.vertical, 2)
-                        .background(.primary.opacity(0.1), in: Capsule())
+            Image(systemName: symbol)
+                .font(.system(size: 19, weight: .medium))
+                .frame(width: 44, height: 40)
+                .background(mainSurface == surface ? Color.primary.opacity(0.09) : .clear, in: Capsule())
+                .overlay(alignment: .topTrailing) {
+                    if surface == .todo && model.pendingTodoDecisionCount > 0 {
+                        Text("\(model.pendingTodoDecisionCount)")
+                            .font(.system(size: 10, weight: .bold))
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 4).frame(minWidth: 16, minHeight: 16)
+                            .background(.orange, in: Capsule())
+                            .offset(x: 3, y: -2)
+                            .accessibilityHidden(true)
+                    }
                 }
-            }
-            .frame(minWidth: 115, minHeight: 42)
-            .background(mainSurface == surface ? Color.primary.opacity(0.09) : .clear, in: Capsule())
+                .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .accessibilityLabel(title)
@@ -435,7 +454,7 @@ struct InboxView: View {
                 }).frame(maxWidth: 620)
             }
         }
-        .padding(.bottom, 4)
+        .padding(.bottom, 0)
     }
 
     private var conversationHeader: some View {
@@ -506,6 +525,9 @@ struct InboxView: View {
                 Label("Context from other apps", systemImage: "tray")
             }.accessibilityIdentifier("conversation-context")
             Divider()
+            Button { composerFocused = false; showModelControls = true } label: {
+                Label("Model & routing", systemImage: "slider.horizontal.3")
+            }.disabled(model.focused == nil).accessibilityIdentifier("conversation-model-controls")
             Button { composerFocused = false; showScheduledJobs = true } label: {
                 Label("Scheduled jobs", systemImage: "clock")
             }.accessibilityIdentifier("inbox-scheduled-jobs")
@@ -879,7 +901,6 @@ private struct AgentComposerView: View {
         let stopRequest = sendShowsStop ? card.flatMap { model.cancellation(agentID: $0.id, turnID: stopTarget) } : nil
         let canSend = model.canSend
         VStack(spacing: 0) {
-            MobileModelControls(model: model)
             if let error = model.creationError {
                 HStack {
                     Text(error).font(.caption).foregroundStyle(Ink.muted)
