@@ -989,6 +989,11 @@ final class InboxModel: ObservableObject {
 
     func respondTodo(to decision: TodoDecision, choiceID: String?, text: String?) async -> Bool {
         guard !todoResponding, decision.status == "needs_you" else { return false }
+        guard let current = todoDecisions.first(where: { $0.id == decision.id }),
+              current.version == decision.version, current.status == "needs_you" else {
+            todoError = "This decision changed. Refresh and review it again."
+            return false
+        }
         if isDemo {
             todoDecisions.removeAll { $0.id == decision.id }
             return true

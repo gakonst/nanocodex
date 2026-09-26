@@ -18,8 +18,9 @@ final class InboxUITests: XCTestCase {
         app.buttons["decision-card:fixture-email"].tap()
         XCTAssertTrue(app.buttons["decision-choice:fixture-email:draft"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.textViews["decision-instructions"].exists)
+        capture(app, "todo-decision-detail")
         app.buttons["decision-detail-close"].tap()
-        let input = app.textViews["todo-capture"]
+        let input = app.descendants(matching: .any)["todo-capture"].firstMatch
         input.tap(); input.typeText("Check whether Alex can meet next week")
         XCTAssertTrue(app.buttons["todo-capture-save"].isEnabled)
         app.buttons["todo-capture-save"].tap()
@@ -27,8 +28,30 @@ final class InboxUITests: XCTestCase {
         capture(app, "todo-captured")
         app.buttons["main-tab-chat"].tap()
         XCTAssertTrue(app.buttons["conversation-drawer-open"].waitForExistence(timeout: 5))
+        capture(app, "todo-chat-dock")
         app.buttons["main-tab-todo"].tap()
         XCTAssertTrue(app.staticTexts["Check whether Alex can meet next week"].exists)
+        let card = app.buttons["decision-card:fixture-email"]
+        card.swipeRight()
+        XCTAssertTrue(app.buttons["decision-swipe-primary:fixture-email"].waitForExistence(timeout: 5))
+        capture(app, "todo-swipe-primary")
+        app.buttons["decision-swipe-primary:fixture-email"].tap()
+        XCTAssertTrue(app.staticTexts["Nothing needs your decision right now"].waitForExistence(timeout: 5))
+    }
+
+    func testDecisionSecondarySwipeChoice() {
+        let app = XCUIApplication()
+        app.launchArguments = ["--demo", "--todo-ui-fixture"]
+        app.launchEnvironment = ["NANOCODEX_DEMO_PROFILE": UUID().uuidString]
+        app.launch()
+        let card = app.buttons["decision-card:fixture-email"]
+        XCTAssertTrue(card.waitForExistence(timeout: 10))
+        card.swipeLeft()
+        let option = app.buttons["decision-swipe-secondary:fixture-email"]
+        XCTAssertTrue(option.waitForExistence(timeout: 5))
+        capture(app, "todo-swipe-secondary")
+        option.tap()
+        XCTAssertTrue(app.staticTexts["Nothing needs your decision right now"].waitForExistence(timeout: 5))
     }
 
     func testRunningAgentsToolbarFiltersAndShowsLastPrompt() {

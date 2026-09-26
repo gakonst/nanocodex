@@ -33,6 +33,19 @@ private extension EnvironmentValues {
     }
 }
 
+/// Shared visual treatment for Chat and TODO, including identical outer spacing.
+struct InboxComposerShell: ViewModifier {
+    let focused: Bool
+    func body(content: Content) -> some View {
+        content
+            .background(ChatPalette.composer, in: RoundedRectangle(cornerRadius: 28))
+            .overlay(RoundedRectangle(cornerRadius: 28).strokeBorder(Color.primary.opacity(focused ? 0.18 : 0.1)))
+            .shadow(color: .black.opacity(0.035), radius: 8, y: 2)
+            .padding(.horizontal, 12).padding(.top, 4).padding(.bottom, 6)
+            .background(Color(uiColor: .systemBackground))
+    }
+}
+
 private enum Ink {
     static let background = Color(uiColor: .systemBackground)
     static let card = Color(uiColor: .secondarySystemGroupedBackground)
@@ -81,13 +94,12 @@ struct InboxView: View {
     @State private var screenViewerRevision = UUID()
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var composerFocused = false
-    @State private var composerHeight: CGFloat = 80
 
     var body: some View {
         NavigationStack {
             Group {
                 if model.connected && mainSurface == .todo {
-                    TodoBoardView(model: model, inputFocused: $todoInputFocused)
+                    TodoBoardView(model: model)
                 } else { inbox }
             }
                 #if os(iOS)
@@ -114,8 +126,25 @@ struct InboxView: View {
                 }
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
-            if model.connected && !composerFocused && !todoInputFocused && !showConversations && !showScreens && !showScheduledJobs && !showConnectors {
-                mainNavigation
+            if model.connected && !showScreens && !showScheduledJobs && !showConnectors {
+                let drawerVisible = showConversations || drawerTranslation != 0
+                VStack(spacing: 0) {
+                    Group {
+                        if mainSurface == .todo {
+                            TodoCaptureComposer(model: model, inputFocused: $todoInputFocused)
+                        } else {
+                            conversationBottomControls
+                        }
+                    }
+                    // Keep the composer mounted while the drawer slides; its local
+                    // attachment/editor state must survive without covering the list.
+                    .frame(height: drawerVisible ? 0 : nil)
+                    .clipped().opacity(drawerVisible ? 0 : 1)
+                    .allowsHitTesting(!drawerVisible).accessibilityHidden(drawerVisible)
+                    if !drawerVisible && !composerFocused && !todoInputFocused { mainNavigation }
+                }
+                .frame(maxWidth: .infinity)
+                .background(Ink.background)
             }
         }
         .safeAreaInset(edge: .top, spacing: 0) {
@@ -239,6 +268,7 @@ struct InboxView: View {
         .accessibilityLabel(title)
         .accessibilityValue(surface == .todo ? "\(model.pendingTodoDecisionCount) decisions need you" : "")
         .accessibilityAddTraits(mainSurface == surface ? [.isSelected] : [])
+        .accessibilityRemoveTraits(mainSurface == surface ? [] : [.isSelected])
         .accessibilityIdentifier(identifier)
     }
 
@@ -371,7 +401,6 @@ struct InboxView: View {
             Group {
                     if let identity = model.focusedConversationIdentity {
                         ConversationView(model: model, identity: identity, readingPositions: readingPositions).id(identity)
-                            .environment(\.conversationComposerHeight, composerHeight)
                     } else { emptyState.frame(maxWidth: .infinity, maxHeight: .infinity) }
             }
             .frame(maxHeight: screenExpanded && screenThreads.contains(model.focusedConversationIdentity ?? "") ? 0 : .infinity)
@@ -385,28 +414,28 @@ struct InboxView: View {
                     .padding(.horizontal, 16)
             }
         }
-        .overlay(alignment: .bottom) {
-            VStack(spacing: 0) {
-                if let error = model.error {
-                    HStack(alignment: .top) {
-                        Text(error).font(.caption).foregroundStyle(Ink.amber)
-                        Spacer(minLength: 4)
-                        Button { model.error = nil } label: { Image(systemName: "xmark") }
-                            .accessibilityLabel("Dismiss error")
-                    }
-                    .padding(12).background(Ink.card, in: RoundedRectangle(cornerRadius: 12)).padding(.horizontal, 12)
-                } else if let notice = model.notice, !composerFocused {
-                    Text(notice).font(.caption).foregroundStyle(Ink.muted).accessibilityIdentifier("notice")
+    }
+
+    private var conversationBottomControls: some View {
+        VStack(spacing: 0) {
+            if let error = model.error {
+                HStack(alignment: .top) {
+                    Text(error).font(.caption).foregroundStyle(Ink.amber)
+                    Spacer(minLength: 4)
+                    Button { model.error = nil } label: { Image(systemName: "xmark") }
+                        .accessibilityLabel("Dismiss error")
                 }
-                if model.focused != nil {
-                    AgentComposerView(model: model, focused: $composerFocused, onVoiceChat: {
-                        composerFocused = false
-                    }).frame(maxWidth: 620)
-                }
+                .padding(12).background(Ink.card, in: RoundedRectangle(cornerRadius: 12)).padding(.horizontal, 12)
+            } else if let notice = model.notice, !composerFocused {
+                Text(notice).font(.caption).foregroundStyle(Ink.muted).accessibilityIdentifier("notice")
             }
-            .padding(.bottom, 4)
-            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { composerHeight = $0 }
+            if model.focused != nil {
+                AgentComposerView(model: model, focused: $composerFocused, onVoiceChat: {
+                    composerFocused = false
+                }).frame(maxWidth: 620)
+            }
         }
+        .padding(.bottom, 4)
     }
 
     private var conversationHeader: some View {
@@ -1016,10 +1045,7 @@ private struct AgentComposerView: View {
                 }
                 .padding(.horizontal, 4).padding(.bottom, 4).padding(.top, visiblePending.isEmpty ? 4 : 0).accessibilityElement(children: .contain).accessibilityIdentifier("composer-input")
 
-        }.background(ChatPalette.composer, in: RoundedRectangle(cornerRadius: 28))
-            .overlay(RoundedRectangle(cornerRadius: 28).strokeBorder(Color.primary.opacity(focused ? 0.18 : 0.1)))
-            .shadow(color: .black.opacity(0.035), radius: 8, y: 2)
-            .padding(.horizontal, 12).padding(.top, 4).padding(.bottom, 6).background(Ink.background)
+        }.modifier(InboxComposerShell(focused: focused))
             .onChange(of: model.focusedConversationIdentity) { _, _ in
                 showExpandedEditor = false
                 focused = false
