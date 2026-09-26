@@ -156,7 +156,7 @@ struct InboxView: View {
                     // Keep the composer mounted while the drawer slides; its local
                     // attachment/editor state must survive without covering the list.
                     .frame(height: drawerVisible ? 0 : nil)
-                    .clipped().opacity(drawerVisible ? 0 : 1)
+                    .opacity(drawerVisible ? 0 : 1)
                     .allowsHitTesting(!drawerVisible).accessibilityHidden(drawerVisible)
                     if !drawerVisible && !composerFocused && !todoInputFocused { mainNavigation }
                 }
