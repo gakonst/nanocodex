@@ -322,6 +322,26 @@ it("quarantines old tagged-continuation rows instead of forging a typed result",
   });
 });
 
+it("rearms a persisted terminal job after cold construction loses its alarm", async () => {
+  await runInDurableObject(stub(), async (_session, state) => {
+    const read: NamedTool = { name: "current_time", description: "read", handler: () => "now" };
+    new AsyncJobs(state.storage, { current_time: read }, () => "source",
+      async intent => accepted(intent), () => {});
+    state.storage.sql.exec("INSERT INTO turns (id, input, state) VALUES ('source', 'work', 'completed')");
+    state.storage.sql.exec(`INSERT INTO async_jobs
+      (id, invocation, original_turn, execution_turn, call_id, tool, args, state,
+       result, terminal_state, created_at) VALUES (?, 'turn-1:crash-window', 'source',
+       'turn-1', 'crash-window', 'current_time', '{}', 'completed', '"now"', 'completed', ?)`,
+      crypto.randomUUID(), Date.now());
+    await state.storage.deleteAlarm();
+    const constructorTasks: Promise<unknown>[] = [];
+    new AsyncJobs(state.storage, { current_time: read }, () => "source",
+      async intent => accepted(intent), work => { constructorTasks.push(work); });
+    await Promise.all(constructorTasks);
+    expect(await state.storage.getAlarm()).not.toBeNull();
+  });
+});
+
 it("fences stale results from a crashed lease and delivers the winning retry once", async () => {
   await runInDurableObject(stub(), async (_session, state) => {
     const tasks: Promise<unknown>[] = [];
@@ -340,13 +360,13 @@ it("fences stale results from a crashed lease and delivers the winning retry onc
     expect(attempts).toBe(0);
     await jobs.reconcile();
     expect(attempts).toBe(1);
-    // A second instance starts after a lease expires while the first promise
-    // is still in flight, just as a stale worker could finish after recovery.
+    // A hung handler in this very same object must not suppress expired-lease
+    // recovery; a later cold instance sees the same durable winning attempt.
     state.storage.sql.exec("UPDATE async_jobs SET started_at = ? WHERE id = ?", Date.now() - 31_000, id);
+    await jobs.reconcile();
+    expect(attempts).toBe(2);
     const restored = new AsyncJobs(state.storage, { current_time: read }, () => "original-turn", deliver,
       work => { tasks.push(work); }, new Set(["current_time"]));
-    await restored.reconcile();
-    expect(attempts).toBe(2);
     await Promise.resolve();
     expect(restored.status(id)).toMatchObject({ state: "completed", result: '{"fresh":true}' });
     resolveFirst({ stale: true });
@@ -381,10 +401,10 @@ it("never replays a mutable tool after its lease becomes uncertain", async () =>
     await jobs.reconcile();
     expect(executions).toBe(1);
     state.storage.sql.exec("UPDATE async_jobs SET started_at = ? WHERE id = ?", Date.now() - 31_000, id);
-    const restored = make();
-    await restored.reconcile();
+    await jobs.reconcile(); // still the same object with a hung handler
     expect(executions).toBe(1);
-    expect(restored.status(id)).toMatchObject({ state: "uncertain" });
+    expect(jobs.status(id)).toMatchObject({ state: "uncertain" });
+    const restored = make();
     await restored.reconcile();
     expect(delivered).toHaveLength(1);
     expect(delivered[0]).toMatchObject({ callId: "call-mutable", terminalState: "uncertain" });
@@ -528,6 +548,10 @@ it("retains a compact invocation fence after an old delivered mutable payload is
     await jobs.reconcile(); // completed model-step receipt
     expect(jobs.status(id)).toMatchObject({ state: "delivered", continuation_started: true });
     state.storage.sql.exec("UPDATE async_jobs SET created_at = ? WHERE id = ?",
+      Date.now() - 8 * 24 * 60 * 60 * 1000, id);
+    await jobs.reconcile(); // old creation alone must not expire a recent confirmation
+    expect(jobs.status(id)).toMatchObject({ state: "delivered", continuation_started: true });
+    state.storage.sql.exec("UPDATE async_jobs SET delivered_at = ? WHERE id = ?",
       Date.now() - 8 * 24 * 60 * 60 * 1000, id);
     await jobs.reconcile(); // archive payload and preserve durable invocation identity
     expect(jobs.status(id)).toMatchObject({ job_id: id, state: "archived", continuation_started: true });

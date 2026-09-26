@@ -204,15 +204,18 @@ been removed; old rows are quarantined, never replayed as typed tool output.
 The dormant `AsyncJobs` ledger persists a stable turn, original provider call
 ID, job ID, arguments, correlation, and bounded result before dispatch. It
 registers `current_time`, `web__run`, and the local Just Bash `exec_command`,
-with eight active jobs and seven-day *delivered*-payload retention. An
-expired confirmed delivery becomes a compact permanent invocation tombstone:
+with eight active jobs and seven-day payload retention measured from
+**confirmed model-step delivery**, not tool creation. An expired confirmed delivery becomes a compact permanent invocation tombstone:
 its status is `archived`, the original payload is no longer available from
 `/jobs`, and a replay of the same invocation fails closed rather than
 executing a mutable tool a second time. This is a safety fence, not a
 complete long-term output archival policy. Results checkpointed without a
 model wake remain durable and visible but may consume capacity. The read-only
-operations may be retried after a stale lease (at most three attempts). An
-uncertain or cancelled shell execution **must not be rerun**: its terminal
+operations may be retried after a stale lease (at most three attempts),
+even if an older read-only handler remains hung in the same DO; its lease
+cannot overwrite the winning result. A cold DO construction rearms alarms
+for persisted queued, running and terminal jobs whose prior alarm was lost.
+An uncertain or cancelled shell execution **must not be rerun**: its terminal
 result explicitly says the side effect may have happened. Cancel is a durable
 fence, not rollback. The exact Unreal pending text is staged under the original
 function-call ID; the job ID is available through the jobs status API and is

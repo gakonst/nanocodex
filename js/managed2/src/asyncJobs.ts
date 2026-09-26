@@ -47,7 +47,7 @@ const terminalOrigin = `EXISTS (SELECT 1 FROM turns AS source_turn
     AND source_turn.state IN ('completed', 'failed', 'cancelled'))`;
 
 export class AsyncJobs {
-  private readonly active = new Set<string>();
+  private readonly active = new Map<string, string>();
   private readonly delivering = new Set<string>();
   private readonly legacyContinuationColumn: boolean;
   private readonly probeEpoch = crypto.randomUUID();
@@ -94,7 +94,8 @@ export class AsyncJobs {
     // If the capability is still absent, park again without a polling alarm.
     if (storage.sql.exec<{ n: number }>(
       `SELECT COUNT(*) AS n FROM async_jobs WHERE
-        (state = 'awaiting_integration' AND (integration_probe_epoch IS NULL OR integration_probe_epoch != ?))
+        state IN ('queued', 'running', 'completed', 'failed', 'uncertain', 'cancelled')
+        OR (state = 'awaiting_integration' AND (integration_probe_epoch IS NULL OR integration_probe_epoch != ?))
         OR (state = 'checkpointed' AND wake_generation < ? AND ${terminalOrigin})`,
       this.probeEpoch, this.wakeGeneration).toArray()[0]!.n > 0) {
       this.waitUntil((async () => {
@@ -110,8 +111,8 @@ export class AsyncJobs {
     this.storage.transactionSync(() => {
       this.storage.sql.exec(`INSERT INTO async_job_tombstones (id, invocation, tool, archived_at)
         SELECT id, invocation, tool, ? FROM async_jobs
-        WHERE state = 'delivered' AND created_at < ?`, Date.now(), cutoff);
-      this.storage.sql.exec("DELETE FROM async_jobs WHERE state = 'delivered' AND created_at < ?", cutoff);
+        WHERE state = 'delivered' AND delivered_at IS NOT NULL AND delivered_at < ?`, Date.now(), cutoff);
+      this.storage.sql.exec("DELETE FROM async_jobs WHERE state = 'delivered' AND delivered_at IS NOT NULL AND delivered_at < ?", cutoff);
     });
   }
 
@@ -211,10 +212,14 @@ export class AsyncJobs {
   }
 
   private async run(id: string): Promise<void> {
-    if (this.active.has(id)) return;
     const job = this.get(id);
-    if (!job || (job.state !== "queued" && !(job.state === "running" &&
-      job.started_at !== null && job.started_at + LEASE_MS < Date.now()))) return;
+    const expired = job?.state === "running" && job.started_at !== null
+      && job.started_at + LEASE_MS < Date.now();
+    // A handler in this same DO may hang beyond its durable lease. Fence its
+    // mutable outcome, or let a read-only attempt supersede that lease. The
+    // old handler's conditional write cannot overwrite the winning result.
+    if (this.active.has(id) && !expired) return;
+    if (!job || (job.state !== "queued" && !expired)) return;
     // A stale running mutable lease could already have executed. Even an
     // apparently idempotent shell command is never replayed without proof.
     if (job.state === "running" && !job.replay_safe) {
@@ -231,13 +236,13 @@ export class AsyncJobs {
       await this.storage.setAlarm(Date.now() + 1_000);
       return;
     }
-    this.active.add(id);
     const attempt = job.attempts + 1;
     const leaseId = crypto.randomUUID();
     this.storage.sql.exec(`UPDATE async_jobs SET state = 'running', attempts = ?, started_at = ?, lease_id = ?
       WHERE id = ? AND attempts = ? AND (state = 'queued' OR (state = 'running' AND started_at + ? < ?))`,
       attempt, Date.now(), leaseId, id, job.attempts, LEASE_MS, Date.now());
-    if (this.get(id)?.lease_id !== leaseId) { this.active.delete(id); return; }
+    if (this.get(id)?.lease_id !== leaseId) return;
+    this.active.set(id, leaseId);
     try {
       const tool = this.registeredTools[job.tool];
       if (!tool) throw new Error("registered tool no longer available");
@@ -259,7 +264,7 @@ export class AsyncJobs {
         terminal, terminal, job.replay_safe ? "Replay-safe job failed (details withheld)"
           : "Execution outcome unknown; side effect may have occurred", id, attempt, leaseId);
     } finally {
-      this.active.delete(id);
+      if (this.active.get(id) === leaseId) this.active.delete(id);
       await this.storage.setAlarm(Date.now() + 1_000);
     }
   }
