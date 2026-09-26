@@ -136,8 +136,8 @@ export async function importCrmEmailPush(options: CrmEmailPushOptions, input: st
       session.prepare(`INSERT INTO crm_notes(owner_id,id,record_id,body,source_url,created_at,updated_at)
         SELECT ?,?,?,?,?,?,? WHERE EXISTS (SELECT 1 FROM crm_records WHERE owner_id=? AND id=?) AND NOT EXISTS (SELECT 1 FROM crm_email_imports WHERE owner_id=? AND connection_id=? AND message_id=?)
         ON CONFLICT(owner_id,id) DO NOTHING`).bind(options.ownerId, noteId, recordId, body, source, now, now, options.ownerId, recordId, options.ownerId, event.connectionId, id),
-      session.prepare(`INSERT INTO crm_email_imports(owner_id,connection_id,message_id,record_id,note_id,imported_at) SELECT ?,?,?,?,?,? WHERE EXISTS (SELECT 1 FROM crm_records WHERE owner_id=? AND id=?)
-        ON CONFLICT(owner_id,connection_id,message_id) DO NOTHING`).bind(options.ownerId, event.connectionId, id, recordId, noteId, now, options.ownerId, recordId),
+      session.prepare(`INSERT INTO crm_email_imports(owner_id,connection_id,message_id,record_id,note_id,imported_at,received_ms) SELECT ?,?,?,?,?,?,? WHERE EXISTS (SELECT 1 FROM crm_records WHERE owner_id=? AND id=?)
+        ON CONFLICT(owner_id,connection_id,message_id) DO NOTHING`).bind(options.ownerId, event.connectionId, id, recordId, noteId, now, Number(data.internalDate), options.ownerId, recordId),
     ]);
     await markComplete(id);
     if (writes[1].meta.changes) result.imported++; else result.skipped++;
