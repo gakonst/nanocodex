@@ -244,6 +244,7 @@ export class AsyncJobs {
     ).toArray();
     let retry = false;
     const idleCohort: { job: Job; intent: FinalToolResultIntent }[] = [];
+    const wakingSources = new Set<string>();
     for (const job of rows) {
       if (job.state === "queued" || job.state === "running") {
         this.waitUntil(this.run(job.id));
@@ -285,7 +286,9 @@ export class AsyncJobs {
           if ([active, idle].some(status => status?.state === "accepted_unbound"
             || status?.state === "bound_unconfirmed")) {
             // The provider is still working. Do not re-submit while either
-            // durable owner retains an unconfirmed exact receipt.
+            // durable owner retains an unconfirmed exact receipt. A later
+            // same-source cohort must not race that in-flight native wake.
+            wakingSources.add(job.original_turn);
             retry = true;
             continue;
           }
@@ -358,6 +361,16 @@ export class AsyncJobs {
         if (!heldForBatch) this.delivering.delete(job.id);
       }
     }
+    // A completed row may be in this bounded page while an older unconfirmed
+    // same-source checkpoint lies beyond it. The SQL fence prevents chunk 2
+    // from racing a prompt-less wake even across an eviction or full page.
+    const eligibleIds = new Set(idleCohort.map(({ job }) => job.id));
+    for (const row of this.storage.sql.exec<{ id: string; original_turn: string }>(
+      `SELECT id, original_turn FROM async_jobs WHERE state = 'checkpointed'
+        AND wake_generation < ? AND ${terminalOrigin}`,
+      this.wakeGeneration).toArray()) {
+      if (!eligibleIds.has(row.id)) wakingSources.add(row.original_turn);
+    }
     // Cohorts are source-turn-local and ordered by creation time and job ID;
     // each native call is bounded to eight outputs and has only original IDs.
     // The native batch validates/stages all members before one idle wake. No
@@ -370,36 +383,45 @@ export class AsyncJobs {
     }
     for (const cohort of cohorts.values()) {
       cohort.sort((a, b) => a.job.created_at - b.job.created_at || a.job.id.localeCompare(b.job.id));
-      for (let start = 0; start < cohort.length; start += 8) {
-        const batch = cohort.slice(start, start + 8);
-        try {
-          const result = await this.deliverIdleBatch!(batch.map(row => row.intent));
-          const receipts = result as Partial<FinalToolResultReceipt>[] | null;
-          if (!Array.isArray(receipts) || receipts.length !== batch.length
-            || receipts.some((receipt, index) => receipt?.operation_id !== batch[index]!.job.id
-              || receipt.call_id !== batch[index]!.job.call_id
-              || typeof receipt.replayed !== "boolean"
-              || typeof receipt.continuation_started !== "boolean")) {
-            throw new Error("invalid terminal output batch checkpoint receipts");
-          }
-          // Keep the local cohort transition all-or-nothing across a DO crash;
-          // only exact durable uptake status may later mark each job delivered.
-          this.storage.transactionSync(() => {
-            for (const { job } of batch) this.storage.sql.exec(`UPDATE async_jobs SET
-              state = 'checkpointed', delivered_at = ?, continuation_started = 0,
-              wake_generation = 0 WHERE id = ?
-              AND state IN ('completed', 'failed', 'uncertain', 'cancelled', 'awaiting_integration', 'checkpointed')`,
-              Date.now(), job.id);
-          });
-          if (this.idleOutputStatus) retry = true;
-        } catch (error) {
-          if (error instanceof TypedIngestionUnavailable) {
-            for (const { job } of batch) this.storage.sql.exec(
-              "UPDATE async_jobs SET state = 'awaiting_integration' WHERE id = ?", job.id);
-          } else retry = true;
-        } finally {
-          for (const { job } of batch) this.delivering.delete(job.id);
+      // The native driver can accept only one bounded idle batch per wake.
+      // Never send chunk 2 while chunk 1's model call is still in flight.
+      if (wakingSources.has(cohort[0]!.job.original_turn)) {
+        retry = true;
+        for (const { job } of cohort) this.delivering.delete(job.id);
+        continue;
+      }
+      const batch = cohort.slice(0, 8);
+      if (cohort.length > batch.length) {
+        retry = true;
+        for (const { job } of cohort.slice(batch.length)) this.delivering.delete(job.id);
+      }
+      try {
+        const result = await this.deliverIdleBatch!(batch.map(row => row.intent));
+        const receipts = result as Partial<FinalToolResultReceipt>[] | null;
+        if (!Array.isArray(receipts) || receipts.length !== batch.length
+          || receipts.some((receipt, index) => receipt?.operation_id !== batch[index]!.job.id
+            || receipt.call_id !== batch[index]!.job.call_id
+            || typeof receipt.replayed !== "boolean"
+            || typeof receipt.continuation_started !== "boolean")) {
+          throw new Error("invalid terminal output batch checkpoint receipts");
         }
+        // Keep the local cohort transition all-or-nothing across a DO crash;
+        // only exact durable uptake status may later mark each job delivered.
+        this.storage.transactionSync(() => {
+          for (const { job } of batch) this.storage.sql.exec(`UPDATE async_jobs SET
+            state = 'checkpointed', delivered_at = ?, continuation_started = 0,
+            wake_generation = 0 WHERE id = ?
+            AND state IN ('completed', 'failed', 'uncertain', 'cancelled', 'awaiting_integration', 'checkpointed')`,
+            Date.now(), job.id);
+        });
+        if (this.idleOutputStatus) retry = true;
+      } catch (error) {
+        if (error instanceof TypedIngestionUnavailable) {
+          for (const { job } of batch) this.storage.sql.exec(
+            "UPDATE async_jobs SET state = 'awaiting_integration' WHERE id = ?", job.id);
+        } else retry = true;
+      } finally {
+        for (const { job } of batch) this.delivering.delete(job.id);
       }
     }
     // A checkpointed active acceptance is retried only after its source turn

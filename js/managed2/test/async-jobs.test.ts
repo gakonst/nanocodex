@@ -536,7 +536,7 @@ it("wraps exec_command as a mutable background tool and checkpoints its single r
   });
 });
 
-it("batches a deterministic idle source cohort in chunks of at most eight, with no false uptake", async () => {
+it("spills a ninth terminal across the bounded wake without losing or falsely delivering it", async () => {
   await runInDurableObject(stub(), async (_session, state) => {
     state.storage.sql.exec("INSERT INTO turns (id, input, state) VALUES ('source', 'work', 'completed')");
     const read: NamedTool = { name: "current_time", description: "read", handler: () => "ok" };
@@ -547,26 +547,82 @@ it("batches a deterministic idle source cohort in chunks of at most eight, with 
         terminal_state, created_at) VALUES (?, ?, 'source', 'turn-1', ?, 'current_time', '{}',
         'completed', '"ready"', 'completed', ?)`, ids[i], `turn-1:call-${i}`, `call-${i}`, i);
     const batches: (readonly FinalToolResultIntent[])[] = [];
-    let uptaken = false;
-    const jobs = new AsyncJobs(state.storage, { current_time: read }, () => "source",
+    let wakeActive = false;
+    let firstUptaken = false;
+    let secondUptaken = false;
+    const makeJobs = () => new AsyncJobs(state.storage, { current_time: read }, () => "source",
       async () => { throw new Error("must not submit separately while idle"); }, () => {},
       new Set(["current_time"]), undefined, async () => ({ state: "pruned_or_unknown" }),
-      async () => uptaken ? { state: "confirmed", model_call_index: 3, response_id: "model-3" }
+      async intent => (intent.callId === "call-8" ? secondUptaken : firstUptaken)
+        ? { state: "confirmed", model_call_index: 3, response_id: "model-3" }
         : { state: "accepted_unbound" },
       async intents => {
         batches.push([...intents]);
+        // The native driver rejects a new cohort while the first prompt-less
+        // wake is in flight. A mock that accepts 8+1 at once hides this race.
+        if (wakeActive) throw new Error("native driver requires an idle boundary");
+        wakeActive = true;
+        return intents.map(intent => accepted(intent, true));
+      });
+    let jobs = makeJobs();
+    await jobs.reconcile();
+    expect(batches.map(batch => batch.length)).toEqual([8]);
+    expect(batches[0]!.map(intent => intent.jobId)).toEqual(ids.slice(0, 8));
+    for (const id of ids.slice(0, 8)) expect(jobs.status(id)).toMatchObject({ state: "checkpointed", continuation_started: false });
+    expect(jobs.status(ids[8]!)).toMatchObject({ state: "completed" });
+    // Rehydrate the host's reconciliation object while the native wake is
+    // still active; the ninth durable row must not race or vanish on restart.
+    jobs = makeJobs();
+    await jobs.reconcile();
+    expect(batches.map(batch => batch.length)).toEqual([8]);
+    expect(jobs.status(ids[8]!)).toMatchObject({ state: "completed" });
+    firstUptaken = true;
+    wakeActive = false;
+    await jobs.reconcile();
+    expect(batches.map(batch => batch.length)).toEqual([8, 1]);
+    expect(batches.at(-1)![0]!.callId).toBe("call-8");
+    for (const id of ids.slice(0, 8)) expect(jobs.status(id)).toMatchObject({ state: "delivered", continuation_started: true });
+    expect(jobs.status(ids[8]!)).toMatchObject({ state: "checkpointed", continuation_started: false });
+    secondUptaken = true;
+    await jobs.reconcile();
+    expect(jobs.status(ids[8]!)).toMatchObject({ state: "delivered", continuation_started: true });
+  });
+});
+
+it("finds an unconfirmed same-source wake beyond the bounded reconciliation page", async () => {
+  await runInDurableObject(stub(), async (_session, state) => {
+    state.storage.sql.exec("INSERT INTO turns (id, input, state) VALUES ('other', 'work', 'completed')");
+    state.storage.sql.exec("INSERT INTO turns (id, input, state) VALUES ('source', 'work', 'completed')");
+    const read: NamedTool = { name: "current_time", description: "read", handler: () => "ok" };
+    new AsyncJobs(state.storage, { current_time: read }, () => "source", async () => {}, () => {});
+    const insert = (id: string, source: string, call: string, stateName: string, at: number) => {
+      state.storage.sql.exec(`INSERT INTO async_jobs
+        (id, invocation, original_turn, execution_turn, call_id, tool, args, state, result,
+          terminal_state, created_at, wake_generation) VALUES (?, ?, ?, 'turn-1', ?,
+          'current_time', '{}', ?, '"ready"', 'completed', ?, 0)`,
+      id, `turn-1:${call}`, source, call, stateName, at);
+    };
+    for (let index = 0; index < 24; index++) insert(crypto.randomUUID(), "other", `call-other-${index}`, "completed", index);
+    const next = crypto.randomUUID();
+    insert(next, "source", "call-source-new", "completed", 24);
+    // Twenty-five completed rows fill the page, hiding this older native
+    // checkpoint from the per-row status loop. SQL must still fence source.
+    insert(crypto.randomUUID(), "source", "call-source-inflight", "checkpointed", 25);
+    const batches: string[][] = [];
+    const jobs = new AsyncJobs(state.storage, { current_time: read }, () => "source",
+      async () => { throw new Error("unexpected individual output"); }, () => {},
+      new Set(["current_time"]), undefined, async () => ({ state: "pruned_or_unknown" }),
+      async () => ({ state: "accepted_unbound" }),
+      async intents => {
+        batches.push(intents.map(intent => intent.callId));
+        if (intents.some(intent => intent.callId === "call-source-new"))
+          throw new Error("would race in-flight source wake");
         return intents.map(intent => accepted(intent, true));
       });
     await jobs.reconcile();
-    expect(batches.map(batch => batch.length)).toEqual([8, 1]);
-    expect(batches.flat().map(intent => intent.jobId)).toEqual(ids);
-    expect(batches.flat().map(intent => intent.callId)).toEqual(ids.map((_, i) => `call-${i}`));
-    for (const id of ids) expect(jobs.status(id)).toMatchObject({ state: "checkpointed", continuation_started: false });
-    await jobs.reconcile();
-    expect(batches).toHaveLength(2); // staging acknowledgement did not trigger a replay
-    uptaken = true;
-    await jobs.reconcile();
-    for (const id of ids) expect(jobs.status(id)).toMatchObject({ state: "delivered", continuation_started: true });
+    expect(batches).toHaveLength(1);
+    expect(batches[0]).toEqual(Array.from({ length: 8 }, (_, i) => `call-other-${i}`));
+    expect(jobs.status(next)).toMatchObject({ state: "completed" });
   });
 });
 

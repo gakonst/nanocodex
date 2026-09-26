@@ -720,6 +720,130 @@ async fn two_late_terminal_outputs_share_one_promptless_wake() {
 }
 
 #[tokio::test]
+async fn ninth_completed_output_spills_after_bounded_eight_member_wake_without_loss() {
+    let (retained, _seed_rx) = mpsc::unbounded_channel();
+    let openai = OpenAi::builder("test")
+        .service(move || RetainingCompletedService {
+            retained: retained.clone(),
+        })
+        .build()
+        .unwrap();
+    let (seed, seed_events) = Nanocodex::builder(openai)
+        .tools(Tools::builder().without_defaults().build().unwrap())
+        .build()
+        .unwrap();
+    seed.prompt("seed").await.unwrap().result().await.unwrap();
+    let mut snapshot = serde_json::to_value(seed.snapshot().await.unwrap()).unwrap();
+    drop((seed, seed_events));
+    snapshot["unreal_function_outputs"] = serde_json::json!(true);
+    let history = snapshot["history"].as_array_mut().unwrap();
+    for index in 0..9 {
+        let call_id = format!("job-{index}");
+        history.push(serde_json::json!({
+            "type": "function_call", "call_id": call_id, "name": "job", "arguments": "{}"
+        }));
+        history.push(serde_json::json!({
+            "type": "function_call_output", "call_id": call_id,
+            "output": "Tool call is still running. Its result arrives in a later turn: continue with independent work, or end your turn to wait for it."
+        }));
+    }
+    let (attempts, mut observed) = mpsc::unbounded_channel();
+    let (release, gate) = tokio::sync::oneshot::channel();
+    let gate = Arc::new(std::sync::Mutex::new(Some(gate)));
+    let openai = OpenAi::builder("test")
+        .service(move || WakeGateService {
+            attempts: attempts.clone(),
+            gate: Arc::clone(&gate),
+        })
+        .build()
+        .unwrap();
+    let (agent, events) = Nanocodex::builder(openai)
+        .resume(serde_json::from_value(snapshot).unwrap())
+        .tools(Tools::builder().without_defaults().build().unwrap())
+        .build()
+        .unwrap();
+    let output = |index: usize| nanocodex_agent::LateFunctionOutput {
+        call_id: format!("job-{index}"),
+        operation_id: format!("operation-{index}"),
+        output: nanocodex_oai_api::responses::FunctionOutputBody::Text(
+            format!("terminal-{index}").into(),
+        ),
+    };
+    let first = agent
+        .submit_late_function_outputs((0..8).map(output).collect())
+        .await
+        .unwrap();
+    assert_eq!(first.len(), 8);
+    assert!(first.iter().all(|receipt| !receipt.replayed));
+    let wake = tokio::time::timeout(Duration::from_secs(5), observed.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    let wake_items = wake
+        .input_items()
+        .map(|item| serde_json::to_value(item).unwrap())
+        .collect::<Vec<_>>();
+    for index in 0..8 {
+        assert_eq!(
+            wake_items
+                .iter()
+                .filter(|item| {
+                    item["type"] == "function_call_output"
+                        && item["call_id"] == format!("job-{index}")
+                        && item["output"] == format!("terminal-{index}")
+                })
+                .count(),
+            1
+        );
+    }
+    assert!(!wake_items.iter().any(|item| item["output"] == "terminal-8"));
+    // A second batch cannot enter during the gated first wake. Its rejection
+    // cannot consume the ninth operation ID or silently drop its terminal.
+    assert!(matches!(
+        agent.submit_late_function_outputs(vec![output(8)]).await,
+        Err(NanocodexError::InvalidRequest(_))
+    ));
+    release.send(()).unwrap();
+    let last = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            match agent.submit_late_function_outputs(vec![output(8)]).await {
+                Ok(receipts) => break receipts,
+                Err(NanocodexError::InvalidRequest(_)) => {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+                Err(error) => panic!("ninth terminal rejected after first wake: {error}"),
+            }
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(last.len(), 1);
+    assert_eq!(last[0].call_id, "job-8");
+    assert!(!last[0].replayed);
+    let second = tokio::time::timeout(Duration::from_secs(5), observed.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    let second_items = second
+        .input_items()
+        .map(|item| serde_json::to_value(item).unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        second_items
+            .iter()
+            .filter(|item| {
+                item["type"] == "function_call_output"
+                    && item["call_id"] == "job-8"
+                    && item["output"] == "terminal-8"
+            })
+            .count(),
+        1
+    );
+    assert!(observed.try_recv().is_err(), "unexpected third wake");
+    drop((agent, events));
+}
+
+#[tokio::test]
 async fn late_terminal_submitted_during_active_turn_wakes_before_queued_prompt() {
     let (retained, _retained_attempts) = mpsc::unbounded_channel();
     let first = OpenAi::builder("test")
