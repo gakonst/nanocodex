@@ -4126,6 +4126,54 @@ mod tests {
         ));
     }
 
+    /// Isolated storage-head characterization, not end-to-end model latency.
+    #[tokio::test]
+    #[ignore = "run manually to characterize long-lived exact-ID journal growth"]
+    async fn late_output_retention_storage_profile() {
+        use std::time::Instant;
+
+        let store = MemoryStore::new().unwrap();
+        let session = DurableSession::open_with_terminal_receipt_limit(store, "late-profile", 0)
+            .await
+            .unwrap();
+        let (owner, _) = session.acquire_agent().await.unwrap();
+        let payload = "x".repeat(8_192);
+        let mut previous = Instant::now();
+        for index in 0..250 {
+            let id = format!("late-output:profile-{index}");
+            assert!(matches!(
+                owner
+                    .admit_typed::<_, u32, String>(id.clone(), &index)
+                    .await,
+                Ok(Admission::Accepted)
+            ));
+            owner.begin_attempt(id.clone()).await.unwrap();
+            owner
+                .complete(
+                    id,
+                    EncodedPayload::encode(&serde_json::json!({
+                        "model": "gpt-6-sol", "lineage_id": "profile", "workspace": "/test",
+                        "history": payload,
+                    }))
+                    .unwrap(),
+                    &"receipt".to_owned(),
+                )
+                .await
+                .unwrap();
+            if [9, 99, 249].contains(&index) {
+                let state = session.state().await.unwrap();
+                let head_bytes = state.checkpoint_payload().unwrap().len();
+                println!(
+                    "late_journal_count={} retained_head_bytes={} last_segment_ms={}",
+                    index + 1,
+                    head_bytes,
+                    previous.elapsed().as_millis()
+                );
+                previous = Instant::now();
+            }
+        }
+    }
+
     #[tokio::test]
     async fn zero_retention_is_atomic_with_terminal_state() {
         let store = MemoryStore::new().unwrap();
