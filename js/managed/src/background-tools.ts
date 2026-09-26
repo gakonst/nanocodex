@@ -5,7 +5,7 @@ const MAX_OUTPUT = 16_384;
 const MAX_ACTIVE = 8;
 
 export type BackgroundToolDelivery = Readonly<{
-  /** Stable deduplication key. The callback MUST atomically deduplicate this ID with its message append. */
+  /** Stable key; the callback must use an identified steer or idempotent turn admission. */
   jobId: string;
   sessionId: string;
   sourceTurnId?: string;
@@ -34,7 +34,7 @@ export class BackgroundReadToolRunner {
   constructor(options: {
     storage: DurableObjectStorage;
     waitUntil(promise: Promise<void>): void;
-    /** Callback must append a NEW lower-trust message, never a tool result into an old turn. */
+    /** Callback must admit a distinct completion, never a second result for the old call. */
     deliver(message: BackgroundToolDelivery): Promise<void>;
     /** Rechecked on start and recovery; current session/grant must still be authorized. */
     authorize(context: ToolContext): boolean;
@@ -190,7 +190,7 @@ export class BackgroundReadToolRunner {
     }
     const completed = this.#storage.sql.exec<Job>("SELECT * FROM managed_background_read_jobs WHERE id = ?", id).one();
     if (completed.state !== "complete") return;
-    // At-least-once delivery: dedupe inside the callback, atomically with its durable message append.
+    // At-least-once delivery: callback uses an identified steer or idempotent turn key.
     await this.#deliver({
       jobId: id, sessionId: completed.session_id, sourceTurnId: completed.turn_id ?? undefined,
       toolName: "web__run", trust: "untrusted_tool_result", content: completed.output ?? "null",

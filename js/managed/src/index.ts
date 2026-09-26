@@ -7100,6 +7100,9 @@ export class DurableAgentSession extends DurableComputerObject {
     const session = this.#session();
     const row = result.sourceTurnId && this.#managedTurn(result.sourceTurnId);
     if (!session || this.#agent?.sessionId !== result.sessionId || !row
+      || !this.#configuration().async_tools
+      || (this.#configuration().environment?.network.access !== undefined
+        && this.#configuration().environment?.network.access !== "enabled")
       || this.#deleting || this.#deleted || this.#durabilityExported
       || this.#durabilityImportState === "pending") throw new Error("background delivery is fenced");
     // This is source data, not a second output for the resolved tool call and
@@ -9242,9 +9245,14 @@ export class DurableAgentSession extends DurableComputerObject {
       // Bind the currently attributed managed turn *before* the background
       // receipt is stored, so alarm recovery can find its authority later.
       const attachManagedTurn = (tool: NamedTool): NamedTool => ({ ...tool,
-        handler: (input, context) => tool.handler(input, {
-          ...context, turnId: this.#eventTurnId ?? this.#eventTurnQueue[0],
-        }),
+        handler: (input, context) => {
+          const turnId = this.#eventTurnId ?? this.#eventTurnQueue[0];
+          if (tool.name === "start_background_web_search" && (!turnId
+            || this.#managedTurn(turnId)?.state !== "accepted")) {
+            throw new Error("background search requires an active managed turn");
+          }
+          return tool.handler(input, { ...context, turnId });
+        },
       });
       cloudTools.push(attachManagedTurn(this.#backgroundReadRunner.tool()),
         attachManagedTurn(this.#backgroundReadRunner.statusTool()));
