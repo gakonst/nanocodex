@@ -462,6 +462,60 @@ conversational tools. Simple collections use tags.
 `crm_get` includes bounded pages of identities, facts and relationships, with
 separate continuation cursors; `crm_search` matches these details too.
 
+`crm_events` (`list`, `get`, `save`, `delete`) stores conferences and other event
+containers with title, start/end, location and provenance. `get` returns a bounded
+participation roster; pass its `next_cursor` as `roster_cursor` to continue.
+`crm_event_participation` (`list`, `save`, `delete`) links an event to a `record_id`:
+a person, or a company with `role="organizer"`. Role is separate from attendance
+status (`unknown`, `invited`, `expected`, `attended`, `declined`). An invitation,
+public attendee list, or organizer role does not establish that someone attended.
+List existing participation before saving; edit its ID to update the assertion.
+
+`crm_interactions` (`list`, `get`, `save`, `delete`) stores one shared observation
+with `participants: [{record_id, role}]`, flexible `type`, optional `summary`,
+`body`, and `occurred_at`. A single `person_id` is a convenience for one participant.
+For example, a synthetic proposal can have `type="proposal"`, proposer and
+recipient roles, and `occurred_at="2026-09-20"`; the same interaction appears in
+both people's timelines. `YYYY-MM-DD` preserves date-only precision; RFC3339
+preserves a supplied time. Date-only entries sort at UTC midnight and expose
+`precision="date"`. Do not invent a time when the user supplied only a date.
+
+Interactions optionally link an owned `event_id`, an imported `meeting_id`, or
+an imported email's paired `connection_id`/`message_id`. Meeting/email links must
+relate to a participant. Event membership is not required to record an independent
+observation. Participant/link identity and origin are immutable on edits.
+Deleting an event or imported source detaches its link and preserves the
+independent interaction; deleting one participant preserves shared history for
+remaining participants. Interactions with no remaining participants remain in
+account-wide history. Shared interaction provenance also covers participant roles.
+
+Events, participation and interactions keep `origin` (`user`, `source`,
+`inferred`), `sources`, `confidence`, and `rationale`. Source assertions need
+references; inferences also need confidence and rationale. User statements stay
+separate from research. An interaction does not fill a meeting's missing notes
+or implicitly assert attendance.
+
+`crm_timeline({person_id?, event_id?, limit, cursor, from, to})` reads a bounded
+newest-first history. Omit person_id for account-wide history; event_id restricts
+event participation and associated interactions; it does not transitively include
+linked native Calendar or email records. A shared interaction appears
+once in the global timeline. `crm_get` includes its first page as `timeline`, with
+`timeline_next_cursor`; continue with `timeline_limit`/`timeline_cursor` or use
+the dedicated tool. Notes retain their independent cursor. Timeline cursors are
+scoped to the account, person, event and time filters; `from` is inclusive and `to`
+exclusive. Equal timestamps use stable kind/ID ordering. The timeline queries
+native Calendar meetings, meeting notes and surviving contact/email notes alongside
+event participation and shared interactions, without duplicating source records.
+Legacy contact notes have no recorded origin, so the timeline does not classify
+them as user observations.
+Repeated attendee aliases yield one Calendar entry. Calendar entries retain the
+matched person’s response status and the account’s declined flag; acceptance
+does not assert attendance. Conflicting alias responses remain unresolved. Newly imported emails retain
+the provider's receipt timestamp; older imports use their import timestamp with
+an explicit `timestamp_basis`. Deleting an imported note does not resurrect it
+from its import receipt. Timeline reads do not fetch a mailbox or expand Calendar
+collection beyond its existing opt-in scope.
+
 For example, after "automatically collect my meetings", the agent enables the
 schedule, imports events and researches attendees. "Which meetings need notes?"
 uses `crm_meetings({operation:"list",needs_notes:true})`. "For Jamie's meeting,
