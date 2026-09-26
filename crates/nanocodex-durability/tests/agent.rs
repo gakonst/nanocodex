@@ -5078,7 +5078,7 @@ async fn idle_cohort_fault_matrix_never_wakes_only_a_committed_prefix() -> Resul
     // commit and cold reopen even when ordinary turn receipts are pruned.
     for retention in [0, 16] {
         for after_commit in [false, true] {
-            for revision in 1..=5 {
+            for revision in 0..=5 {
                 let store = CrashAtReplace {
                     inner: MemoryStore::new()?,
                     revision,
