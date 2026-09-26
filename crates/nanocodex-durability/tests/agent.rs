@@ -5213,3 +5213,204 @@ async fn idle_cohort_fault_matrix_never_wakes_only_a_committed_prefix() -> Resul
     std::fs::remove_dir_all(workspace)?;
     Ok(())
 }
+
+#[tokio::test]
+async fn compacted_open_cohort_recovers_both_original_ids_after_ambiguous_write() -> Result<()> {
+    use nanocodex_agent::LateFunctionOutput;
+    use nanocodex_oai_api::responses::FunctionOutputBody;
+    let workspace = temporary_workspace("unreal-compacted-open-cohort")?;
+    let seed_openai = OpenAi::builder("test-key")
+        .service(|| DurableReplayService {
+            generations: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        })
+        .build()?;
+    let (seed, seed_events) = Nanocodex::builder(seed_openai)
+        .workspace(&workspace)
+        .tools(Tools::builder().without_defaults().build()?)
+        .build()?;
+    seed.prompt("seed").await?.result().await?;
+    let mut seed_snapshot = serde_json::to_value(seed.snapshot().await?)?;
+    seed.shutdown().await?;
+    drop(seed_events);
+    seed_snapshot["unreal_function_outputs"] = json!(true);
+    for call in ["compacted-a", "compacted-b"] {
+        seed_snapshot["history"].as_array_mut().unwrap().extend([
+            json!({"type":"function_call", "call_id":call, "name":"job", "arguments":"{}"}),
+            json!({"type":"function_call_output", "call_id":call, "output":
+                "Tool call is still running. Its result arrives in a later turn: continue with independent work, or end your turn to wait for it."}),
+        ]);
+    }
+    let outputs = || {
+        vec![
+            LateFunctionOutput {
+                call_id: "compacted-a".into(),
+                operation_id: "compacted-op-a".into(),
+                output: FunctionOutputBody::Text("completed result".into()),
+            },
+            LateFunctionOutput {
+                call_id: "compacted-b".into(),
+                operation_id: "compacted-op-b".into(),
+                output: FunctionOutputBody::Text(
+                    "outcome uncertain; do not retry side effect".into(),
+                ),
+            },
+        ]
+    };
+    for after_commit in [false, true] {
+        let id = format!("compacted-open-cohort-{after_commit}");
+        let store = MemoryStore::new()?;
+        let state = DurableSession::open(store.clone(), &id).await?;
+        let (tx, mut requests) = tokio::sync::mpsc::unbounded_channel();
+        let service = {
+            let tx = tx.clone();
+            move || BoundaryProbeService {
+                requests: tx.clone(),
+                generations: Arc::new(std::sync::atomic::AtomicUsize::new(1)),
+                release_first: Arc::new(tokio::sync::Notify::new()),
+            }
+        };
+        let tools = Tools::builder().without_defaults().build()?;
+        let (before, before_events) = Nanocodex::builder(
+            OpenAi::builder("test-key")
+                .service(service.clone())
+                .build()?,
+        )
+        .resume(serde_json::from_value(seed_snapshot.clone())?)
+        .workspace(&workspace)
+        .tools(tools.clone())
+        .durability(state.clone())
+        .await?
+        .build()?;
+        before.compact().await?;
+        let compacted = serde_json::to_value(before.snapshot().await?)?;
+        assert!(
+            compacted["history"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|item| item["type"] == "compaction")
+        );
+        for call in ["compacted-a", "compacted-b"] {
+            assert_eq!(
+                compacted["history"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .filter(|item| item["type"] == "function_call" && item["call_id"] == call)
+                    .count(),
+                1
+            );
+            assert_eq!(
+                compacted["history"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .filter(|item| item["type"] == "function_call_output"
+                        && item["call_id"] == call
+                        && item["output"]
+                            .as_str()
+                            .unwrap()
+                            .starts_with("Tool call is still running."))
+                    .count(),
+                1
+            );
+        }
+        assert!(requests.try_recv().is_err());
+        let saved = state
+            .agent_snapshot()
+            .await?
+            .ok_or_else(|| eyre!("compacted open-call checkpoint was not persisted"))?;
+        assert_eq!(serde_json::to_value(saved)?, compacted);
+        before.shutdown().await?;
+        drop((before, before_events));
+        let base = state.state().await?.revision();
+        let crashing = CrashAtReplace {
+            inner: store.clone(),
+            revision: base + 4,
+            after_commit,
+            fired: Arc::new(AtomicBool::new(false)),
+        };
+        let fault_state = DurableSession::open(crashing.clone(), &id).await?;
+        let (first, first_events) = Nanocodex::builder(
+            OpenAi::builder("test-key")
+                .service(service.clone())
+                .build()?,
+        )
+        .workspace(&workspace)
+        .tools(tools.clone())
+        .durability(fault_state)
+        .await?
+        .build()?;
+        let failure = first.submit_late_function_outputs(outputs()).await;
+        assert!(
+            failure.is_err(),
+            "second member's ambiguous write must be reported"
+        );
+        assert!(crashing.fired.load(Ordering::SeqCst));
+        assert!(
+            requests.try_recv().is_err(),
+            "a partial cohort reached provider"
+        );
+        let _ = first.shutdown().await;
+        drop((first, first_events));
+        let reopened = DurableSession::open(store.clone(), &id).await?;
+        let (restarted, events) =
+            Nanocodex::builder(OpenAi::builder("test-key").service(service).build()?)
+                .workspace(&workspace)
+                .tools(tools)
+                .durability(reopened.clone())
+                .await?
+                .build()?;
+        let wake = tokio::time::timeout(Duration::from_secs(5), requests.recv())
+            .await?
+            .ok_or_else(|| eyre!("compacted cohort did not wake"))?;
+        for (call, terminal) in [
+            ("compacted-a", "completed result"),
+            ("compacted-b", "outcome uncertain; do not retry side effect"),
+        ] {
+            assert_eq!(
+                wake.iter()
+                    .filter(|item| item["type"] == "function_call" && item["call_id"] == call)
+                    .count(),
+                1
+            );
+            assert_eq!(
+                wake.iter()
+                    .filter(|item| item["type"] == "function_call_output"
+                        && item["call_id"] == call
+                        && item["output"]
+                            .as_str()
+                            .unwrap()
+                            .starts_with("Tool call is still running."))
+                    .count(),
+                1
+            );
+            assert_eq!(
+                wake.iter()
+                    .filter(|item| item["type"] == "function_call_output"
+                        && item["call_id"] == call
+                        && item["output"] == terminal
+                        && item.get("status").is_none())
+                    .count(),
+                1
+            );
+        }
+        assert!(
+            requests.try_recv().is_err(),
+            "one cohort must yield exactly one wake"
+        );
+        let replay = restarted.submit_late_function_outputs(outputs()).await?;
+        assert_eq!(replay.len(), 2);
+        assert!(replay.iter().all(|receipt| receipt.replayed));
+        assert!(
+            requests.try_recv().is_err(),
+            "historical replay cannot wake again"
+        );
+        let final_snapshot = serde_json::to_value(restarted.snapshot().await?)?;
+        assert!(final_snapshot["pending_late_batch"].is_null());
+        restarted.shutdown().await?;
+        drop(events);
+    }
+    std::fs::remove_dir_all(workspace)?;
+    Ok(())
+}

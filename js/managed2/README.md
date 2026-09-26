@@ -233,3 +233,11 @@ API stays 501 pending authorized live API/subscription HTTP/WS compatibility,
 full correctness/performance review and green exact-head CI. A gated
 three-route canary lives in `scripts/provider-canary`; its structural fixture
 tests do not establish upstream acceptance.
+
+A separate opt-in **synthetic-only** latency probe is available with
+`pnpm run test:async-perf-fixture` (optionally
+`MANAGED2_TEST_TRANSPORT=websocket`). It alternates three synchronous and
+three asynchronous runs of a 2500-ms fixture search through both Workers and
+records original-turn completion, host job `completed`/`checkpointed`/`delivered`
+observations, and end-to-end terminal uptake. Do not interpret its fixture
+model/tool timings as live provider performance or as a release gate.

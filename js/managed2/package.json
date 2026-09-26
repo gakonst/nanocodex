@@ -8,6 +8,7 @@
     "test": "pnpm prepare:just-bash && vitest run --config vitest.config.ts test/flow.test.ts test/bash-flow.test.ts test/async-jobs.test.ts",
     "test:websocket": "pnpm prepare:just-bash && MANAGED2_TEST_TRANSPORT=websocket vitest run --config vitest.config.ts test/relay-websocket.test.ts",
     "test:async-e2e": "pnpm prepare:just-bash && MANAGED2_TEST_ASYNC_TOOLS=true vitest run --config vitest.config.ts test/async-e2e.test.ts test/async-active.test.ts test/async-cohort.test.ts test/async-mixed.test.ts test/async-cancel.test.ts test/async-recovery.test.ts",
+    "test:async-perf-fixture": "pnpm prepare:just-bash && MANAGED2_TEST_ASYNC_TOOLS=true vitest run --config vitest.config.ts test/async-performance.test.ts",
     "test:async-e2e:websocket": "pnpm prepare:just-bash && MANAGED2_TEST_TRANSPORT=websocket MANAGED2_TEST_ASYNC_TOOLS=true vitest run --config vitest.config.ts test/async-e2e.test.ts test/async-active.test.ts test/async-cohort.test.ts test/async-mixed.test.ts test/async-cancel.test.ts",
     "build": "pnpm prepare:just-bash && wrangler deploy --dry-run --outdir dist --config wrangler.jsonc",
     "prepare:just-bash": "node scripts/prepare-just-bash-lazy.mjs"
