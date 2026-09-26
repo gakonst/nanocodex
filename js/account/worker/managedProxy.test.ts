@@ -116,7 +116,7 @@ test("direct broker failure and stale generation never replay through the manage
 
 test("inference credentials cannot reach account, connector, agent or hand proxy paths", async () => {
   for (const path of ["/v1/me", "/v1/agents", "/v1/api-keys", "/v1/connectors/github", "/v1/credentials",
-    "/v1/account/hands", "/v1/account/hands/screens", "/v1/account/tool-host", "/v1/history", "/v1/memories/list", "/v1/memories/write", "/v1/memories/status", "/v1/markdown-memory/get", "/v1/egress", "/v1/wallet"]) {
+    "/v1/account/hands", "/v1/account/hands/screens", "/v1/account/hosted-tool-stats", "/v1/account/tool-host", "/v1/history", "/v1/memories/list", "/v1/memories/write", "/v1/memories/status", "/v1/markdown-memory/get", "/v1/egress", "/v1/wallet"]) {
     const request = new Request("https://nanocodex.example" + path, {
       headers: { authorization: "Bearer nci_live_synthetic", cookie: "synthetic=account", upgrade: "websocket", "x-nanocodex-managed-access": "synthetic" },
     });
@@ -127,6 +127,26 @@ test("inference credentials cannot reach account, connector, agent or hand proxy
     assert.equal(response?.status, 403, path);
     assert.deepEqual(await response.json(), { error: "inference_key_scope" });
   }
+});
+
+test("hosted tool stats are forwarded unchanged to managed owner authorization", async () => {
+  const request = new Request("https://nanocodex.example/v1/account/hosted-tool-stats", {
+    headers: { authorization: "Bearer fixture-key", cookie: "nanocodex_account=fixture" },
+  });
+  let calls = 0;
+  const response = await routeManaged(request, { NANOCODEX_BACKEND: {
+    fetch(forwarded) {
+      calls++;
+      const forwardedRequest = new Request(forwarded);
+      assert.equal(forwardedRequest.url, request.url);
+      assert.equal(forwardedRequest.headers.get("authorization"), "Bearer fixture-key");
+      assert.equal(forwardedRequest.headers.get("cookie"), "nanocodex_account=fixture");
+      return Promise.resolve(Response.json({ total_calls: 3 }));
+    },
+    connect() { throw new Error("unused"); },
+  } }, new URL(request.url));
+  assert.equal(calls, 1);
+  assert.deepEqual(await response?.json(), { total_calls: 3 });
 });
 
 test("malformed inference authorization cannot fall back to a cached owner cookie", async () => {
