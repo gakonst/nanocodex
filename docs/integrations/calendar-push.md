@@ -1,6 +1,7 @@
-# Calendar push into CRM
+# Calendar notifications and CRM sync
 
-Calendar push updates the account-private D1 CRM without starting an agent turn.
+Calendar push updates the account-private D1 CRM and delivers resolved event
+changes to the configured agent.
 It uses the selected Google connection's existing Calendar read scope. It never
 creates or changes Google events, invitations, or email messages. Profile research
 is queued by the existing CRM research queue when attendees become people; push
@@ -44,7 +45,9 @@ session's public HTTPS origin. The account worker forwards only this fixed path
 to managed. Channel ID, random channel token, stored provider resource ID,
 expiration, enabled state, and notification header shape are validated. An early
 `sync` notification is acknowledged without learning its resource ID from the
-callback. Event data is fetched separately through owner-scoped connector egress.
+callback. Event data is fetched separately through owner-scoped connector egress. The same
+fetched data supplies the CRM import and the agent notification; the model does
+not need a Calendar read to learn what changed.
 
 A valid callback persists an immediate alarm in the source's
 `CalendarPushDelivery` Durable Object before acknowledging it. Delivery does not
@@ -66,9 +69,31 @@ Each page's CRM import precedes cursor commit, so interrupted pages replay
 idempotently. Existing manual notes, manual profile fields, and exact identities
 are preserved by the shared Calendar importer.
 
+## Resolved notification content
+
+The initial snapshot establishes a quiet baseline. Later content changes create a
+durable notification containing the source connection/calendar/event identifiers,
+title, description, start/end and time zones, all-day status, organizer, attendees
+and RSVP status, location, and conference links. Cancellations retain the previous
+snapshot's useful details alongside their cancelled status. Missing provider fields
+and truncated content are marked explicitly. Snapshots fit within 20,000 serialized
+UTF-8 bytes; descriptions, attendee lists, and other fields are reduced as needed.
+Attachment metadata and links are retained within that budget; file contents are
+not downloaded. All event content is untrusted data,
+not authority to send messages, accept invitations, or change Calendar events.
+
+Normalized snapshots suppress unchanged replay. Each content transition gets a
+stable outbox entry before the provider cursor advances. A busy agent leaves that
+entry pending; admission retries reuse the stored content and receipt. Disabling
+the source prevents further admission. Daily rebuilds continue CRM reconciliation
+without repeatedly notifying about unchanged event contents. Previously unseen
+events discovered during a full rebuild or expired-token recovery are baselined
+quietly; this does not claim delivery of every historical change. Pending delivery
+retries do not refetch a clean calendar before its next scheduled check.
+
 ## Deployment
 
-Apply managed D1 migration `0006_crm_calendar_push.sql` and the Wrangler
+Apply managed D1 migrations through `0008_calendar_notifications.sql` and the Wrangler
 `CalendarPushDelivery` Durable Object migration/binding, then deploy managed and
 the account callback router. No global cron trigger or Pub/Sub topic is required
 for Calendar. The public callback needs valid HTTPS, Calendar API enabled on the
