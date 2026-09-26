@@ -213,7 +213,9 @@ export class ManagedPortabilityArchive {
         const stateId = this.#storage.sql.exec<{ state_id: string }>(
           "SELECT state_id FROM managed_durability_record_import WHERE singleton = 1",
         ).one().state_id;
-        await createCloudflareDurabilityStore(this.#storage).importRecords(stateId, records);
+        // Stage under this verified manifest. A partial adoption may never
+        // become visible as a completed late-output receipt to a live Agent.
+        await createCloudflareDurabilityStore(this.#storage).stageImportRecords(stateId, expected.digest, records);
         assertOwnership();
       }
       const destinationKey = `${prefix(this.#storageId, kind)}${item.suffix}`;
@@ -269,6 +271,7 @@ export class ManagedPortabilityArchive {
   }
 
   clearLocalState(): void {
+    this.#storage.sql.exec("DELETE FROM nanocodex_durable_staged_records");
     this.#storage.sql.exec(`
       DELETE FROM managed_durability_record_import;
       DELETE FROM managed_durability_record_export;

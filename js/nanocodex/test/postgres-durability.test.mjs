@@ -65,6 +65,23 @@ test("PostgreSQL fences owners before comparing complete-state revisions", async
   }), /payload must be a string/);
 });
 
+test("PostgreSQL rejects conflicting immutable receipt keys without advancing the head", async () => {
+  const pool = new MockPool();
+  const store = createPostgresDurabilityStore(pool);
+  const owner = await store.acquire("receipts", { ownerId: "owner" });
+  assert.deepEqual(await store.replace("receipts", { records: [{ key: "late-receipt:test", value: "original" }],
+    ...owner, expectedRevision: "0", payload: "one",
+  }), { status: "replaced", revision: "1" });
+  assert.deepEqual(await store.replace("receipts", { records: [{ key: "late-receipt:test", value: "contradictory" }],
+    ...owner, expectedRevision: "1", payload: "two",
+  }), { status: "not_committed", message: "immutable record conflict" });
+  assert.deepEqual(await store.load("receipts"), { revision: "1", payload: "one" });
+  assert.equal(await store.readRecord("receipts", "late-receipt:test"), "original");
+  assert.deepEqual(await store.replace("receipts", { records: [{ key: "late-receipt:test", value: "original" }],
+    ...owner, expectedRevision: "1", payload: "two",
+  }), { status: "replaced", revision: "2" });
+});
+
 test("PostgreSQL distinguishes rolled-back writes and reconciles lost COMMIT responses", async () => {
   const pool = new MockPool();
   const store = createPostgresDurabilityStore(pool);
@@ -198,6 +215,7 @@ class MockPool {
     this.connects = 0;
     this.owners = new Map();
     this.states = new Map();
+    this.records = new Map();
     this.failNextCommit = false;
     this.failNextUpsert = false;
     this.clientQueries = [];
@@ -266,6 +284,16 @@ class MockClient {
     if (sql.startsWith("SELECT revision::text FROM nanocodex_durable_states")) {
       const state = this.pool.states.get(values[0]);
       return { rows: state ? [{ revision: state.revision }] : [] };
+    }
+    if (sql.startsWith("INSERT INTO nanocodex_durable_records")) {
+      const key = JSON.stringify([values[0], values[1]]);
+      if (this.pool.records.has(key)) return { rows: [], rowCount: 0 };
+      this.pool.records.set(key, values[2]);
+      return { rows: [], rowCount: 1 };
+    }
+    if (sql.startsWith("SELECT value FROM nanocodex_durable_records")) {
+      const value = this.pool.records.get(JSON.stringify([values[0], values[1]]));
+      return { rows: value === undefined ? [] : [{ value }] };
     }
     if (sql.startsWith("INSERT INTO nanocodex_durable_states")) {
       if (this.pool.failNextUpsert) {

@@ -12,6 +12,10 @@ export const sqliteDurabilitySchema = Object.freeze([
      state_id TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL,
      PRIMARY KEY (state_id, key)
    ) WITHOUT ROWID`,
+  `CREATE TABLE IF NOT EXISTS nanocodex_durable_staged_records (
+     state_id TEXT NOT NULL, import_id TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL,
+     PRIMARY KEY (state_id, import_id, key)
+   ) WITHOUT ROWID`,
   `CREATE TABLE IF NOT EXISTS nanocodex_durable_owners (
      state_id TEXT PRIMARY KEY,
      owner_id TEXT NOT NULL,
@@ -128,6 +132,11 @@ export async function importDurabilityStatePages(store, pages) {
   let first;
   let cursor = encodeExportCursor(0);
   let payload = "";
+  // Never expose records from an uncommitted import to live exact-ID lookups.
+  // They become visible only in the same importState transaction as the head.
+  // A future streaming importer must use an isolated staging namespace and
+  // promote it atomically; importRecords publishes to the live record table.
+  const stagedRecords = [];
   let complete = false;
   for await (const page of pages) {
     exactObject(
@@ -168,7 +177,7 @@ export async function importDurabilityStatePages(store, pages) {
         after = record.key;
       }
       if (page.nextCursor !== null && (records.length === 0 || page.nextCursor !== recordExportCursor(after))) throw new TypeError("invalid durability record cursor");
-      await store.importRecords(first.stateId, records);
+      stagedRecords.push(...records);
       complete = page.nextCursor === null;
     } else {
       if (records.length !== 0 || decodeExportCursor(page.cursor) !== payload.length) throw new TypeError("durability export pages are missing, duplicated, or out of order");
@@ -193,6 +202,7 @@ export async function importDurabilityStatePages(store, pages) {
   const imported = await store.importState(first.stateId, state, {
     expectedRevision: first.from,
     expectedPayload: current.payload,
+    records: checkedRecords(stagedRecords),
   });
   return copyState(imported);
 }
@@ -408,6 +418,22 @@ export function createSqliteDurabilityStore(options) {
         "SELECT key, value FROM nanocodex_durable_records WHERE state_id = ? AND key > ? ORDER BY key LIMIT ?", [stateId, after, limit],
       ));
     },
+    stageImportRecords(stateId, importId, incoming) {
+      requireId(stateId, "state");
+      requireId(importId, "import");
+      const records = checkedRecords(incoming);
+      return options.transaction((query) => {
+        let pending;
+        for (const record of records) pending = mapMaybePromise(pending, () => mapMaybePromise(
+          query("SELECT value FROM nanocodex_durable_staged_records WHERE state_id = ? AND import_id = ? AND key = ?", [stateId, importId, record.key]),
+          (rows) => {
+            if (rows.length && rows[0].value !== record.value) throw new Error("immutable staged record conflict");
+            return query("INSERT INTO nanocodex_durable_staged_records (state_id, import_id, key, value) VALUES (?, ?, ?, ?) ON CONFLICT (state_id, import_id, key) DO NOTHING", [stateId, importId, record.key, record.value]);
+          },
+        ));
+        return pending;
+      });
+    },
     importRecords(stateId, incoming) {
       const records = checkedRecords(incoming);
       return options.transaction((query) => {
@@ -528,10 +554,7 @@ export function createSqliteDurabilityStore(options) {
             const revision = durabilityRevision(BigInt(expectedRevision) + 1n);
             let pending;
             for (const record of request.records) {
-              pending = mapMaybePromise(pending, () => query(
-                `INSERT INTO nanocodex_durable_records (state_id, key, value) VALUES (?, ?, ?)
-                 ON CONFLICT (state_id, key) DO NOTHING`, [stateId, record.key, record.value],
-              ));
+              pending = mapMaybePromise(pending, () => insertImmutableSqliteRecord(query, stateId, record));
             }
             return mapMaybePromise(pending, () => mapMaybePromise(
               query(
@@ -553,6 +576,8 @@ export function createSqliteDurabilityStore(options) {
         ? undefined
         : durabilityRevision(importOptions.expectedRevision);
       const expectedPayload = expectedImportPayload(importOptions, expectedRevision);
+      const stagedImportId = importOptions?.stagedImportId === undefined
+        ? undefined : requireId(importOptions.stagedImportId, "import");
       return options.transaction((query) => mapMaybePromise(
         query(
           "SELECT owner_id, fence FROM nanocodex_durable_owners WHERE state_id = ?",
@@ -583,9 +608,20 @@ export function createSqliteDurabilityStore(options) {
               if (previousFence === MAX_REVISION_TEXT) throw new RangeError("SQLite durability fence overflow");
               const fence = durabilityFence(BigInt(previousFence) + 1n);
               let staged;
-              for (const record of checkedRecords(importOptions?.records ?? [])) staged = mapMaybePromise(staged, () => query(
-                "INSERT INTO nanocodex_durable_records (state_id, key, value) VALUES (?, ?, ?) ON CONFLICT (state_id, key) DO NOTHING",
-                [stateId, record.key, record.value],
+              for (const record of checkedRecords(importOptions?.records ?? [])) staged = mapMaybePromise(
+                staged, () => insertImmutableSqliteRecord(query, stateId, record),
+              );
+              if (stagedImportId !== undefined) staged = mapMaybePromise(staged, () => mapMaybePromise(
+                query("SELECT key, value FROM nanocodex_durable_staged_records WHERE state_id = ? AND import_id = ? ORDER BY key", [stateId, stagedImportId]),
+                (rows) => {
+                  let promoted;
+                  for (const record of checkedRecords(rows)) promoted = mapMaybePromise(
+                    promoted, () => insertImmutableSqliteRecord(query, stateId, record),
+                  );
+                  return mapMaybePromise(promoted, () => query(
+                    "DELETE FROM nanocodex_durable_staged_records WHERE state_id = ? AND import_id = ?", [stateId, stagedImportId],
+                  ));
+                },
               ));
               return mapMaybePromise(staged, () => mapMaybePromise(
                 query(
@@ -749,4 +785,15 @@ function exactObject(value, expected, label) {
   if (actual.length !== required.length || actual.some((key, index) => key !== required[index])) {
     throw new TypeError(`${label} row has an invalid shape`);
   }
+}
+
+function insertImmutableSqliteRecord(query, stateId, record) {
+  return mapMaybePromise(
+    query("SELECT value FROM nanocodex_durable_records WHERE state_id = ? AND key = ?", [stateId, record.key]),
+    (rows) => {
+      if (rows.length && rows[0].value !== record.value) throw new Error("immutable record conflict");
+      return query("INSERT INTO nanocodex_durable_records (state_id, key, value) VALUES (?, ?, ?) ON CONFLICT (state_id, key) DO NOTHING",
+        [stateId, record.key, record.value]);
+    },
+  );
 }

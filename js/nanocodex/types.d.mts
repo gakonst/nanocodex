@@ -178,11 +178,18 @@ export type DurabilityPortableStore = DurabilityStore & Readonly<{
     state: DurabilityStoredState,
     options?: Readonly<{
       records?: readonly DurabilityRecord[];
+      /** Atomically promote an isolated, verified import manifest's staged records. */
+      stagedImportId?: string;
       expectedRevision?: DurabilityRevision | undefined;
       /** When supplied, compare the complete expected state atomically before importing. */
       expectedPayload?: string | null | undefined;
     }> | undefined,
   ): DurabilityStoredState | Promise<DurabilityStoredState>;
+}>;
+
+/** SQLite-backed portable store with invisible, manifest-scoped import staging. */
+export type DurabilityStagedImportStore = DurabilityPortableStore & Readonly<{
+  stageImportRecords(stateId: string, importId: string, records: readonly DurabilityRecord[]): void | Promise<void>;
 }>;
 
 /** In-process store for hosts that carry its snapshot across durable steps. */

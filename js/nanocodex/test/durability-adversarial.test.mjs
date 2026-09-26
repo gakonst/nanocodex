@@ -160,6 +160,64 @@ test("portable export fences the source and exact import refuses overwrite", asy
   );
 });
 
+test("portable full and paged exports preserve off-head exact-ID receipts", async () => {
+  const stateId = "late-portable";
+  const receiptKey = "late-receipt:" + "d".repeat(64);
+  const receiptValue = JSON.stringify({
+    format: 1,
+    archived_revision: 1,
+    operation_id: "late-output:original-call-id",
+    input: { inline: "input" },
+    status: { Completed: { checkpoint: { inline: "checkpoint" }, output: { inline: "output" } } },
+  });
+  const records = [
+    ...Array.from({ length: 18 }, (_, n) => ({ key: `payload:${String(n).padStart(2, "0")}`, value: `body:${n}` })),
+    { key: receiptKey, value: receiptValue },
+  ];
+  const source = createMemoryDurabilityStore(stateId);
+  const owner = source.acquire(stateId, { ownerId: "source" });
+  assert.deepEqual(source.replace(stateId, {
+    ...owner, expectedRevision: "0", payload: "compacted-head-without-late-id", records,
+  }), { status: "replaced", revision: "1" });
+  const archive = await exportDurabilityState(source, stateId);
+  assert.deepEqual(archive.records, records.sort((a, b) => a.key.localeCompare(b.key)));
+  assert.equal(archive.payload.includes("original-call-id"), false);
+  const restored = createMemoryDurabilityStore(stateId);
+  await importDurabilityState(restored, JSON.parse(JSON.stringify(archive)));
+  assert.equal(restored.readRecord(stateId, receiptKey), receiptValue);
+  assert.deepEqual(restored.scanRecords(stateId, "", 16), source.scanRecords(stateId, "", 16));
+
+  const pages = [];
+  let cursor;
+  do {
+    const page = await exportDurabilityStatePage(source, stateId, { from: "0", to: "1", cursor, limit: 9 });
+    pages.push(page);
+    cursor = page.nextCursor;
+  } while (cursor !== null);
+  assert.ok(pages.length >= 4);
+  const paged = createMemoryDurabilityStore(stateId);
+  await importDurabilityStatePages(paged, JSON.parse(JSON.stringify(pages)));
+  assert.deepEqual(paged.load(stateId), restored.load(stateId));
+  assert.equal(paged.readRecord(stateId, receiptKey), receiptValue);
+  assert.deepEqual(paged.scanRecords(stateId, "payload:15", 16), restored.scanRecords(stateId, "payload:15", 16));
+
+  // An interruption after the first record page cannot leave an orphaned
+  // exact-ID receipt that becomes visible after an unrelated future commit.
+  assert.ok(pages.slice(0, -1).some((page) => page.records.length > 0));
+  const interrupted = createMemoryDurabilityStore(stateId);
+  await assert.rejects(importDurabilityStatePages(interrupted, pages.slice(0, -1)), /incomplete/);
+  assert.equal(interrupted.readRecord(stateId, receiptKey), null);
+  const next = interrupted.acquire(stateId, { ownerId: "new-live-owner" });
+  assert.deepEqual(interrupted.replace(stateId, {
+    ...next, expectedRevision: "0", payload: "unrelated-live-head", records: [],
+  }), { status: "replaced", revision: "1" });
+  assert.equal(interrupted.readRecord(stateId, receiptKey), null);
+
+  const divergent = createMemoryDurabilityStore(stateId, { revision: "1", payload: "different-lineage" });
+  await assert.rejects(importDurabilityStatePages(divergent, pages), DurabilityImportConflictError);
+  assert.equal(divergent.readRecord(stateId, receiptKey), null);
+});
+
 test("cursor export resumes only from the exact from-state lineage", async () => {
   const payload = "first-page:🧪:middle:second-page:tail";
   const fromPayload = "older-total-state";

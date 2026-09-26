@@ -133,6 +133,49 @@ test("the memory durability store replaces one complete opaque state", () => {
   assert.equal(exhausted.snapshot().revision, "18446744073709551615");
 });
 
+test("the SQLite durability store rejects conflicting immutable receipt keys", () => {
+  const owners = new Map();
+  const states = new Map();
+  const records = new Map();
+  const query = (sql, args) => {
+    const [stateId] = args;
+    if (sql.startsWith("SELECT owner_id, fence FROM nanocodex_durable_owners")) {
+      const owner = owners.get(stateId); return owner === undefined ? [] : [owner];
+    }
+    if (sql.startsWith("INSERT INTO nanocodex_durable_owners")) {
+      owners.set(stateId, { owner_id: args[1], fence: args[2] }); return [];
+    }
+    if (sql.startsWith("SELECT revision FROM nanocodex_durable_states")) {
+      const state = states.get(stateId); return state === undefined ? [] : [{ revision: state.revision }];
+    }
+    if (sql.startsWith("SELECT revision, payload FROM nanocodex_durable_states")) {
+      const state = states.get(stateId); return state === undefined ? [] : [state];
+    }
+    if (sql.startsWith("SELECT value FROM nanocodex_durable_records")) {
+      const value = records.get(JSON.stringify(args)); return value === undefined ? [] : [{ value }];
+    }
+    if (sql.startsWith("INSERT INTO nanocodex_durable_records")) {
+      const address = JSON.stringify(args.slice(0, 2));
+      if (!records.has(address)) records.set(address, args[2]);
+      return [];
+    }
+    if (sql.startsWith("INSERT INTO nanocodex_durable_states")) {
+      states.set(stateId, { revision: args[1], payload: args[2] }); return [];
+    }
+    throw new Error(`unexpected SQL: ${sql}`);
+  };
+  const store = createSqliteDurabilityStore({ transaction: (callback) => callback(query) });
+  const owner = store.acquire("receipt", { ownerId: "owner" });
+  assert.deepEqual(store.replace("receipt", { records: [{ key: "late-receipt:test", value: "old" }],
+    ...owner, expectedRevision: "0", payload: "first",
+  }), { status: "replaced", revision: "1" });
+  assert.throws(() => store.replace("receipt", { records: [{ key: "late-receipt:test", value: "different" }],
+    ...owner, expectedRevision: "1", payload: "bad",
+  }), /immutable record conflict/);
+  assert.deepEqual(store.load("receipt"), { revision: "1", payload: "first" });
+  assert.equal(store.readRecord("receipt", "late-receipt:test"), "old");
+});
+
 test("the SQLite durability store owns revision validation and compare-and-replace", () => {
   const owners = new Map();
   const states = new Map();

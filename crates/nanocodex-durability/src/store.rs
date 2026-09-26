@@ -99,7 +99,7 @@ pub type StoreFuture<'a, T> = Pin<Box<dyn Future<Output = T> + 'a>>;
 /// One immutable record published with an execution-state update.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct StoreRecord {
-    /// Content-derived record identity, scoped to the state.
+    /// Immutable content- or caller-identity-derived record key, scoped to the state.
     pub key: String,
     /// Exact record contents.
     pub value: String,

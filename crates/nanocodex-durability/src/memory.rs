@@ -101,6 +101,21 @@ impl MemoryStore {
                             } else {
                                 match state.revision.checked_add(1) {
                                     Some(revision) => {
+                                        let mut incoming = HashMap::new();
+                                        let conflict = new_records.iter().any(|record| {
+                                            incoming
+                                                .insert(&record.key, &record.value)
+                                                .is_some_and(|value| value != &record.value)
+                                                || records
+                                                    .get(&(state_id.clone(), record.key.clone()))
+                                                    .is_some_and(|stored| stored != &record.value)
+                                        });
+                                        if conflict {
+                                            drop(result.send(Err(StoreError::Backend(
+                                                "immutable durability record conflict".into(),
+                                            ))));
+                                            continue;
+                                        }
                                         for record in new_records {
                                             records
                                                 .entry((state_id.clone(), record.key))
@@ -232,6 +247,90 @@ mod tests {
                 .replace("state", &first_owned.owner, u64::MAX, "stale", &[])
                 .await,
             Err(StoreError::Fenced)
+        );
+    }
+
+    #[tokio::test]
+    async fn immutable_record_conflict_never_advances_the_head() {
+        let mut store = MemoryStore::new().unwrap();
+        let owned = store
+            .acquire("record-conflict", OwnerId::new())
+            .await
+            .unwrap();
+        let record = crate::StoreRecord {
+            key: "late-receipt:test".into(),
+            value: "old".into(),
+        };
+        store
+            .replace(
+                "record-conflict",
+                &owned.owner,
+                0,
+                "first",
+                &[record.clone()],
+            )
+            .await
+            .unwrap();
+        let conflict = crate::StoreRecord {
+            value: "new".into(),
+            ..record.clone()
+        };
+        assert!(
+            matches!(store.replace("record-conflict", &owned.owner, 1, "bad", &[conflict]).await,
+            Err(StoreError::Backend(message)) if message.contains("immutable"))
+        );
+        assert_eq!(
+            store
+                .acquire("record-conflict", OwnerId::new())
+                .await
+                .unwrap()
+                .state
+                .revision,
+            1
+        );
+        assert_eq!(
+            store
+                .read_record("record-conflict", &record.key)
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("old")
+        );
+        // Conflicting keys *within* one unpublished revision must not silently
+        // choose the first value and then advance the head.
+        let current = store
+            .acquire("record-conflict", OwnerId::new())
+            .await
+            .unwrap();
+        let duplicates = [
+            crate::StoreRecord {
+                key: "duplicate".into(),
+                value: "one".into(),
+            },
+            crate::StoreRecord {
+                key: "duplicate".into(),
+                value: "two".into(),
+            },
+        ];
+        assert!(matches!(
+            store.replace("record-conflict", &current.owner, 1, "bad duplicate", &duplicates).await,
+            Err(StoreError::Backend(message)) if message.contains("immutable")
+        ));
+        assert_eq!(
+            store
+                .read_record("record-conflict", "duplicate")
+                .await
+                .unwrap(),
+            None
+        );
+        assert_eq!(
+            store
+                .acquire("record-conflict", OwnerId::new())
+                .await
+                .unwrap()
+                .state
+                .revision,
+            1
         );
     }
 

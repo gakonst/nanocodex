@@ -77,6 +77,7 @@ export function exportDurabilityState(
 export function importDurabilityState(
   owner: DurableObjectOwner,
   archive: DurabilityPortableStateArchive,
+  options?: Readonly<{ stagedImportId?: string }>,
 ): Promise<DurabilityStoredState>;
 
 /** Prunes old terminal receipts before constructing the full Agent runtime. */

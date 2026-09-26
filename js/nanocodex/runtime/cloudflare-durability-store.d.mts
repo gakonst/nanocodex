@@ -1,7 +1,7 @@
 import type {
   DurabilitySqliteRow,
   DurabilitySqliteValue,
-  DurabilityPortableStore,
+  DurabilityStagedImportStore,
 } from "../types.mjs";
 
 export type CloudflareDurableObjectStorage = Readonly<{
@@ -23,4 +23,4 @@ export type CloudflareDurableObjectStorage = Readonly<{
  */
 export declare function createCloudflareDurabilityStore(
   storage: CloudflareDurableObjectStorage,
-): DurabilityPortableStore;
+): DurabilityStagedImportStore;

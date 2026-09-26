@@ -3,7 +3,7 @@ use std::{collections::BTreeMap, sync::Arc};
 use crate::{Error, Result};
 use serde::{Serialize, de::DeserializeOwned};
 
-const STATE_FORMAT: u8 = 4;
+const STATE_FORMAT: u8 = 5;
 const RECORD_BYTES: usize = 256_000;
 
 /// An immutable payload reference. Content is loaded only for its consumer.
@@ -542,12 +542,70 @@ impl OperationState {
     }
 }
 
+/// Immutable per-ID terminal journal stored outside the revisioned state head.
+/// Its deterministic key is scoped by StateStore's state_id and the exact ID;
+/// the payload record references remain content-addressed.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct RetiredLateReceipt {
+    pub(crate) format: u8,
+    pub(crate) archived_revision: u64,
+    pub(crate) operation_id: String,
+    pub(crate) input: EncodedPayload,
+    pub(crate) status: OperationStatus,
+}
+
+pub(crate) fn late_receipt_key(operation_id: &str) -> Option<String> {
+    operation_id
+        .starts_with("late-output:")
+        .then(|| format!("late-receipt:{}", record_key(operation_id)))
+}
+
+impl RetiredLateReceipt {
+    pub(crate) fn from_record(operation_id: &str, revision: u64, record: &str) -> Result<Self> {
+        let receipt: Self = serde_json::from_str(record).map_err(Error::InvalidPayload)?;
+        if receipt.format != 1
+            || receipt.archived_revision == 0
+            || receipt.archived_revision > revision
+            || receipt.operation_id != operation_id
+            || !receipt.status.is_terminal()
+        {
+            return Err(Error::InvalidState(
+                "late receipt identity or status mismatch".into(),
+            ));
+        }
+        Ok(receipt)
+    }
+
+    fn stage(&mut self, records: &mut Vec<crate::StoreRecord>) -> Result<()> {
+        self.input.stage(records);
+        match &mut self.status {
+            OperationStatus::Completed { checkpoint, output } => {
+                checkpoint.stage(records);
+                output.stage(records);
+            }
+            OperationStatus::Failed { checkpoint, .. } => checkpoint.stage(records),
+            OperationStatus::Cancelled {
+                checkpoint: Some(checkpoint),
+            } => checkpoint.stage(records),
+            OperationStatus::Cancelled { checkpoint: None } | OperationStatus::Pending => {}
+        }
+        records.push(crate::StoreRecord {
+            key: late_receipt_key(&self.operation_id).expect("late journal ID"),
+            value: serde_json::to_string(self).map_err(Error::InvalidPayload)?,
+        });
+        Ok(())
+    }
+}
+
 /// Complete state reduced from an complete retained state.
 #[derive(Clone, Debug, Default)]
 pub struct DurableState {
     revision: u64,
     operations: BTreeMap<String, OperationState>,
     latest_checkpoint: Option<(u64, EncodedPayload)>,
+    // Pending one-transaction publications, never part of the durable head.
+    late_receipts_to_stage: Vec<RetiredLateReceipt>,
 }
 
 #[derive(serde::Deserialize, serde::Serialize)]
@@ -577,7 +635,7 @@ struct RetainedCheckpointRef<'a> {
 }
 
 impl DurableState {
-    pub(crate) fn stage_records(&mut self) -> Vec<crate::StoreRecord> {
+    pub(crate) fn stage_records(&mut self) -> Result<Vec<crate::StoreRecord>> {
         let mut records = Vec::new();
         for operation in self.operations.values_mut() {
             operation.input.stage(&mut records);
@@ -611,9 +669,21 @@ impl DurableState {
         if let Some((_, value)) = &mut self.latest_checkpoint {
             value.stage(&mut records);
         }
+        for receipt in &mut self.late_receipts_to_stage {
+            receipt.stage(&mut records)?;
+        }
+        self.late_receipts_to_stage.clear();
         records.sort_unstable_by(|a, b| a.key.cmp(&b.key));
+        if records
+            .windows(2)
+            .any(|pair| pair[0].key == pair[1].key && pair[0].value != pair[1].value)
+        {
+            return Err(Error::InvalidState(
+                "same immutable durability record key has conflicting values".into(),
+            ));
+        }
         records.dedup_by(|a, b| a.key == b.key);
-        records
+        Ok(records)
     }
 
     /// Current optimistic store revision.
@@ -683,7 +753,7 @@ impl DurableState {
 
     pub(crate) fn retain_terminal_receipts(&mut self, limit: usize) -> bool {
         let before = self.operations.len();
-        Self::retain_terminal_operations(&mut self.operations, limit);
+        self.retain_terminal_operations(limit);
         let mut changed = self.operations.len() != before;
         for operation in self
             .operations
@@ -704,8 +774,9 @@ impl DurableState {
         changed
     }
 
-    fn retain_terminal_operations(operations: &mut BTreeMap<String, OperationState>, limit: usize) {
-        let mut terminal_orders = operations
+    fn retain_terminal_operations(&mut self, limit: usize) {
+        let mut terminal_orders = self
+            .operations
             .iter()
             .filter(|(id, operation)| {
                 !id.starts_with("late-output:") && operation.status.is_terminal()
@@ -717,17 +788,20 @@ impl DurableState {
         let retained = terminal_orders
             .into_iter()
             .collect::<std::collections::BTreeSet<_>>();
-        operations.retain(|operation_id, operation| {
-            // A late-output ID is the original caller's identity, not a
-            // generated turn ID. Its terminal receipt is both the exact-input
-            // deduplication ledger and the recovery checkpoint for a fenced
-            // cohort. Pruning it would permit the same ID (even with a
-            // different body) to execute again after transcript compaction,
-            // or strand a cohort between two member commits. Retain these
-            // receipts independently of the ordinary bounded turn policy.
-            operation_id.starts_with("late-output:")
-                || !operation.status.is_terminal()
-                || retained.contains(&operation.accepted_order)
+        self.operations.retain(|operation_id, operation| {
+            if operation_id.starts_with("late-output:") && operation.status.is_terminal() {
+                // Publish the complete exact-ID receipt outside the bounded
+                // head in the *same* replace that removes this operation.
+                self.late_receipts_to_stage.push(RetiredLateReceipt {
+                    format: 1,
+                    archived_revision: self.revision,
+                    operation_id: operation_id.clone(),
+                    input: operation.input.clone(),
+                    status: operation.status.clone(),
+                });
+                return false;
+            }
+            !operation.status.is_terminal() || retained.contains(&operation.accepted_order)
         });
     }
 
@@ -737,7 +811,9 @@ impl DurableState {
                 "a compacted state checkpoint must have a positive revision".to_owned(),
             ));
         }
-        if checkpoint.format != STATE_FORMAT {
+        // V4 is an existing receipt-bearing head; its terminal late operations
+        // are migrated into per-ID records by the next compacting replacement.
+        if checkpoint.format != 4 && checkpoint.format != STATE_FORMAT {
             return Err(Error::InvalidState(format!(
                 "unsupported state format {}",
                 checkpoint.format
@@ -903,6 +979,7 @@ impl DurableState {
             revision,
             operations: checkpoint.operations,
             latest_checkpoint,
+            late_receipts_to_stage: Vec::new(),
         };
         for (operation_id, operation) in &state.operations {
             if matches!(

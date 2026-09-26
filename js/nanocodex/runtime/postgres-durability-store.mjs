@@ -73,7 +73,7 @@ export function createPostgresDurabilityStore(pool) {
       try {
         await client.query("BEGIN");
         for (const record of records) {
-          await client.query("INSERT INTO nanocodex_durable_records (state_id, key, value) VALUES ($1, $2, $3) ON CONFLICT (state_id, key) DO NOTHING", [stateId, record.key, record.value]);
+          await insertImmutableRecord(client, stateId, record);
         }
         committing = true;
         await client.query("COMMIT");
@@ -344,8 +344,7 @@ async function replaceStateOnce(pool, stateId, request) {
     const payload = requestPayload(request.payload);
     const revision = durabilityRevision(BigInt(state.revision) + 1n);
     for (const record of request.records) {
-      await client.query(`INSERT INTO nanocodex_durable_records (state_id, key, value) VALUES ($1, $2, $3)
-        ON CONFLICT (state_id, key) DO NOTHING`, [stateId, record.key, record.value]);
+      await insertImmutableRecord(client, stateId, record);
     }
     await client.query(
       `INSERT INTO nanocodex_durable_states (state_id, revision, payload)
@@ -448,9 +447,7 @@ async function restoreStateOnce(
       [stateId, PORTABLE_IMPORT_OWNER],
     );
     if (claimed.rows.length !== 1) throw new RangeError("PostgreSQL durability fence overflow");
-    for (const record of records) await client.query(
-      "INSERT INTO nanocodex_durable_records (state_id, key, value) VALUES ($1, $2, $3) ON CONFLICT (state_id, key) DO NOTHING", [stateId, record.key, record.value],
-    );
+    for (const record of records) await insertImmutableRecord(client, stateId, record);
     if (state.revision !== "0") {
       await client.query(
         `INSERT INTO nanocodex_durable_states (state_id, revision, payload)
@@ -578,4 +575,20 @@ function requireOwner(value) {
 
 function message(error) {
   return error instanceof Error ? error.message : String(error);
+}
+
+async function insertImmutableRecord(client, stateId, record) {
+  const inserted = await client.query(
+    "INSERT INTO nanocodex_durable_records (state_id, key, value) VALUES ($1, $2, $3) ON CONFLICT (state_id, key) DO NOTHING",
+    [stateId, record.key, record.value],
+  );
+  if (inserted.rowCount === 0) {
+    const retained = await client.query(
+      "SELECT value FROM nanocodex_durable_records WHERE state_id = $1 AND key = $2 FOR UPDATE",
+      [stateId, record.key],
+    );
+    if (retained.rows.length !== 1 || retained.rows[0].value !== record.value) {
+      throw new Error("immutable record conflict");
+    }
+  }
 }

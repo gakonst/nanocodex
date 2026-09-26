@@ -12,7 +12,8 @@ use tokio::sync::{mpsc, oneshot};
 use crate::{
     BoundaryOutputState, DurableState, EncodedPayload, Error, OperationStatus, OwnerId, OwnerToken,
     Result, StateStore, SteerState, StepStatus, StoreError, StoredState, Transition,
-    shared_store::SharedStore, state::RetainedCheckpoint,
+    shared_store::SharedStore,
+    state::{RetainedCheckpoint, RetiredLateReceipt, late_receipt_key},
 };
 
 const COMMAND_CAPACITY: usize = 64;
@@ -512,7 +513,8 @@ impl Driver {
                     operation_id,
                     result,
                 } => {
-                    let outcome = self.authorize(&caller).and_then(|()| {
+                    let outcome = async {
+                        self.authorize(&caller)?;
                         let operation = self.state.operation(&operation_id);
                         if operation.is_some_and(|operation| !operation.status.is_terminal())
                             && let Some((pending_id, _)) = self.state.first_pending_operation()
@@ -523,8 +525,15 @@ impl Driver {
                                 pending_id: pending_id.to_owned(),
                             });
                         }
-                        Ok(operation.map(|operation| operation.status.clone()))
-                    });
+                        if let Some(operation) = operation {
+                            return Ok(Some(operation.status.clone()));
+                        }
+                        Ok(self
+                            .retired_late_receipt(&operation_id, None)
+                            .await?
+                            .map(|receipt| receipt.status))
+                    }
+                    .await;
                     drop(result.send(outcome));
                 }
                 Command::InspectOperation {
@@ -533,15 +542,20 @@ impl Driver {
                     input,
                     result,
                 } => {
-                    let outcome = self.authorize(&caller).and_then(|()| {
-                        let Some(operation) = self.state.operation(&operation_id) else {
-                            return Ok(None);
-                        };
-                        if operation.input != input {
-                            return Err(Error::OperationConflict { operation_id });
+                    let outcome = async {
+                        self.authorize(&caller)?;
+                        if let Some(operation) = self.state.operation(&operation_id) {
+                            if operation.input != input {
+                                return Err(Error::OperationConflict { operation_id });
+                            }
+                            return Ok(Some(operation.status.clone()));
                         }
-                        Ok(Some(operation.status.clone()))
-                    });
+                        Ok(self
+                            .retired_late_receipt(&operation_id, Some(&input))
+                            .await?
+                            .map(|receipt| receipt.status))
+                    }
+                    .await;
                     let outcome = match outcome {
                         Ok(None) => Ok(None),
                         Ok(Some(OperationStatus::Pending)) => Ok(Some(StoredAdmission::Pending)),
@@ -1138,6 +1152,12 @@ impl Driver {
                 OperationStatus::Cancelled { .. } => Ok(StoredAdmission::Cancelled),
             };
         }
+        if let Some(receipt) = self
+            .retired_late_receipt(&operation_id, Some(&input))
+            .await?
+        {
+            return self.admission_from_status(receipt.status).await;
+        }
         self.apply(Transition::OperationAccepted {
             operation_id: operation_id.clone(),
             input,
@@ -1145,6 +1165,43 @@ impl Driver {
         .await?;
         self.claimed.insert(operation_id, caller.clone());
         Ok(StoredAdmission::Accepted)
+    }
+
+    async fn retired_late_receipt(
+        &mut self,
+        operation_id: &str,
+        input: Option<&EncodedPayload>,
+    ) -> Result<Option<RetiredLateReceipt>> {
+        let Some(key) = late_receipt_key(operation_id) else {
+            return Ok(None);
+        };
+        let Some(value) = self.store.read_record(&self.state_id, &key).await? else {
+            return Ok(None);
+        };
+        let receipt = RetiredLateReceipt::from_record(operation_id, self.state.revision(), &value)?;
+        if input.is_some_and(|input| receipt.input != *input) {
+            return Err(Error::OperationConflict {
+                operation_id: operation_id.to_owned(),
+            });
+        }
+        Ok(Some(receipt))
+    }
+
+    async fn admission_from_status(&mut self, status: OperationStatus) -> Result<StoredAdmission> {
+        match status {
+            OperationStatus::Pending => Err(Error::InvalidState(
+                "retired late operation is pending".into(),
+            )),
+            OperationStatus::Completed { checkpoint, output } => Ok(StoredAdmission::Completed {
+                checkpoint: checkpoint.load(&mut *self.store, &self.state_id).await?,
+                output: output.load(&mut *self.store, &self.state_id).await?,
+            }),
+            OperationStatus::Failed { checkpoint, error } => Ok(StoredAdmission::Failed {
+                checkpoint: checkpoint.load(&mut *self.store, &self.state_id).await?,
+                error,
+            }),
+            OperationStatus::Cancelled { .. } => Ok(StoredAdmission::Cancelled),
+        }
     }
 
     async fn admit_automatic(
@@ -1737,7 +1794,7 @@ impl Driver {
                 next.revision()
             )));
         }
-        let records = next.stage_records();
+        let records = next.stage_records()?;
         let payload = next.checkpoint_payload()?;
         let revision = match self
             .store
@@ -1868,10 +1925,10 @@ impl DurableSession {
 
     /// Loads a durable session whose compacted checkpoint retains at most the
     /// newest `limit` ordinary terminal replay receipts. Terminal
-    /// `late-output:` journals are exempt: they bind caller-owned IDs and
-    /// exact inputs across compaction and may be needed to recover a fenced
-    /// multi-output cohort. They currently grow with the number of distinct
-    /// late outputs; callers must not treat this as a total state-size bound.
+    /// `late-output:` journals are archived atomically to immutable per-ID
+    /// records, preserving exact replay across compaction and fenced cohorts
+    /// without growing the execution head. Total immutable storage still grows
+    /// with the number of distinct late outputs.
     ///
     /// The embedding application must preserve older ordinary exact-ID results
     /// before selecting this policy. Unresolved operations and the latest
@@ -4095,7 +4152,10 @@ mod tests {
         owner.shutdown().await.unwrap();
         session.prune_receipts().await.unwrap();
         let retained = session.state().await.unwrap();
-        assert!(retained.operation(&id).is_some());
+        assert!(
+            retained.operation(&id).is_none(),
+            "the exact receipt lives in an immutable per-ID record"
+        );
         assert!(retained.operation("ordinary").is_none());
         drop((owner, session));
 
@@ -4123,6 +4183,168 @@ mod tests {
         assert!(matches!(
             owner.admit_typed::<_, u32, String>(id.clone(), &conflicting).await,
             Err(Error::OperationConflict { operation_id }) if operation_id == id
+        ));
+        // The operation ID alone is not permission to substitute another
+        // provider call. Changing only the original call ID is also a conflict.
+        let wrong_call = serde_json::json!({"kind": "late_function_output", "call_id": "call-b", "output": "body-a"});
+        assert!(matches!(
+            owner.inspect_typed::<_, u32, String>(id.clone(), &wrong_call).await,
+            Err(Error::OperationConflict { operation_id }) if operation_id == id
+        ));
+        assert!(matches!(
+            owner.admit_typed::<_, u32, String>(id.clone(), &wrong_call).await,
+            Err(Error::OperationConflict { operation_id }) if operation_id == id
+        ));
+    }
+
+    #[tokio::test]
+    async fn archived_failed_and_cancelled_late_ids_never_reexecute() {
+        let store = MemoryStore::new().unwrap();
+        let session =
+            DurableSession::open_with_terminal_receipt_limit(store.clone(), "late-errors", 0)
+                .await
+                .unwrap();
+        let failure = "late-output:failed";
+        assert!(matches!(
+            session.admit(failure, &"input").await,
+            Ok(Admission::Accepted)
+        ));
+        session.begin_attempt(failure).await.unwrap();
+        session
+            .fail(failure, &"safe checkpoint", "effect outcome uncertain")
+            .await
+            .unwrap();
+        let cancelled = "late-output:cancelled";
+        assert!(matches!(
+            session.admit(cancelled, &"input").await,
+            Ok(Admission::Accepted)
+        ));
+        session.cancel(cancelled).await.unwrap();
+        assert!(session.state().await.unwrap().operations().is_empty());
+        drop(session);
+        let reopened = DurableSession::open_with_terminal_receipt_limit(store, "late-errors", 0)
+            .await
+            .unwrap();
+        assert!(matches!(reopened.admit(failure, &"input").await,
+            Ok(Admission::Failed { error, .. }) if error == "effect outcome uncertain"));
+        let (owner, _) = reopened.acquire_agent().await.unwrap();
+        assert!(matches!(
+            owner
+                .inspect_typed::<_, String, String>(cancelled.into(), &"input")
+                .await,
+            Ok(Some(Admission::Cancelled))
+        ));
+        assert!(matches!(
+            owner
+                .admit_typed::<_, String, String>(cancelled.into(), &"input")
+                .await,
+            Ok(Admission::Cancelled)
+        ));
+        assert!(matches!(
+            owner
+                .admit_typed::<_, String, String>(cancelled.into(), &"other")
+                .await,
+            Err(Error::OperationConflict { .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn uncommitted_imported_late_receipt_is_not_a_new_operation() {
+        use crate::{
+            StoreRecord,
+            state::{RetiredLateReceipt, late_receipt_key},
+        };
+        let mut store = MemoryStore::new().unwrap();
+        let owned = store
+            .acquire("orphan-receipt", OwnerId::new())
+            .await
+            .unwrap();
+        let id = "late-output:orphan";
+        let input = "same-id-and-body";
+        let record = RetiredLateReceipt {
+            format: 1,
+            archived_revision: 2,
+            operation_id: id.into(),
+            input: EncodedPayload::encode(&input).unwrap(),
+            status: OperationStatus::Cancelled { checkpoint: None },
+        };
+        store
+            .replace(
+                "orphan-receipt",
+                &owned.owner,
+                0,
+                &DurableState::default().checkpoint_payload().unwrap(),
+                &[StoreRecord {
+                    key: late_receipt_key(id).unwrap(),
+                    value: serde_json::to_string(&record).unwrap(),
+                }],
+            )
+            .await
+            .unwrap();
+        let session = DurableSession::open_with_terminal_receipt_limit(store, "orphan-receipt", 0)
+            .await
+            .unwrap();
+        let (owner, _) = session.acquire_agent().await.unwrap();
+        assert!(matches!(
+            owner.admit_typed::<_, u32, String>(id.into(), &input).await,
+            Err(Error::InvalidState(_))
+        ));
+        assert_eq!(session.state().await.unwrap().revision(), 1);
+    }
+
+    #[tokio::test]
+    async fn version_four_terminal_late_journal_migrates_atomically() {
+        let store = MemoryStore::new().unwrap();
+        let session = DurableSession::open(store.clone(), "late-v4-migrate")
+            .await
+            .unwrap();
+        let id = "late-output:old".to_owned();
+        assert!(matches!(
+            session.admit(id.clone(), &"body").await,
+            Ok(Admission::Accepted)
+        ));
+        session.begin_attempt(id.clone()).await.unwrap();
+        session
+            .complete(id.clone(), &"old checkpoint", &"old output")
+            .await
+            .unwrap();
+        drop(session);
+        let mut raw = store.clone();
+        let owned = raw
+            .acquire("late-v4-migrate", OwnerId::new())
+            .await
+            .unwrap();
+        let mut legacy: serde_json::Value =
+            serde_json::from_str(owned.state.payload.as_ref().unwrap()).unwrap();
+        legacy["nanocodex_durable_state"]["format"] = serde_json::json!(4);
+        raw.replace(
+            "late-v4-migrate",
+            &owned.owner,
+            owned.state.revision,
+            &legacy.to_string(),
+            &[],
+        )
+        .await
+        .unwrap();
+        drop(raw);
+        let migrated =
+            DurableSession::open_with_terminal_receipt_limit(store.clone(), "late-v4-migrate", 0)
+                .await
+                .unwrap();
+        migrated.prune_receipts().await.unwrap();
+        assert!(migrated.state().await.unwrap().operation(&id).is_none());
+        drop(migrated);
+        let reopened =
+            DurableSession::open_with_terminal_receipt_limit(store, "late-v4-migrate", 0)
+                .await
+                .unwrap();
+        let replay = reopened.admit(id.clone(), &"body").await.unwrap();
+        assert!(
+            matches!(replay, Admission::Completed { output, .. } if output.decode::<String>().unwrap() == "old output")
+        );
+        assert!(matches!(
+            reopened.admit(id, &"different").await,
+            Err(Error::OperationConflict { .. })
         ));
     }
 
