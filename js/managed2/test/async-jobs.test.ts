@@ -17,11 +17,11 @@ it("keys background jobs by stable turn+call, caps active jobs, and never admits
     const jobs = new AsyncJobs(state.storage, { web__run: read }, () => "original-turn",
       async () => {}, () => {});
     const handler = jobs.tool(read).handler;
-    expect(handler({ q: "stable" }, context("call-1"))).toBe(UNREAL_RUNNING_OUTPUT);
+    expect(handler({ q: "stable" }, context("call-1"))).toEqual({ output: UNREAL_RUNNING_OUTPUT });
     const first = { job_id: jobId(state, "call-1") };
-    expect(handler({ q: "stable" }, context("call-1"))).toBe(UNREAL_RUNNING_OUTPUT);
+    expect(handler({ q: "stable" }, context("call-1"))).toEqual({ output: UNREAL_RUNNING_OUTPUT });
     expect(() => handler({ q: "changed" }, context("call-1"))).toThrow("async invocation conflict");
-    for (let n = 2; n <= 8; n++) expect(handler({ q: `q${n}` }, context(`call-${n}`))).toBe(UNREAL_RUNNING_OUTPUT);
+    for (let n = 2; n <= 8; n++) expect(handler({ q: `q${n}` }, context(`call-${n}`))).toEqual({ output: UNREAL_RUNNING_OUTPUT });
     expect(() => handler({ q: "over capacity" }, context("call-9"))).toThrow("capacity reached");
     expect(() => jobs.tool({ name: "exec_command", description: "mutable", handler: () => "" }))
       .toThrow("not allowlisted");
@@ -30,7 +30,7 @@ it("keys background jobs by stable turn+call, caps active jobs, and never admits
       async () => {}, () => {});
     expect(restored.status(first.job_id)).toMatchObject({ job_id: first.job_id, tool: "web__run" });
     expect(restored.tool(read).handler({ q: "stable" }, context("call-1")))
-      .toBe(UNREAL_RUNNING_OUTPUT);
+      .toEqual({ output: UNREAL_RUNNING_OUTPUT });
     const timing = new ToolTiming(state.storage.sql);
     timing.observe("internal-a", "external-a", "tool.call", { call_id: "same", tool: "web__run" }, Date.now());
     timing.observe("internal-b", "external-b", "tool.call", { call_id: "same", tool: "web__run" }, Date.now());
@@ -52,7 +52,7 @@ it("persists same-call identity before egress and emits a stable terminal intent
     } };
     const jobs = new AsyncJobs(state.storage, { web__run: read }, () => "original-turn",
       async result => { injected.push(result); }, work => { tasks.push(work); });
-    expect(jobs.tool(read).handler({ q: "stable" }, context("call-1"))).toBe(UNREAL_RUNNING_OUTPUT);
+    expect(jobs.tool(read).handler({ q: "stable" }, context("call-1"))).toEqual({ output: UNREAL_RUNNING_OUTPUT });
     const first = { job_id: jobId(state, "call-1") };
     expect(first.job_id).toMatch(/^[0-9a-f-]{36}$/);
     expect(calls).toBe(0); // work must not execute inline before provisional output
@@ -81,7 +81,7 @@ it("retries the identical terminal intent after uncertain delivery", async () =>
         injected.push(result);
         if (++attempts === 1) throw new Error("uncertain core acknowledgement");
       }, work => { tasks.push(work); });
-    expect(jobs.tool(read).handler({}, context("call-time"))).toBe(UNREAL_RUNNING_OUTPUT);
+    expect(jobs.tool(read).handler({}, context("call-time"))).toEqual({ output: UNREAL_RUNNING_OUTPUT });
     const first = { job_id: jobId(state, "call-time") };
     await jobs.reconcile();
     await Promise.all(tasks);
@@ -101,7 +101,7 @@ it("holds a terminal intent without a typed ingestion adapter or a synthetic con
     const read: NamedTool = { name: "current_time", description: "test read", handler: () => ({ utc: "now" }) };
     const jobs = new AsyncJobs(state.storage, { current_time: read }, () => "original-turn",
       async () => { throw new TypedIngestionUnavailable(); }, work => { tasks.push(work); });
-    expect(jobs.tool(read).handler({}, context("call-time"))).toBe(UNREAL_RUNNING_OUTPUT);
+    expect(jobs.tool(read).handler({}, context("call-time"))).toEqual({ output: UNREAL_RUNNING_OUTPUT });
     const first = { job_id: jobId(state, "call-time") };
     await jobs.reconcile();
     await Promise.all(tasks);
@@ -140,7 +140,7 @@ it("quarantines old tagged-continuation rows instead of forging a typed result",
     const read: NamedTool = { name: "current_time", description: "test read", handler: () => ({ utc: "now" }) };
     const migrated = new AsyncJobs(state.storage, { current_time: read }, () => "new-turn",
       async () => { throw new TypedIngestionUnavailable(); }, () => {});
-    expect(migrated.tool(read).handler({}, context("new-call"))).toBe(UNREAL_RUNNING_OUTPUT);
+    expect(migrated.tool(read).handler({}, context("new-call"))).toEqual({ output: UNREAL_RUNNING_OUTPUT });
     const created = { job_id: jobId(state, "new-call") };
     expect(created.job_id).toMatch(/^[0-9a-f-]{36}$/);
     expect(state.storage.sql.exec<{ continuation_turn: string }>(
@@ -161,7 +161,7 @@ it("fences stale results from a crashed lease and delivers the winning retry onc
     const deliver = async (result: FinalToolResultIntent) => { sent.push(result); };
     const jobs = new AsyncJobs(state.storage, { current_time: read }, () => "original-turn", deliver,
       work => { tasks.push(work); });
-    expect(jobs.tool(read).handler({}, context("call-restarted"))).toBe(UNREAL_RUNNING_OUTPUT);
+    expect(jobs.tool(read).handler({}, context("call-restarted"))).toEqual({ output: UNREAL_RUNNING_OUTPUT });
     const id = jobId(state, "call-restarted");
     expect(attempts).toBe(0);
     await jobs.reconcile();

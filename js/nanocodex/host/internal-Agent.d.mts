@@ -7,3 +7,6 @@ export function functionCallOutputCapability(agent: object, callId: string): Rea
     operationId: string;
   }>): Promise<FunctionCallOutputReceipt>;
 }>;
+
+/** Host-only typed pending result; never made available to model code. */
+export function stageFunctionCallOutput(output: string): object;

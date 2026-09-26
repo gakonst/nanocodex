@@ -1,4 +1,5 @@
 import type { NamedTool, ToolContext } from "nanocodex";
+import { stageFunctionCallOutput } from "../../nanocodex/host/internal-Agent.mjs";
 
 /** Only explicitly registered read-only tools may outlive a model call. */
 // Unreal Agent's MIT-licensed context-builder pending output; source:
@@ -23,7 +24,7 @@ export type FinalToolResultIntent = Readonly<{ originalTurn: string; executionTu
 /** A trusted adapter must resolve the original Agent tool call, atomically
  * replace its unsent pending output OR append the terminal output under the
  * same call ID if pending was already sent, and durably dedupe jobId. There is
- * currently no such JS/WASM adapter. Never implement this with turn.prompt(). */
+ * Never implement this with turn.prompt(). */
 export type DeliverFinalToolResult = (intent: FinalToolResultIntent) => Promise<void>;
 export class TypedIngestionUnavailable extends Error {
   constructor() { super("typed same-call-ID result ingestion is not available"); }
@@ -107,7 +108,7 @@ export class AsyncJobs {
       // isolate loss; only explicitly read-only jobs may be retried.
       this.waitUntil(Promise.resolve().then(() => this.run(job!.id)));
       this.waitUntil(this.storage.setAlarm(Date.now() + 1_000));
-      return UNREAL_RUNNING_OUTPUT;
+      return stageFunctionCallOutput(UNREAL_RUNNING_OUTPUT);
     } };
   }
 

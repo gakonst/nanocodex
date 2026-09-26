@@ -234,7 +234,7 @@ impl ManagedSessionState {
         output: FunctionOutputBody,
         receipt_id: Option<crate::ResponseItemId>,
     ) -> Result<(), ManagedSessionStateError> {
-        if is_unreal_running_output(&output) {
+        if !self.unreal_function_outputs || is_unreal_running_output(&output) {
             return Err(ManagedSessionStateError::MalformedToolCalls);
         }
         let pending = self

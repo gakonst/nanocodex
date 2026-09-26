@@ -704,7 +704,10 @@ where
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .take();
             if let Some(completed) = completed {
-                aborted_outputs.extend(self.finish_completed_tool_call(completed, &call.progress)?);
+                let call_id = completed.call_id.clone();
+                let staged = completed.trusted_unreal_pending;
+                let items = self.finish_completed_tool_call(completed, &call.progress)?;
+                aborted_outputs.push((call_id, staged, items));
                 continue;
             }
             let active_nested_tool_calls = self.finish_active_tool_progress(&call.progress);
@@ -728,11 +731,13 @@ where
                 call.shell_abort_format,
                 Some(&call.span),
             )?;
-            aborted_outputs.push(match call.kind {
+            let call_id = call.call_id.clone();
+            let item = match call.kind {
                 CodeCallKind::Custom => custom_tool_output(call.call_id, output),
                 CodeCallKind::Function => function_tool_output(call.call_id, output),
                 CodeCallKind::ToolSearch => tool_search_output(call.call_id.clone(), Vec::new()),
-            });
+            };
+            aborted_outputs.push((call_id, false, vec![item]));
         }
         self.finish_active_tool_batch_wall();
         let session = self
@@ -741,7 +746,14 @@ where
             .ok_or(NanocodexError::InvalidAttemptState {
                 detail: "interrupted turn did not have a model session",
             })?;
-        session.conversation.append(aborted_outputs);
+        for (call_id, staged, items) in aborted_outputs {
+            super::tool_calls::append_tool_result(
+                &mut session.conversation,
+                &call_id,
+                staged,
+                items,
+            )?;
+        }
         session.conversation.append([turn_aborted()]);
         session.conversation.commit_interrupted();
         Ok(Self::checkpoint_from_session(
