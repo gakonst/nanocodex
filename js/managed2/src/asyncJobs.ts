@@ -1,6 +1,8 @@
 import type { NamedTool, ToolContext } from "nanocodex";
 
 /** Only explicitly registered read-only tools may outlive a model call. */
+// Unreal Agent's MIT-licensed context-builder pending output; source:
+// https://github.com/unreallabsai/unreal-agent/blob/1b9f778453f411c029b39b85102aaefb95e7e48d/harness/contextbuilder/builder.go
 export const UNREAL_RUNNING_OUTPUT = "Tool call is still running. Its result arrives in a later turn: continue with independent work, or end your turn to wait for it.";
 const MAX_INPUT = 64_000;
 const MAX_RESULT = 8_192;
