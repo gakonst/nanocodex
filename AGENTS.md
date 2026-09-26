@@ -51,3 +51,11 @@
 - Use synthetic identities and project data in fixtures and examples. Keep real
   account IDs, private project inventories, and one-off personal migration plans
   outside tracked source; pass operational data through private runtime inputs.
+
+- On a shared macOS Hand, invoke Xcode through `scripts/xcodebuild-guard.sh`
+  instead of raw `xcodebuild` for `apple/` and `macos/` work. The per-user OS
+  lock queues builds across agent sessions until the build actually exits; the
+  default `-jobs 3` leaves CPU for interactive use, and UI tests default to one
+  nonparallel Simulator destination. Explicit caller flags override those
+  defaults. Do not boot duplicate simulators for concurrent UI tests; shut down
+  only the simulators used by your run when finished.
