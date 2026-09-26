@@ -1,5 +1,9 @@
 use super::*;
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "driver-owned queues and durable checkpoint boundaries remain explicit"
+)]
 pub(super) async fn drive_late_wake<S>(
     commands: &mut mpsc::Receiver<Command>,
     execution: &Execution,
@@ -93,7 +97,7 @@ where
             command = commands.recv(), if commands_open => {
                 let mut reopen = false;
                 let command = match command {
-                    Some(command) => accept_execution_command(&execution, &spawner.config, defaults.thinking, command, &mut reopen).await,
+                    Some(command) => accept_execution_command(execution, &spawner.config, defaults.thinking, command, &mut reopen).await,
                     None => None,
                 };
                 if reopen {
@@ -110,7 +114,7 @@ where
                     Some(command @ Command::RoutePrompt { .. }) => {
                         let mut reopen = false;
                         if let Some(Command::Prompt { key, prompt, execution_operation, cancel_on_admission, parent, events, result, .. }) =
-                            accept_idle_route(&execution, &spawner.config, defaults.thinking, command, &mut reopen).await {
+                            accept_idle_route(execution, &spawner.config, defaults.thinking, command, &mut reopen).await {
                             queued.push_back(queued_prompt(key, prompt, execution_operation,
                                 cancel_on_admission, defaults.thinking, defaults.fast_mode, parent, events, result));
                         }
@@ -152,7 +156,7 @@ where
                         }
                     }
                     Some(command @ (Command::Snapshot { .. } | Command::ChildSnapshot { .. } | Command::Fork { .. } | Command::Spawn { .. } | Command::SpawnBatch { .. } | Command::Context { .. } | Command::Steer { .. } | Command::SteerWithId { .. } | Command::WithdrawSteer { .. } | Command::SetModel { .. })) => {
-                        handle_idle_command(command, checkpoint.as_ref(), &spawner, defaults, session_id, workspace.clone());
+                        handle_idle_command(command, checkpoint.as_ref(), spawner, defaults, session_id, workspace.clone());
                     }
                     Some(Command::SetThinking { result, .. } | Command::SetFastMode { result, .. }) => {
                         drop(result.send(Err(model_change_locked())));
