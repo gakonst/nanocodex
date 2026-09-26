@@ -14,6 +14,26 @@ final class ChatMarkdownTests: XCTestCase {
         XCTAssertEqual(String(empty.characters), "\n\t ")
     }
 
+    func testPendingMarkdownTailKeepsNewTextVisibleWhileParsingIsBehind() {
+        let paragraph = "An earlier paragraph.\n\nThe live sentence "
+        let textBlock = try! XCTUnwrap(ChatMarkdownBlock.parse(paragraph).last)
+        let pending = ChatMarkdownLiveTail.pending(source: paragraph, latest: paragraph + "continues 👩‍💻", last: textBlock)
+        XCTAssertEqual(pending?.inline, " continues 👩‍💻", "Parsing drops trailing whitespace; the live tail must restore it")
+        XCTAssertEqual(String(textBlock.text.characters) + (pending?.inline ?? ""), "The live sentence continues 👩‍💻")
+
+        let code = "```swift\nlet value ="
+        let codeBlock = try! XCTUnwrap(ChatMarkdownBlock.parse(code).last)
+        XCTAssertEqual(ChatMarkdownLiveTail.pending(source: code, latest: code + " 42", last: codeBlock)?.inline, " 42")
+        XCTAssertNil(ChatMarkdownLiveTail.pending(source: paragraph, latest: "A corrected response", last: textBlock),
+                     "A replacement must not reuse obsolete formatted content")
+
+        let closed = "```swift\nlet value = 42\n```"
+        let closedBlock = try! XCTUnwrap(ChatMarkdownBlock.parse(closed).last)
+        let continuation = ChatMarkdownLiveTail.pending(source: closed, latest: closed + "\n\nExplanation", last: closedBlock)
+        XCTAssertEqual(continuation?.following, "\n\nExplanation", "Prose after a closed fence must not become copied code")
+        XCTAssertEqual(continuation?.inline, "")
+    }
+
     func testUnclosedStreamingFenceRemainsCode() {
         let blocks = ChatMarkdownBlock.parse("Working\n\n```js\nconst value =")
         XCTAssertEqual(blocks.count, 2)

@@ -1713,7 +1713,6 @@ private final class ConversationReadingPositions {
         var atLatest: Bool
         var rowID: String? = nil
         var offsetY: CGFloat = 0
-        var childID: String? = nil
     }
     var values: [String: Position] = [:]
     var tools: [String: ConversationToolExpansion] = [:]
@@ -1956,9 +1955,11 @@ private struct ConversationContentView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.conversationNavigationActive) private var navigationActive
     @State private var followsLatest = true
-    @State private var isInteractingTranscript = false
-    @State private var isScrollGestureActive = false
-    @State private var scrollsTowardLatest = false
+    @State private var scrollPhase: ScrollPhase = .idle
+    private var isInteractingTranscript: Bool { scrollPhase == .interacting }
+    private var isScrollGestureActive: Bool {
+        scrollPhase == .tracking || scrollPhase == .interacting || scrollPhase == .decelerating
+    }
     @State private var hasInitialPosition = false
     @State private var pendingReadingRestore: ConversationReadingPositions.Position?
     @State private var rowGeometry = ConversationRowGeometry()
@@ -1967,10 +1968,6 @@ private struct ConversationContentView: View {
     #if DEBUG
     @State private var rowMeasurementCount: UInt64 = 0
     #endif
-    private var historyRestore: (id: String, offsetY: CGFloat, childID: String?)? {
-        get { rowGeometry.historyRestore }
-        nonmutating set { rowGeometry.historyRestore = newValue }
-    }
     @State private var historyContent = ConversationContentPosition()
     @State private var historyReady = false
     private enum HistoryDirection { case older, newer }
@@ -1981,8 +1978,6 @@ private struct ConversationContentView: View {
         let visible = rowGeometry.visibleFrames(height: viewport.size.height).filter { revision.itemsByID[rowGeometry.semanticID(for: $0.key)] != nil }
         let sourceRows = visible.keys.compactMap { rowGeometry.sourceRowIDs[$0] }
         model.protectHistoryRows(Set(visible.keys).union(sourceRows))
-        guard let first = visible.min(by: { $0.value.minY < $1.value.minY }) else { return }
-        historyRestore = (first.key, first.value.minY, nil)
     }
     private func loadHistory(_ direction: HistoryDirection, in viewport: GeometryProxy) {
         guard model.focusedConversationIdentity == identity, pendingReadingRestore == nil,
@@ -1996,21 +1991,7 @@ private struct ConversationContentView: View {
             if direction == .older { await model.loadOlder() }
             else { await model.loadNewer() }
             guard model.focusedConversationIdentity == identity else { return }
-            if model.historyMutationRevision == historyRequestRevision { historyRestore = nil }
             historyRequestInFlight = false
-        }
-    }
-    private func restoreHistoryPosition(using scroll: NativeConversationScrollProxy) {
-        guard !revision.preparing, !model.loadingOlder, !model.loadingNewer,
-              let target = historyRestore else { return }
-        var transaction = Transaction()
-        transaction.disablesAnimations = true
-        withTransaction(transaction) {
-            let position = ConversationReadingPositions.Position(atLatest: false, rowID: target.id, offsetY: target.offsetY, childID: target.childID)
-            readingPositions.values[identity] = position
-            pendingReadingRestore = position
-            scroll.scrollTo(target.id, anchor: .top)
-            historyRestore = nil
         }
     }
     private func updateHistoryPosition(in viewport: GeometryProxy) {
@@ -2057,11 +2038,9 @@ private struct ConversationContentView: View {
     private func followLatest(using scroll: NativeConversationScrollProxy) {
         guard followsLatest, pendingReadingRestore == nil,
               !model.needsLatestHistory, !isScrollGestureActive, !navigationActive else { return }
-        // Animate only the scroll offset, not the transcript's text or tool state.
-        // Initial positioning and accessibility Reduce Motion remain immediate.
-        withAnimation(hasInitialPosition && !reduceMotion ? .smooth(duration: 0.24) : nil) {
-            scroll.scrollTo("latest", anchor: .bottom, animated: hasInitialPosition && !reduceMotion)
-        }
+        // The native viewport follows measured height changes on its own.
+        // Only an explicit Latest tap animates; stream arrivals never restart it.
+        scroll.followLatest()
     }
     private func userTarget(_ direction: HistoryDirection) -> String? {
         let users = revision.userIndices
@@ -2087,7 +2066,6 @@ private struct ConversationContentView: View {
         model.setHistoryAtLatest(false)
         model.protectHistoryRows([id])
         historyDirection = nil
-        historyRestore = nil
         selectedUserMessage = id
         pendingUserDirection = nil
         pendingReadingRestore = .init(atLatest: false, rowID: id, offsetY: 0)
@@ -2095,7 +2073,7 @@ private struct ConversationContentView: View {
         // Measured restoration retains the target through streaming and layout changes.
         var transaction = Transaction(animation: nil)
         transaction.disablesAnimations = true
-        withTransaction(transaction) { scroll.scrollTo(id, anchor: .top) }
+        withTransaction(transaction) { scroll.scrollTo(id, topOffset: 0) }
     }
     private func navigateUser(_ direction: HistoryDirection, using scroll: NativeConversationScrollProxy) {
         // History insertion/restoration must finish before another explicit jump.
@@ -2107,7 +2085,6 @@ private struct ConversationContentView: View {
         navigationKnownIDs = Set(revision.items.map(\.id))
         pendingUserDirection = direction
         pendingReadingRestore = nil
-        historyRestore = nil
         historyDirection = nil
         followsLatest = false
         fetchUserHistory(direction)
@@ -2160,21 +2137,13 @@ private struct ConversationContentView: View {
                 next: revision.userIndices.indices.contains(next) ? revision.items[revision.userIndices[next]].id : nil)
             if userNavigationTargets != targets { userNavigationTargets = targets }
         }
-        if !navigationActive, !isInteractingTranscript, let target = pendingReadingRestore, let id = target.rowID, let parent = frames[id] {
-            let frame = target.childID.flatMap { frames[$0] } ?? parent
-            if abs(frame.minY - target.offsetY) < 1 {
-                // Retain the semantic position through keyboard/viewport
-                // changes. The next touch or explicit jump releases it.
-                historyReady = true
-            } else {
-                let available = viewport.size.height - composerHeight - 52 - parent.height
-                if abs(available) > 0.5 {
-                    // The timeline can grow while loading older steps.
-                    // Preserve the step's screen position within its parent.
-                    let origin = parent.minY + target.offsetY - frame.minY
-                    scroll.scrollTo(id, anchor: UnitPoint(x: 0, y: origin / available))
-                }
-            }
+        if !navigationActive, !isInteractingTranscript, let target = pendingReadingRestore,
+           let id = target.rowID, frames[id] != nil {
+            // The native viewport now owns this realized point. A target near
+            // the end may be clamped by content bounds and never align exactly;
+            // do not leave history loading blocked waiting for pixel equality.
+            historyReady = true
+            pendingReadingRestore = nil
         }
         saveReadingPosition(in: viewport)
         updateHistoryPosition(in: viewport)
@@ -2198,8 +2167,9 @@ private struct ConversationContentView: View {
             Button {
                 followsLatest = false
                 if let first = rowGeometry.firstFrame(where: { revision.itemsByID[$0] != nil }) {
-                    pendingReadingRestore = .init(atLatest: false, rowID: first.key,
-                        offsetY: revision.itemsByID[first.key]?.message == nil ? max(0, first.value.minY) : first.value.minY)
+                    let offset = revision.itemsByID[first.key]?.message == nil ? max(0, first.value.minY) : first.value.minY
+                    pendingReadingRestore = .init(atLatest: false, rowID: first.key, offsetY: offset)
+                    scroll.scrollTo(first.key, topOffset: offset)
                 }
                 tools.setAllExpanded(!hasExpandedTools)
             } label: { Image(systemName: hasExpandedTools ? "rectangle.compress.vertical" : "rectangle.expand.vertical").frame(width: 44, height: 44)
@@ -2260,9 +2230,9 @@ private struct ConversationContentView: View {
             pendingReadingRestore = rowGeometry[rowID].map {
                 .init(atLatest: false, rowID: rowID, offsetY: $0.minY)
             }
+            if let point = pendingReadingRestore { scroll.scrollTo(rowID, topOffset: point.offsetY) }
             if historyRequestInFlight { rememberHistoryPosition(in: viewport) }
         }
-        rowGeometry.onFollowLatest = { followLatest(using: scroll) }
         var rows: [NativeConversationTranscript.Row] = []
         var semanticIDs: [String: String] = [:]
         var sourceRowIDs: [String: String] = [:]
@@ -2381,9 +2351,7 @@ private struct ConversationContentView: View {
                                                     role: transcript.speaker == "user" ? "You" : "Agent", text: transcript.text)
                             return AnyView(ConversationMessageView(row: row, model: model, agentID: agentID)
                                 .accessibilityIdentifier("voice-transcript-" + transcript.speaker))
-                        }) {
-                            rowGeometry.onFollowLatest?()
-                        }
+                        })
                     }
                     Color.clear.frame(height: 1)
             })
@@ -2410,7 +2378,6 @@ private struct ConversationContentView: View {
                     if let boundaryItemID, let boundary = frames.filter({ rowGeometry.semanticID(for: $0.key) == boundaryItemID }).values.max(by: { $0.maxY < $1.maxY }) {
                         visible["history-gap"] = CGRect(x: 0, y: boundary.maxY, width: 1, height: 1)
                     }
-                    rowGeometry.updateOffset(0)
                     rowGeometry.updateContentFrames(visible)
                     updateRowPositions(in: viewport, using: scroll)
                 },
@@ -2430,7 +2397,6 @@ private struct ConversationContentView: View {
                         if pendingUserDirection != nil { pendingUserDirection = nil }
                         if pendingReadingRestore != nil { pendingReadingRestore = nil }
                         let towardLatest = metrics.contentOffset.y > previous.contentOffset.y
-                        if scrollsTowardLatest != towardLatest { scrollsTowardLatest = towardLatest }
                         let direction: HistoryDirection = towardLatest ? .newer : .older
                         if historyDirection != direction { historyDirection = direction }
                         if hasInitialPosition && !historyReady { historyReady = true }
@@ -2439,9 +2405,7 @@ private struct ConversationContentView: View {
                     saveReadingPosition(in: viewport)
                 },
                 onPhase: { previous, phase in
-                if phase == .tracking { scrollsTowardLatest = false }
-                isInteractingTranscript = phase == .interacting
-                isScrollGestureActive = phase == .tracking || phase == .interacting || phase == .decelerating
+                scrollPhase = phase
                 // Horizontal drawer gestures can enter a scroll phase without
                 // moving the transcript. Only vertical input suspends following.
                 if phase == .idle, previous == .interacting || previous == .decelerating {
@@ -2458,7 +2422,6 @@ private struct ConversationContentView: View {
             .contentShape(Rectangle())
             .onChange(of: revision.projectionRevision) { _, _ in
                 continueUserNavigation(using: scroll)
-                restoreHistoryPosition(using: scroll)
                 // Content-height observation follows after layout; issuing a second
                 // scroll here would retarget against the previous geometry.
                 updateHistoryPosition(in: viewport)
@@ -2471,6 +2434,7 @@ private struct ConversationContentView: View {
                 if let first = rowGeometry.visibleFrames(height: viewport.size.height).filter({ revision.itemsByID[rowGeometry.semanticID(for: $0.key)] != nil })
                     .min(by: { $0.value.minY < $1.value.minY }) {
                     pendingReadingRestore = .init(atLatest: false, rowID: first.key, offsetY: first.value.minY)
+                    scroll.scrollTo(first.key, topOffset: first.value.minY)
                 }
             }
             .onChange(of: hasInitialPosition) { _, _ in updateHistoryPosition(in: viewport) }
@@ -2482,7 +2446,6 @@ private struct ConversationContentView: View {
             .onChange(of: model.loadingOlder) { _, loading in
                 if !loading {
                     continueUserNavigation(using: scroll)
-                    restoreHistoryPosition(using: scroll)
                 }
                 updateHistoryPosition(in: viewport)
             }
@@ -2490,7 +2453,6 @@ private struct ConversationContentView: View {
             .onChange(of: model.loadingNewer) { _, loading in
                 if !loading {
                     continueUserNavigation(using: scroll)
-                    restoreHistoryPosition(using: scroll)
                 }
                 updateHistoryPosition(in: viewport)
             }
@@ -2508,15 +2470,21 @@ private struct ConversationContentView: View {
                         selectedUserMessage = nil
                         pendingUserDirection = nil
                         historyDirection = nil
-                        historyRestore = nil
                         pendingReadingRestore = nil
                         // Record the intent before fetching/projecting the live
                         // tail; every later publication continues following it.
                         followsLatest = true
-                        Task {
-                            if model.needsLatestHistory { await model.loadNewer(latest: true) }
-                            guard model.focusedConversationIdentity == identity, !model.needsLatestHistory else { return }
-                            followLatest(using: scroll)
+                        // This button is an explicit native intent, even if
+                        // the previous drag is still decelerating. Do not gate
+                        // it on a stale SwiftUI gesture phase.
+                        if model.needsLatestHistory {
+                            Task {
+                                await model.loadNewer(latest: true)
+                                guard model.focusedConversationIdentity == identity, !model.needsLatestHistory else { return }
+                                scroll.followLatest(animated: hasInitialPosition && !reduceMotion)
+                            }
+                        } else {
+                            scroll.followLatest(animated: hasInitialPosition && !reduceMotion)
                         }
                     } label: {
                         Label("Latest messages", systemImage: "arrow.down")
@@ -2564,9 +2532,9 @@ private struct ConversationContentView: View {
                        revision.items.contains(where: { $0.id == rowGeometry.semanticID(for: id) }) {
                         followsLatest = false
                         pendingReadingRestore = saved
-                        scroll.scrollTo(id, anchor: .top)
+                        scroll.scrollTo(id, topOffset: saved.offsetY)
                     } else {
-                        scroll.scrollTo("latest", anchor: .bottom)
+                        scroll.followLatest()
                     }
                     hasInitialPosition = true
                     return
@@ -2610,52 +2578,26 @@ private final class ConversationNativeScrollState {
 
 private final class ConversationRowGeometry {
     var onToolToggle: ((String) -> Void)?
-    var onFollowLatest: (() -> Void)?
     var semanticIDs: [String: String] = [:]
     var sourceRowIDs: [String: String] = [:]
     func semanticID(for id: String) -> String { semanticIDs[id] ?? id }
-    private var contentFrames: [String: CGRect] = [:]
-    private var orderedFrames: [(key: String, value: CGRect)] = []
-    private var offsetY: CGFloat = 0
+    // Native cells report only realized viewport frames. There is no full
+    // transcript geometry cache or second content-offset coordinate system.
+    private var frames: [String: CGRect] = [:]
 
-    func updateContentFrames(_ value: [String: CGRect]) {
-        contentFrames = value
-        // These are non-overlapping siblings in the measured vertical stack.
-        // Index only when layout changes, never for a native scroll offset.
-        orderedFrames = value.sorted { $0.value.minY < $1.value.minY }
-    }
+    func updateContentFrames(_ value: [String: CGRect]) { frames = value }
 
-    func updateOffset(_ value: CGFloat) { offsetY = value }
-
-    subscript(_ id: String) -> CGRect? {
-        contentFrames[id]?.offsetBy(dx: 0, dy: -offsetY)
-    }
-
-    private var firstVisibleIndex: Int {
-        var lower = 0, upper = orderedFrames.count
-        while lower < upper {
-            let middle = lower + (upper - lower) / 2
-            if orderedFrames[middle].value.maxY <= offsetY { lower = middle + 1 }
-            else { upper = middle }
-        }
-        return lower
-    }
+    subscript(_ id: String) -> CGRect? { frames[id] }
 
     func visibleFrames(height: CGFloat) -> [String: CGRect] {
-        var visible: [String: CGRect] = [:]
-        for entry in orderedFrames.dropFirst(firstVisibleIndex) {
-            guard entry.value.minY < offsetY + height else { break }
-            visible[entry.key] = entry.value.offsetBy(dx: 0, dy: -offsetY)
-        }
-        return visible
+        frames.filter { $0.value.maxY > 0 && $0.value.minY < height }
     }
 
     func firstFrame(where matches: (String) -> Bool) -> (key: String, value: CGRect)? {
-        guard let entry = orderedFrames.dropFirst(firstVisibleIndex).first(where: { matches($0.key) }) else { return nil }
-        return (entry.key, entry.value.offsetBy(dx: 0, dy: -offsetY))
+        frames.filter { matches($0.key) && $0.value.maxY > 0 }
+            .min { $0.value.minY < $1.value.minY }
     }
 
-    var historyRestore: (id: String, offsetY: CGFloat, childID: String?)?
 }
 
 private struct ConversationRowFrames: PreferenceKey {
