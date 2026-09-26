@@ -110,6 +110,70 @@ export async function routePrompt(agent, options) {
   return raw === undefined ? undefined : createTurn(raw, agent);
 }
 
+/** Trusted host seam: admits an original-call-ID tool result, never a user prompt or steer. */
+export async function submitFunctionCallOutput(agent, callId, options) {
+  const state = agentState(agent);
+  if (!options || typeof options !== "object" || Array.isArray(options)) {
+    throw new TypeError("function-call output options must be an object");
+  }
+  if ("callId" in options) {
+    throw new TypeError("callId cannot be supplied when submitting a call-bound output");
+  }
+  if (Object.keys(options).some((key) => !["output", "operationId"].includes(key))) {
+    throw new TypeError("function-call output options contain unknown fields");
+  }
+  const { output, operationId } = options;
+  if (typeof callId !== "string" || !callId.trim()) {
+    throw new TypeError("callId must be a non-empty string");
+  }
+  if (typeof operationId !== "string" || !operationId.trim()) {
+    throw new TypeError("operationId must be a non-empty stable string");
+  }
+  const encodedOutput = encodeFunctionCallOutput(output);
+  // No prompt/steer fallback. The Rust method owns durable admission and wakeup;
+  // an older kernel cannot safely accept a deferred tool result.
+  if (typeof state.raw.submitFunctionCallOutput !== "function") {
+    throw new Error("this Nanocodex runtime does not support late function-call output");
+  }
+  const encoded = await state.raw.submitFunctionCallOutput(callId, encodedOutput, operationId);
+  if (typeof encoded !== "string") {
+    throw new TypeError("the runtime returned an invalid function-call output receipt");
+  }
+  const receipt = JSON.parse(encoded);
+  if (!receipt || typeof receipt !== "object" || Array.isArray(receipt)) {
+    throw new TypeError("the runtime returned an invalid function-call output receipt");
+  }
+  return freezeJson(receipt);
+}
+
+function encodeFunctionCallOutput(output) {
+  if (typeof output === "string") return JSON.stringify(output);
+  if (!Array.isArray(output) || output.length === 0) {
+    throw new TypeError("function-call output must be text or non-empty typed content");
+  }
+  const content = output.map((item) => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) {
+      throw new TypeError("function-call output content must be typed objects");
+    }
+    switch (item.type) {
+      case "input_text":
+        if (typeof item.text !== "string" || Object.keys(item).some((key) => !["type", "text"].includes(key))) break;
+        return { type: "input_text", text: item.text };
+      case "input_image":
+        if (typeof item.image_url !== "string" || !item.image_url ||
+          (item.detail !== undefined && !["auto", "low", "high", "original"].includes(item.detail)) ||
+          Object.keys(item).some((key) => !["type", "image_url", "detail"].includes(key))) break;
+        return { type: "input_image", image_url: item.image_url, ...(item.detail === undefined ? {} : { detail: item.detail }) };
+      case "input_audio":
+        if (typeof item.audio_url !== "string" || !item.audio_url || Object.keys(item).some((key) => !["type", "audio_url"].includes(key))) break;
+        return { type: "input_audio", audio_url: item.audio_url };
+      default: break;
+    }
+    throw new TypeError("invalid function-call output content");
+  });
+  return JSON.stringify(content);
+}
+
 export function getTurnResult(turn) {
   const state = turnState(turn);
   if (!state.result) {

@@ -9,6 +9,16 @@ export type PromptItem =
 
 export type PromptInput = string | readonly PromptItem[];
 
+/** Host-owned result of an existing function call; this is not a user input. */
+export type FunctionCallOutput = string | readonly (
+  | Readonly<{ type: "input_text"; text: string }>
+  | Readonly<{ type: "input_image"; image_url: string; detail?: "auto" | "low" | "high" | "original" }>
+  | Readonly<{ type: "input_audio"; audio_url: string }>
+)[];
+
+/** Opaque durable admission acknowledgement emitted by the Rust driver. */
+export type FunctionCallOutputReceipt = Readonly<Record<string, unknown>>;
+
 export type AgentEvent = {
   protocol_version: number;
   request_id: string;
