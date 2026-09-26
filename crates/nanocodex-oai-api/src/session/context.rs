@@ -2,13 +2,19 @@ use std::collections::HashSet;
 
 use crate::{
     ContentItem, FunctionOutputBody, FunctionOutputContent, MessageRole, ResponseItem,
-    ResponseItemId, Usage,
-    responses::{ItemStatus, ResponseHistory},
+    ResponseItemId, Usage, responses::ResponseHistory,
 };
 
 use super::compaction;
 
 const TOOL_OUTPUT_TOKEN_LIMIT: usize = 12_000;
+/// Exact Unreal running-result payload. Only the opt-in path treats this text
+/// as a pending marker; ordinary transcript handling is unchanged.
+pub(crate) const UNREAL_RUNNING_OUTPUT: &str = "Tool call is still running. Its result arrives in a later turn: continue with independent work, or end your turn to wait for it.";
+
+pub(crate) fn is_unreal_running_output(output: &FunctionOutputBody) -> bool {
+    matches!(output, FunctionOutputBody::Text(text) if text.as_ref() == UNREAL_RUNNING_OUTPUT)
+}
 const REQUEST_PREFIX_ID_NAMESPACE: uuid::Uuid =
     uuid::Uuid::from_u128(0x3e203f80_1cd8_4938_9588_0990bb023db5);
 // Changing this value would change model-visible IDs and invalidate prompt caches.
@@ -118,9 +124,13 @@ impl ContextManager {
         call_id: &str,
         mut terminal: ResponseItem,
     ) -> bool {
-        let Some(index) = self.items.tail().iter().position(|item| matches!(item,
-            ResponseItem::FunctionCallOutput { call_id: id, status: Some(ItemStatus::InProgress), .. }
-                if id.as_ref() == call_id)) else { return false; };
+        let Some(index) = self.items.tail().iter().position(|item| {
+            matches!(item,
+            ResponseItem::FunctionCallOutput { call_id: id, output, .. }
+                if id.as_ref() == call_id && is_unreal_running_output(output))
+        }) else {
+            return false;
+        };
         terminal = truncate_tool_output(terminal);
         assign_missing_response_item_id(&mut terminal);
         let old_tokens = compaction::estimate_item_tokens(&self.items.tail()[index]);
@@ -590,18 +600,22 @@ pub fn has_well_formed_unreal_function_outputs(items: &[ResponseItem]) -> bool {
                 ..
             } => calls.insert(call_id.as_ref()),
             ResponseItem::FunctionCallOutput {
-                call_id, status, ..
+                call_id,
+                output,
+                status,
+                ..
             } => {
-                if !calls.contains(call_id.as_ref()) {
+                if !calls.contains(call_id.as_ref()) || status.is_some() {
                     return false;
                 }
+                let running = is_unreal_running_output(output);
                 match outputs.entry(call_id.as_ref()) {
                     std::collections::hash_map::Entry::Vacant(slot) => {
-                        slot.insert(*status == Some(ItemStatus::InProgress));
+                        slot.insert(running);
                         true
                     }
                     std::collections::hash_map::Entry::Occupied(mut slot)
-                        if *slot.get() && *status != Some(ItemStatus::InProgress) =>
+                        if *slot.get() && !running =>
                     {
                         slot.insert(false);
                         true
@@ -654,11 +668,8 @@ pub fn has_well_formed_tool_calls(items: &[ResponseItem]) -> bool {
                 call_id: Some(call_id),
                 ..
             } => function_calls.insert(call_id.as_ref()),
-            ResponseItem::FunctionCallOutput {
-                call_id, status, ..
-            } => {
-                *status != Some(ItemStatus::InProgress)
-                    && function_calls.contains(call_id.as_ref())
+            ResponseItem::FunctionCallOutput { call_id, .. } => {
+                function_calls.contains(call_id.as_ref())
                     && function_outputs.insert(call_id.as_ref())
             }
             ResponseItem::CustomToolCall { call_id, .. } => custom_calls.insert(call_id.as_ref()),

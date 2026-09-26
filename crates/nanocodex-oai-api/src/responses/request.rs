@@ -577,28 +577,13 @@ impl Serialize for RequestResponseItem<'_> {
     where
         S: serde::Serializer,
     {
-        let strip_output_status = matches!(
-            self.item,
-            ResponseItem::FunctionCallOutput {
-                status: Some(_),
-                ..
-            }
-        );
-        if self.strip_image_detail
-            || strip_output_status
-            || self.item.id().is_some_and(|id| !id.is_prefixed())
-        {
+        if self.strip_image_detail || self.item.id().is_some_and(|id| !id.is_prefixed()) {
             let mut item = self.item.clone();
             if item.id().is_some_and(|id| !id.is_prefixed()) {
                 item.set_id(None);
             }
             if self.strip_image_detail {
                 item.strip_image_details();
-            }
-            // Pending is a client-owned transcript marker, not a provider
-            // function_call_output field. Strip all output statuses on the wire.
-            if let ResponseItem::FunctionCallOutput { status, .. } = &mut item {
-                *status = None;
             }
             item.serialize(serializer)
         } else {
@@ -1138,18 +1123,21 @@ mod tests {
     }
 
     #[test]
-    fn function_output_status_is_internal_only_on_all_request_input_paths() {
+    fn unreal_running_and_terminal_outputs_use_exact_wire_shape_without_changing_default_status() {
         let pending: ResponseItem = serde_json::from_value(json!({
-            "type": "function_call_output", "id": "fco_pending", "call_id": "job-1",
-            "output": "working", "status": "in_progress"
+            "type": "function_call_output", "call_id": "job-1",
+            "output": crate::session::context::UNREAL_RUNNING_OUTPUT
         }))
         .unwrap();
         let terminal: ResponseItem = serde_json::from_value(json!({
-            "type": "function_call_output", "id": "fco_terminal", "call_id": "job-1",
-            "output": "done", "status": "completed"
+            "type": "function_call_output", "call_id": "job-1", "output": "done"
         }))
         .unwrap();
-        let history = ResponseHistory::new(vec![pending, terminal]);
+        let ordinary: ResponseItem = serde_json::from_value(json!({
+            "type": "function_call_output", "call_id": "job-2", "status": "completed", "output": "other"
+        }))
+        .unwrap();
+        let history = ResponseHistory::new(vec![pending, terminal, ordinary]);
         let profile = RequestProfile::new("agent", "lineage", Arc::from([]));
         let config = ModelConfig::default();
         let request = serde_json::to_value(ResponseCreate::generation_with_policy(
@@ -1166,22 +1154,20 @@ mod tests {
             None,
         ))
         .unwrap();
-        assert_eq!(request["input"].as_array().unwrap().len(), 2);
-        for item in request["input"].as_array().unwrap() {
-            assert_eq!(item["call_id"], "job-1");
-            assert!(item.get("status").is_none());
-        }
-        let delta =
-            serde_json::to_value(ResponsesInput::history_suffix(&[], &history, 1, None)).unwrap();
-        assert_eq!(delta.as_array().unwrap().len(), 1);
-        assert!(delta[0].get("status").is_none());
         assert_eq!(
-            serde_json::to_value(history.iter().next().unwrap()).unwrap()["status"],
-            "in_progress"
+            request["input"][0]["output"],
+            crate::session::context::UNREAL_RUNNING_OUTPUT
         );
+        assert!(request["input"][0].get("status").is_none());
         assert_eq!(
-            serde_json::to_value(history.iter().nth(1).unwrap()).unwrap()["status"],
-            "completed"
+            request["input"][0]["call_id"],
+            request["input"][1]["call_id"]
+        );
+        assert_eq!(request["input"][1]["output"], "done");
+        assert!(request["input"][1].get("status").is_none());
+        assert_eq!(
+            request["input"][2]["status"], "completed",
+            "default serialization must remain unchanged"
         );
     }
 
