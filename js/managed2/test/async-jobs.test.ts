@@ -508,6 +508,44 @@ it("retains a checkpoint without a model continuation and reconciles the same op
   });
 });
 
+it("retains a compact invocation fence after an old delivered mutable payload is archived", async () => {
+  await runInDurableObject(stub(), async (_session, state) => {
+    state.storage.sql.exec("INSERT INTO turns (id, input, state) VALUES ('source', 'work', 'completed')");
+    const tasks: Promise<unknown>[] = [];
+    let executions = 0;
+    const shell: NamedTool = { name: "exec_command", description: "mutable", handler: () => {
+      executions++;
+      return { output: "written" };
+    } };
+    const jobs = new AsyncJobs(state.storage, { exec_command: shell }, () => "source",
+      async intent => accepted(intent), task => { tasks.push(task); }, new Set(), undefined,
+      async () => ({ state: "confirmed", model_call_index: 2, response_id: "model-2" }));
+    expect(jobs.tool(shell).handler({ cmd: "write-once" }, context("mutable-once")))
+      .toEqual({ output: UNREAL_RUNNING_OUTPUT });
+    const id = jobId(state, "mutable-once");
+    await Promise.all(tasks);
+    await jobs.reconcile(); // original typed result checkpoint
+    await jobs.reconcile(); // completed model-step receipt
+    expect(jobs.status(id)).toMatchObject({ state: "delivered", continuation_started: true });
+    state.storage.sql.exec("UPDATE async_jobs SET created_at = ? WHERE id = ?",
+      Date.now() - 8 * 24 * 60 * 60 * 1000, id);
+    await jobs.reconcile(); // archive payload and preserve durable invocation identity
+    expect(jobs.status(id)).toMatchObject({ job_id: id, state: "archived", continuation_started: true });
+    expect(state.storage.sql.exec<{ n: number }>("SELECT COUNT(*) AS n FROM async_jobs WHERE id = ?", id)
+      .toArray()[0]!.n).toBe(0);
+    expect(() => jobs.tool(shell).handler({ cmd: "write-once" }, context("mutable-once")))
+      .toThrow("async invocation archived; unsafe to replay");
+    expect(() => jobs.tool(shell).handler({ cmd: "different" }, context("mutable-once")))
+      .toThrow("async invocation archived; unsafe to replay");
+    const restored = new AsyncJobs(state.storage, { exec_command: shell }, () => "source",
+      async intent => accepted(intent), task => { tasks.push(task); });
+    expect(restored.status(id)).toMatchObject({ state: "archived", continuation_started: true });
+    expect(() => restored.tool(shell).handler({ cmd: "write-once" }, context("mutable-once")))
+      .toThrow("async invocation archived; unsafe to replay");
+    expect(executions).toBe(1);
+  });
+});
+
 it("wraps exec_command as a mutable background tool and checkpoints its single result under the original call", async () => {
   await runInDurableObject(stub(), async (_session, state) => {
     const tasks: Promise<unknown>[] = [];

@@ -83,6 +83,12 @@ export class AsyncJobs {
       singleton INTEGER PRIMARY KEY CHECK (singleton = 1), created_at INTEGER NOT NULL, id TEXT NOT NULL
     )`);
     storage.sql.exec("INSERT OR IGNORE INTO async_jobs_reconcile_cursor VALUES (1, -1, '')");
+    // Keep an immutable, compact replay fence after delivered payloads expire.
+    // An old tool invocation must never become a new mutable side effect.
+    storage.sql.exec(`CREATE TABLE IF NOT EXISTS async_job_tombstones (
+      id TEXT PRIMARY KEY, invocation TEXT NOT NULL UNIQUE, tool TEXT NOT NULL,
+      archived_at INTEGER NOT NULL
+    )`);
     // Deployment alone does not wake an idle DO. On its next construction,
     // recheck one old checkpoint or an output parked against an older kernel.
     // If the capability is still absent, park again without a polling alarm.
@@ -99,12 +105,27 @@ export class AsyncJobs {
     }
   }
 
+  private archiveDelivered(): void {
+    const cutoff = Date.now() - RETENTION_MS;
+    this.storage.transactionSync(() => {
+      this.storage.sql.exec(`INSERT INTO async_job_tombstones (id, invocation, tool, archived_at)
+        SELECT id, invocation, tool, ? FROM async_jobs
+        WHERE state = 'delivered' AND created_at < ?`, Date.now(), cutoff);
+      this.storage.sql.exec("DELETE FROM async_jobs WHERE state = 'delivered' AND created_at < ?", cutoff);
+    });
+  }
+
   private get(id: string): Job | undefined {
     return this.storage.sql.exec<Job>("SELECT * FROM async_jobs WHERE id = ?", id).toArray()[0];
   }
   public status(id: string): { job_id: string; state: string; tool: string; result?: string; continuation_started?: boolean } | undefined {
     const job = this.get(id);
-    if (!job) return undefined;
+    if (!job) {
+      const archived = this.storage.sql.exec<{ tool: string }>(
+        "SELECT tool FROM async_job_tombstones WHERE id = ?", id).toArray()[0];
+      return archived ? { job_id: id, state: "archived", tool: archived.tool,
+        continuation_started: true } : undefined;
+    }
     return { job_id: job.id, state: job.state, tool: job.tool,
       ...(job.result === null ? {} : { result: bound(job.result) }),
       ...(job.continuation_started === null ? {} : { continuation_started: job.continuation_started === 1 }) };
@@ -133,8 +154,10 @@ export class AsyncJobs {
         || job.context_json !== contextJson || job.replay_safe !== replaySafe))
         throw new Error("async invocation conflict");
       if (!job) {
-        this.storage.sql.exec("DELETE FROM async_jobs WHERE state = 'delivered' AND created_at < ?",
-          Date.now() - RETENTION_MS);
+        this.archiveDelivered();
+        if (this.storage.sql.exec<{ n: number }>(
+          "SELECT COUNT(*) AS n FROM async_job_tombstones WHERE invocation = ?", invocation,
+        ).toArray()[0]!.n > 0) throw new Error("async invocation archived; unsafe to replay");
         if (this.storage.sql.exec<{ n: number }>("SELECT COUNT(*) AS n FROM async_jobs")
           .toArray()[0]!.n >= MAX_JOBS || this.storage.sql.exec<{ n: number }>(
           "SELECT COUNT(*) AS n FROM async_jobs WHERE state IN ('queued', 'running')"
@@ -242,8 +265,7 @@ export class AsyncJobs {
   }
 
   public async reconcile(): Promise<void> {
-    this.storage.sql.exec("DELETE FROM async_jobs WHERE state = 'delivered' AND created_at < ?",
-      Date.now() - RETENTION_MS);
+    this.archiveDelivered();
     // All running work is examined on every tick. Terminal records rotate
     // through a durable keyset, so neither a page of unconfirmed checkpoints
     // nor a page of ready results can starve the other after DO eviction.
