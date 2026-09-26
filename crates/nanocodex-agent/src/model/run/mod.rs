@@ -105,7 +105,23 @@ pub(crate) struct ModelRun<S> {
     before_compaction: Option<Arc<dyn crate::execution::BeforeCompaction>>,
 }
 
+/// One trusted terminal output accepted during a running turn. The durable
+/// operation remains authoritative; this queue only accelerates delivery.
+#[derive(Clone)]
+pub(crate) struct QueuedBoundaryOutput {
+    pub(crate) call_id: String,
+    pub(crate) output: FunctionOutputBody,
+    pub(crate) operation_id: String,
+    pub(crate) durable_index: u32,
+    pub(crate) accepted_after_model_call_index: u32,
+    pub(crate) model_call_index: Option<u32>,
+}
+
+pub(crate) type BoundaryOutputQueue = Arc<tokio::sync::Mutex<VecDeque<QueuedBoundaryOutput>>>;
+
 pub(crate) struct TurnSteering {
+    pub(crate) boundary_outputs: BoundaryOutputQueue,
+    pub(crate) retained_boundary_outputs: Vec<QueuedBoundaryOutput>,
     pub(crate) receiver: crate::agent::execution::SteerQueue,
     pub(crate) retained: Vec<QueuedSteer>,
     pub(crate) model_call_index: Arc<tokio::sync::Mutex<u32>>,
@@ -488,6 +504,32 @@ impl<S> ModelRun<S> {
             NanocodexError::InvalidRequest("no model session for late function output".into())
         })?;
         session.validate_workspace(requested_workspace)?;
+        Self::append_late_output_to_session(
+            session,
+            call_id,
+            output,
+            operation_id,
+            true,
+            self.global_instructions.clone(),
+        )
+    }
+
+    /// Shared transcript mutation for an idle wake and an active model boundary.
+    /// The active caller must serialize this with model-request admission and
+    /// persist the returned checkpoint before acknowledging model uptake.
+    pub(super) fn append_late_output_to_session(
+        session: &mut ModelSessionState,
+        call_id: &str,
+        output: FunctionOutputBody,
+        operation_id: &str,
+        idle_wake: bool,
+        global_instructions: Option<Arc<str>>,
+    ) -> Result<(ModelCheckpoint, bool)>
+    where
+        S: Service<ResponsesAttempt, Response = ResponsesServiceResponse> + AgentSend + 'static,
+        S::Error: Into<nanocodex_oai_api::ResponseError>,
+        S::Future: AgentSend,
+    {
         if !session.conversation.managed.unreal_function_outputs() {
             return Err(NanocodexError::InvalidRequest(
                 "Unreal function outputs are not enabled for this session".into(),
@@ -519,7 +561,7 @@ impl<S> ModelRun<S> {
                     ));
                 }
                 return Ok((
-                    Self::checkpoint_from_session(session, true, self.global_instructions.clone()),
+                    Self::checkpoint_from_session(session, true, global_instructions),
                     true,
                 ));
             }
@@ -527,7 +569,12 @@ impl<S> ModelRun<S> {
         // Validate against an isolated clone before sealing the original tail.
         // Do not risk partially changing the driver's mutable session on error.
         let mut conversation = session.conversation.clone();
-        conversation.commit_tail();
+        // At an active boundary, an unsent placeholder is replaceable rather
+        // than a second same-ID output. The idle path lacks that request fence
+        // and conservatively seals its existing tail before completion.
+        if idle_wake {
+            conversation.commit_tail();
+        }
         conversation
             .managed
             .complete_unreal_function_output_with_id(call_id, output, Some(receipt_id.clone()))
@@ -536,13 +583,15 @@ impl<S> ModelRun<S> {
         session.conversation = conversation;
         // Chain all unconsumed outputs into the same wake. Replay of the same
         // receipt returns above without advancing the identity a second time.
-        session.pending_late_wake = Some(advance_late_wake(
-            session.pending_late_wake.as_deref(),
-            receipt_id.as_ref(),
-        ));
+        if idle_wake {
+            session.pending_late_wake = Some(advance_late_wake(
+                session.pending_late_wake.as_deref(),
+                receipt_id.as_ref(),
+            ));
+        }
         session.preserve_inherited_delta = true;
         Ok((
-            Self::checkpoint_from_session(session, true, self.global_instructions.clone()),
+            Self::checkpoint_from_session(session, true, global_instructions),
             false,
         ))
     }

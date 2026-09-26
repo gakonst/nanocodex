@@ -587,6 +587,8 @@ where
             receiver,
             retained,
             model_call_index,
+            boundary_outputs,
+            retained_boundary_outputs,
         } = steering;
         let outcome = {
             let run = self.drive_session(
@@ -595,6 +597,8 @@ where
                 retained,
                 resumed,
                 model_call_index,
+                boundary_outputs,
+                retained_boundary_outputs,
                 fork_snapshots,
             );
             tokio::pin!(run);
@@ -781,6 +785,8 @@ where
                 receiver,
                 retained,
                 model_call_index,
+                boundary_outputs,
+                retained_boundary_outputs,
             } = steering;
             let task = self.drive_session(
                 &mut session,
@@ -788,6 +794,8 @@ where
                 retained,
                 resumed && phase == ExecutionPhase::Generate,
                 model_call_index,
+                boundary_outputs,
+                retained_boundary_outputs,
                 fork_snapshots,
             );
             tokio::pin!(task);
@@ -952,6 +960,8 @@ where
         retained_steers: Vec<QueuedSteer>,
         resumed: bool,
         model_call_index: Arc<tokio::sync::Mutex<u32>>,
+        boundary_outputs: BoundaryOutputQueue,
+        retained_boundary_outputs: Vec<QueuedBoundaryOutput>,
         fork_snapshots: &watch::Sender<Option<ModelCheckpoint>>,
     ) -> Result<String> {
         // Match Codex's ordering: always sample the turn's initial prompt once
@@ -967,19 +977,68 @@ where
                         .is_some_and(|index| index <= next_call)
             })
             .collect::<VecDeque<_>>();
-        *model_call_index.lock().await = next_call;
+        // Never discard a bound-but-unacknowledged output merely because its
+        // model ordinal precedes the restored call. Recovery must establish
+        // provider uptake from the recorded step first, or fail closed.
+        let mut pending_boundary_outputs = retained_boundary_outputs.into();
+        if resumed
+            && pending_boundary_outputs
+                .iter()
+                .any(|output: &QueuedBoundaryOutput| {
+                    output
+                        .model_call_index
+                        .is_some_and(|index| index < next_call)
+                })
+        {
+            return Err(NanocodexError::InvalidExecutionPolicy(
+                "restored boundary output lacks a verified model uptake receipt".into(),
+            ));
+        }
         let mut first_batch = true;
         loop {
             let call_index = self.stats.model_calls + 1;
-            if can_drain_steers {
+            // Linearize request admission with driver acceptance. An output
+            // accepted while request N is in flight can only enter N+1.
+            // Unlike user steers, trusted terminal outputs also cross a
+            // post-compaction boundary: they must never be silently postponed.
+            let mut bound_for_request = Vec::new();
+            {
                 let mut current_call_index = model_call_index.lock().await;
                 *current_call_index = call_index;
-                pending_steers.extend(steers.lock().await.drain(..));
-                drop(current_call_index);
-                self.drain_steers(&mut session.conversation, &mut pending_steers, call_index)
-                    .await?;
+                pending_boundary_outputs.extend(boundary_outputs.lock().await.drain(..));
+                while pending_boundary_outputs.front().is_some_and(|output| {
+                    output.model_call_index == Some(call_index)
+                        || (output.model_call_index.is_none()
+                            && output.accepted_after_model_call_index < call_index)
+                }) {
+                    let output = pending_boundary_outputs
+                        .front()
+                        .expect("eligible output disappeared");
+                    if output.model_call_index.is_none()
+                        && let Some(steps) = &self.execution_steps
+                    {
+                        steps
+                            .bind_boundary_output(output.durable_index, call_index)
+                            .await?;
+                    }
+                    Self::append_late_output_to_session(
+                        session,
+                        &output.call_id,
+                        output.output.clone(),
+                        &output.operation_id,
+                        false,
+                        self.global_instructions.clone(),
+                    )?;
+                    bound_for_request.push(output.durable_index);
+                    pending_boundary_outputs.pop_front();
+                }
+                if can_drain_steers {
+                    pending_steers.extend(steers.lock().await.drain(..));
+                    self.drain_steers(&mut session.conversation, &mut pending_steers, call_index)
+                        .await?;
+                }
             }
-            if !first_batch {
+            if !first_batch || !bound_for_request.is_empty() {
                 self.retain_execution(session, ExecutionPhase::Generate)
                     .await?;
             }
@@ -992,6 +1051,16 @@ where
                 response,
                 transport_continuation_valid,
             } = model_call;
+            // A durable model-{call_index} response (including replay of a
+            // completed step) is the first evidence of provider uptake. Binding
+            // a queue entry before request dispatch is deliberately not an ack.
+            if let Some(steps) = &self.execution_steps {
+                for index in bound_for_request {
+                    steps
+                        .confirm_boundary_output(index, call_index, response.id.to_string())
+                        .await?;
+                }
+            }
             session
                 .conversation
                 .update_token_info(response.usage.as_ref());
@@ -1057,6 +1126,18 @@ where
                     )
                     .await?;
                     continue;
+                }
+                // A completion accepted before finalization must not be
+                // stranded in a finished operation; give it a fresh model
+                // boundary. Anything accepted afterward is handled by the
+                // driver's idle promptless continuation.
+                {
+                    let _boundary = model_call_index.lock().await;
+                    pending_boundary_outputs.extend(boundary_outputs.lock().await.drain(..));
+                    if !pending_boundary_outputs.is_empty() {
+                        session.conversation.clear_delta();
+                        continue;
+                    }
                 }
                 if let Some(message) = final_message {
                     return Ok(if message.trim().is_empty() {

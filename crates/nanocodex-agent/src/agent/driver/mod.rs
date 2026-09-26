@@ -1323,6 +1323,7 @@ where
             let execution_steps = execution_turn.steps();
             let steer_rx: SteerQueue = Arc::new(tokio::sync::Mutex::new(VecDeque::new()));
             let steers = Arc::downgrade(&steer_rx);
+            let boundary_outputs = Arc::new(tokio::sync::Mutex::new(VecDeque::new()));
             let mut accepted_steers = retained_steers
                 .iter()
                 .filter(|steer| steer.model_call_index.is_none())
@@ -1337,7 +1338,7 @@ where
                 })
                 .collect();
             let mut steer_ids = std::collections::HashSet::new();
-            let model_call_index = Arc::new(tokio::sync::Mutex::new(1_u32));
+            let model_call_index = Arc::new(tokio::sync::Mutex::new(0_u32));
             let (cancel, cancel_rx) = oneshot::channel();
             let (fork_snapshots, mut fork_snapshot_rx) = watch::channel(None);
             let mut fork_snapshots_open = true;
@@ -1360,6 +1361,8 @@ where
                             receiver: steer_rx,
                             retained: retained_steers,
                             model_call_index: Arc::clone(&model_call_index),
+                            boundary_outputs: Arc::clone(&boundary_outputs),
+                            retained_boundary_outputs: Vec::new(),
                         },
                         cancel_rx,
                         fork_snapshots,
@@ -2010,7 +2013,12 @@ async fn accept_turn_steer(
     // before either this model-call drain or the following one.
     let call_index = model_call_index.lock().await;
     let Some(steer) = execution_turn
-        .accept_steer(prompt.clone(), id.clone(), *call_index, capacity_available)
+        .accept_steer(
+            prompt.clone(),
+            id.clone(),
+            (*call_index).max(1),
+            capacity_available,
+        )
         .await?
     else {
         return Ok(());

@@ -74,10 +74,28 @@ where
         }
         let execution_steps = self.execution_steps.clone();
         let recovered = if let Some(steps) = &execution_steps {
-            match steps
-                .begin::<_, RecordedModelResult>(&step_id, "model_call", &())
-                .await?
-            {
+            // Only opt-in Unreal turns need a content-bound model step. The
+            // historical `&()` signature remains unchanged for normal turns.
+            // This prevents a completed model-{index} step from being replayed
+            // against a different late-output transcript after a crash.
+            let step = if conversation.managed.unreal_function_outputs() {
+                use sha2::{Digest, Sha256};
+                let history = prompt_history.iter().collect::<Vec<_>>();
+                let encoded =
+                    serde_json::to_vec(&(model.as_str(), thinking.as_str(), fast_mode, history))
+                        .map_err(|error| {
+                            NanocodexError::InvalidExecutionPolicy(error.to_string())
+                        })?;
+                let fingerprint: [u8; 32] = Sha256::digest(encoded).into();
+                steps
+                    .begin::<_, RecordedModelResult>(&step_id, "model_call", &fingerprint)
+                    .await?
+            } else {
+                steps
+                    .begin::<_, RecordedModelResult>(&step_id, "model_call", &())
+                    .await?
+            };
+            match step {
                 crate::agent::ExecutionStep::Execute => None,
                 crate::agent::ExecutionStep::Replay(output) => Some(output),
             }

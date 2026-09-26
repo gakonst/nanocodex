@@ -113,7 +113,9 @@ where
         TurnSteering {
             receiver: steer_rx,
             retained,
-            model_call_index: Arc::new(tokio::sync::Mutex::new(1)),
+            model_call_index: Arc::new(tokio::sync::Mutex::new(0)),
+            boundary_outputs: Arc::new(tokio::sync::Mutex::new(VecDeque::new())),
+            retained_boundary_outputs: Vec::new(),
         },
         cancel_rx,
         fork_tx,
