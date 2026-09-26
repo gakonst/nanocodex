@@ -212,7 +212,7 @@ impl ModelCheckpoint {
         );
     }
 
-    pub(crate) fn unreal_function_outputs(&self) -> bool {
+    pub(crate) const fn unreal_function_outputs(&self) -> bool {
         self.conversation.managed.unreal_function_outputs()
     }
 
