@@ -204,7 +204,7 @@ been removed; old rows are quarantined, never replayed as typed tool output.
 The dormant `AsyncJobs` ledger persists a stable turn, original provider call
 ID, job ID, arguments, correlation, and bounded result before dispatch. It
 registers `current_time`, `web__run`, and the local Just Bash `exec_command`,
-with eight active jobs and seven-day completed-row retention. The read-only
+with eight active jobs and seven-day *delivered*-row retention. Results checkpointed without a model wake remain durable and visible but may consume capacity. The read-only
 operations may be retried after a stale lease (at most three attempts). An
 uncertain or cancelled shell execution **must not be rerun**: its terminal
 result explicitly says the side effect may have happened. Cancel is a durable
@@ -215,9 +215,10 @@ CUA or remote Hands tool; they are not covered by this ledger.
 
 The private JS/WASM bridge stages the original-call pending output and admits
 one terminal same-call-ID checkpoint. **This is not yet a usable async mode**:
-active terminal results wait until the entire model turn ends, idle terminal
-results do not wake a prompt-less model continuation, and terminal receipts are
-not independently durable after context compaction. The API remains 501 until
-those scheduler/replay issues and live HTTP/WebSocket provider compatibility
-are resolved. A gated three-route canary is in `scripts/provider-canary`;
+active terminal results wait until the entire model turn ends, and idle
+terminal results do not wake a prompt-less model continuation. The Rust
+execution journal can recognize a completed result even after context compaction
+when a durable policy is attached, but a checkpointed result is not proof that
+the model saw it. The API remains 501 until scheduler/recovery end-to-end tests
+and live HTTP/WebSocket provider compatibility are resolved. A gated three-route canary is in `scripts/provider-canary`;
 its fixture tests do not establish live provider acceptance.
