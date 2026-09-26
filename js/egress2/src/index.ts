@@ -1,4 +1,4 @@
-import { DurableObject, WorkerEntrypoint } from "cloudflare:workers";
+import { DurableObject, WorkerEntrypoint, tracing } from "cloudflare:workers";
 import { createEgressHandler, type ActiveCredential } from "./handler";
 import { validChatGptImport, type ChatGptCredentialImport } from "./chatgpt";
 import { OwnerSubscription } from "./subscription";
@@ -88,8 +88,18 @@ const search = createSearchHandler<Env>({
 /** Private service binding only. Caller must authenticate the user before asserting the owner header. */
 export default class Egress2 extends WorkerEntrypoint<Env> {
   fetch(request: Request): Promise<Response> {
-    return request.url === "https://nanocodex.internal/v1/search"
-      ? search(request, this.env) : handler.fetch(request, this.env);
+    const isSearch = request.url === "https://nanocodex.internal/v1/search";
+    return tracing.enterSpan(isSearch ? "egress2.search" : "egress2.model", async span => {
+      // This is an application correlation UUID, not a Cloudflare trace/span ID.
+      // No owner, prompt, search terms, URL, or credential enters telemetry.
+      const supplied = request.headers.get("x-managed2-trace-id");
+      if (supplied && /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(supplied)) {
+        span.setAttribute("managed2.trace_id", supplied);
+      }
+      const response = await (isSearch ? search(request, this.env) : handler.fetch(request, this.env));
+      span.setAttribute("http.response.status_code", response.status);
+      return response;
+    });
   }
 
   async putCredential(ownerId: string, provider: string = "openai", value: string): Promise<void> {

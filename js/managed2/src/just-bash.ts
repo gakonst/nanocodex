@@ -1,4 +1,5 @@
 import type { NamedTool, ToolContext } from "nanocodex";
+import { tracing } from "cloudflare:workers";
 import { justBash, type Workspace } from "nanocodex-tools";
 
 export type BashPhase = "setup" | "vfs_hydrate" | "execute" | "vfs_flush";
@@ -13,6 +14,8 @@ const encoder = new TextEncoder();
 class SqliteWorkspace implements Workspace {
   readonly root = root;
   #stage = new Map<string, Entry | null>();
+  #traceNextList = false;
+  traceNextHydration(): void { this.#traceNextList = true; }
   constructor(private readonly storage: DurableObjectStorage, private readonly onHydrate: (durationMs: number) => void) {
     // This class itself is only constructed on the first exec_command call.
     storage.sql.exec(`CREATE TABLE IF NOT EXISTS bash_files (
@@ -48,6 +51,7 @@ class SqliteWorkspace implements Workspace {
   async list(path = ".", options: { recursive?: boolean; maxEntries?: number } = {}) {
     const start = performance.now();
     try {
+      const load = () => {
       const directory = this.path(path);
       const entries = this.metadata();
       if (entries.get(directory)?.kind !== "directory") throw new Error(`not a directory: ${directory}`);
@@ -56,6 +60,10 @@ class SqliteWorkspace implements Workspace {
         .map(([name, entry]) => ({ path: name, kind: entry.kind, ...(entry.kind === "file" ? { size: entry.size } : {}) }));
       if (found.length > (options.maxEntries ?? Infinity)) throw new Error("shell workspace listing limit exceeded");
       return found;
+      };
+      if (!this.#traceNextList) return load();
+      this.#traceNextList = false;
+      return tracing.enterSpan("managed2.bash.vfs_hydrate", load);
     } finally { this.onHydrate(performance.now() - start); }
   }
   async readFile(path: string): Promise<Uint8Array> {
@@ -149,7 +157,7 @@ export function createJustBashTool(storage: DurableObjectStorage, onPhase?: Bash
         let executionStart = setupStart;
         let hydrated = false;
         try {
-          const shell = await ready();
+          const shell = await tracing.enterSpan("managed2.bash.setup", ready);
           // The interpreter is imported by the generic tool handler, then
           // its aroundExecute hook calls list() once to refresh VFS metadata.
           observeHydrate = duration => {
@@ -159,7 +167,8 @@ export function createJustBashTool(storage: DurableObjectStorage, onPhase?: Bash
             phase(context, "vfs_hydrate", duration);
             executionStart = performance.now();
           };
-          try { return await shell.tool.handler(input, context); }
+          filesystem!.traceNextHydration();
+          try { return await tracing.enterSpan("managed2.bash.execute", () => shell.tool.handler(input, context)); }
           finally {
             if (!hydrated) {
               phase(context, "setup", performance.now() - setupStart);
@@ -168,7 +177,7 @@ export function createJustBashTool(storage: DurableObjectStorage, onPhase?: Bash
             }
             phase(context, "execute", performance.now() - executionStart);
             const flushStart = performance.now();
-            try { filesystem!.flush(); }
+            try { tracing.enterSpan("managed2.bash.vfs_flush", () => filesystem!.flush()); }
             catch (error) { filesystem!.discard(); throw error; }
             finally { phase(context, "vfs_flush", performance.now() - flushStart); }
           }

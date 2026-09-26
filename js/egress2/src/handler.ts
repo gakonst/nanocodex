@@ -1,3 +1,5 @@
+import { tracing } from "cloudflare:workers";
+
 /** The owner header is asserted by the trusted host, never by an untrusted client. */
 export const OWNER_HEADER = "x-managed2-owner";
 export const CREDENTIAL_PLACEHOLDER = "NANOCODEX_PROVIDER_CREDENTIAL";
@@ -99,7 +101,10 @@ export function createEgressHandler<Env>({
         // Do not echo failures from credential storage: they may contain sensitive data.
         let credential: string | ActiveCredential | null;
         try {
-          credential = await readCredential(ownerId, env);
+          credential = await tracing.enterSpan("egress2.credential", async span => {
+            if (traceId) span.setAttribute("managed2.trace_id", traceId);
+            return readCredential(ownerId, env);
+          });
         } catch {
           credentialMs = clock() - lookupStarted;
           return finish(new Response("Credential unavailable", { status: 502 }));
@@ -159,7 +164,14 @@ export function createEgressHandler<Env>({
       dispatchMs = clock() - credentialEnd;
       const fetchAttempt = async (active: ActiveCredential, retry = false): Promise<Response> => {
         const upstreamStarted = clock();
-        try { return await send(active, retry); }
+        try { return await tracing.enterSpan("egress2.upstream", async span => {
+          if (traceId) span.setAttribute("managed2.trace_id", traceId);
+          span.setAttribute("egress2.route", routeKind);
+          span.setAttribute("egress2.attempt", retry ? "recovery" : "first");
+          const response = await send(active, retry);
+          span.setAttribute("http.response.status_code", response.status);
+          return response;
+        }); }
         finally { upstreamMs += clock() - upstreamStarted; }
       };
       try {
@@ -170,7 +182,11 @@ export function createEgressHandler<Env>({
           await upstream.body?.cancel().catch(() => {});
           const recoveryStarted = clock();
           let recovered: ActiveCredential | null;
-          try { recovered = await recoverCredential(ownerId, credential.revision, env); }
+          const revision = credential.revision;
+          try { recovered = await tracing.enterSpan("egress2.credential_recovery", async span => {
+            if (traceId) span.setAttribute("managed2.trace_id", traceId);
+            return recoverCredential(ownerId, revision, env);
+          }); }
           catch { recovered = null; }
           recoveryMs = clock() - recoveryStarted;
           if (!recovered || recovered.kind !== "chatgpt" || recovered.expiresAt <= now()

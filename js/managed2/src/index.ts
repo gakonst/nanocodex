@@ -1,4 +1,4 @@
-import { DurableObject } from "cloudflare:workers";
+import { DurableObject, tracing } from "cloudflare:workers";
 import { Agent } from "nanocodex/cloudflare";
 import type { NamedTool } from "nanocodex";
 import { authenticate } from "./auth";
@@ -40,7 +40,11 @@ export default {
     if (!create && !credential && !match) return reply(404, { error: "not_found" });
     const events = match?.[2] === "events";
     const authStart = performance.now();
-    const principal = await authenticate(request, env.AUTH_API_KEY_HASHES);
+    const principal = await tracing.enterSpan("managed2.api.auth", async span => {
+      const authenticated = await authenticate(request, env.AUTH_API_KEY_HASHES);
+      span.setAttribute("managed2.auth.outcome", authenticated ? "allowed" : "denied");
+      return authenticated;
+    });
     const authMs = performance.now() - authStart;
     const authTiming = `auth;dur=${authMs.toFixed(1)}`;
     if (!principal) {
@@ -242,7 +246,13 @@ export class Session extends DurableObject<Env> {
     // acceptance result, not just the SQLite insert, with concurrent retries.
     const pending = this.#admissions.get(turnId);
     if (pending && pending.input !== input) return Promise.resolve(reply(409, { error: "idempotency_conflict" }));
-    const outcome = pending?.outcome ?? this.#admitTurnOnce(owner, turnId, input).then(async response => ({
+    const outcome = pending?.outcome ?? tracing.enterSpan("managed2.turn.admit", async span => {
+      const response = await this.#admitTurnOnce(owner, turnId, input);
+      const traceId = response.headers.get("x-managed2-trace-id");
+      if (traceId) span.setAttribute("managed2.trace_id", traceId);
+      span.setAttribute("http.response.status_code", response.status);
+      return response;
+    }).then(async response => ({
       status: response.status,
       body: await response.text(),
       headers: [...response.headers] as [string, string][],
@@ -381,12 +391,26 @@ export class Session extends DurableObject<Env> {
     if (!timing) return;
     const elapsed = Math.max(0, Date.now() - timing.started_at);
     if (event.type === "model.call.started") {
+      // Event callbacks can be in a different invocation; record a point-in-time
+      // marker. The durable timeline measures the full interval across events.
+      const phase = timing.first_tool_result_ms !== null ? "continuation" : "first";
+      tracing.enterSpan("managed2.model.call.started", span => {
+        span.setAttribute("managed2.trace_id", timing.trace_id);
+        span.setAttribute("managed2.model.phase", phase);
+      });
       const column = timing.first_tool_result_ms !== null ? "post_tool_model_call_ms" : "first_model_call_ms";
       this.ctx.storage.sql.exec(
         `UPDATE turn_timing SET ${column} = COALESCE(${column}, ?) WHERE id = ?`, elapsed, external,
       );
       console.info({ event: "managed2.model_call_started", trace_id: timing.trace_id,
         phase: timing.first_tool_result_ms !== null ? "after_tool" : "initial", elapsed_ms: elapsed });
+      return;
+    }
+    if (event.type === "model.call.completed" || event.type === "model.call.failed") {
+      tracing.enterSpan("managed2.model.call.ended", span => {
+        span.setAttribute("managed2.trace_id", timing.trace_id);
+        span.setAttribute("managed2.outcome", event.type === "model.call.completed" ? "completed" : "failed");
+      });
       return;
     }
     if (event.type === "tool.call") {
@@ -454,8 +478,10 @@ export class Session extends DurableObject<Env> {
     let initializing = true;
     const web = managedWeb({ egress: this.env.EGRESS, owner,
       onTiming: (context, phase, durationMs) => this.#toolTiming.phase(context, phase, durationMs),
+      correlation: context => this.#toolTiming.correlation(context),
     });
-    const options = { tools: [currentTime, this.#bash, web].map(tool => this.#toolTiming.instrument(tool)),
+    const options = { tools: [currentTime, this.#bash, web].map(tool => this.#toolTiming.instrument(tool,
+      context => this.#toolTiming.correlation(context))),
       instructions: "You are a concise assistant. Use exec_command for shell tasks in /brain." };
     Object.defineProperty(options, Symbol.for("nanocodex.cloudflare.internalConfiguration"), { value: {
       model: "gpt-6-sol", thinking: "low", reasoning_mode: "standard", fast_mode: false,
@@ -467,7 +493,9 @@ export class Session extends DurableObject<Env> {
       subagentsEnabled: false,
       onResponseCreateSent: () => this.#modelSent(),
     } });
-    return this.#agent = Agent.create({ ctx: this.ctx, env: { NANOCODEX: {
+    return this.#agent = tracing.enterSpan("managed2.agent.init", async span => {
+      span.setAttribute("managed2.trace_id", initTrace);
+      return Agent.create({ ctx: this.ctx, env: { NANOCODEX: {
       fetch: (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
         const source = new Request(input, init);
         if (source.url !== "https://nanocodex.internal/v1/responses") {
@@ -483,10 +511,16 @@ export class Session extends DurableObject<Env> {
           ? initializing ? initTrace : crypto.randomUUID() : undefined);
         if (trace) headers.set("x-managed2-trace-id", trace);
         const began = performance.now();
-        return this.env.EGRESS.fetch("https://api.openai.com/v1/responses", {
-          method: source.method, headers, body: source.body, signal: source.signal,
-          redirect: "manual",
-        }).then(response => {
+        return tracing.enterSpan("managed2.model.egress", async span => {
+          if (trace) span.setAttribute("managed2.trace_id", trace);
+          span.setAttribute("managed2.model.transport", this.env.RESPONSES_TRANSPORT === "websocket" ? "websocket" : "http");
+          span.setAttribute("managed2.model.phase", this.env.RESPONSES_TRANSPORT !== "websocket" ? "turn_http"
+            : active ? "turn_reconnect" : initializing ? "preconnect" : "idle_reconnect");
+          const response = await this.env.EGRESS.fetch("https://api.openai.com/v1/responses", {
+            method: source.method, headers, body: source.body, signal: source.signal,
+            redirect: "manual",
+          });
+          span.setAttribute("http.response.status_code", response.status);
           const egressTiming = response.headers.get("server-timing") ?? "";
           const marker = /(?:^|, )egress_route;desc="(openai_api|chatgpt_subscription)"(?:,|$)/.exec(egressTiming)?.[1];
           const dispatch = /(?:^|, )egress_dispatch;dur=([0-9.]+)(?:,|$)/.exec(egressTiming)?.[1];
@@ -514,6 +548,7 @@ export class Session extends DurableObject<Env> {
         return agent;
       })
       .catch(error => { this.#agent = undefined; throw error; });
+    });
   }
 
   async #dispatch(id: string, input: string, owner: string): Promise<void> {
@@ -525,18 +560,25 @@ export class Session extends DurableObject<Env> {
     );
     const timing = this.#timing(id)!;
     this.#activeTraces.set(id, timing.trace_id);
-    const turn = agent.turn.prompt({ id, input });
+    let turn: ReturnType<typeof agent.turn.prompt> | undefined;
     try {
-      await turn.accepted();
+      turn = agent.turn.prompt({ id, input });
+      await tracing.enterSpan("managed2.turn.admission", async admission => {
+        admission.setAttribute("managed2.trace_id", timing.trace_id);
+        await turn!.accepted();
+      });
       this.ctx.storage.sql.exec("UPDATE turn_timing SET accepted_ms = COALESCE(accepted_ms, ?) WHERE id = ?",
         Math.max(0, Date.now() - timing.started_at), id);
       this.ctx.storage.sql.exec("UPDATE turns SET state = 'accepted' WHERE id = ?", id);
       this.#running.add(id);
       await this.ctx.storage.setAlarm(Date.now() + 10_000);
       this.ctx.waitUntil((async () => {
-        let result: Awaited<ReturnType<typeof turn.result>> | undefined;
+        let result: Awaited<ReturnType<NonNullable<typeof turn>["result"]>> | undefined;
         try {
-          result = await turn.result();
+          result = await tracing.enterSpan("managed2.turn.result", async span => {
+            span.setAttribute("managed2.trace_id", timing.trace_id);
+            return turn!.result();
+          });
           this.ctx.storage.sql.exec("UPDATE turns SET state = 'completed', message = ? WHERE id = ?", result.finalMessage, id);
         } catch (error) {
           this.ctx.storage.sql.exec("UPDATE turns SET state = 'failed', error = ? WHERE id = ?",
@@ -559,16 +601,18 @@ export class Session extends DurableObject<Env> {
             first_model_call_ms: observed?.first_model_call_ms ?? null,
             post_tool_model_call_ms: observed?.post_tool_model_call_ms ?? null });
           result?.dispose();
-          turn.dispose();
+          turn?.dispose();
           this.#running.delete(id);
           this.#activeTraces.delete(id);
           for (const [internal, external] of this.#eventTurns) {
-            if (external === id) this.#eventTurns.delete(internal);
+            if (external === id) {
+              this.#eventTurns.delete(internal);
+            }
           }
         }
       })());
     } catch (error) {
-      turn.dispose();
+      turn?.dispose();
       this.#activeTraces.delete(id);
       throw error;
     }
