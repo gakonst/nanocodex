@@ -517,7 +517,7 @@ impl<S> ModelRun<S> {
     /// Shared transcript mutation for an idle wake and an active model boundary.
     /// The active caller must serialize this with model-request admission and
     /// persist the returned checkpoint before acknowledging model uptake.
-    pub(super) fn append_late_output_to_session(
+    fn append_late_output_to_session(
         session: &mut ModelSessionState,
         call_id: &str,
         output: FunctionOutputBody,

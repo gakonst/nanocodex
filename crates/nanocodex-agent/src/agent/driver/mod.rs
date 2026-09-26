@@ -5,7 +5,8 @@ mod wake;
 use wake::drive_late_wake;
 
 use super::execution::{
-    AdmittedExecution, ExecutionTurn, SteerDelivery, SteerQueue, SteerReceipt, SteerSender,
+    AdmittedExecution, ExecutionBoundaryOutput, ExecutionTurn, SteerDelivery, SteerQueue,
+    SteerReceipt, SteerSender,
 };
 use super::spawn::{validate_model_reasoning_mode, validate_model_thinking};
 use super::*;
@@ -1317,6 +1318,41 @@ where
                     continue;
                 }
             };
+            let retained_boundary_outputs = match if latest_fork_checkpoint
+                .as_ref()
+                .is_some_and(|checkpoint| checkpoint.model().unreal_function_outputs())
+            {
+                execution_turn.retained_boundary_outputs().await
+            } else {
+                Ok(Vec::new())
+            } {
+                Ok(outputs) => outputs
+                    .into_iter()
+                    .map(|entry| {
+                        let ExecutionBoundaryOutput::TerminalOutput { call_id, output } =
+                            entry.output;
+                        QueuedBoundaryOutput {
+                            call_id,
+                            output,
+                            operation_id: entry.message_id,
+                            durable_index: entry.index,
+                            accepted_after_model_call_index: entry.accepted_after_model_call_index,
+                            model_call_index: entry.model_call_index,
+                        }
+                    })
+                    .collect::<Vec<_>>(),
+                Err(error) => {
+                    if let Some(operation_id) = &execution_operation {
+                        self.execution.release_claim(operation_id).await;
+                    }
+                    let outcome = self
+                        .execution
+                        .recover_failure(execution_operation.as_deref(), Err(error))
+                        .await;
+                    drop(result.send(outcome));
+                    continue;
+                }
+            };
             let execution_base_checkpoint = execution_operation
                 .as_ref()
                 .map(|_| latest_fork_checkpoint.clone());
@@ -1362,7 +1398,7 @@ where
                             retained: retained_steers,
                             model_call_index: Arc::clone(&model_call_index),
                             boundary_outputs: Arc::clone(&boundary_outputs),
-                            retained_boundary_outputs: Vec::new(),
+                            retained_boundary_outputs,
                         },
                         cancel_rx,
                         fork_snapshots,
@@ -1652,7 +1688,45 @@ where
                                 drop(result.send(Err(model_change_locked())));
                             }
                             Some(Command::SubmitLateFunctionOutput { call_id, output, operation_id, result }) => {
-                                pending_late_outputs.push((call_id, output, operation_id, result));
+                                if execution_operation.is_none() {
+                                    // Existing nondurable hosts keep the idle fallback.
+                                    pending_late_outputs.push((call_id, output, operation_id, result));
+                                    continue;
+                                }
+                                // The lock fences acceptance against the next model
+                                // request admission. No model output is acknowledged
+                                // merely because its durable receipt was accepted.
+                                let call_index = model_call_index.lock().await;
+                                let available = execution_turn.retained_boundary_outputs().await
+                                    .map(|pending| pending.len() < 8);
+                                let admitted = match available {
+                                    Ok(available) => execution_turn.accept_boundary_output(
+                                        call_id.clone(), output.clone(), operation_id.clone(),
+                                        *call_index, available,
+                                    ).await,
+                                    Err(error) => Err(error),
+                                };
+                                let outcome = match admitted {
+                                    Ok(index) => {
+                                        let replayed = index.is_none();
+                                        if let Some(index) = index {
+                                            // Enqueue after durable acceptance, while still
+                                            // fencing request admission with the same lock.
+                                            boundary_outputs.lock().await.push_back(QueuedBoundaryOutput {
+                                                call_id: call_id.clone(), output,
+                                                operation_id: operation_id.clone(), durable_index: index,
+                                                accepted_after_model_call_index: *call_index,
+                                                model_call_index: None,
+                                            });
+                                        }
+                                        Ok(LateFunctionOutputReceipt {
+                                            operation_id, call_id, replayed, continuation_started: false,
+                                        })
+                                    }
+                                    Err(error) => Err(error),
+                                };
+                                drop(call_index);
+                                drop(result.send(outcome));
                             }
                             Some(Command::AppendDeveloperMessage { text, result }) => {
                                 pending_developer_messages.push((text, result));

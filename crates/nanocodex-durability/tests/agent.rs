@@ -4557,3 +4557,159 @@ async fn deterministic_hosted_stream_failure_is_terminal_across_cold_reopen() ->
 async fn transient_hosted_stream_failure_remains_retryable_across_cold_reopen() -> Result<()> {
     assert_hosted_stream_failure_recovery(false).await
 }
+
+#[derive(Clone)]
+struct BoundaryProbeService {
+    requests: tokio::sync::mpsc::UnboundedSender<Vec<serde_json::Value>>,
+    generations: Arc<std::sync::atomic::AtomicUsize>,
+    release_first: Arc<tokio::sync::Notify>,
+}
+
+impl tower::Service<nanocodex_oai_api::tower::ResponsesAttempt> for BoundaryProbeService {
+    type Response = nanocodex_oai_api::tower::ResponsesServiceResponse;
+    type Error = ResponseError;
+    type Future =
+        Pin<Box<dyn Future<Output = std::result::Result<Self::Response, Self::Error>> + Send>>;
+
+    fn poll_ready(
+        &mut self,
+        _: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::result::Result<(), Self::Error>> {
+        std::task::Poll::Ready(Ok(()))
+    }
+
+    fn call(&mut self, request: nanocodex_oai_api::tower::ResponsesAttempt) -> Self::Future {
+        let kind = request.kind();
+        let first = if matches!(
+            kind,
+            nanocodex_oai_api::tower::ResponsesAttemptKind::Generation
+        ) {
+            let items = request
+                .input_items()
+                .map(|item| serde_json::to_value(item).unwrap())
+                .collect();
+            self.requests.send(items).unwrap();
+            self.generations.fetch_add(1, Ordering::SeqCst) == 0
+        } else {
+            false
+        };
+        let gate = Arc::clone(&self.release_first);
+        Box::pin(async move {
+            if first {
+                gate.notified().await;
+            }
+            Ok(successful_attempt(kind))
+        })
+    }
+}
+
+#[tokio::test]
+async fn accepted_terminal_crosses_active_model_boundary_with_original_call_id() -> Result<()> {
+    use nanocodex_oai_api::responses::FunctionOutputBody;
+    let workspace = temporary_workspace("unreal-active-boundary")?;
+    let seed_openai = OpenAi::builder("test-key")
+        .service(|| DurableReplayService {
+            generations: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        })
+        .build()?;
+    let (seed, seed_events) = Nanocodex::builder(seed_openai)
+        .workspace(&workspace)
+        .tools(Tools::builder().without_defaults().build()?)
+        .build()?;
+    seed.prompt("seed").await?.result().await?;
+    let mut value = serde_json::to_value(seed.snapshot().await?)?;
+    seed.shutdown().await?;
+    drop(seed_events);
+    value["unreal_function_outputs"] = json!(true);
+    let history = value["history"].as_array_mut().unwrap();
+    history
+        .push(json!({"type":"function_call", "call_id":"job-1", "name":"job", "arguments":"{}"}));
+    history.push(json!({"type":"function_call_output", "call_id":"job-1", "output":
+        "Tool call is still running. Its result arrives in a later turn: continue with independent work, or end your turn to wait for it."}));
+
+    let store = MemoryStore::new()?;
+    let state = DurableSession::open(store.clone(), "unreal-active-boundary").await?;
+    let (tx, mut requests) = tokio::sync::mpsc::unbounded_channel();
+    let generations = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let release_first = Arc::new(tokio::sync::Notify::new());
+    let openai = OpenAi::builder("test-key")
+        .service({
+            let generations = Arc::clone(&generations);
+            let release_first = Arc::clone(&release_first);
+            move || BoundaryProbeService {
+                requests: tx.clone(),
+                generations: Arc::clone(&generations),
+                release_first: Arc::clone(&release_first),
+            }
+        })
+        .build()?;
+    let (agent, events) = Nanocodex::builder(openai)
+        .resume(serde_json::from_value(value)?)
+        .workspace(&workspace)
+        .tools(Tools::builder().without_defaults().build()?)
+        .durability(state.clone())
+        .await?
+        .build()?;
+    let turn = agent
+        .prompt(PromptRequest::new("independent work").request_id("active-boundary-turn"))
+        .await?;
+    let initial = tokio::time::timeout(Duration::from_secs(5), requests.recv())
+        .await?
+        .unwrap();
+    assert!(
+        !initial
+            .iter()
+            .any(|item| item["output"] == "terminal result")
+    );
+    let receipt = tokio::time::timeout(
+        Duration::from_secs(5),
+        agent.submit_late_function_output(
+            "job-1",
+            FunctionOutputBody::Text("terminal result".into()),
+            "job-identity-1",
+        ),
+    )
+    .await??;
+    assert!(!receipt.replayed && !receipt.continuation_started);
+    let duplicate = agent
+        .submit_late_function_output(
+            "job-1",
+            FunctionOutputBody::Text("terminal result".into()),
+            "job-identity-1",
+        )
+        .await?;
+    assert!(duplicate.replayed);
+    release_first.notify_one();
+    let second = tokio::time::timeout(Duration::from_secs(5), requests.recv())
+        .await?
+        .unwrap();
+    let terminal = second
+        .iter()
+        .filter(|item| {
+            item["type"] == "function_call_output"
+                && item["call_id"] == "job-1"
+                && item["output"] == "terminal result"
+        })
+        .count();
+    assert_eq!(
+        terminal, 1,
+        "exact original-call-ID terminal must enter next request once"
+    );
+    tokio::time::timeout(Duration::from_secs(5), turn.result()).await??;
+    assert_eq!(generations.load(Ordering::SeqCst), 2);
+    let operation = state
+        .state()
+        .await?
+        .operations()
+        .get("active-boundary-turn")
+        .unwrap()
+        .clone();
+    let confirmed = &operation.boundary_output_receipts["job-identity-1"];
+    assert_eq!(confirmed.confirmed_model_call_index, Some(2));
+    assert_eq!(confirmed.response_id.as_deref(), Some("durable-response"));
+    assert!(operation.boundary_outputs.is_empty());
+    agent.shutdown().await?;
+    drop(events);
+    std::fs::remove_dir_all(workspace)?;
+    Ok(())
+}

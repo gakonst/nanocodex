@@ -296,11 +296,9 @@ pub trait ExecutionPolicy: Send + Sync {
         &'a self,
         _operation_id: String,
     ) -> ExecutionFuture<'a, Result<Vec<RetainedExecutionBoundaryOutput>>> {
-        Box::pin(async {
-            Err(NanocodexError::ExecutionPolicyCapabilityUnsupported {
-                capability: "retained_boundary_outputs",
-            })
-        })
+        // Older policies could never accept this opt-in output, so their
+        // recovery queue is necessarily empty. Acceptance itself fails closed.
+        Box::pin(async { Ok(Vec::new()) })
     }
 
     /// Returns steering inputs retained for the current operation attempt.
@@ -560,11 +558,9 @@ pub trait ExecutionPolicy: Send + Sync {
         &'a self,
         _operation_id: String,
     ) -> ExecutionFuture<'a, Result<Vec<RetainedExecutionBoundaryOutput>>> {
-        Box::pin(async {
-            Err(NanocodexError::ExecutionPolicyCapabilityUnsupported {
-                capability: "retained_boundary_outputs",
-            })
-        })
+        // Older policies could never accept this opt-in output, so their
+        // recovery queue is necessarily empty. Acceptance itself fails closed.
+        Box::pin(async { Ok(Vec::new()) })
     }
 
     /// Returns steering inputs retained for the current operation attempt.
@@ -1316,6 +1312,42 @@ impl ExecutionTurn {
             policy.begin_attempt(operation_id.clone()).await?;
         }
         self.retained_steers().await
+    }
+
+    /// Returns accepted terminal outputs not yet confirmed by a completed model step.
+    pub(crate) async fn retained_boundary_outputs(
+        &self,
+    ) -> Result<Vec<RetainedExecutionBoundaryOutput>> {
+        let (Some(policy), Some(operation_id)) = (&self.policy, &self.operation_id) else {
+            return Ok(Vec::new());
+        };
+        policy.retained_boundary_outputs(operation_id.clone()).await
+    }
+
+    /// Atomically retains a trusted typed completion with the running operation.
+    /// Identical caller retries replay their original receipt without enqueuing twice.
+    pub(crate) async fn accept_boundary_output(
+        &self,
+        call_id: String,
+        output: nanocodex_oai_api::responses::FunctionOutputBody,
+        message_id: String,
+        accepted_after_model_call_index: u32,
+        capacity_available: bool,
+    ) -> Result<Option<u32>> {
+        let (Some(policy), Some(operation_id)) = (&self.policy, &self.operation_id) else {
+            return Err(NanocodexError::ExecutionPolicyCapabilityUnsupported {
+                capability: "active_boundary_output",
+            });
+        };
+        policy
+            .accept_identified_boundary_output(
+                operation_id.clone(),
+                message_id,
+                accepted_after_model_call_index,
+                ExecutionBoundaryOutput::TerminalOutput { call_id, output },
+                capacity_available,
+            )
+            .await
     }
 
     pub(crate) fn steps(&self) -> Option<ExecutionSteps> {

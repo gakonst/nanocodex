@@ -45,8 +45,8 @@ use crate::{NanocodexError, Result, session::SessionSnapshot, usage::TurnUsage};
 use crate::{
     model::run::{
         CompletedModelTurn, HistoryCheckpoint, ModelCheckpoint, ModelCompactOutcome, ModelRun,
-        ModelTurnOutcome, PreparedCheckpoint, TurnSteering, prepare_checkpoint,
-        prepare_history_checkpoint, prepare_resumed_checkpoint,
+        ModelTurnOutcome, PreparedCheckpoint, QueuedBoundaryOutput, TurnSteering,
+        prepare_checkpoint, prepare_history_checkpoint, prepare_resumed_checkpoint,
     },
     session::{CommittedSession, SessionResume},
 };

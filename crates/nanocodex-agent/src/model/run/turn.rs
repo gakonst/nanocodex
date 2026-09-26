@@ -953,6 +953,10 @@ where
         }));
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "keep independent steer and terminal-output lanes explicit at model boundaries"
+    )]
     pub(super) async fn drive_session(
         &mut self,
         session: &mut ModelSessionState,
@@ -980,7 +984,8 @@ where
         // Never discard a bound-but-unacknowledged output merely because its
         // model ordinal precedes the restored call. Recovery must establish
         // provider uptake from the recorded step first, or fail closed.
-        let mut pending_boundary_outputs = retained_boundary_outputs.into();
+        let mut pending_boundary_outputs: VecDeque<QueuedBoundaryOutput> =
+            retained_boundary_outputs.into();
         if resumed
             && pending_boundary_outputs
                 .iter()
