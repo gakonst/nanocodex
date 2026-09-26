@@ -73,6 +73,66 @@ it("persists same-call identity before egress and emits a stable terminal intent
   });
 });
 
+it("reconciles an active acceptance once after source turn settles, including after DO rehydrate", async () => {
+  await runInDurableObject(stub(), async (_session, state) => {
+    state.storage.sql.exec("INSERT INTO turns (id, input, state) VALUES ('original-turn', 'work', 'accepted')");
+    const tasks: Promise<unknown>[] = [];
+    const intents: FinalToolResultIntent[] = [];
+    const read: NamedTool = { name: "current_time", description: "test read", handler: () => ({ utc: "now" }) };
+    const deliver = async (intent: FinalToolResultIntent) => {
+      intents.push(intent);
+      return accepted(intent); // acceptance alone is not provider uptake
+    };
+    const jobs = new AsyncJobs(state.storage, { current_time: read }, () => "original-turn",
+      deliver, work => { tasks.push(work); });
+    expect(jobs.tool(read).handler({}, context("call-cancelled"))).toEqual({ output: UNREAL_RUNNING_OUTPUT });
+    const id = jobId(state, "call-cancelled");
+    await Promise.all(tasks);
+    await jobs.reconcile();
+    expect(jobs.status(id)).toMatchObject({ state: "checkpointed", continuation_started: false });
+    await jobs.reconcile();
+    expect(intents).toHaveLength(1); // never resubmit during the active turn
+    state.storage.sql.exec("UPDATE turns SET state = 'failed' WHERE id = 'original-turn'");
+    const restored = new AsyncJobs(state.storage, { current_time: read }, () => "original-turn",
+      deliver, () => {});
+    await restored.reconcile();
+    expect(intents).toHaveLength(2);
+    expect(intents[1]).toEqual(intents[0]); // never mint a new operation after cancellation
+    expect(restored.status(id)).toMatchObject({ state: "checkpointed", continuation_started: false });
+    await restored.reconcile();
+    expect(intents).toHaveLength(2); // bounded; still not a model-uptake receipt
+  });
+});
+
+it("keeps a terminal-racing active receipt eligible for idle retry", async () => {
+  await runInDurableObject(stub(), async (_session, state) => {
+    state.storage.sql.exec("INSERT INTO turns (id, input, state) VALUES ('original-turn', 'work', 'accepted')");
+    const tasks: Promise<unknown>[] = [];
+    const intents: FinalToolResultIntent[] = [];
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const read: NamedTool = { name: "current_time", description: "test read", handler: () => ({ utc: "now" }) };
+    const jobs = new AsyncJobs(state.storage, { current_time: read }, () => "original-turn",
+      async intent => {
+        intents.push(intent);
+        if (intents.length === 1) await gate;
+        return accepted(intent);
+      }, work => { tasks.push(work); });
+    jobs.tool(read).handler({}, context("call-race"));
+    await Promise.all(tasks);
+    const first = jobs.reconcile();
+    // Wait until the first delivery has started and captured the active state.
+    for (let attempt = 0; intents.length === 0 && attempt < 100; attempt++) await Promise.resolve();
+    expect(intents).toHaveLength(1);
+    state.storage.sql.exec("UPDATE turns SET state = 'failed' WHERE id = 'original-turn'");
+    release();
+    await first;
+    await jobs.reconcile();
+    expect(intents).toHaveLength(2);
+    expect(intents[1]).toEqual(intents[0]);
+  });
+});
+
 it("retries the identical terminal intent after uncertain delivery", async () => {
   await runInDurableObject(stub(), async (_session, state) => {
     const tasks: Promise<unknown>[] = [];
@@ -323,8 +383,9 @@ it("retains a checkpoint without a model continuation and reconciles the same op
     expect(intents).toHaveLength(1);
     expect(restored.status(id)).toMatchObject({ state: "checkpointed" });
     expect(await state.storage.getAlarm()).toBeNull();
-    // A new wake-capable generation explicitly retries the already-checkpointed
-    // operation once; ordinary alarms on the old kernel must not spin forever.
+    // A new wake-capable generation retries only after the source turn is
+    // terminal; an active receipt might otherwise still bind to its next call.
+    state.storage.sql.exec("INSERT INTO turns (id, input, state) VALUES ('turn', 'work', 'completed')");
     woke = true;
     const upgraded = make(1);
     await upgraded.reconcile();

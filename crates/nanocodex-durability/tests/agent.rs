@@ -4713,3 +4713,99 @@ async fn accepted_terminal_crosses_active_model_boundary_with_original_call_id()
     std::fs::remove_dir_all(workspace)?;
     Ok(())
 }
+
+#[tokio::test]
+async fn active_terminal_cancelled_before_uptake_requires_idle_reconciliation() -> Result<()> {
+    use nanocodex_oai_api::responses::FunctionOutputBody;
+    let workspace = temporary_workspace("unreal-cancelled-boundary")?;
+    let seed_openai = OpenAi::builder("test-key")
+        .service(|| DurableReplayService {
+            generations: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        })
+        .build()?;
+    let (seed, seed_events) = Nanocodex::builder(seed_openai)
+        .workspace(&workspace)
+        .tools(Tools::builder().without_defaults().build()?)
+        .build()?;
+    seed.prompt("seed").await?.result().await?;
+    let mut value = serde_json::to_value(seed.snapshot().await?)?;
+    seed.shutdown().await?;
+    drop(seed_events);
+    value["unreal_function_outputs"] = json!(true);
+    let history = value["history"].as_array_mut().unwrap();
+    history
+        .push(json!({"type":"function_call", "call_id":"job-1", "name":"job", "arguments":"{}"}));
+    history.push(json!({"type":"function_call_output", "call_id":"job-1", "output":
+        "Tool call is still running. Its result arrives in a later turn: continue with independent work, or end your turn to wait for it."}));
+
+    let state = DurableSession::open(MemoryStore::new()?, "unreal-cancelled-boundary").await?;
+    let (tx, mut requests) = tokio::sync::mpsc::unbounded_channel();
+    let generations = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let release_first = Arc::new(tokio::sync::Notify::new());
+    let openai = OpenAi::builder("test-key")
+        .service({
+            let generations = Arc::clone(&generations);
+            let release_first = Arc::clone(&release_first);
+            move || BoundaryProbeService {
+                requests: tx.clone(),
+                generations: Arc::clone(&generations),
+                release_first: Arc::clone(&release_first),
+            }
+        })
+        .build()?;
+    let (agent, events) = Nanocodex::builder(openai)
+        .resume(serde_json::from_value(value)?)
+        .workspace(&workspace)
+        .tools(Tools::builder().without_defaults().build()?)
+        .durability(state.clone())
+        .await?
+        .build()?;
+    let turn = agent
+        .prompt(PromptRequest::new("independent work").request_id("cancelled-turn"))
+        .await?;
+    tokio::time::timeout(Duration::from_secs(5), requests.recv())
+        .await?
+        .unwrap();
+    let terminal = FunctionOutputBody::Text("terminal result".into());
+    let receipt = agent
+        .submit_late_function_output("job-1", terminal.clone(), "job-identity-1")
+        .await?;
+    assert!(!receipt.replayed && !receipt.continuation_started);
+    turn.cancel().await?;
+    assert!(matches!(
+        turn.result().await,
+        Err(NanocodexError::TurnCancelled)
+    ));
+    let retained = state.state().await?;
+    let operation = &retained.operations()["cancelled-turn"];
+    assert!(matches!(
+        operation.status,
+        OperationStatus::Cancelled { .. }
+    ));
+    assert!(operation.boundary_output_receipts["job-identity-1"].discarded);
+    assert_eq!(
+        operation.boundary_output_receipts["job-identity-1"].confirmed_model_call_index,
+        None
+    );
+    // The original active receipt was only an acceptance, not delivery. A
+    // durable host must reconcile the identical job ID after turn settlement.
+    let retried = agent
+        .submit_late_function_output("job-1", terminal, "job-identity-1")
+        .await?;
+    assert!(!retried.replayed);
+    let wake = tokio::time::timeout(Duration::from_secs(5), requests.recv())
+        .await?
+        .unwrap();
+    assert_eq!(
+        wake.iter()
+            .filter(|item| item["type"] == "function_call_output"
+                && item["call_id"] == "job-1"
+                && item["output"] == "terminal result")
+            .count(),
+        1
+    );
+    agent.shutdown().await?;
+    drop(events);
+    std::fs::remove_dir_all(workspace)?;
+    Ok(())
+}

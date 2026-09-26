@@ -13,9 +13,11 @@ const MAX_ATTEMPTS = 3;
 const MAX_JOBS = 100;
 const MAX_ACTIVE = 8;
 const RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
-// Bump only when a deployed core can actually start a prompt-less continuation.
-// Existing checkpointed rows get one stable-operation reconciliation per generation.
-const WAKE_GENERATION = 0;
+// Once the originating turn settles, replay the identical stable operation
+// once at an idle boundary. An active-turn acceptance may be discarded by
+// cancellation before a model request receives it. This generation records
+// the post-settlement attempt; it does not assert model uptake.
+const WAKE_GENERATION = 1;
 const bound = (value: string) => value.length > MAX_STATUS_RESULT ? `${value.slice(0, MAX_STATUS_RESULT)}\n[truncated in status; original output retained]` : value;
 
 type Job = { id: string; invocation: string; original_turn: string; execution_turn: string | null; call_id: string | null;
@@ -37,6 +39,10 @@ export type DeliverFinalToolResult = (intent: FinalToolResultIntent) => Promise<
 export class TypedIngestionUnavailable extends Error {
   constructor() { super("typed same-call-ID result ingestion is not available"); }
 }
+
+const terminalOrigin = `EXISTS (SELECT 1 FROM turns AS source_turn
+  WHERE source_turn.id = async_jobs.original_turn
+    AND source_turn.state IN ('completed', 'failed', 'cancelled'))`;
 
 export class AsyncJobs {
   private readonly active = new Set<string>();
@@ -68,7 +74,8 @@ export class AsyncJobs {
     // Deployment alone does not wake an idle DO. On its next construction,
     // schedule one reconciliation for rows from an older wake-capable adapter.
     if (storage.sql.exec<{ n: number }>(
-      "SELECT COUNT(*) AS n FROM async_jobs WHERE state = 'checkpointed' AND wake_generation < ?",
+       `SELECT COUNT(*) AS n FROM async_jobs WHERE state = 'checkpointed'
+        AND wake_generation < ? AND ${terminalOrigin}`,
       this.wakeGeneration).toArray()[0]!.n > 0) {
       this.waitUntil((async () => {
         const nextAt = Date.now() + 1_000;
@@ -225,7 +232,7 @@ export class AsyncJobs {
       Date.now() - RETENTION_MS);
     const rows = this.storage.sql.exec<Job>(
       `SELECT * FROM async_jobs WHERE state NOT IN ('delivered', 'legacy_uninjectable')
-        AND (state != 'checkpointed' OR wake_generation < ?)
+        AND (state != 'checkpointed' OR (wake_generation < ? AND ${terminalOrigin}))
         ORDER BY (state = 'checkpointed'), (state = 'awaiting_integration'), created_at LIMIT 25`,
       this.wakeGeneration,
     ).toArray();
@@ -244,16 +251,22 @@ export class AsyncJobs {
       if (this.delivering.has(job.id)) continue;
       this.delivering.add(job.id);
       try {
+        // Capture settlement before awaiting the Rust adapter. A cancellation
+        // can race a slow receipt; observing only afterwards would suppress
+        // the necessary idle reconciliation of that active acceptance.
+        const settledBefore = this.storage.sql.exec<{ n: number }>(
+          `SELECT COUNT(*) AS n FROM async_jobs WHERE id = ? AND ${terminalOrigin}`, job.id,
+        ).toArray()[0]!.n > 0;
         // Stable intent across ambiguous failures; only the Rust adapter can
         // decide whether the pending output was sent and dedupe terminal output.
         const rawReceipt = await this.deliverFinal({ originalTurn: job.original_turn, executionTurn: job.execution_turn,
           callId: job.call_id, tool: job.tool, jobId: job.id,
           terminalState, output: job.result });
-        // Only a verified core checkpoint acknowledges delivery. The kernel
-        // currently reports continuation_started=false even for a durable
-        // checkpoint; do not claim that the model saw the terminal output.
-        // Keep its stable intent for a later wake-capable kernel to reconcile.
-        // False receipts are parked; no perpetual alarm against an old core.
+        // A false receipt is acceptance, never proof of provider uptake. If
+        // accepted during the original active turn, leave it eligible for one
+        // identical-operation reconciliation after that turn settles. The
+        // durable Rust journal deduplicates an already delivered terminal.
+        // Neither outcome by itself upgrades the status to delivered.
         const receipt = rawReceipt as Partial<FinalToolResultReceipt> | null | undefined;
         if (receipt?.operation_id !== job.id || receipt.call_id !== job.call_id
           || typeof receipt.replayed !== "boolean" || typeof receipt.continuation_started !== "boolean") {
@@ -262,7 +275,7 @@ export class AsyncJobs {
         this.storage.sql.exec(`UPDATE async_jobs SET state = ?, delivered_at = ?, continuation_started = ?, wake_generation = ?
           WHERE id = ? AND state IN ('completed', 'failed', 'uncertain', 'cancelled', 'awaiting_integration', 'checkpointed')`,
           receipt.continuation_started ? "delivered" : "checkpointed", Date.now(),
-          receipt.continuation_started ? 1 : 0, this.wakeGeneration, job.id);
+          receipt.continuation_started ? 1 : 0, settledBefore ? this.wakeGeneration : 0, job.id);
       } catch (error) {
         if (error instanceof TypedIngestionUnavailable) {
           this.storage.sql.exec("UPDATE async_jobs SET state = 'awaiting_integration' WHERE id = ?", job.id);
@@ -271,13 +284,13 @@ export class AsyncJobs {
         this.delivering.delete(job.id);
       }
     }
-    // Checkpointed rows deliberately have no alarm until the wake adapter's
-    // generation changes. Drain upgraded rows in bounded batches, then park
-    // false receipts rather than perpetually polling the old core.
+    // A checkpointed active acceptance is retried only after its source turn
+    // settles. One post-settlement attempt is parked without a poll loop;
+    // its false receipt still cannot prove model uptake.
     if (retry || this.storage.sql.exec<{ n: number }>(
       `SELECT COUNT(*) AS n FROM async_jobs WHERE state IN
         ('queued', 'running', 'completed', 'failed', 'uncertain', 'cancelled')
-        OR (state = 'checkpointed' AND wake_generation < ?)`, this.wakeGeneration,
+        OR (state = 'checkpointed' AND wake_generation < ? AND ${terminalOrigin})`, this.wakeGeneration,
     ).toArray()[0]!.n > 0) await this.storage.setAlarm(Date.now() + 1_000);
   }
 }
