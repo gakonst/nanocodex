@@ -708,6 +708,12 @@ it("rotates nearly full terminal capacity across rehydration without false uptak
        'turn-1', ?, 'current_time', '{}', ?, '"ready"', 'completed', 0, 0)`,
     id, `turn-1:nearly-full-${index}`, index < 90 ? "busy-source" : "ready-source",
     `nearly-full-${index}`, index < 90 ? "checkpointed" : "completed");
+    // Simulate a crash after advancing past the first page but before any
+    // adapter call. The persisted cursor must wrap to the skipped IDs.
+    state.storage.sql.exec(
+      "UPDATE async_jobs_reconcile_cursor SET created_at = 0, id = ? WHERE singleton = 1",
+      [...checkpointed, ...ready].sort()[24]!,
+    );
     const inspected = new Set<string>();
     let readyAttempts = 0;
     const makeJobs = () => new AsyncJobs(state.storage, { current_time: read }, () => "ready-source",
