@@ -536,7 +536,7 @@ export class Session extends DurableObject<Env> {
         async intent => {
           const agent = await this.#ready(owner);
           try {
-            await functionCallOutputCapability(agent, intent.callId).submit({
+            return await functionCallOutputCapability(agent, intent.callId).submit({
               output: intent.output, operationId: intent.jobId,
             });
           } catch (error) {
@@ -568,7 +568,7 @@ export class Session extends DurableObject<Env> {
     });
     const jobs = this.#asyncEnabled() ? this.#jobs(owner, web) : undefined;
     const tools = jobs
-      ? [jobs.tool(currentTime), this.#bash, jobs.tool(web)]
+      ? [jobs.tool(currentTime), jobs.tool(this.#bash), jobs.tool(web)]
       : [currentTime, this.#bash, web];
     const options = { tools: tools.map(tool => this.#toolTiming.instrument(tool,
       context => this.#toolTiming.correlation(context))),

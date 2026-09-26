@@ -1,6 +1,6 @@
 import { env, runInDurableObject } from "cloudflare:test";
 import { expect, it } from "vitest";
-import { AsyncJobs, TypedIngestionUnavailable, UNREAL_RUNNING_OUTPUT, type FinalToolResultIntent } from "../src/asyncJobs";
+import { AsyncJobs, TypedIngestionUnavailable, UNREAL_RUNNING_OUTPUT, type FinalToolResultIntent, type FinalToolResultReceipt } from "../src/asyncJobs";
 import { ToolTiming } from "../src/toolTiming";
 import type { NamedTool, ToolContext } from "nanocodex";
 
@@ -8,6 +8,9 @@ const context = (id: string): ToolContext => ({ callId: id, parentCallId: "", se
   turnId: "turn-1", model: "test", signal: new AbortController().signal });
 const jobId = (state: DurableObjectState, call: string) => state.storage.sql.exec<{ id: string }>(
   "SELECT id FROM async_jobs WHERE call_id = ?", call).toArray()[0]!.id;
+const accepted = (intent: FinalToolResultIntent, continuation_started = false): FinalToolResultReceipt => ({
+  operation_id: intent.jobId, call_id: intent.callId, replayed: false, continuation_started,
+});
 const stub = () => (env as unknown as { SESSIONS: DurableObjectNamespace })
   .SESSIONS.getByName(`jobs-test:${crypto.randomUUID()}`);
 
@@ -15,7 +18,7 @@ it("keys background jobs by stable turn+call, caps active jobs, and rejects tool
   await runInDurableObject(stub(), (_session, state) => {
     const read: NamedTool = { name: "web__run", description: "test read", handler: () => new Promise(() => {}) };
     const jobs = new AsyncJobs(state.storage, { web__run: read }, () => "original-turn",
-      async () => {}, () => {});
+      async result => accepted(result), () => {});
     const handler = jobs.tool(read).handler;
     expect(handler({ q: "stable" }, context("call-1"))).toEqual({ output: UNREAL_RUNNING_OUTPUT });
     const first = { job_id: jobId(state, "call-1") };
@@ -27,7 +30,7 @@ it("keys background jobs by stable turn+call, caps active jobs, and rejects tool
       .toThrow("not registered");
     expect(jobs.status(first.job_id)).toMatchObject({ job_id: first.job_id, tool: "web__run", state: "queued" });
     const restored = new AsyncJobs(state.storage, { web__run: read }, () => "original-turn",
-      async () => {}, () => {});
+      async result => accepted(result), () => {});
     expect(restored.status(first.job_id)).toMatchObject({ job_id: first.job_id, tool: "web__run" });
     expect(restored.tool(read).handler({ q: "stable" }, context("call-1")))
       .toEqual({ output: UNREAL_RUNNING_OUTPUT });
@@ -51,7 +54,7 @@ it("persists same-call identity before egress and emits a stable terminal intent
       return { citation: "https://example.org/source" };
     } };
     const jobs = new AsyncJobs(state.storage, { web__run: read }, () => "original-turn",
-      async result => { injected.push(result); }, work => { tasks.push(work); });
+      async result => { injected.push(result); return accepted(result); }, work => { tasks.push(work); });
     expect(jobs.tool(read).handler({ q: "stable" }, context("call-1"))).toEqual({ output: UNREAL_RUNNING_OUTPUT });
     const first = { job_id: jobId(state, "call-1") };
     expect(first.job_id).toMatch(/^[0-9a-f-]{36}$/);
@@ -64,7 +67,7 @@ it("persists same-call identity before egress and emits a stable terminal intent
     expect(injected).toEqual([{ originalTurn: "original-turn", executionTurn: "turn-1",
       callId: "call-1", tool: "web__run", jobId: first.job_id, terminalState: "completed",
       output: '{"citation":"https://example.org/source"}' }]);
-    expect(jobs.status(first.job_id)).toMatchObject({ state: "delivered" });
+    expect(jobs.status(first.job_id)).toMatchObject({ state: "checkpointed" });
     await jobs.reconcile();
     expect(injected).toHaveLength(1);
   });
@@ -80,6 +83,7 @@ it("retries the identical terminal intent after uncertain delivery", async () =>
       async result => {
         injected.push(result);
         if (++attempts === 1) throw new Error("uncertain core acknowledgement");
+        return { ...accepted(result), replayed: true };
       }, work => { tasks.push(work); });
     expect(jobs.tool(read).handler({}, context("call-time"))).toEqual({ output: UNREAL_RUNNING_OUTPUT });
     const first = { job_id: jobId(state, "call-time") };
@@ -88,7 +92,7 @@ it("retries the identical terminal intent after uncertain delivery", async () =>
     await jobs.reconcile();
     expect(jobs.status(first.job_id)).toMatchObject({ state: "completed" });
     await jobs.reconcile();
-    expect(jobs.status(first.job_id)).toMatchObject({ state: "delivered" });
+    expect(jobs.status(first.job_id)).toMatchObject({ state: "checkpointed" });
     expect(injected).toHaveLength(2);
     expect(injected[0]).toEqual(injected[1]); // core deduplication required
     expect(injected[0]!.callId).toBe("call-time");
@@ -100,19 +104,19 @@ it("holds a terminal intent without a typed ingestion adapter or a synthetic con
     const tasks: Promise<unknown>[] = [];
     const read: NamedTool = { name: "current_time", description: "test read", handler: () => ({ utc: "now" }) };
     const jobs = new AsyncJobs(state.storage, { current_time: read }, () => "original-turn",
-      async () => { throw new TypedIngestionUnavailable(); }, work => { tasks.push(work); });
+      async (): Promise<FinalToolResultReceipt> => { throw new TypedIngestionUnavailable(); }, work => { tasks.push(work); });
     expect(jobs.tool(read).handler({}, context("call-time"))).toEqual({ output: UNREAL_RUNNING_OUTPUT });
     const first = { job_id: jobId(state, "call-time") };
     await jobs.reconcile();
     await Promise.all(tasks);
     await jobs.reconcile();
     expect(jobs.status(first.job_id)).toMatchObject({ state: "awaiting_integration", result: '{"utc":"now"}' });
-    expect(state.storage.sql.exec<{ n: number }>("SELECT COUNT(*) AS n FROM async_jobs WHERE state = 'delivered'")
+    expect(state.storage.sql.exec<{ n: number }>("SELECT COUNT(*) AS n FROM async_jobs WHERE state = 'checkpointed'")
       .toArray()[0]!.n).toBe(0);
     // Reconstructed jobs retain the original call identity and output; no
     // generated user turn or provider call ID can claim a completed delivery.
     const restored = new AsyncJobs(state.storage, { current_time: read }, () => "original-turn",
-      async () => { throw new TypedIngestionUnavailable(); }, () => {});
+      async (): Promise<FinalToolResultReceipt> => { throw new TypedIngestionUnavailable(); }, () => {});
     await restored.reconcile();
     expect(restored.status(first.job_id)).toMatchObject({ state: "awaiting_integration" });
   });
@@ -139,7 +143,7 @@ it("quarantines old tagged-continuation rows instead of forging a typed result",
     // that column must never become a continuation turn.
     const read: NamedTool = { name: "current_time", description: "test read", handler: () => ({ utc: "now" }) };
     const migrated = new AsyncJobs(state.storage, { current_time: read }, () => "new-turn",
-      async () => { throw new TypedIngestionUnavailable(); }, () => {});
+      async (): Promise<FinalToolResultReceipt> => { throw new TypedIngestionUnavailable(); }, () => {});
     expect(migrated.tool(read).handler({}, context("new-call"))).toEqual({ output: UNREAL_RUNNING_OUTPUT });
     const created = { job_id: jobId(state, "new-call") };
     expect(created.job_id).toMatch(/^[0-9a-f-]{36}$/);
@@ -158,7 +162,7 @@ it("fences stale results from a crashed lease and delivers the winning retry onc
       return ++attempts === 1 ? firstResult : { fresh: true };
     } };
     const sent: FinalToolResultIntent[] = [];
-    const deliver = async (result: FinalToolResultIntent) => { sent.push(result); };
+    const deliver = async (result: FinalToolResultIntent) => { sent.push(result); return accepted(result); };
     const jobs = new AsyncJobs(state.storage, { current_time: read }, () => "original-turn", deliver,
       work => { tasks.push(work); }, new Set(["current_time"]));
     expect(jobs.tool(read).handler({}, context("call-restarted"))).toEqual({ output: UNREAL_RUNNING_OUTPUT });
@@ -199,7 +203,7 @@ it("never replays a mutable tool after its lease becomes uncertain", async () =>
     } };
     const delivered: FinalToolResultIntent[] = [];
     const make = () => new AsyncJobs(state.storage, { exec_command: mutate }, () => "turn",
-      async result => { delivered.push(result); }, work => { tasks.push(work); });
+      async result => { delivered.push(result); return accepted(result); }, work => { tasks.push(work); });
     const jobs = make();
     expect(jobs.tool(mutate).handler({ cmd: "touch /brain/sentinel" }, context("call-mutable")))
       .toEqual({ output: UNREAL_RUNNING_OUTPUT });
@@ -216,7 +220,7 @@ it("never replays a mutable tool after its lease becomes uncertain", async () =>
     expect(delivered[0]).toMatchObject({ callId: "call-mutable", terminalState: "uncertain" });
     resolveFirst("late success");
     await Promise.all(tasks);
-    expect(restored.status(id)).toMatchObject({ state: "delivered" });
+    expect(restored.status(id)).toMatchObject({ state: "checkpointed" });
   });
 });
 
@@ -227,7 +231,7 @@ it("cancels a queued mutable operation without dispatching it", async () => {
       handler: () => { executions++; return "unexpected"; } };
     const delivered: FinalToolResultIntent[] = [];
     const jobs = new AsyncJobs(state.storage, { exec_command: mutate }, () => "turn",
-      async result => { delivered.push(result); }, () => {});
+      async result => { delivered.push(result); return accepted(result); }, () => {});
     jobs.tool(mutate).handler({ cmd: "touch /brain/sentinel" }, context("queued-mutable"));
     const id = jobId(state, "queued-mutable");
     await jobs.cancel(id);
@@ -235,6 +239,126 @@ it("cancels a queued mutable operation without dispatching it", async () => {
     expect(executions).toBe(0);
     expect(delivered).toHaveLength(1);
     expect(delivered[0]).toMatchObject({ terminalState: "cancelled" });
-    expect(jobs.status(id)).toMatchObject({ state: "delivered" });
+    expect(jobs.status(id)).toMatchObject({ state: "checkpointed" });
+  });
+});
+
+
+it("does not acknowledge a mismatched core receipt, then reconciles the stable operation after ambiguous acceptance", async () => {
+  await runInDurableObject(stub(), async (_session, state) => {
+    const tasks: Promise<unknown>[] = [];
+    const read: NamedTool = { name: "current_time", description: "read", handler: () => ({ utc: "now" }) };
+    const intents: FinalToolResultIntent[] = [];
+    let wrong = true;
+    const deliver = async (intent: FinalToolResultIntent) => {
+      intents.push(intent);
+      return wrong ? { ...accepted(intent), call_id: "other-call" } : { ...accepted(intent), replayed: true };
+    };
+    const jobs = new AsyncJobs(state.storage, { current_time: read }, () => "turn", deliver,
+      task => { tasks.push(task); }, new Set(["current_time"]));
+    jobs.tool(read).handler({}, context("call-1"));
+    const id = jobId(state, "call-1");
+    await jobs.reconcile();
+    await Promise.all(tasks);
+    await jobs.reconcile();
+    expect(jobs.status(id)).toMatchObject({ state: "completed" });
+    wrong = false;
+    await jobs.reconcile();
+    expect(jobs.status(id)).toMatchObject({ state: "checkpointed", continuation_started: false });
+    expect(intents).toHaveLength(2);
+    expect(intents[0]).toEqual(intents[1]);
+  });
+});
+
+it("fences concurrent reconciliation of one terminal call while a core acknowledgement is pending", async () => {
+  await runInDurableObject(stub(), async (_session, state) => {
+    const tasks: Promise<unknown>[] = [];
+    const read: NamedTool = { name: "current_time", description: "read", handler: () => ({ utc: "now" }) };
+    let release!: () => void;
+    const pending = new Promise<void>(resolve => { release = resolve; });
+    let deliveries = 0;
+    const jobs = new AsyncJobs(state.storage, { current_time: read }, () => "turn",
+      async intent => { deliveries++; await pending; return accepted(intent, true); },
+      task => { tasks.push(task); }, new Set(["current_time"]));
+    jobs.tool(read).handler({}, context("call-1"));
+    const id = jobId(state, "call-1");
+    await jobs.reconcile();
+    await Promise.all(tasks);
+    const first = jobs.reconcile();
+    const second = jobs.reconcile();
+    await Promise.resolve();
+    expect(deliveries).toBe(1);
+    release();
+    await Promise.all([first, second]);
+    expect(jobs.status(id)).toMatchObject({ state: "delivered", continuation_started: true });
+  });
+});
+
+it("retains a checkpoint without a model continuation and reconciles the same operation after a future wake", async () => {
+  await runInDurableObject(stub(), async (_session, state) => {
+    const tasks: Promise<unknown>[] = [];
+    let executions = 0;
+    const read: NamedTool = { name: "current_time", description: "read", handler: () => { executions++; return "now"; } };
+    const intents: FinalToolResultIntent[] = [];
+    let woke = false;
+    const deliver = async (intent: FinalToolResultIntent) => {
+      intents.push(intent);
+      return { ...accepted(intent, woke), replayed: intents.length > 1 };
+    };
+    const make = (generation = 0) => new AsyncJobs(state.storage, { current_time: read }, () => "turn", deliver,
+      task => { tasks.push(task); }, new Set(["current_time"]), generation);
+    const jobs = make();
+    jobs.tool(read).handler({}, context("call-1"));
+    const id = jobId(state, "call-1");
+    await jobs.reconcile();
+    await Promise.all(tasks);
+    await jobs.reconcile();
+    expect(jobs.status(id)).toMatchObject({ state: "checkpointed", continuation_started: false });
+    expect(intents).toHaveLength(1);
+    await state.storage.deleteAlarm();
+    const restored = make();
+    // Retention of acknowledged deliveries must not erase an unwoken result.
+    state.storage.sql.exec("UPDATE async_jobs SET created_at = ? WHERE id = ?", Date.now() - 8 * 24 * 60 * 60 * 1000, id);
+    await restored.reconcile(); // too soon: a stable checkpoint must not spin or falsely claim delivery
+    expect(intents).toHaveLength(1);
+    expect(restored.status(id)).toMatchObject({ state: "checkpointed" });
+    expect(await state.storage.getAlarm()).toBeNull();
+    // A new wake-capable generation explicitly retries the already-checkpointed
+    // operation once; ordinary alarms on the old kernel must not spin forever.
+    woke = true;
+    const upgraded = make(1);
+    await upgraded.reconcile();
+    expect(upgraded.status(id)).toMatchObject({ state: "delivered", continuation_started: true });
+    expect(intents).toHaveLength(2);
+    expect(intents[0]).toEqual(intents[1]);
+    expect(executions).toBe(1);
+  });
+});
+
+it("wraps exec_command as a mutable background tool and checkpoints its single result under the original call", async () => {
+  await runInDurableObject(stub(), async (_session, state) => {
+    const tasks: Promise<unknown>[] = [];
+    let executions = 0;
+    const shell: NamedTool = { name: "exec_command", description: "shell", handler: input => {
+      executions++;
+      return { exit_code: 0, output: (input as { cmd: string }).cmd };
+    } };
+    const intents: FinalToolResultIntent[] = [];
+    const jobs = new AsyncJobs(state.storage, { exec_command: shell }, () => "original-turn",
+      async intent => { intents.push(intent); return accepted(intent); }, task => { tasks.push(task); });
+    expect(jobs.tool(shell).handler({ cmd: "printf safe" }, context("shell-call")))
+      .toEqual({ output: UNREAL_RUNNING_OUTPUT });
+    const id = jobId(state, "shell-call");
+    expect(jobs.status(id)).toMatchObject({ state: "queued" });
+    await Promise.all(tasks);
+    await jobs.reconcile();
+    expect(jobs.status(id)).toMatchObject({ state: "checkpointed", continuation_started: false,
+      result: '{"exit_code":0,"output":"printf safe"}' });
+    expect(intents).toEqual([{ originalTurn: "original-turn", executionTurn: "turn-1", callId: "shell-call",
+      tool: "exec_command", jobId: id, terminalState: "completed",
+      output: '{"exit_code":0,"output":"printf safe"}' }]);
+    await jobs.reconcile();
+    expect(executions).toBe(1);
+    expect(intents).toHaveLength(1);
   });
 });
