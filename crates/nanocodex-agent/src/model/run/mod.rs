@@ -215,6 +215,35 @@ impl ModelCheckpoint {
         self.conversation.managed.unreal_function_outputs()
     }
 
+    /// Stable wake identity while terminal outputs are the checkpoint tail.
+    /// A model response or real input after them closes this wake window.
+    pub(crate) fn late_wake_id(&self) -> Option<String> {
+        if !self.unreal_function_outputs() {
+            return None;
+        }
+        Self::late_wake_id_from_history(&self.snapshot_history())
+    }
+
+    fn late_wake_id_from_history(history: &[ResponseItem]) -> Option<String> {
+        let mut receipts = Vec::new();
+        for item in history.iter().rev() {
+            match item {
+                ResponseItem::FunctionCallOutput { id: Some(id), .. }
+                    if id.as_ref().starts_with("late:") =>
+                {
+                    receipts.push(id.to_string())
+                }
+                _ => break,
+            }
+        }
+        if receipts.is_empty() {
+            return None;
+        }
+        receipts.reverse();
+        const NAMESPACE: uuid::Uuid = uuid::Uuid::from_u128(0xa01b8f32_68bf_49a0_b138_99ec17efca31);
+        Some(uuid::Uuid::new_v5(&NAMESPACE, receipts.join("\n").as_bytes()).to_string())
+    }
+
     pub(crate) fn snapshot_history(&self) -> Vec<ResponseItem> {
         self.conversation.flattened_history()
     }
@@ -817,5 +846,42 @@ mod context_accounting_snapshot_tests {
         legacy.as_object_mut().unwrap().remove("context_usage");
         let legacy: SessionSnapshot = serde_json::from_value(legacy).unwrap();
         assert!(legacy.into_resume().is_ok());
+    }
+}
+
+#[cfg(test)]
+mod late_wake_tests {
+    use super::*;
+
+    #[test]
+    fn wake_identity_tracks_only_the_terminal_receipt_tail() {
+        let terminal = |id: &str| {
+            let mut item = ResponseItem::function_call_output(
+                "job-1".to_owned(),
+                FunctionOutputBody::Text("done".into()),
+            );
+            item.set_id(Some(ResponseItemId::from_server(id.to_owned())));
+            item
+        };
+        let first = terminal("late:first");
+        let second = terminal("late:second");
+        let initial = ModelCheckpoint::late_wake_id_from_history(&[first.clone()]).unwrap();
+        let grouped =
+            ModelCheckpoint::late_wake_id_from_history(&[first.clone(), second.clone()]).unwrap();
+        assert_ne!(initial, grouped);
+        assert_eq!(
+            grouped,
+            ModelCheckpoint::late_wake_id_from_history(&[first, second]).unwrap()
+        );
+        let response = ResponseItem::message(
+            MessageRole::Assistant,
+            [ContentItem::InputText {
+                text: "finished".into(),
+            }],
+        );
+        assert!(
+            ModelCheckpoint::late_wake_id_from_history(&[terminal("late:first"), response])
+                .is_none()
+        );
     }
 }

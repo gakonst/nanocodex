@@ -803,6 +803,81 @@ impl Execution {
         ))
     }
 
+    /// Bind a terminal tool receipt to its exact call/body in the durable
+    /// operation journal. A compacted transcript is not a receipt ledger.
+    pub(crate) async fn admit_late_output(
+        &self,
+        operation_id: &str,
+        call_id: &str,
+        output: &nanocodex_oai_api::responses::FunctionOutputBody,
+    ) -> Result<AdmittedExecution> {
+        let Some(policy) = &self.policy else {
+            return Ok(AdmittedExecution::Execute);
+        };
+        let input = encode(&serde_json::json!({
+            "kind": "late_function_output",
+            "call_id": call_id,
+            "output": output,
+        }))?;
+        Ok(map_admission(
+            policy
+                .admit(format!("late-output:{operation_id}"), input)
+                .await?,
+        ))
+    }
+
+    pub(crate) fn start_late_output(
+        &self,
+        effort: nanocodex_oai_api::Thinking,
+        operation_id: &str,
+    ) -> ExecutionTurn {
+        ExecutionTurn {
+            platform: self.platform.start_compaction(effort),
+            policy: self.policy.clone(),
+            operation_id: self
+                .policy
+                .as_ref()
+                .map(|_| format!("late-output:{operation_id}")),
+            operation_input: None,
+            outcome: ExecutionOutcome::Started,
+        }
+    }
+
+    /// Admit one internal model continuation for a durable set of terminal outputs.
+    /// Its identity is derived from the checkpoint, never from caller-provided text.
+    pub(crate) async fn admit_late_continuation(
+        &self,
+        lineage_id: &str,
+        wake_id: &str,
+    ) -> Result<(Option<String>, Option<String>, AdmittedExecution)> {
+        let Some(policy) = &self.policy else {
+            return Ok((None, None, AdmittedExecution::Execute));
+        };
+        let operation_id = format!("late-continuation:{lineage_id}:{wake_id}");
+        let input = encode(&serde_json::json!({
+            "kind": "late_function_output_continuation",
+            "lineage_id": lineage_id,
+            "wake_id": wake_id,
+        }))?;
+        let admission = policy.admit(operation_id.clone(), input.clone()).await?;
+        Ok((Some(operation_id), Some(input), map_admission(admission)))
+    }
+
+    pub(crate) fn start_late_continuation(
+        &self,
+        effort: nanocodex_oai_api::Thinking,
+        operation_id: Option<String>,
+        operation_input: Option<String>,
+    ) -> ExecutionTurn {
+        ExecutionTurn {
+            platform: self.platform.start_compaction(effort),
+            policy: self.policy.clone(),
+            operation_id,
+            operation_input: operation_input.map(ExecutionInput::Encoded),
+            outcome: ExecutionOutcome::Started,
+        }
+    }
+
     #[cfg_attr(target_family = "wasm", allow(clippy::missing_const_for_fn))]
     pub(crate) fn start_compaction(
         &self,

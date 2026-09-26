@@ -1969,12 +1969,51 @@ where
     S::Error: Into<ResponseError>,
     S::Future: AgentSend,
 {
-    let (snapshot, replayed) =
-        model.submit_late_function_output(&call_id, output, &operation_id, workspace)?;
-    let checkpoint = Arc::new(CommittedSession::new(identity.0, identity.1, snapshot));
-    if !replayed {
-        execution.commit_checkpoint(&checkpoint).await?;
+    let admitted = execution
+        .admit_late_output(&operation_id, &call_id, &output)
+        .await?;
+    if matches!(admitted, AdmittedExecution::Completed { .. }) {
+        // The journal is authoritative even if compaction removed the terminal
+        // output from the current transcript. Never append it a second time.
+        let snapshot = model.current_checkpoint().ok_or_else(|| {
+            NanocodexError::InvalidSessionSnapshot(
+                "replayed late output has no model checkpoint".into(),
+            )
+        })?;
+        return Ok((
+            Arc::new(CommittedSession::new(identity.0, identity.1, snapshot)),
+            LateFunctionOutputReceipt {
+                operation_id,
+                call_id,
+                replayed: true,
+                continuation_started: false,
+            },
+        ));
     }
+    if !matches!(
+        admitted,
+        AdmittedExecution::Execute | AdmittedExecution::Resume
+    ) {
+        return Err(NanocodexError::InvalidExecutionPolicy(
+            "late output operation is not executable".into(),
+        ));
+    }
+    let turn = execution.start_late_output(nanocodex_oai_api::Thinking::Medium, &operation_id);
+    turn.begin().await?;
+    let (snapshot, replayed) =
+        match model.submit_late_function_output(&call_id, output, &operation_id, workspace) {
+            Ok(value) => value,
+            Err(error) => {
+                execution
+                    .release_claim(&format!("late-output:{operation_id}"))
+                    .await;
+                return Err(error);
+            }
+        };
+    let checkpoint = Arc::new(CommittedSession::new(identity.0, identity.1, snapshot));
+    execution
+        .persist(&checkpoint, turn.completed_without_message())
+        .await?;
     Ok((
         checkpoint,
         LateFunctionOutputReceipt {

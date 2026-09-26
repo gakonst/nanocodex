@@ -235,10 +235,70 @@ where
         self.emit_terminal("failed")
     }
 
+    pub(crate) fn current_checkpoint(&self) -> Option<ModelCheckpoint> {
+        self.session.as_ref().map(|session| {
+            Self::checkpoint_from_session(session, true, self.global_instructions.clone())
+        })
+    }
+
+    /// Continue a durable terminal function output without creating user input.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn continue_late(
+        &mut self,
+        workspace: Option<Arc<str>>,
+        thinking: Thinking,
+        fast_mode: bool,
+        logical_turn: u64,
+        steering: TurnSteering,
+        cancel: tokio::sync::oneshot::Receiver<()>,
+        fork_snapshots: watch::Sender<Option<ModelCheckpoint>>,
+        execution_steps: Option<ExecutionSteps>,
+    ) -> Result<ModelTurnOutcome> {
+        self.execute_inner(
+            None,
+            workspace,
+            thinking,
+            fast_mode,
+            logical_turn,
+            steering,
+            cancel,
+            fork_snapshots,
+            execution_steps,
+        )
+        .await
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn execute(
         &mut self,
         task: Prompt,
+        workspace: Option<Arc<str>>,
+        thinking: Thinking,
+        fast_mode: bool,
+        logical_turn: u64,
+        steering: TurnSteering,
+        cancel: tokio::sync::oneshot::Receiver<()>,
+        fork_snapshots: watch::Sender<Option<ModelCheckpoint>>,
+        execution_steps: Option<ExecutionSteps>,
+    ) -> Result<ModelTurnOutcome> {
+        self.execute_inner(
+            Some(task),
+            workspace,
+            thinking,
+            fast_mode,
+            logical_turn,
+            steering,
+            cancel,
+            fork_snapshots,
+            execution_steps,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn execute_inner(
+        &mut self,
+        task: Option<Prompt>,
         workspace: Option<Arc<str>>,
         thinking: Thinking,
         fast_mode: bool,
@@ -249,7 +309,9 @@ where
         execution_steps: Option<ExecutionSteps>,
     ) -> Result<ModelTurnOutcome> {
         self.execution_steps = execution_steps;
-        self.instruction_revision = task.instruction_revision();
+        if let Some(task) = &task {
+            self.instruction_revision = task.instruction_revision();
+        }
         self.thinking = thinking;
         self.fast_mode = fast_mode;
         self.started_at = Instant::now();
@@ -269,13 +331,13 @@ where
                 orchestration: ModelConfig::orchestration(),
                 websocket_url: display_endpoint(self.responses_endpoint()),
                 workspace: workspace.as_deref(),
-                instruction_bytes: task.text_bytes(),
+                instruction_bytes: task.as_ref().map_or(0, Prompt::text_bytes),
             },
         )?;
 
         let configured = (Arc::clone(&self.config), self.model);
-        let outcome = self
-            .execute_task(
+        let outcome = if let Some(task) = task {
+            self.execute_task(
                 task,
                 workspace,
                 logical_turn,
@@ -283,7 +345,17 @@ where
                 &mut cancel,
                 &fork_snapshots,
             )
-            .await;
+            .await
+        } else {
+            self.continue_late_task(
+                workspace,
+                logical_turn,
+                steering,
+                &mut cancel,
+                &fork_snapshots,
+            )
+            .await
+        };
         self.restore_runtime(configured, logical_turn)?;
         match outcome {
             Ok(ModelTaskOutcome::Completed(message)) => {
@@ -469,6 +541,69 @@ where
             .conversation
             .append(prompt_messages(task, user_content));
         Ok(true)
+    }
+
+    /// The checkpoint already contains the typed terminal output. On a retry,
+    /// restore the request journal's Generate phase rather than adding it again.
+    async fn continue_late_task(
+        &mut self,
+        requested_workspace: Option<Arc<str>>,
+        logical_turn: u64,
+        steering: TurnSteering,
+        cancel: &mut tokio::sync::oneshot::Receiver<()>,
+        fork_snapshots: &watch::Sender<Option<ModelCheckpoint>>,
+    ) -> Result<ModelTaskOutcome> {
+        let restored = self
+            .restore_execution(requested_workspace.as_deref(), logical_turn)
+            .await?;
+        let resumed = restored.is_some();
+        let mut session = if let Some((session, ExecutionPhase::Generate)) = restored {
+            session
+        } else if restored.is_some() {
+            return Err(NanocodexError::InvalidExecutionPolicy(
+                "invalid late output continuation".into(),
+            ));
+        } else {
+            let mut session = self.session.take().ok_or_else(|| {
+                NanocodexError::InvalidSessionSnapshot("late output has no model session".into())
+            })?;
+            session.validate_workspace(requested_workspace.as_deref())?;
+            session.factory = session.factory.for_logical_turn(logical_turn);
+            session
+                .conversation
+                .prepare_request_policy(self.continuation_policy());
+            session
+        };
+        if !resumed {
+            self.retain_execution(&session, ExecutionPhase::Generate)
+                .await?;
+        }
+        let TurnSteering {
+            receiver,
+            retained,
+            model_call_index,
+        } = steering;
+        let outcome = {
+            let run = self.drive_session(
+                &mut session,
+                receiver,
+                retained,
+                resumed,
+                model_call_index,
+                fork_snapshots,
+            );
+            tokio::pin!(run);
+            tokio::select! {
+                biased;
+                _ = &mut *cancel => None,
+                outcome = &mut run => Some(outcome),
+            }
+        };
+        self.session = Some(session);
+        match outcome {
+            Some(outcome) => outcome.map(ModelTaskOutcome::Completed),
+            None => Ok(ModelTaskOutcome::Cancelled),
+        }
     }
 
     pub(super) async fn execute_task(
