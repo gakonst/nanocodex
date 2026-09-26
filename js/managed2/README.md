@@ -215,10 +215,14 @@ CUA or remote Hands tool; they are not covered by this ledger.
 
 The private JS/WASM bridge stages the original-call pending output and admits
 one terminal same-call-ID checkpoint. **This is not yet a usable async mode**:
-active terminal results wait until the entire model turn ends, and idle
-terminal results do not wake a prompt-less model continuation. The Rust
-execution journal can recognize a completed result even after context compaction
-when a durable policy is attached, but a checkpointed result is not proof that
-the model saw it. The API remains 501 until scheduler/recovery end-to-end tests
-and live HTTP/WebSocket provider compatibility are resolved. A gated three-route canary is in `scripts/provider-canary`;
+the Rust driver can now wake a prompt-less model continuation for an idle
+terminal result and remain responsive to commands during that provider call.
+But a terminal arriving in an active turn still waits until the *whole turn*
+ends rather than entering the next model-request boundary; queued user turns
+are then ordered after the wake. The execution journal recognizes completed
+results after compaction, but recovering a completed wake from an older
+checkpoint and notifying the Managed2 job ledger of model uptake are not
+complete. Its `checkpointed` status is not proof the model saw the output.
+The API remains 501 pending those recovery tests and live HTTP/WebSocket
+provider compatibility checks. A gated three-route canary is in `scripts/provider-canary`;
 its fixture tests do not establish live provider acceptance.
