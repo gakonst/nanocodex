@@ -100,9 +100,10 @@ export class AsyncJobs {
         id, invocation, originalTurn, context.turnId, context.callId, tool.name, input, Date.now());
         job = this.get(id)!;
       }
-      // Never execute the tool inline while its provisional response is being
-      // returned. The durable alarm resumes the queued intent independently of
-      // the model turn (and survives an isolate restart).
+      // Dispatch after the provisional output returns to the model, but do not
+      // impose a one-second alarm delay. The durable queued row and alarm fence
+      // isolate loss; only explicitly read-only jobs may be retried.
+      this.waitUntil(Promise.resolve().then(() => this.run(job!.id)));
       this.waitUntil(this.storage.setAlarm(Date.now() + 1_000));
       return UNREAL_RUNNING_OUTPUT;
     } };
