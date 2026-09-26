@@ -210,7 +210,8 @@ export class AccountHostedTools extends DurableObject<AccountHostedToolsEnv> {
       // never fetch input, result, receipt, machine or call identities.
       const data = this.ctx.storage.sql.exec<{
         name: string; state: string; calls: number; tool_failed: number;
-        tool_ambiguous: number; tool_unavailable: number; tool_failed_other: number; late_receipts: number;
+        tool_ambiguous: number; tool_unavailable: number; tool_failed_other: number;
+        cua_cdp_dispatch_deadline: number; cua_js_kernel_timeout: number; late_receipts: number;
         pre_dispatch_unavailable: number; post_dispatch_unavailable: number; unknown_dispatch_unavailable: number;
         duration_count: number;
         total_duration_ms: number | null; avg_duration_ms: number | null;
@@ -230,6 +231,17 @@ export class AccountHostedTools extends DurableObject<AccountHostedToolsEnv> {
             AND json_extract(result_json, '$.output.success') = 0
             AND COALESCE(json_extract(result_json, '$.output.structured_result.status'), '') NOT IN ('ambiguous', 'unavailable')
             THEN 1 ELSE 0 END) AS tool_failed_other,
+          -- Narrow, owner-only retrospective buckets for two observed CUA error strings.
+          -- These are subsets of completed unsuccessful calls, not additional calls.
+          -- Search only the persisted result and return counts, never message text.
+          SUM(CASE WHEN name = 'mcp__cua_repl__js' AND state = 'completed' AND json_valid(result_json)
+            AND json_extract(result_json, '$.output.success') = 0
+            AND instr(result_json, 'CDP operation exceeded its deadline before command dispatch') > 0
+            THEN 1 ELSE 0 END) AS cua_cdp_dispatch_deadline,
+          SUM(CASE WHEN name = 'mcp__cua_repl__js' AND state = 'completed' AND json_valid(result_json)
+            AND json_extract(result_json, '$.output.success') = 0
+            AND instr(result_json, 'js execution timed out; kernel reset') > 0
+            THEN 1 ELSE 0 END) AS cua_js_kernel_timeout,
           SUM(CASE WHEN state = 'ambiguous' AND receipt_json IS NOT NULL THEN 1 ELSE 0 END) AS late_receipts,
           SUM(CASE WHEN state = 'unavailable' AND dispatched_at = 0 THEN 1 ELSE 0 END) AS pre_dispatch_unavailable,
           SUM(CASE WHEN state = 'unavailable' AND dispatched_at > 0 THEN 1 ELSE 0 END) AS post_dispatch_unavailable,
