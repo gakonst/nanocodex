@@ -6,8 +6,9 @@ use std::{
 use nanocodex_agent::{
     ExecutionPolicyDisposition, NanocodexBuilder, NanocodexError, Result as AgentResult,
     execution::{
-        ExecutionAdmission, ExecutionContinuation, ExecutionFuture, ExecutionOutput,
-        ExecutionPolicy, ExecutionSteer, ExecutionStepAdmission, IdentifiedExecutionSteer,
+        ExecutionAdmission, ExecutionBoundaryOutput, ExecutionContinuation, ExecutionFuture,
+        ExecutionOutput, ExecutionPolicy, ExecutionSteer, ExecutionStepAdmission,
+        IdentifiedExecutionSteer, RetainedExecutionBoundaryOutput,
     },
     session::SessionSnapshot,
 };
@@ -291,6 +292,55 @@ impl ExecutionPolicy for DurableExecution {
         })
     }
 
+    fn accept_identified_boundary_output<'a>(
+        &'a self,
+        operation_id: String,
+        message_id: String,
+        accepted_after_model_call_index: u32,
+        output: ExecutionBoundaryOutput,
+        capacity_available: bool,
+    ) -> ExecutionFuture<'a, AgentResult<Option<u32>>> {
+        Box::pin(async move {
+            self.owner
+                .accept_boundary_output(
+                    operation_id,
+                    accepted_after_model_call_index,
+                    &output,
+                    message_id,
+                    capacity_available,
+                )
+                .await
+                .map_err(agent_error)
+        })
+    }
+
+    fn retained_boundary_outputs<'a>(
+        &'a self,
+        operation_id: String,
+    ) -> ExecutionFuture<'a, AgentResult<Vec<RetainedExecutionBoundaryOutput>>> {
+        Box::pin(async move {
+            self.owner
+                .retained_boundary_outputs(operation_id)
+                .await
+                .and_then(|outputs| {
+                    outputs
+                        .into_iter()
+                        .map(|entry| {
+                            Ok(RetainedExecutionBoundaryOutput {
+                                index: entry.index,
+                                message_id: entry.state.message_id,
+                                accepted_after_model_call_index: entry
+                                    .state
+                                    .accepted_after_model_call_index,
+                                output: entry.state.input.decode()?,
+                            })
+                        })
+                        .collect()
+                })
+                .map_err(agent_error)
+        })
+    }
+
     fn retained_steers<'a>(
         &'a self,
         operation_id: String,
@@ -518,9 +568,14 @@ fn agent_error(error: Error) -> NanocodexError {
     if matches!(error, Error::SteerQueueFull) {
         return NanocodexError::SteerQueueFull;
     }
+    if matches!(error, Error::BoundaryOutputQueueFull) {
+        return NanocodexError::BoundaryOutputQueueFull;
+    }
     if matches!(
         error,
-        Error::SteerConflict { .. } | Error::SteerWithdrawn { .. }
+        Error::SteerConflict { .. }
+            | Error::SteerWithdrawn { .. }
+            | Error::BoundaryOutputConflict { .. }
     ) {
         return NanocodexError::InvalidRequest(error.to_string());
     }

@@ -132,6 +132,10 @@ pub enum NanocodexError {
     #[error("the active turn's steering queue is full")]
     SteerQueueFull,
 
+    /// The pending model-boundary output queue has no remaining capacity.
+    #[error("the active turn's model-boundary output queue is full")]
+    BoundaryOutputQueueFull,
+
     /// Cancellation targeted an already terminal turn.
     #[error("the targeted turn has already completed or been cancelled")]
     TurnNotCancellable,

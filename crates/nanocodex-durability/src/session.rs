@@ -10,9 +10,9 @@ use serde::{Serialize, de::DeserializeOwned};
 use tokio::sync::{mpsc, oneshot};
 
 use crate::{
-    DurableState, EncodedPayload, Error, OperationStatus, OwnerId, OwnerToken, Result, StateStore,
-    SteerState, StepStatus, StoreError, StoredState, Transition, shared_store::SharedStore,
-    state::RetainedCheckpoint,
+    BoundaryOutputState, DurableState, EncodedPayload, Error, OperationStatus, OwnerId, OwnerToken,
+    Result, StateStore, SteerState, StepStatus, StoreError, StoredState, Transition,
+    shared_store::SharedStore, state::RetainedCheckpoint,
 };
 
 const COMMAND_CAPACITY: usize = 64;
@@ -125,6 +125,12 @@ enum StoredBeginStep {
 }
 
 #[derive(Clone)]
+pub(crate) struct StoredBoundaryOutput {
+    pub(crate) index: u32,
+    pub(crate) state: BoundaryOutputState,
+}
+
+#[derive(Clone)]
 pub(crate) struct StoredSteer {
     pub(crate) index: u32,
     pub(crate) state: SteerState,
@@ -211,6 +217,20 @@ enum Command {
         accepted_after_model_call_index: u32,
         input: EncodedPayload,
         result: oneshot::Sender<Result<Option<u32>>>,
+    },
+    AcceptBoundaryOutput {
+        capacity_available: bool,
+        message_id: String,
+        caller: Caller,
+        operation_id: String,
+        accepted_after_model_call_index: u32,
+        input: EncodedPayload,
+        result: oneshot::Sender<Result<Option<u32>>>,
+    },
+    RetainedBoundaryOutputs {
+        caller: Caller,
+        operation_id: String,
+        result: oneshot::Sender<Result<Vec<StoredBoundaryOutput>>>,
     },
     RetainedSteers {
         caller: Caller,
@@ -567,6 +587,62 @@ impl Driver {
                                 capacity_available,
                             )
                             .await
+                        }
+                        Err(error) => Err(error),
+                    };
+                    drop(result.send(outcome));
+                }
+                Command::AcceptBoundaryOutput {
+                    capacity_available,
+                    message_id,
+                    caller,
+                    operation_id,
+                    accepted_after_model_call_index,
+                    input,
+                    result,
+                } => {
+                    let outcome = match self.authorize(&caller) {
+                        Ok(()) => {
+                            self.accept_boundary_output(
+                                &caller,
+                                operation_id,
+                                accepted_after_model_call_index,
+                                input,
+                                message_id,
+                                capacity_available,
+                            )
+                            .await
+                        }
+                        Err(error) => Err(error),
+                    };
+                    drop(result.send(outcome));
+                }
+                Command::RetainedBoundaryOutputs {
+                    caller,
+                    operation_id,
+                    result,
+                } => {
+                    let outcome = self
+                        .authorize(&caller)
+                        .and_then(|()| self.retained_boundary_outputs(&caller, &operation_id));
+                    let outcome = match outcome {
+                        Ok(mut outputs) => {
+                            let mut error = None;
+                            for output in &mut outputs {
+                                match output
+                                    .state
+                                    .input
+                                    .load(&mut *self.store, &self.state_id)
+                                    .await
+                                {
+                                    Ok(value) => output.state.input = value,
+                                    Err(failure) => {
+                                        error = Some(failure);
+                                        break;
+                                    }
+                                }
+                            }
+                            error.map_or(Ok(outputs), Err)
                         }
                         Err(error) => Err(error),
                     };
@@ -1025,6 +1101,73 @@ impl Driver {
         })
         .await?;
         Ok(Some(steer_index))
+    }
+
+    async fn accept_boundary_output(
+        &mut self,
+        caller: &Caller,
+        operation_id: String,
+        accepted_after_model_call_index: u32,
+        input: EncodedPayload,
+        message_id: String,
+        capacity_available: bool,
+    ) -> Result<Option<u32>> {
+        self.require_claimed(caller, &operation_id)?;
+        self.require_running(&operation_id)?;
+        let operation = self.state.operation(&operation_id).ok_or_else(|| {
+            Error::InvalidState(format!("operation `{operation_id}` was not accepted"))
+        })?;
+        if let Some(receipt) = operation.boundary_output_receipts.get(&message_id) {
+            if receipt.input_key != input.key.as_ref() {
+                return Err(Error::BoundaryOutputConflict { message_id });
+            }
+            return Ok(None);
+        }
+        if !capacity_available {
+            return Err(Error::BoundaryOutputQueueFull);
+        }
+        let output_index = u32::try_from(operation.boundary_outputs.len())
+            .ok()
+            .and_then(|n| n.checked_add(1))
+            .ok_or_else(|| Error::InvalidState("boundary output index overflow".into()))?;
+        self.apply(Transition::BoundaryOutputAccepted {
+            operation_id,
+            output_index,
+            accepted_after_model_call_index,
+            input,
+            message_id,
+        })
+        .await?;
+        Ok(Some(output_index))
+    }
+
+    fn retained_boundary_outputs(
+        &self,
+        caller: &Caller,
+        operation_id: &str,
+    ) -> Result<Vec<StoredBoundaryOutput>> {
+        self.require_claimed(caller, operation_id)?;
+        self.require_running(operation_id)?;
+        let operation = self.state.operation(operation_id).ok_or_else(|| {
+            Error::InvalidState(format!("operation `{operation_id}` was not accepted"))
+        })?;
+        operation
+            .boundary_outputs
+            .iter()
+            .cloned()
+            .enumerate()
+            .map(|(offset, state)| {
+                Ok(StoredBoundaryOutput {
+                    index: u32::try_from(offset)
+                        .ok()
+                        .and_then(|n| n.checked_add(1))
+                        .ok_or_else(|| {
+                            Error::InvalidState("boundary output index overflow".into())
+                        })?,
+                    state,
+                })
+            })
+            .collect()
     }
 
     fn retained_steers(&self, caller: &Caller, operation_id: &str) -> Result<Vec<StoredSteer>> {
@@ -2154,6 +2297,42 @@ impl DurableOwner {
         receive(receiver).await
     }
 
+    pub(crate) async fn accept_boundary_output<I: Serialize + ?Sized>(
+        &self,
+        operation_id: String,
+        accepted_after_model_call_index: u32,
+        input: &I,
+        message_id: String,
+        capacity_available: bool,
+    ) -> Result<Option<u32>> {
+        let (result, receiver) = oneshot::channel();
+        self.send(Command::AcceptBoundaryOutput {
+            capacity_available,
+            message_id,
+            caller: self.caller()?,
+            operation_id,
+            accepted_after_model_call_index,
+            input: EncodedPayload::encode(input)?,
+            result,
+        })
+        .await?;
+        receive(receiver).await
+    }
+
+    pub(crate) async fn retained_boundary_outputs(
+        &self,
+        operation_id: String,
+    ) -> Result<Vec<StoredBoundaryOutput>> {
+        let (result, receiver) = oneshot::channel();
+        self.send(Command::RetainedBoundaryOutputs {
+            caller: self.caller()?,
+            operation_id,
+            result,
+        })
+        .await?;
+        receive(receiver).await
+    }
+
     pub(crate) async fn retained_steers(&self, operation_id: String) -> Result<Vec<StoredSteer>> {
         let (result, receiver) = oneshot::channel();
         self.send(Command::RetainedSteers {
@@ -2651,6 +2830,118 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn boundary_output_receipt_survives_ack_loss_and_cold_reopen_without_completion() {
+        let store = MemoryStore::new().unwrap();
+        let session = DurableSession::open(store.clone(), "boundary-receipt")
+            .await
+            .unwrap();
+        let (owner, _) = session.acquire_agent().await.unwrap();
+        owner
+            .admit_typed::<_, u32, String>("turn".into(), &"prompt")
+            .await
+            .unwrap();
+        owner.begin_attempt("turn".into()).await.unwrap();
+        let payload = serde_json::json!({"terminal_output": {"text": "hello"}});
+        let (result, lost_ack) = oneshot::channel();
+        drop(lost_ack);
+        owner
+            .send(Command::AcceptBoundaryOutput {
+                capacity_available: true,
+                message_id: "output-1".into(),
+                caller: owner.caller().unwrap(),
+                operation_id: "turn".into(),
+                accepted_after_model_call_index: 1,
+                input: EncodedPayload::encode(&payload).unwrap(),
+                result,
+            })
+            .await
+            .unwrap();
+        let state = session.state().await.unwrap();
+        assert_eq!(state.operation("turn").unwrap().boundary_outputs.len(), 1);
+        assert_eq!(
+            state
+                .operation("turn")
+                .unwrap()
+                .boundary_output_receipts
+                .len(),
+            1
+        );
+        owner.shutdown().await.unwrap();
+        drop((owner, session));
+
+        let reopened = DurableSession::open(store, "boundary-receipt")
+            .await
+            .unwrap();
+        let (owner, _) = reopened.acquire_agent().await.unwrap();
+        owner
+            .admit_typed::<_, u32, String>("turn".into(), &"prompt")
+            .await
+            .unwrap();
+        owner.begin_attempt("turn".into()).await.unwrap();
+        let revision = reopened.state().await.unwrap().revision();
+        assert_eq!(
+            owner
+                .accept_boundary_output("turn".into(), 9, &payload, "output-1".into(), false)
+                .await
+                .unwrap(),
+            None
+        );
+        assert_eq!(revision, reopened.state().await.unwrap().revision());
+        let outputs = owner
+            .retained_boundary_outputs("turn".into())
+            .await
+            .unwrap();
+        assert_eq!(outputs.len(), 1);
+        assert_eq!(outputs[0].index, 1);
+        assert_eq!(
+            outputs[0]
+                .state
+                .input
+                .decode::<serde_json::Value>()
+                .unwrap(),
+            payload
+        );
+        // Caller ids for steering and outputs are intentionally independent.
+        assert_eq!(
+            owner
+                .accept_steer("turn".into(), 1, &"steer", Some("output-1".into()), true)
+                .await
+                .unwrap(),
+            Some(1)
+        );
+        assert_eq!(owner.retained_steers("turn".into()).await.unwrap().len(), 1);
+        assert!(matches!(
+            owner
+                .accept_boundary_output("turn".into(), 9, &"different", "output-1".into(), false)
+                .await,
+            Err(Error::BoundaryOutputConflict { .. })
+        ));
+        assert!(matches!(
+            owner
+                .accept_boundary_output("turn".into(), 9, &payload, "output-2".into(), false)
+                .await,
+            Err(Error::BoundaryOutputQueueFull)
+        ));
+        assert!(
+            owner
+                .complete("turn".into(), EncodedPayload::encode(&1).unwrap(), &"done")
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            reopened
+                .state()
+                .await
+                .unwrap()
+                .operation("turn")
+                .unwrap()
+                .boundary_outputs
+                .len(),
+            1
+        );
+    }
+
+    #[tokio::test]
     async fn stale_agent_capability_cannot_mutate_or_release_its_successor() {
         let store = MemoryStore::new().unwrap();
         let session = DurableSession::open(store, "local-owner-aba")
@@ -3106,6 +3397,8 @@ mod tests {
         fn operation(status: OperationStatus, steers: Vec<SteerState>) -> OperationState {
             OperationState {
                 steer_receipts: Default::default(),
+                boundary_output_receipts: Default::default(),
+                boundary_outputs: Default::default(),
                 continuation: None,
                 retired_model_calls: 0,
                 retired_steers: 0,

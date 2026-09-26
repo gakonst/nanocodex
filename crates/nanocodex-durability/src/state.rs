@@ -250,6 +250,19 @@ pub enum Transition {
         /// Model-call ordinal before which the steer is applied.
         model_call_index: u32,
     },
+    /// A typed output accepted for delivery at a future model request boundary.
+    BoundaryOutputAccepted {
+        /// Admitted operation.
+        operation_id: String,
+        /// One-based queue position.
+        output_index: u32,
+        /// Current model request when accepted.
+        accepted_after_model_call_index: u32,
+        /// Caller idempotency identity.
+        message_id: String,
+        /// Typed serialized output.
+        input: EncodedPayload,
+    },
     /// An operation completed and advanced the durable session checkpoint.
     OperationCompleted {
         /// Accepted operation identity.
@@ -375,6 +388,28 @@ pub struct IdentifiedSteerReceipt {
     pub withdrawn: bool,
 }
 
+/// A typed output waiting for a future model request (never a completed delivery).
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct BoundaryOutputState {
+    /// Caller idempotency identity.
+    pub message_id: String,
+    /// Encoded typed output.
+    pub input: EncodedPayload,
+    /// Current model request when accepted.
+    pub accepted_after_model_call_index: u32,
+}
+
+/// Caller receipt independent of steering receipts.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct BoundaryOutputReceipt {
+    /// Content fingerprint for exact duplicate detection.
+    pub input_key: String,
+    /// Original one-based queue position.
+    pub index: u32,
+}
+
 /// Reduced durable operation state.
 #[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
@@ -382,6 +417,12 @@ pub struct OperationState {
     /// Caller receipts survive retirement of live steering bodies.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub steer_receipts: BTreeMap<String, IdentifiedSteerReceipt>,
+    /// Independent idempotency namespace for typed boundary outputs.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub boundary_output_receipts: BTreeMap<String, BoundaryOutputReceipt>,
+    /// Accepted but not yet delivered typed outputs.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub boundary_outputs: Vec<BoundaryOutputState>,
     /// Current conversation and execution position; settled batches are retired atomically.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub continuation: Option<EncodedPayload>,
@@ -408,6 +449,7 @@ impl OperationState {
             || self.retired_model_calls != 0
             || !self.steps.is_empty()
             || !self.steers.is_empty()
+            || !self.boundary_outputs.is_empty()
     }
 
     fn retire_steps(&mut self) {
@@ -498,6 +540,9 @@ impl DurableState {
             }
             for steer in &mut operation.steers {
                 steer.input.stage(&mut records);
+            }
+            for output in &mut operation.boundary_outputs {
+                output.input.stage(&mut records);
             }
         }
         if let Some((_, value)) = &mut self.latest_checkpoint {
@@ -686,8 +731,25 @@ impl DurableState {
                     None => saw_unbound_steer = true,
                 }
             }
+            for (offset, output) in operation.boundary_outputs.iter().enumerate() {
+                if output.message_id.is_empty()
+                    || output.accepted_after_model_call_index == 0
+                    || operation
+                        .boundary_output_receipts
+                        .get(&output.message_id)
+                        .is_none_or(|receipt| {
+                            receipt.index as usize != offset + 1
+                                || receipt.input_key != output.input.key.as_ref()
+                        })
+                {
+                    return Err(Error::InvalidState(format!(
+                        "invalid boundary output in operation `{operation_id}`"
+                    )));
+                }
+            }
             if matches!(operation.status, OperationStatus::Completed { .. }) {
                 ensure_completed_steers_consumed(operation_id, operation)?;
+                ensure_no_pending_boundary_outputs(operation_id, operation)?;
             }
             if matches!(
                 &operation.status,
@@ -967,6 +1029,29 @@ impl DurableState {
                     }
                 }
             }
+            Transition::BoundaryOutputAccepted {
+                operation_id,
+                output_index,
+                accepted_after_model_call_index,
+                message_id,
+                ..
+            } => {
+                self.ensure_prior_operations_terminal(operation_id)?;
+                let operation = self.pending_operation(operation_id)?;
+                let expected = u32::try_from(operation.boundary_outputs.len())
+                    .ok()
+                    .and_then(|n| n.checked_add(1))
+                    .ok_or_else(|| Error::InvalidState("boundary output index overflow".into()))?;
+                if message_id.is_empty()
+                    || operation.boundary_output_receipts.contains_key(message_id)
+                    || *output_index != expected
+                    || *accepted_after_model_call_index == 0
+                {
+                    return Err(Error::InvalidState(
+                        "invalid or duplicate boundary output acceptance".into(),
+                    ));
+                }
+            }
             Transition::OperationCompleted { operation_id, .. } => {
                 self.ensure_prior_operations_terminal(operation_id)?;
                 let operation = self.pending_operation(operation_id)?;
@@ -980,6 +1065,7 @@ impl DurableState {
                     )));
                 }
                 ensure_completed_steers_consumed(operation_id, operation)?;
+                ensure_no_pending_boundary_outputs(operation_id, operation)?;
             }
             Transition::OperationFailed { operation_id, .. } => {
                 self.ensure_prior_operations_terminal(operation_id)?;
@@ -1027,6 +1113,8 @@ impl DurableState {
                     operation_id,
                     OperationState {
                         steer_receipts: BTreeMap::new(),
+                        boundary_output_receipts: BTreeMap::new(),
+                        boundary_outputs: Vec::new(),
                         continuation: None,
                         retired_model_calls: 0,
                         retired_steers: 0,
@@ -1075,6 +1163,27 @@ impl DurableState {
                     ))
                 })?;
                 step.status = StepStatus::Completed(output);
+            }
+            Transition::BoundaryOutputAccepted {
+                operation_id,
+                output_index,
+                accepted_after_model_call_index,
+                message_id,
+                input,
+            } => {
+                let operation = self.pending_operation_mut(&operation_id)?;
+                operation.boundary_output_receipts.insert(
+                    message_id.clone(),
+                    BoundaryOutputReceipt {
+                        input_key: input.key.to_string(),
+                        index: output_index,
+                    },
+                );
+                operation.boundary_outputs.push(BoundaryOutputState {
+                    message_id,
+                    input,
+                    accepted_after_model_call_index,
+                });
             }
             Transition::SteerAccepted {
                 operation_id,
@@ -1217,6 +1326,18 @@ impl DurableState {
     }
 }
 
+fn ensure_no_pending_boundary_outputs(
+    operation_id: &str,
+    operation: &OperationState,
+) -> Result<()> {
+    if !operation.boundary_outputs.is_empty() {
+        return Err(Error::InvalidState(format!(
+            "operation `{operation_id}` completed with undelivered boundary output"
+        )));
+    }
+    Ok(())
+}
+
 fn ensure_completed_steers_consumed(operation_id: &str, operation: &OperationState) -> Result<()> {
     for (offset, steer) in operation.steers.iter().enumerate() {
         let steer_index = offset + 1 + operation.retired_steers as usize;
@@ -1246,6 +1367,7 @@ impl Transition {
             | Self::OperationAccepted { operation_id, .. }
             | Self::StepStarted { operation_id, .. }
             | Self::StepCompleted { operation_id, .. }
+            | Self::BoundaryOutputAccepted { operation_id, .. }
             | Self::SteerAccepted { operation_id, .. }
             | Self::SteerBound { operation_id, .. }
             | Self::SteerWithdrawn { operation_id, .. }

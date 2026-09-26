@@ -91,6 +91,31 @@ pub struct ExecutionSteer {
 /// Optional caller identity paired with a retained steering input.
 pub type IdentifiedExecutionSteer = (Option<String>, ExecutionSteer);
 
+/// Typed delivery admitted for the next model request boundary.
+/// Acceptance alone is not proof that a model request received this output.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ExecutionBoundaryOutput {
+    /// Text of a completed terminal invocation.
+    TerminalOutput {
+        /// Exact terminal output body.
+        text: String,
+    },
+}
+
+/// Pending boundary delivery recovered from durable state.
+#[derive(Clone, Debug)]
+pub struct RetainedExecutionBoundaryOutput {
+    /// Original one-based acceptance position.
+    pub index: u32,
+    /// Caller idempotency identity.
+    pub message_id: String,
+    /// Model request current on acceptance.
+    pub accepted_after_model_call_index: u32,
+    /// Typed output not yet delivered.
+    pub output: ExecutionBoundaryOutput,
+}
+
 /// Serializable result retained at a completed agent boundary.
 #[derive(Clone, Deserialize, Serialize)]
 pub struct ExecutionOutput {
@@ -212,6 +237,35 @@ pub trait ExecutionPolicy: Send + Sync {
             self.accept_steer(operation_id, accepted_after_model_call_index, input_json)
                 .await
                 .map(Some)
+        })
+    }
+
+    /// Durably admits a typed output and independent caller receipt. A duplicate
+    /// identity with identical input returns None, even if capacity is exhausted.
+    fn accept_identified_boundary_output<'a>(
+        &'a self,
+        _operation_id: String,
+        _message_id: String,
+        _accepted_after_model_call_index: u32,
+        _output: ExecutionBoundaryOutput,
+        _capacity_available: bool,
+    ) -> ExecutionFuture<'a, Result<Option<u32>>> {
+        Box::pin(async {
+            Err(NanocodexError::ExecutionPolicyCapabilityUnsupported {
+                capability: "accept_identified_boundary_output",
+            })
+        })
+    }
+
+    /// Recover typed outputs not yet delivered to a model request.
+    fn retained_boundary_outputs<'a>(
+        &'a self,
+        _operation_id: String,
+    ) -> ExecutionFuture<'a, Result<Vec<RetainedExecutionBoundaryOutput>>> {
+        Box::pin(async {
+            Err(NanocodexError::ExecutionPolicyCapabilityUnsupported {
+                capability: "retained_boundary_outputs",
+            })
         })
     }
 
@@ -418,6 +472,35 @@ pub trait ExecutionPolicy: Send + Sync {
             self.accept_steer(operation_id, accepted_after_model_call_index, input_json)
                 .await
                 .map(Some)
+        })
+    }
+
+    /// Durably admits a typed output and independent caller receipt. A duplicate
+    /// identity with identical input returns None, even if capacity is exhausted.
+    fn accept_identified_boundary_output<'a>(
+        &'a self,
+        _operation_id: String,
+        _message_id: String,
+        _accepted_after_model_call_index: u32,
+        _output: ExecutionBoundaryOutput,
+        _capacity_available: bool,
+    ) -> ExecutionFuture<'a, Result<Option<u32>>> {
+        Box::pin(async {
+            Err(NanocodexError::ExecutionPolicyCapabilityUnsupported {
+                capability: "accept_identified_boundary_output",
+            })
+        })
+    }
+
+    /// Recover typed outputs not yet delivered to a model request.
+    fn retained_boundary_outputs<'a>(
+        &'a self,
+        _operation_id: String,
+    ) -> ExecutionFuture<'a, Result<Vec<RetainedExecutionBoundaryOutput>>> {
+        Box::pin(async {
+            Err(NanocodexError::ExecutionPolicyCapabilityUnsupported {
+                capability: "retained_boundary_outputs",
+            })
         })
     }
 
