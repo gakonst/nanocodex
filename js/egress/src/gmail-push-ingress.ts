@@ -20,7 +20,8 @@ function decode(value: string): Uint8Array {
 }
 async function keys(fetchKeys: typeof fetch): Promise<GoogleKey[]> {
   if (fetchKeys === fetch && cachedKeys && cachedKeys.until > Date.now()) return cachedKeys.keys;
-  const response = await fetchKeys(JWKS, { redirect: "error", signal: AbortSignal.timeout(10_000) });
+  // Workerd rejects redirect="error"; manual plus the status check fails closed.
+  const response = await fetchKeys(JWKS, { redirect: "manual", signal: AbortSignal.timeout(10_000) });
   if (!response.ok) throw new Error("Google keys unavailable");
   const body = await response.json() as { keys?: GoogleKey[] };
   if (!Array.isArray(body.keys) || body.keys.length > 20) throw new Error("invalid Google keys");

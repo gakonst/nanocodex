@@ -13,7 +13,7 @@ async function fixture(overrides: Record<string, unknown> = {}) {
   const unsigned = `${encode({ alg: "RS256", kid: "fixture" })}.${encode({ iss: "https://accounts.google.com", aud: config.GMAIL_PUSH_AUDIENCE, email: config.GMAIL_PUSH_SERVICE_ACCOUNT, email_verified: true, sub: "123", iat: now, exp: now + 3600, ...overrides })}`;
   const signature = new Uint8Array(await crypto.subtle.sign("RSASSA-PKCS1-v1_5", keys.privateKey, new TextEncoder().encode(unsigned)));
   const token = `${unsigned}.${btoa(String.fromCharCode(...signature)).replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", "")}`;
-  return { token, fetchKeys: async () => Response.json({ keys: [{ ...jwk, kid: "fixture", alg: "RS256", use: "sig" }] }) };
+  return { token, fetchKeys: async (url: RequestInfo | URL, init?: RequestInit) => { new Request(url, init); return Response.json({ keys: [{ ...jwk, kid: "fixture", alg: "RS256", use: "sig" }] }); } };
 }
 describe("Google Pub/Sub authentication", () => {
   it("accepts Google-signed configured identity and rejects forged signatures", async () => {
@@ -26,6 +26,18 @@ describe("Google Pub/Sub authentication", () => {
       const { token, fetchKeys } = await fixture(invalid);
       expect(await verifyGooglePushToken(token, config, fetchKeys)).toBe(false);
     }
+  });
+  it("does not follow redirects while fetching signing keys", async () => {
+    const { token } = await fixture();
+    let calls = 0;
+    const redirected = async (url: RequestInfo | URL, init?: RequestInit) => {
+      const request = new Request(url, init);
+      expect(request.redirect).toBe("manual");
+      calls++;
+      return new Response(null, {status: 302, headers: {location: "https://other.example/keys"}});
+    };
+    expect(await verifyGooglePushToken(token, config, redirected)).toBe(false);
+    expect(calls).toBe(1);
   });
   it("reports bounded authentication failures without exposing token claims", async () => {
     const { token, fetchKeys } = await fixture({ aud: "private-invalid-audience" });
