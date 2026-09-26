@@ -992,6 +992,7 @@ impl Execution {
         &self,
         lineage_id: &str,
         wake_id: &str,
+        jobs: &[crate::model::run::LateWakeJob],
     ) -> Result<(Option<String>, Option<String>, AdmittedExecution)> {
         let Some(policy) = &self.policy else {
             return Ok((None, None, AdmittedExecution::Execute));
@@ -1001,6 +1002,7 @@ impl Execution {
             "kind": "late_function_output_continuation",
             "lineage_id": lineage_id,
             "wake_id": wake_id,
+            "jobs": jobs,
         }))?;
         let admission = policy.admit(operation_id.clone(), input.clone()).await?;
         Ok((Some(operation_id), Some(input), map_admission(admission)))

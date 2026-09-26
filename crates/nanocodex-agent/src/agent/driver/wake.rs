@@ -40,11 +40,14 @@ where
             NanocodexError::InvalidSessionSnapshot("late wake has no pending marker".into())
         })?;
     let journal_id = format!("late-continuation:{}:{wake_id}", spawner.lineage_id);
+    let jobs = model
+        .current_checkpoint()
+        .map_or_else(Vec::new, |checkpoint| checkpoint.late_wake_jobs().to_vec());
     let (operation_id, operation_input, admission) = execution
         .recover_failure(
             Some(&journal_id),
             execution
-                .admit_late_continuation(&spawner.lineage_id, &wake_id)
+                .admit_late_continuation(&spawner.lineage_id, &wake_id, &jobs)
                 .await,
         )
         .await?;

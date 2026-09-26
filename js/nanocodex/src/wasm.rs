@@ -2053,6 +2053,29 @@ impl WasmNanocodex {
         serde_json::to_string(&status).map_err(js_error)
     }
 
+    /// Reads exact idle-wake uptake from a durable completed provider model step.
+    /// A submitted checkpoint or pending step alone never confirms consumption.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a non-durable runtime or a failed durable-state query.
+    #[wasm_bindgen(js_name = idleFunctionOutputStatus)]
+    pub async fn idle_function_output_status(
+        &self,
+        job_id: &str,
+        call_id: &str,
+    ) -> Result<String, JsValue> {
+        let state = self
+            .durable_status
+            .as_ref()
+            .ok_or_else(|| js_error("durable idle function-call status is unavailable"))?;
+        let status = state
+            .idle_function_output_status_for_call(job_id, call_id)
+            .await
+            .map_err(js_error)?;
+        serde_json::to_string(&status).map_err(js_error)
+    }
+
     /// Appends adapter-owned developer context at the next safe model boundary.
     ///
     /// Returns the complete read-only session context captured at that boundary.

@@ -363,6 +363,7 @@ where
             Ok(ModelTaskOutcome::Completed(message)) => {
                 if let Some(session) = &mut self.session {
                     session.pending_late_wake = None;
+                    session.pending_late_jobs.clear();
                 }
                 self.record_transport();
                 let usage = self.stats.turn_usage();
@@ -691,6 +692,7 @@ where
                 context,
                 preserve_inherited_delta: false,
                 pending_late_wake: None,
+                pending_late_jobs: Vec::new(),
             };
             session
                 .conversation
@@ -929,6 +931,7 @@ where
             prompt_cache_key: Arc::from(session.factory.profile().prompt_cache_key()),
             preserve_inherited_delta,
             pending_late_wake: session.pending_late_wake.clone(),
+            pending_late_jobs: session.pending_late_jobs.clone(),
             global_instructions,
             context_baseline: session.context.baseline(),
         }
@@ -948,6 +951,7 @@ where
             prompt_cache_key: Arc::from(session.factory.profile().prompt_cache_key()),
             preserve_inherited_delta: true,
             pending_late_wake: session.pending_late_wake.clone(),
+            pending_late_jobs: session.pending_late_jobs.clone(),
             global_instructions: global_instructions.cloned(),
             context_baseline: session.context.baseline(),
         }));

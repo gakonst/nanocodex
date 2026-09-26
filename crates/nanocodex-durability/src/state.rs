@@ -219,6 +219,9 @@ pub enum Transition {
         step_id: String,
         /// Opaque typed output returned during replay.
         output: EncodedPayload,
+        /// Provider response ID extracted from a completed late-wake model step.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        late_response_id: Option<String>,
     },
     /// Live steering input was accepted for an active operation.
     SteerAccepted {
@@ -465,6 +468,9 @@ pub struct OperationState {
     /// Number of confirmed FIFO bodies removed after a durable advance.
     #[serde(default)]
     pub retired_boundary_outputs: u32,
+    /// First completed provider model step of an idle wake; retained after step retirement.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub late_model_response: Option<(u32, String)>,
     /// Current conversation and execution position; settled batches are retired atomically.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub continuation: Option<EncodedPayload>,
@@ -759,6 +765,22 @@ impl DurableState {
                     )));
                 }
             }
+            if let Some((index, response_id)) = &operation.late_model_response {
+                let step_id = format!("model-{index}");
+                if !operation_id.starts_with("late-continuation:")
+                    || *index == 0
+                    || response_id.is_empty()
+                    || (*index > operation.retired_model_calls
+                        && !operation.steps.get(&step_id).is_some_and(|step| {
+                            step.kind == "model_call"
+                                && matches!(step.status, StepStatus::Completed(_))
+                        }))
+                {
+                    return Err(Error::InvalidState(
+                        "invalid retained late wake model receipt".into(),
+                    ));
+                }
+            }
             let mut previous_model_call_index = None;
             let mut saw_unbound_steer = false;
             for (offset, steer) in operation.steers.iter().enumerate() {
@@ -1004,7 +1026,21 @@ impl DurableState {
                 operation_id,
                 step_id,
                 output: _,
+                late_response_id,
             } => {
+                if let Some(response_id) = late_response_id {
+                    let index = step_id
+                        .strip_prefix("model-")
+                        .and_then(|n| n.parse::<u32>().ok());
+                    if !operation_id.starts_with("late-continuation:")
+                        || index.is_none_or(|n| n == 0)
+                        || response_id.is_empty()
+                    {
+                        return Err(Error::InvalidState(
+                            "invalid late wake model receipt".into(),
+                        ));
+                    }
+                }
                 ensure_nonempty(step_id, "step ID")?;
                 self.ensure_prior_operations_terminal(operation_id)?;
                 let operation = self.pending_operation(operation_id)?;
@@ -1013,6 +1049,11 @@ impl DurableState {
                         "step `{step_id}` in operation `{operation_id}` completed before start"
                     ))
                 })?;
+                if late_response_id.is_some() && step.kind != "model_call" {
+                    return Err(Error::InvalidState(
+                        "late wake receipt requires a model step".into(),
+                    ));
+                }
                 match &step.status {
                     StepStatus::EffectPending => {}
                     StepStatus::Completed(_) => {
@@ -1282,6 +1323,7 @@ impl DurableState {
                         steer_receipts: BTreeMap::new(),
                         boundary_output_receipts: BTreeMap::new(),
                         boundary_outputs: Vec::new(),
+                        late_model_response: None,
                         retired_boundary_outputs: 0,
                         continuation: None,
                         retired_model_calls: 0,
@@ -1323,8 +1365,19 @@ impl DurableState {
                 operation_id,
                 step_id,
                 output,
+                late_response_id,
             } => {
                 let operation = self.pending_operation_mut(&operation_id)?;
+                if let Some(response_id) = late_response_id {
+                    let index = step_id
+                        .strip_prefix("model-")
+                        .unwrap()
+                        .parse::<u32>()
+                        .unwrap();
+                    if operation.late_model_response.is_none() {
+                        operation.late_model_response = Some((index, response_id));
+                    }
+                }
                 let step = operation.steps.get_mut(&step_id).ok_or_else(|| {
                     Error::InvalidState(format!(
                         "step `{step_id}` in operation `{operation_id}` completed before start"
@@ -1670,6 +1723,7 @@ mod continuation_tests {
                 operation_id: id.clone(),
                 step_id: format!("model-{model_call}"),
                 output: payload.clone(),
+                late_response_id: None,
             })?;
             apply(Transition::ExecutionAdvanced {
                 operation_id: id.clone(),
@@ -1710,6 +1764,7 @@ mod continuation_tests {
             operation_id: id.clone(),
             step_id: "model-1".into(),
             output: payload.clone(),
+            late_response_id: None,
         })?;
         apply(Transition::ExecutionAdvanced {
             operation_id: id.clone(),
@@ -1737,6 +1792,7 @@ mod continuation_tests {
             operation_id: id.clone(),
             step_id: "model-2".into(),
             output: payload.clone(),
+            late_response_id: None,
         })?;
         apply(Transition::ExecutionAdvanced {
             operation_id: id.clone(),
@@ -1863,6 +1919,7 @@ mod withdrawal_tests {
             operation_id: "turn".into(),
             step_id: "model-2".into(),
             output: payload.clone(),
+            late_response_id: None,
         })?;
         apply(Transition::ExecutionAdvanced {
             operation_id: "turn".into(),
@@ -1993,6 +2050,7 @@ mod boundary_output_lifecycle_tests {
                 operation_id: "turn".into(),
                 step_id: "model-2".into(),
                 output: payload.clone(),
+                late_response_id: None,
             },
         )?;
         assert_eq!(state.operation("turn").unwrap().boundary_outputs.len(), 2);
@@ -2100,6 +2158,7 @@ mod boundary_output_lifecycle_tests {
                         operation_id: "turn".into(),
                         step_id: "model-2".into(),
                         output: payload.clone(),
+                        late_response_id: None,
                     },
                 )?;
                 apply(

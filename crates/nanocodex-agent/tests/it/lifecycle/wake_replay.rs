@@ -17,6 +17,7 @@ use super::*;
 #[derive(Default)]
 struct WakeJournal {
     pending_snapshot: Mutex<Option<SessionSnapshot>>,
+    wake_input: Mutex<Option<serde_json::Value>>,
     completed: Mutex<Option<(SessionSnapshot, ExecutionOutput)>>,
     lose_completion_ack: AtomicBool,
     recovered_failures: AtomicUsize,
@@ -39,9 +40,12 @@ impl ExecutionPolicy for WakeJournal {
     fn admit<'a>(
         &'a self,
         operation_id: String,
-        _input: String,
+        input: String,
     ) -> ExecutionFuture<'a, nanocodex_agent::Result<ExecutionAdmission>> {
         Box::pin(async move {
+            if operation_id.starts_with("late-continuation:") {
+                *self.wake_input.lock().unwrap() = Some(serde_json::from_str(&input).unwrap());
+            }
             if operation_id.starts_with("late-continuation:")
                 && let Some((snapshot, output)) = self.completed.lock().unwrap().clone()
             {
@@ -206,10 +210,18 @@ async fn completed_wake_admission_restores_authoritative_snapshot_and_live_model
         .await
         .unwrap();
     let pending = journal.pending_snapshot.lock().unwrap().clone().unwrap();
+    assert_eq!(
+        serde_json::to_value(&pending).unwrap()["pending_late_jobs"],
+        serde_json::json!([{"job_id":"replay-operation", "call_id":"job-replay"}])
+    );
     let first_wake = tokio::time::timeout(Duration::from_secs(5), observed.recv())
         .await
         .unwrap()
         .unwrap();
+    assert_eq!(
+        journal.wake_input.lock().unwrap().as_ref().unwrap()["jobs"],
+        serde_json::json!([{"job_id":"replay-operation", "call_id":"job-replay"}])
+    );
     assert!(first_wake.input_items().any(|item| {
         serde_json::to_string(item)
             .unwrap()

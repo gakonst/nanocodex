@@ -151,6 +151,13 @@ pub(crate) struct CompletedModelTurn {
     pub(crate) checkpoint: ModelCheckpoint,
 }
 
+/// Exact idle terminal receipt identities carried into one durable wake.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+pub(crate) struct LateWakeJob {
+    pub(crate) job_id: String,
+    pub(crate) call_id: String,
+}
+
 #[derive(Clone)]
 pub(crate) struct ModelCheckpoint {
     workspace: String,
@@ -162,6 +169,7 @@ pub(crate) struct ModelCheckpoint {
     global_instructions: Option<Arc<str>>,
     context_baseline: ContextBaseline,
     pending_late_wake: Option<String>,
+    pending_late_jobs: Vec<LateWakeJob>,
 }
 
 pub(crate) struct PreparedCheckpoint {
@@ -242,6 +250,14 @@ impl ModelCheckpoint {
         self.pending_late_wake = wake;
     }
 
+    pub(crate) fn late_wake_jobs(&self) -> &[LateWakeJob] {
+        &self.pending_late_jobs
+    }
+
+    pub(crate) fn restore_late_wake_jobs(&mut self, jobs: Vec<LateWakeJob>) {
+        self.pending_late_jobs = jobs;
+    }
+
     pub(crate) fn snapshot_history(&self) -> Vec<ResponseItem> {
         self.conversation.flattened_history()
     }
@@ -283,6 +299,7 @@ impl ModelCheckpoint {
             global_instructions,
             context_baseline,
             pending_late_wake: None,
+            pending_late_jobs: Vec::new(),
         })
     }
 }
@@ -399,6 +416,7 @@ impl<S> ModelRun<S> {
                 context: ContextState::new(selected_agents_md, checkpoint.context_baseline),
                 preserve_inherited_delta: checkpoint.preserve_inherited_delta,
                 pending_late_wake: checkpoint.pending_late_wake,
+                pending_late_jobs: checkpoint.pending_late_jobs,
             }),
             active_tools: Some(active_tools),
             active_tool_calls: Vec::new(),
@@ -482,6 +500,7 @@ impl<S> ModelRun<S> {
             global_instructions: self.global_instructions.clone(),
             context_baseline: session.context.baseline(),
             pending_late_wake: session.pending_late_wake.clone(),
+            pending_late_jobs: session.pending_late_jobs.clone(),
         })
     }
 
@@ -584,6 +603,10 @@ impl<S> ModelRun<S> {
         // Chain all unconsumed outputs into the same wake. Replay of the same
         // receipt returns above without advancing the identity a second time.
         if idle_wake {
+            session.pending_late_jobs.push(LateWakeJob {
+                job_id: operation_id.to_owned(),
+                call_id: call_id.to_owned(),
+            });
             session.pending_late_wake = Some(advance_late_wake(
                 session.pending_late_wake.as_deref(),
                 receipt_id.as_ref(),
@@ -625,6 +648,7 @@ impl<S> ModelRun<S> {
             context,
             preserve_inherited_delta: false,
             pending_late_wake: None,
+            pending_late_jobs: Vec::new(),
         })
     }
 
@@ -870,10 +894,27 @@ mod context_accounting_snapshot_tests {
         assert_ne!(first, second);
         assert_eq!(second, advance_late_wake(Some(&first), "late:second"));
         checkpoint.restore_late_wake(Some(second.clone()));
+        checkpoint.restore_late_wake_jobs(vec![
+            LateWakeJob {
+                job_id: "job-1".into(),
+                call_id: "job-1".into(),
+            },
+            LateWakeJob {
+                job_id: "job-2".into(),
+                call_id: "call-2".into(),
+            },
+        ]);
         let snapshot =
             CommittedSession::new(Arc::from("lineage"), Model::Astra, checkpoint).snapshot();
         let encoded = serde_json::to_value(snapshot).unwrap();
         assert_eq!(encoded["pending_late_wake"], second);
+        assert_eq!(
+            encoded["pending_late_jobs"],
+            serde_json::json!([
+                {"job_id":"job-1", "call_id":"job-1"},
+                {"job_id":"job-2", "call_id":"call-2"}
+            ])
+        );
         let restored: SessionSnapshot = serde_json::from_value(encoded).unwrap();
         assert!(
             restored
@@ -897,6 +938,8 @@ mod context_accounting_snapshot_tests {
             .into_replayed_checkpoint("lineage", Model::Astra, Some("."))
             .unwrap();
         assert_eq!(replay.late_wake_id(), Some(second.as_str()));
+        assert_eq!(replay.late_wake_jobs().len(), 2);
+        assert_eq!(replay.late_wake_jobs()[1].call_id, "call-2");
         replay.conversation.append([ResponseItem::message(
             MessageRole::Developer,
             [ContentItem::InputText {

@@ -121,6 +121,7 @@ impl CommittedSession {
             context_snapshot: Some(self.model.context_baseline().clone()),
             context_usage: Some(self.model.context_usage()),
             pending_late_wake: self.model.late_wake_id().map(str::to_owned),
+            pending_late_jobs: self.model.late_wake_jobs().to_vec(),
         }
     }
 }
@@ -172,6 +173,8 @@ pub struct SessionSnapshot {
     context_usage: Option<ContextUsage>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pending_late_wake: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pending_late_jobs: Vec<super::model::run::LateWakeJob>,
 }
 
 /// Session metadata separated from independently persisted conversation items.
@@ -255,6 +258,7 @@ impl SessionSnapshot {
             context_snapshot,
             context_usage: None,
             pending_late_wake: None,
+            pending_late_jobs: Vec::new(),
         })
     }
 
@@ -362,6 +366,7 @@ impl SessionSnapshot {
                     self.context_snapshot.clone(),
                 )?;
                 checkpoint.restore_late_wake(self.pending_late_wake.clone());
+                checkpoint.restore_late_wake_jobs(self.pending_late_jobs.clone());
                 if let Some(usage) = self.context_usage.as_ref() {
                     checkpoint.restore_context_usage(usage);
                 }

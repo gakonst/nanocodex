@@ -65,7 +65,7 @@ impl<C, O> AutomaticAdmission<C, O> {
 }
 
 /// Read-only status of a typed output for one exact active-source operation and job message.
-/// This does not describe standalone/idle delivery. Binding alone is not model uptake.
+/// Also used for exact idle-wake receipts. Binding alone is not model uptake.
 #[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum ActiveBoundaryOutputStatus {
@@ -1552,10 +1552,35 @@ impl Driver {
                 "step `{step_id}` in operation `{operation_id}` already completed"
             ))),
             StepStatus::EffectPending => {
+                let late_response_id = if operation_id.starts_with("late-continuation:") {
+                    let step = self
+                        .state
+                        .operation(&operation_id)
+                        .and_then(|op| op.steps.get(&step_id));
+                    if step.is_some_and(|step| step.kind == "model_call") {
+                        let json: serde_json::Value = output.decode()?;
+                        let id = json
+                            .get("response")
+                            .and_then(|response| response.get("id"))
+                            .and_then(serde_json::Value::as_str)
+                            .filter(|id| !id.is_empty())
+                            .ok_or_else(|| {
+                                Error::InvalidState(
+                                    "late wake model step lacks a provider response ID".into(),
+                                )
+                            })?;
+                        Some(id.to_owned())
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
                 self.apply(Transition::StepCompleted {
                     operation_id,
                     step_id,
                     output,
+                    late_response_id,
                 })
                 .await
             }
@@ -1926,6 +1951,84 @@ impl DurableSession {
         })
         .await?;
         receiver.await.map_err(|_| Error::DriverStopped)
+    }
+
+    /// Reads the exact idle-wake job/call's uptake from its retained journal.
+    /// Neither checkpoint submission nor a started model request is confirmation.
+    /// Missing, mismatched, or pruned evidence fails closed.
+    pub async fn idle_function_output_status_for_call(
+        &self,
+        job_id: &str,
+        call_id: &str,
+    ) -> Result<ActiveBoundaryOutputStatus> {
+        if job_id.is_empty() || call_id.is_empty() {
+            return Ok(ActiveBoundaryOutputStatus::PrunedOrUnknown);
+        }
+        let state = self.state().await?;
+        let mut result = ActiveBoundaryOutputStatus::PrunedOrUnknown;
+        for (id, operation) in state.operations() {
+            if !id.starts_with("late-continuation:") {
+                continue;
+            }
+            let input = self.resolve(&operation.input).await?;
+            let Ok(value) = input.decode::<serde_json::Value>() else {
+                continue;
+            };
+            let Some(lineage) = value.get("lineage_id").and_then(serde_json::Value::as_str) else {
+                continue;
+            };
+            let Some(wake) = value.get("wake_id").and_then(serde_json::Value::as_str) else {
+                continue;
+            };
+            if value.get("kind").and_then(serde_json::Value::as_str)
+                != Some("late_function_output_continuation")
+                || id != &format!("late-continuation:{lineage}:{wake}")
+                || !value
+                    .get("jobs")
+                    .and_then(serde_json::Value::as_array)
+                    .is_some_and(|jobs| {
+                        jobs.iter().any(|job| {
+                            job.get("job_id").and_then(serde_json::Value::as_str) == Some(job_id)
+                                && job.get("call_id").and_then(serde_json::Value::as_str)
+                                    == Some(call_id)
+                        })
+                    })
+            {
+                continue;
+            }
+            if let Some((index, response_id)) = &operation.late_model_response {
+                if *index > 0 && !response_id.is_empty() {
+                    return Ok(ActiveBoundaryOutputStatus::Confirmed {
+                        model_call_index: *index,
+                        response_id: response_id.clone(),
+                    });
+                }
+            }
+            if let Some(index) = operation
+                .steps
+                .iter()
+                .filter_map(|(step_id, step)| {
+                    (step.kind == "model_call")
+                        .then(|| {
+                            step_id
+                                .strip_prefix("model-")
+                                .and_then(|n| n.parse::<u32>().ok())
+                        })
+                        .flatten()
+                        .filter(|index| *index > 0)
+                })
+                .min()
+            {
+                result = ActiveBoundaryOutputStatus::BoundUnconfirmed {
+                    model_call_index: index,
+                };
+            } else if operation.status.is_terminal() {
+                result = ActiveBoundaryOutputStatus::Discarded;
+            } else if !matches!(result, ActiveBoundaryOutputStatus::BoundUnconfirmed { .. }) {
+                result = ActiveBoundaryOutputStatus::AcceptedUnbound;
+            }
+        }
+        Ok(result)
     }
 
     /// Copies the current reduced state from the owning driver.
@@ -3986,6 +4089,150 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn idle_wake_failed_without_model_step_is_discarded_and_pruning_fails_closed() {
+        let store = crate::MemoryStore::new().unwrap();
+        let session =
+            DurableSession::open_with_terminal_receipt_limit(store.clone(), "idle-failed", 1)
+                .await
+                .unwrap();
+        let (owner, _) = session.acquire_agent().await.unwrap();
+        let id = "late-continuation:lineage:failed-wake";
+        let input = serde_json::json!({"kind":"late_function_output_continuation",
+            "lineage_id":"lineage", "wake_id":"failed-wake",
+            "jobs":[{"job_id":"job-failed", "call_id":"call-failed"}]});
+        owner
+            .admit_typed::<_, String, String>(id.into(), &input)
+            .await
+            .unwrap();
+        owner.begin_attempt(id.into()).await.unwrap();
+        owner
+            .fail(
+                id.into(),
+                EncodedPayload::encode(&"checkpoint").unwrap(),
+                "error".into(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            session
+                .idle_function_output_status_for_call("job-failed", "call-failed")
+                .await
+                .unwrap(),
+            ActiveBoundaryOutputStatus::Discarded
+        );
+        owner.shutdown().await.unwrap();
+        drop((owner, session));
+        let pruned = DurableSession::open_with_terminal_receipt_limit(store, "idle-failed", 0)
+            .await
+            .unwrap();
+        pruned.prune_receipts().await.unwrap();
+        assert_eq!(
+            pruned
+                .idle_function_output_status_for_call("job-failed", "call-failed")
+                .await
+                .unwrap(),
+            ActiveBoundaryOutputStatus::PrunedOrUnknown
+        );
+    }
+
+    #[tokio::test]
+    async fn idle_wake_status_requires_exact_job_call_and_completed_step_after_reopen() {
+        let store = crate::MemoryStore::new().unwrap();
+        let session = DurableSession::open(store.clone(), "idle-status")
+            .await
+            .unwrap();
+        let (owner, _) = session.acquire_agent().await.unwrap();
+        let id = "late-continuation:lineage:wake";
+        let input = serde_json::json!({"kind":"late_function_output_continuation",
+            "lineage_id":"lineage", "wake_id":"wake", "jobs":[
+                {"job_id":"job-1", "call_id":"call-1"},
+                {"job_id":"job-2", "call_id":"call-2"}]});
+        let status = |job, call| session.idle_function_output_status_for_call(job, call);
+        assert_eq!(
+            status("job-1", "call-1").await.unwrap(),
+            ActiveBoundaryOutputStatus::PrunedOrUnknown
+        );
+        owner
+            .admit_typed::<_, String, String>(id.into(), &input)
+            .await
+            .unwrap();
+        owner.begin_attempt(id.into()).await.unwrap();
+        assert_eq!(
+            status("job-1", "call-1").await.unwrap(),
+            ActiveBoundaryOutputStatus::AcceptedUnbound
+        );
+        assert_eq!(
+            status("job-1", "call-2").await.unwrap(),
+            ActiveBoundaryOutputStatus::PrunedOrUnknown
+        );
+        owner
+            .begin_step(id.into(), "model-1".into(), "model_call".into(), &"input")
+            .await
+            .unwrap();
+        assert_eq!(
+            status("job-2", "call-2").await.unwrap(),
+            ActiveBoundaryOutputStatus::BoundUnconfirmed {
+                model_call_index: 1
+            }
+        );
+        assert!(
+            owner
+                .complete_step(
+                    id.into(),
+                    "model-1".into(),
+                    &serde_json::json!({"response":{"id":""}})
+                )
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            status("job-1", "call-1").await.unwrap(),
+            ActiveBoundaryOutputStatus::BoundUnconfirmed {
+                model_call_index: 1
+            }
+        );
+        owner
+            .complete_step(
+                id.into(),
+                "model-1".into(),
+                &serde_json::json!({"response":{"id":"provider-response"}}),
+            )
+            .await
+            .unwrap();
+        let confirmed = ActiveBoundaryOutputStatus::Confirmed {
+            model_call_index: 1,
+            response_id: "provider-response".into(),
+        };
+        assert_eq!(status("job-1", "call-1").await.unwrap(), confirmed);
+        assert_eq!(status("job-2", "call-2").await.unwrap(), confirmed);
+        owner
+            .complete(
+                id.into(),
+                EncodedPayload::encode(&"checkpoint").unwrap(),
+                &"done",
+            )
+            .await
+            .unwrap();
+        owner.shutdown().await.unwrap();
+        drop((owner, session));
+        let reopened = DurableSession::open(store, "idle-status").await.unwrap();
+        assert_eq!(
+            reopened
+                .idle_function_output_status_for_call("job-2", "call-2")
+                .await
+                .unwrap(),
+            confirmed
+        );
+        assert_eq!(
+            reopened
+                .idle_function_output_status_for_call("job-2", "call-1")
+                .await
+                .unwrap(),
+            ActiveBoundaryOutputStatus::PrunedOrUnknown
+        );
+    }
+
     #[test]
     fn compacted_steer_state_rejects_impossible_boundaries_and_terminal_shapes() {
         fn steer(accepted_after: u32, bound_to: Option<u32>) -> SteerState {
@@ -4002,6 +4249,7 @@ mod tests {
                 steer_receipts: Default::default(),
                 boundary_output_receipts: Default::default(),
                 boundary_outputs: Default::default(),
+                late_model_response: None,
                 retired_boundary_outputs: 0,
                 continuation: None,
                 retired_model_calls: 0,
