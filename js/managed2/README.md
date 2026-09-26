@@ -213,17 +213,23 @@ function-call ID; the job ID is available through the jobs status API and is
 not appended to that provider-visible text. Managed2 currently exposes no
 CUA or remote Hands tool; they are not covered by this ledger.
 
-The private JS/WASM bridge stages the original-call pending output and admits
-one terminal same-call-ID checkpoint. **This is not yet a usable async mode**:
-the Rust driver can now wake a prompt-less model continuation for an idle
-terminal result and remain responsive to commands during that provider call.
-But a terminal arriving in an active turn still waits until the *whole turn*
-ends rather than entering the next model-request boundary; queued user turns
-are then ordered after the wake. The execution journal recognizes completed
-results after compaction, and a completed wake can recover its authoritative
-journal snapshot after a lost acknowledgment. Notifying the Managed2 job ledger
-of actual model uptake is still incomplete; its `checkpointed` status is not
-proof the model saw the output. The API remains 501 pending active-boundary
-delivery, broader crash/replay tests, and live HTTP/WebSocket provider
-compatibility checks. A gated three-route canary is in `scripts/provider-canary`;
-its fixture tests do not establish live provider acceptance.
+The private JS/WASM bridge stages the original-call pending output and
+admits terminal output under that same call ID. The Rust driver can inject a
+settled result at the original turn's next model-request boundary, or start a
+prompt-less idle continuation when the turn has ended. Same-source idle
+results are staged in a bounded cohort before one wake. Host SQL marks a job
+`delivered` only after the exact native active/idle receipt identifies a
+completed model step, not merely after checkpoint submission. A durable Rust
+journal supports replay through transcript compaction and cold recovery.
+
+**This is still not a usable production async mode.** The Worker E2E suite
+(`test:async-e2e` and `test:async-e2e:websocket`) exercises synthetic Egress2
+provider fixtures, including nonblocking pending/terminal, active-boundary
+uptake, two-result idle coalescing, cancellation fencing and HTTP lost-SQL
+completion replay after DO eviction. These do not establish real provider
+acceptance of duplicate original-call-ID outputs, all crash/compaction
+interleavings through the Worker, or production end-to-end performance. The
+API stays 501 pending authorized live API/subscription HTTP/WS compatibility,
+full correctness/performance review and green exact-head CI. A gated
+three-route canary lives in `scripts/provider-canary`; its structural fixture
+tests do not establish upstream acceptance.
