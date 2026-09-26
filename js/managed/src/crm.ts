@@ -173,7 +173,7 @@ export async function crmRequest(db: D1Database, ownerId: string, operation: Crm
         return { records: resultPage.items.map(record), next_cursor: resultPage.next_cursor };
       }
       case "get": {
-        const args = object(input, ["id", "notes_limit", "notes_cursor"]);
+        const args = object(input, ["id", "notes_limit", "notes_cursor", "timeline_limit", "timeline_cursor"]);
         const recordId = id(args.id);
         const size = has(args, "notes_limit") ? limit(args.notes_limit) : 20;
         const queryScope = await scope([ownerId, "notes", recordId]);
@@ -187,7 +187,15 @@ export async function crmRequest(db: D1Database, ownerId: string, operation: Crm
         const row = results[0].results[0] as EffectiveRecordRow | undefined;
         if (!row) notFound();
         const notes = page(results[1].results as NoteRow[], size, queryScope);
-        return { record: record(row), notes: notes.items, next_cursor: notes.next_cursor };
+        const timeline = row.kind === "person"
+          ? await (await import("./crm-timeline")).crmTimelineRequest(db, ownerId, {
+            person_id: recordId,
+            ...(has(args, "timeline_limit") ? { limit: args.timeline_limit } : {}),
+            ...(has(args, "timeline_cursor") ? { cursor: args.timeline_cursor } : {}),
+          }) : null;
+        if (row.kind !== "person" && (has(args, "timeline_limit") || has(args, "timeline_cursor"))) invalid("Timeline requires a person.");
+        return { record: record(row), notes: notes.items, next_cursor: notes.next_cursor,
+          ...(timeline ? { timeline: timeline.entries, timeline_next_cursor: timeline.next_cursor } : {}) };
       }
       case "save": {
         const args = object(input, ["id", ...recordFields]);
