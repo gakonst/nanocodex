@@ -314,6 +314,35 @@ impl ExecutionPolicy for DurableExecution {
         })
     }
 
+    fn bind_boundary_output<'a>(
+        &'a self,
+        operation_id: String,
+        output_index: u32,
+        model_call_index: u32,
+    ) -> ExecutionFuture<'a, AgentResult<()>> {
+        Box::pin(async move {
+            self.owner
+                .bind_boundary_output(operation_id, output_index, model_call_index)
+                .await
+                .map_err(agent_error)
+        })
+    }
+
+    fn confirm_boundary_output<'a>(
+        &'a self,
+        operation_id: String,
+        output_index: u32,
+        model_call_index: u32,
+        response_id: String,
+    ) -> ExecutionFuture<'a, AgentResult<()>> {
+        Box::pin(async move {
+            self.owner
+                .confirm_boundary_output(operation_id, output_index, model_call_index, response_id)
+                .await
+                .map_err(agent_error)
+        })
+    }
+
     fn retained_boundary_outputs<'a>(
         &'a self,
         operation_id: String,
@@ -332,6 +361,7 @@ impl ExecutionPolicy for DurableExecution {
                                 accepted_after_model_call_index: entry
                                     .state
                                     .accepted_after_model_call_index,
+                                model_call_index: entry.state.model_call_index,
                                 output: entry.state.input.decode()?,
                             })
                         })

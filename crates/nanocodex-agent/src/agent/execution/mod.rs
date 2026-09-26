@@ -93,13 +93,15 @@ pub type IdentifiedExecutionSteer = (Option<String>, ExecutionSteer);
 
 /// Typed delivery admitted for the next model request boundary.
 /// Acceptance alone is not proof that a model request received this output.
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ExecutionBoundaryOutput {
-    /// Text of a completed terminal invocation.
+    /// Typed output of the original terminal invocation, preserving the exact call identity.
     TerminalOutput {
-        /// Exact terminal output body.
-        text: String,
+        /// Exact original function-call ID.
+        call_id: String,
+        /// Original typed terminal body.
+        output: nanocodex_oai_api::responses::FunctionOutputBody,
     },
 }
 
@@ -112,7 +114,9 @@ pub struct RetainedExecutionBoundaryOutput {
     pub message_id: String,
     /// Model request current on acceptance.
     pub accepted_after_model_call_index: u32,
-    /// Typed output not yet delivered.
+    /// Model-call ordinal assigned at the request boundary, if any.
+    pub model_call_index: Option<u32>,
+    /// Typed output not yet durably consumed.
     pub output: ExecutionBoundaryOutput,
 }
 
@@ -253,6 +257,36 @@ pub trait ExecutionPolicy: Send + Sync {
         Box::pin(async {
             Err(NanocodexError::ExecutionPolicyCapabilityUnsupported {
                 capability: "accept_identified_boundary_output",
+            })
+        })
+    }
+
+    /// Binds one FIFO output to the model request receiving it; idempotent for the same boundary.
+    fn bind_boundary_output<'a>(
+        &'a self,
+        _operation_id: String,
+        _output_index: u32,
+        _model_call_index: u32,
+    ) -> ExecutionFuture<'a, Result<()>> {
+        Box::pin(async {
+            Err(NanocodexError::ExecutionPolicyCapabilityUnsupported {
+                capability: "bind_boundary_output",
+            })
+        })
+    }
+
+    /// Confirms an output only after its model step has been durably completed.
+    /// Replays of the same confirmation (including after retirement) are idempotent.
+    fn confirm_boundary_output<'a>(
+        &'a self,
+        _operation_id: String,
+        _output_index: u32,
+        _model_call_index: u32,
+        _response_id: String,
+    ) -> ExecutionFuture<'a, Result<()>> {
+        Box::pin(async {
+            Err(NanocodexError::ExecutionPolicyCapabilityUnsupported {
+                capability: "confirm_boundary_output",
             })
         })
     }
@@ -488,6 +522,35 @@ pub trait ExecutionPolicy: Send + Sync {
         Box::pin(async {
             Err(NanocodexError::ExecutionPolicyCapabilityUnsupported {
                 capability: "accept_identified_boundary_output",
+            })
+        })
+    }
+
+    /// Binds one FIFO output to the model request receiving it.
+    fn bind_boundary_output<'a>(
+        &'a self,
+        _operation_id: String,
+        _output_index: u32,
+        _model_call_index: u32,
+    ) -> ExecutionFuture<'a, Result<()>> {
+        Box::pin(async {
+            Err(NanocodexError::ExecutionPolicyCapabilityUnsupported {
+                capability: "bind_boundary_output",
+            })
+        })
+    }
+
+    /// Confirms an output only after its model step has been durably completed.
+    fn confirm_boundary_output<'a>(
+        &'a self,
+        _operation_id: String,
+        _output_index: u32,
+        _model_call_index: u32,
+        _response_id: String,
+    ) -> ExecutionFuture<'a, Result<()>> {
+        Box::pin(async {
+            Err(NanocodexError::ExecutionPolicyCapabilityUnsupported {
+                capability: "confirm_boundary_output",
             })
         })
     }
@@ -1138,6 +1201,40 @@ impl ExecutionSteps {
                     history,
                     prefix,
                 },
+            )
+            .await
+    }
+
+    #[allow(
+        dead_code,
+        reason = "consumed by the active model boundary integration"
+    )]
+    pub(crate) async fn bind_boundary_output(
+        &self,
+        output_index: u32,
+        model_call_index: u32,
+    ) -> Result<()> {
+        self.policy
+            .bind_boundary_output(self.operation_id.clone(), output_index, model_call_index)
+            .await
+    }
+
+    #[allow(
+        dead_code,
+        reason = "consumed by the active model boundary integration"
+    )]
+    pub(crate) async fn confirm_boundary_output(
+        &self,
+        output_index: u32,
+        model_call_index: u32,
+        response_id: String,
+    ) -> Result<()> {
+        self.policy
+            .confirm_boundary_output(
+                self.operation_id.clone(),
+                output_index,
+                model_call_index,
+                response_id,
             )
             .await
     }

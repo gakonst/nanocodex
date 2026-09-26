@@ -227,6 +227,21 @@ enum Command {
         input: EncodedPayload,
         result: oneshot::Sender<Result<Option<u32>>>,
     },
+    BindBoundaryOutput {
+        caller: Caller,
+        operation_id: String,
+        output_index: u32,
+        model_call_index: u32,
+        result: oneshot::Sender<Result<()>>,
+    },
+    ConfirmBoundaryOutput {
+        caller: Caller,
+        operation_id: String,
+        output_index: u32,
+        model_call_index: u32,
+        response_id: String,
+        result: oneshot::Sender<Result<()>>,
+    },
     RetainedBoundaryOutputs {
         caller: Caller,
         operation_id: String,
@@ -610,6 +625,50 @@ impl Driver {
                                 input,
                                 message_id,
                                 capacity_available,
+                            )
+                            .await
+                        }
+                        Err(error) => Err(error),
+                    };
+                    drop(result.send(outcome));
+                }
+                Command::BindBoundaryOutput {
+                    caller,
+                    operation_id,
+                    output_index,
+                    model_call_index,
+                    result,
+                } => {
+                    let outcome = match self.authorize(&caller) {
+                        Ok(()) => {
+                            self.bind_boundary_output(
+                                &caller,
+                                operation_id,
+                                output_index,
+                                model_call_index,
+                            )
+                            .await
+                        }
+                        Err(error) => Err(error),
+                    };
+                    drop(result.send(outcome));
+                }
+                Command::ConfirmBoundaryOutput {
+                    caller,
+                    operation_id,
+                    output_index,
+                    model_call_index,
+                    response_id,
+                    result,
+                } => {
+                    let outcome = match self.authorize(&caller) {
+                        Ok(()) => {
+                            self.confirm_boundary_output(
+                                &caller,
+                                operation_id,
+                                output_index,
+                                model_call_index,
+                                response_id,
                             )
                             .await
                         }
@@ -1112,22 +1171,26 @@ impl Driver {
         message_id: String,
         capacity_available: bool,
     ) -> Result<Option<u32>> {
-        self.require_claimed(caller, &operation_id)?;
-        self.require_running(&operation_id)?;
         let operation = self.state.operation(&operation_id).ok_or_else(|| {
             Error::InvalidState(format!("operation `{operation_id}` was not accepted"))
         })?;
         if let Some(receipt) = operation.boundary_output_receipts.get(&message_id) {
+            if !operation.status.is_terminal() {
+                self.require_claimed(caller, &operation_id)?;
+            }
             if receipt.input_key != input.key.as_ref() {
                 return Err(Error::BoundaryOutputConflict { message_id });
             }
             return Ok(None);
         }
+        self.require_claimed(caller, &operation_id)?;
+        self.require_running(&operation_id)?;
         if !capacity_available {
             return Err(Error::BoundaryOutputQueueFull);
         }
         let output_index = u32::try_from(operation.boundary_outputs.len())
             .ok()
+            .and_then(|n| n.checked_add(operation.retired_boundary_outputs))
             .and_then(|n| n.checked_add(1))
             .ok_or_else(|| Error::InvalidState("boundary output index overflow".into()))?;
         self.apply(Transition::BoundaryOutputAccepted {
@@ -1139,6 +1202,77 @@ impl Driver {
         })
         .await?;
         Ok(Some(output_index))
+    }
+
+    async fn bind_boundary_output(
+        &mut self,
+        caller: &Caller,
+        operation_id: String,
+        output_index: u32,
+        model_call_index: u32,
+    ) -> Result<()> {
+        self.require_claimed(caller, &operation_id)?;
+        self.require_running(&operation_id)?;
+        let operation = self.state.operation(&operation_id).ok_or_else(|| {
+            Error::InvalidState(format!("operation `{operation_id}` was not accepted"))
+        })?;
+        if let Some(bound) = output_index
+            .checked_sub(operation.retired_boundary_outputs)
+            .and_then(|index| index.checked_sub(1))
+            .and_then(|index| usize::try_from(index).ok())
+            .and_then(|index| operation.boundary_outputs.get(index))
+            .and_then(|entry| entry.model_call_index)
+        {
+            if bound == model_call_index {
+                return Ok(());
+            }
+            return Err(Error::InvalidState(format!(
+                "boundary output {output_index} changed model boundary from {bound} to {model_call_index}"
+            )));
+        }
+        self.apply(Transition::BoundaryOutputBound {
+            operation_id,
+            output_index,
+            model_call_index,
+        })
+        .await
+    }
+
+    async fn confirm_boundary_output(
+        &mut self,
+        caller: &Caller,
+        operation_id: String,
+        output_index: u32,
+        model_call_index: u32,
+        response_id: String,
+    ) -> Result<()> {
+        self.require_claimed(caller, &operation_id)?;
+        self.require_running(&operation_id)?;
+        let operation = self.state.operation(&operation_id).ok_or_else(|| {
+            Error::InvalidState(format!("operation `{operation_id}` was not accepted"))
+        })?;
+        // A lost acknowledgement must be replayable even after the live body was retired.
+        if let Some(receipt) = operation
+            .boundary_output_receipts
+            .values()
+            .find(|receipt| receipt.index == output_index)
+            && let Some(confirmed) = receipt.confirmed_model_call_index
+        {
+            if confirmed == model_call_index && receipt.response_id.as_deref() == Some(&response_id)
+            {
+                return Ok(());
+            }
+            return Err(Error::InvalidState(
+                "boundary output confirmation conflicts with receipt".into(),
+            ));
+        }
+        self.apply(Transition::BoundaryOutputConfirmed {
+            operation_id,
+            output_index,
+            model_call_index,
+            response_id,
+        })
+        .await
     }
 
     fn retained_boundary_outputs(
@@ -1156,10 +1290,17 @@ impl Driver {
             .iter()
             .cloned()
             .enumerate()
+            .filter(|(_, state)| {
+                operation
+                    .boundary_output_receipts
+                    .get(&state.message_id)
+                    .is_some_and(|receipt| receipt.confirmed_model_call_index.is_none())
+            })
             .map(|(offset, state)| {
                 Ok(StoredBoundaryOutput {
                     index: u32::try_from(offset)
                         .ok()
+                        .and_then(|n| n.checked_add(operation.retired_boundary_outputs))
                         .and_then(|n| n.checked_add(1))
                         .ok_or_else(|| {
                             Error::InvalidState("boundary output index overflow".into())
@@ -2319,6 +2460,44 @@ impl DurableOwner {
         receive(receiver).await
     }
 
+    pub(crate) async fn bind_boundary_output(
+        &self,
+        operation_id: String,
+        output_index: u32,
+        model_call_index: u32,
+    ) -> Result<()> {
+        let (result, receiver) = oneshot::channel();
+        self.send(Command::BindBoundaryOutput {
+            caller: self.caller()?,
+            operation_id,
+            output_index,
+            model_call_index,
+            result,
+        })
+        .await?;
+        receive(receiver).await
+    }
+
+    pub(crate) async fn confirm_boundary_output(
+        &self,
+        operation_id: String,
+        output_index: u32,
+        model_call_index: u32,
+        response_id: String,
+    ) -> Result<()> {
+        let (result, receiver) = oneshot::channel();
+        self.send(Command::ConfirmBoundaryOutput {
+            caller: self.caller()?,
+            operation_id,
+            output_index,
+            model_call_index,
+            response_id,
+            result,
+        })
+        .await?;
+        receive(receiver).await
+    }
+
     pub(crate) async fn retained_boundary_outputs(
         &self,
         operation_id: String,
@@ -3399,6 +3578,7 @@ mod tests {
                 steer_receipts: Default::default(),
                 boundary_output_receipts: Default::default(),
                 boundary_outputs: Default::default(),
+                retired_boundary_outputs: 0,
                 continuation: None,
                 retired_model_calls: 0,
                 retired_steers: 0,
