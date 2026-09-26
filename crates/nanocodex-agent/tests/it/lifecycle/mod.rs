@@ -202,3 +202,5 @@ impl Service<ResponsesAttempt> for RetainingCompletedService {
 mod builder;
 mod control;
 mod shutdown;
+
+mod wake_replay;

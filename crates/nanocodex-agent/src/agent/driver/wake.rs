@@ -8,6 +8,10 @@ pub(super) async fn drive_late_wake<S>(
     commands: &mut mpsc::Receiver<Command>,
     execution: &Execution,
     spawner: &BranchSpawner<S>,
+    events: &EventSink,
+    transport_stats: &Arc<TransportStats>,
+    tools: &Tools,
+    prompt_cache: &ModelPromptCache,
     workspace: Option<Arc<str>>,
     model: &mut ModelRun<S>,
     checkpoint: &mut Option<Arc<CommittedSession>>,
@@ -35,23 +39,50 @@ where
         .ok_or_else(|| {
             NanocodexError::InvalidSessionSnapshot("late wake has no pending marker".into())
         })?;
+    let journal_id = format!("late-continuation:{}:{wake_id}", spawner.lineage_id);
     let (operation_id, operation_input, admission) = execution
-        .admit_late_continuation(&spawner.lineage_id, &wake_id)
+        .recover_failure(
+            Some(&journal_id),
+            execution
+                .admit_late_continuation(&spawner.lineage_id, &wake_id)
+                .await,
+        )
         .await?;
     match admission {
         AdmittedExecution::Execute | AdmittedExecution::Resume => {}
-        AdmittedExecution::Completed { .. } => {
-            // The policy may know a newer committed snapshot than this
-            // driver. Never replay a completed operation from stale state.
-            return Err(NanocodexError::InvalidSessionSnapshot(
-                "late continuation already completed; restore the committed policy snapshot".into(),
-            ));
+        AdmittedExecution::Completed { snapshot, .. } => {
+            // The journal is authoritative after a crash between persistence and
+            // driver checkpoint publication. Rebuild both the exposed boundary
+            // and the live run before servicing queued commands or another wake.
+            let replayed = snapshot.clone().into_replayed_checkpoint(
+                &spawner.lineage_id,
+                defaults.model,
+                workspace.as_deref(),
+            )?;
+            if replayed.late_wake_id() == Some(wake_id.as_str()) {
+                return Err(NanocodexError::InvalidSessionSnapshot(
+                    "completed late continuation still requests its own wake".into(),
+                ));
+            }
+            let committed = Arc::new(
+                CommittedSession::new(Arc::clone(&spawner.lineage_id), defaults.model, replayed)
+                    .with_retained_snapshot(Some(snapshot)),
+            );
+            *model = model_from_checkpoint(
+                events,
+                transport_stats,
+                tools,
+                spawner,
+                prompt_cache,
+                Some(&committed),
+            );
+            *checkpoint = Some(committed);
+            return Ok(true);
         }
-        AdmittedExecution::Failed { .. } | AdmittedExecution::Cancelled => {
-            return Err(NanocodexError::InvalidExecutionPolicy(
-                "late continuation is terminal but its checkpoint still requests a wake".into(),
-            ));
+        AdmittedExecution::Failed { error } => {
+            return Err(NanocodexError::ReplayedExecutionFailed(error));
         }
+        AdmittedExecution::Cancelled => return Err(NanocodexError::TurnCancelled),
     }
     let turn =
         execution.start_late_continuation(defaults.thinking, operation_id.clone(), operation_input);
@@ -61,7 +92,9 @@ where
             if let Some(operation_id) = &operation_id {
                 execution.release_claim(operation_id).await;
             }
-            return Err(error);
+            return execution
+                .recover_failure(Some(&journal_id), Err(error))
+                .await;
         }
     };
     let steer_rx = Arc::new(tokio::sync::Mutex::new(VecDeque::new()));
@@ -173,12 +206,13 @@ where
                 defaults.model,
                 done.checkpoint,
             ));
-            execution
+            let persisted = execution
                 .persist(&committed, turn.completed(done.final_message, done.usage))
-                .await?;
-            *checkpoint = Some(committed);
-            model.emit_terminal("completed")?;
-            Ok(())
+                .await;
+            if persisted.is_ok() {
+                *checkpoint = Some(committed);
+            }
+            persisted
         }
         Ok(ModelTurnOutcome::Cancelled(snapshot)) => {
             let committed = Arc::new(CommittedSession::new(
@@ -186,10 +220,11 @@ where
                 defaults.model,
                 snapshot,
             ));
-            execution.persist(&committed, turn.interrupted()).await?;
-            *checkpoint = Some(committed);
-            model.emit_terminal("cancelled")?;
-            Err(NanocodexError::TurnCancelled)
+            let persisted = execution.persist(&committed, turn.interrupted()).await;
+            if persisted.is_ok() {
+                *checkpoint = Some(committed);
+            }
+            persisted.and(Err(NanocodexError::TurnCancelled))
         }
         Ok(ModelTurnOutcome::Failed {
             error,
@@ -202,14 +237,46 @@ where
             ));
             execution
                 .persist(&committed, turn.failed(error.to_string(), true))
-                .await?;
-            model.emit_terminal("failed")?;
-            Err(error)
+                .await
+                .and(Err(error))
         }
         Err(error) => {
-            execution.fail_without_checkpoint(turn).await?;
-            Err(error)
+            if !matches!(
+                error.execution_policy_disposition(),
+                Some(crate::ExecutionPolicyDisposition::Reopen)
+            ) {
+                execution
+                    .fail_without_checkpoint(turn)
+                    .await
+                    .and(Err(error))
+            } else {
+                Err(error)
+            }
         }
+    };
+    let persisted = execution
+        .recover_failure(operation_id.as_deref(), persisted)
+        .await;
+    // A retry/reopen is an unfinished attempt, not a terminal model run.
+    let terminal = match &persisted {
+        Ok(()) => Some("completed"),
+        Err(NanocodexError::TurnCancelled) => Some("cancelled"),
+        Err(error)
+            if matches!(
+                error.execution_policy_disposition(),
+                Some(
+                    crate::ExecutionPolicyDisposition::Retry
+                        | crate::ExecutionPolicyDisposition::Reopen
+                )
+            ) =>
+        {
+            None
+        }
+        Err(_) => Some("failed"),
+    };
+    let persisted = match terminal {
+        Some(status) => model.emit_terminal(status).and(persisted),
+        None => persisted,
     };
     if shutdown_requested {
         begin_shutdown(commands, queued, defaults.thinking, defaults.fast_mode).await;
