@@ -209,7 +209,8 @@ export class AccountHostedTools extends DurableObject<AccountHostedToolsEnv> {
       // One persisted row per (session_id, source_call_id). Aggregate in SQL;
       // never fetch input, result, receipt, machine or call identities.
       const data = this.ctx.storage.sql.exec<{
-        name: string; state: string; calls: number; tool_failed: number; late_receipts: number;
+        name: string; state: string; calls: number; tool_failed: number;
+        tool_ambiguous: number; tool_unavailable: number; tool_failed_other: number; late_receipts: number;
         pre_dispatch_unavailable: number; post_dispatch_unavailable: number; unknown_dispatch_unavailable: number;
         duration_count: number;
         total_duration_ms: number | null; avg_duration_ms: number | null;
@@ -217,6 +218,18 @@ export class AccountHostedTools extends DurableObject<AccountHostedToolsEnv> {
       }>(`SELECT name, state, COUNT(*) AS calls,
           SUM(CASE WHEN state = 'completed' AND json_valid(result_json)
             AND json_extract(result_json, '$.output.success') = 0 THEN 1 ELSE 0 END) AS tool_failed,
+          SUM(CASE WHEN state = 'completed' AND json_valid(result_json)
+            AND json_extract(result_json, '$.output.success') = 0
+            AND json_extract(result_json, '$.output.structured_result.status') = 'ambiguous'
+            THEN 1 ELSE 0 END) AS tool_ambiguous,
+          SUM(CASE WHEN state = 'completed' AND json_valid(result_json)
+            AND json_extract(result_json, '$.output.success') = 0
+            AND json_extract(result_json, '$.output.structured_result.status') = 'unavailable'
+            THEN 1 ELSE 0 END) AS tool_unavailable,
+          SUM(CASE WHEN state = 'completed' AND json_valid(result_json)
+            AND json_extract(result_json, '$.output.success') = 0
+            AND COALESCE(json_extract(result_json, '$.output.structured_result.status'), '') NOT IN ('ambiguous', 'unavailable')
+            THEN 1 ELSE 0 END) AS tool_failed_other,
           SUM(CASE WHEN state = 'ambiguous' AND receipt_json IS NOT NULL THEN 1 ELSE 0 END) AS late_receipts,
           SUM(CASE WHEN state = 'unavailable' AND dispatched_at = 0 THEN 1 ELSE 0 END) AS pre_dispatch_unavailable,
           SUM(CASE WHEN state = 'unavailable' AND dispatched_at > 0 THEN 1 ELSE 0 END) AS post_dispatch_unavailable,
@@ -720,8 +733,11 @@ export class AccountHostedToolsProvider implements HostedToolsDynamicProvider {
       observeHandCall("account.decode", name, responseAt, "ambiguous", context.callId);
       return failed("Hand response could not be decoded; execution outcome is unknown. The command was not resent.", "ambiguous");
     }
+    const structuredStatus = result.structured_result && typeof result.structured_result === "object"
+      ? (result.structured_result as { status?: unknown }).status : undefined;
     observeHandCall("account.decode", name, responseAt, result.pre_admission_unavailable === true ? "unavailable"
-      : result.success ? "ok" : "failed", context.callId);
+      : result.success ? "ok" : structuredStatus === "ambiguous" ? "ambiguous"
+      : structuredStatus === "unavailable" ? "unavailable" : "failed", context.callId);
     if (machineId !== undefined && result.pre_admission_unavailable === true) {
       // The broker checked its call ledger: this invocation was never admitted.
       // Let the agent recover the hand instead of indefinitely replaying the turn.

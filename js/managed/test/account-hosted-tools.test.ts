@@ -192,6 +192,24 @@ describe("account Hosted Tools provider", () => {
     },
   );
 
+  it.each(["ambiguous", "unavailable", "provider_error"])("observes decoded %s as its structured outcome", async status => {
+    const provider = new AccountHostedToolsProvider(fakeNamespace(new Map([[ACCOUNT_A, async request => {
+      if (new URL(request.url).pathname === "/snapshot") return Response.json(snapshot);
+      return Response.json({ output: "fixture error", structured_result: { status }, success: false,
+        metadata: null, value: null });
+    }]])), ACCOUNT_A, () => true);
+    await provider.refresh();
+    const logs: Record<string, unknown>[] = [];
+    const spy = vi.spyOn(console, "info").mockImplementation(entry => { logs.push(entry); });
+    try {
+      await expect(provider.machineTool("laptop", "exec_command")!.handler({}, {
+        sessionId: "agent", callId: "fixture-call",
+      })).resolves.toMatchObject({ success: false, structuredResult: { status } });
+      expect(logs).toContainEqual(expect.objectContaining({ type: "hand.tool.stage", stage: "account.decode",
+        outcome: status === "provider_error" ? "failed" : status, call_id: "fixture-call" }));
+    } finally { spy.mockRestore(); }
+  });
+
   it("settles a broken Hand locally while another tool in the same agent continues", async () => {
     const provider = new AccountHostedToolsProvider(fakeNamespace(new Map([[ACCOUNT_A, async request => {
       if (new URL(request.url).pathname === "/snapshot") return Response.json(snapshot);
