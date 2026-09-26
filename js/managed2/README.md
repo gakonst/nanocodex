@@ -211,9 +211,10 @@ seven-day retention after acknowledged delivery. It does not assert exactly-once
 upstream reads. When typed ingestion is unavailable, the terminal row remains
 `awaiting_integration` with no synthetic continuation and no tight alarm loop.
 
-The private JS/WASM Agent bridge now provides typed same-call-ID *checkpoint
-admission* with a stable replay receipt; the ledger supplies Unreal's exact
-running-output text instead of a job-ID receipt. This is still **not a usable
+The private JS/WASM Agent bridge now stages a trusted original-call pending
+output and provides typed same-call-ID *checkpoint admission* with a stable
+replay receipt; the ledger supplies Unreal's exact running-output text instead
+of a job-ID receipt. This is still **not a usable
 async mode**: active terminal submissions wait until the full model turn ends,
 and an idle terminal does not wake a prompt-less model continuation. The Rust
 checkpoint path therefore acknowledges `continuation_started=false`; the API

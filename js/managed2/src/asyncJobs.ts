@@ -23,7 +23,7 @@ export type FinalToolResultIntent = Readonly<{ originalTurn: string; executionTu
   tool: string; jobId: string; terminalState: "completed" | "failed"; output: string }>;
 /** A trusted adapter must resolve the original Agent tool call, atomically
  * replace its unsent pending output OR append the terminal output under the
- * same call ID if pending was already sent, and durably dedupe jobId. There is
+ * same call ID if pending was already sent, and durably dedupe jobId.
  * Never implement this with turn.prompt(). */
 export type DeliverFinalToolResult = (intent: FinalToolResultIntent) => Promise<void>;
 export class TypedIngestionUnavailable extends Error {
