@@ -33,6 +33,7 @@ test('production owner key creates and revokes a guest link', { timeout: 90_000 
   const linkResponse = await request(`${owner}/share-links`, 'POST', { permission: 'read' });
   assert.equal(linkResponse.status, 201, `create share link returned ${linkResponse.status}`);
   const link = await linkResponse.json();
+  assert.ok(URL.canParse(link.url), 'invalid share URL');
   const url = new URL(link.url);
   assert.equal(url.origin, origin);
   assert.equal(url.pathname, `/share/${id}`);
@@ -42,7 +43,7 @@ test('production owner key creates and revokes a guest link', { timeout: 90_000 
   assert.match(link.id, /^[0-9a-f-]{36}$/);
   assert.equal(link.permission, 'read');
   const token = url.hash.slice('#token='.length);
-  assert.match(token, /^nsl_[A-Za-z0-9_-]{43}$/);
+  assert.ok(/^nsl_[A-Za-z0-9_-]{43}$/.test(token), 'invalid bearer token shape');
   assert.equal((await request(`/v1/shared/${id}`, 'GET', undefined, token)).status, 200);
   assert.equal((await request(`/v1/shared/${randomUUID()}`, 'GET', undefined, token)).status, 404);
   const listed = await (await request(`${owner}/share-links`)).json();
@@ -52,7 +53,8 @@ test('production owner key creates and revokes a guest link', { timeout: 90_000 
   assert.equal(revoked.status, 204);
   assert.equal((await request(`/v1/shared/${id}`, 'GET', undefined, token)).status, 404);
   assert.equal((await request(`/v1/shared/${id}/events/history`, 'GET', undefined, token)).status, 404);
-  assert.equal((await request(`${owner}/share-links`)).status, 200);
-  assert.equal((await (await request(`${owner}/share-links`)).json()).data.some(item => item.id === link.id), false);
+  const remaining = await request(`${owner}/share-links`);
+  assert.equal(remaining.status, 200);
+  assert.equal((await remaining.json()).data.some(item => item.id === link.id), false);
   t.diagnostic(`revoke confirmed for synthetic managed thread ${id}; no bearer logged`);
 });
