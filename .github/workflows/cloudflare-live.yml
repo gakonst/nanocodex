@@ -7,7 +7,7 @@ on:
       suite:
         description: Live validation suite
         type: choice
-        options: [all, goals]
+        options: [all, goals, share]
         default: all
 
 permissions:
@@ -92,6 +92,27 @@ jobs:
           NANOCODEX_DURABILITY_TEST_API_KEY: ${{ secrets.NANOCODEX_ASTRA_MANAGED_API_KEY }}
           NANOCODEX_DURABILITY_RECOVERY_AGENTS: ${{ vars.NANOCODEX_DURABILITY_RECOVERY_AGENTS || '[]' }}
         run: node --test js/managed/test/live-durability.test.mjs js/managed/test/live-large-input.test.mjs
+
+  share-live:
+    name: exercise deployed thread-share revocation
+    needs: deployment
+    if: needs.deployment.outputs.deployed == 'true' && (github.event_name != 'workflow_dispatch' || inputs.suite == 'all' || inputs.suite == 'share')
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    environment: cloudflare-production
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+      - name: Create a link, revoke it, and verify guest denial
+        env:
+          NANOCODEX_SHARE_TEST_API_KEY: ${{ secrets.NANOCODEX_ASTRA_MANAGED_API_KEY }}
+        run: node --test js/managed/test/live-share-links.test.mjs
 
   goals-live:
     name: exercise deployed goals
