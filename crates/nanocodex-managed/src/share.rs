@@ -176,18 +176,20 @@ mod tests {
     use std::sync::{Arc, Mutex};
     use tokio::net::TcpListener;
 
+    type RecordedCalls = Arc<Mutex<Vec<(HttpMethod, String)>>>;
+
     #[tokio::test]
     async fn owner_share_journey_and_failure_are_not_retried_or_exposed() {
         let calls = Arc::new(Mutex::new(Vec::<(HttpMethod, String)>::new()));
         let app = Router::new().route("/v1/agents/{agent}/share-links", get({
-            async fn list(State(calls): State<Arc<Mutex<Vec<(HttpMethod, String)>>>>, headers: HeaderMap) -> Json<serde_json::Value> {
+            async fn list(State(calls): State<RecordedCalls>, headers: HeaderMap) -> Json<serde_json::Value> {
                 assert!(headers.get("authorization").is_some());
                 calls.lock().unwrap().push((HttpMethod::GET, String::new()));
                 Json(serde_json::json!({"data": [{"id": "00000000-0000-4000-8000-000000000001", "permission": "read", "created_at": 123}]}))
             }
             list
         }).post({
-            async fn create(State(calls): State<Arc<Mutex<Vec<(HttpMethod, String)>>>>, headers: HeaderMap, Json(body): Json<serde_json::Value>) -> (StatusCode, Json<serde_json::Value>) {
+            async fn create(State(calls): State<RecordedCalls>, headers: HeaderMap, Json(body): Json<serde_json::Value>) -> (StatusCode, Json<serde_json::Value>) {
                 calls.lock().unwrap().push((HttpMethod::POST, body.to_string()));
                 if body["permission"] == "read" {
                     return (StatusCode::FORBIDDEN, Json(serde_json::json!({"error": "forbidden"})));
@@ -196,7 +198,7 @@ mod tests {
             }
             create
         })).route("/v1/agents/{agent}/share-links/{id}", axum::routing::delete({
-            async fn revoke(State(calls): State<Arc<Mutex<Vec<(HttpMethod, String)>>>>) -> StatusCode {
+            async fn revoke(State(calls): State<RecordedCalls>) -> StatusCode {
                 calls.lock().unwrap().push((HttpMethod::DELETE, String::new()));
                 StatusCode::NO_CONTENT
             }
