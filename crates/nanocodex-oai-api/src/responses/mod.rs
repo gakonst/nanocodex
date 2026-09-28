@@ -2,6 +2,7 @@
 
 mod content;
 mod event;
+mod format;
 mod item;
 #[cfg(feature = "client")]
 mod request;
@@ -17,6 +18,7 @@ pub use event::{
     CompletedResponse, InputTokenDetails, OutputTokenDetails, ResponseEvent, ServerEvent, Usage,
     WarmupResponse, WarmupServerEvent,
 };
+pub use format::StrictJsonSchema;
 pub use item::{ConfigurationUpdateReasoning, ResponseItem, ResponseItemId};
 #[cfg(feature = "client")]
 pub(crate) use request::{CreatePolicy, ResponseCreate};

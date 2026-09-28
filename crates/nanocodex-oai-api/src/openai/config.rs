@@ -2,7 +2,7 @@ use std::{borrow::Cow, sync::Arc};
 
 use crate::{
     CONTEXT_WINDOW_TOKENS, Model, OpenAiAuth, ReasoningMode, ResponsesHistory, ResponsesTransport,
-    Thinking,
+    Thinking, responses::StrictJsonSchema,
 };
 
 const SOL_SYSTEM_PROMPT: &str = include_str!("../../prompts/sol.md");
@@ -51,6 +51,8 @@ pub struct ModelConfig {
     pub responses_history: ResponsesHistory,
     /// Whether the provider may retain response checkpoints.
     pub store_responses: bool,
+    /// Optional strict JSON Schema required for model output.
+    pub strict_json_schema: Option<StrictJsonSchema>,
     /// Responses WebSocket endpoint.
     pub websocket_url: String,
     /// Base URL used for HTTPS Responses calls and related endpoints.
@@ -128,6 +130,7 @@ impl Default for ModelConfig {
             raw_api_events: true,
             responses_history: ResponsesHistory::default(),
             store_responses: false,
+            strict_json_schema: None,
             websocket_url: "wss://api.openai.com/v1/responses".to_owned(),
             api_base_url: "https://api.openai.com/v1".to_owned(),
             #[cfg(any(target_family = "wasm", docsrs))]

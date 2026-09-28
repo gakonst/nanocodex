@@ -7,7 +7,8 @@ mod platform;
 
 use crate::{
     DefaultResponsesService, Model, OpenAiAuth, OpenAiAuthError, OpenAiAuthMode, ReasoningMode,
-    ResponsesHistory, ResponsesRetryPolicy, ResponsesTransport, Thinking, session::SessionBuilder,
+    ResponsesHistory, ResponsesRetryPolicy, ResponsesTransport, Thinking,
+    responses::StrictJsonSchema, session::SessionBuilder,
 };
 
 #[doc(hidden)]
@@ -243,6 +244,17 @@ impl<F> OpenAiBuilder<F> {
                 ResponsesHistory::FullReplay
             };
         }
+        self
+    }
+
+    /// Requires each Responses request to produce output matching a JSON Schema.
+    ///
+    /// The format is sent as `text.format` with `type: "json_schema"` and
+    /// strict validation enabled. This setting is inherited by sessions and
+    /// agents created from this client.
+    #[must_use]
+    pub fn strict_json_schema(mut self, schema: StrictJsonSchema) -> Self {
+        self.config.strict_json_schema = Some(schema);
         self
     }
 
@@ -669,8 +681,11 @@ mod tests {
 
     use crate::{
         Model, ModelConfig, OpenAiAuthMode, ResponseError, ResponsesAttempt, ResponsesHistory,
-        ResponsesServiceResponse, ResponsesTransport,
+        ResponsesServiceResponse, ResponsesTransport, Thinking,
+        responses::{RequestProfile, StrictJsonSchema},
     };
+    use serde_json::json;
+    use std::sync::Arc;
 
     use super::{OpenAi, apply_mode_defaults};
 
@@ -718,6 +733,43 @@ mod tests {
             apply_mode_defaults(&mut config, mode);
             assert!(!config.store_responses);
         }
+    }
+
+    #[test]
+    fn strict_json_schema_is_sent_in_the_text_format() {
+        let schema = json!({
+            "type": "object",
+            "properties": {"answer": {"type": "string"}},
+            "required": ["answer"],
+            "additionalProperties": false
+        });
+        let client = OpenAi::builder("test-key")
+            .strict_json_schema(StrictJsonSchema::new("answer", schema.clone()))
+            .build()
+            .unwrap();
+        let profile = RequestProfile::new("schema-session", "schema-cache", Arc::from([]));
+        let request = serde_json::to_value(crate::responses::ResponseCreate::warmup(
+            client.config(),
+            Model::Astra,
+            Thinking::Low,
+            false,
+            &profile,
+            None,
+        ))
+        .expect("request should serialize");
+
+        assert_eq!(
+            request["text"],
+            json!({
+                "verbosity": "low",
+                "format": {
+                    "type": "json_schema",
+                    "strict": true,
+                    "name": "answer",
+                    "schema": schema
+                }
+            })
+        );
     }
 
     #[test]
