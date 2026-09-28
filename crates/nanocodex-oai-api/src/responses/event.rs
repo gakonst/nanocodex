@@ -272,6 +272,8 @@ pub struct WarmupResponse {
 #[derive(Deserialize)]
 pub struct CompletedResponse {
     pub id: String,
+    #[serde(default)]
+    pub model: Option<String>,
     #[serde(default = "completed_status")]
     pub status: String,
     #[serde(default)]

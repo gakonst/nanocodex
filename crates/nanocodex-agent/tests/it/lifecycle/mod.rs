@@ -172,6 +172,7 @@ impl Service<ResponsesAttempt> for RetainingCompletedService {
                     .expect("generation attempts have a model call index");
                 ResponsesOutput::Generation(GenerationOutput {
                     id: format!("resp-generation-{call_index}"),
+                    reported_model: None,
                     status: "completed".to_owned(),
                     end_turn: Some(true),
                     final_message: Some("done".to_owned()),

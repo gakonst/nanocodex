@@ -127,6 +127,7 @@ fn recovered_nested_tool_generation() -> ResponsesOutput {
     .expect("custom tool call item decodes");
     ResponsesOutput::Generation(GenerationOutput {
         id: "resp-recovered-tools".to_owned(),
+        reported_model: None,
         status: "completed".to_owned(),
         end_turn: Some(false),
         final_message: None,
@@ -148,6 +149,7 @@ fn recovered_nested_tool_generation() -> ResponsesOutput {
 fn final_generation() -> ResponsesOutput {
     ResponsesOutput::Generation(GenerationOutput {
         id: "resp-recovered-final".to_owned(),
+        reported_model: None,
         status: "completed".to_owned(),
         end_turn: Some(true),
         final_message: Some("recovered".to_owned()),
@@ -178,6 +180,7 @@ text("unreachable");
     .expect("custom tool call item decodes");
     ResponsesOutput::Generation(GenerationOutput {
         id: "resp-tools".to_owned(),
+        reported_model: None,
         status: "completed".to_owned(),
         end_turn: Some(false),
         final_message: None,

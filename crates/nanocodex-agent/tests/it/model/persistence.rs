@@ -39,6 +39,7 @@ impl tower::Service<nanocodex_oai_api::tower::ResponsesAttempt> for FailFirstWar
             nanocodex_oai_api::tower::ResponsesOutput::Generation(
                 nanocodex_oai_api::tower::GenerationOutput {
                     id: "resp-recovered".to_owned(),
+                    reported_model: None,
                     status: "completed".to_owned(),
                     end_turn: Some(true),
                     final_message: Some("done".to_owned()),

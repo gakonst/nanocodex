@@ -11,6 +11,7 @@ fn workers_ai_adapter_events_are_accepted_by_the_rust_protocol() {
             ServerEvent::OutputItemDone { .. } => completed_items += 1,
             ServerEvent::Completed { response } => {
                 assert_eq!(response.end_turn, Some(false));
+                assert_eq!(response.model.as_deref(), Some("@cf/zai-org/glm-5.3"));
                 assert_eq!(response.usage.unwrap().total_tokens, 20);
                 terminal = true;
             }

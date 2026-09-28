@@ -119,6 +119,7 @@ impl From<&str> for ResponseInput {
 pub struct CompletedResponse {
     output: Arc<[ResponseItem]>,
     output_text: Arc<str>,
+    reported_model: Option<String>,
     usage: Option<Usage>,
     estimated_cost: Option<crate::EstimatedUsdCost>,
     cost_status: crate::CostStatus,
@@ -136,6 +137,12 @@ impl CompletedResponse {
     #[must_use]
     pub fn output_text(&self) -> &str {
         &self.output_text
+    }
+
+    /// Returns the model identifier reported by the provider, when available.
+    #[must_use]
+    pub fn reported_model(&self) -> Option<&str> {
+        self.reported_model.as_deref()
     }
 
     /// Iterates over complete function and custom tool calls.
@@ -604,6 +611,7 @@ where
     let completed = CompletedResponse {
         output,
         output_text,
+        reported_model: response.reported_model,
         usage: response.usage,
         estimated_cost,
         cost_status,

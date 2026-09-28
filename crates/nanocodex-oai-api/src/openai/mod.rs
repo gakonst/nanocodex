@@ -393,6 +393,7 @@ impl<F> OpenAiBuilder<F> {
     ///             Ok::<_, ResponseError>(ResponsesServiceResponse::new(
     ///                 ResponsesOutput::Generation(GenerationOutput {
     ///                     id: "resp_adapter_01".to_owned(),
+    ///                     reported_model: None,
     ///                     status: "completed".to_owned(),
     ///                     end_turn: Some(true),
     ///                     final_message: Some("served by the adapter".to_owned()),

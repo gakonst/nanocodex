@@ -889,6 +889,7 @@ fn successful_attempt(
         }),
         ResponsesAttemptKind::Generation => ResponsesOutput::Generation(GenerationOutput {
             id: "durable-response".to_owned(),
+            reported_model: None,
             status: "completed".to_owned(),
             end_turn: Some(true),
             final_message: Some("durably replayed".to_owned()),
@@ -1073,6 +1074,7 @@ impl tower::Service<nanocodex_oai_api::tower::ResponsesAttempt> for AutomaticCom
                 let message = format!("automatic-generation-{call}");
                 ResponsesOutput::Generation(GenerationOutput {
                     id: format!("automatic-generation-{call}"),
+                    reported_model: None,
                     status: "completed".to_owned(),
                     end_turn: Some(true),
                     final_message: Some(message.clone()),
@@ -1157,6 +1159,7 @@ impl tower::Service<nanocodex_oai_api::tower::ResponsesAttempt> for SteeredDurab
                         Ok(ResponsesServiceResponse::new(ResponsesOutput::Generation(
                             GenerationOutput {
                                 id: "steer-boundary".to_owned(),
+                                reported_model: None,
                                 status: "completed".to_owned(),
                                 end_turn: Some(false),
                                 final_message: None,
@@ -1179,6 +1182,7 @@ impl tower::Service<nanocodex_oai_api::tower::ResponsesAttempt> for SteeredDurab
                         Ok(ResponsesServiceResponse::new(ResponsesOutput::Generation(
                             GenerationOutput {
                                 id: "steered-response".to_owned(),
+                                reported_model: None,
                                 status: "completed".to_owned(),
                                 end_turn: Some(true),
                                 final_message: Some("steer retained".to_owned()),
@@ -1257,6 +1261,7 @@ impl tower::Service<nanocodex_oai_api::tower::ResponsesAttempt> for RemovedToolR
                     .expect("recorded tool call item decodes");
                     ResponsesOutput::Generation(GenerationOutput {
                         id: "recorded-tool-response".to_owned(),
+                        reported_model: None,
                         status: "completed".to_owned(),
                         end_turn: Some(false),
                         final_message: None,
@@ -1289,6 +1294,7 @@ impl tower::Service<nanocodex_oai_api::tower::ResponsesAttempt> for RemovedToolR
                     }
                     ResponsesOutput::Generation(GenerationOutput {
                         id: "recovered-response".to_owned(),
+                        reported_model: None,
                         status: "completed".to_owned(),
                         end_turn: Some(true),
                         final_message: Some("recovered with the recorded tool output".to_owned()),
@@ -1353,6 +1359,7 @@ impl tower::Service<nanocodex_oai_api::tower::ResponsesAttempt> for DurableToolS
                     .expect("durable tool call item decodes");
                     ResponsesOutput::Generation(GenerationOutput {
                         id: "durable-tool-response".to_owned(),
+                        reported_model: None,
                         status: "completed".to_owned(),
                         end_turn: Some(false),
                         final_message: None,
@@ -1385,6 +1392,7 @@ impl tower::Service<nanocodex_oai_api::tower::ResponsesAttempt> for DurableToolS
                     );
                     ResponsesOutput::Generation(GenerationOutput {
                         id: "durable-tool-recovered-response".to_owned(),
+                        reported_model: None,
                         status: "completed".to_owned(),
                         end_turn: Some(true),
                         final_message: Some("recovered after retrying the tool".to_owned()),
@@ -1446,6 +1454,7 @@ impl tower::Service<nanocodex_oai_api::tower::ResponsesAttempt> for ReplayContin
                     .expect("replay-fence tool call item decodes");
                     ResponsesOutput::Generation(GenerationOutput {
                         id: "old-socket-response".to_owned(),
+                        reported_model: None,
                         status: "completed".to_owned(),
                         end_turn: Some(false),
                         final_message: None,
@@ -1495,6 +1504,7 @@ impl tower::Service<nanocodex_oai_api::tower::ResponsesAttempt> for ReplayContin
                     assert!(prompt_index < model_index && model_index < tool_index);
                     ResponsesOutput::Generation(GenerationOutput {
                         id: "replacement-socket-response".to_owned(),
+                        reported_model: None,
                         status: "completed".to_owned(),
                         end_turn: Some(true),
                         final_message: Some("continued from full typed history".to_owned()),
@@ -1546,6 +1556,7 @@ impl tower::Service<nanocodex_oai_api::tower::ResponsesAttempt> for DurableRepla
                     .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 ResponsesOutput::Generation(GenerationOutput {
                     id: "durable-response".to_owned(),
+                    reported_model: None,
                     status: "completed".to_owned(),
                     end_turn: Some(true),
                     final_message: Some("durably replayed".to_owned()),
@@ -4180,6 +4191,7 @@ impl tower::Service<nanocodex_oai_api::tower::ResponsesAttempt> for LongTurnServ
         std::future::ready(Ok(ResponsesServiceResponse::new(
             ResponsesOutput::Generation(GenerationOutput {
                 id: format!("long-response-{index}"),
+                reported_model: None,
                 status: "completed".into(),
                 end_turn: Some(done),
                 final_message: done.then(|| "finished".into()),

@@ -81,6 +81,7 @@ impl Service<ResponsesAttempt> for ScriptedResponses {
         ready(Ok(ResponsesServiceResponse::new(
             ResponsesOutput::Generation(GenerationOutput {
                 id: format!("resp_{index}"),
+                reported_model: None,
                 status: "completed".to_owned(),
                 end_turn: Some(true),
                 final_message: Some(format!("answer-{index}")),

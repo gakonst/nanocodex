@@ -82,6 +82,7 @@ fn generation(call: Option<(&str, &str)>) -> ResponsesOutput {
     };
     ResponsesOutput::Generation(GenerationOutput {
         id: format!("resp-{}", call.map_or("final", |(id, _)| id)),
+        reported_model: None,
         status: "completed".to_owned(),
         end_turn: Some(call.is_none()),
         final_message: call.is_none().then(|| "done".to_owned()),

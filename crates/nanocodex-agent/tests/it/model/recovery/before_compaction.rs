@@ -111,6 +111,7 @@ impl Service<ResponsesAttempt> for Provider {
                 let answer = format!("source answer {index}");
                 ResponsesOutput::Generation(GenerationOutput {
                     id: format!("resp-{index}"),
+                    reported_model: None,
                     status: "completed".into(),
                     end_turn: Some(!(index == 0 && matches!(self.trigger, Trigger::MidTurn))),
                     final_message: Some(answer.clone()),

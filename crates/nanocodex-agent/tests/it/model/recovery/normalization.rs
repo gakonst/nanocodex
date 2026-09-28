@@ -110,6 +110,7 @@ impl Service<ResponsesAttempt> for UnmatchedToolCallService {
                 };
                 ResponsesOutput::Generation(GenerationOutput {
                     id: format!("resp-{call}"),
+                    reported_model: None,
                     status: "completed".to_owned(),
                     end_turn,
                     final_message,

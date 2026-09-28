@@ -21,6 +21,9 @@ use crate::{
 pub struct GenerationOutput {
     /// Provider response ID retained privately by a managed session.
     pub id: String,
+    /// Provider-reported model identifier when present in the completion event.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reported_model: Option<String>,
     /// Provider terminal status.
     pub status: String,
     /// Whether the model affirmatively ended the logical turn.
@@ -365,6 +368,7 @@ where
                 let final_message = final_message(&output_items);
                 return Ok(GenerationOutput {
                     id: response.id,
+                    reported_model: response.model,
                     status: response.status,
                     end_turn: response.end_turn,
                     final_message,

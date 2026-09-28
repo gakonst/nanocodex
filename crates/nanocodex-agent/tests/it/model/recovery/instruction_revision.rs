@@ -66,6 +66,7 @@ impl Service<ResponsesAttempt> for RevisionProvider {
                 }));
                 ResponsesOutput::Generation(GenerationOutput {
                     id: "resp-revision-complete".to_owned(),
+                    reported_model: None,
                     status: "completed".to_owned(),
                     end_turn: Some(true),
                     final_message: Some("revision observed".to_owned()),
@@ -96,6 +97,7 @@ fn revision_tool_generation(index: u32) -> ResponsesOutput {
     .expect("function call item decodes");
     ResponsesOutput::Generation(GenerationOutput {
         id: "resp-revision-tool".to_owned(),
+        reported_model: None,
         status: "completed".to_owned(),
         end_turn: Some(false),
         final_message: None,

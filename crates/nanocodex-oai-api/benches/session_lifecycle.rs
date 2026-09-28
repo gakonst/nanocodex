@@ -36,6 +36,7 @@ impl Service<ResponsesAttempt> for ImmediateResponses {
         ready(Ok(ResponsesServiceResponse::new(
             ResponsesOutput::Generation(GenerationOutput {
                 id: "resp_benchmark".to_owned(),
+                reported_model: None,
                 status: "completed".to_owned(),
                 end_turn: Some(true),
                 final_message: Some("done".to_owned()),

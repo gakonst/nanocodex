@@ -58,6 +58,7 @@ impl Service<crate::ResponsesAttempt> for Scripted {
             Ok(
                 ResponsesServiceResponse::new(ResponsesOutput::Generation(GenerationOutput {
                     id: format!("resp-{call}"),
+                    reported_model: Some("@cf/zai-org/glm-5.3".to_owned()),
                     status: "completed".to_owned(),
                     end_turn: None,
                     final_message: Some(format!("answer-{call}")),
@@ -107,6 +108,7 @@ async fn response_stream_and_future_share_one_completed_operation() {
     };
 
     assert_eq!(completed.output_text(), "answer-1");
+    assert_eq!(completed.reported_model(), Some("@cf/zai-org/glm-5.3"));
     let estimated_cost = completed
         .estimated_cost()
         .expect("provider usage should produce an estimate");
@@ -221,6 +223,7 @@ impl Service<crate::ResponsesAttempt> for RecordingScripted {
         std::future::ready(Ok(ResponsesServiceResponse::new(
             ResponsesOutput::Generation(GenerationOutput {
                 id: format!("resp-{call}"),
+                reported_model: None,
                 status: "completed".to_owned(),
                 end_turn: Some(call == 2),
                 final_message,
@@ -257,13 +260,9 @@ async fn sequential_creates_send_only_the_new_delta_after_completion() {
 
     {
         let mut turn = session.turn();
-        assert_eq!(
-            turn.create("The region is us-west-2.")
-                .await
-                .unwrap()
-                .output_text(),
-            "answer-1"
-        );
+        let first = turn.create("The region is us-west-2.").await.unwrap();
+        assert_eq!(first.output_text(), "answer-1");
+        assert_eq!(first.reported_model(), None);
         assert_eq!(
             turn.create("What region did I give you?")
                 .await
@@ -472,6 +471,7 @@ impl Service<crate::ResponsesAttempt> for CompactingScripted {
             );
             ResponsesOutput::Generation(GenerationOutput {
                 id: format!("resp-{call}"),
+                reported_model: None,
                 status: "completed".to_owned(),
                 end_turn: None,
                 final_message: Some(format!("answer-{call}")),

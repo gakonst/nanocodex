@@ -218,6 +218,7 @@ fn tool_generation(response_id: &str, call_id: &str, input: &str) -> ResponsesOu
     .expect("custom tool call item decodes");
     ResponsesOutput::Generation(GenerationOutput {
         id: response_id.to_owned(),
+        reported_model: None,
         status: "completed".to_owned(),
         end_turn: Some(false),
         final_message: None,
@@ -239,6 +240,7 @@ fn tool_generation(response_id: &str, call_id: &str, input: &str) -> ResponsesOu
 fn final_generation(response_id: &str) -> ResponsesOutput {
     ResponsesOutput::Generation(GenerationOutput {
         id: response_id.to_owned(),
+        reported_model: None,
         status: "completed".to_owned(),
         end_turn: Some(true),
         final_message: Some("done".to_owned()),

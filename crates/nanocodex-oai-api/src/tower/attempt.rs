@@ -638,13 +638,63 @@ impl ResponsesAttemptFactory {
 
 #[cfg(test)]
 mod tests {
+    use std::{collections::VecDeque, sync::Arc};
+
     use super::{ResponseHistory, ResponsesAttemptFactory, TransportStats};
     use crate::{
         ContentItem, EventSink, MessageRole, Model, ResponseItem, ResponsesTransport, Thinking,
         responses::RequestProfile,
     };
     use serde_json::json;
-    use std::sync::Arc;
+    use tokio_tungstenite::tungstenite::Utf8Bytes;
+
+    struct FixtureSource {
+        lines: VecDeque<String>,
+    }
+
+    impl crate::stream::ResponseEventSource for FixtureSource {
+        async fn next_text(
+            &mut self,
+        ) -> Result<crate::socket::ReceivedText, crate::ResponsesError> {
+            let text = self
+                .lines
+                .pop_front()
+                .expect("captured response fixture should end with a completion event");
+            Ok(crate::socket::ReceivedText {
+                text: Utf8Bytes::from(text),
+                received_ns: crate::monotonic_now_ns(),
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn generation_output_keeps_model_from_captured_completion_event() {
+        let fixture = include_str!("../../tests/fixtures/workers_ai_events.jsonl");
+        let mut source = FixtureSource {
+            lines: fixture.lines().map(str::to_owned).collect(),
+        };
+        let (events, _receiver) = EventSink::channel("reported-model-fixture".to_owned());
+        let observer = super::ResponsesObserver {
+            events,
+            stats: Arc::new(TransportStats::default()),
+            response_events: None,
+        };
+
+        let output = crate::stream::receive(
+            &mut source,
+            "fixture",
+            &observer,
+            1,
+            web_time::Instant::now(),
+        )
+        .await
+        .expect("captured response stream should decode");
+
+        assert_eq!(
+            output.reported_model.as_deref(),
+            Some("@cf/zai-org/glm-5.3")
+        );
+    }
 
     #[test]
     fn retry_preserves_the_attempts_turn_policy() {

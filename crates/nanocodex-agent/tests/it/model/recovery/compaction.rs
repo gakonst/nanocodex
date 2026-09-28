@@ -554,6 +554,7 @@ impl Service<ResponsesAttempt> for ActiveReplacementService {
                     order.lock().unwrap().push("queued_generation");
                     ResponsesOutput::Generation(GenerationOutput {
                         id: "resp-queued".to_owned(),
+                        reported_model: None,
                         status: "completed".to_owned(),
                         end_turn: Some(true),
                         final_message: Some("done".to_owned()),
@@ -699,6 +700,7 @@ impl Service<ResponsesAttempt> for PreTurnCompactionService {
                 let answer = format!("answer-{call}");
                 ResponsesOutput::Generation(GenerationOutput {
                     id: format!("resp-{call}"),
+                    reported_model: None,
                     status: "completed".to_owned(),
                     end_turn: Some(true),
                     final_message: Some(answer.clone()),

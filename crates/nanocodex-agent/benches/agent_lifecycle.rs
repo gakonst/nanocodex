@@ -41,6 +41,7 @@ impl Service<ResponsesAttempt> for ImmediateResponses {
                 );
                 ResponsesOutput::Generation(GenerationOutput {
                     id: "resp_generation".to_owned(),
+                    reported_model: None,
                     status: "completed".to_owned(),
                     end_turn: Some(true),
                     final_message: Some("done".to_owned()),

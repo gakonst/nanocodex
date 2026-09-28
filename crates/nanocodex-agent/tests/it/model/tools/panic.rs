@@ -111,6 +111,7 @@ fn panic_generation() -> ResponsesOutput {
     .expect("function call item decodes");
     ResponsesOutput::Generation(GenerationOutput {
         id: "resp-panic".to_owned(),
+        reported_model: None,
         status: "completed".to_owned(),
         end_turn: Some(false),
         final_message: None,
@@ -132,6 +133,7 @@ fn panic_generation() -> ResponsesOutput {
 fn final_generation(response_id: &str, message: &str) -> ResponsesOutput {
     ResponsesOutput::Generation(GenerationOutput {
         id: response_id.to_owned(),
+        reported_model: None,
         status: "completed".to_owned(),
         end_turn: Some(true),
         final_message: Some(message.to_owned()),

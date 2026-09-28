@@ -56,6 +56,7 @@ impl Service<ResponsesAttempt> for ProviderProbe {
             }),
             ResponsesAttemptKind::Generation => ResponsesOutput::Generation(GenerationOutput {
                 id: "resp-generation".to_owned(),
+                reported_model: None,
                 status: "completed".to_owned(),
                 end_turn: Some(true),
                 final_message: Some("provider was called".to_owned()),
@@ -126,6 +127,7 @@ impl Service<ResponsesAttempt> for HostContextProvider {
                 }));
                 ResponsesOutput::Generation(GenerationOutput {
                     id: "resp-host-context-complete".to_owned(),
+                    reported_model: None,
                     status: "completed".to_owned(),
                     end_turn: Some(true),
                     final_message: Some("private context observed".to_owned()),
@@ -156,6 +158,7 @@ fn host_context_tool_generation() -> ResponsesOutput {
     .expect("function call item decodes");
     ResponsesOutput::Generation(GenerationOutput {
         id: "resp-host-context-tool".to_owned(),
+        reported_model: None,
         status: "completed".to_owned(),
         end_turn: Some(false),
         final_message: None,
