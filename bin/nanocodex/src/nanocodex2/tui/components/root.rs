@@ -226,6 +226,7 @@ pub(crate) enum RootEvent {
     NotifyError(String),
     NotifySuccess(String),
     VoiceOutput(String),
+    ShareOutput(String),
     ConfirmReviewDownload,
     UpdateAvailable(Version),
     SteerAdmitted(QueueId),
@@ -304,6 +305,7 @@ pub(crate) enum RootEffect {
     Voice(crate::voice::Command),
     ShowAgentId,
     Vault(crate::tui::vault::Command),
+    Share(crate::tui::share::Command),
     ApproveVault(crate::tui::vault::Review),
     Submit(Submission),
     Reflect(Submission),
@@ -373,6 +375,7 @@ enum Overlay {
     VaultReview(crate::tui::vault::Review),
     AgentId(String),
     VoiceOutput { text: String, scroll: u16 },
+    ShareOutput { text: String, scroll: u16 },
     VoiceMenu(Node<super::voice_menu::VoiceMenu>),
     VoiceClone(String, bool, u16, bool),
     Actions(Node<ActionsMenu>),
@@ -480,6 +483,7 @@ impl RootNode {
         let menu = self.overlay.as_ref().map(|overlay| match overlay {
             Overlay::VaultReview(_) => "vault_review",
             Overlay::VoiceOutput { .. } => "voice_output",
+            Overlay::ShareOutput { .. } => "share_output",
             Overlay::VoiceMenu(_) => "voice_menu",
             Overlay::VoiceClone(..) => "voice_clone",
             Overlay::AgentId(_) => "agent_id",
@@ -1104,6 +1108,25 @@ impl RootNode {
                         }
                     }
                 }
+                Overlay::ShareOutput { text, scroll } => {
+                    let layout = Floating::new(
+                        "Share · managed thread",
+                        100,
+                        area.height.saturating_sub(4),
+                        &[
+                            ("↑↓ pgup/pgdn", "scroll"),
+                            ("c", "copy all"),
+                            ("esc", "close"),
+                        ],
+                    )
+                    .render(frame, area, theme);
+                    let paragraph = Paragraph::new(text.as_str()).wrap(Wrap { trim: false });
+                    let max_scroll = paragraph
+                        .line_count(layout.body.width)
+                        .saturating_sub(usize::from(layout.body.height));
+                    *scroll = (*scroll).min(u16::try_from(max_scroll).unwrap_or(u16::MAX));
+                    frame.render_widget(paragraph.scroll((*scroll, 0)), layout.body);
+                }
                 Overlay::VoiceOutput { text, scroll } => {
                     let layout = Floating::new(
                         "Voice · local controls",
@@ -1258,6 +1281,7 @@ impl RootNode {
             Some(
                 Overlay::VoiceMenu(_)
                     | Overlay::VoiceOutput { .. }
+                    | Overlay::ShareOutput { .. }
                     | Overlay::VoiceClone(_, _, _, _)
             )
         ) {
@@ -1303,7 +1327,7 @@ impl RootNode {
                     && !self.composer.component().has_images()
                     && matches!(
                         self.composer.component().draft().split_whitespace().next(),
-                        Some("/voice" | "/screen" | "/zoom" | "/reload")
+                        Some("/share" | "/voice" | "/screen" | "/zoom" | "/reload")
                     )
                 {
                     let mut update = self
@@ -1829,7 +1853,9 @@ impl RootNode {
                 })
             }
             Some(Overlay::VoiceMenu(_)) => self.update_voice_menu(event),
-            Some(Overlay::VoiceOutput { .. }) => self.update_voice_output(event),
+            Some(Overlay::VoiceOutput { .. } | Overlay::ShareOutput { .. }) => {
+                self.update_voice_output(event)
+            }
             Some(Overlay::Actions(_)) => self.update_actions(event),
             Some(Overlay::ContextDiagnostics(_)) => self.update_context_diagnostics(event),
             Some(Overlay::Effort(_)) => self.update_effort(EffortEvent::Terminal { event, now }),
@@ -2097,6 +2123,9 @@ impl RootNode {
         match update.effects.into_iter().next() {
             Some(ActionsEffect::Dismiss) => self.overlay = None,
             Some(ActionsEffect::Submit(command)) => return self.submit_action_command(command),
+            Some(ActionsEffect::Trigger(Action::Share)) => {
+                return self.submit_action_command("/share".to_owned());
+            }
             Some(ActionsEffect::Trigger(Action::Goal)) => {
                 return self.submit_action_command("/goal".to_owned());
             }
@@ -2664,8 +2693,11 @@ impl RootNode {
             self.overlay = None;
             return ComponentUpdate::render(RenderRequest::Immediate);
         }
-        let Some(Overlay::VoiceOutput { text, scroll }) = &mut self.overlay else {
-            return ComponentUpdate::none();
+        let (text, scroll) = match &mut self.overlay {
+            Some(Overlay::VoiceOutput { text, scroll } | Overlay::ShareOutput { text, scroll }) => {
+                (text, scroll)
+            }
+            _ => return ComponentUpdate::none(),
         };
         match event {
             Event::Key(key) if matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) => {
@@ -2993,6 +3025,13 @@ impl RootNode {
             render = render.max(self.update_transcript(TranscriptEvent::FollowTail).render);
         }
         let effects = match update.effect {
+            Some(ComposerEffect::Share(command)) => match command {
+                Ok(command) => vec![RootEffect::Share(command)],
+                Err(message) => {
+                    self.notification = Some(Notification::plain(message, Color::Red));
+                    Vec::new()
+                }
+            },
             Some(ComposerEffect::Vault(command)) => {
                 let command = if command == crate::tui::vault::Command::Latest {
                     self.transcript
@@ -4212,6 +4251,10 @@ impl Component for RootNode {
                 self.overlay = Some(Overlay::AgentId(id));
                 ComponentUpdate::render(RenderRequest::Immediate)
             }
+            RootEvent::ShareOutput(text) => {
+                self.overlay = Some(Overlay::ShareOutput { text, scroll: 0 });
+                ComponentUpdate::render(RenderRequest::Immediate)
+            }
             RootEvent::VoiceOutput(text) => {
                 if matches!(self.overlay, Some(Overlay::VoiceClone(_, _, _, _))) {
                     return ComponentUpdate::render(RenderRequest::Immediate);
@@ -5406,6 +5449,35 @@ mod live_control_tests {
             .collect::<String>();
         assert!(!screen.contains("Thinking…"));
         assert!(!screen.contains("Running exec command"));
+    }
+
+    #[test]
+    fn share_commands_never_reach_agent_even_during_active_work() {
+        for command in [
+            "/share",
+            "/share read",
+            "/share write",
+            "/share list",
+            "/share revoke 00000000-0000-4000-8000-000000000001",
+        ] {
+            let mut root = root_with_draft(command);
+            root.managed_active_turns = 1;
+            let update = root.update(key(KeyCode::Enter));
+            assert!(
+                matches!(update.effects.as_slice(), [RootEffect::Share(_)]),
+                "{command}"
+            );
+            assert!(root.composer.component().draft().is_empty());
+        }
+        let mut root = root_with_draft("/share revoke");
+        let update = root.update(key(KeyCode::Enter));
+        assert!(
+            update
+                .effects
+                .iter()
+                .all(|effect| !matches!(effect, RootEffect::Submit(_) | RootEffect::Steer { .. }))
+        );
+        assert!(root.composer.component().draft().is_empty());
     }
 
     #[test]

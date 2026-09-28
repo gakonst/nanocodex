@@ -971,3 +971,14 @@ html[data-theme="light"] .chat-workspace {
 .agent-navigation-thread .agent-navigation-activity { color: var(--chat-muted); font-size: 12px; line-height: 1.4; }
 
 .agent-navigation-thread .agent-navigation-prompt { color: var(--chat-muted); font-size: 12px; line-height: 1.4; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.agent-navigation-group {
+  padding: 16px 10px 5px;
+  color: var(--chat-muted);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: .025em;
+}
+.agent-navigation-group:first-child { padding-top: 4px; }
+.agent-navigation-status time { margin-left: auto; font-size: 11px; font-style: normal; }
+.agent-search-results button span small { display: block; overflow: hidden; color: var(--chat-muted); text-overflow: ellipsis; white-space: nowrap; font-size: 11px; }

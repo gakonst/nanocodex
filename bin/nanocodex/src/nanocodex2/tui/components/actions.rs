@@ -20,10 +20,11 @@ use ratatui::{
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
-const ACTIONS: [Action; 18] = [
+const ACTIONS: [Action; 19] = [
     Action::Effort,
     Action::FastMode,
     Action::Goal,
+    Action::Share,
     Action::Theme,
     Action::NewSession,
     Action::ResumeSession,
@@ -59,6 +60,7 @@ pub(super) struct ActionAvailability {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum Action {
     Goal,
+    Share,
     Bug,
     Screen,
     Zoom,
@@ -194,9 +196,9 @@ impl ActionsMenu {
     }
 
     fn trigger_selected(&self) -> ComponentUpdate<ActionsEffect> {
-        // Managed goal commands are interpreted by the server. Preserve their
-        // arguments and send them through the ordinary prompt submission path.
-        if self.query.split_whitespace().next() == Some("goal") {
+        // Preserve typed arguments for managed goal commands and local share
+        // commands. The root classifies these before any agent submission.
+        if matches!(self.query.split_whitespace().next(), Some("goal" | "share")) {
             return ComponentUpdate {
                 effects: vec![ActionsEffect::Submit(format!("/{}", self.query))],
                 render: RenderRequest::Immediate,
@@ -304,7 +306,7 @@ impl ActionsMenu {
             Action::ReloadConfig => true,
             Action::EditConfig => true,
             Action::DebugContext => true,
-            Action::Bug | Action::Goal => true,
+            Action::Bug | Action::Goal | Action::Share => true,
         }
     }
 
@@ -340,6 +342,7 @@ impl Action {
     const fn label(self) -> &'static str {
         match self {
             Self::Goal => "Goal",
+            Self::Share => "Share thread · view or comment link",
             Self::Bug => "Debug a bug",
             Self::Screen => "Watch Hand screen",
             Self::Zoom => "Zoom focused pane",
@@ -367,6 +370,7 @@ impl Action {
     const fn alias(self) -> Option<&'static str> {
         match self {
             Self::Goal => Some("goal"),
+            Self::Share => Some("share"),
             Self::Bug => Some("bug"),
             Self::Screen => Some("screen"),
             Self::Zoom => Some("zoom"),

@@ -1,0 +1,82 @@
+.thread-share-dialog { width: min(520px, calc(100vw - 28px)); max-height: min(88vh, 720px); padding: 0; border: 1px solid var(--chat-line, var(--border-soft, #ddd)); border-radius: 18px; color: var(--chat-text, var(--text, #202020)); background: var(--chat-sidebar, var(--surface, #fff)); box-shadow: 0 24px 90px rgb(0 0 0 / .25); }
+.thread-share-dialog::backdrop { background: rgb(0 0 0 / .5); }
+.thread-share-panel { padding: 24px; }
+.thread-share-panel header { display: flex; align-items: flex-start; gap: 14px; }
+.thread-share-icon { display: grid; flex: none; place-items: center; width: 42px; height: 42px; border-radius: 12px; color: var(--chat-text); background: var(--chat-hover, var(--surface-hover, #f3f3f3)); }
+.thread-share-icon svg, .thread-share-panel button svg { width: 17px; height: 17px; }
+.thread-share-panel header h2 { margin: 0; font-size: 19px; line-height: 1.3; }
+.thread-share-panel header p, .thread-share-help { margin: 6px 0 0; color: var(--chat-muted, var(--text-muted, #6b6b6b)); font-size: 13px; line-height: 1.5; }
+.thread-share-panel button { cursor: pointer; }
+.thread-share-panel button:disabled { opacity: .55; cursor: not-allowed; }
+.thread-share-panel .thread-share-close { display: grid; flex: none; place-items: center; margin: -6px -6px 0 auto; width: 36px; height: 36px; border: 0; border-radius: 8px; color: inherit; background: transparent; }
+.thread-share-panel .thread-share-close:hover, .thread-share-active button:hover { background: var(--chat-hover, var(--surface-hover, #eee)); }
+.thread-share-panel form { margin-top: 28px; }
+.thread-share-panel form label, .thread-share-created label { display: block; margin-bottom: 8px; font-weight: 600; font-size: 13px; }
+.thread-share-create, .thread-share-created > div { display: flex; gap: 8px; }
+.thread-share-create select, .thread-share-created input { flex: 1; min-width: 0; height: 42px; padding: 0 12px; border: 1px solid var(--chat-line, #d8d8d8); border-radius: 9px; color: inherit; background: var(--chat-input, var(--surface-raised, #fff)); font: inherit; font-size: 13px; }
+.thread-share-create button, .thread-share-created button, .shared-thread-comments form button { display: flex; align-items: center; justify-content: center; gap: 6px; min-height: 42px; padding: 0 14px; border: 0; border-radius: 9px; color: #fff; background: #313131; font-weight: 600; font-size: 13px; white-space: nowrap; }
+.thread-share-created { margin-top: 20px; padding: 16px; border: 1px solid var(--chat-line, var(--border-soft, #ddd)); border-radius: 12px; background: var(--chat-hover, var(--surface-hover, #f9f9f9)); }
+.thread-share-created input { background: var(--chat-sidebar, var(--surface, #fff)); }
+.thread-share-created small { display: block; margin-top: 8px; color: var(--chat-muted, var(--text-muted, #666)); line-height: 1.4; }
+.thread-share-error, .shared-thread-error { padding: 10px 12px; border-radius: 8px; color: #a2332d; background: #fff0ed; font-size: 13px; }
+.thread-share-active { margin-top: 24px; padding-top: 20px; border-top: 1px solid var(--chat-line, var(--border-soft, #ddd)); }
+.thread-share-active h3 { margin: 0 0 12px; font-size: 13px; }
+.thread-share-active > p { color: var(--chat-muted, var(--text-muted, #777)); font-size: 13px; }
+.thread-share-active ul, .shared-thread-comments ul { padding: 0; margin: 0; list-style: none; }
+.thread-share-active li { display: flex; gap: 8px; align-items: center; justify-content: space-between; min-height: 52px; border-top: 1px solid var(--chat-line, var(--border-soft, #ddd)); }
+.thread-share-active li > span { display: flex; gap: 10px; align-items: center; min-width: 0; }
+.thread-share-active li > span > svg { width: 17px; height: 17px; color: var(--chat-muted, var(--text-muted, #777)); }
+.thread-share-active li strong, .thread-share-active li small { display: block; font-size: 12px; }
+.thread-share-active li small { margin-top: 3px; color: var(--chat-muted, var(--text-muted, #777)); }
+.thread-share-active li button { display: flex; gap: 5px; align-items: center; padding: 8px; border: 0; border-radius: 7px; color: var(--chat-muted, var(--text-muted, #777)); background: transparent; font-size: 12px; }
+.shared-thread-page { min-height: 100vh; color: var(--chat-text, var(--text, #222)); background: var(--chat-background, var(--surface, #fff)); font-family: inherit; }
+.shared-thread-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; height: 64px; padding: 0 max(24px, calc((100vw - 900px) / 2)); border-bottom: 1px solid var(--chat-line, var(--border-soft, #ddd)); }
+.shared-thread-brand { display: inline-flex; gap: 10px; align-items: center; color: inherit; text-decoration: none; font-weight: 650; font-size: 16px; }
+.shared-thread-brand .paradigm-mark { width: 20px; height: 22px; background: currentColor; }
+.shared-thread-header > span { display: flex; gap: 7px; align-items: center; color: var(--chat-muted, var(--text-muted, #777)); font-size: 12px; }
+.shared-thread-header svg { width: 15px; height: 15px; }
+.shared-thread-container { width: min(100% - 40px, 720px); margin: 0 auto; padding: 48px 0 80px; }
+.shared-thread-intro { display: flex; justify-content: space-between; gap: 24px; align-items: flex-start; padding-bottom: 26px; border-bottom: 1px solid var(--chat-line, var(--border-soft, #ddd)); }
+.shared-thread-eyebrow { color: var(--chat-muted, var(--text-muted, #777)); font-size: 12px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; }
+.shared-thread-intro h1 { margin: 8px 0 8px; overflow-wrap: anywhere; font-size: clamp(24px, 4vw, 33px); line-height: 1.2; letter-spacing: -.03em; }
+.shared-thread-intro p { max-width: 520px; margin: 0; color: var(--chat-muted, var(--text-muted, #777)); font-size: 13px; line-height: 1.6; }
+.shared-thread-intro button, .shared-thread-state button { display: flex; gap: 7px; align-items: center; padding: 8px 10px; border: 1px solid var(--chat-line, var(--border-soft, #ddd)); border-radius: 8px; color: inherit; background: transparent; cursor: pointer; font-size: 12px; }
+.shared-thread-intro button:disabled { opacity: .5; }
+.shared-thread-intro svg { width: 15px; height: 15px; }
+.shared-thread-timeline { display: grid; gap: 22px; padding: 32px 0; }
+.shared-thread-message { max-width: 90%; min-width: 0; }
+.shared-thread-message.is-user { justify-self: end; padding: 14px 18px; border-radius: 18px; background: var(--chat-hover, var(--surface-hover, #f2f2f2)); }
+.shared-thread-message .shared-thread-author { display: block; margin-bottom: 7px; color: var(--chat-muted, var(--text-muted, #777)); font-size: 11px; font-weight: 600; }
+.shared-thread-message p, .shared-thread-comments li p { margin: 0; overflow-wrap: anywhere; white-space: pre-wrap; line-height: 1.65; font-size: 14px; }
+.shared-thread-state { margin: 80px auto; text-align: center; color: var(--chat-muted, var(--text-muted, #777)); }
+.shared-thread-state h1 { color: var(--chat-text, var(--text, #222)); }
+.shared-thread-state button { margin: 24px auto; }
+.shared-thread-empty { color: var(--chat-muted, var(--text-muted, #777)); font-size: 13px; }
+.shared-thread-comments { padding-top: 28px; border-top: 1px solid var(--chat-line, var(--border-soft, #ddd)); }
+.shared-thread-comments h2 { display: flex; gap: 8px; align-items: center; margin: 0 0 16px; font-size: 16px; }
+.shared-thread-comments h2 svg { width: 17px; height: 17px; }
+.shared-thread-comments h2 span { color: var(--chat-muted, var(--text-muted, #777)); font-size: 12px; }
+.shared-thread-comments li { padding: 15px 0; border-bottom: 1px solid var(--chat-line, var(--border-soft, #ddd)); }
+.shared-thread-comments li span { display: block; margin-bottom: 6px; color: var(--chat-muted, var(--text-muted, #777)); font-size: 11px; }
+.shared-thread-comments form { display: grid; gap: 9px; margin-top: 28px; }
+.shared-thread-comments form label { font-size: 13px; font-weight: 600; }
+.shared-thread-comments textarea { width: 100%; min-height: 92px; box-sizing: border-box; padding: 13px; resize: vertical; border: 1px solid var(--chat-line, var(--border-soft, #ddd)); border-radius: 12px; color: inherit; background: var(--chat-input, var(--surface-raised, #fff)); font: inherit; font-size: 14px; }
+.shared-thread-comments form > div { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.shared-thread-comments form small, .shared-thread-readonly { color: var(--chat-muted, var(--text-muted, #777)); font-size: 12px; }
+.shared-thread-comments form button { cursor: pointer; }
+.shared-thread-comments form button:disabled { cursor: not-allowed; opacity: .5; }
+.shared-thread-comments form button svg, .shared-thread-readonly svg { width: 15px; height: 15px; }
+.shared-thread-readonly { display: flex; gap: 8px; align-items: center; margin-top: 24px; }
+@media (max-width: 600px) { .thread-share-panel { padding: 18px; } .thread-share-create { flex-direction: column; } .shared-thread-container { width: min(100% - 32px, 720px); padding-top: 34px; } .shared-thread-intro { flex-direction: column; gap: 14px; } .shared-thread-message { max-width: 100%; } }
+.thread-share-comments { margin-top: 22px; padding-top: 18px; border-top: 1px solid var(--chat-line, var(--border-soft, #ddd)); }
+.thread-share-comments > div { display: flex; justify-content: space-between; align-items: center; }
+.thread-share-comments h3 { margin: 0; font-size: 13px; }
+.thread-share-comments h3 span { margin-left: 4px; color: var(--chat-muted, var(--text-muted, #777)); font-size: 11px; }
+.thread-share-comments > div button, .shared-thread-older { padding: 8px 10px; border: 1px solid var(--chat-line, var(--border-soft, #ddd)); border-radius: 8px; color: inherit; background: transparent; font-size: 12px; cursor: pointer; }
+.thread-share-comments > p { color: var(--chat-muted, var(--text-muted, #777)); font-size: 13px; }
+.thread-share-comments ul { margin: 12px 0 0; padding: 0; list-style: none; }
+.thread-share-comments li { padding: 12px 0; border-top: 1px solid var(--chat-line, var(--border-soft, #ddd)); }
+.thread-share-comments li small { color: var(--chat-muted, var(--text-muted, #777)); font-size: 11px; }
+.thread-share-comments li p { margin: 6px 0 0; overflow-wrap: anywhere; white-space: pre-wrap; line-height: 1.5; font-size: 13px; }
+.shared-thread-older { justify-self: center; }
+.thread-share-older { margin-top: 12px; padding: 8px 10px; border: 1px solid var(--chat-line, var(--border-soft, #ddd)); border-radius: 8px; color: inherit; background: transparent; font-size: 12px; cursor: pointer; }

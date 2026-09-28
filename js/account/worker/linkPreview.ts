@@ -135,6 +135,7 @@ function isIframeNavigation(request: Request): boolean {
 export function documentStatusForPath(pathname: string): 200 | 404 | null {
   pathname = normalizePath(pathname);
   if (pathname === "/" || pathname === "/agent" || isAgentDocumentPath(pathname)
+    || isShareDocumentPath(pathname)
     || pathname === "/multiplayer"
     || pathname === "/world" || pathname === "/artifact-runtime"
     || pathname === "/demos/chief-of-staff"
@@ -220,6 +221,11 @@ async function previewForUrl(url: URL, env: LinkPreviewEnv): Promise<Preview> {
       title: "Nanocodex",
     };
   }
+  if (isShareDocumentPath(pathname)) {
+    // Never resolve the conversation server-side: access requires a fragment bearer
+    // token, which is available only to the guest browser after navigation.
+    return fixed(pathname, "Shared thread", "Open a Nanocodex conversation shared with you.");
+  }
   if (pathname === "/agent" || isAgentDocumentPath(pathname)) {
     return fixed(pathname, "Durable agent", "Open an account-owned durable Nanocodex agent.");
   }
@@ -266,6 +272,10 @@ async function previewForUrl(url: URL, env: LinkPreviewEnv): Promise<Preview> {
     eyebrow: "HIGH-PERFORMANCE CODEX SDK",
     title: SITE_NAME,
   };
+}
+
+function isShareDocumentPath(pathname: string): boolean {
+  return /^\/share\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(pathname);
 }
 
 function isAgentDocumentPath(pathname: string): boolean {

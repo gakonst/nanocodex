@@ -1,6 +1,6 @@
 import { QueryClientProvider } from "@tanstack/react-query";
 import { appQueryClient } from "./queryClient";
-import { Suspense, useEffect, useState } from "react";
+import { lazy, Suspense, useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { BrowserRouter } from "react-router";
 import { AccountSessionProvider } from "./AccountSession";
@@ -9,6 +9,7 @@ import { ArtifactRuntime } from "./artifactRuntime";
 import type { PreparedDirectRoute } from "./routeLoaders";
 import { surfaceFromUrl } from "./navigation";
 
+const SharedThreadView = lazy(() => import("./SharedThreadView").then((module) => ({ default: module.SharedThreadView })));
 const directUrl = new URL(window.location.href);
 const directPath = directUrl.pathname === "/"
   ? "/"
@@ -36,7 +37,9 @@ if (directRepositorySurface) {
 createRoot(container).render(
   directPath === "/artifact-runtime"
     ? <ArtifactRuntime />
-    : <BrowserApplication url={directUrl} />,
+    : /^\/share\/[^/]+$/.test(directPath)
+      ? <Suspense fallback={<p role="status">Opening shared thread…</p>}><SharedThreadView key={directPath} agentId={decodeURIComponent(directPath.slice(7))} /></Suspense>
+      : <BrowserApplication url={directUrl} />,
 );
 
 function BrowserApplication({ url }: { url: URL }) {

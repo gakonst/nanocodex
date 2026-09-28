@@ -16,11 +16,12 @@ import {
 import type { AgentControllerEvent } from "nanocodex-react/agent";
 import { AccountChooser } from "nanocodex-connect-ui/AccountChooser";
 import { Link, useNavigate } from "react-router";
-import { Moon, PanelLeft, SquarePen, Sun } from "lucide-react";
+import { Moon, PanelLeft, Share2, SquarePen, Sun } from "lucide-react";
 import type { AgentStatus, AgentTerminalMode, AgentTerminalState } from "./agentTerminalTypes";
 import { AgentTerminal, ManagedAgentTerminal } from "./AgentTerminal";
 import { TerminalComposer, TerminalTranscriptSurface } from "nanocodex-terminal";
 import { AgentSidebar } from "./AgentSidebar";
+import { ThreadShareDialog } from "./ThreadShareDialog";
 import { useAccountSession } from "./AccountSession";
 import { browserAgentCapabilityError } from "./browserAgentCapabilities";
 import { clientFailureMessage } from "./clientFailure";
@@ -65,6 +66,7 @@ export const AgentExperience = memo(function AgentExperience({
 }) {
   const navigate = useNavigate();
   const [inspectorOpen, setInspectorOpen] = useState(false);
+  const [shareOpen, setShareOpen] = useState(false);
   const [ephemeralThreadId, setEphemeralThreadId] = useState(() => crypto.randomUUID());
   const account = useAccountSession();
   const capabilityError = useMemo(() => browserAgentCapabilityError(), []);
@@ -225,6 +227,7 @@ export const AgentExperience = memo(function AgentExperience({
 
   const selectManaged = useCallback((id: string) => {
     setRailOpen(false);
+    setShareOpen(false);
     if (id.startsWith("pending:") || id === visibleManagedConversationId) return;
     ++selectionIntent.current;
     selectionRef.current = id;
@@ -234,6 +237,7 @@ export const AgentExperience = memo(function AgentExperience({
     onAgentChange?.(id);
   }, [account.account, onAgentChange, visibleManagedConversationId]);
   const createConversation = useCallback(() => {
+    setShareOpen(false);
     if (creatingRef.current || !canCreateManaged || !account.account) return;
     const accountId = account.account.id;
     const previousId = selectionRef.current;
@@ -325,12 +329,14 @@ export const AgentExperience = memo(function AgentExperience({
           <button ref={sidebarTriggerRef} className="agent-sidebar-toggle chat-icon-button" type="button" onClick={() => { if (window.matchMedia("(min-width: 761px)").matches) toggleDesktopSidebar(); else setRailOpen(true); }} aria-label="Open sidebar" aria-expanded={railOpen} aria-controls="agent-navigation"><PanelLeft aria-hidden="true" /></button>
           <div className="agent-chat-heading"><strong>{landing ? "Nanocodex" : title}</strong></div>
           <div className="agent-chat-header-actions">
+            {!landing && visibleManagedConversationId && !visibleManagedConversationId.startsWith("pending:") ? <button className="chat-icon-button" type="button" aria-label="Share thread" title="Share thread" onClick={() => setShareOpen(true)}><Share2 aria-hidden="true" /></button> : null}
             {managedConversationId && <button type="button" onClick={() => setInspectorOpen(open => !open)} aria-expanded={inspectorOpen}>Inspect</button>}
             {agentStatus === "starting" || agentStatus === "error" ? <span className={`agent-chat-status is-${agentStatus}`} role="status"><i aria-hidden="true" />{agentStatus === "starting" ? "Connecting…" : "Needs attention"}</span> : null}
             <button className="chat-icon-button" type="button" onClick={() => onThemeChange(theme === "light" ? "dark" : "light")} aria-label={`Use ${theme === "light" ? "dark" : "light"} appearance`} title={`Use ${theme === "light" ? "dark" : "light"} appearance`}>{theme === "light" ? <Moon aria-hidden="true" /> : <Sun aria-hidden="true" />}</button>
             <button className="chat-icon-button" type="button" disabled={createPending || (!landing && sessionChecking)} onClick={newChat} aria-label={landing ? "New chat" : "New agent"} title={landing ? "New chat" : "New agent"}><SquarePen aria-hidden="true" /></button>
           </div>
         </header>
+        {shareOpen && visibleManagedConversationId && !visibleManagedConversationId.startsWith("pending:") ? <ThreadShareDialog key={visibleManagedConversationId} agentId={visibleManagedConversationId} onClose={() => setShareOpen(false)} /> : null}
         {inspectorOpen && managedConversationId && <ManagedAgentInspector key={`${account.account?.id}:${managedConversationId}`} agentId={managedConversationId} onClose={() => setInspectorOpen(false)} />}
         {LOCAL_SPONSORED_TRIAL_RESET && showHomepageTrialReset ? (
           <Suspense fallback={null}>

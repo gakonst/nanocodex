@@ -10,6 +10,7 @@ mod builder;
 mod client;
 mod driver;
 mod error;
+mod share;
 mod sse;
 mod types;
 mod vault;
@@ -31,6 +32,7 @@ pub use client::{ManagedClient, ManagedClientBuilder};
 pub use driver::ManagedAgent;
 pub use error::ManagedError;
 pub use nanocodex_agent::{Model, ReasoningMode, Thinking};
+pub use share::{CreatedShareLink, ShareLink, SharePermission};
 pub use sse::{
     EventCursor, ManagedEventFuture, ManagedEventSource, ManagedEventStream, ManagedEvents,
 };

@@ -45,6 +45,7 @@ import { SessionOperations } from "./session-operations";
 import { ConnectInputs } from "./connect-inputs";
 import { accountToolsEnabled, normalizeToolNames, parseConfiguration, type AgentConfiguration } from "./agent-configuration";
 import { createHash } from "node:crypto";
+import { ThreadShareLinks, type SharePermission } from "./thread-share-links";
 import { initializeTurnInputs, inputChunks, lazyTurnInput, readTurnInput, storeTurnInput } from "./managed-turn-input";
 import { DurableObject, WorkerEntrypoint } from "cloudflare:workers";
 import { ArchiveMaintenance } from "./archive-maintenance";
@@ -2397,6 +2398,28 @@ async function managedFetchRoute(
       return agentCreationResponse(url, agentId, creationSettings,
         durabilityImport === undefined && retainedImport === undefined, durabilityStateId);
     }
+    const shared = url.pathname.match(/^\/v1\/shared\/([^/]+)(?:\/(.*))?$/);
+    if (shared) {
+      if (!SESSION_ID.test(shared[1] ?? "") || !["", "events/history", "comments"].includes(shared[2] ?? ""))
+        return json({ error: "not_found" }, { status: 404 });
+      if (request.method !== "GET" && !(request.method === "POST" && shared[2] === "comments"))
+        return json({ error: "forbidden" }, { status: 403 });
+      if (request.method === "POST" && request.headers.get("origin") !== url.origin)
+        return json({ error: "forbidden_origin" }, { status: 403 });
+      if (!/^Bearer nsl_[A-Za-z0-9_-]{43}$/.test(request.headers.get("authorization") ?? ""))
+        return json({ error: "not_found" }, { status: 404 });
+      const path = shared[2] ? `/share/${shared[2]}` : "/share";
+      const headers = new Headers({ authorization: request.headers.get("authorization")! });
+      if (request.headers.get("content-type")) headers.set("content-type", request.headers.get("content-type")!);
+      if (request.headers.get("origin")) {
+        headers.set("origin", request.headers.get("origin")!);
+        headers.set("x-nanocodex-verified-share-origin", url.origin);
+      }
+      return env.NANOCODEX_SESSIONS.getByName(shared[1]!, durablePlacementOptions(clientIngressColo)).fetch(
+        `https://session.internal${path}${url.search}`, {
+          method: request.method, headers, body: request.body, signal: request.signal,
+        });
+    }
     const match = url.pathname.match(/^\/v1\/agents\/([^/]+)(?:\/(.*))?$/);
     if (!match || !SESSION_ID.test(match[1] ?? "")) {
       return json({ error: "not_found" }, { status: 404 });
@@ -2414,6 +2437,28 @@ async function managedFetchRoute(
       ...(routedTurnId === undefined ? {} : { turn_id: routedTurnId }),
     });
     const stub = env.NANOCODEX_SESSIONS.getByName(agentId, durablePlacementOptions(clientIngressColo));
+    if (resource === "share-comments" || resource === "share-links" || /^share-links\/[^/]+$/.test(resource)) {
+      if (url.search && (resource !== "share-comments" || [...url.searchParams.keys()].some(key => key !== "before")))
+        return json({ error: "invalid_request" }, { status: 400 });
+      if ((principal.kind !== "account_session" && principal.kind !== "api_key") || principal.connectGrant
+        || !principal.capabilities.includes("agents:read")
+        || (request.method !== "GET" && !principal.capabilities.includes("agents:write")))
+        return json({ error: "forbidden" }, { status: 403 });
+      if (request.method !== "GET") {
+        const failure = requireSameOriginMutation(request, url, principal);
+        if (failure) return failure;
+      }
+      if (request.method === "GET" && resource !== "share-links" && resource !== "share-comments"
+        || request.method === "POST" && resource !== "share-links"
+        || request.method === "DELETE" && !/^share-links\/[0-9a-f-]{36}$/.test(resource)
+        || !["GET", "POST", "DELETE"].includes(request.method))
+        return json({ error: "method_not_allowed" }, { status: 405 });
+      const headers = new Headers();
+      forwardPrincipalAssertions(headers, principal);
+      return stub.fetch(`https://session.internal/${resource}?public_origin=${encodeURIComponent(url.origin)}${resource === "share-comments" && url.search ? `&${url.search.slice(1)}` : ""}`, {
+        method: request.method, headers, body: request.body, signal: request.signal,
+      });
+    }
     if (resource === "_connect-existence") {
       if (request.method !== "GET"
         || url.origin !== CONNECT_SERVICE_ORIGIN
@@ -3510,6 +3555,7 @@ export class DurableAgentSession extends DurableComputerObject {
   #deletionGeneration = 0;
   #runtimeOwnershipGeneration = 0;
   readonly #commandReceipts: CommandReceipts;
+  readonly #shareLinks: ThreadShareLinks;
   readonly #constructorEnteredAtMs: number;
   #constructorBaseMs = 0;
   #constructorReadyAtMs?: number;
@@ -3528,6 +3574,7 @@ export class DurableAgentSession extends DurableComputerObject {
     this.#constructorBaseMs = roundMilliseconds(performance.now() - constructorStartedAt);
     ctx = this.ctx;
     this.#commandReceipts = new CommandReceipts(ctx.storage);
+    this.#shareLinks = new ThreadShareLinks(ctx.storage);
     initializeTurnInputs(ctx.storage, "managed_history_projection_chunks");
     this.#cronTriggers = new CronTriggers(ctx.storage);
     this.#goals = new Goals(ctx.storage, () => this.#sessionId()!);
@@ -4089,6 +4136,113 @@ export class DurableAgentSession extends DurableComputerObject {
         return json({ error: "not_found" }, { status: 404 });
       }
       turnAuthorization = asserted.authorization;
+    }
+    if (url.pathname === "/share" || url.pathname === "/share/events/history" || url.pathname === "/share/comments") {
+      const headers = { "cache-control": "no-store" };
+      if (ownerAssertion || this.#deleting || this.#deleted || this.#durabilityExported
+        || this.#session()?.runtime_profile !== "managed")
+        return json({ error: "not_found" }, { status: 404, headers });
+      const bearer = request.headers.get("authorization");
+      const link = this.#shareLinks.validate(bearer);
+      if (!link) return json({ error: "not_found" }, { status: 404, headers });
+      if (url.pathname === "/share") {
+        if (request.method !== "GET" || url.search) return json({ error: "not_found" }, { status: 404, headers });
+        const firstPrompt = this.ctx.storage.sql.exec<{ first_prompt: string }>(
+          "SELECT first_prompt FROM session_state WHERE singleton=1").one().first_prompt;
+        return json({ agent_id: this.#sessionId(), permission: link.permission,
+          title: typeof firstPrompt === "string" ? conversationTitle(firstPrompt) || "Shared thread" : "Shared thread", latest_event_cursor: this.#eventArchive.latestCursor(this.#eventLog) }, { headers });
+      }
+      if (url.pathname === "/share/comments") {
+        const before = url.searchParams.get("before");
+        if ([...url.searchParams.keys()].some(key => key !== "before")
+          || url.searchParams.getAll("before").length > 1 || before !== null && (!/^[1-9]\d*$/.test(before)
+            || !Number.isSafeInteger(Number(before))))
+          return json({ error: "invalid_request" }, { status: 400, headers });
+        if (request.method === "GET") return json(this.#shareLinks.comments(before === null ? undefined : Number(before)), { headers });
+        if (url.search) return json({ error: "invalid_request" }, { status: 400, headers });
+        if (!request.headers.get("origin")
+          || request.headers.get("origin") !== request.headers.get("x-nanocodex-verified-share-origin"))
+          return json({ error: "forbidden_origin" }, { status: 403, headers });
+        if (request.method !== "POST") return json({ error: "forbidden" }, { status: 403, headers });
+        if (request.headers.get("content-type")?.split(";")[0] !== "application/json")
+          return json({ error: "invalid_request" }, { status: 400, headers });
+        const encoded = await request.text();
+        if (encoded.length > 5000) return json({ error: "invalid_request" }, { status: 400, headers });
+        let candidate: unknown;
+        try { candidate = JSON.parse(encoded); }
+        catch { return json({ error: "invalid_request" }, { status: 400, headers }); }
+        const result = this.#shareLinks.comment(bearer, candidate);
+        return result.value ? json(result.value, { status: result.status, headers })
+          : json({ error: result.status === 404 ? "not_found" : "comment_rejected" }, { status: result.status, headers });
+      }
+      if (request.method !== "GET") return json({ error: "forbidden" }, { status: 403, headers });
+      const beforeParam = url.searchParams.get("before");
+      const limitParam = url.searchParams.get("limit") ?? "128";
+      if ([...url.searchParams.keys()].some(key => key !== "before" && key !== "limit")
+        || url.searchParams.getAll("before").length > 1 || url.searchParams.getAll("limit").length > 1
+        || beforeParam !== null && (!parseCursor(beforeParam) || beforeParam === "0")
+        || !/^[1-9][0-9]*$/.test(limitParam) || Number(limitParam) > MAX_HISTORY_PAGE_SIZE)
+        return json({ error: "invalid_history_page" }, { status: 400, headers });
+      try {
+        const page = await this.#eventArchive.history(this.#eventLog, beforeParam ?? undefined, Number(limitParam));
+        // Never spread the raw event: tool events, reasoning, usage and arbitrary fields
+        // are intentionally absent from this separate public projection.
+        const data = page.data.flatMap<
+          { cursor: string; created_at: number; turn_id: string | null; type: "turn_accepted"; id: string; input: string }
+          | { cursor: string; created_at: number; turn_id: string | null; type: "turn_completed"; id: string; final_message: string }
+        >(({ cursor, created_at, turn_id, message }) => {
+          if (message.type === "turn_accepted" && typeof message.id === "string")
+            return [{ cursor, created_at, turn_id, type: "turn_accepted" as const, id: message.id,
+              input: promptInputText(message.input) }];
+          if (message.type === "turn_completed" && typeof message.id === "string")
+            return [{ cursor, created_at, turn_id, type: "turn_completed" as const, id: message.id,
+              final_message: message.final_message }];
+          return [];
+        });
+        // Revocation during an archived R2 read must not disclose the decoded page.
+        if (!this.#shareLinks.validate(bearer)) return json({ error: "not_found" }, { status: 404, headers });
+        return json({ data, has_more: page.has_more, latest_cursor: page.latest_cursor,
+          next_cursor: page.has_more ? page.data[0]?.cursor ?? null : null }, { headers });
+      } catch { return json({ error: "event_archive_unavailable" }, { status: 503, headers }); }
+    }
+    if (url.pathname === "/share-comments" || url.pathname === "/share-links" || /^\/share-links\/[^/]+$/.test(url.pathname)) {
+      const headers = { "cache-control": "no-store" };
+      if (!ownerAssertion || turnAuthorization.connectGrant
+        || !turnAuthorization.capabilities.includes("agents:read")
+        || request.method !== "GET" && !turnAuthorization.capabilities.includes("agents:write"))
+        return json({ error: "forbidden" }, { status: 403, headers });
+      const session = this.#session();
+      if (!session || session.runtime_profile !== "managed" || this.#deleting || this.#deleted || this.#durabilityExported)
+        return json({ error: "not_found" }, { status: 404, headers });
+      if (request.method === "GET" && url.pathname === "/share-comments") {
+        const before = url.searchParams.get("before");
+        if ([...url.searchParams.keys()].some(key => key !== "before" && key !== "public_origin")
+          || url.searchParams.getAll("before").length > 1 || before !== null && (!/^[1-9]\d*$/.test(before)
+            || !Number.isSafeInteger(Number(before))))
+          return json({ error: "invalid_request" }, { status: 400, headers });
+        return json(this.#shareLinks.comments(before === null ? undefined : Number(before)), { headers });
+      }
+      if (request.method === "GET" && url.pathname === "/share-links")
+        return json({ data: this.#shareLinks.list() }, { headers });
+      if (request.method === "DELETE")
+        return this.#shareLinks.revoke(url.pathname.slice("/share-links/".length))
+          ? new Response(null, { status: 204, headers }) : json({ error: "not_found" }, { status: 404, headers });
+      if (request.method !== "POST" || url.pathname !== "/share-links")
+        return json({ error: "method_not_allowed" }, { status: 405, headers });
+      const encoded = await request.text();
+      if (encoded.length > 128) return json({ error: "invalid_request" }, { status: 400, headers });
+      let parsed: unknown;
+      try { parsed = JSON.parse(encoded); } catch { return json({ error: "invalid_request" }, { status: 400, headers }); }
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)
+        || Object.keys(parsed).some(key => key !== "permission")
+        || !["read", "write"].includes((parsed as { permission?: string }).permission ?? ""))
+        return json({ error: "invalid_request" }, { status: 400, headers });
+      const permission = (parsed as { permission: SharePermission }).permission;
+      const created = this.#shareLinks.create(permission);
+      if (!created) return json({ error: "share_link_limit" }, { status: 429, headers });
+      const { token, revoked_at: _revoked, ...link } = created;
+      const publicOrigin = url.searchParams.get("public_origin") ?? session.public_origin;
+      return json({ ...link, url: `${publicOrigin}/share/${session.session_id}#token=${token}` }, { status: 201, headers });
     }
     if (/^\/phone\/calls(?:\/[0-9a-f-]{36}\/(?:steer|hangup))?$/.test(url.pathname)) {
       if (!ownerAssertion || !this.#hasFullAccountAuthority(turnAuthorization)
@@ -8169,6 +8323,7 @@ export class DurableAgentSession extends DurableComputerObject {
       this.#goalRuntime.clear();
       this.ctx.storage.sql.exec("DELETE FROM managed_cron_triggers");
       this.ctx.storage.sql.exec("DELETE FROM managed_cron_deliveries");
+      this.#shareLinks.clear();
       this.ctx.storage.sql.exec("DELETE FROM managed_turns");
       this.ctx.storage.sql.exec("DELETE FROM managed_thread_route");
       this.ctx.storage.sql.exec("DELETE FROM managed_routing_origin");

@@ -22,6 +22,7 @@ mod prompt;
 mod scheduler;
 mod screen;
 mod session;
+mod share;
 mod shell;
 mod spinner;
 mod terminal;
@@ -572,6 +573,7 @@ struct DriverRuntime {
     )>,
     unresolved_steers: HashMap<(PaneId, components::QueueId), CancellationToken>,
     vault_tasks: JoinSet<vault::Completion>,
+    share_tasks: JoinSet<(PaneId, String, u64, Result<share::Outcome, ManagedError>)>,
     vault_attempted: HashSet<(String, String)>,
     steer_receipts: HashMap<(PaneId, components::QueueId), (u64, SteerTarget, String)>,
     pending_withdrawals: HashSet<(PaneId, components::QueueId)>,
@@ -1600,6 +1602,7 @@ impl DriverRuntime {
             && self.settings_updates.is_empty()
             && self.settings_queue.is_empty()
             && self.vault_tasks.is_empty()
+            && self.share_tasks.is_empty()
             && self.voice_tasks.is_empty()
             // Keep local recordings and samples until explicitly submitted or discarded.
             && self.clone_panel.is_none()
@@ -1620,6 +1623,7 @@ impl DriverRuntime {
             && self.cancellations.is_empty()
             && self.settings_updates.is_empty()
             && self.settings_queue.is_empty()
+            && self.share_tasks.is_empty()
             && self.active_shells == 0
             && self.pending_submission.is_none()
             && self.cancel_after_admission.is_empty()
@@ -1940,6 +1944,7 @@ async fn run_inner(
         receipt_reconciliations: JoinSet::new(),
         unresolved_steers: HashMap::new(),
         vault_tasks: JoinSet::new(),
+        share_tasks: JoinSet::new(),
         vault_attempted: HashSet::new(),
         steer_receipts: HashMap::new(),
         pending_withdrawals: HashSet::new(),
@@ -2959,6 +2964,34 @@ async fn run_inner(
                     }
                 }
             }
+            Some(result) = runtime.share_tasks.join_next(), if !runtime.share_tasks.is_empty() => {
+                match result {
+                    Ok((pane, agent_id, generation, outcome)) if runtime.agent_id == agent_id
+                        && runtime.connection_generation == generation => {
+                        match outcome {
+                            Ok(share::Outcome::Created(receipt)) => {
+                                // Do not put a bearer URL in notification, transcript, or logs.
+                                let copied = clipboard::copy_text(&receipt.url).is_ok();
+                                request_render(app.update(AppEvent::ShareOutput { pane, text: receipt.url }), &mut scheduler);
+                                request_render(app.update(AppEvent::NotifySuccess { pane, message: if copied {
+                                    "Share link copied. Keep it private; press c to copy again or Esc to close.".into()
+                                } else {
+                                    "Share link created. Clipboard unavailable; press c in the link panel to retry.".into()
+                                } }), &mut scheduler);
+                            }
+                            Ok(share::Outcome::Listed(links)) => request_render(
+                                app.update(AppEvent::ShareOutput { pane, text: share::list_text(&links) }), &mut scheduler),
+                            Ok(share::Outcome::Revoked) => request_render(
+                                app.update(AppEvent::NotifySuccess { pane, message: "Share link revoked.".into() }), &mut scheduler),
+                            Err(error) => request_render(
+                                app.update(AppEvent::NotifyError { pane, error: share::error(&error) }), &mut scheduler),
+                        }
+                    }
+                    Ok(_) => {}, // No bearer URL from a previous thread may appear in the current one.
+                    Err(_) => request_render(app.update(AppEvent::NotifyError { pane: PaneId::Main,
+                        error: "Share request stopped unexpectedly. Check /share list before retrying a mutation.".into() }), &mut scheduler),
+                }
+            }
             Some(result) = runtime.links.join_next(), if !runtime.links.is_empty() => {
                 let (pane, result) = result.unwrap_or_else(|error| (
                     PaneId::Main, Err(format!("Could not open link: {error}")),
@@ -3625,6 +3658,32 @@ async fn apply_update(
                         } else {
                             runtime.pending_submission = Some((pane, id, prompt));
                         }
+                    }
+                    RootEffect::Share(command) => {
+                        if command == share::Command::Help {
+                            absorb(app.update(AppEvent::ShareOutput { pane, text: share::help() }), &mut effects, scheduler);
+                            continue;
+                        }
+                        if runtime.agent_id.is_empty() {
+                            absorb(app.update(AppEvent::NotifyError { pane, error: "No managed thread yet. Send a prompt or attach a thread before sharing.".into() }), &mut effects, scheduler);
+                            continue;
+                        }
+                        if runtime.agent.is_none() || runtime.recovery.is_some() {
+                            absorb(app.update(AppEvent::NotifyError { pane, error: "Managed thread is offline. Reconnect before managing share links.".into() }), &mut effects, scheduler);
+                            continue;
+                        }
+                        let client = runtime.client.clone();
+                        let agent_id = runtime.agent_id.clone();
+                        let generation = runtime.connection_generation;
+                        runtime.share_tasks.spawn(async move {
+                            let result = match command {
+                                share::Command::Create(permission) => client.create_share_link(&agent_id, permission).await.map(share::Outcome::Created),
+                                share::Command::List => client.list_share_links(&agent_id).await.map(share::Outcome::Listed),
+                                share::Command::Revoke(id) => client.revoke_share_link(&agent_id, &id).await.map(|()| share::Outcome::Revoked),
+                                share::Command::Help => unreachable!(),
+                            };
+                            (pane, agent_id, generation, result)
+                        });
                     }
                     RootEffect::Vault(command) => {
                         match command {
@@ -4959,6 +5018,7 @@ mod tests {
             receipt_reconciliations: JoinSet::new(),
             unresolved_steers: HashMap::new(),
             vault_tasks: JoinSet::new(),
+            share_tasks: JoinSet::new(),
             vault_attempted: HashSet::new(),
             steer_receipts: HashMap::new(),
             pending_withdrawals: HashSet::new(),

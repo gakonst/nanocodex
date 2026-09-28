@@ -11,6 +11,7 @@ import {
   SquarePen,
 } from "lucide-react";
 import {
+  Fragment,
   useCallback,
   useEffect,
   useRef,
@@ -178,10 +179,13 @@ export function AgentSidebar({
           </div>
           <div className="agent-navigation-list" aria-busy={pending}>
             {!landing
-              ? conversations.map((conversation) => (
-                  <button
+              ? conversations.map((conversation, index) => (
+                  <Fragment key={conversation.id}>
+                    {threadGroup(conversation) !== (index ? threadGroup(conversations[index - 1]!) : undefined) ? (
+                      <div className="agent-navigation-group">{threadGroup(conversation)}</div>
+                    ) : null}
+                    <button
                     className="agent-navigation-thread"
-                    key={conversation.id}
                     type="button"
                     title={conversation.title}
                     onPointerEnter={() => { if (!conversation.id.startsWith("pending:")) onPrefetch(conversation.id); }}
@@ -201,6 +205,7 @@ export function AgentSidebar({
                       <span className="agent-navigation-status" data-status={conversation.presentation?.status ?? "unknown"}>
                         <i aria-hidden="true" />
                         {sidebarStatus(conversation)}
+                        {conversation.lastUserMessageAt ? <time dateTime={new Date(conversation.lastUserMessageAt).toISOString()}>{threadAge(conversation.lastUserMessageAt)}</time> : null}
                       </span>
                       {conversation.presentation?.activity && conversation.presentation.activeTurnIds.includes(conversation.presentation.activityTurnId ?? "") ? (
                         <span className="agent-navigation-activity">{conversation.presentation.activity}</span>
@@ -211,7 +216,8 @@ export function AgentSidebar({
                         </span>
                       ) : null}
                     </span>
-                  </button>
+                    </button>
+                  </Fragment>
                 ))
               : null}
             {landing ? (
@@ -303,4 +309,22 @@ function sidebarStatus(conversation: ManagedConversation): string {
     case "idle": return "Idle";
     default: return "Status unavailable";
   }
+}
+
+function threadGroup(conversation: ManagedConversation): string {
+  if (conversation.id.startsWith("pending:")) return "New";
+  const updated = conversation.lastUserMessageAt ?? conversation.updatedAt;
+  if (!updated) return "Earlier";
+  const days = (Date.now() - updated) / 86_400_000;
+  if (days < 1 && new Date(updated).toDateString() === new Date().toDateString()) return "Today";
+  if (days < 7) return "This week";
+  if (days < 30) return "This month";
+  return "Earlier";
+}
+
+function threadAge(timestamp: number): string {
+  const days = Math.max(0, Math.floor((Date.now() - timestamp) / 86_400_000));
+  if (days === 0) return new Date(timestamp).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+  if (days < 7) return `${days}d ago`;
+  return new Date(timestamp).toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }

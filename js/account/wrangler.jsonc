@@ -32,6 +32,7 @@
       "/",
       "/agent",
       "/agent/*",
+      "/share/*",
       "/demos/chief-of-staff",
       "/multiplayer",
       "/world",

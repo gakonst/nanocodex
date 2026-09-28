@@ -13,8 +13,12 @@ export function AgentSearchDialog({
 }) {
   const dialog = useRef<HTMLDialogElement>(null);
   const [query, setQuery] = useState("");
-  const matches = conversations.filter(({ title }) =>
-    title.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase()),
+  const normalizedQuery = query.trim().toLocaleLowerCase();
+  const matches = conversations.filter((conversation) =>
+    !conversation.id.startsWith("pending:") && (
+      conversation.title.toLocaleLowerCase().includes(normalizedQuery)
+      || (conversation.presentation?.lastUserPrompt ?? "").toLocaleLowerCase().includes(normalizedQuery)
+    ),
   );
   useEffect(() => {
     const element = dialog.current;
@@ -82,6 +86,9 @@ export function AgentSearchDialog({
                 {/^Conversation [a-f\d]{8}$/i.test(conversation.title)
                   ? "New agent"
                   : conversation.title}
+                {conversation.presentation?.lastUserPrompt ? (
+                  <small>{conversation.presentation.lastUserPrompt}</small>
+                ) : null}
               </span>
             </button>
           ))}

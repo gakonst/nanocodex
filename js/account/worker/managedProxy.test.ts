@@ -458,3 +458,23 @@ test("CRM reads reach the managed authorization boundary with pagination intact"
   }
   assert.equal(isManagedRoutePath("/v1/crm/example/delete"), false);
 });
+
+test("shared thread endpoints forward bearer to managed but inference keys remain scoped", async () => {
+  const id = "11111111-1111-4111-8111-111111111111";
+  for (const suffix of ["", "/events/history", "/comments"])
+    assert.equal(isManagedRoutePath(`/v1/shared/${id}${suffix}`), true);
+  for (const path of [`/v1/shared/${id}/turns`, `/v1/shared/${id}/events`, "/v1/shared/not-an-id"])
+    assert.equal(isManagedRoutePath(path), false);
+  const requests: Request[] = [];
+  const env = { NANOCODEX_BACKEND: {
+    fetch(request: Request) { requests.push(request); return Promise.resolve(Response.json({ data: [] })); },
+    connect() { throw Error("unused"); },
+  } };
+  const path = `/v1/shared/${id}/comments`;
+  const url = new URL(`https://nanocodex.localhost${path}`);
+  const request = new Request(url, { headers: { authorization: "Bearer nsl_test" } });
+  assert.equal((await routeManaged(request, env, url))?.status, 200);
+  assert.deepEqual(requests, [request]);
+  assert.equal((await routeManaged(new Request(url, { headers: { authorization: "Bearer nci_test" } }), env, url))?.status, 403);
+  assert.equal(requests.length, 1);
+});
