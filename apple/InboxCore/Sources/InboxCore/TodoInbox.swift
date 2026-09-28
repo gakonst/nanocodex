@@ -34,6 +34,9 @@ public struct TodoDecision: Identifiable, Equatable, Sendable {
     public let title: String
     public let context: String
     public let todoID: String?
+    public let sourceConnectionID: String?
+    public let sourceThreadID: String?
+    public let sourceMessageID: String?
     public let sourceLabel: String
     public let sourceURL: URL?
     public let status: String
@@ -48,6 +51,9 @@ public struct TodoDecision: Identifiable, Equatable, Sendable {
         id = json["id"].string; title = json["title"].string
         context = json["context"].string
         todoID = json["todo_id"].string.isEmpty ? nil : json["todo_id"].string
+        sourceConnectionID = json["source_connection_id"].string.isEmpty ? nil : json["source_connection_id"].string
+        sourceThreadID = json["source_thread_id"].string.isEmpty ? nil : json["source_thread_id"].string
+        sourceMessageID = json["source_message_id"].string.isEmpty ? nil : json["source_message_id"].string
         sourceLabel = json["source_label"].string
         let url = URL(string: json["source_url"].string)
         sourceURL = url?.scheme == "https" ? url : nil
@@ -152,6 +158,14 @@ public extension ManagedClient {
     func captureTodo(_ body: String, watchHint: String = "", operationID: UUID) async throws -> TodoCapture {
         let response = try await json(path: "/v1/todo", method: "POST", body: .object([
             "body": .string(body), "watch_hint": .string(watchHint), "operation_id": .string(operationID.uuidString.lowercased()),
+        ]), idempotencyKey: operationID.uuidString.lowercased())
+        return try TodoCapture(response["item"])
+    }
+    func updateTodoCapture(_ capture: TodoCapture, status: String, operationID: UUID) async throws -> TodoCapture {
+        guard let id = UUID(uuidString: capture.id), ["done", "captured"].contains(status) else { throw APIError.invalidResponse }
+        let response = try await json(path: "/v1/todo/items/\(id.uuidString.lowercased())", method: "PATCH", body: .object([
+            "version": .number(Double(capture.version)), "status": .string(status),
+            "operation_id": .string(operationID.uuidString.lowercased()),
         ]), idempotencyKey: operationID.uuidString.lowercased())
         return try TodoCapture(response["item"])
     }

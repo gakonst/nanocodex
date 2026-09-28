@@ -7,7 +7,7 @@ const reply = (data: unknown, status = 200) => Response.json(data, { status, hea
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 type ItemRow = { id: string; body: string; watch_hint: string; status: string; version: number; created_at: string; operation_id: string };
-type DecisionRow = { id: string; todo_id: string | null; workflow_id: string | null; title: string; context: string; source_label: string; source_url: string; status: string; version: number; choices: string; created_at: string };
+type DecisionRow = { id: string; todo_id: string | null; workflow_id: string | null; title: string; context: string; source_label: string; source_url: string; source_connection_id: string | null; source_thread_id: string | null; source_message_id: string | null; status: string; version: number; choices: string; created_at: string };
 type DecisionView = Omit<DecisionRow, "workflow_id">;
 type Choice = { id: string; title: string };
 
@@ -48,10 +48,19 @@ export function initializeTodoInbox(storage: DurableObjectStorage): void {
     choices TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'needs_you',
     version INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL
   );
+  CREATE TABLE IF NOT EXISTS todo_capture_updates (
+    operation_id TEXT PRIMARY KEY, item_id TEXT NOT NULL, version INTEGER NOT NULL,
+    status TEXT NOT NULL, item_json TEXT NOT NULL, recorded_at TEXT NOT NULL
+  );
   CREATE TABLE IF NOT EXISTS todo_decision_responses (
     operation_id TEXT PRIMARY KEY, decision_id TEXT NOT NULL, version INTEGER NOT NULL,
     choice_id TEXT, text TEXT, recorded_at TEXT NOT NULL
   );`);
+  // Additive and safe for existing accounts and repeated initialization.
+  const columns = new Set(storage.sql.exec<{ name: string }>("PRAGMA table_info(todo_decisions)").toArray().map(column => column.name));
+  for (const column of ["source_connection_id", "source_thread_id", "source_message_id"]) {
+    if (!columns.has(column)) storage.sql.exec(`ALTER TABLE todo_decisions ADD COLUMN ${column} TEXT`);
+  }
   initializeGmailDecisionTraces(storage);
 }
 
@@ -63,7 +72,7 @@ export async function handleTodoInbox(request: Request, storage: DurableObjectSt
   if (path === "/todo" && request.method === "GET") {
     const items = storage.sql.exec<ItemRow>("SELECT * FROM todo_captures ORDER BY created_at DESC LIMIT 200").toArray();
     // Completed activity must never crowd an older unanswered choice out.
-    const projection = "id, todo_id, title, context, source_label, source_url, choices, status, version, created_at";
+    const projection = "id, todo_id, title, context, source_label, source_url, source_connection_id, source_thread_id, source_message_id, choices, status, version, created_at";
     const open = storage.sql.exec<DecisionView>(`SELECT ${projection} FROM todo_decisions WHERE status = 'needs_you' ORDER BY created_at DESC LIMIT 200`).toArray();
     const activity = storage.sql.exec<DecisionView>(`SELECT ${projection} FROM todo_decisions WHERE status != 'needs_you' ORDER BY created_at DESC LIMIT 200`).toArray();
     const decisions = [...open, ...activity].map(({ choices, ...rest }) => ({ ...rest, choices: JSON.parse(choices) as Choice[] }));
@@ -84,6 +93,33 @@ export async function handleTodoInbox(request: Request, storage: DurableObjectSt
     const id = crypto.randomUUID(), at = new Date().toISOString();
     storage.sql.exec("INSERT INTO todo_captures(id, operation_id, body, watch_hint, created_at) VALUES (?, ?, ?, ?, ?)", id, operation, body, watchHint, at);
     return reply({ item: storage.sql.exec<ItemRow>("SELECT * FROM todo_captures WHERE id = ?", id).toArray()[0] }, 201);
+  }
+  const itemMatch = path.match(/^\/todo\/items\/([0-9a-f-]{36})$/i);
+  if (itemMatch && request.method === "PATCH" && uuid.test(itemMatch[1]!)) {
+    const input = await boundedBody(request);
+    if (!input) return reply({ error: "invalid_json" }, 400);
+    const { operation_id: operationInput, version, status } = input;
+    if (typeof operationInput !== "string" || !uuid.test(operationInput)
+      || !Number.isSafeInteger(version) || (version as number) < 1
+      || (status !== "done" && status !== "captured")) return reply({ error: "invalid_update" }, 400);
+    const id = itemMatch[1]!.toLowerCase(), operation = operationInput.toLowerCase();
+    // Keep validation and the durable receipt in the same transaction as the mutation.
+    return storage.transactionSync(() => {
+      const previous = storage.sql.exec<{ item_id: string; version: number; status: string; item_json: string }>(
+        "SELECT * FROM todo_capture_updates WHERE operation_id = ?", operation).toArray()[0];
+      if (previous) return previous.item_id === id && previous.version === version && previous.status === status
+        ? reply({ item: JSON.parse(previous.item_json) }) : reply({ error: "operation_conflict" }, 409);
+      const item = storage.sql.exec<ItemRow>("SELECT * FROM todo_captures WHERE id = ?", id).toArray()[0];
+      if (!item) return reply({ error: "not_found" }, 404);
+      if (item.version !== version) return reply({ error: "stale_item" }, 409);
+      if (!["captured", "done"].includes(item.status) || item.status === status)
+        return reply({ error: "invalid_transition" }, 409);
+      storage.sql.exec("UPDATE todo_captures SET status = ?, version = version + 1 WHERE id = ? AND version = ?", status, id, version);
+      const updated = { ...item, status, version: item.version + 1 };
+      storage.sql.exec("INSERT INTO todo_capture_updates(operation_id, item_id, version, status, item_json, recorded_at) VALUES (?, ?, ?, ?, ?, ?)",
+        operation, id, version, status, JSON.stringify(updated), new Date().toISOString());
+      return reply({ item: updated });
+    });
   }
   const response = path.match(/^\/todo\/decisions\/([0-9a-f-]{36})\/respond$/i);
   if (response && request.method === "POST" && uuid.test(response[1]!)) {
@@ -134,11 +170,12 @@ export async function routeTodoRequest(request: Request, env: Pick<AccountAuthEn
     if (principal.kind === "account_session" && request.headers.get("origin") !== url.origin)
       return reply({ error: "forbidden_origin" }, 403);
   }
-  if (!/^\/v1\/todo(?:$|\/traces$|\/decisions\/[0-9a-f-]{36}\/respond$)/i.test(url.pathname)
-    || url.search && url.pathname !== "/v1/todo/traces") return reply({ error: "not_found" }, 404);
+  const mailOrSchedule = /^\/v1\/todo\/(?:schedule|mail\/(?:accounts|threads(?:\/[A-Za-z0-9_-]+(?:\/modify)?)?|drafts(?:\/[0-9a-fA-F-]{36})?|send|suggest|messages\/[A-Za-z0-9_-]+\/attachments\/[A-Za-z0-9_-]+))$/.test(url.pathname);
+  if (!mailOrSchedule && (!/^\/v1\/todo(?:$|\/traces$|\/items\/[0-9a-f-]{36}$|\/decisions\/[0-9a-f-]{36}\/respond$)/i.test(url.pathname)
+    || url.search && url.pathname !== "/v1/todo/traces")) return reply({ error: "not_found" }, 404);
   const path = url.pathname.slice(3);
   return env.NANOCODEX_USERS.getByName(principal.userId, durablePlacementOptions(env.trustedClientIngressColo)).fetch(
-    `https://user.internal${path}${url.search}`, new Request(request, { headers: { "content-type": "application/json" } }),
+    `https://user.internal${path}${url.search}`, new Request(request, { headers: request.headers.has("content-type") ? { "content-type": request.headers.get("content-type")! } : {} }),
   );
 }
 
@@ -146,6 +183,7 @@ export type TodoDecisionProposal = Readonly<{
   source_key: string; todo_id?: string; workflow_id?: string;
   title: string; context: string; source_label: string;
   source_url: string; choices: readonly Choice[];
+  source_connection_id?: string | null; source_thread_id?: string | null; source_message_id?: string | null;
 }>;
 
 /** Internal DO RPC for future firehose/workflow producers; not a public client route. */
@@ -157,6 +195,9 @@ export function proposeTodoDecision(storage: DurableObjectStorage, input: TodoDe
     || input.todo_id !== undefined && (!uuid.test(input.todo_id)
       || !storage.sql.exec("SELECT id FROM todo_captures WHERE id = ?", input.todo_id).toArray().length)
     || input.workflow_id !== undefined && !safe(input.workflow_id, 256)
+    || input.source_connection_id != null && !safe(input.source_connection_id, 256)
+    || input.source_thread_id != null && (typeof input.source_thread_id !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(input.source_thread_id))
+    || input.source_message_id != null && (typeof input.source_message_id !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(input.source_message_id))
     || !safe(input.title, 200)
     || !safe(input.context, 4096) || !safe(input.source_label, 120)
     || typeof input.source_url !== "string" || input.source_url.length > 2048
@@ -168,11 +209,11 @@ export function proposeTodoDecision(storage: DurableObjectStorage, input: TodoDe
   }
   const id = crypto.randomUUID();
   storage.sql.exec(`INSERT INTO todo_decisions
-    (id, source_key, todo_id, workflow_id, title, context, source_label, source_url, choices, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(source_key) DO NOTHING`, id,
+    (id, source_key, todo_id, workflow_id, title, context, source_label, source_url, choices, created_at, source_connection_id, source_thread_id, source_message_id)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(source_key) DO NOTHING`, id,
   input.source_key, input.todo_id ?? null, input.workflow_id ?? null,
   input.title, input.context, input.source_label, input.source_url,
-  JSON.stringify(input.choices), new Date().toISOString());
+  JSON.stringify(input.choices), new Date().toISOString(), input.source_connection_id ?? null, input.source_thread_id ?? null, input.source_message_id ?? null);
   const existing = storage.sql.exec<DecisionRow>("SELECT * FROM todo_decisions WHERE source_key = ?", input.source_key).toArray()[0];
   if (!existing) throw new Error("todo proposal persistence failed");
   // A replay cannot silently redefine an already presented approval or its choices.
@@ -180,5 +221,12 @@ export function proposeTodoDecision(storage: DurableObjectStorage, input: TodoDe
     || existing.title !== input.title || existing.context !== input.context
     || existing.source_label !== input.source_label || existing.source_url !== input.source_url
     || existing.choices !== JSON.stringify(input.choices)) throw new Error("todo_source_conflict");
+  const sourceFields = ["source_connection_id", "source_thread_id", "source_message_id"] as const;
+  if (sourceFields.some(field => input[field] != null && existing[field] != null && input[field] !== existing[field]))
+    throw new Error("todo_source_conflict");
+  // Exact producer references can enrich old rows; older producers cannot erase them.
+  storage.sql.exec(`UPDATE todo_decisions SET source_connection_id = COALESCE(source_connection_id, ?),
+    source_thread_id = COALESCE(source_thread_id, ?), source_message_id = COALESCE(source_message_id, ?) WHERE id = ?`,
+  input.source_connection_id ?? null, input.source_thread_id ?? null, input.source_message_id ?? null, existing.id);
   return { id: existing.id, status: existing.status, version: existing.version };
 }

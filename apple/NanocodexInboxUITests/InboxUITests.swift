@@ -284,91 +284,206 @@ final class InboxUITests: XCTestCase {
         }
     }
 
-    func testDecisionFirstTodoCaptureAndChatNavigation() {
+    func testTodoUnifiedQueueThreadDraftAndExplicitSend() {
         let app = XCUIApplication()
-        app.launchArguments = ["--demo", "--todo-ui-fixture"]
+        app.launchArguments = ["--demo", "--todo-ui-fixture", "--todo-mail-fixture"]
         app.launchEnvironment = ["NANOCODEX_DEMO_PROFILE": UUID().uuidString]
         app.launch()
         XCTAssertTrue(app.buttons["main-tab-todo"].waitForExistence(timeout: 10))
-        XCTAssertFalse(app.staticTexts["Decisions"].exists)
-        XCTAssertTrue(app.segmentedControls["todo-filter"].exists)
+        XCTAssertTrue(app.buttons["todo-row:event:fixture-mail:primary:fixture-planning"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.buttons["decision-card:fixture-email"].exists)
-        XCTAssertTrue(app.buttons["todo-watch-toggle"].exists)
-        capture(app, "todo-decision-first")
-        app.buttons["todo-watch-toggle"].tap()
-        XCTAssertTrue(app.textFields["todo-watch-hint"].waitForExistence(timeout: 3))
-        app.buttons["Clear watch hint"].tap()
-        app.buttons["decision-card:fixture-email"].tap()
-        XCTAssertTrue(app.buttons["decision-choice:fixture-email:draft"].waitForExistence(timeout: 5))
-        XCTAssertTrue(app.textViews["decision-instructions"].exists)
-        capture(app, "todo-decision-detail")
-        app.buttons["decision-detail-close"].tap()
+        XCTAssertTrue(app.buttons["todo-row:mail:fixture-mail:fixture-thread"].exists)
+        capture(app, "todo-unified-queue")
+        app.buttons["todo-row:event:fixture-mail:primary:fixture-planning"].tap()
+        XCTAssertTrue(app.staticTexts["Review the launch date, owners, and first round of invitations."].waitForExistence(timeout: 5))
+        app.buttons["Done"].tap()
+        app.buttons["todo-row:mail:fixture-mail:fixture-thread"].tap()
+        XCTAssertTrue(app.buttons["mail-expand-all"].waitForExistence(timeout: 5))
+        app.buttons["mail-expand-all"].tap()
+        XCTAssertTrue(app.staticTexts["mail-body:fixture-message-1"].exists)
+        capture(app, "todo-full-thread")
+        app.buttons["mail-reply_all"].tap()
+        XCTAssertTrue(app.textViews["mail-draft-body"].waitForExistence(timeout: 5))
+        let body = app.textViews["mail-draft-body"]
+        body.tap(); body.typeText("Thursday at 10 works. I will review the launch plan before then.")
+        XCTAssertTrue(app.buttons["mail-send"].isEnabled)
+        capture(app, "todo-editable-draft")
+        app.buttons["mail-draft-done"].tap()
+        let continued = app.buttons["mail-continue-draft"]
+        if !continued.isHittable { app.swipeUp() }
+        XCTAssertTrue(continued.waitForExistence(timeout: 5)); continued.tap()
+        XCTAssertTrue((app.textViews["mail-draft-body"].value as? String ?? "").contains("Thursday at 10 works"))
+        XCTAssertFalse(app.staticTexts["Fixture send complete · no email sent"].exists)
+        app.buttons["mail-send"].tap()
+        XCTAssertTrue(app.staticTexts["Fixture send complete · no email sent"].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.buttons["mail-send"].isEnabled)
+        capture(app, "todo-explicit-send-receipt")
+    }
+
+    func testTodoCaptureCompleteUndoAndMailArchiveUndo() {
+        let app = XCUIApplication()
+        app.launchArguments = ["--demo", "--todo-ui-fixture", "--todo-mail-fixture"]
+        app.launchEnvironment = ["NANOCODEX_DEMO_PROFILE": UUID().uuidString]
+        app.launch()
+        XCTAssertTrue(app.buttons["todo-compose"].waitForExistence(timeout: 10))
         let input = app.descendants(matching: .any)["todo-capture"].firstMatch
-        input.tap(); input.typeText("Check whether Alex can meet next week")
-        XCTAssertTrue(app.buttons["todo-capture-save"].isEnabled)
+        input.tap(); input.typeText("Review the launch agenda")
         app.buttons["todo-capture-save"].tap()
-        XCTAssertTrue(app.staticTexts["Check whether Alex can meet next week"].waitForExistence(timeout: 5))
-        capture(app, "todo-captured")
+        XCTAssertTrue(app.staticTexts["Review the launch agenda"].waitForExistence(timeout: 5))
+        app.staticTexts["Review the launch agenda"].tap()
+        app.buttons["Mark done"].tap()
+        XCTAssertTrue(app.buttons["Undo"].waitForExistence(timeout: 5))
+        app.buttons["Undo"].tap()
+        XCTAssertTrue(app.staticTexts["Review the launch agenda"].waitForExistence(timeout: 5))
+        app.buttons["todo-split:Mail"].tap()
+        let thread = app.buttons["todo-row:mail:fixture-mail:fixture-thread"]
+        XCTAssertTrue(thread.waitForExistence(timeout: 5))
+        thread.swipeLeft()
+        app.buttons["todo-archive:fixture-thread"].tap()
+        XCTAssertFalse(thread.exists)
+        app.buttons["Undo"].tap()
+        XCTAssertTrue(thread.waitForExistence(timeout: 5))
+        capture(app, "todo-archive-undo")
         app.buttons["main-tab-chat"].tap()
         XCTAssertTrue(app.buttons["conversation-drawer-open"].waitForExistence(timeout: 5))
-        XCTAssertTrue(app.buttons["send"].exists)
-        capture(app, "todo-chat-dock")
-        XCTAssertTrue(app.buttons["model-picker"].exists)
-        XCTAssertTrue(app.buttons["effort-dial"].exists)
-        XCTAssertTrue(app.buttons["auto-route"].exists)
         app.buttons["main-tab-todo"].tap()
-        XCTAssertTrue(app.staticTexts["Check whether Alex can meet next week"].exists)
-        let card = app.buttons["decision-card:fixture-email"]
-        card.swipeRight()
-        XCTAssertTrue(app.buttons["decision-swipe-primary:fixture-email"].waitForExistence(timeout: 5))
-        capture(app, "todo-swipe-primary")
-        app.buttons["decision-swipe-primary:fixture-email"].tap()
-        XCTAssertTrue(app.staticTexts["Nothing needs your decision right now"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["todo-split:Mail"].exists)
     }
 
-    func testTodoFiltersKeepIgnoredContextAndActionableChoicesSeparate() {
+    func testTodoSuggestedDraftFromLinkedDecisionStaysEditable() {
         let app = XCUIApplication()
-        app.launchArguments = ["--demo", "--todo-ui-fixture", "--todo-filter-fixture"]
+        app.launchArguments = ["--demo", "--todo-ui-fixture", "--todo-mail-fixture", "--todo-linked-mail-fixture"]
         app.launchEnvironment = ["NANOCODEX_DEMO_PROFILE": UUID().uuidString]
         app.launch()
-        let filters = app.segmentedControls["todo-filter"]
-        XCTAssertTrue(filters.waitForExistence(timeout: 10))
-        XCTAssertTrue(filters.buttons["All"].isSelected)
-        XCTAssertTrue(app.buttons["decision-card:fixture-email"].exists)
-        filters.buttons["Ignore"].tap()
-        XCTAssertTrue(app.staticTexts["Weekly digest"].waitForExistence(timeout: 5))
-        XCTAssertTrue(app.staticTexts["Updates <updates@example.test>"].exists)
-        XCTAssertTrue(app.staticTexts["No reply requested."].exists)
-        XCTAssertFalse(app.buttons["decision-card:fixture-email"].exists)
-        XCTAssertFalse(app.staticTexts["Classification unavailable"].exists)
-        XCTAssertFalse(app.staticTexts["Remember the agenda"].exists)
-        capture(app, "todo-ignore-filter")
-        filters.buttons["Actionable"].tap()
-        XCTAssertTrue(app.buttons["decision-card:fixture-email"].exists)
-        XCTAssertFalse(app.staticTexts["Weekly digest"].exists)
-        app.buttons["decision-card:fixture-email"].tap()
-        XCTAssertTrue(app.buttons["decision-choice:fixture-email:draft"].waitForExistence(timeout: 5))
-        app.buttons["decision-detail-close"].tap()
-        filters.buttons["All"].tap()
-        app.swipeUp()
-        XCTAssertTrue(app.staticTexts["Classification unavailable"].exists)
-        XCTAssertTrue(app.staticTexts["Remember the agenda"].exists)
-        capture(app, "todo-all-filter")
+        let decision = app.buttons["decision-card:fixture-email"]
+        XCTAssertTrue(decision.waitForExistence(timeout: 10))
+        XCTAssertFalse(app.buttons["todo-row:mail:fixture-mail:fixture-thread"].exists, "A linked decision must not duplicate its mail row")
+        decision.tap()
+        XCTAssertTrue(app.buttons["mail-reply"].waitForExistence(timeout: 5)); app.buttons["mail-reply"].tap()
+        let suggest = app.buttons["mail-draft-suggest"]
+        XCTAssertTrue(suggest.waitForExistence(timeout: 5)); suggest.tap()
+        let body = app.textViews["mail-draft-body"]
+        let populated = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            !(body.value as? String ?? "").isEmpty
+        }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [populated], timeout: 5), .completed)
+        body.tap(); body.typeText(" I will send the final notes on Friday.")
+        XCTAssertTrue((body.value as? String ?? "").contains("final notes on Friday"))
+        app.buttons["mail-draft-done"].tap()
+        let continued = app.buttons["mail-continue-draft"]
+        if !continued.isHittable { app.swipeUp() }
+        continued.tap()
+        XCTAssertTrue((body.value as? String ?? "").contains("final notes on Friday"))
+        XCTAssertFalse(app.staticTexts["Fixture send complete · no email sent"].exists)
+        capture(app, "todo-suggested-draft-reviewed")
+        app.buttons["mail-send"].tap()
+        XCTAssertTrue(app.staticTexts["Fixture send complete · no email sent"].waitForExistence(timeout: 5))
     }
 
-    func testDecisionSecondarySwipeChoice() {
+    func testTodoSnoozedMailReturnsFromLater() {
         let app = XCUIApplication()
-        app.launchArguments = ["--demo", "--todo-ui-fixture"]
+        app.launchArguments = ["--demo", "--todo-ui-fixture", "--todo-mail-fixture"]
         app.launchEnvironment = ["NANOCODEX_DEMO_PROFILE": UUID().uuidString]
         app.launch()
-        let card = app.buttons["decision-card:fixture-email"]
-        XCTAssertTrue(card.waitForExistence(timeout: 10))
-        card.swipeLeft()
-        let option = app.buttons["decision-swipe-secondary:fixture-email"]
-        XCTAssertTrue(option.waitForExistence(timeout: 5))
-        capture(app, "todo-swipe-secondary")
-        option.tap()
-        XCTAssertTrue(app.staticTexts["Nothing needs your decision right now"].waitForExistence(timeout: 5))
+        let thread = app.buttons["todo-row:mail:fixture-mail:fixture-thread"]
+        XCTAssertTrue(thread.waitForExistence(timeout: 10)); thread.swipeLeft()
+        app.buttons["Snooze"].tap(); app.buttons["Tomorrow at 9 AM"].tap()
+        XCTAssertTrue(thread.waitForNonExistence(timeout: 5))
+        app.buttons["todo-split:Later"].tap()
+        XCTAssertTrue(thread.waitForExistence(timeout: 5)); thread.swipeRight()
+        app.buttons["Bring back"].tap()
+        XCTAssertTrue(thread.waitForNonExistence(timeout: 5))
+        app.buttons["todo-split:For you"].tap()
+        XCTAssertTrue(thread.waitForExistence(timeout: 5))
+        capture(app, "todo-snooze-return")
+    }
+
+    func testTodoLinkedMailSnoozeUsesOneReminder() {
+        let app = XCUIApplication()
+        app.launchArguments = ["--demo", "--todo-ui-fixture", "--todo-mail-fixture", "--todo-linked-mail-fixture"]
+        app.launchEnvironment = ["NANOCODEX_DEMO_PROFILE": UUID().uuidString]
+        app.launch()
+        let decision = app.buttons["decision-card:fixture-email"]
+        XCTAssertTrue(decision.waitForExistence(timeout: 10))
+        app.buttons["todo-split:Mail"].tap()
+        let thread = app.buttons["todo-row:mail:fixture-mail:fixture-thread"]
+        XCTAssertTrue(thread.waitForExistence(timeout: 5)); thread.swipeLeft()
+        app.buttons["Snooze"].tap(); app.buttons["Tomorrow at 9 AM"].tap()
+        XCTAssertTrue(thread.waitForNonExistence(timeout: 5))
+        app.buttons["todo-split:For you"].tap()
+        XCTAssertFalse(decision.exists)
+        app.buttons["todo-split:Later"].tap()
+        XCTAssertTrue(decision.waitForExistence(timeout: 5))
+        XCTAssertFalse(thread.exists)
+        decision.swipeRight(); app.buttons["Bring back"].tap()
+        XCTAssertTrue(decision.waitForNonExistence(timeout: 5))
+        app.buttons["todo-split:For you"].tap()
+        XCTAssertTrue(decision.waitForExistence(timeout: 5))
+    }
+
+    func testTodoDistinctDecisionsInOneThreadRemainActionable() {
+        let app = XCUIApplication()
+        app.launchArguments = ["--demo", "--todo-ui-fixture", "--todo-mail-fixture", "--todo-linked-mail-fixture", "--todo-multi-message-fixture"]
+        app.launchEnvironment = ["NANOCODEX_DEMO_PROFILE": UUID().uuidString]
+        app.launch()
+        let latest = app.buttons["decision-card:fixture-email"]
+        let earlier = app.buttons["decision-card:fixture-earlier-email"]
+        XCTAssertTrue(latest.waitForExistence(timeout: 10)); XCTAssertTrue(earlier.exists)
+        XCTAssertFalse(app.buttons["todo-row:mail:fixture-mail:fixture-thread"].exists)
+        earlier.tap()
+        XCTAssertTrue(app.staticTexts["mail-body:fixture-message-1"].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.staticTexts["mail-body:fixture-message-2"].exists)
+        app.buttons["mail-thread-done"].tap()
+        earlier.swipeLeft()
+        app.buttons["decision-swipe-secondary:fixture-earlier-email"].tap()
+        XCTAssertTrue(earlier.waitForNonExistence(timeout: 5)); XCTAssertTrue(latest.exists)
+    }
+
+    func testTodoComposeShowsSenderAndCanStartAgainAfterSend() {
+        let app = XCUIApplication()
+        app.launchArguments = ["--demo", "--todo-ui-fixture", "--todo-mail-fixture"]
+        app.launchEnvironment = ["NANOCODEX_DEMO_PROFILE": UUID().uuidString]
+        app.launch()
+        let compose = app.buttons["todo-compose"]
+        XCTAssertTrue(compose.waitForExistence(timeout: 10)); compose.tap()
+        XCTAssertTrue(app.staticTexts["alex@example.com"].waitForExistence(timeout: 5))
+        let to = app.textFields["mail-draft-to"]
+        XCTAssertTrue(to.waitForExistence(timeout: 5)); to.tap(); to.typeText("review@example.com")
+        let subject = app.textFields["mail-draft-subject"]
+        subject.tap(); subject.typeText("Launch review")
+        let body = app.textViews["mail-draft-body"]
+        body.tap(); body.typeText("Here are my notes for the launch.")
+        app.buttons["mail-send"].tap()
+        XCTAssertTrue(app.staticTexts["Fixture send complete · no email sent"].waitForExistence(timeout: 5))
+        app.buttons["mail-draft-done"].tap()
+        compose.tap()
+        XCTAssertTrue(app.textViews["mail-draft-body"].waitForExistence(timeout: 5))
+        XCTAssertEqual(app.textViews["mail-draft-body"].value as? String, "")
+        XCTAssertFalse(app.buttons["mail-send"].isEnabled)
+        capture(app, "todo-new-compose-after-send")
+    }
+
+    func testTodoUnknownSendStaysLockedAfterRelaunch() {
+        let app = XCUIApplication()
+        app.launchArguments = ["--demo", "--todo-ui-fixture", "--todo-mail-fixture", "--todo-mail-unknown-fixture"]
+        app.launchEnvironment = ["NANOCODEX_DEMO_PROFILE": UUID().uuidString]
+        app.launch()
+        let thread = app.buttons["todo-row:mail:fixture-mail:fixture-thread"]
+        XCTAssertTrue(thread.waitForExistence(timeout: 10)); thread.tap()
+        app.buttons["mail-reply"].tap()
+        let body = app.textViews["mail-draft-body"]
+        XCTAssertTrue(body.waitForExistence(timeout: 5)); body.tap(); body.typeText("Thanks, I will review it.")
+        app.buttons["mail-send"].tap()
+        XCTAssertTrue(app.staticTexts["Send outcome unknown · retry blocked"].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.buttons["mail-send"].isEnabled)
+        app.terminate(); app.launch()
+        XCTAssertTrue(thread.waitForExistence(timeout: 10)); thread.tap()
+        let continued = app.buttons["mail-continue-draft"]
+        if !continued.isHittable { app.swipeUp() }
+        XCTAssertTrue(continued.waitForExistence(timeout: 5)); continued.tap()
+        XCTAssertTrue(app.staticTexts["Send outcome unknown · retry blocked"].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.buttons["mail-send"].isEnabled)
+        capture(app, "todo-unknown-send-preserved")
     }
 
     func testRunningAgentsToolbarFiltersAndShowsLastPrompt() {

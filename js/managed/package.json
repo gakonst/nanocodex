@@ -13,7 +13,7 @@
     "deploy": "node ../../scripts/cloudflare/managed-crm.mjs deploy",
     "prebuild": "npm run prepare:code-evaluator",
     "prepare:code-evaluator": "node scripts/prepare-code-evaluator.mjs && node scripts/prepare-hand-image.mjs && node scripts/prepare-just-bash-lazy.mjs",
-    "test": "vitest run && npm run test:rpc-lifecycle && npm run test:discovery-cache && npm run test:routing",
+    "test": "vitest run && npm run test:rpc-lifecycle && npm run test:discovery-cache && npm run test:routing && npm run test:todo-mail",
     "test:discovery-cache": "node --test test/account-discovery-isolates.test.mjs",
     "test:rpc-lifecycle": "node --test test/rpc-lifecycle.test.mjs",
     "typecheck": "tsc --noEmit",
@@ -24,7 +24,8 @@
     "test:media": "node --test scripts/media/runtime.test.mjs",
     "test:memory": "vitest run --config vitest.memory.config.ts",
     "preview": "node ../../scripts/cloudflare/managed-crm.mjs preview",
-    "db:migrate:local": "wrangler d1 migrations apply NANOCODEX_CRM --local --env development --config wrangler.jsonc --persist-to ../account/.wrangler/state"
+    "db:migrate:local": "wrangler d1 migrations apply NANOCODEX_CRM --local --env development --config wrangler.jsonc --persist-to ../account/.wrangler/state",
+    "test:todo-mail": "node --test test/todo-mail-journey.test.mjs"
   },
   "dependencies": {
     "nanocodex-computer": "workspace:*",

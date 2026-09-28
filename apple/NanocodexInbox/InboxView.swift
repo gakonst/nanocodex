@@ -187,6 +187,7 @@ struct InboxView: View {
             Group {
                 if model.connected && mainSurface == .todo {
                     TodoBoardView(model: model)
+                        .id(model.todoAccountIdentity)
                         .contentMargins(.bottom, bottomDockHeight, for: .scrollContent)
                 } else if model.connected && mainSurface == .crm {
                     CRMView(model: model)

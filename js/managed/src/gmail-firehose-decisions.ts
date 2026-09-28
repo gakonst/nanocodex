@@ -143,6 +143,8 @@ export async function proposeGmailReplyDecisions(input: string, ai: RoutingAi, p
         source_key: key,title: utf8Prefix(`Reply requested: ${subject || "Email"}`, 200),
         context: `From ${sender}. Review the original email before deciding. This choice only records your intent; no reply is drafted or sent.`,
         source_label: "Gmail", source_url: "https://mail.google.com/",
+        source_connection_id: batch.connectionId, source_message_id: message.id,
+        source_thread_id: typeof message.threadId === "string" && idPattern.test(message.threadId) ? message.threadId : null,
         choices: [{ id: "follow_up", title: "Follow up" }, { id: "dismiss", title: "Dismiss" }],
       });
       decisionId = decision.id;

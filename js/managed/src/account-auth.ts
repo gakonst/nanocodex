@@ -1,3 +1,4 @@
+import { initializeTodoMail, handleTodoMail } from "./todo-mail";
 import { consumeRpcData } from "nanocodex/cloudflare/rpc";
 import { API_KEY, apiKeyDigest, apiKeyPrincipal, isOrganizationCapabilities, isApiKeyBase, isStoredApiKey, forwardPrincipalAssertions } from "nanocodex/cloudflare/managed-auth";
 export { isOrganizationCapabilities, forwardPrincipalAssertions };
@@ -85,6 +86,7 @@ export interface AccountAuthEnv extends IngressPlacement {
   NANOCODEX_LOCAL_WEBAUTHN_HMAC_KEY?: string;
   NANOCODEX_OTP_HMAC_KEY?: string;
   NANOCODEX?: Fetcher;
+  AI?: import("./todo-mail-suggest").TodoMailSuggestionAI;
   TWILIO_ACCOUNT_SID?: string;
   TWILIO_API_KEY_SECRET?: string;
   TWILIO_API_KEY_SID?: string;
@@ -1768,6 +1770,7 @@ export class UserAccount extends DurableObject<AccountAuthEnv> {
     )`);
     retireAccountProjects(ctx.storage);
     initializeTodoInbox(ctx.storage);
+    initializeTodoMail(ctx.storage);
     // Existing agents stay candidates until their first schedule read. New
     // registrations supply their actual presence; omitted legacy values stay unknown.
     const columns = new Set(ctx.storage.sql.exec<{ name: string }>("PRAGMA table_info(agent_registry)").toArray().map(({ name }) => name));
@@ -1802,6 +1805,11 @@ export class UserAccount extends DurableObject<AccountAuthEnv> {
 
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
+    if (url.pathname.startsWith("/todo/mail/") || url.pathname === "/todo/schedule") {
+      const account = await this.ctx.storage.get<UserRecord>("account");
+      if (!account) return json({ error: "not_found" }, { status: 404 });
+      return handleTodoMail(request, this.ctx.storage, this.env.NANOCODEX, account.id, this.env.AI);
+    }
     if (url.pathname === "/todo" || url.pathname.startsWith("/todo/")) {
       return handleTodoInbox(request, this.ctx.storage);
     }

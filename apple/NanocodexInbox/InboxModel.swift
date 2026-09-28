@@ -100,6 +100,65 @@ final class InboxModel: ObservableObject {
     @Published private(set) var todoDecisions: [TodoDecision] = []
     @Published private(set) var todoTraces: [TodoTrace] = []
     @Published var todoFilter: TodoFeedFilter = .all
+    let todoWorkspace = TodoWorkspace()
+    // Keep queue state when switching between TODO, Chat and CRM.
+    @Published var todoSplit = "For you"
+    @Published var todoSearch = ""
+    @Published var todoMailQuery = "in:inbox"
+    @Published var todoSelectedAccount = ""
+    @Published var todoSnoozed: [String: Double] = [:]
+    @Published var todoRetainedMail: [TodoMailThreadSummary] = []
+    private var todoRetainedChecks: [String: Date] = [:]
+    func reconcileRetainedTodoMail() async {
+        guard connected, !isDemo, let client else { return }
+        let epoch = generation
+        // Bound each foreground refresh; oldest checks rotate first for large lists.
+        let candidates = todoRetainedMail.sorted {
+            (todoRetainedChecks[$0.connectionID + ":" + $0.id] ?? .distantPast) < (todoRetainedChecks[$1.connectionID + ":" + $1.id] ?? .distantPast)
+        }.filter { (todoRetainedChecks[$0.connectionID + ":" + $0.id] ?? .distantPast) < .now.addingTimeInterval(-60) }.prefix(5)
+        for prior in candidates {
+            let key = prior.connectionID + ":" + prior.id
+            do {
+                let fresh = try await client.todoMailSummary(connectionID: prior.connectionID, threadID: prior.id)
+                guard generation == epoch, connected, !Task.isCancelled else { return }
+                todoRetainedChecks[key] = .now
+                guard let index = todoRetainedMail.firstIndex(where: { $0.id == prior.id && $0.connectionID == prior.connectionID }) else { continue }
+                if prior.inInbox != false && fresh.inInbox == false {
+                    forgetRetainedMail(prior); snoozeTodoRow("mail:" + key, until: nil)
+                } else { todoRetainedMail[index] = fresh; persistRetainedTodoMail() }
+            } catch {
+                guard generation == epoch, connected, !Task.isCancelled else { return }
+                todoRetainedChecks[key] = .now
+                if (error as? APIError) == .http(404) {
+                    forgetRetainedMail(prior); snoozeTodoRow("mail:" + key, until: nil)
+                } else { todoWorkspace.error = "Couldn't refresh snoozed mail. " + error.localizedDescription }
+            }
+        }
+    }
+    func retainSnoozedMail(_ thread: TodoMailThreadSummary) {
+        todoRetainedMail.removeAll { $0.id == thread.id && $0.connectionID == thread.connectionID }
+        todoRetainedMail.append(thread)
+        persistRetainedTodoMail()
+    }
+    func forgetRetainedMail(_ thread: TodoMailThreadSummary) {
+        todoRetainedMail.removeAll { $0.id == thread.id && $0.connectionID == thread.connectionID }
+        persistRetainedTodoMail()
+    }
+    private func persistRetainedTodoMail() {
+        let data = try? JSONEncoder().encode(todoRetainedMail), key = "inbox.todoRetainedMail." + scope
+        preferences.enqueue { $0.set(data, forKey: key) }
+    }
+    var todoMailClient: ManagedClient? { client }
+    var todoAccountIdentity: String { scope }
+
+    func snoozeTodoRow(_ id: String, until: Date?) {
+        todoSnoozed[id] = until?.timeIntervalSince1970
+        let values = todoSnoozed, key = "inbox.todoSnoozed." + scope
+        preferences.enqueue { $0.set(values, forKey: key) }
+    }
+    func todoRowIsSnoozed(_ id: String) -> Bool {
+        (todoSnoozed[id] ?? 0) > Date.now.timeIntervalSince1970
+    }
     @Published private(set) var todoLoading = false
     @Published private(set) var todoLoaded = false
     private var todoRevision = 0
@@ -962,12 +1021,22 @@ final class InboxModel: ObservableObject {
                     "id": .string("fixture-email"), "title": .string("How should we reply to Maya?"),
                     "context": .string("Maya accepted Tuesday, but the offered slot is no longer free. Review an alternative before anything is sent."),
                     "source_label": .string("Email thread"), "source_url": .string(""),
+                    "source_connection_id": .string(ProcessInfo.processInfo.arguments.contains("--todo-linked-mail-fixture") ? "fixture-mail" : ""),
+                    "source_thread_id": .string(ProcessInfo.processInfo.arguments.contains("--todo-linked-mail-fixture") ? "fixture-thread" : ""),
+                    "source_message_id": .string(ProcessInfo.processInfo.arguments.contains("--todo-linked-mail-fixture") ? "fixture-message-2" : ""),
                     "status": .string("needs_you"), "version": .number(1),
                     "choices": .array([
                         .object(["id": .string("draft"), "title": .string("Draft another time")]),
                         .object(["id": .string("defer"), "title": .string("Not now")]),
                     ]),
                 ]))]) ?? []
+                if ProcessInfo.processInfo.arguments.contains("--todo-multi-message-fixture"), let earlier = try? TodoDecision(.object([
+                    "id": .string("fixture-earlier-email"), "title": .string("Review the launch plan before Thursday"),
+                    "context": .string("The first message asks for feedback on the plan."), "source_label": .string("Email thread"),
+                    "status": .string("needs_you"), "version": .number(1), "source_connection_id": .string("fixture-mail"),
+                    "source_thread_id": .string("fixture-thread"), "source_message_id": .string("fixture-message-1"),
+                    "choices": .array([.object(["id": .string("follow_up"), "title": .string("Follow up")]), .object(["id": .string("dismiss"), "title": .string("Dismiss")])]),
+                ])) { todoDecisions.append(earlier) }
                 if ProcessInfo.processInfo.arguments.contains("--todo-filter-fixture") {
                     todoTraces = (try? [
                         TodoTrace(.object(["id": .number(1), "outcome": .string("no_reply"),
@@ -1077,11 +1146,40 @@ final class InboxModel: ObservableObject {
             todoRevision &+= 1
             todoDecisions.removeAll { $0.id == decision.id }
             await refreshTodo()
+            guard generation == epoch, connected else { return false }
             todoResponding = false
             return true
         } catch {
             if generation == epoch { todoError = error.localizedDescription; todoResponding = false }
             return false
+        }
+    }
+
+    @discardableResult
+    func setTodoCapture(_ capture: TodoCapture, done: Bool, operationID: UUID) async -> TodoCapture? {
+        guard connected else { return nil }
+        let epoch = generation
+        do {
+            let result: TodoCapture
+            if isDemo {
+                result = try TodoCapture(.object([
+                    "id": .string(capture.id), "body": .string(capture.body),
+                    "watch_hint": .string(capture.watchHint), "status": .string(done ? "done" : "captured"),
+                    "version": .number(Double(capture.version + 1)), "created_at": .string(capture.createdAt),
+                ]))
+            } else if let client {
+                result = try await client.updateTodoCapture(capture, status: done ? "done" : "captured", operationID: operationID)
+            } else { return nil }
+            guard epoch == generation, connected else { return nil }
+            todoRevision &+= 1
+            if let index = todoItems.firstIndex(where: { $0.id == result.id }) { todoItems[index] = result }
+            if todoLoading { todoRefreshRequested = true }
+            else if !isDemo { await refreshTodo() }
+            guard epoch == generation, connected else { return nil }
+            return result
+        } catch {
+            if epoch == generation { todoError = error.localizedDescription }
+            return nil
         }
     }
 
@@ -1235,6 +1333,10 @@ final class InboxModel: ObservableObject {
         drafts = UserDefaults.standard.dictionary(forKey: "inbox.drafts." + scope) as? [String: String] ?? [:]
         seen = UserDefaults.standard.dictionary(forKey: "inbox.seen." + scope) as? [String: String] ?? [:]
         restorePending()
+        if let data = UserDefaults.standard.data(forKey: "inbox.todoRetainedMail." + scope) {
+            todoRetainedMail = (try? JSONDecoder().decode([TodoMailThreadSummary].self, from: data)) ?? []
+        }
+        todoSnoozed = UserDefaults.standard.dictionary(forKey: "inbox.todoSnoozed." + scope) as? [String: Double] ?? [:]
         restoringTodoDraft = true
         todoDraft = UserDefaults.standard.string(forKey: "inbox.todoDraft." + scope) ?? ""
         todoWatchHint = UserDefaults.standard.string(forKey: "inbox.todoHint." + scope) ?? ""
@@ -1451,6 +1553,10 @@ final class InboxModel: ObservableObject {
     }
     private func reset() {
         historySnapshotTask?.cancel(); historySnapshotTask = nil
+        if let data = UserDefaults.standard.data(forKey: "inbox.todoRetainedMail." + scope) {
+            todoRetainedMail = (try? JSONDecoder().decode([TodoMailThreadSummary].self, from: data)) ?? []
+        }
+        todoSnoozed = UserDefaults.standard.dictionary(forKey: "inbox.todoSnoozed." + scope) as? [String: Double] ?? [:]
         restoringTodoDraft = true
         defer { restoringTodoDraft = false }
         agentNotificationUpdate?.cancel(); agentNotificationUpdate = nil
@@ -1484,6 +1590,8 @@ final class InboxModel: ObservableObject {
         observedAgentID = nil; threadLoading = false; threadError = nil
         downloadedFiles = nil
         connected = false; restoringAccount = false; restorationError = nil
+        todoWorkspace.reset()
+        todoRetainedChecks = [:]; todoRetainedMail = []; todoSnoozed = [:]; todoSplit = "For you"; todoSearch = ""; todoMailQuery = "in:inbox"; todoSelectedAccount = ""
         isDemo = false; todoItems = []; todoDecisions = []; todoTraces = []; todoFilter = .all; todoDraft = ""; todoWatchHint = ""; todoCaptureOperation = nil; todoResponseOperations.removeAll(); todoError = nil; todoLoading = false; todoLoaded = false; todoRevision = 0; todoRefreshRequested = false; todoFixtureLoaded = false; todoSaving = false; todoResponding = false; cards = []; deck = InboxDeck(); mediaProjection = InboxMediaProjection(); rows = []; events = []; drafts = [:]; seen = [:]
         for task in attachmentProviderTasks.values { task.cancel() }
         attachmentProviderTasks = [:]

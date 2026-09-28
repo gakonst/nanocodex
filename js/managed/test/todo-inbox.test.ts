@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest";
 import { env as workerEnv, runInDurableObject } from "cloudflare:test";
 import { ensureAccount, type AccountAuthEnv, type Principal } from "../src/account-auth";
 import { initializeGmailDecisionTraces, recordGmailDecisionTrace } from "../src/gmail-firehose-traces";
-import { routeTodoRequest, proposeTodoDecision } from "../src/todo-inbox";
+import { initializeTodoInbox, routeTodoRequest, proposeTodoDecision } from "../src/todo-inbox";
+
+import { proposeGmailReplyDecisions } from "../src/gmail-firehose-decisions";
 
 const env = workerEnv as unknown as AccountAuthEnv;
 const owner = (userId: string, capabilities: Principal["capabilities"] = ["agents:read", "agents:write"]): Principal => ({
@@ -37,6 +39,74 @@ describe("account-owned TODO inbox", () => {
     expect((await (await f.call(me, "GET", ""))!.json() as { items: unknown[] }).items).toHaveLength(1);
     expect((await (await f.call(someoneElse, "GET", ""))!.json() as { items: unknown[] }).items).toHaveLength(0);
     expect((await f.call(me, "POST", "", { ...body, operation_id: crypto.randomUUID(), body: " ".repeat(30) }))?.status).toBe(400);
+  });
+
+  it("completes and undoes a capture with durable retries, version conflicts and owner authorization", async () => {
+    const f = await fixture(), me = owner(f.user);
+    const created = await f.call(me, "POST", "", { body: "Follow up after the meeting", operation_id: crypto.randomUUID() });
+    const { item } = await created!.json() as { item: { id: string } };
+    const path = `/items/${item.id}`;
+    const complete = { version: 1, status: "done", operation_id: crypto.randomUUID() };
+    expect((await f.call(null, "PATCH", path, complete))?.status).toBe(401);
+    expect((await f.call(owner(f.user, ["agents:read"]), "PATCH", path, complete))?.status).toBe(403);
+    expect((await f.call({ ...me, connectGrant: {} as any }, "PATCH", path, complete))?.status).toBe(403);
+    expect((await f.call({ ...me, kind: "account_session" }, "PATCH", path, complete, { origin: "https://unrelated.test" }))?.status).toBe(403);
+    expect((await f.call(owner(f.other), "PATCH", path, complete))?.status).toBe(404);
+    const done = await f.call(me, "PATCH", path, complete);
+    expect(done?.status).toBe(200);
+    const receipt = await done!.json();
+    expect(receipt).toMatchObject({ item: { id: item.id, status: "done", version: 2 } });
+    const retry = await f.call(me, "PATCH", path, { ...complete, operation_id: complete.operation_id.toUpperCase() });
+    expect(await retry!.json()).toEqual(receipt);
+    expect((await f.call(me, "PATCH", path, { ...complete, operation_id: crypto.randomUUID() }))?.status).toBe(409);
+    expect((await f.call(me, "PATCH", path, { ...complete, status: "captured" }))?.status).toBe(409);
+    expect((await f.call(me, "PATCH", path, { ...complete, version: 2, status: "watching", operation_id: crypto.randomUUID() }))?.status).toBe(400);
+    const undo = await f.call({ ...me, kind: "account_session" }, "PATCH", path,
+      { version: 2, status: "captured", operation_id: crypto.randomUUID() }, { origin: "https://example.test" });
+    expect(undo?.status).toBe(200);
+    expect(await undo!.json()).toMatchObject({ item: { id: item.id, status: "captured", version: 3 } });
+    // A delayed retry must return its original receipt without completing the item again.
+    expect(await (await f.call(me, "PATCH", path, complete))!.json()).toEqual(receipt);
+    const snapshot = await (await f.call(me, "GET", ""))!.json() as any;
+    expect(snapshot.items).toMatchObject([{ id: item.id, status: "captured", version: 3 }]);
+    console.log(JSON.stringify({ journey: "todo-capture-complete-undo", complete: "done/v2", undo: "captured/v3", delayed_retry: "original receipt; persisted captured/v3", unauthorized: [401, 403, 404], stale: 409 }));
+  });
+
+  it("migrates legacy decisions and exposes exact Gmail references without guessing from subjects", async () => {
+    const f = await fixture(), producer = env.NANOCODEX_USERS.getByName(f.user);
+    const legacy = { source_key: "legacy-reference", title: "Reply requested: Same subject", context: "Legacy email",
+      source_label: "Gmail", source_url: "https://mail.google.com/", choices: [{ id: "later", title: "Later" }] };
+    const old = await producer.proposeTodoDecision(legacy);
+    await runInDurableObject(producer, (_, state) => {
+      for (const column of ["source_connection_id", "source_thread_id", "source_message_id"])
+        state.storage.sql.exec(`ALTER TABLE todo_decisions DROP COLUMN ${column}`);
+      initializeTodoInbox(state.storage); initializeTodoInbox(state.storage);
+    });
+    const before = await (await f.call(owner(f.user), "GET", ""))!.json() as any;
+    expect(before.decisions[0]).toMatchObject({ id: old.id, source_connection_id: null, source_thread_id: null, source_message_id: null });
+    const batch = JSON.stringify({ type: "gmail.history", connectionId: "connection-1", messages: [
+      { id: "message-1", threadId: "thread-1", status: "ok", headers: { from: "person@example.test", subject: "Same subject" }, body: "Please reply." },
+      { id: "message-2", threadId: "../invalid", status: "ok", headers: { from: "person@example.test", subject: "Same subject" }, body: "Please reply." },
+    ] });
+    const count = await proposeGmailReplyDecisions(batch,
+      { run: async () => ({ state: "Completed", result: { answers: { action: { choice: "reply_requested", confidence: 0.99 } } } }) },
+      producer, () => {}, { has: () => false, mark: () => {} }, async () => {});
+    expect(count).toBe(2);
+    const after = await (await f.call(owner(f.user), "GET", ""))!.json() as any;
+    expect(after.decisions.find((entry: any) => entry.source_message_id === "message-1"))
+      .toMatchObject({ source_connection_id: "connection-1", source_thread_id: "thread-1" });
+    expect(after.decisions.find((entry: any) => entry.source_message_id === "message-2"))
+      .toMatchObject({ source_connection_id: "connection-1", source_thread_id: null });
+    expect(after.decisions.find((entry: any) => entry.id === old.id)).toMatchObject({ source_connection_id: null });
+    const enriched = { ...legacy, source_connection_id: "connection-1", source_thread_id: "thread-1", source_message_id: "message-1" };
+    expect((await producer.proposeTodoDecision(enriched)).id).toBe(old.id);
+    expect((await producer.proposeTodoDecision(legacy)).id).toBe(old.id);
+    await runInDurableObject(producer, (_, state) => {
+      expect(() => proposeTodoDecision(state.storage, { ...enriched, source_connection_id: "connection-2" })).toThrow("todo_source_conflict");
+    });
+    const final = await (await f.call(owner(f.user), "GET", ""))!.json() as any;
+    expect(final.decisions.find((entry: any) => entry.id === old.id)).toMatchObject({ source_connection_id: "connection-1", source_thread_id: "thread-1" });
+    console.log(JSON.stringify({ journey: "gmail-source-linkage", migration: "nullable legacy refs preserved", producer: "exact connection/message/thread refs", malformed_thread: null, conflicting_reference: "rejected" }));
   });
 
   it("records one account-scoped decision and one versioned choice without executing a playbook", async () => {
