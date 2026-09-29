@@ -220,6 +220,7 @@ async fn serve(socket: UnixStream, bridge: Bridge) -> io::Result<()> {
     .await?;
     let mut changed = bridge.changed.subscribe();
     let mut cursor = None;
+    let mut excluded: Vec<String> = Vec::new();
     let mut incoming = Vec::new();
     let slots = Arc::new(tokio::sync::Semaphore::new(16));
     let mut replies = tokio::task::JoinSet::new();
@@ -233,7 +234,9 @@ async fn serve(socket: UnixStream, bridge: Bridge) -> io::Result<()> {
                 Ok(events) => {
                     for event in events {
                         cursor = event["seq"].as_str().and_then(|s| s.parse().ok());
-                        send(&mut write, &event).await?;
+                        if !filtered(&excluded, &event) {
+                            send(&mut write, &event).await?;
+                        }
                     }
                 }
                 Err(gap) => {
@@ -254,10 +257,16 @@ async fn serve(socket: UnixStream, bridge: Bridge) -> io::Result<()> {
                 let request: Request = serde_json::from_slice(&bytes)?;
                 if request.method == "events.subscribe" {
                     let parsed = request.params["after_seq"].as_str().and_then(|s| s.parse::<u64>().ok());
-                    if let Some(after) = parsed {
-                        cursor = Some(after);
-                        send(&mut write,&json!({"id":request.id,"result":{"subscribed":true}})).await?;
-                    } else { send(&mut write,&json!({"id":request.id,"result":rejected("invalid_cursor")})).await?; }
+                    let filter = event_filter(&request.params["exclude_types"]);
+                    match (parsed, filter) {
+                        (Some(after), Some(filter)) => {
+                            cursor = Some(after);
+                            excluded = filter;
+                            send(&mut write,&json!({"id":request.id,"result":{"subscribed":true,"exclude_types":excluded}})).await?;
+                        }
+                        (None, _) => send(&mut write,&json!({"id":request.id,"result":rejected("invalid_cursor")})).await?,
+                        (_, None) => send(&mut write,&json!({"id":request.id,"result":rejected("invalid_filter")})).await?,
+                    }
                 } else {
                     // Reserve two slots for cancellation even during slow history reads.
                     if request.method != "cancel" && (slots.available_permits() <= 2 || bridge.inflight.available_permits() <= 2) {
@@ -292,6 +301,46 @@ async fn serve(socket: UnixStream, bridge: Bridge) -> io::Result<()> {
             }
         }
     }
+}
+
+/// Agent event types a subscriber does not need, such as raw provider frames.
+/// A trailing `.*` matches a type family. Filtering skips delivery only; the
+/// cursor still advances, so replay and gap semantics are unchanged.
+fn event_filter(value: &Value) -> Option<Vec<String>> {
+    if value.is_null() {
+        return Some(Vec::new());
+    }
+    let types = value.as_array()?;
+    if types.len() > 32 {
+        return None;
+    }
+    types
+        .iter()
+        .map(|kind| {
+            kind.as_str()
+                .filter(|kind| !kind.is_empty() && kind.len() <= 128)
+                .map(str::to_owned)
+        })
+        .collect()
+}
+
+fn filtered(excluded: &[String], event: &Value) -> bool {
+    let kind = match event["type"].as_str() {
+        Some("agent.event") => &event["data"]["type"],
+        Some("managed.event") => &event["data"]["event"]["type"],
+        _ => return false,
+    };
+    let Some(kind) = kind.as_str() else {
+        return false;
+    };
+    excluded
+        .iter()
+        .any(|pattern| match pattern.strip_suffix(".*") {
+            Some(family) => kind
+                .strip_prefix(family)
+                .is_some_and(|rest| rest.starts_with('.')),
+            None => pattern == kind,
+        })
 }
 
 fn read_registration(path: &Path) -> io::Result<Registration> {

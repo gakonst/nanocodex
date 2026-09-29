@@ -102,6 +102,7 @@ vergen = { workspace = true, features = ["build", "git", "gitcl"] }
 [dev-dependencies]
 criterion.workspace = true
 nanocodex-tools.workspace = true
+portable-pty.workspace = true
 tokio-tungstenite.workspace = true
 
 [[bench]]
@@ -131,6 +132,10 @@ path = "tests/durable_run.rs"
 [[test]]
 name = "local_managed_server"
 path = "tests/local_managed_server.rs"
+
+[[test]]
+name = "tui_control"
+path = "tests/tui_control.rs"
 
 [[bin]]
 name = "nanocodex"

@@ -65,8 +65,11 @@ metadata, open menu, settings, `draft_revision`, and `settings_revision`.
 Managed state also includes `active_turn_ids`, `managed_cursor`, and local shell
 activity. Native `active_turns` maps session IDs to canonical running turn IDs.
 
-`state.changed` announces revisions; fetch state to read the current draft.
-Draft text is deliberately absent from the replay journal. `conversation.active_changed`
+`state.changed` carries the new `state` without its `composer`, plus
+`composer_empty`, `active_turns`, and both revisions, so subscribers need no
+follow-up `state.get`. `settings.changed` carries `settings`. Fetch state to read
+the draft itself: draft text is deliberately absent from notifications and the
+replay journal. `conversation.active_changed`
 announces the new composer target and generation, including switching away and
 back to the same session. A branch-preview menu does not change the composer
 target. `conversations` contains known roots, branches, side conversations, and
@@ -82,11 +85,12 @@ clients must not interpret this as an empty, supported queue.
 | `models.list` | Canonical model IDs and each model's supported effort IDs. |
 | `settings.set` | Target fields below, `expected_settings_revision`, and exactly one of `settings.model` or `settings.effort`. |
 | `prompt` | Target fields and `input.text`. Literal text, including slash-prefixed text. Rejects if busy. |
+| `command` | Target fields and `input.text` holding one slash command (native TUI; `capabilities.commands`). Runs it as if typed, without reading or changing the composer. Rejects plain text (`not_a_command`), menus that need the terminal (`interactive_command`), invalid usage (`invalid_command`), and prompt-producing commands while busy. Acceptance means dispatched, not completed. |
 | `steer` | Target fields, `expected_turn_id`, `input.text`. Never falls back to starting a turn. |
 | `cancel` | Target fields and `expected_turn_id`. Cancels only that turn. |
 | `request.get` | `request_id`: reads this process's retained command disposition. |
 | `command.status` | Managed only: `expected_session_id`, `expected_turn_id`, `request_id`, for durable steer/cancel receipts. |
-| `events.subscribe` | Decimal-string `after_seq`, exclusive. Streams replay then live notifications. |
+| `events.subscribe` | Decimal-string `after_seq`, exclusive, and optional `exclude_types` (up to 32 `agent.event`/`managed.event` types; `family.*` matches a family). Streams replay then live notifications, skipping excluded types; the reply echoes the filter. |
 | `history.live` | `snapshot_token`, optional `offset` (default 0) and `limit` (default 32, max 128). Returns `records`, `next_offset`, `has_more`. |
 | `history.pending` | Page the private event journal at `boundary` from `snapshot.pending_history`, with optional `cursor`, `order` (`newest` default or `oldest`), and `limit` (max 16). An optional live `snapshot_token` also pins the boundary. |
 | `history.pending.read` | Read a chunked journal record using `boundary`, `record_id`, and optional byte `offset`. |
@@ -165,8 +169,10 @@ The same fields are persisted as `event_msg` / `input_accepted` rollout records,
 including inputs accepted before a cancellation or failure. Use these as semantic
 user transcript rows when present; legacy `user_message` and model-context user
 items remain for compatibility and should not be rendered as additional inputs.
-External prompt and
-steer request IDs are correlated with those records. Managed acceptance already
+External steer request
+IDs are correlated with those records. Native prompt receipts correlate through
+their canonical `turn_id`; the native TUI has no execution policy to admit a
+caller-owned prompt identity, so its `input.accepted` omits `request_id`. Managed acceptance already
 contains prompt input; nested `input.accepted` steering events are also durable.
 
 Native `history.committed` follows successful rollout flushing independently of
@@ -194,6 +200,11 @@ advances the writer's committed boundary.
    completion, failure, and cancellation determine root active-turn state; nested
    runtime terminals cannot override that authoritative state. A new instance
    requires a fresh attach and committed-history reconciliation.
+
+Raw provider `api.event` frames are most of the stream by volume (about 95% of
+the bytes in a short tool-using turn). Chat-style clients should subscribe with
+`"exclude_types":["api.event","model.*"]`; `capabilities.event_filter` and
+`capabilities.state_notifications` advertise these contracts.
 
 Replay is bounded to 4,096 frames or 16 MiB. Semantic live history retains up to
 512 records or 16 MiB, with four immutable snapshots; old tokens return

@@ -127,6 +127,10 @@ impl SubmittedPrompt {
         self.instruction = None;
     }
 
+    pub(super) const fn has_instruction(&self) -> bool {
+        self.instruction.is_some()
+    }
+
     pub(super) fn set_instruction(&mut self, instruction: String) {
         self.instruction = Some(instruction);
     }

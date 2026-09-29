@@ -21,6 +21,11 @@ pub(super) fn dispatch(
         command.reject(code);
         return Ok(());
     }
+    if method == "command" {
+        let result = run_command(ui, &command.request.params, tx);
+        command.finish(result);
+        return Ok(());
+    }
     if method == "prompt" && ui.app.control_snapshot()["execution"] != "idle" {
         command.reject("busy");
         return Ok(());
@@ -50,6 +55,39 @@ pub(super) fn dispatch(
         input_id,
     })?;
     Ok(())
+}
+
+/// Runs one slash command as if submitted from the composer, leaving the
+/// user's draft untouched. Plain text belongs to `prompt`; menus that need
+/// terminal interaction are rejected. Acceptance means the command was
+/// dispatched, not that its effects have completed.
+fn run_command(
+    ui: &mut UiModel,
+    params: &Value,
+    tx: &mpsc::UnboundedSender<WorkerCommand>,
+) -> Value {
+    let text = params["input"]["text"].as_str().unwrap_or("").trim();
+    if !text.starts_with('/') || text.contains('\n') {
+        return rejected("not_a_command");
+    }
+    let submission = classify_submission(SubmittedPrompt::text(text.to_owned()));
+    match submission {
+        Submission::Prompt(ref prompt) if !prompt.has_instruction() => rejected("not_a_command"),
+        Submission::Prompt(_) if ui.app.control_snapshot()["execution"] != "idle" => {
+            rejected("busy")
+        }
+        Submission::ModelPicker | Submission::ReasoningPicker => rejected("interactive_command"),
+        Submission::InvalidCommand(message) => {
+            json!({"status":"rejected","code":"invalid_command","message":message})
+        }
+        submission => {
+            let root = std::sync::Arc::clone(&ui.root_session_id);
+            match execute_submission(&mut ui.app, &root, tx, SubmitIntent::Queue, submission) {
+                Ok(()) => accepted(json!({})),
+                Err(error) => unknown(error),
+            }
+        }
+    }
 }
 
 fn descriptor(agent: &Nanocodex, root: &str, parent: Option<&str>, role: &str) -> Conversation {
@@ -210,12 +248,15 @@ impl AgentWorker {
                         .as_str()
                         .unwrap_or("")
                         .to_owned();
+                    // The bridge ledger owns request deduplication and the receipt carries
+                    // the canonical turn ID. A prompt request ID would require an execution
+                    // policy, which the native TUI does not configure.
                     if self
                         .prompt_identified(
                             target,
                             input_id.unwrap(),
                             SubmittedPrompt::text(text),
-                            Some(command.request.id.clone()),
+                            None,
                         )
                         .await
                     {

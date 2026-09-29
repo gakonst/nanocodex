@@ -913,6 +913,7 @@ pub(crate) async fn run_observed(
         update_tx,
     );
     if let Some(server) = &control_server {
+        server.bridge.enable_commands();
         ui.control = Some(server.bridge.clone());
     }
     let mut view_telemetry = ViewTelemetry::new(Arc::clone(&root_session_id));
@@ -3488,7 +3489,25 @@ fn submit(
     let Some(input) = app.take_submission() else {
         return Ok(());
     };
-    match classify_submission(input) {
+    execute_submission(
+        app,
+        root_session_id,
+        commands,
+        intent,
+        classify_submission(input),
+    )
+}
+
+/// Runs a classified submission without reading the composer; external
+/// control commands share this path with typed input.
+fn execute_submission(
+    app: &mut App,
+    root_session_id: &str,
+    commands: &mpsc::UnboundedSender<WorkerCommand>,
+    intent: SubmitIntent,
+    submission: Submission,
+) -> Result<()> {
+    match submission {
         Submission::Prompt(prompt) => {
             let target = app.focus;
             if matches!(intent, SubmitIntent::Immediate) && app.is_running(target) {

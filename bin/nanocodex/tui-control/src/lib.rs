@@ -109,6 +109,7 @@ struct Inner {
     settings_override: Option<Value>,
     managed_cursors: HashMap<String, String>,
     active_turns: HashMap<String, Vec<String>>,
+    commands: bool,
 }
 
 /// Small shared projection. Mutations are delivered to the owning UI loop.
@@ -145,12 +146,19 @@ impl Bridge {
                 settings_override: None,
                 managed_cursors: HashMap::new(),
                 active_turns: HashMap::new(),
+                commands: false,
             })),
             changed,
             registration_changed,
             commands,
             inflight: Arc::new(tokio::sync::Semaphore::new(64)),
         })
+    }
+
+    /// Advertises and admits `command`: the owner can run one slash command
+    /// without reading or changing the composer draft.
+    pub fn enable_commands(&self) {
+        self.inner.lock().unwrap().commands = true;
     }
 
     pub fn registration(&self) -> Registration {
@@ -234,15 +242,25 @@ impl Bridge {
         }
         if inner.state != value {
             inner.state = value;
-            // Do not retain a user's draft in replay history.
-            Self::append(
-                &mut inner,
-                "state.changed",
-                json!({"draft_revision":revision.to_string(),
-                "settings_revision":settings_revision.to_string()}),
-            );
+            // Do not retain a user's draft in replay history: publish everything
+            // else, so subscribers need no follow-up state.get.
+            let data = Self::public_state(&inner, revision, settings_revision);
+            Self::append(&mut inner, "state.changed", data);
         }
         self.changed.send_replace(inner.seq);
+    }
+
+    fn public_state(inner: &Inner, revision: u64, settings_revision: u64) -> Value {
+        let mut state = inner.state.clone();
+        let composer = state
+            .as_object_mut()
+            .and_then(|state| state.remove("composer"));
+        let empty = composer.as_ref().is_none_or(|composer| {
+            composer["text"].as_str().is_none_or(str::is_empty)
+                && composer["attachments"].as_array().is_none_or(Vec::is_empty)
+        });
+        json!({"draft_revision":revision.to_string(), "settings_revision":settings_revision.to_string(),
+            "state":state, "composer_empty":empty, "active_turns":inner.active_turns})
     }
 
     /// Publishes authoritative settings before acknowledging the command, even if UI rendering lags.
@@ -258,10 +276,11 @@ impl Bridge {
             + 1;
         inner.state["settings_revision"] = json!(revision.to_string());
         inner.settings_override = Some(patch);
+        let settings = inner.state["settings"].clone();
         Self::append(
             &mut inner,
             "settings.changed",
-            json!({"settings_revision":revision.to_string()}),
+            json!({"settings_revision":revision.to_string(),"settings":settings}),
         );
         self.changed.send_replace(inner.seq);
     }
@@ -288,6 +307,7 @@ impl Bridge {
             "pending_history":{"boundary":inner.journal.end.to_string(),"error":inner.journal.error},
             "committed_history":inner.committed.iter().map(|(id, n)|(id.clone(),n.to_string())).collect::<HashMap<_,_>>(),
             "capabilities":{"questions_read":false,"replay":"process","request_deduplication":"process",
+                "commands":inner.commands,"event_filter":true,"state_notifications":true,
                 "max_frame_bytes":MAX_FRAME,"max_replay_bytes":MAX_REPLAY_BYTES,
                 "pending_history":"process_disk","history_chunked":true,"concurrent_requests":16}})
     }
@@ -641,7 +661,10 @@ impl Bridge {
                     .map(|entry| entry.result.clone())
                     .unwrap_or_else(|| unknown("request not retained by this instance"));
             }
-            "prompt" | "steer" | "cancel" | "settings.set" => {}
+            "command" if !self.inner.lock().unwrap().commands => {
+                return rejected("unsupported_method");
+            }
+            "prompt" | "steer" | "cancel" | "settings.set" | "command" => {}
             "models.list" | "history.list" | "history.read" | "command.status" => {
                 return self.forward(request).await;
             }
