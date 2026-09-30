@@ -1,0 +1,3 @@
+# Preserve upstream license and bootstrap bytes verbatim.
+obscura/licenses/* -whitespace
+src/obscura-assets/bootstrap.txt -whitespace

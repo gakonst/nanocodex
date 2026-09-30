@@ -1,0 +1,21 @@
+{
+  "package": "agents",
+  "version": "0.22.0",
+  "files": [
+    {
+      "source": "../src/browser/cdp-session.ts",
+      "file": "cdp-session.ts",
+      "sha256": "9f6e77e2c2dd8e6b99efe88ffe3b1ab7a215cd1390d25f673aa4b60228d1f20a"
+    },
+    {
+      "source": "../src/browser/browser-run.ts",
+      "file": "browser-run.ts",
+      "sha256": "0aabc3ff6c9df79496a9e0c2cb56134d3cfe69fd03f9fb9a1c5bedf5aa9df1ae"
+    },
+    {
+      "source": "../src/browser/spec.ts",
+      "file": "spec.ts",
+      "sha256": "6ceed8966634cfb50641339165b9a49ef7c19a3a4b0e097e958ad547f6703c43"
+    }
+  ]
+}

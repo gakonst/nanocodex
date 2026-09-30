@@ -17,6 +17,13 @@ minimumReleaseAgeExclude:
   - "@ai-sdk/gateway@4.0.72"
   - "@ai-sdk/provider-utils@5.0.36"
   - "ai@7.0.90"
+  - '@cloudflare/workerd-darwin-64@1.20260929.1'
+  - '@cloudflare/workerd-darwin-arm64@1.20260929.1'
+  - '@cloudflare/workerd-linux-64@1.20260929.1'
+  - '@cloudflare/workerd-linux-arm64@1.20260929.1'
+  - '@cloudflare/workerd-windows-64@1.20260929.1'
+  - workerd@1.20260929.1
 
 patchedDependencies:
   '@cloudflare/sandbox@0.12.4': patches/@cloudflare__sandbox@0.12.4.patch
+  quickjs-emscripten-core@0.32.0: patches/quickjs-emscripten-core@0.32.0.patch

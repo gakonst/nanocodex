@@ -11,6 +11,7 @@ import {
   type CreateBrowserToolsOptions,
 } from "agents/browser/ai";
 import type { NamedTool, ToolContext } from "nanocodex";
+import { createObscuraBrowserBinding, type ObscuraBrowserOptions } from "./obscura-browser";
 import { inspectPrivateCheckout } from "./browser-private-checkout";
 import { privateVaultTakeover, releasePrivateVaultTakeover, validateBrowserVaultTakeoverAction, type BrowserVaultTakeoverAction, type BrowserVaultTouchState } from "./browser-vault-takeover";
 
@@ -22,11 +23,12 @@ import {
   type BrowserVaultResolver, type BrowserVaultQuarantine,
 } from "./browser-vault";
 
-export type ManagedBrowserProvider = "cloudflare" | "browserbase" | "kitesurf" | "chromium";
+export type ManagedBrowserProvider = "cloudflare" | "browserbase" | "kitesurf" | "chromium" | "obscura";
 
 export interface ManagedBrowserEnv {
   BROWSER?: BrowserBinding;
   LOADER?: WorkerLoader;
+  OBSCURA_NETWORK?: Fetcher;
   MANAGED_BROWSER_PROVIDER?: string;
   MANAGED_BROWSER_KEEP_ALIVE_MS?: string;
   MANAGED_BROWSER_TOOL_TIMEOUT_MS?: string;
@@ -365,8 +367,8 @@ function browserCdpCommandAllowed(method: string, params: unknown): boolean {
 
 export function managedBrowserProvider(value: string | undefined): ManagedBrowserProvider {
   const provider = value?.trim().toLowerCase() || "chromium";
-  if (provider === "cloudflare" || provider === "browserbase" || provider === "kitesurf" || provider === "chromium") return provider;
-  throw new TypeError("MANAGED_BROWSER_PROVIDER must be cloudflare, browserbase, kitesurf, or chromium");
+  if (provider === "cloudflare" || provider === "browserbase" || provider === "kitesurf" || provider === "chromium" || provider === "obscura") return provider;
+  throw new TypeError("MANAGED_BROWSER_PROVIDER must be cloudflare, browserbase, kitesurf, chromium, or obscura");
 }
 
 export async function createManagedBrowserRuntime(
@@ -375,6 +377,7 @@ export async function createManagedBrowserRuntime(
     env: ManagedBrowserEnv;
     sessionId: string;
     createRuntime?: BrowserRuntimeFactory;
+    obscura?: ObscuraBrowserOptions;
     fetch?: FetchImplementation;
     resolveVaultLogin?: BrowserVaultResolver;
     authorizeVaultAccess?: (context: ToolContext) => void;
@@ -393,7 +396,7 @@ export async function createManagedBrowserRuntime(
   );
   const timeout = boundedInteger(
     options.env.MANAGED_BROWSER_TOOL_TIMEOUT_MS,
-    oneShot ? DEFAULT_ONE_SHOT_TOOL_TIMEOUT_MS : DEFAULT_TOOL_TIMEOUT_MS,
+    (oneShot || provider === "obscura") ? DEFAULT_ONE_SHOT_TOOL_TIMEOUT_MS : DEFAULT_TOOL_TIMEOUT_MS,
     1_000,
     120_000,
     "MANAGED_BROWSER_TOOL_TIMEOUT_MS",
@@ -447,6 +450,33 @@ export async function createManagedBrowserRuntime(
         });
         return closing;
       },
+    };
+  }
+  if (provider === "obscura") {
+    const obscura = options.obscura
+      ?? (await import("./obscura-assets")).createBundledObscuraOptions(options.env.OBSCURA_NETWORK);
+    const browser = createObscuraBrowserBinding(loader, obscura);
+    const runtime = (options.createRuntime ?? createBrowserRuntime)({
+      ctx: options.ctx, browser, loader,
+      session: { mode: "one-shot" },
+      quickActions: false, timeout, name: "managed-browser-obscura",
+    });
+    const tools = await adaptAiSdkTools(runtime.tools, { native: true });
+    const unsupported = async () => { throw new Error("Obscura does not support private browser continuation"); };
+    return {
+      provider,
+      tools: tools.map(tool => ({ ...tool,
+        description: tool.name === "browser_execute"
+          ? `${tool.description}\nExperimental Obscura runs a bounded DOM and JavaScript subset in Wasm. It is not Chromium and has no visual rendering, screenshots, or private login support. Sessions last for one execution; complete all navigation and inspection in one call. Use cdp.spec to inspect supported commands; unsupported commands fail explicitly.`
+          : tool.description,
+        handler: async (input, context) => {
+          options.authorizeVaultAccess?.(context);
+          return tool.handler(input, context);
+        },
+      })),
+      submitSecureInput: unsupported, submitVaultTakeover: unsupported, submitVaultChallenge: unsupported,
+      expireAndSweep: async () => { await runtime.runtime.expirePaused(); },
+      close: async () => { await runtime.connector.closeSession(); },
     };
   }
   let browser: BrowserBinding;

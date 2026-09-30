@@ -12,6 +12,7 @@
     "predeploy": "npm run prepare:code-evaluator",
     "deploy": "node ../../scripts/cloudflare/managed-crm.mjs deploy",
     "prebuild": "npm run prepare:code-evaluator",
+    "prepare:obscura": "node scripts/prepare-obscura.mjs",
     "prepare:code-evaluator": "node scripts/prepare-code-evaluator.mjs && node scripts/prepare-hand-image.mjs && node scripts/prepare-just-bash-lazy.mjs",
     "test": "vitest run && npm run test:rpc-lifecycle && npm run test:discovery-cache && npm run test:routing && npm run test:todo-mail",
     "test:discovery-cache": "node --test test/account-discovery-isolates.test.mjs",
@@ -25,7 +26,8 @@
     "test:memory": "vitest run --config vitest.memory.config.ts",
     "preview": "node ../../scripts/cloudflare/managed-crm.mjs preview",
     "db:migrate:local": "wrangler d1 migrations apply NANOCODEX_CRM --local --env development --config wrangler.jsonc --persist-to ../account/.wrangler/state",
-    "test:todo-mail": "node --test test/todo-mail-journey.test.mjs"
+    "test:todo-mail": "node --test test/todo-mail-journey.test.mjs",
+    "test:obscura": "node test/obscura/test.mjs"
   },
   "dependencies": {
     "nanocodex-computer": "workspace:*",
@@ -33,6 +35,7 @@
     "@cloudflare/computer": "0.2.1",
     "@cloudflare/sandbox": "0.12.4",
     "@jitl/quickjs-wasmfile-release-asyncify": "0.32.0",
+    "@jitl/quickjs-wasmfile-release-sync": "0.32.0",
     "accounts": "0.16.2",
     "agents": "0.22.0",
     "ai": "7.0.90",
@@ -42,6 +45,8 @@
     "nanocodex-connect-protocol": "workspace:*",
     "nanocodex-tools": "workspace:*",
     "nanocodex-vite": "workspace:*",
+    "tough-cookie": "6.0.0",
+    "ipaddr.js": "2.2.0",
     "quickjs-emscripten-core": "0.32.0",
     "ox": "0.14.36",
     "viem": "^2.54.0",
@@ -56,6 +61,7 @@
     "miniflare": "4.20260730.0",
     "typescript": "5.9.3",
     "vitest": "^4.0.18",
+    "workerd": "1.20260929.1",
     "wrangler": "4.127.1",
     "ws": "^8.18.3"
   }

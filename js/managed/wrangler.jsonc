@@ -10,7 +10,11 @@
   },
   "find_additional_modules": true,
   "base_dir": "src",
-  "rules": [{ "type": "ESModule", "globs": ["**/just-bash-lazy.mjs"] }],
+  "rules": [
+    { "type": "ESModule", "globs": ["**/just-bash-lazy.mjs"] },
+    { "type": "Text", "globs": ["**/obscura-assets/*.txt"], "fallthrough": true },
+    { "type": "Data", "globs": ["**/obscura-assets/*.bin"], "fallthrough": true }
+  ],
   "workers_dev": false,
   "triggers": { "crons": [] },
   "ai": { "binding": "AI" },
@@ -30,6 +34,7 @@
     }
   },
   "services": [
+    { "binding": "OBSCURA_NETWORK", "service": "nanocodex-durable-agent", "entrypoint": "ObscuraNetwork" },
     { "binding": "NANOCODEX_MEDIA", "service": "nanocodex-media", "entrypoint": "MediaService" },
     { "binding": "NANOCODEX_EMAIL", "service": "nanocodex-email", "entrypoint": "EmailService" },
     { "binding": "NANOCODEX_REALTIME", "service": "nanocodex-egress", "entrypoint": "ManagedRealtimeEgress" },
@@ -217,6 +222,7 @@
       ],
       "name": "nanocodex-durable-agent",
       "services": [
+        { "binding": "OBSCURA_NETWORK", "service": "nanocodex-durable-agent", "entrypoint": "ObscuraNetwork", "remote": false },
         { "binding": "NANOCODEX_MEDIA", "service": "nanocodex-media", "entrypoint": "MediaService", "remote": false },
         { "binding": "NANOCODEX_X", "service": "nanocodex-x" },
         { "binding": "NANOCODEX", "service": "nanocodex-egress", "remote": false },

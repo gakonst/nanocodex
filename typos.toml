@@ -6,6 +6,9 @@ extend-exclude = [
     "examples/wow/web/assets/wow/**/*.TTF",
     "crates/nanocodex-browser/assets/axe.js",
     "crates/nanocodex-browser/assets/react_diagnostics.js",
+    # Prepared browser assets contain upstream DOM names and public-suffix data.
+    "js/managed/src/obscura-assets/bootstrap.txt",
+    "js/managed/src/obscura-assets/worker.txt",
     # Preserve upstream sources and captured protocol/encoding fixture bytes.
     "js/account/public/data/",
     "js/account/src/data/harness-repository.json",

@@ -1,0 +1,18 @@
+{
+  "obscura": {
+    "repository": "https://github.com/h4ckf0r0day/obscura",
+    "revision": "5ba6c05ed8dd848862a8a5a3d90e26fcae41ccd9",
+    "license": "Apache-2.0"
+  },
+  "quickjs-emscripten": "0.32.0",
+  "wasm-bindgen": "0.2.126",
+  "fake-indexeddb": "6.2.5",
+  "tough-cookie": "6.0.0",
+  "ipaddr.js": "2.2.0",
+  "quickjs-core-memory-patch": {
+    "path": "patches/quickjs-emscripten-core@0.32.0.patch",
+    "upstream_issue": "https://github.com/justjake/quickjs-emscripten/issues/269",
+    "upstream_fix_proposal": "https://github.com/justjake/quickjs-emscripten/pull/248",
+    "description": "API-preserving lazy refresh of typed FFI output views after WebAssembly memory growth; applied to CommonJS and ESM distributions."
+  }
+}
