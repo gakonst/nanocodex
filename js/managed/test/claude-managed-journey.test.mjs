@@ -69,18 +69,39 @@ function sse(block, stop, id) {
 }
 test('Managed native Claude and mixed-family public delegation, account gates, cancellation and recovery', {timeout:240_000}, async () => {
   await mkdir(evidence,{recursive:true});
-  const trace = [], upstream = [], providerErrors = []; let calls=0, summaries=0, writes=0, taskWrites=0, canonicalWrites=0, codexWrites=0, nestedWrites=0, allowResponses=false, sidebarCalls=0, holds=0, responsesAttempts=0, catalogOutage=false, catalogUnsupportedOnly=false, retainedTaskId, mf;
+  const trace = [], upstream = [], providerErrors = []; let calls=0, summaries=0, writes=0, taskWrites=0, canonicalWrites=0, readinessCalls=0, codexWrites=0, nestedWrites=0, allowResponses=false, sidebarCalls=0, holds=0, responsesAttempts=0, catalogOutage=false, catalogUnsupportedOnly=false, retainedTaskId, mf;
   const providerImpl = async request => {
     const url = new URL(request.url);
     if (url.origin === 'https://api.openai.com' || url.origin === 'https://chatgpt.com') {
       assert.equal(url.origin,'https://api.openai.com');
       assert.equal(request.headers.get('authorization'),'Bearer sk-synthetic-openai-runtime');
+      if (request.method==='GET') return new Response(null,{status:426});
       const body=await request.json(), encoded=JSON.stringify(body.input);
       if (body.model==='gpt-6-luna') {
         assert.match(body.instructions,/Write a short session title/);
-        assert.match(encoded,/Delegate mixed Claude child|Try disconnected mixed child|Delegate nested gateway grandchild/,'only the Codex gateway root requests a sidebar title');
+        assert.match(encoded,/Delegate mixed Claude child|Try disconnected mixed child|Delegate nested gateway grandchild|Delegate default Claude readiness|Try unavailable mixed catalog/,'only Codex roots request a sidebar title');
         sidebarCalls++;
         return Response.json({id:'synthetic-title',output:[{type:'message',role:'assistant',content:[{type:'output_text',text:'Verify native Claude delegation'}]}],usage:{input_tokens:2,output_tokens:2,total_tokens:4}});
+      }
+      if (encoded.includes('Delegate default Claude readiness')) {
+        assert.equal(body.model,'gpt-6-astra');
+        const results=body.input.filter(item=>item.type==='function_call_output');
+        let output;
+        if (!results.length) output=[{type:'function_call',call_id:'readiness-spawn',name:'spawn_agent',arguments:JSON.stringify({harness:'claude',model:null,thinking:null,role:'general',task:'DEFAULT_CLAUDE_READINESS',output_contract:{kind:'string'}})}];
+        else {
+          const content=results.at(-1).output;
+          let result;try { result=JSON.parse(content); } catch {
+            upstream.push({readinessError:content});
+            return new Response(`data: ${JSON.stringify({type:'response.completed',response:{id:'readiness-failure',status:'completed',output:[{type:'message',role:'assistant',content:[{type:'output_text',text:'CLAUDE_TOOL_DONE_READINESS_FAILURE: '+content}]}],usage:{input_tokens:10,output_tokens:2,total_tokens:12}}})}\n\n`,{headers:{'content-type':'text/event-stream'}});
+          }
+          if (result.agent_id!==undefined) output=[{type:'function_call',call_id:'readiness-wait',name:'wait_agent',arguments:JSON.stringify({agent_ids:[result.agent_id],timeout_ms:10000})}];
+          else {
+            assert.equal(result.agents[0].status.state,'completed',JSON.stringify(result));
+            assert.equal(result.agents[0].status.output,'CLAUDE_READY');
+            output=[{type:'message',role:'assistant',content:[{type:'output_text',text:'CLAUDE_TOOL_DONE_DEFAULT_READINESS'}]}];
+          }
+        }
+        return new Response(`data: ${JSON.stringify({type:'response.completed',response:{id:'readiness-'+crypto.randomUUID(),status:'completed',output,usage:{input_tokens:10,output_tokens:2,total_tokens:12}}})}\n\n`,{headers:{'content-type':'text/event-stream'}});
       }
       responsesAttempts++;
       assert.equal(allowResponses,true,'only an explicitly selected Codex child may use Responses');
@@ -133,8 +154,12 @@ test('Managed native Claude and mixed-family public delegation, account gates, c
         return reply({content:'CLAUDE_TOOL_DONE_NESTED_GATEWAY: '+decoded.agents[0].status.output},'stop');
       }
       if(latest.role!=='tool') return use('spawn_agent',{role:'mixed proof specialist',task:'CANONICAL_CHILD_PROOF: write proof then submit result',harness:'claude',model:'claude-opus-4-6',thinking:'low',output_contract:{kind:'string'}});
-      if(JSON.stringify(body.messages).includes('Try disconnected mixed child')) {
-        assert.match(latest.content,/failed|unavailable|authorized/i);
+      if(JSON.stringify(body.messages).includes('Try disconnected mixed child') || JSON.stringify(body.messages).includes('Try unavailable mixed catalog')) {
+        const expected=JSON.stringify(body.messages).includes('Try unavailable mixed catalog')
+          ? 'Claude model catalog is unavailable; account model availability could not be verified'
+          : 'Claude account is not connected; connect Claude in account settings';
+        assert.ok(latest.content.includes(expected),latest.content);
+        upstream.push({rejectedClaudeSpawn:latest.content});
         return reply({content:'CLAUDE_TOOL_DONE_DISCONNECTED_CHILD'},'stop');
       }
       const decoded=JSON.parse(latest.content);
@@ -183,6 +208,13 @@ test('Managed native Claude and mixed-family public delegation, account gates, c
         prior_proof_present:JSON.stringify(body.messages).includes('NATIVE_CLAUDE_DURABLE_PROOF'),summary_present:JSON.stringify(body.messages).includes('NATIVE_SUMMARY'),effort:body.output_config.effort});
       const latest=body.messages.at(-1), result=Array.isArray(latest.content)&&latest.content.find(b=>b.type==='tool_result');
       const encodedHistory = JSON.stringify(body.messages);
+      if (encodedHistory.includes('DEFAULT_CLAUDE_READINESS')) {
+        readinessCalls++;
+        assert.equal(body.model,'claude-sonnet-4-6','family-only spawn chooses an account-available Claude default');
+        const submitted=body.messages.some(message=>Array.isArray(message.content)&&message.content.some(block=>block.type==='tool_use'&&block.name.replace(/^_/,'')==='submit_result'));
+        return submitted ? sse({type:'text',text:'Claude is ready'},'end_turn',`message-${calls}`)
+          : sse({type:'tool_use',id:'readiness-submit',name:'submit_result',input:{output:'CLAUDE_READY'}},'tool_use',`message-${calls}`);
+      }
       const canonicalTask = encodedHistory.includes('CANONICAL_CHILD_PROOF');
       const codexRoot = encodedHistory.includes('Delegate canonical Codex child');
       const canonicalRoot = encodedHistory.includes('Delegate canonical Claude child') || codexRoot;
@@ -410,8 +442,23 @@ test('Managed native Claude and mixed-family public delegation, account gates, c
     assert.deepEqual(mixed.data.map(model=>model.id),['gpt-6-astra','gpt-6.1-sol','gpt-6-luna']);
     await turn(agent,'Run Bash durable proof in mixed account','journey-mixed-provider-pin');assert.equal(responsesAttempts,0,'Claude inference/sidebar cannot borrow OAI credential');
     allowResponses=true;
-    const reverse=(await call('/v1/agents','POST',{settings:{model:'gpt-6-astra',thinking:'low',reasoning_mode:'standard',fast_mode:false}},201)).agent_id;
+    const readinessSettings={model:'gpt-6-astra',thinking:'max',reasoning_mode:'standard',fast_mode:false};
+    const directReadiness=(await call('/v1/agents','POST',{settings:readinessSettings},201)).agent_id;
+    // Create a legacy directory-bound thread, then reopen it under the current deployment flag.
+    await mf.dispose();options.workers[0].bindings.MANAGED_AGENT_DIRECT_CREDENTIALS='false';mf=new Miniflare(options);
+    const legacyReadiness=(await call('/v1/agents','POST',{settings:readinessSettings},201)).agent_id;
+    await mf.dispose();options.workers[0].bindings.MANAGED_AGENT_DIRECT_CREDENTIALS='true';mf=new Miniflare(options);
     catalogOutage=false;
+    for (const [label,readinessAgent] of [['legacy',legacyReadiness],['direct',directReadiness]]) {
+      const completed=await turn(readinessAgent,'Delegate default Claude readiness','journey-default-readiness-'+label);
+      assert.match(JSON.stringify(completed),/CLAUDE_TOOL_DONE_DEFAULT_READINESS/);
+      assert.deepEqual((await call(`/v1/agents/${readinessAgent}`)).settings,readinessSettings,'child family switch preserves GPT parent model and effort');
+      const history=await call(`/v1/agents/${readinessAgent}/events/history?after=0&limit=256`);
+      await writeFile(resolve(evidence,`default-readiness-${label}-history.json`),JSON.stringify(history,null,2));
+      assert.ok(history.data.some(row=>row.agent_id!==undefined&&row.event?.type==='tool.result'&&row.event.payload.tool==='submit_result'&&row.event.payload.structured_result.accepted===true),'child result is accepted through the public tool boundary');
+    }
+    assert.equal(readinessCalls,4,'both retained strategies execute family-only Claude spawn, submit, and finish');
+    const reverse=(await call('/v1/agents','POST',{settings:{model:'gpt-6-astra',thinking:'low',reasoning_mode:'standard',fast_mode:false}},201)).agent_id;
     const mobileSelection=await call(`/v1/agents/${reverse}/routing`,'POST',{model:'claude-sonnet-4-6',thinking:'low'});
     assert.equal(mobileSelection.automatic,false);assert.equal(mobileSelection.settings.model,'claude-sonnet-4-6');
     await turn(reverse,'Delegate canonical Codex child','journey-reverse-child');
@@ -458,6 +505,12 @@ test('Managed native Claude and mixed-family public delegation, account gates, c
     assert.equal(grandchildReceipt.parent_agent_id,claudeChildId,'public receipt confirms the three-generation hierarchy');
     for (const id of [claudeChildId,gatewayGrandchildId]) assert.equal(nestedTools.find(row=>row.agent_id===id&&row.event.payload.tool==='submit_result').event.payload.structured_result.accepted,true);
     assert.equal((await call(`/v1/agents/${nested}`)).settings.model,'kimi-k3');
+    const catalogProbe=(await call('/v1/agents','POST',{},201)).agent_id;
+    await call(`/v1/agents/${catalogProbe}/routing`,'POST',{model:'kimi-k3',thinking:'low'});
+    const beforeCatalogFailure=calls;
+    catalogOutage=true;
+    await turn(catalogProbe,'Try unavailable mixed catalog','journey-mixed-catalog-unavailable');
+    assert.equal(calls,beforeCatalogFailure,'unverified catalog prevents child inference');
     await call('/v1/credentials/claude','DELETE');catalogOutage=false;
     const beforeDisconnected=calls;
     await turn(gateway.agent_id,'Try disconnected mixed child','journey-mixed-disconnected');
@@ -470,7 +523,7 @@ test('Managed native Claude and mixed-family public delegation, account gates, c
     assert.ok((await call('/v1/models')).data.some(row=>row.id==='claude-sonnet-4-6'));
     const validationTrace=await (await claudeProvider(new Request('https://claude-fixture.invalid/trace?scenario=profile-uncertain'))).json();assert.equal(validationTrace.exchange,1);assert.equal(validationTrace.profile,2);
     assert.deepEqual(providerErrors,[],"all provider fixtures matched the real public journeys");
-    console.info('CLAUDE_MANAGED_JOURNEY',{calls,summaries,writes,taskWrites,canonicalWrites,codexWrites,nestedWrites,sidebarCalls,holds,responsesAttempts,DOReopens:4,nativeTools:['Write','Read','Bash'],actualModels:catalog.data.map(m=>m.id),staleSelectionDenied:true,gatewayOnlyDefault:gatewayOnly.default_model,unsupportedOnlyAvailable:unsupportedOnly.availability.claude.available,exactToolAllowlist:true,uninstalledCapabilityDeniedBeforeInference:true});
+    console.info('CLAUDE_MANAGED_JOURNEY',{calls,summaries,writes,taskWrites,canonicalWrites,readinessCalls,codexWrites,nestedWrites,sidebarCalls,holds,responsesAttempts,DOReopens:8,nativeTools:['Write','Read','Bash'],actualModels:catalog.data.map(m=>m.id),staleSelectionDenied:true,gatewayOnlyDefault:gatewayOnly.default_model,unsupportedOnlyAvailable:unsupportedOnly.availability.claude.available,exactToolAllowlist:true,uninstalledCapabilityDeniedBeforeInference:true});
   } finally {
     await mf?.dispose();
     await writeFile(resolve(evidence,'public-api-trace.json'),JSON.stringify(trace,null,2));

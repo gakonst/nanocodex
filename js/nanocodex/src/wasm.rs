@@ -259,6 +259,36 @@ struct JavaScriptSpawnRouter {
     host_definition_id: u32,
 }
 
+// Host/provider exceptions can contain credentials or request bodies. Expose only
+// fixed admission diagnostics; arbitrary JavaScript failures stay opaque.
+fn subagent_routing_error(value: JsValue) -> std::io::Error {
+    let message = value.as_string().or_else(|| {
+        js_sys::Reflect::get(&value, &JsValue::from_str("message"))
+            .ok()
+            .and_then(|message| message.as_string())
+    });
+    let safe = match message.as_deref() {
+        Some("Claude account is not connected") => {
+            "Claude account is not connected; connect Claude in account settings"
+        }
+        Some("Claude model catalog is unavailable") => {
+            "Claude model catalog is unavailable; account model availability could not be verified"
+        }
+        Some("Claude harness is unavailable for this managed session") => {
+            "Claude harness is unavailable for this managed session"
+        }
+        Some("Claude child model is outside the explicit routing policy") => {
+            "Claude child model is outside the explicit routing policy"
+        }
+        Some("Selected Claude child model is unavailable") => {
+            "Selected Claude child model is unavailable for the connected account"
+        }
+        Some("Unsupported Claude child effort") => "Unsupported Claude child effort",
+        _ => return std::io::Error::other("subagent routing failed or was not authorized"),
+    };
+    std::io::Error::other(format!("subagent routing failed: {safe}"))
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 struct JavaScriptSpawnRoute {
@@ -319,7 +349,7 @@ impl nanocodex_subagents::SpawnRouter for JavaScriptSpawnRouter {
             .map_err(|_| std::io::Error::other("subagent routing host rejected request"))?;
         let value = JsFuture::from(promise)
             .await
-            .map_err(|_| std::io::Error::other("subagent routing failed or was not authorized"))?;
+            .map_err(subagent_routing_error)?;
         let route: JavaScriptSpawnRoute = serde_json::from_str(
             &value
                 .as_string()

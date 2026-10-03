@@ -42,8 +42,7 @@ type OwnershipCoordinates = Readonly<{
   runtime_profile: string | null;
 }>;
 
-/** The durable Session is the sole authority for the new subject version. */
-export function sessionCredentialOwner(input: Readonly<{
+type SessionCredentialOwnershipInput = Readonly<{
   subject: string;
   storageId: string;
   binding: Readonly<{
@@ -59,11 +58,25 @@ export function sessionCredentialOwner(input: Readonly<{
   deleted: boolean;
   exported: boolean;
   importPending: boolean;
-}>): string | undefined {
+}>;
+
+/** The durable Session is the sole authority for the retained direct subject. */
+export function sessionCredentialOwner(input: SessionCredentialOwnershipInput): string | undefined {
+  if (input.binding?.strategy !== "session_v1") return undefined;
+  return activeSessionCredentialOwner(input);
+}
+
+/** Messages can use private Session authority without migrating the retained strategy. */
+export function claudeSessionCredentialOwner(input: SessionCredentialOwnershipInput): string | undefined {
+  if (input.binding?.strategy !== undefined && input.binding.strategy !== "session_v1") return undefined;
+  return activeSessionCredentialOwner(input);
+}
+
+function activeSessionCredentialOwner(input: SessionCredentialOwnershipInput): string | undefined {
   const { binding, session, initialization } = input;
   if (input.deleting || input.deleted || input.exported || input.importPending
     || input.subject !== managedCredentialSubject(input.storageId)
-    || !binding || binding.strategy !== "session_v1" || binding.state !== "active"
+    || !binding || binding.state !== "active"
     || binding.subject !== input.storageId
     || !session || session.runtime_profile !== "managed"
     || !initialization || initialization.state !== "active"
@@ -113,6 +126,27 @@ export function scopedManagedModelEgress(
         return sessionModel.binding.fetch(request);
       }
       return binding.fetch(request);
+    },
+  };
+}
+
+/** Claude-only private transport; never changes the retained general-purpose subject. */
+export function scopedManagedClaudeModelEgress(
+  binding: Fetcher,
+  storageId: string,
+  owner: () => string | undefined,
+  clientIngressColo: () => string | null,
+): Pick<Fetcher, "fetch"> {
+  const transport = scopedManagedModelEgress(binding, storageId, managedCredentialSubject(storageId), {
+    binding, owner, clientIngressColo,
+  });
+  return {
+    fetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
+      const request = new Request(input, init);
+      if (request.url !== "https://nanocodex.internal/v1/messages" || request.method !== "POST") {
+        throw new TypeError("invalid managed Claude model request");
+      }
+      return transport.fetch(request);
     },
   };
 }

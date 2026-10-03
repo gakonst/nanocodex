@@ -64,7 +64,7 @@ import { threadSharingTools, redactSharedLinkTokens } from "./thread-sharing-too
 import { initializeTurnInputs, inputChunks, lazyTurnInput, readTurnInput, storeTurnInput } from "./managed-turn-input";
 import { DurableObject, WorkerEntrypoint } from "cloudflare:workers";
 import { ArchiveMaintenance } from "./archive-maintenance";
-import { managedCredentialSubject, scopedManagedModelEgress, sessionCredentialOwner } from "./session-credential-ownership";
+import { claudeSessionCredentialOwner, managedCredentialSubject, scopedManagedClaudeModelEgress, scopedManagedModelEgress, sessionCredentialOwner } from "./session-credential-ownership";
 import { remoteICE } from "./hand-remote-ice";
 import { REMOTE_VM_ASSERTION, type RemoteVMPublisher } from "./hand-remote";
 import { serverHandTool } from "./ssh-hand-setup";
@@ -9315,8 +9315,10 @@ export class DurableAgentSession extends DurableComputerObject {
     const restrictedEnvironment = configuration.environment?.network.access !== undefined && configuration.environment.network.access !== "enabled";
     const isClaude = this.#settings().model.startsWith("claude-");
     if (isClaude && (configuration.output_schema !== undefined || configuration.prompt_cache !== undefined)) throw new ManagedRequestError(409, "claude_response_controls_unsupported", "Claude managed output_schema and prompt_cache controls are not implemented");
-    if (isClaude && (multiplayer || !this.env.NANOCODEX_SESSION_MODEL_EGRESS || this.#credentialBinding?.strategy !== "session_v1")) throw new ManagedRequestError(409, "claude_runtime_unavailable", "Claude requires a managed account-owned private Messages binding");
     if (!multiplayer && create === undefined) await this.#ensureCredentialBinding(session);
+    const claudeAvailable = !multiplayer && this.env.NANOCODEX_SESSION_MODEL_EGRESS !== undefined
+      && this.#claudeCredentialOwner() !== undefined;
+    if (isClaude && !claudeAvailable) throw new ManagedRequestError(409, "claude_runtime_unavailable", "Claude requires a managed account-owned private Messages binding");
     const credentialBindingMs = preparation?.credentialBindingMs ?? performance.now() - phaseStartedAt;
     phaseStartedAt = performance.now();
     signal?.throwIfAborted();
@@ -9451,14 +9453,19 @@ export class DurableAgentSession extends DurableComputerObject {
       nativeOnlyCodex: isClaude,
       ai: this.env.AI!, policy: subagentRoutingPolicy(configuration.model_routing ?? routingPolicySchema.parse({}), configuration.model_routing_selection === "manual"),
       availability: () => this.#routingAvailability(),
-      ...(!multiplayer && this.env.NANOCODEX_SESSION_MODEL_EGRESS && this.#credentialBinding?.strategy === "session_v1" && configuration.tools === undefined ? { claude: {
+      ...(claudeAvailable && configuration.tools === undefined ? { claude: {
         parentModel: (parentSessionId: string) => parentSessionId === rootRoutingSessionId()
           ? isClaude ? this.#settings().model : undefined : readChildRoute(parentSessionId)?.claudeModel,
         authorize: (parentSessionId: string, hostContextRef: string) => {
           assertRuntimeOwned();
           assertRoutingAuthority(managedAuthorizationForRouting(this.ctx.storage, bindings, rootRoutingSessionId(), parentSessionId, hostContextRef));
         },
-        availableModels: async () => (await availableManagedModels(this.env.NANOCODEX, session.owner_id, this.env)).data.filter(model => model.provider === "claude").map(model => model.id),
+        availableModels: async () => {
+          const catalog = await availableManagedModels(this.env.NANOCODEX, session.owner_id, this.env);
+          if (!catalog.availability.claude.connected) throw new Error("Claude account is not connected");
+          if (catalog.availability.claude.error) throw new Error("Claude model catalog is unavailable");
+          return catalog.data.filter(model => model.provider === "claude").map(model => model.id);
+        },
       } } : {}),
       native: {
         availableModels: async () => (await availableManagedModels(this.env.NANOCODEX, session.owner_id, this.env)).data.filter(model => model.provider === "openai").map(model => model.id),
@@ -10059,8 +10066,7 @@ export class DurableAgentSession extends DurableComputerObject {
         if (!this.#hasFullAccountAuthority(authorization) || !turnCanUseExecutionNamespace(authorization))
           throw new ManagedRequestError(403, "claude_forbidden", "Claude tools require current account authority");
       };
-      const alternateClaude = !multiplayer && !isClaude && configuredNames === undefined && configuration.multi_agent?.enabled !== false
-        && this.env.NANOCODEX_SESSION_MODEL_EGRESS !== undefined && this.#credentialBinding?.strategy === "session_v1";
+      const alternateClaude = claudeAvailable && !isClaude && configuredNames === undefined && configuration.multi_agent?.enabled !== false;
       if (isClaude || alternateClaude) {
         claudeTools = await createManagedClaudeTools({ filesystem: computer.filesystem,
           bash: namespaceRuntime?.tools.find(tool => tool.name === "exec_command") ?? computer.tool, poll: namespaceRuntime?.tools.find(tool => tool.name === "write_stdin"), tools: configuredTools, allowedNames: configuredNames, providers: hostedProviders, mcp: !accountToolsEnabled(configuration) ? {} : managedMcp,
@@ -10116,7 +10122,7 @@ export class DurableAgentSession extends DurableComputerObject {
                 : child === undefined ? undefined : managedAuthorizationForRouting(this.ctx.storage, bindings, rootRoutingSessionId(), inferenceSession!, child.host_context_ref);
               if (!this.#hasFullAccountAuthority(authorization) || !turnCanUseExecutionNamespace(authorization))
                 throw new Error("Claude inference requires current session authority");
-              return this.#modelEgress().fetch(request);
+              return this.#claudeModelEgress().fetch(request);
             },
           };
       Object.defineProperty(agentOptions, internalRuntime, { value: {
@@ -11780,6 +11786,23 @@ export class DurableAgentSession extends DurableComputerObject {
       return;
     }
     this.#publish(persistence.event!);
+  }
+
+  #claudeCredentialOwner(): string | undefined {
+    return claudeSessionCredentialOwner({
+      subject: managedCredentialSubject(this.ctx.id.toString()), storageId: this.ctx.id.toString(),
+      binding: this.#credentialBinding, session: this.#session(),
+      initialization: this.#initializationOwnership(),
+      deleting: this.#deleting, deleted: this.#deleted,
+      exported: this.#durabilityExported, importPending: this.#durabilityImportState === "pending",
+    });
+  }
+
+  #claudeModelEgress(): Pick<Fetcher, "fetch"> {
+    const binding = this.env.NANOCODEX_SESSION_MODEL_EGRESS;
+    if (!binding) throw new Error("Claude private model transport is unavailable");
+    return scopedManagedClaudeModelEgress(binding, this.ctx.id.toString(),
+      () => this.#claudeCredentialOwner(), () => this.#routingOrigin().clientIngressColo);
   }
 
   #modelEgress(): Pick<Fetcher, "fetch"> {

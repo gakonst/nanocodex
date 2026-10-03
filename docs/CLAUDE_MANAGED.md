@@ -69,10 +69,15 @@ Default managed Claude sessions expose the canonical `spawn_agent`, `list_agents
 Account-owned managed sessions can select `harness: "claude"` from a Codex
 parent or `harness: "codex"` from a Claude parent. Each child uses its native
 Messages or Responses transport and the spawning turn's retained authority;
-selecting a child never changes the parent's model. Claude-root Codex children
+selecting a child never changes the parent's model. Existing account-owned
+sessions with legacy directory credentials also use the private Messages
+transport for Claude children; their retained credential strategy stays unchanged
+for Codex, voice, and connectors. Claude-root Codex children
 currently support the available GPT models; gateway models are rejected at
 admission. Child selection is checked against the account's available model
-catalog before inference. Explicit `multi_agent: { enabled: false }` disables
+catalog before inference. Spawn failures distinguish a disconnected Claude
+account, an unavailable provider model catalog, and an unavailable selected model.
+Unexpected host errors remain opaque. Explicit `multi_agent: { enabled: false }` disables
 delegation, and an explicit tool allowlist does not acquire additional tools. Existing configurations
 that explicitly enable `Task` retain its blocking execution, durable receipts and
 uncertainty after interruption. The session's native prompt describes its actual
