@@ -175,7 +175,9 @@ pub struct ClaudeBuilder {
 impl ClaudeBuilder {
     fn new(claude: Claude) -> Self {
         let context_window_tokens = match claude.model.as_str() {
-            "claude-opus-5-5" | "claude-fable-5-1" | "claude-sonnet-5" => 1_000_000,
+            "claude-opus-5-5" | "claude-fable-5-1" | "claude-sonnet-5-5" | "claude-sonnet-5" => {
+                1_000_000
+            }
             _ => 200_000, // Conservative fallback; override for other models.
         };
         Self {

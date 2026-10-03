@@ -38,6 +38,57 @@ fn stream(blocks: Vec<Value>, stop: &str) -> String {
 }
 
 #[tokio::test]
+async fn sonnet_55_uses_its_million_token_window_before_compacting() {
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let received = calls.clone();
+    let app = Router::new().route(
+        "/v1/messages",
+        post(move |Json(body): Json<Value>| {
+            let received = received.clone();
+            async move {
+                assert_eq!(body["model"], "claude-sonnet-5-5");
+                received.fetch_add(1, Ordering::SeqCst);
+                let response = stream(vec![json!({"type":"text","text":"answer"})], "end_turn")
+                    .replace("\"input_tokens\":3", "\"input_tokens\":300000");
+                ([("content-type", "text/event-stream")], response)
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let client = ClaudeClient::new(
+        reqwest::Client::new(),
+        format!("http://{address}/v1/messages"),
+        "synthetic",
+    );
+    let (agent, _) = Nanocodex::builder(Claude::new(client, "claude-sonnet-5-5"))
+        .build()
+        .unwrap();
+    for prompt in ["first", "second"] {
+        assert_eq!(
+            agent
+                .prompt(prompt)
+                .await
+                .unwrap()
+                .result()
+                .await
+                .unwrap()
+                .final_message(),
+            "answer"
+        );
+    }
+    agent.shutdown().await.unwrap();
+    server.abort();
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        2,
+        "300K input must not trigger compaction in Sonnet 5.5's 1M window"
+    );
+}
+
+#[tokio::test]
 async fn stream_tool_once_compact_and_failed_turn_preserves_history() {
     let _ = rustls::crypto::ring::default_provider().install_default();
 
