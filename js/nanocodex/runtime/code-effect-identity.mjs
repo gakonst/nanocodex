@@ -40,7 +40,7 @@ export function createCodeEffectIdentity(enabled) {
       const event = typeof encoded === "string" ? JSON.parse(encoded) : encoded;
       const payload = event?.payload;
       if (typeof payload?.turn_id !== "string") return;
-      if (event.type === "input.accepted" && payload.kind === "prompt") {
+      if (event.type === "input.accepted" && (payload.kind === "prompt" || payload.kind === "completion")) {
         const sessionId = payload.session_id;
         if (typeof sessionId !== "string") return;
         const session = sessionFor(sessionId);

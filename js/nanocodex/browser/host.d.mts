@@ -1,6 +1,7 @@
 import type {
   CodeEvaluator,
   CodeEffectJournal,
+  CodeAsyncJobAdapter,
   McpServers,
   MppSession,
   SubagentToolContext,
@@ -119,6 +120,8 @@ export function createBrowserHost(options?: {
   codeEvaluator?: CodeEvaluator;
   /** @internal Trusted durable effect receipts, not available inside guest code. */
   codeEffectJournal?: CodeEffectJournal;
+  /** Trusted durable async job adapter; disabled unless enabled for this session. */
+  codeAsyncJobs?: CodeAsyncJobAdapter;
   toolMode?: "code" | "direct";
   /** @internal Live host lifecycle for ephemeral Rust-owned subagents. */
   subagentRouting?: Pick<import('../runtime/subagent-routing.mjs').SubagentRouting, 'resolve' | 'bind'>;

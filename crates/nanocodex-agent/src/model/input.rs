@@ -23,6 +23,9 @@ pub(in crate::model) fn prompt_messages(
     prompt: &Prompt,
     user_content: Vec<ContentItem>,
 ) -> Vec<ResponseItem> {
+    if let Some(completion) = prompt.async_completion() {
+        return async_completion_items(completion);
+    }
     let mut input = Vec::with_capacity(prompt.transcript().len() + 1);
     input.extend(prompt.transcript().iter().map(|message| {
         let role = match message.role() {
@@ -37,6 +40,46 @@ pub(in crate::model) fn prompt_messages(
     }));
     input.push(ResponseItem::message(MessageRole::User, user_content));
     input
+}
+
+/// A new host-authored call/result pair avoids a second output for the
+/// original exec call, whose immediate result already acknowledged the job.
+fn async_completion_items(completion: &nanocodex_oai_api::AsyncCompletion) -> Vec<ResponseItem> {
+    use nanocodex_oai_api::responses::{ItemStatus, ResponseItemId};
+    let call_id = format!("async_{}", completion.delivery_id);
+    let metadata = serde_json::json!({
+        "kind": "async_completion",
+        "job_id": completion.job_id,
+        "original_call_id": completion.original_call_id,
+        "delivery_id": completion.delivery_id,
+    });
+    let call = ResponseItem::CustomToolCall {
+        id: Some(ResponseItemId::with_suffix("ctc", &call_id)),
+        status: Some(ItemStatus::Completed),
+        call_id: call_id.clone().into(),
+        name: "exec".into(),
+        namespace: Some("functions".into()),
+        input: format!("// Host delivery of a previously accepted Code Mode job.\n// {metadata}")
+            .into(),
+        asynchronous: false,
+        caller: None,
+        created_by: None,
+        internal_chat_message_metadata_passthrough: None,
+    };
+    let mut output = completion.output.clone();
+    output.replace_invalid_image_envelopes();
+    let result = ResponseItem::CustomToolCallOutput {
+        id: Some(ResponseItemId::with_suffix("ctco", &call_id)),
+        call_id: call_id.into(),
+        // Named custom outputs are notifications, not terminal results.
+        name: None,
+        output: function_output(output),
+        caller: None,
+        status: Some(ItemStatus::Completed),
+        created_by: None,
+        internal_chat_message_metadata_passthrough: None,
+    };
+    vec![call, result]
 }
 
 pub(in crate::model) fn turn_aborted() -> ResponseItem {

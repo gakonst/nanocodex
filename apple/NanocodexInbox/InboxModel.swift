@@ -50,6 +50,13 @@ final class InboxModel: ObservableObject {
             preferences.enqueue { $0.set(value, forKey: key) }
         }
     }
+    @Published var newThreadCodeModeAsync = false {
+        didSet {
+            guard !restoringNewThreadDraft, !scope.isEmpty, newThreadCodeModeAsync != oldValue else { return }
+            let key = "inbox.newThreadCodeModeAsync." + scope, value = newThreadCodeModeAsync
+            preferences.enqueue { $0.set(value, forKey: key) }
+        }
+    }
     @Published private(set) var newThreadError: String?
     private var restoringNewThreadDraft = false
     @Published var rows: [TranscriptRow] = [] {
@@ -378,6 +385,7 @@ final class InboxModel: ObservableObject {
     @Published private(set) var modelCatalogError: String?
     @Published private(set) var modelSettingsError: String?
     @Published private var pendingCreations = Set<String>()
+    private var asyncCodeModeCreations = Set<String>()
     @Published private var creationErrors: [String: String] = [:]
     private var creationTasks: [String: Task<String, Error>] = [:]
     private var createdAgentIDs: [String: String] = [:]
@@ -2116,7 +2124,7 @@ final class InboxModel: ObservableObject {
         schedulesTask?.cancel(); schedulesTask = nil; schedulesFailures = [:]
         scheduledJobs = []; scheduledJobAgents = [:]; schedulesLoading = false; schedulesLoaded = false; schedulesError = nil
         for task in creationTasks.values { task.cancel() }
-        creationTasks = [:]; pendingCreations = []; creationErrors = [:]; createdAgentIDs = [:]
+        creationTasks = [:]; pendingCreations = []; asyncCodeModeCreations = []; creationErrors = [:]; createdAgentIDs = [:]
         modelSettingsBusy = []; modelSettingsError = nil
         cancellationTasks.cancelAll(); cancellations = []; steeringTasks.cancelAll(); steeringTransfers = []
         deviceHand?.close(); deviceHand = nil; deviceHandConnected = false
@@ -4057,6 +4065,7 @@ final class InboxModel: ObservableObject {
             cancellations = saved.cancellations
             steeringTransfers = saved.steeringTransfers
             pendingCreations = saved.pendingCreations
+            asyncCodeModeCreations = saved.asyncCodeModeCreations
             outboxRestoredScope = scope
             committedOutbox = saved
             outboxPersistenceError = nil
@@ -4257,6 +4266,7 @@ final class InboxModel: ObservableObject {
     private func restoreNewThreadDraft() {
         restoringNewThreadDraft = true
         newThreadDraft = scope.isEmpty ? "" : UserDefaults.standard.string(forKey: "inbox.newThreadDraft." + scope) ?? ""
+        newThreadCodeModeAsync = !scope.isEmpty && UserDefaults.standard.bool(forKey: "inbox.newThreadCodeModeAsync." + scope)
         newThreadError = nil
         restoringNewThreadDraft = false
     }
@@ -4274,7 +4284,8 @@ final class InboxModel: ObservableObject {
         let id = "draft-" + UUID().uuidString
         let message = PendingMessage(agentID: id, input: text, predecessor: "")
         let snapshot = MobileOutboxStore.Snapshot(pending: pending + [message], cancellations: cancellations,
-            steeringTransfers: steeringTransfers, pendingCreations: pendingCreations.union([id]))
+            steeringTransfers: steeringTransfers, pendingCreations: pendingCreations.union([id]),
+            asyncCodeModeCreations: newThreadCodeModeAsync ? asyncCodeModeCreations.union([id]) : asyncCodeModeCreations)
         do {
             try requireDurableOutbox()
             try durableOutbox().save(snapshot, scope: scope)
@@ -4284,13 +4295,14 @@ final class InboxModel: ObservableObject {
         }
         committedOutbox = snapshot
         pending = snapshot.pending; pendingCreations = snapshot.pendingCreations
+        asyncCodeModeCreations = snapshot.asyncCodeModeCreations
         var card = newConversationCard(id)
         card.noteSubmittedPrompt(text, at: Date().timeIntervalSince1970 * 1000)
         cards.insert(card, at: 0)
         if isDemo { demoRows[id] = [] }
         busy.insert(id); error = nil; notice = nil
         select(id)
-        newThreadDraft = ""; newThreadError = nil
+        newThreadDraft = ""; newThreadCodeModeAsync = false; newThreadError = nil
         persist()
         let epoch = generation
         // submit flushes the draft clear before readyAgent can create remotely.
@@ -4327,6 +4339,7 @@ final class InboxModel: ObservableObject {
         guard pendingCreations.contains(localID) else { return localID }
         if let task = creationTasks[localID] { return try await task.value }
         let epoch = generation, client = client, demo = isDemo
+        let codeModeAsync = asyncCodeModeCreations.contains(localID)
         creationErrors[localID] = nil
         let task = Task { @MainActor () async throws -> String in
             do {
@@ -4340,7 +4353,7 @@ final class InboxModel: ObservableObject {
                     id = "demo-" + localID
                 } else {
                     guard let client else { throw APIError.invalidResponse }
-                    id = try await client.create(requestID: localID)
+                    id = try await client.create(requestID: localID, codeModeAsync: codeModeAsync)
                 }
                 guard generation == epoch else { throw CancellationError() }
                 bindCreatedAgent(localID, to: id)
@@ -4403,7 +4416,7 @@ final class InboxModel: ObservableObject {
             catch { contextError = error.localizedDescription }
         }
         refreshContext()
-        pendingCreations.remove(localID); creationErrors[localID] = nil
+        pendingCreations.remove(localID); asyncCodeModeCreations.remove(localID); creationErrors[localID] = nil
         unlistedAgents.insert(id)
         // Rebind without navigating: a late response must never steal focus.
         deck.reconcile(deck.order.map { $0 == localID ? id : $0 }.filter { !closedConversationIDs.contains($0) })
@@ -4431,7 +4444,8 @@ final class InboxModel: ObservableObject {
         do {
             guard outboxRestoredScope == scope else { throw outboxPersistenceError ?? CocoaError(.coderReadCorrupt) }
             let snapshot = MobileOutboxStore.Snapshot(pending: pending, cancellations: cancellations,
-                                                     steeringTransfers: steeringTransfers, pendingCreations: pendingCreations)
+                                                     steeringTransfers: steeringTransfers, pendingCreations: pendingCreations,
+                                                     asyncCodeModeCreations: asyncCodeModeCreations)
             // Draft typing also calls persist. Only changed command state needs
             // JSON encoding and a synchronous SQLite durability checkpoint.
             if committedOutbox != snapshot {

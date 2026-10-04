@@ -1,5 +1,6 @@
-import { steerInputKey } from "../runtime/steer-receipt.mjs";
-export { steerInputKey };
+export { resumeCompletion, deliverCompletion } from "../internal.mjs";
+import { steerInputKey, asyncCompletionInputKey } from "../runtime/steer-receipt.mjs";
+export { steerInputKey, asyncCompletionInputKey };
 import { createGatewayResponses } from "./gateway-responses.mjs";
 import { createWorkersAiResponses } from "./workers-ai-responses.mjs";
 import { responseControlsBody, responseControlsSocket } from "../runtime/response-controls.mjs";
@@ -16,6 +17,8 @@ import {
   prepareCloudflareAgentSession,
   releaseAgentSession,
   routePrompt,
+  resumeCompletion,
+  deliverCompletion,
 } from "../internal.mjs";
 import { pruneDurableReceipts as pruneWasmDurableReceipts } from "../pkg-web/nanocodex.js";
 import * as Transport from "../browser/Transport.mjs";
@@ -69,8 +72,12 @@ const lifecycles = new WeakMap();
 /** @internal Binds the package-owned module to the public Cloudflare namespace. */
 export function bindAgent(module, hostAgent = HostAgent) {
   return Object.freeze({
+    resumeCompletion,
+    deliverCompletion,
     steerReceipt,
+    operationReceiptStatus,
     steerInputKey,
+    asyncCompletionInputKey,
     pruneDurableReceipts: (owner, options) => pruneDurableReceipts(module, owner, options),
     create: (owner, options) => create(module, owner, options, hostAgent),
     createEphemeral: (owner, options) => createEphemeral(module, owner, options),
@@ -700,6 +707,7 @@ async function createOwned(module, resolved, options, hostAgent, lifecycle, prep
       [Symbol.for("nanocodex.browser.internalRuntime")]: {
         traceTool: internalRuntime?.traceTool,
         codeEffectJournal: internalRuntime?.codeEffectJournal,
+        codeAsyncJobs: internalRuntime?.codeAsyncJobs,
         toolProviders: internalRuntime?.toolProviders,
         subagentsEnabled: internalRuntime?.subagentsEnabled,
         subagentMaxConcurrency: internalRuntime?.subagentMaxConcurrency,
@@ -1125,4 +1133,21 @@ export function steerReceipt(owner, operationId, messageId) {
     throw new Error("invalid durable steer receipt");
   }
   return Object.freeze(receipt);
+}
+
+/** Inspect whether the exact native operation and its steering receipts are still retained. */
+export function operationReceiptStatus(owner, operationId) {
+  const { storage } = resolveContext(owner);
+  const tables = storage.sql.exec("SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('nanocodex_cloudflare_durability', 'nanocodex_durable_states')").toArray();
+  if (tables.length !== 2) return "missing";
+  const stateId = storedStateId(storage);
+  if (stateId === undefined) return "missing";
+  const path = `$.nanocodex_durable_state.operations.${JSON.stringify(operationId)}`;
+  const row = storage.sql.exec(`SELECT json_type(payload, ?) AS operation,
+    json_type(payload, ?) AS completed, json_type(payload, ?) AS failed,
+    json_type(payload, ?) AS cancelled
+    FROM nanocodex_durable_states WHERE state_id = ?`, path,
+    `${path}.status.completed`, `${path}.status.failed`, `${path}.status.cancelled`, stateId).toArray()[0];
+  if (row?.operation == null) return "missing";
+  return row.completed != null || row.failed != null || row.cancelled != null ? "terminal" : "pending";
 }

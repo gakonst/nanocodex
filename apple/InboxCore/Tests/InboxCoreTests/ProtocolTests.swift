@@ -448,6 +448,76 @@ final class ProtocolTests: XCTestCase {
         XCTAssertEqual(id, "created-agent")
         XCTAssertEqual(requests, 2)
     }
+    // The service is the only fixture: creation serialization and SQLite restart
+    // recovery exercise the production public boundaries together.
+    func testAsyncCreationRetriesCapturedConfigurationAfterOutboxRestart() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let path = directory.appendingPathComponent("outbox.sqlite").path
+        let requestID = "draft-async-retry"
+        let scope = "synthetic-async-account"
+        var requests = 0
+        let fixture = try HTTPFixture { request in
+            requests += 1
+            XCTAssertEqual(request.method, "POST")
+            XCTAssertEqual(request.path, "/v1/agents")
+            XCTAssertEqual(request.headers["idempotency-key"], requestID)
+            XCTAssertEqual(request.headers["content-type"], "application/json")
+            XCTAssertEqual(try? JSONDecoder().decode(JSON.self, from: request.body),
+                           .object(["configuration": .object(["code_mode_async": .bool(true)])]))
+            if requests == 1 { return .init(status: 503) }
+            return .init(status: 201, body: #"{"agent_id":"async-created-agent"}"#)
+        }
+        defer { fixture.close() }
+        do {
+            let store = try MobileOutboxStore(path: path)
+            _ = try store.restore(scope: scope)
+            let message = PendingMessage(agentID: requestID, input: "Retain my async thread", predecessor: "")
+            let snapshot = MobileOutboxStore.Snapshot(pending: [message], pendingCreations: [requestID], asyncCodeModeCreations: [requestID])
+            try store.save(snapshot, scope: scope)
+            let client = ManagedClient(credential: try AccountCredential(origin: fixture.origin, apiKey: fixtureKey), configuration: fixture.configuration)
+            defer { client.close() }
+            do {
+                _ = try await client.create(requestID: requestID, codeModeAsync: snapshot.asyncCodeModeCreations.contains(requestID))
+                XCTFail("Failed creation accepted")
+            } catch let error as APIError { XCTAssertEqual(error, .http(503)) }
+        }
+        let reopened = try MobileOutboxStore(path: path)
+        let restored = try reopened.restore(scope: scope)
+        XCTAssertEqual(restored.pending.first?.input, "Retain my async thread")
+        let retainedID = try XCTUnwrap(restored.pendingCreations.first)
+        let retry = ManagedClient(credential: try AccountCredential(origin: fixture.origin, apiKey: fixtureKey), configuration: fixture.configuration)
+        defer { retry.close() }
+        let id = try await retry.create(requestID: retainedID, codeModeAsync: restored.asyncCodeModeCreations.contains(retainedID))
+        XCTAssertEqual(id, "async-created-agent")
+        XCTAssertEqual(requests, 2)
+    }
+
+    func testSavedOutboxWithoutAsyncOptionCreatesWithDefaultTransport() async throws {
+        // This is the exact pre-option snapshot schema, as stored in SQLite.
+        let data = Data(#"{"pending":[],"cancellations":[],"steeringTransfers":[],"pendingCreations":["draft-legacy"]}"#.utf8)
+        let restored = try JSONDecoder().decode(MobileOutboxStore.Snapshot.self, from: data)
+        XCTAssertTrue(restored.asyncCodeModeCreations.isEmpty)
+        var requests = 0
+        let fixture = try HTTPFixture { request in
+            requests += 1
+            XCTAssertEqual(request.path, "/v1/agents")
+            XCTAssertEqual(request.method, "POST")
+            XCTAssertEqual(request.headers["idempotency-key"], "draft-legacy")
+            XCTAssertTrue(request.body.isEmpty)
+            XCTAssertNil(request.headers["content-type"])
+            return .init(status: 201, body: #"{"agent_id":"legacy-created-agent"}"#)
+        }
+        defer { fixture.close() }
+        let client = ManagedClient(credential: try AccountCredential(origin: fixture.origin, apiKey: fixtureKey), configuration: fixture.configuration)
+        defer { client.close() }
+        let requestID = try XCTUnwrap(restored.pendingCreations.first)
+        let id = try await client.create(requestID: requestID, codeModeAsync: restored.asyncCodeModeCreations.contains(requestID))
+        XCTAssertEqual(id, "legacy-created-agent")
+        XCTAssertEqual(requests, 1)
+    }
+
     func testDeletionFenceIsDistinctFromRetriableTurnConflict() async throws {
         let fixture = try HTTPFixture { request in
             .init(status: 409, body: request.path.hasSuffix("deleting")

@@ -75,6 +75,42 @@ no explicit cache write. Provider validation, minimum eligible prefix length,
 cache pricing and expiry still apply. Provider controls are applied to every
 managed Responses socket, including reopened connections and child sessions.
 
+## Asynchronous Code Mode at thread creation
+
+`configuration.code_mode_async: true` opts a new thread into asynchronous Code
+Mode. Omission or `false` preserves the ordinary tool interface. The choice is
+fixed when the thread is created; changing model settings does not enable or
+disable it. On iPhone, choose **Async Code Mode** in the new-thread composer.
+Pending creation retries retain the original choice.
+
+This option currently supports native Codex GPT root threads. Spawned subagents
+retain their existing execution mode; the root can still call their controls
+inside Code Mode. Other harnesses and routed model backends are not supported
+by this option.
+
+```js
+const agent = await Agent.create({
+  ...client,
+  configuration: { code_mode_async: true },
+});
+```
+
+Enabled threads expose `exec` as the model's tool entry point. An execution
+returns a durable job ID after admission. The script continues in the host;
+`await tools.someTool(...)` inside the script still waits for that tool's real
+result. Use ordinary JavaScript dependencies and parallel calls inside one cell.
+
+A saved terminal receipt enters the transcript as tool content at the next
+model-input boundary. When there is no active inference, the host starts a
+continuation from the receipt. The model need not poll, and should finish its
+current inference when further useful work depends on a pending result. A job
+ID is an acknowledgement, not proof of successful execution.
+
+An interrupted host cannot replay an arbitrary JavaScript continuation. Retained
+jobs without terminal receipts report an uncertain outcome; effects must be
+reconciled before retrying. Normal turn completion preserves admitted jobs;
+explicit cancellation remains cancellation.
+
 ## Creating and starting in one durable mutation
 
 Use `Agent.createAndPrompt` for a new session whose first task is already known.

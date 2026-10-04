@@ -142,6 +142,31 @@ pub trait CodeModeHost: Send + Sync + 'static {
         EmbeddedToolMode::Code
     }
 
+    /// Whether this session uses durable async jobs and an exec-only model surface.
+    /// Opting in requires terminal delivery and scoped native-tool callbacks.
+    fn async_jobs_enabled(&self, _session_id: &str) -> bool {
+        false
+    }
+
+    /// Executes a cell with native controls scoped to its original invocation.
+    /// Async hosts must retain this context until the admitted cell terminates.
+    fn execute_with_native_tools<'a>(
+        &'a self,
+        source: &'a str,
+        context: ToolContext<'a>,
+        observer: &'a mut dyn CodeModeObserver,
+        native_tools: Vec<std::sync::Arc<dyn crate::Tool>>,
+    ) -> HostFuture<'a, Result<CodeModeExecution, CodeModeHostError>> {
+        if native_tools.is_empty() {
+            return self.execute_with_updates(source, context, observer);
+        }
+        Box::pin(async {
+            Err(CodeModeHostError::new(
+                "host does not support nested native controls",
+            ))
+        })
+    }
+
     /// Whether the host implements resumable `exec`/`wait` cells and helpers.
     /// Existing complete-cell embeddings retain their original contract.
     fn supports_cells(&self) -> bool {
@@ -221,6 +246,15 @@ pub trait CodeModeHost: Send + Sync + 'static {
     /// Non-destructive early foreground yield. Custom hosts may conservatively
     /// retain timed observations by leaving this default implementation unchanged.
     fn preempt_turn<'a>(
+        &'a self,
+        _session_id: &'a str,
+    ) -> HostFuture<'a, Result<(), CodeModeHostError>> {
+        Box::pin(async { Ok(()) })
+    }
+
+    /// Finishes an ordinary turn while preserving explicitly retained background jobs.
+    /// Existing hosts retain their prior successful-turn behavior by default.
+    fn finish_turn<'a>(
         &'a self,
         _session_id: &'a str,
     ) -> HostFuture<'a, Result<(), CodeModeHostError>> {

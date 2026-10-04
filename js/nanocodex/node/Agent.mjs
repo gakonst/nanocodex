@@ -57,6 +57,7 @@ export function create(options = {}) {
     mcp,
     codeEvaluator,
     codeEffectJournal,
+    codeAsyncJobs,
   } = options;
   const stableSessionId = sessionId ?? createSessionId();
   const {
@@ -87,6 +88,7 @@ export function create(options = {}) {
     workspace: workspace ?? filesystem?.root ?? resume?.workspace,
     codeEvaluator,
     codeEffectJournal,
+    codeAsyncJobs,
     onDispose: () => { releaseDefinitionHost(hostDefinitionId); void harnesses?.close(); },
   });
   let harnesses;

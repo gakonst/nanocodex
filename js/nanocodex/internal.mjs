@@ -99,6 +99,22 @@ export function prompt(agent, options) {
   return createTurn(raw, agent);
 }
 
+/** Trusted host seam: resume from a retained tool completion without a user message. */
+export function resumeCompletion(agent, completion, options = {}) {
+  const state = agentState(agent);
+  if (typeof state.raw.resumeCompletion !== "function")
+    throw new Error("this runtime does not support asynchronous Code Mode completion");
+  return createTurn(state.raw.resumeCompletion(JSON.stringify(completion), options.cancelOnAdmission === true), agent);
+}
+
+/** Trusted host seam: queue a completion at the next model-input boundary. */
+export function deliverCompletion(turn, completion) {
+  const state = turnState(turn);
+  if (typeof state.raw.deliverCompletion !== "function")
+    throw new Error("this runtime does not support asynchronous Code Mode completion");
+  return state.raw.deliverCompletion(JSON.stringify(completion));
+}
+
 /** Internal live-input seam: atomically steers the active turn or starts one. */
 export async function routePrompt(agent, options) {
   const state = agentState(agent);
@@ -609,8 +625,8 @@ const hostBridge = Object.freeze({
     host.releaseSession(sessionId);
     releaseHostSession(host, sessionId);
   },
-  executeCode(source, sessionId, callId, model, turnId) {
-    return requiredSessionHost(sessionId).executeCode(source, sessionId, callId, model, turnId);
+  executeCode(source, sessionId, callId, model, turnId, nativeTools) {
+    return requiredSessionHost(sessionId).executeCode(source, sessionId, callId, model, turnId, nativeTools);
   },
   waitCode(input, sessionId, callId) {
     return requiredSessionHost(sessionId).waitCode(input, sessionId, callId);
@@ -629,6 +645,12 @@ const hostBridge = Object.freeze({
   },
   beginCodeTurn(sessionId) {
     hostSessions.get(sessionId)?.beginCodeTurn?.(sessionId);
+  },
+  codeModeAsync(definitionHostId, sessionId) {
+    return requiredDefinitionHost(definitionHostId).codeModeAsync?.(sessionId) === true;
+  },
+  finishCodeTurn(sessionId) {
+    hostSessions.get(sessionId)?.finishCodeTurn?.(sessionId);
   },
   cancelCodeTurn(sessionId) {
     hostSessions.get(sessionId)?.cancelCodeTurn?.(sessionId);

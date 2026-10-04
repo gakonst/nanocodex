@@ -20,6 +20,7 @@ final class MobileOutboxStoreTests: XCTestCase {
         let restored = try store.restore(scope: "account", defaults: defaults)
         XCTAssertEqual(restored.pending, [message])
         XCTAssertEqual(restored.pendingCreations, ["creation-id"])
+        XCTAssertTrue(restored.asyncCodeModeCreations.isEmpty)
         XCTAssertNil(defaults.object(forKey: "inbox.pending.account"))
     }
 
@@ -34,7 +35,7 @@ final class MobileOutboxStoreTests: XCTestCase {
         let message = PendingMessage(agentID: "agent", input: "retained", predecessor: "", id: UUID().uuidString)
         let cancellation = PendingTurnCancellation(agentID: "agent", turnID: message.id)
         let transfer = SteeringTransfer(agentID: "agent", sourceTurnID: message.id, targetTurnID: "target")
-        let snapshot = MobileOutboxStore.Snapshot(pending: [message], cancellations: [cancellation], steeringTransfers: [transfer], pendingCreations: ["creation-id"])
+        let snapshot = MobileOutboxStore.Snapshot(pending: [message], cancellations: [cancellation], steeringTransfers: [transfer], pendingCreations: ["creation-id"], asyncCodeModeCreations: ["creation-id"])
         do {
             let store = try MobileOutboxStore(path: path)
             _ = try store.restore(scope: "a", defaults: defaults)

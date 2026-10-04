@@ -283,6 +283,9 @@ where
         self.restore_runtime(configured, logical_turn)?;
         match outcome {
             Ok(ModelTaskOutcome::Completed(message)) => {
+                if let Some(tools) = &self.active_tools {
+                    tools.finish_turn().await;
+                }
                 self.record_transport();
                 let usage = self.stats.turn_usage();
                 record_turn_usage(&tracing::Span::current(), &usage);

@@ -9,12 +9,29 @@ public final class MobileOutboxStore: @unchecked Sendable {
         public var cancellations: [PendingTurnCancellation]
         public var steeringTransfers: [SteeringTransfer]
         public var pendingCreations: Set<String>
+        /// Captured opt-in for each pending creation, independent of the composer.
+        public var asyncCodeModeCreations: Set<String>
 
-        public init(pending: [PendingMessage] = [], cancellations: [PendingTurnCancellation] = [], steeringTransfers: [SteeringTransfer] = [], pendingCreations: Set<String> = []) {
+        public init(pending: [PendingMessage] = [], cancellations: [PendingTurnCancellation] = [], steeringTransfers: [SteeringTransfer] = [], pendingCreations: Set<String> = [], asyncCodeModeCreations: Set<String> = []) {
             self.pending = pending
             self.cancellations = cancellations
             self.steeringTransfers = steeringTransfers
             self.pendingCreations = pendingCreations
+            self.asyncCodeModeCreations = asyncCodeModeCreations
+        }
+
+        private enum CodingKeys: String, CodingKey {
+            case pending, cancellations, steeringTransfers, pendingCreations, asyncCodeModeCreations
+        }
+
+        public init(from decoder: Decoder) throws {
+            let values = try decoder.container(keyedBy: CodingKeys.self)
+            pending = try values.decode([PendingMessage].self, forKey: .pending)
+            cancellations = try values.decode([PendingTurnCancellation].self, forKey: .cancellations)
+            steeringTransfers = try values.decode([SteeringTransfer].self, forKey: .steeringTransfers)
+            pendingCreations = try values.decode(Set<String>.self, forKey: .pendingCreations)
+            // Outboxes written before this option retain default creation behavior.
+            asyncCodeModeCreations = try values.decodeIfPresent(Set<String>.self, forKey: .asyncCodeModeCreations) ?? []
         }
     }
 

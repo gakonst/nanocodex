@@ -141,3 +141,27 @@ export function steerReceipt(owner: DurableObjectOwner, operationId: string, mes
 }> | null;
 /** Fingerprint of the exact browser Prompt serialization retained by Rust. */
 export function steerInputKey(input: import("../types.mjs").PromptInput): Promise<string>;
+
+/** Trusted host-owned completion; never deserialize this from public prompt input. */
+export type AsyncCompletion = Readonly<{
+  delivery_id: string;
+  job_id: string;
+  original_call_id: string;
+  output: string | readonly (
+    | Readonly<{ type: "input_text"; text: string }>
+    | Readonly<{ type: "input_image"; image_url: string; detail: "auto" | "low" | "high" | "original" }>
+    | Readonly<{ type: "input_image"; file_id: string; detail: "auto" | "low" | "high" | "original" }>
+    | Readonly<{ type: "input_audio"; audio_url: string }>
+    | Readonly<{ type: "encrypted_content"; encrypted_content: string }>
+  )[];
+}>;
+/** Resume the native agent from a durable tool receipt, without fabricating user input. */
+export function resumeCompletion(agent: Agent, completion: AsyncCompletion, options?: Readonly<{ cancelOnAdmission?: boolean }>): import("../types.mjs").Turn;
+/** Deliver retained tool content at the active turn's next inference boundary. */
+export function deliverCompletion(turn: import("../types.mjs").Turn, completion: AsyncCompletion): Promise<void>;
+
+/** Native Prompt fingerprint used to reconcile identified completion admission. */
+export function asyncCompletionInputKey(completion: AsyncCompletion): Promise<string>;
+
+/** Missing means pruned or absent, never proof that an input was not accepted. */
+export function operationReceiptStatus(owner: DurableObjectOwner, operationId: string): "missing" | "pending" | "terminal";

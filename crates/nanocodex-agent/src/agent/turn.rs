@@ -165,6 +165,25 @@ impl TurnControl {
         self.backend.steer_with_id(self.key, id, prompt).await
     }
 
+    /// Delivers a trusted completed job at the next model boundary as tool content.
+    /// Retries reuse the immutable receipt's delivery identity.
+    ///
+    /// # Errors
+    /// Rejects malformed receipts, unsupported backends, or inactive turns.
+    pub async fn deliver_completion(
+        &self,
+        completion: nanocodex_oai_api::AsyncCompletion,
+    ) -> Result<()> {
+        if self.backend.harness_family() != crate::HarnessFamily::Codex {
+            return Err(NanocodexError::InvalidRequest(
+                "async completion requires Codex".into(),
+            ));
+        }
+        let id = completion.request_id();
+        self.steer_with_id(id, Prompt::from_async_completion(completion))
+            .await
+    }
+
     /// Withdraws the latest accepted steer before its model boundary.
     /// Returns false if the identity is no longer latest or was already consumed.
     ///

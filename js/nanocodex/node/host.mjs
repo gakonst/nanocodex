@@ -59,6 +59,7 @@ export function createNodeHost(options = {}) {
     require: createRequire(resolve(options.workspace ?? process.cwd(), ".nanocodex-code-mode.cjs")),
     console: new Console({ stdout: process.stderr, stderr: process.stderr }),
     evaluate: options.codeEvaluator,
+    asyncJobs: options.codeAsyncJobs,
     effectJournal: options.codeEffectJournal,
     effectIdentity: options.codeEffectJournal ? effectIdentity.resolve : undefined,
   });
@@ -341,6 +342,8 @@ export function createNodeHost(options = {}) {
     executeCode: code.executeCodeObserved,
     waitCode: code.waitCodeObserved,
     beginCodeTurn: code.beginTurn,
+    finishCodeTurn: code.finishTurn,
+    codeModeAsync: (sessionId) => options.codeAsyncJobs?.enabled(sessionId) === true,
     cancelCodeTurn: code.cancelTurn,
     preemptCode: code.preempt,
     preemptCodeTurn: code.preemptTurn,

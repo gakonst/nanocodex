@@ -69,6 +69,7 @@ export async function create(options = {}) {
     executionEnvironment,
     codeEvaluator,
     codeEffectJournal,
+    codeAsyncJobs,
   } = options;
   const toolProviders = internalRuntime?.toolProviders;
   const subagentSessions = internalRuntime?.subagentSessions;
@@ -142,6 +143,7 @@ export async function create(options = {}) {
       : tempoMcp ? { ...tempoMcp, ...mcp } : mcp,
     codeEvaluator,
     codeEffectJournal: internalRuntime?.codeEffectJournal ?? codeEffectJournal,
+    codeAsyncJobs: internalRuntime?.codeAsyncJobs ?? codeAsyncJobs,
     applyPatch: applyBrowserPatch,
     websocketPreconnect,
     websocketUrl,

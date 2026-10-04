@@ -5593,6 +5593,11 @@ final class InboxUITests: XCTestCase {
 
     func testCRMGlobalSendCreatesOneAgentThenChatReusesItsTransportIdentity() {
         let app = launchComposerTransportJourney()
+        let asyncMode = app.switches["new-thread-async-code-mode"]
+        XCTAssertTrue(asyncMode.waitForExistence(timeout: 5))
+        XCTAssertEqual(asyncMode.value as? String, "0")
+        asyncMode.tap()
+        XCTAssertEqual(asyncMode.value as? String, "1")
         let first = "Synthetic CRM composer first prompt"
         let reply = "Synthetic Chat same agent follow-up"
         let draft = composerJourneyField(app, identifier: "new-thread-composer")
@@ -5601,6 +5606,9 @@ final class InboxUITests: XCTestCase {
         XCTAssertTrue(app.buttons["new-thread-send"].isEnabled)
         app.buttons["new-thread-send"].tap()
         let initial = awaitComposerRecordedRequests(app, creates: 1, turns: 1)
+        let creation = initial.first { $0["path"] as? String == "/v1/agents" }
+        XCTAssertEqual((creation?["configuration"] as? [String: Bool])?["code_mode_async"], true)
+        XCTAssertFalse(app.switches["new-thread-async-code-mode"].exists, "Existing threads cannot change their creation option")
         let firstTurn = initial.first { ($0["path"] as? String ?? "").hasSuffix("/turns") }
         XCTAssertEqual(firstTurn?["path"] as? String, "/v1/agents/composer-agent-1/turns")
         XCTAssertEqual(firstTurn?["input"] as? String, first)
@@ -5624,6 +5632,7 @@ final class InboxUITests: XCTestCase {
         XCTAssertTrue(app.buttons["crm-record-alex"].waitForExistence(timeout: 5))
         app.buttons["crm-record-alex"].tap()
         XCTAssertTrue(app.staticTexts["Example University"].waitForExistence(timeout: 5))
+        XCTAssertEqual(app.switches["new-thread-async-code-mode"].value as? String, "0", "Each new thread requires its own opt-in")
         let next = "Synthetic second nonchat new thread prompt"
         let nextDraft = composerJourneyField(app, identifier: "new-thread-composer")
         let emptyValue = nextDraft.value as? String ?? ""
@@ -5633,6 +5642,7 @@ final class InboxUITests: XCTestCase {
         let afterSecondGlobal = awaitComposerRecordedRequests(app, creates: 2, turns: 3, selectedAgent: "composer-agent-2")
         let creations = afterSecondGlobal.filter { $0["path"] as? String == "/v1/agents" }
         XCTAssertEqual(Set(creations.map { $0["idempotency"] as? String ?? "" }).count, 2)
+        XCTAssertNil(creations.last?["configuration"], "Default creation must omit configuration")
         let allTurns = afterSecondGlobal.filter { ($0["path"] as? String ?? "").hasSuffix("/turns") }
         XCTAssertEqual(allTurns.map { $0["path"] as? String ?? "" },
                        ["/v1/agents/composer-agent-1/turns", "/v1/agents/composer-agent-1/turns", "/v1/agents/composer-agent-2/turns"])
@@ -5642,6 +5652,9 @@ final class InboxUITests: XCTestCase {
 
     func testCRMGlobalSendCreationFailureRetriesSameCreationAndPrompt() {
         let app = launchComposerTransportJourney(failCreationOnce: true)
+        let asyncMode = app.switches["new-thread-async-code-mode"]
+        XCTAssertTrue(asyncMode.waitForExistence(timeout: 5))
+        asyncMode.tap()
         let prompt = "Synthetic creation failure preserved prompt"
         let draft = composerJourneyField(app, identifier: "new-thread-composer")
         draft.tap(); draft.typeText(prompt)
@@ -5658,6 +5671,8 @@ final class InboxUITests: XCTestCase {
         let retried = awaitComposerRecordedRequests(app, creates: 2, turns: 1)
         let creations = retried.filter { $0["path"] as? String == "/v1/agents" }
         XCTAssertEqual(Set(creations.map { $0["idempotency"] as? String ?? "" }).count, 1)
+        XCTAssertEqual(creations.compactMap { ($0["configuration"] as? [String: Bool])?["code_mode_async"] }, [true, true],
+                       "Retry uses the captured choice after the composer has reset")
         let admitted = retried.first { ($0["path"] as? String ?? "").hasSuffix("/turns") }
         XCTAssertEqual(admitted?["path"] as? String, "/v1/agents/composer-agent-1/turns")
         XCTAssertEqual(admitted?["input"] as? String, prompt)
@@ -5674,6 +5689,36 @@ final class InboxUITests: XCTestCase {
                        ["/v1/agents/composer-agent-1/turns", "/v1/agents/composer-agent-1/turns"])
         XCTAssertEqual(turns.map { $0["input"] as? String ?? "" }, [prompt, next])
         capture(app, "crm-create-retry-chat-reuses-created-agent-external-recorder")
+    }
+
+    func testCRMAsyncCreationSurvivesAppRestart() {
+        let app = launchComposerTransportJourney(failCreationOnce: true)
+        let asyncMode = app.switches["new-thread-async-code-mode"]
+        XCTAssertTrue(asyncMode.waitForExistence(timeout: 5))
+        asyncMode.tap()
+        let prompt = "Synthetic async creation retained across restart"
+        let draft = composerJourneyField(app, identifier: "new-thread-composer")
+        draft.tap(); draft.typeText(prompt)
+        app.buttons["new-thread-send"].tap()
+        XCTAssertTrue(app.buttons["retry-pending"].firstMatch.waitForExistence(timeout: 15))
+        capture(app, "async-create-before-restart")
+        app.terminate()
+        app.launchEnvironment["NANOCODEX_STARTUP_COMPOSER_CREATE_FAIL_ONCE"] = "0"
+        app.launch()
+        XCTAssertTrue(app.buttons["main-tab-chat"].waitForExistence(timeout: 20))
+        app.buttons["main-tab-chat"].tap()
+        let retry = app.buttons["retry-pending"].firstMatch
+        XCTAssertTrue(retry.waitForExistence(timeout: 15))
+        XCTAssertTrue(retry.isEnabled)
+        retry.tap()
+        // The fixture ledger reports this process only; retry comes from the
+        // production disk outbox, without another tap on the new-thread toggle.
+        let requests = awaitComposerRecordedRequests(app, creates: 1, turns: 1)
+        let creation = requests.first { $0["path"] as? String == "/v1/agents" }
+        XCTAssertEqual((creation?["configuration"] as? [String: Bool])?["code_mode_async"], true)
+        let turn = requests.first { ($0["path"] as? String ?? "").hasSuffix("/turns") }
+        XCTAssertEqual(turn?["input"] as? String, prompt)
+        capture(app, "async-create-restored-configuration-and-prompt")
     }
 
     private func capture(_ app: XCUIApplication, _ name: String) {

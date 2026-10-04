@@ -17,7 +17,7 @@ use nanocodex::{
         durability::{
             OwnedState, OwnerId, OwnerToken, StateStore, StoreError, StoreFuture, StoredState,
         },
-        input::{Prompt, UserInput},
+        input::{AsyncCompletion, Prompt, UserInput},
         session::{SessionId, SessionSnapshot},
     },
     oai::auth::{
@@ -28,11 +28,11 @@ use nanocodex::{
     oai::responses::ResponseItem,
     oai::transport::{ResponsesHistory, ResponsesTransport},
     tools::{
-        ToolContext, ToolDefinition, ToolInput, ToolOutput,
+        Tool, ToolContext, ToolDefinition, ToolInput, ToolOutput,
         contract::ToolOutputWire,
         embedded::{
             CodeModeExecution, CodeModeHost, CodeModeHostError, CodeModeObserver, CodeModeUpdate,
-            EmbeddedToolMode, HostFuture, NestedToolCall, bind_host,
+            EmbeddedToolMode, HostFuture, NestedToolCall, OwnedToolContext, bind_host,
         },
         standard::StandardTool,
     },
@@ -135,7 +135,11 @@ extern "C" {
         call_id: &str,
         model: &str,
         turn_id: Option<&str>,
+        native_tools: &JsValue,
     ) -> Result<Promise, JsValue>;
+
+    #[wasm_bindgen(js_namespace = ["globalThis", "nanocodexHost"], js_name = codeModeAsync)]
+    fn host_code_mode_async(definition_host_id: u32, session_id: &str) -> bool;
 
     #[wasm_bindgen(catch, js_namespace = ["globalThis", "nanocodexHost"], js_name = waitCode)]
     fn host_wait_code(input: &str, session_id: &str, call_id: &str) -> Result<Promise, JsValue>;
@@ -158,6 +162,9 @@ extern "C" {
 
     #[wasm_bindgen(js_namespace = ["globalThis", "nanocodexHost"], js_name = preemptCodeTurn)]
     fn host_preempt_code_turn(session_id: &str);
+
+    #[wasm_bindgen(js_namespace = ["globalThis", "nanocodexHost"], js_name = finishCodeTurn)]
+    fn host_finish_code_turn(session_id: &str);
 
     #[wasm_bindgen(js_namespace = ["globalThis", "nanocodexHost"], js_name = cancelCodeTurn)]
     fn host_cancel_code_turn(session_id: &str);
@@ -755,6 +762,85 @@ impl JavaScriptCodeModeHost {
 }
 
 impl CodeModeHost for JavaScriptCodeModeHost {
+    fn async_jobs_enabled(&self, session_id: &str) -> bool {
+        host_code_mode_async(self.definition_host_id, session_id)
+    }
+
+    fn execute_with_native_tools<'a>(
+        &'a self,
+        source: &'a str,
+        context: ToolContext<'a>,
+        observer: &'a mut dyn CodeModeObserver,
+        native_tools: Vec<Arc<dyn Tool>>,
+    ) -> HostFuture<'a, Result<CodeModeExecution, CodeModeHostError>> {
+        Box::pin(async move {
+            let definitions = native_tools
+                .iter()
+                .map(|tool| tool.definition())
+                .collect::<Vec<_>>();
+            let encoded = serde_json::to_string(&definitions)
+                .map_err(|error| CodeModeHostError::new(error.to_string()))?;
+            let owned = Arc::new(OwnedToolContext::from_context(context));
+            let handlers = Arc::new(native_tools);
+            // JS owns this closure for exactly the admitted cell's lifetime. The
+            // captured context fixes session, turn and instruction revision.
+            let invoke = Closure::<dyn Fn(String, String, String) -> Promise>::new(
+                move |name: String, input: String, call_id: String| {
+                    let owned = Arc::clone(&owned);
+                    let handlers = Arc::clone(&handlers);
+                    wasm_bindgen_futures::future_to_promise(async move {
+                        let tool = handlers
+                            .iter()
+                            .find(|tool| tool.definition().name() == name)
+                            .ok_or_else(|| js_error("unknown native Code Mode tool"))?;
+                        let input = if matches!(tool.definition(), ToolDefinition::Custom { .. }) {
+                            ToolInput::Freeform(serde_json::from_str(&input).map_err(js_error)?)
+                        } else {
+                            ToolInput::Function(serde_json::from_str(&input).map_err(js_error)?)
+                        };
+                        let origin = owned.as_context();
+                        let nested = ToolContext::new(
+                            origin.model(),
+                            origin.session_id(),
+                            &call_id,
+                            origin.history(),
+                            origin.output_token_budget(),
+                        )
+                        .with_instruction_revision(origin.instruction_revision())
+                        .with_turn_id(origin.turn_id())
+                        .with_host_context(origin.host_context());
+                        let output = tool.execute(input, nested).await.map_err(js_error)?;
+                        let wire = output.into_wire().map_err(js_error)?;
+                        Ok(JsValue::from_str(
+                            &serde_json::to_string(&wire).map_err(js_error)?,
+                        ))
+                    })
+                },
+            )
+            .into_js_value();
+            let bridge = js_sys::Object::new();
+            js_sys::Reflect::set(
+                &bridge,
+                &JsValue::from_str("definitions"),
+                &js_sys::JSON::parse(&encoded)
+                    .map_err(|error| CodeModeHostError::new(host_error_message(&error)))?,
+            )
+            .map_err(|error| CodeModeHostError::new(host_error_message(&error)))?;
+            js_sys::Reflect::set(&bridge, &JsValue::from_str("invoke"), &invoke)
+                .map_err(|error| CodeModeHostError::new(host_error_message(&error)))?;
+            let execution = host_execute_code(
+                source,
+                context.session_id(),
+                context.call_id(),
+                context.model(),
+                context.turn_id(),
+                &bridge,
+            )
+            .map_err(|error| CodeModeHostError::new(host_error_message(&error)))?;
+            observe_javascript_code(execution, context, Some(observer)).await
+        })
+    }
+
     fn supports_cells(&self) -> bool {
         true
     }
@@ -873,6 +959,16 @@ impl CodeModeHost for JavaScriptCodeModeHost {
         })
     }
 
+    fn finish_turn<'a>(
+        &'a self,
+        session_id: &'a str,
+    ) -> HostFuture<'a, Result<(), CodeModeHostError>> {
+        Box::pin(async move {
+            host_finish_code_turn(session_id);
+            Ok(())
+        })
+    }
+
     fn cancel_turn<'a>(
         &'a self,
         session_id: &'a str,
@@ -902,6 +998,7 @@ async fn execute_javascript_code(
         context.call_id(),
         context.model(),
         context.turn_id(),
+        &JsValue::UNDEFINED,
     )
     .map_err(|error| CodeModeHostError::new(host_error_message(&error)))?;
     observe_javascript_code(execution, context, observer).await
@@ -994,7 +1091,22 @@ fn decode_code_execution(value: JsValue) -> Result<CodeModeExecution, CodeModeHo
     let encoded = value.as_string().ok_or_else(|| {
         CodeModeHostError::new("JavaScript Code Mode host returned a non-string result")
     })?;
-    serde_json::from_str(&encoded).map_err(|error| {
+    let mut value: serde_json::Value = serde_json::from_str(&encoded).map_err(|error| {
+        CodeModeHostError::new(format!(
+            "JavaScript Code Mode host returned invalid execution JSON: {error}"
+        ))
+    })?;
+    if let Some(object) = value.as_object_mut() {
+        object.remove("job_id");
+        if let Some(cell) = object
+            .get_mut("cell")
+            .and_then(serde_json::Value::as_object_mut)
+        {
+            cell.remove("id");
+            cell.remove("job_id");
+        }
+    }
+    serde_json::from_value(value).map_err(|error| {
         CodeModeHostError::new(format!(
             "JavaScript Code Mode host returned invalid execution JSON: {error}"
         ))
@@ -1798,6 +1910,26 @@ impl WasmNanocodex {
             self.inner.clone(),
             Prompt::new(instruction),
             operation_id,
+            cancel_on_admission.unwrap_or(false),
+        ))
+    }
+
+    /// Host-only admission of a completed background job, without a user prompt.
+    ///
+    /// # Errors
+    /// Throws for an invalid immutable receipt. The trusted adapter owns authorization.
+    #[wasm_bindgen(js_name = resumeCompletion)]
+    pub fn resume_completion(
+        &self,
+        completion_json: &str,
+        cancel_on_admission: Option<bool>,
+    ) -> Result<WasmTurn, JsValue> {
+        let completion = parse_async_completion(completion_json)?;
+        let operation_id = completion.request_id();
+        Ok(WasmTurn::accept(
+            self.inner.clone(),
+            Prompt::from_async_completion(completion),
+            Some(operation_id),
             cancel_on_admission.unwrap_or(false),
         ))
     }
@@ -2905,6 +3037,21 @@ impl WasmTurn {
         .map_err(js_error)
     }
 
+    /// Host-only delivery of lower-trust background tool content at the next boundary.
+    ///
+    /// # Errors
+    /// Rejects malformed receipts, inactive turns, or durable identity conflicts.
+    #[wasm_bindgen(js_name = deliverCompletion)]
+    pub async fn deliver_completion(&self, completion_json: &str) -> Result<(), JsValue> {
+        let completion = parse_async_completion(completion_json)?;
+        self.control()
+            .await
+            .map_err(js_error)?
+            .deliver_completion(completion)
+            .await
+            .map_err(js_error)
+    }
+
     /// Removes the latest identified steer while it is still pending.
     /// Returns false after successful turn completion.
     ///
@@ -3442,6 +3589,13 @@ fn remove_subagent_parent(parents: &Arc<Mutex<HashMap<String, AgentHandle>>>, se
             poisoned.into_inner().remove(session_id);
         }
     }
+}
+
+fn parse_async_completion(encoded: &str) -> Result<AsyncCompletion, JsValue> {
+    let completion: AsyncCompletion = serde_json::from_str(encoded)
+        .map_err(|error| js_error(format!("invalid async completion: {error}")))?;
+    completion.validate().map_err(js_error)?;
+    Ok(completion)
 }
 
 fn parse_browser_prompt(content_json: &str) -> Result<Prompt, JsValue> {

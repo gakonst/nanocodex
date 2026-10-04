@@ -22,6 +22,8 @@ export const environmentSchema = z.object({
   network: networkSchema.default({ access: "enabled" }),
 }).strict();
 export const configurationSchema = z.object({
+  /** Immutable thread-start opt-in: Code Mode-only asynchronous jobs. */
+  code_mode_async: z.boolean().optional(),
   /** Observer-only Code Mode steering. Model streams remain conservative. */
   instant_tool_steering: z.boolean().optional(),
   model_routing: routingPolicySchema.optional(),

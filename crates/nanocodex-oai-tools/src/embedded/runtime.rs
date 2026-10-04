@@ -163,7 +163,11 @@ impl EmbeddedToolRuntime {
                 "embedded callable-tool registry lock was poisoned"
             );
         }
-        if mode == EmbeddedToolMode::Direct {
+        let async_jobs = self
+            .host
+            .as_ref()
+            .is_some_and(|host| host.async_jobs_enabled(session_id));
+        if mode == EmbeddedToolMode::Direct && !async_jobs {
             definitions.extend(
                 self.local
                     .iter()
@@ -187,10 +191,19 @@ impl EmbeddedToolRuntime {
                     }
             )
         });
+        if async_jobs {
+            definitions.extend(
+                self.local
+                    .iter()
+                    .filter(|tool| tool.model_visible)
+                    .map(|tool| tool.handler.definition()),
+            );
+        }
         let (mut direct_definitions, code_mode_definitions): (Vec<_>, Vec<_>) =
             definitions.into_iter().partition(|definition| {
-                matches!(definition, ToolDefinition::ToolSearch { .. })
-                    || is_standard_workspace_tool(definition.name())
+                !async_jobs
+                    && (matches!(definition, ToolDefinition::ToolSearch { .. })
+                        || is_standard_workspace_tool(definition.name()))
             });
         direct_definitions = direct_definitions
             .into_iter()
@@ -200,7 +213,7 @@ impl EmbeddedToolRuntime {
         direct_definitions.extend(
             self.local
                 .iter()
-                .filter(|tool| tool.model_visible)
+                .filter(|tool| tool.model_visible && !async_jobs)
                 .map(|tool| tool.handler.definition()),
         );
         crate::code_mode_order::sort_direct_definitions(&mut direct_definitions);
@@ -240,7 +253,19 @@ impl EmbeddedToolRuntime {
                 *description = description
                     .replace("Runs raw JavaScript -- no Node, no file system, no network access, no console.", "Runs JavaScript inside the evaluator supplied by the embedding application.").into_boxed_str();
             }
-            let mut model_definitions = vec![exec, crate::code_mode_spec::wait_spec()];
+            if async_jobs && let ToolDefinition::Custom { description, .. } = &mut exec {
+                *description = description
+                    .replace("`// @exec: {\"yield_time_ms\": 10000, \"max_output_tokens\": 1000}`", "`// @exec: {\"max_output_tokens\": 1000}`")
+                    .replace("- `yield_time_ms` asks `exec` to yield early if the script is still running. Defaults to 10000 ms.", "- `exec` returns a stable job ID and pending admission receipt immediately. Terminal output arrives automatically at the next model boundary; no polling or filler calls are needed. Finish this turn if there is no independent work; completion will resume the conversation.")
+                    .replace("- `yield_control()`: yields the accumulated output to the model immediately while the script keeps running.", "- `yield_control()`: yields inside the running job; final output is delivered automatically.")
+                    .replace("A tool exposed separately by the host is not necessarily callable through `tools`; use its direct tool entry when it is absent from this catalog.", "All enabled capabilities, including native subagent controls, are callable through `tools` in this execution.")
+                    .into_boxed_str();
+                *description = format!("{}\n\nPending approvals retain the original invocation. Do not call wait, poll job IDs, repeat admitted effects, or send filler messages while awaiting automatic completion. Use tools.tool_search for discovery when present in ALL_TOOLS.", description).into_boxed_str();
+            }
+            let mut model_definitions = vec![exec];
+            if !async_jobs {
+                model_definitions.push(crate::code_mode_spec::wait_spec());
+            }
             model_definitions.extend(direct_definitions);
             return (model_definitions, code_mode_tool_names);
         }
@@ -390,8 +415,22 @@ impl EmbeddedToolRuntime {
                 "no embedded Code Mode adapter is configured",
             ));
         };
-        host.execute_with_updates(source, context.as_context(), observer)
+        if host.async_jobs_enabled(context.as_context().session_id()) {
+            host.execute_with_native_tools(
+                source,
+                context.as_context(),
+                observer,
+                self.local
+                    .iter()
+                    .filter(|tool| tool.model_visible)
+                    .map(|tool| Arc::clone(&tool.handler))
+                    .collect(),
+            )
             .await
+        } else {
+            host.execute_with_updates(source, context.as_context(), observer)
+                .await
+        }
     }
 
     /// Observes a yielded cell through a capable embedding host.
@@ -468,6 +507,15 @@ impl EmbeddedToolRuntimeControl {
     pub fn begin_turn(&self) {
         if let (Some(host), Some(session_id)) = (&self.host, &self.session_id) {
             host.begin_turn(session_id);
+        }
+    }
+
+    /// Finishes ordinary turn observation without cancelling retained async jobs.
+    pub async fn finish_turn(&self) {
+        if let (Some(host), Some(session_id)) = (&self.host, &self.session_id)
+            && let Err(error) = host.finish_turn(session_id).await
+        {
+            tracing::warn!(target: "nanocodex_oai_tools", %error, "embedded Code Mode turn finish failed");
         }
     }
 

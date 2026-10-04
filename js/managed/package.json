@@ -13,7 +13,7 @@
     "deploy": "node ../../scripts/cloudflare/managed-crm.mjs deploy",
     "prebuild": "npm run prepare:code-evaluator",
     "prepare:code-evaluator": "node scripts/prepare-code-evaluator.mjs && node scripts/prepare-hand-image.mjs && node scripts/prepare-just-bash-lazy.mjs",
-    "test": "vitest run && npm run test:hosted-tools && npm run test:apps && npm run test:rpc-lifecycle && npm run test:discovery-cache && npm run test:routing && npm run test:todo-mail && npm run test:done && npm run test:meetings && npm run test:recovery && npm run test:model-pause && npm run test:tool-timing && npm run test:hand-reconnect && npm run test:hand-owner-restart && npm run test:hand-leased-recovery && npm run test:hand-communication && npm run test:hand-discovery && npm run test:claude-managed && npm run test:hand-catalog-scaling && npm run test:hand-preparation && npm run test:code-mode-warm && npm run test:user-data && npm run test:whatsapp",
+    "test": "vitest run && npm run test:hosted-tools && npm run test:apps && npm run test:rpc-lifecycle && npm run test:discovery-cache && npm run test:routing && npm run test:todo-mail && npm run test:done && npm run test:meetings && npm run test:recovery && npm run test:model-pause && npm run test:tool-timing && npm run test:hand-reconnect && npm run test:hand-owner-restart && npm run test:hand-leased-recovery && npm run test:hand-communication && npm run test:hand-discovery && npm run test:claude-managed && npm run test:hand-catalog-scaling && npm run test:hand-preparation && npm run test:code-mode-warm && npm run test:code-mode-async && npm run test:user-data && npm run test:whatsapp",
     "test:browser-login": "node --experimental-strip-types scripts/browser-login-chrome.mjs",
     "test:apps": "vitest run --config vitest.apps.config.ts",
     "test:apps:native": "node --test test/native-app-validation-journey.test.mjs",
@@ -47,6 +47,7 @@
     "test:claude-managed": "node --test test/claude-managed-journey.test.mjs",
     "test:hand-catalog-scaling": "node --test test/hand-catalog-scaling-journey.test.mjs",
     "test:hand-preparation": "node --test test/hand-preparation-journey.test.mjs",
+    "test:code-mode-async": "node --test test/code-mode-async-journey.test.mjs",
     "test:code-mode-warm": "node --test test/code-mode-warm-latency-journey.test.mjs",
     "test:whatsapp": "node --test test/whatsapp-public-journey.test.mjs"
   },

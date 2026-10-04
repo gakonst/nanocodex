@@ -305,6 +305,9 @@ pub struct Prompt {
     /// Runtime-owned revision; never part of model-visible prompt content.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     instruction_revision: Option<u64>,
+    /// Trusted host completion, never parsed from public user input.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    async_completion: Option<AsyncCompletion>,
 }
 
 impl Prompt {
@@ -315,6 +318,7 @@ impl Prompt {
             instruction: PromptInput::Text(instruction.into()),
             transcript: Vec::new(),
             instruction_revision: None,
+            async_completion: None,
         }
     }
 
@@ -325,7 +329,28 @@ impl Prompt {
             instruction: PromptInput::Content(input.into_iter().collect()),
             transcript: Vec::new(),
             instruction_revision: None,
+            async_completion: None,
         }
+    }
+
+    /// Builds a host-only completion input without a user instruction.
+    /// Embeddings must expose this only to their trusted job delivery adapter.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn from_async_completion(completion: AsyncCompletion) -> Self {
+        Self {
+            instruction: PromptInput::Text(String::new()),
+            transcript: Vec::new(),
+            instruction_revision: None,
+            async_completion: Some(completion),
+        }
+    }
+
+    /// Returns a typed host completion, outside user instruction content.
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn async_completion(&self) -> Option<&AsyncCompletion> {
+        self.async_completion.as_ref()
     }
 
     /// Attaches the trusted runtime instruction revision to this input.
@@ -371,7 +396,7 @@ impl Prompt {
     /// Returns whether the turn instruction contains no usable content.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.instruction.is_empty()
+        self.async_completion.is_none() && self.instruction.is_empty()
     }
 
     /// Validates the instruction and synthetic transcript invariants.
@@ -383,6 +408,12 @@ impl Prompt {
     /// user instruction. Consecutive messages with the same role are retained
     /// because benchmark transcripts may contain them intentionally.
     pub fn validate(&self) -> Result<(), PromptValidationError> {
+        if let Some(completion) = &self.async_completion {
+            if !self.instruction.is_empty() || !self.transcript.is_empty() {
+                return Err(PromptValidationError::InvalidAsyncCompletion);
+            }
+            return completion.validate();
+        }
         if self.instruction.is_empty() {
             return Err(PromptValidationError::EmptyInstruction);
         }
@@ -404,9 +435,59 @@ impl Prompt {
     }
 }
 
+/// Trusted runtime delivery of a completed background Code Mode job.
+///
+/// This is an embedding capability, not public user input. The output remains
+/// lower-trust tool content. A delivery ID must identify one immutable receipt;
+/// retries must preserve the complete envelope.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct AsyncCompletion {
+    /// Stable unique receipt identity, reused unchanged after uncertainty.
+    pub delivery_id: String,
+    /// Durable job identity returned by the original exec call.
+    pub job_id: String,
+    /// Original exec call identity, for correlation only.
+    pub original_call_id: String,
+    /// Completed tool result, never interpreted as a user instruction.
+    pub output: tools::ToolOutputBody,
+}
+
+impl AsyncCompletion {
+    /// Validates bounded opaque identifiers for durable and provider routing.
+    ///
+    /// # Errors
+    /// Rejects empty, oversized, or unsafe routing identifiers.
+    pub fn validate(&self) -> Result<(), PromptValidationError> {
+        if [&self.delivery_id, &self.job_id, &self.original_call_id]
+            .into_iter()
+            .all(|id| {
+                !id.is_empty()
+                    && id.len() <= 128
+                    && id
+                        .bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || b"_-:.".contains(&b))
+            })
+        {
+            Ok(())
+        } else {
+            Err(PromptValidationError::InvalidAsyncCompletion)
+        }
+    }
+
+    /// Deterministic operation identity shared by active and idle delivery.
+    #[must_use]
+    pub fn request_id(&self) -> String {
+        format!("async:{}", self.delivery_id)
+    }
+}
+
 /// Invalid model-visible prompt content.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum PromptValidationError {
+    /// Host completion identities are malformed or mixed with user input.
+    #[error("invalid host async completion")]
+    InvalidAsyncCompletion,
     /// The final user instruction has no usable content.
     #[error("prompt instruction must not be empty")]
     EmptyInstruction,

@@ -504,6 +504,25 @@ impl Nanocodex {
         })
     }
 
+    /// Resumes retained work from a trusted background completion, without a user prompt.
+    /// The stable delivery identity is reused as the durable operation ID.
+    ///
+    /// # Errors
+    /// Rejects malformed receipts, non-Codex backends, or durable admission failures.
+    pub async fn resume_completion(
+        &self,
+        completion: nanocodex_oai_api::AsyncCompletion,
+    ) -> Result<Turn> {
+        if self.backend.harness_family() != crate::HarnessFamily::Codex {
+            return Err(NanocodexError::InvalidRequest(
+                "async completion requires Codex".into(),
+            ));
+        }
+        let id = completion.request_id();
+        self.prompt(PromptRequest::new(Prompt::from_async_completion(completion)).request_id(id))
+            .await
+    }
+
     fn canonical_turn_id(&self, generated: String, request_id: Option<&str>) -> String {
         #[cfg(feature = "openai")]
         if self.local_session_id.is_some() {

@@ -434,6 +434,7 @@ private final class StartupFixtureProtocol: URLProtocol, @unchecked Sendable {
             event["idempotency"] = request.value(forHTTPHeaderField: "Idempotency-Key") ?? ""
             if let payload = (try? JSONSerialization.jsonObject(with: composerBody)) as? [String: Any] {
                 event["input"] = payload["input"]
+                event["configuration"] = payload["configuration"]
                 event["id"] = payload["id"]
             }
         }
@@ -625,7 +626,10 @@ private final class StartupFixtureProtocol: URLProtocol, @unchecked Sendable {
         var admitted = false
         if path == "/v1/agents", method == "POST" {
             delay = 1.0 // allow prepare/send + durable outbox flush to share the real creation task
-            if !composerBody.isEmpty || key.isEmpty {
+            let asyncConfiguration = payload?["configuration"] as? [String: Any]
+            let validAsyncCreation = payload?.count == 1 && asyncConfiguration?.count == 1
+                && asyncConfiguration?["code_mode_async"] as? Bool == true
+            if (!composerBody.isEmpty && !validAsyncCreation) || key.isEmpty {
                 status = 400; body = ["error": "fixture_invalid_creation_contract"]
             } else if ProcessInfo.processInfo.environment["NANOCODEX_STARTUP_COMPOSER_CREATE_FAIL_ONCE"] == "1", !Self.composerCreationFailed {
                 // Definite pre-creation failure; retry may safely reuse the key.
@@ -710,6 +714,7 @@ private final class StartupFixtureProtocol: URLProtocol, @unchecked Sendable {
                   path == "/v1/agents" || (path.hasPrefix("/v1/agents/") && path.hasSuffix("/turns")) else { return nil }
             var request: [String: Any] = ["method": "POST", "path": path, "idempotency": event["idempotency"] ?? ""]
             request["input"] = event["input"]; request["id"] = event["id"]
+            request["configuration"] = event["configuration"]
             return request
         }
         let data = try! JSONSerialization.data(withJSONObject: entries, options: [.sortedKeys, .withoutEscapingSlashes])

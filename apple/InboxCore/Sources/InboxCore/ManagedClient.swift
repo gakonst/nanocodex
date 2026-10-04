@@ -714,9 +714,10 @@ public final class ManagedClient: @unchecked Sendable {
         try FileManager.default.moveItem(at: download, to: local)
         return local
     }
-    public func create(requestID: String) async throws -> String {
+    public func create(requestID: String, codeModeAsync: Bool = false) async throws -> String {
         // The managed contract uses an absent body for default settings; {} is invalid.
-        let body = try await json(path: "/v1/agents", method: "POST", idempotencyKey: requestID)
+        let configuration: JSON? = codeModeAsync ? .object(["configuration": .object(["code_mode_async": .bool(true)])]) : nil
+        let body = try await json(path: "/v1/agents", method: "POST", body: configuration, idempotencyKey: requestID)
         let id = body["agent_id"].string
         _ = try Self.agentPath(id)
         return id

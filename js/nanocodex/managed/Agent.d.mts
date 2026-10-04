@@ -91,6 +91,8 @@ export type Environment = Readonly<{
 export type Configuration = Readonly<{
   /** Yield active exec/wait observers on accepted steering; default false. */
   instant_tool_steering?: boolean;
+  /** Code Mode-only asynchronous jobs, fixed at thread creation. Defaults to false. */
+  code_mode_async?: boolean;
   /** Pin this session to one connected ChatGPT account; disables automatic account failover. */
   chatgpt_account_id?: string;
   settings?: Readonly<{ model: CreateSettings["model"]; thinking: CreateSettings["thinking"]; reasoning_mode: "standard" | "pro"; fast_mode: boolean }>;

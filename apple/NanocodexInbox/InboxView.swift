@@ -1196,6 +1196,10 @@ private struct NewThreadComposer: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            Toggle("Async Code Mode", isOn: $model.newThreadCodeModeAsync)
+                .font(.subheadline)
+                .accessibilityIdentifier("new-thread-async-code-mode")
+                .padding(.horizontal, 16).padding(.top, 8)
             if let error = model.newThreadError {
                 Text(error).font(.caption).foregroundStyle(Ink.amber)
                     .frame(maxWidth: .infinity, alignment: .leading).padding(12)

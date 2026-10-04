@@ -3,6 +3,7 @@ import type {
   AgentOptions,
   CodeEvaluator,
   CodeEffectJournal,
+  CodeAsyncJobAdapter,
   DefaultAgent,
   DurabilityStore,
   McpServers,
@@ -31,6 +32,8 @@ export declare namespace create {
     codeEvaluator?: CodeEvaluator | undefined;
     /** Opt-in durable direct-tool and nested Code Mode receipts for safe cold recovery. */
     codeEffectJournal?: CodeEffectJournal | undefined;
+    /** Trusted durable adapter; async Code Mode is opt-in per session. */
+    codeAsyncJobs?: CodeAsyncJobAdapter | undefined;
     /** Caller-owned rooted filesystem mounted through standard workspace tools. */
     filesystem?: Workspace | undefined;
     module?: unknown;

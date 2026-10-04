@@ -220,6 +220,39 @@ export function createCodeRuntime(toolConfiguration = {}, extras = {}) {
     return encodeToolOutput(receipt.output, receipt.success, receipt.structured_result, receipt.metadata);
   }
 
+  // Scoped to one admitted execution: native callbacks never enter the shared router.
+  async function admitTools(signal, nativeTools) {
+    const admission = await router.admit(signal);
+    if (nativeTools == null) return admission;
+    try {
+      if (!Array.isArray(nativeTools.definitions) || typeof nativeTools.invoke !== "function") {
+        throw new TypeError("nativeTools requires definitions and invoke");
+      }
+      const definitions = jsonSnapshot(nativeTools.definitions, "native tool definitions");
+      const tools = new Map(admission.tools);
+      const names = new Set();
+      const invokeNative = nativeTools.invoke;
+      for (const definition of definitions) {
+        if (!definition?.name || tools.has(definition.name)) {
+          throw new TypeError(`duplicate or invalid native tool: ${definition?.name}`);
+        }
+        names.add(definition.name);
+        tools.set(definition.name, { name: definition.name });
+      }
+      return { ...admission, tools, definitions: [...admission.definitions, ...definitions],
+        async invoke(name, input, context) {
+          if (!names.has(name)) return admission.invoke(name, input, context);
+          context.signal.throwIfAborted();
+          const wire = JSON.parse(await invokeNative(name, JSON.stringify(input), context.callId));
+          const value = wire.structured_result ?? wire.output;
+          return toolResult(wire.output, value, {
+            success: wire.success, metadata: wire.metadata, value,
+          });
+        },
+      };
+    } catch (error) { admission.release(); throw error; }
+  }
+
   async function executeCode(source, sessionId = "default", parentCallId = "exec", model = "unknown", observer, cell, turnId) {
     if (typeof model === "function" && observer === undefined) {
       observer = model;
@@ -239,8 +272,10 @@ export function createCodeRuntime(toolConfiguration = {}, extras = {}) {
     let finished = false;
     let admission;
     try {
-      admission = await router.admit(controller.signal);
+      controller.signal.throwIfAborted();
+      admission = cell?.admission ?? await admitTools(controller.signal, cell?.nativeTools);
     } catch (error) {
+      cell?.admission?.release();
       activeExecutions.delete(execution);
       return JSON.stringify({
         output: `Script failed\nWall time ${wallTime(startedAt)} seconds\nOutput:\n${errorMessage(error)}`,
@@ -263,7 +298,8 @@ export function createCodeRuntime(toolConfiguration = {}, extras = {}) {
     // A journalled replay must address the same effects regardless of earlier cells.
     let nextJournalCallId = 1;
     const journal = extras.effectJournal;
-    let canonicalIdentity;
+    let canonicalIdentity = cell?.effectIdentity;
+    const subagent = cell ? cell.subagent : subagentBindingsBySession.get(sessionId)?.descriptor;
     function closePendingCalls() {
       // Guest completion still ends the cell immediately, as in Codex. Host
       // receipts outlive guest promises: every observed start needs a terminal
@@ -303,6 +339,7 @@ export function createCodeRuntime(toolConfiguration = {}, extras = {}) {
         // ignores abort. Reject before creating telemetry for a closed cell.
         controller.signal.throwIfAborted();
         if (finished) throw new Error(CANCELLATION_MESSAGE);
+        if (cell?.jobId) extras.asyncJobs?.authorize?.({ jobId: cell.jobId, sessionId, parentCallId, turnId });
         const callId = `${parentCallId}/code-${journal ? nextJournalCallId++ : nextCallId++}`;
         const toolStartedAt = performance.now();
         const startedAfterNs = Math.max(
@@ -424,13 +461,19 @@ export function createCodeRuntime(toolConfiguration = {}, extras = {}) {
             model,
             ...(turnId == null ? {} : { turnId }),
             signal: controller.signal,
-            subagent: subagentBindingsBySession.get(sessionId)?.descriptor,
+            subagent,
           };
-          result = await (traceTool === undefined
+          // Unlike tracing, this trusted hook is an execution fence. Recheck
+          // after journal admission awaits and immediately before dispatch.
+          if (cell?.jobId) extras.asyncJobs?.authorize?.({ jobId: cell.jobId, sessionId, parentCallId, turnId });
+          const invoke = () => traceTool === undefined
             ? admission.invoke(name, input, context)
             : traceToolInvocation(traceTool, name, {
               sessionId, callId, parentCallId, ...(turnId == null ? {} : { turnId }),
-            }, () => admission.invoke(name, input, context)));
+            }, () => admission.invoke(name, input, context));
+          // Authority scoping is part of dispatch, never best-effort tracing.
+          result = await (cell?.asyncContext && extras.asyncJobs?.run
+            ? extras.asyncJobs.run(cell.asyncContext, invoke) : invoke());
         } catch (error) {
           if (error?.code === "host_interrupted") {
             execution.interruption = error;
@@ -629,15 +672,18 @@ export function createCodeRuntime(toolConfiguration = {}, extras = {}) {
     }
   }
 
-  function executeCodeObserved(source, sessionId = "default", parentCallId = "exec", model = "unknown", turnId) {
-    return observeOperation(sessionId, parentCallId, (observation) => {
+  function executeCodeObserved(source, sessionId = "default", parentCallId = "exec", model = "unknown", turnId, nativeTools) {
+    return observeOperation(sessionId, parentCallId, async (observation) => {
       const options = parseExec(source);
+      const asyncJob = extras.asyncJobs?.enabled(sessionId) === true;
       const cell = {
         id: `${cellGeneration}:${nextCellId++}`, sessionId, parentCallId, controller: new AbortController(),
         content: [], updates: [], completedCalls: [], notifications: [], turn: turns.get(sessionId) ?? 0,
-        budget: options.max_output_tokens ?? 10_000, result: undefined, observing: false,
+        budget: options.max_output_tokens ?? 10_000, result: undefined, observing: false, asyncJob, nativeTools,
+        subagent: subagentBindingsBySession.get(sessionId)?.descriptor,
       };
       cells.set(cell.id, cell);
+      if (asyncJob) return admitAsyncCell(cell, options.source, model, turnId);
       cell.completion = executeCode(options.source, sessionId, parentCallId, model, (update) => {
         // Keep queued completions immutable; the invocation record is mutable
         // until the nested call finishes. Original call IDs survive every wait.
@@ -662,6 +708,94 @@ export function createCodeRuntime(toolConfiguration = {}, extras = {}) {
     });
   }
 
+  // Only a trusted host can enable detached cells. Persist admission and capture
+  // effect identity while the originating turn is still live, before dispatch.
+  async function admitAsyncCell(cell, source, model, turnId) {
+    const adapter = extras.asyncJobs;
+    let context;
+    try {
+      for (const method of ["admit", "complete", "retain"]) {
+        if (typeof adapter[method] !== "function") throw new TypeError(`asyncJobs.${method} is required`);
+      }
+      context = Object.freeze({ sessionId: cell.sessionId, parentCallId: cell.parentCallId,
+        cellId: cell.id, source, model, maxOutputTokens: cell.budget,
+        ...(turnId == null ? {} : { turnId }) });
+      if (extras.effectJournal) {
+        const identity = await extras.effectIdentity?.(
+          cell.sessionId, cell.parentCallId, turnId, cell.controller.signal) ?? {};
+        cell.effectIdentity = Promise.resolve(identity);
+        context = Object.freeze({ ...context, operationId: identity.operationId, modelCallIndex: identity.modelCallIndex });
+      }
+      cell.controller.signal.throwIfAborted();
+      cell.admission = await admitTools(cell.controller.signal, cell.nativeTools);
+      cell.nativeTools = undefined;
+      const admitted = await adapter.admit(context);
+      if (!admitted || typeof admitted.jobId !== "string" || !admitted.jobId
+        || !["execute", "existing"].includes(admitted.status)) {
+        throw new TypeError("asyncJobs.admit must return a jobId and execute/existing status");
+      }
+      context = Object.freeze({ ...context, jobId: admitted.jobId });
+      cell.jobId = admitted.jobId;
+      cell.asyncContext = context;
+      if (admitted.status === "existing") {
+        // A retained intent/receipt is never permission to dispatch again.
+        cell.admission.release();
+        cells.delete(cell.id);
+      } else {
+        let launch;
+        const ready = new Promise(resolve => { launch = resolve; });
+        cell.completion = ready.then(async () => {
+          const startedAt = performance.now();
+          let completed;
+          let interrupted = false;
+          try {
+            completed = JSON.parse(await executeCode(source, cell.sessionId, cell.parentCallId, model, (update) => {
+              if (update.type === "nested_call_completed") cell.completedCalls.push(jsonSnapshot(update.call, "async nested call"));
+              if (update.type === "notification") cell.notifications.push({ call_id: update.call_id, text: update.text });
+            }, cell, turnId));
+          } catch (error) {
+            interrupted = error?.code === "host_interrupted";
+            completed = { success: false, output: `Script failed\nOutput:\n${errorMessage(error)}`,
+              nested_calls: cell.completedCalls, notifications: cell.notifications };
+          }
+          const status = interrupted ? "interrupted" : cell.cancelled ? "cancelled"
+            : completed.success ? "completed" : "failed";
+          if (!completed.success && typeof completed.output === "string") {
+            cell.content.push({ type: "input_text", text: completed.output.split("Output:\n").slice(1).join("Output:\n") || completed.output });
+          }
+          const receipt = jsonSnapshot({
+            job_id: cell.jobId, status, success: completed.success,
+            output: limitCodeOutput(withStatus(`Script ${status}`, startedAt, cell.content), cell.budget),
+            cell: { id: cell.id, job_id: cell.jobId, origin_call_id: cell.parentCallId, running: false },
+            nested_calls: completed.nested_calls ?? cell.completedCalls,
+            notifications: cell.notifications,
+          }, "async cell completion");
+          cell.result = receipt;
+          // This promise belongs to the host lifetime, not the exec observer.
+          // Failure leaves the durable job admitted for recovery; never rerun it.
+          try { await adapter.complete(context, receipt); }
+          finally { cell.admission = undefined; }
+          cells.delete(cell.id);
+        });
+        // Prevent unhandled rejection even if a broken retention hook throws.
+        void cell.completion.catch(() => undefined);
+        adapter.retain(cell.completion);
+        // A macrotask boundary also keeps a fast/synchronous guest from running
+        // before the admission receipt has been returned to the caller.
+        setTimeout(launch, 0);
+      }
+      return JSON.stringify({ output: `Script admitted with job ID ${cell.jobId}. Completion will be delivered automatically.`,
+        success: true, job_id: cell.jobId,
+        cell: { id: cell.id, job_id: cell.jobId, origin_call_id: cell.parentCallId, running: true },
+        nested_calls: [], notifications: [] });
+    } catch (cause) {
+      cell.admission?.release();
+      cell.controller.abort(cause);
+      cells.delete(cell.id);
+      throw Object.assign(new Error("Code Mode async job admission interrupted", { cause }), { code: "host_interrupted" });
+    }
+  }
+
   function waitCodeObserved(input, sessionId = "default", callId = "wait") {
     return observeOperation(sessionId, callId, (observation) => {
       const options = parseCellOptions(input, ["cell_id", "yield_time_ms", "max_tokens", "terminate"], ["max_tokens"], true);
@@ -669,6 +803,7 @@ export function createCodeRuntime(toolConfiguration = {}, extras = {}) {
       if (options.terminate !== undefined && typeof options.terminate !== "boolean") throw new TypeError("terminate must be boolean");
       const cell = cells.get(options.cell_id);
       if (!cell || cell.sessionId !== sessionId) throw new Error(`exec cell ${options.cell_id} not found`);
+      if (cell.asyncJob) throw new Error(`exec job ${cell.jobId} completes automatically; wait is not available`);
       if (cell.observing) throw new Error(`exec cell ${cell.id} already has an active observer`);
       cell.turn = turns.get(sessionId) ?? 0;
       if (options.terminate && !cell.finished && !cell.result) {
@@ -782,16 +917,23 @@ export function createCodeRuntime(toolConfiguration = {}, extras = {}) {
     }
   }
 
-  function cancel(sessionId, turn) {
+  function cancel(sessionId, turn, preserveAsyncJobs = false) {
     for (const execution of activeExecutions) {
-      if ((sessionId === undefined || execution.sessionId === sessionId)
-        && (turn === undefined || (execution.cell?.turn ?? execution.turn) === turn)) {
+      if ((!preserveAsyncJobs || !execution.cell?.asyncJob)
+        && (sessionId === undefined || execution.sessionId === sessionId)
+        && (turn === undefined || (execution.cell?.turn ?? execution.turn) === turn
+          || (!preserveAsyncJobs && execution.cell?.asyncJob))) {
         execution.controller.abort(new Error(CANCELLATION_MESSAGE));
       }
     }
     for (const [id, cell] of cells) {
-      if ((sessionId === undefined || cell.sessionId === sessionId)
-        && (turn === undefined || cell.turn === turn)) cells.delete(id);
+      if ((!preserveAsyncJobs || !cell.asyncJob)
+        && (sessionId === undefined || cell.sessionId === sessionId)
+        && (turn === undefined || cell.turn === turn || (!preserveAsyncJobs && cell.asyncJob))) {
+        cell.cancelled = true;
+        cell.controller.abort(new Error(CANCELLATION_MESSAGE));
+        if (!cell.asyncJob) cells.delete(id);
+      }
     }
     closeCodeObservations(sessionId, turn);
   }
@@ -812,6 +954,10 @@ export function createCodeRuntime(toolConfiguration = {}, extras = {}) {
   function reset() {
     for (const execution of activeExecutions) {
       execution.controller.abort(new Error(CANCELLATION_MESSAGE));
+    }
+    for (const cell of cells.values()) {
+      cell.cancelled = true;
+      cell.controller.abort(new Error(CANCELLATION_MESSAGE));
     }
     cells.clear();
     turns.clear();
@@ -876,6 +1022,7 @@ export function createCodeRuntime(toolConfiguration = {}, extras = {}) {
     preempt,
     preemptTurn,
     beginTurn(sessionId) { turns.set(sessionId, (turns.get(sessionId) ?? 0) + 1); },
+    finishTurn(_sessionId) { /* Successful turns preserve yielded and admitted cells. */ },
     cancelTurn(sessionId) { cancel(sessionId, turns.get(sessionId) ?? 0); },
     cancel,
     toolDefinitions: () => JSON.stringify(callableDefinitions()),

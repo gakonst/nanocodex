@@ -92,6 +92,7 @@ export function createBrowserHost(options = {}) {
   const code = createCodeRuntime(options.tools, {
     traceTool,
     evaluate: codeEvaluator,
+    asyncJobs: options.codeAsyncJobs,
     effectJournal: options.codeEffectJournal,
     effectIdentity: options.codeEffectJournal ? effectIdentity.resolve : undefined,
     subagentSessions: options.subagentSessions,
@@ -653,15 +654,17 @@ export function createBrowserHost(options = {}) {
     close,
     sleep: (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
     executeCode: traceTool === undefined ? code.executeCodeObserved
-      : (source, sessionId = "default", callId = "exec", model = "unknown", turnId) =>
+      : (source, sessionId = "default", callId = "exec", model = "unknown", turnId, nativeTools) =>
         traceToolInvocation(traceTool, "exec", {
           sessionId, callId, ...(turnId == null ? {} : { turnId }),
-        }, () => code.executeCodeObserved(source, sessionId, callId, model, turnId)),
+        }, () => code.executeCodeObserved(source, sessionId, callId, model, turnId, nativeTools)),
     waitCode: traceTool === undefined ? code.waitCodeObserved
       : (input, sessionId = "default", callId = "wait") =>
         traceToolInvocation(traceTool, "wait", { sessionId, callId },
           () => code.waitCodeObserved(input, sessionId, callId)),
     beginCodeTurn: code.beginTurn,
+    finishCodeTurn: code.finishTurn,
+    codeModeAsync: (sessionId) => options.codeAsyncJobs?.enabled(sessionId) === true,
     cancelCodeTurn: code.cancelTurn,
     preemptCode: code.preempt,
     preemptCodeTurn: code.preemptTurn,

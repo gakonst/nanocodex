@@ -1,3 +1,5 @@
+import { AsyncLocalStorage } from "node:async_hooks";
+import { AsyncCodeJobs, type CodeJob, type CodeJobContext } from "./async-code-jobs";
 import { cleanupGmailInbox } from "./gmail-firehose-cleanup";
 import { observeClaudeRelease } from "./claude-lifecycle.mjs";
 import { mcpPayment } from "nanocodex/tempo";
@@ -2172,6 +2174,8 @@ async function managedFetchRoute(
             if (catalog.default_model?.startsWith("claude-")) creationSettings = { ...DEFAULT_AGENT_SETTINGS, model: catalog.default_model };
           } catch { return json({ error: "model_availability_unavailable" }, { status: 503 }); }
         }
+        if (creationConfiguration.code_mode_async && (!creationSettings.model.startsWith("gpt-") || creationConfiguration.model_routing))
+          return json({ error: "async_harness_unsupported", message: "Async Code Mode requires a native Codex GPT root thread" }, { status: 409 });
         if (creationSettings.model.startsWith("claude-")) {
           if (creationConfiguration.output_schema !== undefined || creationConfiguration.prompt_cache !== undefined || creationConfiguration.tools?.includes("WebSearch")) return json({ error: "claude_capability_unsupported" }, { status: 409 });
           if (principal.connectGrant) return json({ error: "claude_forbidden" }, { status: 403 });
@@ -3650,6 +3654,12 @@ export class DurableAgentSession extends DurableComputerObject {
     const mount = this.#managedMounts().find(mount => vmHostMountAllocation(mount)?.machine_id === machineId);
     return mount ? managedMountDisplayName(mount) : undefined;
   }
+  #asyncCodeJobs: AsyncCodeJobs;
+  #runtimeManagedTurns = new Map<string, string>();
+  #runtimePendingCalls = new Map<string, Set<string>>();
+  #asyncToolOrigin = new AsyncLocalStorage<CodeJob>();
+  #asyncDeliveryTask?: Promise<void>;
+  #asyncDeliveryAgain = false;
   #operations: SessionOperations;
   #connectInputs: ConnectInputs;
   #brainStorage?: R2Bucket;
@@ -3763,6 +3773,7 @@ export class DurableAgentSession extends DurableComputerObject {
     ctx = this.ctx;
     this.#diagnostics = new DiagnosticJournal(ctx.storage, "managed");
     this.#recoverySafety = new ManagedRecoverySafety(ctx.storage);
+    this.#asyncCodeJobs = new AsyncCodeJobs(ctx.storage, crypto.randomUUID());
     this.#commandReceipts = new CommandReceipts(ctx.storage);
     this.#shareLinks = new ThreadShareLinks(ctx.storage);
     initializeTurnInputs(ctx.storage, "managed_history_projection_chunks");
@@ -5454,6 +5465,12 @@ export class DurableAgentSession extends DurableComputerObject {
     if (presentationPending(this.ctx.storage)) await this.#sidebarPresentation().flush();
     if (this.#operations.nextAlarm() !== undefined) await this.#operations.drain();
     await this.#fireCronTriggers();
+    await this.#drainAsyncCodeJobs();
+    if (this.#asyncCodeJobs.hasRunning() || this.#asyncCodeJobs.hasPending()) {
+      this.#scheduleRecovery();
+      await this.#scheduleNextAlarm();
+      return;
+    }
     // Archival owns a separate durable retry deadline. It must neither block
     // accepted work nor keep retrying an unavailable bucket on every alarm.
     this.#maintainArchives();
@@ -5876,6 +5893,8 @@ export class DurableAgentSession extends DurableComputerObject {
     } catch {
       return new Response(null, { status: 400 });
     }
+    if (configuration.code_mode_async && (runtimeProfile !== "managed" || !settings.model.startsWith("gpt-") || configuration.model_routing))
+      return json({ error: "async_harness_unsupported", message: "Async Code Mode requires a native Codex GPT root thread" }, { status: 409 });
     const managedCoordinates = runtimeProfile === "managed"
       && typeof organizationId === "string" && isUserId(organizationId)
       && typeof teamId === "string" && isUserId(teamId)
@@ -6485,6 +6504,7 @@ export class DurableAgentSession extends DurableComputerObject {
       let manual: ManagedAgentSettings | undefined;
       try { if (body.model !== undefined) manual = parseCompleteAgentSettings({ model: body.model, thinking: body.thinking, reasoning_mode: "standard", fast_mode: false }); }
       catch { return json({ error: "invalid_request", message: "unsupported model or effort" }, { status: 400 }); }
+      if (this.#configuration().code_mode_async) return json({ error: "async_harness_unsupported", message: "Async Code Mode requires a native Codex GPT root thread" }, { status: 409 });
       const gatewayOnly = manual && ["@cf/zai-org/glm-5.3", "kimi-k3", "mimo-v2.6-pro"].includes(manual.model);
       await previous;
       this.#assertSettingsLifecycle();
@@ -7671,7 +7691,13 @@ export class DurableAgentSession extends DurableComputerObject {
       }
       if (!row) return json({ turn_id: id, state: "cancelling" }, { status: 202 });
     }
-    if (isTerminalState(row.state)) return json(managedTurnView(row));
+    if (isTerminalState(row.state)) {
+      if (!this.#configuration().code_mode_async) return json(managedTurnView(row));
+      this.#asyncCodeJobs.cancelAll();
+      await this.ctx.storage.sync();
+      if (this.#turns.size === 0 && this.#pendingTurnIds.size === 0) await this.#shutdownAgent();
+      return json(managedTurnView(row));
+    }
     try {
       const cancelling = this.#markCancelling(id);
       await this.#scheduleCancellation(cancelling.id);
@@ -8054,6 +8080,7 @@ export class DurableAgentSession extends DurableComputerObject {
 
   #markCancelling(id: string): ManagedTurnRow {
     const current = this.#managedTurn(id);
+    this.#asyncCodeJobs.cancelAll();
     if (!current) throw new ManagedRequestError(404, "turn_not_found", `turn ${id} does not exist`);
     if (isTerminalState(current.state) || current.state === "cancelling") return current;
     const message: StreamMessage = { type: "turn_cancelling", id };
@@ -8171,6 +8198,8 @@ export class DurableAgentSession extends DurableComputerObject {
       return latest;
     }
     row = latest;
+    const retainedCompletion = this.#asyncCodeJobs.forDelivery(row.id);
+    if (retainedCompletion && !this.#asyncJobAuthorized(retainedCompletion, true)) row = this.#markCancelling(row.id);
     // Arm before asynchronous construction/admission. Abrupt loss skips catch.
     // Live admissions coalesce above; only a fresh owner consumes this lease.
     if (row.state !== "cancelling" && this.#recoverySafety.begin(row.id)) {
@@ -8282,7 +8311,11 @@ export class DurableAgentSession extends DurableComputerObject {
         admission_ms: roundMilliseconds(performance.now() - admissionStartedAt),
         ...(row.accepted_at === null ? {} : { accepted_to_dispatch_ms: Date.now() - row.accepted_at }),
       });
-      turn = agent.turn.prompt({
+      const completion = this.#asyncCodeJobs.forDelivery(row.id);
+      if (completion && !this.#asyncJobAuthorized(completion, true)) this.#markCancelling(row.id);
+      turn = completion ? CloudflareAgent.resumeCompletion(agent, this.#asyncEnvelope(completion), {
+        cancelOnAdmission: this.#managedTurn(row.id)?.state === "cancelling",
+      }) : agent.turn.prompt({
         id: row.id,
         input: JSON.parse(dispatchInputJson) as PromptInput,
         cancelOnAdmission: dispatchable.state === "cancelling",
@@ -8296,6 +8329,7 @@ export class DurableAgentSession extends DurableComputerObject {
         try { await turn.cancel(); } catch { /* Deletion owns shutdown. */ }
         throw retryableError("agent was deleted during admission");
       }
+      if (completion) this.#asyncCodeJobs.delivered(completion.id, row.id);
       this.#pendingTurnIds.delete(row.id);
       this.ctx.storage.sql.exec(
         `UPDATE managed_turns
@@ -8667,7 +8701,7 @@ export class DurableAgentSession extends DurableComputerObject {
     this.#assertDeletionGeneration(generation);
     CloudflareAgent.destroy(this);
     this.ctx.storage.transactionSync(() => {
-      for (const table of ["managed_recovery_safety", "managed_recovery_progress", "managed_recovery_call_indices", "managed_code_effect_legacy_parents", "managed_code_effect_legacy_sessions", "managed_code_effect_migration", "managed_code_effect_runtime", "managed_code_effects", "managed_code_effect_receipt_chunks", "managed_configuration", "managed_environment_setup", "managed_webhook", "managed_webhook_deliveries", "managed_turn_usage", "managed_model_usage", "managed_artifacts", "managed_artifact_publications", "managed_output_checkpoints", "managed_output_checkpoint_chunks", "managed_turn_file_owners", "managed_connect_inputs"]) this.ctx.storage.sql.exec(`DELETE FROM ${table}`);
+      for (const table of ["managed_async_code_results", "managed_async_code_jobs", "managed_recovery_safety", "managed_recovery_progress", "managed_recovery_call_indices", "managed_code_effect_legacy_parents", "managed_code_effect_legacy_sessions", "managed_code_effect_migration", "managed_code_effect_runtime", "managed_code_effects", "managed_code_effect_receipt_chunks", "managed_configuration", "managed_environment_setup", "managed_webhook", "managed_webhook_deliveries", "managed_turn_usage", "managed_model_usage", "managed_artifacts", "managed_artifact_publications", "managed_output_checkpoints", "managed_output_checkpoint_chunks", "managed_turn_file_owners", "managed_connect_inputs"]) this.ctx.storage.sql.exec(`DELETE FROM ${table}`);
       this.ctx.storage.sql.exec("DROP TABLE IF EXISTS managed_fork_seed");
       this.ctx.storage.sql.exec("DELETE FROM managed_turn_dispatch_chunks");
       this.ctx.storage.sql.exec("DELETE FROM managed_turn_input_chunks");
@@ -8856,7 +8890,7 @@ export class DurableAgentSession extends DurableComputerObject {
         break;
       }
       try {
-        validatePromptInput(JSON.parse(current.input_json));
+        if (!this.#asyncCodeJobs.forDelivery(current.id)) validatePromptInput(JSON.parse(current.input_json));
         await this.#admitManagedTurn(current, true);
       } catch (error) {
         this.#commitManagedResolution(current.id, classifyTurnFailure(current.id, error));
@@ -8864,7 +8898,10 @@ export class DurableAgentSession extends DurableComputerObject {
       const admitted = this.#managedTurn(current.id);
       if (admitted && (admitted.state === "cancelling" || admitted.retry_at !== null)) break;
     }
-    try { if (this.#goalRuntime.pending()) await this.#continueGoal(); } finally { await this.#scheduleNextAlarm(); }
+    try {
+      await this.#drainAsyncCodeJobs();
+      if (this.#goalRuntime.pending()) await this.#continueGoal();
+    } finally { await this.#scheduleNextAlarm(); }
   }
 
   #prepareActiveConversation(authorization: TurnAuthorization): void {
@@ -9324,6 +9361,8 @@ export class DurableAgentSession extends DurableComputerObject {
     if (!session) throw new Error("session is not initialized");
     const multiplayer = session.runtime_profile === "multiplayer";
     const configuration = this.#configuration();
+    if (configuration.code_mode_async && (multiplayer || !this.#settings().model.startsWith("gpt-") || this.#threadRoute()))
+      throw new ManagedRequestError(409, "async_harness_unsupported", "Async Code Mode currently requires a native Codex GPT root thread");
     const restrictedEnvironment = configuration.environment?.network.access !== undefined && configuration.environment.network.access !== "enabled";
     const isClaude = this.#settings().model.startsWith("claude-");
     if (isClaude && (configuration.output_schema !== undefined || configuration.prompt_cache !== undefined)) throw new ManagedRequestError(409, "claude_response_controls_unsupported", "Claude managed output_schema and prompt_cache controls are not implemented");
@@ -9548,7 +9587,7 @@ export class DurableAgentSession extends DurableComputerObject {
       };
     };
     const codeEvaluatorStartedAt = performance.now();
-    const hostedRuntime = hostedProviders.length === 0 ? undefined : {
+    const hostedRuntime = hostedProviders.length === 0 && !configuration.code_mode_async ? undefined : {
       codeEvaluator: managedCodeEvaluator(),
       toolMode: "code" as const,
       toolProviders: hostedProviders,
@@ -10153,11 +10192,51 @@ export class DurableAgentSession extends DurableComputerObject {
           } } }));
         } } } : {}),
         codeEffectJournal: this.#codeEffectJournal,
+        codeAsyncJobs: {
+          run: <T>(context: CodeJobContext & { jobId: string }, invoke: () => Promise<T>) => {
+            const job = this.#asyncCodeJobs.get(context.jobId);
+            if (!job || !this.#asyncJobAuthorized(job)) throw new Error("Async Code Mode origin was cancelled or revoked");
+            return this.#asyncToolOrigin.run(job, invoke);
+          },
+          authorize: (context: { jobId: string }) => {
+            const job = this.#asyncCodeJobs.get(context.jobId);
+            if (!job || !this.#asyncJobAuthorized(job)) throw new Error("Async Code Mode origin was cancelled or revoked");
+          },
+          enabled: (runtimeSessionId: string) => configuration.code_mode_async === true && runtimeSessionId === rootRoutingSessionId(),
+          admit: async (context: CodeJobContext) => {
+            if (context.sessionId !== rootRoutingSessionId()) throw new Error("Async Code Mode child sessions are unsupported");
+            const ownerId = context.turnId === undefined ? undefined : this.#managedRuntimeTurn(context);
+            const owner = ownerId === undefined ? undefined : this.#managedTurn(ownerId);
+            if (!owner || owner.state !== "accepted" || this.#session()?.authorization_epoch !== session.authorization_epoch)
+              throw new Error("Async Code Mode origin is no longer authorized");
+            const admitted = await this.#asyncCodeJobs.admit(context, { turnId: owner.id,
+              authorization: owner.authorization_json, epoch: session.authorization_epoch });
+            if (this.#managedTurn(owner.id)?.state !== "accepted" || this.#session()?.authorization_epoch !== session.authorization_epoch) {
+              this.#asyncCodeJobs.cancelTurn(owner.id);
+              throw new Error("Async Code Mode origin changed during admission");
+            }
+            await this.ctx.storage.sync();
+            await this.#scheduleNextAlarm();
+            return admitted;
+          },
+          complete: async (context: CodeJobContext & { jobId: string }, receipt: unknown) => {
+            this.#asyncCodeJobs.complete(context.jobId, receipt);
+            await this.ctx.storage.sync();
+            await this.#scheduleNextAlarm();
+            await this.#drainAsyncCodeJobs();
+          },
+          retain: (work: Promise<unknown>) => this.ctx.waitUntil(work.catch(error => {
+            console.warn({ type: "managed.async_code_failed", error_kind: errorKind(error) });
+          })),
+        },
         // Passive live transport observations and summaries are always on.
         onSocketTiming: (timing: unknown) => performanceSocketTiming(session.session_id, timing),
         onSocketEvent: (event: unknown) => performanceSocketEvent(session.session_id, event, this.#eventTurnId ?? this.#eventTurnQueue[0], record => this.#diagnostics.record(record)),
-        traceTool: <T>(name: string, context: { sessionId: string; callId: string; parentCallId?: string; turnId?: string }, run: () => Promise<T>) =>
-          diagnosticScope(this.#diagnostics, () => traceToolInvocation("nanocodex.tool", session.session_id, name, context, run, this.#eventTurnId ?? this.#eventTurnQueue[0])),
+        traceTool: <T>(name: string, context: { sessionId: string; callId: string; parentCallId?: string; turnId?: string }, run: () => Promise<T>) => {
+          this.#managedRuntimeTurn(context);
+          const job = this.#asyncToolOrigin.getStore();
+          return diagnosticScope(this.#diagnostics, () => traceToolInvocation("nanocodex.tool", session.session_id, name, context, run, job?.turn_id ?? this.#eventTurnId ?? this.#eventTurnQueue[0]));
+        },
         onRequestShape: (shape: unknown) => performanceRequestShape(session.session_id, shape),
         subagentRouting,
         inferenceForSession,
@@ -10475,7 +10554,7 @@ export class DurableAgentSession extends DurableComputerObject {
   #goalToolTurn(context: ToolContext): string {
     context.signal.throwIfAborted();
     const authorization = this.#authorizationForToolContext(context);
-    const id = this.#eventTurnId ?? this.#eventTurnQueue[0];
+    const id = this.#asyncToolOrigin.getStore()?.turn_id ?? (context.turnId ? this.#runtimeManagedTurns.get(context.turnId) : undefined) ?? this.#eventTurnId ?? this.#eventTurnQueue[0];
     if (context.subagent || !id || !authorization || !this.#hasFullAccountAuthority(authorization)
       || !authorization.capabilities.includes("tools:use")) {
       throw new ManagedRequestError(403, "forbidden", "goal tools require the root persistent thread and full account tool authority");
@@ -10533,7 +10612,152 @@ export class DurableAgentSession extends DurableComputerObject {
     return response.json<unknown>();
   }
 
+  #managedRuntimeTurn(context: { sessionId: string; turnId?: string; callId?: string; parentCallId?: string }): string | undefined {
+    if (!context.turnId) return undefined;
+    const known = this.#runtimeManagedTurns.get(context.turnId);
+    if (known) return known;
+    // The host ABI uses session:ordinal while native events carry a UUID.
+    // Bind only the unique exact emitted tool call, never the current turn.
+    const prefix = context.sessionId + ":";
+    if (!context.turnId.startsWith(prefix) || !/^[1-9]\d*$/.test(context.turnId.slice(prefix.length))) return undefined;
+    const call = context.parentCallId ?? context.callId;
+    const pending = call ? this.#runtimePendingCalls.get(call) : undefined;
+    if (!pending || pending.size !== 1) return undefined;
+    const nativeTurn = [...pending][0]!;
+    const managed = this.#runtimeManagedTurns.get(nativeTurn);
+    if (managed) {
+      this.#runtimeManagedTurns.set(context.turnId, managed);
+      this.#runtimePendingCalls.delete(call!);
+    }
+    return managed;
+  }
+
+  #asyncJobAuthorized(job: CodeJob, continuation = false): boolean {
+    const current = this.#asyncCodeJobs.get(job.id);
+    if (!current) return false;
+    job = current;
+    const origin = this.#managedTurn(job.turn_id);
+    return !this.#deleting && !this.#deleted && !this.#durabilityExported
+      && job.state !== "cancelled" && (continuation || job.state !== "delivered") && this.#session()?.authorization_epoch === job.authorization_epoch
+      && origin !== undefined && (origin.state === "accepted" || origin.state === "completed");
+  }
+
+  #asyncEnvelope(job: CodeJob): CloudflareAgent.AsyncCompletion {
+    const receipt = JSON.parse(job.result_json ?? "{}") as { output?: CloudflareAgent.AsyncCompletion["output"]; status?: string; code?: string };
+    return { delivery_id: job.id, job_id: job.id, original_call_id: job.source_call_id,
+      output: receipt.output ?? "Async Code Mode receipt was pruned" };
+  }
+
+  #drainAsyncCodeJobs(): Promise<void> {
+    if (this.#asyncDeliveryTask) {
+      this.#asyncDeliveryAgain = true;
+      return this.#asyncDeliveryTask;
+    }
+    const task = (async () => {
+      try {
+        do {
+          this.#asyncDeliveryAgain = false;
+          await this.#deliverAsyncCodeJobs();
+        } while (this.#asyncDeliveryAgain);
+      } finally { this.#asyncDeliveryTask = undefined; }
+    })();
+    this.#asyncDeliveryTask = task;
+    return task;
+  }
+
+  async #deliverAsyncCodeJobs(): Promise<void> {
+    if (!this.#sessionId() || this.#deleting || this.#deleted) return;
+    for (const job of this.#asyncCodeJobs.pending()) {
+      if (!this.#asyncJobAuthorized(job)) { this.#asyncCodeJobs.cancelTurn(job.turn_id); continue; }
+      let target = job.delivery_turn_id;
+      if (!target) {
+        const active = this.#eventTurnId ?? this.#eventTurnQueue[0];
+        if (active && this.#turns.has(active)) {
+          // Different request authorities never receive each other's retained work.
+          if (this.#managedTurn(active)?.authorization_json !== job.authorization_json) continue;
+          target = active;
+        } else {
+          if (this.#recoverableTurnCount() > 0 || this.#pendingTurnIds.size > 0) continue;
+          target = `async:${job.id}`;
+        }
+        this.ctx.storage.transactionSync(() => {
+          this.#asyncCodeJobs.bindDelivery(job.id, target!);
+          if (target === `async:${job.id}`) {
+            const now = Date.now();
+            this.ctx.storage.sql.exec(`INSERT OR IGNORE INTO managed_turns
+              (id,request_key,request_hash,input_json,authorization_json,state,accepted_cursor,may_have_inner_operation,created_at,accepted_at,updated_at)
+              VALUES (?,?,?,?,?,'accepted',CAST(? AS INTEGER),0,?,?,?)`,
+              target!, target!, job.id, JSON.stringify(""), job.authorization_json,
+              this.#eventLog.latestCursor(), now, now, now);
+          }
+        });
+        await this.ctx.storage.sync();
+      }
+      if (target === `async:${job.id}`) {
+        const row = this.#managedTurn(target);
+        if (row && !isTerminalState(row.state)) await this.#admitManagedTurn(row, false);
+        continue;
+      }
+      const envelope = this.#asyncEnvelope(job);
+      const inputKey = await CloudflareAgent.asyncCompletionInputKey(envelope);
+      if (!this.#asyncJobAuthorized(job)) { this.#asyncCodeJobs.cancelTurn(job.turn_id); continue; }
+      const receipt = CloudflareAgent.steerReceipt(this, target, `async:${job.id}`);
+      if (receipt) {
+        if (receipt.input_key !== inputKey) throw new Error("async completion receipt identity conflict");
+        if (receipt.withdrawn) this.#asyncCodeJobs.cancelDelivery(job.id, target);
+        else this.#asyncCodeJobs.delivered(job.id, target);
+        continue;
+      }
+      const targetRow = this.#managedTurn(target);
+      if (!targetRow || isTerminalState(targetRow.state)) {
+        const retained = CloudflareAgent.operationReceiptStatus(this, target);
+        if (retained === "terminal") {
+          // The retained native operation and absent receipt prove non-admission.
+          // Its terminal state prevents any later acceptance on this target.
+          const continuation = `async:${job.id}`;
+          this.ctx.storage.transactionSync(() => {
+            this.#asyncCodeJobs.rebindDelivery(job.id, target!, continuation);
+            const now = Date.now();
+            this.ctx.storage.sql.exec(`INSERT OR IGNORE INTO managed_turns
+              (id,request_key,request_hash,input_json,authorization_json,state,accepted_cursor,may_have_inner_operation,created_at,accepted_at,updated_at)
+              VALUES (?,?,?,?,?,'accepted',CAST(? AS INTEGER),0,?,?,?)`,
+              continuation, continuation, job.id, JSON.stringify(""), job.authorization_json,
+              this.#eventLog.latestCursor(), now, now, now);
+          });
+          await this.ctx.storage.sync();
+          const row = this.#managedTurn(continuation);
+          if (row && !isTerminalState(row.state)) await this.#admitManagedTurn(row, false);
+        } else if (retained === "missing") {
+          // Missing history cannot establish non-admission. Preserve the payload,
+          // stop the outbox retry loop, and make uncertainty visible to the user.
+          this.#asyncCodeJobs.cancelDelivery(job.id, target);
+          this.#recordAndBroadcast({ type: "event", event: { protocol_version: 1,
+            request_id: job.runtime_session_id, seq: 0, type: "run.error", payload: {
+              code: "async_delivery_unknown", turn_id: target,
+              message: `Code Mode job ${job.id} finished, but its delivery outcome is unknown because the original operation receipt is unavailable. Reconcile the original operation before retrying.`,
+            } } }, target);
+          await this.ctx.storage.sync();
+        }
+        continue;
+      }
+      const turn = this.#turns.get(target);
+      if (!turn) {
+        // Uncertain active delivery remains pinned. The ordinary recovery
+        // scheduler owns reconstruction; do not recursively schedule this pump.
+        continue;
+      }
+      try {
+        await CloudflareAgent.deliverCompletion(turn, envelope);
+        this.#asyncCodeJobs.delivered(job.id, target);
+      } catch (error) {
+        console.warn({ type: "managed.async_delivery_pending", job_id: job.id, error_kind: errorKind(error) });
+      }
+    }
+  }
+
   #activeTurnAuthorization(): TurnAuthorization | undefined {
+    const origin = this.#asyncToolOrigin.getStore();
+    if (origin) return this.#asyncJobAuthorized(origin) ? parseTurnAuthorization(origin.authorization_json) : undefined;
     // The driver requests tool definitions before emitting run.started. The
     // head of the owned admission queue is therefore the exact authorization
     // for discovery/initialization until event attribution becomes active.
@@ -10562,7 +10786,7 @@ export class DurableAgentSession extends DurableComputerObject {
   }
 
   #authorizationForToolContext(
-    context: Pick<ToolContext, "sessionId" | "subagent">,
+    context: Pick<ToolContext, "sessionId" | "subagent"> & Partial<Pick<ToolContext, "turnId" | "parentCallId">>,
   ): TurnAuthorization | undefined {
     let rootSessionId: string | undefined;
     try {
@@ -10570,6 +10794,17 @@ export class DurableAgentSession extends DurableComputerObject {
         "SELECT session_id FROM nanocodex_cloudflare_agent WHERE singleton = 1",
       ).toArray()[0]?.session_id;
     } catch { /* The adapter creates the identity table during construction. */ }
+    if (context.sessionId === rootSessionId && context.parentCallId) {
+      const scoped = this.#asyncToolOrigin.getStore();
+      const job = scoped?.runtime_session_id === context.sessionId && scoped.source_call_id === context.parentCallId
+        ? scoped : this.#asyncCodeJobs.forCall(context.sessionId, context.parentCallId, context.turnId);
+      if (job) return this.#asyncJobAuthorized(job) ? parseTurnAuthorization(job.authorization_json) : undefined;
+    }
+    if (context.sessionId === rootSessionId && context.turnId) {
+      const managedId = this.#runtimeManagedTurns.get(context.turnId);
+      const origin = managedId ? this.#managedTurn(managedId) : undefined;
+      return origin?.state === "accepted" ? parseTurnAuthorization(origin.authorization_json) : undefined;
+    }
     return managedAuthorizationForToolContext(
       this.#subagentBindings,
       rootSessionId,
@@ -11408,6 +11643,7 @@ export class DurableAgentSession extends DurableComputerObject {
       if (!this.#deleting) {
         if (reopenAgent) await this.#reopenAgent(id);
         this.#scheduleRecovery();
+        await this.#drainAsyncCodeJobs();
         await this.#scheduleNextAlarm();
       }
     }
@@ -11702,8 +11938,10 @@ export class DurableAgentSession extends DurableComputerObject {
     let turnId = this.#eventTurnId;
     // Acceptance can precede run.started, including while another turn is active.
     // Use the admitted operation identity without consuming the execution queue.
-    if (event.type === "input.accepted" && event.payload.kind === "prompt" && typeof event.payload.request_id === "string") {
+    if (event.type === "input.accepted" && (event.payload.kind === "prompt" || event.payload.kind === "completion") && typeof event.payload.request_id === "string") {
       turnId = event.payload.request_id;
+      if (typeof event.payload.turn_id === "string") this.#runtimeManagedTurns.set(event.payload.turn_id, turnId);
+      if (event.payload.kind === "completion") return;
     }
     if (event.type === "run.started") {
       turnId = this.#eventTurnQueue.shift();
@@ -11716,6 +11954,11 @@ export class DurableAgentSession extends DurableComputerObject {
       // outer admission queue until that event arrives so a following run
       // cannot inherit the replayed operation's attribution.
       turnId = this.#eventTurnQueue.shift();
+    }
+    if (event.type === "tool.call" && typeof event.payload.turn_id === "string" && typeof event.payload.call_id === "string") {
+      const calls = this.#runtimePendingCalls.get(event.payload.call_id) ?? new Set<string>();
+      calls.add(event.payload.turn_id);
+      this.#runtimePendingCalls.set(event.payload.call_id, calls);
     }
     const route = event.type === "run.started" ? this.#threadRoute() : undefined;
     this.#recordAndBroadcast({ type: "event", event, ...(route ? {
@@ -11928,6 +12171,10 @@ export class DurableAgentSession extends DurableComputerObject {
     retainTerminalTurns?: number,
   ): Promise<ManagedTurnSealResult> {
     if (this.#deleting) return Promise.reject(new Error("agent deletion fenced turn archival"));
+    // Receipt admission does not end a continuation's need for its origin row.
+    if (this.#asyncCodeJobs.hasRunning() || this.#asyncCodeJobs.hasPending()
+      || this.#asyncCodeJobs.hasPendingContinuation())
+      return Promise.resolve({ archived_bytes: 0, archived_receipts: 0, objects: 0, sealed: false });
     const active = this.#turnArchiveTask;
     if (active) {
       return force
@@ -12184,6 +12431,8 @@ export class DurableAgentSession extends DurableComputerObject {
       const constructions = [...this.#agentConstructions];
       const events = this.#events;
       this.#runtimeOwnershipGeneration += 1;
+      this.#runtimeManagedTurns.clear();
+      this.#runtimePendingCalls.clear();
       this.#agent = undefined;
       this.#agentPromise = undefined;
       this.#agentConstruction = undefined;
@@ -12328,6 +12577,8 @@ export class DurableAgentSession extends DurableComputerObject {
     } catch (error) {
       throw new ManagedRequestError(400, "invalid_request", errorMessage(error));
     }
+    if (this.#configuration().code_mode_async && !settings.model.startsWith("gpt-"))
+      throw new ManagedRequestError(409, "async_harness_unsupported", "Async Code Mode requires a native Codex GPT root thread");
     const immutableRequested = (current.model.startsWith("claude-") && Object.hasOwn(patch, "thinking")) || Object.hasOwn(patch, "model")
       || Object.hasOwn(patch, "reasoning_mode");
     if (immutableRequested && session.accepted_turns !== 0) {
@@ -12432,7 +12683,7 @@ export class DurableAgentSession extends DurableComputerObject {
   }
 
   #immutableSettingsBusy(): boolean {
-    return this.#turns.size > 0
+    return this.#asyncCodeJobs.hasRunning() || this.#asyncCodeJobs.hasPending() || this.#turns.size > 0
       || this.#pendingTurnIds.size > 0
       || this.#admissionTasks.size > 0
       || this.#recoverableTurnCount() > 0
@@ -12667,12 +12918,13 @@ export class DurableAgentSession extends DurableComputerObject {
     if (this.#archivesNeedMaintenance()) {
       targets.push(Math.max(now + 1, this.#archiveMaintenance.nextAttemptAt()));
     }
+    if (this.#asyncCodeJobs.hasRunning() || this.#asyncCodeJobs.hasPending()) targets.push(now + MAX_RETRY_DELAY_MS);
     const unfinished = this.#recoverableTurnCount() > 0;
     // Keep a durable wakeup while in-memory work is owned, including when a
     // hibernatable socket is connected. Losing the isolate also loses those
     // handles; the alarm must still reconstruct the accepted work.
     if (unfinished) targets.push(now + MAX_RETRY_DELAY_MS);
-    if (!unfinished && (this.#agent || this.#agentPromise)
+    if (!unfinished && !this.#asyncCodeJobs.hasRunning() && !this.#asyncCodeJobs.hasPending() && (this.#agent || this.#agentPromise)
       && this.#managedRealtimeSession() === undefined) {
       const session = this.#session();
       const lastActive = session?.last_active ?? now;

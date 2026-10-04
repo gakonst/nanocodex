@@ -578,6 +578,57 @@ export type CodeEffectJournal = Readonly<{
   complete(context: CodeEffectContext, receipt: CodeEffectReceipt): Promise<void>;
 }>;
 
+/** Trusted host admission for a detached Code Mode cell. Never guest-provided. */
+export type CodeAsyncJobContext = Readonly<{
+  sessionId: string;
+  parentCallId: string;
+  cellId: string;
+  turnId?: string;
+  /** Trusted canonical effect identity when a durable effect journal is configured. */
+  operationId?: string;
+  modelCallIndex?: number;
+  model: string;
+  source: string;
+  maxOutputTokens: number;
+}>;
+export type CodeAsyncJobReceipt = Readonly<{
+  job_id: string;
+  status: "completed" | "failed" | "cancelled" | "interrupted";
+  success: boolean;
+  output: unknown;
+  cell: Readonly<{ id: string; job_id: string; origin_call_id: string; running: false }>;
+  nested_calls: readonly Readonly<{
+    call_id: string;
+    name: string;
+    input: unknown;
+    output: unknown;
+    structured_result: unknown;
+    success: boolean;
+    started_after_ns: number;
+    duration_ns: number;
+    metadata: unknown;
+  }>[];
+  notifications: readonly Readonly<{ call_id: string; text: string }>[];
+}>;
+/** Owned by the host scheduler. It must persist admission before returning,
+ * keep the completion promise alive beyond normal turn finish, and durably
+ * retain completion before acknowledging it. An existing or uncertain job
+ * must never be returned as execute; recovery must reconcile its original ID.
+ * Explicit cancellation still aborts live cells. No guest polling is needed. */
+export type CodeAsyncJobAdapter = Readonly<{
+  /** Required authority/context scoping belongs here, outside best-effort tracing. */
+  run?<T>(context: CodeAsyncJobContext & Readonly<{ jobId: string }>, invoke: () => Promise<T>): Promise<T>;
+  /** Synchronous authority fence checked before each retained nested dispatch. */
+  authorize?(context: Pick<CodeAsyncJobContext, "sessionId" | "parentCallId" | "turnId"> & { jobId: string }): void;
+  /** Read the immutable per-thread configuration; false preserves legacy exec. */
+  enabled(sessionId: string): boolean;
+  admit(context: CodeAsyncJobContext): Promise<{ jobId: string; status: "execute" | "existing" }>;
+  complete(context: CodeAsyncJobContext & Readonly<{ jobId: string }>, receipt: CodeAsyncJobReceipt): Promise<void>;
+  /** Register this promise with the host lifetime before any guest dispatch.
+   * A rejection means persistence interrupted; retain the admission for recovery. */
+  retain(completion: Promise<void>): void;
+}>;
+
 declare const mcpPaymentBrand: unique symbol;
 
 /** MCP payment options returned by `mcpPayment()` from `nanocodex/tempo`. */

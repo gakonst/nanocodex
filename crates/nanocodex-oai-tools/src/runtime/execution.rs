@@ -418,6 +418,9 @@ impl ToolRuntimeControl {
             });
     }
 
+    /// Native retained cells already survive successful turns.
+    pub async fn finish_turn(&self) {}
+
     #[doc(hidden)]
     pub async fn cancel_turn(&self) {
         let turn_id = self.current_turn.load(Ordering::Acquire);
