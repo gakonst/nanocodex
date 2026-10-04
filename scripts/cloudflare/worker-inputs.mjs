@@ -25,8 +25,8 @@ const buildTargets = {
   dialog: ['nanocodex-connect-protocol', 'nanocodex-connect-ui', '@nanocodex/connect-dialog'],
   'connect-api': ['nanocodex-tools', 'nanocodex-connect-protocol', '@nanocodex/connect-api'],
   astra: ['nanocodex-tools'], 'chief-of-staff': ['nanocodex-tools'],
-  playground: ['nanocodex-tools', 'nanocodex', 'nanocodex-terminal', '@nanocodex/connect-playground'],
-  account: ['nanocodex-tools', 'nanocodex-connect-protocol', 'nanocodex', 'nanocodex-connect-ui', 'nanocodex-terminal', 'nanocodex-web'],
+  playground: ['nanocodex-tools', 'nanocodex', 'nanocodex-terminal', 'nanocodex-connect-embed', '@nanocodex/connect-playground'],
+  account: ['nanocodex-tools', 'nanocodex-connect-protocol', 'nanocodex', 'nanocodex-connect-ui', 'nanocodex-terminal', 'nanocodex-connect-embed', 'nanocodex-web'],
 };
 
 for (const [name, targets] of Object.entries(buildTargets)) workerSpecs[name].buildTargets = targets;

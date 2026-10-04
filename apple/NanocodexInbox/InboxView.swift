@@ -13,6 +13,7 @@ import NanocodexRemote
 import NanocodexVoice
 import NanocodexContext
 import NanocodexUI
+import NanocodexConnectEmbed
 import UIKit
 import AVFoundation
 import os.signpost
@@ -666,7 +667,7 @@ struct InboxView: View {
                 conversationHeader
                 if let screen = model.latestScreenOutput,
                    !screenThreads.contains(model.focusedConversationIdentity ?? "") {
-                    ChatLatestScreen(output: screen, onWatchLive: model.remoteService == nil ? nil : {
+                    EmbedLatestScreen(output: screen, onWatchLive: model.remoteService == nil ? nil : {
                         guard let identity = model.focusedConversationIdentity else { return }
                         screenThreads.insert(identity)
                     })
@@ -676,7 +677,7 @@ struct InboxView: View {
                 }
                 if let card = model.focused, let identity = model.focusedConversationIdentity,
                    screenThreads.contains(identity), let service = model.remoteService {
-                    RemoteThreadScreen(service: service,
+                    EmbedLiveScreen(conversationID: model.screenScope + identity + screenViewerRevision.uuidString, service: service,
                         selection: Binding(get: { model.screenSelection(agentID: card.id) },
                                            set: { model.selectScreen($0, agentID: card.id) }),
                         expanded: $screenExpanded,
@@ -1198,7 +1199,7 @@ private struct NewThreadComposer: View {
                     .frame(maxWidth: .infinity, alignment: .leading).padding(12)
             }
             HStack(alignment: .bottom, spacing: 8) {
-                ChatComposerEditor(text: $model.newThreadDraft, focused: $focused,
+                EmbedComposerEditor(text: $model.newThreadDraft, focused: $focused,
                                    overflowing: $overflowing, accessibilityLabel: "New thread")
                     .accessibilityIdentifier("new-thread-composer")
                     .overlay(alignment: .topLeading) {
@@ -1525,7 +1526,7 @@ private struct AgentComposerView: View {
     }
 
     private var composerText: some View {
-                ChatComposerEditor(text: $model.draft, focused: $focused, overflowing: $composerOverflows,
+                EmbedComposerEditor(text: $model.draft, focused: $focused, overflowing: $composerOverflows,
                                    onPasteImages: pasteImages)
                     .accessibilityIdentifier("composer")
                     .overlay(alignment: .topLeading) {
@@ -1595,7 +1596,7 @@ private struct ExpandedAgentComposer: View {
     var body: some View {
         NavigationStack {
             VStack(alignment: .leading, spacing: 8) {
-                ChatComposerEditor(text: $draft, focused: $editorFocused, overflowing: $editorOverflow,
+                EmbedComposerEditor(text: $draft, focused: $editorFocused, overflowing: $editorOverflow,
                                    expandsToFill: true, onPasteImages: onPasteImages)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                     .accessibilityLabel("Message")
@@ -1773,7 +1774,7 @@ private struct AttachmentGridLayout: Layout {
 }
 
 private struct OriginalImageAttachmentView: View {
-    @Environment(\.nativeTranscriptVisible) private var visible
+    @Environment(\.embedTranscriptVisible) private var visible
     let attachment: MessageAttachment
     let model: InboxModel
     let agentID: String
@@ -1835,7 +1836,7 @@ private struct InlinePhotoAttachmentView: View {
 }
 
 private struct AttachmentImageView: View {
-    @Environment(\.nativeTranscriptVisible) private var visible
+    @Environment(\.embedTranscriptVisible) private var visible
     let source: AttachmentImageSource?
     var contentMode: ContentMode = .fill
     var imageRatio: Binding<CGFloat>? = nil
@@ -2087,7 +2088,7 @@ private struct ConversationMessageContent: View, Equatable {
                 if !row.text.isEmpty || !row.detail.isEmpty || delivery?.phase == .failed || steering != nil {
                     VStack(alignment: .leading, spacing: 10) {
                         if row.role == "Thinking" {
-                            ChatMarkdown(text: row.text, compact: true)
+                            EmbedMarkdown(text: row.text, compact: true)
                                 .foregroundStyle(Ink.muted)
                         } else if row.role == "You", let receipt = BrowserReceiptPresentation.summary(row.text) {
                             Label(receipt, systemImage: "lock.shield").font(.subheadline)
@@ -2102,7 +2103,7 @@ private struct ConversationMessageContent: View, Equatable {
                                 }
                             }.font(.caption).foregroundStyle(Ink.muted)
                         } else if row.role == "Agent", !row.text.isEmpty {
-                            ChatMarkdown(text: row.text, compact: true)
+                            EmbedMarkdown(text: row.text, compact: true)
                                 .environment(\.openURL, OpenURLAction { url in
                                     guard let link = PublishedOutputLink(url: url) else { return .systemAction }
                                     openOutput(link)
@@ -2363,18 +2364,18 @@ private struct ConversationRenderedItem: Identifiable, Equatable, Sendable {
 // Use measured row heights; decoding follows native viewport visibility.
 private struct ConversationUserImageView: View {
     let source: String
-    @Environment(\.nativeTranscriptVisible) private var visible
+    @Environment(\.embedTranscriptVisible) private var visible
     var body: some View {
-        ChatImageAttachment(source: source, loadsThumbnail: visible)
+        EmbedImageAttachment(source: source, loadsThumbnail: visible)
 
     }
 }
 
 private struct ConversationOutputView: View {
     let output: ChatGeneratedOutput
-    @Environment(\.nativeTranscriptVisible) private var visible
+    @Environment(\.embedTranscriptVisible) private var visible
     var body: some View {
-        ChatGeneratedOutputView(output: output, loadsThumbnail: visible)
+        EmbedGeneratedOutputView(output: output, loadsThumbnail: visible)
 
     }
 }
@@ -2566,7 +2567,7 @@ private struct ConversationContentView: View {
     @State private var hasInitialPosition = false
     @State private var pendingReadingRestore: ConversationReadingPositions.Position?
     @State private var rowGeometry = ConversationRowGeometry()
-    @State private var scroll = NativeConversationScrollProxy()
+    @State private var scroll = EmbedScrollProxy()
     @State private var nativeScrollState = ConversationNativeScrollState()
     #if DEBUG
     @State private var rowMeasurementCount: UInt64 = 0
@@ -2638,7 +2639,7 @@ private struct ConversationContentView: View {
             readingPositions.values[identity] = .init(atLatest: false, rowID: first.key, offsetY: first.value.minY)
         }
     }
-    private func followLatest(using scroll: NativeConversationScrollProxy) {
+    private func followLatest(using scroll: EmbedScrollProxy) {
         guard followsLatest, pendingReadingRestore == nil,
               !model.needsLatestHistory, !isScrollGestureActive, !navigationActive else { return }
         // The native viewport follows measured height changes on its own.
@@ -2664,7 +2665,7 @@ private struct ConversationContentView: View {
         }
         return lower
     }
-    private func jumpToUser(_ id: String, using scroll: NativeConversationScrollProxy) {
+    private func jumpToUser(_ id: String, using scroll: EmbedScrollProxy) {
         followsLatest = false
         model.setHistoryAtLatest(false)
         model.protectHistoryRows([id])
@@ -2678,7 +2679,7 @@ private struct ConversationContentView: View {
         transaction.disablesAnimations = true
         withTransaction(transaction) { scroll.scrollTo(id, topOffset: 0) }
     }
-    private func navigateUser(_ direction: HistoryDirection, using scroll: NativeConversationScrollProxy) {
+    private func navigateUser(_ direction: HistoryDirection, using scroll: EmbedScrollProxy) {
         // History insertion/restoration must finish before another explicit jump.
         guard !model.loadingOlder, !model.loadingNewer else { return }
         if let id = userTarget(direction) { jumpToUser(id, using: scroll); return }
@@ -2703,7 +2704,7 @@ private struct ConversationContentView: View {
             if model.focusedTranscriptRevision == before { pendingUserDirection = nil }
         }
     }
-    private func continueUserNavigation(using scroll: NativeConversationScrollProxy) {
+    private func continueUserNavigation(using scroll: EmbedScrollProxy) {
         guard model.focusedConversationIdentity == identity,
               let direction = pendingUserDirection, !revision.preparing,
               !model.loadingOlder, !model.loadingNewer else { return }
@@ -2723,7 +2724,7 @@ private struct ConversationContentView: View {
             fetchUserHistory(direction)
         } else { pendingUserDirection = nil }
     }
-    private func updateRowPositions(in viewport: GeometryProxy, using scroll: NativeConversationScrollProxy) {
+    private func updateRowPositions(in viewport: GeometryProxy, using scroll: EmbedScrollProxy) {
         let frames = rowGeometry
         // Only visible cells participate in scroll bookkeeping. User-message
         // locations are indexed once by the background projection, then searched
@@ -2765,7 +2766,7 @@ private struct ConversationContentView: View {
             return content.activity.contains { tools.isExpanded($0.id) }
         }
     }
-    private func threadControls(using scroll: NativeConversationScrollProxy) -> some View {
+    private func threadControls(using scroll: EmbedScrollProxy) -> some View {
         HStack(spacing: 8) {
             Button {
                 followsLatest = false
@@ -2822,7 +2823,7 @@ private struct ConversationContentView: View {
         var expanded: Bool = false
         var showsJavaScript: Bool = false
     }
-    private func nativeRows(in viewport: GeometryProxy) -> [NativeConversationTranscript.Row] {
+    private func nativeRows(in viewport: GeometryProxy) -> [EmbedTranscript.Row] {
         // Retained cell closures resolve actions through the newest transcript
         // snapshot and viewport, even when their own content has not changed.
         rowGeometry.onToolToggle = { rowID in
@@ -2833,11 +2834,11 @@ private struct ConversationContentView: View {
             if let point = pendingReadingRestore { scroll.scrollTo(rowID, topOffset: point.offsetY) }
             if historyRequestInFlight { rememberHistoryPosition(in: viewport) }
         }
-        var rows: [NativeConversationTranscript.Row] = []
+        var rows: [EmbedTranscript.Row] = []
         var semanticIDs: [String: String] = [:]
         var sourceRowIDs: [String: String] = [:]
         if revision.items.isEmpty || revision.error != nil {
-            rows.append(.init(id: "transcript-header", revision: String(describing: revision.error) + String(revision.loading) + String(model.hasOlder), content: {
+            rows.append(.init(id: "transcript-header", countsAsMessage: false, revision: String(describing: revision.error) + String(revision.loading) + String(model.hasOlder), content: {
                 AnyView(VStack(alignment: .leading, spacing: 18) {
                     if revision.rows.isEmpty, revision.pending.isEmpty, !revision.loading, revision.error == nil {
                         VStack(alignment: .leading, spacing: 8) {
@@ -2951,7 +2952,7 @@ private struct ConversationContentView: View {
                 }
             }
         }
-        rows.append(.init(id: "latest", revision: revision.projectionRevision, content: {
+        rows.append(.init(id: "latest", countsAsMessage: false, revision: revision.projectionRevision, content: {
             AnyView(VStack(alignment: .leading, spacing: 0) {
                     if let agentID = model.focused?.id {
                         NanocodexVoiceTranscript(session: model.voice, conversationID: agentID, durableRows: revision.rows, rowContent: { transcript in
@@ -2976,11 +2977,12 @@ private struct ConversationContentView: View {
             GeometryReader { viewport in
             let boundaryItemID = historyBoundaryItemID
             ZStack(alignment: .top) {
-            NativeConversationTranscript(
+            EmbedTranscript(
                 rows: nativeRows(in: viewport), proxy: scroll,
                 followsLatest: followsLatest && pendingReadingRestore == nil && !model.needsLatestHistory && !navigationActive,
                 topInset: headerHeight,
                 bottomInset: composerHeight + 52,
+                layout: EmbedTranscriptLayout(maximumRowWidth: 740, horizontalPadding: 20, rowSpacing: 18, verticalPadding: 24),
                 onFrames: { frames in
                     // Native frames contain only realized cells in viewport coordinates.
                     var visible = frames
@@ -3181,7 +3183,7 @@ private struct InboxGeneratedOutputView: View, Equatable {
 // Geometry is reading-position bookkeeping, not rendered state. Updating each
 // pixel must not invalidate the conversation's SwiftUI body.
 private final class ConversationNativeScrollState {
-    var metrics: NativeConversationScrollMetrics?
+    var metrics: EmbedScrollMetrics?
 }
 
 private final class ConversationRowGeometry {

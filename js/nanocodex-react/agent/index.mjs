@@ -253,20 +253,20 @@ function createController(agent, options) {
       publish();
       try {
         await current.turn.steer({ input });
-        if (disposed || generation !== attachmentGeneration) return current.turn;
+        if (disposed || generation !== attachmentGeneration) return undefined;
         if (current.cancelVersion !== cancelVersion) {
           state = steerCancelled(state, id);
           publish();
-          return current.turn;
+          return undefined;
         }
         state = boundedState(steerAdmitted(state, id), options.maxEntries);
         emit("prompt.steered", { id, input });
       } catch (error) {
-        if (disposed || generation !== attachmentGeneration) return current.turn;
+        if (disposed || generation !== attachmentGeneration) return undefined;
         if (current.cancelVersion !== cancelVersion) {
           state = steerCancelled(state, id);
           publish();
-          return current.turn;
+          return undefined;
         }
         if (isCompletedSteerRace(error)) {
           return startRootTurn(id, input, true);
@@ -275,6 +275,8 @@ function createController(agent, options) {
           state = boundedState(steerFailed(state, id, errorMessage(error)), options.maxEntries);
           emit("prompt.steer_error", { error, id, input });
         }
+        publish();
+        return undefined;
       }
       publish();
       return current.turn;

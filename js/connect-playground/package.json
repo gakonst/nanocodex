@@ -18,9 +18,9 @@
     "@tanstack/react-query": "^5.101.4",
     "nanocodex": "workspace:*",
     "nanocodex-react": "workspace:*",
-    "nanocodex-terminal": "workspace:*",
     "react": "^19.2.8",
-    "react-dom": "^19.2.8"
+    "react-dom": "^19.2.8",
+    "nanocodex-connect-embed": "workspace:*"
   },
   "devDependencies": {
     "nanocodex-vite": "workspace:*",

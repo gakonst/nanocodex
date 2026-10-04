@@ -11,7 +11,9 @@ struct NanocodexInboxApp: App {
     var body: some Scene {
         WindowGroup("Nanocodex", id: "inbox") {
             #if DEBUG && targetEnvironment(simulator)
-            if ProcessInfo.processInfo.arguments.contains("--browser-native-form-ui-fixture") {
+            if ProcessInfo.processInfo.arguments.contains("--embed-conversation-ui-fixture") {
+                EmbedConversationUIFixture()
+            } else if ProcessInfo.processInfo.arguments.contains("--browser-native-form-ui-fixture") {
                 BrowserNativeFormUIFixture()
             } else if ProcessInfo.processInfo.arguments.contains("--browser-login-ui-fixture") {
                 BrowserLoginUIFixture()

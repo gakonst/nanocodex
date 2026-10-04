@@ -1,6 +1,6 @@
 # Mobile open-source dependencies
 
-These integrations use free, open-source libraries without a paid SDK or service requirement. Versions are pinned in the Xcode project, `InboxCore/Package.swift`, and `NanocodexUI/Package.swift`; the corresponding `Package.resolved` files record exact revisions.
+These integrations use free, open-source libraries without a paid SDK or service requirement. Versions are pinned in the Xcode project, `InboxCore/Package.swift`, `NanocodexUI/Package.swift`, and `NanocodexConnectEmbed/Package.swift`; the corresponding `Package.resolved` files record exact revisions.
 
 | Library | Version | Use | License |
 | --- | --- | --- | --- |
@@ -14,7 +14,8 @@ MarkdownUI is a maintenance dependency; keep its renderer behind the app's adapt
 
 ## Mobile conversation timeline
 
-`NativeConversationTranscript` adapts the app's stable row identities to ChatLayout's
+[`NanocodexConnectEmbed`](NanocodexConnectEmbed/README.md) owns the public
+`EmbedTranscript` surface and its native adapter. It adapts host-owned stable row identities to ChatLayout's
 `ChatLayoutDiffableDataSource` and `CollectionViewChatLayout`. ChatLayout owns row geometry,
 self-sizing invalidation, batch-update anchoring, and estimated-to-measured position
 restoration. The adapter retains conversation-specific follow/read intent, tab restoration,

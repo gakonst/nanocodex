@@ -197,6 +197,10 @@ jobs:
           # Preserve the full XCTest transcript as evidence while keeping the
           # Actions log focused enough that late-suite failures are not cut off.
           xcodebuild -xctestrun "$xctestrun" -destination "platform=iOS Simulator,id=$device" -parallel-testing-enabled NO -retry-tests-on-failure -test-iterations 2 -test-timeouts-enabled YES -default-test-execution-time-allowance 180 -maximum-test-execution-time-allowance 300 -resultBundlePath apple/build/inbox.xcresult \
+            -only-testing:NanocodexInboxUITests/InboxUITests/testEmbedConversationNativeJourney \
+            -only-testing:NanocodexInboxUITests/InboxUITests/testEmbedConversationPortableJourney \
+            -only-testing:NanocodexInboxUITests/InboxUITests/testEmbedConversationNativeHistoryJourney \
+            -only-testing:NanocodexInboxUITests/InboxUITests/testEmbedConversationPortableHistoryJourney \
             -only-testing:NanocodexInboxUITests/InboxUITests/testMarkdownRendersInConversationAndAfterTabSwitch \
             -only-testing:NanocodexInboxUITests/InboxUITests/testWideTableKeepsTailAboveComposer \
             -only-testing:NanocodexInboxUITests/InboxUITests/testStreamingMarkdownAndToolProgressShareTimeline \

@@ -19,7 +19,7 @@ import { Link, useNavigate } from "react-router";
 import { Moon, PanelLeft, Share2, SquarePen, Sun } from "lucide-react";
 import type { AgentStatus, AgentTerminalMode, AgentTerminalState } from "./agentTerminalTypes";
 import { AgentTerminal, ManagedAgentTerminal } from "./AgentTerminal";
-import { TerminalComposer, TerminalTranscriptSurface } from "nanocodex-terminal";
+import { TerminalComposer, TerminalTranscriptSurface } from "nanocodex-connect-embed";
 import { AgentSidebar } from "./AgentSidebar";
 import { ThreadShareDialog } from "./ThreadShareDialog";
 import { useAccountSession } from "./AccountSession";
@@ -42,7 +42,7 @@ import {
 } from "./managedAgentRuntime";
 import "nanocodex-connect-ui/styles.css";
 import "./AgentTerminal.css";
-import "nanocodex-terminal/styles.css";
+import "nanocodex-connect-embed/conversation.css";
 import "./Home.css";
 import { formatDollars } from "./walletFunding";
 import { useWalletFunding } from "./useWalletFunding";

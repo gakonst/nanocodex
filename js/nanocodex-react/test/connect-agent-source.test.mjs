@@ -92,7 +92,7 @@ test("history-disabled Connect sources tail latest and expose only source-submit
   await waitFor(() => events.some(({ type }) => type === "run.completed"));
   assert.equal(pageCalls, 0);
   assert.deepEqual(histories, [[]]);
-  assert.equal(await watcher.loadOlder(), false);
+  assert.equal(watcher.loadOlder, undefined);
   assert.deepEqual(events.map(({ type, payload }) => [type, payload.text]), [
     ["managed.prompt", "mine"],
     ["assistant.message", "my reply"],

@@ -1,9 +1,9 @@
 import { ArrowLeft, LockKeyhole, MessageCircle, RefreshCw } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Agent, AgentEvent } from "nanocodex-react/agent";
-import { TerminalComposer } from "nanocodex-terminal/composer";
-import { AgentTerminalView } from "nanocodex-terminal";
-import "nanocodex-terminal/styles.css";
+import { TerminalComposer } from "nanocodex-connect-embed";
+import { AgentConversation } from "nanocodex-connect-embed";
+import "nanocodex-connect-embed/conversation.css";
 import "./AgentTerminal.css";
 import "./Home.css";
 import "./ThreadSharing.css";
@@ -231,7 +231,7 @@ export function SharedThreadView({ agentId }: { agentId: string }) {
         {error && !meta ? <div role="alert" className="shared-thread-state"><h1>Can’t open this thread</h1><p>{error}</p><button type="button" onClick={() => { void refresh(); }}>Try again</button></div> : null}
         {meta ? <><div className="shared-chat-boundary"><LockKeyhole aria-hidden="true" /> {meta.permission === "write" ? "You’re in a shared conversation. Messages you send start a real AI turn." : "You’re viewing this shared conversation."}</div>
           {error ? <p className="shared-thread-error" role="alert">{error}</p> : null}
-          <AgentTerminalView agent={agent} agentError={undefined} mode="full" voice={false}
+          <AgentConversation agent={agent} agentError={undefined} mode="full" voice={false}
             onConversationActivity={() => {}} onStateChange={() => {}} retryAgent={() => { void refresh(); }}
             composer={composer} welcome={loading ? "Opening shared thread…" : "No messages have been shared yet."} />
         </> : null}

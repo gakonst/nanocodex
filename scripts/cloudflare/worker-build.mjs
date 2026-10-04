@@ -10,7 +10,7 @@ import { fileURLToPath } from 'node:url';
 
 export const outputs = [
   'js/nanocodex/pkg-web', 'js/nanocodex/pkg-node',
-  'js/nanocodex-tools/dist', 'js/nanocodex-terminal/dist',
+  'js/nanocodex-tools/dist', 'js/nanocodex-terminal/dist', 'js/nanocodex-connect-embed/dist',
   'js/nanocodex-connect-protocol/dist', 'js/nanocodex-connect-ui/dist',
   'js/account/dist', 'js/connect-dialog/dist', 'js/connect-playground/dist',
   'examples/astra-mpp-trial/public/client.js',

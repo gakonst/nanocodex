@@ -26,7 +26,7 @@ const appPackages = new Set([
 const bindingPackages = new Set(["managed", "egress", "x-api", "connect-api", "nanocodex-computer"]);
 const sharedPackages = new Set([
   "nanocodex", "nanocodex-tools", "nanocodex-react", "nanocodex-vite",
-  "nanocodex-terminal", "nanocodex-connect-ui", "nanocodex-connect-protocol",
+  "nanocodex-terminal", "nanocodex-connect-embed", "nanocodex-connect-ui", "nanocodex-connect-protocol",
 ]);
 // Deployed by the Cloudflare workflow; no ci.yml job builds or consumes them.
 const cloudflarePackages = new Set(["managed2", "egress2", "media"]);

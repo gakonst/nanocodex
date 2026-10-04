@@ -60,6 +60,11 @@ try:
         package = json.loads((generated/'package.json').read_text())
         assert {t['name'] for t in package['targets']} == {'NanocodexInbox', 'NanocodexShare', 'NanocodexWidgets'}
         assert any(d['name'] == 'NanocodexVoice' for t in package['targets'] for d in t['dependencies'])
+        main = next(t for t in package['targets'] if t['name'] == 'NanocodexInbox')
+        assert {'name': 'NanocodexConnectEmbed', 'package': 'nanocodexconnectembed'} in main['dependencies']
+        assert {'identity': 'nanocodexconnectembed', 'path': 'NanocodexConnectEmbed'} in package['dependencies']
+        assert not any(d['name'] == 'ChatLayout' for d in main['dependencies'])
+        trace.append('PASS: iPhone links the public native embed package; ChatLayout is owned by that package.\n')
         trace.append('PASS: three bundles, versions, privacy text, share class, original resources, icons and entitlements.\n')
         before = tree_digest(generated)
         run(apple, '--build-number', '../bad', ok=False)
@@ -73,6 +78,14 @@ try:
         assert 'Asset catalog changed' in result.stderr
         assert tree_digest(generated) == before
         shutil.rmtree(asset)
+        embed_manifest = apple/'NanocodexConnectEmbed/Package.swift'
+        embed_source = embed_manifest.read_bytes()
+        embed_manifest.unlink()
+        result = run(apple, ok=False)
+        assert 'Missing Xcode input: NanocodexConnectEmbed/Package.swift' in result.stderr
+        assert tree_digest(generated) == before
+        embed_manifest.write_bytes(embed_source)
+        trace.append('PASS: missing embed package fails preparation without replacing the previous app staging.\n')
         run(apple, '--version', '1.2.4', '--build-number', '43', '--sdk-version', '27.0')
         package = json.loads((generated/'package.json').read_text())
         main = next(t for t in package['targets'] if t['name'] == 'NanocodexInbox')

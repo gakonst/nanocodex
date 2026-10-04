@@ -1,8 +1,7 @@
-import { useCallback, useEffect, useMemo, useRef, type SyntheticEvent } from "react";
+import { useCallback, useEffect, useRef, type SyntheticEvent } from "react";
 import type { ConnectAgent, Connection } from "nanocodex/connect";
 import type { AgentControllerEvent } from "nanocodex-react/agent";
-import { createConnectAgentSource } from "nanocodex-react/connect";
-import { AgentTerminalView } from "nanocodex-terminal";
+import { ConnectConversation } from "nanocodex-connect-embed";
 import { apiHost } from "./config";
 
 export type AppObservation = Readonly<{
@@ -28,10 +27,6 @@ export function ConnectAgentExperience({
   onObservation(value: AppObservation): void;
 }>) {
   const visibility = connection.grant.visibility;
-  const terminalAgent = useMemo(
-    () => createConnectAgentSource(agent, { history: visibility.conversationHistory }),
-    [agent, visibility.conversationHistory],
-  );
   const inputReported = useRef(false);
   const retryAgent = useCallback(() => {}, []);
   const recordActivity = useCallback(() => reportClientStage("prompt_accepted"), []);
@@ -129,8 +124,9 @@ export function ConnectAgentExperience({
       <div className="nanocodex-demo is-preview">
         <div className="conversation-workspace">
           <div className="conversation-main">
-            <AgentTerminalView composerPlaceholder="Ask your agent anything…"
-              agent={terminalAgent}
+            <ConnectConversation composerPlaceholder="Ask your agent anything…"
+              agent={agent}
+              connection={connection}
               agentError={undefined}
               maxEntries={visibility.conversationHistory ? Number.MAX_SAFE_INTEGER : undefined}
               mode="preview"

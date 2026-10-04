@@ -30,6 +30,7 @@ js/tui-react/node_modules/
 js/tui-react/dist/
 js/nanocodex-terminal/node_modules/
 js/nanocodex-terminal/dist/
+js/nanocodex-connect-embed/dist/
 js/chief-of-staff/node_modules/
 js/chief-of-staff/dist/
 js/nanocodex/pkg-node/
@@ -82,3 +83,7 @@ __pycache__/
 
 # Materialized by third_party/codex-voice/patches/webrtc-sys/prepare.py
 third_party/codex-voice/vendor/
+
+# Root SwiftPM SDK consumer builds
+/.build/
+/.swiftpm/

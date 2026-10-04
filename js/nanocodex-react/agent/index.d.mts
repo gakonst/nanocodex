@@ -120,6 +120,7 @@ export type AgentControllerSnapshot = Readonly<{
   canLoadOlder: boolean;
   hasOlder: boolean | undefined;
   visible: boolean;
+  /** Returns the admitted turn; rejected or cancelled admission and local commands return undefined. */
   submit(input: string, options?: SubmitOptions): Promise<AgentTurn | undefined>;
   steer(input: string, options?: Omit<SubmitOptions, "intent">): Promise<AgentTurn | undefined>;
   cancel(): Promise<boolean>;

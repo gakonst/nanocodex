@@ -684,6 +684,7 @@ jobs:
             --filter nanocodex-terminal \
             --filter nanocodex-node-example \
             --filter nanocodex-react-vite-example
+          pnpm --filter nanocodex-connect-embed run test
           node --test examples/browser-cdn/*.test.mjs
           npm test --prefix examples/privy
           npm test --prefix examples/better-auth
@@ -824,7 +825,10 @@ jobs:
           pnpm install --frozen-lockfile
           npm ci --prefix examples/astra-mpp-trial
       - name: Build account Worker dependencies
-        run: pnpm exec turbo run build --filter nanocodex-connect-protocol
+        run: |
+          pnpm exec turbo run build --filter nanocodex-connect-protocol
+          pnpm --filter nanocodex-terminal run build
+          pnpm --filter nanocodex-connect-embed run build
       - name: Test the account Worker
         # Temporarily disabled: CI tests are paused.
         if: needs.changes.outputs.tests == 'true'
@@ -835,11 +839,25 @@ jobs:
             --filter nanocodex-tools \
             --filter nanocodex-connect-ui \
             --filter nanocodex-terminal \
+            --filter nanocodex-connect-embed \
             --filter @nanocodex/connect-dialog \
             --filter @nanocodex/connect-playground \
             --filter nanocodex-web
           npm run typecheck --prefix examples/astra-mpp-trial
           npm run build --prefix examples/astra-mpp-trial
+      - name: Test Connect embed browser journey
+        if: needs.changes.outputs.tests == 'true'
+        env:
+          EMBED_BROWSER_OUTPUT: ${{ github.workspace }}/output/connect-embed-browser
+        run: |
+          pnpm --filter nanocodex-connect-embed exec playwright install --with-deps chromium
+          pnpm --filter nanocodex-connect-embed run test:browser
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always() && needs.changes.outputs.tests == 'true'
+        with:
+          name: connect-embed-browser-journey
+          path: output/connect-embed-browser
+          if-no-files-found: warn
       - name: Test private Claude connection and model picker
         if: needs.changes.outputs.tests == 'true'
         run: |

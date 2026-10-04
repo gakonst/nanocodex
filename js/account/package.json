@@ -49,13 +49,13 @@
     "lucide-react": "^1.24.0",
     "nanocodex": "workspace:*",
     "nanocodex-react": "workspace:*",
-    "nanocodex-terminal": "workspace:*",
     "react": "19.2.8",
     "react-dom": "19.2.8",
     "react-router": "^7.18.2",
     "recharts": "^3.10.1",
     "shiki": "^4.3.1",
-    "viem": "^2.54.0"
+    "viem": "^2.54.0",
+    "nanocodex-connect-embed": "workspace:*"
   },
   "devDependencies": {
     "@cloudflare/vite-plugin": "1.54.2",

@@ -1,35 +1,34 @@
+#if os(iOS)
 import SwiftUI
 import UIKit
 import ChatLayout
 
-private struct NativeTranscriptVisibilityKey: EnvironmentKey {
-    static let defaultValue = true
-}
-extension EnvironmentValues {
-    var nativeTranscriptVisible: Bool {
-        get { self[NativeTranscriptVisibilityKey.self] }
-        set { self[NativeTranscriptVisibilityKey.self] = newValue }
-    }
-}
 @Observable private final class NativeCellVisibility {
     var visible = false
 }
 // Diffable snapshots own identity and order. A stable observed row owns its
 // changing SwiftUI content, so streamed text does not reinstall the hosting
 // configuration (and reset its Markdown/rendering state) on every delta.
+@available(iOS 18.0, *)
 @MainActor @Observable private final class NativeHostedRow {
     @ObservationIgnored var revision: AnyHashable
     var content: () -> AnyView
-    init(_ row: NativeConversationTranscript.Row) {
+    var layout: EmbedTranscriptLayout
+    init(_ row: NativeConversationTranscript.Row, layout: EmbedTranscriptLayout) {
+        self.layout = layout
         revision = row.revision
         content = row.content
     }
 }
+@available(iOS 18.0, *)
 private struct NativeCellContent: View {
     let visibility: NativeCellVisibility
     let hosted: NativeHostedRow
     var body: some View {
-        hosted.content().environment(\.nativeTranscriptVisible, visibility.visible)
+        hosted.content().environment(\.embedTranscriptVisible, visibility.visible)
+            .frame(maxWidth: hosted.layout.maximumRowWidth, alignment: .leading)
+            .frame(maxWidth: .infinity, alignment: .center)
+            .padding(.horizontal, hosted.layout.horizontalPadding)
     }
 }
 private final class NativeTranscriptCell: UICollectionViewCell {
@@ -60,39 +59,38 @@ private final class NativeTranscriptCell: UICollectionViewCell {
 }
 
 @MainActor
-final class NativeConversationScrollProxy {
+public final class EmbedScrollProxy {
+    public init() {}
     fileprivate var scroll: ((String, CGFloat) -> Void)?
     fileprivate var follow: ((Bool) -> Void)?
 
     // Reading positions are exact points below the top chrome, never fractions
     // of a self-sizing row or the keyboard-dependent viewport height.
-    func scrollTo(_ id: String, topOffset: CGFloat = 0) { scroll?(id, topOffset) }
-    func followLatest(animated: Bool = false) { follow?(animated) }
+    public func scrollTo(_ id: String, topOffset: CGFloat = 0) { scroll?(id, topOffset) }
+    public func followLatest(animated: Bool = false) { follow?(animated) }
 }
 
-struct NativeConversationScrollMetrics: Equatable {
-    var contentOffset: CGPoint
-    var contentSize: CGSize
-    var containerSize: CGSize
-    var contentInsets: UIEdgeInsets
+public struct EmbedScrollMetrics: Equatable {
+    public let contentOffset: CGPoint
+    public let contentSize: CGSize
+    public let containerSize: CGSize
+    public let contentInsets: UIEdgeInsets
 }
 
 /// Hosts only the collection view's working set. A row revision must include all
 /// inputs that affect its content; unchanged IDs retain their hosting state.
+@available(iOS 18.0, *)
 struct NativeConversationTranscript: UIViewRepresentable {
-    struct Row {
-        var id: String
-        var revision: AnyHashable
-        var content: () -> AnyView
-    }
+    typealias Row = EmbedTranscript.Row
 
+    var layout: EmbedTranscriptLayout
     var rows: [Row]
-    var proxy: NativeConversationScrollProxy
+    var proxy: EmbedScrollProxy
     var followsLatest: Bool
     var topInset: CGFloat = 0
     var bottomInset: CGFloat
     var onFrames: ([String: CGRect]) -> Void
-    var onMetrics: (NativeConversationScrollMetrics) -> Void
+    var onMetrics: (EmbedScrollMetrics) -> Void
     var onPhase: (ScrollPhase, ScrollPhase) -> Void
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
@@ -100,8 +98,8 @@ struct NativeConversationTranscript: UIViewRepresentable {
     func makeUIView(context: Context) -> TranscriptCollectionView {
         let layout = context.coordinator.chatLayout
         layout.settings.estimatedItemSize = CGSize(width: 320, height: 120)
-        layout.settings.interItemSpacing = 18
-        layout.settings.additionalInsets = UIEdgeInsets(top: 24, left: 0, bottom: 24, right: 0)
+        layout.settings.interItemSpacing = self.layout.rowSpacing
+        layout.settings.additionalInsets = UIEdgeInsets(top: self.layout.verticalPadding, left: 0, bottom: self.layout.verticalPadding, right: 0)
         layout.supportSelfSizingInvalidation = true
         layout.delegate = context.coordinator
         let view = TranscriptCollectionView(frame: .zero, collectionViewLayout: layout)
@@ -121,8 +119,7 @@ struct NativeConversationTranscript: UIViewRepresentable {
     }
 
     static func dismantleUIView(_ view: TranscriptCollectionView, coordinator: Coordinator) {
-        coordinator.parent.proxy.scroll = nil
-        coordinator.parent.proxy.follow = nil
+        coordinator.invalidate()
         view.didLayout = nil
         view.delegate = nil
     }
@@ -158,7 +155,7 @@ struct NativeConversationTranscript: UIViewRepresentable {
         private var correcting = false
         private var reporting = false
         private var reportedFrames: [String: CGRect]?
-        private var reportedMetrics: NativeConversationScrollMetrics?
+        private var reportedMetrics: EmbedScrollMetrics?
         private var applying = false
         private var queuedUpdate: NativeConversationTranscript?
         #if DEBUG
@@ -169,14 +166,24 @@ struct NativeConversationTranscript: UIViewRepresentable {
 
         init(_ parent: NativeConversationTranscript) { self.parent = parent }
 
+        func invalidate() {
+            parent.proxy.scroll = nil
+            parent.proxy.follow = nil
+            for case let cell as NativeTranscriptCell in view?.visibleCells ?? [] {
+                cell.visibility.visible = false
+            }
+            queuedUpdate = nil
+            // Deferred reports and snapshot completions cannot update a removed
+            // conversation or its host bindings after this boundary.
+            view = nil
+        }
+
         func install(_ view: TranscriptCollectionView) {
             self.view = view
             let registration = UICollectionView.CellRegistration<NativeTranscriptCell, String> { [weak self] cell, _, id in
                 guard let hosted = self?.hostedRows[id] else { return }
                 cell.contentConfiguration = UIHostingConfiguration {
-                    NativeCellContent(visibility: cell.visibility, hosted: hosted).id(id).frame(maxWidth: 740, alignment: .leading)
-                        .frame(maxWidth: .infinity, alignment: .center)
-                        .padding(.horizontal, 20)
+                    NativeCellContent(visibility: cell.visibility, hosted: hosted).id(id)
                 }.margins(.all, 0)
                 cell.backgroundConfiguration = .clear()
                 #if DEBUG
@@ -219,7 +226,13 @@ struct NativeConversationTranscript: UIViewRepresentable {
             } else if !parent.followsLatest && next.followsLatest {
                 viewport = .following
             }
+            let layoutChanged = parent.layout != next.layout
             parent = next
+            if layoutChanged {
+                chatLayout.settings.interItemSpacing = next.layout.rowSpacing
+                chatLayout.settings.additionalInsets = UIEdgeInsets(top: next.layout.verticalPadding, left: 0, bottom: next.layout.verticalPadding, right: 0)
+                chatLayout.invalidateLayout()
+            }
             chatLayout.keepContentOffsetAtBottomOnBatchUpdates = next.followsLatest
             parent.proxy.scroll = { [weak self] id, offset in
                 self?.requestScroll(id, offset: offset)
@@ -236,17 +249,18 @@ struct NativeConversationTranscript: UIViewRepresentable {
             let commitRows = { [self] in
                 for row in next.rows {
                     if let hosted = hostedRows[row.id] {
+                        if hosted.layout != next.layout { hosted.layout = next.layout }
                         if hosted.revision != row.revision {
                             hosted.revision = row.revision
                             hosted.content = row.content
                         }
-                    } else { hostedRows[row.id] = NativeHostedRow(row) }
+                    } else { hostedRows[row.id] = NativeHostedRow(row, layout: next.layout) }
                 }
                 if structural {
                     let survivors = Set(newIDs)
                     hostedRows = hostedRows.filter { survivors.contains($0.key) }
                     ids = newIDs
-                    transcriptRowCount = newIDs.filter { $0 != "latest" && $0 != "transcript-header" }.count
+                    transcriptRowCount = next.rows.filter(\.countsAsMessage).count
                 }
             }
             view.contentInset.top = next.topInset
@@ -255,7 +269,7 @@ struct NativeConversationTranscript: UIViewRepresentable {
             view.verticalScrollIndicatorInsets.bottom = next.bottomInset
             if !structural {
                 commitRows()
-                if contentChanged || insetChanged { view.setNeedsLayout() }
+                if contentChanged || insetChanged || layoutChanged { view.setNeedsLayout() }
                 return
             }
             var snapshot = NSDiffableDataSourceSnapshot<Int, String>()
@@ -433,7 +447,7 @@ struct NativeConversationTranscript: UIViewRepresentable {
                     self.reportedFrames = frames
                     self.parent.onFrames(frames)
                 }
-                let metrics = NativeConversationScrollMetrics(contentOffset: view.contentOffset, contentSize: view.contentSize,
+                let metrics = EmbedScrollMetrics(contentOffset: view.contentOffset, contentSize: view.contentSize,
                                                                 containerSize: view.bounds.size, contentInsets: view.adjustedContentInset)
                 if self.reportedMetrics != metrics {
                     self.reportedMetrics = metrics
@@ -489,3 +503,4 @@ struct NativeConversationTranscript: UIViewRepresentable {
         }
     }
 }
+#endif

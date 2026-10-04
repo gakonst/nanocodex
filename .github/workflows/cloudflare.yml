@@ -127,6 +127,7 @@ jobs:
         run: |
           pnpm exec turbo run build \
             --filter nanocodex-terminal \
+            --filter nanocodex-connect-embed \
             --filter @nanocodex/connect-api \
             --filter @nanocodex/connect-dialog \
             --filter @nanocodex/connect-playground \

@@ -1,0 +1,99 @@
+{
+  "name": "nanocodex-connect-embed",
+  "version": "0.1.0",
+  "description": "Composable React agent conversation UI for managed and Connect Nanocodex agents",
+  "type": "module",
+  "sideEffects": [
+    "*.css"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./primitives": {
+      "types": "./dist/primitives.d.ts",
+      "import": "./dist/primitives.js"
+    },
+    "./connect": {
+      "types": "./dist/connect.d.ts",
+      "import": "./dist/connect.js"
+    },
+    "./conversation": {
+      "types": "./dist/conversation.d.ts",
+      "import": "./dist/conversation.js"
+    },
+    "./composer": {
+      "types": "./dist/composer.d.ts",
+      "import": "./dist/composer.js"
+    },
+    "./transcript": {
+      "types": "./dist/transcript.d.ts",
+      "import": "./dist/transcript.js"
+    },
+    "./generated-output": {
+      "types": "./dist/generated-output.d.ts",
+      "import": "./dist/generated-output.js"
+    },
+    "./styles.css": "./styles.css",
+    "./themes.css": "./themes.css",
+    "./conversation.css": "./conversation.css",
+    "./generated-output.css": "./generated-output.css",
+    "./managed": {
+      "types": "./dist/managed.d.ts",
+      "import": "./dist/managed.js"
+    },
+    "./headless": {
+      "types": "./dist/headless.d.ts",
+      "import": "./dist/headless.js"
+    }
+  },
+  "files": [
+    "dist",
+    "*.css",
+    "README.md"
+  ],
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "scripts": {
+    "clean": "node --eval \"require('node:fs').rmSync('dist', { recursive: true, force: true })\"",
+    "build": "npm run clean && tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit && npm run test:typecheck",
+    "test:typecheck": "tsc -p test/tsconfig.json",
+    "check:pack": "node scripts/check-pack.mjs",
+    "test": "npm run build && node --import ./test/register-peer-loader.mjs --test test/*.test.mjs && npm run test:typecheck && npm run check:pack",
+    "prepack": "npm test",
+    "test:browser": "node test/browser-journey.mjs",
+    "demo:account": "node test/browser-account-demo.mjs"
+  },
+  "dependencies": {
+    "nanocodex-terminal": "workspace:^"
+  },
+  "peerDependencies": {
+    "nanocodex-react": "^0.1.0",
+    "react": ">=18",
+    "nanocodex": "^0.6.6"
+  },
+  "devDependencies": {
+    "@types/react": "19.2.14",
+    "nanocodex-react": "workspace:*",
+    "react": "19.2.8",
+    "react-dom": "19.2.8",
+    "react-test-renderer": "19.2.8",
+    "typescript": "5.9.3",
+    "nanocodex": "workspace:*",
+    "esbuild": "0.28.1",
+    "@playwright/test": "1.62.1"
+  },
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "license": "MIT OR Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/gakonst/nanocodex.git",
+    "directory": "js/nanocodex-connect-embed"
+  }
+}

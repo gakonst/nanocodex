@@ -1,0 +1,17 @@
+/* Optional palettes. Set data-theme on an opt-in data-agent-embed wrapper. */
+[data-agent-embed][data-theme="light"] {
+  color-scheme: light;
+  --agent-background: #fff;
+  --agent-foreground: #171717;
+  --agent-muted: #525252;
+  --agent-border: #d4d4d4;
+  --agent-accent: #174ea6;
+}
+[data-agent-embed][data-theme="dark"] {
+  color-scheme: dark;
+  --agent-background: #171717;
+  --agent-foreground: #fafafa;
+  --agent-muted: #d4d4d4;
+  --agent-border: #525252;
+  --agent-accent: #93c5fd;
+}

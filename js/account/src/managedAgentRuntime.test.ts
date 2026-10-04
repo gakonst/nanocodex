@@ -301,7 +301,7 @@ test("managed live watcher delivers partial chunks before authoritative completi
 
 test("incomplete live answers retain every chunk for history reprojection beyond the envelope count limit", async (t) => {
   t.after(() => appQueryClient.clear());
-  const { MAX_MANAGED_RETAINED_ENVELOPES, managedHistoryEvents } = await import("./managedAgentRuntime.ts");
+  const { MAX_MANAGED_RETAINED_ENVELOPES, managedHistoryEvents } = await import("nanocodex-connect-embed/managed");
   const count = MAX_MANAGED_RETAINED_ENVELOPES + 20;
   let delivered!: () => void;
   const ready = new Promise<void>(resolve => { delivered = resolve; });
@@ -333,7 +333,7 @@ test("incomplete live answers retain every chunk for history reprojection beyond
 });
 
 test("helper and commentary messages preserve identity and cannot suppress the authoritative root final", async () => {
-  const { managedHistoryEvents } = await import("./managedAgentRuntime.ts");
+  const { managedHistoryEvents } = await import("nanocodex-connect-embed/managed");
   const history: ManagedEvent[] = [
     { cursor: "1", createdAt: 1, turnId: "turn", type: "event", data: { type: "event", cursor: "1", created_at: 1, turn_id: "turn", agent_id: 1,
       event: { type: "assistant.message", payload: { text: "Helper", phase: "final_answer", item_id: "helper" } } } },
@@ -348,7 +348,7 @@ test("helper and commentary messages preserve identity and cannot suppress the a
 
 
 test("null-phase root message does not synthesize a duplicate final", async () => {
-  const { managedHistoryEvents } = await import("./managedAgentRuntime.ts");
+  const { managedHistoryEvents } = await import("nanocodex-connect-embed/managed");
   const history: ManagedEvent[] = [
     { cursor: "1", createdAt: 1, turnId: "turn", type: "event", data: { type: "event", cursor: "1", created_at: 1, turn_id: "turn",
       event: { type: "assistant.message", payload: { text: "Root", phase: null, item_id: null } } } },
@@ -456,7 +456,7 @@ test("streaming work grows linearly instead of rescanning the incomplete transcr
 });
 
 test("managed shared guest turn retains Guest attribution for the owner's Chat projection", async () => {
-  const { managedHistoryEvents } = await import("./managedAgentRuntime.ts");
+  const { managedHistoryEvents } = await import("nanocodex-connect-embed/managed");
   const accepted: ManagedEvent = { cursor: "1", createdAt: 1, turnId: "guest-turn", type: "turn_accepted",
     data: { cursor: "1", created_at: 1, turn_id: "guest-turn", type: "turn_accepted",
       id: "guest-turn", input: "Can you follow up?", replayed: false, author: "guest", share_link_id: "share-id" } };

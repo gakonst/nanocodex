@@ -285,11 +285,10 @@ function connectEventWatcher(connectAgent, submitted, historyEnabled) {
       if (historyLoaded) listener(historySnapshot);
       return () => historyListeners.delete(listener);
     },
-    loadOlder() {
-      if (!historyEnabled) return Promise.resolve(false);
+    ...(historyEnabled ? { loadOlder() {
       if (!historyLoaded) return loadInitial();
       return loadOlderPage();
-    },
+    } } : {}),
     off() {
       if (controller.signal.aborted) return;
       controller.abort();

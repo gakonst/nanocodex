@@ -674,6 +674,24 @@ public Parquet/JSONL/Hugging Face dataset queries, and live React artifact
 tools. Read their exact contracts and bounds in
 [`js/nanocodex/README.md`](js/nanocodex/README.md#standard-web-and-browser-tools).
 
+### Embed cloud agents in your product
+
+[Nanocodex Connect Embed](js/nanocodex-connect-embed/README.md) provides
+composable React conversation components over the managed-agent and Connect
+SDKs. Use styleless primitives with your own design system, opt into a theme,
+or embed the full conversation surface used by the Nanocodex web app.
+Streaming, history, queued prompts, steering and cancellation share the same
+agent controller. Connect grants continue to define authorization and visibility;
+embedding a component never grants additional access.
+
+For native apps, [the Swift SDK](apple/NanocodexConnectEmbed/README.md) exposes
+`NanocodexConnectEmbed` through the repository's root Swift Package Manager
+manifest. Compose host-styled conversations on iOS 17+ and macOS 14+, with the
+virtualized transcript engine on iOS 18+. The native Nanocodex and DJ Booth
+integrations share these components while retaining their authorization and
+transport ownership. A [standalone iOS example](apple/NanocodexConnectEmbed/Examples/SDKConsumer)
+consumes the public package product.
+
 ### Bring any terminal or product interface
 
 To attach to a running `nanocodex` or `nanocodex2` TUI, use

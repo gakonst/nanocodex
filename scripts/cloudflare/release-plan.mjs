@@ -63,6 +63,7 @@ export function buildSelected(plan, run=execFileSync, completedTargets=new Set()
   const tiers = [
     ['nanocodex-tools', 'nanocodex-connect-protocol', 'nanocodex'],
     ['nanocodex-connect-ui', 'nanocodex-terminal'],
+    ['nanocodex-connect-embed'],
     ['@nanocodex/connect-api', '@nanocodex/connect-dialog', '@nanocodex/connect-playground', 'nanocodex-web'],
   ];
   for (const tier of tiers) {

@@ -23,6 +23,11 @@ account, separately from conversation drafts. Inbox’s filter menu includes an
 explicit **Prepare a thought** action, keeping research/preparation separate
 from starting a thread.
 
+The conversation surface consumes the local [`NanocodexConnectEmbed`](NanocodexConnectEmbed/README.md)
+Swift package. Other native apps can reuse its virtualized transcript, native
+composer/Markdown, generated media, and conversation-scoped screen components
+while owning their own transport and authentication.
+
 Its authenticated native Hand can also bridge [Bluetooth Low Energy devices](../docs/bluetooth-le.md), including typed [Flipper Zero](../docs/flipper-zero.md) RPC tools without custom Flipper firmware.
 
 For Lock Screen voice tasks, add the circular or rectangular **Speak to Nanocodex** widget after

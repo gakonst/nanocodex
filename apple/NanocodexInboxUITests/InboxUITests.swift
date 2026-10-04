@@ -2,6 +2,87 @@ import XCTest
 import UIKit
 
 final class InboxUITests: XCTestCase {
+    func testEmbedConversationNativeJourney() { embedConversationJourney(portable: false) }
+    func testEmbedConversationPortableJourney() { embedConversationJourney(portable: true) }
+
+    func testEmbedConversationNativeHistoryJourney() { embedHistoryJourney(portable: false) }
+    func testEmbedConversationPortableHistoryJourney() { embedHistoryJourney(portable: true) }
+
+    private func embedHistoryJourney(portable: Bool) {
+        let app = XCUIApplication()
+        app.launchArguments = ["--embed-conversation-ui-fixture", "--embed-history"] + (portable ? ["--embed-scroll-view"] : [])
+        app.launch()
+        let tail = app.staticTexts["embed-history-39"]
+        XCTAssertTrue(tail.waitForExistence(timeout: 10))
+        let surface = app.descendants(matching: .any)["embed-surface"].firstMatch
+        let upper = surface.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.25))
+        let lower = surface.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.6))
+        upper.press(forDuration: 0.1, thenDragTo: lower)
+        let reading = expectation(for: NSPredicate(format: "label == 'Reading'"), evaluatedWith: app.staticTexts["embed-following"])
+        wait(for: [reading], timeout: 5)
+        let visible = app.staticTexts.allElementsBoundByIndex.filter {
+            $0.identifier.hasPrefix("embed-history-") && $0.identifier != "embed-history-count" && $0.isHittable
+        }
+        guard let anchor = visible.dropFirst().first ?? visible.first else {
+            XCTFail("Reading must expose a message before prepend"); return
+        }
+        let before = anchor.frame.minY
+        app.buttons["Prepend history"].tap()
+        XCTAssertEqual(app.staticTexts["embed-history-count"].label, "History: 60")
+        XCTAssertTrue(anchor.isHittable, "Prepending above the viewport must preserve the visible message")
+        XCTAssertLessThan(abs(anchor.frame.minY - before), portable ? 100 : 4,
+                          "Portable keeps the reading row; native keeps the exact pixel offset")
+        app.buttons["Latest"].tap()
+        let latest = expectation(for: NSPredicate(format: "hittable == true"), evaluatedWith: tail)
+        wait(for: [latest], timeout: 5)
+        XCTAssertEqual(app.staticTexts["embed-following"].label, "Following")
+        upper.press(forDuration: 0.1, thenDragTo: lower)
+        lower.press(forDuration: 0.1, thenDragTo: upper)
+        // Return all the way to the tail using actual scrolling, without Latest.
+        for _ in 0..<4 where !tail.isHittable { lower.press(forDuration: 0.1, thenDragTo: upper) }
+        let resumed = expectation(for: NSPredicate(format: "label == 'Following'"), evaluatedWith: app.staticTexts["embed-following"])
+        wait(for: [resumed], timeout: 5)
+        capture(app, portable ? "embed-history-portable" : "embed-history-native")
+    }
+
+    private func embedConversationJourney(portable: Bool) {
+        let app = XCUIApplication()
+        app.launchArguments = ["--embed-conversation-ui-fixture"] + (portable ? ["--embed-scroll-view"] : [])
+        app.launch()
+        let reply = app.staticTexts["embed-reply"]
+        XCTAssertTrue(reply.waitForExistence(timeout: 10))
+        XCTAssertEqual(reply.label, "First reply 0")
+        app.buttons["Details"].tap()
+        XCTAssertTrue(app.staticTexts["embed-detail"].waitForExistence(timeout: 5))
+        app.buttons["Stream update"].tap()
+        let streamed = expectation(for: NSPredicate(format: "label == %@", "First reply 1"), evaluatedWith: reply)
+        wait(for: [streamed], timeout: 5)
+        XCTAssertTrue(app.staticTexts["embed-detail"].exists, "A revision must preserve the row's local disclosure state")
+
+        let draft = app.textFields["embed-draft"]
+        draft.tap(); draft.typeText("Host-owned draft")
+        XCTAssertFalse(app.buttons["embed-send"].isEnabled, "The host's admission control must remain authoritative")
+        app.buttons["Switch conversation"].tap()
+        let switched = expectation(for: NSPredicate(format: "label == %@", "Second reply 0"), evaluatedWith: reply)
+        wait(for: [switched], timeout: 5)
+        XCTAssertFalse(app.staticTexts["embed-detail"].exists, "Conversation identity must clear child state even when row IDs are reused")
+        XCTAssertEqual(draft.value as? String, "Host-owned draft", "Identity must not clear host-owned bindings")
+        XCTAssertEqual(app.staticTexts["embed-submitted"].label, "Submitted: 0", "Rendering and switching must never submit")
+
+        app.switches["Allow send"].tap()
+        app.buttons["embed-send"].tap()
+        XCTAssertEqual(app.staticTexts["embed-submitted"].label, "Submitted: 1")
+        XCTAssertTrue(app.staticTexts["Host-owned draft"].waitForExistence(timeout: 5))
+        app.buttons["Details"].tap()
+        app.buttons["Unmount"].tap()
+        XCTAssertFalse(reply.exists)
+        app.buttons["Mount"].tap()
+        XCTAssertTrue(reply.waitForExistence(timeout: 5))
+        XCTAssertFalse(app.staticTexts["embed-detail"].exists)
+        XCTAssertEqual(app.staticTexts["embed-submitted"].label, "Submitted: 1", "Remount must not replay submission")
+        capture(app, portable ? "embed-conversation-portable" : "embed-conversation-native")
+    }
+
     func testNativeBrowserFormFallsBackToLegacyBackendOnce() {
         let app = XCUIApplication()
         app.launchArguments = ["--browser-native-form-ui-fixture", "--browser-native-form-legacy"]

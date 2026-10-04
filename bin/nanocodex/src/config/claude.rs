@@ -520,7 +520,8 @@ fn runtime_reply(
                             };
                             json!({"type":"image","source":source})
                         }
-                        ToolOutputContent::InputAudio { .. }
+                        ToolOutputContent::InputImageFile { .. }
+                        | ToolOutputContent::InputAudio { .. }
                         | ToolOutputContent::EncryptedContent { .. } => return Err(
                             "this host tool result cannot be represented in native Claude Messages"
                                 .into(),

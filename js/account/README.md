@@ -3,7 +3,7 @@
 `nanocodex-web` is the Cloudflare-hosted React application for Nanocodex. It
 provides the public site, documentation, account and Connect experiences, and
 live product demonstrations. It consumes the local `nanocodex`,
-`nanocodex-react`, and `nanocodex-terminal` packages; it is not an SDK runtime
+`nanocodex-react`, and `nanocodex-connect-embed` packages; it is not an SDK runtime
 or a second agent backend.
 
 ## User surfaces

@@ -3568,6 +3568,7 @@ fn execution_text(output: &ToolOutputBody) -> Result<&str> {
         .find_map(|content| match content {
             ToolOutputContent::InputText { text } => Some(text.as_str()),
             ToolOutputContent::InputImage { .. }
+            | ToolOutputContent::InputImageFile { .. }
             | ToolOutputContent::InputAudio { .. }
             | ToolOutputContent::EncryptedContent { .. } => None,
         })

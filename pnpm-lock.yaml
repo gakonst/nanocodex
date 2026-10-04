@@ -147,6 +147,9 @@ importers:
       nanocodex:
         specifier: workspace:*
         version: link:../nanocodex
+      nanocodex-connect-embed:
+        specifier: workspace:*
+        version: link:../nanocodex-connect-embed
       nanocodex-connect-protocol:
         specifier: workspace:*
         version: link:../nanocodex-connect-protocol
@@ -156,9 +159,6 @@ importers:
       nanocodex-react:
         specifier: workspace:*
         version: link:../nanocodex-react
-      nanocodex-terminal:
-        specifier: workspace:*
-        version: link:../nanocodex-terminal
       nanocodex-vite:
         specifier: workspace:*
         version: link:../nanocodex-vite
@@ -328,12 +328,12 @@ importers:
       nanocodex:
         specifier: workspace:*
         version: link:../nanocodex
+      nanocodex-connect-embed:
+        specifier: workspace:*
+        version: link:../nanocodex-connect-embed
       nanocodex-react:
         specifier: workspace:*
         version: link:../nanocodex-react
-      nanocodex-terminal:
-        specifier: workspace:*
-        version: link:../nanocodex-terminal
       react:
         specifier: ^19.2.8
         version: 19.2.8
@@ -677,6 +677,40 @@ importers:
       '@types/node':
         specifier: ^24.0.0
         version: 24.13.3
+      typescript:
+        specifier: 5.9.3
+        version: 5.9.3
+
+  js/nanocodex-connect-embed:
+    dependencies:
+      nanocodex-terminal:
+        specifier: workspace:^
+        version: link:../nanocodex-terminal
+    devDependencies:
+      '@playwright/test':
+        specifier: 1.62.1
+        version: 1.62.1
+      '@types/react':
+        specifier: 19.2.14
+        version: 19.2.14
+      esbuild:
+        specifier: 0.28.1
+        version: 0.28.1
+      nanocodex:
+        specifier: workspace:*
+        version: link:../nanocodex
+      nanocodex-react:
+        specifier: workspace:*
+        version: link:../nanocodex-react
+      react:
+        specifier: 19.2.8
+        version: 19.2.8
+      react-dom:
+        specifier: 19.2.8
+        version: 19.2.8(react@19.2.8)
+      react-test-renderer:
+        specifier: 19.2.8
+        version: 19.2.8(react@19.2.8)
       typescript:
         specifier: 5.9.3
         version: 5.9.3

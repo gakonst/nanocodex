@@ -1,0 +1,62 @@
+name: Swift Connect SDK
+on:
+  pull_request:
+    paths: ['Package.swift', 'apple/InboxCore/**', 'apple/NanocodexUI/**', 'apple/NanocodexRemote/**', 'apple/NanocodexConnectEmbed/**', '.github/workflows/swift-connect-sdk.yml']
+  push:
+    branches: [master]
+    paths: ['Package.swift', 'apple/InboxCore/**', 'apple/NanocodexUI/**', 'apple/NanocodexRemote/**', 'apple/NanocodexConnectEmbed/**', '.github/workflows/swift-connect-sdk.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: swift-connect-sdk-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
+jobs:
+  package:
+    name: SwiftPM macOS and iOS consumer builds
+    runs-on: macos-26
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+      - name: Compile remote-package product on macOS
+        run: swift build --target NanocodexConnectEmbed --jobs 3
+      - name: Compile iOS simulator product without signing
+        run: xcodebuild -project apple/NanocodexConnectEmbed/Examples/SDKConsumer/SDKConsumer.xcodeproj -scheme SDKConsumer -destination 'generic/platform=iOS Simulator' -derivedDataPath output/swift-connect-sdk -jobs 3 CODE_SIGNING_ALLOWED=NO build
+      - name: Build a downstream app through the GitHub package URL
+        env:
+          SDK_REVISION: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          consumer="$RUNNER_TEMP/connect-sdk-consumer"
+          mkdir -p "$consumer/Sources/Consumer"
+          cat > "$consumer/Package.swift" <<SWIFT
+          // swift-tools-version: 6.0
+          import PackageDescription
+          let package = Package(name: "Consumer", platforms: [.macOS(.v14)],
+            dependencies: [.package(url: "https://github.com/gakonst/nanocodex.git", revision: "$SDK_REVISION")],
+            targets: [.executableTarget(name: "Consumer", dependencies: [
+              .product(name: "NanocodexConnectEmbed", package: "nanocodex")
+            ])])
+          SWIFT
+          cat > "$consumer/Sources/Consumer/Consumer.swift" <<'SWIFT'
+          import SwiftUI
+          import NanocodexConnectEmbed
+          @MainActor struct ConsumerView: View {
+            @State private var followsLatest = true
+            @State private var draft = ""
+            var body: some View {
+              EmbedConversation(conversationID: "consumer", rows: [
+                EmbedConversationRow(id: "message", revision: 1) {
+                  Text("Native SDK consumer")
+                }
+              ], followsLatest: $followsLatest) {
+                TextField("Message", text: $draft)
+              }
+            }
+          }
+          @main @MainActor struct Consumer {
+            static func main() { _ = ConsumerView() }
+          }
+          SWIFT
+          swift build --package-path "$consumer" --jobs 3

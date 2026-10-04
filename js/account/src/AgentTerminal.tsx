@@ -16,10 +16,10 @@ import type { AgentControllerEvent } from "nanocodex-react/agent";
 import type { ArtifactDocument } from "nanocodex/tools/artifact";
 import type { ManagedCreateSettings } from "nanocodex/managed";
 import {
-  AgentTerminalView,
-  type AgentTerminalMode,
-  type AgentTerminalState,
-} from "nanocodex-terminal";
+  AgentConversation,
+  type AgentConversationMode as AgentTerminalMode,
+  type AgentConversationState as AgentTerminalState,
+} from "nanocodex-connect-embed";
 import {
   inactiveTerminalMessage,
   type ModelSessionStatus,
@@ -43,8 +43,8 @@ import { useAccountSession } from "./AccountSession";
 import { RemoteScreens } from "./RemoteScreens";
 import { managedConversationQueryOptions, managedTerminalAgent, openManagedAgent } from "./managedAgentRuntime";
 
-export type { AgentTerminalMode, AgentTerminalState } from "nanocodex-terminal";
-export { AgentTerminalView } from "nanocodex-terminal";
+export type { AgentConversationMode as AgentTerminalMode, AgentConversationState as AgentTerminalState } from "nanocodex-connect-embed";
+export { AgentConversation } from "nanocodex-connect-embed";
 
 type Model = ManagedCreateSettings["model"];
 type Thinking = ManagedCreateSettings["thinking"];
@@ -186,7 +186,7 @@ const BrowserAgentTerminal = memo(function BrowserAgentTerminal({
     setSettings((current) => ({ ...current, fastMode }));
   }, [agent]);
   return (
-    <AgentTerminalView
+    <AgentConversation
       agent={agent}
       agentError={isError ? errorMessage(error) : undefined}
       composer={composer}
@@ -332,7 +332,7 @@ export const ManagedAgentTerminal = memo(function ManagedAgentTerminal({
   return (
     <>
     <PhoneCallsPanel key={`${accountId}:${agentId}`} parentAgentId={agentId} enabled={Boolean(accountId) && mode !== "hidden"} />
-    <AgentTerminalView
+    <AgentConversation
       agent={startupReady ? agent : undefined}
       initialDraft={initialDraft}
       agentError={stateQuery.error?.message}

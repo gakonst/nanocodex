@@ -5,7 +5,7 @@ import { NanocodexProvider } from "nanocodex-react/connect";
 
 import { App } from "./App";
 import { config } from "./config";
-import "nanocodex-terminal/styles.css";
+import "nanocodex-connect-embed/conversation.css";
 import "./styles.css";
 
 const root = document.getElementById("root");

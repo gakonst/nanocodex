@@ -1,5 +1,5 @@
 export type {
-  AgentStatus,
-  AgentTerminalMode,
-  AgentTerminalState,
-} from "nanocodex-terminal";
+  AgentConversationStatus as AgentStatus,
+  AgentConversationMode as AgentTerminalMode,
+  AgentConversationState as AgentTerminalState,
+} from "nanocodex-connect-embed";
