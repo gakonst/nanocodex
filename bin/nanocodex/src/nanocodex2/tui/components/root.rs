@@ -457,6 +457,7 @@ pub(crate) struct RootNode {
     queue_edit: Option<QueueEdit>,
     selection: Selection,
     selection_auto_scroll: Option<SelectionAutoScroll>,
+    selection_press: Option<Position>,
     transcript_area: Rect,
     composer_area: Rect,
     composer_content_area: Rect,
@@ -542,6 +543,7 @@ impl RootNode {
             queue_edit: None,
             selection: Selection::default(),
             selection_auto_scroll: None,
+            selection_press: None,
             transcript_area: Rect::default(),
             composer_area: Rect::default(),
             composer_content_area: Rect::default(),
@@ -1668,11 +1670,21 @@ impl RootNode {
             MouseEventKind::Down(MouseButton::Left) => {
                 let (surface, span) = self.selection_span_at(position)?;
                 self.selection.begin(surface, span);
+                self.selection_press = Some(position);
                 self.selection_auto_scroll = None;
                 Some(ComponentUpdate::render(RenderRequest::Immediate))
             }
             MouseEventKind::Drag(MouseButton::Left) => {
                 let surface = self.selection.surface()?;
+                // Terminals can report mouse motion within the pressed cell.
+                // Keep it a click until the pointer actually moves. An active
+                // drag stays a selection even if it returns to its first cell.
+                if self.selection.is_pending()
+                    && !self.selection.is_active()
+                    && self.selection_press == Some(position)
+                {
+                    return Some(ComponentUpdate::none());
+                }
                 let span = self.selection_span_on(surface, position)?;
                 self.selection.drag(span);
                 self.begin_selection_auto_scroll(surface, position);

@@ -4879,3 +4879,128 @@ async fn assert_private_control_export(fixture: &Fixture) {
     assert_eq!(rejected["result"]["code"], "ui_blocked");
     assert!(!rejected.to_string().contains("PTY_FIXTURE_SECRET"));
 }
+
+// The OS opener is the external boundary: exercise the shipped binary's actual
+// markdown rendering, hit testing, mouse decoder and asynchronous open effect.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn terminal_link_clicks_open_once_and_drag_still_copies() {
+    use std::os::unix::fs::PermissionsExt;
+    let opener = tempfile::tempdir().unwrap();
+    let log = opener.path().join("opened.txt");
+    for name in ["open", "xdg-open"] {
+        let script = opener.path().join(name);
+        std::fs::write(
+            &script,
+            "#!/bin/sh\nprintf '%s\\n' \"$1\" >> \"$NANOCODEX_TEST_LINK_LOG\"\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let path = std::env::join_paths(std::iter::once(opener.path().to_path_buf()).chain(
+        std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()),
+    ))
+    .unwrap();
+    let mut fixture = Fixture::start_with_active(true).await;
+    fixture.terminal = Terminal::start_with_command(&fixture.origin, true, None, |command| {
+        command.env("PATH", path);
+        command.env("NANOCODEX_TEST_LINK_LOG", &log);
+    });
+    fixture.replacement_connection().await;
+    fixture.terminal.wait_text("Enter steer").await;
+    let reply = "[Release notes](https://example.test/release)\n\n[Unicode 界 label](https://example.test/unicode)\n\nAutolink <https://example.test/plain>";
+    fixture.nested(
+        REMOTE_TURN,
+        "assistant.message",
+        json!({"model_call_index":1,"item_id":"links","phase":"final_answer","text":reply}),
+    );
+    fixture.complete(REMOTE_TURN);
+    fixture.terminal.wait_text("Release notes").await;
+    fixture.terminal.wait_text("Enter send").await;
+    fn location(terminal: &Terminal, needle: &str) -> (u16, u16) {
+        let parser = terminal.screen.lock().unwrap();
+        for row in 0..32 {
+            let line = parser.screen().rows(0, 160).nth(row).unwrap();
+            if let Some(offset) = line.find(needle) {
+                return (
+                    unicode_width::UnicodeWidthStr::width(&line[..offset]) as u16 + 1,
+                    row as u16 + 1,
+                );
+            }
+        }
+        panic!(
+            "missing click label {needle:?}: {}",
+            parser.screen().contents()
+        );
+    }
+    for (needle, destination, motion) in [
+        ("Release notes", "https://example.test/release", false),
+        ("界 label", "https://example.test/unicode", true),
+        (
+            "https://example.test/plain",
+            "https://example.test/plain",
+            false,
+        ),
+    ] {
+        let before = std::fs::read_to_string(&log).unwrap_or_default();
+        let (col, row) = location(&fixture.terminal, needle);
+        fixture.terminal.input(&format!("\x1b[<0;{col};{row}M"));
+        tokio::time::sleep(Duration::from_millis(80)).await;
+        if motion {
+            // Terminals can report sub-cell movement as a drag at the same cell.
+            fixture.terminal.input(&format!("\x1b[<32;{col};{row}M"));
+        }
+        fixture.terminal.input(&format!("\x1b[<0;{col};{row}m"));
+        tokio::time::timeout(TIMEOUT, async {
+            while std::fs::read_to_string(&log).unwrap_or_default() == before {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap_or_else(|_| {
+            panic!(
+                "click on {needle:?} did not open: {}",
+                fixture.terminal.screen.lock().unwrap().screen().contents()
+            )
+        });
+        assert_eq!(
+            std::fs::read_to_string(&log).unwrap(),
+            format!("{before}{destination}\n")
+        );
+        eprintln!("CLICK {needle:?} -> {destination} (same-cell motion={motion})");
+    }
+    let before = std::fs::read_to_string(&log).unwrap();
+    let (col, row) = location(&fixture.terminal, "Release notes");
+    for return_to_start in [false, true] {
+        let output_start = fixture.terminal.output.lock().unwrap().len();
+        let end = if return_to_start { col } else { col + 6 };
+        fixture.terminal.input(&format!(
+            "\x1b[<0;{col};{row}M\x1b[<32;{col};{row}M\x1b[<32;{};{row}M\x1b[<32;{end};{row}M\x1b[<0;{end};{row}m",
+            col + 6
+        ));
+        tokio::time::timeout(TIMEOUT, async {
+            loop {
+                let copied = String::from_utf8_lossy(
+                    &fixture.terminal.output.lock().unwrap()[output_start..],
+                )
+                .contains("\x1b]52;");
+                if copied {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("drag must copy through terminal clipboard");
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        assert_eq!(
+            std::fs::read_to_string(&log).unwrap(),
+            before,
+            "dragging a link selects text without opening, even when returning to its start"
+        );
+    }
+    eprintln!(
+        "DRAG selects via OSC52 without launching a URL\n{}",
+        fixture.terminal.screen.lock().unwrap().screen().contents()
+    );
+}
