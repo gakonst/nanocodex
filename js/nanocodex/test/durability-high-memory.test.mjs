@@ -12,7 +12,7 @@ class WaitingSocket extends EventTarget {
   close() { this.readyState = 3; }
 }
 
-test("ephemeral subagent messaging survives a WASM heap beyond the Worker subarray ceiling", async () => {
+for (const durable of [false, true]) test(`${durable ? "durable" : "ephemeral"} subagent messaging survives a WASM heap beyond the Worker subarray ceiling`, async () => {
   const module = await readFile(new URL("../pkg-web/nanocodex_bg.wasm", import.meta.url));
   const engine = await initializeBrowserEngine({ module });
   // Reserve address space without filling it. This puts subsequent allocations
@@ -33,7 +33,7 @@ test("ephemeral subagent messaging survives a WASM heap beyond the Worker subarr
     if (result.status === "replaced") writes.push({ stateId, records: request.records });
     return result;
   } };
-  const options = { module, tools: [], durability, durabilityId: "high-memory-messaging",
+  const options = { module, tools: [], sessionId: "018f1f9a-7b3c-7a07-8000-000000000079", ...(durable ? { durability, durabilityId: "high-memory-messaging" } : {}),
     transport: Transport.openAi({ apiKey: "fixture", WebSocketImpl: WaitingSocket }) };
   let agent;
   try {
@@ -57,13 +57,19 @@ test("ephemeral subagent messaging survives a WASM heap beyond the Worker subarr
       });
       assert.equal(result.to_agent_id, child.agent_id);
     }
-    assert.equal(writes.length, initialWrites, "child messages must not write durability");
+    if (durable) assert.ok(writes.length > initialWrites, "durable mailbox delivery commits before its receipt");
+    else assert.equal(writes.length, 0, "an ephemeral tree never calls the durability store");
     const persisted = writes.flatMap(({ records }) => records.map(({ value }) => value)).join("\n");
-    assert.equal(persisted.includes("Message Ελληνικά 😀"), false);
+    assert.equal(persisted.includes("Message Ελληνικά 😀"), durable);
     assert.equal((await Subagents.list(agent)).agents.length, 2);
     await agent.session.shutdown();
     agent = await Agent.create(options);
-    assert.deepEqual((await Subagents.list(agent, { includeCompleted: true })).agents, []);
+    const recovered = (await Subagents.list(agent, { includeCompleted: true })).agents;
+    if (durable) {
+      assert.deepEqual(recovered.map(child => child.agent_id), children.map(child => child.agent_id));
+      assert.ok(recovered.every(child => child.status.state === "closed"),
+        "graceful shutdown retains closed foreground children on reopen");
+    } else assert.deepEqual(recovered, []);
     const replacement = await Subagents.spawn(agent, {
       role: "after-reopen", task: "Verify ephemeral messaging after reopen", outputSchema: { type: "object" },
     });
@@ -71,7 +77,8 @@ test("ephemeral subagent messaging survives a WASM heap beyond the Worker subarr
     assert.equal((await Subagents.send(agent, {
       agentId: replacement.agent_id, priority: "urgent", message: "Still ephemeral after reopen 😀",
     })).to_agent_id, replacement.agent_id);
-    assert.equal(writes.length, reopenedWrites);
+    if (durable) assert.ok(writes.length > reopenedWrites);
+    else assert.equal(writes.length, 0);
   } finally {
     Uint8Array.prototype.subarray = nativeSubarray;
     try { await agent?.session.shutdown(); }

@@ -13,7 +13,7 @@
     "deploy": "node ../../scripts/cloudflare/managed-crm.mjs deploy",
     "prebuild": "npm run prepare:code-evaluator",
     "prepare:code-evaluator": "node scripts/prepare-code-evaluator.mjs && node scripts/prepare-hand-image.mjs && node scripts/prepare-just-bash-lazy.mjs",
-    "test": "vitest run && npm run test:native-input-discovery && npm run test:hosted-tools && npm run test:apps && npm run test:rpc-lifecycle && npm run test:discovery-cache && npm run test:routing && npm run test:todo-mail && npm run test:done && npm run test:meetings && npm run test:recovery && npm run test:model-pause && npm run test:tool-timing && npm run test:hand-reconnect && npm run test:hand-owner-restart && npm run test:hand-leased-recovery && npm run test:hand-communication && npm run test:hand-discovery && npm run test:claude-managed && npm run test:hand-catalog-scaling && npm run test:hand-preparation && npm run test:code-mode-warm && npm run test:user-data && npm run test:whatsapp && npm run test:permissions && npm run test:crm-search && npm run test:vault-requests",
+    "test": "vitest run && npm run test:native-input-discovery && npm run test:hosted-tools && npm run test:apps && npm run test:rpc-lifecycle && npm run test:discovery-cache && npm run test:routing && npm run test:todo-mail && npm run test:done && npm run test:meetings && npm run test:recovery && npm run test:model-pause && npm run test:tool-timing && npm run test:hand-reconnect && npm run test:hand-owner-restart && npm run test:hand-leased-recovery && npm run test:hand-communication && npm run test:hand-discovery && npm run test:claude-managed && npm run test:hand-catalog-scaling && npm run test:hand-preparation && npm run test:code-mode-warm && npm run test:user-data && npm run test:whatsapp && npm run test:permissions && npm run test:crm-search && npm run test:durability && npm run test:vault-requests",
     "test:browser-login": "node --experimental-strip-types scripts/browser-login-chrome.mjs",
     "test:apps": "vitest run --config vitest.apps.config.ts",
     "test:apps:native": "node --test test/native-app-validation-journey.test.mjs",
@@ -40,7 +40,7 @@
     "test:images": "npm run test:images:node && vitest run --config vitest.images.config.ts",
     "test:recovery": "node --test test/managed-crash-recovery-journey.test.mjs",
     "test:model-pause": "node --test test/model-pause-journey.test.mjs",
-    "test:tool-timing": "node --test test/thread-tool-timing-journey.test.mjs test/just-bash-telemetry-journey.test.mjs",
+    "test:tool-timing": "node --test test/thread-tool-timing-journey.test.mjs",
     "test:hand-reconnect": "node --test test/hand-reconnect-journey.test.mjs",
     "test:hand-owner-restart": "node --test test/hand-owner-restart-journey.test.mjs",
     "test:hand-communication": "node --test test/hand-communication-journey.test.mjs",
@@ -54,6 +54,7 @@
     "test:whatsapp": "node --test test/whatsapp-public-journey.test.mjs",
     "test:permissions": "node --test test/permission-requests-journey.test.mjs test/permission-tool-journey.test.mjs",
     "test:crm-search": "node scripts/prepare-code-evaluator.mjs && node scripts/prepare-just-bash-lazy.mjs && node --test test/crm-greek-search-journey.test.mjs",
+    "test:durability": "node --test test/historical-document-fork-journey.test.mjs test/durable-children-scheduler-journey.test.mjs test/code-state-hosted-journey.test.mjs test/managed-code-store-lifecycle-journey.test.mjs",
     "test:vault-requests": "node --test test/vault-request-journey.test.mjs"
   },
   "dependencies": {

@@ -330,3 +330,73 @@ test("actual WASM cancelOnAdmission never issues a queued successor Messages req
     assert.equal(requests.length, 2);
   } finally { await shutdown(agent); }
 });
+
+for (const target of ['node', 'browser']) {
+  test(`actual ${target} Claude historical document fork retains signed native blocks and independent SQLite state`, { timeout: 60_000 }, async t => {
+    const Claude = await sdk(target);
+    const directory = await mkdtemp(join(tmpdir(), 'nanoclaude-document-fork-'));
+    t.after(() => rm(directory, { recursive: true, force: true }));
+    const nativeBlocks = [
+      { type: 'thinking', thinking: 'historical opaque thought', signature: 'fork-signature/+==', native_extension: { retained: true } },
+      { type: 'redacted_thinking', data: 'fork-redacted/+==', opaque: 'retain' },
+    ];
+    const { endpoint, requests } = await fixture(t, index => index === 1
+      ? sse([...nativeBlocks, { type: 'tool_use', id: 'stage-document', name: 'stage', input: {} }], 'tool_use')
+      : sse(text(`DOCUMENT_ANSWER_${index}`)));
+    let db;
+    let agent;
+    let effects = 0;
+    const open = () => (db = sqlite(join(directory, 'documents.sqlite'))).store;
+    const write = (key, expectedVersion, value, fork = 'asOf') => ({ key, expectedVersion, value, fork });
+    const create = (durability, durabilityId, extra = {}) => Claude.create({
+      endpoint, model: 'fixture-model', auth: { apiKey: 'synthetic-destination-document-key' },
+      tools: [{ name: 'stage', description: 'Stage a synthetic session document', inputSchema: { type: 'object' },
+        async handler(_input, context) {
+          effects++;
+          await agent.session.stageDocumentWrites(context.turnId, [write('staged', 0, 'committed with first turn')]);
+          return { content: 'staged' };
+        } }], durability, durabilityId, terminalReceiptRetention: 1, ...extra,
+    });
+    const wasm = target === 'browser' ? await readFile(new URL('../pkg-web/nanocodex_bg.wasm', import.meta.url)) : undefined;
+    const options = wasm === undefined ? {} : { module: wasm };
+    try {
+      let store = open(); agent = await create(store, 'claude-doc-parent', options);
+      await agent.session.compareExchangeDocuments(['initial', 'current', 'asOf'].map(policy => write(policy, 0, 1, policy)));
+      await run(agent, 'CLAUDE_DOCUMENT_FIRST', 'claude-document-0');
+      assert.equal((await agent.session.document('staged')).value, 'committed with first turn');
+      await agent.session.compareExchangeDocuments(['initial', 'current', 'asOf'].map(policy => write(policy, 1, 2, policy)));
+      const before = db.stateText();
+      await assert.rejects(agent.session.compareExchangeDocuments([write('asOf', 2, 99), write('current', 1, 99, 'current')]), /version/i);
+      assert.equal(db.stateText(), before, 'rejected transaction retains all documents and durable revision');
+      for (let index = 1; index < 5; index++) await run(agent, `CLAUDE_DOCUMENT_LATER_${index}`, `claude-document-${index}`);
+      await agent.session.shutdown(); agent = undefined; db.close();
+      store = open(); agent = await create(store, 'claude-doc-parent', options);
+      const seed = await agent.session.documentFork('claude-document-0');
+      assert.deepEqual(['initial', 'current', 'asOf'].map(key => seed.documents.documents[key].value), [1, 2, 1]);
+      assert.equal(seed.documents.documents.asOf.fork, 'asOf');
+      assert.ok(!JSON.stringify(seed).includes('synthetic-destination-document-key'));
+      const beforeReplay = requests.length;
+      await assert.rejects(run(agent, 'CLAUDE_DOCUMENT_FIRST', 'claude-document-0'), /terminal/i);
+      assert.equal(requests.length, beforeReplay, 'pruned operation cannot rerun inference or tools');
+      await agent.session.shutdown(); agent = undefined;
+      agent = await create(store, 'claude-doc-child', { ...options, documentFork: seed });
+      await agent.session.compareExchangeDocuments([write('asOf', seed.documents.documents.asOf.version, 42)]);
+      await agent.session.shutdown(); agent = undefined; db.close();
+      store = open(); agent = await create(store, 'claude-doc-child', options);
+      assert.equal((await agent.session.document('asOf')).value, 42);
+      await run(agent, 'CLAUDE_DOCUMENT_CHILD_ONLY', 'claude-child-next');
+      const child = requests.at(-1).body;
+      assert.match(JSON.stringify(child), /CLAUDE_DOCUMENT_FIRST/);
+      assert.doesNotMatch(JSON.stringify(child), /CLAUDE_DOCUMENT_LATER_/);
+      const retainedBlocks = child.messages.flatMap(message => Array.isArray(message.content) ? message.content : [])
+        .filter(block => ['thinking', 'redacted_thinking'].includes(block.type));
+      assert.deepEqual(retainedBlocks, nativeBlocks, 'fork retains exact native signed and redacted blocks');
+      await assert.rejects(create(store, 'claude-doc-child', { ...options, documentFork: seed }), /pristine|empty|existing|already|occupied/i);
+      await agent.session.shutdown(); agent = await create(store, 'claude-doc-parent', options);
+      assert.equal((await agent.session.document('asOf')).value, 2);
+      assert.equal(effects, 1);
+      t.diagnostic(JSON.stringify({ target, parentTurns: 5, receiptRetention: 1, historicalBoundary: seed.documents.boundary,
+        selectedValues: [1, 2, 1], childValue: 42, parentValue: 2, signedBlocks: retainedBlocks, effects, requests: requests.length }));
+    } finally { await agent?.session.shutdown().catch(() => {}); db?.close(); }
+  });
+}

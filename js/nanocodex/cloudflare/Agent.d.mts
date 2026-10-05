@@ -56,10 +56,13 @@ export type Agent<extended extends object = {}> =
 /** Copies the exact latest committed model boundary; rejects before the first safe boundary. */
 export function checkpoint(agent: Agent): Promise<SessionSnapshot>;
 
-/** Removes the package-owned durable history for one Cloudflare Agent. */
+/** Removes root and descendant history, retaining owner tombstones against stale writes. */
 export function destroy(owner: DurableObjectOwner): void;
 
-/** Fences and exports this inactive Cloudflare Agent's provider-neutral state. */
+/** Rejects retained children before any root-only export fence or mutation. */
+export function assertPortable(owner: DurableObjectOwner): void;
+
+/** Fences and exports an inactive root without retained children. */
 /** Execution head for a host that transfers its immutable records separately. */
 export function exportDurabilityHead(owner: DurableObjectOwner): Promise<DurabilityPortableStateArchive>;
 
@@ -98,6 +101,8 @@ export declare namespace create {
   type Options = Readonly<{
     /** Observer-only instant steering; disabled unless explicitly enabled. */
     instantToolSteering?: boolean | undefined;
+    /** Inline Code Mode tool docs budget; default 3000 estimated tokens. */
+    inlineDocsTokenBudget?: AgentOptions["inlineDocsTokenBudget"];
     /** Awaited host preservation barrier; scoped to this root, never inherited by children. */
     beforeCompaction?: AgentOptions["beforeCompaction"];
     /** Stable portable state identity. It cannot change after first construction or import. */
@@ -107,6 +112,7 @@ export declare namespace create {
      * event retention to the embedding Durable Object and disables connect().
      */
     eventPersistence?: "durable" | "caller" | undefined;
+    requestPolicy?: import("../runtime/request-policy.mjs").RequestPolicy | undefined;
     instructions?: string | undefined;
     /** Appends host instructions while retaining the selected model's prompt. */
     additionalInstructions?: string | undefined;

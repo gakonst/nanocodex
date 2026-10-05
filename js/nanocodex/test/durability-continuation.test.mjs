@@ -39,6 +39,7 @@ test("a long WASM turn resumes its current batch after a lost checkpoint acknowl
     const bytes = request.records.reduce((total, record) => total + Buffer.byteLength(record.value), 0);
     recordBytesWritten += bytes;
     largestCommit = Math.max(largestCommit, bytes);
+    if (id !== durabilityId) return store.replace(id, request);
     const state = decode(request.payload);
     const operation = Object.values(state.operations)[0];
     maximumBytes = Math.max(maximumBytes, JSON.stringify(operation).length);
@@ -103,9 +104,8 @@ test("a long WASM turn resumes its current batch after a lost checkpoint acknowl
   }
 });
 
-for (const nested of [false, true]) {
-  test(nested ? "a nested host interruption retains the unsettled effect"
-    : "a cold WASM developer append identifies unfinished work and permits recovery", { timeout: 60_000 }, async (t) => {
+for (const nested of [false, true]) for (const replaySafe of [false, true]) {
+  test(`${nested ? "a nested host interruption" : "a cold WASM developer append"} ${replaySafe ? "recovers an explicitly idempotent fixture" : "preserves an unsafe effect as outcome unknown"}`, { timeout: 60_000 }, async (t) => {
     const module = await readFile(new URL("../pkg-web/nanocodex_bg.wasm", import.meta.url));
     let generations = 0;
     let dispatched = 0;
@@ -130,9 +130,30 @@ for (const nested of [false, true]) {
         }) })));
       }
     }
-    const durabilityId = `interrupted-${nested}`;
+    // This fixture receiver deduplicates the exact call ID before returning its
+    // receipt. Only that explicit idempotency guarantee permits another dispatch.
+    // The public journal adapter opts into replay-safe admission; completed host
+    // and cell receipts are retained separately from the external receiver.
+    const journalReceipts = new Map();
+    const cellReceipts = new Map();
+    const identity = context => JSON.stringify([context.operationId, context.modelCallIndex,
+      context.parentCallId, context.callId, context.source, context.input]);
+    const codeEffectJournal = replaySafe ? {
+      begin(context) {
+        const receipt = journalReceipts.get(identity(context));
+        return receipt === undefined ? { status: "execute" } : { status: "replay", receipt };
+      },
+      complete(context, receipt) { journalReceipts.set(identity(context), receipt); },
+      beginCell(context) {
+        const receipt = cellReceipts.get(identity(context));
+        return receipt === undefined ? { status: "execute", entries: [] } : { status: "replay", receipt };
+      },
+      completeCell(context, _writes, receipt) { cellReceipts.set(identity(context), receipt); },
+    } : undefined;
+    const durabilityId = `interrupted-${nested}-${replaySafe}`;
     const durability = createMemoryDurabilityStore(durabilityId);
-    const options = { module, harness: false, durability, durabilityId,
+    const options = { module, harness: false, durability, durabilityId, codeEffectJournal,
+      sessionId: "018f1f9a-7b3c-7a07-8000-000000000078",
       codeEvaluator: (source, { tools, text }) => {
         const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
         return new AsyncFunction("tools", "text", source)(tools, text);
@@ -149,15 +170,22 @@ for (const nested of [false, true]) {
       } },
       transport: Transport.openAi({ apiKey: "fixture", WebSocketImpl: ModelSocket, websocketWarmup: false }),
     };
-    let agent = await Agent.create(options);
+    async function openAgent() {
+      const opened = await Agent.create(options);
+      opened.events.watch().onEvent(() => {});
+      return opened;
+    }
+    let agent = await openAgent();
     try {
-      await assert.rejects(agent.turn.prompt({ id: "older", input: "run fixture" }).result(), /lost host response/);
+      await assert.rejects(agent.turn.prompt({ id: "older", input: "run fixture" }).result(),
+        replaySafe && !nested ? /tool host interrupted.*effect journal interrupted/s : /lost host response/);
+      assert.equal(dispatched, 1, "the interrupted attempt dispatched the receiver exactly once");
       assert.equal(generations, 1);
       const pending = Object.values(decode(durability.snapshot().payload).operations)[0];
       assert.ok(pending.continuation);
       assert.ok(Object.values(pending.steps).some((step) => step.output === undefined));
       await agent.session.shutdown().catch(() => {});
-      agent = await Agent.create(options);
+      agent = await openAgent();
       const developerContext = "Synthetic startup context after recovery";
       if (!nested) {
         const beforeAppend = await agent.session.context();
@@ -184,16 +212,22 @@ for (const nested of [false, true]) {
       }
       assert.equal(generations, 1, "blocked admission must not call the model");
       await agent.session.shutdown().catch(() => {});
-      agent = await Agent.create(options);
+      agent = await openAgent();
       assert.equal((await agent.turn.prompt({ id: "older", input: "run fixture" }).result()).finalMessage, "finished");
       assert.equal(generations, 2);
       assert.equal(dispatched, 1);
-      assert.equal(observedIds.length, 2);
-      assert.equal(observedIds[0], observedIds[1]);
+      assert.equal(observedIds.length, replaySafe ? 2 : 1,
+        "unsafe unfinished effects must never redispatch on recovery");
+      if (replaySafe) assert.equal(observedIds[0], observedIds[1]);
+      else {
+        const context = await agent.session.context();
+        assert.match(JSON.stringify(context), /outcome unknown|"outcome":"unknown"/,
+          "the model receives the unsettled effect's unknown outcome");
+      }
       if (!nested) {
         await agent.session.appendDeveloperMessage(developerContext);
         await agent.session.shutdown();
-        agent = await Agent.create(options);
+        agent = await openAgent();
         const context = await agent.session.context();
         assert.equal(context.history.filter(item => item.role === "developer"
           && item.content?.some(part => part.type === "input_text" && part.text === developerContext)).length, 1,
@@ -204,7 +238,7 @@ for (const nested of [false, true]) {
         assert.equal(dispatched, 1, "follow-on work must not redispatch the recovered effect");
         t.diagnostic(JSON.stringify({ stage: "recovered-and-continued", recoveredOperation: "older",
           followOnOperation: "later", finalMessage: followOn.finalMessage, modelCalls: generations,
-          effectDispatches: dispatched, sameEffectId: observedIds[0] === observedIds[1], developerCopies: 1 }));
+          effectDispatches: dispatched, replaySafe, sameEffectId: replaySafe ? observedIds[0] === observedIds[1] : null, developerCopies: 1 }));
       }
     } finally {
       await agent.session.shutdown().catch(() => {});

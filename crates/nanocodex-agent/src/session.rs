@@ -107,6 +107,7 @@ impl CommittedSession {
             return snapshot.clone();
         }
         SessionSnapshot {
+            request_policy: self.model.request_policy().clone(),
             version: SESSION_SNAPSHOT_VERSION,
             model: self.selected_model.as_str().to_owned(),
             lineage_id: self.lineage_id.to_string(),
@@ -145,6 +146,8 @@ pub(crate) struct ContextUsage {
 /// history and cache lineage.
 #[derive(Clone, serde::Deserialize, serde::Serialize)]
 pub struct SessionSnapshot {
+    #[serde(default, skip_serializing_if = "serde_json::Value::is_null")]
+    request_policy: serde_json::Value,
     version: u32,
     model: String,
     lineage_id: String,
@@ -243,6 +246,7 @@ impl SessionSnapshot {
             client_authored,
             context_snapshot,
             context_usage: None,
+            request_policy: serde_json::Value::Null,
         })
     }
 
@@ -321,6 +325,7 @@ impl SessionSnapshot {
                     None,
                     self.context_snapshot.clone(),
                 )?;
+                checkpoint.restore_request_policy(self.request_policy.clone());
                 if let Some(usage) = self.context_usage.as_ref() {
                     checkpoint.restore_context_usage(usage);
                 }

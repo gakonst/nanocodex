@@ -11,3 +11,5 @@ export type { GatewayResponsesOptions } from "./gateway-responses.mjs";
 export type { ResponsesCanonicalModel } from "./workers-ai-responses.mjs";
 export { createSubagentRouting } from "../runtime/subagent-routing.mjs";
 export type { ChildRoute, ChildRouteRequest, ChildRouteBinding, SubagentRouting } from "../runtime/subagent-routing.mjs";
+
+export * as RequestPolicy from "../runtime/request-policy.mjs";

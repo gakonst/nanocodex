@@ -278,8 +278,20 @@ impl AgentStatus {
     }
 }
 
+/// How parent release affects a child. Background children require a durable
+/// parent and a host scheduler that reopens it with current authorization.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentLifetime {
+    #[default]
+    Foreground,
+    Background,
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct AgentDescriptor {
+    #[serde(default)]
+    pub lifetime: AgentLifetime,
     pub id: AgentId,
     pub session_id: String,
     pub role: String,

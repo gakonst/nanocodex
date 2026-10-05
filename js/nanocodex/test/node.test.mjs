@@ -297,7 +297,7 @@ test("Node-hosted WASM preserves follow-ons, cache identity, events, and custom 
   await server.close();
 });
 
-test("a durable Node-hosted root runs the canonical in-memory Rust subagent task tree", async () => {
+test("a durable Node-hosted root journals the canonical Rust subagent task tree", async () => {
   const server = await startServer();
   const decoyServer = await startServer();
   const events = [];
@@ -388,7 +388,8 @@ test("a durable Node-hosted root runs the canonical in-memory Rust subagent task
     }]);
 
     const childSocket = await childConnection;
-    assert.equal(childSocket.request.headers["session-id"], rootProviderSessionId);
+    assert.notEqual(childSocket.request.headers["session-id"], rootProviderSessionId);
+    assert.equal(childSocket.request.headers["session-id"], childSocket.request.headers["thread-id"]);
     childSessionId = childSocket.request.headers["thread-id"];
     assert.ok(childSessionId);
     assert.notEqual(childSessionId, rootProviderSessionId);
@@ -448,7 +449,10 @@ test("a durable Node-hosted root runs the canonical in-memory Rust subagent task
   })();
 
   try {
-    const result = await agent.turn.prompt({ input: "Delegate this check." }).result();
+    const result = await bounded(Promise.race([
+      agent.turn.prompt({ input: "Delegate this check." }).result(),
+      scenario.then(() => new Promise(() => {})),
+    ]), "durable root scenario");
     assert.equal(result.finalMessage, "portable");
     await scenario;
     assert.equal(rootToolContexts.length, 1);
@@ -491,8 +495,7 @@ test("a durable Node-hosted root runs the canonical in-memory Rust subagent task
       event.request_id === agent.sessionId
       && event.type === "tool.call"
       && event.payload.tool === "wait_agent"));
-    assert.throws(() => durability.load(childSessionId), /unknown durability state/,
-      "child sessions never acquire or persist a durable state");
+    assert.notEqual(durability.load(childSessionId).revision, "0", "each child owns a durable execution journal");
     assert.notEqual(durability.load(durabilityId).revision, "0", "the root remains durable");
   } finally {
     watch.off();
@@ -588,6 +591,7 @@ test("Node host invokes canonical subagent handlers without a root model turn", 
     const directory = await Subagents.list(agent, { includeCompleted: true });
     assert.deepEqual(directory.agents, [{
       agent_id: started.agent_id,
+      lifetime: "foreground",
       role: "memory-search",
       task: "Use find_threads and return its thread ID.",
       parent_agent_id: null,

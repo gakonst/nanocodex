@@ -1,3 +1,4 @@
+import { assertRequestPolicy } from "../runtime/request-policy.mjs";
 import { prepareHarnesses } from '../runtime/harnesses.mjs';
 import { create as createClaude } from './Claude.mjs';
 import { applyBrowserPatch, Nanocodex } from "../pkg-web/nanocodex.js";
@@ -35,14 +36,20 @@ import {
 
 /** Creates the Rust/WASM Agent in the current Web API host isolate. */
 export async function create(options = {}) {
+  if (managedTransportOptions(options?.transport) && options.requestPolicy !== undefined) {
+    throw new TypeError('managed request policy must be configured by its owning host');
+  }
   if (options.harness === 'claude') return createClaude(options);
-  if (options.harness !== undefined && options.harness !== 'codex') throw new TypeError('unsupported harness family');
-  if (managedTransportOptions(options?.transport)) return createManagedAgent(options);
+  if (options.harness !== undefined && options.harness !== false && options.harness !== 'codex') throw new TypeError('unsupported harness family');
+  if (managedTransportOptions(options?.transport)) {
+    return createManagedAgent(options);
+  }
   const internalRuntime = options[Symbol.for("nanocodex.browser.internalRuntime")];
   if (internalRuntime !== undefined
     && (!internalRuntime || typeof internalRuntime !== "object" || Array.isArray(internalRuntime))) {
     throw new TypeError("browser Agent internal runtime options must be an object");
   }
+  const requestPolicy = options.requestPolicy === undefined ? undefined : assertRequestPolicy(options.requestPolicy);
   const {
     transport,
     module,
@@ -51,6 +58,7 @@ export async function create(options = {}) {
     reasoningMode,
     fastMode,
     instantToolSteering,
+    inlineDocsTokenBudget,
     rawApiEvents,
     instructions,
     additionalInstructions,
@@ -58,6 +66,7 @@ export async function create(options = {}) {
     sessionId,
     workspace,
     resume,
+    documentFork,
     durability,
     durabilityId,
     terminalReceiptRetention,
@@ -115,6 +124,7 @@ export async function create(options = {}) {
     throw new TypeError("workspace must match filesystem.root when both are provided");
   }
   const events = createEventChannel();
+  if (options.requestPolicy !== undefined) events.subscribe(() => {});
   const tempoMcp = mpp?.[Symbol.for("nanocodex.tempo.mcp")];
   let hostDefinitionId;
   const host = createBrowserHost({
@@ -122,6 +132,7 @@ export async function create(options = {}) {
     WebSocketImpl,
     createWebSocket,
     createResponse,
+    requestPolicy,
     hostAuth: hostAuth === true
       || (apiKey === undefined && mpp === undefined && subscription === undefined),
     hostManagedProtocol,
@@ -182,8 +193,8 @@ export async function create(options = {}) {
             ? undefined
             : "wss://openai.mpp.tempo.xyz/v1/responses"),
           apiBaseUrl,
-          websocketWarmup,
-          stateless,
+          websocketWarmup: requestPolicy === undefined ? websocketWarmup : false,
+          stateless: requestPolicy === undefined ? stateless : true,
           subagents: subagentConfig,
           claudeHarness: harnesses?.claude,
           subagentRouting: internalRuntime?.subagentRouting !== undefined,
@@ -237,6 +248,7 @@ export async function create(options = {}) {
         // Adopted child handles are ephemeral and do not own the root store.
         if (raw.sessionId === stableSessionId) durabilityOwner?.retain();
         bindHostSession(host, raw.sessionId, cloudflareReservation);
+        host.bindRequestPolicy(raw.sessionId);
         events.addSource(raw);
       } catch (error) {
         events.removeSource(raw);
@@ -252,7 +264,8 @@ export async function create(options = {}) {
       if (raw.sessionId === stableSessionId) durabilityOwner?.release();
       releaseHost(host);
     },
-    decorate: (agent) => agent.extend(agentActions()),
+    fork: (source, forked, at) => host.forkRequestPolicy(source.sessionId, forked.sessionId, at),
+    decorate: (agent, raw) => agent.extend(agentActions()).extend(() => ({ requestPolicy: host.requestPolicyFor(raw.sessionId) })),
   });
   let agent;
   try {
@@ -262,6 +275,7 @@ export async function create(options = {}) {
       reasoningMode,
       fastMode,
       instantToolSteering,
+    inlineDocsTokenBudget,
       rawApiEvents,
       instructions,
       additionalInstructions,
@@ -269,6 +283,7 @@ export async function create(options = {}) {
       workspace: workspace ?? filesystem?.root,
       executionEnvironment,
       resume,
+      documentFork,
       durabilityId,
       terminalReceiptRetention,
     }, cloudflareReservation);
@@ -276,7 +291,7 @@ export async function create(options = {}) {
     if (!creationStarted) await host.dispose();
     throw error;
   }
-  if (websocketPreconnect && websocketUrl) {
+  if (requestPolicy === undefined && websocketPreconnect && websocketUrl) {
     // Preconnect is speculative. A normal turn reconnects through the owned
     // transport path, while adapters that require startup validation (such as
     // Cloudflare) observe the same attempt at their createWebSocket boundary.

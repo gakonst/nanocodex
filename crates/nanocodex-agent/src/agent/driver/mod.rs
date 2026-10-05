@@ -1163,36 +1163,73 @@ where
             let mut steer_ids = std::collections::HashSet::new();
             let model_call_index = Arc::new(tokio::sync::Mutex::new(1_u32));
             let (cancel, cancel_rx) = oneshot::channel();
+            let (ownership_cancel, mut ownership_cancel_rx) = watch::channel(false);
             let (fork_snapshots, mut fork_snapshot_rx) = watch::channel(None);
             let mut fork_snapshots_open = true;
             let mut cancel = Some(cancel);
             if cancel_on_admission && let Some(cancel) = cancel.take() {
+                ownership_cancel.send_replace(true);
                 let _ = cancel.send(());
             }
             let mut cancel_result = None;
             let input_events = events.clone();
             model.set_events(events);
-            let mut execution = Box::pin(
-                model
-                    .execute(
-                        prompt,
-                        self.workspace.clone(),
-                        thinking,
-                        fast_mode,
-                        logical_turn_index,
-                        TurnSteering {
-                            preempt: steer_preempt_rx,
-                            instant_tool_steering: self.spawner.instant_tool_steering,
-                            receiver: steer_rx,
-                            retained: retained_steers,
-                            model_call_index: Arc::clone(&model_call_index),
-                        },
-                        cancel_rx,
-                        fork_snapshots,
-                        execution_steps,
-                    )
-                    .instrument(turn_span.clone()),
-            );
+            let ownership = self.spawner.turn_ownership.clone();
+            let ownership_session = session_id.clone();
+            let model_execution = model
+                .execute(
+                    prompt,
+                    self.workspace.clone(),
+                    thinking,
+                    fast_mode,
+                    logical_turn_index,
+                    TurnSteering {
+                        preempt: steer_preempt_rx,
+                        instant_tool_steering: self.spawner.instant_tool_steering,
+                        receiver: steer_rx,
+                        retained: retained_steers,
+                        model_call_index: Arc::clone(&model_call_index),
+                    },
+                    cancel_rx,
+                    fork_snapshots,
+                    execution_steps,
+                )
+                .instrument(turn_span.clone());
+            let mut execution = Box::pin(async move {
+                if let Some(ownership) = &ownership {
+                    ownership.prepare(&ownership_session).await?;
+                }
+                let outcome = model_execution.await;
+                let Some(ownership) = ownership else {
+                    return outcome;
+                };
+                match outcome {
+                    Ok(ModelTurnOutcome::Completed(completed)) => {
+                        let settled = if *ownership_cancel_rx.borrow() {
+                            false
+                        } else {
+                            tokio::select! {
+                                biased;
+                                _ = ownership_cancel_rx.changed() => false,
+                                settled = ownership.settle(&ownership_session, true) => {
+                                    settled?;
+                                    true
+                                }
+                            }
+                        };
+                        if settled {
+                            Ok(ModelTurnOutcome::Completed(completed))
+                        } else {
+                            ownership.settle(&ownership_session, false).await?;
+                            Ok(ModelTurnOutcome::Cancelled(completed.checkpoint))
+                        }
+                    }
+                    outcome => {
+                        ownership.settle(&ownership_session, false).await?;
+                        outcome
+                    }
+                }
+            });
             let completed = loop {
                 if !commands_open {
                     break execution.as_mut().await;
@@ -1228,7 +1265,8 @@ where
                         };
                         if reopen {
                             if let Some(cancel) = cancel.take() {
-                                let _ = cancel.send(());
+                                ownership_cancel.send_replace(true);
+                let _ = cancel.send(());
                             }
                             begin_shutdown(
                                 &mut self.commands,
@@ -1286,7 +1324,8 @@ where
                                 drop(result.send(outcome));
                                 if reopen {
                                     if let Some(cancel) = cancel.take() {
-                                        let _ = cancel.send(());
+                                        ownership_cancel.send_replace(true);
+                let _ = cancel.send(());
                                     }
                                     begin_shutdown(
                                         &mut self.commands,
@@ -1312,7 +1351,8 @@ where
                                 let reopen = outcome_requires_reopen(&outcome);
                                 drop(result.send(outcome));
                                 if reopen {
-                                    if let Some(cancel) = cancel.take() { let _ = cancel.send(()); }
+                                    if let Some(cancel) = cancel.take() { ownership_cancel.send_replace(true);
+                let _ = cancel.send(()); }
                                     begin_shutdown(&mut self.commands, &mut queued_turns, default_thinking, default_fast_mode).await;
                                     commands_open = false;
                                     break execution.as_mut().await;
@@ -1334,7 +1374,8 @@ where
                                 let reopen = outcome_requires_reopen(&outcome);
                                 drop(result.send(outcome));
                                 if reopen {
-                                    if let Some(cancel) = cancel.take() { let _ = cancel.send(()); }
+                                    if let Some(cancel) = cancel.take() { ownership_cancel.send_replace(true);
+                let _ = cancel.send(()); }
                                     begin_shutdown(&mut self.commands, &mut queued_turns, default_thinking, default_fast_mode).await;
                                     commands_open = false;
                                     break execution.as_mut().await;
@@ -1362,7 +1403,8 @@ where
                                 drop(route_result.send(outcome));
                                 if reopen {
                                     if let Some(cancel) = cancel.take() {
-                                        let _ = cancel.send(());
+                                        ownership_cancel.send_replace(true);
+                let _ = cancel.send(());
                                     }
                                     begin_shutdown(
                                         &mut self.commands,
@@ -1411,7 +1453,8 @@ where
                                     drop(cancellation.send(outcome));
                                     if reopen {
                                         if let Some(cancel) = cancel.take() {
-                                            let _ = cancel.send(());
+                                            ownership_cancel.send_replace(true);
+                let _ = cancel.send(());
                                         }
                                         begin_shutdown(
                                             &mut self.commands,
@@ -1431,7 +1474,8 @@ where
                                     )));
                                     continue;
                                 };
-                                let _ = cancel.send(());
+                                ownership_cancel.send_replace(true);
+                let _ = cancel.send(());
                                 cancel_result = Some(cancellation);
                                 break execution.as_mut().await;
                             }
@@ -1500,13 +1544,15 @@ where
                             Some(Command::Compact { parent, result }) => {
                                 pending_compact = Some((parent, result));
                                 if let Some(cancel) = cancel.take() {
-                                    let _ = cancel.send(());
+                                    ownership_cancel.send_replace(true);
+                let _ = cancel.send(());
                                 }
                                 break execution.as_mut().await;
                             }
                             Some(Command::Shutdown) => {
                                 if let Some(cancel) = cancel.take() {
-                                    let _ = cancel.send(());
+                                    ownership_cancel.send_replace(true);
+                let _ = cancel.send(());
                                 }
                                 begin_shutdown(
                                     &mut self.commands,
@@ -1521,7 +1567,8 @@ where
                                 commands_open = false;
                                 mark_all_queued_turns_cancelled(&mut queued_turns);
                                 if let Some(cancel) = cancel.take() {
-                                    let _ = cancel.send(());
+                                    ownership_cancel.send_replace(true);
+                let _ = cancel.send(());
                                 }
                             }
                         }

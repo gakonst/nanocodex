@@ -12,3 +12,5 @@ export * as Workspace from "./workspace.mjs";
 export * as Tools from "../tools/index.mjs";
 
 export * as Claude from "./Claude.mjs";
+
+export * as RequestPolicy from "../runtime/request-policy.mjs";

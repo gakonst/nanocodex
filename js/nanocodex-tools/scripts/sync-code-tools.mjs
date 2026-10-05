@@ -1,6 +1,6 @@
 // The JS package is canonical; keep local assets for independently packed crates.
 import { readFile, writeFile } from "node:fs/promises";
-for (const name of ["code-tools.mjs", "code-values.mjs"]) {
+for (const name of ["code-tools.mjs", "code-values.mjs", "code-discovery.mjs"]) {
   const canonical = new URL(`../runtime/${name}`, import.meta.url);
   const generated = new URL(`../../../crates/nanocodex-oai-tools/src/code_mode/${name}`, import.meta.url);
   const source = await readFile(canonical, "utf8");

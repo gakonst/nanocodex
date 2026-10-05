@@ -1,3 +1,4 @@
+import { createRequestPolicyHost } from "./request-policy-host.mjs";
 import { freezeJson } from '../internal.mjs';
 
 const TOOL_RESULT = Symbol.for('nanocodex.toolResult');
@@ -66,7 +67,7 @@ function ownMessagesFetch(fetchImpl, endpoint) {
   messagesFetches.set(id, { fetch: fetchImpl, endpoint });
   return { id, release() { messagesFetches.delete(id); } };
 }
-export function createClaudeHost({ auth, tools = [], onEvent = () => {}, fetch, endpoint, subagentSessions, subagentRouting }) {
+export function createClaudeHost({ auth, tools = [], onEvent = () => {}, fetch, endpoint, subagentSessions, subagentRouting, requestPolicy, sessionId }) {
   if (!auth || typeof auth !== 'object' || Array.isArray(auth)
     || Object.keys(auth).some((key) => !['apiKey', 'headers'].includes(key))
     || (auth.headers !== undefined && typeof auth.headers !== 'function')
@@ -92,7 +93,11 @@ export function createClaudeHost({ auth, tools = [], onEvent = () => {}, fetch, 
     if (turnId !== undefined) turns?.get(turnId)?.abort();
     else for (const value of turns?.values() ?? []) value.abort();
   };
-  const messagesFetch = fetch === undefined ? undefined : ownMessagesFetch(fetch, endpoint);
+  const policyHost = createRequestPolicyHost(requestPolicy);
+  policyHost.bind(sessionId);
+  const governedFetch = requestPolicy === undefined ? fetch
+    : (input, init) => policyHost.fetch(sessionId, fetch ?? globalThis.fetch.bind(globalThis), "claude", input, init);
+  const messagesFetch = governedFetch === undefined ? undefined : ownMessagesFetch(governedFetch, endpoint ?? "https://api.anthropic.com/v1/messages");
   const host = {
     connect() { throw new Error('Claude uses Messages HTTP only'); },
     async claudeAuthHeaders() {
@@ -106,7 +111,10 @@ export function createClaudeHost({ auth, tools = [], onEvent = () => {}, fetch, 
     },
     toolDefinitions() { return JSON.stringify(definitions); },
     toolMode() { return 'direct'; },
-    emitEvent: onEvent,
+    emitEvent(event, ...args) { policyHost.observe(event); return onEvent(event, ...args); },
+    bindRequestPolicy: id => policyHost.bind(id),
+    forkRequestPolicy: (sourceId, id, at) => policyHost.fork(sourceId, id, at),
+    requestPolicyFor: id => policyHost.policy(id),
     sleep(_sessionId, milliseconds) { return new Promise((resolve) => setTimeout(resolve, milliseconds)); },
     cancelCodeTurn: abort,
     cancelCode: abort,

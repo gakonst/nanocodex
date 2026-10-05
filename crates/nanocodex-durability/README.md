@@ -25,7 +25,9 @@ nanocodex-oai-api <- nanocodex-tools <- nanocodex-agent
 ```
 
 Construct only the layer an application needs, or attach durable state after the
-OpenAI client and tool registry have been composed into an agent:
+OpenAI client and tool registry have been composed into an agent. The examples
+below import this crate's core `DurableAgentExt`, which configures execution
+recovery for that agent; it does not install a child registry or durable factory:
 
 ```rust,ignore
 use nanocodex_agent::{Nanocodex, OpenAi, PromptRequest};
@@ -78,15 +80,32 @@ let result = agent.prompt(
 Choose `SqliteStore`, `PostgresStore`, or a persistent host store to retain work
 across process restarts. Reopen the same state ID and replay the same request ID
 and input to recover pending work or return its committed receipt. Unfinished
-Claude effects follow the same at-least-once execution rule described above.
+Claude effects follow the same explicit replay-safety contract as OpenAI effects.
 Claude snapshots use the store's chunked immutable payloads; they do not yet
 use the OpenAI adapter's per-message context pages. Snapshot serialization and
 restoration therefore process the full retained Claude context.
 
-Durability belongs to each explicitly configured agent. The core spawn/fork
-lifecycle does not inherit a durable owner or journal. An embedding that hosts
-Claude's Agent tool can construct each child with its own `DurableSession` and
-stable identity; attaching the parent's session alone does not persist children.
+Durability belongs to each explicitly configured agent. Core spawning does not
+inherit a durable owner or journal. A lower-level embedding must configure
+`Registry::enable_durability`, a factory that opens each child's own
+`DurableSession`, registry tools, and reconstruction before replaying child
+capabilities. `RegistryOwnership` supplies startup recovery and the foreground
+settlement barrier when attached to the native builder's `turn_ownership` hook.
+
+For automatic native composition, import `nanocodex::DurableAgentExt` instead
+(with the facade's `durability` feature, plus `claude` for Claude builders).
+It installs the registry, tools, same-family factory, and independent child
+journals while retaining caller tools and tool-factory recipes. It rejects a
+preconfigured spawn factory before mutating child identity or topology. Mixed
+OpenAI/Claude routing requires explicit factories with the core adapter. On
+WASM, the facade reexports the core adapter; JavaScript hosts compose the tree.
+
+Native facade construction starts owner-bound child recovery without submitting
+a root turn, including background work whose root turn already completed.
+Await `agent.ready()` to observe completion or the retained startup error. New
+prompts also await readiness; shutdown or dropping the last handle cancels
+unfinished startup recovery. A successful foreground turn waits for its
+foreground children, while failed or cancelled turns stop them before settlement.
 
 Without `.durability(...)`, the same builder is an ordinary non-durable agent.
 An OpenAI-only consumer can stop at `OpenAi::instructions(...).build()`, and a
@@ -102,11 +121,11 @@ contract through the Nanocodex WASM host bridge.
 
 Operations are durable accepted units of work. Steps cover every external
 effect inside an operation: model calls, warmup, automatic compaction, and
-tools. Beginning a step returns `Execute` when no output is committed or
-`Replay(output)` when one is. An unfinished step executes again after recovery.
-This deliberately permits duplicate provider billing and duplicate external
-tool effects. Standalone compaction follows the same rule: a committed
-checkpoint replays, while an unfinished transform runs again.
+tools. A new step returns `Execute`; a completed step returns its exact
+`Replay(output)`. An unfinished effect requires both its retained and current
+replay permissions to be safe. Otherwise it returns `OutcomeUnknown`. Model
+calls and compaction explicitly permit replay; ordinary tools do not. See the
+replay contract below before opting a tool into repeatable execution.
 
 An active turn retains one current conversation, its execution phase and counters,
 and only the effects in the current model/tool batch. Advancing to the next batch
@@ -115,21 +134,56 @@ starts at this position; it does not rerun earlier model/tool batches or retain
 copies of their requests. Warmup and pre-turn compaction have explicit phases so
 an interruption cannot repeat prompt preparation or lose its original context.
 The Rust adapter owns these boundaries; hosts do not manage pruning or recovery.
-Format 4 replaces inline payloads and compressed whole-state snapshots with immutable records.
+Format 5 retains replay permission alongside immutable payload records. Format 4
+heads remain readable, with legacy tool intents treated as unsafe.
+
+Automatic compaction runs as one owned background effect alongside foreground
+model/tool batches. Its journaled input contains an immutable conversation cutoff;
+foreground checkpoints retain both the pending intent and any completed summary
+receipt. The preservation hook settles before the summary provider request starts.
+Responses summaries use a separate full-replay transport connection, so a held
+summary cannot occupy the foreground connection or its request lock.
+
+When a summary settles, the adapter rechecks durable ownership and verifies that
+the current conversation still starts with the exact cutoff. It then installs the
+summary followed by every item appended since that cutoff. Rewritten prefixes,
+image repairs and competing summaries invalidate that result. Claude retains the
+complete signed thinking, opaque blocks and tool-result content in this tail.
+Responses installation clears the old response continuation ID; the next request
+uses the installed summary and complete tail as its full-replay baseline.
+
+Foreground work continues while the summary is pending below the hard context
+boundary. At the hard boundary or context-exhaustion recovery it waits for the
+owned summary before admitting another model request. Cancellation stops owned
+work; a superseding store owner prevents the old response from publishing. Cold
+recovery replays a completed summary receipt without another summary request and
+retains foreground receipts until their exact outputs have been incorporated.
+An unfinished safe summary may be requested again under the new owner.
+
+The real HTTP/SSE and SQLite journeys in `tests/oai_background_http.rs` and
+`tests/claude_background_http.rs` cover held-summary overlap, immutable inputs,
+complete tails, hard-limit admission, lost foreground acknowledgements and owner
+takeover. Run them with:
+
+```sh
+CARGO_INCREMENTAL=0 cargo +1.97 test -p nanocodex-durability \
+  --features sqlite,claude --test oai_background_http --test claude_background_http \
+  -- --nocapture
+```
 
 Completed tool outputs replay exactly without consulting the recovered runtime's
-current tool catalog. Tool availability matters only when an unfinished step
-must execute. Capabilities represented by a tool result, such as spawned-agent
-identity, own their persistence and reconnection semantics outside generic step
-replay. Core spawned descendants remain ephemeral; a host that needs durable
-children must build each child with its own `DurableSession`, stable state ID,
-fence, operation journal and checkpoint. Forking an attached durable checkpoint
-remains unsupported.
+current tool catalog. A receipt for a capability, such as a child agent, requires
+the capability's own durable identity and reconstruction path. The subagent
+registry uses `ChildJournal` on the same fenced store protocol for topology,
+mailboxes, assignments, and results. Each reconstructed child has a separate
+`DurableSession`; it never borrows the parent's execution owner. Hosted durable
+agents install this factory and registry automatically. Lower-level embeddings
+must configure their child factory and durable registry together.
 
-This persists agent execution, not a higher-level task-tree registry. An
-orchestrator that assigns separate tree-local IDs, mailboxes, roles, or status
-must persist that topology independently and map those IDs to agent session
-IDs when it needs cold tree reconstruction.
+Session documents select `Initial`, `Current`, `AsOf`, or `Block` fork behavior.
+The fork checkpoint and selected document values are initialized atomically in
+a fresh destination. Successful operation boundaries remain addressable after
+terminal receipt pruning; reusing one of those operation IDs is rejected.
 
 The execution head contains references, active phase, counters, and a bounded
 receipt tail. SHA-256 addressed records hold exact payloads in chunks of at most
@@ -198,16 +252,53 @@ owner acquisition and loading the complete current state before deciding what
 ran.
 
 Each external effect follows an intent/effect/settlement boundary. A start
-commits `effect_pending`; settlement atomically replaces it with `completed`
-and the exact output. A crash before settlement executes the effect again with
-the same stable identity and input. A crash after settlement replays the output
-without invoking the effect again. Agent model calls, warmups, and compactions
-reconstruct their requests from that retained input, so changed instructions,
-tool catalogs, or environment context cannot redefine an interrupted call.
-New calls use the current runtime; live tool authorization and owner fencing
-still apply. There is no per-effect retry policy or uncertainty state. Operation
-terminals atomically carry their checkpoint and replay receipt.
+commits `effect_pending` with `ReplaySafety`; settlement atomically replaces it
+with `completed` and the exact output. A completed receipt always replays without
+invoking the handler. An interrupted effect executes again only when both its
+original persisted permission and its current permission are `Safe`. Otherwise
+`BeginStep::OutcomeUnknown` requires an explicit unknown-outcome receipt.
+The agent adapters turn this into a failed tool result visible to the model;
+they never silently redispatch the handler.
+
+Custom execution policies must implement `begin_step_with_replay`; the default
+fails closed, including for currently safe effects whose original intent policy
+cannot be established. The crate-provided adapters implement the full contract.
+
+Tools default to `Unsafe`. Parallel safety does not imply replay safety. Native
+tools opt in with `Tool::is_replay_safe`, dynamic providers with the corresponding
+named method, and Claude callbacks with `.tool_replay_safety(name, ReplaySafety::Safe)`.
+Use the opt-in only for genuinely repeatable actions or a host journal that
+reuses completed receipts and reconciles unfinished effects without duplicating
+them. Direct session users choose `begin_step_with_replay`; `begin_step` and
+`begin_step_typed` default to unsafe.
+
+Model calls, warmups, compaction, and the explicitly idempotent preservation
+barrier are repeatable. Provider requests can incur additional usage after a
+crash. Frozen request settings, live authorization, and owner fencing still
+apply. Operation terminals atomically carry their checkpoint and replay receipt.
 
 Unlike a store that stages an output separately from source-ordered transcript
 placement, this store owns one opaque total state. A second materialization
 write would add latency without adding a recovery boundary.
+
+Session documents are committed through `complete_with_documents` or
+`complete_step_with_documents`, together with the corresponding receipt. Keys
+are limited to 256 bytes; a session retains at most 64 documents and 65,536 bytes
+of encoded current document metadata and values, including creation values.
+Oversized transactions and version conflicts change neither receipts nor documents.
+Immutable historical snapshots use operation-derived lookup records in the
+`StateStore`; the execution head has no growing boundary index. Legacy format-5
+heads with a boundary index are migrated into these records on their next commit.
+`document_fork(operation_id)` returns a loaded `EncodedPayload` checkpoint and a
+policy-selected seed. For a self-contained checkpoint (including Claude), pass
+it to `initialize_document_fork(seed, &checkpoint)` in an empty destination.
+For OpenAI agent checkpoints, use `agent_document_fork(operation_id)` followed
+by `initialize_agent_document_fork(seed, &snapshot)` instead: these load the
+referenced context pages and publish them under the destination's own records.
+Then attach the destination session to a freshly authorized builder.
+
+These document forks copy the selected checkpoint and documents, not pending
+effects, operation receipts, or a child tree. They differ from native
+`Nanocodex::fork`/`fork_from`: OpenAI rejects those history operations when an
+execution policy is installed, and Claude does not implement them. Historical
+Claude document forks are supported independently of that native API limit.

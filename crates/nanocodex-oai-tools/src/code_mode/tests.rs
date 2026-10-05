@@ -561,6 +561,7 @@ async fn closed_guest_delivery_preserves_completed_result_and_shell_session() {
         metadata: None,
     };
     let mut receipts = super::PendingCallReceipts {
+        captured: std::sync::Arc::new(std::sync::Mutex::new(super::JournalOutput::default())),
         calls: std::collections::HashMap::from([(7, (make_call(), std::time::Instant::now()))]),
         updates,
     };

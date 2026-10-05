@@ -51,7 +51,7 @@ export declare namespace create {
     | {
       durability: DurabilityStore;
       durabilityId: string;
-      /** The root remains durable; all subagent children are ephemeral. */
+      /** Subagent identities, mailboxes, and execution recover on this durability store. */
       tools?: ToolConfiguration<SubagentTool> | undefined;
     }
   );

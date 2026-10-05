@@ -859,7 +859,7 @@ test("web-target WASM executes the complete browser harness tool contract", asyn
     }]);
     assert.deepEqual(effects.images, [{
       url: "https://demo.test/api/tools/image-generation",
-      body: { images: [], prompt: "fixture image" },
+      body: { images: [], prompt: "fixture image", transparent_background: false },
     }]);
     assert.deepEqual(effects.rememberedImages, [{
       sessionId: agent.sessionId,

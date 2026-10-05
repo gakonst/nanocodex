@@ -93,11 +93,13 @@ pub trait DynamicToolProvider: Send + Sync {
             .any(|definition| definition.name() == name)
     }
 
-    /// Returns whether a callable deferred tool is safe to execute in parallel.
-    ///
-    /// Providers are conservative by default. Implementations must return
-    /// `true` only for a currently callable tool with explicit safety
-    /// metadata.
+    /// Whether an interrupted invocation may be repeated without duplicating effects.
+    /// This defaults to false and is independent from parallel execution safety.
+    fn is_replay_safe(&self, _name: &str) -> bool {
+        false
+    }
+
+    /// Whether a callable deferred tool explicitly permits parallel execution.
     fn supports_parallel_tool_calls(&self, _name: &str) -> bool {
         false
     }
@@ -171,7 +173,11 @@ impl ToolSource for crate::mcp::Mcp {
 /// Declarative selection of the built-in tools installed for an agent.
 #[derive(Clone)]
 pub struct Tools {
+    #[cfg(all(not(target_family = "wasm"), feature = "code-mode"))]
+    pub(super) code_journal: Option<Arc<dyn crate::code_mode::CodeModeJournal>>,
     exposure: ToolExposure,
+    #[cfg(feature = "code-mode")]
+    pub(crate) inline_docs_token_budget: usize,
     workspace: bool,
     web_search: bool,
     image_generation: bool,
@@ -203,7 +209,11 @@ pub struct Tools {
 impl Default for Tools {
     fn default() -> Self {
         Self {
+            #[cfg(all(not(target_family = "wasm"), feature = "code-mode"))]
+            code_journal: None,
             exposure: ToolExposure::default(),
+            #[cfg(feature = "code-mode")]
+            inline_docs_token_budget: 3000,
             workspace: true,
             web_search: true,
             image_generation: true,
@@ -304,6 +314,17 @@ impl fmt::Debug for Tools {
 }
 
 impl Tools {
+    /// Attaches native Code Mode persistence to this session’s tool selection.
+    #[cfg(all(not(target_family = "wasm"), feature = "code-mode"))]
+    #[must_use]
+    pub fn with_code_journal(
+        mut self,
+        journal: Arc<dyn crate::code_mode::CodeModeJournal>,
+    ) -> Self {
+        self.code_journal = Some(journal);
+        self
+    }
+
     /// Starts a builder with all standard tools enabled.
     #[must_use]
     pub fn builder() -> ToolsBuilder {
@@ -491,6 +512,18 @@ impl ToolsBuilder {
     #[must_use]
     pub const fn exposure(mut self, exposure: ToolExposure) -> Self {
         self.tools.exposure = exposure;
+        self
+    }
+
+    /// Sets the budget for inline Code Mode tool documentation (default 3000).
+    ///
+    /// Estimated tokens are UTF-8 bytes divided by four, rounded up. The fixed
+    /// execution instructions are excluded. Zero omits all inline tool docs;
+    /// omitted tools remain callable and discoverable from the admitted catalog.
+    #[must_use]
+    #[cfg(feature = "code-mode")]
+    pub const fn inline_docs_token_budget(mut self, tokens: usize) -> Self {
+        self.tools.inline_docs_token_budget = tokens;
         self
     }
 

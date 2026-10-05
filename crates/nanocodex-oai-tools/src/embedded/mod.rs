@@ -142,6 +142,13 @@ pub trait CodeModeHost: Send + Sync + 'static {
         EmbeddedToolMode::Code
     }
 
+    /// Whether durable cell state and nested effect receipts permit cold replay.
+    /// Hosts must retain pending effects as unknown and never redispatch them.
+    /// Existing hosts fail closed until they implement that complete protocol.
+    fn code_replay_safe(&self) -> bool {
+        false
+    }
+
     /// Whether the host implements resumable `exec`/`wait` cells and helpers.
     /// Existing complete-cell embeddings retain their original contract.
     fn supports_cells(&self) -> bool {
@@ -199,6 +206,12 @@ pub trait CodeModeHost: Send + Sync + 'static {
             }
             Ok(execution)
         })
+    }
+
+    /// Whether repeating an interrupted direct call is safe. The host must
+    /// enforce idempotency or reconcile its journal before opting in.
+    fn is_replay_safe(&self, _name: &str) -> bool {
+        false
     }
 
     /// Executes one directly exposed application tool.

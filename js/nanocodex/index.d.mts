@@ -12,6 +12,12 @@ export type {
   Agent,
   AgentActions,
   AgentEvent,
+  DocumentFork,
+  DocumentForkPolicy,
+  DocumentForkSeed,
+  DocumentValue,
+  DocumentWrite,
+  SessionDocument,
   AgentLifecycle,
   AgentOptions,
   BeforeCompactionRequest,
@@ -27,6 +33,7 @@ export type {
   CodeEvaluator,
   CodeEffectContext,
   CodeEffectReceipt,
+  CodeCellReceipt,
   CodeEffectJournal,
   CodeEvaluatorEnvironment,
   DefaultAgent,
@@ -70,3 +77,5 @@ export type {
   Subscription as ClaudeSubscriptionHandle,
   Status as ClaudeSubscriptionStatus,
 } from "./worker/ClaudeSubscription.mjs";
+
+export * as RequestPolicy from "./runtime/request-policy.mjs";

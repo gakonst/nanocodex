@@ -1,3 +1,4 @@
+import { createCodeDiscovery } from "nanocodex-tools/runtime/code-discovery";
 import { createCodeTools } from "nanocodex-tools/runtime/code-tools";
 import { guestValueHelpers } from "nanocodex-tools/runtime/code-values";
 const DEFAULT_MEMORY_LIMIT_BYTES = 64 * 1024 * 1024;
@@ -197,6 +198,7 @@ const tools = (${createCodeTools.toString()})(
   (name, input) => __nanocodex_call_tool(name, JSON.stringify(input ?? null)).then(__nanocodex_decode),
 );
 const ALL_TOOLS = Object.freeze(typeof __nanocodex_catalog === "undefined" ? undefined : JSON.parse(__nanocodex_catalog));
+const { searchTools, describeTool, describeNamespace } = (${createCodeDiscovery.toString()})(ALL_TOOLS);
 const text = (value) => __nanocodex_emit("text", JSON.stringify(__nanocodex_stringify(value)));
 const image = (value, detail) => {
   const item = normalizeImage(value, detail);

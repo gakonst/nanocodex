@@ -25,13 +25,24 @@ for (const keepNames of [false, true]) {
     const { createCodeRuntime, createQuickJsEvaluator } = await import(
       `data:text/javascript;base64,${Buffer.from(bundle.outputFiles[0].text).toString("base64")}`
     );
-    const runtime = createCodeRuntime({ echo: {
-      description: "Echo a fixture value.", parameters: { type: "object" },
+    const runtime = createCodeRuntime({ "fixture.echo": {
+      description: "Echo a fixture value.",
+      parameters: { type: "object", properties: { value: { type: "integer" } }, required: ["value"] },
       handler: async (input) => input,
     } }, { evaluate: createQuickJsEvaluator(quickJs) });
     const result = JSON.parse(await runtime.executeCode(`
       store("fixture", { value: 42 });
-      text(await tools.echo(load("fixture")));
+      const found = searchTools("FIXTURE echo", { limit: 1 });
+      const described = describeTool(found[0].callableName);
+      try { described.inputSchema.properties.value.type = "string"; } catch {}
+      let invalidQuery = false;
+      try { searchTools(""); } catch (error) { invalidQuery = error instanceof TypeError; }
+      let invalidLimit = false;
+      try { searchTools("echo", { limit: 101 }); } catch (error) { invalidLimit = error instanceof RangeError; }
+      text({ found, described, invalidQuery, invalidLimit,
+        namespace: describeNamespace("fixture").map((tool) => tool.name),
+        missing: describeTool("unavailable") === undefined,
+        value: await tools[described.callableName](load("fixture")) });
       image("data:image/png;base64,YQ==");
       generatedImage({ image_url: "data:image/png;base64,YQ==", output_hint: "fixture-image" });
       audio(${JSON.stringify(audioUrl)});
@@ -41,6 +52,16 @@ for (const keepNames of [false, true]) {
     assert.match(output, /42/);
     assert.match(output, /fixture-image/);
     assert.match(output, /shorter than 25 ms/);
-    assert.deepEqual(result.nested_calls.map((call) => call.name), ["echo"]);
+    const report = JSON.parse(result.output.find((item) => item.type === "input_text" && item.text.startsWith('{"found":')).text);
+    assert.deepEqual(report, {
+      found: [{ name: "fixture.echo", callableName: "fixture_echo", description: "Echo a fixture value." }],
+      described: {
+        name: "fixture.echo", callableName: "fixture_echo", description: "Echo a fixture value.",
+        inputSchema: { type: "object", properties: { value: { type: "integer" } }, required: ["value"] },
+        outputSchema: null, kind: "function",
+      },
+      invalidQuery: true, invalidLimit: true, namespace: ["fixture.echo"], missing: true, value: { value: 42 },
+    });
+    assert.deepEqual(result.nested_calls.map((call) => call.name), ["fixture.echo"]);
   });
 }

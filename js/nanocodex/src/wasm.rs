@@ -15,7 +15,8 @@ use nanocodex::{
     agent::{
         AgentHandle, ExecutionEnvironment, PromptRequest, SpawnOptions,
         durability::{
-            OwnedState, OwnerId, OwnerToken, StateStore, StoreError, StoreFuture, StoredState,
+            DurableSession, OwnedState, OwnerId, OwnerToken, StateStore, StoreError, StoreFuture,
+            StoredState,
         },
         input::{Prompt, UserInput},
         session::{SessionId, SessionSnapshot},
@@ -127,6 +128,12 @@ extern "C" {
         encoded_bytes: u32,
         subagent_id: Option<&str>,
     ) -> Result<(), JsValue>;
+
+    #[wasm_bindgen(catch, js_namespace = ["globalThis", "nanocodexHost"], js_name = codeReplaySafe)]
+    fn host_code_replay_safe(definition_host_id: u32) -> Result<bool, JsValue>;
+
+    #[wasm_bindgen(catch, js_namespace = ["globalThis", "nanocodexHost"], js_name = toolReplaySafe)]
+    fn host_tool_replay_safe(definition_host_id: u32, name: &str) -> Result<bool, JsValue>;
 
     #[wasm_bindgen(catch, js_namespace = ["globalThis", "nanocodexHost"], js_name = executeCode)]
     fn host_execute_code(
@@ -755,6 +762,14 @@ impl JavaScriptCodeModeHost {
 }
 
 impl CodeModeHost for JavaScriptCodeModeHost {
+    fn is_replay_safe(&self, name: &str) -> bool {
+        host_tool_replay_safe(self.definition_host_id, name).unwrap_or(false)
+    }
+
+    fn code_replay_safe(&self) -> bool {
+        host_code_replay_safe(self.definition_host_id).unwrap_or(false)
+    }
+
     fn supports_cells(&self) -> bool {
         true
     }
@@ -1136,6 +1151,8 @@ struct WasmConfig {
     fast_mode: bool,
     #[serde(default)]
     instant_tool_steering: bool,
+    #[serde(default = "default_inline_docs_token_budget")]
+    inline_docs_token_budget: usize,
     #[serde(default)]
     websocket_warmup: bool,
     #[serde(default = "default_raw_api_events")]
@@ -1163,6 +1180,8 @@ struct WasmConfig {
     #[serde(default)]
     durability_id: Option<String>,
     #[serde(default)]
+    document_fork: Option<WasmDocumentFork>,
+    #[serde(default)]
     durability_host_id: Option<String>,
     #[serde(default)]
     terminal_receipt_retention: Option<usize>,
@@ -1176,6 +1195,13 @@ struct WasmConfig {
 
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
+struct WasmDocumentFork {
+    checkpoint: SessionSnapshot,
+    documents: nanocodex::durability::DocumentFork,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 struct WasmSubagentsConfig {
     #[serde(default = "default_max_subagents")]
     max_concurrency: usize,
@@ -1184,6 +1210,8 @@ struct WasmSubagentsConfig {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 struct WasmSubagentTask {
+    #[serde(default)]
+    lifetime: nanocodex_subagents::AgentLifetime,
     role: String,
     task: String,
     #[serde(default)]
@@ -1364,6 +1392,7 @@ fn encode_subscription_credential(
 #[wasm_bindgen(js_name = Nanocodex)]
 pub struct WasmNanocodex {
     inner: RustNanocodex,
+    durable_session: Option<DurableSession>,
     subagents: Option<WasmSubagents>,
     event_forwarding: Rc<Cell<bool>>,
 }
@@ -1375,6 +1404,13 @@ struct WasmHarnessFactory {
     hosts: Arc<Mutex<HashMap<String, u32>>>,
     codex: Option<(serde_json::Value, nanocodex::oai::auth::OpenAiAuth)>,
     claude: Option<serde_json::Value>,
+    durability: Option<WasmChildDurability>,
+}
+
+#[derive(Clone)]
+struct WasmChildDurability {
+    route_id: String,
+    terminal_receipt_retention: Option<usize>,
 }
 
 impl WasmHarnessFactory {
@@ -1411,9 +1447,42 @@ impl WasmHarnessFactory {
             "terminal_receipt_retention",
             "terminalReceiptRetention",
             "resume",
+            "document_fork",
+            "documentFork",
             "before_compaction",
         ] {
             object.remove(key);
+        }
+        if let Some(durability) = &factory.durability {
+            let session_id = match &snapshot {
+                Some(nanocodex_agent::ChildSnapshot::Codex(snapshot)) => {
+                    snapshot.session_id.clone()
+                }
+                Some(nanocodex_agent::ChildSnapshot::Native { session_id, .. }) => {
+                    session_id.clone()
+                }
+                None => SessionId::new().to_string(),
+            };
+            let (session_key, state_key, route_key, retention_key) = match family {
+                HarnessFamily::Codex => (
+                    "session_id",
+                    "durability_id",
+                    "durability_host_id",
+                    "terminal_receipt_retention",
+                ),
+                HarnessFamily::Claude => (
+                    "sessionId",
+                    "durabilityId",
+                    "durabilityHostId",
+                    "terminalReceiptRetention",
+                ),
+            };
+            object.insert(session_key.into(), session_id.clone().into());
+            object.insert(state_key.into(), session_id.into());
+            object.insert(route_key.into(), durability.route_id.clone().into());
+            if let Some(limit) = durability.terminal_receipt_retention {
+                object.insert(retention_key.into(), limit.into());
+            }
         }
         object.insert("model".into(), model.to_string().into());
         object.insert(
@@ -1429,27 +1498,30 @@ impl WasmHarnessFactory {
             .and_then(serde_json::Value::as_u64)
             .ok_or_else(unavailable)? as u32;
         let built = match family {
-            HarnessFamily::Codex => {
-                build_codex(
-                    serde_json::from_value(recipe).map_err(|_| unavailable())?,
-                    auth.expect("Codex authentication"),
-                    Some(factory.clone()),
-                    snapshot,
-                    host_context,
-                )
-                .await
-            }
-            HarnessFamily::Claude => {
-                claude::build_claude(
-                    serde_json::from_value(recipe).map_err(|_| unavailable())?,
-                    Some(factory.clone()),
-                    snapshot,
-                    host_context,
-                )
-                .await
-            }
+            HarnessFamily::Codex => build_codex(
+                serde_json::from_value(recipe).map_err(|_| unavailable())?,
+                auth.expect("Codex authentication"),
+                Some(factory.clone()),
+                snapshot,
+                host_context,
+            )
+            .await
+            .map(|(inner, events, _)| (inner, events)),
+            HarnessFamily::Claude => claude::build_claude(
+                serde_json::from_value(recipe).map_err(|_| unavailable())?,
+                Some(factory.clone()),
+                snapshot,
+                host_context,
+            )
+            .await
+            .map(|(inner, events, _)| (inner, events)),
         }
-        .map_err(|_| NanocodexError::InvalidRequest("target harness construction failed".into()))?;
+        .map_err(|error| {
+            NanocodexError::InvalidRequest(format!(
+                "target harness construction failed: {}",
+                host_error_message(&error)
+            ))
+        })?;
         factory
             .hosts
             .lock()
@@ -1473,13 +1545,14 @@ impl AgentFactory for WasmHarnessFactory {
                 .selected_harness()
                 .unwrap_or(parent.harness_family())
                 == parent.harness_family()
+                && factory.durability.is_none()
             {
                 return parent
                     .spawn_native_with_host_context(options, host_context)
                     .await;
             }
-            let model = parent.harness_model();
-            let options = options.resolve(model, model.default_thinking())?;
+            let (model, thinking) = parent.settings().await?;
+            let options = options.resolve(model, thinking)?;
             factory.build_native(options, host_context, None).await
         })
     }
@@ -1492,7 +1565,8 @@ impl AgentFactory for WasmHarnessFactory {
         let factory = Arc::new(self.clone());
         Box::pin(async move {
             parent.ensure_available().await?;
-            if parent.harness_family() == snapshot.model().family() {
+            if parent.harness_family() == snapshot.model().family() && factory.durability.is_none()
+            {
                 return parent.restore_native_runtime(snapshot, host_context).await;
             }
             let model = snapshot.model();
@@ -1500,7 +1574,11 @@ impl AgentFactory for WasmHarnessFactory {
                 .build_native(
                     SpawnOptions::new()
                         .harness(model.family())
-                        .harness_model(model),
+                        .harness_model(model)
+                        .thinking(match &snapshot {
+                            nanocodex_agent::ChildSnapshot::Codex(snapshot) => snapshot.thinking,
+                            nanocodex_agent::ChildSnapshot::Native { thinking, .. } => *thinking,
+                        }),
                     host_context,
                     Some(snapshot),
                 )
@@ -1513,7 +1591,6 @@ impl AgentFactory for WasmHarnessFactory {
 struct WasmSubagents {
     host_definition_id: u32,
     registry: Arc<SubagentRegistry>,
-    control: SubagentControl,
     parents: Arc<Mutex<HashMap<String, AgentHandle>>>,
     hosts: Arc<Mutex<HashMap<String, u32>>>,
     sessions: Rc<RefCell<HashMap<(String, SubagentId), String>>>,
@@ -1563,7 +1640,7 @@ impl WasmSubagents {
     fn new(
         host_definition_id: u32,
         registry: Arc<SubagentRegistry>,
-        control: SubagentControl,
+        _control: SubagentControl,
         updates: tokio::sync::mpsc::UnboundedReceiver<ScopedAgentUpdate>,
         parents: Arc<Mutex<HashMap<String, AgentHandle>>>,
         hosts: Arc<Mutex<HashMap<String, u32>>>,
@@ -1583,7 +1660,6 @@ impl WasmSubagents {
             host_definition_id,
             hosts,
             registry,
-            control,
             parents,
             sessions,
             event_forwarders,
@@ -1616,17 +1692,101 @@ impl WasmSubagents {
         });
     }
 
-    async fn close_all(&self, root_session_id: &str) -> std::io::Result<()> {
-        self.control.close_all(root_session_id).await?;
-        release_subagent_scope(
-            self.host_definition_id,
-            &self.sessions,
-            &self.parents,
-            &self.hosts,
-            root_session_id,
-        );
-        self.remove_parent(root_session_id);
+    async fn recover(&self, root: &RustNanocodex, route_id: String) -> Result<(), JsValue> {
+        self.registry
+            .enable_durability(JavaScriptDurabilityStore { route_id }, root.session_id())
+            .await
+            .map_err(js_error)?;
+        self.registry
+            .recover(self.parent(root.session_id())?)
+            .await
+            .map_err(js_error)
+    }
+
+    // A failed constructor has not published any of this fresh registry's
+    // capabilities. Stop partial recovery without closing durable foreground
+    // records or retaining a healthy-looking background generation.
+    async fn retire_unpublished(&self) {
+        let sessions = self
+            .parents
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
+        for session in sessions {
+            let retired = self.registry.retire_unpublished_parent(&session).await;
+            if let Some(root) = retired.first() {
+                release_subagent_scope(
+                    self.host_definition_id,
+                    &self.sessions,
+                    &self.parents,
+                    &self.hosts,
+                    root,
+                );
+            }
+        }
+        self.parents
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clear();
+        self.hosts
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clear();
+    }
+
+    async fn release_parent(&self, session_id: &str) -> std::io::Result<()> {
+        if let Err(error) = self.registry.release_parent(session_id).await {
+            let retired = self.registry.retire_failed_parent(session_id).await;
+            if let Some(root) = retired.first() {
+                release_subagent_scope(
+                    self.host_definition_id,
+                    &self.sessions,
+                    &self.parents,
+                    &self.hosts,
+                    root,
+                );
+                for session in retired {
+                    self.remove_parent(&session);
+                    self.hosts
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .remove(&session);
+                }
+            }
+            return Err(error);
+        }
+        // Background drivers remain owned by their registry until a cold host
+        // scheduler acquires a new fenced parent generation.
+        if !self.registry.has_background(session_id).await {
+            release_subagent_scope(
+                self.host_definition_id,
+                &self.sessions,
+                &self.parents,
+                &self.hosts,
+                session_id,
+            );
+            self.remove_parent(session_id);
+        }
         Ok(())
+    }
+
+    async fn recover_report(&self, session_id: &str) -> Result<String, JsValue> {
+        self.registry
+            .recover(self.parent(session_id)?)
+            .await
+            .map_err(js_error)?;
+        let agents = self
+            .registry
+            .summaries_all(session_id)
+            .await
+            .map_err(js_error)?;
+        let background_pending = self.registry.has_background(session_id).await;
+        serde_json::to_string(
+            &serde_json::json!({ "agents": agents, "backgroundPending": background_pending }),
+        )
+        .map_err(js_error)
     }
 }
 
@@ -1660,9 +1820,19 @@ impl WasmNanocodex {
         config: WasmConfig,
         auth: nanocodex::oai::auth::OpenAiAuth,
     ) -> Result<Self, JsValue> {
+        let durability = config
+            .durability_host_id
+            .as_ref()
+            .map(|route_id| WasmChildDurability {
+                route_id: route_id.clone(),
+                terminal_receipt_retention: config.terminal_receipt_retention,
+            });
         let (factory, subagents) = if let Some(settings) = &config.subagents {
             let (registry, control, updates) =
                 nanocodex_subagents::channel(settings.max_concurrency);
+            if durability.is_some() {
+                registry.require_durability();
+            }
             if config.subagent_routing {
                 registry.set_spawn_router(Arc::new(JavaScriptSpawnRouter {
                     host_definition_id: config.host_definition_id,
@@ -1678,6 +1848,7 @@ impl WasmNanocodex {
                     auth.clone(),
                 )),
                 claude: config.claude_harness.clone(),
+                durability: durability.clone(),
             });
             let subagents = WasmSubagents::new(
                 config.host_definition_id,
@@ -1691,8 +1862,25 @@ impl WasmNanocodex {
         } else {
             (None, None)
         };
-        let (inner, events) = build_codex(config, auth, factory, None, None).await?;
-        Ok(Self::from_parts(inner, events, subagents))
+        let (inner, events, durable_session) =
+            match build_codex(config, auth, factory, None, None).await {
+                Ok(parts) => parts,
+                Err(error) => {
+                    if let Some(subagents) = &subagents {
+                        subagents.retire_unpublished().await;
+                    }
+                    return Err(error);
+                }
+            };
+        if let (Some(subagents), Some(durability)) = (&subagents, durability)
+            && let Err(error) = subagents.recover(&inner, durability.route_id).await
+        {
+            subagents.retire_unpublished().await;
+            return Err(error);
+        }
+        let mut agent = Self::from_parts(inner, events, subagents);
+        agent.durable_session = durable_session;
+        Ok(agent)
     }
 
     /// Returns the stable Agent identity.
@@ -1881,6 +2069,59 @@ impl WasmNanocodex {
         serde_json::to_string(&self.inner.snapshot().await.map_err(js_error)?).map_err(js_error)
     }
 
+    /// Reads the committed JSON document from this session's retained durable handle.
+    pub async fn document(&self, key: &str) -> Result<String, JsValue> {
+        let document = self
+            .durable_session()?
+            .document(key)
+            .await
+            .map_err(js_error)?;
+        serde_json::to_string(&document).map_err(js_error)
+    }
+
+    /// Atomically publishes conditional host journal writes under the session owner.
+    #[wasm_bindgen(js_name = compareExchangeDocuments)]
+    pub async fn compare_exchange_documents(&self, writes_json: &str) -> Result<(), JsValue> {
+        let writes = serde_json::from_str::<Vec<nanocodex::durability::DocumentWrite>>(writes_json)
+            .map_err(js_error)?;
+        self.durable_session()?
+            .compare_exchange_documents(writes)
+            .await
+            .map_err(js_error)
+    }
+
+    /// Stages conditional writes for the running operation's successful commit.
+    #[wasm_bindgen(js_name = stageDocumentWrites)]
+    pub async fn stage_document_writes(
+        &self,
+        operation_id: &str,
+        writes_json: &str,
+    ) -> Result<(), JsValue> {
+        validate_operation_id(Some(operation_id))?;
+        let writes = serde_json::from_str::<Vec<nanocodex::durability::DocumentWrite>>(writes_json)
+            .map_err(js_error)?;
+        self.durable_session()?
+            .stage_document_writes(operation_id, writes)
+            .await
+            .map_err(js_error)
+    }
+
+    /// Exports an exact historical model checkpoint and policy-selected session documents.
+    #[wasm_bindgen(js_name = documentFork)]
+    pub async fn document_fork(&self, operation_id: &str) -> Result<String, JsValue> {
+        validate_operation_id(Some(operation_id))?;
+        let (checkpoint, documents) = self
+            .durable_session()?
+            .agent_document_fork(operation_id)
+            .await
+            .map_err(js_error)?;
+        serde_json::to_string(&WasmDocumentFork {
+            checkpoint,
+            documents,
+        })
+        .map_err(js_error)
+    }
+
     /// Starts a clean sibling with the same private agent policy.
     ///
     /// # Errors
@@ -2034,6 +2275,16 @@ impl WasmNanocodex {
         WasmBrowserVoice::new(self.inner.clone(), voice).map_err(js_error)
     }
 
+    /// Reattaches durable children under this runtime's current host authority.
+    #[wasm_bindgen(js_name = recoverSubagents)]
+    pub async fn recover_subagents(&self) -> Result<String, JsValue> {
+        self.subagents
+            .as_ref()
+            .ok_or_else(|| js_error("subagents are disabled"))?
+            .recover_report(self.inner.session_id())
+            .await
+    }
+
     /// Gracefully stops the driver and joins every resource owned by this agent.
     ///
     /// # Errors
@@ -2042,7 +2293,7 @@ impl WasmNanocodex {
     pub async fn shutdown(&self) -> Result<(), JsValue> {
         if let Some(subagents) = &self.subagents {
             subagents
-                .close_all(self.inner.session_id())
+                .release_parent(self.inner.session_id())
                 .await
                 .map_err(js_error)?;
         }
@@ -2051,6 +2302,12 @@ impl WasmNanocodex {
 }
 
 impl WasmNanocodex {
+    fn durable_session(&self) -> Result<&DurableSession, JsValue> {
+        self.durable_session.as_ref().ok_or_else(|| {
+            js_error("session documents require an agent with durability and durabilityId")
+        })
+    }
+
     fn from_parts(
         inner: RustNanocodex,
         events: AgentEvents,
@@ -2060,6 +2317,7 @@ impl WasmNanocodex {
         forward_events(events, Rc::clone(&event_forwarding));
         Self {
             inner,
+            durable_session: None,
             subagents,
             event_forwarding,
         }
@@ -2079,7 +2337,7 @@ impl Drop for WasmNanocodex {
             let subagents = subagents.clone();
             let session_id = self.inner.session_id().to_owned();
             spawn_local(async move {
-                drop(subagents.close_all(&session_id).await);
+                drop(subagents.release_parent(&session_id).await);
             });
         }
     }
@@ -3303,7 +3561,16 @@ fn forward_subagent_updates(
                     }
                 }
                 SubagentUpdate::Event { id, event } => {
-                    if event_forwarders.get() > 0
+                    // Recovery can admit a child before the root's user event
+                    // watcher is installed. Host journals and request policy
+                    // need these canonical identities even without a watcher.
+                    let identity_event = matches!(
+                        event.kind,
+                        nanocodex::oai::events::AgentEventKind::InputAccepted
+                            | nanocodex::oai::events::AgentEventKind::ModelCallStarted
+                            | nanocodex::oai::events::AgentEventKind::ToolCall
+                    );
+                    if (identity_event || event_forwarders.get() > 0)
                         && let Ok(encoded) = serde_json::to_string(&event)
                     {
                         let id = id.to_string();
@@ -3500,6 +3767,12 @@ fn validate(config: &WasmConfig) -> Result<(), JsValue> {
     {
         return Err(js_error("durability_host_id must not be empty"));
     }
+    if config.document_fork.is_some() && (config.durability_id.is_none() || config.resume.is_some())
+    {
+        return Err(js_error(
+            "document_fork requires durability and cannot be combined with resume",
+        ));
+    }
     if config.durability_id.is_some() != config.durability_host_id.is_some() {
         return Err(js_error(
             "durability_id and durability_host_id must be supplied together",
@@ -3526,6 +3799,10 @@ fn parse_revision(revision: &str) -> Result<u64, StoreError> {
     revision.parse::<u64>().map_err(|error| {
         StoreError::Backend(format!("invalid JavaScript durability revision: {error}"))
     })
+}
+
+const fn default_inline_docs_token_budget() -> usize {
+    3000
 }
 
 const fn default_raw_api_events() -> bool {
@@ -3574,6 +3851,7 @@ impl WasmSubagents {
             &subagents.registry,
             session_id,
             AgentTask {
+                lifetime: task.lifetime,
                 role: task.role,
                 task: task.task,
                 output_schema: task.output_schema,
@@ -3611,7 +3889,8 @@ impl WasmSubagents {
         let agents = subagents
             .registry
             .directory(session_id, task.include_completed, task.include_self)
-            .await;
+            .await
+            .map_err(js_error)?;
         serde_json::to_string(&WasmSubagentDirectoryReport { agents }).map_err(js_error)
     }
     pub async fn send_subagent_message(
@@ -3686,6 +3965,7 @@ impl WasmSubagents {
                 role: task.role,
                 task: task.task,
                 output_schema: task.output_schema,
+                lifetime: task.lifetime,
             })
             .collect();
         let subagents = self;
@@ -3727,7 +4007,7 @@ async fn build_codex(
     factory: Option<Arc<WasmHarnessFactory>>,
     snapshot: Option<nanocodex_agent::ChildSnapshot>,
     host_context: Option<Arc<str>>,
-) -> Result<(RustNanocodex, AgentEvents), JsValue> {
+) -> Result<(RustNanocodex, AgentEvents, Option<DurableSession>), JsValue> {
     validate(&config)?;
 
     let model = config.model.parse::<Model>().map_err(js_error)?;
@@ -3763,6 +4043,7 @@ async fn build_codex(
         .build()
         .map_err(js_error)?;
     let tools = Tools::builder()
+        .inline_docs_token_budget(config.inline_docs_token_budget)
         .without_defaults()
         .build()
         .map_err(js_error)?;
@@ -3771,6 +4052,9 @@ async fn build_codex(
         let registry = Arc::clone(&factory.registry);
         let parents = Arc::clone(&factory.parents);
         RustNanocodex::builder(openai)
+            .turn_ownership(Arc::new(nanocodex_subagents::RegistryOwnership(
+                registry.clone(),
+            )))
             .spawn_factory(factory.clone())
             .tools_factory(move |agent| {
                 let agent = agent.with_spawn_factory(factory.clone());
@@ -3790,7 +4074,14 @@ async fn build_codex(
     };
     builder = builder.instant_tool_steering(config.instant_tool_steering);
     builder = builder.host_context(host_context);
-    if let Some(snapshot) = snapshot {
+    if let Some(mut snapshot) = snapshot {
+        if config.durability_id.is_some()
+            && let nanocodex_agent::ChildSnapshot::Codex(snapshot) = &mut snapshot
+        {
+            // The durable owner supplies the latest committed conversation. The
+            // registry's residency snapshot retains only identity and policy.
+            snapshot.conversation = None;
+        }
         builder = builder.restore_runtime(snapshot).map_err(js_error)?;
     }
     if config.before_compaction {
@@ -3819,6 +4110,7 @@ async fn build_codex(
     if let Some(resume) = config.resume {
         builder = builder.resume(resume);
     }
+    let mut retained_durable_session = None;
     if let (Some(route_id), Some(state_id)) = (config.durability_host_id, config.durability_id) {
         let store = JavaScriptDurabilityStore { route_id };
         let durable_state = if let Some(limit) = config.terminal_receipt_retention {
@@ -3835,6 +4127,13 @@ async fn build_codex(
             nanocodex::agent::durability::DurableSession::open(store, state_id).await
         }
         .map_err(js_error)?;
+        if let Some(seed) = config.document_fork {
+            durable_state
+                .initialize_agent_document_fork(seed.documents, &seed.checkpoint)
+                .await
+                .map_err(js_error)?;
+        }
+        retained_durable_session = Some(durable_state.clone());
         builder = builder.durability(durable_state).await.map_err(js_error)?;
     }
     // Restored and forked lineages keep their original key and prefix IDs.
@@ -3844,5 +4143,5 @@ async fn build_codex(
         builder = builder.prompt_cache_key(key);
     }
     let (inner, events) = builder.build().map_err(js_error)?;
-    Ok((inner, events))
+    Ok((inner, events, retained_durable_session))
 }

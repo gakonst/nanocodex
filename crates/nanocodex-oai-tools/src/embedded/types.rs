@@ -17,6 +17,7 @@ pub struct OwnedToolContext {
     pub(crate) model: String,
     pub(crate) session_id: String,
     pub(crate) call_id: String,
+    pub(crate) journal_scope: Option<Arc<str>>,
     pub(crate) turn_id: Option<Arc<str>>,
     pub(crate) history: Arc<Vec<ResponseItem>>,
     pub(crate) output_token_budget: usize,
@@ -38,6 +39,7 @@ impl OwnedToolContext {
             model: model.into(),
             session_id: session_id.into(),
             call_id: call_id.into(),
+            journal_scope: None,
             turn_id: None,
             history,
             output_token_budget,
@@ -58,6 +60,7 @@ impl OwnedToolContext {
         .with_instruction_revision(context.instruction_revision())
         .with_host_context(context.host_context().map(Arc::from))
         .with_turn_id(context.turn_id().map(Arc::from))
+        .with_journal_scope(context.journal_scope().map(Arc::from))
     }
 
     /// Borrows this owned state as the standard tool invocation context.
@@ -73,6 +76,15 @@ impl OwnedToolContext {
         .with_instruction_revision(self.instruction_revision)
         .with_host_context(self.host_context.as_deref())
         .with_turn_id(self.turn_id.as_deref())
+        .with_journal_scope(self.journal_scope.as_deref())
+    }
+
+    /// Retains the host-owned cell journal identity across asynchronous work.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn with_journal_scope(mut self, scope: Option<Arc<str>>) -> Self {
+        self.journal_scope = scope;
+        self
     }
 
     /// Retains the originating model call's revision across asynchronous work.

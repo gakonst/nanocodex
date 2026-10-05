@@ -1,3 +1,4 @@
+import { createCodeDiscovery } from "./code-discovery.mjs";
 import { createCodeTools } from "./code-tools.mjs";
 import { stringify, storeSnapshot, normalizeImage, normalizeAudio, generatedImageItems } from "./code-values.mjs";
 import { limitCodeOutput } from "./code-output.mjs";
@@ -267,6 +268,8 @@ export function createCodeRuntime(toolConfiguration = {}, extras = {}) {
     const journal = extras.effectJournal;
     let canonicalIdentity;
     let cellContext;
+    let receipt;
+    let replayed = false;
     function journalFailure(cause) {
       const error = cause?.code === "CODE_EFFECT_UNKNOWN" ? cause
         : Object.assign(new Error("Code Mode effect journal interrupted", { cause }), { code: "host_interrupted" });
@@ -570,13 +573,37 @@ export function createCodeRuntime(toolConfiguration = {}, extras = {}) {
     }
 
     try {
-      if (journal?.beginCell || journal?.commitStore) {
+      if (journal?.beginCell || journal?.completeCell) {
         try {
-          if (!journal.beginCell || !journal.commitStore) throw effectUnknown(new Error("incomplete durable cell store protocol"));
+          if (!journal.beginCell || !journal.completeCell) throw effectUnknown(new Error("incomplete durable cell store protocol"));
           canonicalIdentity ??= Promise.resolve(extras.effectIdentity?.(sessionId, parentCallId, turnId, controller.signal) ?? {});
           cellContext = { ...await canonicalIdentity, sessionId, parentCallId, callId: parentCallId,
             name: "code-cell", source, input: null, ...(turnId == null ? {} : { turnId }) };
-          const entries = await journal.beginCell(cellContext);
+          const decision = await journal.beginCell(cellContext);
+          if (decision?.status === "replay") {
+            receipt = boundedEffectSnapshot(decision.receipt, "cell receipt");
+            if (typeof receipt?.success !== "boolean" || !Array.isArray(receipt.nested_calls)
+              || !(typeof receipt.output === "string" || Array.isArray(receipt.output))) {
+              throw effectUnknown(new Error("invalid completed cell receipt"));
+            }
+            replayed = true;
+            if (cell) {
+              // Observed execution drains content and updates separately. Rehydrate
+              // from the full terminal receipt without evaluating guest source.
+              const items = typeof receipt.output === "string"
+                ? [{ type: "input_text", text: receipt.output.split("Output:\n").slice(1).join("Output:\n") }]
+                : receipt.output.slice(1);
+              cell.content.push(...items);
+              cell.notifications.push(...(receipt.notifications ?? []));
+              for (const call of receipt.nested_calls) {
+                observer?.({ type: "nested_call_started", call_id: call.call_id, name: call.name, input: call.input });
+                observer?.({ type: "nested_call_completed", call });
+              }
+            }
+            return JSON.stringify(receipt);
+          }
+          if (decision?.status !== "execute") throw effectUnknown(new Error("cell outcome unknown"));
+          const entries = decision.entries;
           let snapshot;
           try {
             snapshot = boundedEffectSnapshot(entries, "cell starting store");
@@ -592,6 +619,7 @@ export function createCodeRuntime(toolConfiguration = {}, extras = {}) {
           try {
             await (extras.evaluate || evaluateNative)(source, {
               tools,
+              ...createCodeDiscovery(availableDefinitions),
               toolDefinitions: availableDefinitions,
               text,
               image,
@@ -620,38 +648,44 @@ export function createCodeRuntime(toolConfiguration = {}, extras = {}) {
       if (execution.interruption) throw execution.interruption;
       if (execution.recoveryFailure) throw execution.recoveryFailure;
       closePendingCalls();
-      return JSON.stringify({
+      receipt = {
         output: withStatus("Script completed", startedAt, content),
         success: true,
         nested_calls: nestedCalls,
         notifications,
-      });
+      };
+      return JSON.stringify(receipt);
     } catch (error) {
       if (execution.interruption) throw execution.interruption;
       if (error?.code === "host_interrupted") throw error;
       closePendingCalls();
-      return JSON.stringify({
+      receipt = {
         output: `Script failed\nWall time ${wallTime(startedAt)} seconds\nOutput:\n${errorMessage(error)}`,
         success: false,
         nested_calls: nestedCalls,
-      });
+      };
+      return JSON.stringify(receipt);
     } finally {
       closePendingCalls();
       finished = true;
-      const commitWrites = !controller.signal.aborted;
+      const commitReceipt = receipt && !replayed && !controller.signal.aborted;
       // End the isolate lifetime before asynchronous durability acknowledgement:
       // timers/detached continuations cannot mutate an already captured delta.
       controller.abort(new Error(CANCELLATION_MESSAGE));
       for (const timer of timers.values()) clearTimeout(timer);
       try {
-        if (commitWrites) {
-          // Failed scripts are completed results too. The durable adapter merges
-          // a delta once, never replacing newer writes on a completed-cell replay.
+        if (commitReceipt) {
+          const writes = receipt.success ? [...storedWrites] : [];
           if (cellContext) {
-            try { await journal.commitStore(cellContext, boundedEffectSnapshot([...storedWrites], "cell store writes")); }
-            catch (cause) { journalFailure(cause); }
+            try {
+              await journal.completeCell(cellContext,
+                boundedEffectSnapshot(writes, "cell store writes"),
+                boundedEffectSnapshot(receipt, "cell receipt"));
+            } catch (cause) { journalFailure(cause); }
           }
-          for (const [key, value] of storedWrites) sessionStore.set(key, value);
+          // Only expose successful local writes after the receipt transaction
+          // acknowledges persistence. External effects retain separate receipts.
+          for (const [key, value] of writes) sessionStore.set(key, value);
           if (cell) cell.finished = true;
         }
       } catch (error) {
@@ -685,7 +719,12 @@ export function createCodeRuntime(toolConfiguration = {}, extras = {}) {
       }, cell, turnId).then((result) => {
         const completed = JSON.parse(result);
         if (!completed.success && typeof completed.output === "string") {
-          cell.content.push({ type: "input_text", text: completed.output.split("Output:\n").slice(1).join("Output:\n") || completed.output });
+          const failure = completed.output.split("Output:\n").slice(1).join("Output:\n") || completed.output;
+          // Guest output cannot suppress a terminal recovery/journal failure.
+          // Receipt replay may already have hydrated this exact diagnostic.
+          if (!cell.content.some(item => item.type === "input_text" && item.text === failure)) {
+            cell.content.push({ type: "input_text", text: failure });
+          }
         }
         cell.result = { success: completed.success };
         cell.wake?.();
@@ -884,6 +923,10 @@ export function createCodeRuntime(toolConfiguration = {}, extras = {}) {
       });
     },
     router,
+    toolReplaySafe: () => ["begin", "complete"].every(
+      method => typeof extras.effectJournal?.[method] === "function"),
+    codeReplaySafe: () => ["begin", "complete", "beginCell", "completeCell"].every(
+      method => typeof extras.effectJournal?.[method] === "function"),
     executeCode,
     executeCodeObserved,
     waitCodeObserved,
@@ -937,6 +980,9 @@ async function evaluateNative(source, environment) {
   const script = new AsyncFunction(
     "tools",
     "ALL_TOOLS",
+    "searchTools",
+    "describeTool",
+    "describeNamespace",
     "text",
     "image",
     "generatedImage",
@@ -955,6 +1001,9 @@ async function evaluateNative(source, environment) {
   await script(
     environment.tools,
     environment.toolDefinitions,
+    environment.searchTools,
+    environment.describeTool,
+    environment.describeNamespace,
     environment.text,
     environment.image,
     environment.generatedImage,

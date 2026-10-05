@@ -330,12 +330,12 @@ Cloudflare Agents default to direct tool mode because Workers prohibit dynamic
 `eval`/`new Function`. Caller-defined tools therefore work without a code
 evaluator. Select `toolMode: "code"` only when also supplying an evaluator that
 is explicitly compatible with the deployed Worker runtime. Runtime-owned
-Subagents are installed by default, including on a durable root. All children are
-ephemeral: their identities, topology, conversations, results, and routing exist
-only for the lifetime of the root runtime. Root shutdown or restart discards the
-entire child tree; only the root's own durable history resumes. Existing child
-checkpoints from older versions are discarded. Within a live runtime, completed
-children remain available for follow-up messages until closed. Use
+Subagents are installed by default, including on a durable root. With a durability
+store, child identities, topology, queued messages, typed results, and native
+conversation checkpoints survive owner loss. Reopening the same durable parent
+recovers unfinished children with the host's current authentication. Without a
+durability store, the child tree lives only in memory. Completed children remain
+available for follow-up messages until closed. Use
 `Subagents.create({ maxConcurrency })` in `tools` to set an explicit finite
 concurrency limit. Active subagent turns are unlimited by default.
 
@@ -625,9 +625,50 @@ binding crate at build time and exposed by a small branded JS configuration;
 adding a dynamic component ABI would be a separate feature with a much larger
 contract and runtime cost.
 
-The root owns the task tree. `agent.session.shutdown()` closes every child
-before stopping the root driver; applications do not maintain a parallel JS
-scheduler or reimplement the communication tools.
+The root owns the task tree. Children default to `lifetime: "foreground"` and
+`agent.session.shutdown()` closes them before stopping the root driver. A
+`lifetime: "background"` child requires a durability store. Shutdown checkpoints
+and releases background execution so a later owner can recover it; it does not
+keep an evicted Worker running. Use `Subagents.close(agent, childId)` to explicitly
+cancel and permanently close a background child.
+
+A host alarm or cron handler can reopen the same durable parent, then call the
+public recovery hook. Acquire the current transport credentials on each wake;
+credentials are not restored from the child journal. Keep that runtime alive
+while waiting for work, and schedule another wake when the bounded wait expires:
+
+```js
+import { Agent, Subagents } from "nanocodex/host";
+
+async function onAlarm() {
+  const agent = await Agent.create({
+    module,
+    durability,
+    durabilityId: "customer-agent-123",
+    transport: await currentAuthorizedTransport(),
+    tools,
+  });
+  try {
+    await Subagents.recover(agent); // Repeated calls do not start duplicate turns.
+    const { agents } = await Subagents.list(agent, { includeCompleted: true });
+    const pending = agents.filter(child => child.lifetime === "background"
+      && ["pending", "running"].includes(child.status.state));
+    if (pending.length) {
+      const report = await Subagents.wait(agent, {
+        agentIds: pending.map(child => child.agent_id), timeoutMs: 10_000,
+      });
+      if (report.timed_out || report.agents.some(child => child.status.state === "running")) {
+        await scheduleNextAlarm();
+      }
+    }
+  } finally {
+    await agent.session.shutdown();
+  }
+}
+```
+
+The host owns alarm scheduling and authorization. Rust owns child admission,
+message delivery, cancellation, and replay inside the recovered runtime.
 
 ## Persistent workspaces
 
@@ -1040,6 +1081,45 @@ adapter and execute the canonical schema; the platform never interprets the
 opaque Rust state. See `js/managed`,
 `examples/vercel-workflows`, and `examples/rivet-actors` for all three host
 shapes.
+
+Durable sessions also expose session documents and historical fork seeds. These
+records belong to the session's fenced durability transaction; account-shared
+application data belongs in its separate account store. Conditional writes use
+`expectedVersion: 0` for creation and the returned version for updates:
+
+```js
+await agent.session.compareExchangeDocuments([
+  { key: "journal", expectedVersion: 0, value: { count: 1 }, fork: "asOf" },
+]);
+const journal = await agent.session.document("journal");
+const turn = agent.turn.prompt({ id: "checkpoint-1", input: "Continue." });
+await turn.result();
+const seed = await agent.session.documentFork("checkpoint-1");
+const branch = await Agent.create({
+  transport: freshTransport, tools, durability,
+  durabilityId: "independent-branch", documentFork: seed,
+});
+```
+
+`stageDocumentWrites(operationId, writes)` stages a conditional transaction
+while that operation is running. It publishes together with successful
+completion, its checkpoint and terminal receipt; failure publishes none of the
+staged writes. `compareExchangeDocuments` publishes an immediate atomic
+transaction. All writes validate before any value changes, including version
+conflicts and the session's 64-document / 64 KiB document metadata-and-value
+limit. Use bounded JSON values.
+
+Fork policies are `initial`, `current`, `asOf` and `block`. They select the
+creation value, latest value, value at the completed operation, or refuse a fork
+when the blocked document exists in the source. Later-created `asOf` keys are
+omitted; `initial` and `current` follow their explicit source-value policies. Every successful operation retains a historical boundary, including
+operations that write no documents and operations whose terminal receipts have
+been pruned. Fork seeds contain loaded model checkpoint data, so they can seed a
+pristine destination backed by a different durability store. Supply current
+destination credentials, tools and authority independently; seeds do not grant
+access or copy schedules or account-shared stores. Claude exposes these same
+durable document methods with its native checkpoint format; see the
+[Claude SDK guide](../../docs/CLAUDE_JAVASCRIPT.md).
 
 Cloudflare Durable Objects can bind their colocated SQLite and initialize the
 canonical schema in one call. The adapter is structural and adds no Workers
@@ -1497,3 +1577,81 @@ The SDK snapshots the configuration when the dialog is created and carries it
 in the `nanocodex_appearance` URL parameter to wallet and funding iframes or the
 account popup. The hosted dialog limits the JSON value to 1,024 characters and
 uses native defaults for malformed values. Omit `appearance` for native defaults.
+
+### Named request configuration and virtual routing
+
+`RequestPolicy` is exported by `nanocodex`, `nanocodex/node`, `nanocodex/host`,
+`nanocodex/browser`, `nanocodex/cloudflare`, and `nanocodex/worker`, with a direct
+`nanocodex/request-policy` entry. Create a policy with its own durable state ID
+and attach it using `requestPolicy` on a local Agent or its owning Cloudflare
+adapter. Browser agents with a policy run in the current isolate so callbacks
+remain local. Managed remote clients require configuration in their owning host.
+
+```js
+import { Agent, Transport, RequestPolicy } from 'nanocodex/node';
+import { createMemoryDurabilityStore } from 'nanocodex/durability';
+
+const policy = await RequestPolicy.create({
+  durability: createMemoryDurabilityStore('example-policy'),
+  durabilityId: 'example-policy',
+  selection: 'balanced',
+  models: [{
+    model: 'gpt-6-luna', family: 'codex',
+    contextTokens: 100_000, maxOutputTokens: 1_000,
+  }],
+  route: ({ state }) => ({ model: 'gpt-6-luna', state: state ?? null }),
+});
+await policy.configure([
+  { kind: 'set_section', section: { name: 'project', text: 'Use concise answers.' } },
+]);
+const agent = await Agent.create({
+  model: 'gpt-6-luna',
+  transport: Transport.openAi({ apiKey: process.env.OPENAI_API_KEY }),
+  requestPolicy: policy,
+});
+const result = await agent.turn.prompt({ input: 'Explain the project.' }).result();
+console.log(result.finalMessage);
+await agent.session.shutdown();
+```
+
+Named sections and native tool definitions apply at the next new request
+boundary. `set_section`, `remove_section`, `set_tool`, and `remove_tool` preserve
+ordering and record configuration history. A tool patch must exactly match a
+declaration in the current native request, including its schema and flags;
+retained configuration never grants a revoked tool. Provider requests use the
+flattened current configuration. This API does not claim a provider-native patch
+protocol. Claude signed blocks and native tool ordering remain intact.
+
+Policy agents use full-history HTTP Responses or native Claude Messages. Each
+receipt records `selected`, `dispatched`, immutable `original` parameters,
+rendered limits, router state, dispatch status, and observed response usage.
+Tool continuation retains its physical model. Transparent Codex history can
+switch only with an explicit shared `switchGroup` and a `switchSafe` callback;
+Claude and opaque native history reject physical switching. Physical context and
+output bounds are checked before dispatch. The default input estimate uses UTF-8
+request bytes conservatively; supply `estimateInputTokens` for provider-specific
+accounting, and always supply it for opaque or multimodal requests. Routing does
+not change the session's configured model; inspect receipts for dispatch identity.
+
+Use a persistent `DurabilityStore` for cold recovery. A memory store only survives
+within its host process. Recreate the policy with the same state ID and virtual
+selection to retain configuration and router state. `fork` copies policy state
+to a separate destination store/ID. Keep policies branch-local; give independent
+agents and alternate harnesses their own policy. The policy stops on an already
+dispatched request until its outcome is reconciled, preserving uncertain charge
+receipts. A custom `requestContext` can provide stable application request IDs.
+Reusing an ID with changed parameters fails. Current authentication stays in the
+transport closure, and `authorize` can recheck host authority before every
+normal or cache-warm dispatch. Hosted model pins and provider authorization still
+apply to the rendered native request.
+
+Claude cache warming requires explicit `cacheWarm.enabled: true`, an existing
+native cache breakpoint with matching 300- or 3600-second TTL, caller-supplied
+cost estimates and prices, a spend limit, and a reuse estimate whose expected
+savings exceed the write estimate. It sends a native nonstreaming request with
+one output token and records actual native usage and calculated spend. The
+attempt and estimated reservation are durable before HTTP; uncertain attempts
+are not sent again. Inspect `snapshot().warms` and `actualWarmUsd` for evidence.
+Warming rejects thinking requests. Normal policy requests record usage without
+an extra model request when warming is disabled. Native warming is currently
+available for Claude only.

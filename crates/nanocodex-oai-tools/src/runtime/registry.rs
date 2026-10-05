@@ -22,6 +22,16 @@ impl ToolRegistry {
                     .any(|provider| provider.contains(name)))
     }
 
+    pub(crate) fn is_replay_safe(&self, name: &str) -> bool {
+        if let Some((handler, _)) = self.get(name) {
+            return handler.is_replay_safe();
+        }
+        self.providers
+            .iter()
+            .find(|provider| provider.contains(name))
+            .is_some_and(|provider| provider.is_replay_safe(name))
+    }
+
     pub(crate) fn supports_parallel_tool_calls(&self, name: &str) -> bool {
         if let Some((handler, _)) = self.get(name) {
             return handler.supports_parallel_tool_calls();

@@ -18,6 +18,9 @@ use nanocodex_agent::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+mod background;
+#[cfg(all(feature = "code-mode", not(target_family = "wasm")))]
+mod code_mode;
 mod durable;
 use crate::execution::{Admission, ClaudeExecutionPolicy, Step};
 use durable::{Cursor, Effect, Snapshot};
@@ -62,6 +65,9 @@ pub struct ClaudeToolInvocation {
     pub session_id: String,
     pub turn_id: String,
     pub call_id: String,
+    /// Host-owned durable operation/step identity for native Code Mode.
+    #[doc(hidden)]
+    pub journal_scope: Option<String>,
     /// Immutable revision captured for the originating model response.
     pub instruction_revision: Option<u64>,
     /// Embedding-private inherited tool context; never serialized to the model.
@@ -92,8 +98,20 @@ impl ClaudeToolReply {
 #[derive(Clone, Default)]
 pub struct ClaudeTools {
     tools: Vec<(ToolDefinition, Handler)>,
+    tool_replay_safety: HashMap<String, nanocodex_agent::ReplaySafety>,
 }
 impl ClaudeTools {
+    /// Sets explicit recovery permission for a named callback. Defaults to unsafe;
+    /// only opt in for idempotent or host-journaled execution, independent of parallelism.
+    pub fn tool_replay_safety(
+        mut self,
+        name: impl Into<String>,
+        safety: nanocodex_agent::ReplaySafety,
+    ) -> Self {
+        self.tool_replay_safety.insert(name.into(), safety);
+        self
+    }
+
     /// Creates an empty native function collection.
     pub fn new() -> Self {
         Self::default()
@@ -161,8 +179,12 @@ pub struct ClaudeBuilder {
     system_blocks: Option<Vec<Value>>,
     workspace: String,
     tools: Vec<(ToolDefinition, Handler)>,
+    tool_replay_safety: HashMap<String, nanocodex_agent::ReplaySafety>,
+    #[cfg(all(feature = "code-mode", not(target_family = "wasm")))]
+    code_tools: Option<nanocodex_oai_tools::Tools>,
     tools_factory: Option<ClaudeToolsFactory>,
     spawn_factory: Option<Arc<dyn AgentFactory>>,
+    turn_ownership: Option<Arc<dyn nanocodex_agent::execution::TurnOwnership>>,
     host_context: Option<Arc<str>>,
     server_tools: Vec<ServerToolDefinition>,
     parallel_tools: bool,
@@ -173,6 +195,17 @@ pub struct ClaudeBuilder {
     task_board: Option<Arc<nanocodex_claude_tools::tasks::ClaudeTasks>>,
 }
 impl ClaudeBuilder {
+    /// Sets explicit recovery permission for a named callback. Defaults to unsafe;
+    /// only opt in for idempotent or host-journaled execution, independent of parallelism.
+    pub fn tool_replay_safety(
+        mut self,
+        name: impl Into<String>,
+        safety: nanocodex_agent::ReplaySafety,
+    ) -> Self {
+        self.tool_replay_safety.insert(name.into(), safety);
+        self
+    }
+
     fn new(claude: Claude) -> Self {
         let context_window_tokens = match claude.model.as_str() {
             "claude-opus-5-5" | "claude-fable-5-1" | "claude-sonnet-5-5" | "claude-sonnet-5" => {
@@ -197,8 +230,12 @@ impl ClaudeBuilder {
             system_blocks: None,
             workspace: String::new(),
             tools: Vec::new(),
+            tool_replay_safety: HashMap::new(),
+            #[cfg(all(feature = "code-mode", not(target_family = "wasm")))]
+            code_tools: None,
             tools_factory: None,
             spawn_factory: None,
+            turn_ownership: None,
             host_context: None,
             server_tools: Vec::new(),
             parallel_tools: false,
@@ -226,6 +263,64 @@ impl ClaudeBuilder {
         F: Fn(AgentHandle) -> Result<ClaudeTools> + Send + Sync + 'static,
     {
         self.tools_factory = Some(Arc::new(factory));
+        self
+    }
+    /// Composes task-tree callbacks with the caller's per-agent callback recipe.
+    #[doc(hidden)]
+    pub fn map_tools_factory<F>(mut self, map: F) -> Self
+    where
+        F: Fn(AgentHandle, ClaudeTools) -> Result<ClaudeTools> + Send + Sync + 'static,
+    {
+        let previous = self.tools_factory.take();
+        self.tools_factory = Some(Arc::new(move |handle| {
+            let tools = match &previous {
+                Some(factory) => factory(handle.clone())?,
+                None => ClaudeTools::new(),
+            };
+            map(handle, tools)
+        }));
+        self
+    }
+    /// Whether embedding-owned child construction has already been configured.
+    #[doc(hidden)]
+    pub fn has_spawn_factory(&self) -> bool {
+        self.spawn_factory.is_some()
+    }
+    /// Returns a caller-configured native identity before attaching durability.
+    #[doc(hidden)]
+    pub fn configured_session_id(&self) -> Option<&str> {
+        self.session_id.as_deref()
+    }
+    /// Derives an independent recipe without the root's execution ownership.
+    #[doc(hidden)]
+    pub fn fresh_child(mut self) -> Self {
+        self.session_id = None;
+        self.restored = None;
+        self.policy = None;
+        self.turn_ownership = None;
+        #[cfg(all(feature = "tools", not(target_family = "wasm")))]
+        if self.task_board.is_some() {
+            let names = nanocodex_claude_tools::tasks::ClaudeTasks::definitions()
+                .into_iter()
+                .filter_map(|value| value.get("name").and_then(Value::as_str).map(str::to_owned))
+                .collect::<HashSet<_>>();
+            self.tools
+                .retain(|(definition, _)| !names.contains(&definition.name));
+            self = self.tasks(Arc::new(nanocodex_claude_tools::tasks::ClaudeTasks::new()));
+        }
+        self
+    }
+    /// Sets the model used by an independent native recipe.
+    pub fn model(mut self, model: impl Into<String>) -> Self {
+        self.claude.model = model.into();
+        self
+    }
+    /// Holds successful terminal publication until owned foreground work is idle.
+    pub fn turn_ownership(
+        mut self,
+        hook: Arc<dyn nanocodex_agent::execution::TurnOwnership>,
+    ) -> Self {
+        self.turn_ownership = Some(hook);
         self
     }
     /// Installs embedding-owned mixed-family child construction.
@@ -506,6 +601,9 @@ impl ClaudeBuilder {
             let definition: ToolDefinition = serde_json::from_value(schema)
                 .expect("built-in Claude task schema must remain valid");
             let name = definition.name.clone();
+            // Restored session-local state and receipt commit together; no external effect.
+            self.tool_replay_safety
+                .insert(name.clone(), nanocodex_agent::ReplaySafety::Safe);
             let tasks = tasks.clone();
             self = self.tool(definition, move |input| {
                 let tasks = tasks.clone();
@@ -655,10 +753,7 @@ impl ClaudeBuilder {
             .map(|policy| policy.state_id().to_owned())
             .or_else(|| self.session_id.clone())
             .unwrap_or_else(|| format!("claude-{}", uuid::Uuid::new_v4()));
-        let mut recipe = self.clone();
-        recipe.session_id = None;
-        recipe.restored = None;
-        recipe.policy = None;
+        let recipe = self.clone().fresh_child();
         let native_factory = Arc::new(ClaudeNativeFactory {
             recipe,
             state: std::sync::Mutex::new(Weak::new()),
@@ -678,8 +773,13 @@ impl ClaudeBuilder {
             handle = handle.with_spawn_factory(factory.clone());
         }
         if let Some(factory) = &self.tools_factory {
-            self.tools.extend(factory(handle.clone())?.tools);
+            let tools = factory(handle.clone())?;
+            self.tools.extend(tools.tools);
+            self.tool_replay_safety.extend(tools.tool_replay_safety);
         }
+
+        #[cfg(all(feature = "code-mode", not(target_family = "wasm")))]
+        let code_runtime = self.install_code_mode(&session_id)?;
 
         if self.claude.model.trim().is_empty()
             || self.max_tokens == 0
@@ -873,6 +973,7 @@ impl ClaudeBuilder {
         }
         *discovered.try_lock().expect("new discovery lock") = restored.discovered;
         let (runtime, events) = BackendRuntime::new(session_id.clone());
+        let ownership = self.turn_ownership.clone();
         let state = Arc::new(State {
             client: self.claude.client.bind_subscription_session(&session_id),
             model: std::sync::RwLock::new(self.claude.model),
@@ -894,11 +995,15 @@ impl ClaudeBuilder {
             tools: definitions,
             server_tools: self.server_tools,
             handlers,
+            tool_replay_safety: self.tool_replay_safety,
+            #[cfg(all(feature = "code-mode", not(target_family = "wasm")))]
+            code_runtime,
             discovered,
             client_tool_search: self.client_tool_search,
             parallel_tools: self.parallel_tools,
             conversation: Mutex::new(restored.conversation),
             policy: self.policy,
+            turn_ownership: self.turn_ownership,
             admission: Mutex::new(()),
             idle: Notify::new(),
             compaction_cancel: Mutex::new(None),
@@ -915,7 +1020,12 @@ impl ClaudeBuilder {
             .lock()
             .expect("new native capability lock") = Arc::downgrade(&state);
         let driver = Driver { state, handle };
-        Ok((runtime.bind(driver), events))
+        let agent = runtime.bind(driver);
+        #[cfg(not(target_family = "wasm"))]
+        let agent = agent.with_owned_startup(ownership);
+        #[cfg(target_family = "wasm")]
+        let _ = ownership;
+        Ok((agent, events))
     }
 }
 
@@ -1275,6 +1385,8 @@ async fn web_fetch_with_source<P: nanocodex_claude_tools::web::ApprovedWebFetchS
 
 #[derive(Clone, Default, Serialize, Deserialize)]
 struct Conversation {
+    #[serde(default)]
+    request_policy: Value,
     // Session-local effect identity survives history compaction.
     admitted_tool_ids: HashSet<String>,
     #[serde(default)]
@@ -1431,7 +1543,7 @@ fn client_discovered_tools(messages: &[Message]) -> HashSet<&str> {
         .collect()
 }
 
-fn thinking_effort(thinking: Thinking) -> Option<crate::Effort> {
+const fn thinking_effort(thinking: Thinking) -> Option<crate::Effort> {
     match thinking {
         Thinking::None => None,
         Thinking::Low => Some(crate::Effort::Low),
@@ -1608,11 +1720,15 @@ struct State {
     tools: Vec<ToolDefinition>,
     server_tools: Vec<ServerToolDefinition>,
     handlers: HashMap<String, Handler>,
+    tool_replay_safety: HashMap<String, nanocodex_agent::ReplaySafety>,
+    #[cfg(all(feature = "code-mode", not(target_family = "wasm")))]
+    code_runtime: Option<Arc<nanocodex_oai_tools::runtime::ToolRuntime>>,
     discovered: Arc<Mutex<HashSet<String>>>,
     client_tool_search: bool,
     parallel_tools: bool,
     conversation: Mutex<Conversation>,
     policy: Option<Arc<dyn ClaudeExecutionPolicy>>,
+    turn_ownership: Option<Arc<dyn nanocodex_agent::execution::TurnOwnership>>,
     admission: Mutex<()>,
     idle: Notify,
     compaction_cancel: Mutex<Option<Arc<Cancellation>>>,
@@ -1659,6 +1775,7 @@ fn provider_error(error: impl std::fmt::Display) -> NanocodexError {
 }
 #[derive(Clone, Copy)]
 enum CompactionMode {
+    Background,
     Automatic,
     ContextRecovery,
     Manual,
@@ -1726,7 +1843,13 @@ struct ResponseContext<'a> {
     effect: Option<Effect<'a>>,
 }
 impl State {
-    fn emit(&self, events: &AgentEventPublisher, kind: AgentEventKind, payload: Value) {
+    fn emit(&self, events: &AgentEventPublisher, kind: AgentEventKind, mut payload: Value) {
+        if kind != AgentEventKind::InputAccepted
+            && let Some(turn_id) = events.turn_id()
+            && let Some(object) = payload.as_object_mut()
+        {
+            object.insert("turn_id".into(), json!(turn_id));
+        }
         let Ok(payload) = serde_json::value::to_raw_value(&payload) else {
             return;
         };
@@ -1737,6 +1860,21 @@ impl State {
             kind,
             payload: Arc::from(payload),
         });
+    }
+    fn emit_accepted_input(&self, request: &BackendPrompt) {
+        let turn_id = request
+            .events
+            .turn_id()
+            .unwrap_or(request.events.request_id());
+        self.emit(
+            &request.events,
+            AgentEventKind::InputAccepted,
+            json!({
+                "session_id": request.events.request_id(), "turn_id": turn_id,
+                "item_id": format!("{turn_id}:prompt"), "kind": "prompt",
+                "request_id": request.request_id, "input": request.prompt.instruction,
+            }),
+        );
     }
     fn model(&self) -> String {
         self.model
@@ -1898,25 +2036,65 @@ impl State {
         request.tool_choice = context.disable_tools.then(|| json!({"type":"none"}));
         // Preserve the embedding's stable caller prefix before adding OMP's
         // own identity cache marker; that marker is not caller cache policy.
+        // A durable cursor freezes original parameters, never current authority.
+        // Recheck the actual prepared declarations before replay or dispatch.
+        let authorized = self.available_tools();
+        let revoked_declaration = request.tools.iter().any(|tool| !authorized.contains(tool));
         request.cache_system_prefix().map_err(provider_error)?;
         client.prepare_request(&mut request);
         if cancel.flag.load(Ordering::SeqCst) && context.effect.is_none() {
             return Err(NanocodexError::TurnCancelled.into());
         }
-        if let Some(effect) = &context.effect
-            && let Step::Replay(value) = effect
-                .begin(
+        if let Some(effect) = &context.effect {
+            match effect
+                .begin_with_replay(
                     "model",
                     client.durable_request(&request).map_err(provider_error)?,
+                    // Provider tools can mutate remote state. Missing settlement
+                    // must not automatically repeat an effect or uncertain charge.
+                    if request
+                        .tool_choice
+                        .as_ref()
+                        .is_some_and(|choice| choice["type"] == "none")
+                        || !request
+                            .tools
+                            .iter()
+                            .any(|tool| matches!(tool, ClaudeToolSpec::Server(_)))
+                    {
+                        nanocodex_agent::ReplaySafety::Safe
+                    } else {
+                        nanocodex_agent::ReplaySafety::Unsafe
+                    },
                 )
                 .await?
-        {
-            let response = serde_json::from_value(value).map_err(durable::recovery_error)?;
-            completed(&response, 0, 0, None);
-            return Ok(response);
+            {
+                Step::Replay(value) => {
+                    let response =
+                        serde_json::from_value(value).map_err(durable::recovery_error)?;
+                    completed(&response, 0, 0, None);
+                    return Ok(response);
+                }
+                Step::OutcomeUnknown => {
+                    return Err(durable::recovery_error(
+                        "provider model effect outcome is unknown; reconcile before dispatch",
+                    )
+                    .into());
+                }
+                Step::Execute => {}
+            }
+        }
+        if revoked_declaration {
+            return Err(provider_error("prepared Claude request contains a declaration revoked by current host authorization").into());
         }
         if cancel.flag.load(Ordering::SeqCst) {
             return Err(NanocodexError::TurnCancelled.into());
+        }
+        if let Some(events) = events {
+            self.emit(events, AgentEventKind::ModelCallStarted, json!({
+                "call_index": index.saturating_add(1), "model": request.model,
+                "reasoning_mode": if request.thinking.is_some() { "thinking" } else { "none" },
+                "effort": self.effort().map(|effort| format!("{effort:?}").to_lowercase()).unwrap_or_else(|| "model_default".into()),
+            }));
         }
         let mut stream = tokio::select! {
             result = client.stream(&request) => match result {
@@ -2027,9 +2205,33 @@ impl State {
         };
         let events = &request.events;
         let (reasoning_mode, effort) = self.emit_run_started(&request);
-        let mut result = self
-            .run_locked(&mut conversation, &request, speed, &cancel)
-            .await;
+        let mut result = async {
+            if let Some(ownership) = &self.turn_ownership {
+                ownership.prepare(&self.session_id).await?;
+            }
+            self.run_locked(&mut conversation, &request, speed, &cancel)
+                .await
+        }
+        .await;
+        if let Some(ownership) = &self.turn_ownership {
+            if result.is_ok() {
+                let settled = tokio::select! {
+                    biased;
+                    () = cancel.cancelled() => None,
+                    settled = ownership.settle(&self.session_id, true) => Some(settled),
+                };
+                match settled {
+                    Some(Ok(())) => {}
+                    Some(Err(error)) => result = Err(error),
+                    None => {
+                        ownership.settle(&self.session_id, false).await?;
+                        result = Err(NanocodexError::TurnCancelled);
+                    }
+                }
+            } else if let Err(error) = ownership.settle(&self.session_id, false).await {
+                result = Err(error);
+            }
+        }
         if result
             .as_ref()
             .err()
@@ -2175,7 +2377,7 @@ impl State {
         // activate a name, and references removed by summary require rediscovery.
         // Acquire before the context swap so both states change without yielding.
         let mut discovered = self.discovered.lock().await;
-        if cursor.tool_search {
+        if cursor.tool_search && !matches!(mode, CompactionMode::Background) {
             let references = client_discovered_tools(&retained);
             discovered.retain(|name| references.contains(name.as_str()));
         }
@@ -2201,7 +2403,9 @@ impl State {
             CompactionMode::Automatic if context.rounds_since_compaction < 3 => {
                 context.rapid_compactions.saturating_add(1)
             }
-            CompactionMode::Automatic | CompactionMode::ContextRecovery => 1,
+            CompactionMode::Automatic
+            | CompactionMode::Background
+            | CompactionMode::ContextRecovery => 1,
             CompactionMode::Manual => 0,
         };
         context.rounds_since_compaction = 0;
@@ -2293,6 +2497,10 @@ impl State {
                 .clone()
                 .unwrap_or_else(|| events.turn_id().unwrap_or(events.request_id()).to_owned()),
             call_id: id.to_owned(),
+            journal_scope: cursor
+                .operation
+                .as_ref()
+                .map(|operation| json!([operation, format!("tool-{index}-{id}")]).to_string()),
             instruction_revision: cursor.instruction_revision,
             host_context: self.host_context.clone(),
         };
@@ -2398,6 +2606,7 @@ impl State {
             cursor.usage = usage.clone();
             self.advance_cursor(&mut cursor, conversation).await?;
         }
+        let mut background = None;
         let mut previous_message_id = conversation.previous_message_id.clone();
         for index in cursor.index..u32::MAX {
             if self
@@ -2410,6 +2619,27 @@ impl State {
             if cancel.flag.load(Ordering::SeqCst) && self.policy.is_none() {
                 return Err(NanocodexError::TurnCancelled);
             }
+            if cursor.background.is_none()
+                && conversation.allows_auto_compaction()
+                && conversation.active_context_tokens >= cursor.threshold.saturating_mul(4) / 5
+                && conversation.active_context_tokens < cursor.threshold
+                && !pending.is_empty()
+            {
+                let mut cutoff = conversation.clone();
+                cutoff.messages = pending.clone();
+                cutoff.summary.clear();
+                cursor.background = Some(background::PendingSummary {
+                    cutoff,
+                    step: format!("background-summary-{index}"),
+                });
+                self.advance_cursor(&mut cursor, conversation).await?;
+            }
+            if background.is_none() {
+                background = self.start_summary(&cursor, cancel);
+            }
+            // A recovered foreground receipt must see its original request.
+            // Install summaries only after consuming it, before the existing
+            // continuation checkpoint or terminal settlement.
             if index > 0
                 && conversation.allows_auto_compaction()
                 && !conversation.messages.is_empty()
@@ -2437,11 +2667,14 @@ impl State {
                 cursor.usage = usage.clone();
                 self.advance_cursor(&mut cursor, conversation).await?;
             }
+            let prepared_template = self
+                .prepare_policy_request(conversation, &mut cursor, &pending, index)
+                .await?;
             let discovered = self.discovered.lock().await.clone();
-            let response = self
-                .response(
+            let response = {
+                let foreground = self.response(
                     pending.clone(),
-                    cursor.template.tools.clone(),
+                    prepared_template.tools.clone(),
                     cancel,
                     Some(&request.events),
                     index,
@@ -2449,12 +2682,21 @@ impl State {
                         disable_tools: false,
                         container: conversation.container.as_deref(),
                         previous_message_id: previous_message_id.as_deref(),
-                        template: Some(&cursor.template),
+                        template: Some(&prepared_template),
                         wire_profile: cursor.wire_profile.as_ref(),
                         effect: cursor.effect(self, &format!("model-{index}")),
                     },
-                )
-                .await;
+                );
+                tokio::pin!(foreground);
+                loop {
+                    tokio::select! {
+                        result = &mut foreground => break result,
+                        result = background::progress(&mut background) => {
+                            if let Some(work) = &mut background { work.result = Some(result); }
+                        }
+                    }
+                }
+            };
             let response = match response {
                 Ok(response) => response,
                 Err(failure) => {
@@ -2800,6 +3042,23 @@ impl State {
                 if interrupted {
                     return Err(NanocodexError::TurnCancelled);
                 }
+                if conversation.active_context_tokens >= cursor.threshold {
+                    background::wait(&mut background).await;
+                } else {
+                    background::poll(&mut background);
+                }
+                if self
+                    .install_summary(
+                        &mut cursor,
+                        &mut background,
+                        conversation,
+                        &mut pending,
+                        &mut usage,
+                    )
+                    .await?
+                {
+                    previous_message_id = None;
+                }
                 cursor.index = index + 1;
                 cursor.pending = pending.clone();
                 cursor.usage = usage.clone();
@@ -2822,6 +3081,23 @@ impl State {
                     .saturating_add(response.usage.cache_read_input_tokens)
                     .saturating_add(response.usage.cache_creation_input_tokens)
                     .saturating_add(response.usage.output_tokens);
+                if conversation.active_context_tokens >= cursor.threshold {
+                    background::wait(&mut background).await;
+                } else {
+                    background::poll(&mut background);
+                }
+                if self
+                    .install_summary(
+                        &mut cursor,
+                        &mut background,
+                        conversation,
+                        &mut pending,
+                        &mut usage,
+                    )
+                    .await?
+                {
+                    previous_message_id = None;
+                }
                 cursor.index = index + 1;
                 cursor.pending = pending.clone();
                 cursor.usage = usage.clone();
@@ -2883,6 +3159,23 @@ impl State {
                 ));
                 pending = conversation.packed_messages();
                 previous_message_id = conversation.previous_message_id.clone();
+                if conversation.active_context_tokens >= cursor.threshold {
+                    background::wait(&mut background).await;
+                } else {
+                    background::poll(&mut background);
+                }
+                if self
+                    .install_summary(
+                        &mut cursor,
+                        &mut background,
+                        conversation,
+                        &mut pending,
+                        &mut usage,
+                    )
+                    .await?
+                {
+                    previous_message_id = None;
+                }
                 cursor.index = index + 1;
                 cursor.pending = pending.clone();
                 cursor.usage = usage.clone();
@@ -2920,6 +3213,23 @@ impl State {
                 conversation.previous_message_id = previous_message_id.clone();
                 conversation.summary.clear();
                 conversation.advance_boundary();
+                if conversation.active_context_tokens >= cursor.threshold {
+                    background::wait(&mut background).await;
+                } else {
+                    background::poll(&mut background);
+                }
+                if self
+                    .install_summary(
+                        &mut cursor,
+                        &mut background,
+                        conversation,
+                        &mut pending,
+                        &mut usage,
+                    )
+                    .await?
+                {
+                    previous_message_id = None;
+                }
                 cursor.index = index + 1;
                 cursor.pending = pending.clone();
                 cursor.usage = usage.clone();
@@ -2939,6 +3249,18 @@ impl State {
                 .saturating_add(response.usage.cache_read_input_tokens)
                 .saturating_add(response.usage.cache_creation_input_tokens)
                 .saturating_add(response.usage.output_tokens);
+            background::wait(&mut background).await;
+            let mut completed = conversation.packed_messages();
+            self.install_summary(
+                &mut cursor,
+                &mut background,
+                conversation,
+                &mut completed,
+                &mut usage,
+            )
+            .await?;
+            // Keep the terminal foreground receipt until settle commits the
+            // result. A lost acknowledgement must replay this same response.
             return Ok(TurnResult::from_backend(
                 request.request_id.clone(),
                 text,
@@ -3134,6 +3456,7 @@ impl LifecycleBackend for Driver {
                             Admission::Execute | Admission::Resume => None,
                         };
                         if let Some(result) = terminal {
+                            state.emit_accepted_input(&request);
                             state.accepted_turns.fetch_add(1, Ordering::SeqCst);
                             let (status, kind) = match &result {
                                 Ok(_) => ("completed", AgentEventKind::RunCompleted),
@@ -3171,6 +3494,7 @@ impl LifecycleBackend for Driver {
                             "Claude request_id requires an attached durability policy",
                         ));
                     }
+                    state.emit_accepted_input(&request);
                     state.accepted_turns.fetch_add(1, Ordering::SeqCst);
                     let request_id = request.request_id.clone();
                     let key = request.key;
@@ -3506,6 +3830,10 @@ impl LifecycleBackend for Driver {
                 }
                 drop(cancels);
                 notified.await;
+            }
+            #[cfg(all(feature = "code-mode", not(target_family = "wasm")))]
+            if let Some(runtime) = &state.code_runtime {
+                runtime.control().cancel().await;
             }
             if let Some(policy) = &state.policy {
                 policy.shutdown().await?;

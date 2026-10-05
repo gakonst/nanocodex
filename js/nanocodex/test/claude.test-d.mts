@@ -19,7 +19,14 @@ NodeClaude.create(options).then(async agent => {
   const tokens: number = (await result.usage()).input_tokens;
   void output; void tokens;
   await agent.session.cancel(); await agent.session.compact(); await agent.session.shutdown();
-  // @ts-expect-error Claude does not claim Codex voice/subagent/fork support.
+  const document = await agent.session.document('journal');
+  const value: unknown = document?.value;
+  void value;
+  await agent.session.compareExchangeDocuments([{key: 'journal', expectedVersion: 0, value: {count: 1}, fork: 'asOf'}]);
+  await agent.session.stageDocumentWrites('turn', [{key: 'journal', expectedVersion: 1, value: {count: 2}, fork: 'asOf'}]);
+  const seed = await agent.session.documentFork('turn');
+  NodeClaude.create({...options, durability: {} as import('../types.mjs').DurabilityStore, durabilityId: 'child', documentFork: seed});
+  // @ts-expect-error Claude does not claim the non-durable Codex session.fork API.
   agent.session.fork();
   // @ts-expect-error This SDK supports text prompts, not Codex content input.
   agent.turn.prompt({ input: [{ type: 'input_text', text: 'x' }] });

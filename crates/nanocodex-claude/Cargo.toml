@@ -10,6 +10,8 @@ description = "Typed Anthropic Messages protocol and streaming transport"
 [features]
 default = []
 tools = ["dep:nanocodex-claude-tools"]
+# Opt-in native JavaScript tool runtime; each agent owns its own cells.
+code-mode = ["dep:nanocodex-oai-tools", "nanocodex-oai-tools/code-mode"]
 # Compatibility alias for existing callers.
 workspace-files = ["tools"]
 
@@ -22,6 +24,7 @@ xxhash-rust = { version = "0.8.15", features = ["xxh64"] }
 url.workspace = true
 nanocodex-claude-tools = { path = "../nanocodex-claude-tools", version = "0.6.6", default-features = false, optional = true }
 futures-util.workspace = true
+nanocodex-oai-tools = { workspace = true, optional = true }
 nanocodex-agent = { path = "../nanocodex-agent", version = "0.6.6", default-features = false }
 tokio = { workspace = true, features = ["macros", "sync", "time"] }
 web-time.workspace = true

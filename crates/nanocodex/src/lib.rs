@@ -18,7 +18,12 @@ pub use harness::{Harness, HarnessBuilder, HarnessRequest};
 pub use nanocodex_claude::Claude;
 #[cfg(feature = "durability")]
 #[cfg_attr(docsrs, doc(cfg(feature = "durability")))]
+#[cfg(target_family = "wasm")]
 pub use nanocodex_durability::DurableAgentExt;
+#[cfg(all(feature = "durability", not(target_family = "wasm")))]
+mod durable;
+#[cfg(all(feature = "durability", not(target_family = "wasm")))]
+pub use durable::DurableAgentExt;
 #[cfg(all(not(target_family = "wasm"), feature = "managed"))]
 #[cfg_attr(
     docsrs,

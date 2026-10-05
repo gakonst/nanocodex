@@ -195,6 +195,10 @@ impl Tool for HostContextProbe {
         )
     }
 
+    fn is_replay_safe(&self) -> bool {
+        true
+    }
+
     async fn execute(&self, _input: ToolInput, context: ToolContext<'_>) -> ToolResult {
         self.seen
             .lock()
@@ -294,6 +298,19 @@ impl ExecutionPolicy for ProviderSteps {
         _operation_id: String,
     ) -> ExecutionFuture<'a, nanocodex_agent::Result<()>> {
         Box::pin(async { Ok(()) })
+    }
+
+    fn begin_step_with_replay<'a>(
+        &'a self,
+        operation_id: String,
+        step_id: String,
+        kind: String,
+        input_json: String,
+        safety: nanocodex_agent::ReplaySafety,
+    ) -> ExecutionFuture<'a, nanocodex_agent::Result<ExecutionStepAdmission>> {
+        // This provider-boundary fixture only admits explicitly repeatable work.
+        assert_eq!(safety, nanocodex_agent::ReplaySafety::Safe);
+        self.begin_step(operation_id, step_id, kind, input_json)
     }
 
     fn begin_step<'a>(
@@ -659,6 +676,10 @@ impl Tool for RecoveredRevisionProbe {
             }),
         )
     }
+    fn is_replay_safe(&self) -> bool {
+        true
+    }
+
     async fn execute(&self, _input: ToolInput, context: ToolContext<'_>) -> ToolResult {
         self.observations.lock().unwrap().push((
             context.instruction_revision(),

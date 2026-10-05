@@ -1,3 +1,5 @@
+mod ownership;
+pub use ownership::TurnOwnership;
 mod preservation;
 pub use preservation::{
     BeforeCompaction, BeforeCompactionRequest, CompactionMessage, CompactionReceipt,
@@ -62,6 +64,8 @@ pub enum ExecutionStepAdmission {
     Execute,
     /// Reuse the exact JSON output retained by a prior attempt.
     Replay(String),
+    /// An interrupted effect is not safe to repeat; its outcome is unknown.
+    OutcomeUnknown,
 }
 
 /// Current execution metadata and the active model context.
@@ -73,6 +77,15 @@ pub struct ExecutionContinuation {
     pub history: Vec<nanocodex_oai_api::responses::ResponseItem>,
     /// Frozen request prefix for the current execution.
     pub prefix: Vec<nanocodex_oai_api::responses::ResponseItem>,
+}
+
+/// Provider request and branch policy state prepared before external dispatch.
+#[derive(Clone, Deserialize, Serialize)]
+pub struct RequestPreparation {
+    /// Exact provider-native body excluding credentials.
+    pub request: serde_json::Value,
+    /// Branch-local configuration and routing checkpoint.
+    pub state: serde_json::Value,
 }
 
 /// One live steering input retained for deterministic operation recovery.
@@ -108,6 +121,27 @@ pub struct ExecutionOutput {
 /// without becoming a dependency of `nanocodex-agent`.
 #[cfg(not(target_family = "wasm"))]
 pub trait ExecutionPolicy: Send + Sync {
+    /// Optionally freezes a native provider request before transport authentication.
+    /// The returned state is retained with the native conversation checkpoint.
+    fn prepare_request<'a>(
+        &'a self,
+        _operation: String,
+        _request_id: String,
+        _continuation: bool,
+        _state: serde_json::Value,
+        _request: serde_json::Value,
+        _authorized: serde_json::Value,
+    ) -> ExecutionFuture<'a, Result<Option<RequestPreparation>>> {
+        Box::pin(async { Ok(None) })
+    }
+
+    /// Supplies the native cell journal owned by this execution policy.
+    fn code_mode_journal(
+        &self,
+    ) -> Option<Arc<dyn nanocodex_oai_tools::code_mode::CodeModeJournal>> {
+        None
+    }
+
     /// Resolves a failed attempt against the authoritative operation state.
     /// A pending operation must return a retry/reopen disposition, even when
     /// its original failure was not a transport or storage error.
@@ -276,6 +310,23 @@ pub trait ExecutionPolicy: Send + Sync {
         continuation: ExecutionContinuation,
     ) -> ExecutionFuture<'a, Result<()>>;
 
+    /// Advances the foreground while retaining named independently owned effects.
+    fn advance_retaining<'a>(
+        &'a self,
+        operation_id: String,
+        continuation: ExecutionContinuation,
+        retained_steps: Vec<String>,
+    ) -> ExecutionFuture<'a, Result<()>> {
+        Box::pin(async move {
+            if !retained_steps.is_empty() {
+                return Err(NanocodexError::ExecutionPolicyCapabilityUnsupported {
+                    capability: "background effect retention",
+                });
+            }
+            self.advance(operation_id, continuation).await
+        })
+    }
+
     /// Begins or replays one typed external effect.
     fn begin_step<'a>(
         &'a self,
@@ -284,6 +335,23 @@ pub trait ExecutionPolicy: Send + Sync {
         kind: String,
         input_json: String,
     ) -> ExecutionFuture<'a, Result<ExecutionStepAdmission>>;
+
+    /// Begins an effect with explicit recovery permission. Durable policies must
+    /// retain this with intent and require both old and current `Safe` to retry.
+    fn begin_step_with_replay<'a>(
+        &'a self,
+        _operation_id: String,
+        _step_id: String,
+        _kind: String,
+        _input_json: String,
+        _replay_safety: crate::ReplaySafety,
+    ) -> ExecutionFuture<'a, Result<ExecutionStepAdmission>> {
+        Box::pin(async {
+            Err(NanocodexError::ExecutionPolicyCapabilityUnsupported {
+                capability: "effect replay safety",
+            })
+        })
+    }
 
     /// Commits the output of one executed effect.
     fn complete_step<'a>(
@@ -324,6 +392,20 @@ pub trait ExecutionPolicy: Send + Sync {
 /// guarantees on every target.
 #[cfg(target_family = "wasm")]
 pub trait ExecutionPolicy: Send + Sync {
+    /// Optionally freezes a native provider request before transport authentication.
+    /// The returned state is retained with the native conversation checkpoint.
+    fn prepare_request<'a>(
+        &'a self,
+        _operation: String,
+        _request_id: String,
+        _continuation: bool,
+        _state: serde_json::Value,
+        _request: serde_json::Value,
+        _authorized: serde_json::Value,
+    ) -> ExecutionFuture<'a, Result<Option<RequestPreparation>>> {
+        Box::pin(async { Ok(None) })
+    }
+
     /// Resolves a failed attempt against the authoritative operation state.
     /// Pending work must remain recoverable regardless of the original error.
     fn recover_failure<'a>(
@@ -480,6 +562,23 @@ pub trait ExecutionPolicy: Send + Sync {
         continuation: ExecutionContinuation,
     ) -> ExecutionFuture<'a, Result<()>>;
 
+    /// Advances the foreground while retaining named independently owned effects.
+    fn advance_retaining<'a>(
+        &'a self,
+        operation_id: String,
+        continuation: ExecutionContinuation,
+        retained_steps: Vec<String>,
+    ) -> ExecutionFuture<'a, Result<()>> {
+        Box::pin(async move {
+            if !retained_steps.is_empty() {
+                return Err(NanocodexError::ExecutionPolicyCapabilityUnsupported {
+                    capability: "background effect retention",
+                });
+            }
+            self.advance(operation_id, continuation).await
+        })
+    }
+
     /// Begins or replays one external effect.
     fn begin_step<'a>(
         &'a self,
@@ -488,6 +587,23 @@ pub trait ExecutionPolicy: Send + Sync {
         kind: String,
         input_json: String,
     ) -> ExecutionFuture<'a, Result<ExecutionStepAdmission>>;
+
+    /// Begins an effect with explicit recovery permission. Durable policies must
+    /// retain this with intent and require both old and current `Safe` to retry.
+    fn begin_step_with_replay<'a>(
+        &'a self,
+        _operation_id: String,
+        _step_id: String,
+        _kind: String,
+        _input_json: String,
+        _replay_safety: crate::ReplaySafety,
+    ) -> ExecutionFuture<'a, Result<ExecutionStepAdmission>> {
+        Box::pin(async {
+            Err(NanocodexError::ExecutionPolicyCapabilityUnsupported {
+                capability: "effect replay safety",
+            })
+        })
+    }
     /// Commits one effect output.
     fn complete_step<'a>(
         &'a self,
@@ -635,6 +751,23 @@ struct StandaloneCompactionBase {
 }
 
 impl Execution {
+    pub(crate) fn durable_steering(&self) -> bool {
+        self.policy
+            .as_ref()
+            .is_some_and(|policy| policy.supports_steer_receipts())
+    }
+
+    pub(crate) async fn has_steer_receipt(&self, operation_id: String, id: String) -> Result<bool> {
+        let Some(policy) = &self.policy else {
+            return Ok(false);
+        };
+        Ok(policy
+            .retained_identified_steers(operation_id)
+            .await?
+            .iter()
+            .any(|(message_id, _)| message_id.as_deref() == Some(id.as_str())))
+    }
+
     pub(crate) async fn accepted_input(
         &self,
         events: &nanocodex_oai_api::__private::EventSink,
@@ -685,6 +818,18 @@ impl Execution {
     #[cfg(not(target_family = "wasm"))]
     pub(crate) const fn info(&self) -> Option<&RolloutInfo> {
         self.platform.info()
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    pub(crate) fn configure_tools(&self, tools: crate::Tools) -> crate::Tools {
+        match self
+            .policy
+            .as_ref()
+            .and_then(|policy| policy.code_mode_journal())
+        {
+            Some(journal) => tools.with_code_journal(journal),
+            None => tools,
+        }
     }
 
     pub(crate) const fn identifies_prompts(&self) -> bool {
@@ -939,11 +1084,32 @@ pub(crate) enum SteerDelivery {
 }
 
 pub(crate) enum ExecutionStep<O> {
+    OutcomeUnknown,
     Execute,
     Replay(O),
 }
 
 impl ExecutionSteps {
+    pub(crate) async fn prepare_request(
+        &self,
+        request_id: String,
+        continuation: bool,
+        state: serde_json::Value,
+        request: serde_json::Value,
+        authorized: serde_json::Value,
+    ) -> Result<Option<RequestPreparation>> {
+        self.policy
+            .prepare_request(
+                self.operation_id.clone(),
+                request_id,
+                continuation,
+                state,
+                request,
+                authorized,
+            )
+            .await
+    }
+
     pub(crate) fn operation_id(&self) -> &str {
         &self.operation_id
     }
@@ -969,15 +1135,17 @@ impl ExecutionSteps {
         state: &T,
         history: Vec<nanocodex_oai_api::responses::ResponseItem>,
         prefix: Vec<nanocodex_oai_api::responses::ResponseItem>,
+        retained_steps: Vec<String>,
     ) -> Result<()> {
         self.policy
-            .advance(
+            .advance_retaining(
                 self.operation_id.clone(),
                 ExecutionContinuation {
                     state_json: encode(state)?,
                     history,
                     prefix,
                 },
+                retained_steps,
             )
             .await
     }
@@ -998,18 +1166,42 @@ impl ExecutionSteps {
         I: Serialize + ?Sized,
         O: DeserializeOwned,
     {
+        let admission = self
+            .begin_with_replay(step_id, kind, input, crate::ReplaySafety::Safe)
+            .await?;
+        if matches!(admission, ExecutionStep::OutcomeUnknown) {
+            return Err(NanocodexError::ExecutionPolicyCapabilityUnsupported {
+                capability: "replay of an unclassified interrupted model effect",
+            });
+        }
+        Ok(admission)
+    }
+
+    pub(crate) async fn begin_with_replay<I, O>(
+        &self,
+        step_id: impl Into<String>,
+        kind: impl Into<String>,
+        input: &I,
+        replay_safety: crate::ReplaySafety,
+    ) -> Result<ExecutionStep<O>>
+    where
+        I: Serialize + ?Sized,
+        O: DeserializeOwned,
+    {
         match self
             .policy
-            .begin_step(
+            .begin_step_with_replay(
                 self.operation_id.clone(),
                 step_id.into(),
                 kind.into(),
                 encode(input)?,
+                replay_safety,
             )
             .await?
         {
             ExecutionStepAdmission::Execute => Ok(ExecutionStep::Execute),
             ExecutionStepAdmission::Replay(output) => Ok(ExecutionStep::Replay(decode(&output)?)),
+            ExecutionStepAdmission::OutcomeUnknown => Ok(ExecutionStep::OutcomeUnknown),
         }
     }
 

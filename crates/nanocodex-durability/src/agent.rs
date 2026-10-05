@@ -24,37 +24,55 @@ pub trait DurableAgentExt: Sized {
 
 impl<F> DurableAgentExt for NanocodexBuilder<F> {
     async fn durability(self, state: DurableSession) -> AgentResult<Self> {
-        let state_id = state.state_id().to_owned();
-        let mut builder = self;
-        let (owner, checkpoint) = state.acquire_agent().await.map_err(agent_error)?;
-        let mut known_records = HashSet::new();
-        if let Some(checkpoint) = checkpoint {
-            let (restored, keys) = crate::context::load_snapshot_with_keys(
-                (&owner).into(),
-                checkpoint.decode().map_err(agent_error)?,
-            )
-            .await
-            .map_err(agent_error)?;
-            if let Some(configured) = builder.resume_snapshot()
-                && serde_json::to_string(configured)
+        attach(self, state, None).await
+    }
+}
+
+impl<F> crate::request_policy::DurableOpenAiRequestExt for NanocodexBuilder<F> {
+    async fn durability_with_request_policy(
+        self,
+        state: DurableSession,
+        settings: crate::request_policy::RequestPolicySettings,
+    ) -> AgentResult<Self> {
+        attach(self, state, Some(settings)).await
+    }
+}
+
+async fn attach<F>(
+    builder: NanocodexBuilder<F>,
+    state: DurableSession,
+    settings: Option<crate::request_policy::RequestPolicySettings>,
+) -> AgentResult<NanocodexBuilder<F>> {
+    let state_id = state.state_id().to_owned();
+    let mut builder = builder;
+    let (owner, checkpoint) = state.acquire_agent().await.map_err(agent_error)?;
+    let mut known_records = HashSet::new();
+    if let Some(checkpoint) = checkpoint {
+        let (restored, keys) = crate::context::load_snapshot_with_keys(
+            (&owner).into(),
+            checkpoint.decode().map_err(agent_error)?,
+        )
+        .await
+        .map_err(agent_error)?;
+        if let Some(configured) = builder.resume_snapshot()
+            && serde_json::to_string(configured)
+                .map_err(|error| NanocodexError::InvalidSessionSnapshot(error.to_string()))?
+                != serde_json::to_string(&restored)
                     .map_err(|error| NanocodexError::InvalidSessionSnapshot(error.to_string()))?
-                    != serde_json::to_string(&restored).map_err(|error| {
-                        NanocodexError::InvalidSessionSnapshot(error.to_string())
-                    })?
-            {
-                return Err(NanocodexError::InvalidSessionSnapshot(
-                    "configured resume snapshot does not match the durability state".to_owned(),
-                ));
-            }
-            known_records = keys;
-            builder = builder.resume(restored);
-        } else if builder.resume_snapshot().is_none() {
-            // A fork's explicitly supplied completed snapshot owns its cache
-            // lineage. A fresh durable root alone defaults to its state ID.
-            builder = builder.default_prompt_cache_key(state_id);
+        {
+            return Err(NanocodexError::InvalidSessionSnapshot(
+                "configured resume snapshot does not match the durability state".to_owned(),
+            ));
         }
-        let owner = Arc::new(Mutex::new(Some((owner, known_records))));
-        Ok(builder
+        known_records = keys;
+        builder = builder.resume(restored);
+    } else if builder.resume_snapshot().is_none() {
+        // A fork's explicitly supplied completed snapshot owns its cache
+        // lineage. A fresh durable root alone defaults to its state ID.
+        builder = builder.default_prompt_cache_key(state_id);
+    }
+    let owner = Arc::new(Mutex::new(Some((owner, known_records))));
+    Ok(builder
             .execution_policy_factory(move || {
                 let (owner, keys) = owner
                     .lock()
@@ -70,24 +88,37 @@ impl<F> DurableAgentExt for NanocodexBuilder<F> {
                                 .to_owned(),
                         )
                     })?;
-                let policy = DurableExecution::ready(owner);
+                let mut policy = DurableExecution::ready(owner, state.clone());
+                policy.settings = settings.clone();
+
                 policy.remember(keys)?;
                 let policy: Arc<dyn ExecutionPolicy> = Arc::new(policy);
                 Ok(policy)
             }) )
-    }
 }
 
 struct DurableExecution {
-    owner: DurableOwner,
+    owner: Arc<DurableOwner>,
+    #[cfg(not(target_family = "wasm"))]
+    code_journal: Arc<crate::code_mode::DurableCodeJournal>,
     context_records: Mutex<HashSet<String>>,
+    settings: Option<crate::request_policy::RequestPolicySettings>,
 }
 
 impl DurableExecution {
-    fn ready(owner: DurableOwner) -> Self {
+    fn ready(owner: DurableOwner, state: DurableSession) -> Self {
+        let owner = Arc::new(owner);
+        #[cfg(target_family = "wasm")]
+        let _ = state;
         Self {
+            #[cfg(not(target_family = "wasm"))]
+            code_journal: Arc::new(crate::code_mode::DurableCodeJournal::new(
+                Arc::clone(&owner),
+                state,
+            )),
             owner,
             context_records: Mutex::new(HashSet::new()),
+            settings: None,
         }
     }
 
@@ -108,6 +139,93 @@ impl DurableExecution {
 }
 
 impl ExecutionPolicy for DurableExecution {
+    fn prepare_request<'a>(
+        &'a self,
+        operation: String,
+        request_id: String,
+        continuation: bool,
+        state: serde_json::Value,
+        request: serde_json::Value,
+        authorized: serde_json::Value,
+    ) -> ExecutionFuture<'a, AgentResult<Option<nanocodex_agent::execution::RequestPreparation>>>
+    {
+        Box::pin(async move {
+            let Some(settings) = &self.settings else {
+                return Ok(None);
+            };
+            let step = format!("prepare/{request_id}");
+            let input =
+                serde_json::json!({"request":request, "state":state, "continuation":continuation});
+            let prepared = match self
+                .owner
+                .begin_step(
+                    operation.clone(),
+                    step.clone(),
+                    "request_policy".into(),
+                    &input,
+                    crate::ReplaySafety::Safe,
+                )
+                .await
+                .map_err(agent_error)?
+            {
+                BeginStep::OutcomeUnknown => {
+                    return Err(agent_error(Error::InvalidState(
+                        "request preparation outcome is unknown".into(),
+                    )));
+                }
+                BeginStep::Replay(value) => {
+                    let receipt: nanocodex_agent::execution::RequestPreparation =
+                        value.decode().map_err(agent_error)?;
+                    settings
+                        .prepare_native(
+                            request_id,
+                            continuation,
+                            false,
+                            receipt.state,
+                            request,
+                            nanocodex_agent::HarnessFamily::Codex,
+                        )
+                        .map_err(agent_error)?
+                }
+                BeginStep::Execute => {
+                    let safe = !continuation && !crate::request_policy::contains_opaque(&request);
+                    let prepared = settings
+                        .prepare_native(
+                            request_id,
+                            continuation,
+                            safe,
+                            state,
+                            request,
+                            nanocodex_agent::HarnessFamily::Codex,
+                        )
+                        .map_err(agent_error)?;
+                    let receipt = nanocodex_agent::execution::RequestPreparation {
+                        request: prepared.request.clone(),
+                        state: prepared.state.clone(),
+                    };
+                    self.owner
+                        .complete_step(operation, step, &receipt)
+                        .await
+                        .map_err(agent_error)?;
+                    prepared
+                }
+            };
+            crate::request_policy::authorize_native(&prepared.request, &authorized)
+                .map_err(agent_error)?;
+            Ok(Some(nanocodex_agent::execution::RequestPreparation {
+                request: prepared.request,
+                state: prepared.state,
+            }))
+        })
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    fn code_mode_journal(
+        &self,
+    ) -> Option<Arc<dyn nanocodex_oai_tools::code_mode::CodeModeJournal>> {
+        Some(self.code_journal.clone())
+    }
+
     fn recover_failure<'a>(
         &'a self,
         operation_id: String,
@@ -120,7 +238,7 @@ impl ExecutionPolicy for DurableExecution {
             ) {
                 return error;
             }
-            let owner = &self.owner;
+            let owner = self.owner.as_ref();
             match owner.recover_failure(operation_id).await {
                 Ok(Some(OperationStatus::Failed { error, .. })) => {
                     NanocodexError::ReplayedExecutionFailed(error)
@@ -173,7 +291,7 @@ impl ExecutionPolicy for DurableExecution {
     ) -> ExecutionFuture<'a, AgentResult<ExecutionAdmission>> {
         Box::pin(async move {
             let input = raw(input_json)?;
-            let owner = &self.owner;
+            let owner = self.owner.as_ref();
             let admission = owner
                 .admit_typed::<_, crate::context::Snapshot, ExecutionOutput>(operation_id, &input)
                 .await
@@ -364,7 +482,7 @@ impl ExecutionPolicy for DurableExecution {
         operation_id: String,
     ) -> ExecutionFuture<'a, AgentResult<Option<ExecutionContinuation>>> {
         Box::pin(async move {
-            let owner = &self.owner;
+            let owner = self.owner.as_ref();
             match owner
                 .continuation(operation_id)
                 .await
@@ -403,6 +521,27 @@ impl ExecutionPolicy for DurableExecution {
         })
     }
 
+    fn advance_retaining<'a>(
+        &'a self,
+        operation_id: String,
+        continuation: ExecutionContinuation,
+        retained_steps: Vec<String>,
+    ) -> ExecutionFuture<'a, AgentResult<()>> {
+        Box::pin(async move {
+            let prepared = {
+                let known = self.context_records.lock().map_err(|_| {
+                    NanocodexError::InvalidExecutionPolicy("context cache poisoned".into())
+                })?;
+                crate::context::prepare_continuation(continuation, &known).map_err(agent_error)?
+            };
+            self.owner
+                .advance_retaining(operation_id, prepared.payload, retained_steps)
+                .await
+                .map_err(agent_error)?;
+            self.remember(prepared.keys)
+        })
+    }
+
     fn begin_step<'a>(
         &'a self,
         operation_id: String,
@@ -410,14 +549,46 @@ impl ExecutionPolicy for DurableExecution {
         kind: String,
         input_json: String,
     ) -> ExecutionFuture<'a, AgentResult<ExecutionStepAdmission>> {
+        self.begin_step_with_replay(
+            operation_id,
+            step_id,
+            kind,
+            input_json,
+            crate::ReplaySafety::Unsafe,
+        )
+    }
+
+    fn begin_step_with_replay<'a>(
+        &'a self,
+        operation_id: String,
+        step_id: String,
+        kind: String,
+        input_json: String,
+        replay_safety: crate::ReplaySafety,
+    ) -> ExecutionFuture<'a, AgentResult<ExecutionStepAdmission>> {
         Box::pin(async move {
-            let input = raw(input_json)?;
+            let input = raw(input_json.clone())?;
             match self
                 .owner
-                .begin_step(operation_id, step_id, kind, &input)
+                .begin_step(
+                    operation_id.clone(),
+                    step_id.clone(),
+                    kind.clone(),
+                    &input,
+                    replay_safety,
+                )
                 .await
             {
-                Ok(BeginStep::Execute) => Ok(ExecutionStepAdmission::Execute),
+                Ok(BeginStep::OutcomeUnknown) => Ok(ExecutionStepAdmission::OutcomeUnknown),
+                Ok(BeginStep::Execute) => {
+                    #[cfg(not(target_family = "wasm"))]
+                    if kind == "tool_call" {
+                        self.code_journal
+                            .bind(&operation_id, &step_id, &input_json)
+                            .map_err(agent_error)?;
+                    }
+                    Ok(ExecutionStepAdmission::Execute)
+                }
                 Ok(BeginStep::Replay(output)) => Ok(ExecutionStepAdmission::Replay(
                     output.json().map_err(agent_error)?.to_owned(),
                 )),
@@ -546,6 +717,94 @@ mod tests {
 
     use super::*;
 
+    #[cfg(not(target_family = "wasm"))]
+    #[tokio::test]
+    async fn code_replays_and_unknown_steps_do_not_consume_admission_scopes() {
+        use nanocodex_oai_tools::code_mode::{CodeJournalAdmission, CodeModeJournal};
+        let state = DurableSession::open(crate::MemoryStore::new().unwrap(), "code-scopes")
+            .await
+            .unwrap();
+        let (owner, _) = state.acquire_agent().await.unwrap();
+        owner
+            .admit_typed::<_, u32, String>("turn".into(), &"input")
+            .await
+            .unwrap();
+        owner.begin_attempt("turn".into()).await.unwrap();
+        let policy = DurableExecution::ready(owner, state.clone());
+        // Seed settled and unsafe pending steps through the authoritative owner.
+        // Recovery of either class must avoid reserving an unexecuted cell scope.
+        for index in 0..70 {
+            let step = format!("tool-{index}-reused");
+            let input = serde_json::json!({"call_id":"reused", "name":"exec", "input":"text(1);"});
+            policy
+                .owner
+                .begin_step(
+                    "turn".into(),
+                    step.clone(),
+                    "tool_call".into(),
+                    &input,
+                    crate::ReplaySafety::Unsafe,
+                )
+                .await
+                .unwrap();
+            if index % 2 == 0 {
+                policy
+                    .owner
+                    .complete_step(
+                        "turn".into(),
+                        step.clone(),
+                        &serde_json::json!({"result":"done"}),
+                    )
+                    .await
+                    .unwrap();
+            }
+            let admission = policy
+                .begin_step_with_replay(
+                    "turn".into(),
+                    step,
+                    "tool_call".into(),
+                    input.to_string(),
+                    crate::ReplaySafety::Unsafe,
+                )
+                .await
+                .unwrap();
+            assert!(if index % 2 == 0 {
+                matches!(admission, ExecutionStepAdmission::Replay(_))
+            } else {
+                matches!(admission, ExecutionStepAdmission::OutcomeUnknown)
+            });
+        }
+        // Two live cells with the same provider ID have independent host steps.
+        for step in ["tool-70-reused", "tool-71-reused"] {
+            let input = serde_json::json!({"call_id":"reused", "name":"exec", "input":"text(1);"});
+            assert!(matches!(
+                policy
+                    .begin_step_with_replay(
+                        "turn".into(),
+                        step.into(),
+                        "tool_call".into(),
+                        input.to_string(),
+                        crate::ReplaySafety::Safe
+                    )
+                    .await
+                    .unwrap(),
+                ExecutionStepAdmission::Execute
+            ));
+        }
+        for step in ["tool-70-reused", "tool-71-reused"] {
+            let key = serde_json::json!(["turn", step]).to_string();
+            assert!(matches!(
+                policy
+                    .code_journal
+                    .admit_cell("session", &key, "text(1);")
+                    .await
+                    .unwrap(),
+                CodeJournalAdmission::Execute { .. }
+            ));
+        }
+        policy.shutdown().await.unwrap();
+    }
+
     #[tokio::test]
     async fn corruption_is_fatal_even_when_an_operation_is_pending() {
         let state = DurableSession::open(crate::MemoryStore::new().unwrap(), "corrupt")
@@ -556,7 +815,7 @@ mod tests {
             .admit_typed::<_, u32, String>("turn".into(), &"input")
             .await
             .unwrap();
-        let policy = DurableExecution::ready(owner);
+        let policy = DurableExecution::ready(owner, state.clone());
         let failure = policy
             .recover_failure(
                 "turn".into(),
@@ -581,7 +840,7 @@ mod tests {
             .await
             .unwrap();
         owner.begin_attempt("first".into()).await.unwrap();
-        let policy = DurableExecution::ready(owner);
+        let policy = DurableExecution::ready(owner, state.clone());
         let failure = policy
             .recover_failure(
                 "first".into(),
@@ -650,7 +909,7 @@ mod tests {
                 .await
                 .unwrap();
         }
-        let policy = DurableExecution::ready(owner);
+        let policy = DurableExecution::ready(owner, state.clone());
         let failure = policy
             .recover_failure("newer".into(), NanocodexError::TurnStopped)
             .await;

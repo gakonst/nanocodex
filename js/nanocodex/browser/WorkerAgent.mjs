@@ -596,6 +596,10 @@ async function dispatch(message, state) {
   if (method === "agent.spawn") return state.allocateAgent(await agent.session.spawn());
   if (method === "agent.compact") return agent.session.compact();
   if (method === "agent.context") return agent.session.context();
+  if (method === "agent.document") return agent.session.document(args[1]);
+  if (method === "agent.compareExchangeDocuments") return agent.session.compareExchangeDocuments(JSON.parse(args[1]).map(({ expected_version, fork, ...write }) => ({ ...write, expectedVersion: expected_version, fork: fork === "as_of" ? "asOf" : fork })));
+  if (method === "agent.stageDocumentWrites") return agent.session.stageDocumentWrites(args[1], JSON.parse(args[2]).map(({ expected_version, fork, ...write }) => ({ ...write, expectedVersion: expected_version, fork: fork === "as_of" ? "asOf" : fork })));
+  if (method === "agent.documentFork") return agent.session.documentFork(args[1]);
   if (method === "agent.setModel") return agent.session.setModel(args[1]);
   if (method === "agent.setThinking") return agent.session.setThinking(args[1]);
   if (method === "agent.setFastMode") return agent.session.setFastMode(args[1]);
@@ -774,6 +778,10 @@ class WorkerConnection {
       spawn: async () => connection.rawAgent(await connection.rpc("agent.spawn", [handleId])),
       compact: () => connection.rpc("agent.compact", [handleId]),
       context: async () => JSON.stringify(await connection.rpc("agent.context", [handleId])),
+      document: async (key) => JSON.stringify(await connection.rpc("agent.document", [handleId, key])),
+      compareExchangeDocuments: (writes) => connection.rpc("agent.compareExchangeDocuments", [handleId, writes]),
+      stageDocumentWrites: (operationId, writes) => connection.rpc("agent.stageDocumentWrites", [handleId, operationId, writes]),
+      documentFork: async (operationId) => JSON.stringify(await connection.rpc("agent.documentFork", [handleId, operationId])),
       setModel: (value) => connection.rpc("agent.setModel", [handleId, value]),
       setThinking: (value) => connection.rpc("agent.setThinking", [handleId, value]),
       setFastMode: (value) => connection.rpc("agent.setFastMode", [handleId, value]),

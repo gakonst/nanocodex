@@ -49,6 +49,7 @@ pub(super) struct CodexCompatibility {
     pub(super) instant_tool_steering: bool,
     pub(super) context: ContextSourceConfig,
     pub(super) execution: ExecutionConfig,
+    pub(super) turn_ownership: Option<Arc<dyn execution::TurnOwnership>>,
     pub(super) before_compaction: Option<Arc<dyn execution::BeforeCompaction>>,
     pub(super) spawn_factory: Option<Arc<dyn backend::AgentFactory>>,
     pub(super) host_context: Option<Arc<str>>,
@@ -71,6 +72,59 @@ impl<F> NanocodexBuilder<F> {
     #[must_use]
     pub fn before_compaction(mut self, hook: impl execution::BeforeCompaction + 'static) -> Self {
         self.codex.before_compaction = Some(Arc::new(hook));
+        self
+    }
+
+    /// Holds successful terminal publication until owned foreground work is idle.
+    /// Failure and cancellation stop owned foreground work before committing.
+    #[must_use]
+    pub fn turn_ownership(mut self, hook: Arc<dyn execution::TurnOwnership>) -> Self {
+        self.codex.turn_ownership = Some(hook);
+        self
+    }
+
+    /// Whether embedding-owned child construction has already been configured.
+    #[doc(hidden)]
+    pub fn has_spawn_factory(&self) -> bool {
+        self.codex.spawn_factory.is_some()
+    }
+
+    /// Returns an explicitly configured native session identity.
+    #[doc(hidden)]
+    pub const fn configured_session_id(&self) -> Option<SessionId> {
+        self.session_id
+    }
+
+    /// Derives an independent native recipe without root execution ownership.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn fresh_child(mut self) -> Self {
+        self.session_id = None;
+        self.resume = None;
+        self.prompt_cache.key = None;
+        self.codex.execution = ExecutionConfig::default();
+        self.codex.before_compaction = None;
+        self
+    }
+
+    /// Composes embedding tools with the caller's existing per-agent tool recipe.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn map_tools_factory<T>(mut self, map: T) -> Self
+    where
+        T: Fn(AgentHandle, Tools) -> std::result::Result<Tools, ToolsBuildError>
+            + Send
+            + Sync
+            + 'static,
+    {
+        let previous = self.tools;
+        self.tools = ToolsConfiguration::PerAgent(Arc::new(move |handle| {
+            let tools = match &previous {
+                ToolsConfiguration::Shared(tools) => tools.clone(),
+                ToolsConfiguration::PerAgent(factory) => factory(handle.clone())?,
+            };
+            map(handle, tools)
+        }));
         self
     }
 

@@ -2,6 +2,7 @@ import {
   closeSubagent,
   interruptSubagent,
   listSubagents,
+  recoverSubagents,
   sendSubagentMessage,
   spawnSubagent,
   spawnSubagents,
@@ -39,6 +40,11 @@ export function wait(agent, options) {
 
 export function list(agent, options) {
   return listSubagents(agent, options);
+}
+
+/** Host scheduler hook; the caller opens the durable parent with current authority. */
+export function recover(agent) {
+  return recoverSubagents(agent);
 }
 
 export function send(agent, options) {

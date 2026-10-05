@@ -180,12 +180,13 @@ test("a fenced durability owner requires reopening instead of retrying the stale
   second.dispose();
 });
 
-test("a duplicate durable session rejects without fencing the live Agent", async () => {
+test("a duplicate durable session rejects without fencing the live Agent", async (t) => {
   const server = await startResponsesServer();
   const durabilityId = "lifecycle-session-collision";
   const stored = createMemoryDurabilityStore(durabilityId);
   let authorityAcquisitions = 0;
   const durability = {
+    ...stored,
     acquire(stateId, request) {
       authorityAcquisitions += 1;
       return stored.acquire(stateId, request);
@@ -199,7 +200,9 @@ test("a duplicate durable session rejects without fencing the live Agent", async
     durability,
     durabilityId,
   };
+  t.after(() => server.close());
   const first = await Agent.create(options);
+  t.after(() => first.dispose());
   const firstAuthorityAcquisitions = authorityAcquisitions;
   assert.ok(firstAuthorityAcquisitions > 0);
   await assert.rejects(Agent.create(options), /session ID is already active/);
@@ -217,8 +220,6 @@ test("a duplicate durable session rejects without fencing the live Agent", async
   await scenario;
 
   turn.dispose();
-  first.dispose();
-  await server.close();
 });
 
 test("durability store failures preserve reopen and retry-safe dispositions", async () => {
@@ -237,11 +238,13 @@ test("durability store failures preserve reopen and retry-safe dispositions", as
   ];
   for (const [name, replaceOutcome, expectedCode] of cases) {
     const durabilityId = `lifecycle-store-${name}`;
+    const stored = createMemoryDurabilityStore(durabilityId);
     const durability = {
-      acquire(_stateId, { ownerId }) {
-        return { ownerId, fence: "1", revision: "0", payload: null };
-      },
-      replace() {
+      ...stored,
+      replace(stateId, request) {
+        // Child-tree startup owns a separate state. Inject the failure only
+        // into the root operation whose accepted/result disposition is tested.
+        if (stateId !== durabilityId) return stored.replace(stateId, request);
         if (replaceOutcome instanceof Error) throw replaceOutcome;
         return replaceOutcome;
       },

@@ -61,7 +61,7 @@ impl Drop for CompactionLifecycle<'_> {
 // Untagged success preserves receipts written before failures were recorded.
 #[derive(Deserialize, Serialize)]
 #[serde(untagged)]
-enum RecordedCompactionOutcome {
+pub(super) enum RecordedCompactionOutcome {
     Success(RecordedCompactionResult),
     Failure {
         compaction_error: String,
@@ -73,17 +73,17 @@ enum RecordedCompactionOutcome {
 }
 
 #[derive(Deserialize, Serialize)]
-struct RecordedCompactionResult {
-    response_id: String,
-    status: String,
-    item: ResponseItem,
-    usage: Option<Usage>,
-    attempt: u32,
-    connection_generation: u32,
-    server_reasoning_included: bool,
-    duration_ns: u64,
-    time_to_first_event_ns: u64,
-    time_to_first_output_ns: Option<u64>,
+pub(super) struct RecordedCompactionResult {
+    pub(super) response_id: String,
+    pub(super) status: String,
+    pub(super) item: ResponseItem,
+    pub(super) usage: Option<Usage>,
+    pub(super) attempt: u32,
+    pub(super) connection_generation: u32,
+    pub(super) server_reasoning_included: bool,
+    pub(super) duration_ns: u64,
+    pub(super) time_to_first_event_ns: u64,
+    pub(super) time_to_first_output_ns: Option<u64>,
 }
 
 pub(super) enum ModelTaskOutcome {
@@ -123,7 +123,34 @@ where
             return Ok(false);
         };
         let active_context_tokens = conversation.active_context_tokens();
+        if self.background_compaction.is_some() {
+            self.start_background(factory).await?;
+            if self.background_work.is_some() {
+                self.poll_background().await;
+                if self.force_compaction || active_context_tokens >= auto_compact_token_limit {
+                    self.wait_background().await;
+                }
+                if let Some(true) = self.install_background(conversation, factory).await? {
+                    self.force_compaction = false;
+                    return Ok(true);
+                }
+            }
+            if !self.force_compaction && active_context_tokens < auto_compact_token_limit {
+                return Ok(false);
+            }
+            // A hard limit before dispatch uses the existing synchronous path.
+            self.background_compaction = None;
+            self.background_work = None;
+        }
         if !self.force_compaction && active_context_tokens < auto_compact_token_limit {
+            if active_context_tokens >= auto_compact_token_limit.saturating_mul(4) / 5 {
+                self.background_compaction = Some(background::PendingCompaction {
+                    cutoff: conversation.flattened_history(),
+                    after_model_call_index,
+                    active_context_tokens,
+                    auto_compact_token_limit,
+                });
+            }
             return Ok(false);
         }
         let (item, _usage, server_reasoning_included) = self
@@ -381,6 +408,9 @@ where
                         receipt.validate()?;
                         true
                     }
+                    crate::agent::ExecutionStep::OutcomeUnknown => {
+                        unreachable!("model helper rejects unknown effects")
+                    }
                     crate::agent::ExecutionStep::Execute => false,
                 }
             } else {
@@ -437,6 +467,9 @@ where
                     .begin::<_, RecordedCompactionOutcome>(&step_id, "compaction", &())
                     .await?
                 {
+                    crate::agent::ExecutionStep::OutcomeUnknown => {
+                        unreachable!("model helper rejects unknown effects")
+                    }
                     crate::agent::ExecutionStep::Execute => None,
                     crate::agent::ExecutionStep::Replay(output) => Some(output),
                 }

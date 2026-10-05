@@ -152,7 +152,34 @@ Turn cancellation uses the actual Rust lifecycle identity, including anonymous
 non-durable turns, rather than guessing from whichever turn is currently active.
 A host abort signal is cooperative and is never proof an external effect was
 rolled back; durable unknown outcomes still require reconciliation. Provider-native checkpoints are managed by the shared store, not
-OpenAI `SessionSnapshot` objects. Unsupported snapshot export, fork, runtime
-model switches and other OpenAI-specific operations fail explicitly. Whole-JSON
-checkpoint storage and complete host-tool/product parity remain open limits.
+OpenAI `SessionSnapshot` objects. Durable Claude sessions expose
+`session.document(key)`, `session.compareExchangeDocuments(writes)`,
+`session.stageDocumentWrites(operationId, writes)` and
+`session.documentFork(completedOperationId)`. Documents use conditional versions;
+a transaction either publishes every write or leaves every value unchanged.
+Staged writes publish with the successful operation's checkpoint and receipt.
+
+A historical fork seed contains the original native Claude checkpoint, including
+signed and opaque blocks, plus policy-selected session documents. Pass it as
+`documentFork` to `Claude.create` with a fresh `durabilityId` and independently
+supplied auth, tools and instructions. The destination must be pristine:
+
+```js
+const seed = await parent.session.documentFork("completed-turn-id");
+const child = await Claude.create({
+  auth, model: "claude-sonnet-4-6", tools, durability,
+  durabilityId: "independent-child", documentFork: seed,
+});
+```
+
+Document policies are `initial` (creation value), `current` (latest value),
+`asOf` (value at the selected completed operation) and `block` (refuse a fork
+when present in the source). An `asOf` document created after the selected
+operation is omitted; `initial` and `current` follow their explicit source-value
+policies. Historical boundaries survive terminal receipt pruning. Seeds
+contain session data; credentials, grants, schedules and account-shared stores
+must be supplied independently. Non-durable Codex `session.fork`, snapshot
+export, runtime model switches and other OpenAI-specific operations still fail
+explicitly. Whole-JSON checkpoint storage and complete host-tool/product parity
+remain open limits.
 See [runtime coverage](CLAUDE_RUNTIME.md) and the [tool matrix](CLAUDE_TOOL_MATRIX.md).

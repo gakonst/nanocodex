@@ -496,7 +496,7 @@ impl SpawnOptions {
 }
 
 /// Native in-memory checkpoint for residency eviction, without host credentials.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub enum ChildSnapshot {
     /// Existing Responses checkpoint, preserving its public representation.
     Codex(ChildRuntimeSnapshot),
@@ -517,7 +517,7 @@ pub enum ChildSnapshot {
 
 impl ChildSnapshot {
     /// Whether restoration can resume an already committed assignment.
-    pub fn has_conversation(&self) -> bool {
+    pub const fn has_conversation(&self) -> bool {
         match self {
             Self::Codex(snapshot) => snapshot.conversation.is_some(),
             Self::Native {
@@ -526,7 +526,7 @@ impl ChildSnapshot {
         }
     }
     /// Pinned family-scoped model selected when the child was constructed.
-    pub fn model(&self) -> crate::HarnessModel {
+    pub const fn model(&self) -> crate::HarnessModel {
         match self {
             Self::Codex(snapshot) => crate::HarnessModel::Codex(snapshot.model),
             Self::Native { model, .. } => *model,

@@ -468,6 +468,28 @@ impl ManagedSessionState {
         self.history_revision = self.history_revision.saturating_add(1);
     }
 
+    /// Installs a summary of an immutable prefix followed by its complete tail.
+    ///
+    /// The caller verifies that `cutoff` is still the current conversation prefix.
+    /// Only that prefix participates in retained-message pruning; `tail` is
+    /// appended unchanged after the summary and becomes the full-replay baseline.
+    pub fn install_compaction_with_tail(
+        &mut self,
+        item: ResponseItem,
+        cutoff: &[ResponseItem],
+        tail: impl IntoIterator<Item = ResponseItem>,
+        request_prefix: &[ResponseItem],
+    ) {
+        let mut history =
+            compaction::install_history_with_provenance(cutoff, &[], item, &self.client_authored);
+        history.extend(tail);
+        self.context.replace_and_recompute(history, request_prefix);
+        let provenance = std::mem::take(&mut self.client_authored);
+        self.restore_client_authored(provenance);
+        self.reset_for_full_request();
+        self.history_revision = self.history_revision.saturating_add(1);
+    }
+
     /// Installs image-prepared replay history and marks its durable baseline changed.
     #[doc(hidden)]
     pub fn replace_prepared_history(&mut self, history: Vec<ResponseItem>) {

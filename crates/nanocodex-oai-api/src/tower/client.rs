@@ -34,6 +34,18 @@ impl<S> ResponsesClient<S> {
         ResponsesClient::new(map(self.service))
     }
 
+    /// Dispatches an owned request, releasing the service borrow before completion.
+    ///
+    /// This permits another request on the same service while the first is pending.
+    /// # Errors
+    /// Returns the service readiness error.
+    pub async fn dispatch(&mut self, request: ResponsesAttempt) -> Result<S::Future, S::Error>
+    where
+        S: Service<ResponsesAttempt>,
+    {
+        Ok(self.service.ready().await?.call(request))
+    }
+
     /// Executes one request through the owned service stack.
     ///
     /// # Errors

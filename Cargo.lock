@@ -5782,6 +5782,7 @@ dependencies = [
  "rustls",
  "serde_json",
  "tokio",
+ "tower",
 ]
 
 [[package]]
@@ -5934,6 +5935,7 @@ dependencies = [
  "getrandom 0.4.3",
  "nanocodex-agent",
  "nanocodex-claude-tools",
+ "nanocodex-oai-tools",
  "regex",
  "reqwest",
  "rustls",
@@ -6002,6 +6004,7 @@ dependencies = [
 name = "nanocodex-durability"
 version = "0.6.6"
 dependencies = [
+ "async-trait",
  "axum",
  "eyre",
  "futures-util",
@@ -6380,6 +6383,7 @@ dependencies = [
  "jsonschema",
  "nanocodex-agent",
  "nanocodex-claude",
+ "nanocodex-durability",
  "nanocodex-oai-api",
  "nanocodex-oai-tools",
  "serde",

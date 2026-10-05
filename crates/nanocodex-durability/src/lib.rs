@@ -3,12 +3,22 @@
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
 mod agent;
+mod child_journal;
+pub use child_journal::ChildJournal;
 #[cfg(feature = "claude")]
 mod claude;
+#[cfg(not(target_family = "wasm"))]
+mod code_mode;
 mod context;
+mod documents;
+pub use documents::{DocumentFork, DocumentForkPolicy, DocumentWrite, SessionDocument};
+#[cfg(feature = "claude")]
+pub mod cache_warm;
 mod memory;
 #[cfg(all(feature = "postgres", not(target_family = "wasm")))]
 mod postgres;
+/// Named configuration, virtual routing and cache decisions at durable request boundaries.
+pub mod request_policy;
 mod session;
 mod shared_store;
 #[cfg(all(feature = "sqlite", not(target_family = "wasm")))]
@@ -17,6 +27,7 @@ mod state;
 mod store;
 
 pub use memory::MemoryStore;
+pub use nanocodex_agent::ReplaySafety;
 #[cfg(all(feature = "postgres", not(target_family = "wasm")))]
 #[cfg_attr(
     docsrs,

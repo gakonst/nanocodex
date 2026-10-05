@@ -540,10 +540,12 @@ test("ConnectAgent publishes app tools with only signed hosted MCPs over the tic
     await waitForConnect(() => sockets[0].frames.some(({ type, call_id: callId }) => (
       type === "result" && callId === "call:app-echo"
     )));
+    const { timing, ...result } = sockets[0].frames.find(({ type, call_id: callId }) => (
+      type === "result" && callId === "call:app-echo"
+    ));
+    assert.ok(timing && Object.values(timing).every(value => Number.isFinite(value) && value >= 0));
     assert.deepEqual(
-      sockets[0].frames.find(({ type, call_id: callId }) => (
-        type === "result" && callId === "call:app-echo"
-      )),
+      result,
       {
         type: "result",
         call_id: "call:app-echo",

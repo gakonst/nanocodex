@@ -136,6 +136,28 @@ test("a precompiled browser module instantiates once across isolated agents", as
   }
 });
 
+test("disposing unused durable browser agents releases their local registry generation", async (context) => {
+  const module = await readFile(new URL("../pkg-web/nanocodex_bg.wasm", import.meta.url));
+  const create = () => HostAgent.create({
+    module, transport: browserTransport,
+    durability: createMemoryDurabilityStore("dispose-memory-budget"),
+    durabilityId: "dispose-memory-budget",
+  });
+  const cold = await create();
+  const engine = await initializeBrowserEngine({ module });
+  const coldLinearMemoryBytes = engine.memory.buffer.byteLength;
+  cold.dispose();
+  for (let index = 0; index < 80; index += 1) {
+    const agent = await create();
+    agent.dispose();
+  }
+  const retainedLinearMemoryBytes = engine.memory.buffer.byteLength;
+  context.diagnostic(JSON.stringify({ durable_disposals: 81,
+    cold_linear_memory_bytes: coldLinearMemoryBytes,
+    retained_linear_memory_bytes: retainedLinearMemoryBytes }));
+  assert.equal(retainedLinearMemoryBytes, coldLinearMemoryBytes);
+});
+
 test("long durable histories preserve cold replay and cancellation results", {
   timeout: 180_000,
 }, async (context) => {

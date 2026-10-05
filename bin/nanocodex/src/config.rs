@@ -12,8 +12,8 @@ use eyre::{Result, WrapErr, eyre};
 ))]
 use nanocodex::NanocodexBuilder;
 use nanocodex::{
-    AgentEvents, DurableAgentExt as _, HarnessFamily, HarnessModel, Model, Nanocodex, OpenAi,
-    ReasoningMode, Thinking, Tools,
+    AgentEvents, HarnessFamily, HarnessModel, Model, Nanocodex, OpenAi, ReasoningMode, Thinking,
+    Tools,
     agent::{
         rollout::{DurableSession, RolloutConfig},
         session::{SessionId, SessionSnapshot},
@@ -35,6 +35,7 @@ use crate::subagents::{self, ChildAgents, DEFAULT_MAX_SUBAGENTS, SubagentToolSet
 use crate::vm::{ConfiguredVm, VmArgs};
 
 mod claude;
+mod durability;
 
 pub(crate) struct ConfiguredAgent {
     pub(crate) handle: Nanocodex,
@@ -454,6 +455,26 @@ impl AgentArgs {
         let codex_home = default_codex_home()?;
         let responses_transport = self.responses_transport();
         let mut session = prepare_session_build(self.cwd, self.rollouts, &codex_home, durable)?;
+        let generic_subagents = self.subagents;
+        let subagent_tools = selected_subagent_tools(generic_subagents, tui);
+        let subagent_runtime = subagent_tools.map(|_| subagents::channel(self.max_subagents));
+        let durability = match local_durability {
+            Some(persistence) => Some(
+                durability::CliDurability::open(
+                    persistence,
+                    HarnessFamily::Codex,
+                    session.session_id,
+                    subagent_runtime
+                        .as_ref()
+                        .map(|(registry, _, _)| Arc::clone(registry)),
+                )
+                .await?,
+            ),
+            None => None,
+        };
+        if let Some(durability) = &durability {
+            session.session_id = Some(durability.codex_session_id()?);
+        }
         if self.memory && session.session_id.is_none() {
             session.session_id = Some(SessionId::new());
         }
@@ -568,9 +589,6 @@ impl AgentArgs {
             tools = managed_memory.install(tools);
         }
         let tools = tools.build()?;
-        let generic_subagents = self.subagents;
-        let subagent_tools = selected_subagent_tools(generic_subagents, tui);
-        let subagent_runtime = subagent_tools.map(|_| subagents::channel(self.max_subagents));
         let claude_tools = tools
             .clone()
             .into_builder()
@@ -578,9 +596,11 @@ impl AgentArgs {
             .web_search(false)
             .image_generation(false)
             .build()?;
+        // Recipes are retained by registered factory handles; only installed
+        // tools and the live CLI control own the registry strongly.
         let codex_registry = subagent_runtime
             .as_ref()
-            .map(|(registry, _, _)| Arc::clone(registry));
+            .map(|(registry, _, _)| Arc::downgrade(registry));
         let codex_tools = tools.clone();
         let mut codex_recipe = Nanocodex::builder(openai.clone())
             .reasoning_mode(self.reasoning_mode)
@@ -592,7 +612,7 @@ impl AgentArgs {
                     subagents::install_tools(
                         codex_tools.clone(),
                         parent,
-                        Arc::clone(registry),
+                        registry.upgrade().expect("live CLI owns child registry"),
                         subagent_tools.unwrap_or(SubagentToolSet::Generic),
                     )
                 } else {
@@ -609,9 +629,11 @@ impl AgentArgs {
         ) {
             codex_recipe = codex_recipe.additional_instructions(instructions);
         }
+        let child_durability = durability.clone();
         let harness_builder =
             nanocodex::Harness::builder().register(HarnessFamily::Codex, move |request| {
                 let mut builder = codex_recipe.clone();
+                let durability = child_durability.clone();
                 async move {
                     let HarnessModel::Codex(model) = request.model else {
                         return Err(nanocodex::NanocodexError::InvalidRequest(
@@ -623,7 +645,9 @@ impl AgentArgs {
                         .thinking(request.thinking)
                         .host_context(request.host_context)
                         .spawn_factory(request.spawn_factory);
-                    if let Some(snapshot) = request.snapshot {
+                    if let Some(durability) = durability {
+                        builder = durability.codex_child(builder, request.snapshot).await?;
+                    } else if let Some(snapshot) = request.snapshot {
                         builder = builder.restore_runtime(snapshot)?;
                     }
                     builder.build()
@@ -638,6 +662,7 @@ impl AgentArgs {
             claude_tools,
             web_search,
             subagent_runtime.as_ref().map(|(registry, _, _)| Arc::clone(registry)),
+            durability.clone(),
         ).build();
         let mut builder = Nanocodex::builder(openai)
             .model(model)
@@ -660,12 +685,12 @@ impl AgentArgs {
             (&subagent_runtime, subagent_tools)
         {
             let tools = tools;
-            let registry = Arc::clone(registry);
+            let registry = Arc::downgrade(registry);
             builder.tools_factory(move |agent| {
                 subagents::install_tools(
                     tools.clone(),
                     agent,
-                    Arc::clone(&registry),
+                    registry.upgrade().expect("live CLI owns child registry"),
                     subagent_tools,
                 )
             })
@@ -687,18 +712,9 @@ impl AgentArgs {
         } else {
             builder
         };
-        let builder = if let Some(local_durability) = local_durability {
-            let store = SqliteStore::open(&local_durability.path).wrap_err_with(|| {
-                format!(
-                    "failed to open local durability database {}",
-                    local_durability.path.display()
-                )
-            })?;
-            let state = PortableDurableSession::open(store, local_durability.state_id)
-                .await
-                .wrap_err("failed to open local durability state")?;
-            builder
-                .durability(state)
+        let builder = if let Some(durability) = durability {
+            durability
+                .codex_root(builder)
                 .await
                 .wrap_err("failed to attach local durability")?
         } else {

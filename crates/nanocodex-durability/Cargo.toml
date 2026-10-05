@@ -19,11 +19,13 @@ rustdoc-args = ["-D", "warnings"]
 
 [features]
 default = []
-claude = ["dep:nanocodex-claude"]
+claude = ["dep:nanocodex-claude", "nanocodex-claude/code-mode"]
 sqlite = ["dep:rusqlite"]
 postgres = ["dep:tokio-postgres"]
 
 [dependencies]
+async-trait.workspace = true
+nanocodex-oai-tools = { workspace = true, features = ["code-mode"] }
 nanocodex-claude = { workspace = true, optional = true }
 nanocodex-agent.workspace = true
 sha2.workspace = true

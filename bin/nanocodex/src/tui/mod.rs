@@ -4010,6 +4010,7 @@ mod tests {
                 session_id: format!("agent-{id}"),
                 role: "reviewer".to_owned(),
                 task: "review the change".to_owned(),
+                lifetime: Default::default(),
                 parent,
             }),
         )

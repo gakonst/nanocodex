@@ -11,9 +11,13 @@ use super::{
 };
 use nanocodex_agent::input::Prompt;
 use nanocodex_agent::{
-    ChildSnapshot, Nanocodex, NanocodexError, Result as AgentResult, TurnControl, TurnResult,
+    ChildSnapshot, Nanocodex, NanocodexError, PromptRequest, Result as AgentResult, TurnControl,
+    TurnResult,
 };
-use std::{collections::VecDeque, sync::Weak};
+use std::{
+    collections::VecDeque,
+    sync::{Arc, Weak},
+};
 use tokio::sync::{mpsc, oneshot, watch};
 use tracing::Instrument;
 
@@ -21,12 +25,15 @@ const COMMAND_CAPACITY: usize = 8;
 
 #[derive(Clone)]
 pub(super) struct HarnessHandle {
+    registry: Weak<Registry>,
     commands: mpsc::Sender<HarnessCommand>,
     deferred: mpsc::UnboundedSender<DeliveryCommand>,
     urgent: mpsc::UnboundedSender<DeliveryCommand>,
 }
 
 struct DeliveryCommand {
+    // Admission may outlive the sending caller before the actor accepts it.
+    registry: Arc<Registry>,
     message: AgentMessage,
     committed: Option<oneshot::Receiver<()>>,
     response: oneshot::Sender<std::io::Result<MessageDisposition>>,
@@ -84,6 +91,7 @@ struct Harness {
     urgent: mpsc::UnboundedReceiver<DeliveryCommand>,
     pending_deferred: VecDeque<AgentMessage>,
     pending_urgent: VecDeque<AgentMessage>,
+    pending_ownership: Option<Arc<Registry>>,
     output_schema: String,
     rehydrated_assignment: Option<String>,
     capacity: Capacity,
@@ -92,9 +100,18 @@ struct Harness {
 }
 
 struct ActiveTurn {
+    registry: Arc<Registry>,
     control: TurnControl,
     result: Task<AgentResult<TurnResult>>,
     _capacity: TurnCapacity,
+}
+
+impl Drop for ActiveTurn {
+    fn drop(&mut self) {
+        // Retiring a poisoned harness must also drop its detached result waiter.
+        // This releases local handles without issuing a durable cancellation.
+        self.result.abort();
+    }
 }
 
 enum HarnessEvent {
@@ -147,6 +164,10 @@ impl HarnessHandle {
         let (response, result) = oneshot::channel();
         let (committed, wait_for_commit) = oneshot::channel();
         let command = DeliveryCommand {
+            registry: self
+                .registry
+                .upgrade()
+                .ok_or_else(|| std::io::Error::other("subagent registry stopped"))?,
             message,
             committed: Some(wait_for_commit),
             response,
@@ -192,6 +213,7 @@ pub(super) fn spawn(
     let (deferred, deferred_receiver) = mpsc::unbounded_channel();
     let (urgent, urgent_receiver) = mpsc::unbounded_channel();
     let handle = HarnessHandle {
+        registry: registry.clone(),
         commands,
         deferred,
         urgent,
@@ -201,13 +223,16 @@ pub(super) fn spawn(
         Harness {
             root_session_id,
             id,
-            agent: Some(agent),
+            // Managed children use active-turn and queued-delivery leases, not
+            // the independent caller lease supplied by native construction.
+            agent: Some(agent.without_caller_ownership()),
             active: None,
             commands: receiver,
             deferred: deferred_receiver,
             urgent: urgent_receiver,
             pending_deferred: VecDeque::new(),
             pending_urgent: VecDeque::new(),
+            pending_ownership: None,
             output_schema,
             rehydrated_assignment,
             capacity,
@@ -295,7 +320,7 @@ impl Harness {
                 capacity,
                 response,
             } => {
-                let _ = response.send(self.start_turn(prompt, capacity).await);
+                let _ = response.send(self.start_turn(prompt, capacity, None).await);
                 false
             }
             HarnessCommand::Interrupt { response } => {
@@ -326,12 +351,51 @@ impl Harness {
         if !command.wait_for_commit().await {
             return;
         }
-        let steer = if priority == MessagePriority::Urgent && self.active.is_some() {
+        let durable = self
+            .registry
+            .upgrade()
+            .is_some_and(|registry| registry.durable_replay());
+        if let (Some(registry), Some(agent)) = (self.registry.upgrade(), self.agent.as_ref())
+            && let Some(operation) = registry
+                .message_steer_operation(&self.root_session_id, command.message.id)
+                .await
+        {
+            match agent
+                .has_steer_receipt(operation, format!("child-message:{}", command.message.id))
+                .await
+            {
+                Ok(true) => {
+                    self.admit(
+                        command.message.id,
+                        command.response,
+                        MessageDisposition::Steered,
+                    )
+                    .await;
+                    return;
+                }
+                Err(error) => {
+                    self.reject(command, error.to_string()).await;
+                    return;
+                }
+                Ok(false) => {}
+            }
+        }
+        // Backends without atomic steering receipts retain urgent messages in
+        // the durable mailbox until the current turn reaches its boundary.
+        let can_steer = !durable || self.agent.as_ref().is_some_and(Nanocodex::durable_steering);
+        let steer = if priority == MessagePriority::Urgent && self.active.is_some() && can_steer {
             match self.registry.upgrade() {
                 Some(registry) => {
-                    registry
-                        .begin_turn_steer(&self.root_session_id, self.id)
+                    match registry
+                        .begin_turn_steer(&self.root_session_id, self.id, command.message.id)
                         .await
+                    {
+                        Ok(steer) => steer,
+                        Err(error) => {
+                            let _ = command.response.send(Err(error));
+                            return;
+                        }
+                    }
                 }
                 None => None,
             }
@@ -345,17 +409,26 @@ impl Harness {
                 command.message.prompt(),
                 completion_instructions(&self.output_schema)
             );
-            let result = self
+            let control = &self
                 .active
                 .as_ref()
                 .expect("steering requires an active turn")
-                .control
-                .steer(Prompt::new(prompt).with_instruction_revision(steer.revision()))
-                .await;
-            if let Some(registry) = self.registry.upgrade() {
-                registry
+                .control;
+            let input = Prompt::new(prompt).with_instruction_revision(steer.revision());
+            let result = if durable {
+                control
+                    .steer_with_id(format!("child-message:{}", command.message.id), input)
+                    .await
+            } else {
+                control.steer(input).await
+            };
+            if let Some(registry) = self.registry.upgrade()
+                && let Err(error) = registry
                     .finish_turn_steer(&self.root_session_id, steer, result.is_ok())
-                    .await;
+                    .await
+            {
+                let _ = command.response.send(Err(error));
+                return;
             }
             match result {
                 Ok(()) => {
@@ -388,7 +461,10 @@ impl Harness {
             && let Ok(capacity) = self.capacity.reserve()
         {
             let delegation = self.begin_delegation(command.message.id).await;
-            if let Err(error) = self.start_turn(command.message.prompt(), capacity).await {
+            if let Err(error) = self
+                .start_turn(command.message.prompt(), capacity, Some(command.message.id))
+                .await
+            {
                 self.rollback_delegation(delegation).await;
                 self.reject(command, error.to_string()).await;
                 return;
@@ -406,6 +482,7 @@ impl Harness {
     }
 
     async fn queue_delivery(&mut self, command: DeliveryCommand, priority: MessagePriority) {
+        self.pending_ownership = Some(command.registry.clone());
         let queue = match priority {
             MessagePriority::Deferred => &mut self.pending_deferred,
             MessagePriority::Urgent => &mut self.pending_urgent,
@@ -423,6 +500,7 @@ impl Harness {
                 .front()
                 .or_else(|| self.pending_deferred.front())
             else {
+                self.pending_ownership = None;
                 return;
             };
             let Ok(capacity) = self.capacity.reserve() else {
@@ -436,10 +514,10 @@ impl Harness {
             }
             .expect("a pending message should still exist");
             let delegation = self.begin_delegation(id).await;
-            match self.start_turn(message.prompt(), capacity).await {
+            match self.start_turn(message.prompt(), capacity, Some(id)).await {
                 Ok(()) => {
                     if let Some(registry) = self.registry.upgrade() {
-                        registry
+                        let _ = registry
                             .message_delivered(
                                 &self.root_session_id,
                                 id,
@@ -454,6 +532,9 @@ impl Harness {
                 }
             }
         }
+        if self.pending_urgent.is_empty() && self.pending_deferred.is_empty() {
+            self.pending_ownership = None;
+        }
     }
 
     async fn fail_pending(&mut self, reason: &str) {
@@ -466,6 +547,7 @@ impl Harness {
         for id in pending {
             self.publish_message_failure(id, reason.to_owned()).await;
         }
+        self.pending_ownership = None;
     }
 
     async fn reject_waiting_deliveries(&mut self, reason: &str) {
@@ -482,7 +564,7 @@ impl Harness {
             return;
         }
         if let Some(registry) = self.registry.upgrade() {
-            registry
+            let _ = registry
                 .message_rejected(&self.root_session_id, command.message.id)
                 .await;
         }
@@ -491,7 +573,7 @@ impl Harness {
 
     async fn publish_message_failure(&self, id: MessageId, error: String) {
         if let Some(registry) = self.registry.upgrade() {
-            registry
+            let _ = registry
                 .message_failed(&self.root_session_id, id, error)
                 .await;
         }
@@ -509,10 +591,11 @@ impl Harness {
             )));
             return;
         };
-        registry
+        let result = registry
             .message_admitted(&self.root_session_id, id, disposition)
-            .await;
-        let _ = response.send(Ok(disposition));
+            .await
+            .map(|()| disposition);
+        let _ = response.send(result);
     }
 
     async fn begin_delegation(&self, id: MessageId) -> Option<DelegationChange> {
@@ -531,7 +614,12 @@ impl Harness {
             .await;
     }
 
-    async fn start_turn(&mut self, prompt: String, capacity: TurnCapacity) -> std::io::Result<()> {
+    async fn start_turn(
+        &mut self,
+        prompt: String,
+        capacity: TurnCapacity,
+        message_id: Option<MessageId>,
+    ) -> std::io::Result<()> {
         if self.active.is_some() {
             return Err(std::io::Error::other(format!(
                 "agent {} is not idle",
@@ -546,15 +634,6 @@ impl Harness {
             .agent
             .as_ref()
             .ok_or_else(|| std::io::Error::other(format!("agent {} is closed", self.id)))?;
-        let Some(instruction_revision) = registry
-            .harness_turn_started(&self.root_session_id, self.id)
-            .await
-        else {
-            return Err(std::io::Error::other(format!(
-                "agent {} cannot start another turn",
-                self.id
-            )));
-        };
         // A first turn interrupted before a committed model boundary still
         // needs its assignment after idle eviction. Include it in the next
         // admitted prompt when rehydrating from memory.
@@ -566,16 +645,24 @@ impl Harness {
             "{prompt}\n\n{}",
             completion_instructions(&self.output_schema)
         );
-        let turn = match agent
-            .prompt(Prompt::new(prompt).with_instruction_revision(instruction_revision))
-            .await
-        {
+        let (instruction_revision, prompt, operation_id, cancel_on_admission) = registry
+            .admit_child_turn(&self.root_session_id, self.id, prompt, message_id)
+            .await?;
+        let mut request =
+            PromptRequest::new(Prompt::new(prompt).with_instruction_revision(instruction_revision));
+        if let Some(operation_id) = operation_id {
+            request = request.request_id(operation_id);
+        }
+        if cancel_on_admission {
+            request = request.cancel_on_admission();
+        }
+        let turn = match agent.prompt(request).await {
             Ok(turn) => turn,
             Err(error) => {
                 let error = format!("could not start agent {}: {error}", self.id);
                 registry
                     .harness_turn_start_failed(&self.root_session_id, self.id, error.clone())
-                    .await;
+                    .await?;
                 return Err(std::io::Error::other(error));
             }
         };
@@ -583,6 +670,7 @@ impl Harness {
         let control = turn.control();
         let result = platform::spawn(turn);
         self.active = Some(ActiveTurn {
+            registry,
             control,
             result,
             _capacity: capacity,
@@ -614,11 +702,15 @@ impl Harness {
     }
 
     async fn turn_finished(&mut self, result: Result<AgentResult<TurnResult>, TaskError>) {
+        // Release capacity before draining queued work, but keep the registry
+        // through snapshot persistence and transfer to the next execution.
+        let ownership = self.active.as_ref().map(|active| active.registry.clone());
         self.active = None;
         self.publish_turn_result(result).await;
         // Do not depend on the capacity watch to notice our own turn ending.
         // If another agent took the released slot, the watch still retries later.
         self.start_pending().await;
+        drop(ownership);
     }
 
     async fn publish_turn_result(&self, result: Result<AgentResult<TurnResult>, TaskError>) {
@@ -628,14 +720,22 @@ impl Harness {
             )))
         });
         if let Some(registry) = self.registry.upgrade() {
-            registry
-                .harness_turn_finished(&self.root_session_id, self.id, result)
-                .await;
+            let snapshot = match &self.agent {
+                Some(agent) => agent.runtime_snapshot().await.ok(),
+                None => None,
+            };
+            if let Err(error) = registry
+                .harness_turn_finished(&self.root_session_id, self.id, result, snapshot)
+                .await
+            {
+                tracing::error!(%error, "durable child settlement failed; cold recovery required");
+            }
         }
     }
 
     async fn close(&mut self) -> std::io::Result<()> {
-        let shutdown_result = match self.agent.take() {
+        self.stop_active().await?;
+        let shutdown_result = match self.agent.as_ref() {
             Some(agent) => agent.shutdown().await.map_err(|error| {
                 std::io::Error::other(format!("could not close agent {}: {error}", self.id))
             }),
@@ -645,7 +745,7 @@ impl Harness {
         if let Some(registry) = self.registry.upgrade() {
             registry
                 .harness_closed(&self.root_session_id, self.id)
-                .await;
+                .await?;
         }
         shutdown_result
     }
@@ -661,7 +761,9 @@ mod tests {
         let (commands, _commands) = mpsc::channel(COMMAND_CAPACITY);
         let (deferred, mut deferred_receiver) = mpsc::unbounded_channel();
         let (urgent, mut urgent_receiver) = mpsc::unbounded_channel();
+        let (registry, _, _updates) = crate::channel(128);
         let handle = HarnessHandle {
+            registry: Arc::downgrade(&registry),
             commands,
             deferred,
             urgent,

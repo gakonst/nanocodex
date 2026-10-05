@@ -374,6 +374,7 @@ pub struct ToolContext<'a> {
     session_id: &'a str,
     call_id: &'a str,
     turn_id: Option<&'a str>,
+    journal_scope: Option<&'a str>,
     history: &'a [ResponseItem],
     output_token_budget: usize,
     host_context: Option<&'a str>,
@@ -395,11 +396,27 @@ impl<'a> ToolContext<'a> {
             session_id,
             call_id,
             turn_id: None,
+            journal_scope: None,
             history,
             output_token_budget,
             host_context: None,
             instruction_revision: None,
         }
+    }
+
+    /// Attaches the host-owned durable operation and step identity for Code Mode.
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn with_journal_scope(mut self, scope: Option<&'a str>) -> Self {
+        self.journal_scope = scope;
+        self
+    }
+
+    /// Returns the host-owned durable scope, never a provider call identity.
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn journal_scope(self) -> Option<&'a str> {
+        self.journal_scope
     }
 
     /// Captures the runtime instruction revision at the model call boundary.
@@ -581,6 +598,12 @@ pub trait Tool: Send + Sync + 'static {
     /// Execution is serial by default. Opt in only when the handler's state and
     /// effects are safe to overlap with other parallel-capable tools.
     fn supports_parallel_tool_calls(&self) -> bool {
+        false
+    }
+
+    /// Whether repeating an interrupted invocation is safe. Independent from
+    /// parallel execution; defaults to false, including reads and shell tools.
+    fn is_replay_safe(&self) -> bool {
         false
     }
 

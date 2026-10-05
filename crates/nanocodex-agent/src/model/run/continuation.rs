@@ -6,6 +6,8 @@ use super::*;
 struct CurrentExecution {
     phase: ExecutionPhase,
     #[serde(default)]
+    request_policy: Value,
+    #[serde(default)]
     instruction_revision: Option<u64>,
     workspace: String,
     canonical_context: ResponseItem,
@@ -34,6 +36,8 @@ struct CurrentExecution {
     warmup_cost: Option<nanocodex_oai_api::pricing::EstimatedUsdCost>,
     context_window_tokens: u64,
     force_compaction: bool,
+    #[serde(default)]
+    background_compaction: Option<background::PendingCompaction>,
     tool_call_indices: HashMap<Box<str>, u32>,
 }
 
@@ -85,6 +89,8 @@ where
         config.store_responses = saved.store_responses;
         config.context_window_tokens = saved.context_window_tokens;
         self.force_compaction = saved.force_compaction;
+        self.background_compaction = saved.background_compaction;
+        self.background_work = None;
         self.instruction_revision = saved.instruction_revision;
         session.factory = session
             .factory
@@ -104,6 +110,7 @@ where
         } else {
             ConversationState::resume(saved.canonical_context, history)?
         };
+        session.conversation.request_policy = saved.request_policy;
         session
             .conversation
             .managed
@@ -192,6 +199,7 @@ where
         self.record_transport();
         let steps = self.execution_steps.as_ref().expect("durable execution");
         let saved = CurrentExecution {
+            request_policy: session.conversation.request_policy.clone(),
             phase,
             instruction_revision: self.instruction_revision,
             workspace: session.workspace.clone(),
@@ -216,6 +224,7 @@ where
             warmup_cost: self.stats.warmup_usage.estimated_cost.clone(),
             context_window_tokens: self.config.context_window_tokens,
             force_compaction: self.force_compaction,
+            background_compaction: self.background_compaction.clone(),
             tool_call_indices: self.tool_call_indices.clone(),
         };
         steps
@@ -223,6 +232,17 @@ where
                 &saved,
                 session.conversation.flattened_history(),
                 session.factory.profile().prefix().to_vec(),
+                self.background_compaction
+                    .as_ref()
+                    .map_or_else(Vec::new, |pending| {
+                        vec![
+                            format!("background-compaction-{}", pending.after_model_call_index),
+                            format!(
+                                "before-background-compaction-{}",
+                                pending.after_model_call_index
+                            ),
+                        ]
+                    }),
             )
             .await?;
         Ok(())
@@ -236,6 +256,7 @@ mod tests {
     #[test]
     fn execution_accounting_basis_roundtrips_and_defaults_for_legacy_records() {
         let saved = CurrentExecution {
+            request_policy: Value::Null,
             phase: ExecutionPhase::Generate,
             instruction_revision: None,
             workspace: ".".into(),
@@ -266,6 +287,7 @@ mod tests {
             warmup_cost: None,
             context_window_tokens: 272000,
             force_compaction: false,
+            background_compaction: None,
             tool_call_indices: HashMap::new(),
         };
         let mut encoded = serde_json::to_value(saved).unwrap();

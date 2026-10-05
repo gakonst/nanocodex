@@ -65,6 +65,8 @@ cleanup() {
 
 trap cleanup EXIT
 
+node js/nanocodex-tools/scripts/sync-code-tools.mjs --check
+
 cache_helper="js/nanocodex-vite/scripts/wasm-output-cache.mjs"
 # Downstream Turbo caches key on nanocodex#build inputs, which must cover every WASM source.
 node "$cache_helper" check-turbo

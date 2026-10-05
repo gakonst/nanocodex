@@ -116,7 +116,7 @@ it("fences the exact legacy parent after >512 noise/archive deletion and retains
   });
 }, 30_000);
 
-it("replays a journalled completed ordinal and executes a new ordinal under a pending outer head", async () => {
+it("fences a pending cell after owner loss even when its first nested ordinal completed", async () => {
   await runInDurableObject(sessions().getByName(crypto.randomUUID()), async (_instance, ctx) => {
     let reads = 0; let writes = 0;
     let entered!: () => void; let release!: () => void;
@@ -142,8 +142,9 @@ it("replays a journalled completed ordinal and executes a new ordinal under a pe
     expect(ctx.storage.sql.exec("SELECT * FROM managed_code_effect_legacy_parents").toArray()).toEqual([]);
     const recovered = createCodeRuntime(tools, { evaluate: managedCodeEvaluator(), effectJournal: replacement, effectIdentity: effectScope() });
     const result = JSON.parse(await recovered.executeCode(source, "fixture-session", "owned-cell"));
-    expect(result.success).toBe(true);
-    expect({ reads, writes }).toEqual({ reads: 1, writes: 1 });
+    expect(result.success).toBe(false);
+    expect(result.output).toContain("outcome unknown");
+    expect({ reads, writes }).toEqual({ reads: 1, writes: 0 });
     console.log("CODE_EFFECT_JOURNALLED_PARENT_UPGRADE_JOURNEY", JSON.stringify({ reads, writes, result }));
     await ctx.storage.deleteAlarm();
   });
@@ -370,7 +371,7 @@ it("replenishes recovery only for a new model ordinal's real receipt, not a repl
   });
 }, 30_000);
 
-it("pins a pending cell's starting store and merges completed writes exactly once across owner loss", async () => {
+it("fences an unfinished cell after owner loss and preserves its earlier committed store", async () => {
   await runInDurableObject(sessions().getByName(crypto.randomUUID()), async (_instance, ctx) => {
     let calls = 0;
     const tools = { read: { handler: async (input: unknown) => { calls++; return input; } } };
@@ -389,21 +390,22 @@ it("pins a pending cell's starting store and merges completed writes exactly onc
     await expect(lost.executeCode(source, "store-session", "pending")).rejects.toMatchObject({ code: "host_interrupted" });
     expect(calls).toBe(1);
     const recovered = make();
-    // A different completed cell may advance shared state while the older cell
-    // still needs its own immutable starting state to replay its effect inputs.
+    // A different cell may advance shared state; the unfinished older cell
+    // cannot replay guest source or repeat any external effects.
     expect(JSON.parse(await recovered.executeCode('store("other", "kept");', "store-session", "other")).success).toBe(true);
     const result = JSON.parse(await recovered.executeCode(source, "store-session", "pending"));
-    expect(result.success).toBe(true);
-    expect(result.nested_calls.map((call: { structured_result: unknown }) => call.structured_result)).toEqual([{ value: 41 }, { value: 42 }]);
-    expect(calls).toBe(2);
+    expect(result.success).toBe(false);
+    expect(result.output).toContain("outcome unknown");
+    expect(calls).toBe(1);
     expect(JSON.parse(await recovered.executeCode('store("seed", 99);', "store-session", "newer")).success).toBe(true);
     const replay = JSON.parse(await make().executeCode(source, "store-session", "pending"));
-    expect(replay.success).toBe(true);
+    expect(replay.success).toBe(false);
+    expect(replay.output).toContain("outcome unknown");
     const latest = JSON.parse(await make().executeCode('text([load("seed"), load("other")]);', "store-session", "latest"));
     expect(latest.output).toContainEqual({ type: "input_text", text: '[99,"kept"]' });
     const isolated = JSON.parse(await make().executeCode('text(load("seed") === undefined);', "other-session", "latest"));
     expect(isolated.output).toContainEqual({ type: "input_text", text: "true" });
-    expect(calls).toBe(2);
+    expect(calls).toBe(1);
     console.log("STORE_OWNER_REPLAY_JOURNEY", JSON.stringify({ calls, result, replay, latest, isolated }));
     await ctx.storage.deleteAlarm();
   });
@@ -416,7 +418,7 @@ it.each(["input-conflict", "invalid-receipt", "missing-store", "corrupt-store"])
     const make = () => createCodeRuntime(tools, { evaluate: managedCodeEvaluator(), effectJournal: createManagedCodeEffectJournal(ctx.storage), effectIdentity: effectScope() });
     const source = 'text(await tools.write({ value: 1 }));';
     expect(JSON.parse(await make().executeCode(source, "store-session", "same")).success).toBe(true);
-    if (kind === "invalid-receipt") ctx.storage.sql.exec("UPDATE managed_code_effect_receipt_chunks SET receipt_json='{}'");
+    if (kind === "invalid-receipt") ctx.storage.sql.exec("UPDATE managed_code_store_chunks SET value_json='{}' WHERE blob_key LIKE 'receipt:%'");
     if (kind === "missing-store") ctx.storage.sql.exec("DELETE FROM managed_code_cells");
     if (kind === "corrupt-store") ctx.storage.sql.exec("UPDATE managed_code_store_chunks SET value_json='{broken'");
     const result = JSON.parse(await make().executeCode(kind === "input-conflict" ? source.replace("value: 1", "value: 2") : source, "store-session", "same"));
@@ -428,35 +430,92 @@ it.each(["input-conflict", "invalid-receipt", "missing-store", "corrupt-store"])
   });
 }, 30_000);
 
-it("merges concurrent cell writes, retains failed-script writes, and rejects an oversized store without losing earlier state", async () => {
+it("rejects a concurrent same-key read/modify/write conflict without losing the admitted update or repeating effects", async () => {
   await runInDurableObject(sessions().getByName(crypto.randomUUID()), async (_instance, ctx) => {
     let release!: () => void;
     let entered!: () => void;
+    let calls = 0;
     const starting = new Promise<void>(resolve => { entered = resolve; });
     const gate = new Promise<void>(resolve => { release = resolve; });
     const evaluate = managedCodeEvaluator();
-    // Delay one cell after its durable starting snapshot but before entering
-    // QuickJS. The shipped evaluator serializes guests; overlapping snapshot
-    // lifetimes still must merge their independent writes correctly.
-    const make = () => createCodeRuntime({}, { evaluate: async (source: string, environment: CodeEvaluatorEnvironment) => {
-      if (source === 'store("a", 1);') { entered(); await gate; }
-      return evaluate(source, environment);
-    }, effectJournal: createManagedCodeEffectJournal(ctx.storage), effectIdentity: effectScope() });
+    const journal = createManagedCodeEffectJournal(ctx.storage);
+    const source = 'const count = load("counter"); text(await tools.effect({writer:"stale",value:count})); store("counter", count + 1); store("staleOnly", true); text(load("counter"));';
+    const tools = { effect: { handler: async (input: unknown) => { calls++; return input; } } };
+    const make = (effectJournal = journal) => createCodeRuntime(tools, {
+      evaluate: async (code: string, environment: CodeEvaluatorEnvironment) => {
+        // Real QuickJS serializes guests. Hold this guest after its real SQLite
+        // starting snapshot so another real guest commits from the same value.
+        if (code === source) { entered(); await gate; }
+        return evaluate(code, environment);
+      }, effectJournal, effectIdentity: effectScope(),
+    });
     const runtime = make();
-    const a = runtime.executeCode('store("a", 1);', "concurrent", "a");
+    expect(JSON.parse(await runtime.executeCode('store("counter", 41);', "concurrent", "seed")).success).toBe(true);
+    const stale = runtime.executeCode(source, "concurrent", "stale");
     await starting;
-    const b = JSON.parse(await runtime.executeCode('store("b", 2);', "concurrent", "b"));
-    expect(b.success).toBe(true);
+    const admittedSource = 'const count = load("counter"); text(await tools.effect({writer:"admitted",value:count})); store("counter", count + 1); text(load("counter"));';
+    const admitted = JSON.parse(await runtime.executeCode(admittedSource, "concurrent", "admitted"));
+    expect(admitted.success).toBe(true);
+    expect(admitted.nested_calls[0].structured_result).toEqual({ writer: "admitted", value: 41 });
     release();
-    expect(JSON.parse(await a).success).toBe(true);
+    const conflict = JSON.parse(await stale);
+    expect(conflict.success).toBe(false);
+    expect(conflict.output).toContain("outcome unknown");
+    expect(conflict.output).toContain("version conflict");
+    expect(conflict.nested_calls[0].structured_result).toEqual({ writer: "stale", value: 41 });
+    expect(calls).toBe(2);
+    expect(await journal.snapshotStore!("concurrent")).toEqual([["counter", 42]]);
+    const staleKey = JSON.stringify(["concurrent", "original", 1, "stale"]);
+    expect(ctx.storage.sql.exec("SELECT expected_version,writes_hash FROM managed_code_cells WHERE cell_key=?", staleKey).one())
+      .toEqual({ expected_version: 1, writes_hash: null });
+    expect(ctx.storage.sql.exec("SELECT 1 FROM managed_code_store_blobs WHERE blob_key=?", "receipt:" + staleKey).toArray()).toEqual([]);
+    expect(ctx.storage.sql.exec("SELECT version FROM managed_code_store_versions WHERE session_id='concurrent'").one()).toEqual({ version: 2 });
     const failed = JSON.parse(await runtime.executeCode('store("failed", 3); throw new Error("ordinary failure");', "concurrent", "failed"));
     expect(failed.success).toBe(false);
     const tooLarge = JSON.parse(await runtime.executeCode('store("large", "x".repeat(9 * 1024 * 1024));', "concurrent", "large"));
     expect(tooLarge.success).toBe(false);
     expect(tooLarge.output).toContain("outcome unknown");
-    const latest = JSON.parse(await make().executeCode('text([load("a"), load("b"), load("failed"), load("large") === undefined]);', "concurrent", "read"));
-    expect(latest.output).toContainEqual({ type: "input_text", text: '[1,2,3,true]' });
-    console.log("STORE_MERGE_AND_BOUNDS_JOURNEY", JSON.stringify({ failed, tooLarge, latest }));
+    const restartedJournal = createManagedCodeEffectJournal(ctx.storage);
+    const restarted = make(restartedJournal);
+    expect(JSON.parse(await restarted.executeCode('store("counter", load("counter") + 1);', "concurrent", "next")).success).toBe(true);
+    const retainedUnknown = JSON.parse(await restarted.executeCode(source, "concurrent", "stale"));
+    expect(retainedUnknown.success).toBe(false);
+    expect(retainedUnknown.output).toContain("outcome unknown");
+    expect(retainedUnknown.output).toContain("version conflict");
+    expect(calls).toBe(2);
+    expect(JSON.parse(await restarted.executeCode(admittedSource, "concurrent", "admitted"))).toEqual(admitted);
+    const latest = JSON.parse(await restarted.executeCode('text([load("counter"), load("staleOnly"), load("failed"), load("large") === undefined]);', "concurrent", "read"));
+    expect(latest.output).toContainEqual({ type: "input_text", text: '[43,null,null,true]' });
+    expect(await restartedJournal.snapshotStore!("concurrent")).toEqual([["counter", 43]]);
+    expect(ctx.storage.sql.exec("SELECT version FROM managed_code_store_versions WHERE session_id='concurrent'").one()).toEqual({ version: 3 });
+    console.log("STORE_CAS_AND_BOUNDS_JOURNEY", JSON.stringify({ calls, admitted, conflict, retainedUnknown, failed, tooLarge, latest }));
+    await ctx.storage.deleteAlarm();
+  });
+}, 30_000);
+
+it("keeps empty read-only stores valid and rolls state, version, and terminal receipt back together", async () => {
+  await runInDurableObject(sessions().getByName(crypto.randomUUID()), async (_instance, ctx) => {
+    const make = () => createCodeRuntime({}, { evaluate: managedCodeEvaluator(), effectJournal: createManagedCodeEffectJournal(ctx.storage), effectIdentity: effectScope() });
+    const empty = JSON.parse(await make().executeCode('text(load("counter") === undefined);', "empty", "read"));
+    expect(empty.success).toBe(true);
+    expect(JSON.parse(await make().executeCode('text(load("counter") === undefined);', "empty", "read-again")).success).toBe(true);
+    expect(await createManagedCodeEffectJournal(ctx.storage).snapshotStore!("empty")).toEqual([]);
+    expect(ctx.storage.sql.exec("SELECT 1 FROM managed_code_store_versions WHERE session_id='empty'").toArray()).toEqual([]);
+    expect(JSON.parse(await make().executeCode('store("counter", 1);', "atomic", "seed")).success).toBe(true);
+    // Fail the actual SQLite receipt insert after the session blob/version were
+    // written in the same transaction. This is a storage-boundary injection,
+    // not a replacement evaluator or fake journal result.
+    ctx.storage.sql.exec(`CREATE TRIGGER fixture_receipt_failure BEFORE INSERT ON managed_code_store_chunks
+      WHEN NEW.blob_key = 'receipt:["atomic","original",1,"write"]'
+      BEGIN SELECT RAISE(ABORT, 'fixture terminal receipt unavailable'); END`);
+    await expect(make().executeCode('store("counter", 2);', "atomic", "write")).rejects.toMatchObject({ code: "host_interrupted" });
+    const journal = createManagedCodeEffectJournal(ctx.storage);
+    expect(await journal.snapshotStore!("atomic")).toEqual([["counter", 1]]);
+    expect(ctx.storage.sql.exec("SELECT version FROM managed_code_store_versions WHERE session_id='atomic'").one()).toEqual({ version: 1 });
+    expect(ctx.storage.sql.exec("SELECT writes_hash FROM managed_code_cells WHERE cell_key=?", JSON.stringify(["atomic", "original", 1, "write"])).one()).toEqual({ writes_hash: null });
+    expect(ctx.storage.sql.exec("SELECT 1 FROM managed_code_store_blobs WHERE blob_key=?", 'receipt:["atomic","original",1,"write"]').toArray()).toEqual([]);
+    ctx.storage.sql.exec("DROP TRIGGER fixture_receipt_failure");
+    console.log("STORE_ATOMIC_RECEIPT_JOURNEY", JSON.stringify({ empty, snapshot: await journal.snapshotStore!("atomic") }));
     await ctx.storage.deleteAlarm();
   });
 }, 30_000);

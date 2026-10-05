@@ -34,6 +34,7 @@ pub(super) struct ContinuationPolicy {
 #[derive(Clone)]
 pub(super) struct ConversationState {
     pub(super) canonical_context: Arc<ResponseItem>,
+    pub(super) request_policy: Value,
     pub(super) managed: ManagedSessionState,
     pub(super) continuation_policy: Option<ContinuationPolicy>,
 }
@@ -44,6 +45,7 @@ impl ConversationState {
             canonical_context: Arc::new(canonical_context),
             managed: ManagedSessionState::new(Vec::new()),
             continuation_policy: None,
+            request_policy: Value::Null,
         }
     }
 
@@ -59,6 +61,7 @@ impl ConversationState {
             canonical_context: Arc::new(canonical_context),
             managed: ManagedSessionState::new(history),
             continuation_policy: None,
+            request_policy: Value::Null,
         })
     }
 
@@ -78,6 +81,7 @@ impl ConversationState {
             canonical_context: Arc::new(canonical_context),
             managed,
             continuation_policy: None,
+            request_policy: Value::Null,
         };
         state.prepare_replay_images();
         Ok(state)

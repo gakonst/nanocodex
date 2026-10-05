@@ -80,7 +80,10 @@ agent-relative tools for every root, spawn, and fork. JavaScript does not load a
 second WASM plugin or maintain a parallel scheduler.
 
 The extension exposes `spawn_agent`, `submit_result`, `send_agent_message`,
-`list_agents`, `wait_agent`, `interrupt_agent`, and `close_agent`. Root shutdown
-closes its children. All subagents are ephemeral, including children of a durable
-root: root restart resumes only the root and discards the child tree. Read the [binding guide](https://github.com/gakonst/nanocodex/blob/master/js/nanocodex/README.md#standard-web-and-browser-tools)
+`list_agents`, `wait_agent`, `interrupt_agent`, and `close_agent`. With a durable
+root, child identities, mailboxes, results, and execution checkpoints survive
+runtime reconstruction. Choose a child lifetime with `foreground` or `background`;
+background work requires durability and the managed host schedules its recovery.
+Explicit closure cancels the selected subtree. Without a durability store the
+tree remains in memory. Read the [binding guide](https://github.com/gakonst/nanocodex/blob/master/js/nanocodex/README.md#standard-web-and-browser-tools)
 and [branches and subagents](/core/branching).

@@ -379,9 +379,10 @@ export type Agent = Readonly<{
   /** Account-owned list metadata, present on handles returned by `list()`. */
   summary?: Summary | undefined;
   turn: Readonly<{ prompt(options: PromptOptions): Turn }>;
-  /** Copy the latest committed model boundary into a separate durable agent.
+  /** Copy a completed model boundary and policy-selected session documents into a separate durable agent.
+   * `at` selects a completed turn ID; omitted selects the latest completed turn.
    * Reuse the same key to reconcile an uncertain response. */
-  fork(options: Readonly<{ idempotencyKey: string; signal?: AbortSignal | undefined }>): Promise<Agent>;
+  fork(options: Readonly<{ idempotencyKey: string; at?: string | undefined; signal?: AbortSignal | undefined }>): Promise<Agent>;
   settings: Readonly<{
     read(): Promise<CreateSettings>;
     update(patch: SettingsPatch): Promise<CreateSettings>;

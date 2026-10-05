@@ -80,6 +80,10 @@
     },
     "./standard": "./tools/standard.mjs",
     "./standard-descriptions": "./tools/standardDescriptions.mjs",
+    "./runtime/code-discovery": {
+      "types": "./runtime/code-discovery.d.mts",
+      "import": "./runtime/code-discovery.mjs"
+    },
     "./runtime/code-tools": "./runtime/code-tools.mjs",
     "./runtime/code-values": "./runtime/code-values.mjs",
     "./runtime/code-runtime": "./runtime/code-runtime.mjs",
@@ -111,7 +115,7 @@
   },
   "scripts": {
     "clean": "node --eval \"require('node:fs').rmSync('dist', { recursive: true, force: true })\"",
-    "build": "npm run clean && tsc -p tsconfig.json",
+    "build": "node scripts/sync-code-tools.mjs --check && npm run clean && tsc -p tsconfig.json",
     "prepack": "npm run build",
     "test": "npm run build && node --test test/*.test.mjs",
     "typecheck": "tsc --noEmit"

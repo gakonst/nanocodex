@@ -5,7 +5,9 @@ use std::sync::Arc;
 use nanocodex_agent::Result as AgentResult;
 use nanocodex_claude::{
     ClaudeBuilder,
-    execution::{Admission as ClaudeAdmission, ClaudeExecutionPolicy, PolicyFuture, Step},
+    execution::{
+        Admission as ClaudeAdmission, ClaudeExecutionPolicy, PolicyFuture, RequestPreparation, Step,
+    },
 };
 use serde_json::Value;
 
@@ -21,16 +23,184 @@ impl DurableAgentExt for ClaudeBuilder {
         let checkpoint = checkpoint
             .map(|value| value.decode::<Value>().map_err(agent_error))
             .transpose()?;
-        self.execution_policy(Arc::new(ClaudeExecution { state_id, owner }), checkpoint)
+        let owner = Arc::new(owner);
+        #[cfg(not(target_family = "wasm"))]
+        let code_journal = Arc::new(crate::code_mode::DurableCodeJournal::new(
+            owner.clone(),
+            state,
+        ));
+        self.execution_policy(
+            Arc::new(ClaudeExecution {
+                settings: None,
+                warm: None,
+                state_id,
+                owner,
+                #[cfg(not(target_family = "wasm"))]
+                code_journal,
+            }),
+            checkpoint,
+        )
     }
 }
 
 struct ClaudeExecution {
     state_id: String,
-    owner: DurableOwner,
+    owner: Arc<DurableOwner>,
+    #[cfg(not(target_family = "wasm"))]
+    code_journal: Arc<crate::code_mode::DurableCodeJournal>,
+    settings: Option<crate::request_policy::RequestPolicySettings>,
+    warm: Option<(
+        nanocodex_claude::ClaudeClient,
+        crate::cache_warm::CacheWarmPolicy,
+    )>,
+}
+
+impl crate::request_policy::DurableClaudeRequestExt for ClaudeBuilder {
+    async fn durability_with_request_policy(
+        self,
+        state: DurableSession,
+        settings: crate::request_policy::RequestPolicySettings,
+    ) -> AgentResult<Self> {
+        let state_id = state.state_id().to_owned();
+        let (owner, checkpoint) = state.acquire_agent().await.map_err(agent_error)?;
+        let checkpoint = checkpoint
+            .map(|value| value.decode::<Value>().map_err(agent_error))
+            .transpose()?;
+        let owner = Arc::new(owner);
+        #[cfg(not(target_family = "wasm"))]
+        let code_journal = Arc::new(crate::code_mode::DurableCodeJournal::new(
+            owner.clone(),
+            state,
+        ));
+        self.execution_policy(
+            Arc::new(ClaudeExecution {
+                state_id,
+                owner,
+                settings: Some(settings),
+                warm: None,
+                #[cfg(not(target_family = "wasm"))]
+                code_journal,
+            }),
+            checkpoint,
+        )
+    }
+    async fn durability_with_request_policy_and_cache_warm(
+        self,
+        state: DurableSession,
+        settings: crate::request_policy::RequestPolicySettings,
+        client: nanocodex_claude::ClaudeClient,
+        policy: crate::cache_warm::CacheWarmPolicy,
+    ) -> AgentResult<Self> {
+        policy.validate().map_err(agent_error)?;
+        let state_id = state.state_id().to_owned();
+        let (owner, checkpoint) = state.acquire_agent().await.map_err(agent_error)?;
+        let checkpoint = checkpoint
+            .map(|value| value.decode::<Value>().map_err(agent_error))
+            .transpose()?;
+        let owner = Arc::new(owner);
+        #[cfg(not(target_family = "wasm"))]
+        let code_journal = Arc::new(crate::code_mode::DurableCodeJournal::new(
+            owner.clone(),
+            state,
+        ));
+        self.execution_policy(
+            Arc::new(ClaudeExecution {
+                state_id,
+                owner,
+                settings: Some(settings),
+                warm: Some((client, policy)),
+                #[cfg(not(target_family = "wasm"))]
+                code_journal,
+            }),
+            checkpoint,
+        )
+    }
 }
 
 impl ClaudeExecutionPolicy for ClaudeExecution {
+    fn prepare_request(
+        &self,
+        operation: String,
+        request_id: String,
+        continuation: bool,
+        state: Value,
+        request: Value,
+    ) -> PolicyFuture<'_, Option<RequestPreparation>> {
+        Box::pin(async move {
+            let Some(settings) = &self.settings else {
+                return Ok(None);
+            };
+            if state["requests"].as_array().is_some_and(|requests| {
+                requests
+                    .iter()
+                    .any(|entry| entry["request"]["request_id"] == request_id)
+            }) {
+                return settings
+                    .prepare_claude(request_id, continuation, state, request)
+                    .map(Some)
+                    .map_err(agent_error);
+            }
+            let step = format!("prepare/{request_id}");
+            // Configuration and virtual selection are frozen in the receipt. A
+            // recovered turn consumes that receipt even if host settings changed.
+            let input =
+                serde_json::json!({"request":request, "state":state, "continuation":continuation});
+            let prepared = match self
+                .owner
+                .begin_step(
+                    operation.clone(),
+                    step.clone(),
+                    "request_policy".into(),
+                    &input,
+                    crate::ReplaySafety::Safe,
+                )
+                .await
+                .map_err(agent_error)?
+            {
+                BeginStep::OutcomeUnknown => Err(agent_error(crate::Error::InvalidState(
+                    "request preparation outcome is unknown".into(),
+                ))),
+                BeginStep::Replay(value) => {
+                    let prepared: RequestPreparation = value.decode().map_err(agent_error)?;
+                    // Current host authorization and limits still constrain a frozen receipt.
+                    settings
+                        .prepare_claude(request_id.clone(), continuation, prepared.state, request)
+                        .map_err(agent_error)
+                }
+                BeginStep::Execute => {
+                    let prepared = settings
+                        .prepare_claude(request_id.clone(), continuation, state, request)
+                        .map_err(agent_error)?;
+                    self.owner
+                        .complete_step(operation.clone(), step, &prepared)
+                        .await
+                        .map_err(agent_error)?;
+                    Ok(prepared)
+                }
+            }?;
+            if !continuation && let Some((client, policy)) = &self.warm {
+                return crate::cache_warm::warm(
+                    &self.owner,
+                    &operation,
+                    &request_id,
+                    prepared,
+                    client,
+                    policy,
+                )
+                .await
+                .map(Some)
+                .map_err(agent_error);
+            }
+            Ok(Some(prepared))
+        })
+    }
+    #[cfg(not(target_family = "wasm"))]
+    fn code_mode_journal(
+        &self,
+    ) -> Option<Arc<dyn nanocodex_oai_tools::code_mode::CodeModeJournal>> {
+        Some(self.code_journal.clone())
+    }
+
     fn state_id(&self) -> &str {
         &self.state_id
     }
@@ -84,6 +254,20 @@ impl ClaudeExecutionPolicy for ClaudeExecution {
         })
     }
 
+    fn advance_retaining(
+        &self,
+        id: String,
+        state: Value,
+        retained_steps: Vec<String>,
+    ) -> PolicyFuture<'_, ()> {
+        Box::pin(async move {
+            self.owner
+                .advance_retaining(id, payload(&state)?, retained_steps)
+                .await
+                .map_err(agent_error)
+        })
+    }
+
     fn begin_step(
         &self,
         id: String,
@@ -91,14 +275,40 @@ impl ClaudeExecutionPolicy for ClaudeExecution {
         kind: String,
         input: Value,
     ) -> PolicyFuture<'_, Step> {
+        self.begin_step_with_replay(id, step_id, kind, input, crate::ReplaySafety::Unsafe)
+    }
+
+    fn begin_step_with_replay(
+        &self,
+        id: String,
+        step_id: String,
+        kind: String,
+        input: Value,
+        replay_safety: crate::ReplaySafety,
+    ) -> PolicyFuture<'_, Step> {
         Box::pin(async move {
             match self
                 .owner
-                .begin_step(id, step_id, kind, &input)
+                .begin_step(
+                    id.clone(),
+                    step_id.clone(),
+                    kind.clone(),
+                    &input,
+                    replay_safety,
+                )
                 .await
                 .map_err(agent_error)?
             {
-                BeginStep::Execute => Ok(Step::Execute),
+                BeginStep::OutcomeUnknown => Ok(Step::OutcomeUnknown),
+                BeginStep::Execute => {
+                    #[cfg(not(target_family = "wasm"))]
+                    if kind == "tool" && input.get("name").and_then(Value::as_str) == Some("exec") {
+                        self.code_journal
+                            .bind(&id, &step_id, &input.to_string())
+                            .map_err(agent_error)?;
+                    }
+                    Ok(Step::Execute)
+                }
                 BeginStep::Replay(value) => Ok(Step::Replay(value.decode().map_err(agent_error)?)),
             }
         })

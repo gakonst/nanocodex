@@ -8,6 +8,10 @@ import { check, fingerprintInputs, save } from "./wasm-output-cache.mjs";
 
 const repository = new URL("../../../", import.meta.url);
 const scripts = ["js/nanocodex-vite/scripts/build-js-package.sh", "js/nanocodex-vite/scripts/wasm-output-cache.mjs", "js/nanocodex-vite/scripts/wasm-memory-views.mjs", "js/nanocodex/scripts/deduplicate-wasm.mjs", "js/nanocodex/scripts/write-package-types.mjs", "js/nanocodex/scripts/write-wasm-attestation.mjs", "js/nanocodex/scripts/check-managed-wasm.mjs"];
+scripts.push("js/nanocodex-tools/scripts/sync-code-tools.mjs");
+for (const name of ["code-tools.mjs", "code-values.mjs", "code-discovery.mjs"]) {
+  scripts.push(`js/nanocodex-tools/runtime/${name}`, `crates/nanocodex-oai-tools/src/code_mode/${name}`);
+}
 const pkg = (name, extra = "") => `[package]\nname = "${name}"\nversion = "0.0.0"\nedition = "2021"\n${extra}`;
 const turbo = (crates) => JSON.stringify({ tasks: { "nanocodex#build": { inputs: ["$TURBO_DEFAULT$", "$TURBO_ROOT$/Cargo.toml", "$TURBO_ROOT$/Cargo.lock", "$TURBO_ROOT$/.cargo/**", "$TURBO_ROOT$/js/nanocodex-vite/scripts/**", ...crates.map((crate) => `$TURBO_ROOT$/crates/${crate}/**`)] } } });
 
@@ -26,6 +30,8 @@ async function fixture(t) {
   await put("js/nanocodex/package.json", '{"devDependencies":{"binaryen":"132.0.0"}}');
   await put("crates/core/Cargo.toml", pkg("core"));
   await put("crates/core/src/lib.rs", "// core source");
+  await put("crates/nanocodex-oai-tools/Cargo.toml", pkg("nanocodex-oai-tools"));
+  await put("crates/nanocodex-oai-tools/src/lib.rs", "// embedded assets only in this fixture");
   await put("crates/host/Cargo.toml", pkg("host"));
   await put("crates/host/src/lib.rs", "// host source");
   await put(".cargo/config.toml", "# config");
@@ -52,6 +58,12 @@ test("content key, loud failures, and verified pre-Cargo reuse", async (t) => {
   assert.notEqual(await fingerprintInputs(root, "release", { CARGO_PROFILE_WASM_OPT_LEVEL: "s" }), key);
   for (const path of ["crates/core/src/lib.rs", "crates/core/Cargo.toml", "Cargo.toml", "Cargo.lock", ".cargo/config.toml", "js/nanocodex-vite/scripts/wasm-memory-views.mjs"]) assert.ok(await affects(path), path);
   assert.equal(await affects("js/nanocodex/cloudflare/worker.mjs"), false);
+
+  const embedded = "crates/nanocodex-oai-tools/src/code_mode/code-discovery.mjs";
+  const originalEmbedded = await readFile(resolve(root, embedded));
+  await put(embedded, "// stale discovery source");
+  assert.throws(build, /Rust Code Mode code-discovery.mjs is stale/);
+  await put(embedded, originalEmbedded);
 
   await put("turbo.json", turbo([]));
   assert.throws(build, /turbo\.json nanocodex#build inputs omit WASM inputs/);

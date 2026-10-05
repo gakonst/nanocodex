@@ -457,6 +457,19 @@ impl ResponsesService {
         request: &ResponsesAttempt,
         transport: ResponsesTransport,
     ) -> Result<EncodedRequest, ResponsesServiceError> {
+        if let Some(prepared) = &request.prepared_request {
+            let mut body = (**prepared).clone();
+            if transport == ResponsesTransport::WebSocket {
+                body["type"] = "response.create".into();
+                body["client_metadata"]["responses_lite"] = "true".into();
+                if let Some(state) = connection.turn_state.as_deref() {
+                    body["client_metadata"]["turn_state"] = state.into();
+                }
+            }
+            return EncodedRequest::new(&body).map_err(|error| {
+                ResponsesServiceError::responses(error, FailurePhase::Encode, connection.generation)
+            });
+        }
         let encoded = match request.kind {
             ResponsesAttemptKind::Warmup => EncodedRequest::new(&ResponseCreate::warmup(
                 &self.config,
@@ -798,7 +811,13 @@ impl Service<ResponsesAttempt> for ResponsesService {
             );
             async move {
                 let queued_at = Instant::now();
-                let mut connection = service.connection.lock().await;
+                // Owned background work must not occupy the foreground socket
+                // or its request lock. The full replay owns its routing state.
+                let independent = request
+                    .independent_connection
+                    .then(|| Arc::new(Mutex::new(ConnectionState::new())));
+                let connection_state = independent.as_ref().unwrap_or(&service.connection);
+                let mut connection = connection_state.lock().await;
                 tracing::Span::current().record("request.queue.duration_ns", elapsed_ns(queued_at));
                 connection.enter_logical_turn(request.logical_turn);
                 let transport = request.effective_transport(service.config.responses_transport);

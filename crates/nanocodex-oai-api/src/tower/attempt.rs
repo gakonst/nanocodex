@@ -153,6 +153,7 @@ pub struct TransportStatsDelta {
 #[derive(Clone)]
 pub struct ResponsesAttempt {
     pub(crate) kind: ResponsesAttemptKind,
+    pub(crate) prepared_request: Option<Arc<serde_json::Value>>,
     pub(crate) call_index: Option<u32>,
     full_history: ResponseHistory,
     incremental_history: ResponseHistory,
@@ -168,6 +169,7 @@ pub struct ResponsesAttempt {
     pub(crate) max_attempts: u32,
     full_replay: bool,
     pub(crate) logical_turn: u64,
+    pub(crate) independent_connection: bool,
     session_transport: Arc<SessionTransport>,
 }
 
@@ -181,6 +183,7 @@ impl ResponsesAttempt {
         session_transport: Arc<SessionTransport>,
     ) -> Self {
         Self {
+            prepared_request: None,
             kind: ResponsesAttemptKind::Warmup,
             call_index: None,
             full_history: ResponseHistory::default(),
@@ -197,6 +200,7 @@ impl ResponsesAttempt {
             max_attempts: 1,
             full_replay: false,
             logical_turn: 0,
+            independent_connection: false,
             session_transport,
         }
     }
@@ -216,6 +220,7 @@ impl ResponsesAttempt {
         session_transport: Arc<SessionTransport>,
     ) -> Self {
         Self {
+            prepared_request: None,
             kind: ResponsesAttemptKind::Generation,
             call_index: Some(call_index),
             full_history,
@@ -232,6 +237,7 @@ impl ResponsesAttempt {
             max_attempts: RESPONSE_MAX_ATTEMPTS.get(),
             full_replay: previous_response_id.is_none(),
             logical_turn: 0,
+            independent_connection: false,
             session_transport,
         }
     }
@@ -252,6 +258,7 @@ impl ResponsesAttempt {
         session_transport: Arc<SessionTransport>,
     ) -> Self {
         Self {
+            prepared_request: None,
             kind: ResponsesAttemptKind::Compaction,
             call_index: Some(call_index),
             full_history,
@@ -268,6 +275,7 @@ impl ResponsesAttempt {
             max_attempts: COMPACTION_MAX_ATTEMPTS,
             full_replay: previous_response_id.is_none(),
             logical_turn: 0,
+            independent_connection: false,
             session_transport,
         }
     }
@@ -290,6 +298,51 @@ impl ResponsesAttempt {
                 self.tail.as_ref(),
             )
         }
+    }
+
+    /// Builds the full native body used for a frozen durable request. Authentication
+    /// and connection-local continuation state are applied by the live transport.
+    #[doc(hidden)]
+    pub fn native_request(
+        &self,
+        config: &crate::ModelConfig,
+    ) -> Result<serde_json::Value, serde_json::Error> {
+        serde_json::to_value(crate::responses::ResponseCreate::generation_with_policy(
+            config,
+            crate::responses::CreatePolicy::new(
+                crate::ResponsesTransport::Https,
+                self.model,
+                self.thinking,
+                self.fast_mode,
+            ),
+            ResponsesInput::history(
+                self.profile.prefix(),
+                &self.full_history,
+                self.tail.as_ref(),
+            ),
+            None,
+            &self.profile,
+            None,
+        ))
+    }
+
+    /// Installs a previously prepared full native request for every retry.
+    #[doc(hidden)]
+    pub fn with_prepared_request(mut self, request: serde_json::Value, model: Model) -> Self {
+        self.prepared_request = Some(Arc::new(request));
+        self.model = model;
+        self.full_replay = true;
+        self
+    }
+
+    /// Runs a full replay on an owned connection beside foreground requests.
+    /// Sticky routing, cancellation and fallback remain local to this work.
+    #[must_use]
+    pub fn with_independent_connection(mut self) -> Self {
+        self.independent_connection = true;
+        self.session_transport = Arc::new(SessionTransport::new());
+        self.force_full_replay();
+        self
     }
 
     /// Returns the provider operation represented by this attempt.

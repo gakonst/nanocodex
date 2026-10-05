@@ -78,8 +78,11 @@ test("managed Agent checkpoint fork creates a separate child with no prompt body
   assert.deepEqual(calls[0], {
     path: `/v1/agents/${agentId}/forks`, body: "", key: "stable-side-fork",
   });
+  await parent.fork({ idempotencyKey: "historical-side-fork", at: "completed-first" });
+  assert.deepEqual(calls[1], { path: `/v1/agents/${agentId}/forks`, body: JSON.stringify({at: "completed-first"}), key: "historical-side-fork" });
   await assert.rejects(parent.fork({ idempotencyKey: "bad key" }), /idempotency key/);
-  assert.equal(calls.length, 1);
+  await assert.rejects(parent.fork({ idempotencyKey: "safe", at: "bad turn id" }), /completed turn/);
+  assert.equal(calls.length, 2);
   const forged = Agent.open(agentId, { baseUrl: origin, apiKey, fetch: async () =>
     Response.json({ agent_id: agentId, parent_agent_id: agentId }, { status: 201 }) });
   await assert.rejects(forged.fork({ idempotencyKey: "safe" }), /separate child/);

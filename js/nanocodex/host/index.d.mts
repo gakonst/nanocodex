@@ -3,6 +3,12 @@ export { createQuickJsEvaluator } from "../runtime/quickjs-evaluator.mjs";
 export type {
   AgentActions,
   AgentEvent,
+  DocumentFork,
+  DocumentForkPolicy,
+  DocumentForkSeed,
+  DocumentValue,
+  DocumentWrite,
+  SessionDocument,
   AgentLifecycle,
   AgentOptions,
   AgentSessionContext,
@@ -65,3 +71,5 @@ export type {
 } from "../browser/host.mjs";
 
 export * as Claude from "./Claude.mjs";
+
+export * as RequestPolicy from "../runtime/request-policy.mjs";

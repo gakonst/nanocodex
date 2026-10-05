@@ -32,11 +32,13 @@ impl Snapshot {
         Ok(snapshot)
     }
 }
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct Cursor {
     #[serde(default)]
     pub(super) instruction_revision: Option<u64>,
+    #[serde(default)]
+    pub(super) background: Option<background::PendingSummary>,
     pub(super) snapshot: Snapshot,
     pub(super) template: MessagesRequest,
     #[serde(default)]
@@ -70,13 +72,19 @@ pub(super) struct Effect<'a> {
     step: String,
 }
 impl Effect<'_> {
-    pub(super) async fn begin(&self, kind: &str, input: Value) -> Result<Step> {
+    pub(super) async fn begin_with_replay(
+        &self,
+        kind: &str,
+        input: Value,
+        replay_safety: nanocodex_agent::ReplaySafety,
+    ) -> Result<Step> {
         self.policy
-            .begin_step(
+            .begin_step_with_replay(
                 self.operation.to_owned(),
                 self.step.clone(),
                 kind.to_owned(),
                 input,
+                replay_safety,
             )
             .await
     }
@@ -87,6 +95,39 @@ impl Effect<'_> {
     }
 }
 impl State {
+    pub(super) async fn prepare_policy_request(
+        &self,
+        conversation: &mut Conversation,
+        cursor: &mut Cursor,
+        messages: &[Message],
+        index: u32,
+    ) -> Result<MessagesRequest> {
+        let mut template = cursor.template.clone();
+        let (Some(policy), Some(operation)) = (&self.policy, &cursor.operation) else {
+            return Ok(template);
+        };
+        template.messages = messages.to_vec();
+        template.container = conversation.container.clone();
+        let id = format!("{operation}/model-{index}");
+        if let Some(prepared) = policy
+            .prepare_request(
+                operation.clone(),
+                id,
+                index > 0,
+                conversation.request_policy.clone(),
+                serde_json::to_value(&template).map_err(provider_error)?,
+            )
+            .await?
+        {
+            template = serde_json::from_value(prepared.request).map_err(recovery_error)?;
+            if conversation.request_policy != prepared.state {
+                conversation.request_policy = prepared.state;
+                self.advance_cursor(cursor, conversation).await?;
+            }
+        }
+        Ok(template)
+    }
+
     #[cfg_attr(
         not(all(feature = "tools", not(target_family = "wasm"))),
         allow(clippy::missing_const_for_fn)
@@ -163,6 +204,7 @@ impl State {
         }
         let mut cursor = Cursor {
             instruction_revision: None,
+            background: None,
             snapshot: self.snapshot(conversation).await?,
             template: self.request_template(speed),
             wire_profile: Some(self.client.freeze_wire_profile()),
@@ -193,9 +235,13 @@ impl State {
         cursor.snapshot = self.snapshot(conversation).await?;
         if let (Some(policy), Some(operation)) = (&self.policy, &cursor.operation) {
             policy
-                .advance(
+                .advance_retaining(
                     operation.clone(),
                     serde_json::to_value(&*cursor).map_err(provider_error)?,
+                    cursor
+                        .background
+                        .as_ref()
+                        .map_or_else(Vec::new, |pending| vec![pending.step.clone()]),
                 )
                 .await?;
         }
@@ -244,6 +290,23 @@ impl State {
         }
         settled
     }
+    fn replay_safety(&self, name: &str) -> nanocodex_agent::ReplaySafety {
+        #[cfg(all(feature = "code-mode", not(target_family = "wasm")))]
+        if let Some(runtime) = &self.code_runtime
+            && (matches!(name, "exec" | "wait") || runtime.contains(name))
+        {
+            return if runtime.is_replay_safe(name) {
+                nanocodex_agent::ReplaySafety::Safe
+            } else {
+                nanocodex_agent::ReplaySafety::Unsafe
+            };
+        }
+        self.tool_replay_safety
+            .get(name)
+            .copied()
+            .unwrap_or_default()
+    }
+
     pub(super) async fn durable_tool(
         &self,
         control: (&Cursor, &Cancellation),
@@ -257,11 +320,19 @@ impl State {
         let index = cursor.index;
         let step = format!("tool-{index}-{id}");
         let effect = cursor.effect(self, &step);
-        if let Some(effect) = &effect
-            && let Step::Replay(value) = effect
-                .begin("tool", json!({"id":id,"name":name,"input":input}))
+        let admission = if let Some(effect) = &effect {
+            effect
+                .begin_with_replay(
+                    "tool",
+                    json!({"id":id,"name":name,"input":input}),
+                    self.replay_safety(name),
+                )
                 .await?
-        {
+        } else {
+            Step::Execute
+        };
+        let outcome_unknown = matches!(admission, Step::OutcomeUnknown);
+        if let Step::Replay(value) = admission {
             #[derive(Deserialize)]
             #[serde(deny_unknown_fields)]
             struct Receipt {
@@ -283,7 +354,7 @@ impl State {
         let unknown = || {
             ContentBlock::tool_result_content(id, ToolResultContent::Text("Tool execution interrupted; outcome unknown. Do not assume it did not run or automatically repeat it.".into()), true)
         };
-        let result = if cancel.flag.load(Ordering::SeqCst) {
+        let result = if outcome_unknown || cancel.flag.load(Ordering::SeqCst) {
             unknown()
         } else if let Some(handler) = handler {
             tokio::select! {

@@ -11,6 +11,10 @@ import {
 } from "../internal.mjs";
 
 export {
+  compareExchangeDocuments,
+  document,
+  documentFork,
+  stageDocumentWrites,
   endRealtimeConversation,
   realtimeDelegation,
   realtimeTailDelegation,

@@ -33,6 +33,7 @@ export function defineRuntime(definition) {
     shutdown: definition.shutdown || ((agent) => agent.shutdown()),
     subscribe: definition.subscribe,
     adopt: definition.adopt,
+    fork: definition.fork,
     release: definition.release,
     decorate: definition.decorate,
     reserveSessions: definition.reserveSessions !== false,
@@ -185,12 +186,17 @@ export async function fork(agent, options) {
   const raw = at === undefined
     ? await state.raw.fork()
     : await state.raw.forkFrom(resultState(at).raw);
+  try { await state.runtime.fork?.(state.raw, raw, at); }
+  catch (error) { raw.free(); throw error; }
   return createAgent(raw, state.runtime);
 }
 
 export async function spawn(agent) {
   const state = agentState(agent);
-  return createAgent(await state.raw.spawn(), state.runtime);
+  const raw = await state.raw.spawn();
+  try { await state.runtime.fork?.(state.raw, raw); }
+  catch (error) { raw.free(); throw error; }
+  return createAgent(raw, state.runtime);
 }
 
 export async function spawnSubagent(agent, options) {
@@ -207,6 +213,11 @@ export async function waitSubagents(agent, options) {
 
 export async function listSubagents(agent, options) {
   return JSON.parse(await agentState(agent).raw.listSubagents(JSON.stringify(options ?? {})));
+}
+
+/** Internal host scheduler seam; recovery uses this live parent's current host. */
+export async function recoverSubagents(agent) {
+  return JSON.parse(await agentState(agent).raw.recoverSubagents());
 }
 
 export async function sendSubagentMessage(agent, options) {
@@ -240,6 +251,47 @@ export function compact(agent) {
 /** Copies the live agent's latest committed, resumable model boundary. */
 export async function checkpoint(agent) {
   return JSON.parse(await agentState(agent).raw.checkpoint());
+}
+
+/** Reads one committed session-owned document; missing keys return null. */
+export async function document(agent, key) {
+  return normalizeDocument(JSON.parse(await agentState(agent).raw.document(key)));
+}
+
+/** Commits a conditional batch independently of a model turn. */
+export function compareExchangeDocuments(agent, writes) {
+  return agentState(agent).raw.compareExchangeDocuments(JSON.stringify(documentWritesConfig(writes)));
+}
+
+/** Stages a conditional batch for the identified durable turn's successful completion. */
+export function stageDocumentWrites(agent, operationId, writes) {
+  return agentState(agent).raw.stageDocumentWrites(operationId, JSON.stringify(documentWritesConfig(writes)));
+}
+
+/** Exports the selected durable model boundary and policy-selected document values. */
+export async function documentFork(agent, operationId) {
+  const seed = JSON.parse(await agentState(agent).raw.documentFork(operationId));
+  return { ...seed, documents: { ...seed.documents, documents: Object.fromEntries(
+    Object.entries(seed.documents.documents).map(([key, value]) => [key, normalizeDocument(value)]),
+  ) } };
+}
+
+function normalizeDocument(value) {
+  return value === null ? null : { ...value, fork: value.fork === "as_of" ? "asOf" : value.fork };
+}
+
+function documentWritesConfig(writes) {
+  return writes.map(({ key, expectedVersion, value, fork }) => ({
+    key, expected_version: expectedVersion, value, fork: fork === "asOf" ? "as_of" : fork,
+  }));
+}
+
+export function documentForkConfig(seed) {
+  return { ...seed, documents: { ...seed.documents, documents: Object.fromEntries(
+    Object.entries(seed.documents.documents).map(([key, value]) => [key, {
+      ...value, fork: value.fork === "asOf" ? "as_of" : value.fork,
+    }]),
+  ) } };
 }
 
 export async function context(agent) {
@@ -330,6 +382,10 @@ export function toWasmConfig(options = {}) {
   copy(config, "reasoning_mode", options.reasoningMode);
   copy(config, "fast_mode", options.fastMode);
   copy(config, "instant_tool_steering", options.instantToolSteering);
+  if (options.inlineDocsTokenBudget !== undefined && (!Number.isSafeInteger(options.inlineDocsTokenBudget) || options.inlineDocsTokenBudget < 0)) {
+    throw new TypeError("inlineDocsTokenBudget must be a non-negative safe integer");
+  }
+  copy(config, "inline_docs_token_budget", options.inlineDocsTokenBudget);
   copy(config, "stateless_http", options.stateless);
   copy(config, "subagent_routing", options.subagentRouting);
   copy(config, "websocket_warmup", options.websocketWarmup);
@@ -357,6 +413,9 @@ export function toWasmConfig(options = {}) {
     );
   }
   copy(config, "resume", options.resume);
+  if (options.documentFork !== undefined) {
+    config.document_fork = documentForkConfig(options.documentFork);
+  }
   copy(config, "durability_id", options.durabilityId);
   copy(config, "durability_host_id", options.durabilityHostId);
   copy(config, "terminal_receipt_retention", options.terminalReceiptRetention);
@@ -470,7 +529,16 @@ export function registerDefinitionHost(host, cloudflareReservation) {
 }
 
 export function releaseDefinitionHost(id) {
+  const host = definitionHosts.get(id);
+  if (host === undefined) return;
   definitionHosts.delete(id);
+  // Rust drops may release child sessions after their definition has gone.
+  // Retire every registration owned by the final definition here; pointer
+  // checks in releaseHostSessions preserve sessions rebound to a successor.
+  for (const owner of definitionHosts.values()) {
+    if (owner === host) return;
+  }
+  releaseHostSessions(host);
 }
 
 const hostBridge = Object.freeze({
@@ -588,7 +656,7 @@ const hostBridge = Object.freeze({
     }
     if (!cloudflareHostMayBindSubagent(host)) return;
     const existing = hostSessions.get(sessionId);
-    if (existing && existing !== host) {
+    if (existing && existing !== host && !cloudflareHostMayReplaceSubagent(host, existing)) {
       throw new Error(`Nanocodex subagent session ID is already active: ${sessionId}`);
     }
     host.bindSubagentSession(sessionId, JSON.parse(contextJson), hostContextRef);
@@ -608,6 +676,12 @@ const hostBridge = Object.freeze({
     if (!host || hostSessions.get(sessionId) !== host) return;
     host.releaseSession(sessionId);
     releaseHostSession(host, sessionId);
+  },
+  toolReplaySafe(definitionHostId, name) {
+    return requiredDefinitionHost(definitionHostId).toolReplaySafe?.(name) === true;
+  },
+  codeReplaySafe(definitionHostId) {
+    return requiredDefinitionHost(definitionHostId).codeReplaySafe?.() === true;
   },
   executeCode(source, sessionId, callId, model, turnId) {
     return requiredSessionHost(sessionId).executeCode(source, sessionId, callId, model, turnId);
@@ -903,6 +977,25 @@ export function mayReleaseCloudflareSubagentSession(reservation) {
 function cloudflareHostMayBindSubagent(host) {
   const reservation = cloudflareHostReservations.get(host);
   return reservation === undefined || mayBindCloudflareSubagentSession(reservation);
+}
+
+function cloudflareHostMayReplaceSubagent(host, existingHost) {
+  const reservation = cloudflareHostReservations.get(host);
+  const existing = cloudflareHostReservations.get(existingHost);
+  if (reservation === undefined || existing === undefined
+    || !mayBindCloudflareSubagentSession(reservation)
+    || reservation.ownerId !== existing.ownerId
+    || reservation.sessionId !== existing.sessionId) return false;
+  // Native recovery binds children after acquiring the durable fence, while
+  // raw construction still holds the pending reservation. Only that successor
+  // may replace the active predecessor; the predecessor cannot bind back over it.
+  const pending = pendingCloudflareAgentSessions.get(reservation.sessionId);
+  if (pending !== undefined) {
+    return pending === reservation
+      && activeAgentSessions.get(reservation.sessionId) === existing;
+  }
+  return activeAgentSessions.get(reservation.sessionId) === reservation
+    && !mayBindCloudflareSubagentSession(existing);
 }
 
 /** Internal Cloudflare seam: activates a prepared owner after raw construction acquires its durable fence. */

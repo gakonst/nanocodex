@@ -346,37 +346,61 @@ fn runtime(web_search: bool) -> ToolRuntime {
     )
 }
 
-#[test]
-fn web_search_handler_and_spec_are_absent_when_disabled() {
-    let enabled = runtime(true);
-    assert!(
-        enabled
-            .registry
-            .entries()
-            .any(|(_, definition)| definition.name() == "web__run")
-    );
-    assert!(enabled.supports_parallel_tool_calls("web__run"));
-    assert!(!enabled.supports_parallel_tool_calls("image_gen__imagegen"));
-    let enabled_specs = serde_json::to_value(enabled.model_specs("test-session")).unwrap();
-    assert!(
-        enabled_specs[0]["description"]
-            .as_str()
-            .is_some_and(|description| description.contains("`web__run`"))
-    );
-
-    let disabled = runtime(false);
-    assert!(
-        disabled
-            .registry
-            .entries()
-            .all(|(_, definition)| definition.name() != "web__run")
-    );
-    let disabled_specs = serde_json::to_value(disabled.model_specs("test-session")).unwrap();
-    assert!(
-        disabled_specs[0]["description"]
-            .as_str()
-            .is_some_and(|description| !description.contains("`web__run`"))
-    );
+#[tokio::test]
+async fn web_search_handler_and_spec_are_absent_when_disabled() {
+    for enabled in [true, false] {
+        let runtime = runtime(enabled);
+        assert_eq!(runtime.supports_parallel_tool_calls("web__run"), enabled);
+        assert!(!runtime.supports_parallel_tool_calls("image_gen__imagegen"));
+        let execution = runtime
+            .execute_code(
+                r#"
+const definition = describeTool('web__run');
+let unavailable;
+if (!definition) {
+  try { await tools.web__run({search_query: [{q: 'synthetic query'}]}); }
+  catch (error) { unavailable = error.code; }
+}
+text({enabled: !!definition, callableName: definition?.callableName ?? null,
+  hasSchema: !!definition?.inputSchema, unavailable: unavailable ?? null});
+"#,
+                ToolContext::new(
+                    "test-model",
+                    "test-session",
+                    "test-call",
+                    &[],
+                    DEFAULT_TOOL_OUTPUT_TOKENS,
+                ),
+            )
+            .await
+            .unwrap();
+        assert!(execution.success, "{:?}", execution.output);
+        assert!(
+            execution.nested_calls.is_empty(),
+            "disabled web search must reject before dispatch"
+        );
+        let ToolOutputBody::Content(content) = execution.output else {
+            panic!("expected content output");
+        };
+        let content = serde_json::to_value(content).unwrap();
+        let report: Value = serde_json::from_str(
+            content.as_array().unwrap().last().unwrap()["text"]
+                .as_str()
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            report,
+            json!({
+                "enabled": enabled,
+                "callableName": if enabled { Some("web__run") } else { None },
+                "hasSchema": enabled,
+                "unavailable": if enabled { None } else { Some("TOOL_NOT_AVAILABLE") }
+            })
+        );
+        eprintln!("web search discovery enabled={enabled}: {report}");
+        runtime.control().cancel().await;
+    }
 }
 
 #[test]

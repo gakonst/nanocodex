@@ -311,7 +311,7 @@ async fn aborted_begin_caller_does_not_cancel_the_owned_store_commit() {
 }
 
 #[tokio::test]
-async fn an_unfinished_step_can_execute_again_in_the_same_attempt() {
+async fn an_unfinished_unsafe_step_is_unknown_even_in_the_same_attempt() {
     let session = DurableSession::open(
         MemoryStore::new().unwrap(),
         "cancel-authorized-pending-step",
@@ -332,12 +332,12 @@ async fn an_unfinished_step_can_execute_again_in_the_same_attempt() {
         session
             .begin_step("turn-1", "tool-1", "tool_call", &"effect")
             .await,
-        Ok(BeginStep::Execute)
+        Ok(BeginStep::OutcomeUnknown)
     ));
     let state = session.state().await.unwrap();
     assert_eq!(
         state.operation("turn-1").unwrap().steps["tool-1"].attempts,
-        2
+        1
     );
     assert!(matches!(
         state.operation("turn-1").unwrap().steps["tool-1"].status,
@@ -529,7 +529,7 @@ async fn rejects_noncanonical_checkpoint_fields() {
 async fn rejects_retry_attempt_counter_overflow_without_advancing_state() {
     let revision = u64::from(u32::MAX);
     let payload = format!(
-        r#"{{"nanocodex_durable_state":{{"format":4,"operations":{{"turn":{{"input":"d5c35dc42880af8ea51f2aed62e8aa32127127a3354052e17726ff172b2e38a5","status":"pending","steps":{{"model":{{"kind":"model","input":"edf916f660660da65a1f21d7ab77d99621262f447acf39a4202ea81551863e66","status":"effect_pending","attempts":{}}}}},"retired_steers":0,"accepted_order":1}}}},"latest_checkpoint":null}}}}"#,
+        r#"{{"nanocodex_durable_state":{{"format":4,"operations":{{"turn":{{"input":"d5c35dc42880af8ea51f2aed62e8aa32127127a3354052e17726ff172b2e38a5","status":"pending","steps":{{"model":{{"kind":"model","input":"edf916f660660da65a1f21d7ab77d99621262f447acf39a4202ea81551863e66","status":"effect_pending","replay_safety":"safe","attempts":{}}}}},"retired_steers":0,"accepted_order":1}}}},"latest_checkpoint":null}}}}"#,
         u32::MAX,
     );
     let session = DurableSession::open(
@@ -550,7 +550,13 @@ async fn rejects_retry_attempt_counter_overflow_without_advancing_state() {
     session.begin_attempt("turn").await.unwrap();
 
     let error = session
-        .begin_step("turn", "model", "model", &"retry")
+        .begin_step_with_replay(
+            "turn",
+            "model",
+            "model",
+            &"retry",
+            nanocodex_durability::ReplaySafety::Safe,
+        )
         .await
         .expect_err("attempt overflow must not silently saturate");
     assert!(matches!(error, Error::InvalidState(_)));

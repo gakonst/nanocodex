@@ -1,3 +1,4 @@
+import type { CodeDiscovery } from "nanocodex-tools/runtime/code-discovery";
 import type { Options as ClaudeOptions } from './runtime/claude.mjs';
 export type Thinking = "none" | "low" | "medium" | "high" | "xhigh" | "max";
 export type ReasoningMode = "standard" | "pro";
@@ -38,6 +39,8 @@ export type CompactionReceipt = Readonly<{
 }>;
 
 export type AgentOptions = {
+  /** Persisted named configuration and physical routing at each full-history HTTP boundary. */
+  requestPolicy?: import("./runtime/request-policy.mjs").RequestPolicy | undefined;
   harness?: "codex" | undefined;
   /** Explicit alternate-family credentials and native tools; children remain in the shared task tree. */
   harnesses?: Readonly<{ claude?: ClaudeOptions }> | undefined;
@@ -57,12 +60,19 @@ export type AgentOptions = {
   fastMode?: boolean | undefined;
   /** Yield exec/wait observations on accepted steering; cells continue. Default false. */
   instantToolSteering?: boolean | undefined;
+  /** Inline Code Mode tool docs: default 3000 estimated tokens (UTF-8 bytes / 4).
+   * Whole descriptions are omitted at the limit; discovery and invocation remain available. */
+  inlineDocsTokenBudget?: number | undefined;
   /** Emit full raw API request/response events. Defaults to true. */
   rawApiEvents?: boolean | undefined;
   sessionId?: string | undefined;
   thinking?: Thinking | undefined;
   workspace?: string | undefined;
   resume?: SessionSnapshot | undefined;
+  /** Creates a fresh durable branch from exported session data; cannot accompany resume. */
+  documentFork?: DocumentForkSeed | undefined;
+  /** Completed receipts to retain, 0..4096. Historical document boundaries remain available. */
+  terminalReceiptRetention?: number | undefined;
 };
 
 /** Model-visible facts for tools executing outside the embedding process. */
@@ -336,6 +346,40 @@ export type TurnUsage = Readonly<{
   cost_status: CostStatus;
 }>;
 
+/** JSON data stored within one durable Agent session. */
+export type DocumentValue = null | boolean | number | string | readonly DocumentValue[] | { readonly [key: string]: DocumentValue };
+
+/** Immutable creation policy used when exporting a durable historical branch. */
+export type DocumentForkPolicy = "initial" | "current" | "asOf" | "block";
+
+export type SessionDocument = Readonly<{
+  version: number;
+  initial: DocumentValue;
+  value: DocumentValue;
+  fork: DocumentForkPolicy;
+}>;
+
+export type DocumentWrite = Readonly<{
+  key: string;
+  /** Zero creates; updates require the exact current document version. */
+  expectedVersion: number;
+  /** Null is a stored value, not deletion. */
+  value: DocumentValue;
+  /** Updates must repeat the immutable creation policy. */
+  fork: DocumentForkPolicy;
+}>;
+
+export type DocumentFork = Readonly<{
+  boundary: string;
+  documents: Readonly<Record<string, SessionDocument>>;
+}>;
+
+/** Data-only seed; destination credentials, tools and storage are supplied independently. */
+export type DocumentForkSeed = Readonly<{
+  checkpoint: SessionSnapshot;
+  documents: DocumentFork;
+}>;
+
 export type ForkOptions = Readonly<{ at?: TurnResult | undefined }>;
 export type WatchEventsOptions = { includeAllSessions?: boolean | undefined };
 
@@ -364,6 +408,10 @@ export type AgentActions = {
     appendDeveloperMessage(text: string): Promise<AgentSessionContext>;
     compact(): Promise<void>;
     context(): Promise<AgentSessionContext>;
+    document(key: string): Promise<SessionDocument | null>;
+    compareExchangeDocuments(writes: readonly DocumentWrite[]): Promise<void>;
+    stageDocumentWrites(operationId: string, writes: readonly DocumentWrite[]): Promise<void>;
+    documentFork(operationId: string): Promise<DocumentForkSeed>;
     fork(options?: ForkOptions): Promise<DefaultAgent>;
     setModel(model: Model): Promise<void>;
     setFastMode(enabled: boolean): Promise<void>;
@@ -502,7 +550,7 @@ export type ToolConfiguration<Extension = never> =
   | readonly (NamedTool | Extension)[]
   | import("./tools/Tools.mjs").Tools;
 
-export type CodeEvaluatorEnvironment = {
+export type CodeEvaluatorEnvironment = CodeDiscovery & {
   tools: Readonly<Record<string, (input: unknown) => Promise<unknown>>>;
   toolDefinitions: readonly Record<string, unknown>[];
   text(value: unknown): void;
@@ -566,21 +614,32 @@ export type CodeEffectReceipt = Readonly<{
   thrown: boolean;
   failure?: unknown;
 }>;
+/** Exact terminal cell result retained with its successful state delta. */
+export type CodeCellReceipt = Readonly<{
+  output: unknown;
+  success: boolean;
+  nested_calls: readonly unknown[];
+  notifications?: readonly unknown[];
+}>;
 /** Admission must durably retain intent; completion must durably retain the exact receipt.
  * A recovered intent without an outcome is unknown, never permission to execute again.
  * Keys must scope [sessionId, operationId ?? "", modelCallIndex ?? 0, parentCallId, callId]; validate identity/input and fence concurrent runtime generations. */
 export type CodeEffectJournal = Readonly<{
-  /** Optional durable cell store protocol; provide both methods together.
-   * Context uses name="code-cell", callId=parentCallId, input=null. beginCell
-   * pins and returns immutable starting entries before evaluation. commitStore
-   * merges only writes, once per canonical cell identity (including failed scripts).
-   * Replaying an older committed cell must never overwrite newer session writes.
-   * Entries are JSON snapshots, bounded to 8 MiB/32,768 nodes. Missing legacy
-   * state must fail closed if prior effects make the starting state unprovable.
-   * Deterministic conflicts/corruption throw code="CODE_EFFECT_UNKNOWN";
-   * unclassified transport/storage exceptions remain retryable interruptions. */
-  beginCell?(context: CodeEffectContext): Promise<readonly (readonly [string, unknown])[]>;
-  commitStore?(context: CodeEffectContext, writes: readonly (readonly [string, unknown])[]): Promise<void>;
+  /** Successful store deltas and the exact cell receipt co-commit in one transaction.
+   * Provide beginCell and completeCell together. Pin immutable starting entries
+   * before evaluation; replay completed cells without evaluating guest source.
+   * Interrupted nested intents are unknown and must never redispatch. Failed or
+   * aborted cells commit no writes; external effects cannot be rolled back.
+   * Snapshots and receipts are bounded to 8 MiB/32,768 nodes. */
+  beginCell?(context: CodeEffectContext): Promise<
+    | { status: "execute"; entries: readonly (readonly [string, unknown])[] }
+    | { status: "replay"; receipt: CodeCellReceipt }
+    | { status: "unknown" }
+  >;
+  completeCell?(context: CodeEffectContext, writes: readonly (readonly [string, unknown])[], receipt: CodeCellReceipt): Promise<void>;
+  /** Bounded committed state for independent branch inheritance. Never includes pending writes. */
+  snapshotStore?(sessionId: string): Promise<readonly (readonly [string, unknown])[]>;
+  restoreStore?(sessionId: string, entries: readonly (readonly [string, unknown])[]): Promise<void>;
   begin(context: CodeEffectContext): Promise<
     | { status: "execute" }
     | { status: "replay"; receipt: CodeEffectReceipt }

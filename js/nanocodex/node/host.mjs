@@ -1,5 +1,6 @@
 import { retryAfterAdvice } from "../runtime/retry-after.mjs";
 
+import { createRequestPolicyHost } from "../runtime/request-policy-host.mjs";
 import { createCodeEffectIdentity } from "../runtime/code-effect-identity.mjs";
 import { createBeforeCompaction } from "../runtime/before-compaction.mjs";
 import { createResponsesHttp, responsesHttpHeaders } from "../runtime/responses-http.mjs";
@@ -27,6 +28,7 @@ const DEFAULT_MAX_FRAME_BYTES = 16 * 1024 * 1024;
 const MPP_CLIENT_PROTOCOL_ERROR_CLOSE_CODE = 3008;
 
 export function createNodeHost(options = {}) {
+  const policyHost = createRequestPolicyHost(options.requestPolicy);
   const preservation = createBeforeCompaction(options.beforeCompaction);
   const toolMode = options.toolMode ?? "code";
   if (toolMode !== "code" && toolMode !== "direct") {
@@ -50,7 +52,7 @@ export function createNodeHost(options = {}) {
   const http = createResponsesHttp((endpoint, apiKey, sessionId, metadata, body, signal) => {
     if (disposal) throw new Error("Nanocodex host is already disposed");
     if (options.mpp) throw JSON.stringify({ kind: "transport", detail: "MPP HTTPS transport is unavailable", reconnectable: false });
-    return fetch(endpoint, { method: "POST", headers: responsesHttpHeaders(apiKey, sessionId, metadata),
+    return policyHost.fetch(metadata.threadId ?? sessionId, globalThis.fetch.bind(globalThis), "codex", endpoint, { method: "POST", headers: responsesHttpHeaders(apiKey, sessionId, metadata),
       body, signal, redirect: "error" });
   });
   const connections = new Map();
@@ -338,6 +340,8 @@ export function createNodeHost(options = {}) {
     next,
     close,
     sleep: (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
+    codeReplaySafe: code.codeReplaySafe,
+    toolReplaySafe: code.toolReplaySafe,
     executeCode: code.executeCodeObserved,
     waitCode: code.waitCodeObserved,
     beginCodeTurn: code.beginTurn,
@@ -350,8 +354,11 @@ export function createNodeHost(options = {}) {
     cancelCode: code.cancel,
     toolMode: () => toolMode,
     toolDefinitions: code.toolDefinitions,
-    releaseSession: (sessionId) => { effectIdentity.release(sessionId); return code.releaseSession(sessionId); },
-    emitEvent: (event, ...args) => { effectIdentity.observe(event); return onEvent(event, ...args); },
+    releaseSession: (sessionId) => { effectIdentity.release(sessionId); policyHost.release(sessionId); return code.releaseSession(sessionId); },
+    bindRequestPolicy: sessionId => policyHost.bind(sessionId),
+    forkRequestPolicy: (sourceId, sessionId, at) => policyHost.fork(sourceId, sessionId, at),
+    requestPolicyFor: sessionId => policyHost.policy(sessionId),
+    emitEvent: (event, ...args) => { effectIdentity.observe(event); policyHost.observe(event); return onEvent(event, ...args); },
     reset: () => { effectIdentity.reset(); return code.reset(); },
     dispose,
   });

@@ -601,8 +601,9 @@ test("cell completion stops guest timers before a delayed durable store acknowle
   const runtime = createCodeRuntime({}, { effectJournal: {
     async begin() { throw new Error("no effects expected"); },
     async complete() { throw new Error("no effects expected"); },
-    async beginCell() { return committed; },
-    async commitStore(_context, writes) {
+    async beginCell() { return { status: "execute", entries: committed }; },
+    async completeCell(_context, writes, receipt) {
+      assert.equal(receipt.success, true);
       committing.resolve();
       await release.promise;
       committed.splice(0, committed.length, ...writes);

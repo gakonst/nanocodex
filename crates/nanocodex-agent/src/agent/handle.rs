@@ -8,11 +8,16 @@ use crate::rollout::RolloutInfo;
 
 /// Cheap, cloneable command handle for an owned agent driver.
 pub struct Nanocodex {
+    // Only caller-facing handles own this lease. Keeping it out of the backend
+    // and factory capabilities prevents a registry -> harness -> driver cycle.
+    pub(super) caller_ownership: Option<Arc<dyn Send + Sync>>,
     pub(super) backend: Arc<dyn LifecycleBackend>,
     pub(super) events: nanocodex_oai_api::events::AgentEventPublisher,
     pub(super) next_turn: Arc<AtomicU64>,
     pub(super) agent_id: Arc<str>,
     pub(super) session_id: Arc<str>,
+    #[cfg(not(target_family = "wasm"))]
+    pub(super) startup: Option<Arc<OwnedStartup>>,
     #[cfg(feature = "openai")]
     pub(super) local_session_id: Option<SessionId>,
     #[cfg(all(feature = "openai", not(target_family = "wasm")))]
@@ -22,15 +27,33 @@ pub struct Nanocodex {
 impl Clone for Nanocodex {
     fn clone(&self) -> Self {
         Self {
+            caller_ownership: self.caller_ownership.clone(),
             backend: Arc::clone(&self.backend),
             events: self.events.clone(),
             next_turn: Arc::clone(&self.next_turn),
             agent_id: Arc::clone(&self.agent_id),
             session_id: Arc::clone(&self.session_id),
+            #[cfg(not(target_family = "wasm"))]
+            startup: self.startup.clone(),
             #[cfg(feature = "openai")]
             local_session_id: self.local_session_id,
             #[cfg(all(feature = "openai", not(target_family = "wasm")))]
             rollout: self.rollout.clone(),
+        }
+    }
+}
+
+#[cfg(not(target_family = "wasm"))]
+pub(super) struct OwnedStartup {
+    result: tokio::sync::watch::Receiver<Option<std::result::Result<(), String>>>,
+    task: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
+}
+
+#[cfg(not(target_family = "wasm"))]
+impl Drop for OwnedStartup {
+    fn drop(&mut self) {
+        if let Some(task) = self.task.get_mut().expect("startup task lock").take() {
+            task.abort();
         }
     }
 }
@@ -155,21 +178,33 @@ impl AgentHandle {
         host_context: Option<Arc<str>>,
     ) -> Result<(Nanocodex, AgentEvents)> {
         self.native.ensure_available(self.clone()).await?;
-        if snapshot.model().family() == self.harness_family() {
+        if self.factory.is_some() {
+            self.restore_runtime_with_factory(snapshot, host_context)
+                .await
+        } else if snapshot.model().family() == self.harness_family() {
             self.native
                 .restore(self.clone(), snapshot, host_context)
                 .await
         } else {
-            self.factory
-                .as_ref()
-                .ok_or_else(|| {
-                    NanocodexError::InvalidRequest(
-                        "checkpoint family requires a configured child factory".into(),
-                    )
-                })?
-                .restore(self.clone(), snapshot, host_context)
-                .await
+            Err(NanocodexError::InvalidRequest(
+                "checkpoint family requires a configured child factory".into(),
+            ))
         }
+    }
+    /// Restores a retained child through the embedding's configured factory.
+    /// Durable hosts use this even within the same family to reopen each child's
+    /// independent execution journal before rebuilding the native driver.
+    pub async fn restore_runtime_with_factory(
+        &self,
+        snapshot: ChildSnapshot,
+        host_context: Option<Arc<str>>,
+    ) -> Result<(Nanocodex, AgentEvents)> {
+        self.native.ensure_available(self.clone()).await?;
+        self.factory
+            .as_ref()
+            .unwrap_or(&self.native)
+            .restore(self.clone(), snapshot, host_context)
+            .await
     }
     /// Restores through the native factory, bypassing mixed routing.
     pub async fn restore_native_runtime(
@@ -364,6 +399,16 @@ impl Nanocodex {
         self.backend.set_harness_model(model).await
     }
 
+    /// Whether this native driver atomically retains identified steering receipts.
+    pub fn durable_steering(&self) -> bool {
+        self.backend.durable_steering()
+    }
+
+    /// Checks a retained steering admission without restarting its operation.
+    pub async fn has_steer_receipt(&self, operation_id: String, id: String) -> Result<bool> {
+        self.backend.has_steer_receipt(operation_id, id).await
+    }
+
     /// Captures a provider-native in-memory residency checkpoint.
     pub async fn runtime_snapshot(&self) -> Result<ChildSnapshot> {
         self.backend.runtime_snapshot().await
@@ -373,6 +418,56 @@ impl Nanocodex {
     #[must_use]
     pub fn agent_id(&self) -> &str {
         &self.agent_id
+    }
+
+    /// Waits for owner-bound startup recovery without submitting a model turn.
+    /// Recovery failures remain observable to every clone and block new prompts.
+    pub async fn ready(&self) -> Result<()> {
+        #[cfg(not(target_family = "wasm"))]
+        if let Some(startup) = &self.startup {
+            let mut result = startup.result.clone();
+            loop {
+                if let Some(outcome) = result.borrow().clone() {
+                    return outcome.map_err(NanocodexError::InvalidExecutionPolicy);
+                }
+                result.changed().await.map_err(|_| {
+                    NanocodexError::InvalidExecutionPolicy("owned startup recovery stopped".into())
+                })?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Starts the embedding's reconstruction only after its native owner is bound.
+    #[doc(hidden)]
+    #[cfg(not(target_family = "wasm"))]
+    pub fn with_owned_startup(mut self, hook: Option<Arc<dyn execution::TurnOwnership>>) -> Self {
+        if let Some(hook) = hook {
+            self.caller_ownership = hook.caller_ownership();
+            let session = self.session_id.clone();
+            let (send, result) = tokio::sync::watch::channel(None);
+            let task = tokio::spawn(async move {
+                let outcome = hook
+                    .prepare(&session)
+                    .await
+                    .map_err(|error| error.to_string());
+                send.send_replace(Some(outcome));
+            });
+            self.startup = Some(Arc::new(OwnedStartup {
+                result,
+                task: std::sync::Mutex::new(Some(task)),
+            }));
+        }
+        self
+    }
+
+    /// Transfers a caller-owned handle to a harness that supplies execution and
+    /// mailbox ownership. This does not stop the driver or change stored state.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn without_caller_ownership(mut self) -> Self {
+        self.caller_ownership = None;
+        self
     }
 
     /// Returns the stable identity used by events, transport metadata, and any rollout.
@@ -445,6 +540,14 @@ impl Nanocodex {
     /// concurrent and later callers on any clone await or reuse that same
     /// result.
     pub async fn shutdown(&self) -> Result<()> {
+        #[cfg(not(target_family = "wasm"))]
+        if let Some(startup) = &self.startup {
+            let task = startup.task.lock().expect("startup task lock").take();
+            if let Some(task) = task {
+                task.abort();
+                let _ = task.await;
+            }
+        }
         self.backend.shutdown().await
     }
 
@@ -459,6 +562,7 @@ impl Nanocodex {
     /// Returns an error for an empty prompt or request ID, when identified
     /// work is submitted without a configured policy, or if the driver stopped.
     pub async fn prompt(&self, request: impl Into<PromptRequest>) -> Result<Turn> {
+        self.ready().await?;
         let PromptRequest {
             prompt,
             request_id,
@@ -633,6 +737,7 @@ impl Nanocodex {
     /// Returns a model or driver-stopped error. Rollout writes follow the same
     /// retry-on-[`Self::flush_rollout`] contract as prompt turns.
     pub async fn compact(&self) -> Result<()> {
+        self.ready().await?;
         self.backend.compact().await
     }
 

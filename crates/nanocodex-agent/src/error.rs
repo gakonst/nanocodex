@@ -184,7 +184,6 @@ pub enum NanocodexError {
 
     /// An execution policy relied on a fail-closed default for a capability
     /// that must explicitly acknowledge durable authority.
-    #[cfg(feature = "openai")]
     #[error("execution policy does not implement required capability `{capability}`")]
     ExecutionPolicyCapabilityUnsupported {
         /// Missing policy capability.

@@ -4,13 +4,10 @@
 use super::{
     message::MAX_MESSAGE_BYTES,
     model::{
-        AgentDescriptor, AgentId, AgentStatus, AgentUpdate, MessageId, MessagePriority,
-        MessagePurpose, agent_prompt,
+        AgentDescriptor, AgentId, AgentLifetime, AgentStatus, AgentUpdate, MessageId,
+        MessagePriority, MessagePurpose, agent_prompt,
     },
-    runtime::{
-        AgentDirectoryEntry, AgentSummary, OutputContract, Registry, SubmissionOutcome,
-        forward_events,
-    },
+    runtime::{AgentDirectoryEntry, AgentSummary, OutputContract, Registry, forward_events},
 };
 use async_trait::async_trait;
 use futures_util::future::join_all;
@@ -39,6 +36,8 @@ const WAIT_AGENT_TOOL: &str = "wait_agent";
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AgentTask {
+    #[serde(default)]
+    pub lifetime: AgentLifetime,
     pub role: String,
     pub task: String,
     pub output_schema: Value,
@@ -110,6 +109,8 @@ impl OutputContractNode {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct SpawnAgentTask {
+    #[serde(default)]
+    lifetime: Option<AgentLifetime>,
     role: String,
     task: String,
     #[serde(default)]
@@ -151,6 +152,7 @@ impl SpawnAgentTask {
         options.validate_harness().map_err(std::io::Error::other)?;
         Ok((
             AgentTask {
+                lifetime: self.lifetime.unwrap_or_default(),
                 role: self.role,
                 task: self.task,
                 output_schema,
@@ -264,6 +266,11 @@ pub async fn start_agents_observed(
     observe_session: impl Fn(&str) + Send + Sync + 'static,
 ) -> AgentToolResult<Vec<AgentStartReport>> {
     registry.register_handle(parent.clone());
+    for task in &tasks {
+        registry
+            .validate_lifetime(session_id, task.lifetime)
+            .await?;
+    }
     let prepared = prepare_batch(tasks)?;
     let mut startup = registry.batch_startup();
     let capacities = registry.reserve_turns(prepared.len())?;
@@ -341,6 +348,7 @@ pub async fn start_agents_observed(
     {
         let id = reservation.id;
         let descriptor = AgentDescriptor {
+            lifetime: task.lifetime,
             id,
             session_id: child.session_id().to_string(),
             role: task.role.clone(),
@@ -364,6 +372,7 @@ pub async fn start_agents_observed(
                 child,
                 event_task,
                 contract,
+                None,
             )
             .await
         {
@@ -427,7 +436,16 @@ pub async fn start_agent_with(
     options: SpawnOptions,
 ) -> AgentToolResult<AgentStartReport> {
     let host_context = registry.host_context_for_session(session_id).await;
-    start_agent_with_host_context(parent, registry, session_id, task, options, host_context).await
+    start_agent_with_host_context(
+        parent,
+        registry,
+        session_id,
+        task,
+        options,
+        host_context,
+        None,
+    )
+    .await
 }
 
 async fn start_agent_with_host_context(
@@ -437,13 +455,22 @@ async fn start_agent_with_host_context(
     task: AgentTask,
     options: SpawnOptions,
     host_context: Option<Arc<str>>,
+    call: Option<(String, Value)>,
 ) -> AgentToolResult<AgentStartReport> {
+    let _spawn = registry.spawn_lock.lock().await;
+    if let Some((key, input)) = &call
+        && let Some(report) = registry.replay_spawn(session_id, key, input).await?
+    {
+        return Ok(report);
+    }
     registry.register_handle(parent.clone());
     let AgentTask {
+        lifetime,
         role,
         task,
         output_schema,
     } = task;
+    registry.validate_lifetime(session_id, lifetime).await?;
     let contract = OutputContract::compile(&output_schema)?;
     let capacity = registry.reserve_turn()?;
     let reservation = registry.reserve(session_id).await?;
@@ -483,6 +510,7 @@ async fn start_agent_with_host_context(
     }
     let session_id = child.session_id().to_string();
     let descriptor = AgentDescriptor {
+        lifetime,
         id,
         session_id,
         role: role.clone(),
@@ -506,6 +534,7 @@ async fn start_agent_with_host_context(
             child,
             event_task,
             contract,
+            call,
         )
         .await?;
     registry.send(&reservation.root_session_id, AgentUpdate::Added(descriptor));
@@ -533,10 +562,13 @@ struct SpawnAgent {
 
 #[async_trait]
 impl Tool for SpawnAgent {
+    fn is_replay_safe(&self) -> bool {
+        self.registry.upgrade().is_some_and(|r| r.durable_replay())
+    }
     fn definition(&self) -> ToolDefinition {
         ToolDefinition::function(
             SPAWN_AGENT_TOOL,
-            "Starts an ephemeral, reusable clean-room subagent without inherited conversation history and immediately returns its ID. Children and in-memory idle snapshots are dropped when the parent runtime restarts; historical IDs do not identify recovered agents.",
+            "Starts a reusable clean-room subagent without inherited conversation history and immediately returns its stable ID. With a durable parent, child identities, messages, results and native execution survive cold recovery.",
             spawn_agent_parameters(),
         )
         .with_strict_parameters()
@@ -544,7 +576,12 @@ impl Tool for SpawnAgent {
     }
 
     async fn execute(&self, input: ToolInput, context: ToolContext<'_>) -> ToolResult {
-        let (task, options) = input.decode_json::<SpawnAgentTask>()?.into_parts()?;
+        let args = input.decode_json::<Value>()?;
+        let call = Some((
+            format!("{}:{}", context.session_id(), context.call_id()),
+            args.clone(),
+        ));
+        let (task, options) = serde_json::from_value::<SpawnAgentTask>(args)?.into_parts()?;
         let host_context = context.host_context().map(Arc::<str>::from);
         let registry = self
             .registry
@@ -558,6 +595,7 @@ impl Tool for SpawnAgent {
             task,
             options,
             host_context,
+            call,
         )
         .await?;
         // Tool futures are Send, while host JS routing and shutdown futures are
@@ -575,6 +613,7 @@ impl Tool for SpawnAgent {
                     task,
                     options,
                     host_context,
+                    call,
                 )
                 .await
             });
@@ -597,6 +636,7 @@ fn spawn_agent_parameters() -> Value {
     json!({
         "type": "object",
         "properties": {
+            "lifetime": { "type": ["string", "null"], "enum": ["foreground", "background", null], "description": "Foreground closes with its parent. Background survives parent release and requires a durable parent with host recovery scheduling. Null defaults to foreground." },
             "role": { "type": "string", "description": "A short role describing the subagent's specialty." },
             "task": { "type": "string", "description": "A complete, focused task for the subagent." },
             "harness": {
@@ -615,7 +655,7 @@ fn spawn_agent_parameters() -> Value {
             },
             "output_contract": { "$ref": "#/$defs/node" }
         },
-        "required": ["role", "task", "harness", "model", "thinking", "output_contract"],
+        "required": ["role", "task", "harness", "model", "thinking", "output_contract", "lifetime"],
         "additionalProperties": false,
         "$defs": {
             "node": { "anyOf": [
@@ -682,6 +722,9 @@ struct SubmitResult {
 
 #[async_trait]
 impl Tool for SubmitResult {
+    fn is_replay_safe(&self) -> bool {
+        self.registry.upgrade().is_some_and(|r| r.durable_replay())
+    }
     fn definition(&self) -> ToolDefinition {
         ToolDefinition::function(
             SUBMIT_RESULT_TOOL,
@@ -716,24 +759,21 @@ impl Tool for SubmitResult {
     }
 
     async fn execute(&self, input: ToolInput, context: ToolContext<'_>) -> ToolResult {
-        let SubmitResultArgs { output } = input.decode_json()?;
+        let args = input.decode_json::<Value>()?;
+        let SubmitResultArgs { output } = serde_json::from_value(args.clone())?;
         let registry = self
             .registry
             .upgrade()
             .ok_or_else(|| std::io::Error::other("subagent runtime is closed"))?;
-        let outcome = registry
-            .submit_result(context.session_id(), context.instruction_revision(), output)
-            .await?;
-        let output = match outcome {
-            SubmissionOutcome::Accepted { decoded_json_text } => {
-                let mut receipt = json!({ "accepted": true, "status": "accepted" });
-                if decoded_json_text {
-                    receipt["decoded_json_text"] = json!(true);
-                }
-                receipt
-            }
-            SubmissionOutcome::Superseded => json!({ "accepted": false, "status": "superseded" }),
-        };
+        let session = context.session_id().to_owned();
+        let revision = context.instruction_revision();
+        let key = format!("{}:{}", context.session_id(), context.call_id());
+        let output = platform_receipt(async move {
+            registry
+                .submit_result_keyed(&session, revision, output, key, args)
+                .await
+        })
+        .await?;
         Ok(ToolOutput::from_json(output, true))
     }
 }
@@ -744,6 +784,9 @@ struct SendAgentMessage {
 
 #[async_trait]
 impl Tool for SendAgentMessage {
+    fn is_replay_safe(&self) -> bool {
+        self.registry.upgrade().is_some_and(|r| r.durable_replay())
+    }
     fn definition(&self) -> ToolDefinition {
         ToolDefinition::function(
             SEND_AGENT_MESSAGE_TOOL,
@@ -787,26 +830,32 @@ impl Tool for SendAgentMessage {
     }
 
     async fn execute(&self, input: ToolInput, context: ToolContext<'_>) -> ToolResult {
+        let args = input.decode_json::<Value>()?;
+        let call = Some((
+            format!("{}:{}", context.session_id(), context.call_id()),
+            args.clone(),
+        ));
         let SendMessageTask {
             agent_id,
             message,
             priority,
             purpose,
             in_reply_to,
-        } = input.decode_json()?;
+        } = serde_json::from_value(args)?;
         let registry = self
             .registry
             .upgrade()
             .ok_or_else(|| std::io::Error::other("subagent runtime is closed"))?;
         #[cfg(not(target_family = "wasm"))]
         let receipt = registry
-            .send_message(
+            .send_message_keyed(
                 context.session_id(),
                 agent_id,
                 priority,
                 purpose,
                 in_reply_to,
                 message,
+                call,
             )
             .await?;
         #[cfg(target_family = "wasm")]
@@ -814,13 +863,14 @@ impl Tool for SendAgentMessage {
             let session_id = context.session_id().to_owned();
             let pending = super::platform::spawn(async move {
                 registry
-                    .send_message(
+                    .send_message_keyed(
                         &session_id,
                         agent_id,
                         priority,
                         purpose,
                         in_reply_to,
                         message,
+                        call,
                     )
                     .await
             });
@@ -871,11 +921,14 @@ impl Tool for ListAgents {
             .registry
             .upgrade()
             .ok_or_else(|| std::io::Error::other("subagent runtime is closed"))?;
-        json_output(&AgentDirectory {
-            agents: registry
-                .directory(context.session_id(), include_completed, include_self)
-                .await,
+        let session = context.session_id().to_owned();
+        let agents = platform_receipt(async move {
+            registry
+                .directory(&session, include_completed, include_self)
+                .await
         })
+        .await?;
+        json_output(&AgentDirectory { agents })
     }
 }
 
@@ -925,9 +978,10 @@ impl Tool for WaitAgent {
             .map(Duration::from_millis)
             .unwrap_or(DEFAULT_WAIT_TIMEOUT)
             .min(MAX_WAIT_TIMEOUT);
-        let (agents, timed_out) = registry
-            .wait(context.session_id(), &agent_ids, duration)
-            .await?;
+        let session = context.session_id().to_owned();
+        let (agents, timed_out) =
+            platform_receipt(async move { registry.wait(&session, &agent_ids, duration).await })
+                .await?;
         json_output(&WaitReport { agents, timed_out })
     }
 }
@@ -987,12 +1041,15 @@ impl Tool for ChangeAgentLifecycle {
             .registry
             .upgrade()
             .ok_or_else(|| std::io::Error::other("subagent runtime is closed"))?;
-        let agents = match self.operation {
-            LifecycleOperation::Interrupt => {
-                registry.interrupt(context.session_id(), agent_id).await?
+        let session = context.session_id().to_owned();
+        let operation = self.operation;
+        let agents = platform_receipt(async move {
+            match operation {
+                LifecycleOperation::Interrupt => registry.interrupt(&session, agent_id).await,
+                LifecycleOperation::Close => registry.close(&session, agent_id).await,
             }
-            LifecycleOperation::Close => registry.close(context.session_id(), agent_id).await?,
-        };
+        })
+        .await?;
         json_output(&LifecycleReport { agents })
     }
 }
@@ -1200,6 +1257,28 @@ fn agent_status_schema() -> Value {
     json!({ "oneOf": variants })
 }
 
+// Store callbacks can be isolate-local on WASM; tools retain a Send receipt.
+// The abort guard ties local admission to cancellation of the calling tool.
+#[cfg(target_family = "wasm")]
+fn platform_receipt<T: Send + 'static>(
+    future: impl std::future::Future<Output = std::io::Result<T>> + 'static,
+) -> impl std::future::Future<Output = std::io::Result<T>> + Send {
+    let pending = super::platform::spawn(future);
+    let cancel = pending.abort_on_drop();
+    async move {
+        let _cancel = cancel;
+        pending
+            .await
+            .map_err(|_| std::io::Error::other("child operation cancelled"))?
+    }
+}
+#[cfg(not(target_family = "wasm"))]
+async fn platform_receipt<T>(
+    future: impl std::future::Future<Output = std::io::Result<T>> + Send,
+) -> std::io::Result<T> {
+    future.await
+}
+
 #[cfg(test)]
 mod strict_spawn_tests {
     use super::*;
@@ -1241,7 +1320,8 @@ mod strict_spawn_tests {
                 "harness",
                 "model",
                 "thinking",
-                "output_contract"
+                "output_contract",
+                "lifetime"
             ])
         );
         for shape in ["object", "array", "string_enum", "scalar", "field"] {
@@ -1254,7 +1334,7 @@ mod strict_spawn_tests {
         }
         let validator = jsonschema::validator_for(parameters).unwrap();
         let valid = json!({
-            "role": "audit", "task": "check", "model": null, "thinking": null,
+            "role": "audit", "task": "check", "harness": null, "lifetime": null, "model": null, "thinking": null,
             "output_contract": { "kind": "object", "fields": [
                 { "name": "summary", "schema": { "kind": "string" }, "required": true },
                 { "name": "items", "schema": { "kind": "array", "items": { "kind": "integer" } }, "required": false }
@@ -1273,7 +1353,7 @@ mod strict_spawn_tests {
     #[test]
     fn typed_contract_compiles_nested_and_optional_results() {
         let parsed: SpawnAgentTask = serde_json::from_value(json!({
-            "role": "audit", "task": "check", "model": null, "thinking": null,
+            "role": "audit", "task": "check", "harness": null, "lifetime": null, "model": null, "thinking": null,
             "output_contract": { "kind": "object", "fields": [
                 { "name": "summary", "schema": { "kind": "string" }, "required": true },
                 { "name": "items", "schema": { "kind": "array", "items": { "kind": "integer" } }, "required": false }
@@ -1292,7 +1372,7 @@ mod strict_spawn_tests {
     #[test]
     fn typed_contract_enums_and_duplicate_fields_remain_valid_schemas() {
         let parsed: SpawnAgentTask = serde_json::from_value(json!({
-            "role": "audit", "task": "check", "model": null, "thinking": null,
+            "role": "audit", "task": "check", "harness": null, "lifetime": null, "model": null, "thinking": null,
             "output_contract": { "kind": "object", "fields": [
                 { "name": "status", "schema": { "kind": "integer" }, "required": true },
                 { "name": "status", "schema": { "kind": "string_enum", "values": ["ok", "fail"] }, "required": false }

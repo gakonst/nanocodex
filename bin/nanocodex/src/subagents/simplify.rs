@@ -115,6 +115,7 @@ impl Tool for SimplifyReview {
                     role: format!("simplify-{angle}"),
                     task: simplify_reviewer_task(angle, guidance, &diff, focus.as_deref()),
                     output_schema: reviewer_output_schema(),
+                    lifetime: Default::default(),
                 },
             )
             .await;

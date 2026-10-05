@@ -17,9 +17,9 @@
 
 use super::{
     AgentEvents, Cell, DurableAgentExt, HashMap, JavaScriptDurabilityStore, JavaScriptSpawnRouter,
-    JsFuture, JsValue, Mutex, Prompt, Rc, RefCell, RustNanocodex, TurnState, WasmHarnessFactory,
-    WasmSubagents, WasmSubagentsConfig, WasmTurn, forward_events, host_cancel_code_turn, js_error,
-    validate_operation_id,
+    JsFuture, JsValue, Mutex, Prompt, Rc, RefCell, RustNanocodex, TurnState, WasmChildDurability,
+    WasmHarnessFactory, WasmSubagents, WasmSubagentsConfig, WasmTurn, forward_events,
+    host_cancel_code_turn, js_error, validate_operation_id,
 };
 use nanocodex_claude::{
     Claude, ClaudeAuthFuture, ClaudeAuthProvider, ClaudeAuthUnavailable, ClaudeClient,
@@ -84,10 +84,19 @@ pub(super) struct ClaudeConfig {
     durability_host_id: Option<String>,
     durability_id: Option<String>,
     terminal_receipt_retention: Option<usize>,
+    document_fork: Option<ClaudeDocumentFork>,
     subagents: Option<WasmSubagentsConfig>,
     #[serde(default)]
     subagent_routing: bool,
     codex_harness: Option<Value>,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct ClaudeDocumentFork {
+    // Native Claude checkpoint JSON, including signed blocks; never a Codex snapshot.
+    checkpoint: Value,
+    documents: nanocodex::durability::DocumentFork,
 }
 
 #[derive(Default, Deserialize, Serialize)]
@@ -103,6 +112,9 @@ enum CachePolicy {
 
 impl ClaudeConfig {
     fn validate(&self) -> Result<(), &'static str> {
+        if self.document_fork.is_some() && self.durability_id.is_none() {
+            return Err("documentFork requires durability");
+        }
         if self.model.trim().is_empty() {
             return Err("Claude model must not be empty");
         }
@@ -280,6 +292,7 @@ async fn execute_tool(
 #[wasm_bindgen(js_name = Nanoclaude)]
 pub struct WasmNanoclaude {
     inner: RustNanocodex,
+    durable_session: Option<nanocodex::agent::durability::DurableSession>,
     event_forwarding: Rc<Cell<bool>>,
     turns: RefCell<Vec<Weak<RefCell<TurnState>>>>,
     subagents: Option<WasmSubagents>,
@@ -292,12 +305,22 @@ impl WasmNanoclaude {
         // Serde errors can include caller-supplied strings; do not echo config secrets.
         let config: ClaudeConfig = serde_json::from_str(config_json)
             .map_err(|_| js_error("invalid Nanoclaude configuration"))?;
+        let durability = config
+            .durability_host_id
+            .as_ref()
+            .map(|route_id| WasmChildDurability {
+                route_id: route_id.clone(),
+                terminal_receipt_retention: config.terminal_receipt_retention,
+            });
         let (factory, subagents) = if let Some(settings) = &config.subagents {
             let host = config
                 .host_definition_id
                 .ok_or_else(|| js_error("subagents require hostDefinitionId"))?;
             let (registry, control, updates) =
                 nanocodex_subagents::channel(settings.max_concurrency);
+            if durability.is_some() {
+                registry.require_durability();
+            }
             if config.subagent_routing {
                 registry.set_spawn_router(Arc::new(JavaScriptSpawnRouter {
                     host_definition_id: host,
@@ -322,6 +345,7 @@ impl WasmNanoclaude {
                 hosts: Arc::new(Mutex::new(HashMap::new())),
                 codex,
                 claude: Some(serde_json::to_value(&config).map_err(js_error)?),
+                durability: durability.clone(),
             });
             let subagents = WasmSubagents::new(
                 host,
@@ -335,11 +359,27 @@ impl WasmNanoclaude {
         } else {
             (None, None)
         };
-        let (inner, events) = build_claude(config, factory, None, None).await?;
+        let (inner, events, durable_session) = match build_claude(config, factory, None, None).await
+        {
+            Ok(parts) => parts,
+            Err(error) => {
+                if let Some(subagents) = &subagents {
+                    subagents.retire_unpublished().await;
+                }
+                return Err(error);
+            }
+        };
+        if let (Some(subagents), Some(durability)) = (&subagents, durability)
+            && let Err(error) = subagents.recover(&inner, durability.route_id).await
+        {
+            subagents.retire_unpublished().await;
+            return Err(error);
+        }
         let event_forwarding = Rc::new(Cell::new(false));
         forward_events(events, Rc::clone(&event_forwarding));
         Ok(Self {
             inner,
+            durable_session,
             event_forwarding,
             turns: RefCell::new(Vec::new()),
             subagents,
@@ -417,10 +457,19 @@ impl WasmNanoclaude {
         Ok(())
     }
 
+    #[wasm_bindgen(js_name = recoverSubagents)]
+    pub async fn recover_subagents(&self) -> Result<String, JsValue> {
+        self.subagents
+            .as_ref()
+            .ok_or_else(|| js_error("subagents are disabled"))?
+            .recover_report(self.inner.session_id())
+            .await
+    }
+
     pub async fn shutdown(&self) -> Result<(), JsValue> {
         if let Some(subagents) = &self.subagents {
             subagents
-                .close_all(self.inner.session_id())
+                .release_parent(self.inner.session_id())
                 .await
                 .map_err(js_error)?;
         }
@@ -486,6 +535,58 @@ impl WasmNanoclaude {
             .await
     }
 
+    pub async fn document(&self, key: &str) -> Result<String, JsValue> {
+        let document = self
+            .durable_session()?
+            .document(key)
+            .await
+            .map_err(js_error)?;
+        serde_json::to_string(&document).map_err(js_error)
+    }
+
+    /// Atomically publishes conditional host journal writes under the session owner.
+    #[wasm_bindgen(js_name = compareExchangeDocuments)]
+    pub async fn compare_exchange_documents(&self, writes_json: &str) -> Result<(), JsValue> {
+        let writes = serde_json::from_str::<Vec<nanocodex::durability::DocumentWrite>>(writes_json)
+            .map_err(js_error)?;
+        self.durable_session()?
+            .compare_exchange_documents(writes)
+            .await
+            .map_err(js_error)
+    }
+
+    /// Stages conditional writes for the running operation's successful commit.
+    #[wasm_bindgen(js_name = stageDocumentWrites)]
+    pub async fn stage_document_writes(
+        &self,
+        operation_id: &str,
+        writes_json: &str,
+    ) -> Result<(), JsValue> {
+        validate_operation_id(Some(operation_id))?;
+        let writes = serde_json::from_str::<Vec<nanocodex::durability::DocumentWrite>>(writes_json)
+            .map_err(js_error)?;
+        self.durable_session()?
+            .stage_document_writes(operation_id, writes)
+            .await
+            .map_err(js_error)
+    }
+
+    /// Exports an exact historical model checkpoint and policy-selected session documents.
+    #[wasm_bindgen(js_name = documentFork)]
+    pub async fn document_fork(&self, operation_id: &str) -> Result<String, JsValue> {
+        validate_operation_id(Some(operation_id))?;
+        let (checkpoint, documents) = self
+            .durable_session()?
+            .document_fork(operation_id)
+            .await
+            .map_err(js_error)?;
+        serde_json::to_string(&ClaudeDocumentFork {
+            checkpoint: checkpoint.decode::<Value>().map_err(js_error)?,
+            documents,
+        })
+        .map_err(js_error)
+    }
+
     /// Claude checkpoints are stored natively by durability, not OpenAI snapshots.
     pub fn snapshot(&self) -> Result<String, JsValue> {
         Err(js_error(
@@ -497,6 +598,14 @@ impl WasmNanoclaude {
         Err(js_error(
             "Claude checkpoint export is unsupported; checkpoints are managed by durability",
         ))
+    }
+}
+
+impl WasmNanoclaude {
+    fn durable_session(&self) -> Result<&nanocodex::agent::durability::DurableSession, JsValue> {
+        self.durable_session.as_ref().ok_or_else(|| {
+            js_error("session documents require an agent with durability and durabilityId")
+        })
     }
 }
 
@@ -513,7 +622,7 @@ impl Drop for WasmNanoclaude {
             let subagents = subagents.clone();
             let session_id = self.inner.session_id().to_owned();
             wasm_bindgen_futures::spawn_local(async move {
-                let _ = subagents.close_all(&session_id).await;
+                let _ = subagents.release_parent(&session_id).await;
             });
         }
     }
@@ -524,7 +633,14 @@ pub(super) async fn build_claude(
     factory: Option<Arc<WasmHarnessFactory>>,
     snapshot: Option<nanocodex_agent::ChildSnapshot>,
     host_context: Option<Arc<str>>,
-) -> Result<(RustNanocodex, AgentEvents), JsValue> {
+) -> Result<
+    (
+        RustNanocodex,
+        AgentEvents,
+        Option<nanocodex::agent::durability::DurableSession>,
+    ),
+    JsValue,
+> {
     config.validate().map_err(js_error)?;
     let endpoint = config.endpoint.unwrap_or_else(|| {
         if config.subscription_compatibility {
@@ -619,6 +735,12 @@ pub(super) async fn build_claude(
     for definition in config.server_tools {
         builder = builder.server_tool(definition);
     }
+    builder = builder.host_context(host_context);
+    if let Some(snapshot) = snapshot {
+        builder = builder.restore_runtime(snapshot).map_err(js_error)?;
+    }
+    // Durability owns the current conversation and overrides older residency snapshots.
+    let mut retained_durable_session = None;
     if let (Some(route_id), Some(state_id)) = (config.durability_host_id, config.durability_id) {
         let store = JavaScriptDurabilityStore { route_id };
         let durable = if let Some(limit) = config.terminal_receipt_retention {
@@ -630,6 +752,13 @@ pub(super) async fn build_claude(
             nanocodex::agent::durability::DurableSession::open(store, state_id).await
         }
         .map_err(js_error)?;
+        if let Some(seed) = config.document_fork {
+            durable
+                .initialize_document_fork_value(seed.documents, &seed.checkpoint)
+                .await
+                .map_err(js_error)?;
+        }
+        retained_durable_session = Some(durable.clone());
         builder = builder.durability(durable).await.map_err(js_error)?;
     }
     if let Some(factory) = factory {
@@ -658,9 +787,6 @@ pub(super) async fn build_claude(
                 )
             });
     }
-    builder = builder.host_context(host_context);
-    if let Some(snapshot) = snapshot {
-        builder = builder.restore_runtime(snapshot).map_err(js_error)?;
-    }
-    builder.build().map_err(js_error)
+    let (inner, events) = builder.build().map_err(js_error)?;
+    Ok((inner, events, retained_durable_session))
 }

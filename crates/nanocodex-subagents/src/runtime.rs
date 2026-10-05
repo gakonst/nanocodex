@@ -9,9 +9,10 @@ use super::{
     harness::{self, HarnessHandle},
     message::MessageThreads,
     model::{
-        AgentDescriptor, AgentId, AgentMessage, AgentMessageUpdate, AgentStatus, AgentThread,
-        AgentUpdate, MessageDeliveryState, MessageDisposition, MessageId, MessagePriority,
-        MessagePurpose, MessageSender, ScopedAgentUpdate, SubagentRuntimeId, ThreadId,
+        AgentDescriptor, AgentId, AgentLifetime, AgentMessage, AgentMessageUpdate, AgentStatus,
+        AgentThread, AgentUpdate, MessageDeliveryState, MessageDisposition, MessageId,
+        MessagePriority, MessagePurpose, MessageSender, ScopedAgentUpdate, SubagentRuntimeId,
+        ThreadId,
     },
     platform::{self, Task, timeout_at},
     task_tree::TaskTree,
@@ -22,7 +23,8 @@ use nanocodex_agent::{
     AgentEvents, AgentHandle, ChildSnapshot, Nanocodex, NanocodexError, Result as AgentResult,
     TurnResult,
 };
-use serde::Serialize;
+use nanocodex_durability::{ChildJournal, StateStore};
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
     collections::HashMap,
@@ -36,6 +38,8 @@ use tokio::sync::{mpsc, oneshot, watch};
 use web_time::Instant;
 
 pub(super) struct ChildSession {
+    pub(super) execution: Option<ChildExecution>,
+    pub(super) interrupted: bool,
     pub(super) descriptor: AgentDescriptor,
     pub(super) host_context: Option<Arc<str>>,
     pub(super) event_task: Option<Task<()>>,
@@ -100,6 +104,8 @@ pub struct Registry {
     max_resident: AtomicUsize,
     residency_lock: tokio::sync::Mutex<()>,
     message_lock: tokio::sync::Mutex<()>,
+    pub(super) spawn_lock: tokio::sync::Mutex<()>,
+    durable_required: std::sync::atomic::AtomicBool,
 }
 
 #[derive(Default)]
@@ -115,6 +121,112 @@ struct AgentScope {
     sessions: HashMap<AgentId, ChildSession>,
     messages: MessageThreads,
     closing: bool,
+    journal: Option<ChildJournal>,
+    calls: HashMap<String, ChildCall>,
+    steer_intents: HashMap<MessageId, ChildSteer>,
+    observation_error: Option<String>,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+struct ChildSteer {
+    operation_id: String,
+    revision: u64,
+    previous_revision: u64,
+}
+
+/// Exact admission retained until child execution and registry settlement agree.
+#[derive(Clone, Serialize, Deserialize)]
+pub(super) struct ChildExecution {
+    operation_id: String,
+    prompt: String,
+    instruction_revision: u64,
+}
+
+#[derive(Serialize, Deserialize)]
+struct ChildTreeRecord {
+    #[serde(default)]
+    steer_intents: HashMap<MessageId, ChildSteer>,
+    #[serde(default)]
+    calls: HashMap<String, ChildCall>,
+    version: u32,
+    topology: TaskTree,
+    messages: MessageThreads,
+    closing: bool,
+    sessions: HashMap<AgentId, ChildRecord>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct ChildRecord {
+    descriptor: AgentDescriptor,
+    host_context: Option<String>,
+    status: AgentStatus,
+    output_schema: Value,
+    snapshot: Option<ChildSnapshot>,
+    next_instruction_revision: u64,
+    active_instruction_revision: Option<u64>,
+    submitted_output: Option<Value>,
+    last_output: Option<Value>,
+    execution: Option<ChildExecution>,
+    interrupted: bool,
+}
+
+impl AgentScope {
+    fn ensure_readable(&self) -> std::io::Result<()> {
+        if let Some(error) = &self.observation_error {
+            return Err(std::io::Error::other(format!(
+                "child journal requires cold recovery: {error}"
+            )));
+        }
+        Ok(())
+    }
+
+    async fn persist(&mut self) -> std::io::Result<()> {
+        self.ensure_readable()?;
+        if self.journal.is_none() {
+            return Ok(());
+        }
+        let record = ChildTreeRecord {
+            calls: self.calls.clone(),
+            steer_intents: self.steer_intents.clone(),
+            version: 1,
+            topology: self.topology.clone(),
+            messages: self.messages.clone(),
+            closing: self.closing,
+            sessions: self
+                .sessions
+                .iter()
+                .map(|(&id, child)| {
+                    (
+                        id,
+                        ChildRecord {
+                            descriptor: child.descriptor.clone(),
+                            host_context: child.host_context.as_deref().map(str::to_owned),
+                            status: child.status.clone(),
+                            output_schema: child.output_schema.clone(),
+                            snapshot: child.stored_runtime.clone(),
+                            next_instruction_revision: child.next_instruction_revision,
+                            active_instruction_revision: child.active_instruction_revision,
+                            submitted_output: child.submitted_output.clone(),
+                            last_output: child.last_output.clone(),
+                            execution: child.execution.clone(),
+                            interrupted: child.interrupted,
+                        },
+                    )
+                })
+                .collect(),
+        };
+        let result = self
+            .journal
+            .as_mut()
+            .expect("journal present")
+            .commit(&record)
+            .await
+            .map_err(std::io::Error::other);
+        if let Err(error) = &result {
+            self.observation_error = Some(error.to_string());
+        }
+        result
+    }
 }
 
 pub(super) struct AgentReservation {
@@ -177,6 +289,7 @@ impl Drop for BatchStartup {
 
 #[derive(Clone, Serialize)]
 pub struct AgentSummary {
+    pub lifetime: AgentLifetime,
     pub agent_id: AgentId,
     pub role: String,
     pub task: String,
@@ -188,6 +301,7 @@ pub struct AgentSummary {
 
 #[derive(Serialize)]
 pub struct AgentDirectoryEntry {
+    pub lifetime: AgentLifetime,
     pub agent_id: AgentId,
     pub role: String,
     pub task: String,
@@ -197,7 +311,7 @@ pub struct AgentDirectoryEntry {
     pub can_manage: bool,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct MessageReceipt {
     pub message_id: MessageId,
     pub thread_id: ThreadId,
@@ -293,7 +407,14 @@ impl RegistryState {
         if session.steering || session.active_instruction_revision != Some(instruction_revision) {
             return Ok(SubmissionOutcome::Superseded);
         }
-        if session.submitted_output.is_some() {
+        if let Some(accepted) = &session.submitted_output {
+            if scope.journal.is_some() {
+                let (candidate, decoded_json_text) =
+                    validate_submitted_output(&session.output_validator, output)?;
+                if accepted == &candidate {
+                    return Ok(SubmissionOutcome::Accepted { decoded_json_text });
+                }
+            }
             return Err(CompletionError::new(
                 CompletionErrorCode::AlreadyAccepted,
                 false,
@@ -517,6 +638,7 @@ impl RegistryState {
                     && !matches!(session.status, AgentStatus::Closing | AgentStatus::Closed)
                     && scope.topology.authorize(session_id, id).is_ok();
                 Some(AgentDirectoryEntry {
+                    lifetime: session.descriptor.lifetime,
                     agent_id: id,
                     role: bounded_summary(&session.descriptor.role),
                     task: bounded_summary(&session.descriptor.task),
@@ -680,6 +802,7 @@ impl RegistryState {
             .scopes
             .get(root_session_id)
             .ok_or_else(|| std::io::Error::other("subagent scope disappeared"))?;
+        scope.ensure_readable()?;
         ids.iter()
             .map(|id| {
                 scope
@@ -796,7 +919,7 @@ impl RegistryState {
                 .sessions
                 .get_mut(id)
                 .ok_or_else(|| std::io::Error::other(format!("unknown agent_id {id}")))?;
-            if session.active {
+            if session.active || session.execution.is_some() {
                 return Err(std::io::Error::other(format!(
                     "agent {id} is still running"
                 )));
@@ -827,7 +950,7 @@ impl RegistryState {
             scope
                 .sessions
                 .get(id)
-                .is_some_and(|session| !session.active)
+                .is_some_and(|session| !session.active && session.execution.is_none())
         }))
     }
 
@@ -850,7 +973,10 @@ impl RegistryState {
             .sessions
             .iter()
             .filter(|(_, session)| {
-                !session.active && session.status.can_start_turn() && session.harness.is_some()
+                !session.active
+                    && session.execution.is_none()
+                    && session.status.can_start_turn()
+                    && session.harness.is_some()
             })
             .filter(|(id, _)| !scope.messages.has_pending_for(**id))
             .filter(|(id, _)| {
@@ -904,6 +1030,8 @@ impl RegistryState {
 
 const AGENT_STOP_TIMEOUT: Duration = Duration::from_secs(30);
 
+include!("durable_registry.rs");
+
 impl Registry {
     pub(super) fn new(
         updates: mpsc::UnboundedSender<ScopedAgentUpdate>,
@@ -921,6 +1049,8 @@ impl Registry {
             max_resident: AtomicUsize::new(crate::DEFAULT_MAX_RESIDENT_SUBAGENTS),
             residency_lock: tokio::sync::Mutex::new(()),
             message_lock: tokio::sync::Mutex::new(()),
+            spawn_lock: tokio::sync::Mutex::new(()),
+            durable_required: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
@@ -998,7 +1128,13 @@ impl Registry {
     }
 
     pub(super) async fn reserve(&self, session_id: &str) -> std::io::Result<AgentReservation> {
-        self.state.lock().await.reserve_for(session_id)
+        let mut state = self.state.lock().await;
+        let reservation = state.reserve_for(session_id)?;
+        state
+            .scope_mut(&reservation.root_session_id)
+            .persist()
+            .await?;
+        Ok(reservation)
     }
 
     pub(super) async fn reserve_many(
@@ -1007,30 +1143,79 @@ impl Registry {
         count: usize,
     ) -> std::io::Result<Vec<AgentReservation>> {
         let mut state = self.state.lock().await;
-        (0..count).map(|_| state.reserve_for(session_id)).collect()
+        let reservations: Vec<_> = (0..count)
+            .map(|_| state.reserve_for(session_id))
+            .collect::<std::io::Result<_>>()?;
+        let root = state.root_session_id(session_id).to_owned();
+        state.scope_mut(&root).persist().await?;
+        Ok(reservations)
     }
 
+    #[cfg(test)]
     pub(super) async fn submit_result(
         &self,
         session_id: &str,
         instruction_revision: Option<u64>,
         output: Value,
     ) -> std::io::Result<SubmissionOutcome> {
-        self.state
-            .lock()
-            .await
-            .submit_result(session_id, instruction_revision, output)
+        let mut state = self.state.lock().await;
+        let outcome = state.submit_result(session_id, instruction_revision, output)?;
+        let root = state.root_session_id(session_id).to_owned();
+        state.scope_mut(&root).persist().await?;
+        Ok(outcome)
     }
 
     pub(super) async fn begin_turn_steer(
         &self,
         root_session_id: &str,
         id: AgentId,
-    ) -> Option<TurnSteer> {
+        message_id: MessageId,
+    ) -> std::io::Result<Option<TurnSteer>> {
+        let mut state = self.state.lock().await;
+        let previous = state
+            .scope_mut(root_session_id)
+            .steer_intents
+            .get(&message_id)
+            .cloned();
+        let Some(mut steer) = state.begin_turn_steer(root_session_id, id) else {
+            return Ok(None);
+        };
+        let scope = state.scope_mut(root_session_id);
+        if let Some(previous) = previous {
+            steer.revision = previous.revision;
+            steer.previous_revision = previous.previous_revision;
+            scope
+                .sessions
+                .get_mut(&id)
+                .expect("child")
+                .active_instruction_revision = Some(previous.revision);
+        } else if let Some(execution) = &scope.sessions[&id].execution {
+            scope.steer_intents.insert(
+                message_id,
+                ChildSteer {
+                    operation_id: execution.operation_id.clone(),
+                    revision: steer.revision,
+                    previous_revision: steer.previous_revision,
+                },
+            );
+        }
+        scope.persist().await?;
+        Ok(Some(steer))
+    }
+
+    pub(super) async fn message_steer_operation(
+        &self,
+        root: &str,
+        id: MessageId,
+    ) -> Option<String> {
         self.state
             .lock()
             .await
-            .begin_turn_steer(root_session_id, id)
+            .scopes
+            .get(root)?
+            .steer_intents
+            .get(&id)
+            .map(|intent| intent.operation_id.clone())
     }
 
     pub(super) async fn finish_turn_steer(
@@ -1038,13 +1223,16 @@ impl Registry {
         root_session_id: &str,
         steer: TurnSteer,
         committed: bool,
-    ) {
-        self.state
-            .lock()
-            .await
-            .finish_turn_steer(root_session_id, steer, committed);
+    ) -> std::io::Result<()> {
+        let mut state = self.state.lock().await;
+        state.finish_turn_steer(root_session_id, steer, committed);
+        state.scope_mut(root_session_id).persist().await
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the durable call identity accompanies the existing child registration inputs"
+    )]
     pub(super) async fn insert(
         self: &Arc<Self>,
         root_session_id: String,
@@ -1053,9 +1241,28 @@ impl Registry {
         agent: Nanocodex,
         event_task: Task<()>,
         contract: OutputContract,
+        call: Option<(String, Value)>,
     ) -> std::io::Result<()> {
         let OutputContract { validator, schema } = contract;
+        let durable = self
+            .state
+            .lock()
+            .await
+            .scopes
+            .get(&root_session_id)
+            .is_some_and(|scope| scope.journal.is_some());
+        let snapshot = if durable {
+            Some(
+                agent
+                    .runtime_snapshot()
+                    .await
+                    .map_err(std::io::Error::other)?,
+            )
+        } else {
+            None
+        };
         let mut state = self.state.lock().await;
+        let descriptor_id = descriptor.id;
         state.validate_insert(&root_session_id, &descriptor)?;
         let (harness, harness_task) = harness::spawn(
             root_session_id.clone(),
@@ -1067,10 +1274,12 @@ impl Registry {
             None,
         );
         state.insert(
-            root_session_id,
+            root_session_id.clone(),
             descriptor.id,
             descriptor.session_id.clone(),
             ChildSession {
+                execution: None,
+                interrupted: false,
                 descriptor,
                 host_context,
                 event_task: Some(event_task),
@@ -1080,7 +1289,7 @@ impl Registry {
                 active: false,
                 output_validator: validator,
                 output_schema: serde_json::from_str(&schema).expect("compiled schema is JSON"),
-                stored_runtime: None,
+                stored_runtime: snapshot,
                 next_instruction_revision: 0,
                 active_instruction_revision: None,
                 steering: false,
@@ -1090,6 +1299,16 @@ impl Registry {
                 evicted: false,
             },
         )?;
+        if let Some((key, input)) = call {
+            state.scope_mut(&root_session_id).calls.insert(
+                key,
+                ChildCall::Spawn {
+                    input,
+                    id: descriptor_id,
+                },
+            );
+        }
+        state.scope_mut(&root_session_id).persist().await?;
         drop(state);
         self.changed();
         Ok(())
@@ -1110,43 +1329,43 @@ impl Registry {
         harness.start(prompt, capacity).await
     }
 
+    #[cfg(test)]
     pub(super) async fn harness_turn_started(
         &self,
         root_session_id: &str,
         id: AgentId,
-    ) -> Option<u64> {
-        let revision = {
-            let mut state = self.state.lock().await;
-            let last_used = state.next_access();
-            let session = state
-                .scopes
-                .get_mut(root_session_id)
-                .and_then(|scope| scope.sessions.get_mut(&id))?;
-            if !session.status.can_start_turn() || session.active {
-                None
-            } else {
-                let revision = session.next_instruction_revision.checked_add(1)?;
-                session.next_instruction_revision = revision;
-                session.active_instruction_revision = Some(revision);
-                session.active = true;
-                session.steering = false;
-                session.submitted_output = None;
-                session.last_used = last_used;
-                session.status = AgentStatus::Running;
-                Some(revision)
-            }
+    ) -> std::io::Result<Option<u64>> {
+        let mut state = self.state.lock().await;
+        let last_used = state.next_access();
+        let scope = state.scope_mut(root_session_id);
+        let Some(session) = scope.sessions.get_mut(&id) else {
+            return Ok(None);
         };
-        if revision.is_some() {
-            self.send(
-                root_session_id,
-                AgentUpdate::Status {
-                    id,
-                    status: AgentStatus::Running,
-                },
-            );
-            self.changed();
+        if !session.status.can_start_turn() || session.active {
+            return Ok(None);
         }
-        revision
+        let revision = session
+            .next_instruction_revision
+            .checked_add(1)
+            .ok_or_else(|| std::io::Error::other("child instruction revision exhausted"))?;
+        session.next_instruction_revision = revision;
+        session.active_instruction_revision = Some(revision);
+        session.active = true;
+        session.steering = false;
+        session.submitted_output = None;
+        session.last_used = last_used;
+        session.status = AgentStatus::Running;
+        scope.persist().await?;
+        drop(state);
+        self.send(
+            root_session_id,
+            AgentUpdate::Status {
+                id,
+                status: AgentStatus::Running,
+            },
+        );
+        self.changed();
+        Ok(Some(revision))
     }
 
     pub(super) async fn harness_turn_start_failed(
@@ -1154,27 +1373,29 @@ impl Registry {
         root_session_id: &str,
         id: AgentId,
         error: String,
-    ) {
-        let status = {
-            let mut state = self.state.lock().await;
-            let Some(session) = state
-                .scopes
-                .get_mut(root_session_id)
-                .and_then(|scope| scope.sessions.get_mut(&id))
-            else {
-                return;
-            };
-            session.active = false;
-            session.active_instruction_revision = None;
-            session.steering = false;
-            session.submitted_output = None;
-            if !matches!(session.status, AgentStatus::Closing | AgentStatus::Closed) {
-                session.status = AgentStatus::Failed { error };
-            }
-            session.status.clone()
+    ) -> std::io::Result<()> {
+        let mut state = self.state.lock().await;
+        let scope = state.scope_mut(root_session_id);
+        let Some(session) = scope.sessions.get_mut(&id) else {
+            return Ok(());
         };
+        // Durable admission may have succeeded in the native driver before its
+        // receipt failed. Keep that operation and its output for reconstruction.
+        session.active = false;
+        session.steering = false;
+        if scope.journal.is_none() {
+            session.active_instruction_revision = None;
+            session.submitted_output = None;
+        }
+        if !matches!(session.status, AgentStatus::Closing | AgentStatus::Closed) {
+            session.status = AgentStatus::Failed { error };
+        }
+        let status = session.status.clone();
+        scope.persist().await?;
+        drop(state);
         self.send(root_session_id, AgentUpdate::Status { id, status });
         self.changed();
+        Ok(())
     }
 
     pub(super) async fn harness_turn_finished(
@@ -1182,42 +1403,42 @@ impl Registry {
         root_session_id: &str,
         id: AgentId,
         result: AgentResult<TurnResult>,
-    ) {
-        let status = {
-            let mut state = self.state.lock().await;
-            let Some(session) = state
-                .scopes
-                .get_mut(root_session_id)
-                .and_then(|scope| scope.sessions.get_mut(&id))
-            else {
-                return;
-            };
-            if !session.active {
-                return;
-            }
-            session.active = false;
-            session.active_instruction_revision = None;
-            session.steering = false;
-            let submitted_output = session.submitted_output.take();
-            // Acceptance belongs to this turn even if cancellation/close wins settlement.
-            // Keep its evidence, without claiming the interrupted execution completed.
-            if let Some(output) = &submitted_output {
-                session.last_output = Some(output.clone());
-            }
-            if matches!(session.status, AgentStatus::Closing | AgentStatus::Closed) {
-                session.status.clone()
-            } else {
-                match result {
-                    Ok(_) => complete_session(session, submitted_output),
-                    Err(NanocodexError::TurnCancelled) => AgentStatus::Interrupted,
-                    Err(error) => AgentStatus::Failed {
-                        error: error.to_string(),
-                    },
-                }
-            }
-            .clone_into(&mut session.status);
-            session.status.clone()
+        snapshot: Option<ChildSnapshot>,
+    ) -> std::io::Result<()> {
+        let mut state = self.state.lock().await;
+        let scope = state.scope_mut(root_session_id);
+        let Some(session) = scope.sessions.get_mut(&id) else {
+            return Ok(());
         };
+        if !session.active {
+            return Ok(());
+        }
+        if scope.journal.is_some() && snapshot.is_none() {
+            return Err(std::io::Error::other(
+                "durable child settlement requires a native snapshot",
+            ));
+        }
+        session.stored_runtime = snapshot.or_else(|| session.stored_runtime.take());
+        session.active = false;
+        session.execution = None;
+        session.active_instruction_revision = None;
+        session.steering = false;
+        let submitted_output = session.submitted_output.take();
+        if let Some(output) = &submitted_output {
+            session.last_output = Some(output.clone());
+        }
+        if !matches!(session.status, AgentStatus::Closing | AgentStatus::Closed) {
+            session.status = match result {
+                Ok(_) => complete_session(session, submitted_output),
+                Err(NanocodexError::TurnCancelled) => AgentStatus::Interrupted,
+                Err(error) => AgentStatus::Failed {
+                    error: error.to_string(),
+                },
+            };
+        }
+        let status = session.status.clone();
+        scope.persist().await?;
+        drop(state);
         self.send(root_session_id, AgentUpdate::Status { id, status });
         self.changed();
         let registry = Arc::clone(self);
@@ -1225,6 +1446,7 @@ impl Registry {
         drop(platform::spawn(async move {
             registry.enforce_resident_limit(&root_session_id).await;
         }));
+        Ok(())
     }
 
     async fn enforce_resident_limit(&self, root_session_id: &str) {
@@ -1272,7 +1494,7 @@ impl Registry {
             }
             self.changed();
             if harness.close().await.is_err() {
-                self.harness_closed(root_session_id, id).await;
+                let _ = self.harness_closed(root_session_id, id).await;
             }
             // Drain the old generation before another delivery may rehydrate this
             // ID. Its late runtime_closed callback must never close the new driver.
@@ -1295,37 +1517,37 @@ impl Registry {
         }
     }
 
-    pub(super) async fn harness_closed(&self, root_session_id: &str, id: AgentId) {
-        let status_update = {
-            let mut state = self.state.lock().await;
-            let Some(session) = state
-                .scopes
-                .get_mut(root_session_id)
-                .and_then(|scope| scope.sessions.get_mut(&id))
-            else {
-                return;
-            };
-            if matches!(session.status, AgentStatus::Closed) {
-                None
-            } else {
-                session.harness = None;
-                session.active = false;
-                session.active_instruction_revision = None;
-                session.steering = false;
-                session.submitted_output = None;
-                if session.evicted && !matches!(session.status, AgentStatus::Closing) {
-                    None
-                } else {
-                    session.evicted = false;
-                    session.status = AgentStatus::Closed;
-                    Some(AgentStatus::Closed)
-                }
-            }
+    pub(super) async fn harness_closed(
+        &self,
+        root_session_id: &str,
+        id: AgentId,
+    ) -> std::io::Result<()> {
+        let mut state = self.state.lock().await;
+        let scope = state.scope_mut(root_session_id);
+        let Some(session) = scope.sessions.get_mut(&id) else {
+            return Ok(());
         };
-        if let Some(status) = status_update {
+        if session.active || session.execution.is_some() {
+            return Err(std::io::Error::other("child execution has not settled"));
+        }
+        session.harness = None;
+        session.active_instruction_revision = None;
+        session.steering = false;
+        session.submitted_output = None;
+        let status = if session.evicted && !matches!(session.status, AgentStatus::Closing) {
+            None
+        } else {
+            session.evicted = false;
+            session.status = AgentStatus::Closed;
+            Some(AgentStatus::Closed)
+        };
+        scope.persist().await?;
+        drop(state);
+        if let Some(status) = status {
             self.send(root_session_id, AgentUpdate::Status { id, status });
         }
         self.changed();
+        Ok(())
     }
 
     async fn runtime_closed(&self, root_session_id: &str, id: AgentId) {
@@ -1341,7 +1563,7 @@ impl Registry {
                 .and_then(|session| session.harness.clone())
         };
         let Some(harness) = harness else {
-            self.harness_closed(root_session_id, id).await;
+            let _ = self.harness_closed(root_session_id, id).await;
             return;
         };
         drop(harness.close().await);
@@ -1356,11 +1578,13 @@ impl Registry {
         session_id: &str,
         include_completed: bool,
         include_self: bool,
-    ) -> Vec<AgentDirectoryEntry> {
-        self.state
-            .lock()
-            .await
-            .directory(session_id, include_completed, include_self)
+    ) -> std::io::Result<Vec<AgentDirectoryEntry>> {
+        let mut state = self.state.lock().await;
+        let root = state.root_session_id(session_id).to_owned();
+        if let Some(scope) = state.scopes.get_mut(&root) {
+            scope.persist().await?;
+        }
+        Ok(state.directory(session_id, include_completed, include_self))
     }
 
     /// Keep weak factory capabilities, never a second owner of a child driver.
@@ -1399,10 +1623,8 @@ impl Registry {
                     .sessions
                     .get(&id)
                     .ok_or_else(|| std::io::Error::other(format!("unknown agent_id {id}")))?;
-                if matches!(
-                    session.status,
-                    AgentStatus::Pending | AgentStatus::Closing | AgentStatus::Closed
-                ) || session.harness.is_some()
+                if matches!(session.status, AgentStatus::Closing | AgentStatus::Closed)
+                    || session.harness.is_some()
                 {
                     break;
                 }
@@ -1445,7 +1667,7 @@ impl Registry {
             let contract = OutputContract::compile(&schema)?;
             let needs_assignment = !snapshot.has_conversation();
             let (agent, events) = parent
-                .restore_runtime(snapshot, host_context)
+                .restore_runtime_with_factory(snapshot, host_context)
                 .await
                 .map_err(std::io::Error::other)?;
             let (start, ready) = oneshot::channel();
@@ -1493,8 +1715,46 @@ impl Registry {
         in_reply_to: Option<MessageId>,
         body: String,
     ) -> std::io::Result<MessageReceipt> {
+        self.send_message_keyed(session_id, to, priority, purpose, in_reply_to, body, None)
+            .await
+    }
+
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "adds a durable call identity to the public message parameters"
+    )]
+    pub(super) async fn send_message_keyed(
+        self: &Arc<Self>,
+        session_id: &str,
+        to: AgentId,
+        priority: MessagePriority,
+        purpose: MessagePurpose,
+        in_reply_to: Option<MessageId>,
+        body: String,
+        call: Option<(String, Value)>,
+    ) -> std::io::Result<MessageReceipt> {
         let _residency_guard = self.residency_lock.lock().await;
         let _message_guard = self.message_lock.lock().await;
+        if let Some((key, input)) = &call {
+            let mut state = self.state.lock().await;
+            let root = state.root_session_id(session_id).to_owned();
+            let scope = state.scope_mut(&root);
+            if self.durable_replay() && scope.journal.is_none() {
+                return Err(std::io::Error::other("durable child journal is not ready"));
+            }
+            scope.persist().await?;
+            if let Some(previous) = scope.calls.get(key) {
+                return match previous {
+                    ChildCall::Message {
+                        input: previous,
+                        receipt,
+                    } if previous == input => Ok(receipt.clone()),
+                    _ => Err(std::io::Error::other(
+                        "child tool call identity reused with different arguments",
+                    )),
+                };
+            }
+        }
         self.rehydrate(session_id, to, purpose).await?;
         let prepared = self.state.lock().await.prepare_message(
             session_id,
@@ -1507,27 +1767,63 @@ impl Registry {
         let delivery = prepared
             .harness
             .enqueue_delivery(prepared.message.clone())?;
-        self.state
-            .lock()
-            .await
-            .commit_message(&prepared.root_session_id, prepared.message.clone())?;
+        {
+            let mut state = self.state.lock().await;
+            state.commit_message(&prepared.root_session_id, prepared.message.clone())?;
+            let scope = state.scope_mut(&prepared.root_session_id);
+            if let Some((key, input)) = &call {
+                // A queued receipt is the stable durable mailbox admission. Delivery
+                // may happen after the caller loses its transport or restarts.
+                scope.calls.insert(
+                    key.clone(),
+                    ChildCall::Message {
+                        input: input.clone(),
+                        receipt: MessageReceipt {
+                            message_id: prepared.message.id,
+                            thread_id: prepared.message.thread_id,
+                            from: prepared.message.from,
+                            to_agent_id: prepared.message.to,
+                            disposition: MessageDisposition::Queued,
+                        },
+                    },
+                );
+            }
+            scope.persist().await?;
+        }
         let disposition = match delivery.release().await {
             Ok(disposition) => disposition,
             Err(error) => {
-                self.state
-                    .lock()
-                    .await
-                    .rollback_message(&prepared.root_session_id, prepared.message.id);
+                let mut state = self.state.lock().await;
+                // Retain durable mailbox admission on an ambiguous driver failure.
+                if state.scope_mut(&prepared.root_session_id).journal.is_none() {
+                    state.rollback_message(&prepared.root_session_id, prepared.message.id);
+                }
+                state.scope_mut(&prepared.root_session_id).persist().await?;
                 return Err(error);
             }
         };
-        Ok(MessageReceipt {
+        let receipt = MessageReceipt {
             message_id: prepared.message.id,
             thread_id: prepared.message.thread_id,
             from: prepared.message.from,
             to_agent_id: prepared.message.to,
             disposition,
-        })
+        };
+        if let Some((key, input)) = call {
+            let mut state = self.state.lock().await;
+            let scope = state.scope_mut(&prepared.root_session_id);
+            if scope.journal.is_some() {
+                scope.calls.insert(
+                    key,
+                    ChildCall::Message {
+                        input,
+                        receipt: receipt.clone(),
+                    },
+                );
+            }
+            scope.persist().await?;
+        }
+        Ok(receipt)
     }
 
     pub(super) async fn message_admitted(
@@ -1535,15 +1831,17 @@ impl Registry {
         root_session_id: &str,
         id: MessageId,
         disposition: MessageDisposition,
-    ) {
+    ) -> std::io::Result<()> {
         let thread = {
             let mut state = self.state.lock().await;
             let thread = state.thread_for_message(root_session_id, id);
             state.mark_message_admitted(root_session_id, id, disposition);
+            state.scope_mut(root_session_id).steer_intents.remove(&id);
+            state.scope_mut(root_session_id).persist().await?;
             thread
         };
         let Some(thread) = thread else {
-            return;
+            return Ok(());
         };
         self.send(
             root_session_id,
@@ -1554,13 +1852,17 @@ impl Registry {
             }),
         );
         self.changed();
+        Ok(())
     }
 
-    pub(super) async fn message_rejected(&self, root_session_id: &str, id: MessageId) {
-        self.state
-            .lock()
-            .await
-            .rollback_message(root_session_id, id);
+    pub(super) async fn message_rejected(
+        &self,
+        root_session_id: &str,
+        id: MessageId,
+    ) -> std::io::Result<()> {
+        let mut state = self.state.lock().await;
+        state.rollback_message(root_session_id, id);
+        state.scope_mut(root_session_id).persist().await
     }
 
     pub(super) async fn message_delivered(
@@ -1568,13 +1870,13 @@ impl Registry {
         root_session_id: &str,
         id: MessageId,
         disposition: MessageDisposition,
-    ) {
+    ) -> std::io::Result<()> {
         self.publish_message_state(
             root_session_id,
             id,
             MessageDeliveryState::Delivered { disposition },
         )
-        .await;
+        .await
     }
 
     pub(super) async fn begin_message_delivery(
@@ -1608,9 +1910,14 @@ impl Registry {
         }
     }
 
-    pub(super) async fn message_failed(&self, root_session_id: &str, id: MessageId, error: String) {
+    pub(super) async fn message_failed(
+        &self,
+        root_session_id: &str,
+        id: MessageId,
+        error: String,
+    ) -> std::io::Result<()> {
         self.publish_message_state(root_session_id, id, MessageDeliveryState::Failed { error })
-            .await;
+            .await
     }
 
     async fn publish_message_state(
@@ -1618,28 +1925,37 @@ impl Registry {
         root_session_id: &str,
         message_id: MessageId,
         delivery: MessageDeliveryState,
-    ) {
-        let thread = self
-            .state
-            .lock()
-            .await
-            .thread_for_message(root_session_id, message_id);
-        let Some(thread) = thread else {
-            return;
-        };
-        self.send(
-            root_session_id,
-            AgentUpdate::Message(AgentMessageUpdate {
-                message_id,
-                thread,
-                delivery,
-            }),
-        );
-        self.changed();
-        self.state
-            .lock()
-            .await
-            .mark_message_terminal(root_session_id, message_id);
+    ) -> std::io::Result<()> {
+        let mut state = self.state.lock().await;
+        let thread = state.thread_for_message(root_session_id, message_id);
+        state.mark_message_terminal(root_session_id, message_id);
+        state.scope_mut(root_session_id).persist().await?;
+        drop(state);
+        if let Some(thread) = thread {
+            self.send(
+                root_session_id,
+                AgentUpdate::Message(AgentMessageUpdate {
+                    message_id,
+                    thread,
+                    delivery,
+                }),
+            );
+            self.changed();
+        }
+        Ok(())
+    }
+
+    async fn checked_summaries(
+        &self,
+        session: &str,
+        ids: &[AgentId],
+    ) -> std::io::Result<Vec<AgentSummary>> {
+        let mut state = self.state.lock().await;
+        let root = state.root_session_id(session).to_owned();
+        if let Some(scope) = state.scopes.get_mut(&root) {
+            scope.persist().await?;
+        }
+        state.summaries(session, ids)
     }
 
     pub async fn wait(
@@ -1654,7 +1970,7 @@ impl Registry {
         let mut revision = self.revision.subscribe();
         let deadline = Instant::now() + duration;
         loop {
-            let summaries = self.state.lock().await.summaries(session_id, ids)?;
+            let summaries = self.checked_summaries(session_id, ids).await?;
             if summaries
                 .iter()
                 .any(|summary| summary.status.is_wait_terminal())
@@ -1662,7 +1978,7 @@ impl Registry {
                 return Ok((summaries, false));
             }
             if timeout_at(deadline, revision.changed()).await.is_err() {
-                let summaries = self.state.lock().await.summaries(session_id, ids)?;
+                let summaries = self.checked_summaries(session_id, ids).await?;
                 return Ok((summaries, true));
             }
         }
@@ -1676,7 +1992,13 @@ impl Registry {
         let _message_guard = self.message_lock.lock().await;
         let (root_session_id, ids, harnesses) = {
             let mut state = self.state.lock().await;
-            state.request_interrupt(session_id, id)?
+            let request = state.request_interrupt(session_id, id)?;
+            let scope = state.scope_mut(&request.0);
+            for id in &request.1 {
+                scope.sessions.get_mut(id).expect("child").interrupted = true;
+            }
+            scope.persist().await?;
+            request
         };
         self.changed();
         let deadline = Instant::now() + AGENT_STOP_TIMEOUT;
@@ -1697,7 +2019,13 @@ impl Registry {
             status_updates,
         } = {
             let mut state = self.state.lock().await;
-            state.request_close(session_id, id)?
+            let request = state.request_close(session_id, id)?;
+            let scope = state.scope_mut(&request.root_session_id);
+            for id in &request.ids {
+                scope.sessions.get_mut(id).expect("child").interrupted = true;
+            }
+            scope.persist().await?;
+            request
         };
         for (id, status) in status_updates {
             self.send(&root_session_id, AgentUpdate::Status { id, status });
@@ -1721,7 +2049,13 @@ impl Registry {
             status_updates,
         } = {
             let mut state = self.state.lock().await;
-            state.request_close_all(session_id)?
+            let request = state.request_close_all(session_id)?;
+            let scope = state.scope_mut(&request.root_session_id);
+            for id in &request.ids {
+                scope.sessions.get_mut(id).expect("child").interrupted = true;
+            }
+            scope.persist().await?;
+            request
         };
         for (id, status) in status_updates {
             self.send(&root_session_id, AgentUpdate::Status { id, status });
@@ -1757,16 +2091,17 @@ impl Registry {
         // Closing an already-finished driver can race with its natural shutdown.
         // Once every harness reports inactive, command errors no longer identify
         // a live resource and must not prevent task handles from being joined.
-        drop(closing_result);
+        closing_result?;
         let ClosedSessions {
             summaries,
             harness_tasks,
             event_tasks,
-        } = self
-            .state
-            .lock()
-            .await
-            .finish_close(&root_session_id, &ids)?;
+        } = {
+            let mut state = self.state.lock().await;
+            let closed = state.finish_close(&root_session_id, &ids)?;
+            state.scope_mut(&root_session_id).persist().await?;
+            closed
+        };
         for summary in &summaries {
             self.send(
                 &root_session_id,
@@ -1810,18 +2145,22 @@ impl Registry {
         Ok(summaries)
     }
 
-    async fn cancel_all(&self, session_id: &str) {
+    async fn cancel_all(&self, session_id: &str) -> std::io::Result<()> {
         let _message_guard = self.message_lock.lock().await;
         let (root_session_id, ids, harnesses) = {
             let mut state = self.state.lock().await;
-            state.request_interrupt_all(session_id)
+            let request = state.request_interrupt_all(session_id);
+            let scope = state.scope_mut(&request.0);
+            for id in &request.1 {
+                scope.sessions.get_mut(id).expect("child").interrupted = true;
+            }
+            scope.persist().await?;
+            request
         };
         self.changed();
         let deadline = Instant::now() + AGENT_STOP_TIMEOUT;
-        drop(
-            self.interrupt_harnesses(&root_session_id, &ids, harnesses, deadline)
-                .await,
-        );
+        self.interrupt_harnesses(&root_session_id, &ids, harnesses, deadline)
+            .await
     }
 
     async fn interrupt_harnesses(
@@ -1848,7 +2187,7 @@ impl Registry {
         })?;
         self.wait_until_inactive(root_session_id, ids, deadline)
             .await?;
-        drop(interruption_result);
+        interruption_result?;
         Ok(())
     }
 
@@ -2013,6 +2352,7 @@ impl ChildSession {
             self.last_output.clone()
         };
         AgentSummary {
+            lifetime: self.descriptor.lifetime,
             agent_id: self.descriptor.id,
             role: self.descriptor.role.clone(),
             task: self.descriptor.task.clone(),
@@ -2039,8 +2379,8 @@ impl SubagentControl {
         self.registry.set_max_resident(limit);
     }
 
-    pub async fn cancel_all(&self, root_session_id: &str) {
-        self.registry.cancel_all(root_session_id).await;
+    pub async fn cancel_all(&self, root_session_id: &str) -> std::io::Result<()> {
+        self.registry.cancel_all(root_session_id).await
     }
 
     pub async fn close_all(&self, root_session_id: &str) -> std::io::Result<()> {
@@ -2254,6 +2594,7 @@ mod tests {
             });
             registry.set_spawn_router(router.clone());
             let task = || AgentTask {
+                lifetime: Default::default(),
                 role: "worker".to_owned(),
                 task: "work".to_owned(),
                 output_schema: json!({ "type": "object" }),
@@ -2297,6 +2638,7 @@ mod tests {
                 registry
                     .directory(parent.session_id(), true, false)
                     .await
+                    .unwrap()
                     .is_empty()
             );
             assert!(receiver.try_recv().is_err());
@@ -2372,7 +2714,10 @@ mod tests {
         mark_reusable(&original, "root", descendant).await;
         original.set_max_resident(1);
         original.enforce_resident_limit("root").await;
-        assert_eq!(original.directory("root", true, false).await.len(), 2);
+        assert_eq!(
+            original.directory("root", true, false).await.unwrap().len(),
+            2
+        );
         assert!(
             original.state.lock().await.scopes["root"]
                 .sessions
@@ -2383,7 +2728,13 @@ mod tests {
         drop((original, control, updates));
 
         let (registry, _control, mut updates) = super::channel(2);
-        assert!(registry.directory("root", true, false).await.is_empty());
+        assert!(
+            registry
+                .directory("root", true, false)
+                .await
+                .unwrap()
+                .is_empty()
+        );
         assert!(
             registry
                 .host_context_for_session(&prior_session)
@@ -2470,7 +2821,7 @@ mod tests {
             registry.close("root", child).await.unwrap()[0].status,
             AgentStatus::Closed
         );
-        assert!(!registry.directory("root", true, false).await[0].can_message);
+        assert!(!registry.directory("root", true, false).await.unwrap()[0].can_message);
     }
 
     #[tokio::test]
@@ -2487,6 +2838,7 @@ mod tests {
             .insert(
                 reservation.root_session_id,
                 AgentDescriptor {
+                    lifetime: Default::default(),
                     id: reservation.id,
                     session_id: agent.session_id().to_string(),
                     role: "child".to_owned(),
@@ -2504,6 +2856,7 @@ mod tests {
                     registry.updates.clone(),
                 ),
                 contract,
+                None,
             )
             .await
             .unwrap_err();
@@ -2553,6 +2906,7 @@ mod tests {
     ) -> String {
         let session_id = events.request_id().to_owned();
         let descriptor = AgentDescriptor {
+            lifetime: Default::default(),
             id: reservation.id,
             session_id: session_id.clone(),
             role: format!("agent-{}", reservation.id),
@@ -2576,6 +2930,7 @@ mod tests {
                 agent,
                 event_task,
                 test_contract(),
+                None,
             )
             .await
             .unwrap();
@@ -2633,6 +2988,7 @@ mod tests {
 
     fn test_session(id: AgentId, session_id: &str, parent: Option<AgentId>) -> ChildSession {
         let descriptor = AgentDescriptor {
+            lifetime: Default::default(),
             id,
             session_id: session_id.to_owned(),
             role: format!("agent-{id}"),
@@ -2640,6 +2996,8 @@ mod tests {
             parent,
         };
         ChildSession {
+            execution: None,
+            interrupted: false,
             descriptor,
             host_context: None,
             event_task: Some(platform::spawn(async {})),
@@ -2988,8 +3346,10 @@ mod tests {
                 "main",
                 id,
                 Err(nanocodex_agent::NanocodexError::TurnCancelled),
+                None,
             )
-            .await;
+            .await
+            .unwrap();
         {
             let state = registry.state.lock().await;
             let session = &state.scopes["main"].sessions[&id];
@@ -3001,7 +3361,10 @@ mod tests {
             assert_eq!(session.active_instruction_revision, None);
             assert_eq!(session.submitted_output, None);
         }
-        assert_eq!(registry.harness_turn_started("main", id).await, Some(2));
+        assert_eq!(
+            registry.harness_turn_started("main", id).await.unwrap(),
+            Some(2)
+        );
         assert_eq!(
             registry
                 .submit_result("child-session", Some(1), json!({"report": "old"}))
@@ -3044,6 +3407,47 @@ mod tests {
             summaries[0].last_output,
             Some(json!({ "report": "completed work" }))
         );
+    }
+
+    #[tokio::test]
+    async fn capacity_waiting_mailbox_owns_registry_until_delivery_settles() {
+        let (registry, control, _updates) = super::channel(0);
+        let called = Arc::new(Notify::new());
+        let (id, _) = insert_pending_runtime_session(&registry, "main", None, called.clone()).await;
+        mark_reusable(&registry, "main", id).await;
+        let receipt = registry
+            .send_message(
+                "main",
+                id,
+                MessagePriority::Deferred,
+                MessagePurpose::Coordinate,
+                None,
+                "queued at zero capacity".to_owned(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(receipt.disposition, MessageDisposition::Queued);
+        let capacity = registry.capacity.clone();
+        let weak = Arc::downgrade(&registry);
+        drop((registry, control));
+        assert!(
+            weak.upgrade().is_some(),
+            "capacity wait owns committed delivery"
+        );
+        capacity.set_limit(1);
+        timeout(Duration::from_secs(5), called.notified())
+            .await
+            .unwrap();
+        let registry = weak.upgrade().expect("running delivery owns registry");
+        registry.close_all("main").await.unwrap();
+        drop(registry);
+        timeout(Duration::from_secs(5), async {
+            while weak.upgrade().is_some() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("drained/cancelled delivery releases registry");
     }
 
     #[tokio::test]
@@ -3132,6 +3536,7 @@ mod tests {
         let entry = registry
             .directory("main", true, false)
             .await
+            .unwrap()
             .into_iter()
             .find(|entry| entry.agent_id == interrupted)
             .expect("evicted agent should remain in the directory");
@@ -3319,7 +3724,10 @@ mod tests {
                 (&parent.id, &AgentStatus::Closed),
             ]
         );
-        assert_eq!(registry.directory("main", true, false).await.len(), 3);
+        assert_eq!(
+            registry.directory("main", true, false).await.unwrap().len(),
+            3
+        );
 
         let all_closed = registry.close_all("main").await.unwrap();
         assert_eq!(all_closed.len(), 3);

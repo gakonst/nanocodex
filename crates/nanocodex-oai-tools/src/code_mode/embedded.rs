@@ -25,6 +25,7 @@ use super::RuntimeEvent;
 
 const BOOTSTRAP: &str = include_str!("bootstrap.js");
 // Generated from js/nanocodex-tools/runtime/code-tools.mjs for crate packaging.
+const CODE_DISCOVERY: &str = include_str!("code-discovery.mjs");
 const CODE_TOOLS: &str = include_str!("code-tools.mjs");
 const CODE_VALUES: &str = include_str!("code-values.mjs");
 
@@ -269,6 +270,13 @@ fn run_execution_in_context<'js>(
         .eval::<Function<'js>, _>(factory_source)
         .catch(ctx)
         .map_err(|error| format!("failed to evaluate shared tool facade: {error}"))?;
+    let create_discovery = ctx
+        .eval::<Function<'js>, _>(format!(
+            "({})",
+            CODE_DISCOVERY.replacen("export function", "function", 1)
+        ))
+        .catch(ctx)
+        .map_err(|error| format!("failed to evaluate shared tool discovery: {error}"))?;
     let values_factory = CODE_VALUES
         .split_once("export const")
         .ok_or_else(|| "shared value helper export marker is missing".to_owned())?
@@ -284,7 +292,7 @@ fn run_execution_in_context<'js>(
         .catch(ctx)
         .map_err(|error| format!("failed to evaluate embedded QuickJS bootstrap: {error}"))?;
     let run_cell = bootstrap
-        .call::<_, Function<'js>>((create_tools, value_helpers))
+        .call::<_, Function<'js>>((create_tools, value_helpers, create_discovery))
         .catch(ctx)
         .map_err(|error| format!("failed to initialize embedded QuickJS bootstrap: {error}"))?;
     remove_native_globals(ctx)?;

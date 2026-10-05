@@ -1,3 +1,4 @@
+mod background;
 mod continuation;
 mod lifecycle;
 mod responses;
@@ -99,6 +100,8 @@ pub(crate) struct ModelRun<S> {
     instruction_revision: Option<u64>,
     global_instructions: Option<Arc<str>>,
     force_compaction: bool,
+    background_compaction: Option<background::PendingCompaction>,
+    background_work: Option<background::CompactionWork>,
     pending_developer_messages: Vec<ResponseItem>,
     execution_steps: Option<ExecutionSteps>,
     before_compaction: Option<Arc<dyn crate::execution::BeforeCompaction>>,
@@ -211,6 +214,13 @@ impl ModelCheckpoint {
         );
     }
 
+    pub(crate) const fn request_policy(&self) -> &Value {
+        &self.conversation.request_policy
+    }
+    pub(crate) fn restore_request_policy(&mut self, state: Value) {
+        self.conversation.request_policy = state;
+    }
+
     pub(crate) fn snapshot_history(&self) -> Vec<ResponseItem> {
         self.conversation.flattened_history()
     }
@@ -299,6 +309,8 @@ impl<S> ModelRun<S> {
             instruction_revision: None,
             global_instructions,
             force_compaction: false,
+            background_compaction: None,
+            background_work: None,
             pending_developer_messages: Vec::new(),
             execution_steps: None,
             before_compaction: None,
@@ -380,6 +392,8 @@ impl<S> ModelRun<S> {
             instruction_revision: None,
             global_instructions,
             force_compaction: false,
+            background_compaction: None,
+            background_work: None,
             pending_developer_messages: Vec::new(),
             execution_steps: None,
             before_compaction: None,

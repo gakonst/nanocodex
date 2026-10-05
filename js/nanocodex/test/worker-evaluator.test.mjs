@@ -8,7 +8,7 @@ import { NodeWebWorker } from "./support/node-web-worker.mjs";
 const PROTOCOL = "nanocodex.code-evaluator.v1";
 const WORKER_URL = new URL("../runtime/code-evaluator.worker.mjs", import.meta.url);
 
-test("real module evaluator preserves Code Mode globals and terminal store commits", async () => {
+test("real module evaluator preserves Code Mode globals and commits only successful cells", async () => {
   const logs = [];
   const runtime = createCodeRuntime({
     double: {
@@ -47,7 +47,7 @@ test("real module evaluator preserves Code Mode globals and terminal store commi
   assert.equal(JSON.stringify(completed.output).includes("unreachable"), false);
 
   const failed = JSON.parse(await runtime.executeCode(
-    'store("ordinary-failure", "retained"); throw new Error("expected failure");',
+    'store("answer", -1); store("ordinary-failure", "discarded"); throw new Error("expected failure");',
     "real-worker",
     "exec-failed",
   ));
@@ -55,12 +55,12 @@ test("real module evaluator preserves Code Mode globals and terminal store commi
   assert.match(failed.output, /expected failure/);
 
   const followOn = JSON.parse(await runtime.executeCode(
-    'text({ answer: load("answer"), failure: load("ordinary-failure") });',
+    'text({ answer: load("answer"), failureAbsent: load("ordinary-failure") === undefined });',
     "real-worker",
     "exec-follow-on",
   ));
   assert.equal(followOn.success, true);
-  assert.match(JSON.stringify(followOn.output), /retained/);
+  assert.deepEqual(JSON.parse(followOn.output.at(-1).text), { answer: 42, failureAbsent: true });
   runtime.reset();
 });
 

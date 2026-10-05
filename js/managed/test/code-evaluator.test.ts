@@ -1,3 +1,4 @@
+import { createCodeDiscovery } from "nanocodex-tools/runtime/code-discovery";
 import { beforeEach, expect, it, vi } from "vitest";
 import type { CodeEvaluator } from "nanocodex";
 
@@ -22,6 +23,7 @@ beforeEach(() => {
 
 function environment(signal = new AbortController().signal): Parameters<CodeEvaluator>[1] {
   return {
+    ...createCodeDiscovery([]),
     signal, tools: {}, toolDefinitions: [], text() {}, image() {}, generatedImage() {},
     audio() {}, notify() {}, yield_control() {}, setTimeout: () => 0, clearTimeout() {},
     store() {}, load() {}, exit(): never { throw new Error("exit"); },

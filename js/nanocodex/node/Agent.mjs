@@ -1,3 +1,4 @@
+import { assertRequestPolicy } from "../runtime/request-policy.mjs";
 import { prepareHarnesses } from '../runtime/harnesses.mjs';
 import { create as createClaude } from './Claude.mjs';
 import { createRequire } from "node:module";
@@ -31,15 +32,22 @@ let initializedWeb;
 let NodeNanocodex;
 
 export function create(options = {}) {
+  if (managedTransportOptions(options?.transport) && options.requestPolicy !== undefined) {
+    throw new TypeError('managed request policy must be configured by its owning host');
+  }
   if (options.harness === 'claude') return createClaude(options);
   if (options.harness !== undefined && options.harness !== 'codex') throw new TypeError('unsupported harness family');
-  if (managedTransportOptions(options?.transport)) return createManagedAgent(options);
+  if (managedTransportOptions(options?.transport)) {
+    return createManagedAgent(options);
+  }
+  const requestPolicy = options.requestPolicy === undefined ? undefined : assertRequestPolicy(options.requestPolicy);
   const {
     model,
     thinking,
     reasoningMode,
     fastMode,
     instantToolSteering,
+    inlineDocsTokenBudget,
     rawApiEvents,
     instructions,
     additionalInstructions,
@@ -47,8 +55,10 @@ export function create(options = {}) {
     sessionId,
     workspace,
     resume,
+    documentFork,
     durability,
     durabilityId,
+    terminalReceiptRetention,
     transport,
     module,
     filesystem,
@@ -69,6 +79,7 @@ export function create(options = {}) {
   } = resolveResponsesTransport(transport);
   const { tools: hostTools, subagents: subagentConfig } = resolveTools(tools);
   const events = createEventChannel();
+  if (options.requestPolicy !== undefined) events.subscribe(() => {});
   if (filesystem && workspace !== undefined && workspace !== filesystem.root) {
     throw new TypeError("workspace must match filesystem.root when both are provided");
   }
@@ -76,6 +87,7 @@ export function create(options = {}) {
   let hostDefinitionId;
   const host = createNodeHost({
     mpp,
+    requestPolicy,
     mcpServers: mcp === false
       ? undefined
       : tempoMcp ? { ...tempoMcp, ...mcp } : mcp,
@@ -123,7 +135,8 @@ export function create(options = {}) {
             ? undefined
             : "wss://openai.mpp.tempo.xyz/v1/responses"),
           apiBaseUrl,
-          websocketWarmup,
+          websocketWarmup: requestPolicy === undefined ? websocketWarmup : false,
+          stateless: requestPolicy !== undefined,
           subagents: subagentConfig,
           claudeHarness: harnesses?.claude,
           hostDefinitionId,
@@ -150,6 +163,7 @@ export function create(options = {}) {
         // Adopted child handles are ephemeral and do not own the root store.
         if (raw.sessionId === stableSessionId) durabilityOwner?.retain();
         bindHostSession(host, raw.sessionId);
+        host.bindRequestPolicy(raw.sessionId);
         events.addSource(raw);
       } catch (error) {
         events.removeSource(raw);
@@ -165,7 +179,8 @@ export function create(options = {}) {
       if (raw.sessionId === stableSessionId) durabilityOwner?.release();
       releaseHost(host);
     },
-    decorate: (agent) => agent.extend(agentActions()),
+    fork: (source, forked, at) => host.forkRequestPolicy(source.sessionId, forked.sessionId, at),
+    decorate: (agent, raw) => agent.extend(agentActions()).extend(() => ({ requestPolicy: host.requestPolicyFor(raw.sessionId) })),
   });
   return createAgentClient(runtime, {
     model,
@@ -173,13 +188,16 @@ export function create(options = {}) {
     reasoningMode,
     fastMode,
     instantToolSteering,
+    inlineDocsTokenBudget,
     rawApiEvents,
     instructions,
     additionalInstructions,
     sessionId: stableSessionId,
     workspace: workspace ?? filesystem?.root,
     resume,
+    documentFork,
     durabilityId,
+    terminalReceiptRetention,
   }).catch(async (error) => {
     if (!creationStarted) await host.dispose();
     throw error;

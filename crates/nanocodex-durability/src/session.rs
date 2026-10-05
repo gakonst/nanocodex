@@ -71,6 +71,9 @@ pub enum BeginStep<O = EncodedPayload> {
     Execute,
     /// A prior attempt completed; use this stored output instead of executing.
     Replay(O),
+    /// A prior attempt may have performed an unsafe effect. Settle an explicit
+    /// unknown-outcome receipt; never automatically invoke the handler again.
+    OutcomeUnknown,
 }
 
 enum StoredAdmission {
@@ -120,6 +123,7 @@ impl StoredAdmission {
 }
 
 enum StoredBeginStep {
+    OutcomeUnknown,
     Execute,
     Replay(EncodedPayload),
 }
@@ -142,6 +146,39 @@ struct AgentAcquisition {
 }
 
 enum Command {
+    CompareExchangeDocuments {
+        writes: Vec<crate::DocumentWrite>,
+        result: oneshot::Sender<Result<()>>,
+    },
+    StageDocuments {
+        caller: Caller,
+        operation_id: String,
+        writes: Vec<crate::DocumentWrite>,
+        result: oneshot::Sender<Result<()>>,
+    },
+    Document {
+        key: String,
+        result: oneshot::Sender<Option<crate::SessionDocument>>,
+    },
+    DocumentFork {
+        boundary: String,
+        result: oneshot::Sender<Result<(EncodedPayload, crate::DocumentFork)>>,
+    },
+    InitializeDocumentFork {
+        caller: Caller,
+        fork: crate::DocumentFork,
+        checkpoint: EncodedPayload,
+        result: oneshot::Sender<Result<()>>,
+    },
+    CompleteDocuments {
+        caller: Caller,
+        operation_id: String,
+        step_id: Option<String>,
+        checkpoint: Option<EncodedPayload>,
+        output: EncodedPayload,
+        writes: Vec<crate::DocumentWrite>,
+        result: oneshot::Sender<Result<()>>,
+    },
     LoadPayloads {
         caller: Option<Caller>,
         payloads: Vec<EncodedPayload>,
@@ -161,6 +198,7 @@ enum Command {
         caller: Caller,
         operation_id: String,
         continuation: EncodedPayload,
+        retained_steps: Vec<String>,
         result: oneshot::Sender<Result<()>>,
     },
     RecoverFailure {
@@ -170,6 +208,11 @@ enum Command {
     },
     State {
         result: oneshot::Sender<DurableState>,
+    },
+    SteerReceipt {
+        operation_id: String,
+        message_id: String,
+        result: oneshot::Sender<Result<Option<crate::IdentifiedSteerReceipt>>>,
     },
     LatestCheckpoint {
         result: oneshot::Sender<Result<Option<EncodedPayload>>>,
@@ -236,6 +279,7 @@ enum Command {
         step_id: String,
         kind: String,
         input: EncodedPayload,
+        replay_safety: crate::ReplaySafety,
         result: oneshot::Sender<Result<StoredBeginStep>>,
     },
     CompleteStep {
@@ -420,6 +464,7 @@ impl Driver {
                     caller,
                     operation_id,
                     continuation,
+                    retained_steps,
                     result,
                 } => {
                     let outcome = async {
@@ -429,6 +474,7 @@ impl Driver {
                         self.apply(Transition::ExecutionAdvanced {
                             operation_id,
                             continuation,
+                            retained_steps,
                         })
                         .await
                     }
@@ -455,7 +501,183 @@ impl Driver {
                     });
                     drop(result.send(outcome));
                 }
+                Command::CompareExchangeDocuments { writes, result } => {
+                    let outcome = async {
+                        let mut next = self.state.clone();
+                        next.documents.write(writes)?;
+                        next.advance_revision(self.state.revision().checked_add(1).ok_or_else(
+                            || Error::InvalidState("state revision overflow".into()),
+                        )?)?;
+                        self.persist(next).await
+                    }
+                    .await;
+                    drop(result.send(outcome));
+                }
+                Command::StageDocuments {
+                    caller,
+                    operation_id,
+                    writes,
+                    result,
+                } => {
+                    let outcome = async {
+                        // This handle shares the model owner's actor. It may stage
+                        // data for that owner's claimed running operation, but it
+                        // cannot complete or admit model work through this seam.
+                        if let Some(generation) = self.active_agent_generation {
+                            self.require_claimed(&Caller::Agent(generation), &operation_id)?;
+                        } else {
+                            self.authorize(&caller)?;
+                            self.require_claimed(&caller, &operation_id)?;
+                        }
+                        self.require_running(&operation_id)?;
+                        let mut next = self.state.clone();
+                        next.documents.stage(operation_id, writes)?;
+                        next.advance_revision(self.state.revision() + 1)?;
+                        self.persist(next).await
+                    }
+                    .await;
+                    drop(result.send(outcome));
+                }
+                Command::Document { key, result } => {
+                    drop(result.send(self.state.documents.current.get(&key).cloned()));
+                }
+                Command::DocumentFork { boundary, result } => {
+                    let outcome = async {
+                        let payload = match self.state.documents.boundaries.get(&boundary) {
+                            Some(payload) => payload.clone(),
+                            None => {
+                                let key = crate::documents::boundary_key(&boundary);
+                                let reference = self
+                                    .store
+                                    .read_record(&self.state_id, &key)
+                                    .await?
+                                    .ok_or_else(|| {
+                                        Error::InvalidState(format!(
+                                            "document boundary `{boundary}` is not retained"
+                                        ))
+                                    })?;
+                                serde_json::from_value::<EncodedPayload>(serde_json::Value::String(
+                                    reference,
+                                ))
+                                .map_err(Error::InvalidPayload)?
+                            }
+                        };
+                        let record: crate::documents::Boundary = payload
+                            .load(&mut *self.store, &self.state_id)
+                            .await?
+                            .decode()?;
+                        let checkpoint = record
+                            .checkpoint
+                            .load(&mut *self.store, &self.state_id)
+                            .await?;
+                        let fork = self.state.documents.fork(&boundary, record)?;
+                        Ok((checkpoint, fork))
+                    }
+                    .await;
+                    drop(result.send(outcome));
+                }
+                Command::InitializeDocumentFork {
+                    caller,
+                    fork,
+                    checkpoint,
+                    result,
+                } => {
+                    let outcome = async {
+                        self.authorize(&caller)?;
+                        if self.state.revision() != 0 {
+                            return Err(Error::InvalidState(
+                                "document forks require an empty destination".into(),
+                            ));
+                        }
+                        let mut next = self.state.clone();
+                        next.apply_transition(1, Transition::CheckpointCommitted { checkpoint })?;
+                        for (key, doc) in fork.documents {
+                            if key.trim().is_empty() || key.len() > 256 || doc.version != 1 {
+                                return Err(Error::InvalidState(
+                                    "invalid document fork seed".into(),
+                                ));
+                            }
+                            next.documents.current.insert(key, doc);
+                        }
+                        next.documents.validate()?;
+                        self.persist(next).await
+                    }
+                    .await;
+                    drop(result.send(outcome));
+                }
+                Command::CompleteDocuments {
+                    caller,
+                    operation_id,
+                    step_id,
+                    checkpoint,
+                    output,
+                    writes,
+                    result,
+                } => {
+                    let terminal = step_id.is_none();
+                    let outcome = async {
+                        self.authorize(&caller)?;
+                        self.require_claimed(&caller, &operation_id)?;
+                        self.require_running(&operation_id)?;
+                        let revision =
+                            self.state.revision().checked_add(1).ok_or_else(|| {
+                                Error::InvalidState("state revision overflow".into())
+                            })?;
+                        if terminal {
+                            self.require_new_boundary(&operation_id).await?;
+                        }
+                        let mut next = self.state.clone();
+                        match step_id {
+                            Some(step_id) => {
+                                next.apply_transition(
+                                    revision,
+                                    Transition::StepCompleted {
+                                        operation_id: operation_id.clone(),
+                                        step_id,
+                                        output,
+                                    },
+                                )?;
+                                next.documents.write(writes)?;
+                            }
+                            None => {
+                                let checkpoint = checkpoint.ok_or_else(|| {
+                                    Error::InvalidState(
+                                        "document completion requires checkpoint".into(),
+                                    )
+                                })?;
+                                next.apply_transition(
+                                    revision,
+                                    Transition::OperationCompleted {
+                                        operation_id: operation_id.clone(),
+                                        checkpoint: checkpoint.clone(),
+                                        output,
+                                    },
+                                )?;
+                                let mut staged = next.documents.take_staged(&operation_id);
+                                staged.extend(writes);
+                                next.documents.commit(&operation_id, checkpoint, staged)?;
+                            }
+                        }
+                        if let Some(limit) = self.terminal_receipt_limit {
+                            let _ = next.retain_terminal_receipts(limit);
+                        }
+                        self.persist(next).await
+                    }
+                    .await;
+                    if terminal && finishing_attempt_releases_claim(&outcome) {
+                        self.release_claim_if_owned(&caller, &operation_id);
+                    }
+                    drop(result.send(outcome));
+                }
                 Command::State { result } => drop(result.send(self.state.clone())),
+                Command::SteerReceipt {
+                    operation_id,
+                    message_id,
+                    result,
+                } => {
+                    let outcome = self.steer_receipt(&operation_id, &message_id).await;
+                    drop(result.send(outcome));
+                }
                 Command::LatestCheckpoint { result } => {
                     let outcome = match self.state.latest_checkpoint() {
                         Some(value) => value.load(&mut *self.store, &self.state_id).await.map(Some),
@@ -640,12 +862,20 @@ impl Driver {
                     step_id,
                     kind,
                     input,
+                    replay_safety,
                     result,
                 } => {
                     let outcome = match self.authorize(&caller) {
                         Ok(()) => {
-                            self.begin_step(&caller, operation_id, step_id, kind, input)
-                                .await
+                            self.begin_step(
+                                &caller,
+                                operation_id,
+                                step_id,
+                                kind,
+                                input,
+                                replay_safety,
+                            )
+                            .await
                         }
                         Err(error) => Err(error),
                     };
@@ -915,6 +1145,7 @@ impl Driver {
                 OperationStatus::Cancelled { .. } => Ok(StoredAdmission::Cancelled),
             };
         }
+        self.require_new_boundary(&operation_id).await?;
         self.apply(Transition::OperationAccepted {
             operation_id: operation_id.clone(),
             input,
@@ -976,6 +1207,21 @@ impl Driver {
         Ok(())
     }
 
+    async fn steer_receipt(
+        &mut self,
+        operation_id: &str,
+        message_id: &str,
+    ) -> Result<Option<crate::IdentifiedSteerReceipt>> {
+        match self.state.operation(operation_id) {
+            Some(operation) => {
+                operation
+                    .steer_receipt(message_id, &mut *self.store, &self.state_id)
+                    .await
+            }
+            None => Ok(None),
+        }
+    }
+
     async fn accept_steer(
         &mut self,
         caller: &Caller,
@@ -991,7 +1237,9 @@ impl Driver {
             Error::InvalidState(format!("operation `{operation_id}` was not accepted"))
         })?;
         if let Some(id) = &message_id
-            && let Some(receipt) = operation.steer_receipts.get(id)
+            && let Some(receipt) = operation
+                .steer_receipt(id, &mut *self.store, &self.state_id)
+                .await?
         {
             if receipt.input_key != input.key.as_ref() {
                 return Err(Error::SteerConflict {
@@ -1118,6 +1366,7 @@ impl Driver {
         step_id: String,
         kind: String,
         input: EncodedPayload,
+        replay_safety: crate::ReplaySafety,
     ) -> Result<StoredBeginStep> {
         self.require_claimed(caller, &operation_id)?;
         if let Some((pending_id, _)) = self.state.first_pending_operation()
@@ -1145,10 +1394,17 @@ impl Driver {
                         output.load(&mut *self.store, &self.state_id).await?,
                     ));
                 }
-                StepStatus::EffectPending => {}
+                StepStatus::EffectPending => {
+                    if step.replay_safety != crate::ReplaySafety::Safe
+                        || replay_safety != crate::ReplaySafety::Safe
+                    {
+                        return Ok(StoredBeginStep::OutcomeUnknown);
+                    }
+                }
             }
         }
         let entry = Transition::StepStarted {
+            replay_safety,
             operation_id: operation_id.clone(),
             step_id,
             kind,
@@ -1202,12 +1458,28 @@ impl Driver {
     ) -> Result<()> {
         self.require_claimed(caller, &operation_id)?;
         self.require_running(&operation_id)?;
-        let entry = Transition::OperationCompleted {
-            operation_id: operation_id.clone(),
-            checkpoint,
-            output,
-        };
-        let outcome = self.apply_terminal(entry).await;
+        let outcome = async {
+            self.require_new_boundary(&operation_id).await?;
+            let mut next = self.state.clone();
+            let writes = next.documents.take_staged(&operation_id);
+            next.apply_transition(
+                self.state
+                    .revision()
+                    .checked_add(1)
+                    .ok_or_else(|| Error::InvalidState("state revision overflow".into()))?,
+                Transition::OperationCompleted {
+                    operation_id: operation_id.clone(),
+                    checkpoint: checkpoint.clone(),
+                    output,
+                },
+            )?;
+            next.documents.commit(&operation_id, checkpoint, writes)?;
+            if let Some(limit) = self.terminal_receipt_limit {
+                let _ = next.retain_terminal_receipts(limit);
+            }
+            self.persist(next).await
+        }
+        .await;
         if finishing_attempt_releases_claim(&outcome) {
             self.release_claim_if_owned(caller, &operation_id);
         }
@@ -1281,11 +1553,52 @@ impl Driver {
             Error::InvalidState("state revision exceeded the u64 range".to_owned())
         })?;
         let mut next = self.state.clone();
+        match &entry {
+            Transition::OperationFailed { operation_id, .. }
+            | Transition::OperationCancelled { operation_id, .. } => {
+                next.documents.take_staged(operation_id);
+            }
+            _ => {}
+        }
+        if let Transition::SteerWithdrawn { operation_id, .. } = &entry
+            && let Some(id) = self
+                .state
+                .operation(operation_id)
+                .and_then(|operation| operation.steers.last())
+                .and_then(|steer| steer.message_id.clone())
+            && let Some(receipt) = self.steer_receipt(operation_id, &id).await?
+        {
+            next.operations_mut()
+                .get_mut(operation_id)
+                .expect("retained operation")
+                .steer_receipts
+                .insert(id, receipt);
+        }
         next.apply_transition(expected_revision, entry)?;
         if let Some(limit) = self.terminal_receipt_limit {
             let _ = next.retain_terminal_receipts(limit);
         }
         self.persist(next).await
+    }
+
+    // Boundary identities outlive the bounded terminal receipt head. Reusing a
+    // pruned ID must never admit a new execution or alias its historical fork.
+    async fn require_new_boundary(&mut self, operation_id: &str) -> Result<()> {
+        if self.state.documents.boundaries.contains_key(operation_id)
+            || self
+                .store
+                .read_record(
+                    &self.state_id,
+                    &crate::documents::boundary_key(operation_id),
+                )
+                .await?
+                .is_some()
+        {
+            return Err(Error::OperationTerminal {
+                operation_id: operation_id.to_owned(),
+            });
+        }
+        Ok(())
     }
 
     async fn persist(&mut self, mut next: DurableState) -> Result<()> {
@@ -1298,7 +1611,24 @@ impl Driver {
                 next.revision()
             )));
         }
+        next.stage_steer_receipts(&mut *self.store, &self.state_id)
+            .await?;
         let records = next.stage_records();
+        // Old checkpoints may migrate already published indexes. Only identical
+        // records may reconcile; INSERT ... ON CONFLICT DO NOTHING cannot hide
+        // a conflicting immutable identity behind a successful head update.
+        for record in records
+            .iter()
+            .filter(|record| record.key.starts_with("document-boundary/"))
+        {
+            if let Some(existing) = self.store.read_record(&self.state_id, &record.key).await?
+                && existing != record.value
+            {
+                return Err(Error::InvalidState(
+                    "immutable document boundary conflict".into(),
+                ));
+            }
+        }
         let payload = next.checkpoint_payload()?;
         let revision = match self
             .store
@@ -1514,6 +1844,37 @@ impl DurableSession {
     #[must_use]
     pub fn state_id(&self) -> &str {
         &self.state_id
+    }
+
+    /// Shares this session's store transport for independently fenced child journals.
+    #[doc(hidden)]
+    #[cfg(not(target_family = "wasm"))]
+    pub fn child_store(&self) -> impl StateStore + Clone + 'static {
+        self.store.clone()
+    }
+
+    /// Shares this session's store transport for independently fenced child journals.
+    #[doc(hidden)]
+    #[cfg(target_family = "wasm")]
+    pub fn child_store(&self) -> impl StateStore + Clone + Send + 'static {
+        self.store.clone()
+    }
+
+    /// Looks up an identified steering receipt without hydrating other receipts.
+    /// Retained terminal operations keep consumed and withdrawn identities.
+    pub async fn steer_receipt(
+        &self,
+        operation_id: &str,
+        message_id: &str,
+    ) -> Result<Option<crate::IdentifiedSteerReceipt>> {
+        let (result, receiver) = oneshot::channel();
+        self.send(Command::SteerReceipt {
+            operation_id: operation_id.to_owned(),
+            message_id: message_id.to_owned(),
+            result,
+        })
+        .await?;
+        receive(receiver).await
     }
 
     /// Copies the current reduced state from the owning driver.
@@ -1784,11 +2145,42 @@ impl DurableSession {
                 step_id.into(),
                 kind.into(),
                 EncodedPayload::encode(input)?,
+                crate::ReplaySafety::Unsafe,
+            )
+            .await?
+        {
+            StoredBeginStep::OutcomeUnknown => Ok(BeginStep::OutcomeUnknown),
+            StoredBeginStep::Execute => Ok(BeginStep::Execute),
+            StoredBeginStep::Replay(output) => Ok(BeginStep::Replay(output)),
+        }
+    }
+
+    /// Begins an effect with explicit crash-replay permission. Both the original
+    /// and current policy must be `Safe` to repeat an unsettled effect.
+    pub async fn begin_step_with_replay<I>(
+        &self,
+        operation_id: impl Into<String>,
+        step_id: impl Into<String>,
+        kind: impl Into<String>,
+        input: &I,
+        replay_safety: crate::ReplaySafety,
+    ) -> Result<BeginStep>
+    where
+        I: Serialize + ?Sized,
+    {
+        match self
+            .begin_step_encoded(
+                operation_id.into(),
+                step_id.into(),
+                kind.into(),
+                EncodedPayload::encode(input)?,
+                replay_safety,
             )
             .await?
         {
             StoredBeginStep::Execute => Ok(BeginStep::Execute),
             StoredBeginStep::Replay(output) => Ok(BeginStep::Replay(output)),
+            StoredBeginStep::OutcomeUnknown => Ok(BeginStep::OutcomeUnknown),
         }
     }
 
@@ -1810,9 +2202,11 @@ impl DurableSession {
                 step_id.into(),
                 kind.into(),
                 EncodedPayload::encode(input)?,
+                crate::ReplaySafety::Unsafe,
             )
             .await?
         {
+            StoredBeginStep::OutcomeUnknown => Ok(BeginStep::OutcomeUnknown),
             StoredBeginStep::Execute => Ok(BeginStep::Execute),
             StoredBeginStep::Replay(output) => Ok(BeginStep::Replay(output.decode()?)),
         }
@@ -1824,6 +2218,7 @@ impl DurableSession {
         step_id: String,
         kind: String,
         input: EncodedPayload,
+        replay_safety: crate::ReplaySafety,
     ) -> Result<StoredBeginStep> {
         let (result, receiver) = oneshot::channel();
         self.send(Command::BeginStep {
@@ -1832,6 +2227,7 @@ impl DurableSession {
             step_id,
             kind,
             input,
+            replay_safety,
             result,
         })
         .await?;
@@ -1855,6 +2251,176 @@ impl DurableSession {
         })
         .await?;
         receive(receiver).await
+    }
+
+    /// Atomically publishes conditional document writes through this session's
+    /// fenced store owner. A trusted retained handle can journal host work while
+    /// an attached model Agent owns the operation lane. This does not admit or
+    /// complete model operations; the next completed model boundary captures the
+    /// resulting documents according to their fork policies.
+    pub async fn compare_exchange_documents(
+        &self,
+        writes: Vec<crate::DocumentWrite>,
+    ) -> Result<()> {
+        let (result, receiver) = oneshot::channel();
+        self.send(Command::CompareExchangeDocuments { writes, result })
+            .await?;
+        receive(receiver).await
+    }
+
+    /// Stages bounded document writes for a claimed running operation. The
+    /// operation's successful completion publishes them with its result and
+    /// checkpoint. Failure/cancellation discards them. This also works through
+    /// a retained handle after attaching the session to a model Agent.
+    pub async fn stage_document_writes(
+        &self,
+        operation_id: impl Into<String>,
+        writes: Vec<crate::DocumentWrite>,
+    ) -> Result<()> {
+        let (result, receiver) = oneshot::channel();
+        self.send(Command::StageDocuments {
+            caller: Caller::Direct(self.caller_id.clone()),
+            operation_id: operation_id.into(),
+            writes,
+            result,
+        })
+        .await?;
+        receive(receiver).await
+    }
+
+    /// Reads a session-owned document. Missing keys return `None`.
+    pub async fn document(&self, key: impl Into<String>) -> Result<Option<crate::SessionDocument>> {
+        let (result, receiver) = oneshot::channel();
+        self.send(Command::Document {
+            key: key.into(),
+            result,
+        })
+        .await?;
+        receiver.await.map_err(|_| Error::DriverStopped)
+    }
+
+    /// Selects documents and the checkpoint at a retained completed-operation boundary.
+    /// Historical boundaries survive terminal receipt pruning. No external effect is copied.
+    pub async fn document_fork(
+        &self,
+        boundary: impl Into<String>,
+    ) -> Result<(EncodedPayload, crate::DocumentFork)> {
+        let (result, receiver) = oneshot::channel();
+        self.send(Command::DocumentFork {
+            boundary: boundary.into(),
+            result,
+        })
+        .await?;
+        receive(receiver).await
+    }
+
+    /// Atomically initializes an empty destination with a policy-selected fork and checkpoint.
+    pub async fn initialize_document_fork(
+        &self,
+        fork: crate::DocumentFork,
+        checkpoint: &EncodedPayload,
+    ) -> Result<()> {
+        // The source session loaded this payload; preserve its contents rather than
+        // serializing the opaque record reference as the destination checkpoint.
+        checkpoint.json()?;
+        let (result, receiver) = oneshot::channel();
+        self.send(Command::InitializeDocumentFork {
+            caller: Caller::Direct(self.caller_id.clone()),
+            fork,
+            checkpoint: checkpoint.clone(),
+            result,
+        })
+        .await?;
+        receive(receiver).await
+    }
+
+    /// Loads the complete model checkpoint and policy-selected documents from a
+    /// successful Agent operation, including after receipt pruning or reopening.
+    pub async fn agent_document_fork(
+        &self,
+        operation_id: impl Into<String>,
+    ) -> Result<(
+        nanocodex_agent::session::SessionSnapshot,
+        crate::DocumentFork,
+    )> {
+        let (checkpoint, documents) = self.document_fork(operation_id).await?;
+        let snapshot = crate::context::load_snapshot(self.into(), checkpoint).await?;
+        Ok((snapshot, documents))
+    }
+
+    /// Initializes an empty Agent session with an independently indexed model
+    /// checkpoint. The seed contains data only; destination authority is supplied
+    /// separately by the caller when constructing the destination Agent.
+    pub async fn initialize_agent_document_fork(
+        &self,
+        documents: crate::DocumentFork,
+        snapshot: &nanocodex_agent::session::SessionSnapshot,
+    ) -> Result<()> {
+        let prepared =
+            crate::context::prepare_snapshot(snapshot.clone(), &std::collections::HashSet::new())?;
+        self.initialize_document_fork(documents, &prepared.payload)
+            .await
+    }
+
+    /// Initializes a destination from JSON checkpoint contents received across
+    /// a public transport. Use `initialize_document_fork` for a Rust payload.
+    pub async fn initialize_document_fork_value<C: Serialize + ?Sized>(
+        &self,
+        fork: crate::DocumentFork,
+        checkpoint: &C,
+    ) -> Result<()> {
+        self.initialize_document_fork(fork, &EncodedPayload::encode(checkpoint)?)
+            .await
+    }
+
+    /// Commits the step receipt and document writes in one fenced store replacement.
+    /// A successful external effect must supply its own stable provider idempotency key.
+    pub async fn complete_step_with_documents<O: Serialize + ?Sized>(
+        &self,
+        operation_id: impl Into<String>,
+        step_id: impl Into<String>,
+        output: &O,
+        writes: Vec<crate::DocumentWrite>,
+    ) -> Result<()> {
+        let (result, receiver) = oneshot::channel();
+        self.send(Command::CompleteDocuments {
+            caller: Caller::Direct(self.caller_id.clone()),
+            operation_id: operation_id.into(),
+            step_id: Some(step_id.into()),
+            checkpoint: None,
+            output: EncodedPayload::encode(output)?,
+            writes,
+            result,
+        })
+        .await?;
+        receive(receiver).await
+    }
+
+    /// Atomically commits documents, checkpoint and result, and retains a historical fork boundary.
+    /// Validation or a definitely uncommitted store failure leaves every document unchanged.
+    pub async fn complete_with_documents<C: Serialize + ?Sized, O: Serialize + ?Sized>(
+        &self,
+        operation_id: impl Into<String>,
+        checkpoint: &C,
+        output: &O,
+        writes: Vec<crate::DocumentWrite>,
+    ) -> Result<()> {
+        let (result, receiver) = oneshot::channel();
+        self.send(Command::CompleteDocuments {
+            caller: Caller::Direct(self.caller_id.clone()),
+            operation_id: operation_id.into(),
+            step_id: None,
+            checkpoint: Some(EncodedPayload::encode(checkpoint)?),
+            output: EncodedPayload::encode(output)?,
+            writes,
+            result,
+        })
+        .await?;
+        let outcome = receive(receiver).await;
+        if finishing_attempt_releases_claim(&outcome) {
+            self.release_one_claim();
+        }
+        outcome
     }
 
     /// Atomically terminalizes an operation with its checkpoint and result.
@@ -1971,6 +2537,51 @@ pub(crate) struct DurableOwner {
 }
 
 impl DurableOwner {
+    #[cfg(feature = "claude")]
+    pub(crate) async fn document(&self, key: &str) -> Result<Option<crate::SessionDocument>> {
+        self.caller()?;
+        let (result, receiver) = oneshot::channel();
+        self.send(Command::Document {
+            key: key.to_owned(),
+            result,
+        })
+        .await?;
+        receiver.await.map_err(|_| Error::DriverStopped)
+    }
+
+    pub(crate) async fn complete_step_with_documents<T: Serialize + ?Sized>(
+        &self,
+        operation_id: String,
+        step_id: String,
+        output: &T,
+        writes: Vec<crate::DocumentWrite>,
+    ) -> Result<()> {
+        let (result, receiver) = oneshot::channel();
+        self.send(Command::CompleteDocuments {
+            caller: self.caller()?,
+            operation_id,
+            step_id: Some(step_id),
+            checkpoint: None,
+            output: EncodedPayload::encode(output)?,
+            writes,
+            result,
+        })
+        .await?;
+        receive(receiver).await
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    pub(crate) async fn complete_code_cell(
+        &self,
+        operation_id: String,
+        step_id: String,
+        output: &serde_json::Value,
+        writes: Vec<crate::DocumentWrite>,
+    ) -> Result<()> {
+        self.complete_step_with_documents(operation_id, step_id, output, writes)
+            .await
+    }
+
     pub(crate) async fn load_payloads(
         &self,
         payloads: Vec<EncodedPayload>,
@@ -2015,11 +2626,22 @@ impl DurableOwner {
         operation_id: String,
         continuation: EncodedPayload,
     ) -> Result<()> {
+        self.advance_retaining(operation_id, continuation, Vec::new())
+            .await
+    }
+
+    pub(crate) async fn advance_retaining(
+        &self,
+        operation_id: String,
+        continuation: EncodedPayload,
+        retained_steps: Vec<String>,
+    ) -> Result<()> {
         let (result, receiver) = oneshot::channel();
         self.send(Command::Advance {
             caller: self.caller()?,
             operation_id,
             continuation,
+            retained_steps,
             result,
         })
         .await?;
@@ -2205,6 +2827,7 @@ impl DurableOwner {
         step_id: String,
         kind: String,
         input: &I,
+        replay_safety: crate::ReplaySafety,
     ) -> Result<BeginStep>
     where
         I: Serialize + ?Sized,
@@ -2216,10 +2839,12 @@ impl DurableOwner {
             step_id,
             kind,
             input: EncodedPayload::encode(input)?,
+            replay_safety,
             result,
         })
         .await?;
         match receive(receiver).await? {
+            StoredBeginStep::OutcomeUnknown => Ok(BeginStep::OutcomeUnknown),
             StoredBeginStep::Execute => Ok(BeginStep::Execute),
             StoredBeginStep::Replay(output) => Ok(BeginStep::Replay(output)),
         }
@@ -2565,9 +3190,14 @@ mod tests {
         let state = session.state().await.unwrap();
         let accepted = state.operation("turn").unwrap();
         assert_eq!(accepted.steers.len(), 1);
-        assert_eq!(accepted.steer_receipts.len(), 1);
+        assert!(accepted.steer_receipts.is_empty());
         assert_eq!(
-            accepted.steer_receipts["message"].input_key,
+            session
+                .steer_receipt("turn", "message")
+                .await
+                .unwrap()
+                .unwrap()
+                .input_key,
             accepted.steers[0].input.key.as_ref()
         );
         owner.shutdown().await.unwrap();
@@ -2626,6 +3256,7 @@ mod tests {
                 "model-2".into(),
                 "model_call".into(),
                 &"request",
+                crate::ReplaySafety::Safe,
             )
             .await
             .unwrap();
@@ -2646,8 +3277,252 @@ mod tests {
         let operation = state.operation("turn").unwrap();
         assert!(operation.status.is_terminal());
         assert!(operation.steers.is_empty());
-        assert!(operation.steer_receipts["message"].withdrawn);
-        assert!(!operation.steer_receipts["consumed"].withdrawn);
+        assert!(
+            terminal
+                .steer_receipt("turn", "message")
+                .await
+                .unwrap()
+                .unwrap()
+                .withdrawn
+        );
+        assert!(
+            !terminal
+                .steer_receipt("turn", "consumed")
+                .await
+                .unwrap()
+                .unwrap()
+                .withdrawn
+        );
+    }
+
+    // Identified steering admission and retirement are internal execution-policy
+    // boundaries. This protocol journey uses the real session driver and store;
+    // native prompt-routing recovery is covered by the agent integration suite.
+    #[tokio::test]
+    async fn long_steered_turn_stages_bounded_receipts_and_cold_replays_retired_ids() {
+        #[derive(Clone)]
+        struct MeasuredStore {
+            inner: MemoryStore,
+            maxima: std::sync::Arc<std::sync::Mutex<(usize, usize, usize)>>,
+        }
+        impl StateStore for MeasuredStore {
+            fn acquire<'a>(
+                &'a mut self,
+                id: &'a str,
+                owner: OwnerId,
+            ) -> crate::StoreFuture<'a, std::result::Result<crate::OwnedState, StoreError>>
+            {
+                self.inner.acquire(id, owner)
+            }
+            fn read_record<'a>(
+                &'a mut self,
+                id: &'a str,
+                key: &'a str,
+            ) -> crate::StoreFuture<'a, std::result::Result<Option<String>, StoreError>>
+            {
+                self.inner.read_record(id, key)
+            }
+            fn replace<'a>(
+                &'a mut self,
+                id: &'a str,
+                owner: &'a OwnerToken,
+                revision: u64,
+                payload: &'a str,
+                records: &'a [crate::StoreRecord],
+            ) -> crate::StoreFuture<'a, std::result::Result<u64, StoreError>> {
+                {
+                    let mut maxima = self.maxima.lock().unwrap();
+                    maxima.0 = maxima.0.max(payload.len());
+                    maxima.1 = maxima.1.max(records.len());
+                    maxima.2 = maxima.2.max(
+                        records
+                            .iter()
+                            .map(|record| record.value.len())
+                            .max()
+                            .unwrap_or(0),
+                    );
+                }
+                self.inner.replace(id, owner, revision, payload, records)
+            }
+        }
+        let maxima = std::sync::Arc::new(std::sync::Mutex::new((0, 0, 0)));
+        let store = MeasuredStore {
+            inner: MemoryStore::new().unwrap(),
+            maxima: maxima.clone(),
+        };
+        let session =
+            DurableSession::open_with_terminal_receipt_limit(store.clone(), "paged-steers", 64)
+                .await
+                .unwrap();
+        let (owner, _) = session.acquire_agent().await.unwrap();
+        owner
+            .admit_typed::<_, u32, String>("turn".into(), &"prompt")
+            .await
+            .unwrap();
+        owner.begin_attempt("turn".into()).await.unwrap();
+        for index in 1..=1024_u32 {
+            let id = format!("message-{index}");
+            assert_eq!(
+                owner
+                    .accept_steer("turn".into(), index, &id, Some(id.clone()), true)
+                    .await
+                    .unwrap(),
+                Some(index)
+            );
+            owner
+                .bind_steer("turn".into(), index, index + 1)
+                .await
+                .unwrap();
+            let model = format!("model-{}", index + 1);
+            owner
+                .begin_step(
+                    "turn".into(),
+                    model.clone(),
+                    "model_call".into(),
+                    &"request",
+                    crate::ReplaySafety::Safe,
+                )
+                .await
+                .unwrap();
+            owner
+                .complete_step("turn".into(), model, &"response")
+                .await
+                .unwrap();
+            owner
+                .advance("turn".into(), EncodedPayload::encode(&index).unwrap())
+                .await
+                .unwrap();
+        }
+        // Withdrawal must update an archived receipt atomically, not lose it
+        // when the live input is removed.
+        owner
+            .accept_steer(
+                "turn".into(),
+                1025,
+                &"withdrawn",
+                Some("withdrawn".into()),
+                true,
+            )
+            .await
+            .unwrap();
+        owner.withdraw_steer("turn".into(), 1025).await.unwrap();
+        owner.shutdown().await.unwrap();
+        drop((owner, session));
+        let reopened =
+            DurableSession::open_with_terminal_receipt_limit(store.clone(), "paged-steers", 64)
+                .await
+                .unwrap();
+        let (owner, _) = reopened.acquire_agent().await.unwrap();
+        owner
+            .admit_typed::<_, u32, String>("turn".into(), &"prompt")
+            .await
+            .unwrap();
+        owner.begin_attempt("turn".into()).await.unwrap();
+        let revision = reopened.state().await.unwrap().revision();
+        for index in [1, 32, 33, 512, 1024] {
+            let id = format!("message-{index}");
+            assert_eq!(
+                owner
+                    .accept_steer("turn".into(), 1025, &id, Some(id.clone()), false)
+                    .await
+                    .unwrap(),
+                None
+            );
+            assert_eq!(
+                reopened
+                    .steer_receipt("turn", &id)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .index,
+                index
+            );
+        }
+        assert_eq!(reopened.state().await.unwrap().revision(), revision);
+        assert!(
+            owner
+                .retained_steers("turn".into())
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        assert!(matches!(
+            owner
+                .accept_steer(
+                    "turn".into(),
+                    1025,
+                    &"changed",
+                    Some("message-1".into()),
+                    true
+                )
+                .await,
+            Err(Error::SteerConflict { .. })
+        ));
+        assert!(matches!(
+            owner
+                .accept_steer(
+                    "turn".into(),
+                    1025,
+                    &"withdrawn",
+                    Some("withdrawn".into()),
+                    true
+                )
+                .await,
+            Err(Error::SteerWithdrawn { .. })
+        ));
+        owner
+            .complete(
+                "turn".into(),
+                EncodedPayload::encode(&1024_u32).unwrap(),
+                &"done",
+            )
+            .await
+            .unwrap();
+        owner.shutdown().await.unwrap();
+        drop((owner, reopened));
+        let terminal = DurableSession::open_with_terminal_receipt_limit(store, "paged-steers", 64)
+            .await
+            .unwrap();
+        assert!(
+            terminal
+                .steer_receipt("turn", "withdrawn")
+                .await
+                .unwrap()
+                .unwrap()
+                .withdrawn
+        );
+        assert_eq!(
+            terminal
+                .steer_receipt("turn", "message-1")
+                .await
+                .unwrap()
+                .unwrap()
+                .index,
+            1
+        );
+        assert!(
+            terminal
+                .steer_receipt("turn", "absent")
+                .await
+                .unwrap()
+                .is_none()
+        );
+        let (head_bytes, records_per_write, record_bytes) = *maxima.lock().unwrap();
+        println!(
+            "1024 consumed + 1 withdrawn; cold replay and terminal lookup preserved: head <= {head_bytes} bytes, records/write <= {records_per_write}, record <= {record_bytes} bytes"
+        );
+        assert!(
+            head_bytes < 16 * 1024,
+            "head grew with retired receipts: {head_bytes}"
+        );
+        assert!(
+            records_per_write < 24,
+            "a commit rewrote the receipt archive: {records_per_write}"
+        );
+        assert!(
+            record_bytes < 16 * 1024,
+            "receipt page grew with archive: {record_bytes}"
+        );
     }
 
     #[tokio::test]
@@ -3105,6 +3980,7 @@ mod tests {
 
         fn operation(status: OperationStatus, steers: Vec<SteerState>) -> OperationState {
             OperationState {
+                steer_receipt_root: None,
                 steer_receipts: Default::default(),
                 continuation: None,
                 retired_model_calls: 0,

@@ -33,6 +33,10 @@ const durability = Object.fromEntries(['acquire', 'replace', 'load', 'readRecord
 const codeEffectJournal = workerData.journal ? {
   begin: context => rpc('journal.begin', context),
   complete: (context, receipt) => rpc('journal.complete', context, receipt),
+  ...(workerData.cellJournal ? {
+    beginCell: context => rpc('journal.beginCell', context),
+    completeCell: (context, writes, receipt) => rpc('journal.completeCell', context, writes, receipt),
+  } : {}),
 } : undefined;
 const shared = {
   module: await readFile(new URL('../../pkg-web/nanocodex_bg.wasm', import.meta.url)),

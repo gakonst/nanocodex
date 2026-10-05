@@ -154,6 +154,7 @@ async fn completed(registry: &Registry, session: &str, id: AgentId) {
 
 fn task(text: &str) -> AgentTask {
     AgentTask {
+        lifetime: nanocodex_subagents::AgentLifetime::Foreground,
         role: "synthetic specialist".into(),
         task: text.into(),
         output_schema: json!({"type":"string"}),
@@ -472,7 +473,7 @@ async fn journey() {
     .await
     .unwrap();
     completed(&registry, &session, claude_child.agent_id).await;
-    let directory = registry.directory(&session, true, false).await;
+    let directory = registry.directory(&session, true, false).await.unwrap();
     assert_eq!(directory.len(), 1);
     let old_claude_owner = handles
         .lock()
@@ -533,7 +534,14 @@ async fn journey() {
         "native transcript must survive eviction"
     );
     assert_eq!(recall["request"]["model"], ClaudeModel::Sonnet55.as_str());
-    assert_eq!(registry.directory(&session, true, false).await.len(), 2);
+    assert_eq!(
+        registry
+            .directory(&session, true, false)
+            .await
+            .unwrap()
+            .len(),
+        2
+    );
 
     // Route back from the restored native Claude owner into Codex, retaining
     // shared topology rather than creating a second registry for that family.
@@ -549,7 +557,7 @@ async fn journey() {
     .await
     .unwrap();
     completed(&registry, &session, descendant.agent_id).await;
-    let directory = registry.directory(&session, true, false).await;
+    let directory = registry.directory(&session, true, false).await.unwrap();
     assert_eq!(directory.len(), 3);
     assert_eq!(
         directory

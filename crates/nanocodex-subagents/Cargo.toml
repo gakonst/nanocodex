@@ -21,6 +21,7 @@ async-trait.workspace = true
 futures-util.workspace = true
 jsonschema.workspace = true
 nanocodex-agent.workspace = true
+nanocodex-durability.workspace = true
 nanocodex-claude = { workspace = true, optional = true }
 nanocodex-oai-tools = { workspace = true, features = ["code-mode"] }
 serde.workspace = true

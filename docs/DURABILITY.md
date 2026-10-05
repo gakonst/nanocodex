@@ -1,8 +1,10 @@
 # Durability model
 
-Nanocodex has one durability protocol. Rust owns it. Hosts store one opaque,
-complete current-state value, and application layers project those facts for
-their own APIs. Recovery loads one total state value.
+Nanocodex uses one fenced store protocol for durable execution. Rust owns each
+agent's execution head and immutable records; hosts persist them atomically.
+Child registries, session documents, and host effect journals retain their own
+facts at explicit admission and settlement boundaries. Application projections
+do not decide whether an interrupted effect may execute again.
 
 The protocol protects the entire execution lifecycle: prompt admission, model
 requests, warmup, compaction, tool effects, checkpoint commits, cancellation,
@@ -102,22 +104,70 @@ and running attempts in memory under its fenced owner capability. Losing the
 driver loses those claims; it does not require a state mutation to release
 them.
 
-## Agent identity and ephemeral children
+## Agent identity and child ownership
 
-Durability attaches only to the agent explicitly configured with it. Spawned
-children and their descendants do not inherit execution policies, storage owners,
-operation journals, checkpoints, or resumable rollout files.
+A child has a stable tree ID, native session ID, parent, assignment revision,
+and foreground or background lifetime. `ChildJournal` persists topology,
+mailboxes, execution admission, cancellation intent, and results using the
+existing fenced store. Large values use immutable records; the current head
+contains a bounded root reference.
 
-Subagent topology, routing pins, mailboxes, and conversation history live only in
-the running parent runtime. Idle child resources may be unloaded and rehydrated
-from memory within that runtime; this does not write persistent state. Closing or
-reconstructing the parent drops its children. Historical child identifiers are
-not restored as active agents; new work requires a fresh spawn. Parent history
-can retain task descriptions and results without retaining child execution state.
+Hosted agents with durability configure a separate native `DurableSession` for
+each child and reconstruct the registry before returning replayed capabilities.
+A completed spawn receipt therefore refers to the original child. Root and child
+owners remain separate, and reconstruction uses the current host's authorization.
+Saved tool context does not grant new authority.
 
-Root admission, effect recovery, and checkpoint behavior are unchanged. Durable
-replay of a root tool receipt does not recreate a subagent that belonged to a
-previous runtime.
+On native targets, `nanocodex::DurableAgentExt` (the facade's `durability`
+feature) installs the registry, same-family child factory, per-child execution
+journals, and foreground ownership barrier. OpenAI builders are supported;
+Claude builders also require the facade's `claude` feature. Caller tools and
+tool-factory recipes are retained. Automatic recipes do not switch between
+OpenAI and Claude; an embedding must supply explicit authorized recipes for that
+routing. Successful root completion waits for foreground children; failure or
+cancellation stops foreground children before settlement.
+An already configured spawn factory is rejected before identity or child-tree
+mutation; embeddings with custom routing can attach the core
+`nanocodex_durability::DurableAgentExt` adapter and supply their own durable child
+factory and registry. Copying the parent's execution policy into a child is not
+supported. On WASM, the facade reexports the core adapter; JavaScript hosts
+compose their own durable child registry and factory.
+
+Native facade builds begin owner-bound reconstruction immediately, including
+pending background work when the root operation already completed. Await
+`agent.ready()` to observe startup completion or its retained recovery error; no
+root prompt or operation is fabricated. New prompts also await readiness.
+Shutdown and dropping the last handle cancel unfinished startup recovery.
+
+Background children require a durable parent. Managed recovery alarms reopen
+unfinished background work even after the parent turn has settled. Completed
+children remain addressable without keeping an idle recovery loop running.
+Explicit subtree close records cancellation before stopping native drivers.
+
+## Session documents and forks
+
+Session documents belong to an agent's execution state. Receipt/checkpoint and
+document mutations can commit in one replacement with expected document versions.
+A rejected transaction changes neither. Account-wide app and user-data stores
+remain separate shared records and do not implicitly join this transaction.
+
+Fork policies select the creation value (`Initial`), latest value (`Current`),
+value at the selected successful operation (`AsOf`), or refuse the fork (`Block`).
+The source boundary includes its checkpoint. Immutable operation lookup records
+survive terminal receipt pruning, and destination initialization rejects an
+already occupied state. Historical forks use the original boundary rather than
+reinterpreting the current transcript. Reusing a retained historical operation ID
+is rejected even after its ordinary terminal receipt has expired.
+
+A document fork seeds a new session's checkpoint and selected documents, not its
+source's operation receipts, pending effects, or child tree. For OpenAI's paged
+context, use `DurableSession::agent_document_fork` and
+`initialize_agent_document_fork`; these materialize and reindex the checkpoint
+in the destination store. Claude's native checkpoint uses `document_fork` and
+`initialize_document_fork`. Construct the destination with its own durable owner
+and current tools and credentials. These APIs are distinct from native
+`Nanocodex::fork`/`fork_from`: OpenAI rejects those history operations when an
+execution policy is installed, and Claude does not implement them.
 
 ## Store contract
 
@@ -140,16 +190,22 @@ payloads are recovery scratch data and cannot be used after settlement. Pending
 agent operations retain one current conversation and execution phase, plus only
 the current batch of effect records. A single replacement saves the next
 conversation and retires settled effects; advancing past an unfinished effect is
-rejected. Recovery resumes this batch, with original request settings and token
+rejected unless it is explicitly retained background work. The immutable summary
+cutoff and its pending or completed receipt survive foreground advances. Recovery
+resumes this batch, with original request settings and token
 usage, without replaying earlier batches or storing historical request copies. Encoded payloads share immutable storage
 inside the Rust owner so preparing a replacement does not deep-copy every receipt.
 Managed sessions keep 16 inner terminal receipts; their managed inbox and archive
 continue to own public exact-ID replay beyond that tail.
 
-State format 4 uses the `nanocodex_durable_state` head envelope and SHA-256
+State format 5 uses the `nanocodex_durable_state` head envelope and SHA-256
 addressed payload records. Bodies over 256,000 UTF-8 bytes are split into records.
-Persistent 64-message context pages share prior records. Each boundary publishes
-only new messages and changed pages, with its head in one atomic transaction.
+OpenAI checkpoints use persistent 64-message context pages that share prior
+records. Each boundary publishes only new messages and changed pages, with its
+head in one atomic transaction. Claude checkpoints retain native Messages
+content, including signed thinking and tool results, in chunked payloads;
+serialization and restoration still process the full retained Claude context.
+Format 4 heads remain readable; missing tool replay permission is unsafe.
 The old inline/compressed storage formats are rejected.
 
 Cold acquisition reads the head only. Execution resolves current model context
@@ -233,7 +289,26 @@ The Cloudflare adapter exposes this protocol directly as
 inactive Agent. Import requires a pristine Durable Object and is exactly
 idempotent for a byte-identical archive, so a lost success response can be
 retried. A fresh runtime session ID is created at the destination while the
-archive's stable state ID remains unchanged.
+archive's stable state ID remains unchanged. This archive represents one execution
+state, not a task tree. Cloudflare rejects export (including head-only export)
+when descendant execution journals are retained, even for closed children;
+the rejection occurs before acquiring or fencing any owner. An empty registry
+alone does not block export. `CloudflareAgent.destroy(owner)` requires an inactive
+lifecycle and fences and deletes the root, registry, and descendant journals.
+
+Managed Code Mode memo snapshots use an 8 MiB bound shared by their SQLite
+journal and account-owned R2 document references. Forks copy the selected
+snapshot into the new native session's journal; cold reopen retains branch
+writes without changing the parent. Aggregate writes that exceed the bound
+are rejected before committing the new journal state.
+
+The managed portability archive does not carry that colocated journal or its
+account-owned R2 objects. `POST /v1/agents/:id/durability` therefore returns
+`409 code_mode_store_not_portable` for stored Code Mode state before sealing
+the source. The source remains usable. Import rejects older pointer-only
+Code Mode archives with the same error before creating a destination. Delete
+clears the session's cells, store versions, blob metadata, and chunks along
+with its other managed state.
 
 Archives can contain conversation and tool state and are not encrypted by this
 API. Applications own transport encryption, access control, retention, and
@@ -291,20 +366,22 @@ Beginning a step returns exactly one value:
 
 | Admission | Durable evidence | Caller action |
 |---|---|---|
-| `Execute` | No committed output exists | Dispatch and commit output |
+| `Execute` | New intent, or both saved and current replay policies are safe | Dispatch and commit output |
 | `Replay(output)` | A completed output is durable | Reuse the exact output; do not dispatch |
+| `OutcomeUnknown` | Unsettled effect without both safe permissions | Reconcile or commit an explicit unknown-outcome result; do not redispatch |
 
-There is no durable uncertainty result and no retry-safety classification.
-An unfinished provider or tool step is submitted again with the same stable
-step identity and input. This deliberately provides at-least-once execution:
-the provider may bill twice and an external tool effect may happen twice.
+Tool effects default to unsafe. Parallel execution permission is independent.
+The policy is committed with intent, so an unsafe effect cannot become replayable
+merely because a later deployment changes its handler. Conversely, removing a
+safe permission suppresses replay. Completed receipts replay even when a handler
+is unavailable. Native and Claude agent adapters settle unknown outcomes as
+failed tool results so the model can continue with accurate evidence.
 
-Bounded transport retries still belong to the uninterrupted live Responses
-attempt. Durable recovery adds another submission only when no completed step
-output was committed. Successful dispatch settles in one replacement:
-`effect_pending -> completed(output)`. That replacement is the materialization
-boundary because the output and all operation state share one opaque total-state
-payload. Completed results always replay.
+Model requests, warmup, compaction, and the host's explicitly idempotent
+preservation barrier opt into replay. Provider usage may be billed again after
+interruption. Bounded transport retries belong to the live provider attempt.
+Effect settlement remains one atomic `effect_pending -> completed(output)`
+replacement under the current owner fence.
 
 Standalone compaction follows the same rule. A committed resulting checkpoint
 replays; otherwise a later request runs compaction again. It cannot run while an
@@ -382,8 +459,8 @@ the durable cursor is authoritative.
 |---|---|---|
 | Before acceptance commit | No operation | Caller may submit normally |
 | After acceptance, before effect start | Pending operation | New owner claims and executes |
-| After effect start | `effect_pending` step | Execute again with the same identity and input |
-| After effect returns, before settlement | `effect_pending` | Execute again; duplicate billing or effects are allowed |
+| After effect start | `effect_pending` step | Replay only with retained and current safe permissions; otherwise settle an unknown outcome |
+| After effect returns, before settlement | `effect_pending` | Same replay-safety check; a repeatable request may incur duplicate billing |
 | After settlement | `completed(output)` | Replay exact output; never redispatch |
 | During terminal replacement with `NotCommitted` | Pending operation | Same valid owner may retry |
 | During an unconfirmed terminal replacement | Store result is not authoritative | Reacquire, reload, then decide |
@@ -404,7 +481,7 @@ archival and cold recovery.
 1. Persist before dispatch.
 2. Never infer a commit from a transport error.
 3. Never retry on a stale owner.
-4. Execute every unfinished step again after recovery.
+4. Execute an unfinished step again only when both retained and current replay permissions are safe.
 5. Replay every completed step without dispatching it again.
 6. Never split a checkpoint from its terminal receipt.
 7. Never let managed projection override Rust effect recovery.
@@ -415,20 +492,21 @@ stores, and Cloudflare Durable Object integration. A backend-specific failure
 must map into the same store result meanings; it must not invent recovery
 policy.
 
-## Relationship to Pi `dev`
+## Relationship to Pi 1.0 and Pi Durable
 
 The execution core deliberately follows Pi's harness boundaries: a complete
 current restart state after every transition, separate acceptance and driving,
 fenced single ownership, intent/effect/settlement, durable cancellation, and
 atomic terminal checkpoint/result publication.
 
-This crate is not a clone of Pi's complete session database. Pi also defines
-immutable conversation entries, mutable bound values/lists, an append-only
-usage ledger, assistant-frame persistence, lanes/navigation, and operation
-cleanup. Nanocodex keeps conversation data inside its typed agent checkpoint
-and scopes this crate to execution recovery. Claiming those storage subsystems
-were copied would be false; the shared durability invariants are the part
-implemented here.
+The alignment reference is Pi v1.0.0. Session documents, historical document
+forks, owned children, replay policy, background compaction and configuration
+history share the contracts described above. Nanocodex retains typed agent
+checkpoints and its existing journals rather than adopting Pi's complete session
+database. Its generic bound values/lists, lanes/navigation and assistant-frame
+storage are not interchangeable APIs. Account-wide application and CRM records
+remain independent transactions; session documents provide the explicit
+co-commit boundary for conversation-owned state.
 
 Pi's `outcome_ready` state is necessary because finalized parallel tool output
 is staged separately before source-ordered entry placement. Nanocodex has no
@@ -468,3 +546,31 @@ after success. Failed uploads retain their SQLite source and deadline across
 object reconstruction. Alarms and new events cannot bypass that backoff, and
 archival never blocks admission or cancellation recovery. Explicit export and
 seal requests still report their own storage failures to their caller.
+
+
+## Reproducing the recovery journeys
+
+Run these from the repository root after installing the documented Rust and
+JavaScript toolchains and workspace dependencies:
+
+```sh
+cargo test --locked -p nanocodex-durability --features sqlite,claude
+cargo test --locked -p nanocodex -p nanocodex-subagents --features nanocodex/claude
+cargo test --locked -p nanocodex-bin --test cli_durable_tree -- --nocapture
+pnpm --filter nanocodex run build
+pnpm --filter nanocodex test
+pnpm --filter nanocodex-managed-service run test:durability
+```
+
+The CLI and managed journeys use the shipped transports, SQLite and workerd;
+external inference uses deterministic local HTTP fixtures. They terminate
+processes, cold-reopen existing stores, and check stable child identities,
+accepted mailboxes, exact effect receipts, current authorization, historical
+forks and completed outputs. Native lifetime witnesses and WASM memory checks
+also exercise cleanup without discarding persisted work. Standalone helper
+process tests are invoked by their parent journeys, not independently.
+
+Journey logs print their evidence directories under `output/`. Preserve those
+traces alongside the command and tested revision; a skipped process helper is
+not a substitute for running its parent journey. These local checks remain
+necessary when the repository's general CI tests are paused.

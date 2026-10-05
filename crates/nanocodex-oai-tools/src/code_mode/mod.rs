@@ -1,6 +1,8 @@
 //! Code Mode execution results, notifications, and nested-tool observation.
 
 mod audio;
+mod journal;
+pub use journal::{CodeJournalAdmission, CodeModeJournal};
 mod embedded;
 mod output;
 use crate::code_mode_spec as spec;
@@ -54,6 +56,7 @@ pub(crate) struct CodeModeRuntime {
     admission_attempts: Arc<Semaphore>,
     cells: Arc<Mutex<CellRegistry>>,
     stored: Arc<Mutex<HashMap<String, Value>>>,
+    journal: Option<Arc<dyn CodeModeJournal>>,
     host: Arc<Mutex<SharedJsHost>>,
     current_turn: Arc<AtomicU64>,
     preempt: watch::Sender<(u64, u64)>,
@@ -249,7 +252,32 @@ struct ObservedNestedCall {
 // Every observed start gets one terminal receipt, including root completion or
 // cancellation while its future is still pending. Dropping work cannot establish
 // whether an external effect happened, so never present interruption as rollback.
+#[derive(Default)]
+struct JournalOutput {
+    content: Vec<ToolOutputContent>,
+    calls: std::collections::BTreeMap<u64, Value>,
+    notifications: Vec<Value>,
+}
+
+fn nested_receipt(call: &NestedToolCall) -> Value {
+    serde_json::json!({
+        "call_id": call.call_id, "name": call.name, "input": call.input,
+        "output": call.output, "structured_result": call.structured_result,
+        "success": call.success, "started_after_ns": call.started_after_ns,
+        "duration_ns": call.duration_ns, "metadata": call.metadata,
+    })
+}
+
+fn record_nested(output: &StdMutex<JournalOutput>, id: u64, call: &NestedToolCall) {
+    output
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .calls
+        .insert(id, nested_receipt(call));
+}
+
 struct PendingCallReceipts {
+    captured: Arc<StdMutex<JournalOutput>>,
     calls: HashMap<u64, (NestedToolCall, Instant)>,
     updates: mpsc::UnboundedSender<CellUpdate>,
 }
@@ -258,6 +286,7 @@ impl Drop for PendingCallReceipts {
     fn drop(&mut self) {
         for (id, (mut call, started)) in self.calls.drain() {
             call.duration_ns = u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX);
+            record_nested(&self.captured, id, &call);
             let _ = self
                 .updates
                 .send(CellUpdate::NestedCall(ObservedNestedCall {
@@ -270,13 +299,8 @@ impl Drop for PendingCallReceipts {
 }
 
 enum CellTerminal {
-    Completed {
-        stored: HashMap<String, Value>,
-    },
-    ScriptFailed {
-        message: String,
-        stored: HashMap<String, Value>,
-    },
+    Completed { stored: HashMap<String, Value> },
+    ScriptFailed { message: String },
     Terminated,
 }
 
@@ -296,10 +320,19 @@ impl CodeModeRuntime {
                 live_cells: HashMap::new(),
             })),
             stored: Arc::new(Mutex::new(HashMap::new())),
+            journal: None,
             host: Arc::new(Mutex::new(SharedJsHost::prewarmed())),
             current_turn,
             preempt: watch::channel((0, 0)).0,
         }
+    }
+
+    pub(super) fn set_journal(&mut self, journal: Arc<dyn CodeModeJournal>) {
+        self.journal = Some(journal);
+    }
+
+    pub(super) fn has_journal(&self) -> bool {
+        self.journal.is_some()
     }
 
     pub(super) fn control(&self) -> CodeModeControl {
@@ -423,7 +456,43 @@ impl CodeModeRuntime {
                 Vec::new(),
             );
         }
-        let stored = self.stored.lock().await.clone();
+        let (stored, document_version) = if let Some(journal) = &self.journal {
+            match journal
+                .admit_cell(
+                    &context.session_id,
+                    context.journal_scope.as_deref().unwrap_or(&context.call_id),
+                    source.code.as_str(),
+                )
+                .await
+            {
+                Ok(CodeJournalAdmission::Execute { stored, version }) => (stored, version),
+                Ok(CodeJournalAdmission::Replay(receipt)) => {
+                    return serde_json::from_value(receipt).unwrap_or_else(|error| {
+                        failed_execution(
+                            started_at,
+                            &format!("Invalid durable Code Mode receipt: {error}"),
+                            Vec::new(),
+                        )
+                    });
+                }
+                Ok(CodeJournalAdmission::Unknown) => {
+                    return failed_execution(
+                        started_at,
+                        "Code Mode cell has an unfinished durable attempt; execution outcome unknown. External effects will not be redispatched.",
+                        Vec::new(),
+                    );
+                }
+                Err(error) => {
+                    return failed_execution(
+                        started_at,
+                        &format!("Code Mode journal admission failed: {error}"),
+                        Vec::new(),
+                    );
+                }
+            }
+        } else {
+            (self.stored.lock().await.clone(), 0)
+        };
         let cell = {
             let mut registry = self.cells.lock().await;
             let cell_id = registry.allocate_cell_id();
@@ -437,6 +506,8 @@ impl CodeModeRuntime {
                 stored,
                 Arc::clone(&self.stored),
                 Arc::clone(&self.host),
+                self.journal.clone(),
+                document_version,
             ));
             registry.live_cells.insert(cell_id, Arc::clone(&cell));
             cell
@@ -788,6 +859,8 @@ impl LiveCell {
         stored: HashMap<String, Value>,
         shared_stored: Arc<Mutex<HashMap<String, Value>>>,
         host: Arc<Mutex<SharedJsHost>>,
+        journal: Option<Arc<dyn CodeModeJournal>>,
+        document_version: u64,
     ) -> Self {
         let (updates_tx, updates) = mpsc::unbounded_channel();
         let (terminate, terminate_rx) = oneshot::channel();
@@ -819,6 +892,8 @@ impl LiveCell {
                 updates_tx,
                 terminate_rx,
                 Arc::clone(&lifecycle),
+                journal,
+                document_version,
             )
             .instrument(actor_span),
         );
@@ -1222,19 +1297,35 @@ fn text_exposes_session_id(text: &str, session_id: i64) -> bool {
     })
 }
 
+struct DriveCellContext<'a> {
+    parent_call_id: &'a str,
+    tools: &'a ToolRegistry,
+    context: &'a OwnedToolContext,
+    updates: &'a mpsc::UnboundedSender<CellUpdate>,
+    actor_started_at: Instant,
+    journal: Option<&'a dyn CodeModeJournal>,
+    captured: Arc<StdMutex<JournalOutput>>,
+}
+
 impl EmbeddedHost {
     async fn drive_cell(
         &mut self,
         cell_id: u64,
-        parent_call_id: &str,
-        tools: &ToolRegistry,
-        context: &OwnedToolContext,
-        updates: &mpsc::UnboundedSender<CellUpdate>,
-        actor_started_at: Instant,
+        drive: DriveCellContext<'_>,
     ) -> Result<CellTerminal, HostFailure> {
+        let DriveCellContext {
+            parent_call_id,
+            tools,
+            context,
+            updates,
+            actor_started_at,
+            journal,
+            captured,
+        } = drive;
         let mut pending_calls: FuturesUnordered<BoxFuture<'_, CompletedNestedCall>> =
             FuturesUnordered::new();
         let mut pending_receipts = PendingCallReceipts {
+            captured: Arc::clone(&captured),
             calls: HashMap::new(),
             updates: updates.clone(),
         };
@@ -1247,6 +1338,10 @@ impl EmbeddedHost {
                         continue;
                     };
                     // A completed result wins over a simultaneously ready root terminal.
+                    if let Some(journal) = journal {
+                        journal.complete_effect(parent_call_id, &completed.call.call_id, &nested_receipt(&completed.call))
+                            .await.map_err(HostFailure::new)?;
+                    }
                     self.send_completed_call(cell_id, completed, &mut pending_receipts)?;
                 }
                 event = self.read_event() => {
@@ -1270,6 +1365,10 @@ impl EmbeddedHost {
                             id, name, input, ..
                         } => {
                             let nested_call_id = format!("{}/code-{id}", context.call_id);
+                            if let Some(journal) = journal {
+                                journal.begin_effect(parent_call_id, &nested_call_id, &name, &input)
+                                    .await.map_err(HostFailure::new)?;
+                            }
                             let started = Instant::now();
                             let message = "Code Mode cell ended before the tool returned; execution outcome unknown";
                             pending_receipts.calls.insert(id, (NestedToolCall {
@@ -1298,11 +1397,15 @@ impl EmbeddedHost {
                             pending_calls.push(nested_call.boxed());
                         }
                         RuntimeEvent::Notify { text, .. } => {
+                            captured.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+                                .notifications.push(serde_json::json!({"call_id": parent_call_id, "text": text}));
                             let _ = updates.send(CellUpdate::Notification(
                                 CodeModeNotification::new(parent_call_id, text),
                             ));
                         }
                         RuntimeEvent::Content { content, .. } => {
+                            captured.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+                                .content.push(content.clone());
                             let _ = updates.send(CellUpdate::Content(content));
                         }
                         RuntimeEvent::Yielded { .. } => {
@@ -1321,10 +1424,8 @@ impl EmbeddedHost {
                             ..
                         } => {
                             tracing::Span::current().record("runtime.event_count", event_count);
-                            return Ok(CellTerminal::ScriptFailed {
-                                message,
-                                stored,
-                            });
+                            let _ = stored;
+                            return Ok(CellTerminal::ScriptFailed { message });
                         }
                     }
                 }
@@ -1348,6 +1449,7 @@ impl EmbeddedHost {
         // Host execution is already known. Publish it independently of guest
         // delivery, which may fail after the cell or its runtime has closed.
         pending_receipts.calls.remove(&id);
+        record_nested(&pending_receipts.captured, id, &call);
         let _ = pending_receipts
             .updates
             .send(CellUpdate::NestedCall(ObservedNestedCall {
@@ -1372,6 +1474,8 @@ async fn run_cell_actor(
     updates: mpsc::UnboundedSender<CellUpdate>,
     mut terminate: oneshot::Receiver<()>,
     lifecycle: Arc<CellLifecycle>,
+    journal: Option<Arc<dyn CodeModeJournal>>,
+    document_version: u64,
 ) {
     let started_at = Instant::now();
     let host_wait_started_at = Instant::now();
@@ -1401,16 +1505,22 @@ async fn run_cell_actor(
     };
     record_elapsed("host.wait_ns", host_wait_started_at);
     tracing::Span::current().record("host.reused", reused);
+    let captured = Arc::new(StdMutex::new(JournalOutput::default()));
+    let initial_stored = stored.clone();
     let run = async {
         host.start_cell(cell_id, &source, stored, tools.nested_tool_metadata())
             .map_err(HostFailure::new)?;
         host.drive_cell(
             cell_id,
-            &context.call_id,
-            tools.as_ref(),
-            &context,
-            &updates,
-            started_at,
+            DriveCellContext {
+                parent_call_id: context.journal_scope.as_deref().unwrap_or(&context.call_id),
+                tools: tools.as_ref(),
+                context: &context,
+                updates: &updates,
+                actor_started_at: started_at,
+                journal: journal.as_deref(),
+                captured: Arc::clone(&captured),
+            },
         )
         .await
     };
@@ -1442,19 +1552,94 @@ async fn run_cell_actor(
         &terminal,
         Ok(CellTerminal::Completed { .. } | CellTerminal::ScriptFailed { .. })
     );
-    match terminal {
-        Ok(CellTerminal::Completed { stored }) => {
+    let journal_result = if let Some(journal) = &journal {
+        let (status, success, message) = match &terminal {
+            Ok(CellTerminal::Completed { .. }) => ("Script completed", true, None),
+            Ok(CellTerminal::ScriptFailed { message, .. }) => {
+                ("Script failed", false, Some(message.clone()))
+            }
+            Ok(CellTerminal::Terminated) => ("Script terminated", true, None),
+            Err(failure) => ("Script failed", false, Some(failure.message.clone())),
+        };
+        let (receipt, unknown) = {
+            let mut output = captured
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if let Some(message) = message {
+                output
+                    .content
+                    .push(ToolOutputContent::InputText { text: message });
+            }
+            let nested_calls = output.calls.values().cloned().collect::<Vec<_>>();
+            let unknown = nested_calls
+                .iter()
+                .filter(|call| call["structured_result"]["outcome"] == "unknown")
+                .cloned()
+                .collect::<Vec<_>>();
+            let content = output::truncate_content(
+                std::mem::take(&mut output.content),
+                Some(context.output_token_budget),
+            );
+            let receipt = serde_json::json!({
+                "cell": {"origin_call_id": context.call_id, "running": false},
+                "output": with_status(status, started_at.elapsed().as_secs_f64(), content),
+                "success": success, "nested_calls": nested_calls,
+                "notifications": output.notifications,
+            });
+            (receipt, unknown)
+        };
+        let mut result = Ok(());
+        for call in unknown {
+            result = journal
+                .complete_effect(
+                    context.journal_scope.as_deref().unwrap_or(&context.call_id),
+                    call["call_id"].as_str().unwrap_or_default(),
+                    &call,
+                )
+                .await;
+            if result.is_err() {
+                break;
+            }
+        }
+        if result.is_ok() {
+            let next_stored = match &terminal {
+                Ok(CellTerminal::Completed { stored }) => {
+                    let mut next = initial_stored;
+                    next.extend(stored.clone());
+                    Some(next)
+                }
+                _ => None,
+            };
+            result = journal
+                .complete_cell(
+                    context.journal_scope.as_deref().unwrap_or(&context.call_id),
+                    document_version,
+                    next_stored,
+                    &receipt,
+                )
+                .await;
+        }
+        result
+    } else {
+        Ok(())
+    };
+    match (terminal, journal_result) {
+        (_, Err(error)) => {
+            let _ = updates.send(CellUpdate::HostFailed(format!(
+                "Code Mode journal commit failed; execution outcome unknown: {error}"
+            )));
+        }
+        (Ok(CellTerminal::Completed { stored }), Ok(())) => {
             shared_stored.lock().await.extend(stored);
             let _ = updates.send(CellUpdate::Completed);
         }
-        Ok(CellTerminal::ScriptFailed { message, stored }) => {
-            shared_stored.lock().await.extend(stored);
+        (Ok(CellTerminal::ScriptFailed { message, .. }), Ok(())) => {
             let _ = updates.send(CellUpdate::ScriptFailed { message });
         }
-        Ok(CellTerminal::Terminated) => {
+        (Ok(CellTerminal::Terminated), Ok(())) => {
             let _ = updates.send(CellUpdate::Terminated);
         }
-        Err(failure) => {
+        (Err(failure), Ok(())) => {
             let _ = updates.send(CellUpdate::HostFailed(failure.message));
         }
     }

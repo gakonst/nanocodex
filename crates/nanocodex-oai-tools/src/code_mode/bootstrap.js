@@ -1,4 +1,4 @@
-((createCodeTools, valueHelpers) => {
+((createCodeTools, valueHelpers, createCodeDiscovery) => {
   const { stringify, storeSnapshot, normalizeImage, normalizeAudio, generatedImageItems } = valueHelpers;
   const nativeTool = __nanocodexTool;
   const nativeContent = __nanocodexContent;
@@ -98,6 +98,7 @@
     const EXIT = Symbol("exit");
     function exit() { throw EXIT; }
 
+    const { searchTools, describeTool, describeNamespace } = createCodeDiscovery(definitions);
     const allTools = Object.freeze(definitions.map((tool) => {
       return Object.freeze({
         name: tool.name,
@@ -122,6 +123,9 @@
         "tools",
         "ALL_TOOLS",
         "toolSchema",
+        "searchTools",
+        "describeTool",
+        "describeNamespace",
         "text",
         "image",
         "audio",
@@ -140,6 +144,9 @@
           tools,
           allTools,
           toolSchema,
+          searchTools,
+          describeTool,
+          describeNamespace,
           text,
           image,
           audio,

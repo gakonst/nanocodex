@@ -6,12 +6,13 @@
 use super::model::AgentId;
 use std::collections::HashMap;
 
-#[derive(Default)]
+#[derive(Default, Clone, serde::Serialize, serde::Deserialize)]
 pub(super) struct TaskTree {
     next_id: u64,
     nodes: HashMap<AgentId, TaskNode>,
 }
 
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 struct TaskNode {
     session_id: String,
     parent: Option<AgentId>,

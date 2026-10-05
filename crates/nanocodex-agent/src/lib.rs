@@ -12,6 +12,8 @@ extern crate self as nanocodex_agent;
 
 mod agent;
 mod error;
+mod replay;
+pub use replay::ReplaySafety;
 mod harness;
 pub use harness::{ClaudeModel, HarnessFamily, HarnessModel};
 #[cfg(feature = "openai")]

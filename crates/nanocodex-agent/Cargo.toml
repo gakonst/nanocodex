@@ -24,7 +24,6 @@ openai = [
     "dep:iana-time-zone",
     "dep:nanocodex-oai-tools",
     "nanocodex-oai-tools/code-mode",
-    "dep:serde_json",
     "dep:sha2",
     "dep:tower",
     "dep:tracing",
@@ -41,7 +40,7 @@ iana-time-zone = { workspace = true, optional = true }
 nanocodex-oai-api = { version = "0.6.6", path = "../nanocodex-oai-api", default-features = false, features = ["events"] }
 nanocodex-oai-tools = { workspace = true, optional = true }
 serde.workspace = true
-serde_json = { workspace = true, optional = true }
+serde_json.workspace = true
 sha2 = { workspace = true, optional = true }
 thiserror.workspace = true
 tokio = { workspace = true, features = ["macros", "sync"] }

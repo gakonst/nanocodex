@@ -157,6 +157,7 @@ impl Journey {
             &self.registry,
             &self.session,
             AgentTask {
+                lifetime: Default::default(),
                 role: task.to_owned(),
                 task: task.to_owned(),
                 output_schema: json!({"type":"string"}),

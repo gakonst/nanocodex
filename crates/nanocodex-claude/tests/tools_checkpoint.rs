@@ -43,6 +43,18 @@ impl ClaudeExecutionPolicy for CheckpointPolicy {
             Ok(())
         })
     }
+    fn begin_step_with_replay(
+        &self,
+        id: String,
+        step: String,
+        kind: String,
+        input: Value,
+        safety: nanocodex_agent::ReplaySafety,
+    ) -> PolicyFuture<'_, Step> {
+        // Session-local task mutations are reconstructed with their checkpoint.
+        assert_eq!(safety, nanocodex_agent::ReplaySafety::Safe);
+        self.begin_step(id, step, kind, input)
+    }
     fn begin_step(&self, _: String, _: String, _: String, _: Value) -> PolicyFuture<'_, Step> {
         Box::pin(async { Ok(Step::Execute) })
     }

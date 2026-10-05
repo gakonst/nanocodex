@@ -65,7 +65,7 @@ The feature requires `NANOCODEX_THREAD_ROUTING=true` and the AI binding. The Wor
 
 ## Child threads and provider transport
 
-If `multi_agent.enabled` is true, a new child is routed independently with the same policy and current provider availability. Its role/task and any explicit model/thinking overrides determine its eligible choices. The child decision is saved before inference, reused during continuation and in-memory idle rehydration, and authorized against the retained spawning-turn context. Children and their route pins are ephemeral and disappear when the parent runtime restarts. The root decision stays unchanged. Missing authorization or route metadata fails closed.
+If `multi_agent.enabled` is true, a new child is routed independently with the same policy and current provider availability. Its role/task and any explicit model/thinking overrides determine its eligible choices. The child decision is saved before inference and reused during continuation and driver reconstruction. Durable trees retain the child and its route across a parent runtime restart; reconstruction rechecks current provider credentials and authorization. Saved spawning-turn context is not an authorization grant. An in-memory tree retains its route only while its parent runtime lives. The root decision stays unchanged. Missing authorization or route metadata fails closed.
 
 See [provider configuration](AGGREGATOR_ROUTING.md). Mixed-provider trees use stateless HTTP and full history replay; OpenRouter/Vercel routes need their deployment-owned secrets. Transport telemetry records outcomes, but unknown execution locations do not become regional performance evidence.
 

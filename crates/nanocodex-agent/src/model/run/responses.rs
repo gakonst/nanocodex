@@ -25,11 +25,59 @@ where
     pub(super) async fn perform_model_call(
         &mut self,
         call_index: u32,
-        conversation: &ConversationState,
+        conversation: &mut ConversationState,
         factory: &ResponsesAttemptFactory,
+        tools: &ToolRuntime,
     ) -> Result<ModelCallOutcome> {
         let step_id = format!("model-{call_index}");
-        let model = self.model;
+        let mut request = factory.generation(
+            call_index,
+            &conversation.managed.generation_request(),
+            self.model,
+            self.thinking,
+            self.fast_mode,
+        );
+        let mut model = self.model;
+        let mut replay_safety = crate::ReplaySafety::Safe;
+        if let Some(steps) = &self.execution_steps {
+            let original = request
+                .native_request(&self.config)
+                .map_err(NanocodexError::ExecutionPayload)?;
+            replay_safety = provider_request_replay_safety(&original);
+            let current = self.attempt_factory(tools)?;
+            let authorized = current
+                .generation(
+                    call_index,
+                    &conversation.managed.generation_request(),
+                    self.model,
+                    self.thinking,
+                    self.fast_mode,
+                )
+                .native_request(&self.config)
+                .map_err(NanocodexError::ExecutionPayload)?;
+            let request_id = format!("{}/model-{call_index}", steps.operation_id());
+            if let Some(prepared) = steps
+                .prepare_request(
+                    request_id,
+                    call_index > 1,
+                    conversation.request_policy.clone(),
+                    original,
+                    authorized,
+                )
+                .await?
+            {
+                model = prepared.request["model"]
+                    .as_str()
+                    .ok_or_else(|| {
+                        NanocodexError::InvalidExecutionPolicy("prepared model is missing".into())
+                    })?
+                    .parse::<Model>()
+                    .map_err(NanocodexError::InvalidExecutionPolicy)?;
+                replay_safety = provider_request_replay_safety(&prepared.request);
+                conversation.request_policy = prepared.state;
+                request = request.with_prepared_request(prepared.request, model);
+            }
+        }
         let thinking = self.thinking;
         let reasoning_mode = self.config.reasoning_mode;
         let fast_mode = self.fast_mode;
@@ -47,7 +95,7 @@ where
                 previous_response_id,
             },
         )?;
-        let request = factory.generation(call_index, &request_history, model, thinking, fast_mode);
+
         let (input_item_count, input_bytes, input_content) = trace_model_input(&request);
         let span = model_call_span(
             call_index,
@@ -64,9 +112,20 @@ where
         let execution_steps = self.execution_steps.clone();
         let recovered = if let Some(steps) = &execution_steps {
             match steps
-                .begin::<_, RecordedModelResult>(&step_id, "model_call", &())
+                .begin_with_replay::<_, RecordedModelResult>(
+                    &step_id,
+                    "model_call",
+                    &(),
+                    replay_safety,
+                )
                 .await?
             {
+                crate::agent::ExecutionStep::OutcomeUnknown => {
+                    return Err(NanocodexError::InvalidExecutionPolicy(
+                        "provider model effect outcome is unknown; reconcile before dispatch"
+                            .into(),
+                    ));
+                }
                 crate::agent::ExecutionStep::Execute => None,
                 crate::agent::ExecutionStep::Replay(output) => Some(output),
             }
@@ -76,7 +135,19 @@ where
         let (recorded_result, transport_continuation_valid) = if let Some(output) = recovered {
             (output, false)
         } else {
-            let success = match self.client.execute(request).instrument(span.clone()).await {
+            let result = {
+                let foreground = self.client.execute(request).instrument(span.clone());
+                tokio::pin!(foreground);
+                loop {
+                    tokio::select! {
+                        result = &mut foreground => break result,
+                        result = background::progress(&mut self.background_work) => {
+                            if let Some(work) = &mut self.background_work { work.result = Some(result); }
+                        }
+                    }
+                }
+            };
+            let success = match result {
                 Ok(success) => success,
                 Err(error) => {
                     span.record("status", "failed");
@@ -175,6 +246,42 @@ where
             },
         )?;
         Err(error)
+    }
+}
+
+// Client tool declarations only ask the host to execute a separately journaled
+// effect. Every other declaration may execute at the provider boundary, where
+// this harness has no reconciliation/idempotency guarantee.
+fn provider_request_replay_safety(request: &serde_json::Value) -> crate::ReplaySafety {
+    fn client_tool(tool: &serde_json::Value) -> bool {
+        match tool["type"].as_str() {
+            Some("function" | "custom") => true,
+            Some("tool_search") => tool["execution"] == "client",
+            Some("namespace") => tool["tools"]
+                .as_array()
+                .is_some_and(|tools| tools.iter().all(client_tool)),
+            _ => false,
+        }
+    }
+    let top_level_safe = request.get("tools").is_none_or(|tools| {
+        tools
+            .as_array()
+            .is_some_and(|tools| tools.iter().all(client_tool))
+    });
+    let additional_safe = request["input"].as_array().is_none_or(|items| {
+        items
+            .iter()
+            .filter(|item| item["type"] == "additional_tools")
+            .all(|item| {
+                item["tools"]
+                    .as_array()
+                    .is_some_and(|tools| tools.iter().all(client_tool))
+            })
+    });
+    if top_level_safe && additional_safe {
+        crate::ReplaySafety::Safe
+    } else {
+        crate::ReplaySafety::Unsafe
     }
 }
 

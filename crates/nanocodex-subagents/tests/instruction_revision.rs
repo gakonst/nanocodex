@@ -149,6 +149,7 @@ async fn regression(steer_after_acceptance: bool) {
             &registry,
             &session,
             AgentTask {
+                lifetime: Default::default(),
                 role: "revision probe".into(),
                 task: "Return the requested result".into(),
                 output_schema: json!({"type":"object", "properties":{"result":{"type":"string"}},

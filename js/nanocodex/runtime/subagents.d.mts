@@ -18,6 +18,8 @@ export interface Options {
 }
 
 export type AgentId = number;
+/** Foreground children end with their parent. Background children require durability. */
+export type Lifetime = "foreground" | "background";
 export type AgentStatus =
   | Readonly<{ state: "pending" | "running" | "interrupted" | "closing" | "closed" }>
   | Readonly<{ state: "completed"; output: unknown }>
@@ -27,6 +29,7 @@ export type AgentSummary = Readonly<{
   role: string;
   task: string;
   parent_agent_id: AgentId | null;
+  lifetime: Lifetime;
   status: AgentStatus;
   last_output?: unknown;
 }>;
@@ -34,6 +37,8 @@ export type JsonSchema = boolean | Readonly<Record<string, unknown>>;
 type CodexModel = "sol" | "luna" | "astra" | "glm-5.3" | "kimi" | "mimo";
 type ClaudeModel = "opus" | "sonnet" | "fable" | "haiku" | "claude-opus-5-5" | "claude-sonnet-5-5" | "claude-fable-5-1" | "claude-opus-4-6" | "claude-sonnet-4-6" | "claude-haiku-4-5";
 export type SpawnOptions = Readonly<{
+  /** Defaults to foreground. Background requires a durable parent. */
+  lifetime?: Lifetime | undefined;
   role: string;
   task: string;
   thinking?: Thinking | undefined;
@@ -43,6 +48,8 @@ export type SpawnOptions = Readonly<{
   | { harness: "claude"; model?: ClaudeModel | undefined })>;
 /** Batch children inherit their parent's family, model and thinking. */
 export type BatchSpawnOptions = Readonly<{
+  /** Defaults to foreground. Each background child requires a durable parent. */
+  lifetime?: Lifetime | undefined;
   role: string;
   task: string;
   outputSchema: JsonSchema;
@@ -104,6 +111,15 @@ export function spawnMany(
 export function wait(agent: SubagentOwner, options: WaitOptions): Promise<WaitReport>;
 /** Directly invokes the canonical Rust list_agents handler. */
 export function list(agent: SubagentOwner, options?: DirectoryOptions): Promise<DirectoryReport>;
+/**
+ * Idempotently resumes recoverable children of an open durable parent.
+ * A host alarm, cron, or queue handler must first open the parent with its current
+ * tools and authorization. Persisted child context never grants authority.
+ * The caller owns the parent and keeps its runtime alive while children execute.
+ * Rejects when the parent is not durable or subagents are disabled.
+ */
+export type RecoveryReport = LifecycleReport & Readonly<{ backgroundPending: boolean }>;
+export function recover(agent: SubagentOwner): Promise<RecoveryReport>;
 /** Directly invokes the canonical Rust send_agent_message handler. */
 export function send(agent: SubagentOwner, options: SendOptions): Promise<MessageReceipt>;
 /** Directly invokes the canonical Rust interrupt_agent handler. */

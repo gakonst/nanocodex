@@ -3,7 +3,7 @@ use std::{collections::BTreeMap, sync::Arc};
 use crate::{Error, Result};
 use serde::{Serialize, de::DeserializeOwned};
 
-const STATE_FORMAT: u8 = 4;
+const STATE_FORMAT: u8 = 5;
 const RECORD_BYTES: usize = 256_000;
 
 /// An immutable payload reference. Content is loaded only for its consumer.
@@ -163,7 +163,7 @@ impl EncodedPayload {
     }
 }
 
-fn record_key(value: &str) -> String {
+pub(crate) fn record_key(value: &str) -> String {
     use sha2::{Digest, Sha256};
     const HEX: &[u8; 16] = b"0123456789abcdef";
     let mut encoded = String::with_capacity(64);
@@ -192,6 +192,9 @@ pub enum Transition {
         operation_id: String,
         /// Opaque current agent state, rather than a history of requests.
         continuation: EncodedPayload,
+        /// Background effects still owned by this execution boundary.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        retained_steps: Vec<String>,
     },
     /// A host-visible operation was durably accepted.
     OperationAccepted {
@@ -210,6 +213,9 @@ pub enum Transition {
         kind: String,
         /// Opaque typed step input.
         input: EncodedPayload,
+        /// Recovery permission captured before dispatch.
+        #[serde(default)]
+        replay_safety: crate::ReplaySafety,
     },
     /// An external step completed with a replayable output.
     StepCompleted {
@@ -342,6 +348,9 @@ pub struct StepState {
     pub kind: String,
     /// Original opaque step input.
     pub input: EncodedPayload,
+    /// Recovery permission captured before dispatch.
+    #[serde(default)]
+    pub replay_safety: crate::ReplaySafety,
     /// Current reduced status.
     pub status: StepStatus,
     /// Number of committed starts for this step.
@@ -363,6 +372,93 @@ pub struct SteerState {
     pub model_call_index: Option<u32>,
 }
 
+const STEER_RECEIPT_PAGE_ENTRIES: usize = 32;
+
+// Only changed radix paths are staged. A page has at most 32 receipts or 16
+// child references; the operation checkpoint retains a single immutable root.
+#[derive(serde::Deserialize, serde::Serialize)]
+#[serde(tag = "kind", content = "entries", deny_unknown_fields)]
+enum SteerReceiptPage {
+    Leaf(BTreeMap<String, IdentifiedSteerReceipt>),
+    Branch(BTreeMap<String, EncodedPayload>),
+}
+
+fn receipt_digit(id: &str, depth: usize) -> Result<String> {
+    record_key(id)
+        .get(depth..depth + 1)
+        .map(str::to_owned)
+        .ok_or_else(|| Error::InvalidState("steer receipt identity hash collision".into()))
+}
+
+fn stage_receipt_page(
+    page: &SteerReceiptPage,
+    records: &mut Vec<crate::StoreRecord>,
+) -> Result<EncodedPayload> {
+    let mut payload = EncodedPayload::encode(page)?;
+    payload.stage(records);
+    Ok(payload)
+}
+
+fn build_receipt_pages(
+    entries: BTreeMap<String, IdentifiedSteerReceipt>,
+    depth: usize,
+    records: &mut Vec<crate::StoreRecord>,
+) -> Result<EncodedPayload> {
+    if entries.len() <= STEER_RECEIPT_PAGE_ENTRIES {
+        return stage_receipt_page(&SteerReceiptPage::Leaf(entries), records);
+    }
+    let mut groups: BTreeMap<String, BTreeMap<String, IdentifiedSteerReceipt>> = BTreeMap::new();
+    for (id, receipt) in entries {
+        groups
+            .entry(receipt_digit(&id, depth)?)
+            .or_default()
+            .insert(id, receipt);
+    }
+    let mut children = BTreeMap::new();
+    for (digit, entries) in groups {
+        children.insert(digit, build_receipt_pages(entries, depth + 1, records)?);
+    }
+    stage_receipt_page(&SteerReceiptPage::Branch(children), records)
+}
+
+fn update_receipt_page<'a>(
+    root: Option<EncodedPayload>,
+    id: String,
+    receipt: IdentifiedSteerReceipt,
+    depth: usize,
+    store: &'a mut dyn crate::StateStore,
+    state_id: &'a str,
+    records: &'a mut Vec<crate::StoreRecord>,
+) -> crate::StoreFuture<'a, Result<EncodedPayload>> {
+    Box::pin(async move {
+        let page = match root {
+            Some(root) => root.load(store, state_id).await?.decode()?,
+            None => SteerReceiptPage::Leaf(BTreeMap::new()),
+        };
+        match page {
+            SteerReceiptPage::Leaf(mut entries) => {
+                entries.insert(id, receipt);
+                build_receipt_pages(entries, depth, records)
+            }
+            SteerReceiptPage::Branch(mut children) => {
+                let digit = receipt_digit(&id, depth)?;
+                let child = update_receipt_page(
+                    children.remove(&digit),
+                    id,
+                    receipt,
+                    depth + 1,
+                    store,
+                    state_id,
+                    records,
+                )
+                .await?;
+                children.insert(digit, child);
+                stage_receipt_page(&SteerReceiptPage::Branch(children), records)
+            }
+        }
+    })
+}
+
 /// A small durable caller receipt retained after consumption or withdrawal.
 #[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
@@ -379,7 +475,10 @@ pub struct IdentifiedSteerReceipt {
 #[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct OperationState {
-    /// Caller receipts survive retirement of live steering bodies.
+    /// Immutable paged index of caller receipts, including retired inputs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub steer_receipt_root: Option<EncodedPayload>,
+    /// Unstaged caller receipts, including legacy inline checkpoints.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub steer_receipts: BTreeMap<String, IdentifiedSteerReceipt>,
     /// Current conversation and execution position; settled batches are retired atomically.
@@ -403,6 +502,68 @@ pub struct OperationState {
 }
 
 impl OperationState {
+    pub(crate) async fn steer_receipt(
+        &self,
+        id: &str,
+        store: &mut dyn crate::StateStore,
+        state_id: &str,
+    ) -> Result<Option<IdentifiedSteerReceipt>> {
+        if let Some(receipt) = self.steer_receipts.get(id) {
+            return Ok(Some(receipt.clone()));
+        }
+        let mut root = self.steer_receipt_root.clone();
+        let mut depth = 0;
+        while let Some(page) = root {
+            match page
+                .load(store, state_id)
+                .await?
+                .decode::<SteerReceiptPage>()?
+            {
+                SteerReceiptPage::Leaf(entries) => return Ok(entries.get(id).cloned()),
+                SteerReceiptPage::Branch(mut children) => {
+                    root = children.remove(&receipt_digit(id, depth)?);
+                    depth += 1;
+                }
+            }
+        }
+        Ok(None)
+    }
+
+    async fn stage_steer_receipts(
+        &mut self,
+        store: &mut dyn crate::StateStore,
+        state_id: &str,
+    ) -> Result<()> {
+        let entries = std::mem::take(&mut self.steer_receipts);
+        if entries.is_empty() {
+            return Ok(());
+        }
+        let mut records = Vec::new();
+        let root = if self.steer_receipt_root.is_none() {
+            // One-time migration from the legacy inline receipt map.
+            build_receipt_pages(entries, 0, &mut records)?
+        } else {
+            if entries.len() != 1 {
+                return Err(Error::InvalidState(
+                    "multiple unstaged steer receipt updates".into(),
+                ));
+            }
+            let (id, receipt) = entries.into_iter().next().expect("nonempty receipts");
+            update_receipt_page(
+                self.steer_receipt_root.clone(),
+                id,
+                receipt,
+                0,
+                store,
+                state_id,
+                &mut records,
+            )
+            .await?
+        };
+        self.steer_receipt_root = Some(root.with_records(records));
+        Ok(())
+    }
+
     pub(crate) fn cancellation_requires_checkpoint(&self) -> bool {
         self.continuation.is_some()
             || self.retired_model_calls != 0
@@ -410,7 +571,7 @@ impl OperationState {
             || !self.steers.is_empty()
     }
 
-    fn retire_steps(&mut self) {
+    fn retire_steps(&mut self, retained_steps: &[String]) {
         for (id, step) in &self.steps {
             if step.kind == "model_call"
                 && matches!(step.status, StepStatus::Completed(_))
@@ -421,7 +582,7 @@ impl OperationState {
                 self.retired_model_calls = self.retired_model_calls.max(index);
             }
         }
-        self.steps.clear();
+        self.steps.retain(|id, _| retained_steps.contains(id));
         let consumed = self
             .steers
             .iter()
@@ -440,6 +601,7 @@ impl OperationState {
 /// Complete state reduced from an complete retained state.
 #[derive(Clone, Debug, Default)]
 pub struct DurableState {
+    pub(crate) documents: crate::documents::Documents,
     revision: u64,
     operations: BTreeMap<String, OperationState>,
     latest_checkpoint: Option<(u64, EncodedPayload)>,
@@ -448,6 +610,8 @@ pub struct DurableState {
 #[derive(serde::Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct DurableCheckpoint {
+    #[serde(default)]
+    documents: crate::documents::Documents,
     format: u8,
     operations: BTreeMap<String, OperationState>,
     latest_checkpoint: Option<EncodedPayload>,
@@ -461,6 +625,7 @@ pub(crate) struct RetainedCheckpoint {
 
 #[derive(serde::Serialize)]
 struct DurableCheckpointRef<'a> {
+    documents: &'a crate::documents::Documents,
     format: u8,
     operations: &'a BTreeMap<String, OperationState>,
     latest_checkpoint: Option<&'a EncodedPayload>,
@@ -472,10 +637,31 @@ struct RetainedCheckpointRef<'a> {
 }
 
 impl DurableState {
+    pub(crate) async fn stage_steer_receipts(
+        &mut self,
+        store: &mut dyn crate::StateStore,
+        state_id: &str,
+    ) -> Result<()> {
+        for operation in self.operations.values_mut() {
+            operation.stage_steer_receipts(store, state_id).await?;
+        }
+        Ok(())
+    }
+
     pub(crate) fn stage_records(&mut self) -> Vec<crate::StoreRecord> {
         let mut records = Vec::new();
+        for (id, mut boundary) in std::mem::take(&mut self.documents.boundaries) {
+            boundary.stage(&mut records);
+            records.push(crate::StoreRecord {
+                key: crate::documents::boundary_key(&id),
+                value: boundary.key.to_string(),
+            });
+        }
         for operation in self.operations.values_mut() {
             operation.input.stage(&mut records);
+            if let Some(root) = &mut operation.steer_receipt_root {
+                root.stage(&mut records);
+            }
             if let Some(value) = &mut operation.continuation {
                 value.stage(&mut records);
             }
@@ -518,6 +704,10 @@ impl DurableState {
     #[must_use]
     pub const fn operations(&self) -> &BTreeMap<String, OperationState> {
         &self.operations
+    }
+
+    pub(crate) const fn operations_mut(&mut self) -> &mut BTreeMap<String, OperationState> {
+        &mut self.operations
     }
 
     /// Looks up one operation.
@@ -566,6 +756,7 @@ impl DurableState {
         serde_json::to_string(&RetainedCheckpointRef {
             nanocodex_durable_state: DurableCheckpointRef {
                 format: STATE_FORMAT,
+                documents: &self.documents,
                 operations: &self.operations,
                 latest_checkpoint: self.latest_checkpoint(),
             },
@@ -609,17 +800,35 @@ impl DurableState {
         });
     }
 
-    pub(crate) fn from_checkpoint(revision: u64, checkpoint: DurableCheckpoint) -> Result<Self> {
+    pub(crate) fn from_checkpoint(
+        revision: u64,
+        mut checkpoint: DurableCheckpoint,
+    ) -> Result<Self> {
         if revision == 0 {
             return Err(Error::InvalidState(
                 "a compacted state checkpoint must have a positive revision".to_owned(),
             ));
         }
-        if checkpoint.format != STATE_FORMAT {
+        if !matches!(checkpoint.format, 4 | STATE_FORMAT) {
             return Err(Error::InvalidState(format!(
                 "unsupported state format {}",
                 checkpoint.format
             )));
+        }
+        // Format 4 already defined provider/compaction/preservation steps as
+        // repeatable. Preserve that contract during upgrade, while old tool
+        // intents remain unsafe. The current caller must still opt in too.
+        if checkpoint.format == 4 {
+            for operation in checkpoint.operations.values_mut() {
+                for step in operation.steps.values_mut() {
+                    if matches!(
+                        step.kind.as_str(),
+                        "model" | "model_call" | "warmup" | "compaction" | "before_compaction"
+                    ) {
+                        step.replay_safety = crate::ReplaySafety::Safe;
+                    }
+                }
+            }
         }
         let mut accepted_orders = std::collections::BTreeSet::new();
         for (operation_id, operation) in &checkpoint.operations {
@@ -720,6 +929,7 @@ impl DurableState {
         let state = Self {
             revision,
             operations: checkpoint.operations,
+            documents: checkpoint.documents,
             latest_checkpoint,
         };
         for (operation_id, operation) in &state.operations {
@@ -776,14 +986,16 @@ impl DurableState {
             ensure_nonempty(operation_id, "operation ID")?;
         }
         match entry {
-            Transition::ExecutionAdvanced { operation_id, .. } => {
+            Transition::ExecutionAdvanced {
+                operation_id,
+                retained_steps,
+                ..
+            } => {
                 self.ensure_prior_operations_terminal(operation_id)?;
                 let operation = self.pending_operation(operation_id)?;
-                if operation
-                    .steps
-                    .values()
-                    .any(|step| matches!(step.status, StepStatus::EffectPending))
-                {
+                if operation.steps.iter().any(|(id, step)| {
+                    matches!(step.status, StepStatus::EffectPending) && !retained_steps.contains(id)
+                }) {
                     return Err(Error::InvalidState(format!(
                         "operation `{operation_id}` cannot advance past an unsettled effect"
                     )));
@@ -801,6 +1013,7 @@ impl DurableState {
                 step_id,
                 kind,
                 input,
+                replay_safety,
             } => {
                 ensure_nonempty(step_id, "step ID")?;
                 ensure_nonempty(kind, "step kind")?;
@@ -825,6 +1038,13 @@ impl DurableState {
                     if matches!(step.status, StepStatus::Completed(_)) {
                         return Err(Error::InvalidState(format!(
                             "settled step `{step_id}` in operation `{operation_id}` restarted"
+                        )));
+                    }
+                    if step.replay_safety != crate::ReplaySafety::Safe
+                        || *replay_safety != crate::ReplaySafety::Safe
+                    {
+                        return Err(Error::InvalidState(format!(
+                            "unsettled step `{step_id}` in operation `{operation_id}` cannot safely restart"
                         )));
                     }
                     if step.attempts == u32::MAX {
@@ -1014,10 +1234,11 @@ impl DurableState {
             Transition::ExecutionAdvanced {
                 operation_id,
                 continuation,
+                retained_steps,
             } => {
                 let operation = self.pending_operation_mut(&operation_id)?;
                 operation.continuation = Some(continuation);
-                operation.retire_steps();
+                operation.retire_steps(&retained_steps);
             }
             Transition::OperationAccepted {
                 operation_id,
@@ -1026,6 +1247,7 @@ impl DurableState {
                 self.operations.insert(
                     operation_id,
                     OperationState {
+                        steer_receipt_root: None,
                         steer_receipts: BTreeMap::new(),
                         continuation: None,
                         retired_model_calls: 0,
@@ -1043,6 +1265,7 @@ impl DurableState {
                 step_id,
                 kind,
                 input,
+                replay_safety,
             } => {
                 let operation = self.pending_operation_mut(&operation_id)?;
                 if let Some(step) = operation.steps.get_mut(&step_id) {
@@ -1057,6 +1280,7 @@ impl DurableState {
                         StepState {
                             kind,
                             input,
+                            replay_safety,
                             status: StepStatus::EffectPending,
                             attempts: 1,
                         },
@@ -1131,7 +1355,7 @@ impl DurableState {
             } => {
                 let operation = self.pending_operation_mut(&operation_id)?;
                 if operation.continuation.take().is_some() {
-                    operation.retire_steps();
+                    operation.retire_steps(&[]);
                 }
                 operation.status = OperationStatus::Completed {
                     checkpoint: checkpoint.clone(),
@@ -1146,7 +1370,7 @@ impl DurableState {
             } => {
                 let operation = self.pending_operation_mut(&operation_id)?;
                 if operation.continuation.take().is_some() {
-                    operation.retire_steps();
+                    operation.retire_steps(&[]);
                 }
                 operation.status = OperationStatus::Failed {
                     checkpoint: checkpoint.clone(),
@@ -1160,7 +1384,7 @@ impl DurableState {
             } => {
                 let operation = self.pending_operation_mut(&operation_id)?;
                 if operation.continuation.take().is_some() {
-                    operation.retire_steps();
+                    operation.retire_steps(&[]);
                 }
                 operation.status = OperationStatus::Cancelled {
                     checkpoint: checkpoint.clone(),
@@ -1290,6 +1514,7 @@ mod continuation_tests {
                 })?;
             }
             apply(Transition::StepStarted {
+                replay_safety: crate::ReplaySafety::Safe,
                 operation_id: id.clone(),
                 step_id: format!("model-{model_call}"),
                 kind: "model_call".into(),
@@ -1312,6 +1537,7 @@ mod continuation_tests {
             apply(Transition::ExecutionAdvanced {
                 operation_id: id.clone(),
                 continuation: payload.clone(),
+                retained_steps: Vec::new(),
             })?;
             let operation = state.operation(&id).unwrap();
             assert_eq!(operation.retired_steers, model_call - 1);
@@ -1332,6 +1558,7 @@ mod continuation_tests {
             input: payload.clone(),
         })?;
         apply(Transition::StepStarted {
+            replay_safety: crate::ReplaySafety::Safe,
             operation_id: id.clone(),
             step_id: "model-1".into(),
             kind: "model_call".into(),
@@ -1352,6 +1579,7 @@ mod continuation_tests {
         apply(Transition::ExecutionAdvanced {
             operation_id: id.clone(),
             continuation: payload.clone(),
+            retained_steps: Vec::new(),
         })?;
         apply(Transition::SteerBound {
             operation_id: id.clone(),
@@ -1359,6 +1587,7 @@ mod continuation_tests {
             model_call_index: 2,
         })?;
         apply(Transition::StepStarted {
+            replay_safety: crate::ReplaySafety::Safe,
             operation_id: id.clone(),
             step_id: "model-2".into(),
             kind: "model_call".into(),
@@ -1367,7 +1596,8 @@ mod continuation_tests {
         assert!(
             apply(Transition::ExecutionAdvanced {
                 operation_id: id.clone(),
-                continuation: payload.clone()
+                continuation: payload.clone(),
+                retained_steps: Vec::new(),
             })
             .is_err()
         );
@@ -1379,9 +1609,11 @@ mod continuation_tests {
         apply(Transition::ExecutionAdvanced {
             operation_id: id.clone(),
             continuation: payload.clone(),
+            retained_steps: Vec::new(),
         })?;
         assert!(
             apply(Transition::StepStarted {
+                replay_safety: crate::ReplaySafety::Safe,
                 operation_id: id.clone(),
                 step_id: "model-1".into(),
                 kind: "model_call".into(),
@@ -1492,6 +1724,7 @@ mod withdrawal_tests {
             model_call_index: 2,
         })?;
         apply(Transition::StepStarted {
+            replay_safety: crate::ReplaySafety::Safe,
             operation_id: "turn".into(),
             step_id: "model-2".into(),
             kind: "model_call".into(),
@@ -1505,6 +1738,7 @@ mod withdrawal_tests {
         apply(Transition::ExecutionAdvanced {
             operation_id: "turn".into(),
             continuation: payload.clone(),
+            retained_steps: Vec::new(),
         })?;
         for steer_index in 2..=3 {
             apply(Transition::SteerAccepted {

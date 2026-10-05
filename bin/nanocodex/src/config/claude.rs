@@ -126,6 +126,28 @@ impl AgentArgs {
         let registry = self
             .subagents
             .then(|| subagents::channel(self.max_subagents));
+        // Open the root before registering recipes so every family captures
+        // the same child store and owned registry barrier.
+        let persistence = local_durability.or_else(|| {
+            self.rollouts.then(|| LocalDurability {
+                path: codex_home.join("claude/sessions.sqlite"),
+                state_id: SessionId::new().to_string(),
+            })
+        });
+        let durability = match persistence {
+            Some(persistence) => Some(
+                durability::CliDurability::open(
+                    persistence,
+                    HarnessFamily::Claude,
+                    None,
+                    registry
+                        .as_ref()
+                        .map(|(registry, _, _)| Arc::clone(registry)),
+                )
+                .await?,
+            ),
+            None => None,
+        };
         let tool_registry = registry
             .as_ref()
             .map(|(registry, _, _)| Arc::clone(registry));
@@ -142,7 +164,7 @@ impl AgentArgs {
             .build()?;
         let codex_home_for_recipe = codex_home.clone();
         let codex_workspace = workspace.clone();
-        let codex_registry = tool_registry.clone();
+        let codex_registry = tool_registry.as_ref().map(Arc::downgrade);
         let codex_instructions = instructions.clone();
         let websocket_url = self.websocket_url;
         let api_base_url = self.api_base_url;
@@ -151,8 +173,10 @@ impl AgentArgs {
         let fast_mode = self.fast_mode;
         let websocket_warmup = self.websocket_warmup;
         let store_responses = self.store_responses;
+        let child_durability = durability.clone();
         let harness_builder =
             nanocodex::Harness::builder().register(HarnessFamily::Codex, move |request| {
+                let durability = child_durability.clone();
                 let auth = codex_auth.clone();
                 let tools = codex_tools.clone();
                 let workspace = codex_workspace.clone();
@@ -205,13 +229,15 @@ impl AgentArgs {
                                 nanocodex_subagents::install_tools(
                                     tools.clone(),
                                     parent,
-                                    Arc::clone(registry),
+                                    registry.upgrade().expect("live CLI owns child registry"),
                                 )
                             } else {
                                 Ok(tools.clone())
                             }
                         });
-                    if let Some(checkpoint) = request.snapshot {
+                    if let Some(durability) = durability {
+                        builder = durability.codex_child(builder, request.snapshot).await?;
+                    } else if let Some(checkpoint) = request.snapshot {
                         builder = builder.restore_runtime(checkpoint)?;
                     }
                     builder.build()
@@ -225,6 +251,7 @@ impl AgentArgs {
             tools.clone(),
             web_search,
             tool_registry.clone(),
+            durability.clone(),
         )
         .build();
         let mut builder = configured_claude_builder(
@@ -239,23 +266,8 @@ impl AgentArgs {
             tool_registry,
         )
         .spawn_factory(harness.spawn_factory());
-        // Claude checkpoints retain native Messages blocks and signed thinking.
-        // The default rollout toggle enables this native journal for Claude.
-        let persistence = local_durability.or_else(|| {
-            self.rollouts.then(|| LocalDurability {
-                path: codex_home.join("claude/sessions.sqlite"),
-                state_id: SessionId::new().to_string(),
-            })
-        });
-        if let Some(persistence) = persistence {
-            if let Some(parent) = persistence.path.parent() {
-                std::fs::create_dir_all(parent)
-                    .wrap_err("failed to create Claude durability directory")?;
-            }
-            let store = SqliteStore::open(&persistence.path)
-                .wrap_err("failed to open Claude durability store")?;
-            let state = PortableDurableSession::open(store, persistence.state_id).await?;
-            builder = builder.durability(state).await?;
+        if let Some(durability) = durability {
+            builder = durability.claude_root(builder).await?;
         }
         let (handle, events) = builder.build()?;
         let (child_agents, subagent_updates) =
@@ -305,14 +317,23 @@ fn configured_claude_builder(
         instructions.push_str("\n\n");
         instructions.push_str(SUBAGENT_INSTRUCTIONS);
     }
+    // The native Claude factory retains this tools recipe after construction.
+    // Installed tools retain the live registry, so the recipe must be weak.
+    let registry = registry.as_ref().map(Arc::downgrade);
     let mut builder = Nanocodex::builder(Claude::new(client, model.as_str()))
         .workspace(workspace.to_string_lossy().into_owned())
         .system(instructions)
         .max_tokens(16_384)
         .tools_factory(move |parent| {
             let tools = if let Some(registry) = &registry {
-                nanocodex_subagents::install_tools(tools.clone(), parent, Arc::clone(registry))
-                    .map_err(|error| nanocodex::NanocodexError::InvalidRequest(error.to_string()))?
+                nanocodex_subagents::install_tools(
+                    tools.clone(),
+                    parent,
+                    registry
+                        .upgrade()
+                        .ok_or(nanocodex::NanocodexError::AgentStopped)?,
+                )
+                .map_err(|error| nanocodex::NanocodexError::InvalidRequest(error.to_string()))?
             } else {
                 tools.clone()
             };
@@ -327,6 +348,7 @@ fn configured_claude_builder(
     builder
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn register_claude_recipe(
     harness: nanocodex::HarnessBuilder,
     connection: ClaudeConnection,
@@ -335,14 +357,25 @@ pub(super) fn register_claude_recipe(
     tools: Tools,
     web_search: bool,
     registry: Option<Arc<nanocodex_subagents::Registry>>,
+    durability: Option<durability::CliDurability>,
 ) -> nanocodex::HarnessBuilder {
+    let registry = registry.as_ref().map(Arc::downgrade);
     harness.register(HarnessFamily::Claude, move |request| {
+        let durability = durability.clone();
         let connection = connection.clone();
         let workspace = workspace.clone();
         let instructions = instructions.clone();
         let tools = tools.clone();
         let registry = registry.clone();
         async move {
+            let registry = registry
+                .as_ref()
+                .map(|registry| {
+                    registry
+                        .upgrade()
+                        .ok_or(nanocodex::NanocodexError::AgentStopped)
+                })
+                .transpose()?;
             let client = connection
                 .client()
                 .await
@@ -364,7 +397,9 @@ pub(super) fn register_claude_recipe(
             )
             .spawn_factory(request.spawn_factory)
             .host_context(request.host_context);
-            if let Some(checkpoint) = request.snapshot {
+            if let Some(durability) = durability {
+                builder = durability.claude_child(builder, request.snapshot).await?;
+            } else if let Some(checkpoint) = request.snapshot {
                 builder = builder.restore_runtime(checkpoint)?;
             }
             builder.build()

@@ -1,3 +1,4 @@
+import { createCodeDiscovery } from "nanocodex-tools/runtime/code-discovery";
 import { expect, it } from "vitest";
 import type { CodeEvaluatorEnvironment } from "nanocodex";
 import { managedCodeEvaluator } from "../src/code-evaluator";
@@ -5,6 +6,7 @@ import { managedCodeEvaluator } from "../src/code-evaluator";
 it("runs the first lazy Code Mode cell in real QuickJS and reuses the evaluator after failure", async () => {
   const output: unknown[] = [];
   const environment: CodeEvaluatorEnvironment = {
+    ...createCodeDiscovery([]),
     signal: new AbortController().signal,
     tools: { add: async input => { const { left, right } = input as { left: number; right: number }; return left + right; } },
     toolDefinitions: [], text: value => { output.push(value); },

@@ -1385,22 +1385,23 @@ impl tower::Service<nanocodex_oai_api::tower::ResponsesAttempt> for DurableToolS
                         } if &**call_id == "call-count-once" => Some(output.as_ref()),
                         _ => None,
                     });
-                    assert!(
-                        recovered_output
-                            .expect("recovery must include the retried tool result")
-                            .contains("counted")
-                    );
+                    let recovered_output =
+                        recovered_output.expect("recovery must include the exact tool outcome");
+                    let final_message = if recovered_output.contains("outcome unknown") {
+                        "recovered with outcome unknown"
+                    } else {
+                        assert!(recovered_output.contains("counted"));
+                        "recovered after retrying the tool"
+                    };
                     ResponsesOutput::Generation(GenerationOutput {
                         id: "durable-tool-recovered-response".to_owned(),
                         reported_model: None,
                         status: "completed".to_owned(),
                         end_turn: Some(true),
-                        final_message: Some("recovered after retrying the tool".to_owned()),
+                        final_message: Some(final_message.to_owned()),
                         output_items: vec![ResponseItem::message(
                             MessageRole::Assistant,
-                            [ContentItem::output_text(
-                                "recovered after retrying the tool",
-                            )],
+                            [ContentItem::output_text(final_message)],
                         )],
                         code_calls: Vec::new(),
                         usage: None,
@@ -1739,6 +1740,25 @@ async fn execution_policy_authority_defaults_fail_closed() -> Result<()> {
             capability: "cancel"
         })
     ));
+    for safety in [
+        nanocodex_agent::ReplaySafety::Unsafe,
+        nanocodex_agent::ReplaySafety::Safe,
+    ] {
+        assert!(matches!(
+            policy
+                .begin_step_with_replay(
+                    "turn".into(),
+                    "effect".into(),
+                    "tool".into(),
+                    "{}".into(),
+                    safety
+                )
+                .await,
+            Err(NanocodexError::ExecutionPolicyCapabilityUnsupported {
+                capability: "effect replay safety"
+            })
+        ));
+    }
     assert_eq!(releases.load(Ordering::SeqCst), 0);
     assert_eq!(generations.load(Ordering::SeqCst), 0);
 
@@ -2212,7 +2232,28 @@ async fn exact_id_retry_replays_steer_at_its_original_model_boundary() -> Result
     while !started.load(Ordering::Acquire) {
         tokio::task::yield_now().await;
     }
-    first.steer("retain this routed steer").await?;
+    first
+        .steer_with_id("identified-steer".into(), "retain this routed steer")
+        .await?;
+    first
+        .steer_with_id("identified-steer".into(), "retain this routed steer")
+        .await?;
+    assert_eq!(
+        state
+            .state()
+            .await?
+            .operation("steered-turn")
+            .expect("running turn")
+            .steers
+            .len(),
+        1
+    );
+    assert!(
+        first
+            .steer_with_id("identified-steer".into(), "changed steering input")
+            .await
+            .is_err()
+    );
     release_first.notify_one();
     let error = first
         .result()
@@ -2239,6 +2280,17 @@ async fn exact_id_retry_replays_steer_at_its_original_model_boundary() -> Result
 
     agent.shutdown().await?;
     drop((agent, events));
+    let cold = self::DurableSession::open(store, "steered-exact-id-retry").await?;
+    let receipt = cold
+        .steer_receipt("steered-turn", "identified-steer")
+        .await?
+        .expect("terminal operation retains identified steering receipt");
+    assert_eq!(receipt.index, 1);
+    assert!(!receipt.withdrawn);
+    println!(
+        "native identified steering: duplicate replayed, conflict rejected, terminal commit retried without model effects; cold receipt index={}",
+        receipt.index
+    );
     std::fs::remove_dir_all(workspace)?;
     Ok(())
 }
@@ -3650,7 +3702,7 @@ async fn exact_id_retry_reclaims_a_definitely_uncommitted_terminal_replace() -> 
 }
 
 #[tokio::test]
-async fn portable_state_retries_an_unfinished_tool() -> Result<()> {
+async fn portable_state_reports_unknown_without_repeating_unfinished_tool() -> Result<()> {
     let store = self::MemoryStore::new()?;
     let failing_store = FailReplaceOnce {
         inner: store.clone(),
@@ -3709,11 +3761,8 @@ async fn portable_state_retries_an_unfinished_tool() -> Result<()> {
         .await?;
     assert_eq!(recovered_turn.request_id(), Some("turn-1"));
     let recovered = recovered_turn.result().await?;
-    assert_eq!(
-        recovered.final_message(),
-        "recovered after retrying the tool"
-    );
-    assert_eq!(tool_calls.load(std::sync::atomic::Ordering::SeqCst), 2);
+    assert_eq!(recovered.final_message(), "recovered with outcome unknown");
+    assert_eq!(tool_calls.load(std::sync::atomic::Ordering::SeqCst), 1);
     assert_eq!(generations.load(std::sync::atomic::Ordering::SeqCst), 2);
     resumed.shutdown().await?;
     drop((resumed, resumed_events));
@@ -3731,18 +3780,15 @@ async fn portable_state_retries_an_unfinished_tool() -> Result<()> {
         .await?
         .result()
         .await?;
-    assert_eq!(
-        replayed.final_message(),
-        "recovered after retrying the tool"
-    );
+    assert_eq!(replayed.final_message(), "recovered with outcome unknown");
     assert_eq!(generations.load(std::sync::atomic::Ordering::SeqCst), 2);
     let next = reopened
         .prompt(PromptRequest::new("continue").request_id("turn-2"))
         .await?
         .result()
         .await?;
-    assert_eq!(next.final_message(), "recovered after retrying the tool");
-    assert_eq!(tool_calls.load(std::sync::atomic::Ordering::SeqCst), 2);
+    assert_eq!(next.final_message(), "recovered with outcome unknown");
+    assert_eq!(tool_calls.load(std::sync::atomic::Ordering::SeqCst), 1);
     assert_eq!(generations.load(std::sync::atomic::Ordering::SeqCst), 3);
     reopened.shutdown().await?;
     drop((reopened, reopened_events));
@@ -4569,4 +4615,145 @@ async fn deterministic_hosted_stream_failure_is_terminal_across_cold_reopen() ->
 #[tokio::test]
 async fn transient_hosted_stream_failure_remains_retryable_across_cold_reopen() -> Result<()> {
     assert_hosted_stream_failure_recovery(false).await
+}
+
+#[cfg(feature = "sqlite")]
+#[tokio::test]
+async fn completed_agent_history_forks_after_receipt_pruning_and_cold_reopen() -> Result<()> {
+    use nanocodex_durability::{DocumentForkPolicy, DocumentWrite, SqliteStore};
+    let directory = tempfile::tempdir()?;
+    let db = directory.path().join("agent-history.sqlite");
+    let workspace = temporary_workspace("document-agent-history")?;
+    let generations = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let openai = || {
+        OpenAi::builder("synthetic-key")
+            .service({
+                let generations = Arc::clone(&generations);
+                move || DurableReplayService {
+                    generations: Arc::clone(&generations),
+                }
+            })
+            .build()
+    };
+    let session =
+        DurableSession::open_with_terminal_receipt_limit(SqliteStore::open(&db)?, "parent", 1)
+            .await?;
+    let (agent, events) = Nanocodex::builder(openai()?)
+        .workspace(&workspace)
+        .durability(session.clone())
+        .await?
+        .build()?;
+    let document_writes = |version, value| {
+        [
+            DocumentForkPolicy::Initial,
+            DocumentForkPolicy::Current,
+            DocumentForkPolicy::AsOf,
+        ]
+        .into_iter()
+        .zip(["initial", "current", "asOf"])
+        .map(|(fork, key)| DocumentWrite {
+            key: key.into(),
+            expected_version: version,
+            value: json!(value),
+            fork,
+        })
+        .collect()
+    };
+    session
+        .compare_exchange_documents(document_writes(0, 1))
+        .await?;
+    for index in 0..5 {
+        let id = format!("historical-{index}");
+        let result = agent
+            .prompt(PromptRequest::new(format!("synthetic history {index}")).request_id(&id))
+            .await?
+            .result()
+            .await?;
+        assert_eq!(result.final_message(), "durably replayed");
+        if index == 0 {
+            session
+                .compare_exchange_documents(document_writes(1, 2))
+                .await?;
+        }
+    }
+    agent.shutdown().await?;
+    drop((agent, events, session));
+    let source = DurableSession::open(SqliteStore::open(&db)?, "parent").await?;
+    assert!(source.state().await?.operation("historical-0").is_none());
+    let revision = source.state().await?.revision();
+    for input in ["synthetic history 0", "reused operation with changed input"] {
+        let error = source.admit("historical-0", &input).await.unwrap_err();
+        assert!(error.to_string().contains("terminal"), "{error}");
+    }
+    assert_eq!(source.state().await?.revision(), revision);
+    let (snapshot, seed) = source.agent_document_fork("historical-0").await?;
+    assert_eq!(
+        ["initial", "current", "asOf"].map(|key| seed.documents[key].value.clone()),
+        [json!(1), json!(2), json!(1)]
+    );
+    let encoded = serde_json::to_string(&snapshot)?;
+    assert!(encoded.contains("synthetic history 0"));
+    assert!(!encoded.contains("synthetic history 4"));
+    let child = DurableSession::open(SqliteStore::open(&db)?, "child").await?;
+    child
+        .initialize_agent_document_fork(seed, &snapshot)
+        .await?;
+    drop(child);
+    let child = DurableSession::open(SqliteStore::open(&db)?, "child").await?;
+    assert_eq!(child.document("asOf").await?.unwrap().value, json!(1));
+    child
+        .compare_exchange_documents(vec![DocumentWrite {
+            key: "asOf".into(),
+            expected_version: 1,
+            value: json!(42),
+            fork: DocumentForkPolicy::AsOf,
+        }])
+        .await?;
+    assert_eq!(source.document("asOf").await?.unwrap().value, json!(2));
+    let (branch, branch_events) = Nanocodex::builder(openai()?)
+        .workspace(&workspace)
+        .durability(child.clone())
+        .await?
+        .build()?;
+    assert_eq!(
+        branch
+            .prompt(PromptRequest::new("branch history").request_id("branch-1"))
+            .await?
+            .result()
+            .await?
+            .final_message(),
+        "durably replayed"
+    );
+    branch.shutdown().await?;
+    drop((branch, branch_events));
+    let (branch_snapshot, _) = child.agent_document_fork("branch-1").await?;
+    let branch_encoded = serde_json::to_string(&branch_snapshot)?;
+    assert!(branch_encoded.contains("synthetic history 0"));
+    assert!(branch_encoded.contains("branch history"));
+    assert!(!branch_encoded.contains("synthetic history 4"));
+    // Direct transaction staging uses the same completion path as Agent success.
+    let writes = DurableSession::open(SqliteStore::open(&db)?, "staged").await?;
+    writes.admit("success", &"success").await?;
+    writes.begin_attempt("success").await?;
+    let mutation = DocumentWrite {
+        key: "result".into(),
+        expected_version: 0,
+        value: json!({"receipt": "saved"}),
+        fork: DocumentForkPolicy::AsOf,
+    };
+    writes
+        .stage_document_writes("success", vec![mutation.clone()])
+        .await?;
+    writes
+        .stage_document_writes("success", vec![mutation])
+        .await?;
+    assert!(writes.document("result").await?.is_none());
+    writes
+        .complete("success", &json!({"cursor":1}), &"success")
+        .await?;
+    assert_eq!(writes.document("result").await?.unwrap().version, 1);
+    println!(
+        "SQLite cold Agent fork: five completions, retention=1, historical-0 pruned receipt but retained transcript; child cold resume retains only selected history; staged CAS writes hidden until successful completion"
+    );
+    Ok(())
 }

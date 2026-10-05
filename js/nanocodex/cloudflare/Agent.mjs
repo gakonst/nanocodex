@@ -41,7 +41,9 @@ const INTERNAL_RUNTIME = Symbol.for("nanocodex.cloudflare.internalRuntime");
 const INTERNAL_CONFIGURATION = Symbol.for("nanocodex.cloudflare.internalConfiguration");
 const INTERNAL_FORK_RESUME = Symbol.for("nanocodex.cloudflare.internalForkResume");
 const EPHEMERAL_APPLICATION_OPTIONS = new Set([
+  "requestPolicy",
   "instantToolSteering",
+  "inlineDocsTokenBudget",
   "beforeCompaction",
   "additionalInstructions",
   "fastMode",
@@ -55,7 +57,9 @@ const EPHEMERAL_APPLICATION_OPTIONS = new Set([
   "workspace",
 ]);
 const APPLICATION_OPTIONS = new Set([
+  "requestPolicy",
   "instantToolSteering",
+  "inlineDocsTokenBudget",
   "beforeCompaction",
   "additionalInstructions",
   "durabilityId",
@@ -78,6 +82,7 @@ export function bindAgent(module, hostAgent = HostAgent) {
     destroy,
     exportDurabilityState,
     exportDurabilityHead,
+    assertPortable,
     importDurabilityState: (owner, archive) => importDurabilityState(owner, archive, module),
     route,
   });
@@ -106,9 +111,11 @@ export function destroy(owner) {
   const storage = context.storage;
   createCloudflareDurabilityStore(storage);
   initializeAgentStorage(storage);
-  const stateId = storedStateId(storage) ?? legacyStateId(storage);
+  // The adapter owns one root per Durable Object. Its private state tables
+  // also contain the child registry and every descendant execution journal.
+  const stateIds = storage.sql.exec("SELECT state_id FROM nanocodex_durable_owners").toArray();
   storage.transactionSync(() => {
-    if (stateId !== undefined) {
+    for (const { state_id: stateId } of stateIds) {
       const retained = storage.sql.exec(
         "SELECT fence FROM nanocodex_durable_owners WHERE state_id = ?",
         stateId,
@@ -127,18 +134,36 @@ export function destroy(owner) {
         "DELETE FROM nanocodex_durable_records WHERE state_id = ?",
         stateId,
       );
-      storage.sql.exec(
-        "DELETE FROM nanocodex_durable_states WHERE state_id = ?",
-        stateId,
-      );
+      storage.sql.exec("DELETE FROM nanocodex_durable_states WHERE state_id = ?", stateId);
     }
+    // These pre-record-store tables exist only in legacy databases. The DO
+    // owns every state, so remove their schema along with any retained data.
+    storage.sql.exec("DROP TABLE IF EXISTS nanocodex_durable_state_chunks");
+    storage.sql.exec("DROP TABLE IF EXISTS nanocodex_durable_chunk_heads");
     storage.sql.exec("DROP TABLE IF EXISTS nanocodex_cloudflare_fork_resume");
     clearCloudflareEventSocket(context);
   });
 }
 
+/** Rejects root-only portability before fencing any member of an owned tree. */
+export function assertPortable(owner) {
+  const storage = resolveContext(owner).storage;
+  createCloudflareDurabilityStore(storage);
+  initializeAgentStorage(storage);
+  const stateId = storedStateId(storage) ?? legacyStateId(storage);
+  const sessionId = storedSessionId(storage);
+  // A registry alone can be empty. Every actual child first acquires its own
+  // execution owner, retained even after close. Never silently discard those
+  // journals when exporting the current single-session archive format.
+  const states = storage.sql.exec("SELECT state_id FROM nanocodex_durable_owners").toArray();
+  if (states.some(row => row.state_id !== stateId && row.state_id !== `${sessionId}/children`)) {
+    throw new Error("Cloudflare Agent with retained children requires a task-tree archive; root-only export is unavailable");
+  }
+}
+
 /** Fences and exports this inactive Cloudflare Agent's provider-neutral state. */
 export async function exportDurabilityState(owner, request, headOnly = false) {
+  assertPortable(owner);
   const context = reserveInactiveLifecycle(owner, "exporting durability state");
   try {
     const storage = context.storage;
@@ -496,12 +521,18 @@ async function createOwned(module, resolved, options, hostAgent, lifecycle, prep
   }
   const { sessionId, stateId } = durableIdentity(context.storage, durabilityId);
   if (internalConfiguration?.model?.startsWith("claude-")) {
-    if (forkResume !== undefined || internalRuntime?.workersAi || internalRuntime?.gateway) {
+    if (internalRuntime?.workersAi || internalRuntime?.gateway) {
       throw new Error("Claude requires its native checkpoint and subscription transport");
     }
     if (typeof internalRuntime?.claude?.create !== "function") {
       throw new Error("Claude subscription transport is unavailable; refusing Responses fallback");
     }
+    if (forkResume !== undefined && (!forkResume.checkpoint || !forkResume.documents)) {
+      throw new Error("Claude forks require native checkpoint and session documents");
+    }
+    if (resumeDigest !== undefined) context.storage.sql.exec(
+      "INSERT OR IGNORE INTO nanocodex_cloudflare_fork_resume(singleton,state_id,digest) VALUES (1,?,?)",
+      stateId, resumeDigest);
     // Claude owns canonical Messages state; never open or reinterpret it as Codex.
     // Its durable session identity is the state identity, not a separate transport ID.
     context.storage.sql.exec("UPDATE nanocodex_cloudflare_agent SET session_id = ? WHERE singleton = 1", stateId);
@@ -534,8 +565,10 @@ async function createOwned(module, resolved, options, hostAgent, lifecycle, prep
         harnesses,
         model: internalConfiguration.model, thinking: internalConfiguration.thinking,
         instructions: agentOptions.instructions ?? agentOptions.additionalInstructions,
+        requestPolicy: agentOptions.requestPolicy,
         tools: agentOptions.tools, module, durability, durabilityId: stateId,
         terminalReceiptRetention: agentOptions.terminalReceiptRetention,
+        ...(forkResume === undefined ? {} : { documentFork: forkResume }),
       });
       if (eventSocket) {
         const watcher = claude.events.watch();
@@ -589,8 +622,8 @@ async function createOwned(module, resolved, options, hostAgent, lifecycle, prep
   const startup = deferred();
   const transport = Transport.hostManaged({
     ...endpoint,
-    stateless: directInference,
-    websocketPreconnect: !directInference,
+    stateless: directInference || agentOptions.requestPolicy !== undefined,
+    websocketPreconnect: !directInference && agentOptions.requestPolicy === undefined,
     async createResponse(url, id, request) {
       let selected = endpoint;
       const body = responseControlsBody(request.body, internalRuntime?.responseControls);
@@ -714,12 +747,13 @@ async function createOwned(module, resolved, options, hostAgent, lifecycle, prep
       sessionId,
       durability,
       durabilityId: stateId,
-      ...(forkResume === undefined ? {} : { resume: forkResume }),
+      ...(forkResume === undefined ? {} : forkResume.checkpoint !== undefined && forkResume.documents !== undefined
+        ? { documentFork: forkResume } : { resume: forkResume }),
     });
     // Managed voice needs the durable session before the separate Responses
     // relay is ready. Its preconnection remains owned by the host and a later
     // text turn consumes it through the same credential-checked transport.
-    if (!directInference && internalRuntime?.waitForPreconnect !== false) {
+    if (!directInference && agentOptions.requestPolicy === undefined && internalRuntime?.waitForPreconnect !== false) {
       await withTimeout(
         startup.promise,
         STARTUP_TIMEOUT_MS,
@@ -806,7 +840,8 @@ export async function createEphemeral(module, owner, options = {}) {
   const startup = deferred();
   const transport = Transport.hostManaged({
     ...endpoint,
-    websocketPreconnect: true,
+    stateless: agentOptions.requestPolicy !== undefined,
+    websocketPreconnect: agentOptions.requestPolicy === undefined,
     async createWebSocket(url, id, request) {
       try {
         const opened = await endpoint.createWebSocket(url, id, request);
@@ -827,7 +862,7 @@ export async function createEphemeral(module, owner, options = {}) {
       toolMode: "direct",
       transport,
     });
-    await withTimeout(
+    if (agentOptions.requestPolicy === undefined) await withTimeout(
       startup.promise,
       STARTUP_TIMEOUT_MS,
       "Cloudflare ephemeral Agent EGRESS startup validation timed out",
@@ -872,7 +907,7 @@ function applicationOptions(options) {
   for (const name of Object.keys(options)) {
     if (!APPLICATION_OPTIONS.has(name)) {
       throw new TypeError(
-        `Cloudflare Agent.create does not accept ${name}; only durabilityId, eventPersistence, instructions, additionalInstructions, terminalReceiptRetention, and tools are configurable`,
+        `Cloudflare Agent.create does not accept ${name}; only durabilityId, eventPersistence, instructions, additionalInstructions, terminalReceiptRetention, requestPolicy, and tools are configurable`,
       );
     }
   }

@@ -7,7 +7,7 @@ mod schema_types;
 use schema_types::render_json_schema_to_typescript;
 
 const DEFERRED_NESTED_TOOLS_GUIDANCE: &str = r"Some deferred nested tools may be omitted from this description. They are still available on the global `tools` object and listed in `ALL_TOOLS`.
-To find one, filter `ALL_TOOLS` by `name` and `description`.";
+Use `searchTools(query)` to find tools and `describeTool(name)` or `describeNamespace(namespace)` for full guidance and schemas.";
 // Based on https://modelcontextprotocol.io/specification/draft/schema#calltoolresult.
 const MCP_TYPESCRIPT_PREAMBLE: &str = r#"type Role = "user" | "assistant";
 type MetaObject = Record<string, unknown>;
@@ -108,6 +108,9 @@ const EXEC_DESCRIPTION: &str = r#"Run JavaScript code to orchestrate/compose too
 - `notify(value: string | number | boolean | undefined | null)`: immediately injects an extra `custom_tool_call_output` for the current `exec` call. Values are stringified like `text(...)`.
 - `setTimeout(callback: () => void, delayMs?: number)`: schedules a callback to run later and returns a timeout id. Pending timeouts do not keep `exec` alive by themselves; await an explicit promise if you need to wait for one.
 - `clearTimeout(timeoutId?: number)`: cancels a timeout created by `setTimeout`.
+- `searchTools(query: string, options?: { limit?: number })`: searches the immutable callable catalog by every case-insensitive whitespace-separated term; returns name, callableName and description (default limit 10, range 1–100).
+- `describeTool(name: string)`: returns full description, inputSchema, outputSchema, kind and callableName; accepts public or normalized name; unknown names return undefined.
+- `describeNamespace(namespace: string)`: returns full definitions with that exact prefix before the first `__` or `.`; unknown namespaces return an empty array.
 - `ALL_TOOLS`: metadata for the enabled nested tools as `{ name, description }` entries.
 - `yield_control()`: yields the accumulated output to the model immediately while the script keeps running."#;
 
@@ -116,62 +119,79 @@ pub(crate) fn exec_description(
     provider_summaries: &[(String, String)],
     has_deferred_tools: bool,
     code_mode_only: bool,
+    inline_docs_token_budget: usize,
 ) -> String {
     let mut description = EXEC_DESCRIPTION.to_owned();
     description.push_str("\n- `ALL_TOOLS` is the catalog of callable nested tools for this execution. A tool exposed separately by the host is not necessarily callable through `tools`; use its direct tool entry when it is absent from this catalog.");
     description.push_str("\n- Nanocodex extension: calling a missing nested tool rejects locally with `TOOL_NOT_AVAILABLE`; it does not dispatch a tool. An unfinished nested call may have executed even when its cell ends; an `outcome: unknown` receipt is not permission to retry it.");
-    if !provider_summaries.is_empty() {
-        description.push_str("\n\nAdditional runtime-provided nested tools:");
-        for (name, summary) in provider_summaries {
-            let _ = write!(description, "\n- `tools.{name}`: {}", summary.trim());
-        }
-        description.push_str(
-            "\nInspect the matching `ALL_TOOLS` entry for complete guidance before using an unfamiliar runtime-provided tool.",
+    let mut inline = String::new();
+    let byte_budget = inline_docs_token_budget.saturating_mul(4);
+    let mut omitted = has_deferred_tools;
+    for (name, summary) in provider_summaries {
+        let entry = format!(
+            "\n\nAdditional runtime-provided nested tool `tools.{name}`: {}",
+            summary.trim()
         );
+        if inline.len().saturating_add(entry.len()) <= byte_budget {
+            inline.push_str(&entry);
+        } else {
+            omitted = true;
+        }
     }
-    if has_deferred_tools {
+    if code_mode_only {
+        let mut rendered_namespaces = BTreeSet::new();
+        let mut rendered_mcp_types = false;
+        for spec in definitions {
+            let Some(declaration) = exec_tool_declaration(spec) else {
+                continue;
+            };
+            let mut entry = String::new();
+            let uses_mcp = spec
+                .output_schema()
+                .and_then(|schema| mcp_structured_content_schema(schema.as_value()))
+                .is_some();
+            if uses_mcp && !rendered_mcp_types {
+                let _ = write!(
+                    entry,
+                    "\n\nShared MCP Types:\n```ts\n{MCP_TYPESCRIPT_PREAMBLE}\n```"
+                );
+            }
+            let namespace =
+                code_mode_namespace_and_name(spec.name()).map(|(namespace, _)| namespace);
+            if let Some(namespace) = namespace
+                && !rendered_namespaces.contains(namespace)
+            {
+                let _ = write!(
+                    entry,
+                    "\n\n## {namespace}\nTools in the {namespace} namespace."
+                );
+            }
+            let global_name = normalize_identifier(spec.name());
+            let heading = if global_name == spec.name() {
+                format!("### `{global_name}`")
+            } else {
+                format!("### `{global_name}` (`{}`)", spec.name())
+            };
+            let _ = write!(
+                entry,
+                "\n\n{heading}\n{}\n\n{declaration}",
+                spec.description()
+            );
+            if inline.len().saturating_add(entry.len()) <= byte_budget {
+                inline.push_str(&entry);
+                if let Some(namespace) = namespace {
+                    rendered_namespaces.insert(namespace);
+                }
+                rendered_mcp_types |= uses_mcp;
+            } else {
+                omitted = true;
+            }
+        }
+    }
+    if omitted {
         let _ = write!(description, "\n\n{DEFERRED_NESTED_TOOLS_GUIDANCE}");
     }
-    if !code_mode_only {
-        return description;
-    }
-    if has_deferred_tools
-        || definitions.iter().any(|spec| {
-            spec.output_schema()
-                .and_then(|schema| mcp_structured_content_schema(schema.as_value()))
-                .is_some()
-        })
-    {
-        let _ = write!(
-            description,
-            "\n\nShared MCP Types:\n```ts\n{MCP_TYPESCRIPT_PREAMBLE}\n```"
-        );
-    }
-    let mut rendered_namespaces = BTreeSet::new();
-    for spec in definitions {
-        if let Some((namespace, _)) = code_mode_namespace_and_name(spec.name())
-            && rendered_namespaces.insert(namespace)
-        {
-            let _ = write!(
-                description,
-                "\n\n## {namespace}\nTools in the {namespace} namespace."
-            );
-        }
-        let Some(declaration) = exec_tool_declaration(spec) else {
-            continue;
-        };
-        let global_name = normalize_identifier(spec.name());
-        let heading = if global_name == spec.name() {
-            format!("### `{global_name}`")
-        } else {
-            format!("### `{global_name}` (`{}`)", spec.name())
-        };
-        let _ = write!(
-            description,
-            "\n\n{heading}\n{}\n\n{declaration}",
-            spec.description(),
-        );
-    }
+    description.push_str(&inline);
     description
 }
 

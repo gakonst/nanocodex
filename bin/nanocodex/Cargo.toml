@@ -160,3 +160,7 @@ use-self = "warn"
 redundant-clone = "warn"
 large-enum-variant = "allow"
 result-large-err = "allow"
+
+[[test]]
+name = "cli_durable_tree"
+path = "tests/cli_durable_tree.rs"

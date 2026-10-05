@@ -13,6 +13,9 @@ const principal: Principal = {
 const parent = "01997777-7777-7777-8777-777777777777";
 const snapshot = {version: 1, model: "gpt-6-astra", lineage_id: "lineage", prompt_cache_key: "cache",
   workspace: "/brain", canonical_context: {type: "message", role: "user", content: []}, history: []};
+const documentSeed = {checkpoint: snapshot, documents: {boundary: "completed-first", documents: {
+  journal: {version: 1, initial: 1, value: 1, fork: "asOf"},
+}}};
 const settings = {model: "gpt-6-astra", thinking: "low", reasoning_mode: "standard", fast_mode: false};
 function fixture(parentStatus = 200) {
   const calls: Array<{id:string;path:string;body:string}> = [];
@@ -23,12 +26,12 @@ function fixture(parentStatus = 200) {
       const req = new Request(input, init); const path = new URL(req.url).pathname;
       const body = await req.text(); calls.push({id,path,body});
       if (id === parent && path === "/fork/snapshot") return parentStatus === 200
-        ? Response.json({snapshot, settings}) : Response.json({error:"checkpoint_unavailable"},{status:parentStatus});
+        ? Response.json({seed: documentSeed, settings}) : Response.json({error:"checkpoint_unavailable"},{status:parentStatus});
       if (path === "/fork/status") {
         const row = seeded.get(id);
         if (!row) return Response.json({error:"not_found"},{status:404});
         const value = JSON.parse(row);
-        return Response.json({parent_agent_id:value.parent_agent_id,request_key:value.request_key,settings});
+        return Response.json({parent_agent_id:value.parent_agent_id,request_key:value.request_key,at:value.at,settings});
       }
       if (path === "/create") return Response.json({prepare_ms:1,initialize_ms:1,commit_ms:1});
       if (path === "/fork/seed") {
@@ -39,9 +42,9 @@ function fixture(parentStatus = 200) {
       return Response.json({error:"not_found"},{status:404});
     }})
   }} as unknown as Env;
-  const request = (actor:Principal = principal, key = "fork:stable") => worker.fetch(
+  const request = (actor:Principal = principal, key = "fork:stable", at?: string) => worker.fetch(
     new Request(`https://nanocodex.example/v1/agents/${parent}/forks`, {
-      method:"POST", headers:{"idempotency-key":key},
+      method:"POST", headers:{"idempotency-key":key}, ...(at === undefined ? {} : {body: JSON.stringify({at})}),
     }), runtime, createExecutionContext(), actor);
   return {calls, seeded, request};
 }
@@ -56,13 +59,24 @@ describe("checkpoint fork ingress", () => {
     expect(JSON.stringify(body)).not.toContain("canonical_context");
     expect(JSON.stringify(body)).not.toContain("lineage_id");
     const seed = JSON.parse(seeded.get(body.agent_id)!);
-    expect(seed.snapshot).toEqual(snapshot);
+    expect(seed.snapshot).toEqual(documentSeed);
     expect(seed.parent_agent_id).toBe(parent);
     expect(calls.filter(c=>c.id===parent).map(c=>c.path)).toEqual(["/fork/snapshot"]);
     expect(calls.some(c=>c.path.includes("turns"))).toBe(false);
     const second = await request(); expect(second.status).toBe(201);
     expect((await second.json() as {agent_id:string}).agent_id).toBe(body.agent_id);
     expect(seeded.size).toBe(1);
+  });
+  it("forwards a historical completed selector and rejects changing it under one key", async () => {
+    const {calls, seeded, request} = fixture();
+    const first = await request(principal, "fork:historical", "completed-first");
+    expect(first.status).toBe(201);
+    const id = (await first.json() as {agent_id:string}).agent_id;
+    expect(JSON.parse(calls.find(c => c.id === parent)!.body)).toEqual({at:"completed-first"});
+    expect(JSON.parse(seeded.get(id)!).at).toBe("completed-first");
+    expect((await request(principal, "fork:historical", "completed-first")).status).toBe(201);
+    expect((await request(principal, "fork:historical", "completed-later")).status).toBe(409);
+    expect(calls.filter(c => c.id === parent)).toHaveLength(1);
   });
   it("fails closed when the checkpoint is unavailable or scope lacks tool authority", async () => {
     const busy = fixture(409);

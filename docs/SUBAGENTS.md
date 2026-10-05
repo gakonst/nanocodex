@@ -83,11 +83,29 @@ bounded during cleanup. Subagents share the root’s provider, workspace, base
 tools, and process authority; clean conversation context is not a security
 sandbox.
 
-Children and their descendants are ephemeral: they do not inherit the root's
-durability store, checkpoints, or operation journal. Idle children may be
-rehydrated from memory while the parent runtime lives. Restarting the parent
-drops the tree, mailboxes, route pins, and child history; historical IDs cannot
-resume those children. See [durability ownership](DURABILITY.md#agent-identity-and-ephemeral-children).
+A durable root in the JavaScript hosts opens a durable child tree on its existing
+store. Child IDs, ownership, mailboxes, results, and independent execution
+checkpoints survive reconstruction. Saved host context never grants authority:
+the host reapplies current capabilities before resuming each child. On native
+targets, `nanocodex::DurableAgentExt` installs the registry, per-child journals,
+and same-family factory automatically for OpenAI and Claude (with the `claude`
+feature). Lower-level users of `nanocodex_durability::DurableAgentExt` configure
+the registry, durable factory, and ownership hooks explicitly; a plain in-memory
+registry retains its original process lifetime. Automatic native composition
+rejects existing spawn factories, so custom or mixed-family routing uses the
+core adapter with explicit recipes.
+
+Native facade builds start child recovery after binding the owner. Await
+`agent.ready()` to observe completion or a retained startup failure; prompts
+also await it. Background children can recover after a completed root turn
+without submitting another root prompt. Shutdown and last-handle drop cancel
+unfinished startup recovery.
+
+`foreground` and `background` lifetimes express ownership separately from
+whether a driver is resident in memory. Background children require durability;
+the managed scheduler retains wakeups after the foreground turn ends. Explicit
+interrupt and close operations remain recoverable across a process exit. See
+[durability ownership](DURABILITY.md#agent-identity-and-child-ownership).
 
 Tact’s subagent tree TUI is presentation owned by Tact and is not copied into
 Nanocodex’s existing Ratatui application. Nanocodex drains the same typed

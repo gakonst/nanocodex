@@ -18,6 +18,7 @@ pub(crate) fn exec_spec(
     provider_summaries: &[(String, String)],
     has_deferred_tools: bool,
     code_mode_only: bool,
+    inline_docs_token_budget: usize,
 ) -> ToolDefinition {
     ToolDefinition::custom(
         "exec",
@@ -26,6 +27,7 @@ pub(crate) fn exec_spec(
             provider_summaries,
             has_deferred_tools,
             code_mode_only,
+            inline_docs_token_budget,
         ),
         CustomToolFormat::grammar("lark", GRAMMAR),
     )

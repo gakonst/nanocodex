@@ -1,3 +1,4 @@
+import { createRequestPolicyHost } from "../runtime/request-policy-host.mjs";
 import { createCodeEffectIdentity } from "../runtime/code-effect-identity.mjs";
 import { createBeforeCompaction } from "../runtime/before-compaction.mjs";
 import { createResponsesHttp, responsesHttpHeaders } from "../runtime/responses-http.mjs";
@@ -35,6 +36,7 @@ export function createBrowserHost(options = {}) {
     throw new TypeError("host socket timing hook must be a function");
   }
   const socketObservations = createSocketObservations(options.onSocketEvent);
+  const policyHost = createRequestPolicyHost(options.requestPolicy);
   const preservation = createBeforeCompaction(options.beforeCompaction);
   const toolMode = options.toolMode ?? "code";
   if (toolMode !== "code" && toolMode !== "direct") {
@@ -69,15 +71,27 @@ export function createBrowserHost(options = {}) {
   const http = createResponsesHttp((endpoint, apiKey, sessionId, metadata, body, signal) => {
     if (disposal) throw new Error("Nanocodex host is already disposed");
     if (options.mpp) throw JSON.stringify({ kind: "transport", detail: "MPP HTTPS transport is unavailable", reconnectable: false });
-    if (options.createResponse) {
-      const authorization = options.hostAuth
-        ? { authorization: "host_managed" }
-        : { authorization: "bearer", bearerToken: apiKey };
-      return options.createResponse(endpoint, sessionId, { ...metadata, ...authorization, body, signal });
-    }
-    if (options.hostAuth) throw JSON.stringify({ kind: "transport", detail: "host-managed HTTPS requires createResponse", reconnectable: false });
-    return fetch(endpoint, { method: "POST", headers: responsesHttpHeaders(apiKey, sessionId, metadata),
-      body, signal, redirect: "error" });
+    const send = async (input, init) => {
+      const incoming = new Request(input, init);
+      let response;
+      if (options.createResponse) {
+        const authorization = options.hostAuth
+          ? { authorization: "host_managed" }
+          : { authorization: "bearer", bearerToken: apiKey };
+        response = await options.createResponse(endpoint, sessionId, { ...metadata, ...authorization, body: await incoming.text(), signal: incoming.signal });
+      } else {
+        if (options.hostAuth) throw JSON.stringify({ kind: "transport", detail: "host-managed HTTPS requires createResponse", reconnectable: false });
+        response = await fetch(incoming);
+      }
+      // Workerd does not implement redirect:error. Manual transport plus an
+      // explicit rejection preserves the no-credential-redirect boundary.
+      if (response.type === "opaqueredirect" || (response.status >= 300 && response.status < 400)) {
+        throw new Error("Responses HTTPS redirects are not allowed");
+      }
+      return response;
+    };
+    return policyHost.fetch(metadata.threadId ?? sessionId, send, "codex", endpoint, { method: "POST", headers: responsesHttpHeaders(apiKey, sessionId, metadata),
+      body, signal, redirect: "manual" });
   });
   const connections = new Map();
   const openingAttempts = new Set();
@@ -652,6 +666,8 @@ export function createBrowserHost(options = {}) {
     next,
     close,
     sleep: (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
+    codeReplaySafe: code.codeReplaySafe,
+    toolReplaySafe: code.toolReplaySafe,
     executeCode: traceTool === undefined ? code.executeCodeObserved
       : (source, sessionId = "default", callId = "exec", model = "unknown", turnId) =>
         traceToolInvocation(traceTool, "exec", {
@@ -702,8 +718,11 @@ export function createBrowserHost(options = {}) {
     },
     toolMode: () => toolMode,
     toolDefinitions: code.toolDefinitions,
-    releaseSession: (sessionId) => { effectIdentity.release(sessionId); socketObservations?.release(sessionId); return code.releaseSession(sessionId); },
-    emitEvent: (event, ...args) => { effectIdentity.observe(event); socketObservations?.runtime(event); return onEvent(event, ...args); },
+    releaseSession: (sessionId) => { effectIdentity.release(sessionId); policyHost.release(sessionId); socketObservations?.release(sessionId); return code.releaseSession(sessionId); },
+    bindRequestPolicy: sessionId => policyHost.bind(sessionId),
+    forkRequestPolicy: (sourceId, sessionId, at) => policyHost.fork(sourceId, sessionId, at),
+    requestPolicyFor: sessionId => policyHost.policy(sessionId),
+    emitEvent: (event, ...args) => { effectIdentity.observe(event); policyHost.observe(event); socketObservations?.runtime(event); return onEvent(event, ...args); },
     reset: () => { effectIdentity.reset(); return code.reset(); },
     dispose,
   });
