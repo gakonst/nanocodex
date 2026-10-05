@@ -175,6 +175,9 @@ struct RewindCommand {
     /// Restore the selected checkpoint and later native file edits.
     #[arg(long)]
     restore: bool,
+    /// Restore files, branch the conversation, or do both.
+    #[arg(long, default_value = "files", value_parser = ["files", "conversation", "files-and-conversation"])]
+    mode: String,
 }
 
 #[derive(Args)]
@@ -314,11 +317,15 @@ async fn run(cli: Cli) -> Result<()> {
             command.run.run(command.agent, command.vm).await
         }
         Some(Command::ManagedServer(command)) => command.run().await,
-        Some(Command::Rewind(command)) => rewind::run(
-            &command.session,
-            command.checkpoint.as_deref(),
-            command.restore,
-        ),
+        Some(Command::Rewind(command)) => {
+            rewind::run(
+                &command.session,
+                command.checkpoint.as_deref(),
+                command.restore,
+                &command.mode,
+            )
+            .await
+        }
         Some(Command::Resume(command)) => {
             let codex_home = config::default_codex_home()?;
             if command.agent.selected_harness()? == nanocodex::HarnessFamily::Claude {

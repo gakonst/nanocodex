@@ -2140,3 +2140,96 @@ async fn legacy_failed_server_snapshot_accepts_new_input_without_native_replay()
     assert_eq!(log[0]["container"], "legacy-container");
     server.abort();
 }
+
+/// Tool-only host policies must not silently add lifecycle journal writes.
+/// Exercise public builders, SQLite journals, native dispatch and actual HTTP.
+#[tokio::test]
+async fn tool_only_policies_preserve_default_wire_and_durable_write_count() {
+    use nanocodex_claude::{
+        ClaudeHookFuture, ClaudeToolDecision, ClaudeToolHooks, ClaudeToolInvocation,
+    };
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    struct ToolPolicy(Arc<AtomicUsize>);
+    impl ClaudeToolHooks for ToolPolicy {
+        fn before<'a>(
+            &'a self,
+            _: &'a str,
+            _: &'a Value,
+            _: &'a ClaudeToolInvocation,
+        ) -> ClaudeHookFuture<'a, std::result::Result<ClaudeToolDecision, String>> {
+            Box::pin(async move {
+                self.0.fetch_add(1, Ordering::SeqCst);
+                Ok(ClaudeToolDecision::Allow)
+            })
+        }
+    }
+    let directory = tempfile::tempdir().unwrap();
+    let (client, requests, server) = server(|index, _| {
+        if index % 2 == 1 {
+            sse(
+                vec![json!({"type":"tool_use","id":"default-effect","name":"effect","input":{}})],
+                "tool_use",
+                10,
+            )
+        } else {
+            sse(text("default-policy-answer"), "end_turn", 10)
+        }
+    })
+    .await;
+    let mut observations = Vec::new();
+    for policies in [0, 4] {
+        let session = DurableSession::open(
+            SqliteStore::open(directory.path().join(format!("policies-{policies}.sqlite")))
+                .unwrap(),
+            "default-policy-session",
+        )
+        .await
+        .unwrap();
+        let invoked = Arc::new(AtomicUsize::new(0));
+        let mut builder = Nanocodex::builder(Claude::new(client.clone(), "test"))
+            .tool(tool(), |_| async { Ok("real-tool-receipt".into()) });
+        for _ in 0..policies {
+            builder = builder.tool_hooks(Arc::new(ToolPolicy(invoked.clone())));
+        }
+        let (agent, events) = builder
+            .durability(session.clone())
+            .await
+            .unwrap()
+            .build()
+            .unwrap();
+        let result = agent
+            .prompt(PromptRequest::new("default host journey").request_id("default-request"))
+            .await
+            .unwrap()
+            .result()
+            .await
+            .unwrap();
+        assert_eq!(result.final_message(), "default-policy-answer");
+        agent.shutdown().await.unwrap();
+        drop((agent, events));
+        let journal = session.state().await.unwrap();
+        assert_eq!(
+            journal.operations().len(),
+            1,
+            "tool-only host added a lifecycle operation"
+        );
+        assert_eq!(invoked.load(Ordering::SeqCst), policies);
+        observations.push(json!({"tool_policies":policies,"revision":journal.revision(),"operations":journal.operations().keys().collect::<Vec<_>>()}));
+    }
+    assert_eq!(
+        observations[0]["revision"], observations[1]["revision"],
+        "tool-only policies added lifecycle writes"
+    );
+    let requests = requests.lock().unwrap();
+    assert_eq!(requests.len(), 4);
+    assert_eq!(
+        requests[..2],
+        requests[2..],
+        "tool-only lifecycle defaults changed provider wire"
+    );
+    let artifact = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../output/lifecycle-default-journal.json");
+    std::fs::write(&artifact, serde_json::to_vec_pretty(&json!({"observations":observations,"provider_requests":*requests,"observed":"identical wire and revision count; four before policies still executed"})).unwrap()).unwrap();
+    eprintln!("default lifecycle journal evidence: {}", artifact.display());
+    server.abort();
+}

@@ -6,7 +6,9 @@ use std::{
 
 use eyre::{Result, WrapErr as _, bail};
 use nanocodex::claude::{
-    ClaudeHookFuture, ClaudeToolDecision, ClaudeToolHooks, ClaudeToolInvocation, ClaudeToolReply,
+    ClaudeHookFuture, ClaudeLifecycleDecision, ClaudeLifecycleEvent, ClaudeLifecycleInvocation,
+    ClaudeLifecycleOutcome, ClaudeToolDecision, ClaudeToolHooks, ClaudeToolInvocation,
+    ClaudeToolReply,
 };
 use regex::Regex;
 use serde::Deserialize;
@@ -77,10 +79,21 @@ pub(super) fn load_with_workspace(
     for (event, matchers) in settings.hooks {
         if !matches!(
             event.as_str(),
-            "PreToolUse" | "PostToolUse" | "PostToolUseFailure"
+            "PreToolUse"
+                | "PostToolUse"
+                | "PostToolUseFailure"
+                | "SessionStart"
+                | "UserPromptSubmit"
+                | "Stop"
+                | "PreCompact"
+                | "PostCompact"
+                | "StopFailure"
+                | "SubagentStart"
+                | "SubagentStop"
+                | "SessionEnd"
         ) {
             bail!(
-                "unsupported Claude hook event {event}; only PreToolUse, PostToolUse and PostToolUseFailure are implemented"
+                "unsupported Claude hook event {event}; event has no implemented runtime boundary"
             );
         }
         let mut entries = Vec::new();
@@ -141,6 +154,101 @@ impl CommandHooks {
 }
 
 impl ClaudeToolHooks for CommandHooks {
+    fn handles_lifecycle(&self, event: &ClaudeLifecycleEvent) -> bool {
+        self.matching(event.name(), event.matcher_value())
+            .next()
+            .is_some()
+    }
+    fn lifecycle<'a>(
+        &'a self,
+        call: &'a ClaudeLifecycleInvocation,
+    ) -> ClaudeHookFuture<'a, std::result::Result<ClaudeLifecycleOutcome, String>> {
+        Box::pin(async move {
+            let workspace = (self.workspace)(&call.session_id)?;
+            let event = call.event.name();
+            let mut payload = serde_json::to_value(call).map_err(|error| error.to_string())?;
+            payload["cwd"] = json!(workspace);
+            let mut outcome = ClaudeLifecycleOutcome::default();
+            for hook in self.matching(event, call.event.matcher_value()) {
+                let output = match execute(hook, &workspace, &payload).await {
+                    Ok(output) => output,
+                    Err(error) => {
+                        // Prompt/compaction gates fail closed. A Stop error must
+                        // retain the completed response: exit 2 requests another
+                        // round; infrastructure failures are visible diagnostics.
+                        if matches!(
+                            call.event,
+                            ClaudeLifecycleEvent::UserPromptSubmit { .. }
+                                | ClaudeLifecycleEvent::PreCompact { .. }
+                        ) || (call.event.can_block()
+                            && error.starts_with("command hook blocked execution"))
+                        {
+                            outcome.decision = ClaudeLifecycleDecision::Block(error);
+                            return Ok(outcome);
+                        }
+                        outcome.diagnostics.push(error);
+                        continue;
+                    }
+                };
+                if let Err(error) = validate_output(&output, event) {
+                    if matches!(
+                        call.event,
+                        ClaudeLifecycleEvent::UserPromptSubmit { .. }
+                            | ClaudeLifecycleEvent::PreCompact { .. }
+                    ) {
+                        outcome.decision = ClaudeLifecycleDecision::Block(error);
+                        return Ok(outcome);
+                    }
+                    outcome.diagnostics.push(error);
+                    continue;
+                }
+                let stop = output.get("continue") == Some(&Value::Bool(false));
+                let block = output.get("decision").and_then(Value::as_str) == Some("block");
+                if stop || block {
+                    if call.event.can_block() {
+                        outcome.decision = if stop {
+                            ClaudeLifecycleDecision::Stop(reason(&output))
+                        } else {
+                            ClaudeLifecycleDecision::Block(reason(&output))
+                        };
+                        return Ok(outcome);
+                    }
+                    outcome.diagnostics.push(format!(
+                        "{event} is observational; cannot block a completed boundary: {}",
+                        reason(&output)
+                    ));
+                }
+                if let Some(context) = output
+                    .get("hookSpecificOutput")
+                    .and_then(|specific| specific.get("additionalContext"))
+                {
+                    if let Some(context) = context.as_str() {
+                        if matches!(
+                            call.event,
+                            ClaudeLifecycleEvent::SessionStart { .. }
+                                | ClaudeLifecycleEvent::UserPromptSubmit { .. }
+                                | ClaudeLifecycleEvent::SubagentStart { .. }
+                        ) {
+                            outcome.additional_context.push(context.to_owned());
+                        } else {
+                            outcome
+                                .diagnostics
+                                .push(format!("additionalContext is unsupported for {event}"));
+                        }
+                    } else {
+                        let error = "hook additionalContext must be a string".to_owned();
+                        if matches!(call.event, ClaudeLifecycleEvent::UserPromptSubmit { .. }) {
+                            outcome.decision = ClaudeLifecycleDecision::Block(error);
+                            return Ok(outcome);
+                        }
+                        outcome.diagnostics.push(error);
+                    }
+                }
+            }
+            Ok(outcome)
+        })
+    }
+
     fn before<'a>(
         &'a self,
         name: &'a str,

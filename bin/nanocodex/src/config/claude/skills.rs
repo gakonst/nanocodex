@@ -2,7 +2,7 @@
 use nanocodex::{
     agent::Result,
     claude::{ClaudeTools, ToolDefinition},
-    claude_tools::{ClaudeProjectContext, ClaudeSkills},
+    claude_tools::ClaudeProjectContext,
 };
 use std::sync::Arc;
 
@@ -10,18 +10,6 @@ pub(super) fn install(
     mut tools: ClaudeTools,
     workspace: Arc<super::worktree::Workspace>,
 ) -> Result<ClaudeTools> {
-    for schema in ClaudeSkills::definitions() {
-        let definition: ToolDefinition =
-            serde_json::from_value(schema).expect("native skill schema");
-        let workspace = workspace.clone();
-        tools = tools.tool_with_context(definition, move |input, _| {
-            let workspace = workspace.clone();
-            async move {
-                let skills = ClaudeSkills::new(workspace.current())?;
-                skills.execute("Skill", input).await.map(super::text_reply)
-            }
-        });
-    }
     for schema in ClaudeProjectContext::definitions() {
         let definition: ToolDefinition =
             serde_json::from_value(schema).expect("native context schema");

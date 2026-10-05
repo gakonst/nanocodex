@@ -20,6 +20,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 mod durable;
 use crate::execution::{Admission, ClaudeExecutionPolicy, Step};
+pub use durable::rewind_checkpoint;
 use durable::{Cursor, Effect, Snapshot};
 use std::{
     collections::{HashMap, HashSet},
@@ -221,11 +222,14 @@ impl BuilderBackend for Claude {
 }
 
 type WorkspaceResolver = Arc<dyn Fn(&str) -> String + Send + Sync>;
+type SubagentTypeResolver = Arc<dyn Fn(&str) -> Option<String> + Send + Sync>;
 type ChildWorkspaceInit = Arc<dyn Fn(&str, &str) -> Result<()> + Send + Sync>;
 
 /// Provider-specific session builder. Custom functions are opt-in, not automatically discovered.
 #[derive(Clone)]
 pub struct ClaudeBuilder {
+    subagent_type: Option<String>,
+    subagent_type_resolver: Option<SubagentTypeResolver>,
     claude: Claude,
     session_id: Option<String>,
     max_tokens: u32,
@@ -267,6 +271,8 @@ impl ClaudeBuilder {
             _ => 200_000, // Conservative fallback; override for other models.
         };
         Self {
+            subagent_type: None,
+            subagent_type_resolver: None,
             claude,
             session_id: None,
             max_tokens: 4096,
@@ -322,6 +328,19 @@ impl ClaudeBuilder {
     /// Installs embedding-owned mixed-family child construction.
     pub fn spawn_factory(mut self, factory: Arc<dyn AgentFactory>) -> Self {
         self.spawn_factory = Some(factory);
+        self
+    }
+    /// Identifies an explicitly constructed child runtime for lifecycle hooks.
+    pub fn subagent_type(mut self, name: impl Into<String>) -> Self {
+        self.subagent_type = Some(name.into());
+        self
+    }
+    /// Resolves child profile names after the host initializes their workspace.
+    pub fn subagent_type_resolver<F>(mut self, resolver: F) -> Self
+    where
+        F: Fn(&str) -> Option<String> + Send + Sync + 'static,
+    {
+        self.subagent_type_resolver = Some(Arc::new(resolver));
         self
     }
     /// Retains embedding-private context on all tool calls in this lifecycle.
@@ -787,6 +806,7 @@ impl ClaudeBuilder {
         recipe.session_id = None;
         recipe.restored = None;
         recipe.policy = None;
+        recipe.subagent_type = Some("general-purpose".into());
         let native_factory = Arc::new(ClaudeNativeFactory {
             recipe,
             state: std::sync::Mutex::new(Weak::new()),
@@ -1013,6 +1033,9 @@ impl ClaudeBuilder {
         *discovered.try_lock().expect("new discovery lock") = restored.discovered;
         let (runtime, events) = BackendRuntime::new(session_id.clone());
         let state = Arc::new(State {
+            subagent_type: self.subagent_type,
+            subagent_type_resolver: self.subagent_type_resolver,
+            lifecycle_opened: Mutex::new(None),
             client: self.claude.client.bind_subscription_session(&session_id),
             model: std::sync::RwLock::new(self.claude.model),
             max_tokens: self.max_tokens,
@@ -1424,6 +1447,8 @@ const COMPACTION_INSTRUCTIONS: &str = "Produce a concise text-only handoff for c
 
 #[derive(Clone, Default, Serialize, Deserialize)]
 struct Conversation {
+    #[serde(default)]
+    lifecycle_started: bool,
     // Session-local effect identity survives history compaction.
     admitted_tool_ids: HashSet<String>,
     #[serde(default)]
@@ -1671,6 +1696,7 @@ impl AgentFactory for ClaudeNativeFactory {
             snapshot.conversation.pending_continuation = false;
             snapshot.conversation.previous_message_id = None;
             snapshot.conversation.container = None;
+            snapshot.conversation.lifecycle_started = false;
             recipe.claude.model = state.model();
             recipe.effort = state.effort();
             recipe.adaptive_thinking = state.adaptive_thinking.load(Ordering::SeqCst);
@@ -1782,6 +1808,9 @@ struct TurnSteering {
 }
 
 struct State {
+    lifecycle_opened: Mutex<Option<String>>,
+    subagent_type: Option<String>,
+    subagent_type_resolver: Option<SubagentTypeResolver>,
     session_id: String,
     client: ClaudeClient,
     model: std::sync::RwLock<String>,
@@ -2249,6 +2278,7 @@ impl State {
         };
         let events = &request.events;
         let (reasoning_mode, effort) = self.emit_run_started(&request);
+        let notices_before = conversation.recovery_notices.len();
         let mut result = self
             .run_locked(&mut conversation, &request, speed, &cancel)
             .await;
@@ -2262,6 +2292,48 @@ impl State {
             // Store failures instead leave the durable cursor unfinished: its
             // prepared request and committed receipts must reconcile on reopen.
             self.finalize_server_turn(&mut conversation).await;
+        }
+        if let Err(error) = &result
+            && error.execution_policy_disposition().is_none()
+            && !matches!(error, NanocodexError::TurnCancelled)
+            && error.to_string().contains("Claude Messages:")
+        {
+            let invocation = crate::ClaudeLifecycleInvocation {
+                session_id: self.session_id.clone(),
+                turn_id: request
+                    .request_id
+                    .clone()
+                    .unwrap_or_else(|| events.request_id().to_owned()),
+                event_id: format!(
+                    "{}:stop-failure",
+                    request.request_id.as_deref().unwrap_or(events.request_id())
+                ),
+                model: self.model(),
+                instruction_revision: request.prompt.instruction_revision(),
+                event: crate::ClaudeLifecycleEvent::StopFailure {
+                    error: "api_error".into(),
+                    error_details: error.to_string(),
+                },
+            };
+            match crate::hooks::run_lifecycle_hooks(
+                &self.tool_hooks,
+                &invocation,
+                self.policy.as_deref(),
+            )
+            .await
+            {
+                Ok(outcome) => Self::hook_context(&mut conversation, &outcome),
+                Err(error) => result = Err(error),
+            }
+        }
+        for notice in conversation.recovery_notices.iter().skip(notices_before) {
+            if notice.starts_with("Lifecycle hook diagnostic:") {
+                self.emit(
+                    events,
+                    AgentEventKind::RunError,
+                    json!({"error":notice,"source":"lifecycle_hook","observational":true}),
+                );
+            }
         }
         if let Err(error) = self.settle(&conversation, &request, &result).await {
             result = Err(error);
@@ -2386,6 +2458,31 @@ impl State {
         if messages.is_empty() {
             return Err(unsupported("Claude cannot compact empty history"));
         }
+        let trigger = match mode {
+            CompactionMode::Manual => "manual",
+            _ => "auto",
+        };
+        let outcome = self
+            .lifecycle(
+                cursor,
+                cancel,
+                &format!("{step}-pre"),
+                crate::ClaudeLifecycleEvent::PreCompact {
+                    trigger: trigger.into(),
+                    custom_instructions: String::new(),
+                },
+            )
+            .await?;
+        Self::hook_context(context, &outcome);
+        match outcome.decision {
+            crate::ClaudeLifecycleDecision::Block(reason)
+            | crate::ClaudeLifecycleDecision::Stop(reason) => {
+                return Err(unsupported(&format!(
+                    "PreCompact hook blocked compaction: {reason}"
+                )));
+            }
+            crate::ClaudeLifecycleDecision::Continue => {}
+        }
         // Keep the entire latest assistant response and its following receipts.
         // Splitting at the assistant boundary preserves signed/opaque blocks and
         // every tool-use/result pair, including multimodal results. A pending
@@ -2486,6 +2583,19 @@ impl State {
             CompactionMode::Manual => 0,
         };
         context.rounds_since_compaction = 0;
+        drop(discovered);
+        let outcome = self
+            .lifecycle(
+                cursor,
+                cancel,
+                &format!("{step}-post"),
+                crate::ClaudeLifecycleEvent::PostCompact {
+                    trigger: trigger.into(),
+                    compact_summary: context.summary.clone(),
+                },
+            )
+            .await?;
+        Self::hook_context(context, &outcome);
         Ok(response.usage)
     }
     async fn recover_server_turn(
@@ -2594,6 +2704,45 @@ impl State {
         self.emit(events, AgentEventKind::ToolResult, json!({"call_id":id,"tool":name,"status":if is_error {"failed"}else{"completed"},"duration_ns":began.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64,"started_after_ns":null,"result":event_content,"structured_result":structured_result,"metadata":metadata}));
         ContentBlock::tool_result_content(id, content, is_error)
     }
+    async fn lifecycle(
+        &self,
+        cursor: &Cursor,
+        cancel: &Cancellation,
+        event_id: &str,
+        event: crate::ClaudeLifecycleEvent,
+    ) -> Result<crate::ClaudeLifecycleOutcome> {
+        let invocation = crate::ClaudeLifecycleInvocation {
+            session_id: self.session_id.clone(),
+            turn_id: cursor
+                .operation
+                .clone()
+                .unwrap_or_else(|| cursor.lifecycle_turn_id.clone()),
+            event_id: format!(
+                "{}:{event_id}",
+                cursor
+                    .operation
+                    .as_deref()
+                    .unwrap_or(&cursor.lifecycle_turn_id)
+            ),
+            model: cursor.template.model.clone(),
+            instruction_revision: cursor.instruction_revision,
+            event,
+        };
+        tokio::select! {
+            biased;
+            result = crate::hooks::run_lifecycle_hooks(&self.tool_hooks, &invocation, self.policy.as_deref()) => result,
+            () = cancel.cancelled() => Err(NanocodexError::TurnCancelled),
+        }
+    }
+    fn hook_context(context: &mut Conversation, outcome: &crate::ClaudeLifecycleOutcome) {
+        for diagnostic in &outcome.diagnostics {
+            let notice = format!("Lifecycle hook diagnostic: {diagnostic}");
+            if !context.recovery_notices.contains(&notice) {
+                context.recovery_notices.push(notice);
+            }
+        }
+    }
+
     async fn run_locked(
         &self,
         conversation: &mut Conversation,
@@ -2607,7 +2756,7 @@ impl State {
         if cancel.flag.load(Ordering::SeqCst) && self.policy.is_none() {
             return Err(NanocodexError::TurnCancelled);
         }
-        let prompt = prompt_messages(&request.prompt)?;
+        let mut prompt = prompt_messages(&request.prompt)?;
         let mut cursor = self
             .cursor(
                 conversation,
@@ -2616,10 +2765,90 @@ impl State {
                 Some(&request.prompt),
             )
             .await?;
+        if cursor.prepared && conversation.lifecycle_started {
+            *self.lifecycle_opened.lock().await = Some(
+                cursor
+                    .operation
+                    .clone()
+                    .unwrap_or_else(|| cursor.lifecycle_turn_id.clone()),
+            );
+        }
         let mut usage = cursor.usage.clone();
         let mut pending = cursor.pending.clone();
         if !cursor.prepared {
             cursor.instruction_revision = request.prompt.instruction_revision();
+            let submitted = prompt
+                .iter()
+                .flat_map(|m| m.content.iter())
+                .filter_map(|b| match b {
+                    ContentBlock::Text { text, .. } => Some(text.as_str()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            if self.lifecycle_opened.lock().await.is_none() {
+                let outcome = self
+                    .lifecycle(
+                        &cursor,
+                        cancel,
+                        "session-start",
+                        match self
+                            .subagent_type_resolver
+                            .as_ref()
+                            .and_then(|resolve| resolve(&self.session_id))
+                            .or_else(|| self.subagent_type.clone())
+                        {
+                            Some(agent_type) => crate::ClaudeLifecycleEvent::SubagentStart {
+                                agent_id: self.session_id.clone(),
+                                agent_type,
+                            },
+                            None => crate::ClaudeLifecycleEvent::SessionStart {
+                                source: if !conversation.lifecycle_started
+                                    && conversation.messages.is_empty()
+                                    && conversation.summary.is_empty()
+                                {
+                                    "startup"
+                                } else {
+                                    "resume"
+                                }
+                                .into(),
+                            },
+                        },
+                    )
+                    .await?;
+                Self::hook_context(conversation, &outcome);
+                for context in outcome.additional_context {
+                    prompt.insert(0, Message::text(Role::User, context));
+                }
+                conversation.lifecycle_started = true;
+                *self.lifecycle_opened.lock().await = Some(
+                    cursor
+                        .operation
+                        .clone()
+                        .unwrap_or_else(|| cursor.lifecycle_turn_id.clone()),
+                );
+            }
+            let outcome = self
+                .lifecycle(
+                    &cursor,
+                    cancel,
+                    "user-prompt-submit",
+                    crate::ClaudeLifecycleEvent::UserPromptSubmit { prompt: submitted },
+                )
+                .await?;
+            Self::hook_context(conversation, &outcome);
+            match outcome.decision {
+                crate::ClaudeLifecycleDecision::Block(reason)
+                | crate::ClaudeLifecycleDecision::Stop(reason) => {
+                    return Err(unsupported(&format!(
+                        "UserPromptSubmit hook blocked prompt: {reason}"
+                    )));
+                }
+                crate::ClaudeLifecycleDecision::Continue => {}
+            }
+            for context in outcome.additional_context {
+                prompt.push(Message::text(Role::User, context));
+            }
             // Normalize old failed snapshots before appending new user input.
             // A prepared cursor belongs to an unfinished durable operation and
             // must replay its original native request/receipts unchanged.
@@ -3209,9 +3438,59 @@ impl State {
             if cancel.flag.load(Ordering::SeqCst) {
                 return Err(NanocodexError::TurnCancelled);
             }
+            // Preserve received content even when an observational hook fails.
+            conversation.messages = pending.clone();
+            conversation.previous_message_id = previous_message_id.clone();
+            conversation.summary.clear();
+            conversation.pending_continuation = false;
+            let outcome = self
+                .lifecycle(
+                    &cursor,
+                    cancel,
+                    &format!("stop-{index}"),
+                    match self
+                        .subagent_type_resolver
+                        .as_ref()
+                        .and_then(|resolve| resolve(&self.session_id))
+                        .or_else(|| self.subagent_type.clone())
+                    {
+                        Some(agent_type) => crate::ClaudeLifecycleEvent::SubagentStop {
+                            agent_id: self.session_id.clone(),
+                            agent_type,
+                            stop_hook_active: cursor.stop_hook_active,
+                            last_assistant_message: text.clone(),
+                        },
+                        None => crate::ClaudeLifecycleEvent::Stop {
+                            stop_hook_active: cursor.stop_hook_active,
+                            last_assistant_message: text.clone(),
+                        },
+                    },
+                )
+                .await?;
+            Self::hook_context(conversation, &outcome);
+            let hook_stopped = matches!(&outcome.decision, crate::ClaudeLifecycleDecision::Stop(_));
+            if let crate::ClaudeLifecycleDecision::Block(reason) = outcome.decision {
+                if cursor.stop_hook_active {
+                    return Err(unsupported(&format!(
+                        "Stop hook blocked again after one continuation: {reason}; completed assistant content retained"
+                    )));
+                }
+                pending.push(Message::text(
+                    Role::User,
+                    format!("Host Stop hook requests continuation: {reason}"),
+                ));
+                cursor.stop_hook_active = true;
+                cursor.index = index + 1;
+                cursor.pending = pending.clone();
+                cursor.usage = usage.clone();
+                self.advance_cursor(&mut cursor, conversation).await?;
+                continue;
+            }
             // Fence terminal publication against new steering admission. An
             // accepted urgent prompt must reach another model boundary in this turn.
-            let more_instructions = {
+            let more_instructions = if hook_stopped {
+                false
+            } else {
                 let mut turns = self.steering.lock().await;
                 if let Some(turn) = turns.get_mut(&request.key) {
                     if turn.pending.is_empty() {
@@ -3799,7 +4078,7 @@ impl LifecycleBackend for Driver {
     fn shutdown(&self) -> BackendFuture<Result<()>> {
         let state = self.state.clone();
         Box::pin(async move {
-            state.stopped.store(true, Ordering::SeqCst);
+            let first_shutdown = !state.stopped.swap(true, Ordering::SeqCst);
             if let Some(cancel) = state.compaction_cancel.lock().await.as_ref() {
                 cancel.cancel();
             }
@@ -3820,6 +4099,66 @@ impl LifecycleBackend for Driver {
                 }
                 drop(cancels);
                 notified.await;
+            }
+            let end_event = crate::ClaudeLifecycleEvent::SessionEnd {
+                reason: "other".into(),
+            };
+            if first_shutdown
+                && state
+                    .tool_hooks
+                    .iter()
+                    .any(|hook| hook.handles_lifecycle(&end_event))
+            {
+                let mut context = state.conversation.lock().await;
+                if let Some(opened) = state.lifecycle_opened.lock().await.clone() {
+                    let mut operation = None;
+                    let mut deliver = true;
+                    if let Some(policy) = &state.policy {
+                        let (id, admission) = policy
+                            .admit(
+                                format!("claude-session-end-{opened}"),
+                                json!({"provider":"claude","kind":"session_end"}),
+                                false,
+                            )
+                            .await?;
+                        deliver = matches!(admission, Admission::Execute | Admission::Resume);
+                        if deliver {
+                            policy.begin_attempt(id.clone()).await?;
+                        }
+                        operation = Some(id);
+                    }
+                    if deliver {
+                        let invocation = crate::ClaudeLifecycleInvocation {
+                            session_id: state.session_id.clone(),
+                            turn_id: operation
+                                .clone()
+                                .unwrap_or_else(|| durable::candidate_id("session-end")),
+                            event_id: format!("{opened}:session-end"),
+                            model: state.model(),
+                            instruction_revision: None,
+                            event: crate::ClaudeLifecycleEvent::SessionEnd {
+                                reason: "other".into(),
+                            },
+                        };
+                        let outcome = crate::hooks::run_lifecycle_hooks(
+                            &state.tool_hooks,
+                            &invocation,
+                            state.policy.as_deref(),
+                        )
+                        .await?;
+                        State::hook_context(&mut context, &outcome);
+                        if let (Some(policy), Some(operation)) = (&state.policy, operation) {
+                            policy
+                                .complete(
+                                    operation,
+                                    serde_json::to_value(state.snapshot(&context).await?)
+                                        .map_err(provider_error)?,
+                                    Value::Null,
+                                )
+                                .await?;
+                        }
+                    }
+                }
             }
             if let Some(policy) = &state.policy {
                 policy.shutdown().await?;

@@ -2,10 +2,24 @@ use super::*;
 
 mod agents;
 mod checkpoints;
+pub(crate) mod frontend;
+mod loop_frontend;
 mod permissions;
 pub(crate) mod scheduler;
+mod workflow;
 mod worktree;
 pub(crate) use checkpoints::rewind as rewind_files;
+
+/// Preserve current host restrictions before a fresh rewind journal is published.
+pub(crate) fn prepare_rewind_branch(
+    home: &std::path::Path,
+    source: &str,
+    target: &str,
+) -> std::result::Result<(), String> {
+    interaction::prepare_rewind_branch(home, source, target)
+        .map_err(|error| format!("{error:#}"))?;
+    worktree::prepare_rewind_branch(home, source, target)
+}
 mod hooks;
 pub(crate) mod interaction;
 mod mcp;
@@ -63,6 +77,9 @@ impl WorkspaceRegistry {
                 )?),
             );
         }
+        if let Some(workspace) = sessions.get(session) {
+            agents::profiles::restore(session, workspace.clone())?;
+        }
         Ok(())
     }
     fn get(&self, session: &str) -> std::result::Result<Arc<worktree::Workspace>, String> {
@@ -85,8 +102,14 @@ impl WorkspaceRegistry {
             let owner = sessions
                 .get(parent)
                 .ok_or("parent workspace has not been initialized")?;
-            let workspace = owner.child(self.home.clone(), child)?;
-            sessions.insert(child.to_owned(), Arc::new(workspace));
+            let workspace = Arc::new(match workflow::inherited_workspace() {
+                Some((path, lease)) => {
+                    worktree::Workspace::child_from_pin(self.home.clone(), child, path, lease)?
+                }
+                None => owner.child(self.home.clone(), child)?,
+            });
+            agents::profiles::bind(parent, child, workspace.clone())?;
+            sessions.insert(child.to_owned(), workspace);
         }
         Ok(())
     }
@@ -496,11 +519,13 @@ impl AgentArgs {
             web_search,
             tool_registry,
             mcp_handle.clone(),
-            interaction,
+            interaction.clone(),
             codex_home.clone(),
             workspaces.clone(),
             session_id.clone(),
             claude_scheduler.clone(),
+            self.claude_workflows,
+            self.claude_monitor_ws_origin,
         )
         .spawn_factory(harness.spawn_factory());
         let native_session_id = persistence
@@ -522,6 +547,14 @@ impl AgentArgs {
             scheduler
                 .resume(handle.session_id())
                 .map_err(|error| eyre!(error))?;
+            frontend::register(
+                handle.session_id(),
+                scheduler,
+                &workspaces,
+                &interaction,
+                std::env::var_os("HOME").map(PathBuf::from),
+            )
+            .map_err(|error| eyre!(error))?;
         }
         if let Some(id) = native_session_id {
             crate::native_sessions::register(&codex_home, &id, &session_workspace, model)?;
@@ -575,18 +608,27 @@ fn configured_claude_builder(
     workspaces: Arc<WorkspaceRegistry>,
     session_id: String,
     scheduler: Option<Arc<scheduler::SessionScheduler>>,
+    workflows_enabled: bool,
+    monitor_ws_origins: Vec<String>,
 ) -> nanocodex::claude::ClaudeBuilder {
     let load_context = interaction
         .resolved_policy(&session_id)
-        .is_ok_and(|policy| !policy.has_read_restrictions());
-    let initial_instructions = super::instructions::native_with_context(
-        HarnessFamily::Claude,
-        instructions.clone(),
-        &workspace,
-        web_search,
-        registry.is_some(),
-        load_context,
+        .is_ok_and(|policy| !policy.has_read_restrictions())
+        && agents::profiles::allows_context(&session_id);
+    let initial_instructions = agents::profiles::instructions(
+        &session_id,
+        super::instructions::native_with_context(
+            HarnessFamily::Claude,
+            instructions.clone(),
+            &workspace,
+            web_search,
+            registry.is_some(),
+            load_context,
+        ),
     );
+    let profile_guard = Arc::new(agents::profiles::Guard {
+        workspaces: workspaces.clone(),
+    });
     let interaction_tools = interaction.clone();
     let interaction_children = interaction.clone();
     let interaction_context = interaction.clone();
@@ -601,6 +643,7 @@ fn configured_claude_builder(
     let has_registry = registry.is_some();
     let schedule_owner = session_id.clone();
     let mut builder = Nanocodex::builder(Claude::new(client, model.as_str()))
+        .subagent_type_resolver(agents::profiles::selected_name)
         .session_id(session_id)
         .workspace(workspace.to_string_lossy().into_owned())
         .workspace_resolver(move |id| {
@@ -620,22 +663,28 @@ fn configured_claude_builder(
         })
         .system(initial_instructions)
         .system_resolver(move |id| {
-            super::instructions::native_with_context(
-                HarnessFamily::Claude,
-                instructions.clone(),
-                &system_workspaces
-                    .current(id)
-                    .expect("initialized context workspace"),
-                web_search,
-                has_registry,
-                interaction_context
-                    .resolved_policy(id)
-                    .is_ok_and(|policy| !policy.has_read_restrictions()),
+            agents::profiles::instructions(
+                id,
+                super::instructions::native_with_context(
+                    HarnessFamily::Claude,
+                    instructions.clone(),
+                    &system_workspaces
+                        .current(id)
+                        .expect("initialized context workspace"),
+                    web_search,
+                    has_registry,
+                    interaction_context
+                        .resolved_policy(id)
+                        .is_ok_and(|policy| !policy.has_read_restrictions())
+                        && agents::profiles::allows_context(id),
+                ),
             )
         })
         .max_tokens(16_384)
         .parallel_tools(false)
+        .tool_hooks(profile_guard.clone())
         .tool_hooks(interaction)
+        .tool_hooks(profile_guard)
         .tool_hooks(checkpoints)
         .tasks(Arc::new(nanocodex::claude_tools::ClaudeTasks::new()))
         .tools_factory(move |parent| {
@@ -650,11 +699,27 @@ fn configured_claude_builder(
                 .filter(|_| parent.session_id() == schedule_owner)
                 .cloned();
             let monitor = owner_scheduler.as_ref().map(|scheduler| {
-                Arc::new(monitor::Monitor::new(workspace.clone(), scheduler.clone()))
+                Arc::new(monitor::Monitor::new(
+                    workspace.clone(),
+                    scheduler.clone(),
+                    web_search,
+                    monitor_ws_origins.clone(),
+                ))
             });
             let fork = registry
                 .as_ref()
                 .map(|registry| (parent.clone(), registry.clone()));
+            let workflow = if workflows_enabled && parent.session_id() == schedule_owner {
+                registry.as_ref().map(|registry| {
+                    Arc::new(workflow::Workflow::new(
+                        workspace.clone(),
+                        parent.clone(),
+                        registry.clone(),
+                    ))
+                })
+            } else {
+                None
+            };
             let tools = if let Some(registry) = &registry {
                 nanocodex_subagents::install_tools(tools.clone(), parent, Arc::clone(registry))
                     .map_err(|error| nanocodex::NanocodexError::InvalidRequest(error.to_string()))?
@@ -669,6 +734,7 @@ fn configured_claude_builder(
                 fork,
                 interaction_tools.clone(),
                 monitor,
+                workflow,
             )?;
             native = interaction::install(native, interaction_tools.clone());
             if let Some(scheduler) = owner_scheduler {
@@ -763,8 +829,11 @@ pub(super) fn register_claude_recipe(
                 workspaces,
                 session_id,
                 None,
+                false,
+                Vec::new(),
             )
             .spawn_factory(request.spawn_factory)
+            .subagent_type("general-purpose")
             .host_context(request.host_context);
             if let Some(checkpoint) = request.snapshot {
                 builder = builder.restore_runtime(checkpoint)?;
@@ -785,6 +854,8 @@ const fn claude_effort(thinking: Thinking) -> Option<Effort> {
     }
 }
 
+// Keep host-owned capabilities explicit at this single assembly boundary.
+#[allow(clippy::too_many_arguments)]
 fn native_tools(
     workspace: Arc<worktree::Workspace>,
     tools: Tools,
@@ -796,6 +867,7 @@ fn native_tools(
     )>,
     interaction: Arc<interaction::Interaction>,
     monitor: Option<Arc<monitor::Monitor>>,
+    workflow: Option<Arc<workflow::Workflow>>,
 ) -> nanocodex::agent::Result<ClaudeTools> {
     let mut native = ClaudeTools::new();
     for schema in ClaudeWorkspaceFiles::definitions() {
@@ -811,7 +883,8 @@ fn native_tools(
             async move {
                 let include_context = !interaction
                     .resolved_policy(&invocation.session_id)?
-                    .has_read_restrictions();
+                    .has_read_restrictions()
+                    && agents::profiles::allows_context(&invocation.session_id);
                 workspace
                     .files()?
                     .execute_output_with_context(&name, input, include_context)
@@ -842,11 +915,14 @@ fn native_tools(
     if let Some(handle) = mcp_handle {
         native = mcp::install(native, handle);
     }
-    let shell = Arc::new(shell::Shell::new(workspace.clone()));
+    let shell = Arc::new(shell::Shell::new(
+        workspace.clone(),
+        monitor.as_ref().map(|m| m.scheduler()),
+    ));
     let bash = shell.clone();
-    native = native.tool_with_context(shell::Shell::definition(), move |input, _| {
+    native = native.tool_with_context(shell::Shell::definition(), move |input, invocation| {
         let bash = bash.clone();
-        async move { bash.execute(input).await }
+        async move { bash.execute(input, invocation.session_id).await }
     });
     let runtime = Arc::new(RetainedHost(ToolRuntime::new_with_tools(
         workspace.current(),
@@ -857,7 +933,20 @@ fn native_tools(
     if let Some(monitor) = &monitor {
         native = monitor::install(native, monitor.clone());
     }
-    native = agents::install(native, runtime, shell, subagents, fork, monitor);
+    if let Some(workflow) = &workflow {
+        native = workflow::install(native, workflow.clone());
+    }
+    native = agents::install(
+        native,
+        runtime,
+        shell,
+        subagents,
+        fork,
+        monitor,
+        workspace,
+        interaction,
+        workflow,
+    );
     Ok(native)
 }
 

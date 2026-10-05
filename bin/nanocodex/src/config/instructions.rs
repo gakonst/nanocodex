@@ -22,6 +22,11 @@ pub(crate) fn expand_session_user_skill(
     if agent.harness_family() != HarnessFamily::Claude || !prompt.trim().starts_with('/') {
         return Ok(None);
     }
+    if let Some(instruction) =
+        super::claude::frontend::user_instruction(agent.session_id(), prompt)?
+    {
+        return Ok(Some(instruction));
+    }
     let workspace = super::claude::current_session_workspace(agent.session_id())?;
     expand_user_skill(HarnessFamily::Claude, &workspace, prompt)
 }

@@ -317,3 +317,41 @@ pub(crate) fn select(sessions: &[ResumeSession]) -> Result<Option<String>> {
         }
     }
 }
+
+/// Read-only preview: unlike branch creation, listing never fences a live owner.
+pub(crate) fn rewind_preview(home: &Path, id: &str) -> Result<Value> {
+    let db = open(home)?;
+    let payload: String = db.query_row(
+        "SELECT payload FROM nanocodex_durable_states WHERE state_id=?1 AND length(CAST(payload AS BLOB)) <= ?2",
+        rusqlite::params![id, MAX_BYTES as i64], |row| row.get(0),
+    ).wrap_err("unknown or oversized native session")?;
+    let value: Value = serde_json::from_str(&payload)?;
+    let retained = &value["nanocodex_durable_state"];
+    if retained["format"].as_u64() != Some(4) {
+        return Err(eyre!("unsupported native journal format"));
+    }
+    // Validate provider and routing metadata using the normal read-only inspector.
+    let _ = inspect(&db, home, id)?;
+    let mut operations = retained["operations"]
+        .as_object()
+        .ok_or_else(|| eyre!("invalid operations"))?
+        .iter()
+        .collect::<Vec<_>>();
+    operations.sort_by_key(|(_, op)| op["accepted_order"].as_u64().unwrap_or(0));
+    let mut turns = Vec::new();
+    for (turn, operation) in operations {
+        let key = operation["input"]
+            .as_str()
+            .ok_or_else(|| eyre!("invalid input reference"))?;
+        let input: Value = serde_json::from_str(&read_payload(&db, id, key)?)?;
+        if input["provider"] != "claude" || input["kind"] != "prompt" {
+            continue;
+        }
+        turns.push(
+            serde_json::json!({"checkpoint":turn,"input":input,"status":operation["status"]}),
+        );
+    }
+    Ok(
+        serde_json::json!({"session":id,"checkpoints":turns,"restored":false,"scope":"Branch immediately before the selected user turn. Original conversation remains recoverable; historical tools are never replayed. Retention limits may make older boundaries unavailable."}),
+    )
+}

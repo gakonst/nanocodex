@@ -36,9 +36,15 @@ diagnostics. Claude receives catalog metadata, then `Skill` loads the selected
 body and substitutes arguments as text. The host fixes invocation provenance:
 model-disabled skills are omitted from model discovery and cannot be invoked by
 a model supplying different JSON. `allowed-tools` is metadata, not a permission
-grant. Dynamic shell interpolation, hooks, model overrides and forked skill
-execution are unsupported. A user invocation API exists for embeddings; it does
-not by itself register terminal slash commands.
+grant. Native skills can request `context: fork`, a named agent, a Claude model
+and background execution; they start a real clean child through inherited
+profile/permission checks. They do not copy the caller's transcript. Portable
+`ClaudeSkills::execute` refuses fork execution without an embedding's child
+executor. Dynamic shell interpolation and skill-defined hooks remain unsupported.
+Bounded `.claude/settings.json` and `.claude/settings.local.json` `skillOverrides`
+control visibility/invocation, with local precedence; an override cannot lift
+frontmatter restrictions or turn Model provenance into User provenance.
+See [profiles and forked skills](claude-agent-profiles.md).
 
 `--instructions TEXT` replaces the CLI startup instructions, including startup
 project excerpts, skill catalog and optional delegation guidance. It does not
@@ -215,18 +221,27 @@ journeys do not establish every CLI integration, OAuth flow or MCP feature.
 The CLI installs a task board, retained Bash jobs and, when enabled, a shared
 child-agent registry. `TaskOutput`/`TaskStop` distinguish process jobs from agents.
 Bash jobs and registry snapshots live in the process; SQLite receipt persistence
-does not reconstruct them after process exit. A foreground Bash timeout stops
-the process and its descendants instead of automatically moving it to the
-background. Foreground commands retain their observed final directory when it stays inside
+does not reconstruct them after process exit. An eligible foreground Bash
+command reaching its return timeout becomes a retained background job. Commands
+starting with `sleep`, or sessions with `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1`,
+retain timeout cancellation and descendant cleanup; the latter also rejects
+explicit background execution. Foreground commands retain their observed final directory when it stays inside
 the workspace, including nonzero exits; background jobs snapshot it without
 changing the next command's directory. An unavailable or outside final directory
 resets subsequent commands to the workspace root. The command itself is not
 confined by that retention rule. Environment changes do not persist, and cwd is
 process-local. Commands that replace the EXIT trap or use `exec` may leave no cwd
-receipt and therefore reset the next command to the workspace root. Bash defaults
-to a 120-second deadline, accepts at most 600 seconds, and retains that deadline
-for background jobs. Capture is bounded to 4096 bytes; merged stdout/stderr is
-reported as stdout. The local shell does not provide a PTY or an OS security sandbox.
+receipt and therefore reset the next command to the workspace root. Foreground
+return timeouts default to 120 seconds and accept at most 600 seconds. Explicit
+background execution defaults to a 30-minute deadline with a two-hour maximum;
+promoted commands get the configured background default after their foreground
+window. `BASH_DEFAULT_TIMEOUT_MS` and `BASH_MAX_TIMEOUT_MS` can raise background
+limits but cannot lower the defaults; invalid values fail before effects.
+An explicit background call can select a shorter positive execution deadline.
+Completion status can enter the interactive owner's serialized idle queue, with
+retained output immediately available through `TaskOutput`. Capture is bounded
+to 4096 bytes; merged stdout/stderr is reported as stdout. No Bash PTY parameter
+or OS security sandbox is supplied; reference agent-view PTY is a separate surface.
 
 `Agent` starts a general-purpose child or delegates another prompt to an owned
 child. `ListAgents`, `SendMessage`, and `CloseAgent` retain the registry's tree and
@@ -237,20 +252,35 @@ thinking and native tool results remain intact; the current batch and its pendin
 effects are excluded. The fork keeps the parent's model, ignores a model override,
 and rejects harness, thinking, resume and output-contract overrides. It has a new
 session and independent effect receipts; parent tool effects are not replayed.
-Custom Claude agent definitions, named teams and `isolation: worktree` on Agent
-are not configured.
+Project `.claude/agents/**/*.md` definitions are discovered through
+`ListAgentProfiles` and selected by native `subagent_type`. Host-selected models,
+exact tool allow/deny lists and restrictive permission modes intersect inherited
+policy before the first child request. The admitted profile remains immutable
+on resume even when its definition changes; descendants inherit its restrictions.
+`isolation: worktree` creates a child-owned tree without moving the parent.
+Completion retains it for resume; authorized `CloseAgent` removes only exact
+owned unchanged trees after releasing subtree pins and reports preserved dirty,
+committed or pinned trees. This does not restore process-local child registries
+on restart. Named teams remain unavailable. See [profile configuration](claude-agent-profiles.md).
 
 `--claude-hooks PATH` explicitly loads synchronous command hooks for
-`PreToolUse`, `PostToolUse`, and `PostToolUseFailure`. Pre-hooks can deny a call or
-replace its validated input; post-hook failure does not undo an already completed
-effect. Hook processes have bounded output and deadlines with descendant cleanup.
-A request to ask for permission fails closed because this host has no hook
-approval UI for hook decisions. Unsupported hook events and execution kinds fail configuration.
-See [command-hook configuration](claude-command-hooks.md) for supported JSON and
-its shipped-CLI acceptance command.
-Hooks are executable user-selected host configuration, never authority granted
-by project prose. Automatic settings discovery and the remaining Claude Code
-hook lifecycle are not implemented.
+`PreToolUse`, `PostToolUse`, `PostToolUseFailure`, `SessionStart`,
+`UserPromptSubmit`, `Stop`, `StopFailure`, `PreCompact`, `PostCompact`,
+`SubagentStart`, `SubagentStop`, and `SessionEnd`. Pre-tool hooks can deny or
+rewrite validated input; post-hook failure retains completed effects. Prompt
+and precompact gates fail closed. Stop permits one extra model round and refuses
+repeated blocking; observational failures preserve completed content.
+Lifecycle effects commit started intent before dispatch. Recovery with no
+confirmed outcome reports uncertainty and does not rerun the hook; completed
+request replay invokes no hooks. `handles_lifecycle` defaults false, and unmatched
+native lifecycle events create no effect writes. `SessionEnd` is ordinary runtime
+shutdown, not permanent `EndConversation` closure.
+Hook processes have bounded output/deadlines and descendant cleanup. Hook-requested
+`ask` fails closed because there is no hook approval UI. Automatic hook settings
+discovery, asynchronous hooks, prompt/agent hook types and unlisted events remain
+unsupported. Hooks are executable user-selected host configuration; project prose
+grants no authority. See [command-hook configuration](claude-command-hooks.md)
+for exact events, JSON, recovery behavior and acceptance commands.
 
 Interactive sessions install pending `AskUserQuestion` prompts and plan entry/exit
 through terminal/TUI input. Empty or invalid input does not approve anything;
@@ -304,19 +334,34 @@ Interactive TUI sessions install `CronCreate`, `CronList`, `CronDelete` and
 supports local or IANA time zones, ranges, lists and steps. At most 50 tasks are
 retained; recurring tasks expire after seven days. Tasks run only when the CLI
 is open and idle, through the normal session prompt lane. Due state is persisted
-before dispatch, so a crash in that gap may lose a firing. There is no jitter or
-exactly-once delivery guarantee. Reopen retains unexpired future cron tasks,
+before dispatch, so a crash in that gap may lose a firing. Deterministic task-ID
+jitter delays recurring fires by up to half the period, capped at 30 minutes;
+one-shots at :00/:30 can fire up to 90 seconds early, never before creation.
+Scheduler owner epochs fence older resumed UIs; there is no exactly-once delivery
+guarantee. Reopen retains unexpired future cron tasks,
 skips missed recurring intervals, and drops elapsed one-shots and dynamic wakeups.
 A recurring task still open at expiry gets a final firing before removal.
 `ScheduleWakeup` replaces a single pending wakeup, clamps delay to 60–3600 seconds,
 and supports explicit stop; Escape cancels it. These tools are omitted from
 headless and child catalogs and do not create an account cron or daemon.
-The CLI does not install Claude Code’s `/loop` skill, automatic fallback wakeup,
-or project/home `loop.md` discovery.
+The native `/loop` frontend accepts a task, a leading interval or a trailing
+`every` interval. Fixed intervals become normal `CronCreate` requests, disclosing
+minute rounding and the selected nearest uniform cron step. Bare/task-only loops
+ask the model to select `ScheduleWakeup`; a host-only iteration token prevents
+older completion from changing a newer loop. If an allowed iteration ends without
+an explicit wakeup, one 20-minute fallback is installed; its completion does not
+create another fallback. Ask/Deny policies do not grant automatic fallback.
+At each maintenance dispatch, `.claude/loop.md` is read afresh from the current
+workspace, then the trusted user home only if the project file is absent, with
+symlink rejection and 25,000-byte truncation. Read Ask/Deny imports no contents.
+Scheduled skills are checked and expanded with Model provenance, fresh metadata
+and normal Skill policy; built-ins cannot be shadowed. Maintenance/skill text is
+reference data and grants no permissions. Explicit Escape/stop cancels the loop.
 
-The same interactive owner TUI installs command-only `Monitor`. It starts a real
-Bash process pinned to the current workspace and sends bounded stdout lines into
-the serialized idle prompt queue, explicitly marked as untrusted external data.
+The same interactive owner TUI installs `Monitor` for commands or WebSocket
+sources. Commands start real Bash processes pinned to the current workspace.
+Bounded events are batched for 200 ms and enter the serialized idle prompt queue
+as untrusted external data; composer drafts suppress dispatch.
 `TaskOutput` returns retained status/stdout/stderr; `TaskStop` cancels the process
 group, including descendants. Jobs belong to their originating session. The
 host retains at most 32 jobs, 100 stdout lines of at most 4096 bytes each, and
@@ -326,7 +371,13 @@ queue cannot accept its terminal event, status remains available through
 second through one hour. `persistent:true` removes that deadline only for the
 current CLI lifetime. No monitor process or pending event is restored after
 exit. Headless/child catalogs omit Monitor, and disabling cron also disables it.
-WebSocket sources and reference-style event batching are not implemented.
+WebSocket input uses `ws: {url, protocols?}` and requires `--web-search` plus
+normal WebFetch domain admission. Public destinations are validated and DNS-pinned;
+private destinations require a matching repeatable explicit
+`--claude-monitor-ws-origin ws://HOST:PORT` or `wss://HOST:PORT`. Origins cannot
+include credentials, path, query or fragment. Ambient dotenv/environment values
+grant no socket authority. Text, bounded binary frames, ping/close, cancellation
+and timeout use the native socket transport; no socket is recovered after exit.
 
 With `--web-search`, the CLI installs native `WebSearch` and `WebFetch` client
 tools. Search uses an auxiliary Messages server-search request. Fetch captures
@@ -340,6 +391,7 @@ Reproduce shipped-host journeys with:
 
 ```sh
 cargo test --locked -p nanocodex-bin --test claude_host -- --nocapture
+cargo test --locked -p nanocodex-bin --test claude_scheduler_monitor --test claude_workflow --test claude_hooks --test claude_checkpoints -- --nocapture
 cargo test --locked -p nanocodex-bin --test claude_skills --test claude_mcp --test claude_web --test claude_prompt_images -- --nocapture
 python3 scripts/tests/claude-interaction-cli-journey.py --binary target/debug/nanocodex
 python3 scripts/tests/claude-resume-cli-journey.py --binary target/debug/nanocodex
@@ -353,6 +405,34 @@ input to verify pending questions, stale-input rejection, explicit plan approval
 persistence failure, cancellation and hook enforcement. Resume uses independent
 processes and both explicit selection and the picker. Only paths exercised
 by the completed run count as validated; source presence is not a passing run.
+
+## Native workflows
+
+`--claude-workflows` explicitly enables root-only `Workflow` when subagents are
+enabled. It is disabled by default and omitted from child catalogs. Inline,
+named or workspace `scriptPath` workflows begin with pure literal
+`export const meta = {name, description, phases?}`; metadata is validated before
+runtime or child dispatch. An original private JavaScript helper environment
+provides `agent`, `parallel`, `pipeline` and `phase` through the real authorized
+registry, with no direct filesystem, network or process bridge.
+
+Limits are 15 agent calls per run, four concurrent, five minutes, 512 KiB script
+and 64 KiB result. Admission pins the workspace for scripts and all late-spawned
+children; completed resumable children retain their own pins. Read/Edit
+restrictions conservatively cover script loading and persistence; Agent deny/ask
+rules also cover the entire Workflow, including parameter-scoped Agent rules.
+Agent allow rules do not grant Workflow authority. Runs start in
+the background with `wf_` IDs for `TaskOutput`/`TaskStop`. Same-session terminal
+`resumeFromRunId` reuses only confirmed matching prompt/options results; uncertain,
+failed or pending calls remain fenced. Resume cannot retarget another workspace.
+Runs and caches are process-local; SQLite receipts do not reconstruct them.
+
+Reproduce the real QuickJS/registry/CLI journey with
+`cargo test --locked -p nanocodex-bin --test claude_workflow -- --nocapture`.
+Inspect actual provider requests, script/phase/output receipts, cancellation,
+permission refusal, and late-child/retained-child worktree evidence under
+`output/claude-workflow/`. Synthetic model output does not establish live
+subscription admission or complete vendor orchestration semantics.
 
 ## Native session resume
 
@@ -378,8 +458,8 @@ The CLI records before-images for native `Edit`, `Write`, and `NotebookEdit`
 after permission checks and input-rewriting pre-hooks. The journal lives under
 `CODEX_HOME/claude/checkpoints` and associates each file effect with its session,
 turn, call, and actual workspace. Failed or incomplete captures block unsafe
-restoration. Bash, MCP, hook side effects and conversation history are outside
-this file-restoration scope.
+restoration. Bash, MCP and hook side effects are outside this file-restoration
+scope. Conversation branching is selected separately below.
 
 ```sh
 nanocodex rewind SESSION_ID
@@ -402,8 +482,24 @@ Reproduce the real CLI file-restoration journey with
 `cargo test --locked -p nanocodex-bin --test claude_checkpoints -- --nocapture`.
 It covers preview, conflicts, effective hook inputs, file creation/removal,
 notebook restoration, file modes, bounded/special-file rejection and replay.
-This API provides file restoration; it does not implement Claude Code's combined
-conversation-and-code rewind interface.
+Use `--mode conversation` to branch the settled default SQLite journal before
+the selected user turn, or `--mode files-and-conversation` to additionally restore
+native file before-images from that turn and later turns. Default `--mode files`
+retains the existing behavior. Previews list retained user boundaries, selected
+discarded turns and applicable file changes without mutation. Unknown/expired
+history, pending source operations, unsafe boundaries and changed source owners
+are refused. A new UUID journal is returned with its resume command; the original
+history remains recoverable. The branch retains admitted tool identities so
+continuation cannot replay discarded effects under old IDs. Bash, hooks, MCP
+and other external effects are neither undone nor replayed.
+
+File restoration and new branch publication are separate operations. A failed
+publication reports any restored file result and requires inspection before retry;
+there is no cross-file/store atomicity claim. Reproduce selected previews,
+first-turn/combined branching, original continuation, pending refusal and exact
+old-ID fencing through the same `claude_checkpoints` target and
+`cargo test --locked -p nanocodex-durability --features claude,sqlite --test checkpoint_branch`.
+Evidence is retained under `output/claude-conversation-rewind/`.
 
 ## Shared durability
 
@@ -472,6 +568,24 @@ The Claude backend and shared durability adapter compile for `wasm32-unknown-unk
 
 The fallback estimate after an unknown/invalid response includes packed messages, system context and the tool catalog from the frozen request template until the next successful usage anchor. Invalid-response evidence is capped at 64 KiB with a truncation/unknown-effects marker; valid completed boundaries remain intact. Live interactive Claude Code measurements remain separate and do not establish every CLI tool, model, or exact prompt/compaction parity.
 
-The Rust subscription manager supplies PKCE login, callback validation, persisted token exchange/refresh and account continuity through a host-owned private secret store and HTTP capability. Its defaults follow measured Claude Code 2.1.283 behavior. OAuth state is separate from agent checkpoints; the authenticated client is reattached on reopen. A composed SQLite journey covers login, tools, compaction, refresh, restart and logout. Live native subscription admission was verified with the observed public compatibility profile, including tool use, cache hits, compaction and recall after a real SQLite reopen. A separate fresh native PKCE authorization and deliberately triggered real refresh also completed provider inference. Natural expiry, managed live admission and billing remain separate acceptance boundaries. See [authentication setup and measured protocol](claude-authentication.md).
+The Rust subscription manager supplies PKCE login, callback validation, persisted
+token exchange/refresh and account continuity through a host-owned private secret
+store and HTTP capability. Its defaults follow measured Claude Code 2.1.283
+behavior. OAuth state is separate from agent checkpoints; the host reattaches the
+authenticated client on reopen. A composed SQLite journey covers synthetic login,
+tools, compaction, refresh, restart and logout. Historical native subscription,
+PKCE and refresh observations are recorded in [authentication setup and measured
+protocol](claude-authentication.md). Those observations do not establish live
+admission of the continuation capabilities above. Natural expiry, managed live
+admission and billing remain separate acceptance boundaries.
 
-Remaining gaps include full Claude Code permission-mode equivalence, PTYs, workflows, paged transcript storage, and the explicitly unsupported managed operations described in the [managed guide](CLAUDE_MANAGED.md). See [the tool matrix](CLAUDE_TOOL_MATRIX.md) for individual capabilities and [interactive compaction measurements](research/nanoclaude-auto-compaction-measured.md) for the observed reference behavior. No full Claude Code parity is claimed.
+The native host implements 26 of the 35 names in the pinned interactive capture,
+including verified opt-in Workflow. Nine conditional product names remain absent:
+Artifact, DesignSync, EndConversation, PowerShell, PushNotification, RemoteTrigger,
+ReportFindings, SendFeedback and ShareOnboardingGuide. Remaining differences include
+complete permission-mode equivalence, named teams, Bash PTY/agent-view support,
+unlisted hook/plugin features, paged transcript storage and unsupported managed
+operations in the [managed guide](CLAUDE_MANAGED.md). See [the tool matrix](CLAUDE_TOOL_MATRIX.md)
+and [interactive compaction measurements](research/nanoclaude-auto-compaction-measured.md).
+This is implemented capability coverage, not full proprietary behavior or new
+live authentication/provider admission evidence. No full Claude Code parity is claimed.

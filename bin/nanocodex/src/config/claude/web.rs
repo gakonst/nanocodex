@@ -211,7 +211,7 @@ fn checked_url(raw: &str) -> Result<Url, String> {
 
 // Conservative Internet-unicast policy. Exclude local, metadata, multicast,
 // reserved, documentation, benchmarking and transition/translation ranges.
-fn public_ip(ip: IpAddr) -> bool {
+pub(super) fn public_ip(ip: IpAddr) -> bool {
     match ip {
         IpAddr::V4(ip) => {
             let [a, b, c, _] = ip.octets();

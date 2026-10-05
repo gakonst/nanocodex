@@ -255,7 +255,17 @@ impl<'a> Rule<'a> {
         // Aggregate guidance can import files unrelated to its requested path.
         // Until every imported file is admitted independently, read restrictions
         // apply conservatively to the entire aggregate operation.
-        if matches!(name, "ProjectContext" | "Skill") && self.tool == "Read" && !allow {
+        if matches!(name, "ProjectContext" | "Skill" | "Workflow") && self.tool == "Read" && !allow
+        {
+            return true;
+        }
+        if name == "Workflow" && self.tool == "Edit" && !allow {
+            return true;
+        }
+        // Workflow's private registry bridge is an aggregate Agent operation.
+        // Parameter-scoped restrictions also apply conservatively until each
+        // generated child call goes through independent native admission.
+        if name == "Workflow" && wild(self.tool, "Agent", false) && !allow {
             return true;
         }
         let mcp = self.tool.starts_with("mcp__")
@@ -263,11 +273,16 @@ impl<'a> Rule<'a> {
             && name.starts_with(&format!("{}__", self.tool));
         // File-deny rules cannot safely analyze arbitrary subprocess file accesses.
         // Deny shell dispatch conservatively when any file deny/ask policy applies.
-        if matches!(name, "Bash" | "Monitor") && matches!(self.tool, "Read" | "Edit") && !allow {
+        if (name == "Bash" || (name == "Monitor" && input.get("command").is_some()))
+            && matches!(self.tool, "Read" | "Edit")
+            && !allow
+        {
             return true;
         }
-        let shell_alias = self.tool == "Bash" && name == "Monitor";
-        if !file_alias && !shell_alias && !mcp && !wild(self.tool, name, false) {
+        let shell_alias =
+            self.tool == "Bash" && name == "Monitor" && input.get("command").is_some();
+        let web_alias = self.tool == "WebFetch" && name == "Monitor" && input.get("ws").is_some();
+        if !file_alias && !shell_alias && !web_alias && !mcp && !wild(self.tool, name, false) {
             return false;
         }
         let Some(spec) = self.spec else {
@@ -366,6 +381,7 @@ impl<'a> Rule<'a> {
                 };
                 let Some(url) = input
                     .get("url")
+                    .or_else(|| input.get("ws").and_then(|ws| ws.get("url")))
                     .and_then(Value::as_str)
                     .and_then(|s| reqwest::Url::parse(s).ok())
                 else {

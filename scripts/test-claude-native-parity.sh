@@ -14,7 +14,7 @@ for helper in "${NANOCODEX_TEST_PDFINFO:-pdfinfo}" "${NANOCODEX_TEST_PDFTOPPM:-p
 done
 cargo test --locked -p nanocodex-claude --all-features
 cargo test --locked -p nanocodex-claude-tools --all-features -- --include-ignored
-cargo test --locked -p nanocodex-durability --features claude,sqlite --test 'claude*'
+cargo test --locked -p nanocodex-durability --features claude,sqlite --test 'claude*' --test checkpoint_branch
 cargo test --locked -p nanocodex-oai-tools --test it native_mcp -- --nocapture
 cargo test --locked -p nanocodex-bin --test 'claude_*' --test harness_routing -- --nocapture
 cargo check --locked -p nanocodex-claude -p nanocodex-claude-tools --all-features --target wasm32-unknown-unknown

@@ -4,7 +4,13 @@ use super::*;
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::{collections::BTreeMap, fs, io::Write, process::Command, sync::RwLock};
+use std::{
+    collections::BTreeMap,
+    fs,
+    io::{Read, Write},
+    process::Command,
+    sync::RwLock,
+};
 
 type Result<T> = std::result::Result<T, String>;
 
@@ -24,12 +30,86 @@ struct Receipt {
 #[derive(Clone, Serialize, Deserialize)]
 struct State {
     version: u32,
+    #[serde(default)]
+    isolated_child: bool,
+    #[serde(default)]
+    profiles: Option<Vec<nanocodex::claude_tools::AgentProfile>>,
     session: String,
     current: PathBuf,
     active: Option<Owned>,
     generation: u64,
     pending: Option<String>,
     receipts: BTreeMap<String, Receipt>,
+}
+
+/// Prepare the fresh conversation's immutable workspace/profile snapshot before
+/// publishing its journal. Git cleanup ownership stays with the source session.
+pub(super) fn prepare_rewind_branch(home: &Path, source: &str, target: &str) -> Result<()> {
+    if source == target || source.is_empty() || target.is_empty() {
+        return Err("rewind requires distinct nonempty workspace session identities".into());
+    }
+    let directory = home.join("claude/workspaces");
+    let source_path = directory.join(format!("{}.json", digest(source)));
+    match fs::symlink_metadata(&source_path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error.to_string()),
+        Ok(metadata) if !metadata.is_file() || metadata.file_type().is_symlink() => {
+            return Err("rewind source workspace sidecar must be a regular file".into());
+        }
+        Ok(_) => {}
+    }
+    let target_path = directory.join(format!("{}.json", digest(target)));
+    let mut locks = Vec::new();
+    for path in [&source_path, &target_path] {
+        let lock = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(path.with_extension("lock"))
+            .map_err(|error| error.to_string())?;
+        lock.try_lock_exclusive()
+            .map_err(|_| "another process is changing a rewind session workspace")?;
+        locks.push(lock);
+    }
+    let mut bytes = Vec::new();
+    fs::File::open(&source_path)
+        .map_err(|error| error.to_string())?
+        .take(2 * 1024 * 1024 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| error.to_string())?;
+    if bytes.len() > 2 * 1024 * 1024 {
+        return Err("workspace state exceeds size limit".into());
+    }
+    let mut state: State = serde_json::from_slice(&bytes).map_err(|error| error.to_string())?;
+    if state.version != 1 || state.session != source || state.pending.is_some() {
+        return Err("rewind source workspace identity/version/transition is unavailable".into());
+    }
+    let current = fs::canonicalize(&state.current).map_err(|error| error.to_string())?;
+    if current != state.current || !current.is_dir() {
+        return Err("saved workspace identity changed".into());
+    }
+    if let Some(owned) = &state.active {
+        validate_owned(owned)?;
+        if owned.path != state.current {
+            return Err("rewind source owned worktree does not match its workspace".into());
+        }
+    }
+    state.session = target.into();
+    state.active = None;
+    state.isolated_child = false;
+    state.generation = 0;
+    state.receipts.clear();
+    let mut file = tempfile::NamedTempFile::new_in(&directory).map_err(|e| e.to_string())?;
+    file.write_all(&serde_json::to_vec(&state).map_err(|e| e.to_string())?)
+        .map_err(|e| e.to_string())?;
+    file.as_file().sync_all().map_err(|e| e.to_string())?;
+    file.persist_noclobber(&target_path)
+        .map_err(|e| e.to_string())?;
+    fs::File::open(&directory)
+        .and_then(|directory| directory.sync_all())
+        .map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 pub(super) struct Workspace {
@@ -39,7 +119,7 @@ pub(super) struct Workspace {
     notebooks: std::sync::Mutex<BTreeMap<PathBuf, Arc<nanocodex::claude_tools::ClaudeNotebook>>>,
     pins: Arc<std::sync::Mutex<BTreeMap<PathBuf, usize>>>,
     // Conservative lifetime: retained until the child controller is dropped.
-    parent_lease: Option<WorkspaceLease>,
+    parent_lease: std::sync::Mutex<Option<WorkspaceLease>>,
 }
 impl Workspace {
     pub(super) fn new(initial: PathBuf, home: PathBuf, session_id: &str) -> Result<Self> {
@@ -84,6 +164,8 @@ impl Workspace {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                 let state = State {
                     version: 1,
+                    isolated_child: false,
+                    profiles: None,
                     session: session_id.into(),
                     current: initial,
                     active: None,
@@ -104,16 +186,97 @@ impl Workspace {
             files: std::sync::Mutex::new(BTreeMap::new()),
             notebooks: std::sync::Mutex::new(BTreeMap::new()),
             pins: Arc::new(std::sync::Mutex::new(BTreeMap::new())),
-            parent_lease: None,
+            parent_lease: std::sync::Mutex::new(None),
         })
     }
     /// Snapshot and pin atomically against parent transitions. The registry must
     /// retain this controller for as long as the child can access its workspace.
     pub(super) fn child(&self, home: PathBuf, session_id: &str) -> Result<Self> {
         let (initial, lease) = self.pin_current();
+        Self::child_from_pin(home, session_id, initial, lease)
+    }
+    /// The supplied lease preserves the exact admitted workspace even when its
+    /// parent has since transitioned. The child keeps the pin until closure.
+    pub(super) fn child_from_pin(
+        home: PathBuf,
+        session_id: &str,
+        initial: PathBuf,
+        lease: WorkspaceLease,
+    ) -> Result<Self> {
+        if lease.root != initial {
+            return Err("workspace lease does not match child snapshot".into());
+        }
         let mut child = Self::new(initial, home, session_id)?;
-        child.parent_lease = Some(lease);
+        child.parent_lease = std::sync::Mutex::new(Some(lease));
         Ok(child)
+    }
+    pub(super) fn profiles(&self) -> Option<Vec<nanocodex::claude_tools::AgentProfile>> {
+        self.state
+            .read()
+            .expect("workspace state poisoned")
+            .profiles
+            .clone()
+    }
+    pub(super) fn bind_profiles(
+        &self,
+        profiles: Vec<nanocodex::claude_tools::AgentProfile>,
+    ) -> Result<()> {
+        let mut state = self.state.write().map_err(|_| "workspace state poisoned")?;
+        let mut next = state.clone();
+        if next.profiles.is_some() {
+            return Err("child profile binding already exists".into());
+        }
+        next.profiles = Some(profiles);
+        save(&self.path, &next)?;
+        *state = next;
+        Ok(())
+    }
+    pub(super) fn release_parent(&self) {
+        if let Ok(mut lease) = self.parent_lease.lock() {
+            lease.take();
+        }
+    }
+    /// Isolate only this child controller. The parent remains pinned and unchanged.
+    pub(super) fn isolate_child(&self, child: &str) -> Result<()> {
+        self.execute(
+            "EnterWorktree",
+            json!({"name": format!("agent-{}", &digest(child)[..20])}),
+            &format!("child-isolation:{child}"),
+        )?;
+        let mut state = self.state.write().map_err(|_| "workspace state poisoned")?;
+        let mut next = state.clone();
+        next.isolated_child = true;
+        save(&self.path, &next)?;
+        *state = next;
+        Ok(())
+    }
+    pub(super) fn isolated_status(&self) -> Value {
+        let state = self.state.read().expect("workspace state poisoned");
+        match (&state.active, state.isolated_child) {
+            (Some(owned), true) => {
+                json!({"workspace":owned.path,"branch":owned.branch,"base":owned.base,"cleanup":"retained for resume; CloseAgent removes only an unchanged unpinned worktree"})
+            }
+            _ => Value::Null,
+        }
+    }
+    /// Called only after the registry confirms closure of this runtime and all
+    /// descendants. Dirty, committed, externally changed or pinned trees remain.
+    pub(super) fn finish_child(&self, child: &str) -> Value {
+        if let Ok(mut lease) = self.parent_lease.lock() {
+            lease.take();
+        }
+        let before = self.isolated_status();
+        if before.is_null() {
+            return before;
+        }
+        match self.execute(
+            "ExitWorktree",
+            json!({"cleanup":true}),
+            &format!("close-child:{child}"),
+        ) {
+            Ok(receipt) => receipt,
+            Err(reason) => json!({"kept":true,"worktree":before,"reason":reason}),
+        }
     }
     pub(super) fn saved_current(home: &Path, session_id: &str) -> Result<PathBuf> {
         let path = home
@@ -408,6 +571,20 @@ impl Workspace {
 pub(super) struct WorkspaceLease {
     root: PathBuf,
     pins: Arc<std::sync::Mutex<BTreeMap<PathBuf, usize>>>,
+}
+impl Clone for WorkspaceLease {
+    fn clone(&self) -> Self {
+        *self
+            .pins
+            .lock()
+            .expect("workspace pins poisoned")
+            .entry(self.root.clone())
+            .or_default() += 1;
+        Self {
+            root: self.root.clone(),
+            pins: self.pins.clone(),
+        }
+    }
 }
 impl Drop for WorkspaceLease {
     fn drop(&mut self) {

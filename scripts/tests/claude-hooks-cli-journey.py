@@ -196,7 +196,7 @@ else:
         run('implicit', command + ['Exercise opt-out.'])
         require((workspace / 'hooks.jsonl').read_text() == hook_log, 'hooks executed without opt-in')
         prior = len(requests)
-        for label, invalid in [('invalid-json', '{'), ('unsupported-event', json.dumps({'hooks': {'SessionStart': []}})), ('invalid-timeout', json.dumps({'hooks': {'PreToolUse': [{'hooks': [{'type': 'command', 'command': 'touch invalid.txt', 'timeout': 0}]}]}}))]:
+        for label, invalid in [('invalid-json', '{'), ('unsupported-event', json.dumps({'hooks': {'Notification': []}})), ('invalid-timeout', json.dumps({'hooks': {'PreToolUse': [{'hooks': [{'type': 'command', 'command': 'touch invalid.txt', 'timeout': 0}]}]}}))]:
             path = artifact / f'{label}.json'
             path.write_text(invalid)
             run(label, command + ['--claude-hooks', str(path), 'Do not start.'], success=False)

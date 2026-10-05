@@ -57,9 +57,39 @@ configured hooks, including after a planning session is restored. Trusted hook
 commands can have effects of their own. Plan mode is a dispatch policy, not OS
 isolation or rollback of earlier effects.
 
-Additional context injection, asynchronous hooks, prompt/agent hooks, interactive
-hook approval, transcript paths and other Claude Code lifecycle events are not
-implemented. Successful output fields outside the documented subset are ignored.
+Lifecycle commands also run at these native boundaries:
+
+| Event | Boundary and matcher | Result handling |
+| --- | --- | --- |
+| `SessionStart` | First admitted root prompt; `startup` or `resume` | Observation and additional context |
+| `UserPromptSubmit` | Before the submitted prompt reaches inference; no matcher value | Blocks on exit 2, any command error, `decision:block`, or `continue:false` |
+| `Stop` | Completed root assistant response; no matcher value | Exit 2 or `decision:block` requests one more model round; `continue:false` stops |
+| `PreCompact` | Before a summary request; `manual` or `auto` | Command failure or blocking decision prevents compaction |
+| `PostCompact` | After a valid summary replaces history; `manual` or `auto` | Observation; failures preserve the summary |
+| `StopFailure` | A Messages runtime/provider failure; `api_error` | Observation; preserves the original error |
+| `SubagentStart` | First admitted child prompt; child profile/type | Observation and additional context |
+| `SubagentStop` | Completed child assistant response; child profile/type | Same bounded continuation as `Stop` |
+| `SessionEnd` | Explicit runtime shutdown after a started session; `other` | Observation; does not permanently close the durable conversation |
+
+Embeddings opt in with `ClaudeToolHooks::handles_lifecycle(event)` and implement
+`lifecycle`. Tool-only policies default to no lifecycle handling. The CLI checks
+actual configured event matchers before admitting a durable effect, so absent
+lifecycle configuration creates no lifecycle intent, outcome, or shutdown writes.
+
+Lifecycle stdin uses `event_id` in place of tool identity and includes the event's
+fields: `source`, `prompt`, `stop_hook_active`/`last_assistant_message`,
+`trigger`/`custom_instructions` or `compact_summary`, `error`/`error_details`,
+`agent_id`/`agent_type`, or `reason`. Session/turn identity, model, cwd and instruction
+revision remain present. `event_id` is stable for durable reconciliation.
+`SessionStart`, `UserPromptSubmit` and `SubagentStart` accept string
+`hookSpecificOutput.additionalContext` with the matching `hookEventName`.
+A second blocking Stop decision ends with an explicit error rather than looping
+indefinitely; completed assistant content remains retained. Observational errors
+remain diagnostics and never replace model output, summaries or tool receipts.
+
+Asynchronous hooks, prompt/agent hook types, interactive hook approval, transcript
+paths and unlisted lifecycle events are unsupported. Successful output fields
+outside the documented subset are ignored.
 
 Permission rules are checked before hooks and against the final rewritten input.
 An `allow` hook decision cannot override a deny rule; a policy approval prompt
@@ -80,6 +110,13 @@ or completed request does not rerun its hooks. A crash before receipt commit
 still requires reconciling hook side effects using invocation identity; arbitrary
 shell effects are not exactly-once transactions.
 
+Lifecycle commands additionally commit a started marker before calling the hook.
+Recovery with a marker but no completed outcome reports uncertainty and does not
+invoke the command again. This can conservatively skip a command if the process
+died immediately before dispatch. Prompt and compaction gates then fail closed;
+observational events preserve completed content. A completed request replays zero
+hooks, including the shutdown receipt for each actually started runtime.
+
 Run the shipped CLI acceptance journey with:
 
 ```sh
@@ -89,4 +126,9 @@ CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0 CARGO_INCREMENTAL=0 \
 
 The journey uses only a synthetic Messages provider; hook commands, tool effects,
 HTTP/SSE and SQLite are real. Inspect commands, stdin logs, provider requests,
-stdout/stderr and outcomes under `output/claude-hooks-cli/`.
+stdout/stderr and outcomes under `output/claude-hooks-cli/` and
+`output/claude-lifecycle-cli/`. The lifecycle journey also kills the CLI during a
+real hook process and checks that SQLite recovery reports an unknown outcome
+without executing that hook again. Public manual-compaction and native-fork
+coverage runs with `cargo +1.97.0 test -p nanocodex-claude --test lifecycle_hooks`;
+its request and callback trace is `output/lifecycle-public-runtime.json`.

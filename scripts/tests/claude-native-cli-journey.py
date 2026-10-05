@@ -73,7 +73,7 @@ def main():
         ("Write", {"file_path": "created.txt", "content": "native-write-effect\n"}, False, None),
         ("Bash", {"command": "printf 'native-shell-receipt'; printf x >> counter.txt; exit 7"}, False, "native-shell-receipt"),
         ("Read", {"file_path": "../outside.txt"}, True, None),
-        ("Bash", {"command": "(sleep 1; printf leaked > timeout-leak.txt) & wait", "timeout": 100}, True, None),
+        ("Bash", {"command": "sleep 0; (sleep 1; printf leaked > timeout-leak.txt) & wait", "timeout": 100}, True, None),
         ("Read", {"file_path": "editable.txt"}, False, "verified"),
         ("TaskCreate", {"subject": "Durable task", "description": "Restored through the actual CLI"}, False, "Durable task"),
         ("TaskUpdate", {"taskId": "1", "status": "in_progress"}, False, "in_progress"),

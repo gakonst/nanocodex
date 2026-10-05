@@ -102,6 +102,7 @@ struct PendingPaste {
 pub(super) struct SubmittedPrompt {
     display: String,
     instruction: Option<String>,
+    pub(super) loop_iteration_token: Option<String>,
     local_images: Vec<PathBuf>,
 }
 
@@ -110,6 +111,7 @@ impl SubmittedPrompt {
         Self {
             display,
             instruction: None,
+            loop_iteration_token: None,
             local_images,
         }
     }
@@ -125,6 +127,7 @@ impl SubmittedPrompt {
     pub(super) fn set_display(&mut self, display: String) {
         self.display = display;
         self.instruction = None;
+        self.loop_iteration_token = None;
     }
 
     pub(super) const fn has_instruction(&self) -> bool {

@@ -29,6 +29,47 @@ struct PlanState {
     policy: Policy,
 }
 
+/// Preserve the current host restrictions before publishing a rewound session.
+/// Conversation checkpoints do not contain permission or planning state, so
+/// looking up the new UUID must never silently broaden the source policy.
+pub(super) fn prepare_rewind_branch(home: &Path, source: &str, target: &str) -> eyre::Result<()> {
+    use eyre::WrapErr as _;
+    let directory = home.join("claude/plan-mode");
+    let source_path = directory.join(format!("{}.json", hex::encode(source.as_bytes())));
+    let target_path = directory.join(format!("{}.json", hex::encode(target.as_bytes())));
+    let state: PlanState = match std::fs::read(&source_path) {
+        Ok(bytes) => serde_json::from_slice(&bytes)
+            .wrap_err("cannot read source permission and planning state for rewind")?,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => PlanState::default(),
+        Err(error) => {
+            return Err(error)
+                .wrap_err("cannot read source permission and planning state for rewind");
+        }
+    };
+    state
+        .policy
+        .validate()
+        .wrap_err("invalid source permission policy for rewind")?;
+    std::fs::create_dir_all(&directory)?;
+    let temporary = target_path.with_extension(format!("{}.tmp", uuid::Uuid::new_v4()));
+    let result = (|| -> eyre::Result<()> {
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary)?;
+        file.write_all(&serde_json::to_vec(&state)?)?;
+        file.sync_all()?;
+        // A hard link publishes the complete state atomically without replacing
+        // restrictions belonging to an existing target session.
+        std::fs::hard_link(&temporary, &target_path)
+            .wrap_err("cannot publish rewind permission and planning state")?;
+        std::fs::File::open(&directory)?.sync_all()?;
+        Ok(())
+    })();
+    let _ = std::fs::remove_file(temporary);
+    result
+}
+
 pub(super) struct Interaction {
     sender: Option<mpsc::Sender<PendingInteraction>>,
     state_dir: PathBuf,
@@ -340,6 +381,23 @@ fn allowed_in_plan(name: &str) -> bool {
     )
 }
 impl ClaudeToolHooks for Interaction {
+    fn handles_lifecycle(&self, event: &nanocodex::claude::ClaudeLifecycleEvent) -> bool {
+        self.hooks
+            .as_ref()
+            .is_some_and(|hooks| hooks.handles_lifecycle(event))
+    }
+    fn lifecycle<'a>(
+        &'a self,
+        invocation: &'a nanocodex::claude::ClaudeLifecycleInvocation,
+    ) -> ClaudeHookFuture<'a, Result<nanocodex::claude::ClaudeLifecycleOutcome, String>> {
+        Box::pin(async move {
+            match &self.hooks {
+                Some(hooks) => hooks.lifecycle(invocation).await,
+                None => Ok(nanocodex::claude::ClaudeLifecycleOutcome::default()),
+            }
+        })
+    }
+
     fn before<'a>(
         &'a self,
         name: &'a str,

@@ -2,6 +2,7 @@
 """Real CLI PTY, real clock, session reopen and command process cancellation.
 Only the remote Messages endpoint is synthetic; there is no fake clock.
 """
+import shutil
 import argparse, codecs, fcntl, hashlib, importlib.util, json, os, pty, re, select, struct, subprocess, termios, threading, time, unicodedata
 from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -67,7 +68,7 @@ class TerminalScreen:
 
 def main():
  p=argparse.ArgumentParser(description=__doc__);p.add_argument('--binary',type=Path,required=True);p.add_argument('--output',type=Path,default=Path('output/claude-scheduler-monitor-cli')/uuid4().hex);a=p.parse_args()
- artifact=a.output.resolve();artifact.mkdir(parents=True);workspace=artifact/'workspace';workspace.mkdir();home=artifact/'home';home.mkdir();codex_home=home/'codex';codex_home.mkdir();binary=a.binary.resolve()
+ artifact=a.output.resolve();artifact.mkdir(parents=True);workspace=artifact/'workspace';workspace.mkdir();home=artifact/'home';home.mkdir();codex_home=home/'codex';codex_home.mkdir();binary=artifact/'nanocodex-under-test';shutil.copy2(a.binary.resolve(),binary);binary.chmod(0o700);binary_sha256=hashlib.sha256(binary.read_bytes()).hexdigest()
  env={'HOME':str(home),'CODEX_HOME':str(codex_home),'PATH':'/usr/bin:/bin','TERM':'xterm-256color','NANOCODEX_COMPUTER':'off'}
  requests=[];errors=[];commands=[];processes=[];transcripts={};screens={};checks=[];ids={};events=[];receipts=[]
  state={'phase':'initial','index':0,'pending':None,'steps':[],'done':False}
@@ -76,9 +77,22 @@ def main():
   return save
  def check_tasks(r):
   require(any(t['id']==ids['retained'] for t in r['tasks']),'recurring schedule not restored');require(all(t['id'] not in {'wakeup',ids['expired'],ids['missed-one']} for t in r['tasks']),'expired/missed/dynamic task restored');require(all(t['next_fire_at']>time.time() for t in r['tasks']),'missed recurring backlog replayed')
+ def jitter(r,recurring,bound):
+  task=r['task'];seed=int.from_bytes(hashlib.sha256(r['id'].encode()).digest()[:8],'big');expected=seed%(bound+1)*(1 if recurring else -1)
+  require(r['jitter_seconds']==expected and task['jitter_seconds']==expected,'task ID jitter differs from receipt')
+  require(task['next_fire_at']==max(task['created_at']+1,r['nominal_fire_at']+expected),'jitter not applied to persisted fire')
  def monitor_id(r):ids['monitor']=r['task_id']
  def stopped(r):require(r['status']=='stopped',f'monitor not stopped {r}')
  def steps_initial():return [
+  ('CronCreate',{'cron':'* * * * *','prompt':'short-jitter','recurring':True},False,lambda r:(jitter(r,True,30),remember('short-jitter')(r))),
+  ('CronDelete',lambda:{'id':ids['short-jitter']},False,None),
+  ('CronCreate',{'cron':'0 * * * *','prompt':'hour-jitter','recurring':True},False,lambda r:(jitter(r,True,1800),remember('hour-jitter')(r))),
+  ('CronDelete',lambda:{'id':ids['hour-jitter']},False,None),
+  ('CronCreate',{'cron':'30 * * * *','prompt':'early-jitter','recurring':False},False,lambda r:(jitter(r,False,90),remember('early-jitter')(r))),
+  ('CronDelete',lambda:{'id':ids['early-jitter']},False,None),
+  ('CronCreate',{'cron':'7 * * * *','prompt':'exact-minute','recurring':False},False,lambda r:(jitter(r,False,0),remember('exact-minute')(r))),
+  ('CronDelete',lambda:{'id':ids['exact-minute']},False,None),
+  ('CronCreate',{'cron':'0 0 1 1 *','prompt':'final-seven-day-marker','recurring':True},False,remember('final-expiry')),
   ('CronCreate',{'cron':'* * * * *','prompt':'cron-once-marker','recurring':False,'timezone':'Etc/UTC'},False,None),
   ('CronCreate',{'cron':'* * * * *','prompt':'deleted-must-not-fire','recurring':False},False,remember('deleted')),
   ('CronDelete',lambda:{'id':ids['deleted']},False,lambda r:require(r['deleted'],'delete failed')),
@@ -141,7 +155,7 @@ def main():
   os.write(fd,b'\x15')
   def fired(marker):return any(marker in json.dumps(e['message']) and 'tool_result' not in json.dumps(e['message']) for e in events)
   wait(lambda:fired('cron-once-marker') and fired('dynamic-real-clock-marker'),drain,'normal idle firings absent',20)
-  require(not fired('deleted-must-not-fire'),'deleted schedule fired');checks.append('real 60-second wakeup and cron fire only after composer cleared; deletion suppresses fire')
+  require(not fired('deleted-must-not-fire'),'deleted schedule fired');checks.append('ID-derived recurring half-interval/hourly cap jitter and :30 early/non-boundary exact one-shot receipts persisted');checks.append('real 60-second wakeup and cron fire only after composer cleared; deletion suppresses fire')
   phase('prepare-reopen',[('ScheduleWakeup',{'delaySeconds':60,'prompt':'discard-on-reopen','reason':'restart policy','noop':False},False,None)])
   os.write(fd,b'Prepare restart\r');wait(lambda:visible('initial','prepare-reopen-complete'),drain,'restart setup missing');finish(proc,fd,drain)
   manifests=list((codex_home/'claude/sessions').glob('*.json'));require(len(manifests)==1,'session manifest missing');session=json.loads(manifests[0].read_text())['id']
@@ -151,13 +165,27 @@ def main():
   journal['tasks'][ids['expired']]['expires_at']=past
   journal['tasks'][ids['missed-one']]['next_fire_at']=past
   journal['tasks'][ids['retained']]['next_fire_at']=past
+  # Seven-day age is a persisted fixture; expiry delivery still uses the real live clock.
+  journal['tasks'][ids['final-expiry']]['created_at']=int(time.time())-7*86400+10
+  journal['tasks'][ids['final-expiry']]['expires_at']=int(time.time())+10
   (artifact/'reopen-fixture.json').write_text(json.dumps(journal,indent=2));jp.write_text(json.dumps(journal))
   phase('reopen',[('CronList',{},False,check_tasks),('CronDelete',lambda:{'id':ids['retained']},False,None),('Monitor',{'command':'printf "monitor-stdout-marker\\n"; printf "monitor-stderr-marker\\n" >&2; sleep 120 & echo $! > monitor-child.pid; wait','description':'Synthetic process cancellation','persistent':True},False,monitor_id)])
   proc,fd,drain=start('reopen',[str(binary),'resume',session]+common+['--prompt','Inspect restored schedules and start monitor.']);wait(lambda:visible('reopen','reopen-complete'),drain,'reopen tools missing')
   wait(lambda:fired('monitor-stdout-marker'),drain,'monitor stdout idle event absent');checks.append('real process reopen retains cron, drops dynamic/seeded expired/missed one-shots, skips seeded backlog; Monitor stdout arrives at idle')
-  phase('stop',[('TaskStop',lambda:{'task_id':ids['monitor']},False,stopped),('TaskOutput',lambda:{'task_id':ids['monitor'],'block':False},False,lambda r:(stopped(r),require('monitor-stderr-marker' in r['stderr'],'stderr absent')))])
+  wait(lambda:fired('final-seven-day-marker'),drain,'seven-day final fire absent',20);checks.append('persisted seven-day age fixture fires once at live expiry and is removed')
+  phase('stop',[('CronList',{},False,lambda r:require(all(t['id']!=ids['final-expiry'] for t in r['tasks']),'expired final task still listed')),('TaskStop',lambda:{'task_id':ids['monitor']},False,stopped),('TaskOutput',lambda:{'task_id':ids['monitor'],'block':False},False,lambda r:(stopped(r),require('monitor-stderr-marker' in r['stderr'],'stderr absent')))])
   os.write(fd,b'Stop the monitor\r');wait(lambda:visible('reopen','stop-complete'),drain,'monitor stop missing');wait(lambda:any('Monitor finished' in json.dumps(e['message']) and 'stopped' in json.dumps(e['message']) for e in events),drain,'cancellation event absent')
-  child=int((workspace/'monitor-child.pid').read_text());status=Path(f'/proc/{child}/stat');require(not status.exists() or status.read_text().split()[2]=='Z','descendant still alive');finish(proc,fd,drain);checks.append('TaskStop kills descendant, TaskOutput retains bounded stdout/stderr, real cancellation event delivered')
+  child=int((workspace/'monitor-child.pid').read_text());status=Path(f'/proc/{child}/stat');require(not status.exists() or status.read_text().split()[2]=='Z','descendant still alive');checks.append('TaskStop kills descendant, TaskOutput retains bounded stdout/stderr, real cancellation event delivered')
+  # A second actual CLI adopts the retained session while the first UI remains
+  # alive. The stale scheduler must stop before claiming the new owner's job.
+  old_proc,old_fd,old_drain=proc,fd,drain
+  phase('new-owner',[('CronCreate',{'cron':'7 * * * *','prompt':'new-owner-only-marker','recurring':False},False,remember('owner-job'))])
+  proc,fd,drain=start('new-owner',[str(binary),'resume',session]+common+['--prompt','Adopt scheduler ownership.']);wait(lambda:visible('new-owner','new-owner-complete'),drain,'new owner not ready')
+  wait(lambda:visible('reopen','Scheduler paused:'),old_drain,'old scheduler did not fence')
+  with jp.with_suffix('.lock').open('r+') as lock:
+   fcntl.flock(lock,fcntl.LOCK_EX);owned=json.loads(jp.read_text());owned['tasks'][ids['owner-job']]['next_fire_at']=int(time.time())-1;(artifact/'owner-due-fixture.json').write_text(json.dumps(owned,indent=2));temporary=jp.with_suffix('.fixture.tmp');temporary.write_text(json.dumps(owned));temporary.replace(jp)
+  wait(lambda:fired('new-owner-only-marker'),drain,'new owner did not dispatch due fixture');old_drain();require(sum('new-owner-only-marker' in json.dumps(e['message']) and 'tool_result' not in json.dumps(e['message']) for e in events)==1,'ownership produced duplicate fire')
+  require(ids['owner-job'] not in json.loads(jp.read_text())['tasks'],'new owner one-shot not consumed');finish(old_proc,old_fd,old_drain);finish(proc,fd,drain);checks.append('two live CLI processes: resume fences older scheduler before due fixture claim; newer owner fires exactly once')
   # Headless catalogs omit the timer and Monitor tools entirely.
   phase('headless',[]);r=subprocess.run([str(binary),'run']+common+['Inspect headless catalog.'],cwd=workspace,env=env,capture_output=True,timeout=30);require(r.returncode==0,'headless failed');names={t['name'] for t in requests[-1]['tools']};require(not names.intersection({'Monitor','CronCreate','CronList','CronDelete','ScheduleWakeup'}),'headless advertised idle tools');checks.append('headless omits idle-only tools')
   rules=artifact/'monitor-deny.json';rules.write_text(json.dumps({'permissions':{'defaultMode':'full-access','allow':['Monitor'],'deny':['Bash(touch *)']}}))
@@ -165,7 +193,7 @@ def main():
    phase(label,[('Monitor',{'command':'touch monitor-must-not-exist','description':'Denied effect'},True,None)])
    proc,fd,drain=start(label,[str(binary)]+common+flags+['--prompt','Verify Monitor admission.']);wait(lambda:visible(label,label+'-complete'),drain,'Monitor admission final absent');finish(proc,fd,drain);require(not(workspace/'monitor-must-not-exist').exists(),'Monitor bypassed admission')
   checks.append('plan blocks Monitor and Bash deny overrides Monitor allow before process spawn')
-  outcome={'success':True,'checks':checks,'elapsed_seconds':round(time.time()-started,2),'binary_sha256':hashlib.sha256(binary.read_bytes()).hexdigest()}
+  outcome={'success':True,'checks':checks,'elapsed_seconds':round(time.time()-started,2),'binary_sha256':binary_sha256}
  finally:
   for proc in processes:
    if proc.poll() is None:proc.kill();proc.wait()

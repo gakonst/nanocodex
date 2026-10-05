@@ -42,6 +42,10 @@ impl Snapshot {
 #[serde(deny_unknown_fields)]
 pub(super) struct Cursor {
     #[serde(default)]
+    pub(super) lifecycle_turn_id: String,
+    #[serde(default)]
+    pub(super) stop_hook_active: bool,
+    #[serde(default)]
     pub(super) instruction_revision: Option<u64>,
     pub(super) snapshot: Snapshot,
     pub(super) template: MessagesRequest,
@@ -195,6 +199,8 @@ impl State {
             })
             .collect();
         let mut cursor = Cursor {
+            lifecycle_turn_id: candidate_id("lifecycle"),
+            stop_hook_active: false,
             instruction_revision: None,
             snapshot: self.snapshot(conversation).await?,
             template,
@@ -373,4 +379,50 @@ pub(super) fn recovery_error(error: impl std::fmt::Display) -> NanocodexError {
         nanocodex_agent::ExecutionPolicyDisposition::Reopen,
         provider_error(error),
     )
+}
+
+/// Prepares a settled historical checkpoint for a new conversation branch.
+///
+/// The host selects the checkpoint immediately before a user turn through its
+/// owned durable journal. This function never truncates current messages or
+/// replays historical tools. Effect identity and recovery warnings survive the
+/// branch even when later transcript content is forgotten. Provider containers
+/// are not reused because their filesystem may contain later effects.
+pub fn rewind_checkpoint(previous: Option<Value>, latest: Value) -> Result<Value> {
+    let latest = Snapshot::decode(latest)?;
+    if latest.conversation.pending_continuation {
+        return Err(unsupported(
+            "conversation rewind refuses a pending tool/provider continuation",
+        ));
+    }
+    let mut selected = match previous {
+        Some(value) => Snapshot::decode(value)?,
+        None => Snapshot {
+            model: latest.model.clone(),
+            workspace: latest.workspace.clone(),
+            ..Snapshot::default()
+        },
+    };
+    if selected.conversation.pending_continuation {
+        return Err(unsupported(
+            "selected checkpoint has a pending tool/provider continuation",
+        ));
+    }
+    selected
+        .conversation
+        .admitted_tool_ids
+        .extend(latest.conversation.admitted_tool_ids);
+    for notice in latest.conversation.recovery_notices {
+        if !selected.conversation.recovery_notices.contains(&notice) {
+            selected.conversation.recovery_notices.push(notice);
+        }
+    }
+    let notice = "This conversation was explicitly rewound into a new session. External effects from discarded turns may still exist; reconcile their current state before repeating any action. Historical tool calls must not be replayed.".to_owned();
+    if !selected.conversation.recovery_notices.contains(&notice) {
+        selected.conversation.recovery_notices.push(notice);
+    }
+    selected.conversation.lifecycle_started = false;
+    selected.conversation.container = None;
+    selected.conversation.previous_message_id = None;
+    serde_json::to_value(selected).map_err(provider_error)
 }

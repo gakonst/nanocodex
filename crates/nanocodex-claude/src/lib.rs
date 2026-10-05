@@ -13,7 +13,10 @@ use thiserror::Error;
 mod auth;
 mod hooks;
 mod prompt;
-pub use hooks::{ClaudeHookFuture, ClaudeToolDecision, ClaudeToolHooks};
+pub use hooks::{
+    ClaudeHookFuture, ClaudeLifecycleDecision, ClaudeLifecycleEvent, ClaudeLifecycleInvocation,
+    ClaudeLifecycleOutcome, ClaudeToolDecision, ClaudeToolHooks,
+};
 mod subscription_wire;
 pub use subscription_wire::SubscriptionIdentity;
 pub mod subscription;
@@ -1757,7 +1760,9 @@ fn is_user_turn_start(message: &Message) -> bool {
 }
 
 mod agent;
-pub use agent::{Claude, ClaudeBuilder, ClaudeToolInvocation, ClaudeToolReply, ClaudeTools};
+pub use agent::{
+    Claude, ClaudeBuilder, ClaudeToolInvocation, ClaudeToolReply, ClaudeTools, rewind_checkpoint,
+};
 
 /// Portable durability integration with provider-native state.
 pub mod execution;

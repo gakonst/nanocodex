@@ -35,11 +35,12 @@ use crate::subagents::{self, ChildAgents, DEFAULT_MAX_SUBAGENTS, SubagentToolSet
 use crate::vm::{ConfiguredVm, VmArgs};
 
 mod claude;
+pub(crate) use claude::frontend as claude_frontend;
 pub(crate) use claude::interaction::{
     InteractionReceiver, PendingInteraction, serve_terminal as serve_claude_terminal,
 };
-pub(crate) use claude::rewind_files;
 pub(crate) use claude::scheduler::SessionScheduler;
+pub(crate) use claude::{prepare_rewind_branch, rewind_files};
 mod instructions;
 pub(crate) use instructions::{expand_session_user_skill, expand_user_skill};
 mod xai;
@@ -198,6 +199,14 @@ pub(crate) struct AgentArgs {
     /// Explicit JSON file enabling native Claude command hooks (Unix only).
     #[arg(long, global = true, value_name = "PATH")]
     claude_hooks: Option<PathBuf>,
+
+    /// Enable bounded native multi-agent workflows for this Claude root session.
+    #[arg(long, global = true)]
+    claude_workflows: bool,
+
+    /// Explicit private WebSocket origin allowed for native Monitor (repeatable).
+    #[arg(long, global = true, value_name = "ORIGIN", value_parser = NonEmptyStringValueParser::new())]
+    claude_monitor_ws_origin: Vec<String>,
 
     /// Explicit JSON file with Claude permissions allow/ask/deny rules.
     #[arg(long, global = true, value_name = "PATH")]
@@ -404,6 +413,8 @@ impl AgentArgs {
         self.model_policy.web_search = Some(false);
         self.image_generation = Some(false);
         self.subagents = false;
+        self.claude_workflows = false;
+        self.claude_monitor_ws_origin.clear();
         self.rollouts = false;
         self.instructions = Some(instructions.into());
     }
@@ -507,6 +518,16 @@ impl AgentArgs {
         local_durability: Option<LocalDurability>,
     ) -> Result<ConfiguredAgent> {
         let harness = self.selected_harness()?;
+        if self.claude_workflows && (harness != HarnessFamily::Claude || !self.subagents) {
+            return Err(eyre!(
+                "--claude-workflows requires the Claude harness and enabled subagents"
+            ));
+        }
+        if !self.claude_monitor_ws_origin.is_empty() && harness != HarnessFamily::Claude {
+            return Err(eyre!(
+                "--claude-monitor-ws-origin requires the Claude harness"
+            ));
+        }
         let requested_model = self.requested_model(harness)?;
         if harness == HarnessFamily::Claude {
             return self

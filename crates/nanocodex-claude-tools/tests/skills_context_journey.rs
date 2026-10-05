@@ -36,7 +36,12 @@ async fn skill_catalog_invocation_edits_and_errors() {
     write(
         root,
         ".claude/skills/forked/SKILL.md",
-        "---\ncontext: fork\n---\nUnsupported\n",
+        "---\ncontext: fork\n---\nChild execution required\n",
+    );
+    write(
+        root,
+        ".claude/skills/hooks/SKILL.md",
+        "---\nhooks: {}\n---\nUnsupported execution\n",
     );
     write(
         root,
@@ -65,6 +70,20 @@ async fn skill_catalog_invocation_edits_and_errors() {
             .diagnostics
             .iter()
             .any(|s| s.contains("unsupported execution frontmatter"))
+    );
+    assert!(
+        model
+            .skills
+            .iter()
+            .any(|s| s.name == "forked" && s.context.as_deref() == Some("fork"))
+    );
+    let fork_error = skills
+        .execute("Skill", json!({"skill":"forked"}))
+        .await
+        .unwrap_err();
+    assert!(
+        fork_error.contains("host-owned child executor"),
+        "{fork_error}"
     );
     let raw = skills
         .execute(
@@ -122,6 +141,82 @@ async fn skill_catalog_invocation_edits_and_errors() {
             .instructions,
         "Updated\n"
     );
+    write(
+        root,
+        ".claude/settings.json",
+        r#"{"skillOverrides":{"review":"off","internal":"off"}}"#,
+    );
+    assert!(
+        skills
+            .invoke("review", "", SkillInvocation::User)
+            .unwrap_err()
+            .contains("skillOverrides")
+    );
+    write(
+        root,
+        ".claude/settings.local.json",
+        r#"{"skillOverrides":{"review":"name-only","internal":"user-invocable-only"}}"#,
+    );
+    let visible = skills.catalog(SkillInvocation::User);
+    assert!(
+        visible
+            .skills
+            .iter()
+            .any(|s| s.name == "review" && s.description.is_empty())
+    );
+    // A local override does not elevate the skill's own user-invocable:false.
+    assert!(!visible.skills.iter().any(|s| s.name == "internal"));
+    assert!(
+        skills
+            .invoke("internal", "", SkillInvocation::Model)
+            .unwrap_err()
+            .contains("skillOverrides")
+    );
+    write(
+        root,
+        ".claude/settings.local.json",
+        r#"{"skillOverrides":{"review":"invalid"}}"#,
+    );
+    assert!(skills.catalog(SkillInvocation::Model).skills.is_empty());
+    assert!(
+        skills
+            .invoke("review", "", SkillInvocation::User)
+            .unwrap_err()
+            .contains("skillOverrides")
+    );
+    write(root, ".claude/settings.local.json", &" ".repeat(32769));
+    let oversized = skills.catalog(SkillInvocation::Model);
+    assert!(oversized.skills.is_empty());
+    assert!(
+        oversized
+            .diagnostics
+            .iter()
+            .any(|d| d.contains("exceeds 32 KiB"))
+    );
+    println!("skillOverrides oversized settings={}", json!(oversized));
+    fs::remove_file(root.join(".claude/settings.local.json")).unwrap();
+    #[cfg(unix)]
+    {
+        let outside = tempfile::tempdir().unwrap();
+        fs::write(outside.path().join("settings.json"), "{}").unwrap();
+        std::os::unix::fs::symlink(
+            outside.path().join("settings.json"),
+            root.join(".claude/settings.local.json"),
+        )
+        .unwrap();
+        let linked = skills.catalog(SkillInvocation::Model);
+        assert!(linked.skills.is_empty());
+        assert!(
+            linked
+                .diagnostics
+                .iter()
+                .any(|d| d.contains("skillOverrides .claude/settings.local.json"))
+        );
+        assert!(skills.invoke("review", "", SkillInvocation::User).is_err());
+        println!("skillOverrides symlink settings={}", json!(linked));
+        fs::remove_file(root.join(".claude/settings.local.json")).unwrap();
+    }
+    fs::remove_file(root.join(".claude/settings.json")).unwrap();
     fs::remove_file(root.join(".claude/skills/review/SKILL.md")).unwrap();
     assert!(skills.invoke("review", "", SkillInvocation::User).is_err());
     println!("live_edit_and_removal=observed; shell_side_effect=absent");

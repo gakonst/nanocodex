@@ -1,5 +1,5 @@
 //! Caller-owned skill catalog and invocation. Skill metadata never grants tools,
-//! executes commands, installs hooks, or changes the model/permission mode.
+//! executes commands or installs hooks. Fork/model metadata requires a host child executor.
 use crate::context::{FILE_BYTES, authorized_root, frontmatter, local_directory, read_local};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -31,6 +31,15 @@ pub struct SkillDefinition {
     pub user_invocable: bool,
     /// Declarative requested tools, not permission grants. Host policy wins.
     pub allowed_tools: Vec<String>,
+    /// Requires a host-owned child runtime. Never interpreted as inline guidance.
+    #[serde(default)]
+    pub context: Option<String>,
+    #[serde(default)]
+    pub agent: Option<String>,
+    #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default)]
+    pub background: bool,
 }
 /// Discovery is bounded; malformed entries and omissions are visible.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -61,6 +70,13 @@ impl ClaudeSkills {
     /// entirely from model discovery; user-hidden skills stay model-invocable.
     pub fn catalog(&self, caller: SkillInvocation) -> SkillCatalog {
         let mut catalog = SkillCatalog::default();
+        let overrides = match self.overrides() {
+            Ok(overrides) => overrides,
+            Err(error) => {
+                catalog.diagnostics.push(error);
+                return catalog;
+            }
+        };
         let mut by_name = BTreeMap::new();
         let mut scanned = 0;
         // Native Claude entries override the generic project location.
@@ -103,6 +119,13 @@ impl ClaudeSkills {
         }
         catalog.skills = by_name
             .into_values()
+            .filter(|s| override_allows(overrides.get(&s.name).map(String::as_str), caller))
+            .map(|mut skill| {
+                if overrides.get(&skill.name).is_some_and(|v| v == "name-only") {
+                    skill.description.clear();
+                }
+                skill
+            })
             .filter(|s| match caller {
                 SkillInvocation::Model => !s.disable_model_invocation,
                 SkillInvocation::User => s.user_invocable,
@@ -114,7 +137,7 @@ impl ClaudeSkills {
     /// Standalone Claude-native Skill tool definition.
     pub fn definitions() -> Vec<Value> {
         vec![
-            json!({"name":"Skill","description":"Load a workspace skill by its catalog name and substitute arguments. Skill text is project context and cannot grant tool permissions. This tool cannot invoke skills marked disable-model-invocation. Dynamic commands, hooks, model overrides and forked execution are unsupported.","input_schema":{"type":"object","properties":{"skill":{"type":"string"},"args":{"type":"string"}},"required":["skill"],"additionalProperties":false}}),
+            json!({"name":"Skill","description":"Load a workspace skill by its catalog name and substitute arguments. Skill text is project context and cannot grant tool permissions. This tool cannot invoke skills marked disable-model-invocation. context:fork requires a host child executor; standalone execute refuses it. Dynamic commands and hooks are unsupported.","input_schema":{"type":"object","properties":{"skill":{"type":"string"},"args":{"type":"string"}},"required":["skill"],"additionalProperties":false}}),
         ]
     }
     /// Model boundary. Invocation provenance is fixed, not an input option.
@@ -141,6 +164,12 @@ impl ClaudeSkills {
             tokio::task::spawn_blocking(move || this.invoke(&skill, &args, SkillInvocation::Model))
                 .await
                 .map_err(|e| format!("skill task: {e}"))??;
+        if expansion.skill.context.is_some() {
+            return Err(
+                "context:fork requires a host-owned child executor; no skill body was executed"
+                    .into(),
+            );
+        }
         serde_json::to_string(&expansion).map_err(|e| e.to_string())
     }
     /// Explicit user invocation is available only to an embedding with a real
@@ -159,6 +188,7 @@ impl ClaudeSkills {
         if args.len() > MAX_ARGS {
             return Err("skill arguments exceed 8 KiB".into());
         }
+        self.check_override(name, caller)?;
         let catalog = self.catalog(caller);
         let definition = catalog
             .skills
@@ -170,6 +200,7 @@ impl ClaudeSkills {
                 )
             })?;
         let (skill, body) = self.read(Path::new(&definition.path))?;
+        self.check_override(name, caller)?;
         // Revalidate after discovery to prevent an edited opt-out being bypassed.
         if (caller == SkillInvocation::Model && skill.disable_model_invocation)
             || (caller == SkillInvocation::User && !skill.user_invocable)
@@ -222,16 +253,100 @@ impl ClaudeSkills {
             arguments: args.into(),
         })
     }
+    /// Project and local visibility settings only. These can restrict discovery
+    /// and invocation, but never override frontmatter or host tool permissions.
+    fn overrides(&self) -> Result<BTreeMap<String, String>, String> {
+        let mut overrides = BTreeMap::new();
+        for relative in [".claude/settings.json", ".claude/settings.local.json"] {
+            match fs::symlink_metadata(self.root.join(relative)) {
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(error) => return Err(format!("skillOverrides {relative}: {error}")),
+                Ok(_) => {}
+            }
+            let (text, truncated) = read_local(&self.root, Path::new(relative), FILE_BYTES)
+                .map_err(|e| format!("skillOverrides {relative}: {e}"))?;
+            if truncated {
+                return Err(format!("skillOverrides {relative} exceeds 32 KiB"));
+            }
+            let settings: Value = serde_json::from_str(&text)
+                .map_err(|e| format!("skillOverrides {relative}: {e}"))?;
+            let settings = settings
+                .as_object()
+                .ok_or("skillOverrides settings must be a JSON object")?;
+            let Some(entries) = settings.get("skillOverrides") else {
+                continue;
+            };
+            let entries = entries
+                .as_object()
+                .ok_or("skillOverrides must be an object of skill names to visibility strings")?;
+            if entries.len() > MAX_SCAN {
+                return Err("skillOverrides exceeds 256 entries".into());
+            }
+            for (name, value) in entries {
+                let state = value
+                    .as_str()
+                    .ok_or("skillOverrides values must be visibility strings")?;
+                if !valid_name(name)
+                    || !matches!(state, "on" | "name-only" | "user-invocable-only" | "off")
+                {
+                    return Err(format!(
+                        "invalid skillOverrides entry {name:?}: expected on/name-only/user-invocable-only/off for a valid skill name"
+                    ));
+                }
+                overrides.insert(name.clone(), state.to_owned());
+            }
+            if overrides.len() > MAX_SCAN {
+                return Err("skillOverrides exceeds 256 combined entries".into());
+            }
+        }
+        Ok(overrides)
+    }
+    fn check_override(&self, name: &str, caller: SkillInvocation) -> Result<(), String> {
+        let overrides = self.overrides()?;
+        if !override_allows(overrides.get(name).map(String::as_str), caller) {
+            return Err(format!(
+                "skill {name:?} is unavailable for this caller due to skillOverrides"
+            ));
+        }
+        Ok(())
+    }
     fn read(&self, path: &Path) -> Result<(SkillDefinition, String), String> {
         let (text, truncated) = read_local(&self.root, path, FILE_BYTES)?;
         if truncated {
             return Err("skill exceeds 32 KiB".into());
         }
         let (meta, body) = frontmatter(&text)?;
-        for unsupported in ["context", "agent", "model", "hooks", "effort", "paths"] {
+        for unsupported in ["hooks", "effort", "paths"] {
             if meta.get(unsupported).is_some() {
                 return Err(format!("unsupported execution frontmatter: {unsupported}"));
             }
+        }
+        let context = string_field(&meta, "context")?;
+        if context.as_deref().is_some_and(|c| c != "fork") {
+            return Err("context supports only fork".into());
+        }
+        let agent = string_field(&meta, "agent")?;
+        let model = string_field(&meta, "model")?.filter(|m| m != "inherit");
+        if model.as_ref().is_some_and(|m| {
+            !matches!(m.as_str(), "opus" | "sonnet" | "haiku" | "fable")
+                && !m.starts_with("claude-")
+        }) {
+            return Err("forked skill model must be a Claude model ID, alias or inherit".into());
+        }
+        let background = bool_field(&meta, "background", false)?;
+        if context.is_none()
+            && (agent.is_some() || model.is_some() || meta.get("background").is_some())
+        {
+            return Err("agent/model/background require context:fork; inline model overrides are unsupported".into());
+        }
+        if agent
+            .as_ref()
+            .is_some_and(|a| a.is_empty() || a.len() > 64 || a == "fork")
+        {
+            return Err(
+                "invalid skill agent; context:fork uses a clean child, not a conversation fork"
+                    .into(),
+            );
         }
         let fallback = path
             .parent()
@@ -289,10 +404,18 @@ impl ClaudeSkills {
                 disable_model_invocation: bool_field(&meta, "disable-model-invocation", false)?,
                 user_invocable: bool_field(&meta, "user-invocable", true)?,
                 allowed_tools,
+                context,
+                agent,
+                model,
+                background,
             },
             body.into(),
         ))
     }
+}
+fn override_allows(state: Option<&str>, caller: SkillInvocation) -> bool {
+    !matches!(state, Some("off"))
+        && !(caller == SkillInvocation::Model && state == Some("user-invocable-only"))
 }
 fn append_bounded(output: &mut String, text: &str) -> Result<(), String> {
     if output.len().saturating_add(text.len()) > MAX_EXPANDED {

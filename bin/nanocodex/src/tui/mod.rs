@@ -966,7 +966,19 @@ pub(crate) async fn run_observed(
                             let source = if due.id.starts_with("monitor-") { "Monitor" } else { "Scheduled" };
                             let display = format!("[{source} {}] {}", due.id, due.prompt);
                             let mut prompt = SubmittedPrompt::text(display.clone());
-                            prompt.set_instruction(due.prompt);
+                            let instruction = if source == "Monitor" { Ok(due.prompt) }
+                                else { crate::config::claude_frontend::automatic(session, &due.prompt) };
+                            let instruction = match instruction {
+                                Ok(instruction) => instruction,
+                                Err(error) => {
+                                    if let Some(token) = &due.iteration_token { let _ = crate::config::claude_frontend::finish(session, token, false); }
+                                    ui.app.main.push_output(TranscriptItem::Error(format!("Scheduled prompt withheld: {error}")));
+                                    scheduler.request_immediate(Instant::now());
+                                    continue;
+                                }
+                            };
+                            prompt.set_instruction(instruction);
+                            prompt.loop_iteration_token = due.iteration_token;
                             if let Some(prompt_id) = ui.app.queue_prompt(PaneId::Main, display) {
                                 send_command(&worker_tx, WorkerCommand::Prompt { target: PaneId::Main, prompt_id, prompt })?;
                             }
@@ -2751,7 +2763,8 @@ async fn start_turn(
     updates: &mpsc::UnboundedSender<WorkerEvent>,
 ) -> Option<TrackedTurn> {
     let mut prompt = prompt;
-    if !prompt.has_instruction() {
+    let user_submission = !prompt.has_instruction();
+    if user_submission {
         match crate::config::expand_session_user_skill(agent, prompt.display()) {
             Ok(Some(instruction)) => prompt.set_instruction(instruction),
             Ok(None) => {}
@@ -2765,6 +2778,23 @@ async fn start_turn(
             }
         }
     }
+    if user_submission && agent.harness_family() == nanocodex::HarnessFamily::Claude {
+        match crate::config::claude_frontend::begin_user_iteration(
+            agent.session_id(),
+            prompt.display(),
+        ) {
+            Ok(token) => prompt.loop_iteration_token = token,
+            Err(error) => {
+                let _ = updates.send(WorkerEvent::TurnFinished {
+                    target: target.pane,
+                    main_branch_id: target.main_branch_id,
+                    error: Some(error),
+                });
+                return None;
+            }
+        }
+    }
+    let loop_token = prompt.loop_iteration_token.clone();
     let started_at = Instant::now();
     let id = *next_turn_id;
     let span = info_span!(
@@ -2799,7 +2829,19 @@ async fn start_turn(
             let task_span = span.clone();
             tokio::spawn(
                 async move {
-                    let turn_result = turn.result().await;
+                    let mut turn_result = turn.result().await;
+                    if let Some(token) = &loop_token
+                        && let Err(error) = crate::config::claude_frontend::finish(
+                            agent.session_id(),
+                            token,
+                            turn_result.is_ok(),
+                        )
+                    {
+                        turn_result = Err(NanocodexError::backend(
+                            "loop",
+                            std::io::Error::other(error),
+                        ));
+                    }
                     let rollout_result = agent.flush_rollout().await;
                     let persistence_succeeded = rollout_result.is_ok();
                     let (result, error, status, otel_status) = match (turn_result, rollout_result) {
@@ -2839,6 +2881,9 @@ async fn start_turn(
             })
         }
         Err(error) => {
+            if let Some(token) = &loop_token {
+                let _ = crate::config::claude_frontend::finish(agent.session_id(), token, false);
+            }
             drop(updates.send(WorkerEvent::TurnTraceRejected {
                 target: target.pane,
                 id,
