@@ -80,7 +80,10 @@ async fn install_with(
             bail!("--artifacts is only for a Linux Hand");
         }
         let _lock = crate::update::lock_service_operation()?;
-        return crate::hand_service::ensure(executable, account_file).await;
+        eprintln!("Installing or repairing the local Hand service…");
+        crate::hand_service::ensure(executable, account_file).await?;
+        eprintln!("Hand service is installed and connected.");
+        return Ok(());
     }
     if target.is_none() && cfg!(target_os = "windows") {
         if artifacts.is_some() {

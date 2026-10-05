@@ -95,6 +95,15 @@ Nanocodex account-file or GitHub/provider token override.
 
 ## Separate native-service acceptance
 
+For an already connected macOS service, run
+`node bin/nanocodex/tests/hand_install_e2e.mjs CLI [OUTPUT_DIR]` to check repeated
+`hand install` and invalid executable errors against the real launchd owner.
+It uses an invalid synthetic account override, checks that the exact PID and
+plist survive installer exit, and records screen warnings when capture is
+unavailable. Use a CLI containing this idempotency behavior; an older installer
+may restart a connected service whose screen is unavailable. This journey does
+not cover first installation or version handover.
+
 The runners above do **not** establish these contracts. Run each on a disposable
 native desktop user/VM with a real installed service and a synthetic account API
 fixture reachable over the actual Hand transport. Do not run these destructive

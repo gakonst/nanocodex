@@ -1,5 +1,5 @@
 {
-  "originHash": "b268781decc0838380a6c8de58f5cf1c64407c652b4d6999372ebfcf832d084f",
+  "originHash": "bb93df265f85a1e272eefa0d6628a95762ad0c0fe53575b07c53917935896a49",
   "pins": [
     {
       "identity": "chatlayout",
@@ -56,6 +56,15 @@
       }
     },
     {
+      "identity": "opencombine",
+      "kind": "remoteSourceControl",
+      "location": "https://github.com/OpenCombine/OpenCombine.git",
+      "state": {
+        "revision": "8576f0d579b27020beccbccc3ea6844f3ddfc2c2",
+        "version": "0.14.0"
+      }
+    },
+    {
       "identity": "phonenumberkit",
       "kind": "remoteSourceControl",
       "location": "https://github.com/PhoneNumberKit/PhoneNumberKit",
@@ -65,12 +74,30 @@
       }
     },
     {
+      "identity": "swift-asn1",
+      "kind": "remoteSourceControl",
+      "location": "https://github.com/apple/swift-asn1.git",
+      "state": {
+        "revision": "3b6410f7dee09eb33cdd26260c5fd47fda19b0e2",
+        "version": "1.7.3"
+      }
+    },
+    {
       "identity": "swift-cmark",
       "kind": "remoteSourceControl",
       "location": "https://github.com/swiftlang/swift-cmark",
       "state": {
         "revision": "08ddb528923cc1a6527e02b7a1aee9e516ca749a",
         "version": "0.9.0"
+      }
+    },
+    {
+      "identity": "swift-crypto",
+      "kind": "remoteSourceControl",
+      "location": "https://github.com/apple/swift-crypto.git",
+      "state": {
+        "revision": "a9d1d5ab8951ada40cafff8c8e2b551dfde4f390",
+        "version": "5.0.0"
       }
     },
     {

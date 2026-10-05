@@ -627,6 +627,12 @@ compete with an existing system LaunchDaemon. Use `--executable PATH` with
 `hand install` for an explicitly selected Hand binary. Starting before user
 login is not supported by these user-service commands.
 
+Installation waits for the Hand to connect to the account. If screen sharing is
+still starting or unavailable, installation succeeds with a warning and the
+service keeps retrying; shell and filesystem access remain available. Check
+Screen Recording permission and `~/.nanocodex/service/daemon.log` for screen
+problems. Repeating `hand install` leaves a connected service running.
+
 `nanocodex update --nightly --restart-hand` stages a complete verified release, switches the
 installed Hand service, waits for that exact executable to publish a connected
 catalog, and then activates the CLI. A failed Hand startup restores the previous

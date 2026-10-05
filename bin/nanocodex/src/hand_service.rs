@@ -391,7 +391,7 @@ pub(crate) async fn install(binary: Option<PathBuf>, account_file: Option<PathBu
     let since = SystemTime::now();
     if let Err(error) = async {
         start().await?;
-        verify_connected(&binary, since, Duration::from_secs(60)).await?;
+        verify_catalog(&binary, since, Duration::from_secs(60), Readiness::Hand).await?;
         Ok::<(), eyre::Report>(())
     }
     .await
@@ -421,7 +421,10 @@ pub(crate) async fn ensure(binary: Option<PathBuf>, account_file: Option<PathBuf
     }
     let selected = state.executable.as_deref().map(executable).transpose()?;
     if selected.as_deref() == Some(candidate.as_path()) {
-        if connected_catalog(&state, &candidate, SystemTime::UNIX_EPOCH).await? {
+        if let Some(catalog) =
+            connected_catalog(&state, &candidate, SystemTime::UNIX_EPOCH, Readiness::Hand).await?
+        {
+            warn_unavailable_screen(&catalog)?;
             return Ok(());
         }
         let since = SystemTime::now();
@@ -430,7 +433,7 @@ pub(crate) async fn ensure(binary: Option<PathBuf>, account_file: Option<PathBuf
         } else {
             start().await?;
         }
-        verify_connected(&candidate, since, Duration::from_secs(60)).await?;
+        verify_catalog(&candidate, since, Duration::from_secs(60), Readiness::Hand).await?;
         return Ok(());
     }
     let mut update = prepare_update(&candidate, true)
@@ -460,53 +463,110 @@ async fn connected_catalog(
     state: &ServiceStatus,
     expected: &Path,
     since: SystemTime,
-) -> Result<bool> {
-    let ready = state.loaded
-        && state.pid.is_some_and(|pid| pid > 0)
-        && state.executable.as_deref() == Some(expected)
-        && fs::read_dir(home()?.join(".nanocodex/hands")).is_ok_and(|entries| {
-            entries.flatten().any(|entry| {
+    readiness: Readiness,
+) -> Result<Option<Value>> {
+    if !state.loaded
+        || !state.pid.is_some_and(|pid| pid > 0)
+        || state.executable.as_deref() != Some(expected)
+    {
+        return Ok(None);
+    }
+    let catalog = fs::read_dir(home()?.join(".nanocodex/hands"))
+        .ok()
+        .and_then(|entries| {
+            entries.flatten().find_map(|entry| {
                 let path = entry.path().join("status.json");
-                fs::metadata(&path)
+                if !fs::metadata(&path)
                     .and_then(|metadata| metadata.modified())
                     .is_ok_and(|modified| modified >= since)
-                    && fs::read(path)
-                        .ok()
-                        .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
-                        .is_some_and(|value| {
-                            value["status"] == "connected"
-                                && value["screen"]["status"] == "ready"
-                                && value["screen"]["transport"] == "webrtc"
-                                && daemon_matches(&value, state.pid, expected)
-                        })
+                {
+                    return None;
+                }
+                let value: Value = serde_json::from_slice(&fs::read(path).ok()?).ok()?;
+                (value["status"] == "connected"
+                    && daemon_matches(&value, state.pid, expected)
+                    && (matches!(readiness, Readiness::Hand) || screen_ready(&value)))
+                .then_some(value)
             })
         });
-    if !ready {
-        return Ok(false);
+    if catalog.is_none() {
+        return Ok(None);
     }
     // Publication and launchd inspection are independent. Never accept the
     // catalog of an owner that exited or was replaced while we read it.
     let current = status().await?;
-    Ok(current.loaded
-        && current.pid == state.pid
-        && current.executable.as_deref() == Some(expected))
+    if current.loaded && current.pid == state.pid && current.executable.as_deref() == Some(expected)
+    {
+        Ok(catalog)
+    } else {
+        Ok(None)
+    }
 }
+
+fn screen_ready(catalog: &Value) -> bool {
+    catalog["screen"]["status"] == "ready" && catalog["screen"]["transport"] == "webrtc"
+}
+
+fn warn_unavailable_screen(catalog: &Value) -> Result<()> {
+    if !screen_ready(catalog) {
+        eprintln!(
+            "Warning: Hand is connected; screen sharing is unavailable or still starting. The service will keep retrying. Check Screen Recording permission and {} for details.",
+            home()?.join(".nanocodex/service/daemon.log").display()
+        );
+    }
+    Ok(())
+}
+
+#[derive(Clone, Copy)]
+enum Readiness {
+    Hand,
+    Screen,
+}
+
 /// Require a fresh connected WebRTC screen and the expected launchd owner.
 pub(crate) async fn verify_connected(
     expected: &Path,
     since: SystemTime,
     timeout: Duration,
 ) -> Result<ServiceStatus> {
+    verify_catalog(expected, since, timeout, Readiness::Screen).await
+}
+
+async fn verify_catalog(
+    expected: &Path,
+    since: SystemTime,
+    timeout: Duration,
+    readiness: Readiness,
+) -> Result<ServiceStatus> {
     let expected = executable(expected)?;
     let deadline = tokio::time::Instant::now() + timeout;
+    eprintln!(
+        "Waiting up to {} seconds for the Hand to connect{}… Logs: {}",
+        timeout.as_secs(),
+        if matches!(readiness, Readiness::Screen) {
+            " and its screen to become ready"
+        } else {
+            ""
+        },
+        home()?.join(".nanocodex/service/daemon.log").display()
+    );
     loop {
         let state = status().await?;
-        if connected_catalog(&state, &expected, since).await? {
+        if let Some(catalog) = connected_catalog(&state, &expected, since, readiness).await? {
+            if matches!(readiness, Readiness::Hand) {
+                warn_unavailable_screen(&catalog)?;
+            }
             return Ok(state);
         }
         if tokio::time::Instant::now() >= deadline {
             bail!(
-                "Hand did not publish a fresh connected catalog with a ready WebRTC screen and the expected daemon PID/executable before timeout"
+                "Hand did not publish a fresh connected catalog{} with the expected daemon PID/executable before timeout. Check the saved account login and {}",
+                if matches!(readiness, Readiness::Screen) {
+                    " with a ready WebRTC screen"
+                } else {
+                    ""
+                },
+                home()?.join(".nanocodex/service/daemon.log").display()
             );
         }
         tokio::time::sleep(Duration::from_millis(250)).await;
