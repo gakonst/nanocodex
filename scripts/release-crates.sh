@@ -16,6 +16,8 @@ crates=(
   "nanocodex-agent:crates/nanocodex-agent"
   "nanocodex-claude-tools:crates/nanocodex-claude-tools"
   "nanocodex-claude:crates/nanocodex-claude"
+  "nanocodex-xai-tools:crates/nanocodex-xai-tools"
+  "nanocodex-xai:crates/nanocodex-xai"
   "nanocodex-durability:crates/nanocodex-durability"
   "nanocodex-managed:crates/nanocodex-managed"
   "nanocodex-subagents:crates/nanocodex-subagents"

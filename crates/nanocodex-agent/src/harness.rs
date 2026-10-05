@@ -13,6 +13,8 @@ pub enum HarnessFamily {
     Codex,
     /// The native Claude Messages agent loop.
     Claude,
+    /// Source-adapted xAI Grok Build Responses harness.
+    Xai,
 }
 
 impl HarnessFamily {
@@ -21,6 +23,7 @@ impl HarnessFamily {
         match self {
             Self::Codex => "codex",
             Self::Claude => "claude",
+            Self::Xai => "xai",
         }
     }
 
@@ -29,6 +32,7 @@ impl HarnessFamily {
         match self {
             Self::Codex => HarnessModel::Codex(Model::Sol),
             Self::Claude => HarnessModel::Claude(ClaudeModel::Opus55),
+            Self::Xai => HarnessModel::Xai(XaiModel::Grok46),
         }
     }
 }
@@ -46,7 +50,8 @@ impl FromStr for HarnessFamily {
         match value {
             "codex" => Ok(Self::Codex),
             "claude" => Ok(Self::Claude),
-            _ => Err("expected harness family codex or claude"),
+            "xai" => Ok(Self::Xai),
+            _ => Err("expected harness family codex, claude or xai"),
         }
     }
 }
@@ -150,6 +155,8 @@ pub enum HarnessModel {
     Codex(Model),
     /// A model implemented by the native Messages harness.
     Claude(ClaudeModel),
+    /// A model implemented by the Grok Build source adaptation.
+    Xai(XaiModel),
 }
 
 impl HarnessModel {
@@ -158,6 +165,7 @@ impl HarnessModel {
         match self {
             Self::Codex(_) => HarnessFamily::Codex,
             Self::Claude(_) => HarnessFamily::Claude,
+            Self::Xai(_) => HarnessFamily::Xai,
         }
     }
 
@@ -166,6 +174,7 @@ impl HarnessModel {
         match self {
             Self::Codex(model) => model.as_str(),
             Self::Claude(model) => model.as_str(),
+            Self::Xai(model) => model.as_str(),
         }
     }
 
@@ -174,6 +183,7 @@ impl HarnessModel {
         match self {
             Self::Codex(model) => model.default_thinking(),
             Self::Claude(model) => model.default_thinking(),
+            Self::Xai(model) => model.default_thinking(),
         }
     }
 
@@ -182,6 +192,7 @@ impl HarnessModel {
         match self {
             Self::Codex(model) => model.supports_thinking(thinking),
             Self::Claude(model) => model.supports_thinking(thinking),
+            Self::Xai(model) => model.supports_thinking(thinking),
         }
     }
 
@@ -201,6 +212,7 @@ impl HarnessModel {
             .into_iter()
             .map(Self::Codex)
             .chain(ClaudeModel::ALL.into_iter().map(Self::Claude))
+            .chain(XaiModel::ALL.into_iter().map(Self::Xai))
             .filter(move |model| model.family() == family)
     }
 }
@@ -242,6 +254,7 @@ impl FromStr for HarnessModel {
             .parse::<Model>()
             .map(Self::Codex)
             .or_else(|_| value.parse::<ClaudeModel>().map(Self::Claude))
+            .or_else(|_| value.parse::<XaiModel>().map(Self::Xai))
     }
 }
 
@@ -255,5 +268,66 @@ impl<'de> Deserialize<'de> for HarnessModel {
         String::deserialize(deserializer)?
             .parse()
             .map_err(de::Error::custom)
+    }
+}
+
+/// Models in the pinned Grok Build routing catalog.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum XaiModel {
+    /// Grok 4.6, upstream default.
+    Grok46,
+    /// Grok 4.5.
+    Grok45,
+}
+impl XaiModel {
+    /// Context capacity in the pinned Grok Build model catalog.
+    pub const fn context_window_tokens(self) -> u64 {
+        500_000
+    }
+    /// Model-specific automatic compaction threshold from Grok Build.
+    pub const fn auto_compact_threshold_percent(self) -> u32 {
+        80
+    }
+    /// Whether this model advertises provider-hosted search.
+    pub const fn supports_backend_search(self) -> bool {
+        matches!(self, Self::Grok46)
+    }
+    /// Known upstream routing choices.
+    pub const ALL: [Self; 2] = [Self::Grok46, Self::Grok45];
+    /// Native model identifier.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Grok46 => "grok-4.6",
+            Self::Grok45 => "grok-4.5",
+        }
+    }
+    /// Upstream default reasoning effort.
+    pub const fn default_thinking(self) -> Thinking {
+        Thinking::High
+    }
+    /// Supported explicit reasoning efforts from the upstream catalog.
+    pub const fn supports_thinking(self, thinking: Thinking) -> bool {
+        matches!(thinking, Thinking::Low | Thinking::Medium | Thinking::High)
+            || (matches!(self, Self::Grok46) && matches!(thinking, Thinking::Xhigh))
+    }
+}
+impl fmt::Display for XaiModel {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+impl FromStr for XaiModel {
+    type Err = &'static str;
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "grok-4.6" => Ok(Self::Grok46),
+            "grok-4.5" => Ok(Self::Grok45),
+            _ => Err("unsupported xAI routing model"),
+        }
+    }
+}
+impl From<XaiModel> for HarnessModel {
+    fn from(model: XaiModel) -> Self {
+        Self::Xai(model)
     }
 }

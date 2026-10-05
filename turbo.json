@@ -19,6 +19,8 @@
         "$TURBO_ROOT$/crates/nanocodex/**",
         "$TURBO_ROOT$/crates/nanocodex-agent/**",
         "$TURBO_ROOT$/crates/nanocodex-claude/**",
+        "$TURBO_ROOT$/crates/nanocodex-xai/**",
+        "$TURBO_ROOT$/crates/nanocodex-xai-tools/**",
         "$TURBO_ROOT$/crates/nanocodex-claude-tools/**",
         "$TURBO_ROOT$/crates/nanocodex-durability/**",
         "$TURBO_ROOT$/crates/nanocodex-oai-api/**",

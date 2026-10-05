@@ -79,6 +79,7 @@ export async function createClaude(options, load, type, harnessDefaults) {
   }); }
   catch (error) { host.dispose(); throw error; }
   config.codexHarness = harnesses.codex;
+  config.xaiHarness = harnesses.xai;
   config.subagentRouting = internalRuntime?.subagentRouting !== undefined;
   if (options.subagents !== undefined) config.subagents = options.subagents.maxConcurrency === undefined ? {} : { max_concurrency: options.subagents.maxConcurrency };
   options = undefined; // Do not retain caller credentials in runtime lifecycle closures.

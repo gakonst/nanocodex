@@ -1,4 +1,6 @@
+function family(model) { return model.startsWith('grok-') ? 'xai' : model.startsWith('claude-') ? 'claude' : 'codex'; }
 const modelAliases = new Map([
+  ["grok-4.6", "grok-4.6"], ["grok-4.5", "grok-4.5"],
   ["kimi", "kimi"], ["kimi-k3", "kimi"], ["mimo", "mimo"], ["mimo-v2.6-pro", "mimo"],
   ['sol', 'sol'], ['gpt-6.1-sol', 'sol'],
   ['luna', 'luna'], ['gpt-6-luna', 'luna'],
@@ -33,15 +35,15 @@ export function createSubagentRouting({ resolve, authorize, load, save }) {
       // the same immutable request even if the caller reuses its object.
       request = Object.freeze({ ...request,
         ...(request.model === undefined ? {} : { model: canonicalModel(request.model) }) });
-      if (request.harness !== undefined && !['codex','claude'].includes(request.harness)) throw new TypeError('invalid harness family');
-      if (request.harness && request.model && request.harness !== (request.model.startsWith('claude-') ? 'claude' : 'codex')) throw new TypeError('model does not belong to selected harness');
+      if (request.harness !== undefined && !['codex','claude','xai'].includes(request.harness)) throw new TypeError('invalid harness family');
+      if (request.harness && request.model && request.harness !== family(request.model)) throw new TypeError('model does not belong to selected harness');
       const authority = await authorize(request.parentSessionId, request.hostContextRef);
       const choice = await resolve(request, authority);
       if (!choice || typeof choice.model !== "string" || typeof choice.provider !== "string"
         || typeof choice.thinking !== "string") throw new TypeError("subagent router returned an invalid choice");
       const model = canonicalModel(choice.model);
-      const harness = choice.harness ?? (model.startsWith('claude-') ? 'claude' : 'codex');
-      if (!['codex','claude'].includes(harness) || harness !== (model.startsWith('claude-') ? 'claude' : 'codex') || (request.harness !== undefined && request.harness !== harness)) throw new TypeError('subagent route conflicts with harness family');
+      const harness = choice.harness ?? family(model);
+      if (!['codex','claude','xai'].includes(harness) || harness !== family(model) || (request.harness !== undefined && request.harness !== harness)) throw new TypeError('subagent route conflicts with harness family');
       if (!choice.provider.trim() || !thinkingLevels.has(choice.thinking)
         || (model === 'sol' && choice.thinking === 'none')
         || (choice.providerModel !== undefined && (typeof choice.providerModel !== 'string' || !choice.providerModel.trim()))) {
@@ -56,7 +58,7 @@ export function createSubagentRouting({ resolve, authorize, load, save }) {
       // Allowlisted public fields only. Resolution may use credentials, but they
       // must never enter a descriptor, live route, or the Rust bridge.
       const route = Object.freeze({ provider: choice.provider, model,
-        thinking: choice.thinking, ...((choice.harness !== undefined || harness === 'claude') ? { harness } : {}), ...(choice.providerModel === undefined ? {} : { providerModel: choice.providerModel }) });
+        thinking: choice.thinking, ...((choice.harness !== undefined || harness !== 'codex') ? { harness } : {}), ...(choice.providerModel === undefined ? {} : { providerModel: choice.providerModel }) });
       const routeId = crypto.randomUUID();
       pending.set(routeId, { route, parentSessionId: request.parentSessionId,
         hostContextRef: request.hostContextRef });

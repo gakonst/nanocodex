@@ -20,10 +20,12 @@ rustdoc-args = ["-D", "warnings"]
 [features]
 default = []
 claude = ["dep:nanocodex-claude"]
+xai = ["dep:nanocodex-xai"]
 sqlite = ["dep:rusqlite"]
 postgres = ["dep:tokio-postgres"]
 
 [dependencies]
+nanocodex-xai = { workspace = true, optional = true }
 nanocodex-claude = { workspace = true, optional = true }
 nanocodex-agent.workspace = true
 sha2.workspace = true

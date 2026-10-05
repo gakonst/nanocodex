@@ -15,8 +15,10 @@ description = "Composable task-tree subagents for Nanocodex"
 [features]
 default = []
 claude = ["dep:nanocodex-claude"]
+xai = ["dep:nanocodex-xai"]
 
 [dependencies]
+nanocodex-xai = { workspace = true, optional = true }
 async-trait.workspace = true
 futures-util.workspace = true
 jsonschema.workspace = true

@@ -17,11 +17,12 @@ crate-type = ["cdylib", "rlib"]
 async-trait.workspace = true
 futures-util.workspace = true
 js-sys.workspace = true
-nanocodex = { workspace = true, features = ["claude"] }
+nanocodex = { workspace = true, features = ["claude", "xai"] }
 nanocodex-claude.workspace = true
+nanocodex-xai.workspace = true
 nanocodex-agent.workspace = true
 reqwest.workspace = true
-nanocodex-subagents = { workspace = true, features = ["claude"] }
+nanocodex-subagents = { workspace = true, features = ["claude", "xai"] }
 nanocodex-voice-protocol.workspace = true
 serde.workspace = true
 serde_json.workspace = true

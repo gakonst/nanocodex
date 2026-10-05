@@ -20,6 +20,17 @@ export function checkDocumentedBrowserVersion(readme, packageVersion) {
 }
 
 const requiredFiles = [
+  "node/Xai.mjs",
+  "node/Xai.d.mts",
+  "browser/Xai.mjs",
+  "browser/Xai.d.mts",
+  "worker/Xai.mjs",
+  "worker/Xai.d.mts",
+  "host/Xai.mjs",
+  "host/Xai.d.mts",
+  "runtime/xai.mjs",
+  "runtime/xai.d.mts",
+  "runtime/xai-host.mjs",
   "host/Claude.mjs",
   "host/Claude.d.mts",
   "node/Claude.mjs",

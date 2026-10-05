@@ -1,3 +1,4 @@
+import { create as createXai } from './Xai.mjs';
 import { prepareHarnesses } from '../runtime/harnesses.mjs';
 import { create as createClaude } from './Claude.mjs';
 import { applyBrowserPatch, Nanocodex } from "../pkg-web/nanocodex.js";
@@ -35,6 +36,7 @@ import {
 
 /** Creates the Rust/WASM Agent in the current Web API host isolate. */
 export async function create(options = {}) {
+  if (options.harness === 'xai') return createXai(options);
   if (options.harness === 'claude') return createClaude(options);
   if (options.harness !== undefined && options.harness !== 'codex') throw new TypeError('unsupported harness family');
   if (managedTransportOptions(options?.transport)) return createManagedAgent(options);
@@ -186,6 +188,7 @@ export async function create(options = {}) {
           stateless,
           subagents: subagentConfig,
           claudeHarness: harnesses?.claude,
+          xaiHarness: harnesses?.xai,
           subagentRouting: internalRuntime?.subagentRouting !== undefined,
           hostDefinitionId,
           beforeCompaction: beforeCompaction !== undefined,

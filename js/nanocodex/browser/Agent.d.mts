@@ -26,6 +26,7 @@ type WorkerToolExposureOptions =
   | { mcp: WorkerMcpServers; toolMode?: "code" | undefined };
 
 /** Creates a Rust/WASM Agent in a package-owned browser module Worker. */
+export function create(options: import('../runtime/xai.mjs').Options & { harness: 'xai' }): Promise<import('../runtime/xai.mjs').Agent>;
 export function create(options: import('../runtime/claude.mjs').Options & { harness: 'claude' }): Promise<import('../runtime/claude.mjs').Agent>;
 export function create(options: create.ManagedOptions): Promise<AgentLifecycle>;
 export function create(options?: create.Options): Promise<create.ReturnType>;

@@ -43,6 +43,7 @@ pub(crate) use claude::scheduler::SessionScheduler;
 pub(crate) use claude::{prepare_rewind_branch, rewind_files};
 mod instructions;
 pub(crate) use instructions::{expand_session_user_skill, expand_user_skill};
+mod xai;
 
 pub(crate) struct ConfiguredAgent {
     pub(crate) claude_scheduler: Option<Arc<SessionScheduler>>,
@@ -116,6 +117,7 @@ impl ModelArgs {
         let variable = match family {
             HarnessFamily::Codex => "OPENAI_REASONING_EFFORT",
             HarnessFamily::Claude => "ANTHROPIC_REASONING_EFFORT",
+            HarnessFamily::Xai => "XAI_REASONING_EFFORT",
         };
         std::env::var(variable)
             .ok()
@@ -174,15 +176,15 @@ pub(crate) struct AgentArgs {
     #[command(flatten)]
     model_policy: ModelArgs,
 
-    /// Select the native coding harness: codex or claude.
-    #[arg(long, global = true, value_parser = ["codex", "claude"])]
+    /// Select the native coding harness: codex, claude or xai.
+    #[arg(long, global = true, value_parser = ["codex", "claude", "xai"])]
     harness: Option<String>,
 
     /// Select the native Claude harness (shorthand for --harness claude).
     #[arg(long, global = true)]
     claude: bool,
 
-    /// Model in the selected harness family. Defaults use OPENAI_MODEL or ANTHROPIC_MODEL.
+    /// Model in the selected harness family. Defaults use OPENAI_MODEL, ANTHROPIC_MODEL or XAI_MODEL.
     #[arg(long, global = true, value_parser = NonEmptyStringValueParser::new())]
     model: Option<String>,
 
@@ -213,6 +215,14 @@ pub(crate) struct AgentArgs {
     /// Native Claude admission mode (auto classifier mode is not implemented).
     #[arg(long, global = true, value_parser = ["full-access", "bypassPermissions", "default", "manual", "acceptEdits", "plan", "dontAsk"])]
     permission_mode: Option<String>,
+
+    /// Explicit xAI API key override.
+    #[arg(long, global = true, env = "XAI_API_KEY", value_parser = NonEmptyStringValueParser::new(), hide_env_values = true)]
+    xai_api_key: Option<String>,
+
+    /// Native xAI Responses endpoint, including /v1/responses.
+    #[arg(long, global = true, env = "XAI_RESPONSES_URL", value_parser = NonEmptyStringValueParser::new())]
+    xai_responses_url: Option<String>,
 
     /// Optional namespace prepended to the model identifier on the wire.
     ///
@@ -367,6 +377,7 @@ impl AgentArgs {
             (true, Some(family)) if family != "claude" => {
                 Err(eyre!("--claude conflicts with --harness {family}"))
             }
+            (false, Some("xai")) => Ok(HarnessFamily::Xai),
             (true, _) | (false, Some("claude")) => Ok(HarnessFamily::Claude),
             _ => Ok(HarnessFamily::Codex),
         }
@@ -377,6 +388,7 @@ impl AgentArgs {
         let variable = match family {
             HarnessFamily::Codex => "OPENAI_MODEL",
             HarnessFamily::Claude => "ANTHROPIC_MODEL",
+            HarnessFamily::Xai => "XAI_MODEL",
         };
         let environment = std::env::var(variable).ok();
         self.model
@@ -522,6 +534,11 @@ impl AgentArgs {
                 .build_claude(durable, vm, tui, local_durability, requested_model)
                 .await;
         }
+        if harness == HarnessFamily::Xai {
+            return self
+                .build_xai(durable, vm, tui, local_durability, requested_model)
+                .await;
+        }
         let thinking = self
             .model_policy
             .requested_thinking(harness)?
@@ -562,7 +579,7 @@ impl AgentArgs {
         };
         let model = match requested_model {
             Some(HarnessModel::Codex(model)) => model,
-            Some(HarnessModel::Claude(_)) => {
+            Some(HarnessModel::Claude(_) | HarnessModel::Xai(_)) => {
                 unreachable!("model family was validated")
             }
             None => connected_account_default_model(auth.mode()),
@@ -752,6 +769,18 @@ impl AgentArgs {
                     builder.build()
                 }
             });
+        let harness_builder = xai::register_xai_recipe(
+            harness_builder,
+            xai::XaiConnection::new(self.xai_api_key, self.xai_responses_url),
+            session.workspace.clone(),
+            self.instructions.clone(),
+            claude_tools.clone(),
+            self.model_policy.web_search,
+            subagent_runtime
+                .as_ref()
+                .map(|(registry, _, _)| Arc::clone(registry)),
+            Arc::clone(&workspaces),
+        );
         let harness = claude::register_claude_recipe(
             harness_builder,
             claude::ClaudeConnection::new(

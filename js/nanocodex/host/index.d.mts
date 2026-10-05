@@ -65,3 +65,5 @@ export type {
 } from "../browser/host.mjs";
 
 export * as Claude from "./Claude.mjs";
+
+export * as Xai from "./Xai.mjs";

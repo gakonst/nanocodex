@@ -88,6 +88,7 @@ pub(super) struct ClaudeConfig {
     #[serde(default)]
     subagent_routing: bool,
     codex_harness: Option<Value>,
+    xai_harness: Option<Value>,
 }
 
 #[derive(Default, Deserialize, Serialize)]
@@ -322,6 +323,7 @@ impl WasmNanoclaude {
                 hosts: Arc::new(Mutex::new(HashMap::new())),
                 codex,
                 claude: Some(serde_json::to_value(&config).map_err(js_error)?),
+                xai: config.xai_harness.clone(),
             });
             let subagents = WasmSubagents::new(
                 host,

@@ -51,12 +51,12 @@ image.workspace = true
 indicatif.workspace = true
 percent-encoding.workspace = true
 jsonschema.workspace = true
-nanocodex = { workspace = true, features = ["claude-tools", "workspace-tools"] }
+nanocodex = { workspace = true, features = ["claude-tools", "xai-tools", "workspace-tools"] }
 nanocodex-cli-auth.workspace = true
-nanocodex-durability = { workspace = true, features = ["sqlite"] }
+nanocodex-durability = { workspace = true, features = ["sqlite", "xai"] }
 nanocodex-browser.workspace = true
 nanocodex-observability = { workspace = true, features = ["cli"] }
-nanocodex-subagents.workspace = true
+nanocodex-subagents = { workspace = true, features = ["xai"] }
 nanocodex-voice.workspace = true
 nix = { workspace = true, features = ["fs"] }
 nanousd = { workspace = true, optional = true }

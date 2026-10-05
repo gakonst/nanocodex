@@ -1,0 +1,27 @@
+[package]
+name = "nanocodex-xai-tools"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license = "Apache-2.0"
+publish.workspace = true
+description = "Independent xAI-native explicitly authorized host tools"
+
+[features]
+default = ["native"]
+native = ["dep:regex", "dep:globset", "dep:tokio", "dep:nix"]
+
+[dependencies]
+serde = { workspace = true, features = ["rc"] }
+serde_json.workspace = true
+
+[target.'cfg(not(target_family = "wasm"))'.dependencies]
+regex = { workspace = true, optional = true }
+globset = { version = "0.4", optional = true }
+tokio = { workspace = true, optional = true, features = ["rt", "process", "io-util", "time", "macros"] }
+
+[target.'cfg(unix)'.dependencies]
+nix = { workspace = true, optional = true }
+
+[lints]
+workspace = true

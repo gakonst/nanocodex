@@ -37,6 +37,8 @@ workspace-tools = [
     "tools",
     "nanocodex-oai-tools/workspace-runtime",
 ]
+xai = ["dep:nanocodex-xai", "nanocodex-durability?/xai"]
+xai-tools = ["xai", "dep:nanocodex-xai-tools", "nanocodex-xai/tools"]
 
 [dependencies]
 nanocodex-agent = { path = "../nanocodex-agent", version = "0.6.6", default-features = false }
@@ -45,6 +47,8 @@ nanocodex-claude-tools = { workspace = true, optional = true }
 nanocodex-durability = { workspace = true, optional = true }
 nanocodex-oai-api = { path = "../nanocodex-oai-api", version = "0.6.6", default-features = false, features = ["events"] }
 nanocodex-oai-tools = { path = "../nanocodex-oai-tools", version = "0.6.6", default-features = false, optional = true }
+nanocodex-xai = { workspace = true, optional = true }
+nanocodex-xai-tools = { workspace = true, optional = true }
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 nanocodex-managed = { workspace = true, optional = true }

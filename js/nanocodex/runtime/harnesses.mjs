@@ -1,3 +1,5 @@
+import { createXaiHost } from './xai-host.mjs';
+import { toXaiConfig } from './xai.mjs';
 import { registerDefinitionHost, releaseDefinitionHost, releaseHostSessions, toWasmConfig } from '../internal.mjs';
 import { createClaudeHost } from './claude-host.mjs';
 import { toClaudeConfig } from './claude.mjs';
@@ -12,7 +14,7 @@ export async function prepareHarnesses(harnesses, emit, {
 } = {}) {
   if (harnesses === undefined) return { close() {} };
   if (!harnesses || typeof harnesses !== 'object' || Array.isArray(harnesses)
-    || Object.keys(harnesses).some(key => !['codex', 'claude'].includes(key))) throw new TypeError('harnesses accepts codex and claude capabilities');
+    || Object.keys(harnesses).some(key => !['codex', 'claude', 'xai'].includes(key))) throw new TypeError('harnesses accepts codex, claude and xai capabilities');
   const hosts = [];
   const close = async () => {
     await Promise.all(hosts.map(async ([id, host]) => {
@@ -23,6 +25,15 @@ export async function prepareHarnesses(harnesses, emit, {
   };
   const result = { close };
   try {
+    if (harnesses.xai) {
+      const options = harnesses.xai;
+      if (options.durability !== undefined || options.durabilityId !== undefined || options.sessionId !== undefined || options.harnesses !== undefined) throw new TypeError('child harness capabilities must be ephemeral and cannot contain nested harnesses');
+      const config = toXaiConfig(options);
+      const host = createXaiHost({ ...options, endpoint: options.endpoint ?? "https://api.x.ai/v1/responses", onEvent: emit, subagentSessions, subagentRouting });
+      const id = registerDefinitionHost(host);
+      hosts.push([id, host]);
+      result.xai = { ...config, hostDefinitionId: id, authHostId: id, tools: JSON.parse(host.toolDefinitions()) };
+    }
     if (harnesses.claude) {
       const options = harnesses.claude;
       if (options.durability !== undefined || options.durabilityId !== undefined || options.sessionId !== undefined || options.harnesses !== undefined) throw new TypeError('child harness capabilities must be ephemeral and cannot contain nested harnesses');

@@ -89,6 +89,16 @@ a subscription sign-in screen. Managed account connection is documented in the
 [managed Claude guide](../../docs/CLAUDE_MANAGED.md). See the [Claude JavaScript guide](../../docs/CLAUDE_JAVASCRIPT.md)
 for durable reopen, replay, and placement boundaries.
 
+### Explicit xAI runtime
+
+`Xai.create` runs the source-adapted Grok Build Responses harness in Rust/WASM.
+It accepts explicit xAI authentication, named host tools, the existing durability
+store contract, and optional shared subagents. It is exported by the Node,
+browser, Worker, and host entry points. The pinned catalog includes `grok-4.6`
+and `grok-4.5`; compaction and native conversation recovery stay in the backend.
+See the [xAI backend guide](../../docs/NANOXAI.md) for setup, model capabilities,
+host responsibilities, and recovery limits.
+
 ### Personal memories and caller context
 
 Managed agents can keep user preferences separate from team knowledge:

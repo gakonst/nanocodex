@@ -476,6 +476,16 @@ impl AgentArgs {
                     builder.build()
                 }
             });
+        let harness_builder = super::xai::register_xai_recipe(
+            harness_builder,
+            super::xai::XaiConnection::new(self.xai_api_key, self.xai_responses_url),
+            workspace.clone(),
+            instructions.clone(),
+            tools.clone(),
+            self.model_policy.web_search,
+            tool_registry.clone(),
+            workspaces.clone(),
+        );
         let tool_hooks = connection.hooks(workspaces.clone())?;
         let permission_workspaces = workspaces.clone();
         let (interaction, claude_interactions) =

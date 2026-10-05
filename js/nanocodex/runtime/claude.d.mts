@@ -50,7 +50,7 @@ export type Options = Readonly<{
   /** Opt in to the canonical shared subagent task tree. */
   subagents?: Readonly<{ maxConcurrency?: number }>;
   /** Explicit alternate-family capability; no credentials are inferred. */
-  harnesses?: Readonly<{ codex?: CodexHarnessOptions }>;
+  harnesses?: Readonly<{ codex?: CodexHarnessOptions; xai?: import('./xai.mjs').Options }>;
   auth: Auth;
   model: string;
   endpoint?: string;

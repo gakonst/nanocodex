@@ -44,6 +44,7 @@ enum Journey {
     MissingChildAuth,
     Subscription,
     SubscriptionRecovery,
+    XaiMixed,
     ProjectContext,
     ContextRouting,
 }
@@ -135,11 +136,15 @@ impl Provider {
         };
         if self.journey == Journey::ContextRouting {
             return match (label, stage) {
-                ("root", 0..=1) => {
+                ("root", 0..=2) => {
                     if stage > 0 {
                         answer("context-child-answer");
                     }
-                    spawn(Some(["claude", "codex"][stage]), "MIXED_CHILD", false)
+                    spawn(
+                        Some(["claude", "xai", "codex"][stage]),
+                        "MIXED_CHILD",
+                        false,
+                    )
                 }
                 ("root", _) => {
                     answer("context-child-answer");
@@ -149,7 +154,17 @@ impl Provider {
                 _ => Reply::Text("context child finished".into()),
             };
         }
-
+        if self.journey == Journey::XaiMixed {
+            return match (label, stage) {
+                ("root", 0) => spawn(Some("xai"), "MIXED_CHILD", false),
+                ("root", _) => {
+                    answer("xai-mixed-child-answer");
+                    Reply::Text("xai-mixed-root-answer".into())
+                }
+                ("grandchild", 0) => submit("xai-mixed-grandchild-answer"),
+                _ => Reply::Text("mixed child finished".into()),
+            };
+        }
         if matches!(
             self.journey,
             Journey::Subscription | Journey::SubscriptionRecovery
@@ -303,7 +318,7 @@ impl Provider {
             return match (label, stage) {
                 ("root", 0) => Reply::Code(format!(
                     r#"
-for (const family of ['claude', 'codex']) {{
+for (const family of ['claude', 'xai', 'codex']) {{
   const child = await tools.spawn_agent({{harness:family,model:null,role:'MIXED_CHILD',task:'MIXED_CHILD',thinking:null,output_contract:{}}});
   const done = await tools.wait_agent({{agent_ids:[child.agent_id],timeout_ms:20000}});text(done);
   if(done.timed_out || done.agents[0].status.output.answer !== 'context-child-answer') throw Error('context child failed');
@@ -320,7 +335,24 @@ text('context-routing-ok');
                 _ => Reply::Text("context child finished".into()),
             };
         }
-
+        if self.journey == Journey::XaiMixed {
+            return match (label, stage) {
+                ("root", 0) | ("child", 0) => {
+                    let (family, task, answer) = if label == "root" {
+                        ("xai", "MIXED_CHILD", "xai-mixed-child-answer")
+                    } else { (self.root, "MIXED_GRANDCHILD", "xai-mixed-grandchild-answer") };
+                    Reply::Code(format!(r#"
+const c=await tools.spawn_agent({{harness:'{family}',model:'{}',role:'{task}',task:'{task}',thinking:null,output_contract:{}}});
+const done=await tools.wait_agent({{agent_ids:[c.agent_id],timeout_ms:20000}});text(done);
+if(done.timed_out||done.agents[0].status.output.answer!=='{answer}')throw Error('mixed xAI child failed');text('mixed-xai-ok');
+"#, model(family), contract()))
+                },
+                ("child", 1) => Reply::Code("text(await tools.submit_result({output:{answer:'xai-mixed-child-answer'}}));".into()),
+                ("grandchild", 0) => Reply::Code("text(await tools.submit_result({output:{answer:'xai-mixed-grandchild-answer'}}));".into()),
+                ("root", _) => Reply::Text("xai-mixed-root-answer".into()),
+                _ => Reply::Text("mixed child finished".into()),
+            };
+        }
         if self.journey == Journey::SubscriptionRecovery && label == "root" {
             return match stage {
                 0 => Reply::Code(format!(
@@ -577,7 +609,9 @@ fn contract() -> Value {
     json!({"kind":"object","fields":[{"name":"answer","required":true,"schema":{"kind":"string"}}]})
 }
 fn model(family: &str) -> &'static str {
-    if family == "claude" {
+    if family == "xai" {
+        "grok-4.6"
+    } else if family == "claude" {
         CLAUDE_MODEL
     } else {
         CODEX_MODEL
@@ -672,6 +706,7 @@ fn native_error(request: &Value) -> bool {
 }
 
 struct Servers {
+    xai: String,
     codex: String,
     claude: String,
     tasks: Vec<tokio::task::JoinHandle<()>>,
@@ -885,6 +920,27 @@ async fn subscription_servers_with_recovery(
             }
         }),
     );
+    let xai = format!("http://{}/v1/responses", http.local_addr()?);
+    let state = Arc::clone(&provider);
+    router = router.route("/v1/responses", post(move |headers: HeaderMap, Json(request): Json<Value>| {
+        let state = Arc::clone(&state);
+        async move {
+            assert_eq!(headers["authorization"], "Bearer synthetic-xai-key");
+            let label = label(&request);
+            let reply = state.lock().unwrap().respond("xai", &label, request);
+            let id = uuid::Uuid::new_v4().to_string();
+            let output = match reply {
+                Reply::Code(code) => json!({"type":"function_call","name":"exec","call_id":id,"arguments":json!({"code":code}).to_string()}),
+                Reply::Text(text) => json!({"type":"message","role":"assistant","content":[{"type":"output_text","text":text}]}),
+                Reply::Read { path } => json!({"type":"function_call","name":"read_file","call_id":id,"arguments":json!({"target_file":path}).to_string()}),
+                Reply::Write { path, content } => json!({"type":"function_call","name":"write","call_id":id,"arguments":json!({"file_path":path,"content":content}).to_string()}),
+                Reply::Native { .. } => unreachable!("Claude native tools cannot route to xAI"),
+                Reply::Pause => panic!("mixed xAI smoke journey must not pause"),
+            };
+            let event = json!({"type":"response.completed","response":{"id":id,"status":"completed","output":[output],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}});
+            ([("content-type","text/event-stream")],format!("data: {event}\n\n"))
+        }
+    }));
     if let Some(auth) = subscription {
         let token_auth = Arc::clone(&auth);
         let profile_auth = Arc::clone(&auth);
@@ -993,6 +1049,7 @@ async fn subscription_servers_with_recovery(
         }
     });
     Ok(Servers {
+        xai,
         codex,
         claude,
         tasks: vec![http_task, ws_task],
@@ -1290,6 +1347,7 @@ async fn journey(family: &'static str, kind: Journey) -> Result<()> {
         Journey::MissingChildAuth => "auth-denied-answer",
         Journey::Subscription => "subscription-native-answer",
         Journey::SubscriptionRecovery => "subscription-recovery-answer",
+        Journey::XaiMixed => "xai-mixed-root-answer",
         Journey::ProjectContext => "project-context-answer",
         Journey::ContextRouting => "context-routing-answer",
     };
@@ -2306,6 +2364,424 @@ async fn claude_durable_terminal_replays_in_a_second_process_without_a_provider_
     Ok(())
 }
 
+fn xai_command(workspace: &Path, endpoint: &str) -> Command {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_nanocodex"));
+    command
+        .arg("run")
+        .current_dir(workspace)
+        .env_clear()
+        .env("HOME", workspace.join("home"))
+        .env("PATH", "/usr/bin:/bin:/usr/sbin:/sbin")
+        .env("CODEX_HOME", workspace.join("codex-home"))
+        .env("NANOCODEX_COMPUTER", "off")
+        .env("XAI_API_KEY", "synthetic-xai-key")
+        .args([
+            "--harness",
+            "xai",
+            "--xai-responses-url",
+            endpoint,
+            "--mcp-defaults",
+            "false",
+            "--mcp-codex-config",
+            "false",
+        ])
+        .arg("--cwd")
+        .arg(workspace)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    command
+}
+
+#[tokio::test]
+async fn xai_cli_native_tools_children_and_durable_replay() -> Result<()> {
+    let artifact = artifact("xai-native-tools-replay")?;
+    let workspace = artifact.join("workspace");
+    let requests = Arc::new(Mutex::new(Vec::<Value>::new()));
+    let counts = Arc::new(Mutex::new(HashMap::<String, usize>::new()));
+    let listener = TcpListener::bind("127.0.0.1:0").await?;
+    let endpoint = format!("http://{}/v1/responses", listener.local_addr()?);
+    let handler = {
+        let requests = Arc::clone(&requests);
+        let counts = Arc::clone(&counts);
+        let artifact = artifact.clone();
+        move |headers: HeaderMap, Json(request): Json<Value>| {
+            let requests = Arc::clone(&requests);
+            let counts = Arc::clone(&counts);
+            let artifact = artifact.clone();
+            async move {
+                assert_eq!(headers["authorization"], "Bearer synthetic-xai-key");
+                assert_eq!(request["model"], "grok-4.6");
+                let who = label(&request);
+                let stage = {
+                    let mut counts = counts.lock().unwrap();
+                    let n = counts.entry(who.clone()).or_default();
+                    let stage = *n;
+                    *n += 1;
+                    stage
+                };
+                let id = format!("xai-{who}-{stage}");
+                let call = |name: &str, arguments: Value| json!({"type":"function_call","call_id":id,"name":name,"arguments":arguments.to_string()});
+                let code = |code: String| call("exec", json!({"code":code}));
+                let output = if who == "inherited" {
+                    match stage {
+                        0 => code("text(await tools.submit_result({output:{answer:'xai-child-answer'}}));".into()),
+                        _ => json!({"type":"message","role":"assistant","content":[{"type":"output_text","text":"child finished"}]}),
+                    }
+                } else {
+                    match stage {
+                        0 => {
+                            let names: Vec<_> = request["tools"]
+                                .as_array()
+                                .unwrap()
+                                .iter()
+                                .filter_map(|t| t["name"].as_str())
+                                .collect();
+                            for name in [
+                                "write",
+                                "read_file",
+                                "search_replace",
+                                "list_dir",
+                                "glob",
+                                "grep",
+                                "run_terminal_cmd",
+                                "exec",
+                                "wait",
+                                "tool_search",
+                            ] {
+                                assert!(names.contains(&name), "missing native CLI tool {name}");
+                            }
+                            call(
+                                "write",
+                                json!({"file_path":"xai-native.txt","content":"native-file-effect"}),
+                            )
+                        }
+                        1 => call(
+                            "run_terminal_cmd",
+                            json!({"command":"cat xai-native.txt > xai-shell.txt; printf shell-ok", "description":"Copy the synthetic journey file"}),
+                        ),
+                        2 => {
+                            assert!(last_tool_result(&request).to_string().contains("shell-ok"));
+                            call("read_file", json!({"target_file":"xai-shell.txt"}))
+                        }
+                        3 => {
+                            assert!(
+                                last_tool_result(&request)
+                                    .to_string()
+                                    .contains("native-file-effect")
+                            );
+                            code(format!(
+                                r#"
+const child=await tools.spawn_agent({{harness:null,model:null,role:'INHERITED_CHILD',task:'INHERITED_CHILD',thinking:null,output_contract:{}}});
+const done=await tools.wait_agent({{agent_ids:[child.agent_id],timeout_ms:20000}});text(done);
+if(done.timed_out||done.agents[0].status.output.answer!=='xai-child-answer') throw Error('xAI child failed');
+text('xai-child-ok');
+"#,
+                                contract()
+                            ))
+                        }
+                        4 => {
+                            assert!(
+                                last_tool_result(&request)
+                                    .to_string()
+                                    .contains("xai-child-ok")
+                            );
+                            code(format!(
+                                r#"
+for(const family of ['claude','codex']) {{
+ let denied=false;try {{await tools.spawn_agent({{harness:family,model:null,role:'AUTH_CHILD',task:'AUTH_CHILD',thinking:null,output_contract:{}}});}}
+ catch(e) {{denied=true;text(String(e));}}
+ if(!denied) throw Error('missing family auth was admitted');
+}}
+const directory=await tools.list_agents({{include_completed:true}});text(directory);
+if(directory.agents.length!==1) throw Error('failed auth leaked a child');text('lazy-family-auth-ok');
+"#,
+                                contract()
+                            ))
+                        }
+                        _ => {
+                            assert!(
+                                last_tool_result(&request)
+                                    .to_string()
+                                    .contains("lazy-family-auth-ok")
+                            );
+                            json!({"type":"message","role":"assistant","content":[{"type":"output_text","text":"xai-native-cli-answer"}]})
+                        }
+                    }
+                };
+                {
+                    let mut requests = requests.lock().unwrap();
+                    requests
+                        .push(json!({"label":who,"stage":stage,"request":request,"output":output}));
+                    std::fs::write(
+                        artifact.join("provider.json"),
+                        serde_json::to_vec_pretty(&*requests).unwrap(),
+                    )
+                    .unwrap();
+                }
+                let event = json!({"type":"response.completed","response":{"id":id,"status":"completed","output":[output],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}});
+                (
+                    [("content-type", "text/event-stream")],
+                    format!("data: {event}\n\n"),
+                )
+            }
+        }
+    };
+    let task = tokio::spawn(async move {
+        axum::serve(
+            listener,
+            Router::new().route("/v1/responses", post(handler)),
+        )
+        .await
+        .unwrap();
+    });
+    let database = workspace.join("native-xai.sqlite");
+    let invocation = || {
+        let mut command = xai_command(&workspace, &endpoint);
+        command
+            .args(["--rollouts", "false", "--local-durability"])
+            .arg(&database)
+            .args([
+                "--local-durability-state-id",
+                "xai-cli-root",
+                "--request-id",
+                "xai-cli-operation",
+                "XAI_NATIVE_ROOT",
+            ]);
+        command
+    };
+    let initial = artifact.join("initial");
+    std::fs::create_dir_all(&initial)?;
+    let output = run(invocation(), &initial, "native xAI file/shell effects, same-family child, lazy missing family auth and final output").await?;
+    success(&output, &initial, "xai-native-cli-answer")?;
+    assert_eq!(
+        std::fs::read_to_string(workspace.join("xai-native.txt"))?,
+        "native-file-effect"
+    );
+    assert_eq!(
+        std::fs::read_to_string(workspace.join("xai-shell.txt"))?,
+        "native-file-effect"
+    );
+    assert!(database.exists());
+    let initial_requests = requests.lock().unwrap().len();
+    assert!(initial_requests >= 7);
+    let replay = artifact.join("replay");
+    std::fs::create_dir_all(&replay)?;
+    let output = run(
+        invocation(),
+        &replay,
+        "terminal replay from SQLite, zero new provider calls or shell effects",
+    )
+    .await?;
+    success(&output, &replay, "xai-native-cli-answer")?;
+    assert_eq!(requests.lock().unwrap().len(), initial_requests);
+    let events: Vec<Value> = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(serde_json::from_str)
+        .collect::<std::result::Result<_, _>>()?;
+    assert_eq!(events.len(), 3);
+    assert_eq!(events[0]["type"], "run.started");
+    assert_eq!(events[1]["type"], "assistant.message");
+    assert_eq!(events[2]["type"], "run.completed");
+    assert_eq!(events[2]["payload"]["replayed"], true);
+    assert_eq!(events[2]["payload"]["model_calls"], 0);
+    task.abort();
+    Ok(())
+}
+
+#[tokio::test]
+async fn xai_cli_rejects_wrong_family_and_unsupported_options_without_dispatch() -> Result<()> {
+    let artifact = artifact("xai-cli-invalid-options")?;
+    let workspace = artifact.join("workspace");
+    let cases: &[(&[&str], &str)] = &[
+        (&["--model", "claude-sonnet-5-5"], "does not belong"),
+        (
+            &["--model", "grok-4.5", "--web-search", "true"],
+            "does not support --web-search true",
+        ),
+        (&["--claude"], "conflicts"),
+        (&["--thinking", "none"], "does not support thinking"),
+        (&["--memory", "true"], "does not yet support --memory"),
+        (
+            &["--fast-mode", "true"],
+            "--fast-mode true is not supported",
+        ),
+        (
+            &["--image-generation", "true"],
+            "--image-generation true is not supported",
+        ),
+        (
+            &["--responses-transport", "websocket"],
+            "uses HTTPS Responses SSE",
+        ),
+        (
+            &["--store-responses", "true"],
+            "--store-responses true is unsupported",
+        ),
+        (
+            &["--reasoning-mode", "pro"],
+            "--reasoning-mode is a Codex option",
+        ),
+    ];
+    for (index, (args, expected)) in cases.iter().enumerate() {
+        let path = artifact.join(index.to_string());
+        std::fs::create_dir_all(&path)?;
+        let mut command = xai_command(&workspace, "http://127.0.0.1:1/v1/responses");
+        command.args(*args).arg("INVALID_XAI_ROOT");
+        let output = run(command, &path, expected).await?;
+        assert!(!output.status.success());
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains(expected),
+            "unexpected CLI error: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            output.stdout.is_empty(),
+            "invalid options emitted model events"
+        );
+    }
+    let path = artifact.join("missing-key");
+    std::fs::create_dir_all(&path)?;
+    let mut command = xai_command(&workspace, "http://127.0.0.1:1/v1/responses");
+    command.env_remove("XAI_API_KEY").arg("MISSING_XAI_KEY");
+    let output = run(
+        command,
+        &path,
+        "missing xAI credential rejected before provider dispatch",
+    )
+    .await?;
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("XAI_API_KEY"));
+    assert!(!workspace.join("codex-home/xai/sessions.sqlite").exists());
+    Ok(())
+}
+
+#[tokio::test]
+async fn xai_cli_mixed_children_route_back_to_codex_and_claude() -> Result<()> {
+    for family in ["codex", "claude"] {
+        let artifact = artifact(&format!("{family}-xai-{family}"))?;
+        let provider = Arc::new(Mutex::new(Provider {
+            root: family,
+            journey: Journey::XaiMixed,
+            counts: HashMap::new(),
+            log: vec![],
+            artifact: artifact.clone(),
+            pauses: 0,
+            cancellations: 0,
+            connections: vec![],
+        }));
+        let servers = servers(Arc::clone(&provider)).await?;
+        let mut command = command(
+            &artifact.join("workspace"),
+            &servers,
+            family,
+            true,
+            true,
+            false,
+        );
+        command.args([
+            "--model",
+            model(family),
+            "--xai-api-key",
+            "synthetic-xai-key",
+            "--xai-responses-url",
+            &servers.xai,
+            "XAI_MIXED_ROOT",
+        ]);
+        let output = run(command, &artifact, "root -> xAI child -> original family grandchild, native transports and shared result contracts").await?;
+        success(&output, &artifact, "xai-mixed-root-answer")?;
+        let provider = provider.lock().unwrap();
+        for (label, expected_family) in [("root", family), ("child", "xai"), ("grandchild", family)]
+        {
+            let calls: Vec<_> = provider
+                .log
+                .iter()
+                .filter(|call| call["label"] == label)
+                .collect();
+            assert!(
+                !calls.is_empty(),
+                "{label} missing, inspect {}",
+                artifact.display()
+            );
+            for call in calls {
+                assert_eq!(call["family"], expected_family);
+                assert_eq!(call["model"], model(expected_family));
+            }
+        }
+        for label in ["root", "child"] {
+            if family == "claude" && label == "root" {
+                continue;
+            } // Native result asserted in native_script.
+            let call = provider
+                .log
+                .iter()
+                .find(|call| call["label"] == label && call["stage"] == 1)
+                .unwrap();
+            assert!(
+                call["tool_result"].to_string().contains("mixed-xai-ok"),
+                "failed mixed result: {}",
+                call["tool_result"]
+            );
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn xai_cli_model_defaults_select_supported_hosted_search() -> Result<()> {
+    let artifact = artifact("xai-model-defaults")?;
+    let requests = Arc::new(Mutex::new(Vec::<Value>::new()));
+    let captured = requests.clone();
+    let listener = TcpListener::bind("127.0.0.1:0").await?;
+    let endpoint = format!("http://{}/v1/responses", listener.local_addr()?);
+    let app = Router::new().route("/v1/responses", post(move |Json(body): Json<Value>| {
+        let captured = captured.clone();
+        async move {
+            captured.lock().unwrap().push(body);
+            let event = json!({"type":"response.completed","response":{"id":"models","status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"model-defaults-ok"}]}]}});
+            ([("content-type", "text/event-stream")], format!("data: {event}\n\n"))
+        }
+    }));
+    let task = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    for model in ["grok-4.5", "grok-4.6"] {
+        let path = artifact.join(model);
+        std::fs::create_dir_all(&path)?;
+        let mut command = xai_command(&artifact.join("workspace"), &endpoint);
+        command.args([
+            "--model",
+            model,
+            "--rollouts",
+            "false",
+            "--subagents",
+            "false",
+            "MODEL_DEFAULTS",
+        ]);
+        let output = run(command, &path, "known model defaults admit a native Responses request with only supported hosted search").await?;
+        success(&output, &path, "model-defaults-ok")?;
+    }
+    let requests = requests.lock().unwrap();
+    assert_eq!(requests.len(), 2);
+    for (request, model) in requests.iter().zip(["grok-4.5", "grok-4.6"]) {
+        assert_eq!(request["model"], model);
+        assert_eq!(
+            request["tools"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|tool| tool["type"] == "web_search"),
+            model == "grok-4.6"
+        );
+    }
+    std::fs::write(
+        artifact.join("provider.json"),
+        serde_json::to_vec_pretty(&*requests)?,
+    )?;
+    task.abort();
+    Ok(())
+}
+
+// Extract transmitted instruction data, independently of provider framing.
 fn wire_instructions(request: &Value) -> String {
     if let Some(system) = request.get("system") {
         return match system {
@@ -2375,13 +2851,18 @@ fn context_files(workspace: &Path) -> Result<()> {
 }
 
 fn context_command(workspace: &Path, servers: &Servers, family: &str) -> Command {
-    command(workspace, servers, family, true, true, false)
+    if family == "xai" {
+        let mut invocation = xai_command(workspace, &servers.xai);
+        invocation.args(["--rollouts", "false", "--web-search", "false"]);
+        invocation
+    } else {
+        command(workspace, servers, family, true, true, false)
+    }
 }
 
 #[tokio::test]
 async fn native_cli_project_context_is_bounded_lazy_and_explicitly_replaceable() -> Result<()> {
-    {
-        let family = "claude";
+    for family in ["claude", "xai"] {
         let artifact = artifact(&format!("{family}-project-context"))?;
         let workspace = artifact.join("workspace");
         context_files(&workspace)?;
@@ -2544,8 +3025,7 @@ async fn native_cli_project_context_rejects_symlinks_and_special_files() -> Resu
         connections: vec![],
     }));
     let servers = servers(Arc::clone(&provider)).await?;
-    {
-        let family = "claude";
+    for family in ["claude", "xai"] {
         let path = artifact.join(family);
         std::fs::create_dir_all(&path)?;
         let mut invocation = context_command(&workspace, &servers, family);
@@ -2563,7 +3043,7 @@ async fn native_cli_project_context_rejects_symlinks_and_special_files() -> Resu
 async fn native_cli_cross_family_children_resolve_defaults_and_preserve_explicit_override()
 -> Result<()> {
     let mut defaults = HashMap::<String, String>::new();
-    for family in ["claude", "codex"] {
+    for family in ["claude", "xai", "codex"] {
         for custom in [false, true] {
             let artifact = artifact(&format!("{family}-context-routing-{custom}"))?;
             let workspace = artifact.join("workspace");
@@ -2580,11 +3060,30 @@ async fn native_cli_cross_family_children_resolve_defaults_and_preserve_explicit
             }));
             let servers = servers(Arc::clone(&provider)).await?;
             let mut invocation = context_command(&workspace, &servers, family);
+            if family == "xai" {
+                invocation.args([
+                    "--api-key",
+                    "synthetic-openai-key",
+                    "--claude-api-key",
+                    "synthetic-anthropic-key",
+                    "--claude-messages-url",
+                    &servers.claude,
+                    "--websocket-url",
+                    &servers.codex,
+                ]);
+            } else {
+                invocation.args([
+                    "--xai-api-key",
+                    "synthetic-xai-key",
+                    "--xai-responses-url",
+                    &servers.xai,
+                ]);
+            }
             if custom {
                 invocation.args(["--instructions", "fixture-cross-family-override"]);
             }
             invocation.arg("CONTEXT_ROUTING_ROOT");
-            let output = run(invocation, &artifact, "root spawns Claude and Codex children; family defaults independent of parent, explicit replacement inherited without context").await?;
+            let output = run(invocation, &artifact, "native root spawns Claude, xAI and Codex children; family defaults independent of parent, explicit replacement inherited without context").await?;
             success(&output, &artifact, "context-routing-answer")?;
             let provider = provider.lock().unwrap();
             if family != "claude" {
@@ -2594,7 +3093,7 @@ async fn native_cli_cross_family_children_resolve_defaults_and_preserve_explicit
                         .contains("context-routing-ok")
                 );
             }
-            for target in ["claude", "codex"] {
+            for target in ["claude", "xai", "codex"] {
                 let call = provider
                     .log
                     .iter()

@@ -638,19 +638,23 @@ impl Tool for SpawnAgent {
 }
 
 fn spawn_agent_parameters() -> Value {
-    let models = [HarnessFamily::Codex, HarnessFamily::Claude]
-        .into_iter()
-        .flat_map(HarnessModel::for_family)
-        .map(|model| Some(model.as_str()))
-        .chain([Some("glm-5.3"), Some("kimi"), Some("mimo"), None])
-        .collect::<Vec<_>>();
+    let models = [
+        HarnessFamily::Codex,
+        HarnessFamily::Claude,
+        HarnessFamily::Xai,
+    ]
+    .into_iter()
+    .flat_map(HarnessModel::for_family)
+    .map(|model| Some(model.as_str()))
+    .chain([Some("glm-5.3"), Some("kimi"), Some("mimo"), None])
+    .collect::<Vec<_>>();
     json!({
         "type": "object",
         "properties": {
             "role": { "type": "string", "description": "A short role describing the subagent's specialty." },
             "task": { "type": "string", "description": "A complete, focused task for the subagent." },
             "harness": {
-                "type": ["string", "null"], "enum": ["codex", "claude", null],
+                "type": ["string", "null"], "enum": ["codex", "claude", "xai", null],
                 "description": "Native agent-loop family; null inherits the parent's family. A family switch selects that family's defaults."
             },
             "model": {
@@ -1156,6 +1160,77 @@ pub fn install_claude_tools(
                 };
                 Ok(ClaudeToolReply {
                     content: ToolResultContent::Text(text),
+                    is_error: !output.success,
+                    metadata: output
+                        .metadata
+                        .map(|value| serde_json::from_str(value.get()))
+                        .transpose()
+                        .map_err(|error| error.to_string())?,
+                    structured_result: output
+                        .structured_result
+                        .map(|value| serde_json::from_str(value.get()))
+                        .transpose()
+                        .map_err(|error| error.to_string())?,
+                })
+            }
+        });
+    }
+    Ok(tools)
+}
+
+/// Installs the shared task-tree operations as native xAI tool callbacks.
+#[cfg(feature = "xai")]
+pub fn install_xai_tools(
+    mut tools: nanocodex_xai::XaiTools,
+    parent: AgentHandle,
+    registry: Arc<Registry>,
+) -> nanocodex_agent::Result<nanocodex_xai::XaiTools> {
+    for tool in shared_tools(parent, &registry) {
+        let definition = serde_json::to_value(tool.definition())
+            .map_err(|error| nanocodex_agent::NanocodexError::InvalidRequest(error.to_string()))?;
+        let native = nanocodex_xai::ToolDefinition {
+            name: definition["name"].as_str().unwrap_or_default().to_owned(),
+            description: definition["description"]
+                .as_str()
+                .unwrap_or_default()
+                .to_owned(),
+            parameters: definition["parameters"].clone(),
+        };
+        tools = tools.tool_with_context(native, move |input, invocation| {
+            let tool = tool.clone();
+            async move {
+                let raw =
+                    serde_json::value::to_raw_value(&input).map_err(|error| error.to_string())?;
+                let context = ToolContext::new(
+                    &invocation.model,
+                    &invocation.session_id,
+                    &invocation.call_id,
+                    &[],
+                    usize::MAX,
+                )
+                .with_turn_id(Some(&invocation.turn_id))
+                .with_host_context(
+                    invocation
+                        .host_context
+                        .as_deref()
+                        .or(Some(&invocation.turn_id)),
+                )
+                .with_instruction_revision(invocation.instruction_revision);
+                let output = tool
+                    .execute(ToolInput::Function(raw), context)
+                    .await
+                    .map_err(|error| error.to_string())?
+                    .into_wire()
+                    .map_err(|error| error.to_string())?;
+                let text = match output.output {
+                    nanocodex_oai_tools::contract::ToolOutputBody::Text(text) => text,
+                    nanocodex_oai_tools::contract::ToolOutputBody::Content(content) => {
+                        serde_json::to_string(&content).map_err(|error| error.to_string())?
+                    }
+                };
+                Ok(nanocodex_xai::XaiToolReply {
+                    text,
+                    content: Vec::new(),
                     is_error: !output.success,
                     metadata: output
                         .metadata

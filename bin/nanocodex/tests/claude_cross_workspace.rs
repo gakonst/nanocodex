@@ -29,3 +29,8 @@ fn claude_root_mixed_descendants_snapshot_current_worktree() {
 fn codex_root_mixed_descendants_snapshot_current_worktree() {
     journey("codex");
 }
+
+#[test]
+fn xai_root_mixed_descendants_snapshot_current_worktree() {
+    journey("xai");
+}

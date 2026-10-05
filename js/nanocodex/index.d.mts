@@ -70,3 +70,5 @@ export type {
   Subscription as ClaudeSubscriptionHandle,
   Status as ClaudeSubscriptionStatus,
 } from "./worker/ClaudeSubscription.mjs";
+
+export type { Options as XaiOptions, Agent as XaiAgent, Auth as XaiAuth, Tool as XaiTool } from './runtime/xai.mjs';

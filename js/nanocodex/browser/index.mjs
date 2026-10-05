@@ -18,3 +18,5 @@ export {
 } from "./hostManagedWebSocket.mjs";
 
 export * as Claude from "./Claude.mjs";
+
+export * as Xai from "./Xai.mjs";

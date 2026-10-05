@@ -362,6 +362,7 @@ export function toWasmConfig(options = {}) {
   copy(config, "terminal_receipt_retention", options.terminalReceiptRetention);
   copy(config, "subagents", options.subagents);
   copy(config, "claude_harness", options.claudeHarness);
+  copy(config, "xai_harness", options.xaiHarness);
   copy(config, "host_definition_id", options.hostDefinitionId);
   copy(config, "before_compaction", options.beforeCompaction);
   return config;
@@ -474,6 +475,12 @@ export function releaseDefinitionHost(id) {
 }
 
 const hostBridge = Object.freeze({
+  xaiAuth(hostDefinitionId) {
+    return requiredDefinitionHost(hostDefinitionId).xaiAuthHeaders();
+  },
+  executeXaiTool(hostDefinitionId, name, input, sessionId, callId, model, turnId) {
+    return requiredDefinitionHost(hostDefinitionId).executeXaiTool(name, input, sessionId, callId, model, turnId);
+  },
   claudeAuth(hostDefinitionId) {
     return requiredDefinitionHost(hostDefinitionId).claudeAuthHeaders();
   },

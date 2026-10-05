@@ -9,7 +9,7 @@ pub use nanocodex_agent::{
     AgentEvents, AgentSessionContext, ClaudeModel, CostStatus, EstimatedUsdCost,
     ExecutionPolicyDisposition, HarnessFamily, HarnessModel, Nanocodex, NanocodexError,
     PromptRequest, PromptRoute, ReportedTurnUsage, ServiceTier, Turn, TurnControl, TurnResult,
-    TurnUsage, UsdAmount,
+    TurnUsage, UsdAmount, XaiModel,
 };
 mod harness;
 pub use harness::{Harness, HarnessBuilder, HarnessRequest};
@@ -50,6 +50,14 @@ pub use nanocodex_oai_tools::Tools;
     doc(cfg(all(feature = "openai", feature = "oai-tools", not(target_family = "wasm"))))
 )]
 pub use nanocodex_oai_tools::tool;
+#[cfg(feature = "xai")]
+#[cfg_attr(docsrs, doc(cfg(feature = "xai")))]
+pub use nanocodex_xai::Xai;
+
+/// Independent host-authorized xAI tool adapters.
+#[cfg(feature = "xai-tools")]
+#[cfg_attr(docsrs, doc(cfg(feature = "xai-tools")))]
+pub use nanocodex_xai_tools as xai_tools;
 
 /// Owned agent lifecycle, builders, turns, branching, and snapshots.
 ///
@@ -79,6 +87,12 @@ pub mod agent {
 #[cfg_attr(docsrs, doc(cfg(feature = "claude")))]
 #[doc(inline)]
 pub use nanocodex_claude as claude;
+
+/// xAI Responses client, provider-native builder, and host tool contracts.
+#[cfg(feature = "xai")]
+#[cfg_attr(docsrs, doc(cfg(feature = "xai")))]
+#[doc(inline)]
+pub use nanocodex_xai as xai;
 
 /// Portable durable execution policy and host-store contracts.
 #[cfg(feature = "durability")]
@@ -152,6 +166,9 @@ pub mod prelude {
         )))
     )]
     pub use crate::Tools;
+    #[cfg(feature = "xai")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "xai")))]
+    pub use crate::Xai;
     #[cfg(all(feature = "openai", feature = "oai-tools", not(target_family = "wasm")))]
     #[cfg_attr(
         docsrs,

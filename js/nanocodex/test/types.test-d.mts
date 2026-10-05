@@ -657,9 +657,9 @@ async function check() {
   BrowserTransport.openAi({ apiKey, onSocketTiming() {} });
   // @ts-expect-error transport queue policy is private to the adapter.
   await Agent.create({ transport: Transport.openAi({ apiKey }), maxQueuedMessages: 1 });
-  // @ts-expect-error browser send-buffer policy is private to the adapter.
   await BrowserAgent.create({
     transport: BrowserTransport.openAi({ apiKey }),
+    // @ts-expect-error browser send-buffer policy is private to the adapter.
     maxBufferedSendBytes: 1,
   });
 

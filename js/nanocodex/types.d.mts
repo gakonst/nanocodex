@@ -40,7 +40,7 @@ export type CompactionReceipt = Readonly<{
 export type AgentOptions = {
   harness?: "codex" | undefined;
   /** Explicit alternate-family credentials and native tools; children remain in the shared task tree. */
-  harnesses?: Readonly<{ claude?: ClaudeOptions }> | undefined;
+  harnesses?: Readonly<{ claude?: ClaudeOptions; xai?: import('./runtime/xai.mjs').Options }> | undefined;
   /** Optional host barrier. Rejection/timeout stops compaction and retains context.
    * Durable execution replays completed receipts; hosts must deduplicate by boundaryId
    * for interruption between host commit and receipt persistence. Disabled by default.

@@ -3020,9 +3020,11 @@ impl App {
     pub(super) fn model_options(&self) -> Vec<(HarnessModel, &'static str)> {
         match self.model.family() {
             HarnessFamily::Codex => MODEL_OPTIONS.to_vec(),
-            HarnessFamily::Claude => HarnessModel::for_family(HarnessFamily::Claude)
-                .map(|model| (model, model.as_str()))
-                .collect(),
+            family @ (HarnessFamily::Claude | HarnessFamily::Xai) => {
+                HarnessModel::for_family(family)
+                    .map(|model| (model, model.as_str()))
+                    .collect()
+            }
         }
     }
 

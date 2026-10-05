@@ -163,14 +163,14 @@ else: print('{}')
         def child_agent(prompt, harness=None):
             args={'prompt':prompt,'description':'Test inherited policy','run_in_background':False}
             if harness is not None: args['harness']=harness
-            return ('Agent',args,harness == 'codex','restricted Claude permission policy' if harness == 'codex' else None)
+            return ('Agent',args,harness in ('codex','xai'),'restricted Claude permission policy' if harness in ('codex','xai') else None)
         def child_steps(): return [('Write',{'file_path':'child-denied.txt','content':'must never run'},True,'permission denied by rule'),('SubmitResult',{'output':'child permission preserved'},False,None)]
-        run('children',['--claude-permissions',str(childrules)],[child_agent('PERMISSION_CHILD_INITIAL'),child_agent('blocked codex','codex')],children={'PERMISSION_CHILD_INITIAL':child_steps()})
+        run('children',['--claude-permissions',str(childrules)],[child_agent('PERMISSION_CHILD_INITIAL'),child_agent('blocked codex','codex'),child_agent('blocked xai','xai')],children={'PERMISSION_CHILD_INITIAL':child_steps()})
         # Reopen the original restricted session with no flags, then delegate.
         # Its deny rule must remain the child's deny rule too.
-        run('saved-children',[],[child_agent('PERMISSION_CHILD_SAVED'),child_agent('blocked codex after reopen','codex')],session,{'PERMISSION_CHILD_SAVED':[('Write',{'file_path':'denied.txt','content':'saved-policy-bypass'},True,'permission denied by rule'),('SubmitResult',{'output':'saved child policy preserved'},False,None)]})
+        run('saved-children',[],[child_agent('PERMISSION_CHILD_SAVED'),child_agent('blocked codex after reopen','codex'),child_agent('blocked xai after reopen','xai')],session,{'PERMISSION_CHILD_SAVED':[('Write',{'file_path':'denied.txt','content':'saved-policy-bypass'},True,'permission denied by rule'),('SubmitResult',{'output':'saved child policy preserved'},False,None)]})
         require(not(workspace/'child-denied.txt').exists() and not(workspace/'denied.txt').exists(),'child escaped inherited policy')
-        checks.append('Claude child inherits explicit and reopened saved policy; restricted Codex delegation denied')
+        checks.append('Claude child inherits explicit and reopened saved policy; restricted Codex/xAI delegation denied')
         for index,document in enumerate([{'permissions':{'deny':['Bash(']}},{'permissions':{'allow':['Write(src/**)']}},{'permissions':{'defaultMode':'auto'}},{'permissions':{'deny':['Read(!secret)']}}]):
             invalid=artifact/f'invalid-{index}.json'; invalid.write_text(json.dumps(document)); count=len(requests)
             command=[str(binary),'run']+common+['--claude-permissions',str(invalid),'Invalid policy must fail.']; commands.append(command)

@@ -1,3 +1,4 @@
+import { create as createXai } from './Xai.mjs';
 import { prepareHarnesses } from '../runtime/harnesses.mjs';
 import { create as createClaude } from './Claude.mjs';
 import { createRequire } from "node:module";
@@ -31,6 +32,7 @@ let initializedWeb;
 let NodeNanocodex;
 
 export function create(options = {}) {
+  if (options.harness === 'xai') return createXai(options);
   if (options.harness === 'claude') return createClaude(options);
   if (options.harness !== undefined && options.harness !== 'codex') throw new TypeError('unsupported harness family');
   if (managedTransportOptions(options?.transport)) return createManagedAgent(options);
@@ -126,6 +128,7 @@ export function create(options = {}) {
           websocketWarmup,
           subagents: subagentConfig,
           claudeHarness: harnesses?.claude,
+          xaiHarness: harnesses?.xai,
           hostDefinitionId,
           beforeCompaction: beforeCompaction !== undefined,
           ...config,

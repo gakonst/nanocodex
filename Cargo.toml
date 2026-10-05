@@ -10,6 +10,8 @@ members = [
     "crates/nanocodex",
     "crates/nanocodex-agent",
     "crates/nanocodex-claude",
+    "crates/nanocodex-xai",
+    "crates/nanocodex-xai-tools",
     "crates/nanocodex-claude-tools",
     "crates/nanocodex-managed",
     "crates/nanocodex-phone",
@@ -100,6 +102,8 @@ krun = { package = "libkrun", version = "=2.0.0-dev", git = "https://github.com/
 mpp = { version = "=0.11.0", git = "https://github.com/tempoxyz/mpp-rs", rev = "2e265801d216ef54a85b31acda5d0fac192e1b5e", default-features = false }
 nanocodex = { version = "0.6.6", path = "crates/nanocodex" }
 nanocodex-agent = { version = "0.6.6", path = "crates/nanocodex-agent" }
+nanocodex-xai = { version = "0.6.6", path = "crates/nanocodex-xai" }
+nanocodex-xai-tools = { version = "0.6.6", path = "crates/nanocodex-xai-tools", default-features = false }
 nanocodex-claude = { version = "0.6.6", path = "crates/nanocodex-claude" }
 nanocodex-claude-tools = { version = "0.6.6", path = "crates/nanocodex-claude-tools", default-features = false }
 nanocodex-managed = { version = "0.6.6", path = "crates/nanocodex-managed" }

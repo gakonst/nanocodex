@@ -1,0 +1,37 @@
+[package]
+name = "nanocodex-xai"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license = "Apache-2.0"
+publish.workspace = true
+description = "Portable source adaptation of the xAI Grok Build Responses harness"
+
+[features]
+default = []
+tools = ["nanocodex-xai-tools/native"]
+
+[dependencies]
+nanocodex-xai-tools.workspace = true
+serde.workspace = true
+sha2.workspace = true
+nanocodex-agent = { path = "../nanocodex-agent", version = "0.6.6", default-features = false }
+serde_json.workspace = true
+reqwest = { workspace = true, features = ["stream"] }
+futures-util.workspace = true
+uuid.workspace = true
+web-time.workspace = true
+tokio = { workspace = true, features = ["sync", "time", "rt", "macros"] }
+
+[target.'cfg(target_family = "wasm")'.dependencies]
+wasm-bindgen-futures.workspace = true
+wasm-bindgen.workspace = true
+js-sys.workspace = true
+
+[dev-dependencies]
+axum.workspace = true
+rustls.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "net"] }
+
+[lints]
+workspace = true

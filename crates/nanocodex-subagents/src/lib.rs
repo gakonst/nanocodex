@@ -42,3 +42,5 @@ pub const DEFAULT_MAX_RESIDENT_SUBAGENTS: usize = 16;
 
 #[cfg(feature = "claude")]
 pub use tools::install_claude_tools;
+#[cfg(feature = "xai")]
+pub use tools::install_xai_tools;

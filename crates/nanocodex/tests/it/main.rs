@@ -18,4 +18,10 @@ mod claude;
 ))]
 mod harness;
 
+#[cfg(all(feature = "xai", not(target_family = "wasm")))]
+mod xai;
+
+#[cfg(all(feature = "xai", feature = "claude", not(target_family = "wasm")))]
+mod xai_harness;
+
 const fn main() {}

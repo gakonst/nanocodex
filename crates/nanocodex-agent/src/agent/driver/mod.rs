@@ -1561,6 +1561,7 @@ where
                     let persisted = committed;
                     (
                         persisted.map(|()| TurnResult {
+                            backend_checkpoint: None,
                             request_id: execution_operation.clone(),
                             final_message,
                             usage: Some(usage),
@@ -2035,6 +2036,7 @@ async fn accept_execution_command(
                 return None;
             }
             drop(result.send(Ok(TurnResult {
+                backend_checkpoint: None,
                 request_id: Some(operation_id),
                 final_message: output.final_message,
                 usage: Some(output.usage),
@@ -2214,6 +2216,7 @@ async fn accept_idle_route(
                 return None;
             }
             drop(turn_result.send(Ok(TurnResult {
+                backend_checkpoint: None,
                 request_id: Some(operation_id),
                 final_message: output.final_message,
                 usage: Some(output.usage),
