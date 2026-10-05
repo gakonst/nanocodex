@@ -3043,7 +3043,7 @@ async fn native_cli_project_context_rejects_symlinks_and_special_files() -> Resu
 async fn native_cli_cross_family_children_resolve_defaults_and_preserve_explicit_override()
 -> Result<()> {
     let mut defaults = HashMap::<String, String>::new();
-    for family in ["claude", "xai"] {
+    for family in ["claude", "xai", "codex"] {
         for custom in [false, true] {
             let artifact = artifact(&format!("{family}-context-routing-{custom}"))?;
             let workspace = artifact.join("workspace");
@@ -3123,11 +3123,13 @@ async fn native_cli_cross_family_children_resolve_defaults_and_preserve_explicit
                     }
                 } else {
                     assert!(!system.contains("fixture-claude-context"));
-                    assert_ne!(
-                        system,
-                        wire_instructions(&provider.log[0]["request"]),
-                        "Codex inherited native root defaults"
-                    );
+                    if family != "codex" {
+                        assert_ne!(
+                            system,
+                            wire_instructions(&provider.log[0]["request"]),
+                            "Codex inherited native root defaults"
+                        );
+                    }
                 }
             }
         }
