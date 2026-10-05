@@ -43,6 +43,7 @@ export type GatewayResponsesOptions = GatewayResponsesCommonOptions & (Readonly<
 }>);
 /** Incremental (stream:true) or buffered Responses SSE with complete replay and pinned model/effort.
  * Text/reasoning stream incrementally; tools are emitted only after terminal validation.
+ * Compaction uses a buffered summary from the pinned provider, persisted as portable plaintext history.
  * x-nanocodex-inference-buffering reports streaming or buffered binding fallback.
  */
 export function createGatewayResponses(options: GatewayResponsesOptions): WorkersAiResponsesTransport & Readonly<{ stateless: true }>;

@@ -107,7 +107,7 @@ test("aliases cannot collide across tool namespaces or top-level names", async (
 test("opaque compaction, delta histories and unsupported inputs fail before inference", async () => {
   const invoke = fixture(() => assert.fail("must not invoke AI"));
   await assert.rejects(invoke({ previous_response_id: "resp_old", input: [] }), /complete Responses history/);
-  for (const type of ["compaction", "compaction_summary", "context_compaction", "compaction_trigger"]) {
+  for (const type of ["compaction", "compaction_summary", "context_compaction"]) {
     await assert.rejects(invoke({ input: [{ type, encrypted_content: "opaque" }] }), /compaction is unsupported/);
   }
   await assert.rejects(invoke({ input: [{ role: "user", content: [{ type: "input_image", image_url: "x" }] }] }), /unsupported content/);
