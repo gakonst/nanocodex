@@ -2,7 +2,10 @@ use std::path::PathBuf;
 
 use clap::{Args, builder::NonEmptyStringValueParser};
 use eyre::{Result, eyre};
-use nanocodex::{AgentEvents, PromptRequest};
+use nanocodex::{
+    AgentEvents, PromptRequest,
+    agent::input::{Prompt, UserInput},
+};
 use tokio::io::{AsyncWrite, AsyncWriteExt};
 use tokio::time::{Duration, timeout};
 
@@ -17,6 +20,10 @@ pub(crate) struct Run {
     /// Prompt submitted to the agent.
     #[arg(value_parser = NonEmptyStringValueParser::new())]
     prompt: String,
+
+    /// Attach a local image after the prompt text (repeat for multiple images).
+    #[arg(long = "image", value_name = "PATH")]
+    images: Vec<PathBuf>,
 
     /// Stable durable operation ID for this prompt.
     #[arg(long, value_parser = NonEmptyStringValueParser::new())]
@@ -53,12 +60,26 @@ impl Run {
                 .unwrap_or_else(|| DEFAULT_LOCAL_DURABILITY_STATE_ID.to_owned()),
         });
         let configured = config.build(vm, local_durability).await?;
+        let interaction_task = configured
+            .claude_interactions
+            .map(|receiver| tokio::spawn(crate::config::serve_claude_terminal(receiver)));
         let handle = configured.handle;
         let mut events = configured.events;
         let mut stdout = tokio::io::stdout();
         let run_result: Result<()> = async {
             for _ in 0..self.repeat {
-                let mut request = PromptRequest::new(self.prompt.clone());
+                let prompt_text = crate::config::expand_session_user_skill(&handle, &self.prompt)
+                    .map_err(|error| eyre!(error))?
+                    .unwrap_or_else(|| self.prompt.clone());
+                let prompt = if self.images.is_empty() {
+                    Prompt::new(prompt_text.clone())
+                } else {
+                    Prompt::content(std::iter::once(UserInput::Text { text: prompt_text.clone() })
+                        .chain(self.images.iter().map(|path| UserInput::LocalImage {
+                            path: path.clone(), detail: None,
+                        })))
+                };
+                let mut request = PromptRequest::new(prompt);
                 if let Some(request_id) = self.request_id.as_ref() {
                     request = request.request_id(request_id.clone());
                 }
@@ -113,6 +134,9 @@ impl Run {
             Ok(())
         }
         .await;
+        if let Some(task) = interaction_task {
+            task.abort();
+        }
         if let Some(child_agents) = configured.child_agents {
             child_agents.shutdown().await;
         }
@@ -181,6 +205,7 @@ async fn interrupt_signal() -> Result<()> {
 pub(crate) async fn run_prompt(prompt: String, config: AgentArgs, vm: VmArgs) -> Result<()> {
     Run {
         prompt,
+        images: Vec::new(),
         request_id: None,
         local_durability: None,
         local_durability_state_id: None,
@@ -217,6 +242,7 @@ mod tests {
     fn stable_request_id_names_exactly_one_turn() {
         Run {
             prompt: "test".to_owned(),
+            images: Vec::new(),
             request_id: Some("turn-1".to_owned()),
             local_durability: None,
             local_durability_state_id: None,
@@ -227,6 +253,7 @@ mod tests {
 
         let error = Run {
             prompt: "test".to_owned(),
+            images: Vec::new(),
             request_id: Some("turn-1".to_owned()),
             local_durability: None,
             local_durability_state_id: None,

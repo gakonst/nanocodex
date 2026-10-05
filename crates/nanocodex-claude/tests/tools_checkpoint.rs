@@ -220,7 +220,7 @@ async fn tools_only_task_checkpoint_reopens_and_retains_id_watermark() {
     let created: Value = serde_json::from_str(created["content"].as_str().unwrap()).unwrap();
     assert_eq!(created["task"]["id"], "2");
     let artifact = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../outputs/provider-managed-20261001/crates/tools-checkpoint");
+        .join("../../output/provider-managed-20261001/crates/tools-checkpoint");
     std::fs::create_dir_all(&artifact).unwrap();
     std::fs::write(
         artifact.join("requests.json"),

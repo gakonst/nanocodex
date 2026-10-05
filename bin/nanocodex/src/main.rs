@@ -1,3 +1,5 @@
+#![recursion_limit = "256"]
+
 mod auth;
 mod benchmark;
 mod browser;
@@ -29,7 +31,9 @@ mod managed_server;
 mod mcp;
 #[cfg_attr(not(feature = "tempo"), path = "mpp_disabled.rs")]
 mod mpp;
+mod native_sessions;
 mod observability;
+mod rewind;
 mod run;
 mod setup;
 mod startup_timing;
@@ -138,8 +142,10 @@ enum Command {
     Run(Box<RunCommand>),
     /// Run a loopback-only managed-agent durability test server.
     ManagedServer(managed_server::ManagedServer),
-    /// Resume a Codex or Nanocodex thread in the interactive TUI.
+    /// Resume a saved session in the selected harness in the interactive TUI.
     Resume(Box<ResumeCommand>),
+    /// Preview or restore native Claude file checkpoints.
+    Rewind(RewindCommand),
     /// Install, cache, or switch CLI builds.
     Update(update::Update),
 }
@@ -160,8 +166,23 @@ struct RunCommand {
 }
 
 #[derive(Args)]
+struct RewindCommand {
+    #[arg(value_parser = NonEmptyStringValueParser::new())]
+    session: String,
+    /// Turn ID from the checkpoint preview.
+    #[arg(long, value_parser = NonEmptyStringValueParser::new())]
+    checkpoint: Option<String>,
+    /// Restore the selected checkpoint and later native file edits.
+    #[arg(long)]
+    restore: bool,
+    /// Restore files, branch the conversation, or do both.
+    #[arg(long, default_value = "files", value_parser = ["files", "conversation", "files-and-conversation"])]
+    mode: String,
+}
+
+#[derive(Args)]
 struct ResumeCommand {
-    /// Codex thread UUID to resume. Omit it to select from discovered sessions.
+    /// Session ID to resume. Omit it to select from the selected harness’s sessions.
     #[arg(value_parser = NonEmptyStringValueParser::new())]
     thread_id: Option<String>,
 
@@ -296,8 +317,44 @@ async fn run(cli: Cli) -> Result<()> {
             command.run.run(command.agent, command.vm).await
         }
         Some(Command::ManagedServer(command)) => command.run().await,
+        Some(Command::Rewind(command)) => {
+            rewind::run(
+                &command.session,
+                command.checkpoint.as_deref(),
+                command.restore,
+                &command.mode,
+            )
+            .await
+        }
         Some(Command::Resume(command)) => {
             let codex_home = config::default_codex_home()?;
+            if command.agent.selected_harness()? == nanocodex::HarnessFamily::Claude {
+                let id = match command.thread_id {
+                    Some(id) => id,
+                    None => {
+                        let sessions = native_sessions::discover(&codex_home)?;
+                        if sessions.is_empty() {
+                            return Err(eyre!(
+                                "no resumable Claude sessions found under {}",
+                                codex_home.display()
+                            ));
+                        }
+                        let Some(id) = native_sessions::select(&sessions)? else {
+                            return Ok(());
+                        };
+                        id
+                    }
+                };
+                let session = native_sessions::load(&codex_home, &id)?;
+                return tui::run_observed(
+                    command.agent.resume_claude(session)?,
+                    command.vm,
+                    command.prompt.map(tui::InitialPrompt::plain),
+                    None,
+                    Some(command.observability),
+                )
+                .await;
+            }
             let rollouts = RolloutConfig::new(&codex_home);
             let thread_id = match command.thread_id {
                 Some(thread_id) => thread_id,

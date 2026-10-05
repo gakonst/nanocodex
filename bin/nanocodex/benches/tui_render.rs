@@ -54,6 +54,14 @@ mod tui {
     }
 
     #[allow(dead_code, unused_imports)]
+    mod interaction {
+        include!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/tui/interaction.rs"
+        ));
+    }
+
+    #[allow(dead_code, unused_imports)]
     mod app {
         include!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/tui/app.rs"));
     }

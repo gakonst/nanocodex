@@ -35,9 +35,6 @@ const SESSION_TTL_SECONDS = 30 * 24 * 60 * 60;
 const PERSISTENT_SESSION_TTL_SECONDS = 365 * 24 * 60 * 60;
 const WEBAUTHN_CHALLENGE_TTL_SECONDS = 5 * 60;
 const OTP_CHALLENGE_TTL_SECONDS = 5 * 60;
-const OTP_RESEND_SECONDS = 60;
-const OTP_PHONE_REQUESTS_PER_HOUR = 5;
-const OTP_IP_REQUESTS_PER_HOUR = 20;
 const OTP_PROVIDER_TIMEOUT_MS = 10_000;
 const ACCOUNT_PROVISION_TIMEOUT_MS = 10_000;
 const MAX_WALLET_MUTATION_BODY_BYTES = 16 * 1024;
@@ -678,25 +675,8 @@ async function startSmsOtp(
 
   const store = authStore(env, "sms-otp");
   if (!store.create) return json({ error: "sms_otp_unavailable" }, { status: 503 });
-  const [phoneDigest, ipDigest] = await Promise.all([
-    keyedDigest(secret, `phone:${phone}`),
-    keyedDigest(secret, `ip:${request.headers.get("cf-connecting-ip") ?? "local"}`),
-  ]);
+  const phoneDigest = await keyedDigest(secret, `phone:${phone}`);
   const now = Math.floor(Date.now() / 1_000);
-  const limited = !await store.create(`cooldown:${phoneDigest}`, true, { ttl: OTP_RESEND_SECONDS })
-    || !await reserveWindowSlot(
-      store,
-      `phone:${phoneDigest}`,
-      OTP_PHONE_REQUESTS_PER_HOUR,
-      now,
-    )
-    || !await reserveWindowSlot(store, `ip:${ipDigest}`, OTP_IP_REQUESTS_PER_HOUR, now);
-  if (limited) {
-    return json({ error: "rate_limited", retry_after: OTP_RESEND_SECONDS }, {
-      status: 429,
-      headers: { "retry-after": String(OTP_RESEND_SECONDS) },
-    });
-  }
 
   const session = await readBrowserSession(request, env);
   const sessionToken = cookieValue(request, ACCOUNT_COOKIE);
@@ -720,14 +700,13 @@ async function startSmsOtp(
     await Promise.all([
       store.delete(`challenge:${challengeId}`),
       store.delete(`active:${phoneDigest}`),
-      store.delete(`cooldown:${phoneDigest}`),
     ]);
     return json({ error: "sms_delivery_failed" }, { status: 503 });
   }
   return json({
     challenge_id: challengeId,
     expires_in: OTP_CHALLENGE_TTL_SECONDS,
-    resend_after: OTP_RESEND_SECONDS,
+    resend_after: 0,
   }, { status: 202 });
 }
 
@@ -2849,21 +2828,6 @@ function otpSecret(env: AccountAuthEnv): string | undefined {
     && env.NANOCODEX_OTP_HMAC_KEY.length >= 32
     ? env.NANOCODEX_OTP_HMAC_KEY
     : undefined;
-}
-
-async function reserveWindowSlot(
-  store: Kv.Kv,
-  subject: string,
-  limit: number,
-  now: number,
-): Promise<boolean> {
-  if (!store.create) return false;
-  const window = Math.floor(now / 3_600);
-  const ttl = 7_200;
-  for (let slot = 0; slot < limit; slot += 1) {
-    if (await store.create(`rate:${subject}:${window}:${slot}`, true, { ttl })) return true;
-  }
-  return false;
 }
 
 async function keyedDigest(secret: string, value: string): Promise<string> {

@@ -236,7 +236,7 @@ async fn repeated_manual_compaction_includes_prior_summary_and_failed_summary_is
     assert!(agent.compact().await.is_err());
     agent.compact().await.unwrap();
     agent
-        .prompt("continue")
+        .prompt("Correction: constraint B replaces constraint A; do not publish.")
         .await
         .unwrap()
         .result()
@@ -257,6 +257,19 @@ async fn repeated_manual_compaction_includes_prior_summary_and_failed_summary_is
         log[4]["messages"]
             .to_string()
             .contains("second summary preserves constraint A")
+    );
+    // A later user correction must remain a separate, latest user message;
+    // this checks transport ordering, not the summarizer's semantic fidelity.
+    let messages = log[4]["messages"].as_array().unwrap();
+    let correction = messages.last().unwrap();
+    assert_eq!(correction["role"], "user");
+    assert_eq!(
+        correction["content"][0]["text"],
+        "Correction: constraint B replaces constraint A; do not publish."
+    );
+    assert!(
+        !messages[0].to_string().contains("constraint B"),
+        "new user steering must not be folded into generated history"
     );
     task.abort();
 }

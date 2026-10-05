@@ -531,8 +531,6 @@ describe("SMS OTP authentication", () => {
       }), local.env, new URL(`${origin}/v1/auth/logout`));
       expect(loggedOut?.status).toBe(204);
 
-      vi.setSystemTime(new Date("2026-09-02T12:01:01Z"));
-      local.deleteMatching("sms-otp", "cooldown:");
       const second = await beginSmsOtp(local.env, origin, "+306900000000", "198.51.100.2");
       expect(second.response.status).toBe(202);
       const restored = await completeSmsOtp(
@@ -592,7 +590,7 @@ describe("SMS OTP authentication", () => {
     expect(separateUser.user.id).not.toBe(promotedUser.user.id);
   });
 
-  it("enforces browser origin, resend limits, and configured delivery", async () => {
+  it("enforces browser origin and configured delivery", async () => {
     const local = portableEnv();
     local.env.NANOCODEX_OTP_HMAC_KEY = "test-sms-otp-hmac-key-with-at-least-thirty-two-bytes";
     mockTwilioVerify(local.env);
@@ -611,12 +609,6 @@ describe("SMS OTP authentication", () => {
       body: JSON.stringify({ phone: `+1${"2".repeat(1_100)}` }),
     }), local.env, new URL(`${origin}/v1/auth/sms/start`));
     expect(oversized?.status).toBe(413);
-
-    const first = await beginSmsOtp(local.env, origin, "+14155550123");
-    expect(first.response.status).toBe(202);
-    const limited = await beginSmsOtp(local.env, origin, "+14155550123");
-    expect(limited.response.status).toBe(429);
-    expect(limited.response.headers.get("retry-after")).toBe("60");
 
     const unavailable = portableEnv();
     unavailable.env.NANOCODEX_OTP_HMAC_KEY = local.env.NANOCODEX_OTP_HMAC_KEY;
@@ -1405,7 +1397,6 @@ function portableEnv(secret = LOCAL_HMAC_KEY): {
   get(name: string, key: string): unknown;
   set(name: string, key: string, value: unknown): void;
   values(name: string): IterableIterator<unknown>;
-  deleteMatching(name: string, prefix: string): void;
 } {
   const stores = new Map<string, Map<string, unknown>>();
   const store = (name: string) => {
@@ -1523,9 +1514,6 @@ function portableEnv(secret = LOCAL_HMAC_KEY): {
     get: (name, key) => store(name).get(key),
     set: (name, key, value) => store(name).set(key, value),
     values: (name) => store(name).values(),
-    deleteMatching: (name, prefix) => {
-      for (const key of store(name).keys()) if (key.startsWith(prefix)) store(name).delete(key);
-    },
   };
 }
 

@@ -3,6 +3,7 @@
 mod catalog;
 mod client;
 mod config;
+mod native;
 mod oauth;
 mod pagination;
 mod stdio;

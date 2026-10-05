@@ -26,7 +26,7 @@ pub use runtime::{
 };
 pub use tools::{
     AgentStartReport, AgentTask, AgentToolResult, install_tools, start_agent, start_agent_with,
-    start_agents, start_agents_observed,
+    start_agents, start_agents_observed, start_fork_agent,
 };
 
 /// Unlimited active turns by default. Explicit finite limits remain supported.

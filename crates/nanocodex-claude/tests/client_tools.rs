@@ -705,3 +705,122 @@ async fn nested_search_preserves_sources_across_pause_and_bounds_the_combined_an
     assert!(text.len() <= 32 * 1024);
     server.abort();
 }
+
+#[tokio::test]
+async fn failed_tool_search_post_hook_does_not_authorize_deferred_effect() {
+    use nanocodex_claude::{
+        ClaudeHookFuture, ClaudeToolDecision, ClaudeToolHooks, ClaudeToolInvocation,
+        ClaudeToolReply, ToolDefinition,
+    };
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct RejectDiscovery;
+    impl ClaudeToolHooks for RejectDiscovery {
+        fn before<'a>(
+            &'a self,
+            _name: &'a str,
+            _input: &'a Value,
+            _invocation: &'a ClaudeToolInvocation,
+        ) -> ClaudeHookFuture<'a, Result<ClaudeToolDecision, String>> {
+            Box::pin(async { Ok(ClaudeToolDecision::Allow) })
+        }
+        fn after<'a>(
+            &'a self,
+            name: &'a str,
+            _input: &'a Value,
+            _invocation: &'a ClaudeToolInvocation,
+            _reply: &'a ClaudeToolReply,
+        ) -> ClaudeHookFuture<'a, Result<(), String>> {
+            Box::pin(async move {
+                if name == "ToolSearch" {
+                    Err("discovery rejected after handler".into())
+                } else {
+                    Ok(())
+                }
+            })
+        }
+    }
+
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    let requests = Arc::new(Mutex::new(Vec::<Value>::new()));
+    let log = requests.clone();
+    let app = Router::new().route("/v1/messages", post(move |Json(body): Json<Value>| {
+        let log = log.clone();
+        async move {
+            let n = { let mut r = log.lock().unwrap(); r.push(body); r.len() };
+            let (blocks, reason) = match n {
+                1 => (vec![json!({"type":"tool_use","id":"discovery","name":"ToolSearch","input":{"query":"select:effect"}})], "tool_use"),
+                2 => (vec![json!({"type":"tool_use","id":"forbidden-effect","name":"effect","input":{}})], "tool_use"),
+                _ => (vec![json!({"type":"text","text":"done"})], "end_turn"),
+            };
+            ([("content-type", "text/event-stream")], stream(blocks, reason))
+        }
+    }));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let effects = Arc::new(AtomicUsize::new(0));
+    let counter = effects.clone();
+    let client = ClaudeClient::new(
+        reqwest::Client::new(),
+        format!("http://{address}/v1/messages"),
+        "synthetic",
+    );
+    let (agent, _) = Nanocodex::builder(Claude::new(client, "test"))
+        .client_tool_search()
+        .tool_hooks(Arc::new(RejectDiscovery))
+        .tool(
+            ToolDefinition {
+                name: "effect".into(),
+                description: "Counted external effect".into(),
+                input_schema: json!({"type":"object"}),
+                strict: None,
+                defer_loading: true,
+            },
+            move |_| {
+                counter.fetch_add(1, Ordering::SeqCst);
+                async { Ok("committed".into()) }
+            },
+        )
+        .build()
+        .unwrap();
+    let result = agent
+        .prompt("discover then execute")
+        .await
+        .unwrap()
+        .result()
+        .await;
+    assert!(
+        result.is_err(),
+        "failed discovery must reject deferred dispatch"
+    );
+    assert_eq!(effects.load(Ordering::SeqCst), 0);
+    let requests = requests.lock().unwrap();
+    assert_eq!(requests.len(), 2);
+    let receipt = &requests[1]["messages"][2]["content"][0];
+    assert_eq!(receipt["is_error"], true);
+    assert!(
+        receipt
+            .to_string()
+            .contains("discovery rejected after handler")
+    );
+    // Retain the real transport inputs and result, not just the passing test name.
+    let evidence =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../output/tool-search-posthook");
+    std::fs::create_dir_all(&evidence).unwrap();
+    std::fs::write(
+        evidence.join("requests.json"),
+        serde_json::to_vec_pretty(&*requests).unwrap(),
+    )
+    .unwrap();
+    std::fs::write(
+        evidence.join("outcome.json"),
+        serde_json::to_vec_pretty(&json!({
+            "provider_requests": requests.len(), "effect_count": effects.load(Ordering::SeqCst),
+            "failed_discovery_receipt": receipt, "dispatch_error": result.unwrap_err().to_string()
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    server.abort();
+}

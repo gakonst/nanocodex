@@ -1,4 +1,32 @@
 use super::*;
+
+mod agents;
+mod checkpoints;
+pub(crate) mod frontend;
+mod loop_frontend;
+mod permissions;
+pub(crate) mod scheduler;
+mod workflow;
+mod worktree;
+pub(crate) use checkpoints::rewind as rewind_files;
+
+/// Preserve current host restrictions before a fresh rewind journal is published.
+pub(crate) fn prepare_rewind_branch(
+    home: &std::path::Path,
+    source: &str,
+    target: &str,
+) -> std::result::Result<(), String> {
+    interaction::prepare_rewind_branch(home, source, target)
+        .map_err(|error| format!("{error:#}"))?;
+    worktree::prepare_rewind_branch(home, source, target)
+}
+mod hooks;
+pub(crate) mod interaction;
+mod mcp;
+mod monitor;
+mod shell;
+mod skills;
+mod web;
 use nanocodex::{
     Claude,
     claude::{
@@ -17,6 +45,132 @@ use nanocodex::{
 use serde_json::{Value, json, value::to_raw_value};
 use tokio::time::{Duration, Instant};
 
+/// Task-tree workspace bindings. A new child snapshots its parent's current
+/// directory once; later transitions never retarget an existing child's tools.
+pub(super) struct WorkspaceRegistry {
+    home: PathBuf,
+    sessions: std::sync::Mutex<std::collections::BTreeMap<String, Arc<worktree::Workspace>>>,
+    policies: std::sync::Mutex<
+        std::collections::BTreeMap<String, std::sync::Weak<interaction::Interaction>>,
+    >,
+}
+impl WorkspaceRegistry {
+    pub(super) fn new(_initial: PathBuf, home: PathBuf) -> Self {
+        Self {
+            home,
+            sessions: std::sync::Mutex::new(std::collections::BTreeMap::new()),
+            policies: std::sync::Mutex::new(std::collections::BTreeMap::new()),
+        }
+    }
+    pub(super) fn seed(&self, session: &str, initial: PathBuf) -> std::result::Result<(), String> {
+        let mut sessions = self
+            .sessions
+            .lock()
+            .map_err(|_| "workspace registry poisoned")?;
+        if !sessions.contains_key(session) {
+            sessions.insert(
+                session.to_owned(),
+                Arc::new(worktree::Workspace::new(
+                    initial,
+                    self.home.clone(),
+                    session,
+                )?),
+            );
+        }
+        if let Some(workspace) = sessions.get(session) {
+            agents::profiles::restore(session, workspace.clone())?;
+        }
+        Ok(())
+    }
+    fn get(&self, session: &str) -> std::result::Result<Arc<worktree::Workspace>, String> {
+        self.sessions
+            .lock()
+            .map_err(|_| "workspace registry poisoned")?
+            .get(session)
+            .cloned()
+            .ok_or_else(|| "session workspace has not been initialized".into())
+    }
+    pub(super) fn current(&self, session: &str) -> std::result::Result<PathBuf, String> {
+        Ok(self.get(session)?.current())
+    }
+    pub(super) fn initialize(&self, parent: &str, child: &str) -> std::result::Result<(), String> {
+        let mut sessions = self
+            .sessions
+            .lock()
+            .map_err(|_| "workspace registry poisoned")?;
+        if !sessions.contains_key(child) {
+            let owner = sessions
+                .get(parent)
+                .ok_or("parent workspace has not been initialized")?;
+            let workspace = Arc::new(match workflow::inherited_workspace() {
+                Some((path, lease)) => {
+                    worktree::Workspace::child_from_pin(self.home.clone(), child, path, lease)?
+                }
+                None => owner.child(self.home.clone(), child)?,
+            });
+            agents::profiles::bind(parent, child, workspace.clone())?;
+            sessions.insert(child.to_owned(), workspace);
+        }
+        Ok(())
+    }
+    fn bind_policy(
+        &self,
+        session: &str,
+        interaction: &Arc<interaction::Interaction>,
+    ) -> std::result::Result<(), String> {
+        self.policies
+            .lock()
+            .map_err(|_| "workspace policies poisoned")?
+            .insert(session.into(), Arc::downgrade(interaction));
+        Ok(())
+    }
+    pub(super) fn parent_policy(
+        &self,
+        parent: Option<&nanocodex::agent::AgentHandle>,
+    ) -> std::result::Result<permissions::Policy, String> {
+        let policy = match parent {
+            Some(parent) => self
+                .policies
+                .lock()
+                .map_err(|_| "workspace policies poisoned")?
+                .get(parent.session_id())
+                .cloned(),
+            None => None,
+        };
+        match (parent, policy.and_then(|policy| policy.upgrade())) {
+            (Some(parent), Some(policy)) => policy.resolved_policy(parent.session_id()),
+            _ => Ok(permissions::Policy::default()),
+        }
+    }
+    pub(super) fn authorize_cross_family(
+        &self,
+        parent: Option<&nanocodex::agent::AgentHandle>,
+    ) -> std::result::Result<(), String> {
+        if self.parent_policy(parent)?.restricted() {
+            Err("cross-family delegation is unavailable under a restricted Claude permission policy; use a Claude child to retain enforcement".into())
+        } else {
+            Ok(())
+        }
+    }
+    pub(super) fn parent_path(
+        &self,
+        parent: Option<&nanocodex::agent::AgentHandle>,
+        fallback: &Path,
+    ) -> std::result::Result<PathBuf, String> {
+        match parent {
+            Some(parent) => self.current(parent.session_id()),
+            None => Ok(fallback.to_path_buf()),
+        }
+    }
+}
+
+/// Read the same durable workspace binding used by native tools without
+/// acquiring the active conversation lock (also safe for user steering).
+pub(super) fn current_session_workspace(session_id: &str) -> std::result::Result<PathBuf, String> {
+    let home = default_codex_home().map_err(|error| error.to_string())?;
+    worktree::Workspace::saved_current(&home, session_id)
+}
+
 /// Resolve Claude credentials only when its family is used, then share the
 /// native client and its refresh gate across every root and child session.
 #[derive(Clone)]
@@ -25,6 +179,8 @@ pub(super) struct ClaudeConnection {
     api_key: Option<String>,
     endpoint: Option<String>,
     client: Arc<tokio::sync::OnceCell<ClaudeClient>>,
+    hooks_path: Option<PathBuf>,
+    policy: permissions::Policy,
 }
 
 impl ClaudeConnection {
@@ -38,7 +194,40 @@ impl ClaudeConnection {
             api_key,
             endpoint,
             client: Arc::new(tokio::sync::OnceCell::new()),
+            hooks_path: None,
+            policy: permissions::Policy::default(),
         }
+    }
+
+    pub(super) fn with_hooks(mut self, path: Option<PathBuf>) -> Self {
+        self.hooks_path = path;
+        self
+    }
+
+    pub(super) fn with_policy(mut self, policy: permissions::Policy) -> Self {
+        self.policy = policy;
+        self
+    }
+
+    pub(super) fn with_permission_config(
+        mut self,
+        path: Option<&Path>,
+        mode: Option<&str>,
+    ) -> Result<Self> {
+        self.policy = permissions::Policy::load(path, mode)?;
+        Ok(self)
+    }
+
+    fn hooks(
+        &self,
+        workspaces: Arc<WorkspaceRegistry>,
+    ) -> Result<Option<Arc<dyn nanocodex::claude::ClaudeToolHooks>>> {
+        self.hooks_path
+            .as_deref()
+            .map(|path| {
+                hooks::load_with_workspace(path, Arc::new(move |id| workspaces.current(id)))
+            })
+            .transpose()
     }
 
     async fn client(&self) -> std::result::Result<ClaudeClient, String> {
@@ -95,19 +284,50 @@ impl AgentArgs {
         if self.memory {
             return Err(eyre!("the native Claude CLI does not yet support --memory"));
         }
+        let policy = permissions::Policy::load(
+            self.claude_permissions.as_deref(),
+            self.permission_mode.as_deref(),
+        )
+        .map_err(|error| eyre!(error))?;
         let connection = ClaudeConnection::new(
             self.claude_auth,
             self.claude_api_key,
             self.claude_messages_url,
-        );
+        )
+        .with_hooks(self.claude_hooks)
+        .with_policy(policy);
         let client = connection.client().await.map_err(|error| eyre!(error))?;
         let workspace = self
             .cwd
             .unwrap_or_else(|| PathBuf::from("."))
             .canonicalize()
             .wrap_err("failed to resolve the Claude workspace")?;
-        let files = Arc::new(ClaudeWorkspaceFiles::new(&workspace).map_err(|error| eyre!(error))?);
         let codex_home = default_codex_home()?;
+        let persistence = local_durability.or_else(|| {
+            self.rollouts.then(|| LocalDurability {
+                path: codex_home.join("claude/sessions.sqlite"),
+                state_id: self.claude_resume.as_ref().map_or_else(
+                    || SessionId::new().to_string(),
+                    |session| session.id.clone(),
+                ),
+            })
+        });
+        let session_id = persistence.as_ref().map_or_else(
+            || SessionId::new().to_string(),
+            |state| state.state_id.clone(),
+        );
+        let workspaces = Arc::new(WorkspaceRegistry::new(
+            workspace.clone(),
+            codex_home.clone(),
+        ));
+        workspaces
+            .seed(&session_id, workspace.clone())
+            .map_err(|error| eyre!(error))?;
+        let workspace = workspaces
+            .current(&session_id)
+            .map_err(|error| eyre!(error))?;
+        let claude_scheduler = scheduler::SessionScheduler::enabled(tui)
+            .then(|| Arc::new(scheduler::SessionScheduler::new(codex_home.clone())));
         let managed_mcp = if self.mcp.loads_managed() {
             load_managed_mcp_credential(&codex_home).await?
         } else {
@@ -129,26 +349,25 @@ impl AgentArgs {
         let tool_registry = registry
             .as_ref()
             .map(|(registry, _, _)| Arc::clone(registry));
-        let instructions = self.instructions.unwrap_or_else(|| {
-            "You are a coding agent. Use the native Claude workspace tools to inspect and change the authorized workspace. Bash runs foreground commands through the retained workspace host. Use exec for MCP and shared subagent tools.".to_owned()
-        });
-        let codex_auth = self.auth.resolve().map_err(|error| error.to_string());
+        let instructions = self.instructions;
+        let codex_auth = self.auth;
         let codex_tools = tools
             .clone()
             .into_builder()
             .workspace(true)
             .web_search(web_search)
-            .image_generation(self.image_generation)
+            .image_generation(self.image_generation.unwrap_or(true))
             .build()?;
         let codex_home_for_recipe = codex_home.clone();
         let codex_workspace = workspace.clone();
+        let codex_workspaces = workspaces.clone();
         let codex_registry = tool_registry.clone();
         let codex_instructions = instructions.clone();
         let websocket_url = self.websocket_url;
         let api_base_url = self.api_base_url;
         let model_id_prefix = self.model_id_prefix;
         let reasoning_mode = self.reasoning_mode;
-        let fast_mode = self.fast_mode;
+        let fast_mode = self.fast_mode.unwrap_or(true);
         let websocket_warmup = self.websocket_warmup;
         let store_responses = self.store_responses;
         let harness_builder =
@@ -156,6 +375,7 @@ impl AgentArgs {
                 let auth = codex_auth.clone();
                 let tools = codex_tools.clone();
                 let workspace = codex_workspace.clone();
+                let workspaces = codex_workspaces.clone();
                 let codex_home = codex_home_for_recipe.clone();
                 let registry = codex_registry.clone();
                 let instructions = codex_instructions.clone();
@@ -163,13 +383,38 @@ impl AgentArgs {
                 let api_base_url = api_base_url.clone();
                 let model_id_prefix = model_id_prefix.clone();
                 async move {
+                    workspaces
+                        .authorize_cross_family(request.parent.as_ref())
+                        .map_err(nanocodex::NanocodexError::InvalidRequest)?;
+                    let session_id = match &request.snapshot {
+                        Some(nanocodex::agent::ChildSnapshot::Codex(snapshot)) => {
+                            snapshot.session_id.parse::<SessionId>().map_err(|error| {
+                                nanocodex::NanocodexError::InvalidRequest(error.to_string())
+                            })?
+                        }
+                        _ => SessionId::new(),
+                    };
+                    let session_key = session_id.to_string();
+                    if let Some(parent) = &request.parent {
+                        workspaces.initialize(parent.session_id(), &session_key)
+                    } else {
+                        workspaces.seed(&session_key, workspace)
+                    }
+                    .map_err(nanocodex::NanocodexError::InvalidRequest)?;
+                    let workspace = workspaces
+                        .current(&session_key)
+                        .map_err(nanocodex::NanocodexError::InvalidRequest)?;
+                    let tool_workspace = workspace.clone();
                     let HarnessModel::Codex(model) = request.model else {
                         return Err(nanocodex::NanocodexError::InvalidRequest(
                             "Codex recipe received a Claude model".into(),
                         ));
                     };
                     let auth = auth
-                        .map_err(nanocodex::NanocodexError::InvalidRequest)?
+                        .resolve()
+                        .map_err(|error| {
+                            nanocodex::NanocodexError::InvalidRequest(error.to_string())
+                        })?
                         .nanocodex()
                         .map_err(|error| {
                             nanocodex::NanocodexError::InvalidRequest(error.to_string())
@@ -190,7 +435,9 @@ impl AgentArgs {
                     let client = openai.build().map_err(|error| {
                         nanocodex::NanocodexError::InvalidRequest(error.to_string())
                     })?;
+                    let registry_enabled = registry.is_some();
                     let mut builder = Nanocodex::builder(client)
+                        .session_id(session_id)
                         .workspace(workspace)
                         .codex_home(codex_home)
                         .model(model)
@@ -198,9 +445,13 @@ impl AgentArgs {
                         .reasoning_mode(reasoning_mode)
                         .fast_mode(fast_mode)
                         .host_context(request.host_context)
-                        .instructions(instructions)
                         .spawn_factory(request.spawn_factory)
                         .tools_factory(move |parent| {
+                            workspaces
+                                .seed(parent.session_id(), tool_workspace.clone())
+                                .map_err(
+                                    nanocodex::tools::runtime::ToolsBuildError::HostInitialization,
+                                )?;
                             if let Some(registry) = &registry {
                                 nanocodex_subagents::install_tools(
                                     tools.clone(),
@@ -211,12 +462,30 @@ impl AgentArgs {
                                 Ok(tools.clone())
                             }
                         });
+                    if instructions.is_none()
+                        && let Some(extra) = session_instructions(None, registry_enabled, false)
+                    {
+                        builder = builder.additional_instructions(extra);
+                    }
+                    if let Some(instructions) = instructions {
+                        builder = builder.instructions(instructions);
+                    }
                     if let Some(checkpoint) = request.snapshot {
                         builder = builder.restore_runtime(checkpoint)?;
                     }
                     builder.build()
                 }
             });
+        let tool_hooks = connection.hooks(workspaces.clone())?;
+        let permission_workspaces = workspaces.clone();
+        let (interaction, claude_interactions) =
+            interaction::Interaction::new_with_policy_and_workspace(
+                interaction::Interaction::available(tui),
+                codex_home.join("claude/plan-mode"),
+                tool_hooks,
+                connection.policy.clone(),
+                Arc::new(move |id| permission_workspaces.current(id)),
+            );
         let harness = register_claude_recipe(
             harness_builder,
             connection,
@@ -225,28 +494,34 @@ impl AgentArgs {
             tools.clone(),
             web_search,
             tool_registry.clone(),
+            mcp_handle.clone(),
+            workspaces.clone(),
         )
         .build();
+        let session_workspace = workspace.clone();
         let mut builder = configured_claude_builder(
             client,
             model,
             thinking,
             workspace,
-            files,
             instructions,
             tools,
             web_search,
             tool_registry,
+            mcp_handle.clone(),
+            interaction.clone(),
+            codex_home.clone(),
+            workspaces.clone(),
+            session_id.clone(),
+            claude_scheduler.clone(),
+            self.claude_workflows,
+            self.claude_monitor_ws_origin,
         )
         .spawn_factory(harness.spawn_factory());
-        // Claude checkpoints retain native Messages blocks and signed thinking.
-        // The default rollout toggle enables this native journal for Claude.
-        let persistence = local_durability.or_else(|| {
-            self.rollouts.then(|| LocalDurability {
-                path: codex_home.join("claude/sessions.sqlite"),
-                state_id: SessionId::new().to_string(),
-            })
-        });
+        let native_session_id = persistence
+            .as_ref()
+            .filter(|p| p.path == crate::native_sessions::store_path(&codex_home))
+            .map(|p| p.state_id.clone());
         if let Some(persistence) = persistence {
             if let Some(parent) = persistence.path.parent() {
                 std::fs::create_dir_all(parent)
@@ -258,6 +533,22 @@ impl AgentArgs {
             builder = builder.durability(state).await?;
         }
         let (handle, events) = builder.build()?;
+        if let Some(scheduler) = &claude_scheduler {
+            scheduler
+                .resume(handle.session_id())
+                .map_err(|error| eyre!(error))?;
+            frontend::register(
+                handle.session_id(),
+                scheduler,
+                &workspaces,
+                &interaction,
+                std::env::var_os("HOME").map(PathBuf::from),
+            )
+            .map_err(|error| eyre!(error))?;
+        }
+        if let Some(id) = native_session_id {
+            crate::native_sessions::register(&codex_home, &id, &session_workspace, model)?;
+        }
         let (child_agents, subagent_updates) =
             registry.map_or((None, None), |(_, control, updates)| {
                 let (drain, updates) = if tui {
@@ -275,6 +566,8 @@ impl AgentArgs {
                 )
             });
         Ok(ConfiguredAgent {
+            claude_interactions,
+            claude_scheduler,
             handle,
             events,
             realtime: None,
@@ -295,74 +588,242 @@ fn configured_claude_builder(
     model: HarnessModel,
     thinking: Thinking,
     workspace: PathBuf,
-    files: Arc<ClaudeWorkspaceFiles>,
-    mut instructions: String,
+    instructions: Option<String>,
     tools: Tools,
     web_search: bool,
     registry: Option<Arc<nanocodex_subagents::Registry>>,
+    mcp_handle: Option<McpHandle>,
+    interaction: Arc<interaction::Interaction>,
+    codex_home: PathBuf,
+    workspaces: Arc<WorkspaceRegistry>,
+    session_id: String,
+    scheduler: Option<Arc<scheduler::SessionScheduler>>,
+    workflows_enabled: bool,
+    monitor_ws_origins: Vec<String>,
 ) -> nanocodex::claude::ClaudeBuilder {
-    if registry.is_some() && !instructions.contains(SUBAGENT_INSTRUCTIONS) {
-        instructions.push_str("\n\n");
-        instructions.push_str(SUBAGENT_INSTRUCTIONS);
-    }
+    let load_context = interaction
+        .resolved_policy(&session_id)
+        .is_ok_and(|policy| !policy.has_read_restrictions())
+        && agents::profiles::allows_context(&session_id);
+    let initial_instructions = agents::profiles::instructions(
+        &session_id,
+        super::instructions::native_with_context(
+            HarnessFamily::Claude,
+            instructions.clone(),
+            &workspace,
+            web_search,
+            registry.is_some(),
+            load_context,
+        ),
+    );
+    let profile_guard = Arc::new(agents::profiles::Guard {
+        workspaces: workspaces.clone(),
+    });
+    let interaction_tools = interaction.clone();
+    let interaction_children = interaction.clone();
+    let interaction_context = interaction.clone();
+    let checkpoint_workspaces = workspaces.clone();
+    let checkpoints = Arc::new(checkpoints::Checkpoints::new_with_workspace(
+        Arc::new(move |id| checkpoint_workspaces.current(id)),
+        codex_home,
+    ));
+    let workspace_labels = workspaces.clone();
+    let child_workspaces = workspaces.clone();
+    let system_workspaces = workspaces.clone();
+    let has_registry = registry.is_some();
+    let schedule_owner = session_id.clone();
     let mut builder = Nanocodex::builder(Claude::new(client, model.as_str()))
+        .subagent_type_resolver(agents::profiles::selected_name)
+        .session_id(session_id)
         .workspace(workspace.to_string_lossy().into_owned())
-        .system(instructions)
+        .workspace_resolver(move |id| {
+            workspace_labels
+                .current(id)
+                .expect("initialized session workspace")
+                .to_string_lossy()
+                .into_owned()
+        })
+        .child_workspace_init(move |parent, child| {
+            child_workspaces
+                .initialize(parent, child)
+                .map_err(nanocodex::NanocodexError::InvalidRequest)?;
+            interaction_children
+                .initialize_child(parent, child)
+                .map_err(nanocodex::NanocodexError::InvalidRequest)
+        })
+        .system(initial_instructions)
+        .system_resolver(move |id| {
+            agents::profiles::instructions(
+                id,
+                super::instructions::native_with_context(
+                    HarnessFamily::Claude,
+                    instructions.clone(),
+                    &system_workspaces
+                        .current(id)
+                        .expect("initialized context workspace"),
+                    web_search,
+                    has_registry,
+                    interaction_context
+                        .resolved_policy(id)
+                        .is_ok_and(|policy| !policy.has_read_restrictions())
+                        && agents::profiles::allows_context(id),
+                ),
+            )
+        })
         .max_tokens(16_384)
+        .parallel_tools(false)
+        .tool_hooks(profile_guard.clone())
+        .tool_hooks(interaction)
+        .tool_hooks(profile_guard)
+        .tool_hooks(checkpoints)
+        .tasks(Arc::new(nanocodex::claude_tools::ClaudeTasks::new()))
         .tools_factory(move |parent| {
+            let workspace = workspaces
+                .get(parent.session_id())
+                .map_err(nanocodex::NanocodexError::InvalidRequest)?;
+            workspaces
+                .bind_policy(parent.session_id(), &interaction_tools)
+                .map_err(nanocodex::NanocodexError::InvalidRequest)?;
+            let owner_scheduler = scheduler
+                .as_ref()
+                .filter(|_| parent.session_id() == schedule_owner)
+                .cloned();
+            let monitor = owner_scheduler.as_ref().map(|scheduler| {
+                Arc::new(monitor::Monitor::new(
+                    workspace.clone(),
+                    scheduler.clone(),
+                    web_search,
+                    monitor_ws_origins.clone(),
+                ))
+            });
+            let fork = registry
+                .as_ref()
+                .map(|registry| (parent.clone(), registry.clone()));
+            let workflow = if workflows_enabled && parent.session_id() == schedule_owner {
+                registry.as_ref().map(|registry| {
+                    Arc::new(workflow::Workflow::new(
+                        workspace.clone(),
+                        parent.clone(),
+                        registry.clone(),
+                    ))
+                })
+            } else {
+                None
+            };
             let tools = if let Some(registry) = &registry {
                 nanocodex_subagents::install_tools(tools.clone(), parent, Arc::clone(registry))
                     .map_err(|error| nanocodex::NanocodexError::InvalidRequest(error.to_string()))?
             } else {
                 tools.clone()
             };
-            native_tools(&workspace, Arc::clone(&files), tools)
+            let mut native = native_tools(
+                workspace,
+                tools,
+                registry.is_some(),
+                mcp_handle.clone(),
+                fork,
+                interaction_tools.clone(),
+                monitor,
+                workflow,
+            )?;
+            native = interaction::install(native, interaction_tools.clone());
+            if let Some(scheduler) = owner_scheduler {
+                native = scheduler::install(native, scheduler);
+            }
+            Ok(native)
         });
     if let Some(effort) = claude_effort(thinking) {
         builder = builder.adaptive_thinking().keep_thinking().effort(effort);
     }
     if web_search {
-        builder = builder.server_tool(nanocodex::claude::ServerToolDefinition::web_search_basic(5));
+        builder = builder
+            .nested_web_search(false)
+            .web_fetch_with_source(Arc::new(web::PublicWebFetch::new()), false);
     }
     builder
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn register_claude_recipe(
     harness: nanocodex::HarnessBuilder,
     connection: ClaudeConnection,
     workspace: PathBuf,
-    instructions: String,
+    instructions: Option<String>,
     tools: Tools,
     web_search: bool,
     registry: Option<Arc<nanocodex_subagents::Registry>>,
+    mcp_handle: Option<McpHandle>,
+    workspaces: Arc<WorkspaceRegistry>,
 ) -> nanocodex::HarnessBuilder {
     harness.register(HarnessFamily::Claude, move |request| {
         let connection = connection.clone();
-        let workspace = workspace.clone();
+        let workspace = workspaces.parent_path(request.parent.as_ref(), &workspace);
+        let workspaces = workspaces.clone();
         let instructions = instructions.clone();
         let tools = tools.clone();
         let registry = registry.clone();
+        let mcp_handle = mcp_handle.clone();
         async move {
+            let workspace = workspace.map_err(nanocodex::NanocodexError::InvalidRequest)?;
+            let session_id = match &request.snapshot {
+                Some(nanocodex::agent::ChildSnapshot::Native { session_id, .. }) => {
+                    session_id.clone()
+                }
+                _ => SessionId::new().to_string(),
+            };
+            if let Some(parent) = &request.parent {
+                workspaces.initialize(parent.session_id(), &session_id)
+            } else {
+                workspaces.seed(&session_id, workspace.clone())
+            }
+            .map_err(nanocodex::NanocodexError::InvalidRequest)?;
+            let workspace = workspaces
+                .current(&session_id)
+                .map_err(nanocodex::NanocodexError::InvalidRequest)?;
+            let policy = if connection.policy.explicit {
+                connection.policy.clone()
+            } else {
+                workspaces
+                    .parent_policy(request.parent.as_ref())
+                    .map_err(nanocodex::NanocodexError::InvalidRequest)?
+            };
+            let hooks = connection
+                .hooks(workspaces.clone())
+                .map_err(|error| nanocodex::NanocodexError::InvalidRequest(error.to_string()))?;
+            let codex_home = default_codex_home()
+                .map_err(|error| nanocodex::NanocodexError::InvalidRequest(error.to_string()))?;
+            let permission_workspaces = workspaces.clone();
+            let (interaction, _) = interaction::Interaction::new_with_policy_and_workspace(
+                false,
+                codex_home.join("claude/plan-mode"),
+                hooks,
+                policy,
+                Arc::new(move |id| permission_workspaces.current(id)),
+            );
             let client = connection
                 .client()
                 .await
                 .map_err(nanocodex::NanocodexError::InvalidRequest)?;
-            let files = Arc::new(
-                ClaudeWorkspaceFiles::new(&workspace)
-                    .map_err(nanocodex::NanocodexError::InvalidRequest)?,
-            );
             let mut builder = configured_claude_builder(
                 client,
                 request.model,
                 request.thinking,
                 workspace,
-                files,
                 instructions,
                 tools,
                 web_search,
                 registry,
+                mcp_handle,
+                interaction,
+                codex_home,
+                workspaces,
+                session_id,
+                None,
+                false,
+                Vec::new(),
             )
             .spawn_factory(request.spawn_factory)
+            .subagent_type("general-purpose")
             .host_context(request.host_context);
             if let Some(checkpoint) = request.snapshot {
                 builder = builder.restore_runtime(checkpoint)?;
@@ -372,7 +833,7 @@ pub(super) fn register_claude_recipe(
     })
 }
 
-fn claude_effort(thinking: Thinking) -> Option<Effort> {
+const fn claude_effort(thinking: Thinking) -> Option<Effort> {
     match thinking {
         Thinking::None => None,
         Thinking::Low => Some(Effort::Low),
@@ -383,113 +844,152 @@ fn claude_effort(thinking: Thinking) -> Option<Effort> {
     }
 }
 
+// Keep host-owned capabilities explicit at this single assembly boundary.
+#[allow(clippy::too_many_arguments)]
 fn native_tools(
-    workspace: &Path,
-    files: Arc<ClaudeWorkspaceFiles>,
+    workspace: Arc<worktree::Workspace>,
     tools: Tools,
+    subagents: bool,
+    mcp_handle: Option<McpHandle>,
+    fork: Option<(
+        nanocodex::agent::AgentHandle,
+        Arc<nanocodex_subagents::Registry>,
+    )>,
+    interaction: Arc<interaction::Interaction>,
+    monitor: Option<Arc<monitor::Monitor>>,
+    workflow: Option<Arc<workflow::Workflow>>,
 ) -> nanocodex::agent::Result<ClaudeTools> {
     let mut native = ClaudeTools::new();
     for schema in ClaudeWorkspaceFiles::definitions() {
         let definition: ToolDefinition =
             serde_json::from_value(schema).expect("native file schema");
         let name = definition.name.clone();
-        let files = Arc::clone(&files);
-        native = native.tool_with_context(definition, move |input, _| {
-            let files = Arc::clone(&files);
+        let workspace = workspace.clone();
+        let interaction = interaction.clone();
+        native = native.tool_with_context(definition, move |input, invocation| {
+            let workspace = workspace.clone();
             let name = name.clone();
-            async move { files.execute(&name, input).await.map(text_reply) }
-        });
-    }
-    let shell = Arc::new(ClaudeBash::new(RetainedBash {
-        runtime: Arc::new(WorkspaceToolRuntime::new(workspace.to_path_buf())),
-        gate: Arc::new(tokio::sync::Mutex::new(())),
-    }));
-    for schema in ClaudeBash::<RetainedBash>::definitions() {
-        let definition = serde_json::from_value(schema).expect("native Bash schema");
-        let shell = Arc::clone(&shell);
-        native = native.tool_with_context(definition, move |input, _| {
-            let shell = Arc::clone(&shell);
-            async move { shell.execute("Bash", input).await.map(text_reply) }
-        });
-    }
-    // The retained host exposes real MCP discovery and calls through Code Mode.
-    // Only tool contracts cross this boundary; Claude conversations stay native.
-    let runtime = Arc::new(RetainedHost(ToolRuntime::new_with_tools(
-        workspace, None, None, &tools,
-    )));
-    let descriptions = runtime.model_specs("native-claude");
-    for (name, description, schema) in [
-        (
-            "exec",
-            "Execute JavaScript against the retained MCP and subagent capabilities. Use text(value) to return output.",
-            json!({"type":"object","properties":{"code":{"type":"string"}},"required":["code"],"additionalProperties":false}),
-        ),
-        (
-            "wait",
-            "Wait for a yielded JavaScript cell.",
-            json!({"type":"object","properties":{"cell_id":{"type":"string"},"yield_time_ms":{"type":"integer"},"max_tokens":{"type":"integer"},"terminate":{"type":"boolean"}},"required":["cell_id"],"additionalProperties":false}),
-        ),
-        (
-            "tool_search",
-            "Discover currently available MCP tools before calling them from exec.",
-            json!({"type":"object","properties":{"query":{"type":"string"},"limit":{"type":"integer"}},"required":["query"],"additionalProperties":false}),
-        ),
-    ] {
-        let description = descriptions
-            .iter()
-            .find(|definition| definition.name() == name)
-            .map_or(description, |definition| definition.description());
-        let definition: ToolDefinition = serde_json::from_value(
-            json!({"name":name,"description":description,"input_schema":schema}),
-        )
-        .expect("native host schema");
-        let runtime = Arc::clone(&runtime);
-        native = native.tool_with_context(definition, move |input: Value, invocation| {
-            let runtime = Arc::clone(&runtime);
+            let interaction = interaction.clone();
             async move {
-                let context = ToolContext::new(
-                    &invocation.model,
-                    &invocation.session_id,
-                    &invocation.call_id,
-                    &[],
-                    16_000,
-                )
-                .with_host_context(invocation.host_context.as_deref())
-                .with_instruction_revision(invocation.instruction_revision);
-                if name == "tool_search" {
-                    let input = ToolInput::Function(
-                        to_raw_value(&input).map_err(|error| error.to_string())?,
-                    );
-                    let output = runtime
-                        .execute_tool(name, input, context)
-                        .await
-                        .map_err(|error| error.to_string())?;
-                    let mut reply = runtime_reply(&output.output, output.success)?;
-                    reply.structured_result = Some(output.structured_result());
-                    reply.metadata = output
-                        .metadata
-                        .as_ref()
-                        .and_then(|metadata| serde_json::from_str(metadata.get()).ok());
-                    return Ok(reply);
-                }
-                let execution = if name == "exec" {
-                    let code = input
-                        .get("code")
-                        .and_then(Value::as_str)
-                        .ok_or("exec requires code")?;
-                    runtime.execute_code(code, context).await
-                } else {
-                    runtime.wait_for_code(&input.to_string(), context).await
-                }
-                .map_err(|error| error.to_string())?;
-                runtime_reply(&execution.output, execution.success)
+                let include_context = !interaction
+                    .resolved_policy(&invocation.session_id)?
+                    .has_read_restrictions()
+                    && agents::profiles::allows_context(&invocation.session_id);
+                workspace
+                    .files()?
+                    .execute_output_with_context(&name, input, include_context)
+                    .await
+                    .and_then(output_reply)
             }
         });
     }
+    for schema in nanocodex::claude_tools::ClaudeNotebook::definitions() {
+        let definition: ToolDefinition =
+            serde_json::from_value(schema).expect("native notebook schema");
+        let name = definition.name.clone();
+        let workspace = workspace.clone();
+        native = native.tool_with_context(definition, move |input, _| {
+            let workspace = workspace.clone();
+            let name = name.clone();
+            async move {
+                workspace
+                    .notebook()?
+                    .execute(&name, input)
+                    .await
+                    .map(text_reply)
+            }
+        });
+    }
+    native = skills::install(native, workspace.clone())?;
+    native = worktree::install(native, workspace.clone());
+    if let Some(handle) = mcp_handle {
+        native = mcp::install(native, handle);
+    }
+    let shell = Arc::new(shell::Shell::new(
+        workspace.clone(),
+        monitor.as_ref().map(|m| m.scheduler()),
+    ));
+    let bash = shell.clone();
+    native = native.tool_with_context(shell::Shell::definition(), move |input, invocation| {
+        let bash = bash.clone();
+        async move { bash.execute(input, invocation.session_id).await }
+    });
+    let runtime = Arc::new(RetainedHost(ToolRuntime::new_with_tools(
+        workspace.current(),
+        None,
+        None,
+        &tools,
+    )));
+    if let Some(monitor) = &monitor {
+        native = monitor::install(native, monitor.clone());
+    }
+    if let Some(workflow) = &workflow {
+        native = workflow::install(native, workflow.clone());
+    }
+    native = agents::install(
+        native,
+        runtime,
+        shell,
+        subagents,
+        fork,
+        monitor,
+        workspace,
+        interaction,
+        workflow,
+    );
     Ok(native)
 }
 
-fn text_reply(text: String) -> ClaudeToolReply {
+fn output_reply(
+    output: nanocodex::claude_tools::ToolOutput,
+) -> std::result::Result<ClaudeToolReply, String> {
+    use nanocodex::claude_tools::{ImageSource, ToolContent, ToolResultBlock};
+    let content = match output.content {
+        ToolContent::Text(text) => ToolResultContent::Text(text),
+        ToolContent::Blocks(items) => {
+            let mut blocks = Vec::with_capacity(items.len());
+            for item in items {
+                blocks.push(match item {
+                    ToolResultBlock::Text { text } => json!({"type":"text","text":text}),
+                    ToolResultBlock::Image { source } => {
+                        let source = match source {
+                            ImageSource::Base64 { media_type, data } => {
+                                if !matches!(
+                                    media_type.as_str(),
+                                    "image/png" | "image/jpeg" | "image/gif" | "image/webp"
+                                ) {
+                                    return Err("unsupported Claude image media type".into());
+                                }
+                                json!({"type":"base64","media_type":media_type,"data":data})
+                            }
+                            ImageSource::Url { url } => {
+                                if !url.starts_with("https://") {
+                                    return Err("host image URL must be HTTPS".into());
+                                }
+                                json!({"type":"url","url":url})
+                            }
+                        };
+                        json!({"type":"image","source":source})
+                    }
+                    ToolResultBlock::UnsupportedMedia { media_type } => {
+                        return Err(format!(
+                            "host returned media unsupported by the Claude adapter: {media_type}"
+                        ));
+                    }
+                });
+            }
+            ToolResultContent::Blocks(blocks)
+        }
+    };
+    Ok(ClaudeToolReply {
+        content,
+        is_error: output.is_error,
+        metadata: output.metadata,
+        structured_result: output.structured_result,
+    })
+}
+
+const fn text_reply(text: String) -> ClaudeToolReply {
     ClaudeToolReply::success(ToolResultContent::Text(text))
 }
 

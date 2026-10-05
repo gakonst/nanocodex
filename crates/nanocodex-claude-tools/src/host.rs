@@ -606,6 +606,77 @@ pub enum WorktreeAction {
     Remove,
 }
 
+/// Convert an original MCP tools/call result into native Claude result blocks.
+/// Unknown media fails explicitly; the complete remote result and metadata are retained.
+pub fn mcp_tool_output(result: Value) -> Result<ToolOutput, String> {
+    let content = result
+        .get("content")
+        .and_then(Value::as_array)
+        .ok_or("MCP result omitted its content array")?;
+    let mut blocks = Vec::new();
+    for item in content {
+        match item.get("type").and_then(Value::as_str) {
+            Some("text") => blocks.push(ToolResultBlock::Text {
+                text: item
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .ok_or("MCP text content omitted text")?
+                    .to_owned(),
+            }),
+            Some("image") => {
+                let media_type = item
+                    .get("mimeType")
+                    .and_then(Value::as_str)
+                    .ok_or("MCP image omitted mimeType")?;
+                if !matches!(
+                    media_type,
+                    "image/png" | "image/jpeg" | "image/gif" | "image/webp"
+                ) {
+                    return Err(format!(
+                        "MCP image type is unsupported by Claude: {media_type}"
+                    ));
+                }
+                blocks.push(ToolResultBlock::Image {
+                    source: ImageSource::Base64 {
+                        media_type: media_type.to_owned(),
+                        data: item
+                            .get("data")
+                            .and_then(Value::as_str)
+                            .ok_or("MCP image omitted data")?
+                            .to_owned(),
+                    },
+                });
+            }
+            Some("resource") => {
+                let resource = item
+                    .get("resource")
+                    .ok_or("MCP resource omitted resource body")?;
+                // Resource URIs are remote data, never authorization to read local paths.
+                blocks.push(ToolResultBlock::Text {
+                    text: serde_json::to_string(resource).map_err(|e| e.to_string())?,
+                });
+            }
+            Some("resource_link") => blocks.push(ToolResultBlock::Text {
+                text: serde_json::to_string(item).map_err(|e| e.to_string())?,
+            }),
+            kind => {
+                return Err(format!(
+                    "MCP content cannot be represented in Claude Messages: {}",
+                    kind.unwrap_or("missing type")
+                ));
+            }
+        }
+    }
+    let mut output = ToolOutput::content(blocks);
+    output.is_error = result
+        .get("isError")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    output.metadata = result.get("_meta").cloned();
+    output.structured_result = Some(result);
+    Ok(output)
+}
+
 /// Exact Claude-visible definition supplied by a caller-owned MCP catalog.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct McpToolDefinition {

@@ -24,3 +24,4 @@ minimumReleaseAgeExclude:
 
 patchedDependencies:
   '@cloudflare/sandbox@0.12.4': patches/@cloudflare__sandbox@0.12.4.patch
+  accounts@0.17.0: patches/accounts@0.17.0.patch

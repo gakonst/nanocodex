@@ -10,6 +10,7 @@ overrides:
 
 patchedDependencies:
   '@cloudflare/sandbox@0.12.4': 7fa7387e610c11eed36979117adfdd317b44eed0f2feffba0c35cdfa24aed2b2
+  accounts@0.17.0: 7dd67b68911ad06df5c54454b61c6a4bb8e7d8498385709c1328f9d1d3183341
 
 importers:
 
@@ -135,7 +136,7 @@ importers:
         version: 3.14.10(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
       accounts:
         specifier: 0.17.0
-        version: 0.17.0(@modelcontextprotocol/sdk@1.30.0(@cfworker/json-schema@4.1.1)(supports-color@10.2.2)(zod@4.5.4))(@types/react@19.2.14)(@wagmi/core@3.6.5)(express@5.2.1(supports-color@10.2.2))(immer@11.1.18)(react@19.2.8)(typescript@5.9.3)(use-sync-external-store@1.6.0(react@19.2.8))(viem@2.55.19(typescript@5.9.3)(zod@4.5.4))(wagmi@3.7.7)
+        version: 0.17.0(patch_hash=7dd67b68911ad06df5c54454b61c6a4bb8e7d8498385709c1328f9d1d3183341)(@modelcontextprotocol/sdk@1.30.0(@cfworker/json-schema@4.1.1)(supports-color@10.2.2)(zod@4.5.4))(@types/react@19.2.14)(@wagmi/core@3.6.5)(express@5.2.1(supports-color@10.2.2))(immer@11.1.18)(react@19.2.8)(typescript@5.9.3)(use-sync-external-store@1.6.0(react@19.2.8))(viem@2.55.19(typescript@5.9.3)(zod@4.5.4))(wagmi@3.7.7)
       diff:
         specifier: ^9.0.0
         version: 9.0.0
@@ -257,7 +258,7 @@ importers:
     dependencies:
       accounts:
         specifier: 0.17.0
-        version: 0.17.0(@modelcontextprotocol/sdk@1.30.0(@cfworker/json-schema@4.1.1)(supports-color@10.2.2)(zod@4.5.4))(@types/react@19.2.14)(@wagmi/core@3.6.5)(express@5.2.1(supports-color@10.2.2))(immer@11.1.18)(react@19.2.8)(typescript@5.9.3)(use-sync-external-store@1.6.0(react@19.2.8))(viem@2.55.19(typescript@5.9.3)(zod@4.5.4))(wagmi@3.7.7)
+        version: 0.17.0(patch_hash=7dd67b68911ad06df5c54454b61c6a4bb8e7d8498385709c1328f9d1d3183341)(@modelcontextprotocol/sdk@1.30.0(@cfworker/json-schema@4.1.1)(supports-color@10.2.2)(zod@4.5.4))(@types/react@19.2.14)(@wagmi/core@3.6.5)(express@5.2.1(supports-color@10.2.2))(immer@11.1.18)(react@19.2.8)(typescript@5.9.3)(use-sync-external-store@1.6.0(react@19.2.8))(viem@2.55.19(typescript@5.9.3)(zod@4.5.4))(wagmi@3.7.7)
       nanocodex:
         specifier: workspace:*
         version: link:../nanocodex
@@ -399,7 +400,7 @@ importers:
         version: 7.0.0-rc14(sharp@0.35.4(@types/node@24.13.3))(supports-color@10.2.2)
       accounts:
         specifier: 0.17.0
-        version: 0.17.0(@modelcontextprotocol/sdk@1.30.0(@cfworker/json-schema@4.1.1)(supports-color@10.2.2)(zod@4.5.4))(@types/react@19.2.14)(@wagmi/core@3.6.5)(express@5.2.1(supports-color@10.2.2))(immer@11.1.18)(react@19.2.8)(typescript@5.9.3)(use-sync-external-store@1.6.0(react@19.2.8))(viem@2.55.19(typescript@5.9.3)(zod@4.5.4))(wagmi@3.7.7)
+        version: 0.17.0(patch_hash=7dd67b68911ad06df5c54454b61c6a4bb8e7d8498385709c1328f9d1d3183341)(@modelcontextprotocol/sdk@1.30.0(@cfworker/json-schema@4.1.1)(supports-color@10.2.2)(zod@4.5.4))(@types/react@19.2.14)(@wagmi/core@3.6.5)(express@5.2.1(supports-color@10.2.2))(immer@11.1.18)(react@19.2.8)(typescript@5.9.3)(use-sync-external-store@1.6.0(react@19.2.8))(viem@2.55.19(typescript@5.9.3)(zod@4.5.4))(wagmi@3.7.7)
       mppx:
         specifier: 0.11.0
         version: 0.11.0(@modelcontextprotocol/sdk@1.30.0(@cfworker/json-schema@4.1.1)(supports-color@10.2.2)(zod@4.5.4))(express@5.2.1(supports-color@10.2.2))(hono@4.13.5)(typescript@5.9.3)(viem@2.55.19(typescript@5.9.3)(zod@4.5.4))
@@ -716,7 +717,7 @@ importers:
     dependencies:
       accounts:
         specifier: 0.17.0
-        version: 0.17.0(@modelcontextprotocol/sdk@1.30.0(@cfworker/json-schema@4.1.1)(supports-color@10.2.2)(zod@4.5.4))(@types/react@19.2.14)(@wagmi/core@3.6.5)(express@5.2.1(supports-color@10.2.2))(immer@11.1.18)(react@19.2.8)(typescript@5.9.3)(use-sync-external-store@1.6.0(react@19.2.8))(viem@2.55.19(typescript@5.9.3)(zod@4.5.4))(wagmi@3.7.7)
+        version: 0.17.0(patch_hash=7dd67b68911ad06df5c54454b61c6a4bb8e7d8498385709c1328f9d1d3183341)(@modelcontextprotocol/sdk@1.30.0(@cfworker/json-schema@4.1.1)(supports-color@10.2.2)(zod@4.5.4))(@types/react@19.2.14)(@wagmi/core@3.6.5)(express@5.2.1(supports-color@10.2.2))(immer@11.1.18)(react@19.2.8)(typescript@5.9.3)(use-sync-external-store@1.6.0(react@19.2.8))(viem@2.55.19(typescript@5.9.3)(zod@4.5.4))(wagmi@3.7.7)
       nanocodex-connect-protocol:
         specifier: workspace:*
         version: link:../nanocodex-connect-protocol
@@ -7794,7 +7795,7 @@ snapshots:
       '@wagmi/core': 3.6.5(@tanstack/query-core@5.102.8)(@types/react@19.2.14)(accounts@0.17.0)(immer@11.1.18)(react@19.2.8)(typescript@5.9.3)(use-sync-external-store@1.6.0(react@19.2.8))(viem@2.55.19(typescript@5.9.3)(zod@4.5.4))
       viem: 2.55.19(typescript@5.9.3)(zod@4.5.4)
     optionalDependencies:
-      accounts: 0.17.0(@modelcontextprotocol/sdk@1.30.0(@cfworker/json-schema@4.1.1)(supports-color@10.2.2)(zod@4.5.4))(@types/react@19.2.14)(@wagmi/core@3.6.5)(express@5.2.1(supports-color@10.2.2))(immer@11.1.18)(react@19.2.8)(typescript@5.9.3)(use-sync-external-store@1.6.0(react@19.2.8))(viem@2.55.19(typescript@5.9.3)(zod@4.5.4))(wagmi@3.7.7)
+      accounts: 0.17.0(patch_hash=7dd67b68911ad06df5c54454b61c6a4bb8e7d8498385709c1328f9d1d3183341)(@modelcontextprotocol/sdk@1.30.0(@cfworker/json-schema@4.1.1)(supports-color@10.2.2)(zod@4.5.4))(@types/react@19.2.14)(@wagmi/core@3.6.5)(express@5.2.1(supports-color@10.2.2))(immer@11.1.18)(react@19.2.8)(typescript@5.9.3)(use-sync-external-store@1.6.0(react@19.2.8))(viem@2.55.19(typescript@5.9.3)(zod@4.5.4))(wagmi@3.7.7)
       typescript: 5.9.3
     optional: true
 
@@ -7890,7 +7891,7 @@ snapshots:
       zustand: 5.0.0(@types/react@19.2.14)(immer@11.1.18)(react@19.2.8)(use-sync-external-store@1.4.0(react@19.2.8))
     optionalDependencies:
       '@tanstack/query-core': 5.102.8
-      accounts: 0.17.0(@modelcontextprotocol/sdk@1.30.0(@cfworker/json-schema@4.1.1)(supports-color@10.2.2)(zod@4.5.4))(@types/react@19.2.14)(@wagmi/core@3.6.5)(express@5.2.1(supports-color@10.2.2))(immer@11.1.18)(react@19.2.8)(typescript@5.9.3)(use-sync-external-store@1.6.0(react@19.2.8))(viem@2.55.19(typescript@5.9.3)(zod@4.5.4))(wagmi@3.7.7)
+      accounts: 0.17.0(patch_hash=7dd67b68911ad06df5c54454b61c6a4bb8e7d8498385709c1328f9d1d3183341)(@modelcontextprotocol/sdk@1.30.0(@cfworker/json-schema@4.1.1)(supports-color@10.2.2)(zod@4.5.4))(@types/react@19.2.14)(@wagmi/core@3.6.5)(express@5.2.1(supports-color@10.2.2))(immer@11.1.18)(react@19.2.8)(typescript@5.9.3)(use-sync-external-store@1.6.0(react@19.2.8))(viem@2.55.19(typescript@5.9.3)(zod@4.5.4))(wagmi@3.7.7)
       typescript: 5.9.3
     transitivePeerDependencies:
       - '@types/react'
@@ -7907,7 +7908,7 @@ snapshots:
       zustand: 5.0.0(@types/react@19.2.14)(immer@11.1.18)(react@19.2.8)(use-sync-external-store@1.6.0(react@19.2.8))
     optionalDependencies:
       '@tanstack/query-core': 5.102.8
-      accounts: 0.17.0(@modelcontextprotocol/sdk@1.30.0(@cfworker/json-schema@4.1.1)(supports-color@10.2.2)(zod@4.5.4))(@types/react@19.2.14)(@wagmi/core@3.6.5)(express@5.2.1(supports-color@10.2.2))(immer@11.1.18)(react@19.2.8)(typescript@5.9.3)(use-sync-external-store@1.6.0(react@19.2.8))(viem@2.55.19(typescript@5.9.3)(zod@4.5.4))(wagmi@3.7.7)
+      accounts: 0.17.0(patch_hash=7dd67b68911ad06df5c54454b61c6a4bb8e7d8498385709c1328f9d1d3183341)(@modelcontextprotocol/sdk@1.30.0(@cfworker/json-schema@4.1.1)(supports-color@10.2.2)(zod@4.5.4))(@types/react@19.2.14)(@wagmi/core@3.6.5)(express@5.2.1(supports-color@10.2.2))(immer@11.1.18)(react@19.2.8)(typescript@5.9.3)(use-sync-external-store@1.6.0(react@19.2.8))(viem@2.55.19(typescript@5.9.3)(zod@4.5.4))(wagmi@3.7.7)
       typescript: 5.9.3
     transitivePeerDependencies:
       - '@types/react'
@@ -8039,7 +8040,7 @@ snapshots:
       - typescript
       - use-sync-external-store
 
-  accounts@0.17.0(@modelcontextprotocol/sdk@1.30.0(@cfworker/json-schema@4.1.1)(supports-color@10.2.2)(zod@4.5.4))(@types/react@19.2.14)(@wagmi/core@3.6.5)(express@5.2.1(supports-color@10.2.2))(immer@11.1.18)(react@19.2.8)(typescript@5.9.3)(use-sync-external-store@1.6.0(react@19.2.8))(viem@2.55.19(typescript@5.9.3)(zod@4.5.4))(wagmi@3.7.7):
+  accounts@0.17.0(patch_hash=7dd67b68911ad06df5c54454b61c6a4bb8e7d8498385709c1328f9d1d3183341)(@modelcontextprotocol/sdk@1.30.0(@cfworker/json-schema@4.1.1)(supports-color@10.2.2)(zod@4.5.4))(@types/react@19.2.14)(@wagmi/core@3.6.5)(express@5.2.1(supports-color@10.2.2))(immer@11.1.18)(react@19.2.8)(typescript@5.9.3)(use-sync-external-store@1.6.0(react@19.2.8))(viem@2.55.19(typescript@5.9.3)(zod@4.5.4))(wagmi@3.7.7):
     dependencies:
       hono: 4.13.5
       idb-keyval: 6.3.0

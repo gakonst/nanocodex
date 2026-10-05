@@ -1,0 +1,42 @@
+diff --git a/dist/server/internal/handlers/auth.js b/dist/server/internal/handlers/auth.js
+index f0b89f15c55482a908b4ae4adcd1bffd03ca303f..1c3a2e58fca0bd5a559fe2222a88a54a06777a2b 100644
+--- a/dist/server/internal/handlers/auth.js
++++ b/dist/server/internal/handlers/auth.js
+@@ -18,7 +18,6 @@ const defaults = {
+         session: 24 * 60 * 60, // 24 hours
+     },
+ };
+-const maxResources = 10;
+ const maxResourceLength = 2_048;
+ const lineBreak = /[\r\n]/;
+ /**
+@@ -40,7 +39,7 @@ export var schema;
+         challenge.parameters = z.object({
+             chainId: z.optional(z.number()),
+             /** SIWE resources to bind into the issued challenge message. */
+-            resources: z.optional(z.readonly(z.array(resource).check(z.maxLength(maxResources)))),
++            resources: z.optional(z.readonly(z.array(resource))),
+         });
+         /** Response body schema. */
+         challenge.returns = z.object({
+diff --git a/src/server/internal/handlers/auth.ts b/src/server/internal/handlers/auth.ts
+index 4517f1369460d52d2d77cd7b292438bce90ec7bc..7a314b70c902f028b267b42656550842ca4cc482 100644
+--- a/src/server/internal/handlers/auth.ts
++++ b/src/server/internal/handlers/auth.ts
+@@ -21,7 +21,6 @@ const defaults = {
+     session: 24 * 60 * 60, // 24 hours
+   },
+ } as const
+-const maxResources = 10
+ const maxResourceLength = 2_048
+ const lineBreak = /[\r\n]/
+ 
+@@ -88,7 +87,7 @@ export namespace schema {
+     export const parameters = z.object({
+       chainId: z.optional(z.number()),
+       /** SIWE resources to bind into the issued challenge message. */
+-      resources: z.optional(z.readonly(z.array(resource).check(z.maxLength(maxResources)))),
++      resources: z.optional(z.readonly(z.array(resource))),
+     })
+ 
+     /** Response body schema. */

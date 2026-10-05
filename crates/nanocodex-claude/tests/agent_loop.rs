@@ -228,14 +228,29 @@ async fn stream_tool_once_compact_and_failed_turn_preserves_history() {
     assert!(log[3]["messages"].as_array().unwrap().len() > 4);
     // The observed Claude Code continuation installs the summary as USER
     // context, not as an API system prompt or a fabricated signed block.
-    assert_eq!(log[4]["messages"].as_array().unwrap().len(), 1);
-    assert_eq!(log[5]["messages"].as_array().unwrap().len(), 1);
+    assert_eq!(log[4]["messages"].as_array().unwrap().len(), 2);
+    assert_eq!(log[5]["messages"].as_array().unwrap().len(), 2);
+    assert_eq!(
+        log[4]["messages"][1],
+        json!({"role":"user","content":[{"type":"text","text":"fail now"}]})
+    );
+    assert_eq!(
+        log[5]["messages"][1],
+        json!({"role":"user","content":[{"type":"text","text":"continue"}]})
+    );
+    assert_eq!(
+        log[4]["messages"][0], log[5]["messages"][0],
+        "a failed turn must preserve the prior summary"
+    );
     let resumed = log[5]["messages"][0]["content"][0]["text"]
         .as_str()
         .unwrap();
-    assert!(resumed.starts_with("This session is being continued from a previous conversation"));
+    assert_eq!(log[5]["messages"][0]["role"], "user");
     assert!(resumed.contains("SUMMARY: user greeting"));
-    assert!(resumed.contains("continue"));
+    assert!(
+        !resumed.contains("fail now"),
+        "failed input must not enter retained history"
+    );
     assert!(log[5].get("system").is_none());
     server.abort();
 }
@@ -424,7 +439,11 @@ async fn auto_compacts_at_usage_threshold_before_next_prompt() {
         .as_str()
         .unwrap();
     assert!(next.contains("carry first answer"));
-    assert!(next.contains("second"));
+    assert_eq!(log[2]["messages"].as_array().unwrap().len(), 2);
+    assert_eq!(
+        log[2]["messages"][1],
+        json!({"role":"user","content":[{"type":"text","text":"second"}]})
+    );
     assert!(!next.contains("first answer\n\nfirst answer"));
     server.abort();
 }
@@ -629,7 +648,11 @@ async fn compaction_accepts_latest_model_thinking_before_text_summary() {
         .unwrap();
     let requests = captured.lock().unwrap();
     assert_eq!(requests.len(), 3);
-    assert_eq!(requests[2]["messages"].as_array().unwrap().len(), 1);
+    assert_eq!(requests[2]["messages"].as_array().unwrap().len(), 2);
+    assert_eq!(
+        requests[2]["messages"][1],
+        json!({"role":"user","content":[{"type":"text","text":"second"}]})
+    );
     assert!(
         requests[2]["messages"][0]["content"][0]["text"]
             .as_str()
@@ -1012,11 +1035,10 @@ async fn queued_user_text_counts_toward_next_compaction_decision() {
     let log = received.lock().unwrap();
     assert_eq!(log.len(), 3, "summary precedes the next main request");
     assert!(log[1]["messages"].as_array().unwrap().len() >= 2);
-    assert!(
-        log[2]["messages"][0]["content"][0]["text"]
-            .as_str()
-            .unwrap()
-            .contains(&second)
+    assert_eq!(log[2]["messages"].as_array().unwrap().len(), 2);
+    assert_eq!(
+        log[2]["messages"][1],
+        json!({"role":"user","content":[{"type":"text","text":second}]})
     );
     server.abort();
 }

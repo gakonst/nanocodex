@@ -158,15 +158,15 @@ wallet, not a browser wallet.
 
 ## Capability and storage boundaries
 
-- The managed Cloudflare Worker owns HMAC phone identity, local abuse limits,
+- The managed Cloudflare Worker owns HMAC phone identity,
   browser-bound challenges, account sessions, and the one-time hosted
   authorization. Twilio Verify owns OTP generation, delivery, attempt limits,
   expiry, and checking. Tempo Accounts/Wata owns the device-code transport and
   PKCE exchange. The private egress broker owns persistent SMS-account root
   wallets and signs only bounded `wallet_connect` access-key authorizations and
   `wallet_revokeAccessKey` operations.
-- The Worker retains each browser challenge for five minutes, enforces a
-  60-second resend delay, and caps starts per phone and Cloudflare client IP.
+- The Worker retains each browser challenge for five minutes. SMS starts have no
+  local resend delay or per-phone/IP request caps; `resend_after` is zero.
   The Verify Service must use six-digit codes with a validity window compatible
   with that local lifetime. The Worker stores only keyed HMAC phone digests and
   opaque Verify identifiers; it never stores an OTP.

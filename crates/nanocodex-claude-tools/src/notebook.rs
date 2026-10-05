@@ -163,6 +163,9 @@ impl ClaudeNotebook {
         let before = read_bounded(&path)?;
         let mut notebook: Value =
             serde_json::from_slice(&before).map_err(|e| format!("invalid notebook JSON: {e}"))?;
+        if notebook.get("nbformat").and_then(Value::as_u64) != Some(4) {
+            return Err("NotebookEdit supports nbformat 4 notebooks".into());
+        }
         let language = notebook
             .pointer("/metadata/language_info/name")
             .or_else(|| notebook.pointer("/metadata/kernelspec/language"))
@@ -289,9 +292,20 @@ impl ClaudeNotebook {
         if let Some(old) = old_source {
             result["old_source"] = json!(old);
         }
-        let result = result.to_string();
-        if result.len() > 64 * 1024 {
+        if result.to_string().len() > 64 * 1024 {
             return Err("NotebookEdit output exceeds 64 KiB".into());
+        }
+        // Preserve the JSON result contract while supplying the same bounded
+        // path-scoped guidance as the other native workspace operations.
+        if let Ok(loader) = crate::ClaudeProjectContext::new(&self.root) {
+            let context = loader.load_for_path(path.strip_prefix(&self.root).unwrap_or(&path));
+            if !context.excerpts.is_empty() || !context.diagnostics.is_empty() {
+                result["project_context"] = json!(context);
+            }
+        }
+        let result = result.to_string();
+        if result.len() > 1024 * 1024 {
+            return Err("NotebookEdit result with project context exceeds 1 MiB".into());
         }
         atomic_write(&path, &output)?;
         Ok(result)
