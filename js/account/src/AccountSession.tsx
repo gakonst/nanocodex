@@ -60,12 +60,12 @@ export function AccountSessionProvider({ children }: { children: ReactNode }) {
     setOperation("sign-in");
     setError(null);
     try {
-      if (selection.authentication !== "sms_otp") throw new Error("SMS verification is required.");
+      if (selection.authentication !== "sms_otp" && selection.authentication !== "google") throw new Error("Account verification is required.");
       const nextUser = await getCurrentUser();
-      if (!nextUser?.persistent) throw new Error("The SMS account session was not created.");
+      if (!nextUser?.persistent) throw new Error("The account session was not created.");
       await acceptSession(nextUser);
     } catch (cause) {
-      setError(accountFailure(cause, "Couldn’t sign in by SMS. Try again."));
+      setError(accountFailure(cause, "Couldn’t sign in. Try again."));
     } finally {
       setOperation(null);
     }

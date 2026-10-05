@@ -125,8 +125,8 @@ export function Vault() {
         </header>
         <AccountChooser
           description={session.reauthenticationRequired
-            ? "Your session expired. Enter your phone number to restore your vault."
-            : "Enter your phone number to create or restore your Nanocodex account."}
+            ? "Your session expired. Sign in again to restore your vault."
+            : "Use Google or your phone to create or restore your Nanocodex account."}
           disabled={session.operation !== null}
           failure={session.error}
           onChooseAccount={(selection) => void session.chooseAccount(selection)}

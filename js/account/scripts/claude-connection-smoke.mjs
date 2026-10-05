@@ -12,7 +12,7 @@ const output = process.env.NANOCODEX_CLAUDE_UI_EVIDENCE_DIR
  : new URL('../../../output/claude-connection/', import.meta.url);
 mkdirSync(output, {recursive:true});
 console.log("Bundling real account components");
-const bundle = await build({ stdin: { contents: `
+const bundle = await build({ loader: { ".png": "dataurl" }, stdin: { contents: `
 import React from 'react'; import {createRoot} from 'react-dom/client'; import {MemoryRouter} from 'react-router';
 import {QueryClientProvider} from '@tanstack/react-query'; import {appQueryClient} from './src/queryClient';
 import {AccountSessionProvider} from './src/AccountSession'; import {AccountMenu} from './src/AccountMenu';

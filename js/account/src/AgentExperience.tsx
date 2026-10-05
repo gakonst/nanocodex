@@ -422,8 +422,8 @@ function HomepageSmsTerminal() {
   return <div className="connect-onboarding terminal-sms-auth">
     <AccountChooser
       description={account.reauthenticationRequired
-        ? "Your session expired. Enter your phone number to restore it and unlock your free prompts."
-        : "Verify by SMS to unlock three free Luna prompts. No ChatGPT connection is required."}
+        ? "Your session expired. Sign in again to restore it and unlock your free prompts."
+        : "Sign in to unlock three free Luna prompts. No ChatGPT connection is required."}
       disabled={account.operation !== null}
       failure={account.error}
       onChooseAccount={(selection) => void account.chooseAccount(selection)}

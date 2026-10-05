@@ -13,6 +13,14 @@ const authorizationInput = {
 const workerEnv = env as unknown as EgressEnv;
 
 describe("Google connector account hints", () => {
+  it("keeps the private sign-in provider off the default egress entrypoint", async () => {
+    for (const path of ["/v1/client", "/v1/token"]) {
+      const response = await SELF.fetch(`https://google-sign-in.internal${path}`, {
+        method: path === "/v1/client" ? "GET" : "POST",
+      });
+      expect(response.status).toBe(403);
+    }
+  });
   it("targets and verifies the exact Google account requested by the agent", async () => {
     const user = "connector-agent-email";
     const started = await control(`/users/${user}/connectors/gmail`, "POST", {

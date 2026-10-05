@@ -109,7 +109,8 @@ def icons(catalog, destination):
     """Linux has no actool. Preserve actual artwork with legacy icon PNG images."""
     from PIL import Image
     contents = {p.relative_to(catalog).as_posix() for p in catalog.rglob("*") if p.is_file()}
-    allowed = {"Contents.json", "AppIcon.appiconset/Contents.json", "AppIcon.appiconset/AppIcon.png"}
+    allowed = {"Contents.json", "AppIcon.appiconset/Contents.json", "AppIcon.appiconset/AppIcon.png",
+               "GoogleG.imageset/Contents.json", "GoogleG.imageset/google-g.png"}
     require(contents == allowed, "Asset catalog changed: add explicit Linux handling; refusing to omit assets")
     info = json.loads((catalog / "AppIcon.appiconset/Contents.json").read_text())
     require(info["images"] == [{"filename": "AppIcon.png", "idiom": "universal", "platform": "ios", "size": "1024x1024"}],
@@ -120,6 +121,11 @@ def icons(catalog, destination):
                            ("AppIcon76x76", 76), ("AppIcon76x76@2x", 152),
                            ("AppIcon83.5x83.5@2x", 167)):
             source.resize((size, size), getattr(Image, "Resampling", Image).LANCZOS).save(destination / f"{base}.png")
+    google = json.loads((catalog / "GoogleG.imageset/Contents.json").read_text())
+    require(google["images"] == [{"filename": "google-g.png", "idiom": "universal"}],
+            "GoogleG catalog changed: review Linux image handling")
+    # SwiftUI Image("GoogleG") also resolves this named bundle PNG without actool.
+    shutil.copyfile(catalog / "GoogleG.imageset/google-g.png", destination / "GoogleG.png")
     return {
         "CFBundleIcons": {"CFBundlePrimaryIcon": {"CFBundleIconFiles": ["AppIcon60x60"], "UIPrerenderedIcon": False}},
         "CFBundleIcons~ipad": {"CFBundlePrimaryIcon": {"CFBundleIconFiles": ["AppIcon60x60", "AppIcon76x76", "AppIcon83.5x83.5"], "UIPrerenderedIcon": False}},

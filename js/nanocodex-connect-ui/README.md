@@ -55,4 +55,6 @@ scoped to the component and reset when removed, so multiple instances do not
 change each other's theme. Appearance does not change app identity or grants.
 
 The default typography uses system fonts, restrained medium-weight headings, and
-compact control labels. SMS sign-in uses a centered single column at every width. Authorization uses two columns with a 36px gap on desktop; mobile stacks. Both use the same 24px medium-weight headings and font family.
+compact control labels. Google and phone sign-in share a centered single column at every width. Authorization uses two columns with a 36px gap on desktop; mobile stacks. Both use the same 24px medium-weight headings and font family.
+
+The Google sign-in button uses the official Google G asset from [Google’s branding guidelines](https://developers.google.com/identity/branding-guidelines), downloaded from [Google Identity](https://developers.google.com/static/identity/images/g-logo.png). Google retains its trademark rights.

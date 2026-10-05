@@ -1,4 +1,5 @@
 import { useId, useState, type ReactNode } from "react";
+import { GoogleSignInButton } from "./GoogleSignInButton.js";
 import { RequestIdentity } from "./RequestIdentity.js";
 import { normalizeSmsPhone } from "./smsPhone.js";
 
@@ -13,7 +14,7 @@ export type StoredPasskey = Readonly<{
 
 export type AccountSelection = Readonly<{
   address?: `0x${string}` | undefined;
-  authentication?: "sms_otp" | undefined;
+  authentication?: "sms_otp" | "google" | undefined;
   current?: boolean | undefined;
   mode: "login" | "register";
   label: string;
@@ -60,7 +61,7 @@ export function AccountChooser({
   const [phone, setPhone] = useState("");
   const [code, setCode] = useState("");
   const [challenge, setChallenge] = useState<OtpChallenge>();
-  const [operation, setOperation] = useState<"send" | "verify">();
+  const [operation, setOperation] = useState<"send" | "verify" | "google">();
   const [localFailure, setLocalFailure] = useState<string>();
 
   async function sendCode() {
@@ -171,6 +172,16 @@ export function AccountChooser({
         ) : null}
         {requestContext ? <div className="wizard-sections">{requestContext}</div> : null}
 
+        {!challenge ? <>
+          <GoogleSignInButton
+            authOrigin={authOrigin}
+            disabled={disabled || operation === "send" || operation === "verify"}
+            onBusyChange={(busy) => setOperation(busy ? "google" : undefined)}
+            onError={setLocalFailure}
+            onSignIn={(account) => onChooseAccount({ address: account.address, authentication: "google", current: true, label: "Google account", mode: "login" })}
+          />
+          <div className="auth-method-divider"><span>or use your phone</span></div>
+        </> : null}
         {!challenge ? (
           <form id={formId} key="phone" className="sms-otp-form" aria-busy={operation === "send"} noValidate onSubmit={(event) => {
           event.preventDefault();

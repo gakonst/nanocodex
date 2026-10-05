@@ -545,7 +545,7 @@ export function ConnectOnboarding({
       }
       const selectedMode = selectedAccount?.mode ?? accountMode;
       const managedWallet = activeRequest.type === "walletConnect"
-        && selectedAccount?.authentication === "sms_otp"
+        && (selectedAccount?.authentication === "sms_otp" || selectedAccount?.authentication === "google")
         && !browserLocalWebAuthn;
       const hostedAuthorization = activeRequest.type === "walletConnect"
         && (managedWallet
@@ -556,7 +556,7 @@ export function ConnectOnboarding({
       if (authenticatedBrowserAccount && (!hostedAuthorization
         || selectedMode !== "login"
         || !selectedAccount?.address)) {
-        throw new Error("This account requires a fresh SMS sign-in.");
+        throw new Error("This account requires a fresh sign-in.");
       }
       setAccountMode(selectedMode);
       let registrationUserId: string | undefined;
@@ -622,7 +622,7 @@ export function ConnectOnboarding({
                 : activeRequest.rpc) as never,
             ));
           } else {
-            throw new Error("Sign in by SMS to connect this account.");
+            throw new Error("Sign in to connect this account.");
           }
         } finally {
           if (activeRequest.type === "walletConnect") invalidateBrowserSession();
@@ -1465,7 +1465,7 @@ export function ConnectOnboarding({
               authOrigin={isLocalDevelopmentOrigin(window.location.origin)
                 ? window.location.origin
                 : productionNanocodexOrigin}
-              description="Sign in by SMS to the account that owns this access key."
+              description="Sign in to the account that owns this access key."
               disabled={ceremonyActive}
               failure={failure?.id === request.id ? failure.message : undefined}
               onCancel={reject}
@@ -1475,12 +1475,12 @@ export function ConnectOnboarding({
                   || account.address.toLowerCase() !== requestedAddress.toLowerCase()) {
                   setFailure({
                     id: request.id,
-                    message: "That phone is linked to a different account.",
+                    message: "That sign-in belongs to a different account.",
                   });
                   return;
                 }
                 setFailure(undefined);
-                setBrowserAccountState({ address: account.address, id: "sms", persistent: true });
+                setBrowserAccountState({ address: account.address, id: "authenticated", persistent: true });
               }}
             />
           )}
@@ -1749,13 +1749,13 @@ function ConnectionWizard({
                   ? (focusedProvider === "spotify" || focusedProvider === "soundcloud")
                     ? `Finish connecting ${connectorProviderLabel(focusedProvider)} in the Nanocodex iPhone app, then return here.`
                     : `Continue in ${connectorProviderLabel(requiredConnectorProvider(focused.id))}. You’ll return here when the requested access is connected.`
-                  : request.hostPrincipalExchange ? "Approve with your host identity." : browserAccount ? "Review and approve access with your signed-in account." : "Continue with SMS verification."
+                  : request.hostPrincipalExchange ? "Approve with your host identity." : browserAccount ? "Review and approve access with your signed-in account." : "Sign in to continue."
                 : focusedMcp
                   ? mcpConnections?.find(({ id }) => id === focusedMcp.id)?.status === "connected"
                     ? `${focusedMcp.name} is connected. You can return to ${requester}.`
                     : mcpConnectionAction === focusedMcp.id
                       ? `Continue in ${focusedMcp.name}. You’ll return here when it is connected.`
-                      : request.hostPrincipalExchange ? "Approve with your host identity." : browserAccount ? "Review and approve access with your signed-in account." : "Continue with SMS verification."
+                      : request.hostPrincipalExchange ? "Approve with your host identity." : browserAccount ? "Review and approve access with your signed-in account." : "Sign in to continue."
                 : presentation === "dialog"
                   ? null
                   : `Review ${requester}’s hosted access.`}</>}

@@ -55,12 +55,17 @@
       "types": "./dist/connectTypes.d.ts",
       "import": "./dist/connectTypes.js"
     },
-    "./styles.css": "./styles.css"
+    "./styles.css": "./styles.css",
+    "./GoogleSignInButton": {
+      "types": "./dist/GoogleSignInButton.d.ts",
+      "import": "./dist/GoogleSignInButton.js"
+    }
   },
   "files": [
     "dist",
     "styles.css",
-    "README.md"
+    "README.md",
+    "google-logo.png"
   ],
   "publishConfig": {
     "access": "public",

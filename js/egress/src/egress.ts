@@ -49,6 +49,7 @@ import {
 
 export { AgentSubjectDirectory, UserCredentialBroker } from "./broker";
 export { UserConnectorBroker } from "./connector-broker";
+export { GoogleSignInProvider } from "./google-sign-in-provider";
 export { WhatsAppAccount } from "./whatsapp-account";
 export { SpotifyRateLimit } from "./spotify-rate-limit";
 export { McpConnectionDirectory } from "./mcp-connection-owner";

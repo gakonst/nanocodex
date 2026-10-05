@@ -36,6 +36,19 @@ the app's quick voice sheet. The inline accessory is not offered because it
 cannot run an interactive recording intent; actual locked-device microphone
 behavior requires physical-device testing.
 
+## Account sign-in
+
+The iPhone and iPad sign-in form offers **Continue with Google** alongside phone
+verification. Google opens an ephemeral `ASWebAuthenticationSession`; the fixed
+`nanocodex://auth/google` return carries an attempt ID, status, and a one-use completion code bound to
+the private proof. InboxCore
+keeps the proof and temporary session private, exchanges them for a device API
+key, and saves it through the existing Keychain account flow. Cancelling or
+failing to save revokes any unused key. Google sign-in is separate from authorizing
+Google Workspace connectors. The button uses the unmodified
+[official Google G artwork](https://developers.google.com/static/identity/images/g-logo.png)
+under the [Google branding guidelines](https://developers.google.com/identity/branding-guidelines).
+
 ## Meetings
 
 Open **Meetings** in the native iPhone/iPad navigation to record or take notes.

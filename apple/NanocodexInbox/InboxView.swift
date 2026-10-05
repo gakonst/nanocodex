@@ -1931,8 +1931,25 @@ private struct ConnectView: View {
             Text(model.challenge == nil ? "What are we working on?" : "Check your messages")
                 .font(.system(size: 34, weight: .semibold))
             Text(model.challenge.map { "Enter the 6-digit code sent to \($0.phone)." }
-                 ?? "Sign in with the same phone number you use on Nanocodex. Your agents will be here.")
+                 ?? "Sign in with Google or your phone number. Your agents will be here.")
                 .foregroundStyle(Ink.muted)
+            if model.challenge == nil {
+                Button {
+                    inputError = nil; focus = nil
+                    Task { await model.startGoogleSignIn(origin: origin) }
+                } label: {
+                    HStack(spacing: 12) {
+                        Image("GoogleG").resizable().scaledToFit().frame(width: 20, height: 20)
+                        Text("Continue with Google").font(.system(size: 16, weight: .medium))
+                    }.frame(maxWidth: .infinity).frame(minHeight: 44)
+                        .foregroundStyle(Color(red: 0.12, green: 0.12, blue: 0.12))
+                        .background(.white, in: RoundedRectangle(cornerRadius: 8))
+                        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.gray, lineWidth: 1))
+                }.buttonStyle(.plain).disabled(model.signingIn || verificationScheduled)
+                    .accessibilityIdentifier("google-sign-in")
+                HStack { Rectangle().frame(height: 1); Text("or"); Rectangle().frame(height: 1) }
+                    .font(.caption).foregroundStyle(Ink.muted)
+            }
             VStack(alignment: .leading, spacing: 14) {
                 Text(model.challenge == nil ? "Phone number" : "Verification code").font(.subheadline.weight(.medium))
                 if model.challenge == nil {
@@ -2027,6 +2044,7 @@ private struct ConnectView: View {
         }.scrollDismissesKeyboard(.interactively)
             .onChange(of: model.challenge?.phone) { _, value in if value != nil { code = SMSCodeInput(); focus = .code } }
             .onChange(of: region) { _, _ in inputError = nil }
+            .interactiveDismissDisabled(model.signingIn)
             .accessibilityIdentifier("phone-onboarding")
     }
 }

@@ -1,3 +1,4 @@
+import { isGoogleSignInCallback, routeGoogleSignIn } from "./google-sign-in";
 import { readTodoSourceHealth } from "./todo-source-health";
 import { readTodoCalendarBriefings } from "./todo-calendar-briefings";
 import { backfillTodoPreparation, nextTodoPreparationAlarm, runTodoPreparation, scheduleTodoPreparation } from "./todo-preparation";
@@ -83,6 +84,7 @@ export interface AccountAuthEnv extends IngressPlacement {
   NANOCODEX_ACCESS_SECRET?: string;
   ENVIRONMENT?: string;
   NANOCODEX_MOCK_TWILIO_VERIFY_CODE?: string;
+  GOOGLE_SIGN_IN?: Fetcher;
   NANOCODEX_AUTH: DurableObjectNamespace;
   NANOCODEX_USERS: DurableObjectNamespace<UserAccount>;
   NANOCODEX_API_KEYS: DurableObjectNamespace<ApiKeyRecord>;
@@ -206,7 +208,7 @@ const teamStorageKey = (teamId: string) => `team:${teamId}`;
 const userMembershipStorageKey = (userId: string) => `membership:user:${userId}`;
 
 type AccountSessionPayload = Readonly<{
-  authentication?: "anonymous" | "sms_otp";
+  authentication?: "anonymous" | "sms_otp" | "google";
   userId: string;
   issuedAt: number;
   expiresAt: number;
@@ -451,6 +453,27 @@ export async function routeAccountRequest(
 ): Promise<Response | undefined> {
   if (url.pathname === "/auth" || url.pathname.startsWith("/auth/")) {
     return json({ error: "not_found" }, { status: 404 });
+  }
+  if (url.pathname.startsWith("/v1/auth/google/") || isGoogleSignInCallback(url)) {
+    return routeGoogleSignIn(request, env, url, {
+      store: authStore(env, "google-sign-in"),
+      persistentUserId: async () => (await authenticatePersistentAccount(request, env, url))?.userId,
+      complete: async (userId) => {
+        const [wallet] = await Promise.all([ensureAccountWallet(env, userId), ensureAccount(env, userId, true)]);
+        const token = `s_${randomBase64Url(32)}`;
+        const now = Math.floor(Date.now() / 1_000);
+        await authStore(env, "account").set(accountSessionKey(token), {
+          authentication: "google", userId, issuedAt: now, expiresAt: now + SESSION_TTL_SECONDS,
+        } satisfies AccountSessionPayload, { ttl: SESSION_TTL_SECONDS });
+        const previous = cookieValue(request, ACCOUNT_COOKIE);
+        if (previous && (ANONYMOUS_SESSION_TOKEN.test(previous) || SMS_SESSION_TOKEN.test(previous))) {
+          await authStore(env, "account").delete(accountSessionKey(previous));
+        }
+        return json({ user: { id: userId, address: wallet.address, persistent: true } }, {
+          headers: { "set-cookie": accountCookie(token, PERSISTENT_SESSION_TTL_SECONDS, url.protocol) },
+        });
+      },
+    });
   }
   if (url.pathname === "/v1/auth/sms/start") {
     if (request.method !== "POST") return methodNotAllowed();

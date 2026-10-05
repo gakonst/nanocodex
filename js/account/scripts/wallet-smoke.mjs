@@ -12,7 +12,7 @@ const { build } = await import(new URL(`${esbuildEntry}/node_modules/esbuild/lib
 const entry = readdirSync(packages).find(name => /^playwright-core@/.test(name));
 const { chromium } = await import(new URL(`${entry}/node_modules/playwright-core/index.mjs`, packages));
 const address = '0x1111111111111111111111111111111111111111';
-const bundle = await build({ stdin: { contents: `
+const bundle = await build({ loader: { ".png": "dataurl" }, stdin: { contents: `
 import React from 'react'; import {createRoot} from 'react-dom/client';
 import {TempoWalletConnectionCard} from './src/TempoWalletConnectionCard';
 import {useWalletFunding} from './src/useWalletFunding';

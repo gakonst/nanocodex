@@ -63,6 +63,15 @@
   .sms-auth-panel h1 { font-size: 24px; }
   .auth-close { display: block; min-height: 44px; margin: 12px auto 0; padding: 8px 20px; border: 0; background: transparent; color: var(--muted); font-size: 13px; }
   .auth-close:hover { color: var(--text); }
+  :scope.account-sign-in-methods { display: grid; gap: 12px; padding-block: 16px; }
+  :scope.account-sign-in-methods > p { color: var(--muted); font-size: 13px; line-height: 1.5; }
+  .google-sign-in { display: grid; gap: 8px; }
+  .google-sign-in-button { display: flex; align-items: center; justify-content: center; gap: 12px; width: 100%; min-height: 46px; padding: 12px; border: 1px solid light-dark(#747775, #8e918f); border-radius: var(--connect-radius, 10px); background: light-dark(#fff, #131314); color: light-dark(#1f1f1f, #e3e3e3); font-size: 14px; font-weight: 500; }
+  .google-sign-in-button:hover:not(:disabled) { background: var(--surface-raised); }
+  .google-sign-in-logo { width: 20px; height: 20px; flex: 0 0 20px; background: url("./google-logo.png") center / contain no-repeat; }
+  .google-sign-in-cancel { justify-self: center; min-height: 36px; border: 0; background: transparent; color: var(--muted); font-size: 13px; }
+  .auth-method-divider { display: flex; align-items: center; gap: 12px; margin: 20px 0; color: var(--muted); font-size: 12px; }
+  .auth-method-divider::before, .auth-method-divider::after { content: ""; height: 1px; flex: 1; background: var(--border); }
   .sms-otp-form { display: grid; gap: 8px; }
   .sms-otp-form label { font-weight: 500; font-size: 13px; }
   .sms-otp-form > p { color: var(--muted); font-size: 12px; line-height: 1.5; }

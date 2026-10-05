@@ -11,7 +11,7 @@ const { Miniflare } = managedRequire("miniflare");
 const output = new URL("../../../output/permission-request-web/", import.meta.url);
 await mkdir(output, { recursive: true });
 const trace = [];
-const ui = await build({ stdin: { contents: `
+const ui = await build({ loader: { ".png": "dataurl" }, stdin: { contents: `
 import React from "react"; import { createRoot } from "react-dom/client";
 import { QueryClientProvider } from "@tanstack/react-query"; import { appQueryClient } from "./src/queryClient";
 import { AccountSessionProvider } from "./src/AccountSession"; import { PermissionRequestPage } from "./src/PermissionRequestPage";

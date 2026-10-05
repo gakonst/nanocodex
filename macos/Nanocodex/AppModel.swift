@@ -266,6 +266,8 @@ final class AppModel: ObservableObject {
         }
         return url
     }
+    private var googleAuth: GoogleAuth?
+    private let googleBrowser = GoogleSignInBrowser()
     private var signInPreviousCredential: AccountKeychain.Credential?
     private var signInPreviousSavedCredential: AccountKeychain.Credential?
     private var signInChangedAccount = false
@@ -1091,60 +1093,91 @@ final class AppModel: ObservableObject {
         error = nil
         if dismissSettings { showingSettings = false }
     }
-    func startPhoneSignIn(phone: String, baseUrl: String) async throws -> SignInChallenge {
+    private func beginSignIn() {
         if !phoneSignInActive {
             phoneSignInStartedConnected = state.connected
             signInPreviousCredential = currentCredential
             signInPreviousSavedCredential = isolatedSession ? nil : AccountKeychain.read()
             phoneSignInActive = true
         }
+    }
+    func startGoogleSignIn(baseUrl: String) async throws {
+        try await cancelPhoneSignIn()
+        beginSignIn()
+        do {
+            let auth = try GoogleAuth(origin: baseUrl.trimmingCharacters(in: .whitespacesAndNewlines), deviceName: "Mac")
+            googleAuth = auth
+            let authorization = try await auth.start()
+            try Task.checkCancellation()
+            let completionCode = try await googleBrowser.authenticate(authorization)
+            let credential = try await auth.finish(completionCode: completionCode)
+            try Task.checkCancellation()
+            try await adoptSignInCredential(.init(baseUrl: credential.origin, apiKey: credential.apiKey))
+            try await completeSignIn()
+        } catch {
+            let failure = error
+            // Retain failed cleanup state for the next Cancel/Sign-in attempt.
+            try await cancelPhoneSignIn()
+            throw failure
+        }
+    }
+    func startPhoneSignIn(phone: String, baseUrl: String) async throws -> SignInChallenge {
+        if googleAuth != nil { try await cancelPhoneSignIn() }
+        beginSignIn()
         let challenge: SignInChallenge = try await runtime.call("startSignIn", [.object(["phone": .string(phone), "baseUrl": .string(baseUrl)])])
         phoneSignInChallenge = challenge
         return challenge
     }
     func finishPhoneSignIn(code: String) async throws {
+        if !signInCommitted {
+            let credential: AccountKeychain.Credential = try await runtime.call("verifySignIn", [.object(["code": .string(code)])])
+            try await adoptSignInCredential(credential)
+        }
+        try await completeSignIn()
+    }
+    private func adoptSignInCredential(_ credential: AccountKeychain.Credential) async throws {
         persistence?.cancel(); accountTransition = true
         defer { accountTransition = false }
-        if !signInCommitted {
-            // Only this private response contains the credential. It never enters observable state.
-            let credential: AccountKeychain.Credential = try await runtime.call("verifySignIn", [.object(["code": .string(code)])])
-            // Save before switching, so a Keychain failure leaves the current account and Hands intact.
-            if !isolatedSession { try AccountKeychain.save(credential); signInSavedInKeychain = true }
-            let next: DesktopState
-            do {
-                next = try await runtime.call("connect", [.object(["baseUrl": .string(credential.baseUrl), "apiKey": .string(credential.apiKey), "remember": .bool(false)])])
-            } catch {
-                if !isolatedSession {
-                    do {
-                        if let previous = signInPreviousSavedCredential { try AccountKeychain.save(previous) }
-                        else { try AccountKeychain.removeChecked() }
-                        signInSavedInKeychain = false
-                    } catch {
-                        throw RuntimeFailure(message: "macOS could not restore your previous saved account. Your new sign-in remains securely saved. Retry to finish switching accounts.")
-                    }
+        // Save before switching, so a Keychain failure leaves the current account and Hands intact.
+        if !isolatedSession { try AccountKeychain.save(credential); signInSavedInKeychain = true }
+        let next: DesktopState
+        do {
+            next = try await runtime.call("connect", [.object(["baseUrl": .string(credential.baseUrl), "apiKey": .string(credential.apiKey), "remember": .bool(false)])])
+        } catch {
+            if !isolatedSession {
+                do {
+                    if let previous = signInPreviousSavedCredential { try AccountKeychain.save(previous) }
+                    else { try AccountKeychain.removeChecked() }
+                    signInSavedInKeychain = false
+                } catch {
+                    throw RuntimeFailure(message: "macOS could not restore your previous saved account. Your new sign-in remains securely saved. Retry to finish switching accounts.")
                 }
-                throw error
             }
-            signInChangedAccount = true
-            resetAccount()
-            currentCredential = credential
-            apply(next)
-            signInCommitted = true
+            throw error
         }
-        try await runtime.request("completeSignIn")
+        signInChangedAccount = true
+        resetAccount()
+        currentCredential = credential
+        apply(next)
+        signInCommitted = true
+    }
+    private func completeSignIn() async throws {
+        if let googleAuth { try await googleAuth.complete() }
+        else { try await runtime.request("completeSignIn") }
         clearPhoneSignIn()
         error = nil; showingSettings = false
     }
     func cancelPhoneSignIn() async throws {
         guard phoneSignInActive else { return }
+        googleBrowser.cancel()
         if signInCommitted || signInSavedInKeychain {
             // This credential is already in Keychain. Never revoke it when closing the form.
-            try await runtime.request("completeSignIn")
+            if let googleAuth { try await googleAuth.complete() }
+            else { try await runtime.request("completeSignIn") }
         } else {
-            if signInChangedAccount {
-                try await restoreSignInPreviousAccount()
-            }
-            try await runtime.request("cancelSignIn")
+            if signInChangedAccount { try await restoreSignInPreviousAccount() }
+            if let googleAuth { try await googleAuth.cancel() }
+            else { try await runtime.request("cancelSignIn") }
         }
         clearPhoneSignIn()
     }
@@ -1162,6 +1195,7 @@ final class AppModel: ObservableObject {
         signInChangedAccount = false
     }
     private func clearPhoneSignIn() {
+        googleAuth = nil
         phoneSignInActive = false; phoneSignInStartedConnected = false
         phoneSignInChallenge = nil
         signInPreviousCredential = nil; signInPreviousSavedCredential = nil; signInChangedAccount = false; signInCommitted = false; signInSavedInKeychain = false

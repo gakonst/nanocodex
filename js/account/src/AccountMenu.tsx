@@ -1,3 +1,4 @@
+import { AccountSignInMethods } from "./AccountSignInMethods";
 import { AdminPanel } from "./AdminPanel";
 import { AccountCommunication } from "./AccountCommunication";
 import { ClaudeConnection } from "./ClaudeConnection";
@@ -298,8 +299,8 @@ function AccountMenuContent({ inline }: { inline: boolean }) {
       <div className="connect-onboarding terminal-sms-auth connect-route-sms-auth">
         <AccountChooser
           description={session.reauthenticationRequired
-            ? "Your session expired. Enter your phone number to restore this account’s memory and connections."
-            : "Verify by SMS to unlock three free Luna prompts. No ChatGPT connection is required."}
+            ? "Your session expired. Sign in again to restore this account’s memory and connections."
+            : "Sign in to unlock three free Luna prompts. No ChatGPT connection is required."}
           disabled={session.operation !== null}
           failure={session.error}
           onChooseAccount={(selection) => void session.chooseAccount(selection)}
@@ -417,6 +418,7 @@ function AccountMenuContent({ inline }: { inline: boolean }) {
             </ProfileConnectors>
           </AccountConnectionSection>
 
+          <AccountSignInMethods />
           <AccountConnectionSection
             eyebrow="Access"
             meta="CLI, CI, and other clients"
@@ -535,13 +537,13 @@ function AccountMenuContent({ inline }: { inline: boolean }) {
               <section className={inline ? "wizard-section account-identity" : "account-summary"}>
                 {inline ? (
                   <header className="wizard-section-title">
-                    <div><span>Account</span><h2>SMS identity</h2></div>
+                    <div><span>Account</span><h2>Account identity</h2></div>
                     <small>{shortIdentity(session.account.id)}</small>
                   </header>
                 ) : (
                   <>
-                    <span>{session.account.persistent ? "SMS identity" : "Browser session"}</span>
-                    <span>{session.account.persistent ? "Available across devices" : "Verify your phone to keep it"}</span>
+                    <span>{session.account.persistent ? "Account identity" : "Browser session"}</span>
+                    <span>{session.account.persistent ? "Available across devices" : "Sign in to keep it"}</span>
                   </>
                 )}
                 {session.account.persistent ? (
@@ -558,7 +560,7 @@ function AccountMenuContent({ inline }: { inline: boolean }) {
 
               {!accountPersistent ? (
                 <AccountChooser
-                  description="Verify your phone to keep this account and unlock connections and API keys."
+                  description="Sign in to keep this account and unlock connections and API keys."
                   disabled={session.operation !== null}
                   failure={session.error}
                   onChooseAccount={(selection) => void session.chooseAccount(selection)}
@@ -566,6 +568,7 @@ function AccountMenuContent({ inline }: { inline: boolean }) {
               ) : null}
 
               <div className={inline ? "account-profile-content wizard-sections" : "api-key-panel account-profile-content"}>
+                <AccountSignInMethods />
                 <AccountCommunication inline={inline} />
                 <AdminPanel inline={inline} />
                 <section className={inline ? "wizard-section" : undefined} aria-labelledby="connections-heading">
@@ -575,7 +578,7 @@ function AccountMenuContent({ inline }: { inline: boolean }) {
                     <h2 id="connections-heading">Connections</h2>
                     {!inline ? <p>{accountPersistent
                       ? "Choose a service to connect it through your private broker. Connected services can be removed from the same tile."
-                      : "Verify your phone above to enable connections and API keys."}</p> : null}
+                      : "Sign in above to enable connections and API keys."}</p> : null}
                   </div>
                   {inline ? <small>Available to your agents</small> : null}
                 </div>
@@ -743,8 +746,8 @@ function AccountMenuContent({ inline }: { inline: boolean }) {
           ) : (
             <AccountChooser
               description={session.reauthenticationRequired
-                ? "Your session expired. Enter your phone number to restore this account’s memory and connections."
-                : "Enter your phone number to create or restore your Nanocodex account."}
+                ? "Your session expired. Sign in again to restore this account’s memory and connections."
+                : "Use Google or your phone to create or restore your Nanocodex account."}
               disabled={session.operation !== null}
               failure={session.error}
               onChooseAccount={(selection) => void session.chooseAccount(selection)}

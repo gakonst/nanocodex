@@ -9,6 +9,13 @@ followers, and following. `environment().apis` advertises the tool independently
 of connector authentication. It calls the private [X Worker](../x-api/README.md)
 through `NANOCODEX_X`; deploy it with `pnpm deploy:x` before `pnpm deploy:managed`.
 
+## Account sign-in
+
+Google sign-in and explicit account linking reuse the existing Google Workspace
+OAuth client and callback through a private broker binding. Workspace consent
+remains separate. See [configuration and HTTP contract](docs/google-sign-in.md).
+Run the provider-fixture public HTTP journey with `pnpm --dir js/managed test:google-sign-in`.
+
 ## Images
 
 The hosted image tool relays generation and editing through the account's existing

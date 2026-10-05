@@ -1534,6 +1534,10 @@ function decodeIdentity(
   return decodeGoogleIdentity(value);
 }
 
+export function googleOAuthClient(env: ConnectorBrokerEnv): { clientId: string; clientSecret: string } {
+  return providerCredentials("google", env);
+}
+
 function providerCredentials(
   id: OAuthProviderId,
   env: ConnectorBrokerEnv,

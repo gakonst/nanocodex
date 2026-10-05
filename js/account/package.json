@@ -12,7 +12,7 @@
     "dev:app": "CLOUDFLARE_ENV=development vite",
     "sync": "node scripts/sync-nanocodex.mjs",
     "publish:repository": "node scripts/publish-repository.mjs",
-    "test": "npm run test:web && npm run test:claude-connection && npm run test:permissions",
+    "test": "npm run test:web && npm run test:claude-connection && npm run test:permissions && npm run test:google-sign-in",
     "test:permissions": "node scripts/permission-request-journey.mjs",
     "test:wallet": "node scripts/wallet-smoke.mjs",
     "test:web": "node --experimental-strip-types --test src/*.test.ts worker/*.test.ts container/*.test.mjs",
@@ -24,7 +24,8 @@
     "preview": "vite preview",
     "test:claude-connection": "node scripts/claude-connection-smoke.mjs",
     "test:whatsapp": "node scripts/whatsapp-ui-journey.mjs",
-    "test:vault": "node scripts/vault-ui-journey.mjs"
+    "test:vault": "node scripts/vault-ui-journey.mjs",
+    "test:google-sign-in": "node scripts/google-sign-in-journey.mjs"
   },
   "portless": {
     "name": "nanocodex",

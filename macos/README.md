@@ -92,8 +92,14 @@ open macos/build/Build/Products/Debug/Nanocodex.app
 
 Debug builds find the repository `.env` automatically. Release builds accept an
 explicit `NANOCODEX_ENV_FILE`, `NC_API_KEY`, or `NANOCODEX_API_KEY` at launch, or
-phone sign-in. The first launch asks for a phone number and a six-digit SMS code;
-it stores the resulting account securely in macOS Keychain. Settings offers
+Google or phone sign-in. The first launch offers **Continue with Google** and a
+phone number with a six-digit SMS code. Google opens an ephemeral system browser;
+its fixed `nanocodex://auth/google` return contains an attempt ID, status, and a one-use completion code bound to the
+private proof.
+InboxCore exchanges a private proof for the account session, mints the device API
+key, and stores the account securely in macOS Keychain. Cancelling sign-in revokes
+an unused key and clears the temporary session. Google account sign-in does not
+authorize Google Workspace connectors. Settings offers
 **Switch Account**, and **Advanced** in the sign-in form accepts an API key.
 A successfully imported development account is
 stored in macOS Keychain so later Finder/Dock launches reconnect automatically.

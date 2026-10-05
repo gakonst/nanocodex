@@ -415,6 +415,8 @@ final class InboxModel: ObservableObject {
     @Published private(set) var signingIn = false
     @Published private(set) var signInError: String?
     @Published private(set) var signInRetryAt: Date?
+    private var googleAuth: GoogleAuth?
+    private let googleBrowser = GoogleSignInBrowser()
     private var smsAuth: SMSAuth?
     private var smsOrigin: String?
     private var authGeneration = UUID()
@@ -1545,12 +1547,48 @@ final class InboxModel: ObservableObject {
             }
         }
     }
+    func startGoogleSignIn(origin: String) async {
+        guard !signingIn else { return }
+        signingIn = true; signInError = nil; signInRetryAt = nil
+        let epoch = authGeneration
+        defer { if epoch == authGeneration { signingIn = false } }
+        do {
+            try await smsAuth?.cancel()
+            smsAuth = nil; smsOrigin = nil; challenge = nil
+            try await googleAuth?.cancel()
+            let auth = try GoogleAuth(origin: origin.trimmingCharacters(in: .whitespacesAndNewlines), deviceName: "iPhone or iPad")
+            googleAuth = auth
+            let authorization = try await auth.start()
+            try Task.checkCancellation()
+            let completionCode = try await googleBrowser.authenticate(authorization)
+            let credential = try await auth.finish(completionCode: completionCode)
+            try Task.checkCancellation()
+            guard epoch == authGeneration else { throw CancellationError() }
+            // connect validates the account and saves to Keychain before adoption.
+            try await connect(origin: credential.origin, key: credential.apiKey)
+            try? await auth.complete()
+            googleAuth = nil
+        } catch {
+            let failure = error
+            do { try await googleAuth?.cancel(); googleAuth = nil }
+            catch {
+                if epoch == authGeneration { signInError = "Could not clean up this sign-in. Check your connection and try again." }
+                return
+            }
+            if epoch == authGeneration, !(failure is CancellationError) {
+                signInError = failure.localizedDescription
+                signInRetryAt = (failure as? SMSAuthError)?.retryAt
+            }
+        }
+    }
     func startSignIn(phone: String, origin: String) async {
         guard !signingIn else { return }
         signingIn = true; signInError = nil
         let epoch = authGeneration
         defer { if epoch == authGeneration { signingIn = false } }
         do {
+            try await googleAuth?.cancel()
+            googleAuth = nil
             let origin = origin.trimmingCharacters(in: .whitespacesAndNewlines)
             if smsAuth == nil || smsOrigin != origin {
                 try await smsAuth?.cancel()
@@ -1594,6 +1632,9 @@ final class InboxModel: ObservableObject {
         signingIn = true; signInError = nil
         defer { signingIn = false }
         do {
+            googleBrowser.cancel()
+            try await googleAuth?.cancel()
+            googleAuth = nil
             try await smsAuth?.cancel()
             smsAuth = nil; smsOrigin = nil; challenge = nil; signInRetryAt = nil
             return true

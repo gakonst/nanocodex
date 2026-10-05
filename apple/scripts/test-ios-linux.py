@@ -55,8 +55,9 @@ try:
             assert (generated/f'{name}.entitlements').read_bytes() == (apple/source).read_bytes()
         assert (generated/'Bundles/NanocodexShare/CaptureWebPage.js').read_bytes() == (apple/'NanocodexShare/CaptureWebPage.js').read_bytes()
         assert (generated/'Bundles/NanocodexInbox/MOBILE_DEPENDENCY_NOTICES.md').read_bytes() == (apple/'MOBILE_DEPENDENCY_NOTICES.md').read_bytes()
-        sizes = {Image.open(p).size for p in (generated/'Bundles/NanocodexInbox').glob('*.png')}
+        sizes = {Image.open(p).size for p in (generated/'Bundles/NanocodexInbox').glob('AppIcon*.png')}
         assert sizes == {(120, 120), (180, 180), (76, 76), (152, 152), (167, 167)}
+        assert (generated/'Bundles/NanocodexInbox/GoogleG.png').read_bytes() == (apple/'NanocodexInbox/Assets.xcassets/GoogleG.imageset/google-g.png').read_bytes()
         package = json.loads((generated/'package.json').read_text())
         assert {t['name'] for t in package['targets']} == {'NanocodexInbox', 'NanocodexShare', 'NanocodexWidgets'}
         assert any(d['name'] == 'NanocodexVoice' for t in package['targets'] for d in t['dependencies'])

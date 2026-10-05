@@ -31,6 +31,7 @@
     }
   },
   "services": [
+    { "binding": "GOOGLE_SIGN_IN", "service": "nanocodex-egress", "entrypoint": "GoogleSignInProvider" },
     { "binding": "NANOCODEX_MEDIA", "service": "nanocodex-media", "entrypoint": "MediaService" },
     { "binding": "NANOCODEX_EMAIL", "service": "nanocodex-email", "entrypoint": "EmailService" },
     { "binding": "NANOCODEX_REALTIME", "service": "nanocodex-egress", "entrypoint": "ManagedRealtimeEgress" },
@@ -227,6 +228,7 @@
       ],
       "name": "nanocodex-durable-agent",
       "services": [
+        { "binding": "GOOGLE_SIGN_IN", "service": "nanocodex-egress", "entrypoint": "GoogleSignInProvider", "remote": false },
         { "binding": "NANOCODEX_MEDIA", "service": "nanocodex-media", "entrypoint": "MediaService", "remote": false },
         { "binding": "NANOCODEX_X", "service": "nanocodex-x" },
         { "binding": "NANOCODEX", "service": "nanocodex-egress", "remote": false },

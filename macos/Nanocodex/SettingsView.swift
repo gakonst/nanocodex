@@ -213,8 +213,23 @@ struct SignInView: View {
             VStack(alignment: .leading, spacing: 8) {
                 Text(challenge == nil ? (isSwitchingAccount ? "Switch account" : "Welcome to Nanocodex") : "Check your messages")
                     .font(.system(size: 28, weight: .semibold)).tracking(-0.5)
-                Text(challenge.map { "Enter the six-digit code sent to \($0.phone)." } ?? "Sign in with your phone number to start building.")
+                Text(challenge.map { "Enter the six-digit code sent to \($0.phone)." } ?? "Sign in with Google or your phone number to start building.")
                     .font(.system(size: 14)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
+            if challenge == nil {
+                Button {
+                    perform { try await model.startGoogleSignIn(baseUrl: baseUrl); onClose?() }
+                } label: {
+                    HStack(spacing: 12) {
+                        Image("google-g").resizable().scaledToFit().frame(width: 20, height: 20)
+                        Text("Continue with Google").font(.system(size: 14, weight: .medium))
+                    }.frame(maxWidth: .infinity).frame(height: 40)
+                        .foregroundStyle(Color(red: 0.12, green: 0.12, blue: 0.12))
+                        .background(.white, in: RoundedRectangle(cornerRadius: 8))
+                        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.gray, lineWidth: 1))
+                }.buttonStyle(.plain).disabled(busy).accessibilityIdentifier("google-sign-in")
+                HStack { Rectangle().frame(height: 1); Text("or"); Rectangle().frame(height: 1) }
+                    .font(.caption).foregroundStyle(.secondary)
             }
             if let challenge {
                 VStack(alignment: .leading, spacing: 13) {
@@ -286,6 +301,7 @@ struct SignInView: View {
         busy = true; operationError = nil
         Task { @MainActor in
             do { try await operation() }
+            catch is CancellationError { /* Closing the Google browser leaves the sign-in form ready. */ }
             catch { operationError = error.localizedDescription }
             busy = false
         }
