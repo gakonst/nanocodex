@@ -302,8 +302,7 @@ async fn facade_reports_configuration_and_provider_errors() {
         })
         .await
         .unwrap()
-        .err()
-        .expect("provider error");
+        .expect_err("provider error");
         eprintln!("family={family} provider-error={error}");
         assert!(!error.to_string().contains("synthetic-key"));
         agent.shutdown().await.unwrap();
