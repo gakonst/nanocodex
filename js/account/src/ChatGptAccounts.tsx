@@ -25,6 +25,14 @@ export function ChatGptAccounts({ status, disabled, onAdd, onDisconnect }: Reado
         </span>
         <span className="connection-card-action">{status.login ? "Signing in…" : status.accounts.length ? "Add account" : "Connect"}</span>
       </button>
+      {status.login ? (
+        <div className="chatgpt-account-details chatgpt-login" role="status">
+          <strong>Finish ChatGPT sign-in</strong>
+          <p>Sign in to the ChatGPT account you want to add, enter this code, then return here. If the wrong account appears, switch accounts on the sign-in page.</p>
+          <code>{status.login.userCode}</code>
+          <a href={status.login.verificationUrl} target="_blank" rel="noreferrer">Open sign-in page</a>
+        </div>
+      ) : null}
       {status.accounts.length > 0 ? (
         <div className="chatgpt-account-details">
           <ul aria-label="ChatGPT accounts">

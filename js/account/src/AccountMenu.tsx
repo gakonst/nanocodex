@@ -347,14 +347,6 @@ function AccountMenuContent({ inline }: { inline: boolean }) {
             <ProfileConnectors
               accountId={session.account.id}
               after={<>
-                {credentials?.chatgpt.login ? (
-                  <div className="new-api-key" role="status">
-                    <strong>Finish ChatGPT sign-in</strong>
-                    <p>Sign in to the ChatGPT account you want to add, enter this code, then return here. If the wrong account appears, switch accounts on the sign-in page.</p>
-                    <code>{credentials.chatgpt.login.userCode}</code>
-                    <a href={credentials.chatgpt.login.verificationUrl} target="_blank" rel="noreferrer">Open sign-in page</a>
-                  </div>
-                ) : null}
                 {credentials && !credentials.openai.connected && openAiExpanded ? (
                   <form className="connection-setup api-key-create" onSubmit={(event) => void connectOpenAi(event)}>
                     <label htmlFor="openai-key">OpenAI API key</label>
@@ -604,14 +596,6 @@ function AccountMenuContent({ inline }: { inline: boolean }) {
                         onAdd={() => void startChatGpt()}
                         onDisconnect={() => void disconnectProvider("chatgpt")}
                       />
-                      {credentials.chatgpt.login ? (
-                        <div className="new-api-key" role="status">
-                          <strong>Finish ChatGPT sign-in</strong>
-                          <p>Sign in to the ChatGPT account you want to add, enter this code, then return here. If the wrong account appears, switch accounts on the sign-in page.</p>
-                          <code>{credentials.chatgpt.login.userCode}</code>
-                          <a href={credentials.chatgpt.login.verificationUrl} target="_blank" rel="noreferrer">Open sign-in page</a>
-                        </div>
-                      ) : null}
                       {inline ? <AccountConnectionCard
                         action={credentials.openai.connected ? "Disconnect" : openAiExpanded ? "Close" : "Add key"}
                         connected={credentials.openai.connected}

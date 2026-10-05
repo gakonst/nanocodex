@@ -5,6 +5,8 @@
 .chatgpt-account-details li { display: grid; gap: 4px; }
 .chatgpt-account-details code { font-size: 12px; overflow-wrap: anywhere; user-select: all; }
 .chatgpt-account-details span, .chatgpt-account-details p { font-size: 12px; color: var(--text-muted); }
+.chatgpt-login { display: grid; gap: 8px; }
+.chatgpt-login code { font-size: 20px; letter-spacing: 0.08em; color: inherit; }
 .chatgpt-account-details button {
   min-height: 36px;
   padding: 6px 10px;
