@@ -526,10 +526,17 @@ async fn execute(
             if reply.is_error {
                 return Ok(reply);
             }
-            Ok(text_reply(
-                json!({"closed":reply.structured_result,"cleanup":profiles::closed(id)})
-                    .to_string(),
-            ))
+            let mut result = reply
+                .structured_result
+                .ok_or("missing agent close receipt")?;
+            result
+                .as_object_mut()
+                .ok_or("invalid agent close receipt")?
+                .insert("cleanup".into(), profiles::closed(id));
+            let mut enriched = text_reply(result.to_string());
+            enriched.structured_result = Some(result);
+            enriched.metadata = reply.metadata;
+            Ok(enriched)
         }
         "ListAgents" => call(runtime, "list_agents", input, invocation).await,
         "SubmitResult" => call(runtime, "submit_result", input, invocation).await,

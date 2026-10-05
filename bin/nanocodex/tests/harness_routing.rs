@@ -3101,7 +3101,23 @@ async fn native_cli_cross_family_children_resolve_defaults_and_preserve_explicit
                     .expect("missing child dispatch");
                 let system = wire_instructions(&call["request"]);
                 if custom {
-                    assert_eq!(system, "fixture-cross-family-override");
+                    if family == "codex" && target == "codex" {
+                        // Codex retains its host-authored delegation guidance with an
+                        // explicit primary instruction; same-family children inherit
+                        // that exact effective instruction observed on the wire.
+                        let root = provider
+                            .log
+                            .iter()
+                            .find(|call| call["label"] == "root")
+                            .expect("missing root dispatch");
+                        let inherited = wire_instructions(&root["request"]);
+                        assert!(inherited.starts_with("fixture-cross-family-override"));
+                        assert!(!inherited.contains("fixture-agents-context"));
+                        assert!(!inherited.contains("fixture-claude-context"));
+                        assert_eq!(system, inherited);
+                    } else {
+                        assert_eq!(system, "fixture-cross-family-override");
+                    }
                 } else if target != "codex" {
                     assert!(system.contains("fixture-agents-context"));
                     assert_eq!(
