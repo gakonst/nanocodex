@@ -8,7 +8,7 @@ import test from "node:test";
 import { DesktopRuntime } from "../src/runtime.mjs";
 
 for (const failSetup of [false, true]) {
-  test(`desktop first start ${failSetup ? "surfaces provisioning failure" : "provisions before connecting and reuses installation"}`, { timeout: 10_000 }, async t => {
+  test(`shared device Hand connects independently of ${failSetup ? "failed" : "slow"} CUA setup`, { timeout: 10_000 }, async t => {
     const root = await mkdtemp(join(tmpdir(), "desktop-cua-setup-"));
     const originalEnv = process.env;
     const originalPlatform = Object.getOwnPropertyDescriptor(process, "platform");
@@ -22,6 +22,7 @@ for (const failSetup of [false, true]) {
       fs.appendFileSync(${JSON.stringify(calls)}, JSON.stringify(args) + '\\n');
       if (args[0] === 'computer') {
         if (${failSetup}) { console.error('fixture network failure'); process.exit(3); }
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 60_000);
         const runtimeRoot = path.join(process.env.NANOCODEX_DIR, 'runtimes/openai-cua');
         const executable = path.join(runtimeRoot, 'hosts/fixture/cua-provider');
         fs.mkdirSync(path.dirname(executable), { recursive: true }); fs.writeFileSync(executable, '', { mode: 0o755 });
@@ -40,18 +41,13 @@ for (const failSetup of [false, true]) {
       await rm(root, { recursive: true, force: true });
     });
     await runtime.refresh();
-    if (failSetup) {
-      await assert.rejects(runtime.prepareDefaultHand(), /OpenAI CUA setup failed:.*[\s\S]*computer setup/);
-      assert.equal(runtime.state().hands[0].status, "error");
-    } else {
-      assert.equal((await runtime.prepareDefaultHand()).status, "connected");
-      await runtime.stopHand(machine.id);
-      await runtime.startHand(machine.id);
-      assert.equal(runtime.state().hands[0].status, "connected");
-    }
+    assert.equal((await runtime.prepareDefaultHand()).status, "connected");
+    await runtime.stopHand(machine.id);
+    await runtime.startHand(machine.id);
+    assert.equal(runtime.state().hands[0].status, "connected");
     assert.deepEqual((await readFile(calls, "utf8")).trim().split("\n").map(JSON.parse), [
-      ["__device-hand", "--describe"], ["computer", "setup"],
-      ...(!failSetup ? [["__device-hand", "--parent-pipe"], ["__device-hand", "--parent-pipe"]] : []),
+      ["__device-hand", "--describe"], ["account", "login", "--with-api-key"],
+      ["__device-hand", "--parent-pipe"], ["__device-hand", "--parent-pipe"],
     ]);
   });
 }

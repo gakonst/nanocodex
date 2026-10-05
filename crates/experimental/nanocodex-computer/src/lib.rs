@@ -204,7 +204,7 @@ impl ComputerConfig {
         if platform == "windows" {
             return None;
         }
-        provision::managed_provider_path().map(Self::mcp)
+        provision::managed_provider_config()
     }
 }
 

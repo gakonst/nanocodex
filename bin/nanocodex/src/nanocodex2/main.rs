@@ -1215,19 +1215,11 @@ async fn open_workspace_agent_with_settings(
     let mut tools = Tools::builder()
         .without_defaults()
         .add(WorkspaceTools::new(&workspace));
-    let computer_config = {
+    let computer = {
         let _timing = startup_timing::Stage::new("computer_discovery");
-        nanocodex_computer::ComputerConfig::discover_or_install()
-            .await
-            .map_err(ManagedError::Configuration)?
+        native_hand::computer_tools().await?
     };
-    if let Some(config) = computer_config {
-        let computer = {
-            let _timing = startup_timing::Stage::new("computer_catalog");
-            nanocodex_computer::ComputerTools::connect(config)
-                .await
-                .map_err(|error| ManagedError::Configuration(error.to_string()))?
-        };
+    if let Some(computer) = computer {
         for tool in computer.tools() {
             tools = tools.add(tool);
         }

@@ -15,6 +15,25 @@ paths to each runner. Linux distributable source builds also need the pinned
 screen-helper build prerequisites described by `scripts/build-linux-screen-helpers.sh`.
 Do not substitute mock Cargo or a mock updater for these commands.
 
+## Installer download journey
+
+```sh
+python3 bin/nanocodex/tests/install_network_e2e.py target/debug/nanocodex target/debug/nanocodex2 output/install-network
+```
+
+This invokes the real CLI with `install --no-setup --no-modify-path` against a
+loopback HTTPS GitHub transport fixture. It uses an isolated HOME, credential
+file and installation store, with automatic scheduling disabled. A test CA is
+trusted only by the child process; no system trust settings change. The Hand
+payload is a real executable; the voice archive is structural fixture data.
+
+The journey verifies checksum-gated reuse of the running bootstrap, overlapping
+Hand/voice transfers, CLI download fallback, missing checksums, and corrupted
+payload rejection without changing the selected or pending release. Any
+existing native Hand remains running and unchanged. Transcript, request trace,
+and structured results are written to the output directory. This does not
+exercise voice execution or first installation of an OS service.
+
 ## Local-pair runner
 
 The runner copies the **real CLI and Hand binaries** into a disposable directory,

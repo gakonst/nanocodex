@@ -1,4 +1,4 @@
-//! Start only the installed, OS-owned publisher. Never elevate or spawn a daemon.
+//! Start the OS-owned publisher. Missing macOS owners use the unprivileged installer; never elevate or spawn a daemon.
 use std::future::Future;
 
 #[derive(Clone, Copy)]
@@ -8,6 +8,7 @@ pub(super) enum Platform {
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Action {
+    MacInstall,
     MacGuiStatus,
     MacGuiStart,
     MacGuiLoad,
@@ -43,7 +44,9 @@ impl Action {
             );
         }
         let (program, args): (&str, &[&str]) = match self {
-            Self::MacGuiStatus | Self::MacGuiStart | Self::MacGuiLoad => unreachable!(),
+            Self::MacInstall | Self::MacGuiStatus | Self::MacGuiStart | Self::MacGuiLoad => {
+                unreachable!("installation uses the selected native installer")
+            }
             Self::MacStatus => ("/bin/launchctl", &["print", "system/com.nanocodex.hand"]),
             // No -k: an already running publisher must never be restarted.
             Self::MacStart => (
@@ -133,7 +136,7 @@ where
             } else if mac_installed {
                 Action::MacLoad
             } else {
-                return Err(INSTALL.into());
+                Action::MacInstall
             }
         }
         Platform::Linux => {
@@ -214,7 +217,7 @@ mod tests {
         .unwrap();
     }
     #[tokio::test]
-    async fn missing_services_report_installation_without_starting() {
+    async fn missing_linux_reports_setup_and_missing_mac_requests_user_installation() {
         for (platform, action, stdout) in [
             (Platform::Mac, Action::MacStatus, ""),
             (
@@ -223,11 +226,17 @@ mod tests {
                 "LoadState=not-found\nActiveState=inactive\n",
             ),
         ] {
-            let error = scenario(platform, false, vec![(action, false, stdout)])
-                .await
-                .unwrap_err();
-            assert!(error.contains("not installed"));
-            assert!(error.contains("nanocodex hand install"));
+            let mut replies = vec![(action, false, stdout)];
+            if matches!(platform, Platform::Mac) {
+                replies.push((Action::MacInstall, false, ""));
+            }
+            let error = scenario(platform, false, replies).await.unwrap_err();
+            if matches!(platform, Platform::Linux) {
+                assert!(error.contains("not installed"));
+                assert!(error.contains("nanocodex hand install"));
+            } else {
+                assert!(error.contains("rejected"));
+            }
             assert!(!error.contains("scripts/install-hand-service.py"));
         }
     }
@@ -358,8 +367,9 @@ mod tests {
         assert!(error.contains("launchctl kickstart gui/"));
     }
     #[tokio::test]
-    async fn neither_mac_service_installed_reports_installation() {
-        let mut actions = VecDeque::from([Action::MacStatus, Action::MacGuiStatus]);
+    async fn neither_mac_service_installed_requests_user_installation() {
+        let mut actions =
+            VecDeque::from([Action::MacStatus, Action::MacGuiStatus, Action::MacInstall]);
         let error = ensure_with(Platform::Mac, false, Some(false), |action| {
             assert_eq!(actions.pop_front(), Some(action));
             ready(Ok(Reply {
@@ -370,8 +380,7 @@ mod tests {
         .await
         .unwrap_err();
         assert!(actions.is_empty());
-        assert!(error.contains("not installed"));
-        assert!(error.contains("nanocodex hand install"));
+        assert!(error.contains("rejected"));
     }
     #[test]
     fn gui_commands_target_the_current_user_and_preserve_spaces() {

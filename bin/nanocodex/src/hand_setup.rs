@@ -33,6 +33,9 @@ enum HandCommand {
         /// Directory containing a development Linux nanocodex2 binary.
         #[arg(long, value_name = "DIRECTORY", hide = true)]
         artifacts: Option<PathBuf>,
+        /// First-launch enrollment only; never replace or restart an owner.
+        #[arg(long, hide = true, conflicts_with_all = ["target", "port", "account_file", "artifacts"])]
+        if_missing: bool,
     },
     /// Show local Hand service status as JSON.
     Status,
@@ -56,6 +59,40 @@ pub(crate) fn ssh_target(value: &str) -> std::result::Result<String, String> {
         return Err("Expected an SSH alias, IP, hostname, or user@host".into());
     }
     Ok(value.into())
+}
+
+/// Automatic first launch is limited to the unprivileged macOS LaunchAgent.
+/// Hold the same lock as updates, then recheck ownership before any mutation.
+/// Existing or concurrently installed publishers always retain their identity.
+async fn install_missing_user_service(executable: Option<PathBuf>) -> Result<()> {
+    if !cfg!(target_os = "macos") {
+        bail!(
+            "Automatic Hand installation is unavailable on this platform. Run nanocodex setup to connect this computer."
+        );
+    }
+    let account_file = nanocodex_cli_auth::saved_enrollment_account_file()?;
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(60);
+    let _lock = loop {
+        match crate::update::lock_service_operation() {
+            Ok(lock) => break lock,
+            Err(error)
+                if error
+                    .downcast_ref::<std::io::Error>()
+                    .is_some_and(|error| error.kind() == std::io::ErrorKind::WouldBlock)
+                    && tokio::time::Instant::now() < deadline =>
+            {
+                // Another first launch may be enrolling this same publisher.
+                // Wait for its transaction, then inspect the resulting owner.
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
+            Err(error) => return Err(error),
+        }
+    };
+    let state = crate::hand_service::status().await?;
+    if state.installed || state.loaded {
+        return Ok(());
+    }
+    crate::hand_service::install(executable, Some(account_file)).await
 }
 
 /// One idempotent install entry point for guided setup and direct commands.
@@ -300,7 +337,14 @@ impl Hand {
                 executable,
                 account_file,
                 artifacts,
-            } => install_with(target, port, executable, account_file, artifacts).await,
+                if_missing,
+            } => {
+                if if_missing {
+                    install_missing_user_service(executable).await
+                } else {
+                    install_with(target, port, executable, account_file, artifacts).await
+                }
+            }
             HandCommand::Status => {
                 #[cfg(target_os = "linux")]
                 {

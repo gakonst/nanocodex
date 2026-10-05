@@ -630,21 +630,15 @@ impl AgentArgs {
             }
             tools = tools.remote_http_client(mpp_adapter.tool_http_client()?);
         }
-        let computer_config = if configured_vm.is_none() {
+        if configured_vm.is_none() {
             let _timing = crate::startup_timing::Stage::new("computer_discovery");
-            nanocodex_computer::ComputerConfig::discover_or_install()
+            if let Some(computer) = crate::computer::connect_for_startup()
                 .await
-                .map_err(|error| eyre!(error))?
-        } else {
-            None
-        };
-        if let Some(config) = computer_config {
-            let _timing = crate::startup_timing::Stage::new("computer_catalog");
-            let computer = nanocodex_computer::ComputerTools::connect(config)
-                .await
-                .map_err(|error| eyre!(error.to_string()))?;
-            for tool in computer.tools() {
-                tools = tools.add(tool);
+                .map_err(eyre::Report::msg)?
+            {
+                for tool in computer.tools() {
+                    tools = tools.add(tool);
+                }
             }
         }
         if let Some(managed_memory) = &managed_memory {

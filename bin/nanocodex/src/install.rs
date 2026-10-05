@@ -62,7 +62,7 @@ impl Install {
         if no_setup {
             return Ok(());
         }
-        if !std::io::stdin().is_terminal() {
+        if !std::io::stdin().is_terminal() && !nanocodex_cli_auth::has_default_login() {
             println!(
                 "No interactive terminal detected. Finish setup with: {} setup",
                 executable.display()
@@ -72,7 +72,7 @@ impl Install {
 
         let mut command = tokio::process::Command::new(&executable);
         command
-            .args(["setup", "--refresh"])
+            .arg("setup")
             .env("NANOCODEX_DIR", &root)
             .stdin(Stdio::inherit())
             .stdout(Stdio::inherit())

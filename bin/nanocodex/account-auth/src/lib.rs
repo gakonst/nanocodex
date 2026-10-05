@@ -283,6 +283,29 @@ pub fn has_default_login() -> bool {
     enrollment_credentials(None).is_ok()
 }
 
+/// Locate a saved credential that exactly matches the current login. A user
+/// service cannot depend on its launching terminal's temporary environment key.
+/// This returns only the filename; credentials are neither copied nor exported.
+pub fn saved_enrollment_account_file() -> std::result::Result<PathBuf, ManagedError> {
+    let (origin, key) = enrollment_credentials(None)?;
+    let resolve = || -> Result<PathBuf> {
+        let path = store::default_path()?;
+        let saved = store::load(&path)?;
+        if !saved
+            .accounts
+            .get(&origin)
+            .is_some_and(|saved| saved.api_key == *key)
+        {
+            return Err(Error::message(
+                "Automatic Hand setup requires this login to be saved. Run nanocodex setup to sign in and connect this computer.",
+            ));
+        }
+        path.canonicalize()
+            .map_err(|_| Error::message("Cannot locate the saved account credential file"))
+    };
+    resolve().map_err(|error| ManagedError::Configuration(error.to_string()))
+}
+
 /// Run the normal SMS login against the default managed account and credential
 /// file. Used by the guided first-run flow without inventing a second auth path.
 pub async fn login_default() -> std::result::Result<(), Error> {

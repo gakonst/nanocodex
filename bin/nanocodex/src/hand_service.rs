@@ -386,7 +386,7 @@ pub(crate) async fn install(binary: Option<PathBuf>, account_file: Option<PathBu
         file.set_permissions(fs::Permissions::from_mode(0o600))?;
     }
     write_plist(
-        &json!({"Label":LABEL,"ProgramArguments":[binary,"hand"],"RunAtLoad":true,"KeepAlive":{"SuccessfulExit":false},"ThrottleInterval":10,"ExitTimeOut":90,"WorkingDirectory":home,"StandardOutPath":log,"StandardErrorPath":log,"EnvironmentVariables":{"HOME":home,"NANOCODEX_ACCOUNT_FILE":account,"PATH":"/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"}}),
+        &json!({"Label":LABEL,"ProgramArguments":[binary,"hand"],"RunAtLoad":true,"KeepAlive":{"SuccessfulExit":false},"ThrottleInterval":10,"ExitTimeOut":90,"WorkingDirectory":home,"StandardOutPath":log,"StandardErrorPath":log,"EnvironmentVariables":{"HOME":home,"NANOCODEX_ACCOUNT_FILE":account,"NANOCODEX_MANAGED_URL":nanocodex_cli_auth::managed_url_from_environment(None)?,"PATH":"/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"}}),
     )?;
     let since = SystemTime::now();
     if let Err(error) = async {

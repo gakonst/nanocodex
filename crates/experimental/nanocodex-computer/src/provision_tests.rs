@@ -57,21 +57,6 @@ fn component_selection_excludes_the_desktop_shell_and_chrome_proxy() {
 }
 
 #[test]
-fn exact_content_range_is_required() {
-    assert_eq!(
-        content_range(
-            b"HTTP/2 206\r\ncontent-range: bytes 10-19/123\r\n\r\n",
-            10,
-            19
-        )
-        .unwrap(),
-        123
-    );
-    assert!(content_range(b"HTTP/2 200\r\ncontent-length: 10\r\n", 10, 19).is_err());
-    assert!(content_range(b"HTTP/2 206\r\ncontent-range: bytes 0-9/123\r\n", 10, 19).is_err());
-}
-
-#[test]
 fn parses_bounded_classic_zip_directory() {
     let mut central = vec![0u8; 46];
     central[0..4].copy_from_slice(b"PK\x01\x02");
@@ -560,4 +545,247 @@ async fn dropping_setup_cancels_the_owned_process_group() {
         );
         std::thread::sleep(std::time::Duration::from_millis(1));
     }
+}
+
+// This narrow integration boundary is necessary on Linux: provisioning itself
+// requires Apple's codesign and ditto. Only the HTTPS origin is a fixture; ZIP
+// selection, transfer, cancellation, assembly and curl are production code.
+#[test]
+#[ignore = "requires python3, openssl and /usr/bin/curl; runs a local HTTPS journey"]
+fn production_parallel_downloader_https_journey() {
+    use std::{io::BufRead as _, os::unix::process::CommandExt as _, time::Instant};
+
+    let directory = test_directory("parallel-download");
+    let script = directory.path.join("server.py");
+    fs::write(
+        &script,
+        include_str!("../tests/fixtures/cua_archive_server.py"),
+    )
+    .unwrap();
+    let mut server = OwnedCommand::new(
+        std::process::Command::new("python3")
+            .args([script.as_os_str(), directory.path.as_os_str()])
+            .stdout(std::process::Stdio::piped())
+            .process_group(0)
+            .spawn()
+            .unwrap(),
+    );
+    let mut line = String::new();
+    std::io::BufReader::new(server.child.stdout.take().unwrap())
+        .read_line(&mut line)
+        .unwrap();
+    let endpoint: serde_json::Value = serde_json::from_str(&line).expect("HTTPS fixture startup");
+    let url = endpoint["url"].as_str().unwrap();
+    let length = endpoint["length"].as_u64().unwrap();
+    struct HttpsCommands {
+        system: System,
+        certificate: PathBuf,
+        serial: bool,
+    }
+    impl Commands for HttpsCommands {
+        fn check_cancelled(&self) -> Result<(), String> {
+            self.system.check_cancelled()
+        }
+        fn run(&mut self, program: &str, args: &[OsString]) -> Result<String, String> {
+            assert_eq!(program, "/usr/bin/curl");
+            let mut trusted = Vec::new();
+            for (index, arg) in args.iter().enumerate() {
+                if index > 0 && args[index - 1] == "--parallel-max" && self.serial {
+                    trusted.push("1".into());
+                } else {
+                    trusted.push(arg.clone());
+                }
+                if arg == "--disable" || arg == "--next" {
+                    trusted.extend([
+                        "--cacert".into(),
+                        self.certificate.as_os_str().to_owned(),
+                        "--noproxy".into(),
+                        "*".into(),
+                    ]);
+                }
+            }
+            let cancel = if args
+                .iter()
+                .any(|arg| arg.to_string_lossy().ends_with("/cancelled"))
+                && args.iter().filter(|arg| *arg == "--range").count() > 1
+            {
+                let flag = self.system.cancelled.clone();
+                Some(std::thread::spawn(move || {
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                    flag.store(true, Ordering::Release);
+                }))
+            } else {
+                None
+            };
+            let result = self.system.run(program, &trusted);
+            if let Some(cancel) = cancel {
+                cancel.join().unwrap();
+            }
+            result
+        }
+    }
+    let cancellation = Cancellation::new();
+    let mut commands = HttpsCommands {
+        system: System::new(cancellation.flag()),
+        certificate: directory.path.join("cert.pem"),
+        serial: true,
+    };
+    let mut timings = Vec::new();
+    for mode in [
+        "serial",
+        "parallel",
+        "unknown-length",
+        "wrongrange",
+        "missingrange",
+        "changed",
+        "short",
+        "oversize",
+        "failure",
+        "recovery",
+        "cancelled",
+    ] {
+        commands.serial = mode == "serial";
+        let stage = directory.path.join(mode);
+        fs::create_dir(&stage).unwrap();
+        let begin = Instant::now();
+        let release = Release {
+            build: "fixture".into(),
+            url: format!("{url}/{mode}"),
+            length: if mode == "unknown-length" { 0 } else { length },
+        };
+        let result = component_zip(&stage, &mut commands, &release);
+        timings.push((mode, begin.elapsed().as_millis()));
+        if matches!(mode, "serial" | "parallel" | "unknown-length" | "recovery") {
+            let archive = result.unwrap();
+            let verified = std::process::Command::new("python3")
+                .args([
+                    script.as_os_str(),
+                    directory.path.as_os_str(),
+                    archive.as_os_str(),
+                ])
+                .output()
+                .unwrap();
+            assert!(
+                verified.status.success(),
+                "{}",
+                String::from_utf8_lossy(&verified.stderr)
+            );
+            eprintln!(
+                "{mode}: {}",
+                String::from_utf8_lossy(&verified.stdout).trim()
+            );
+        } else {
+            let error = result.unwrap_err();
+            eprintln!("{mode}: rejected: {error}");
+            if mode == "cancelled" {
+                assert_eq!(error, CANCELLED);
+            }
+            assert!(
+                !stage.join("components.zip").exists(),
+                "failed download published an archive"
+            );
+        }
+    }
+    let trace = fs::read_to_string(directory.path.join("requests.jsonl")).unwrap();
+    let requests: Vec<serde_json::Value> = trace
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    let peak = requests
+        .iter()
+        .filter(|r| r["path"] == "/parallel")
+        .map(|r| r["active"].as_u64().unwrap())
+        .max()
+        .unwrap();
+    assert!(
+        (4..=RANGE_PARALLELISM as u64).contains(&peak),
+        "observed peak {peak}"
+    );
+    let serial_peak = requests
+        .iter()
+        .filter(|r| r["path"] == "/serial")
+        .map(|r| r["active"].as_u64().unwrap())
+        .max()
+        .unwrap();
+    assert_eq!(serial_peak, 1);
+    // Known-length feeds avoid the extra probe, and this ZIP's central directory
+    // fits in the tail. Exactly one metadata request precedes payload transfers.
+    let parallel: Vec<_> = requests
+        .iter()
+        .filter(|r| r["path"] == "/parallel")
+        .collect();
+    assert_eq!(
+        parallel
+            .iter()
+            .filter(|r| r["end"].as_u64().unwrap() - r["start"].as_u64().unwrap() < 65557)
+            .count(),
+        1
+    );
+    assert!(
+        parallel
+            .iter()
+            .all(|r| r["end"].as_u64().unwrap() - r["start"].as_u64().unwrap() < RANGE_CHUNK_BYTES)
+    );
+    eprintln!(
+        "actual curl HTTPS journey: peak_parallel={peak}; timings_ms={timings:?}; trace={trace}"
+    );
+}
+
+/// Opt-in real upstream journey, isolated from HOME and runtime publication.
+/// On macOS this also runs ditto, all OpenAI signature checks and signed seals.
+#[test]
+#[ignore = "downloads official components; set CUA_JOURNEY_URL, CUA_JOURNEY_LENGTH, CUA_JOURNEY_BUILD"]
+fn official_component_download_journey() {
+    let mut directory = test_directory("official-download");
+    fs::create_dir(directory.path.join("payload")).unwrap();
+    let release = Release {
+        url: std::env::var("CUA_JOURNEY_URL").unwrap(),
+        length: std::env::var("CUA_JOURNEY_LENGTH")
+            .unwrap()
+            .parse()
+            .unwrap(),
+        build: std::env::var("CUA_JOURNEY_BUILD").unwrap(),
+    };
+    validate_archive_url(&release.url).unwrap();
+    let cancellation = Cancellation::new();
+    let mut system = System::new(cancellation.flag());
+    let began = std::time::Instant::now();
+    #[cfg(target_os = "macos")]
+    {
+        let app = download(&mut directory, &mut system, &release).unwrap();
+        assert_eq!(verify(&app, &mut system).unwrap(), release.build);
+        eprintln!(
+            "official macOS signatures and SHA-256 seals verified for build {}",
+            release.build
+        );
+        // A modified selected resource must still be refused after the optimized
+        // transport. This stage can never be selected by the user's runtime.
+        let resource = app.join(RESOURCES).join(MODULES).join(ENTRY);
+        fs::write(resource, b"tampered integration fixture").unwrap();
+        let error = verify(&app, &mut system).unwrap_err();
+        assert!(error.contains("signed SHA-256 seal"), "{error}");
+        eprintln!("tampered official component rejected: {error}");
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = &mut directory;
+        let archive = component_zip(&directory.path, &mut system, &release).unwrap();
+        let result = std::process::Command::new("python3")
+            .args(["-c", "import sys,zipfile; z=zipfile.ZipFile(sys.argv[1]); assert z.testzip() is None; print('ZIP CRC verified:',len(z.namelist()),'entries')"])
+            .arg(archive).output().unwrap();
+        assert!(
+            result.status.success(),
+            "{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        eprintln!("{}", String::from_utf8_lossy(&result.stdout).trim());
+    }
+    let archive = directory.path.join("components.zip");
+    eprintln!(
+        "official url={} full_bytes={} component_bytes={} elapsed_ms={}",
+        release.url,
+        release.length,
+        fs::metadata(archive).unwrap().len(),
+        began.elapsed().as_millis()
+    );
 }

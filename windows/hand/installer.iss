@@ -48,7 +48,7 @@ Source: "payload\ffmpeg.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "payload\ffmpeg-*.txt"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
-Name: "{group}\Set up or repair Nanocodex"; Filename: "{app}\nanocodex.exe"; Parameters: "setup --refresh"; WorkingDir: "{%USERPROFILE}"
+Name: "{group}\Set up or repair Nanocodex"; Filename: "{app}\nanocodex.exe"; Parameters: "setup"; WorkingDir: "{%USERPROFILE}"
 Name: "{group}\Start Nanocodex Hand"; Filename: "{app}\nanocodex.exe"; Parameters: "hand start"; WorkingDir: "{%USERPROFILE}"
 Name: "{group}\Stop Nanocodex Hand"; Filename: "{app}\nanocodex.exe"; Parameters: "hand stop"; WorkingDir: "{%USERPROFILE}"
 Name: "{group}\Nanocodex Hand logs"; Filename: "{localappdata}\Nanocodex\Hand"
@@ -56,7 +56,7 @@ Name: "{group}\Uninstall Nanocodex"; Filename: "{uninstallexe}"
 
 [Run]
 Filename: "{app}\nanocodex.exe"; Parameters: "hand install"; Flags: runhidden waituntilterminated runasoriginaluser; Check: RepairExistingHand
-Filename: "{app}\nanocodex.exe"; Parameters: "setup --refresh"; Description: "Sign in and connect this computer now"; Flags: postinstall waituntilterminated skipifsilent runasoriginaluser; Check: NeedsGuidedSetup
+Filename: "{app}\nanocodex.exe"; Parameters: "setup"; Description: "Sign in and connect this computer now"; Flags: postinstall waituntilterminated skipifsilent runasoriginaluser; Check: NeedsGuidedSetup
 Filename: "{app}\nanocodex.exe"; Parameters: "update --auto enable"; Flags: runhidden waituntilterminated runasoriginaluser
 
 [UninstallRun]
@@ -65,7 +65,7 @@ Filename: "{app}\nanocodex.exe"; Parameters: "update --auto disable"; Flags: run
 Filename: "{sys}\schtasks.exe"; Parameters: "/Delete /TN ""\Nanocodex Hand"" /F"; Flags: runhidden waituntilterminated; RunOnceId: "RemoveNanocodexHandTask"
 
 [Messages]
-WelcomeLabel2=This installs the Nanocodex CLI and its native Windows Hand.%n%nAfter installation, one guided setup signs in with a phone number, installs the official Computer Use components, starts the per-user Hand, and offers the browser extension. The connected account can control this user's apps and files. Desktop control requires a signed-in Windows session.
+WelcomeLabel2=This installs the Nanocodex CLI and its native Windows Hand.%n%nAfter installation, one guided setup signs in with a phone number and immediately starts the per-user Hand with native screen controls. No browser extension is required. The connected account can control this user's apps and files. Desktop control requires a signed-in Windows session.
 
 [Code]
 var

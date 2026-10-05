@@ -359,13 +359,7 @@ pub(super) async fn run_observed(
     if super::native_secure_input::NativeSecureInput::installed() {
         tools = tools.add(super::native_secure_input::NativeSecureInput);
     }
-    if let Some(config) = nanocodex_computer::ComputerConfig::discover_or_install()
-        .await
-        .map_err(ManagedError::Configuration)?
-    {
-        let computer = nanocodex_computer::ComputerTools::connect(config)
-            .await
-            .map_err(|error| ManagedError::Configuration(error.to_string()))?;
+    if let Some(computer) = computer_tools().await? {
         for tool in computer.tools() {
             tools = tools.add(tool);
         }
@@ -415,6 +409,15 @@ pub(super) async fn run_observed(
             }
         }
     }
+}
+
+/// Downloads are independent of attachment readiness. Native screen controls
+/// remain available while the optional upstream provider is being prepared.
+pub(super) async fn computer_tools()
+-> Result<Option<nanocodex_computer::ComputerTools>, ManagedError> {
+    super::computer::connect_for_startup()
+        .await
+        .map_err(configuration)
 }
 
 fn configuration(error: impl std::fmt::Display) -> ManagedError {

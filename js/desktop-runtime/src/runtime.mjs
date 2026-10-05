@@ -14,7 +14,7 @@ import { connectComputerTools, ensureComputer } from "nanocodex-computer";
 import WebSocket from "ws";
 import { mergeAccountHands, restoredAccountHands } from "./account-hands.mjs";
 import { createVmTools, supportsLocalVms } from "./vm-tools.mjs";
-import { describeDeviceHand, connectDeviceHand } from "./device-hand.mjs";
+import { describeDeviceHand, connectDeviceHand, saveDeviceHandLogin } from "./device-hand.mjs";
 import { runtimeDataDirectory } from "./data-directory.mjs";
 import { desktopFactoryRecipe, superviseVmFactory } from "./vm-factory.mjs";
 
@@ -363,6 +363,7 @@ export class DesktopRuntime extends EventEmitter {
   }
 
   async #resetAccount() {
+    this.#defaultPreparation?.abort.abort();
     ++this.#generation;
     this.#state.accountScope = randomUUID();
     for (const id of this.#threads.keys()) this.closeThread(id);
@@ -621,14 +622,22 @@ export class DesktopRuntime extends EventEmitter {
     if (!this.#state.defaultHandEnabled) return null;
     const generation = this.#generation;
     if (this.#defaultPreparation?.generation === generation) return this.#defaultPreparation.promise;
-    const pending = { generation };
+    const pending = { generation, abort: new AbortController() };
     pending.promise = (async () => {
       let hand = this.#state.hands.find(candidate => candidate.kind === "local" && !candidate.agentId);
       if (this.#state.defaults.deviceBinary) {
         if (this.#deviceIdentity?.generation !== generation) {
           const config = await describeDeviceHand(this.#state.defaults.deviceBinary, this.#deviceEnvironment());
           this.#sameAccount(generation);
-          this.#deviceIdentity = { generation, config };
+          let accountFile;
+          if (process.platform === "darwin") {
+            // Device identity is stable across key rotation and scoped to the
+            // authenticated account. Never overwrite the global CLI login.
+            accountFile = join(this.#dataDirectory, "hand-accounts", `${config.id}.json`);
+            await saveDeviceHandLogin(this.#state.defaults.deviceBinary, this.#deviceEnvironment(), accountFile, { signal: pending.abort.signal });
+            this.#sameAccount(generation);
+          }
+          this.#deviceIdentity = { generation, config, accountFile };
         }
         const config = this.#deviceIdentity.config;
         this.#sameAccount(generation);
@@ -760,7 +769,9 @@ export class DesktopRuntime extends EventEmitter {
   }
   #deviceEnvironment() {
     return { ...process.env, NANOCODEX_API_KEY: this.#options.apiKey, NANOCODEX_MANAGED_URL: this.#options.baseUrl,
-      NANOCODEX_DESKTOP_DATA: this.#dataDirectory };
+      NANOCODEX_DESKTOP_DATA: this.#dataDirectory,
+      ...(this.#deviceIdentity?.generation === this.#generation && this.#deviceIdentity.accountFile
+        ? { NANOCODEX_ACCOUNT_FILE: this.#deviceIdentity.accountFile } : {}) };
   }
   async #startDevice(hand, resource) {
     const connection = connectDeviceHand({ binary: this.#state.defaults.deviceBinary, env: this.#deviceEnvironment(),
@@ -781,9 +792,12 @@ export class DesktopRuntime extends EventEmitter {
     this.#log(hand, "This computer is connected. CLI and app share this Hand.");
   }
   async #startLocal(hand, resource) {
-    const computerExecutable = await ensureComputer({ binary: this.#state.defaults.deviceBinary || this.#state.defaults.binary });
+    // The OS-owned device Hand provisions its own computer tools. Its shell
+    // connection must not wait for a second CUA installer in the app process.
     resource.abort.signal.throwIfAborted();
     if (this.#state.defaults.deviceBinary && this.#isDefaultHand(hand.id)) return this.#startDevice(hand, resource);
+    const computerExecutable = await ensureComputer({ binary: this.#state.defaults.deviceBinary || this.#state.defaults.binary });
+    resource.abort.signal.throwIfAborted();
     const processes = await createNodeProcessTools({ workspace: hand.workspace, onActivity: event => {
       if (event.type === "started") { hand.calls++; hand.activeCalls++; }
       else hand.activeCalls = Math.max(0, hand.activeCalls - 1);
@@ -1140,6 +1154,7 @@ export class DesktopRuntime extends EventEmitter {
   async close() {
     if (this.#closed) return this.#accountTransition;
     this.#closed = true;
+    this.#defaultPreparation?.abort.abort();
     ++this.#connectionAttempt;
     ++this.#generation;
     for (const id of this.#threads.keys()) this.closeThread(id);

@@ -21,6 +21,40 @@ export async function describeDeviceHand(binary, env, { spawnProcess = spawn } =
   } finally { clearTimeout(timeout); }
 }
 
+/** Verify and save the app login through the CLI's private account store.
+ * The key travels only over stdin. The account-specific file is independent
+ * of the global CLI login and existing LaunchAgent configuration. */
+export async function saveDeviceHandLogin(binary, env, accountFile, { signal, spawnProcess = spawn } = {}) {
+  if (!isAbsolute(accountFile)) throw new Error("The Hand credential file must have an absolute path.");
+  const key = env.NANOCODEX_API_KEY;
+  if (!/^ncx_live_[A-Za-z0-9_-]{12}_[A-Za-z0-9_-]{43}$/.test(key ?? "")) throw new Error("Sign in before connecting this computer.");
+  signal?.throwIfAborted();
+  const loginEnvironment = { ...env, NANOCODEX_ACCOUNT_FILE: accountFile };
+  delete loginEnvironment.NANOCODEX_API_KEY;
+  delete loginEnvironment.NC_API_KEY;
+  const child = spawnProcess(binary, ["account", "login", "--with-api-key"], {
+    env: loginEnvironment, stdio: ["pipe", "ignore", "ignore"], windowsHide: true,
+  });
+  const abort = () => child.kill("SIGTERM");
+  const timeout = setTimeout(abort, 30_000);
+  signal?.addEventListener("abort", abort, { once: true });
+  try {
+    await new Promise((resolve, reject) => {
+      const fail = () => reject(new Error("Could not save the verified Hand login. Check account access and available disk space, then reconnect."));
+      child.once("error", fail);
+      child.once("close", code => code === 0 ? resolve() : fail());
+      child.stdin.on("error", fail);
+      child.stdin.end(key + "\n");
+      if (signal?.aborted) abort();
+    });
+    signal?.throwIfAborted();
+    return accountFile;
+  } finally {
+    clearTimeout(timeout);
+    signal?.removeEventListener("abort", abort);
+  }
+}
+
 export function connectDeviceHand({ binary, env, signal, onState, spawnProcess = spawn, timeoutMs = 30_000 }) {
   const child = spawnProcess(binary, ["__device-hand", "--parent-pipe"], { env, stdio: ["pipe", "pipe", "pipe"] });
   let settleReady, rejectReady, exited = false, stopping = false, error = "";

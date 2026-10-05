@@ -43,9 +43,41 @@ const READ_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_ARCHIVE_BYTES: u64 = 256 * 1024 * 1024;
 const MAX_BINARY_BYTES: u64 = 256 * 1024 * 1024;
 
+/// Reuse only the exact running CLI covered by this release manifest.
+fn verified_running_binary(manifest: &[u8], asset_name: &str) -> Option<Vec<u8>> {
+    let expected = checksum_for(manifest, asset_name).ok()?;
+    let path = std::env::current_exe().ok()?;
+    if fs::metadata(&path).ok()?.len() > MAX_BINARY_BYTES {
+        return None;
+    }
+    let bytes = fs::read(path).ok()?;
+    (hex::encode(Sha256::digest(&bytes)) == expected).then_some(bytes)
+}
+
+/// A managed installation already contains its verified Hand companion.
+/// Restrict reuse to the version directory of this exact running executable.
+fn cached_linux_hand() -> Option<Vec<u8>> {
+    if !cfg!(target_os = "linux") {
+        return None;
+    }
+    let executable = std::env::current_exe().ok()?.canonicalize().ok()?;
+    let directory = executable.parent()?;
+    let key = directory.file_name()?.to_str()?;
+    let store = VersionStore::discover().ok()?;
+    if store.version_dir(key).canonicalize().ok()?.as_path() != directory
+        || !store.is_cached_bundle(key, false).ok()?
+    {
+        return None;
+    }
+    fs::read(directory.join("nanocodex2")).ok()
+}
+
 /// Resolve one immutable Linux Hand binary for local or SSH installation.
 /// The controller verifies the release manifest before any credential is sent.
 pub(crate) async fn linux_hand_binary() -> Result<Vec<u8>> {
+    if let Some(binary) = cached_linux_hand() {
+        return Ok(binary);
+    }
     let client = Client::builder()
         .user_agent(format!("nanocodex/{}", version::SEMVER_VERSION))
         .connect_timeout(CONNECT_TIMEOUT)
@@ -395,32 +427,39 @@ impl Update {
         let (binary, compressed) = find_preferred_asset(&release, binary_name)?;
         let (companion, companion_compressed) =
             find_preferred_asset(&release, nanocodex2_binary_asset_name()?)?;
-        let voice_contents = match voice_asset {
-            Some(asset) => Some(download_verified(&client, asset, &checksum_manifest, true).await?),
-            None => None,
-        };
-        let archive = download_verified(&client, binary, &checksum_manifest, true).await?;
-        let contents = unpack_release_asset(archive, &binary.name, compressed)?;
-        let companion_archive =
-            download_verified(&client, companion, &checksum_manifest, true).await?;
-        let companion_contents =
-            unpack_release_asset(companion_archive, &companion.name, companion_compressed)?;
-        let guest_contents = if self.nightly {
-            if let Some(guest_name) = vm_guest_binary_asset_name() {
-                let (guest, compressed) = find_preferred_asset(&release, guest_name)?;
-                let guest_archive =
-                    download_verified(&client, guest, &checksum_manifest, true).await?;
-                Some(unpack_release_asset(
-                    guest_archive,
-                    &guest.name,
-                    compressed,
-                )?)
-            } else {
-                None
+        // Independent payloads overlap; reuse the bootstrap only when this
+        // release's manifest verifies the exact running executable bytes.
+        let cli_download = async {
+            if let Some(contents) = verified_running_binary(&checksum_manifest, binary_name) {
+                return Ok(contents);
             }
-        } else {
-            None
+            let archive = download_verified(&client, binary, &checksum_manifest, true).await?;
+            unpack_release_asset(archive, &binary.name, compressed)
         };
+        let hand_download = async {
+            let archive = download_verified(&client, companion, &checksum_manifest, true).await?;
+            unpack_release_asset(archive, &companion.name, companion_compressed)
+        };
+        let voice_download = async {
+            match voice_asset {
+                Some(asset) => download_verified(&client, asset, &checksum_manifest, true)
+                    .await
+                    .map(Some),
+                None => Ok(None),
+            }
+        };
+        let guest_download = async {
+            if self.nightly
+                && let Some(name) = vm_guest_binary_asset_name()
+            {
+                let (asset, compressed) = find_preferred_asset(&release, name)?;
+                let archive = download_verified(&client, asset, &checksum_manifest, true).await?;
+                return unpack_release_asset(archive, &asset.name, compressed).map(Some);
+            }
+            Ok(None)
+        };
+        let (contents, companion_contents, voice_contents, guest_contents) =
+            tokio::try_join!(cli_download, hand_download, voice_download, guest_download)?;
         store.install_bundle(
             &key,
             &contents,

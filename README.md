@@ -126,10 +126,11 @@ irm https://nanocodex.paradigm.xyz/install.ps1 | iex
 nanocodex
 ```
 
-With an interactive terminal, the installer immediately runs `nanocodex setup`:
-account SMS login, platform CUA setup, the persistent Hand on that machine, and
-the official browser-extension prompt where applicable. The flow is idempotent
-and resumable.
+The installer runs `nanocodex setup` automatically when a terminal or saved
+account login is available. After sign-in it connects the persistent Hand first;
+optional Computer Use components prepare in the background. You can start using
+the Hand while they download. An unattended install without saved credentials
+prints the command to finish sign-in. Setup remains idempotent and resumable.
 
 The POSIX or PowerShell script only selects and checksum-verifies one platform
 bootstrap.
@@ -146,14 +147,17 @@ files and repairs missing or corrupt resources before activating that release.
 For upgrades performed by an older updater, the CLI repairs its matching runtime
 automatically on first voice use.
 
-On macOS and Windows, current native CLIs and Hands automatically provision
-OpenAI's signed CUA runtime and select its upstream MCP tools. macOS range-fetches
-only the signed upstream CUA and browser-bridge components; Windows uses its official Microsoft Store package.
-Every macOS, Linux, or Windows Hand also publishes a native controllable screen.
-When no upstream provider is attached, VM and Cloudflare desktop Hands expose
-that native action schema through the same workdir-routed CUA entry point.
-Use `nanocodex2 computer setup --refresh`
-to update or repair the runtime, or `NANOCODEX_COMPUTER=off` to disable it.
+On macOS, current native CLIs prepare OpenAI's signed CUA runtime in the
+background. The downloader fetches only the required archive ranges. Every
+macOS, Linux, or Windows Hand also publishes its native controllable screen,
+subject to the operating system's permissions. The native screen is available
+while optional upstream components prepare. A newly prepared upstream provider
+is selected on the next attachment; running tool catalogs remain pinned.
+Windows upstream provisioning is currently unavailable; its Hand uses native
+screen controls. Use `nanocodex computer setup` to wait for preparation or
+`nanocodex computer setup --refresh` to repair/update it. Background setup writes
+progress and errors to `~/.nanocodex/runtimes/openai-cua/setup.log` (under
+`NANOCODEX_DIR` when set). `NANOCODEX_COMPUTER=off` disables upstream provisioning.
 See [runtime installation and platform limits](docs/computer/upstream-provider.md).
 
 The CLI is a production consumer and a useful way to try the agent, not a

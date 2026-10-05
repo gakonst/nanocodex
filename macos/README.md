@@ -102,6 +102,25 @@ or sent to native Hand subprocesses.
 
 ## Background Hands
 
+The shared native Hand connects independently of optional OpenAI CUA downloads.
+Missing managed components install in the background; native screen controls
+remain subject to macOS Screen Recording and Accessibility permission. Because a
+Hand publishes its tool catalog at attachment startup, newly installed upstream
+CUA tools appear on the next attachment or service start. A failed automatic CUA
+provider does not prevent shell access; initialization of an installed automatic
+provider is limited to 500 milliseconds before falling back to native controls. An
+explicitly selected custom provider still reports its configuration errors.
+
+On first authenticated CLI launch, a missing current-user LaunchAgent is
+installed automatically using the matching saved CLI login. An existing user or
+system service retains its configuration and identity. On app sign-in, the runtime
+verifies its Keychain credential through the native CLI over stdin and saves it
+in an account-specific private file under its runtime `hand-accounts` directory.
+The new LaunchAgent uses that file; the global CLI login and existing service
+configuration remain unchanged. Keys and API responses are never printed by the
+bridge. A terminal-only environment credential still needs a saved login before
+automatic service enrollment.
+
 The signed app installed in `/Applications` enables **Open Nanocodex at login**
 on its first normal launch. macOS starts it after you sign into the computer;
 the saved account, laptop Hand, and automatic screen sharing then reconnect.

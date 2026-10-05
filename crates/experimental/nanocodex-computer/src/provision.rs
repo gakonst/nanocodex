@@ -26,6 +26,12 @@ fn runtime_root() -> Result<PathBuf, String> {
 /// Linux guests reuse this receipt convention for a preinstalled upstream launcher;
 /// runtime arguments and environment belong in the launcher.
 pub fn managed_provider_path() -> Option<PathBuf> {
+    managed_provider_config().map(|config| config.executable)
+}
+
+/// Preserve launch arguments, environment, and the validated warm catalog
+/// when startup discovers an existing receipt without running the installer.
+pub(crate) fn managed_provider_config() -> Option<crate::ComputerConfig> {
     if !cfg!(any(target_os = "macos", target_os = "linux")) {
         return None;
     }
@@ -37,7 +43,7 @@ pub fn managed_provider_path() -> Option<PathBuf> {
     if !no_codex_managed_receipt(&receipt) {
         return None;
     }
-    Some(config_from_receipt(&receipt).ok()?.executable)
+    config_from_receipt(&receipt).ok()
 }
 
 const NO_CODEX_DEPENDENCY_CONTRACT: &str = "nanocodex-native-no-codex-v1";
@@ -1147,23 +1153,58 @@ mod mac {
             .ok_or_else(|| "OpenAI archive did not honor an exact byte range".into())
     }
 
-    fn fetch_range(
+    // A single curl process reuses connections across bounded parallel ranges.
+    // Split large contiguous components so one slow stream cannot dominate setup.
+    const RANGE_CHUNK_BYTES: u64 = 8 * 1024 * 1024;
+    const RANGE_PARALLELISM: usize = 8;
+
+    fn fetch_ranges(
         stage: &Path,
         commands: &mut impl Commands,
         url: &str,
-        start: u64,
-        end: u64,
+        ranges: &[(u64, u64)],
         label: &str,
-    ) -> Result<(PathBuf, u64), String> {
-        if end < start {
-            return Err("Invalid OpenAI archive byte range".into());
+    ) -> Result<Vec<(PathBuf, u64)>, String> {
+        // Bound argv even if a future ZIP interleaves thousands of tiny files.
+        if ranges.len() > 64 {
+            let mut files = Vec::new();
+            for (batch, chunk) in ranges.chunks(64).enumerate() {
+                files.extend(fetch_ranges(
+                    stage,
+                    commands,
+                    url,
+                    chunk,
+                    &format!("{label}-{batch}"),
+                )?);
+            }
+            return Ok(files);
         }
-        let output = stage.join(format!("{label}.part"));
-        let headers = stage.join(format!("{label}.headers"));
-        commands.run(
-            "/usr/bin/curl",
-            &[
-                "--disable".into(),
+        let mut arguments: Vec<OsString> = [
+            "--disable",
+            "--parallel",
+            "--parallel-max",
+            &RANGE_PARALLELISM.to_string(),
+            "--fail-early",
+        ]
+        .into_iter()
+        .map(Into::into)
+        .collect();
+        let mut files = Vec::new();
+        for (index, &(start, end)) in ranges.iter().enumerate() {
+            if end < start
+                || end
+                    .checked_sub(start)
+                    .and_then(|v| v.checked_add(1))
+                    .is_none()
+            {
+                return Err("Invalid OpenAI archive byte range".into());
+            }
+            if index != 0 {
+                arguments.push("--next".into());
+            }
+            let output = stage.join(format!("{label}-{index}.part"));
+            let headers = stage.join(format!("{label}-{index}.headers"));
+            arguments.extend([
                 "--fail".into(),
                 "--location".into(),
                 "--proto".into(),
@@ -1176,6 +1217,8 @@ mod mac {
                 "30".into(),
                 "--max-time".into(),
                 "540".into(),
+                "--max-filesize".into(),
+                (end - start + 1).to_string().into(),
                 "--range".into(),
                 format!("{start}-{end}").into(),
                 "--dump-header".into(),
@@ -1183,13 +1226,38 @@ mod mac {
                 "--output".into(),
                 output.as_os_str().to_owned(),
                 url.into(),
-            ],
-        )?;
-        if io(fs::metadata(&output))?.len() != end - start + 1 {
-            return Err("OpenAI archive returned the wrong byte count".into());
+            ]);
+            files.push((output, headers));
         }
-        let total = content_range(&io(fs::read(headers))?, start, end)?;
-        Ok((output, total))
+        commands.run("/usr/bin/curl", &arguments)?;
+        files
+            .into_iter()
+            .zip(ranges)
+            .map(|((output, headers), &(start, end))| {
+                commands.check_cancelled()?;
+                if io(fs::metadata(&output))?.len() != end - start + 1 {
+                    return Err("OpenAI archive returned the wrong byte count".into());
+                }
+                let total = content_range(&io(fs::read(headers))?, start, end)?;
+                if total <= end {
+                    return Err("Invalid OpenAI archive total length".into());
+                }
+                Ok((output, total))
+            })
+            .collect()
+    }
+
+    fn fetch_range(
+        stage: &Path,
+        commands: &mut impl Commands,
+        url: &str,
+        start: u64,
+        end: u64,
+        label: &str,
+    ) -> Result<(PathBuf, u64), String> {
+        fetch_ranges(stage, commands, url, &[(start, end)], label)?
+            .pop()
+            .ok_or_else(|| "Missing OpenAI archive range".into())
     }
 
     fn le16(bytes: &[u8], offset: usize) -> Result<u16, String> {
@@ -1306,10 +1374,12 @@ mod mac {
         commands: &mut impl Commands,
         release: &Release,
     ) -> Result<PathBuf, String> {
-        let (_, total) = fetch_range(stage, commands, &release.url, 0, 0, "probe")?;
-        if release.length != 0 && release.length != total {
-            return Err("OpenAI appcast archive length changed".into());
-        }
+        // ARM appcasts give the length. Derived Intel URLs still need a probe.
+        let total = if release.length != 0 {
+            release.length
+        } else {
+            fetch_range(stage, commands, &release.url, 0, 0, "probe")?.1
+        };
         if total < 22 {
             return Err("OpenAI archive is too small".into());
         }
@@ -1322,18 +1392,29 @@ mod mac {
         }
         let tail = io(fs::read(tail_path))?;
         let (central_start, central_size, count) = directory_location(&tail, tail_start, total)?;
-        let (central_path, central_total) = fetch_range(
-            stage,
-            commands,
-            &release.url,
-            central_start,
-            central_start + central_size - 1,
-            "central",
-        )?;
-        if central_total != total {
-            return Err("OpenAI archive changed during download".into());
+        if central_size == 0 {
+            return Err("OpenAI archive has an empty ZIP directory".into());
         }
-        let entries = zip_entries(&io(fs::read(central_path))?, count)?;
+        let central = if central_start >= tail_start {
+            let offset = (central_start - tail_start) as usize;
+            tail.get(offset..offset + central_size as usize)
+                .ok_or("Truncated ZIP central directory")?
+                .to_vec()
+        } else {
+            let (path, central_total) = fetch_range(
+                stage,
+                commands,
+                &release.url,
+                central_start,
+                central_start + central_size - 1,
+                "central",
+            )?;
+            if central_total != total {
+                return Err("OpenAI archive changed during download".into());
+            }
+            io(fs::read(path))?
+        };
+        let entries = zip_entries(&central, count)?;
         let info = entries
             .iter()
             .find(|entry| {
@@ -1379,27 +1460,34 @@ mod mac {
         if component_bytes > MAX_COMPONENT_BYTES {
             return Err("OpenAI CUA components exceed the download limit".into());
         }
-        let archive = stage.join("components.zip");
-        let mut output = io(fs::File::create(&archive))?;
+        let mut ranges = Vec::new();
         let mut offsets = HashMap::new();
         let mut written = 0u64;
-        for (number, (first, last, start, end)) in groups.iter().copied().enumerate() {
-            let (part, part_total) = fetch_range(
-                stage,
-                commands,
-                &release.url,
-                start,
-                end - 1,
-                &format!("payload-{number}"),
-            )?;
-            if part_total != total {
-                return Err("OpenAI archive changed during download".into());
-            }
+        for (first, last, start, end) in groups.iter().copied() {
             for entry in &entries[first..=last] {
                 offsets.insert(entry.local, written + entry.local - start);
             }
-            let mut input = io(fs::File::open(part))?;
+            let mut next = start;
+            while next < end {
+                let chunk_end = end.min(next + RANGE_CHUNK_BYTES);
+                ranges.push((next, chunk_end - 1));
+                next = chunk_end;
+            }
+            written += end - start;
+        }
+        let parts = fetch_ranges(stage, commands, &release.url, &ranges, "payload")?;
+        if parts.iter().any(|(_, part_total)| *part_total != total) {
+            return Err("OpenAI archive changed during download".into());
+        }
+        let archive = stage.join("components.zip");
+        let temporary = stage.join("components.zip.part");
+        let mut output = io(fs::File::create(&temporary))?;
+        written = 0;
+        for (part, _) in parts {
+            commands.check_cancelled()?;
+            let mut input = io(fs::File::open(&part))?;
             written += io(std::io::copy(&mut input, &mut output))?;
+            io(fs::remove_file(part))?;
         }
         let central_offset = written;
         let mut selected_count = 0u16;
@@ -1436,6 +1524,9 @@ mod mac {
         eocd.extend_from_slice(&central_offset.to_le_bytes());
         eocd.extend_from_slice(&0u16.to_le_bytes());
         io(output.write_all(&eocd))?;
+        drop(output);
+        commands.check_cancelled()?;
+        io(fs::rename(temporary, &archive))?;
         Ok(archive)
     }
 
@@ -1461,10 +1552,6 @@ mod mac {
             .map(|name| unpacked.join(name))
             .find(|path| path.is_dir())
             .ok_or("Official OpenAI component archive contains no supported app bundle")?;
-        let build = verify(&source, commands)?;
-        if build != release.build {
-            return Err("OpenAI appcast build does not match its signed bundle".into());
-        }
         let destination = stage.path.join("payload").join(APP);
         io(fs::rename(source, &destination))?;
         Ok(destination)
@@ -1511,6 +1598,9 @@ mod mac {
         }
         let app = download(&mut stage, commands, &release)?;
         let build = verify(&app, commands)?;
+        if build != release.build {
+            return Err("OpenAI appcast build does not match its signed bundle".into());
+        }
         commands.check_cancelled()?;
         let relative = PathBuf::from("versions").join(format!("{build}-{}", nonce()));
         let version = root.join(&relative);
