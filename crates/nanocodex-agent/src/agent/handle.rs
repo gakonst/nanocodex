@@ -8,6 +8,8 @@ use crate::rollout::RolloutInfo;
 
 /// Cheap, cloneable command handle for an owned agent driver.
 pub struct Nanocodex {
+    #[cfg(not(target_family = "wasm"))]
+    pub(super) shutdown_hook: Option<Arc<ShutdownHook>>,
     pub(super) backend: Arc<dyn LifecycleBackend>,
     pub(super) events: nanocodex_oai_api::events::AgentEventPublisher,
     pub(super) next_turn: Arc<AtomicU64>,
@@ -23,6 +25,8 @@ impl Clone for Nanocodex {
     fn clone(&self) -> Self {
         Self {
             backend: Arc::clone(&self.backend),
+            #[cfg(not(target_family = "wasm"))]
+            shutdown_hook: self.shutdown_hook.clone(),
             events: self.events.clone(),
             next_turn: Arc::clone(&self.next_turn),
             agent_id: Arc::clone(&self.agent_id),
@@ -32,6 +36,44 @@ impl Clone for Nanocodex {
             #[cfg(all(feature = "openai", not(target_family = "wasm")))]
             rollout: self.rollout.clone(),
         }
+    }
+}
+
+#[cfg(not(target_family = "wasm"))]
+type HookResult = std::result::Result<(), Arc<NanocodexError>>;
+
+#[cfg(not(target_family = "wasm"))]
+#[derive(Clone, Copy)]
+enum ShutdownMode {
+    Explicit,
+    Implicit,
+}
+
+#[cfg(not(target_family = "wasm"))]
+pub(super) struct ShutdownHook {
+    trigger: std::sync::Mutex<Option<tokio::sync::oneshot::Sender<ShutdownMode>>>,
+    result: tokio::sync::watch::Receiver<Option<HookResult>>,
+}
+
+#[cfg(not(target_family = "wasm"))]
+impl ShutdownHook {
+    async fn stop(&self, mode: ShutdownMode) -> Result<()> {
+        if let Some(trigger) = self
+            .trigger
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+        {
+            let _ = trigger.send(mode);
+        }
+        let mut result = self.result.clone();
+        let outcome = result
+            .wait_for(Option::is_some)
+            .await
+            .map_err(|_| NanocodexError::AgentStopped)?
+            .clone()
+            .ok_or(NanocodexError::AgentStopped)?;
+        outcome.map_err(NanocodexError::Shutdown)
     }
 }
 
@@ -349,6 +391,52 @@ impl Nanocodex {
         backend.into_builder()
     }
 
+    /// Attaches cleanup owned by this handle and all subsequent clones.
+    ///
+    /// The first shutdown stops the backend, then runs the hook
+    /// exactly once. Concurrent callers await the same outcome. Dropping an
+    /// awaiting caller does not cancel cleanup; dropping the final handle also
+    /// disconnects the backend and runs cleanup, preserving accepted remote work.
+    /// Local backends shut down on disconnect. Attach before distributing handle clones.
+    /// Disconnect preserves the backend's detach semantics and does not run hooks.
+    /// Hooks added in succession run in attachment order, even after an earlier
+    /// failure. Child handles do not inherit hooks.
+    ///
+    /// Requires an active Tokio runtime. The hook must not retain this owning
+    /// handle; use weak capabilities to avoid an ownership cycle.
+    #[cfg(not(target_family = "wasm"))]
+    pub fn with_shutdown_hook<F, Fut>(mut self, hook: F) -> Result<Self>
+    where
+        F: FnOnce() -> Fut + Send + 'static,
+        Fut: Future<Output = Result<()>> + Send + 'static,
+    {
+        let runtime = tokio::runtime::Handle::try_current().map_err(|_| {
+            NanocodexError::InvalidRequest("shutdown hooks require an active Tokio runtime".into())
+        })?;
+        let backend = Arc::clone(&self.backend);
+        let previous = self.shutdown_hook.take();
+        let (trigger, receiver) = tokio::sync::oneshot::channel();
+        let (complete, result) = tokio::sync::watch::channel(None);
+        runtime.spawn(async move {
+            let mode = receiver.await.unwrap_or(ShutdownMode::Implicit);
+            let stopped = if let Some(previous) = previous {
+                previous.stop(mode).await
+            } else {
+                match mode {
+                    ShutdownMode::Explicit => backend.shutdown().await,
+                    ShutdownMode::Implicit => backend.disconnect().await,
+                }
+            };
+            let cleanup = hook().await;
+            complete.send_replace(Some(stopped.and(cleanup).map_err(Arc::new)));
+        });
+        self.shutdown_hook = Some(Arc::new(ShutdownHook {
+            trigger: std::sync::Mutex::new(Some(trigger)),
+            result,
+        }));
+        Ok(self)
+    }
+
     /// Returns the immutable native agent-loop family.
     pub fn harness_family(&self) -> crate::HarnessFamily {
         self.backend.harness_family()
@@ -445,6 +533,10 @@ impl Nanocodex {
     /// concurrent and later callers on any clone await or reuse that same
     /// result.
     pub async fn shutdown(&self) -> Result<()> {
+        #[cfg(not(target_family = "wasm"))]
+        if let Some(hook) = &self.shutdown_hook {
+            return hook.stop(ShutdownMode::Explicit).await;
+        }
         self.backend.shutdown().await
     }
 

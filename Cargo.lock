@@ -5781,6 +5781,7 @@ dependencies = [
  "reqwest",
  "rustls",
  "serde_json",
+ "tempfile",
  "tokio",
 ]
 
@@ -6505,6 +6506,7 @@ dependencies = [
  "nanocodex-claude",
  "nanocodex-subagents",
  "nanocodex-voice-protocol",
+ "regex",
  "reqwest",
  "serde",
  "serde_json",

@@ -8,7 +8,8 @@
 //! (false rejects unsupported disabling, true keeps backend policy),
 //! autoCompactWindowTokens, contextWindowTokens, instructions, systemBlocks,
 //! workspace, parallelTools, clientToolSearch, durabilityHostId, durabilityId,
-//! terminalReceiptRetention. Credentials never enter a checkpoint.
+//! terminalReceiptRetention, nativeTasks, nativeWebSearch (both default false).
+//! Credentials never enter a checkpoint.
 //!
 //! Host contracts: claudeAuth(authHostId) -> Promise<JSON header map string>;
 //! executeClaudeTool(hostDefinitionId, name, inputJson, sessionId, callId, model,
@@ -81,6 +82,10 @@ pub(super) struct ClaudeConfig {
     parallel_tools: bool,
     #[serde(default)]
     client_tool_search: bool,
+    #[serde(default)]
+    native_tasks: bool,
+    #[serde(default)]
+    native_web_search: bool,
     durability_host_id: Option<String>,
     durability_id: Option<String>,
     terminal_receipt_retention: Option<usize>,
@@ -605,6 +610,12 @@ pub(super) async fn build_claude(
     }
     if config.client_tool_search {
         builder = builder.client_tool_search();
+    }
+    if config.native_tasks {
+        builder = builder.tasks(Arc::new(nanocodex::claude_tools::ClaudeTasks::new()));
+    }
+    if config.native_web_search {
+        builder = builder.nested_web_search(false);
     }
     for definition in config.tools {
         let host_id = config

@@ -327,6 +327,9 @@ export function createNodeHost(options = {}) {
       if (references > 0) references -= 1;
       return references === 0 ? dispose() : Promise.resolve();
     },
+    readWorkspaceFile: (path) => options.filesystem.readFile(path),
+    writeWorkspaceFile: (path, contents) => options.filesystem.writeFile(path, contents),
+    removeWorkspaceFile: (path) => options.filesystem.remove(path),
     beforeCompaction: preservation.preserve,
     cancelBeforeCompaction: preservation.cancel,
     httpOpen: http.httpOpen,

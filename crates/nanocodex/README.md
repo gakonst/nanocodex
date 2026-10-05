@@ -11,90 +11,104 @@ for breaking signatures, changed defaults, and snapshot/tool migrations.
 
 ## Quick start
 
-Build one owned agent, keep its cheap cloneable handle, and await typed turn
-results. The independent event stream is optional:
+The native facade chooses a provider and installs its supported tools. The
+workspace defaults to the current directory:
 
 ```rust,no_run
-use nanocodex::{Nanocodex, OpenAi};
+use nanocodex::{Backend, Nanocodex};
 
 # async fn run() -> Result<(), Box<dyn std::error::Error>> {
-let openai = OpenAi::new(std::env::var("OPENAI_API_KEY")?)?;
-let (agent, _events) = Nanocodex::builder(openai)
-    .instructions(
-        "You are a Rust coding agent. Preserve unrelated work and run relevant tests.",
-    )
-    .workspace(std::env::current_dir()?)
-    .build()?;
-
-let turn = agent
-    .prompt("Explain the cause of the failing parser test.")
-    .await?;
-let result = turn.await?;
-
+let backend = Backend::codex(std::env::var("OPENAI_API_KEY")?)?;
+let (agent, _events) = Nanocodex::builder(backend).build()?;
+let result = agent.prompt("Read README.md and explain this project.").await?.await?;
 println!("{}", result.final_message());
 agent.shutdown().await?;
 # Ok(())
 # }
 ```
 
-Awaiting `prompt` means the private driver accepted and ordered the turn.
-Awaiting the returned [`Turn`] waits for its complete [`TurnResult`]; it does
-not wait for the turn's optional event stream to be consumed. Follow-on prompts
-reuse the same retained context and transport without asking the caller to
-manage response IDs or history.
+Run this inside a Tokio runtime. `.workspace(path)` chooses another existing
+working directory, and `.instructions(text)` replaces the system instructions.
+The directory does not sandbox commands: tools run with the embedding process's
+permissions. Applications that need isolation should configure a concrete
+builder with their authorized host capabilities.
 
-`gpt-6-astra` with low reasoning is the SDK default; `.model(Model::Sol)` and
-`.model(Model::Luna)` select the other supported models
-when creating the agent. Model selection uses the catalog's default reasoning
-unless an effort was explicitly selected. Astra requires low or greater reasoning. A caller may change the model
-before the first turn is accepted; it then remains fixed for the thread so follow-on turns can continue from the provider
-checkpoint without replaying the complete retained context.
-
-## Claude
-
-Enable `claude` on the facade to use Anthropic Messages with the same owned
-agent lifecycle and durability extension:
-
-```toml
-[dependencies]
-nanocodex = { version = "0.6.5", features = ["claude"] }
-reqwest = "0.13"
-```
+`Backend::codex` and `Backend::claude` return the same `Backend` type, so provider
+selection works in a function or match without changing the calling lifecycle.
+Enable Claude with `cargo add nanocodex --features claude`:
 
 ```rust,no_run
-# #[cfg(all(feature = "claude", feature = "durability"))]
-# async fn claude_turn() -> Result<(), Box<dyn std::error::Error>> {
-use nanocodex::{Claude, DurableAgentExt, Nanocodex};
-use nanocodex::claude::ClaudeClient;
-use nanocodex::durability::{DurableSession, MemoryStore};
-
-let client = ClaudeClient::official(
-    reqwest::Client::new(),
-    std::env::var("ANTHROPIC_API_KEY")?,
-);
-let state = DurableSession::open(MemoryStore::new()?, "claude-session").await?;
-let (agent, _events) = Nanocodex::builder(Claude::latest(client))
-    .system("Answer concisely.")
-    .durability(state)
-    .await?
-    .build()?;
-let result = agent.prompt("Explain durable request replay.").await?.await?;
+# #[cfg(feature = "claude")]
+# async fn choose(use_claude: bool) -> Result<(), Box<dyn std::error::Error>> {
+use nanocodex::{Backend, Nanocodex};
+let backend = if use_claude {
+    Backend::claude(std::env::var("ANTHROPIC_API_KEY")?)?
+} else {
+    Backend::codex(std::env::var("OPENAI_API_KEY")?)?
+};
+let (agent, _events) = Nanocodex::builder(backend).build()?;
+let result = agent.prompt("Read README.md and explain this project.").await?.await?;
 println!("{}", result.final_message());
 agent.shutdown().await?;
 # Ok(())
 # }
 ```
 
-`MemoryStore` retains state in memory; use a persistent host store when state
-must survive process restarts. The facade automatically enables the Claude
-adapter whenever `claude` and `durability` are enabled together.
+Codex installs the existing CLI tool catalog: Code Mode, command sessions,
+patching, plan and file tools, provider-backed web/image tools, and subagents.
+Claude installs native Bash, Read, Edit, Write, Glob, Grep, TaskCreate, TaskGet,
+TaskList, TaskUpdate, TodoWrite, NotebookEdit, shared subagent callbacks, and
+client-side tool discovery and deferred WebSearch. WebSearch makes a nested
+Messages request with Anthropic server search; it is not attached to every root
+request. Bash uses the CLI's retained workspace process
+runtime with deadlines and cancellation. These are the supported SDK adapters;
+this does not import every Claude Code product feature. External MCP servers,
+computer/browser hosts, account integrations, and subscription login remain
+explicit capabilities of the advanced builders.
 
-Default features remain `durability`, `openai`, and `tools`. For the minimal
-Claude provider path, use `default-features = false, features = ["claude"]`.
-Add `durability` for the extension above; durability retains its existing
-OpenAI dependency. On native targets, add `workspace-tools` to expose Claude's optional workspace
-file tools as well as the standard workspace runtime. The `claude` feature
-alone does not enable durability or workspace tools.
+The default models come from `HarnessFamily::default_model()` (`gpt-6-astra`
+and `claude-opus-5-5`). Pin a same-family catalog model on the provider recipe
+with `backend.model(HarnessModel::Codex(Model::Sol))?`. Credentials are explicit;
+constructors do not load a local CLI login. `backend.endpoint(url)?` selects an OpenAI API base or complete Claude Messages URL,
+including loopback endpoints for transport tests.
+
+Awaiting `prompt` means the native driver accepted the turn. Awaiting its
+returned `Turn` waits for the `TurnResult`, independently of event consumption.
+Follow-on prompts keep the native conversation and transport. The `native`
+feature is enabled by default; minimal builds without it retain the concrete
+provider APIs. Await `agent.shutdown()` to stop the root and join its subagents
+and retained shell processes. Cloned handles share that cleanup result; dropping
+the final handle starts cleanup without a joinable receipt.
+
+## Durability
+
+The common builder preserves the existing durability extension:
+
+```rust,no_run
+# #[cfg(feature = "durability")]
+# async fn durable() -> Result<(), Box<dyn std::error::Error>> {
+use nanocodex::{Backend, DurableAgentExt, Nanocodex, PromptRequest};
+use nanocodex::durability::{DurableSession, MemoryStore};
+let store = MemoryStore::new()?;
+let state = DurableSession::open(store, "coding-session").await?;
+let backend = Backend::codex(std::env::var("OPENAI_API_KEY")?)?;
+let (agent, _events) = Nanocodex::builder(backend)
+    .durability(state).await?
+    .build()?;
+let result = agent.prompt(
+    PromptRequest::new("Read README.md").request_id("read-project"),
+).await?.await?;
+println!("{}", result.final_message());
+agent.shutdown().await?;
+# Ok(())
+# }
+```
+
+`MemoryStore` retains state in memory; use a persistent host store to survive
+process restarts. Claude uses the same extension when `claude` and `durability`
+are enabled. Concrete `Nanocodex::builder(OpenAi::new(key)?)` and
+`Nanocodex::builder(Claude::latest(client))` remain the advanced path for custom
+transports, tools, authentication and execution policy.
 
 ## Reusable native harnesses
 

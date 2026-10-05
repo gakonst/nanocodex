@@ -1,3 +1,6 @@
+import { settleCleanup } from '../runtime/tool-router.mjs';
+import { ownedBackendTools } from '../runtime/backend.mjs';
+import { createBackendAgent } from './backend.mjs';
 import { prepareHarnesses } from '../runtime/harnesses.mjs';
 import { create as createClaude } from './Claude.mjs';
 import { createRequire } from "node:module";
@@ -10,6 +13,7 @@ import {
   createAgentClient,
   createEventChannel,
   createSessionId,
+  getTurnResult,
   defineRuntime,
   loadDurabilityRuntime,
   loadSubscriptionRuntime,
@@ -31,6 +35,7 @@ let initializedWeb;
 let NodeNanocodex;
 
 export function create(options = {}) {
+  if (Object.hasOwn(options, 'backend')) return createBackendAgent(options, create);
   if (options.harness === 'claude') return createClaude(options);
   if (options.harness !== undefined && options.harness !== 'codex') throw new TypeError('unsupported harness family');
   if (managedTransportOptions(options?.transport)) return createManagedAgent(options);
@@ -87,11 +92,30 @@ export function create(options = {}) {
     workspace: workspace ?? filesystem?.root ?? resume?.workspace,
     codeEvaluator,
     codeEffectJournal,
-    onDispose: () => { releaseDefinitionHost(hostDefinitionId); void harnesses?.close(); },
+    onDispose: async () => {
+      releaseDefinitionHost(hostDefinitionId);
+      await settleCleanup([() => harnesses?.close(), () => options[ownedBackendTools]?.()], 'Backend host cleanup failed');
+    },
   });
   let harnesses;
   let durabilityOwner;
   let creationStarted = false;
+  // Issued turns retain their host routes and raw owner through terminal settlement,
+  // including public Actions calls and turns whose caller never requests a result.
+  const lifetimes = new WeakMap();
+  const finishRelease = (raw) => {
+    const state = lifetimes.get(raw);
+    if (!state || state.pending || !state.released) return;
+    if (!state.cleaned) {
+      state.cleaned = true;
+      events.removeSource(raw);
+      host.releaseSession(raw.sessionId);
+      releaseHostSession(host, raw.sessionId);
+      if (raw.sessionId === stableSessionId) durabilityOwner?.release();
+      releaseHost(host);
+    }
+    if (state.disposed && !state.freed) { state.freed = true; raw.free(); }
+  };
   hostDefinitionId = registerDefinitionHost(host);
   activateHost(host);
   const runtime = defineRuntime({
@@ -131,39 +155,58 @@ export function create(options = {}) {
           ...config,
           durabilityHostId: durabilityOwner?.id,
         }));
-        return subscription === undefined
+        return await (subscription === undefined
           ? Nanocodex.create(configJson)
           : Nanocodex.createWithChatGpt(
               configJson,
               (await loadSubscriptionRuntime()).rawSubscription(subscription),
-            );
+            ));
       } catch (error) {
         durabilityOwner?.abandon();
         await host.dispose();
         throw error;
       }
     },
+    async shutdown(raw) {
+      try { await raw.shutdown(); }
+      finally {
+        if (raw.sessionId === stableSessionId && options[ownedBackendTools]) await host.dispose();
+      }
+    },
     subscribe: events.subscribe,
     adopt(raw) {
       host.retain();
+      lifetimes.set(raw, { pending: 0, released: false, disposed: false });
       try {
         // Adopted child handles are ephemeral and do not own the root store.
         if (raw.sessionId === stableSessionId) durabilityOwner?.retain();
         bindHostSession(host, raw.sessionId);
         events.addSource(raw);
       } catch (error) {
+        lifetimes.delete(raw);
         events.removeSource(raw);
         if (raw.sessionId === stableSessionId) durabilityOwner?.release();
         releaseHost(host);
         throw error;
       }
     },
+    observeTurn(turn, raw) {
+      const state = lifetimes.get(raw);
+      state.pending += 1;
+      void getTurnResult(turn).finally(() => {
+        state.pending -= 1;
+        try { finishRelease(raw); } catch (error) { reportError(error); }
+      }).catch(() => {});
+    },
     release(raw) {
-      events.removeSource(raw);
-      host.releaseSession(raw.sessionId);
-      releaseHostSession(host, raw.sessionId);
-      if (raw.sessionId === stableSessionId) durabilityOwner?.release();
-      releaseHost(host);
+      lifetimes.get(raw).released = true;
+      finishRelease(raw);
+    },
+    dispose(raw) {
+      const state = lifetimes.get(raw);
+      if (!state) { raw.free(); return; }
+      state.disposed = true;
+      finishRelease(raw);
     },
     decorate: (agent) => agent.extend(agentActions()),
   });

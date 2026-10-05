@@ -70,3 +70,5 @@ export type {
   Subscription as ClaudeSubscriptionHandle,
   Status as ClaudeSubscriptionStatus,
 } from "./worker/ClaudeSubscription.mjs";
+
+export * as Backend from "./runtime/backend-factories.mjs";

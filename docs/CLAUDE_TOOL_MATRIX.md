@@ -18,11 +18,20 @@ Safety design: Claude-visible registry and JSON schemas are independently versio
 
 Primary references: [Claude Code tools](https://code.claude.com/docs/en/tools-reference), [Anthropic tool reference](https://platform.claude.com/docs/en/agents-and-tools/tool-use/tool-reference), [server tools](https://platform.claude.com/docs/en/agents-and-tools/tool-use/server-tools), [web search](https://platform.claude.com/docs/en/agents-and-tools/tool-use/web-search-tool), [web fetch](https://platform.claude.com/docs/en/agents-and-tools/tool-use/web-fetch-tool), [parallel use](https://platform.claude.com/docs/en/agents-and-tools/tool-use/parallel-tool-use).
 
+## Default local setup
+
+The Rust facade's `Backend::claude(api_key)` and Node's
+`Backend.claude({ apiKey })` assemble their supported local tool catalogs.
+Callers choose the backend and workspace; individual tool registration is an
+advanced customization path. See the [Rust guide](../crates/nanocodex/README.md)
+and [JavaScript guide](CLAUDE_JAVASCRIPT.md) for the tools installed on each host.
+The coverage limits in the matrix still apply.
+
 ## Runtime integration boundary
 
 The same `.durability(state).await?.build()?` extension now attaches Claude to `nanocodex-durability` (`claude` feature), including its stores, admission, owner fencing and effect receipts. SQLite reopen and transaction-fault tests cover frozen unfinished requests, completed model/tool replay, signed/opaque compaction context, discovery/container recovery, durable task state and interruption notices that survive lossy summaries. An effect without a committed receipt can still execute again after a crash. Snapshots are whole provider-native JSON payloads, without paged transcript storage optimization.
 
-Rust Claude/durability compilation for `wasm32-unknown-unknown` is verified. The additive [JavaScript API](CLAUDE_JAVASCRIPT.md) now exposes a separate Claude WASM constructor with only explicitly supplied handlers and the shared store contract; no ambient Codex tools are installed. Managed provider selection, product sign-in and complete host services remain separate work. Synthetic WASM execution evidence is distinct from live provider evidence. The native subscription manager implements the login/refresh protocol observed in Claude Code 2.1.283 over private host storage and HTTP. Synthetic SQLite integration covers its composition with agent execution; live independent native admission was verified with the observed compatibility profile, including tools, cache hits, compaction and recall after SQLite reopen. Fresh native PKCE authorization/refresh and product sign-in remain unverified. See [runtime coverage and limits](CLAUDE_RUNTIME.md) and [authentication](claude-authentication.md). The adapters and tests do not establish full Claude Code parity.
+Rust Claude/durability compilation for `wasm32-unknown-unknown` is verified. The [JavaScript API](CLAUDE_JAVASCRIPT.md) exposes the Claude WASM runtime and shared store contract. The Node backend constructor supplies local handlers automatically; the low-level constructor accepts explicit handlers. Neither installs Codex tool definitions into Claude. Managed provider selection, product sign-in and complete host services remain separate work. Synthetic WASM execution evidence is distinct from live provider evidence. The native subscription manager implements the login/refresh protocol observed in Claude Code 2.1.283 over private host storage and HTTP. Synthetic SQLite integration covers its composition with agent execution; live independent native admission was verified with the observed compatibility profile, including tools, cache hits, compaction and recall after SQLite reopen. Fresh native PKCE authorization/refresh and product sign-in remain unverified. See [runtime coverage and limits](CLAUDE_RUNTIME.md) and [authentication](claude-authentication.md). The adapters and tests do not establish full Claude Code parity.
 
 ## Controlled 2.1.284 CLI wire checks (fake-key loopback, no subscription traffic)
 

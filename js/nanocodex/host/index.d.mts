@@ -65,3 +65,5 @@ export type {
 } from "../browser/host.mjs";
 
 export * as Claude from "./Claude.mjs";
+
+export * as Backend from "../runtime/backend-factories.mjs";

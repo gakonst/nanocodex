@@ -54,7 +54,7 @@ test("the package packs public exports and boots Node and browser agents", async
       import { dirname, resolve } from "node:path";
       import { fileURLToPath } from "node:url";
       import { Agent as HostAgent, Transport as HostTransport } from "nanocodex/host";
-      import { Agent as NodeAgent, Subagents as NodeSubagents, Transport as NodeTransport } from "nanocodex/node";
+      import { Agent as NodeAgent, Backend, Subagents as NodeSubagents, Transport as NodeTransport } from "nanocodex/node";
       import { Subagents as BrowserSubagents } from "nanocodex/browser";
 
       const nodeAgent = await NodeAgent.create({
@@ -64,6 +64,15 @@ test("the package packs public exports and boots Node and browser agents", async
       assert.equal(nodeAgent.type, "node");
       await nodeAgent.session.shutdown();
       await nodeAgent.session.shutdown();
+
+      for (const backend of [
+        Backend.codex({ apiKey: "package-test", websocketUrl: "ws://127.0.0.1:9", apiBaseUrl: "http://127.0.0.1:9/v1", websocketWarmup: false }),
+        Backend.claude({ apiKey: "package-test", endpoint: "http://127.0.0.1:9/v1/messages" }),
+      ]) {
+        const local = await NodeAgent.create({ backend });
+        assert.equal(local.type, "node");
+        await local.session.shutdown();
+      }
 
       const browserEntry = fileURLToPath(import.meta.resolve("nanocodex/browser"));
       const wasm = await readFile(resolve(

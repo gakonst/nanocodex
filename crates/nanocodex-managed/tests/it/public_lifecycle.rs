@@ -1456,3 +1456,138 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
+
+#[tokio::test]
+async fn shutdown_hooks_preserve_managed_detach_and_explicit_cancellation() {
+    for mode in ["drop", "disconnect", "shutdown"] {
+        tokio::time::timeout(TEST_TIMEOUT, async {
+            let api_key = format!("ncx_live_{}_{}", "i".repeat(12), "j".repeat(43));
+            let fixture = Fixture::new(&api_key);
+            let app = Router::new()
+                .route("/v1/agents/{agent_id}", get(agent_state))
+                .route("/v1/agents/{agent_id}/events", get(events))
+                .route("/v1/agents/{agent_id}/turns", post(submit_turn))
+                .route(
+                    "/v1/agents/{agent_id}/turns/{turn_id}/cancel",
+                    post(
+                        |State(fixture): State<Fixture>,
+                         Path(ids): Path<(String, String)>,
+                         headers: HeaderMap| async move {
+                            let turn_id = ids.1.clone();
+                            let response =
+                                cancel_turn(State(fixture.clone()), Path(ids), headers).await;
+                            // Managed turn receipts follow the terminal agent event.
+                            fixture
+                                .send_event(nested_event(
+                                    42,
+                                    ROOT_SOURCE_REQUEST_ID,
+                                    None,
+                                    "run.completed",
+                                    json!({"status": "cancelled"}),
+                                ))
+                                .await;
+                            let envelope = json!({
+                                "cursor": "43",
+                                "created_at": 43,
+                                "turn_id": turn_id,
+                                "type": "turn_cancelled",
+                                "id": turn_id
+                            });
+                            fixture
+                                .send_event(Bytes::from(format!(
+                                    "id: 43\nevent: turn_cancelled\ndata: {envelope}\n\n"
+                                )))
+                                .await;
+                            response
+                        },
+                    ),
+                )
+                .with_state(fixture.clone());
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+            let client = ManagedClient::new(
+                format!("http://{address}"),
+                ManagedApiKey::parse(api_key).unwrap(),
+            )
+            .unwrap();
+            let (mut agent, _events): (Nanocodex, AgentEvents) =
+                Nanocodex::builder(Managed::open(client, AGENT_ID))
+                    .build()
+                    .await
+                    .unwrap();
+            let (completed, mut hooks) = mpsc::unbounded_channel();
+            for index in [1, 2] {
+                let completed = completed.clone();
+                agent = agent
+                    .with_shutdown_hook(move || async move {
+                        completed.send(index).unwrap();
+                        Ok(())
+                    })
+                    .unwrap();
+            }
+            drop(completed);
+            fixture.wait_for_event_cursor("40").await;
+            let turn = agent
+                .prompt(PromptRequest::new("live prompt").request_id(ACTIVE_REQUEST_ID))
+                .await
+                .unwrap();
+            fixture
+                .send_event(accepted_event(41, ACTIVE_REQUEST_ID, "live prompt"))
+                .await;
+            let clone = agent.clone();
+            if mode == "shutdown" {
+                let (first, second) = tokio::join!(agent.shutdown(), clone.shutdown());
+                first.unwrap();
+                second.unwrap();
+                agent.shutdown().await.unwrap();
+                let outcome = turn.result().await;
+                assert!(
+                    matches!(outcome, Err(NanocodexError::TurnCancelled)),
+                    "shutdown must retain the cancellation receipt: {outcome:?}"
+                );
+            } else {
+                if mode == "disconnect" {
+                    agent.disconnect().await.unwrap();
+                    assert!(matches!(
+                        hooks.try_recv(),
+                        Err(mpsc::error::TryRecvError::Empty)
+                    ));
+                }
+                drop(turn);
+            }
+            drop(agent);
+            drop(clone);
+            assert_eq!(hooks.recv().await, Some(1), "mode={mode}");
+            assert_eq!(hooks.recv().await, Some(2), "mode={mode}");
+            assert_eq!(hooks.recv().await, None, "hooks run exactly once: {mode}");
+            let actions = lock(&fixture.inner.actions);
+            if mode == "shutdown" {
+                assert_eq!(actions.len(), 1, "concurrent shutdown cancels once");
+                assert_eq!(actions[0].kind, "cancel");
+                assert_eq!(actions[0].agent_id, AGENT_ID);
+                assert_eq!(actions[0].turn_id, ACTIVE_REQUEST_ID);
+            } else {
+                assert!(
+                    actions.is_empty(),
+                    "{mode} must preserve accepted remote work"
+                );
+            }
+            let receipt = json!({"mode":mode,"request_id":ACTIVE_REQUEST_ID,
+                "hook_order":[1,2],"cancel_requests":actions.len(),
+                "accepted_remote_work_preserved":mode != "shutdown"});
+            let directory = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../output/backend-facade");
+            std::fs::create_dir_all(&directory).unwrap();
+            std::fs::write(
+                directory.join(format!("managed-hook-{mode}.json")),
+                serde_json::to_vec_pretty(&receipt).unwrap(),
+            )
+            .unwrap();
+            eprintln!("managed-hook-lifecycle={receipt}");
+            server.abort();
+        })
+        .await
+        .unwrap_or_else(|_| panic!("hook-decorated managed {mode} must remain bounded"));
+    }
+}
