@@ -348,6 +348,8 @@ impl BackendRuntime {
         B: LifecycleBackend,
     {
         Nanocodex {
+            #[cfg(not(target_family = "wasm"))]
+            shutdown_hook: None,
             backend: Arc::new(backend),
             events: self.events,
             next_turn: Arc::new(AtomicU64::new(1)),
@@ -370,6 +372,8 @@ impl BackendRuntime {
         B: LifecycleBackend,
     {
         Nanocodex {
+            #[cfg(not(target_family = "wasm"))]
+            shutdown_hook: None,
             backend: Arc::new(backend),
             events: self.events,
             next_turn: Arc::new(AtomicU64::new(1)),

@@ -1,5 +1,35 @@
 # Nanocodex for JavaScript
 
+For a local Node coding agent, select the backend and let the SDK install its
+local tools in the current directory:
+
+```js
+import { Agent, Backend } from "nanocodex/node";
+
+const backend = Backend.codex({ apiKey: process.env.OPENAI_API_KEY });
+// const backend = Backend.claude({ apiKey: process.env.ANTHROPIC_API_KEY });
+const agent = await Agent.create({ backend });
+try {
+  const turn = agent.turn.prompt({ input: "Read README.md and describe this project." });
+  const result = await turn.result();
+  console.log(result.finalMessage);
+  result.dispose();
+  turn.dispose();
+} finally {
+  await agent.session.shutdown();
+}
+```
+
+Set `workspace` on `Agent.create` to use another existing directory. These Node
+local tools run with host permissions; the directory is not an OS sandbox.
+Claude includes its native nested WebSearch workflow through the selected
+Messages endpoint. Codex web search and other service tools need separately
+configured services.
+For custom tools, transports, browser hosts, or subscription authentication,
+the explicit APIs below remain available. See the
+[backend and Claude guide](../../docs/CLAUDE_JAVASCRIPT.md) for tool coverage.
+
+
 The Node, browser, and Web API host entrypoints expose the same viem-v3-style
 API. A `Transport` owns authentication, placement, and socket setup;
 `Agent.create(...)` owns tools and the common Agent/Turn lifecycle. Generated

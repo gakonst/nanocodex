@@ -1,4 +1,63 @@
-# Explicit Claude JavaScript runtime
+# JavaScript backends and the Claude runtime
+
+## Node agents with automatic local tools
+
+```js
+import { Agent, Backend } from "nanocodex/node";
+
+const backend = Backend.claude({ apiKey: process.env.ANTHROPIC_API_KEY });
+// Or: Backend.codex({ apiKey: process.env.OPENAI_API_KEY })
+const agent = await Agent.create({ backend });
+// Optional: { backend, workspace: "/path/to/project", model: "..." }
+try {
+  const turn = agent.turn.prompt({ input: "Read README.md and describe this project." });
+  const result = await turn.result();
+  console.log(result.finalMessage);
+  result.dispose();
+  turn.dispose();
+} finally {
+  await agent.session.shutdown();
+}
+```
+
+The backend selects the provider and installs the corresponding local tool
+catalog without a caller tool array. Node defaults to `process.cwd()`, Codex
+`gpt-6-astra`, and Claude `claude-opus-5-5`. `workspace` selects an existing
+native directory; `model` and `thinking` remain optional agent settings.
+A factory returning either backend can pass its result to the same `Agent.create`
+call. Backend descriptors expose a readonly `kind`; credentials stay in private
+SDK state and are not serialized with the descriptor.
+
+Codex installs native process execution (`exec_command`, `write_stdin`), the
+canonical Rust `apply_patch` planner, local `view_image`, `update_plan`, workspace
+file operations, Code Mode, tool discovery, and the shared subagent lifecycle.
+Claude installs `Read`, `Edit`, `Write`, `Glob`, `Grep`, `Bash`, `NotebookEdit`,
+`TaskCreate`, `TaskGet`, `TaskList`, `TaskUpdate`, and `TodoWrite`, plus the shared
+subagent lifecycle. These preserve Claude's native input and result contracts.
+The Node file adapters support bounded UTF-8 text; PDF/image reading is not
+installed. `Grep` uses the embedded Rust regex matcher. Bash runs foreground
+commands on POSIX hosts; background and sandbox-bypass flags are rejected. Task
+boards and todos use the shared Rust implementation and durable checkpoints.
+Claude also installs its native nested `WebSearch` Messages workflow using the
+selected provider authentication.
+The existing WASM agent loops execute both families. Codex web search, image
+generation, remote MCP, and account integrations need their own service
+capabilities; a model API key does not configure those services.
+
+Local commands run with the Node process's host permissions. The workspace is
+the initial working directory, not an OS sandbox. Use an isolated process or
+container when the task needs isolation. Shutdown cancels work and joins owned
+process cleanup. The browser and generic Web API host do not have Node's native
+filesystem or process capabilities: this convenience form requires
+`nanocodex/node`; their explicit constructors remain available.
+
+`Backend.codex` accepts `apiKey`, optional `apiBaseUrl`, `websocketUrl`, and
+`websocketWarmup`. `Backend.claude` accepts `apiKey` and optional Messages
+`endpoint`. Unknown or conflicting options and models naming the other provider family are rejected. `backend` cannot be
+combined with `harness`, `auth`, `transport`, `tools`, or `filesystem`; use the
+explicit constructors below for a fine-grained host configuration.
+
+## Explicit host configuration
 
 The additive `Claude.create` constructor runs the Rust Messages backend with the
 **same** `nanocodex-durability` store, fencing, admission, effect receipts and
@@ -137,9 +196,9 @@ subscription admission and synthetic JS tests remain distinct. See
 
 ## Tools and lifecycle boundaries
 
-Only the explicit Claude tool array is advertised. Explicit `strict` and
-deferred-definition flags must be preserved or rejected, never silently ignored. No ambient workspace, shell,
-web, MCP, Code Mode or subagent tools are installed. The injected handler owns
+On the explicit low-level path, only the supplied Claude tool array is advertised. Explicit `strict` and
+deferred-definition flags must be preserved or rejected, never silently ignored. That low-level path installs no ambient workspace, shell,
+web, MCP, Code Mode or subagent tools. The injected handler owns
 permission, isolation, resource bounds and external idempotency; stable call
 identities and schema validation are not an OS sandbox. Thrown handler errors
 become detail-free error results. Deliberate error output is tool-result data.

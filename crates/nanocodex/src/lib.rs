@@ -11,6 +11,18 @@ pub use nanocodex_agent::{
     PromptRequest, PromptRoute, ReportedTurnUsage, ServiceTier, Turn, TurnControl, TurnResult,
     TurnUsage, UsdAmount,
 };
+#[cfg(all(
+    feature = "native",
+    any(feature = "openai", feature = "claude"),
+    not(target_family = "wasm")
+))]
+mod backend;
+#[cfg(all(
+    feature = "native",
+    any(feature = "openai", feature = "claude"),
+    not(target_family = "wasm")
+))]
+pub use backend::{Backend, BackendBuilder};
 mod harness;
 pub use harness::{Harness, HarnessBuilder, HarnessRequest};
 #[cfg(feature = "claude")]
@@ -158,6 +170,12 @@ pub mod prelude {
         doc(cfg(all(feature = "openai", feature = "oai-tools", not(target_family = "wasm"))))
     )]
     pub use crate::tool;
+    #[cfg(all(
+        feature = "native",
+        any(feature = "openai", feature = "claude"),
+        not(target_family = "wasm")
+    ))]
+    pub use crate::{Backend, BackendBuilder};
     pub use crate::{Model, Nanocodex};
     #[cfg(feature = "openai")]
     #[cfg_attr(docsrs, doc(cfg(feature = "openai")))]

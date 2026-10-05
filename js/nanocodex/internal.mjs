@@ -34,6 +34,7 @@ export function defineRuntime(definition) {
     subscribe: definition.subscribe,
     adopt: definition.adopt,
     release: definition.release,
+    observeTurn: definition.observeTurn,
     decorate: definition.decorate,
     reserveSessions: definition.reserveSessions !== false,
   });
@@ -1079,6 +1080,8 @@ function createTurn(raw, agent) {
     },
   };
   turnStates.set(turn, state);
+  const owner = knownAgentState(agent);
+  owner.runtime.observeTurn?.(turn, owner.raw);
   return Object.freeze(turn);
 }
 

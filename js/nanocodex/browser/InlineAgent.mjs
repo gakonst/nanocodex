@@ -35,6 +35,7 @@ import {
 
 /** Creates the Rust/WASM Agent in the current Web API host isolate. */
 export async function create(options = {}) {
+  if (Object.hasOwn(options, 'backend')) throw new TypeError('Backend automatic local tools require nanocodex/node; use the explicit browser/host constructor with host-provided capabilities');
   if (options.harness === 'claude') return createClaude(options);
   if (options.harness !== undefined && options.harness !== 'codex') throw new TypeError('unsupported harness family');
   if (managedTransportOptions(options?.transport)) return createManagedAgent(options);

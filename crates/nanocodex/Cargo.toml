@@ -18,8 +18,9 @@ all-features = true
 rustdoc-args = ["-D", "warnings"]
 
 [features]
-default = ["durability", "mcp", "openai", "tools"]
-claude = ["dep:nanocodex-claude", "nanocodex-durability?/claude"]
+default = ["durability", "mcp", "openai", "tools", "native"]
+native = ["workspace-tools", "dep:nanocodex-subagents", "dep:reqwest", "dep:serde_json", "dep:tokio"]
+claude = ["dep:nanocodex-claude", "nanocodex-durability?/claude", "native", "dep:nanocodex-claude-tools", "nanocodex-claude/tools", "nanocodex-subagents?/claude"]
 claude-tools = ["claude", "dep:nanocodex-claude-tools", "nanocodex-claude/tools"]
 durability = ["dep:nanocodex-durability", "openai"]
 managed = ["dep:nanocodex-managed"]
@@ -47,6 +48,10 @@ nanocodex-oai-api = { path = "../nanocodex-oai-api", version = "0.6.6", default-
 nanocodex-oai-tools = { path = "../nanocodex-oai-tools", version = "0.6.6", default-features = false, optional = true }
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
+nanocodex-subagents = { workspace = true, optional = true }
+reqwest = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
+tokio = { workspace = true, features = ["rt", "sync", "time"], optional = true }
 nanocodex-managed = { workspace = true, optional = true }
 nanocodex-observability = { workspace = true, optional = true }
 
@@ -56,6 +61,7 @@ serde_json.workspace = true
 tokio = { workspace = true, features = ["macros", "rt"] }
 
 [target.'cfg(not(target_family = "wasm"))'.dev-dependencies]
+tempfile.workspace = true
 axum.workspace = true
 reqwest.workspace = true
 rustls.workspace = true

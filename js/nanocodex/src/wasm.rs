@@ -60,10 +60,12 @@ use nanocodex_voice_protocol::{
 };
 
 mod claude;
+mod claude_grep;
 mod claude_subscription;
 mod transport;
 
 pub use claude::WasmNanoclaude;
+pub use claude_grep::WasmClaudeGrepRegex;
 pub use claude_subscription::WasmClaudeSubscription;
 
 use transport::JavaScriptResponsesHost;

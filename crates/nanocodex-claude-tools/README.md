@@ -3,6 +3,10 @@
 Standalone Claude-native, host-authorized capability adapters. No OpenAI API,
 OpenAI tool runtime, agent, model transport, OAuth or ambient executor dependency.
 
+For a local coding agent, the `nanocodex` facade's `Backend::claude(api_key)`
+assembles the supported tools automatically. This crate exposes the individual
+adapters for custom hosts; callers of the facade do not need to register them.
+
 Modules: `bash`, `host`, `notebook`, `tasks`, `web`, `workspace_files`.
 Primary adapter/capability types are also exported at the crate root. Filesystem
 and notebook execution are native-only; portable contracts and the session task

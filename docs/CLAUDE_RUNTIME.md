@@ -1,6 +1,13 @@
 # Claude-native runtime
 
-`nanocodex-claude` implements a separate Messages-based backend behind the common `nanocodex-agent` lifecycle. Tool registration is explicit; it never imports the OpenAI tool catalog or Claude Code credentials. Embeddings supply authentication and host-authorized capabilities.
+`nanocodex-claude` implements a separate Messages-based backend behind the common
+`nanocodex-agent` lifecycle. The low-level builder accepts explicit tool adapters.
+For a local coding agent, use `nanocodex::Backend::claude(api_key)` or Node's
+`Backend.claude({ apiKey })`: the SDK installs its supported native tools against
+the selected workspace. See the [Rust guide](../crates/nanocodex/README.md) and
+[JavaScript guide](CLAUDE_JAVASCRIPT.md) for the default catalogs and customization.
+Credentials remain explicit, and the Claude model receives Claude-native tool
+names and definitions.
 
 ## Native CLI instructions and project context
 
@@ -192,8 +199,10 @@ encodes these directly as Claude results. Hosts must migrate their old shared
 `ToolContext`/Responses content DTOs instead of passing `input_*` wire items.
 Unsupported media produces an explicit error, never a silently truncated block.
 Portable capability contracts, tasks, Bash and web adapters are available on
-WASM; filesystem/notebook execution and the builder's native adapters remain
-native-target-only.
+WASM. Task-board registration and checkpoint recovery use the same Rust
+implementation on native and WASM targets. Filesystem and notebook execution
+in the Rust tools crate remains native-only; the Node backend supplies its local
+filesystem and process handlers.
 
 `ClaudeMcp` intentionally requires a caller implementation of
 `ClaudeMcpProvider`, returning `McpToolDefinition` schemas and native

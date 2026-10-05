@@ -10,6 +10,19 @@ as Claude-native tools. Host implementations can reuse private process,
 transport, task-registry and JavaScript services. The standalone
 `nanocodex-claude-tools` crate has no OpenAI dependency.
 
+## Default local SDK setup
+
+The Rust facade's `Backend::claude(api_key)` and Node's
+`Backend.claude({ apiKey })` assemble their supported local tool catalogs.
+Callers choose the backend and workspace; individual tool registration is an
+advanced customization path. See the [Rust guide](../crates/nanocodex/README.md)
+and [JavaScript guide](CLAUDE_JAVASCRIPT.md) for the tools installed on each host.
+The native CLI integrations below also depend on their flags, UI and session role.
+
+The shared Rust task board supports registration, durable checkpoints and
+recovery on native and WASM targets. Node supplies local filesystem and process
+handlers; browser and Worker hosts use explicit host capabilities.
+
 ## Pinned capture inventory
 
 The [OrcaPromptVault comparison](https://github.com/Continuum-AI-Corp/OrcaPromptVault/tree/33ce5a020cfcb5fe747d40d0a89e84743fabdd40/Claude-Code)

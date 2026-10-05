@@ -18,16 +18,22 @@ type ToolExposureOptions =
   | { mcp?: false | undefined; toolMode?: "code" | "direct" | undefined }
   | { mcp: McpServers; toolMode?: "code" | undefined };
 
-/** Creates a Node-hosted Rust/WASM Agent. */
+/** Creates a Node-hosted Rust/WASM Agent. Backend selects provider and installs local tools. */
+export function create(options: import('./backend.mjs').CodexOptions): Promise<Agent>;
+export function create(options: import('./backend.mjs').ClaudeOptions): Promise<import('../runtime/claude.mjs').Agent>;
+export function create(options: import('./backend.mjs').Options): Promise<Agent | import('../runtime/claude.mjs').Agent>;
 export function create(options: import('../runtime/claude.mjs').Options & { harness: 'claude' }): Promise<import('../runtime/claude.mjs').Agent>;
 export function create(options: create.ManagedOptions): Promise<AgentLifecycle>;
 export function create(options: create.Options): Promise<create.ReturnType>;
 export declare namespace create {
   type ManagedOptions = Readonly<{
+    backend?: never;
     transport: ManagedTransport;
     tools?: Tools | undefined;
   }>;
+  type BackendOptions = import("./backend.mjs").Options;
   type Options = AgentOptions & ToolExposureOptions & {
+    backend?: never;
     codeEvaluator?: CodeEvaluator | undefined;
     /** Opt-in durable direct-tool and nested Code Mode receipts for safe cold recovery. */
     codeEffectJournal?: CodeEffectJournal | undefined;

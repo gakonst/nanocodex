@@ -1,3 +1,4 @@
+import { ownedBackendTools, nativeClaudeDefaults } from './backend.mjs';
 import {
   CLOUDFLARE_SESSION_RESERVATION, activateCloudflareAgentSession, activateHost, bindHostSession, createAgentClient, createEventChannel, createSessionId,
   defineRuntime, loadDurabilityRuntime, registerDefinitionHost, releaseDefinitionHost,
@@ -67,8 +68,12 @@ export async function createClaude(options, load, type, harnessDefaults) {
   const reservation = options?.[CLOUDFLARE_SESSION_RESERVATION];
   const internalRuntime = options?.[Symbol.for("nanocodex.browser.internalRuntime")];
   const config = toClaudeConfig(options);
+  if (options[nativeClaudeDefaults]) { config.nativeTasks = true; config.nativeWebSearch = true; }
   config.sessionId ??= options.durabilityId ?? createSessionId();
   const { durability, durabilityId, module } = options;
+  const closeTools = options[ownedBackendTools];
+  let toolsClosing;
+  const closeOwnedTools = () => toolsClosing ??= Promise.resolve().then(() => closeTools?.());
   const events = createEventChannel();
   const host = createClaudeHost({ auth: options.auth, tools: options.tools, onEvent: events.emit, fetch: options.fetch, endpoint: options.endpoint,
     subagentSessions: internalRuntime?.subagentSessions, subagentRouting: internalRuntime?.subagentRouting });
@@ -119,6 +124,7 @@ export async function createClaude(options, load, type, harnessDefaults) {
     releaseDefinitionHost(hostDefinitionId);
     host.dispose();
     void harnesses.close();
+    void closeOwnedTools().catch(() => {});
   };
   const runtime = defineRuntime({
     key: `claude-${type}-wasm`, name: 'Nanoclaude WASM', type,
@@ -147,6 +153,14 @@ export async function createClaude(options, load, type, harnessDefaults) {
       try { bindHostSession(host, raw.sessionId, reservation); events.addSource(raw); }
       catch (error) { cleanup(); throw error; }
     },
+    observeTurn(turn, raw) {
+      const identity = getTurnHostId(turn);
+      void identity.catch(() => {});
+      track(turn.result().finally(async () => {
+        const id = await identity.catch(() => undefined);
+        if (id !== undefined) host.releaseTurn(raw.sessionId, id);
+      }));
+    },
     release(raw) {
       events.removeSource(raw);
       detached = true;
@@ -156,7 +170,7 @@ export async function createClaude(options, load, type, harnessDefaults) {
       if (pending.size) detachedRaw = raw;
       else raw.free();
     },
-    async shutdown(raw) { host.cancelCodeTurn(raw.sessionId); await raw.shutdown(); },
+    async shutdown(raw) { host.cancelCodeTurn(raw.sessionId); try { await raw.shutdown(); } finally { await closeOwnedTools(); } },
     subscribe: events.subscribe,
     decorate: (agent, raw) => agent.extend(() => ({
       events: { watch: (options) => watch(agent, options) },
@@ -166,12 +180,7 @@ export async function createClaude(options, load, type, harnessDefaults) {
         const turn = prompt(agent, options);
         const identity = getTurnHostId(turn);
         void identity.catch(() => {});
-        // Observe every issued turn, even if the caller never requests its result.
-        // Accepted work owns host/auth/durability routes until its terminal receipt settles.
-        const result = track(turn.result().finally(async () => {
-          const id = await identity.catch(() => undefined);
-          if (id !== undefined) host.releaseTurn(raw.sessionId, id);
-        }));
+        const result = turn.result();
         let disposed = false;
         return Object.freeze({ ...turn,
           result: () => disposed ? Promise.reject(new Error('the Nanocodex turn has been disposed')) : result,

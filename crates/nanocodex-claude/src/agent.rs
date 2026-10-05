@@ -259,7 +259,7 @@ pub struct ClaudeBuilder {
     client_tool_search: bool,
     policy: Option<Arc<dyn ClaudeExecutionPolicy>>,
     restored: Option<Snapshot>,
-    #[cfg(all(feature = "tools", not(target_family = "wasm")))]
+    #[cfg(feature = "tools")]
     task_board: Option<Arc<nanocodex_claude_tools::tasks::ClaudeTasks>>,
 }
 impl ClaudeBuilder {
@@ -302,7 +302,7 @@ impl ClaudeBuilder {
             client_tool_search: false,
             policy: None,
             restored: None,
-            #[cfg(all(feature = "tools", not(target_family = "wasm")))]
+            #[cfg(feature = "tools")]
             task_board: None,
         }
     }
@@ -646,7 +646,7 @@ impl ClaudeBuilder {
     /// Register a separately scoped session-local Claude task board; never a
     /// Codex plan or account scheduler. With the durability extension attached,
     /// task state is checkpointed and restored when the host reopens the session.
-    #[cfg(all(feature = "tools", not(target_family = "wasm")))]
+    #[cfg(feature = "tools")]
     pub fn tasks(mut self, tasks: Arc<nanocodex_claude_tools::tasks::ClaudeTasks>) -> Self {
         self.task_board = Some(tasks.clone());
         for schema in nanocodex_claude_tools::tasks::ClaudeTasks::definitions() {
@@ -1016,7 +1016,7 @@ impl ClaudeBuilder {
                 || !restored.conversation.recovery_notices.is_empty()
                 || restored.conversation.previous_message_id.is_some(),
         );
-        #[cfg(all(feature = "tools", not(target_family = "wasm")))]
+        #[cfg(feature = "tools")]
         if let Some(tasks) = &restored.tasks {
             self.task_board
                 .as_ref()
@@ -1024,10 +1024,10 @@ impl ClaudeBuilder {
                 .restore(tasks.clone())
                 .map_err(provider_error)?;
         }
-        #[cfg(not(all(feature = "tools", not(target_family = "wasm"))))]
+        #[cfg(not(feature = "tools"))]
         if restored.tasks.is_some() {
             return Err(unsupported(
-                "Claude task restoration requires a native target with tools and a task board",
+                "Claude task restoration requires tools and a task board",
             ));
         }
         *discovered.try_lock().expect("new discovery lock") = restored.discovered;
@@ -1070,7 +1070,7 @@ impl ClaudeBuilder {
             admission: Mutex::new(()),
             idle: Notify::new(),
             compaction_cancel: Mutex::new(None),
-            #[cfg(all(feature = "tools", not(target_family = "wasm")))]
+            #[cfg(feature = "tools")]
             task_board: self.task_board,
             cancellations: Mutex::new(HashMap::new()),
             stopped: AtomicBool::new(false),
@@ -1654,9 +1654,9 @@ impl ClaudeNativeFactory {
     }
     fn recipe(&self) -> ClaudeBuilder {
         let recipe = self.recipe.clone();
-        #[cfg(all(feature = "tools", not(target_family = "wasm")))]
+        #[cfg(feature = "tools")]
         let mut recipe = recipe;
-        #[cfg(all(feature = "tools", not(target_family = "wasm")))]
+        #[cfg(feature = "tools")]
         if recipe.task_board.is_some() {
             let names = nanocodex_claude_tools::tasks::ClaudeTasks::definitions()
                 .into_iter()
@@ -1846,7 +1846,7 @@ struct State {
     admission: Mutex<()>,
     idle: Notify,
     compaction_cancel: Mutex<Option<Arc<Cancellation>>>,
-    #[cfg(all(feature = "tools", not(target_family = "wasm")))]
+    #[cfg(feature = "tools")]
     task_board: Option<Arc<nanocodex_claude_tools::tasks::ClaudeTasks>>,
     cancellations: Mutex<HashMap<BackendTurnKey, Arc<Cancellation>>>,
     stopped: AtomicBool,

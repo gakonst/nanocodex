@@ -20,6 +20,13 @@ export function checkDocumentedBrowserVersion(readme, packageVersion) {
 }
 
 const requiredFiles = [
+  "runtime/backend-factories.mjs",
+  "runtime/backend-factories.d.mts",
+  "runtime/backend.mjs",
+  "runtime/backend.d.mts",
+  "node/backend.mjs",
+  "node/backend.d.mts",
+  "node/claude-tools.mjs",
   "host/Claude.mjs",
   "host/Claude.d.mts",
   "node/Claude.mjs",
@@ -204,6 +211,11 @@ export async function checkPackage(packageRoot = root) {
 
   const nodeGlue = await readFile(new URL("pkg-node/nanocodex.js", packageRoot), "utf8");
   assert.match(nodeGlue, /__dirname\}\/\.\.\/pkg-web\/nanocodex_bg\.wasm/);
+
+  const native = await import(new URL("pkg-node/nanocodex.js", packageRoot));
+  for (const name of ["Nanocodex", "Nanoclaude", "ClaudeGrepRegex"]) {
+    assert.equal(typeof native[name], "function", `packaged WASM must expose ${name}; rebuild the package artifacts`);
+  }
 
   console.log(`nanocodex@${packageJson.version} package artifacts are complete`);
 }
