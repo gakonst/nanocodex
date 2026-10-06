@@ -431,9 +431,9 @@ async fn delayed_poppler_timeout_cleanup_and_recovery_journey() {
         !snapshot.exists(),
         "private snapshot was not removed: {snapshot:?}"
     );
-    let pid = state.next().unwrap().parse::<i32>().unwrap();
     #[cfg(target_os = "linux")]
     {
+        let pid = state.next().unwrap().parse::<i32>().unwrap();
         // Linux may keep a killed orphan as a zombie until container PID 1 reaps it.
         // A zombie cannot execute or hold pipes; absence and Z are both stopped.
         let stat_path = format!("/proc/{pid}/stat");
