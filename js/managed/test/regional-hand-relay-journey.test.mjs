@@ -426,6 +426,38 @@ test("public regional Hand relays preserve discovery, process ownership and unce
     await deniedUpgrade(token, 409, { ...newIdentity, "x-nanocodex-hand-runtime-id": retirement.runtime_id });
     assert.equal(migrated.client.connected, true, "retired identity cannot replace the admitted successor");
     evidence.observed.public_inventory_retirement = true;
+    const pendingRegional = await publish({ label: "pending-regional", id: "pending-regional-hand" });
+    await bind("pending-regional", pendingRegional.id);
+    const regionalCall = invoke("pending-regional", "pending-regional-call", shell("printf PENDING > pending.log; while [ ! -f release-process ]; do sleep 0.02; done; printf REGIONAL_RECOVERED", 30000));
+    regionalCall.catch(() => {});
+    await waitFor(async () => { try { return await readFile(join(pendingRegional.workspace, "pending.log"), "utf8") === "PENDING"; } catch (error) { if (error.code !== "ENOENT") throw error; } }, "regional pending native effect");
+    let resumeRegional;
+    pendingRegional.gate = new Promise(resolve => { resumeRegional = resolve; });
+    pendingRegional.socket.terminate();
+    const pendingRegionalRow = await waitFor(async () => {
+      const row = (await ok(request(inventoryPath))).regional.find(row => row.machine_id === pendingRegional.id);
+      return row && !row.online && row.pending_calls > 0 ? row : undefined;
+    }, "offline regional pending inventory");
+    const regionalIdentity = row => ({ machine_id: row.machine_id, runtime_id: row.runtime_id, publication_id: row.publication_id, region: row.region });
+    assert.equal(pendingRegionalRow.retirable, false);
+    assert.equal((await request(retirePath, regionalIdentity(pendingRegionalRow))).status, 409);
+    pendingRegional.gate = undefined; resumeRegional();
+    await waitFor(() => pendingRegional.client.connected, "regional pending recovery reconnect");
+    await writeFile(join(pendingRegional.workspace, "release-process"), "release");
+    assert.equal((await regionalCall).structuredResult.output, "REGIONAL_RECOVERED");
+    await pendingRegional.attachment.close();
+    const stoppedRegional = await waitFor(async () => {
+      const row = (await ok(request(inventoryPath))).regional.find(row => row.machine_id === pendingRegional.id);
+      return row?.retirable ? row : undefined;
+    }, "stopped regional publication safe to retire");
+    const regionalRetirement = regionalIdentity(stoppedRegional);
+    assert.deepEqual(await ok(request(retirePath, regionalRetirement)), { retired: true, ...regionalRetirement });
+    assert.deepEqual(await ok(request(retirePath, regionalRetirement)), { retired: true, ...regionalRetirement });
+    assert.equal((await ok(request(inventoryPath))).regional.some(row => row.machine_id === pendingRegional.id), false);
+    assert.equal((await ok(request("/v1/account/hands/inventory"))).data.some(row => row.id === pendingRegional.id), false);
+    evidence.observed.regional_pending_retirement_rejected = true;
+    evidence.observed.regional_retirement_clears_directory = true;
+
     assert.ok(wire.filter(r => r.event === "upgrade").every(r => r.status === 101));
     console.log(JSON.stringify({ evidence: output, ...evidence.observed }));
   } catch (error) { failure = error; evidence.error = error.stack; throw error; }

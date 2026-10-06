@@ -23,8 +23,9 @@ use tokio_tungstenite::{accept_async, tungstenite::Message};
 const TIMEOUT: Duration = Duration::from_secs(20);
 const DRAFT: &str = "unfinished local draft";
 
-// External clients prompt without an execution policy, run slash commands, and
-// follow state without re-reading it, all while the user's own draft survives.
+// Slash suggestions work through the shipped TUI, then external clients prompt
+// without an execution policy, run commands, and follow filtered state while
+// the user's own draft survives.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn external_client_prompts_runs_commands_and_filters_events_without_touching_the_draft()
 -> Result<()> {
@@ -62,6 +63,7 @@ async fn external_client_prompts_runs_commands_and_filters_events_without_touchi
     command.env("NANOCODEX_COMPUTER", "off");
     command.env("TERM", "xterm-256color");
     command.env_remove("OPENAI_API_KEY");
+    command.env_remove("ANTHROPIC_API_KEY");
     command.env_remove("TMUX");
     command.env_remove("TMUX_PANE");
     let mut child = pair.slave.spawn_command(command).map_err(pty)?;
@@ -81,6 +83,50 @@ async fn external_client_prompts_runs_commands_and_filters_events_without_touchi
     let snapshot = &hello["snapshot"];
     assert_eq!(snapshot["capabilities"]["commands"], true);
     assert_eq!(snapshot["capabilities"]["event_filter"], true);
+
+    keyboard.write_all(b"/")?;
+    keyboard.flush()?;
+    let deadline = Instant::now() + TIMEOUT;
+    loop {
+        let state = client.request("state.get", json!({})).await?;
+        if state["state"]["composer"]["text"] == "/" {
+            assert_eq!(state["state"]["menu"], "slash");
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "slash suggestions never opened in the TUI"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    keyboard.write_all(b"\x1b[B\t")?;
+    keyboard.flush()?;
+    let deadline = Instant::now() + TIMEOUT;
+    loop {
+        let state = client.request("state.get", json!({})).await?;
+        if state["state"]["composer"]["text"] == "/thinking " {
+            assert!(state["state"]["menu"].is_null());
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "arrow and Tab did not complete the selected slash command"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    keyboard.write_all(b"\x15")?;
+    keyboard.flush()?;
+    let deadline = Instant::now() + TIMEOUT;
+    while !client.request("state.get", json!({})).await?["state"]["composer"]["text"]
+        .as_str()
+        .is_some_and(str::is_empty)
+    {
+        assert!(
+            Instant::now() < deadline,
+            "completed slash command could not be cleared"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
 
     keyboard.write_all(DRAFT.as_bytes())?;
     keyboard.flush()?;
@@ -104,6 +150,73 @@ async fn external_client_prompts_runs_commands_and_filters_events_without_touchi
     observer
         .request("events.subscribe", json!({"after_seq":snapshot["seq"]}))
         .await?;
+
+    let models = client.request("models.list", json!({})).await?;
+    assert!(
+        models["models"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|model| model["id"] == "claude-sonnet-5-5")
+    );
+    // Failed selection must not send queued or later input to the old provider.
+    // Reselecting the old model recovers without touching the local draft.
+    let before_selection = client.request("state.get", json!({})).await?;
+    let selection_target = |extra: Value| {
+        let mut params = json!({"expected_instance_id":registration["instance_id"],
+            "expected_session_id":before_selection["active_session_id"],"expected_active_generation":before_selection["active_generation"]});
+        params
+            .as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        params
+    };
+    let failed = client
+        .request(
+            "settings.set",
+            selection_target(json!({"expected_settings_revision":before_selection["state"]["settings_revision"],"settings":{"model":"claude-sonnet-5-5"}})),
+        )
+        .await?;
+    assert_eq!(failed["status"], "rejected", "{failed}");
+    assert!(
+        failed["message"]
+            .as_str()
+            .unwrap_or("")
+            .contains("auth login"),
+        "{failed}"
+    );
+    let rejected = client
+        .request(
+            "prompt",
+            selection_target(json!({"input":{"text":"must not fall back to Codex"}})),
+        )
+        .await?;
+    assert_eq!(rejected["code"], "model_selection_required", "{rejected}");
+    let recovery_deadline = Instant::now() + TIMEOUT;
+    let recovery_state = loop {
+        let state = client.request("state.get", json!({})).await?;
+        if state["state"]["execution"] == "idle"
+            && state["state"]["settings"]["model_mutable"] == true
+        {
+            break state;
+        }
+        assert!(
+            Instant::now() < recovery_deadline,
+            "rejected prompt did not settle: {state}"
+        );
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    };
+    let recovered = client
+        .request(
+            "settings.set",
+            selection_target(json!({"expected_settings_revision":recovery_state["state"]["settings_revision"],"settings":{"model":"gpt-6.1-sol"}})),
+        )
+        .await?;
+    assert_eq!(recovered["status"], "accepted", "{recovered}");
+    assert_eq!(
+        client.request("state.get", json!({})).await?["state"]["composer"]["text"],
+        DRAFT
+    );
 
     let state = client.request("state.get", json!({})).await?;
     let target = |extra: Value| {
@@ -188,6 +301,28 @@ async fn external_client_prompts_runs_commands_and_filters_events_without_touchi
         client.request("state.get", json!({})).await?["state"]["composer"]["text"],
         DRAFT
     );
+    let locked_state = client.request("state.get", json!({})).await?;
+    let locked = client
+        .request(
+            "settings.set",
+            target(json!({"expected_settings_revision":locked_state["state"]["settings_revision"],"settings":{"model":"claude-sonnet-5-5"}})),
+        )
+        .await?;
+    assert_eq!(locked["status"], "rejected", "{locked}");
+    assert!(
+        locked["message"]
+            .as_str()
+            .unwrap_or("")
+            .contains("thread has started"),
+        "{locked}"
+    );
+    let continued = client
+        .request(
+            "prompt",
+            target(json!({"input":{"text":"continue after rejected model change"}})),
+        )
+        .await?;
+    assert_eq!(continued["status"], "accepted", "{continued}");
     child.kill()?;
     server.abort();
     Ok(())

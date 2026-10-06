@@ -120,9 +120,9 @@ fn descriptor(agent: &Nanocodex, root: &str, parent: Option<&str>, role: &str) -
     }
 }
 
-pub(super) fn models(family: nanocodex::HarnessFamily) -> Value {
+pub(super) fn models() -> Value {
     let efforts = Thinking::ALL;
-    json!({"models":HarnessModel::for_family(family).map(|model|
+    json!({"models":HarnessModel::for_family(nanocodex::HarnessFamily::Codex).chain(HarnessModel::for_family(nanocodex::HarnessFamily::Claude)).map(|model|
         json!({"id":model.as_str(),"efforts":efforts.iter().filter(|e| model.supports_thinking(**e)).map(ToString::to_string).collect::<Vec<_>>()})).collect::<Vec<_>>()})
 }
 
@@ -173,7 +173,13 @@ impl AgentWorker {
             return;
         };
         if command.request.method == "models.list" {
-            command.finish(models(self.main.agent.harness_family()));
+            command.finish(models());
+            return;
+        }
+        if self.model_selection_required
+            && matches!(command.request.method.as_str(), "prompt" | "steer")
+        {
+            command.finish(json!({"status":"rejected","code":"model_selection_required","message":MODEL_SELECTION_REQUIRED}));
             return;
         }
         let expected = command.request.params["expected_session_id"]
@@ -310,13 +316,7 @@ impl AgentWorker {
                     Err("set exactly one setting".to_owned())
                 } else if let Some(model) = settings["model"].as_str() {
                     match model.parse::<HarnessModel>() {
-                        Ok(model) => agent
-                            .set_harness_model(model)
-                            .await
-                            .map(|()| {
-                                let _ = self.updates.send(WorkerEvent::ModelChanged { model });
-                            })
-                            .map_err(|e| e.to_string()),
+                        Ok(model) => self.change_model(model).await,
                         Err(e) => Err(e.to_owned()),
                     }
                 } else if let Some(effort) = settings["effort"].as_str() {

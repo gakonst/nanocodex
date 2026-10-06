@@ -1157,16 +1157,33 @@ async fn run_turn(client: &ManagedClient, command: Run) -> Result<(), ManagedErr
         ),
         None => command.agent,
     };
-    let (agent, mut events, agent_id, _) =
-        open_workspace_agent_with_settings(client, requested_agent, None, settings, None).await?;
+    let request_id = command
+        .idempotency_key
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    let (agent, mut events, agent_id, _, initial_turn) = if requested_agent.is_none() {
+        build_workspace_agent_with_settings(
+            client,
+            None,
+            None,
+            settings,
+            None,
+            Some((command.prompt.clone(), request_id.clone())),
+        )
+        .await?
+    } else {
+        build_workspace_agent_with_settings(client, requested_agent, None, settings, None, None)
+            .await?
+    };
     if created {
         eprintln!("Managed agent: {agent_id}");
     }
-    let mut request = PromptRequest::new(command.prompt);
-    if let Some(request_id) = command.idempotency_key {
-        request = request.request_id(request_id);
-    }
-    let turn: Turn = agent.prompt(request).await.map_err(agent_error)?;
+    let turn = match initial_turn {
+        Some(turn) => turn,
+        None => agent
+            .prompt(PromptRequest::new(command.prompt).request_id(request_id))
+            .await
+            .map_err(agent_error)?,
+    };
     let outcome = await_turn(turn, &mut events).await;
     let shutdown = agent.shutdown().await.map_err(agent_error);
     match (outcome, shutdown) {
@@ -1214,6 +1231,35 @@ async fn open_workspace_agent_with_settings(
     settings: AgentSettings,
     event_observer: Option<tokio::sync::mpsc::UnboundedSender<ManagedEvent>>,
 ) -> Result<(Nanocodex, AgentEvents, String, std::path::PathBuf), ManagedError> {
+    let (agent, events, id, workspace, _) = build_workspace_agent_with_settings(
+        client,
+        agent_id,
+        state,
+        settings,
+        event_observer,
+        None,
+    )
+    .await?;
+    Ok((agent, events, id, workspace))
+}
+
+async fn build_workspace_agent_with_settings(
+    client: &ManagedClient,
+    agent_id: Option<String>,
+    state: Option<AgentState>,
+    settings: AgentSettings,
+    event_observer: Option<tokio::sync::mpsc::UnboundedSender<ManagedEvent>>,
+    initial_prompt: Option<(String, String)>,
+) -> Result<
+    (
+        Nanocodex,
+        AgentEvents,
+        String,
+        std::path::PathBuf,
+        Option<Turn>,
+    ),
+    ManagedError,
+> {
     let _opening = startup_timing::Stage::new("workspace_open");
     let config =
         HostConfig::load().map_err(|error| ManagedError::Configuration(error.to_string()))?;
@@ -1246,6 +1292,9 @@ async fn open_workspace_agent_with_settings(
         .build()
         .map_err(|error| ManagedError::Configuration(error.to_string()))?;
     let backend = match (agent_id, state) {
+        (None, None) if initial_prompt.is_some() => {
+            Managed::create(client.clone()).with_settings(settings)
+        }
         (None, None) => Managed::create_live(client.clone()).with_settings(settings),
         (Some(agent_id), Some(state)) => {
             Managed::open_live_from_state(client.clone(), agent_id, state)
@@ -1264,12 +1313,24 @@ async fn open_workspace_agent_with_settings(
         Some(observer) => builder.event_observer(observer),
         None => builder,
     };
-    let (agent, events) = {
+    let (agent, events, turn) = {
         let _timing = startup_timing::Stage::new("managed_backend");
-        builder.build().await.map_err(agent_error)?
+        match initial_prompt {
+            Some((prompt, key)) => {
+                let (agent, events, turn) = builder
+                    .build_with_prompt(prompt, key)
+                    .await
+                    .map_err(agent_error)?;
+                (agent, events, Some(turn))
+            }
+            None => {
+                let (agent, events) = builder.build().await.map_err(agent_error)?;
+                (agent, events, None)
+            }
+        }
     };
     let agent_id = agent.agent_id().to_owned();
-    Ok((agent, events, agent_id, workspace))
+    Ok((agent, events, agent_id, workspace, turn))
 }
 
 fn default_mercator_mcp() -> Result<Mcp, ManagedError> {

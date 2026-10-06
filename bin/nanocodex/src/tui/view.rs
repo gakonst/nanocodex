@@ -29,6 +29,7 @@ pub(super) fn render(frame: &mut Frame<'_>, app: &mut App) {
     super::voice::render(frame, &app.voice, layout.voice);
     render_footer(frame, app, layout.footer);
     app.render_mouse_selection(frame.buffer_mut(), selectable_areas.as_slice());
+    render_slash_suggestions(frame, app, layout.composer);
     render_model_picker(frame, app);
     render_reasoning_picker(frame, app);
 }
@@ -38,8 +39,59 @@ pub(super) fn render_animation(frame: &mut Frame<'_>, app: &mut App) {
     render_composer(frame, app, layout.composer, &layout.composer_layout);
     super::voice::render(frame, &app.voice, layout.voice);
     render_footer(frame, app, layout.footer);
+    render_slash_suggestions(frame, app, layout.composer);
     render_model_picker(frame, app);
     render_reasoning_picker(frame, app);
+}
+
+fn render_slash_suggestions(frame: &mut Frame<'_>, app: &App, composer: Rect) {
+    const MAX_VISIBLE: usize = 8;
+    let suggestions = app.slash_suggestions();
+    if suggestions.is_empty() {
+        return;
+    }
+    let selected = app.selected_slash_suggestion();
+    let start = selected
+        .saturating_add(1)
+        .saturating_sub(MAX_VISIBLE)
+        .min(suggestions.len().saturating_sub(MAX_VISIBLE));
+    let end = (start + MAX_VISIBLE).min(suggestions.len());
+    let popup_height = u16::try_from(end - start)
+        .unwrap_or(u16::MAX)
+        .saturating_add(2)
+        .min(frame.area().height);
+    let popup_width = frame.area().width.min(72);
+    let popup_x = composer
+        .x
+        .min(frame.area().right().saturating_sub(popup_width));
+    let popup_y = composer.y.saturating_sub(popup_height);
+    let popup = Rect::new(popup_x, popup_y, popup_width, popup_height);
+
+    let lines = suggestions[start..end]
+        .iter()
+        .enumerate()
+        .map(|(offset, command)| {
+            let index = start + offset;
+            let marker = if index == selected { "› " } else { "  " };
+            let style = if index == selected {
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default()
+            };
+            Line::from(vec![
+                Span::styled(format!("{marker}{:<30}", command.usage), style),
+                Span::styled(command.description, Style::default().fg(Color::DarkGray)),
+            ])
+        })
+        .collect::<Vec<_>>();
+    let block = Block::default()
+        .title(" Slash commands · ↑/↓ select · Tab complete ")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::DarkGray));
+    frame.render_widget(Clear, popup);
+    frame.render_widget(Paragraph::new(lines).block(block), popup);
 }
 
 fn render_model_picker(frame: &mut Frame<'_>, app: &App) {
@@ -563,7 +615,9 @@ fn render_composer(frame: &mut Frame<'_>, app: &App, area: Rect, layout: &Compos
 fn render_footer(frame: &mut Frame<'_>, app: &App, area: Rect) {
     let conversation = app.active_conversation();
     let spinner = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-    let state = if app.branch_navigator_active() {
+    let state = if !app.slash_suggestions().is_empty() {
+        "Slash commands — ↑/↓ select · Tab complete · Enter choose".to_owned()
+    } else if app.branch_navigator_active() {
         "Branches — ↑/↓ or j/k switch + preview · Esc close".to_owned()
     } else if app.historical_editor_active() {
         let branch = app.historical_editor_source_branch().unwrap_or_default();

@@ -2229,7 +2229,11 @@ async function handleControl(request: Request, url: URL, env: EgressEnv): Promis
       if (await hasRequestPayload(request)) return jsonError(400, "invalid_request");
       return userBroker(env, userId).fetch(target, { method: "PUT" });
     }
-    if ((operation === "balance" || operation === "identity") && request.method === "GET") {
+    if (operation === "identity" && request.method === "GET") {
+      const identity = consumeRpcData(await userBroker(env, userId).readWalletIdentity());
+      return identity ? Response.json(identity) : jsonError(404, "wallet_not_configured");
+    }
+    if (operation === "balance" && request.method === "GET") {
       return userBroker(env, userId).fetch(target, { method: "GET" });
     }
     if (operation && request.method === "POST") {

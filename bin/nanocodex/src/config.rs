@@ -88,7 +88,7 @@ pub(crate) struct AuthArgs {
 }
 
 /// Model-facing flags shared by normal agents and evaluator agents.
-#[derive(Args)]
+#[derive(Args, Clone)]
 pub(crate) struct ModelArgs {
     /// Reasoning effort: none, low, medium, high, xhigh, or max.
     #[arg(long)]
@@ -143,7 +143,7 @@ pub(crate) struct EvalAgentArgs {
     model_policy: ModelArgs,
 }
 
-#[derive(Args)]
+#[derive(Args, Clone)]
 #[allow(
     clippy::struct_excessive_bools,
     reason = "independent CLI feature toggles are not one state machine"
@@ -319,6 +319,26 @@ pub(crate) struct AgentArgs {
 }
 
 impl AgentArgs {
+    /// A new, unused TUI session may choose a different native backend.
+    pub(crate) fn select_tui_model(
+        &mut self,
+        model: HarnessModel,
+        thinking: Thinking,
+        fast_mode: bool,
+    ) {
+        let same_family = self.selected_harness().ok() == Some(model.family());
+        self.harness = Some(model.family().to_string());
+        self.claude = model.family() == HarnessFamily::Claude;
+        self.model = Some(model.to_string());
+        self.model_policy.thinking = Some(if same_family && model.supports_thinking(thinking) {
+            thinking
+        } else {
+            model.default_thinking()
+        });
+        self.fast_mode =
+            Some(model.family() == HarnessFamily::Codex && (!same_family || fast_mode));
+    }
+
     pub(crate) fn resume_claude(
         mut self,
         session: crate::native_sessions::ResumeSession,

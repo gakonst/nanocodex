@@ -16,6 +16,7 @@ mod resume_picker;
 mod scheduler;
 mod selection;
 mod simplify;
+mod slash_commands;
 mod split;
 mod startup;
 mod telemetry;
@@ -221,7 +222,25 @@ enum WorkerCommand {
     Voice(VoiceControl),
 }
 
+struct ReplacementHandle {
+    agent: Nanocodex,
+    request_id: Arc<str>,
+    realtime: Option<OpenAi>,
+    mcp: Option<McpHandle>,
+}
+
+struct ModelReplacement {
+    model: HarnessModel,
+    config: AgentArgs,
+    reply: tokio::sync::oneshot::Sender<Result<ReplacementHandle, String>>,
+    task: startup::Task<Result<crate::config::ConfiguredAgent>>,
+}
+
 enum WorkerEvent {
+    ReplaceBackend {
+        model: HarnessModel,
+        reply: tokio::sync::oneshot::Sender<Result<ReplacementHandle, String>>,
+    },
     ExternalRejected {
         target: PaneId,
         input_id: u64,
@@ -278,6 +297,9 @@ enum WorkerEvent {
     BtwOpened {
         id: u64,
         request_id: Arc<str>,
+    },
+    BtwModelSelectionRejected {
+        id: u64,
     },
     BtwOpenFailed {
         id: u64,
@@ -776,6 +798,9 @@ pub(crate) async fn run_observed(
     resume: Option<DurableSession>,
     observability: Option<crate::observability::ObservabilityArgs>,
 ) -> Result<()> {
+    let can_replace_backend = resume.is_none() && config.claude_resume.is_none();
+    let mut backend_config = config.clone();
+    let backend_vm = vm.clone();
     let resumed_model = resume
         .as_ref()
         .map(|session| HarnessModel::from(session.model()));
@@ -838,6 +863,13 @@ pub(crate) async fn run_observed(
     let startup_result: Result<Option<startup::Backend>> = async {
         loop {
             pending.drain(&mut ui.app, &mut worker_rx);
+            if !backend.is_pending() && let Some(model) = pending.recovery_model() {
+                let mut candidate = backend_config.clone();
+                candidate.select_tui_model(model, ui.app.thinking(), ui.app.fast_mode());
+                backend = startup::Backend::start(candidate.clone(), backend_vm.clone(), None, None);
+                backend_config = candidate;
+                ui.app.set_active_status("Initializing selected model");
+            }
             render_due_frame(&mut ui, &mut terminal, &mut scheduler, &mut stream_telemetry, &mut notifier, math_renderer.as_ref())?;
             let deadline = scheduler.deadline();
             tokio::select! {
@@ -859,7 +891,20 @@ pub(crate) async fn run_observed(
                         scheduler.request_immediate(Instant::now());
                     } else if apply_update(update, &mut scheduler) { break Ok(None); }
                 }
-                ready = backend.finish() => { break ready.wrap_err("TUI initialization task failed")?.map(Some); }
+                ready = backend.finish(), if backend.is_pending() => {
+                    match ready.wrap_err("TUI initialization task failed")? {
+                        Ok(backend) => break Ok(Some(backend)),
+                        Err(error) if can_replace_backend => {
+                            pending.drain(&mut ui.app, &mut worker_rx);
+                            if !pending.has_model_selection() {
+                                pending.cancel(&mut ui.app, PaneId::Main);
+                            }
+                            ui.app.model_change_failed(&format!("{error}. Use /model to select a model and retry initialization."));
+                            scheduler.request_immediate(Instant::now());
+                        }
+                        Err(error) => break Err(error),
+                    }
+                }
                 ready = display.finish(), if display.is_pending() => {
                     if let Some(renderer) = ready.wrap_err("TUI display initialization task failed")?? {
                         ui.app.set_math_renderer(renderer.clone());
@@ -898,26 +943,29 @@ pub(crate) async fn run_observed(
     ui.app.cwd = initialized.cwd;
     ui.app
         .model_changed(resumed_model.unwrap_or(configured.model));
-    if ui.app.main.status == "Initializing" {
+    ui.app.thinking_changed(backend_config.thinking());
+    ui.app.fast_mode_changed(backend_config.fast_mode());
+    if ui.app.main.status.starts_with("Initializing") {
         "Ready".clone_into(&mut ui.app.main.status);
     }
     let agent = configured.handle;
     let mut agent_events = configured.events;
-    let root_session_id = Arc::<str>::from(agent_events.request_id());
+    let mut root_session_id = Arc::<str>::from(agent_events.request_id());
     ui.root_session_id = Arc::clone(&root_session_id);
     let mut claude_interactions = configured.claude_interactions;
     let mut claude_scheduler = configured.claude_scheduler;
     let mut cron_tick = tokio::time::interval(std::time::Duration::from_secs(1));
     cron_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut subagent_updates = configured.subagent_updates;
-    let child_agents = configured.child_agents;
-    let mpp_adapter = configured.mpp_adapter;
-    let browser = configured.browser;
-    let vm = configured.vm;
+    let mut child_agents = configured.child_agents;
+    let mut mpp_adapter = configured.mpp_adapter;
+    let mut browser = configured.browser;
+    let mut vm = configured.vm;
     let (update_tx, mut update_rx) = mpsc::unbounded_channel();
     pending.drain(&mut ui.app, &mut worker_rx);
     let worker = spawn_agent_worker(
         agent,
+        can_replace_backend,
         Arc::clone(&root_session_id),
         configured.realtime,
         configured.mcp,
@@ -931,6 +979,7 @@ pub(crate) async fn run_observed(
     let mut view_telemetry = ViewTelemetry::new(Arc::clone(&root_session_id));
     let mut subagent_completion_tracker = SubagentCompletionTracker::default();
     let mut control_subagents = HashMap::new();
+    let mut model_replacement: Option<ModelReplacement> = None;
     scheduler.request_immediate(Instant::now());
 
     let loop_result: Result<()> = async {
@@ -1060,7 +1109,65 @@ pub(crate) async fn run_observed(
                     return Ok(());
                 }
             }
+            ready = async { model_replacement.as_mut().expect("pending model replacement").task.finish().await }, if model_replacement.is_some() => {
+                let ModelReplacement { model, config: candidate, reply, .. } = model_replacement.take().expect("completed model replacement");
+                match ready.wrap_err("model initialization task failed")? {
+                    Err(error) => { let _ = reply.send(Err(error.to_string())); }
+                    Ok(configured) => {
+                        let old_resources = (child_agents.take(), mpp_adapter.take(), browser.take(), vm.take());
+                        agent_events = configured.events;
+                        root_session_id = Arc::from(agent_events.request_id());
+                        ui.root_session_id = Arc::clone(&root_session_id);
+                        ui.agent_events_open = true;
+                        claude_interactions = configured.claude_interactions;
+                        claude_scheduler = configured.claude_scheduler;
+                        subagent_updates = configured.subagent_updates;
+                        child_agents = configured.child_agents;
+                        mpp_adapter = configured.mpp_adapter;
+                        browser = configured.browser;
+                        vm = configured.vm;
+                        ui.app.model_changed(model);
+                        ui.app.thinking_changed(candidate.thinking());
+                        ui.app.fast_mode_changed(candidate.fast_mode());
+                        view_telemetry = ViewTelemetry::new(Arc::clone(&root_session_id));
+                        control_subagents.clear();
+                        subagent_completion_tracker = SubagentCompletionTracker::default();
+                        backend_config = candidate;
+                        if ui.app.main.status == "Initializing selected model" {
+                            ui.app.set_active_status("Ready");
+                        }
+                        let _ = reply.send(Ok(ReplacementHandle {
+                            agent: configured.handle, request_id: Arc::clone(&root_session_id),
+                            realtime: configured.realtime, mcp: configured.mcp,
+                        }));
+                        if let Err(error) = shutdown_runtime(None, old_resources.0, old_resources.1, old_resources.2, old_resources.3).await {
+                            tracing::warn!(%error, "could not shut down replaced backend resources");
+                        }
+                    }
+                }
+                scheduler.request_immediate(Instant::now());
+            }
             update = update_rx.recv(), if ui.worker_updates_open => {
+                let update = match update {
+                    Some(WorkerEvent::ReplaceBackend { model, reply }) => {
+                        if !can_replace_backend {
+                            let _ = reply.send(Err("Cannot change model after a thread has started".into()));
+                            continue;
+                        }
+                        let mut candidate = backend_config.clone();
+                        candidate.select_tui_model(model, ui.app.thinking(), ui.app.fast_mode());
+                        let build_config = candidate.clone();
+                        let build_vm = backend_vm.clone();
+                        model_replacement = Some(ModelReplacement {
+                            model, config: candidate, reply,
+                            task: startup::Task::spawn(async move { build_config.build_tui(build_vm).await }),
+                        });
+                        ui.app.set_active_status("Initializing selected model");
+                        scheduler.request_immediate(Instant::now());
+                        continue;
+                    }
+                    update => update,
+                };
                 if update.as_ref().is_some_and(|update| {
                     handle_worker_telemetry(update, &mut stream_telemetry)
                 }) {
@@ -1136,10 +1243,32 @@ pub(crate) async fn run_observed(
         renderer.shutdown();
     }
     let display_cleanup = startup::stop_display(&mut display).await;
+    let replacement_cleanup = async {
+        if let Some(mut replacement) = model_replacement
+            && let Some(Ok(configured)) = replacement
+                .task
+                .cancel()
+                .await
+                .wrap_err("model initialization task failed")?
+        {
+            let _ = configured.handle.shutdown().await;
+            shutdown_runtime(
+                None,
+                configured.child_agents,
+                configured.mpp_adapter,
+                configured.browser,
+                configured.vm,
+            )
+            .await?;
+        }
+        Ok::<(), eyre::Report>(())
+    }
+    .await;
     let shutdown_result =
         shutdown_runtime(Some(worker), child_agents, mpp_adapter, browser, vm).await;
     loop_result?;
     display_cleanup?;
+    replacement_cleanup?;
     shutdown_result
 }
 
@@ -1470,6 +1599,10 @@ fn handle_worker_update(
         }
         WorkerEvent::BtwOpened { id, request_id } => app.btw_opened(id, request_id),
         WorkerEvent::BtwOpenFailed { id, error } => app.btw_failed(id, error),
+        WorkerEvent::BtwModelSelectionRejected { id } => {
+            app.close_btw(id);
+            app.push_active_error(MODEL_SELECTION_REQUIRED);
+        }
         WorkerEvent::BtwAgentEvent { id, event } => {
             let _ = app.on_agent_event(PaneId::Btw(id), &event.event);
         }
@@ -1530,6 +1663,9 @@ fn handle_worker_update(
         }
         WorkerEvent::FastModeChanged { enabled } => app.fast_mode_changed(enabled),
         WorkerEvent::FastModeChangeFailed { error } => app.fast_mode_change_failed(&error),
+        WorkerEvent::ReplaceBackend { .. } => {
+            unreachable!("backend replacement belongs to the runtime loop")
+        }
         WorkerEvent::ModelChanged { model } => app.model_changed(model),
         WorkerEvent::ModelChangeFailed { error } => app.model_change_failed(&error),
         WorkerEvent::ThinkingChanged { thinking } => app.thinking_changed(thinking),
@@ -1624,6 +1760,7 @@ fn handle_worker_update(
 
 fn spawn_agent_worker(
     root: Nanocodex,
+    can_replace_backend: bool,
     root_session_id: Arc<str>,
     realtime: Option<OpenAi>,
     mcp: Option<McpHandle>,
@@ -1644,6 +1781,8 @@ fn spawn_agent_worker(
             },
             archived_main: Vec::new(),
             next_turn_id: 1,
+            model_selection_required: false,
+            can_replace_backend,
             btw: None,
             finished: finished_tx,
             updates,
@@ -1729,6 +1868,8 @@ struct AgentWorker {
     main: MainWorkerBranch,
     archived_main: Vec<MainWorkerBranch>,
     next_turn_id: u64,
+    model_selection_required: bool,
+    can_replace_backend: bool,
     btw: Option<BtwWorker>,
     finished: mpsc::UnboundedSender<FinishedTurn>,
     updates: mpsc::UnboundedSender<WorkerEvent>,
@@ -1740,7 +1881,18 @@ struct AgentWorker {
     voice_agent_control: VoiceAgentControl,
 }
 
+const MODEL_SELECTION_REQUIRED: &str = "Input was not sent because model selection failed. Use /model to select a model again before submitting input.";
+
 impl AgentWorker {
+    fn reject_model_selection_input(&self, target: PaneId, input_id: u64, steer: bool) {
+        let _ = self.updates.send(WorkerEvent::ExternalRejected {
+            target,
+            input_id,
+            steer,
+            error: MODEL_SELECTION_REQUIRED.to_owned(),
+        });
+    }
+
     async fn handle_command(&mut self, command: WorkerCommand) {
         match command {
             WorkerCommand::AttachControl(bridge) => self.control = Some(bridge),
@@ -1836,6 +1988,12 @@ impl AgentWorker {
     }
 
     async fn control_voice(&mut self, control: VoiceControl) {
+        if self.model_selection_required {
+            let _ = self.updates.send(WorkerEvent::VoiceFailed {
+                error: MODEL_SELECTION_REQUIRED.to_owned(),
+            });
+            return;
+        }
         let running = self.voice_running();
         match control {
             VoiceControl::Mute => {
@@ -2056,14 +2214,44 @@ impl AgentWorker {
         drop(self.updates.send(update));
     }
 
+    async fn change_model(&mut self, model: HarnessModel) -> Result<(), String> {
+        if !self.can_replace_backend
+            || self.next_turn_id != 1
+            || !self.archived_main.is_empty()
+            || self.btw.is_some()
+            || self.voice.is_some()
+            || self.voice_shutdown.is_some()
+        {
+            return Err("Cannot change model after a thread has started".into());
+        }
+        self.model_selection_required = true;
+        let (reply, receive) = tokio::sync::oneshot::channel();
+        self.updates
+            .send(WorkerEvent::ReplaceBackend { model, reply })
+            .map_err(|error| error.to_string())?;
+        let replacement = receive
+            .await
+            .map_err(|error| error.to_string())?
+            .map_err(|error| {
+                format!("{error}. Use /model to select a model again before submitting input.")
+            })?;
+        let previous = std::mem::replace(&mut self.main.agent, replacement.agent);
+        if let Err(error) = previous.shutdown().await {
+            tracing::warn!(%error, "could not shut down replaced model");
+        }
+        self.main.request_id = replacement.request_id;
+        self.realtime = replacement.realtime;
+        self.mcp = replacement.mcp;
+        self.model_selection_required = false;
+        self.publish_control_conversations();
+        let _ = self.updates.send(WorkerEvent::ModelChanged { model });
+        Ok(())
+    }
+
     async fn set_model(&mut self, model: HarnessModel) {
-        let update = match self.main.agent.set_harness_model(model).await {
-            Ok(()) => WorkerEvent::ModelChanged { model },
-            Err(error) => WorkerEvent::ModelChangeFailed {
-                error: error.to_string(),
-            },
-        };
-        drop(self.updates.send(update));
+        if let Err(error) = self.change_model(model).await {
+            let _ = self.updates.send(WorkerEvent::ModelChangeFailed { error });
+        }
     }
 
     async fn set_thinking(&mut self, thinking: Thinking) {
@@ -2100,6 +2288,10 @@ impl AgentWorker {
         prompt: SubmittedPrompt,
         request_id: Option<String>,
     ) -> bool {
+        if self.model_selection_required {
+            self.reject_model_selection_input(target, prompt_id, false);
+            return false;
+        }
         if target == PaneId::Main
             && let Some(voice) = &self.voice
         {
@@ -2166,6 +2358,10 @@ impl AgentWorker {
     }
 
     async fn steer(&mut self, target: PaneId, steer_id: u64, prompt: SubmittedPrompt) -> bool {
+        if self.model_selection_required {
+            self.reject_model_selection_input(target, steer_id, true);
+            return false;
+        }
         if target == PaneId::Main
             && let Some(voice) = &self.voice
         {
@@ -2328,6 +2524,15 @@ impl AgentWorker {
         steer_ids: Vec<u64>,
         prompt: SubmittedPrompt,
     ) {
+        if self.model_selection_required {
+            let _ = self
+                .updates
+                .send(WorkerEvent::InterruptedSteersKept { target, prompt_id });
+            for id in steer_ids {
+                self.reject_model_selection_input(target, id, true);
+            }
+            return;
+        }
         let already_running = match target {
             PaneId::Main => self
                 .main
@@ -2387,6 +2592,12 @@ impl AgentWorker {
     }
 
     async fn open_btw(&mut self, id: u64, prompt_id: Option<u64>, prompt: Option<SubmittedPrompt>) {
+        if self.model_selection_required {
+            let _ = self
+                .updates
+                .send(WorkerEvent::BtwModelSelectionRejected { id });
+            return;
+        }
         if self.voice_running() {
             drop(self.updates.send(WorkerEvent::BtwOpenFailed {
                 id,
@@ -3200,6 +3411,10 @@ fn handle_key(
         return Ok(action);
     }
 
+    if let Some(action) = handle_slash_suggestion_key(key, app) {
+        return Ok(action);
+    }
+
     if let Some(action) = handle_inline_historical_editor_key(key, app, commands)? {
         return Ok(action);
     }
@@ -3298,6 +3513,31 @@ fn handle_key(
         | KeyCode::Modifier(_) => {}
     }
     Ok(TerminalAction::Redraw)
+}
+
+fn handle_slash_suggestion_key(key: KeyEvent, app: &mut App) -> Option<TerminalAction> {
+    if app.slash_suggestions().is_empty() || !key.modifiers.is_empty() {
+        return None;
+    }
+    match key.code {
+        KeyCode::Up => {
+            app.move_slash_suggestion(-1);
+            Some(TerminalAction::Redraw)
+        }
+        KeyCode::Down => {
+            app.move_slash_suggestion(1);
+            Some(TerminalAction::Redraw)
+        }
+        KeyCode::Tab | KeyCode::BackTab => {
+            app.accept_slash_suggestion();
+            Some(TerminalAction::Redraw)
+        }
+        KeyCode::Enter if !app.slash_suggestion_is_exact() => {
+            app.accept_slash_suggestion();
+            Some(TerminalAction::Redraw)
+        }
+        _ => None,
+    }
 }
 
 fn handle_model_picker_key(
@@ -3990,9 +4230,7 @@ fn classify_submission(input: impl Into<SubmittedPrompt>) -> Submission {
                 return Submission::ModelPicker;
             };
             if settings.next().is_some() {
-                return Submission::InvalidCommand(
-                    "Usage: /model [model ID within the current harness]".to_owned(),
-                );
+                return Submission::InvalidCommand("Usage: /model [model ID or alias]".to_owned());
             }
             return match argument.parse() {
                 Ok(model) => Submission::Model(model),
@@ -5207,6 +5445,7 @@ mod tests {
             let (updates, mut update_rx) = mpsc::unbounded_channel();
             let worker = spawn_agent_worker(
                 agent,
+                true,
                 Arc::from(session.as_str()),
                 None,
                 None,
@@ -5269,6 +5508,7 @@ mod tests {
         let (updates, mut update_rx) = mpsc::unbounded_channel();
         let worker = spawn_agent_worker(
             agent,
+            true,
             Arc::from(session_id.to_string()),
             None,
             None,
@@ -5367,6 +5607,7 @@ mod tests {
         let (updates, mut update_rx) = mpsc::unbounded_channel();
         spawn_agent_worker(
             agent,
+            true,
             std::sync::Arc::from(session_id.to_string()),
             None,
             None,
@@ -5507,6 +5748,7 @@ mod tests {
         let (updates, mut update_rx) = mpsc::unbounded_channel();
         spawn_agent_worker(
             agent,
+            true,
             std::sync::Arc::from(session_id.to_string()),
             None,
             None,
@@ -5676,7 +5918,7 @@ mod tests {
             &commands,
         )?;
         assert_eq!(app.main.status, "Ready");
-        assert!(app.main.transcript.is_empty());
+        assert_eq!(app.main.transcript.len(), 0);
         Ok(())
     }
 

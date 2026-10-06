@@ -14,3 +14,5 @@ export { InferenceSession } from "../src/inference-session";
 export { MeetingPreview } from "../src/meeting-preview";
 
 export { CalendarPushDelivery } from "../src/calendar-push-delivery";
+
+export { RegionalHandRelay } from "../src/regional-hand-relay";

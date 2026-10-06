@@ -36,12 +36,25 @@ async function signIn(page: Page) {
 test("MCP client consent displays identity and access before genuine hosted approval", async ({ context, page }, info) => {
   await setSession(context, "persistent");
   const observed = observe(page, info);
+  // Neither independent read may wait for the other response before starting.
+  const started = new Set<string>();
+  let release!: () => void;
+  const bothStarted = new Promise<void>(resolve => { release = resolve; });
+  await page.route("**/*", async route => {
+    const path = new URL(route.request().url()).pathname;
+    if (path === requestPath || path === "/v1/me") {
+      started.add(path);
+      if (started.size === 2) release();
+      await bothStarted;
+    }
+    await route.continue();
+  });
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto(`/?oauth_request=${requestId}`);
   await expect(page.getByRole("heading", { name: "Connect Synthetic MCP Client" })).toBeVisible();
   await expect(page.getByRole("region", { name: "Requested access" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Allow access" })).toBeEnabled();
-  await expect.poll(() => observed.requests.map(request => request.path)).toEqual([requestPath, "/v1/me", "/v1/connectors"]);
+  await expect.poll(() => observed.requests.map(request => request.path).sort()).toEqual([requestPath, "/v1/me", "/v1/connectors"].sort());
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   await observed.evidence();
   await page.getByRole("button", { name: "Allow access" }).click();

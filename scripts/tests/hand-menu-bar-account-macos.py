@@ -13,6 +13,7 @@ import json
 import os
 from pathlib import Path
 import plistlib
+import re
 import shutil
 import subprocess
 import tempfile
@@ -28,8 +29,8 @@ guard AXIsProcessTrusted() else { fputs("Accessibility permission is required\n"
 let app = AXUIElementCreateApplication(pid)
 var rows: [[String: Any]] = []
 var elements: [(String, String, AXUIElement)] = []
-func walk(_ element: AXUIElement, _ depth: Int) {
-    if depth > 8 || rows.count > 3000 { return }
+func walk(_ element: AXUIElement, _ depth: Int, _ path: [String] = []) {
+    if depth > 16 || rows.count > 3000 { return }
     func attribute(_ name: String) -> CFTypeRef? {
         var value: CFTypeRef?
         AXUIElementCopyAttributeValue(element, name as CFString, &value)
@@ -38,21 +39,40 @@ func walk(_ element: AXUIElement, _ depth: Int) {
     let role = attribute(kAXRoleAttribute) as? String ?? ""
     let title = attribute(kAXTitleAttribute) as? String ?? ""
     if role == kAXMenuItemRole || role == kAXMenuBarItemRole {
-        rows.append(["role":role, "title":title, "enabled":attribute(kAXEnabledAttribute) as? Bool ?? false])
+        rows.append(["role":role, "title":title, "depth":depth, "path":path, "enabled":attribute(kAXEnabledAttribute) as? Bool ?? false])
         elements.append((role, title, element))
     }
-    for child in (attribute(kAXChildrenAttribute) as? [AXUIElement] ?? []).prefix(2500) { walk(child, depth + 1) }
+    let childPath = role == kAXMenuItemRole ? path + [title] : path
+    for child in (attribute(kAXChildrenAttribute) as? [AXUIElement] ?? []).prefix(2500) { walk(child, depth + 1, childPath) }
 }
 walk(app, 0)
-if CommandLine.arguments.count > 2 {
+if CommandLine.arguments.count > 2 && CommandLine.arguments[2] == "Verify Refresh" {
+    guard rows.contains(where: { ($0["title"] as? String) == "Account: Checking…" }) else { exit(5) }
+    let retained = elements.filter { $0.0 == kAXMenuItemRole && $0.1.hasSuffix("(1)") }
+    guard retained.count == 5 else { exit(6) }
+    let deadline = Date().addingTimeInterval(15)
+    repeat {
+        Thread.sleep(forTimeInterval: 0.05)
+        rows.removeAll()
+        elements.removeAll()
+        walk(app, 0)
+        // A refresh must neither close the menu nor replace its category rows.
+        for old in retained {
+            guard let current = elements.first(where: { $0.0 == old.0 && $0.1 == old.1 }),
+                  CFEqual(old.2, current.2) else { exit(7) }
+        }
+        if !rows.contains(where: { ($0["title"] as? String) == "Account: Checking…" }) { break }
+    } while Date() < deadline
+    guard rows.contains(where: { ($0["title"] as? String) == "Account: Signed in · Synthetic account" }),
+          rows.contains(where: { ($0["title"] as? String) == "Connections: 3 connected" }) else { exit(8) }
+}
+else if CommandLine.arguments.count > 2 && !(CommandLine.arguments[2] == "Open Menu" && elements.contains(where: { $0.0 == kAXMenuItemRole })) {
     let title = CommandLine.arguments[2]
-    guard title == "Refresh Status" || title == "Open Menu" || title == "Quit Hand" || title == "Start Hand" || title == "More connections…" else { exit(64) }
+    let category = title.range(of: #"^(Computers|Workspaces|Virtual machines|Screens|Other connections|Offline) \([1-9][0-9]*\)\z"#, options: .regularExpression) != nil
+    let page = title.range(of: #"^Connections [1-9][0-9]*–[1-9][0-9]*\z"#, options: .regularExpression) != nil
+    guard title == "Refresh Status" || title == "Open Menu" || title == "Quit Hand" || category || page else { exit(64) }
     guard let target = elements.first(where: { title == "Open Menu" ? $0.0 == kAXMenuBarItemRole : ($0.0 == kAXMenuItemRole && $0.1 == title) }) else { exit(3) }
-    var result = AXUIElementPerformAction(target.2, kAXPressAction as CFString)
-    if result != .success, let bar = elements.first(where: { $0.0 == kAXMenuBarItemRole }) {
-        _ = AXUIElementPerformAction(bar.2, kAXPressAction as CFString)
-        result = AXUIElementPerformAction(target.2, kAXPressAction as CFString)
-    }
+    let result = AXUIElementPerformAction(target.2, kAXPressAction as CFString)
     if result != .success { exit(4) }
 }
 let data = try JSONSerialization.data(withJSONObject: rows, options: [.sortedKeys])
@@ -86,6 +106,8 @@ def main():
         def do_GET(self):
             requests.append({"method": "GET", "path": self.path, "scenario": mode["name"]})
             assert self.headers.get("Authorization") == "Bearer " + synthetic_key
+            if mode["name"] == "slow" and self.path == "/v1/me":
+                time.sleep(4)
             status = 200
             if mode["name"] == "network" and self.path == "/v1/me":
                 status, value = 503, {}
@@ -106,6 +128,12 @@ def main():
                         data += [{"id": "extra-" + str(i), "name": f"Additional Mac {i:02d}", "kind": "hand", "online": False, "health": "offline"} for i in range(1, 41)]
                     if mode["name"] == "partial":
                         data[3].update(online=None, health="unknown")
+                        data += [
+                            {"id": "zeta-workspace", "name": "Zeta workspace", "kind": "workspace", "online": True, "health": "connected"},
+                            {"id": "alpha-workspace", "name": "Alpha workspace", "kind": "workspace", "online": True, "health": "connected"},
+                            {"id": "offline-vm", "name": "Dormant VM", "kind": "vm", "online": False, "health": "offline"},
+                            {"id": "offline-workspace", "name": "Archived workspace", "kind": "workspace", "online": False, "health": "offline"},
+                        ]
                     value = {"data": data, "coverage": "known_account_and_workspace", "complete": mode["name"] != "partial"}
             elif self.path == "/v1/account/hands/screens":
                 value = {"surfaces": [{"machine_id": "synthetic-screen", "machine_name": "Synthetic screen", "transport": "frames-v1"}]}
@@ -174,25 +202,87 @@ def main():
                                 and (sign_in is None or enabled == sign_in)):
                             receipt["scenarios"].append({"name": name, "menu": rows})
                             (evidence / (name + ".json")).write_text(json.dumps(rows, indent=2))
-                            return
+                            return rows
                         time.sleep(0.2)
                     raise AssertionError(f"{name}: unexpected native menu: {titles}")
 
+                category_pattern = re.compile(r"(?:Computers|Workspaces|Virtual machines|Screens|Other connections|Offline) \([1-9][0-9]*\)")
+
+                def inventory_root(rows, categories):
+                    summary = next(row for row in rows if row["title"].startswith(("Connections:", "Hands: Some connections")))
+                    root_rows = [row for row in rows if row["role"] == "AXMenuItem" and row["depth"] == summary["depth"]]
+                    actual = [row["title"] for row in root_rows if category_pattern.fullmatch(row["title"])]
+                    assert actual == categories, f"Root categories: {actual}, expected {categories}"
+                    assert all(row["enabled"] for row in root_rows if row["title"] in categories)
+                    assert len(actual) <= 6, f"Unbounded root categories: {actual}"
+                    assert not any(" · Connected" in row["title"] or " · Disconnected" in row["title"]
+                                   or " · Screen advertised" in row["title"] or " · Screen available" in row["title"]
+                                   or " · Status unknown" in row["title"]
+                                   or " · Unavailable" in row["title"] or " · Available" in row["title"]
+                                   or row["title"].startswith("Connections ") or row["title"] == "More connections…"
+                                   for row in root_rows), f"Inventory leaked into root: {root_rows}"
+                    return len(root_rows)
+
+                def submenu(name, path, expected):
+                    # Select only titles observed in the real AX tree. Each
+                    # invocation reopens the root, then follows the whole path.
+                    open_menu()
+                    parent_depth = None
+                    for title in path:
+                        rows = expect(name + "-parent-" + str(len(path)), [title])
+                        row = next(row for row in rows if row["title"] == title and row["role"] == "AXMenuItem")
+                        assert row["enabled"], f"Submenu is disabled: {title}"
+                        if parent_depth is not None:
+                            assert row["depth"] > parent_depth, f"Submenu is not nested: {row}"
+                        parent_depth = row["depth"]
+                        subprocess.run([str(reader), str(process.pid), title], capture_output=True, check=True, timeout=10)
+                    rows = expect(name, expected)
+                    children = [row for row in rows if row["path"] == path]
+                    assert [row["title"] for row in children] == expected, f"{name}: unexpected submenu children: {children}"
+                    assert all(row["depth"] > parent_depth for row in children), f"{name}: children are not nested"
+                    assert len(children) <= 20, f"{name}: submenu exceeds 20 entries"
+                    return rows
+
+                categories = ["Computers (1)", "Workspaces (1)", "Virtual machines (1)", "Screens (1)", "Offline (1)"]
                 open_menu()
                 expect("signed-out", ["Menu companion: Running", "Account: Signed out", "Sign in to view"], sign_in=True)
                 assert not requests, "Signed-out menu made account requests"
                 credential.write_text(json.dumps({"version": 1, "accounts": {origin: {"api_key": synthetic_key}}}))
                 credential.chmod(0o600)
                 refresh()
-                expect("signed-in", ["Account: Signed in · Synthetic account", "Hands: 5 listed · 3 connected", "Synthetic Mac · Connected", "Build VM · Connected", "Project workspace · Connected", "Sleeping laptop · Disconnected", "Synthetic screen · Screen advertised"], sign_in=False)
+                rows = expect("signed-in", ["Account: Signed in · Synthetic account", "Connections: 3 connected", *categories], sign_in=False)
+                small_root_count = inventory_root(rows, categories)
+                mode["name"] = "slow"
+                refresh()
+                expect("refresh-started-while-open", ["Account: Checking…", "Connections: 3 connected · Refreshing…", *categories])
+                subprocess.run([str(reader), str(process.pid), "Computers (1)"], capture_output=True, check=True, timeout=10)
+                verified = subprocess.run([str(reader), str(process.pid), "Verify Refresh"], capture_output=True, check=True, timeout=20)
+                (evidence / "refresh-retained-ax-items.json").write_bytes(verified.stdout)
+                expect("refresh-while-open", ["Account: Signed in", "Connections: 3 connected", *categories,
+                        "Synthetic Mac · Connected"], ["Checking…", "Refreshing…"])
+                mode["name"] = "ready"
+                for category, title in zip(categories, ["Synthetic Mac · Connected", "Project workspace · Connected",
+                        "Build VM · Connected", "Synthetic screen · Screen advertised — No connected tool Hand", "Sleeping laptop · Disconnected"]):
+                    submenu("category-" + category.split()[0].lower(), [category], [title])
                 mode["name"] = "large"
                 refresh()
-                expect("large-inventory", ["Hands: 45 listed · 3 connected", "More connections…"])
-                subprocess.run([str(reader), str(process.pid), "More connections…"], capture_output=True, check=True, timeout=10)
-                expect("inventory-overflow", ["Additional Mac 40 · Disconnected", "Project workspace · Connected"])
+                large_categories = categories[:-1] + ["Offline (41)"]
+                rows = expect("large-inventory", ["Connections: 3 connected", *large_categories])
+                assert inventory_root(rows, large_categories) == small_root_count, "Root grew with the inventory"
+                submenu("offline-pages", ["Offline (41)"], ["Connections 1–20", "Connections 21–40", "Connections 41–41"])
+                for start, end in [(1, 20), (21, 40)]:
+                    submenu(f"offline-page-{start}-{end}", ["Offline (41)", f"Connections {start}–{end}"],
+                            [f"Additional Mac {i:02d} · Disconnected" for i in range(start, end + 1)])
+                submenu("offline-last-entry", ["Offline (41)", "Connections 41–41"], ["Sleeping laptop · Disconnected"])
                 mode["name"] = "partial"
                 refresh()
-                expect("partial-inventory", ["Hands: Some connections unavailable", "Project workspace · Status unknown", "Sleeping laptop · Disconnected"], ["Project workspace · Connected"])
+                partial_categories = ["Computers (1)", "Workspaces (3)", "Virtual machines (1)", "Screens (1)", "Offline (3)"]
+                rows = expect("partial-inventory", ["Hands: Some connections unavailable", *partial_categories], ["Project workspace · Connected"])
+                inventory_root(rows, partial_categories)
+                submenu("partial-workspace", ["Workspaces (3)"], ["Alpha workspace · Connected", "Zeta workspace · Connected",
+                        "Project workspace · Status unknown — Connection status unavailable"])
+                submenu("partial-offline", ["Offline (3)"], ["Archived workspace · Disconnected", "Dormant VM · Disconnected",
+                        "Sleeping laptop · Disconnected"])
                 mode["name"] = "network"
                 refresh()
                 expect("network-error", ["Account: Unable to verify", "Server unavailable"], ["Synthetic Mac", "Build VM", "Synthetic screen", "Account: Signed out"], False)
@@ -204,7 +294,9 @@ def main():
                 expect("expired", ["Account: Sign-in expired", "Sign in again to view"], ["Synthetic Mac", "Build VM"], True)
                 mode["name"] = "ready"
                 refresh()
-                expect("recovered", ["Synthetic Mac · Connected", "Build VM · Connected", "Account: Signed in"], sign_in=False)
+                rows = expect("recovered", ["Connections: 3 connected", "Account: Signed in", *categories], sign_in=False)
+                inventory_root(rows, categories)
+                submenu("recovered-computer", ["Computers (1)"], ["Synthetic Mac · Connected"])
                 process.terminate()
                 process.wait(timeout=10)
                 process = None

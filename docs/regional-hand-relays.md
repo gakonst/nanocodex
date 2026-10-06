@@ -114,7 +114,7 @@ curl --fail-with-body \
 
 This GET requires `agents:read` and `tools:use`, rejects Connect grants and query
 parameters, and returns safe legacy metadata:
-`{ "legacy": [{ "machine_id": "…", "runtime_id": "…", "online": true, "pending_calls": 0, "retirable": false }] }`.
+`{ "legacy": [{ "machine_id": "…", "runtime_id": "…", "generation": 1, "online": true, "pending_calls": 0, "retirable": false }] }`.
 It does not require a browser Origin header. The status read does not reserve a
 retirement; the retirement operation rechecks live state.
 
@@ -130,6 +130,19 @@ curl --fail-with-body --request POST \
   --data '{"machine_id":"EXACT_MACHINE_ID","runtime_id":"EXACT_STOPPED_RUNTIME_ID"}'
 ```
 
+For pre-runtime publishers, status returns `runtime_id: null`. Capture the
+positive safe-integer `generation` from that same status row and submit exactly
+`{"machine_id":"EXACT_MACHINE_ID","runtime_id":null,"generation":OBSERVED_GENERATION}`.
+A reconnect changes the generation; a stale request returns 409 and cannot
+retire the new connection. An exact repeated retirement returns the original
+receipt while that retired generation remains current. The receipt includes
+`generation` for pre-runtime publishers. Versioned runtime requests retain their
+existing two-field request and receipt format.
+
+Retirement clears the selected route's catalog, removing its Hand from inventory,
+while retaining its call ledger. It does not deduplicate devices by display name
+or prevent a pre-runtime publisher from reconnecting later.
+
 Use the observed IDs of the stopped legacy runtime. The endpoint requires
 `agents:write` and `tools:use`, rejects Connect grants, and applies same-origin
 checks to browser-session credentials. Query parameters and methods other than
@@ -137,6 +150,16 @@ POST are rejected. The account owner checks that the exact current legacy
 runtime is offline and has no admitted or dispatched calls before retiring it.
 A temporary disconnect never authorizes automatic retirement. Resolve pending
 calls through the existing recovery protocol instead of discarding their state.
+
+Regional registrations appear separately under `regional` in the same status
+response. A confirmed row includes `machine_id`, `runtime_id`, `publication_id`,
+`region`, `online`, `pending_calls`, and `retirable`. Submit exactly those first
+four identity fields to the same retirement endpoint. The original regional
+broker checks that this publication is disconnected with no pending calls;
+only then does the account remove its directory entry and retire that runtime.
+A missing relay or changing publication rejects retirement. Repeating the exact
+request returns its receipt without touching a newer publication. Re-enrollment
+uses a fresh runtime identity; it does not replay old calls.
 
 After a successful drain or retirement, a compatible publisher can start
 with native `NANOCODEX_REGIONAL_HAND_RELAYS=1` and a new runtime identity; the

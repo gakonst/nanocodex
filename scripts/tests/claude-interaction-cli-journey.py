@@ -5,7 +5,7 @@ from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from uuid import uuid4
 
-spec = importlib.util.spec_from_file_location('journey', Path(__file__).with_name('claude-native-cli-journey.py'))
+spec = importlib.util.spec_from_file_location('journey', Path(__file__).with_name('claude-scheduler-monitor-cli-journey.py'))
 helper = importlib.util.module_from_spec(spec); spec.loader.exec_module(helper)
 require, sse, text_of = helper.require, helper.sse, helper.text_of
 
@@ -63,17 +63,17 @@ def main():
             response=sse(block,request['model']); self.send_response(200); self.send_header('Content-Type','text/event-stream'); self.send_header('Content-Length',str(len(response))); self.end_headers(); self.wfile.write(response)
     server=ThreadingHTTPServer(('127.0.0.1',0),Provider); threading.Thread(target=server.serve_forever,daemon=True).start()
     common=[str(args.binary.resolve()),'--claude','--model','claude-sonnet-5-5','--claude-api-key','synthetic-key','--claude-messages-url',f'http://127.0.0.1:{server.server_port}/v1/messages','--cwd',str(workspace),'--browser=none','--mcp-defaults','false','--mcp-codex-config','false','--web-search','false','--image-generation','false','--subagents','false','--memory','false','--claude-hooks',str(hooks)]
-    commands=[]; processes=[]; transcripts={}
+    commands=[]; processes=[]; transcripts={}; screens={}
     def start(command,label):
         master,slave=pty.openpty(); fcntl.ioctl(slave,termios.TIOCSWINSZ,struct.pack('HHHH',45,160,0,0))
         process=subprocess.Popen(command,stdin=slave,stdout=slave,stderr=slave,cwd=workspace,env=env,start_new_session=True); os.close(slave)
-        processes.append(process); commands.append(command); transcripts[label]=bytearray()
+        processes.append(process); commands.append(command); transcripts[label]=bytearray(); screens[label]=helper.TerminalScreen(rows=45, columns=160)
         def drain():
             while select.select([master],[],[],0)[0]:
                 try: chunk=os.read(master,65536)
                 except OSError: break
                 if not chunk: break
-                transcripts[label].extend(chunk)
+                transcripts[label].extend(chunk); screens[label].feed(chunk)
         return process,master,drain
     def wait(check,drain,message,timeout=20):
         end=time.monotonic()+timeout
@@ -84,9 +84,8 @@ def main():
             time.sleep(.025)
         raise AssertionError(message)
     def visible(label, text):
-        # Ratatui emits differential cursor moves between words.
-        plain=re.sub(rb'\x1b\[[0-9;?]*[A-Za-z]',b'',transcripts[label])
-        return re.sub(rb'\s+',b'',text) in re.sub(rb'\s+',b'',plain)
+        # Observe rendered cells: unchanged letters are absent from VT deltas.
+        return re.sub(r'\s+', '', text.decode()) in re.sub(r'\s+', '', screens[label].text())
     def pending(count,drain):
         end=time.monotonic()+.6
         while time.monotonic()<end: drain(); time.sleep(.02)
@@ -138,7 +137,9 @@ def main():
     finally:
         for p in processes:
             if p.poll() is None: p.kill(); p.wait()
-        for label,data in transcripts.items(): (artifact/f'{label}.pty').write_bytes(data)
+        for label,data in transcripts.items():
+            (artifact/f'{label}.pty').write_bytes(data)
+            (artifact/f'{label}.screen.txt').write_text(screens[label].text())
         (artifact/'scenario.json').write_text(json.dumps({'commands':commands,'environment':env,'boundary':'actual CLI TUI and terminal via PTY, local filesystem and SQLite, synthetic Messages HTTP only'},indent=2))
         (artifact/'outcome.json').write_text(json.dumps(outcome,indent=2)); server.shutdown(); print(json.dumps({'artifact':str(artifact),**outcome}))
 if __name__=='__main__': main()

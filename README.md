@@ -341,6 +341,12 @@ nanocodex run "inspect the repository" --harness claude --model opus
 nanocodex run "inspect the repository" --harness codex --model sol
 ```
 
+In the interactive local CLI, `/model` lists both Codex and Claude models before
+the first prompt. Select one from the picker, or enter `/model sonnet`, `/model opus`,
+`/model fable`, or `/model haiku` directly. Selecting another family creates its
+native harness with that family's credentials and default reasoning settings.
+The model is fixed once the thread starts; start a new thread to use another model.
+
 Use `nanocodex --claude auth status` or `nanocodex --claude auth logout` to manage
 that subscription.
 Claude roots and Claude children share its token-refresh manager, including when

@@ -4246,6 +4246,9 @@ export class DurableAgentSession extends DurableComputerObject {
    * even if legacy retained rows predate the publisher's scope validation. */
   listWorkspaceHands(ownerId: string): { data: HandInventoryEntry[]; complete: boolean } {
     const session = this.#session();
+    // A durable deletion tombstone can confirm retirement only to its owner.
+    const ownership = this.#initializationOwnership();
+    if (ownership?.state === "deleted" && ownership.owner_id === ownerId) return { data: [], complete: true };
     if (!session || session.owner_id !== ownerId || this.#deleted || this.#deleting
       || this.#durabilityExported || this.#durabilityImportState === "pending") return { data: [], complete: false };
     const rows = this.ctx.storage.sql.exec<{ machines_json: string; connect_grant_id: string | null }>(
@@ -4265,27 +4268,29 @@ export class DurableAgentSession extends DurableComputerObject {
       // with the same ID. Conflicts remain unknown and do not expose that route.
       const ambiguous = counts.get(machine.id)! > 1;
       if (ambiguous) complete = false;
-      data.push(inventoryEntry(machine, ambiguous ? null : online.get(machine.id) ?? false, true));
+      const connected = online.get(machine.id);
+      if (!ambiguous && connected === false) continue;
+      // Absence from discovery is uncertainty, not proof of disconnection.
+      if (connected === undefined) complete = false;
+      data.push(inventoryEntry(machine, ambiguous ? null : connected ?? null, true));
     }
     return { data, complete };
   }
 
+  #workspacePublicationQueue: Promise<void> = Promise.resolve();
+
   #registerWorkspaceHands(): void {
     // Broker construction can notify before the Session field is assigned.
-    this.ctx.waitUntil(Promise.resolve().then(async () => {
+    // Serialize refreshes and read state inside the queue. Retirement belongs
+    // to account polling, which compares the revision before deleting.
+    this.#workspacePublicationQueue = this.#workspacePublicationQueue.then(async () => {
       for (let attempt = 0; attempt < 3; attempt++) {
         const session = this.#session();
         if (!session) return;
         const result = this.listWorkspaceHands(session.owner_id);
-        // Retain known identities even when conflicting routes make discovery partial.
-        // Discovery always reads the Session again; this is an idempotent index entry.
-        if (result.data.length === 0) {
-          if (this.#hostedTools.machines().length) console.info({
-            type: "hand.inventory.registration_skipped", thread_id: session.session_id,
-            reason: "no_account_scoped_hands",
-          });
-          return;
-        }
+        // Never send unversioned empty writes: an RPC that timed out may still
+        // arrive after a reconnect. Account polling reclaims empty sessions.
+        if (result.data.length === 0) return;
         try {
           const accepted = await withHardDeadline("workspace Hand registration", 4_000, () =>
             this.env.NANOCODEX_ACCOUNT_TOOLS.getByName(session.owner_id)
@@ -4301,7 +4306,8 @@ export class DurableAgentSession extends DurableComputerObject {
           await new Promise<void>(resolve => setTimeout(resolve, attempt === 0 ? 250 : 1_000));
         }
       }
-    }).catch(error => console.warn({ type: "hand.inventory.registration_failed", error: String(error) })));
+    }).catch(error => console.warn({ type: "hand.inventory.registration_failed", error: String(error) }));
+    this.ctx.waitUntil(this.#workspacePublicationQueue);
   }
 
   #calendarPushQueue: Promise<unknown> = Promise.resolve();
@@ -5926,9 +5932,9 @@ export class DurableAgentSession extends DurableComputerObject {
     return new Response(null, { status: 204 });
   }
 
-  // A single SessionDO RPC saves an inter-colo round trip without weakening
-  // the two durable commit points. If the RPC is lost between commits, replay
-  // runs #createHttp again and #submitHttpTurn converges on the retained turn.
+  // Creation and its known prompt share one authenticated request. Fresh
+  // direct sessions publish their registry entry in the background; durable
+  // identity and turn receipts still make replay converge on the same work.
   async #createRunHttp(request: Request): Promise<Response> {
     let value: unknown;
     try { value = await request.json(); }
@@ -5967,8 +5973,8 @@ export class DurableAgentSession extends DurableComputerObject {
     const created = await this.#createHttp(new Request("https://session.internal/create", {
       method: "POST", headers: request.headers, body: JSON.stringify(initialization),
     }), (session) => {
-      // Warm only the existing raw snapshots while registration commits. Normal
-      // admission still owns credential activation, runtime and model startup.
+      // Optional snapshots overlap admission and registry publication. They
+      // never gate the first prompt or provider connection.
       this.ctx.waitUntil(Promise.all([
         this.#catalog(session),
         this.#accountCatalog.vault(this.env.NANOCODEX, session.owner_id,
@@ -5976,7 +5982,10 @@ export class DurableAgentSession extends DurableComputerObject {
       ]).catch((error) => {
         this.#observe("managed.creation_discovery_failed", { error_kind: errorKind(error) }, "warn");
       }));
-    });
+      // The known prompt is already authorized. Prepare its owned runtime and
+      // provider connection alongside admission, never send inference early.
+      this.#prepareActiveConversation(asserted.authorization);
+    }, true);
     if (!created.ok) return created;
     const phases = await created.json<Record<string, number>>();
     const session = this.#session();
@@ -6060,7 +6069,7 @@ export class DurableAgentSession extends DurableComputerObject {
     return new Response(body, { headers });
   }
 
-  async #createHttp(request: Request, afterInitialize?: (session: SessionRow) => void): Promise<Response> {
+  async #createHttp(request: Request, afterInitialize?: (session: SessionRow) => void, pipelined = false): Promise<Response> {
     const handlerEnteredAt = Date.now();
     const handlerStartedAt = performance.now();
     const includeConstructor = this.#createConstructorPending;
@@ -6077,6 +6086,48 @@ export class DurableAgentSession extends DurableComputerObject {
         return new Response(null, { status: 400 });
       }
     } catch { return new Response(null, { status: 400 }); }
+    // The same direct binding used by /create-live needs no remote registry
+    // acknowledgement or preparation lease before an already validated prompt.
+    // Existing staged/legacy sessions retain their original commit protocol.
+    if (pipelined && this.env.MANAGED_AGENT_DIRECT_CREDENTIALS === "true"
+      && (!this.#credentialBinding || this.#credentialBinding.strategy === "session_v1"
+        && this.#credentialBinding.state === "active")) {
+      if (typeof initialization.owner_id !== "string" || !isUserId(initialization.owner_id)
+        || typeof initialization.session_id !== "string" || !SESSION_ID.test(initialization.session_id))
+        return json({ error: "invalid_request" }, { status: 400 });
+      if (this.#durabilityExported || this.#durabilityImportState === "pending")
+        return json({ error: "agent_unavailable" }, { status: 409 });
+      const previous = this.#credentialBinding;
+      const binding: CredentialBindingOwnership = previous ?? {
+        cleanup_at: Date.now(), owner_id: initialization.owner_id,
+        session_id: initialization.session_id, state: "active",
+        subject: this.ctx.id.toString(), strategy: "session_v1",
+      };
+      this.#credentialBinding = binding;
+      const initialized = this.#initializeSession(initialization,
+        normalizeProviderColo(request.headers.get(MANAGED_INGRESS_COLO)));
+      if (!initialized.ok) {
+        this.#credentialBinding = previous;
+        return json({ error: initialized.status === 409 ? "agent_initialization_conflict" : "invalid_request" },
+          { status: initialized.status });
+      }
+      if (!previous) this.ctx.storage.kv.put(CREDENTIAL_BINDING_KEY, binding);
+      const session = this.#session()!;
+      afterInitialize?.(session);
+      this.#publishLiveRegistration(session.owner_id, session.session_id, true);
+      // Identity writes share one synchronous batch. Native output gates
+      // retain durability before responses or provider traffic can escape.
+      return json({ prepare_ms: 0, initialize_ms: roundMilliseconds(performance.now() - handlerStartedAt),
+        commit_ms: 0, commit_attach_ms: 0, commit_activate_ms: 0, commit_alarm_ms: 0,
+        handler_ms: roundMilliseconds(performance.now() - handlerStartedAt),
+        handler_entered_at_ms: handlerEnteredAt, response_ready_at_ms: Date.now(),
+        ...(includeConstructor ? { constructor_entered_at_ms: this.#constructorEnteredAtMs,
+          constructor_ready_at_ms: this.#constructorReadyAtMs,
+          constructor_ms: this.#constructorMs, constructor_base_ms: this.#constructorBaseMs,
+          constructor_sql_ms: this.#constructorSqlMs,
+          constructor_restore_read_ms: this.#constructorRestoreReadMs } : {}),
+      });
+    }
     const started = performance.now();
     // Keep preparation and its crash-cleanup lease durable before doing work.
     // Replays use the same lifecycle checks as the staged import protocol.
@@ -6206,22 +6257,29 @@ export class DurableAgentSession extends DurableComputerObject {
     }, normalizeProviderColo(request.headers.get(MANAGED_INGRESS_COLO)));
     if (!initialized.ok) return initialized;
 
-    const registration = this.#track(attachAgent(
-      this.env,
-      asserted.ownerId,
-      sessionId,
-      this.#ownershipIoTimeoutMs(),
-      this.#cronTriggers.hasTriggers(),
-    ));
-    this.ctx.waitUntil(registration.catch((error) => {
-      console.warn({
-        type: "managed.agent_live_registration_pending",
-        error_kind: errorKind(error),
-      });
-    }));
+    this.#publishLiveRegistration(asserted.ownerId, sessionId);
     const response = this.#upgrade(asserted.authorization, null, callerContext(request.headers), prepare);
     performanceCommit(this.ctx, "session.create.commit");
     return response;
+  }
+
+  #publishLiveRegistration(ownerId: string, sessionId: string, preparedRegistry = false): void {
+    const publish = preparedRegistry ? publishAgentRegistration : attachAgent;
+    const registration = this.#track((async () => {
+      for (let attempt = 0; ; attempt++) {
+        if (this.#deleting || this.#deleted) return;
+        try {
+          await publish(this.env, ownerId, sessionId, this.#ownershipIoTimeoutMs(), this.#cronTriggers.hasTriggers());
+          return;
+        } catch (error) {
+          if (attempt === 2) throw error;
+          await scheduler.wait(10 * 2 ** attempt);
+        }
+      }
+    })());
+    this.ctx.waitUntil(registration.catch((error) => {
+      console.warn({ type: "managed.agent_live_registration_pending", error_kind: errorKind(error) });
+    }));
   }
 
   #initializeSession(initialization: SessionInitialization, clientIngressColo: string | null = null): Response {

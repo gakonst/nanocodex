@@ -28,7 +28,13 @@ with a bounded deadline, without reconnecting the Hand. It excludes
 Connect-scoped routes and returns only
 names, IDs, kind and connection state. Discovery has a four-second deadline and
 eight concurrent workspace reads. Unavailable sources retain known identities
-as unknown; a full 64-session registry marks coverage partial rather than
+as unknown. Definitively disconnected workspace publishers disappear; owner-verified
+deleted-session tombstones also reclaim their registry slots. Account-owned
+offline devices remain retained. Session publications are serialized, and polling
+prunes only the registry revision it read, protecting concurrent reconnects.
+The 64-session bound applies to retained live or uncertain sessions; overflow
+remains durably partial because rejected publishers may not have republished.
+A full registry marks coverage partial rather than
 silently presenting an incomplete list as complete. Older workspace sessions
 join this registry when next opened. Existing `/v1/account/hands` consumers
 retain their live-only contract; screen advertisements remain a separate source.

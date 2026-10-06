@@ -351,6 +351,7 @@ export class UserCredentialBroker extends DurableObject<BrokerEnv> {
   #pendingOperations = 0;
   #activeOperation: CredentialOperation | undefined;
   #credentials: CredentialState = { version: 1, active: null };
+  #committedWalletIdentity: ReturnType<typeof publicRootWallet> | null = null;
   #claude: Promise<ClaudeSubscription.Subscription> | undefined;
   #claudeCredential: ClaudeCredential | undefined;
   #tail: Promise<void> = Promise.resolve();
@@ -366,6 +367,7 @@ export class UserCredentialBroker extends DurableObject<BrokerEnv> {
       let completed = false;
       try {
         await this.#initialize();
+        this.#committedWalletIdentity = this.#credentials.wallet ? publicRootWallet(this.#credentials.wallet) : null;
         this.#activatedAt = Date.now();
         this.#activationMs = this.#activatedAt - startedAt;
         completed = true;
@@ -379,6 +381,11 @@ export class UserCredentialBroker extends DurableObject<BrokerEnv> {
         });
       }
     });
+  }
+
+  async readWalletIdentity(): Promise<ReturnType<typeof publicRootWallet> | null> {
+    await this.#ready;
+    return this.#committedWalletIdentity ? { ...this.#committedWalletIdentity } : null;
   }
 
   fetch(request: Request): Promise<Response> {
@@ -2159,9 +2166,11 @@ export class UserCredentialBroker extends DurableObject<BrokerEnv> {
   }
 
   async #persist(): Promise<void> {
+    const identity = this.#credentials.wallet ? publicRootWallet(this.#credentials.wallet) : null;
     await this.#state.storage.put(STATE_KEY, {
       envelope: await this.#vault.seal(this.#credentials),
     } satisfies StoredRow);
+    this.#committedWalletIdentity = identity;
   }
 
   #entryVault(id: string): CredentialVault {
@@ -2179,6 +2188,7 @@ export class UserCredentialBroker extends DurableObject<BrokerEnv> {
   }
 
   async #persistAndSchedule(): Promise<void> {
+    const identity = this.#credentials.wallet ? publicRootWallet(this.#credentials.wallet) : null;
     const row = {
       envelope: await this.#vault.seal(this.#credentials),
     } satisfies StoredRow;
@@ -2188,6 +2198,7 @@ export class UserCredentialBroker extends DurableObject<BrokerEnv> {
       if (alarm === undefined) await transaction.deleteAlarm();
       else await transaction.setAlarm(alarm);
     });
+    this.#committedWalletIdentity = identity;
   }
 
   async #restoreDurableState(): Promise<void> {
@@ -2195,6 +2206,7 @@ export class UserCredentialBroker extends DurableObject<BrokerEnv> {
       const row = await this.#state.storage.get<StoredRow>(STATE_KEY);
       if (!row) {
         this.#credentials = { version: 1, active: null };
+        this.#committedWalletIdentity = null;
         return;
       }
       const opened = await this.#vault.open<CredentialState>(row.envelope);
@@ -2202,6 +2214,7 @@ export class UserCredentialBroker extends DurableObject<BrokerEnv> {
       if (installed.legacy.length) await this.#migrateLegacyVault(installed.legacy);
     } catch {
       this.#credentials = { version: 1, active: null };
+      this.#committedWalletIdentity = null;
     }
   }
 
@@ -2266,6 +2279,7 @@ export class UserCredentialBroker extends DurableObject<BrokerEnv> {
       delete restored.browserCookieJars;
     }
     this.#credentials = restored;
+    this.#committedWalletIdentity = restored.wallet ? publicRootWallet(restored.wallet) : null;
     for (const chatgpt of this.#chatGptAccounts()) {
       if (chatgpt?.refreshState === "in_flight") {
         chatgpt.refreshState = "ready";
