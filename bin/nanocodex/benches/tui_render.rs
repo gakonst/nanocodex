@@ -62,6 +62,14 @@ mod tui {
     }
 
     #[allow(dead_code, unused_imports)]
+    mod slash_commands {
+        include!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/tui/slash_commands.rs"
+        ));
+    }
+
+    #[allow(dead_code, unused_imports)]
     mod app {
         include!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/tui/app.rs"));
     }
