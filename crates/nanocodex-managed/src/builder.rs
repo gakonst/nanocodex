@@ -19,7 +19,7 @@ use nanocodex_oai_tools::{
 };
 
 #[cfg(feature = "tools")]
-use crate::attachment::AttachmentSupervisor;
+use crate::attachment::{AttachmentSupervisor, ToolPreparation};
 use crate::{
     AgentReceipt, AgentSettings, AgentState, EventCursor, ManagedClient, ManagedError,
     ManagedEvent, ManagedEvents, ManagedModel, PromptInput, SteerWithdrawal, TurnAction, TurnView,
@@ -579,7 +579,7 @@ pub struct ManagedBuilder<S = ManagedService> {
     event_observer: Option<mpsc::UnboundedSender<ManagedEvent>>,
     chatgpt_account: Option<String>,
     #[cfg(feature = "tools")]
-    tools: Option<Tools>,
+    tools: Option<ToolPreparation>,
     #[cfg(feature = "tools")]
     attachment_metadata: Option<AttachmentMetadata>,
 }
@@ -645,7 +645,24 @@ impl<S> ManagedBuilder<S> {
     #[cfg_attr(docsrs, doc(cfg(feature = "tools")))]
     #[must_use]
     pub fn tools(mut self, tools: Tools) -> Self {
-        self.tools = Some(tools);
+        self.tools = Some(ToolPreparation::Ready(tools));
+        self
+    }
+
+    /// Prepares an optional local tool recipe concurrently with admission.
+    ///
+    /// Preparation starts when building and never gates the first cloud request
+    /// or event stream. The completed recipe attaches in the background. Failed
+    /// admission, cancelled build, and disconnect cancel unfinished preparation.
+    /// Validate required configuration before supplying the future; handle any
+    /// optional discovery errors inside it. Use `tools` when recipe preparation must
+    /// finish before admission; attachment/catalog publication still happens in
+    /// the background.
+    #[cfg(feature = "tools")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "tools")))]
+    #[must_use]
+    pub fn tools_async(mut self, tools: impl Future<Output = Tools> + Send + 'static) -> Self {
+        self.tools = Some(ToolPreparation::Deferred(Box::pin(tools)));
         self
     }
 
@@ -705,6 +722,10 @@ impl<S> ManagedBuilder<S> {
             crate::driver::managed_prompt(prompt.clone(), settings.unwrap_or_default().model)?;
         let idempotency_key = idempotency_key.into();
         crate::client::validate_idempotency_key(&idempotency_key).map_err(backend_error)?;
+        #[cfg(feature = "tools")]
+        {
+            self.tools = self.tools.map(ToolPreparation::start);
+        }
         let response = call(
             &mut self.managed.service,
             ManagedRequest::CreateAndPrompt {
@@ -764,6 +785,10 @@ impl<S> ManagedBuilder<S> {
             return Err(backend_error(ManagedError::Configuration(
                 "a builder ChatGPT account pin requires a create recipe".to_owned(),
             )));
+        }
+        #[cfg(feature = "tools")]
+        {
+            self.tools = self.tools.map(ToolPreparation::start);
         }
         let (agent_id, expected_session_id, supplied_state) = match self.managed.operation.clone() {
             ManagedOperation::Create(settings) => {
@@ -868,7 +893,7 @@ impl<S> ManagedBuilder<S> {
         S::Error: std::error::Error + Send + Sync + 'static,
     {
         #[cfg(feature = "tools")]
-        let attachment = match self.tools {
+        let mut attachment = match self.tools {
             Some(tools) => {
                 let target = match call(
                     &mut self.managed.service,
@@ -904,7 +929,7 @@ impl<S> ManagedBuilder<S> {
                 Ok(response) => response,
                 Err(error) => {
                     #[cfg(feature = "tools")]
-                    if let Some(attachment) = attachment.as_ref() {
+                    if let Some(attachment) = attachment.take() {
                         let _ = attachment.shutdown().await;
                     }
                     return Err(error);

@@ -6,6 +6,14 @@ optional reverse attachment of a caller-owned `Tools` recipe. The cloud owns
 model execution and retained history; this crate never reads provider
 tokens or application environment variables.
 
+For optional local discovery, `ManagedBuilder::tools_async` prepares a complete
+`Tools` recipe concurrently with creation or opening. It does not delay first
+prompt admission or event delivery. The recipe attaches when ready; failed or
+cancelled builds and disconnect cancel unfinished preparation. Validate required
+configuration before building, and handle optional discovery errors in the
+future. Use `tools` for an already prepared recipe or a required provider whose
+errors must be resolved before admission.
+
 `Managed::create` and `create_live` resolve the authenticated account catalog
 default when no explicit `with_settings` policy is supplied.
 `ManagedClient::create_with_settings` sets the initial model policy atomically.
