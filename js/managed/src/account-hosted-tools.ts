@@ -174,7 +174,10 @@ export class AccountHostedTools extends DurableObject<AccountHostedToolsEnv> {
 
   /** Internal publication RPC; immutable account ownership fences the registry. */
   registerWorkspaceHands(ownerId: string, sessionId: string, entries: readonly HandInventoryEntry[]): boolean {
-    if (!isUserId(ownerId) || !isUserId(sessionId) || !this.#claim(ownerId)) return false;
+    // Session IDs include UUIDv7 and deterministic UUIDv8; account user IDs
+    // remain UUIDv4. Do not apply the narrower account identity validator here.
+    if (!isUserId(ownerId) || !/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/.test(sessionId)
+      || !this.#claim(ownerId)) return false;
     return new WorkspaceHandRegistry(this.ctx.storage).register(sessionId, entries);
   }
 

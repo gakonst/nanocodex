@@ -74,8 +74,8 @@ it("public inventory enforces authentication, capabilities, Connect denial and r
   expect((await f.call(f.principal, "GET", "?owner=other")).status).toBe(400);
 });
 
-async function seedSession(f: ReturnType<typeof fixture>) {
-  const id = crypto.randomUUID(), stub = bindings.NANOCODEX_SESSIONS.getByName(id);
+async function seedSession(f: ReturnType<typeof fixture>, id: string = crypto.randomUUID()) {
+  const stub = bindings.NANOCODEX_SESSIONS.getByName(id);
   await runInDurableObject(stub, async (instance, state) => {
     const original = (instance as unknown as { env: Record<string, unknown> }).env;
     Object.defineProperty(instance, "env", { configurable: true, value: { ...original,
@@ -96,8 +96,12 @@ async function seedSession(f: ReturnType<typeof fixture>) {
   return { id, stub };
 }
 
-it("reads workspace WebSocket publication through the public route and retains it offline", async () => {
-  const f = fixture(), session = await seedSession(f);
+it.each([
+  ["legacy UUIDv4", "11111111-1111-4111-8111-111111111111"],
+  ["current UUIDv7", "019b0000-0000-7000-8000-111111111111"],
+  ["idempotent UUIDv8", "11111111-1111-8111-8111-111111111111"],
+])("reads %s workspace publication through the public route and retains it offline", async (_, id) => {
+  const f = fixture(), session = await seedSession(f, id);
   const socket = await publish(session.stub, f.owner, "workspace-device", f.principal);
   try {
     await expect.poll(async () => (await (await f.call()).json() as any).data).toEqual([
