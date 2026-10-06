@@ -1850,6 +1850,87 @@ final class InboxUITests: XCTestCase {
         }
     }
 
+    func testAttachmentLibraryRecentPhotosMultiSelection() throws {
+        #if targetEnvironment(simulator)
+        guard ProcessInfo.processInfo.environment["NANOCODEX_SEEDED_RECENT_PHOTOS"] == "1" else {
+            throw XCTSkip("Requires an isolated Simulator seeded with two synthetic photos via simctl addmedia and Photos access granted to xyz.paradigm.centaur.")
+        }
+        continueAfterFailure = false
+        let app = launch(["NANOCODEX_DEMO_COMPOSER_PHOTOS": "1"])
+        defer { app.terminate() }
+        selectInbox(app)
+        let draft = "Keep my draft while selecting recent photos"
+        composer(app).tap(); composer(app).typeText(draft)
+        let removals = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "remove-attachment-"))
+        XCTAssertTrue(removals.firstMatch.waitForExistence(timeout: 5))
+        let attachmentIDs = removals.allElementsBoundByIndex.map(\.identifier)
+        let sheet = app.descendants(matching: .any)["attachment-library-sheet"].firstMatch
+        let addSelected = app.buttons["add-selected-attachments"]
+        app.buttons["add-attachments"].tap()
+        XCTAssertTrue(sheet.waitForExistence(timeout: 5))
+        let recents = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "recent-photo-"))
+        XCTAssertTrue(recents.element(boundBy: 1).waitForExistence(timeout: 10),
+                      "Seed two synthetic images and grant Photos access before running this journey.")
+        let first = app.buttons[recents.element(boundBy: 0).identifier]
+        let second = app.buttons[recents.element(boundBy: 1).identifier]
+
+        func assertSelection(_ firstSelected: Bool, _ secondSelected: Bool, _ evidence: String) {
+            XCTAssertTrue(sheet.exists, "Toggling a recent photo must keep the library open")
+            XCTAssertEqual(first.value as? String, firstSelected ? "Selected" : "Not selected")
+            XCTAssertEqual(second.value as? String, secondSelected ? "Selected" : "Not selected")
+            XCTAssertEqual(first.isSelected, firstSelected)
+            XCTAssertEqual(second.isSelected, secondSelected)
+            let count = (firstSelected ? 1 : 0) + (secondSelected ? 1 : 0)
+            if count == 0 {
+                XCTAssertFalse(addSelected.exists, "No confirmation action without a selection")
+            } else {
+                XCTAssertTrue(addSelected.isHittable)
+                XCTAssertTrue(addSelected.isEnabled)
+                XCTAssertEqual(addSelected.label, count == 1 ? "Add 1 Attachment" : "Add 2 Attachments")
+            }
+            capture(app, "attachment-multiselect-" + evidence)
+        }
+
+        func assertDraftPreserved() {
+            XCTAssertEqual(composer(app).value as? String, draft)
+            XCTAssertEqual(removals.allElementsBoundByIndex.map(\.identifier), attachmentIDs,
+                           "The existing draft attachments must remain intact")
+        }
+
+        assertSelection(false, false, "00-initial")
+        first.tap(); assertSelection(true, false, "01-one-selected")
+        second.tap(); assertSelection(true, true, "02-two-selected")
+        first.tap(); assertSelection(false, true, "03-one-remaining")
+        second.tap(); assertSelection(false, false, "04-none-selected")
+
+        first.tap(); second.tap()
+        assertSelection(true, true, "05-before-cancel")
+        dismissAttachmentLibrary(app)
+        assertDraftPreserved()
+        app.buttons["add-attachments"].tap()
+        XCTAssertTrue(sheet.waitForExistence(timeout: 5))
+        XCTAssertTrue(first.waitForExistence(timeout: 5))
+        assertSelection(false, false, "06-reopened-after-cancel")
+
+        first.tap(); second.tap()
+        assertSelection(true, true, "07-before-confirm")
+        addSelected.tap()
+        gone(sheet)
+        // Demo deliberately skips provider imports. This verifies confirmation
+        // dismissal and preservation only; it does not claim an import/upload.
+        assertDraftPreserved()
+        capture(app, "attachment-multiselect-08-confirmed-draft")
+        app.buttons["add-attachments"].tap()
+        XCTAssertTrue(sheet.waitForExistence(timeout: 5))
+        XCTAssertTrue(first.waitForExistence(timeout: 5))
+        assertSelection(false, false, "09-reopened-after-confirm")
+        dismissAttachmentLibrary(app)
+        assertDraftPreserved()
+        #else
+        throw XCTSkip("Seeded recent-photo journey runs only on an isolated Simulator.")
+        #endif
+    }
+
     private func dismissAttachmentLibrary(_ app: XCUIApplication) {
         let sheet = app.descendants(matching: .any)["attachment-library-sheet"].firstMatch
         XCTAssertTrue(sheet.waitForExistence(timeout: 5))
