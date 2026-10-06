@@ -426,6 +426,40 @@ fn configuration(error: impl std::fmt::Display) -> ManagedError {
     ManagedError::Configuration(error.to_string())
 }
 
+// Sample once for this attachment. A long-lived publisher retains its original
+// timestamp so consumers cannot mistake startup capacity for a live reservation.
+fn observe_resources(machine: AttachmentMachine) -> AttachmentMachine {
+    use nanocodex_oai_tools::attachment::AttachmentResourceObservation;
+    let Ok(elapsed) = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) else {
+        return machine;
+    };
+    let mut system = sysinfo::System::new();
+    system.refresh_memory();
+    let total = system.total_memory();
+    #[cfg(unix)]
+    let disk = nix::sys::statvfs::statvfs(machine.workspace()).ok();
+    #[cfg(unix)]
+    let (disk_total_bytes, disk_available_bytes) = disk.map_or((None, None), |disk| {
+        (
+            u64::try_from(u128::from(disk.blocks()) * u128::from(disk.fragment_size())).ok(),
+            u64::try_from(u128::from(disk.blocks_available()) * u128::from(disk.fragment_size()))
+                .ok(),
+        )
+    });
+    #[cfg(not(unix))]
+    let (disk_total_bytes, disk_available_bytes) = (None, None);
+    machine.with_resources(AttachmentResourceObservation {
+        observed_at_ms: u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX),
+        cpu_logical_count: std::thread::available_parallelism()
+            .ok()
+            .and_then(|count| u32::try_from(count.get()).ok()),
+        memory_total_bytes: (total > 0).then_some(total),
+        memory_available_bytes: (total > 0).then(|| system.available_memory()),
+        disk_total_bytes,
+        disk_available_bytes,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use std::{
@@ -873,38 +907,4 @@ mod tests {
             NativeState::open(workspace.path(), directory.path(), "Test host".into()).unwrap();
         assert_eq!(restarted.machine.id(), machine_id);
     }
-}
-
-// Sample once for this attachment. A long-lived publisher retains its original
-// timestamp so consumers cannot mistake startup capacity for a live reservation.
-fn observe_resources(machine: AttachmentMachine) -> AttachmentMachine {
-    use nanocodex_oai_tools::attachment::AttachmentResourceObservation;
-    let Ok(elapsed) = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) else {
-        return machine;
-    };
-    let mut system = sysinfo::System::new();
-    system.refresh_memory();
-    let total = system.total_memory();
-    #[cfg(unix)]
-    let disk = nix::sys::statvfs::statvfs(machine.workspace()).ok();
-    #[cfg(unix)]
-    let (disk_total_bytes, disk_available_bytes) = disk.map_or((None, None), |disk| {
-        (
-            u64::try_from(u128::from(disk.blocks()) * u128::from(disk.fragment_size())).ok(),
-            u64::try_from(u128::from(disk.blocks_available()) * u128::from(disk.fragment_size()))
-                .ok(),
-        )
-    });
-    #[cfg(not(unix))]
-    let (disk_total_bytes, disk_available_bytes) = (None, None);
-    machine.with_resources(AttachmentResourceObservation {
-        observed_at_ms: u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX),
-        cpu_logical_count: std::thread::available_parallelism()
-            .ok()
-            .and_then(|count| u32::try_from(count.get()).ok()),
-        memory_total_bytes: (total > 0).then_some(total),
-        memory_available_bytes: (total > 0).then(|| system.available_memory()),
-        disk_total_bytes,
-        disk_available_bytes,
-    })
 }
