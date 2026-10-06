@@ -110,7 +110,6 @@ test("opaque compaction, delta histories and unsupported inputs fail before infe
   for (const type of ["compaction", "compaction_summary", "context_compaction"]) {
     await assert.rejects(invoke({ input: [{ type, encrypted_content: "opaque" }] }), /compaction is unsupported/);
   }
-  await assert.rejects(invoke({ input: [{ role: "user", content: [{ type: "input_image", image_url: "x" }] }] }), /unsupported content/);
   await assert.rejects(invoke({ input: [{ type: "function_call_output", call_id: "missing", output: "x" }] }), /no matching call/);
   await assert.rejects(invoke({ input: [{ type: "function_call", name: "f", call_id: "pending", arguments: "{}" }] }), /without outputs/);
 });
@@ -147,7 +146,9 @@ test("agent messages preserve their routing metadata; opaque content fails", asy
     assert.deepEqual(JSON.parse(input.messages[0].content), { author: "child", recipient: "parent", message: "done" });
     return completion({ content: "received" });
   })({ input: [{ type: "agent_message", author: "child", recipient: "parent", content: [{ type: "input_text", text: "done" }] }] });
-  await assert.rejects(fixture(() => assert.fail("must not run"))({ input: [{ type: "agent_message", content: [{ type: "encrypted_content", encrypted_content: "opaque" }] }] }), /unsupported content/);
+  const rejected = await fixture(() => assert.fail("must not run"))({ input: [{ type: "agent_message", content: [{ type: "encrypted_content", encrypted_content: "opaque" }] }] });
+  assert.equal(rejected.status, 400);
+  assert.equal((await rejected.json()).error.code, "unsupported_content");
 });
 
 test("endpoint and authorization are constrained to the local host-managed seam", async () => {

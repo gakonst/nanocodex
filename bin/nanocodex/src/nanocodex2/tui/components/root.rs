@@ -2124,9 +2124,9 @@ impl RootNode {
             fast_mode: self.composer.component().fast_mode(),
             fast_mode_available: self.composer.component().model().supports_fast_mode(),
             effort: self.thread == ThreadState::New
-                || self.composer.component().model().oai().is_some(),
+                || self.composer.component().model().supports_fast_mode(),
             voice_input: self.composer.component().model().oai().is_some(),
-            model: self.thread == ThreadState::New && !self.composer.component().auto_routing(),
+            model: self.thread == ThreadState::New,
             auto_route: self.thread == ThreadState::New
                 && !self.has_active_turns()
                 && !self.composer.component().auto_routing(),
@@ -2371,9 +2371,11 @@ impl RootNode {
     }
 
     fn open_effort(&mut self) -> ComponentUpdate<RootEffect> {
-        if self.thread != ThreadState::New && self.composer.component().model().oai().is_none() {
+        if self.thread != ThreadState::New
+            && !self.composer.component().model().supports_fast_mode()
+        {
             self.notification = Some(Notification::plain(
-                "Claude effort is fixed after the first prompt; start a new session".into(),
+                "This model’s effort is fixed after the first prompt; start a new session".into(),
                 Color::Red,
             ));
             return ComponentUpdate::render(RenderRequest::Immediate);
@@ -2390,9 +2392,6 @@ impl RootNode {
     }
 
     fn open_model(&mut self) -> ComponentUpdate<RootEffect> {
-        if self.composer.component().auto_routing() {
-            return self.routing_settings_locked();
-        }
         if self.thread != ThreadState::New {
             self.notification = Some(Notification::plain(
                 "The model can only be changed before the first prompt".to_owned(),
@@ -2845,9 +2844,11 @@ impl RootNode {
     }
 
     fn apply_effort(&mut self, effort: ReasoningEffort, pro: bool) -> ComponentUpdate<RootEffect> {
-        if self.thread != ThreadState::New && self.composer.component().model().oai().is_none() {
+        if self.thread != ThreadState::New
+            && !self.composer.component().model().supports_fast_mode()
+        {
             self.notification = Some(Notification::plain(
-                "Claude effort is fixed after the first prompt; start a new session".into(),
+                "This model’s effort is fixed after the first prompt; start a new session".into(),
                 Color::Red,
             ));
             return ComponentUpdate::render(RenderRequest::Immediate);
@@ -2938,9 +2939,6 @@ impl RootNode {
             ));
             return ComponentUpdate::render(RenderRequest::Immediate);
         }
-        if self.composer.component().auto_routing() {
-            return self.routing_settings_locked();
-        }
         if self.thread != ThreadState::New {
             self.notification = Some(Notification::plain(
                 "The model can only be changed before the first prompt".to_owned(),
@@ -2948,7 +2946,7 @@ impl RootNode {
             ));
             return ComponentUpdate::render(RenderRequest::Immediate);
         }
-        if model == self.composer.component().model() {
+        if model == self.composer.component().model() && !self.composer.component().auto_routing() {
             return ComponentUpdate::render(RenderRequest::Immediate);
         }
         self.interactive = false;
@@ -5829,42 +5827,6 @@ mod live_control_tests {
             root.update(key(KeyCode::Enter)).effects.as_slice(),
             [RootEffect::Submit(prompt)] if prompt.display_text() == "first prompt"
         ));
-    }
-
-    #[test]
-    fn autoroute_locks_model_and_effort_commands_while_pending_and_resolved() {
-        for model in [None, Some(Model::Oai(nanocodex::Model::Glm53))] {
-            for command in [
-                "/model",
-                "/model sol",
-                "/effort",
-                "/effort high",
-                "/thinking high",
-                "/autoroute",
-            ] {
-                let mut root = root_with_draft(command);
-                root.update(RootEvent::RoutingHydrated {
-                    enabled: true,
-                    provider: Some("Vercel".into()),
-                    model,
-                    effort: model.map(|_| ReasoningEffort::Low),
-                });
-                assert!(!root.action_availability().model);
-                assert!(!root.action_availability().auto_route);
-                let update = root.update(key(KeyCode::Enter));
-                assert!(update.effects.is_empty(), "{command}");
-                assert!(root.overlay.is_none(), "{command}");
-                assert!(
-                    root.notification
-                        .as_ref()
-                        .unwrap()
-                        .message
-                        .to_string()
-                        .contains("Automatic routing")
-                );
-                assert!(root.queue.component().is_empty());
-            }
-        }
     }
 
     #[test]

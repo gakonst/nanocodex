@@ -4,6 +4,7 @@ import { providerStream, streamResponse } from "./provider-stream.mjs";
 const MODEL = "@cf/zai-org/glm-5.3";
 const MODELS = [MODEL, "gpt-6-astra", "gpt-6.1-sol", "gpt-6-luna", "kimi-k3", "mimo-v2.6-pro"];
 const BASE = "https://workers-ai.invalid/v1";
+class UnsupportedContentError extends Error {}
 const fail = (message) => { throw new Error(`Workers AI Responses: ${message}`); };
 const json = (value) => typeof value === "string" ? value : JSON.stringify(value);
 const key = (namespace, name) => JSON.stringify([namespace ?? null, name]);
@@ -34,7 +35,19 @@ export function createWorkersAiResponses(ai, options = {}) {
       const triggers = Array.isArray(body?.input) ? body.input.filter(item => item.type === "compaction_trigger") : [];
       const compact = triggers.length > 0;
       if (compact && (triggers.length !== 1 || body.input.at(-1) !== triggers[0])) fail("invalid compaction trigger");
-      const { input, registry } = translate(compact ? { ...body, input: body.input.slice(0, -1) } : body, model);
+      let translated;
+      try { translated = translate(compact ? { ...body, input: body.input.slice(0, -1) } : body, model); }
+      catch (error) {
+        if (!(error instanceof UnsupportedContentError)) throw error;
+        // A deterministic modality mismatch must reach the agent as a terminal
+        // HTTP error, not a thrown transport failure that it retries forever.
+        return Response.json({ error: { type: "invalid_request_error", code: "unsupported_content",
+          message: model === MODEL
+            ? "GLM-5.3 accepts text only. Use a vision-capable model for image input, or have a vision-capable subagent return text."
+            : "This message requires text content; the supplied content type is unsupported.",
+        } }, { status: 400 });
+      }
+      const { input, registry } = translated;
       if (compact) {
         // Validate the complete call/result history before asking the same pinned
         // provider for a summary. Compaction cannot execute another tool call.
@@ -214,7 +227,7 @@ function translate(body, model) {
       case "tool_search_output": {
         if (!pending.delete(item.call_id)) fail("tool output has no matching call in full history");
         const content = item.type === "tool_search_output" ? JSON.stringify({ tools: item.tools })
-          : vision ? visionContent(item.output) : textContent(item.output);
+          : vision ? visionContent(item.output) : textContent(item.output, true);
         // Chat providers accept screenshots as user image parts, not tool text.
         // Keep every call/result matched before appending the image observations.
         if (Array.isArray(content)) {
@@ -271,12 +284,19 @@ function translate(body, model) {
   return { input, registry };
 }
 
-function textContent(content) {
+function textContent(content, toolOutput = false) {
   if (typeof content === "string") return content;
   if (!Array.isArray(content)) fail("expected text content");
   return content.map(part => {
+    if (toolOutput && part.type === "input_image") {
+      // Project only the provider request. Keep the original screenshot in the
+      // session for clients, restore, and later use with a vision-capable model.
+      return "[Image omitted: GLM-5.3 cannot view images. The image remains in the session. "
+        + "For visual inspection, delegate to an available vision-capable subagent and ask it to return text. "
+        + "Do not infer image contents or repeat the same screenshot call to view it.]";
+    }
     if (!["input_text", "output_text", "text"].includes(part.type) || typeof part.text !== "string") {
-      fail(`unsupported content ${part.type}; GLM history must contain text`);
+      throw new UnsupportedContentError();
     }
     return part.text;
   }).join("\n");

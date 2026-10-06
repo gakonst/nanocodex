@@ -1248,7 +1248,7 @@ private struct AgentComposerView: View {
     @State private var fileTarget: InboxModel.AttachmentTarget?
     @State private var pickerError: String?
     @State private var queueContentHeight: CGFloat = 64
-    private enum AttachmentAction { case camera, photos, videos, files, context, recentPhoto(NSItemProvider) }
+    private enum AttachmentAction { case camera, photos, videos, files, recentPhotos([NSItemProvider]) }
     #if os(iOS)
     @State private var showCamera = false
     @State private var cameraTarget: InboxModel.AttachmentTarget?
@@ -1459,8 +1459,7 @@ private struct AgentComposerView: View {
                     onPhotos: { chooseAttachmentAction(.photos) },
                     onFiles: { chooseAttachmentAction(.files) },
                     onVideos: { chooseAttachmentAction(.videos) },
-                    onContext: { chooseAttachmentAction(.context) },
-                    onRecentPhoto: { chooseAttachmentAction(.recentPhoto($0)) }
+                    onRecentPhotos: { chooseAttachmentAction(.recentPhotos($0)) }
                 )
             }
             .sheet(isPresented: $showExpandedEditor) {
@@ -1556,12 +1555,10 @@ private struct AgentComposerView: View {
         case .files:
             guard let target else { return }
             fileTarget = target; pickerError = nil; showFiles = true
-        case .context:
-            model.showContext = true
-        case .recentPhoto(let provider):
+        case .recentPhotos(let providers):
             guard let target else { return }
             pickerError = nil
-            model.importAttachmentProviders([provider], target: target)
+            model.importAttachmentProviders(providers, target: target)
         }
     }
 

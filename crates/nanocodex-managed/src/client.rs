@@ -12,7 +12,7 @@ use serde::{Deserialize, de::DeserializeOwned};
 use url::{Host, Url};
 use zeroize::Zeroize;
 
-use nanocodex_oai_api::{ReasoningMode, Thinking};
+use nanocodex_oai_api::{Model, ReasoningMode, Thinking};
 
 use crate::{
     AgentList, AgentReceipt, AgentSettings, AgentSettingsPatch, AgentSettingsResponse, AgentState,
@@ -486,6 +486,55 @@ impl ManagedClient {
             ));
         }
         Ok(status)
+    }
+
+    /// Selects a manual model and effort before the first accepted message.
+    /// Gateway models retain a direct routing policy; native models clear routing.
+    /// Native reasoning mode and fast mode can then be set with `set_settings`.
+    ///
+    /// # Errors
+    /// Returns validation, transport, HTTP, or invalid receipt failures.
+    pub async fn set_manual_routing(
+        &self,
+        agent_id: &str,
+        model: impl Into<ManagedModel>,
+        thinking: Thinking,
+    ) -> Result<AutoRoutingStatus, ManagedError> {
+        validate_id("agent", agent_id)?;
+        let model = model.into();
+        AgentSettings {
+            model,
+            thinking,
+            reasoning_mode: ReasoningMode::Standard,
+            fast_mode: false,
+        }
+        .validate()?;
+        let body = serde_json::to_vec(&serde_json::json!({ "model": model, "thinking": thinking }))
+            .map_err(|_| ManagedError::InvalidResponse("failed to encode manual routing"))?;
+        let receipt: AutoRoutingStatus = self
+            .json(
+                Method::POST,
+                &format!("{}/routing", agent_path(agent_id)),
+                Some(&body),
+                None,
+            )
+            .await?;
+        let gateway = matches!(
+            model,
+            ManagedModel::Oai(Model::Glm53 | Model::Kimi | Model::Mimo)
+        );
+        if receipt.enabled != gateway
+            || !receipt.settings.is_valid()
+            || receipt.settings.reasoning_mode != ReasoningMode::Standard
+            || receipt.settings.fast_mode
+            || receipt.settings.model != model
+            || receipt.settings.thinking != thinking
+        {
+            return Err(ManagedError::InvalidResponse(
+                "invalid manual routing receipt",
+            ));
+        }
+        Ok(receipt)
     }
 
     /// Reads the actual retained provider/model without altering the thread.

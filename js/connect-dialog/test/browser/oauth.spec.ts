@@ -39,7 +39,7 @@ test("MCP client consent displays identity and access before genuine hosted appr
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto(`/?oauth_request=${requestId}`);
   await expect(page.getByRole("heading", { name: "Connect Synthetic MCP Client" })).toBeVisible();
-  await expect(page.getByText("Choose what this client can access.")).toBeVisible();
+  await expect(page.getByRole("region", { name: "Requested access" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Allow access" })).toBeEnabled();
   await expect.poll(() => observed.requests.map(request => request.path)).toEqual([requestPath, "/v1/me", "/v1/connectors"]);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
@@ -63,7 +63,9 @@ test("SMS restores an expired session but leaves OAuth consent to an explicit ac
   await setSession(context, "expired");
   const observed = observe(page, info);
   await page.goto(`/?oauth_request=${requestId}`);
-  await expect(page.getByRole("button", { name: "Allow access" })).toBeDisabled();
+  await expect(page.getByRole("textbox", { name: "Mobile number" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Allow access" })).toHaveCount(0);
+  await expect(page.getByRole("checkbox")).toHaveCount(0);
   await signIn(page);
   await expect(page.getByRole("button", { name: "Allow access" })).toBeEnabled();
   expect(observed.requests.some(request => request.path.endsWith("/approve"))).toBe(false);
