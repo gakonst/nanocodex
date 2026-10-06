@@ -4733,10 +4733,9 @@ async fn apply_update(
                             runtime.pending_settings = Some(runtime.settings);
                             if let Some(RetryTarget::Create(settings)) =
                                 runtime.retry_target.as_mut()
+                                && !gateway_model(runtime.settings.model)
                             {
-                                if !gateway_model(runtime.settings.model) {
-                                    settings.thinking = thinking;
-                                }
+                                settings.thinking = thinking;
                             }
                             continue;
                         }
