@@ -487,7 +487,7 @@ export type TurnResult = Readonly<{
   dispose(): void;
 }>;
 
-import type { NamedTool, ToolMap } from "nanocodex-tools";
+import type { NamedTool, ToolContext, ToolMap } from "nanocodex-tools";
 export type {
   NamedTool,
   SubagentToolContext,
@@ -628,6 +628,14 @@ export type McpTool = {
   } | undefined;
 };
 
+/** Trusted host interception; callbacks must never log or throw private values. */
+export type McpPrivateResultPolicy = {
+  /** Runs before remote execution and payment context; throw to reject a call. */
+  beforeCall?: ((name: string, input: Record<string, unknown>, context: ToolContext | undefined) => void | Promise<void>) | undefined;
+  /** Receives the raw result and returns ONLY model-safe MCP content. */
+  transformResult: (name: string, input: Record<string, unknown>, result: unknown, context: ToolContext | undefined) => unknown | Promise<unknown>;
+};
+
 export type McpServer = {
   /** Public Streamable HTTP MCP endpoint. Omit when supplying an initialized client. */
   url?: string | URL | undefined;
@@ -638,6 +646,10 @@ export type McpServer = {
   fetch?: typeof globalThis.fetch | undefined;
   /** Created with `mcpPayment()` from `nanocodex/tempo` (requires the `mppx` peer). */
   payment?: PaidMcpPayment | undefined;
+  /** Host-only interception before all result projections. Errors are replaced with
+   * fixed failures. Caller-owned clients/fetch functions remain trusted and must
+   * not independently log results, notifications, progress, or exceptions. */
+  privateResult?: McpPrivateResultPolicy | undefined;
   enabledTools?: readonly string[] | undefined;
   disabledTools?: readonly string[] | undefined;
   /** Declares every remote tool on this server safe for concurrent nested calls. */

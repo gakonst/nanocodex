@@ -73,7 +73,8 @@ export async function createMcpRuntime(configuration, options = {}) {
         entries.sort((left, right) => left.canonicalName.localeCompare(right.canonicalName));
       } catch (error) {
         if (!closed) {
-          failures[server.name] = errorMessage(error);
+          failures[server.name] = server.privateResult
+            ? "Private MCP server initialization failed" : errorMessage(error);
           // Dynamically authorized servers can lose access or hit a transient
           // broker failure during lazy discovery. Let a later authorized turn
           // start a fresh client; fixed public servers keep their established
@@ -257,6 +258,12 @@ async function connectServer(server, options, signal) {
   }, {
     jsonSchemaValidator: options.jsonSchemaValidator,
   });
+  if (server.privateResult && !server.client) {
+    // Remote notifications and asynchronous protocol errors have no private
+    // result transform. Never forward their payloads to host observers.
+    client.onerror = () => {};
+    client.fallbackNotificationHandler = () => {};
+  }
   if (server.payment) {
     const { context: _context, [mcpPaymentWrap]: wrap, ...payment } = server.payment;
     await wrap(client, payment);
@@ -312,6 +319,13 @@ function normalizeServers(configuration) {
     if (server.supportsParallelToolCalls !== undefined
       && typeof server.supportsParallelToolCalls !== "boolean") {
       throw new TypeError(`MCP server ${name} supportsParallelToolCalls must be boolean`);
+    }
+    if (server.privateResult !== undefined
+      && (!server.privateResult || typeof server.privateResult !== "object"
+        || typeof server.privateResult.transformResult !== "function"
+        || (server.privateResult.beforeCall !== undefined
+          && typeof server.privateResult.beforeCall !== "function"))) {
+      throw new TypeError(`MCP server ${name} privateResult requires transformResult and optional beforeCall functions`);
     }
     if (server.isAvailable !== undefined && typeof server.isAvailable !== "function") {
       throw new TypeError(`MCP server ${name} isAvailable must be a function`);
@@ -390,38 +404,53 @@ function createSearchIndex(entries) {
 }
 
 async function callRemoteTool(entry, input, context) {
-  const result = await withMcpRequest(entry.server, context?.signal, async (requestOptions) => {
-    if (!isServerAvailable(entry.server)) {
-      throw new Error(`MCP server ${entry.server.name} is unavailable`);
-    }
-    const configuredContext = entry.server.payment?.context;
-    const paymentContext = typeof configuredContext === "function"
-      ? await configuredContext({ name: entry.remoteName, arguments: input ?? {} }, context, entry.client)
-      : configuredContext;
-    const options = {
-      ...requestOptions,
-      ...(paymentContext !== undefined ? { context: paymentContext } : {}),
-    };
-    return entry.client.callTool(
-      {
-        name: entry.remoteName,
-        arguments: input ?? {},
-        ...(context?.turnId == null ? {} : {
-          _meta: {
-            "x-codex-turn-metadata": {
-              session_id: context.sessionId,
-              thread_id: context.sessionId,
-              turn_id: context.turnId,
-              call_id: context.callId,
-              model: context.model,
+  const policy = entry.server.privateResult;
+  let result;
+  try {
+    result = await withMcpRequest(entry.server, context?.signal, async (requestOptions) => {
+      await policy?.beforeCall?.(entry.remoteName, input ?? {}, context);
+      requestOptions.signal.throwIfAborted();
+      if (!isServerAvailable(entry.server)) {
+        throw new Error(`MCP server ${entry.server.name} is unavailable`);
+      }
+      const configuredContext = entry.server.payment?.context;
+      const paymentContext = typeof configuredContext === "function"
+        ? await configuredContext({ name: entry.remoteName, arguments: input ?? {} }, context, entry.client)
+        : configuredContext;
+      const options = {
+        ...requestOptions,
+        ...(paymentContext !== undefined ? { context: paymentContext } : {}),
+      };
+      const rawResult = await entry.client.callTool(
+        {
+          name: entry.remoteName,
+          arguments: input ?? {},
+          ...(context?.turnId == null ? {} : {
+            _meta: {
+              "x-codex-turn-metadata": {
+                session_id: context.sessionId,
+                thread_id: context.sessionId,
+                turn_id: context.turnId,
+                call_id: context.callId,
+                model: context.model,
+              },
             },
-          },
-        }),
-      },
-      undefined,
-      options,
-    );
-  });
+          }),
+        },
+        undefined,
+        options,
+      );
+      // Transform inside the deadline, before either model or Code Mode projection.
+      return policy
+        ? await policy.transformResult(entry.remoteName, input ?? {}, rawResult, context)
+        : rawResult;
+    });
+  } catch (error) {
+    if (!policy) throw error;
+    // Errors (including policy failures) may contain provider bodies or secrets.
+    // Do not attach the original error as a cause or interpolate its message.
+    result = { isError: true, content: [{ type: "text", text: "Private MCP request failed" }] };
+  }
   return toolResult(result, result, {
     success: result?.isError !== true,
     metadata: {

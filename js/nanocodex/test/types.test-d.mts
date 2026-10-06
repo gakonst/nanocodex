@@ -732,3 +732,21 @@ metadataBinding.readAccountDiscovery?.("owner", "catalog", { authorityKey: "epoc
 metadataBinding.readAccountDiscovery?.("owner", "vault", { authorityKey: "epoch", accessToken: "secret" });
 // @ts-expect-error Live presence is not a metadata cache component.
 metadataBinding.readAccountDiscovery?.("owner", "machines", { authorityKey: "epoch" });
+
+// Host-side private interception is part of the public server configuration.
+const privateMcpServer = {
+  url: 'https://synthetic.example/mcp',
+  privateResult: {
+    async beforeCall(name, input, context) {
+      const remoteName: string = name;
+      const args: Record<string, unknown> = input;
+      if (!remoteName || !args || !context) throw new Error('Call unavailable');
+    },
+    async transformResult(name, input, result, context) {
+      const raw: unknown = result;
+      void [name, input, raw, context];
+      return { content: [{ type: 'text', text: 'Saved securely' }] };
+    },
+  },
+} satisfies McpServer;
+void privateMcpServer;
