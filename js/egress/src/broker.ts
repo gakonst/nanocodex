@@ -1193,6 +1193,18 @@ export class UserCredentialBroker extends DurableObject<BrokerEnv> {
           } else {
             const parsed = validateSshIdentity(body);
             if (!parsed) return jsonError(400, "invalid_ssh_identity");
+            const retained = this.#credentials.ssh?.[sshIdentity];
+            if (retained) {
+              // HTTP dispatch holds #exclusive across validation and persistence.
+              // Reconciliation of the exact import is a no-op; a reference can
+              // never rotate to a different key or target through PUT.
+              if (retained.privateKey === parsed.privateKey
+                && retained.hostname === parsed.hostname && retained.port === parsed.port
+                && retained.username === parsed.username && retained.hostKeySha256 === parsed.hostKeySha256) {
+                return new Response(null, { status: 204, headers: noStoreHeaders() });
+              }
+              return jsonError(409, "ssh_identity_already_exists");
+            }
             try { identity = { ...parsed, publicKey: await sshPublicKey(parsed.privateKey) }; }
             catch { return jsonError(400, "invalid_ssh_identity"); }
           }

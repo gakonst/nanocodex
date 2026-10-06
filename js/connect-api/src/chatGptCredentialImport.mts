@@ -1,3 +1,4 @@
+import { isAllowedSshCredentialImportResource } from "./sshCredentialImport.mts";
 export const chatGptCredentialImportResourcePrefix =
   "urn:nanocodex:credential-import:chatgpt:codex-auth-v1:sha256:";
 
@@ -95,6 +96,7 @@ export function credentialImportDigestFromResources(resources: unknown): string 
   const imports = [];
   for (const resource of resources) {
     if (typeof resource !== "string" || !resource.startsWith(credentialImportResourcePrefix)) continue;
+    if (isAllowedSshCredentialImportResource(resource)) continue;
     if (!isAllowedChatGptCredentialImportResource(resource)) {
       throw new Error("The ChatGPT credential import resource is malformed.");
     }

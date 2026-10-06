@@ -1,3 +1,4 @@
+import type { SshTarget } from "./sshImportPolicy.mjs";
 import { appearanceStyle, type ConnectAppearance } from "./appearance.js";
 export type { ConnectAppearance } from "./appearance.js";
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
@@ -1416,6 +1417,11 @@ export function ConnectOnboarding({
               mcpConnections={mcpConnections}
               onChooseAccount={(account) => {
                 setWizardAccount(account);
+                if (connectionRequest?.connectPolicy.sshCredentialImport && account.address) {
+                  // Signing in is not consent to import a local SSH key.
+                  setBrowserAccountState({ address: account.address, id: "sms", persistent: true });
+                  return;
+                }
                 void approve(account);
               }}
               onCancel={reject}
@@ -1695,6 +1701,7 @@ function ConnectionWizard({
     ? request.mcpConnections.find(({ id }) => id === request.focusMcpConnection)
     : undefined;
   const deferredChatGptImport = request.connectPolicy.chatGptCredentialImport;
+  const sshImport = request.connectPolicy.sshCredentialImport;
   const requester = presentation === "wizard" ? "Nanocodex CLI" : request.app.name;
   if (!request.hostPrincipalExchange && !connectorStatuses && !accountAddress && !browserAccount) {
     if (browserAccountUnavailable || checkingBrowserAccount) {
@@ -1722,6 +1729,7 @@ function ConnectionWizard({
         confirmationCode={confirmationCode}
         appName={requester}
         appOrigin={request.app.origin}
+        requestContext={sshImport ? <SshImportConsent target={sshImport} /> : undefined}
         description={reauthenticationRequired
           ? "Your session expired. Sign in again."
           : undefined}
@@ -1766,6 +1774,7 @@ function ConnectionWizard({
       ) : undefined}
       title={focused ? `Connect ${connectorProviderLabel(requiredConnectorProvider(focused.id))}` : focusedMcp ? `Connect ${focusedMcp.name}` : `Connect to ${requester}`}
     >
+        {sshImport ? <SshImportConsent target={sshImport} completed={completed} /> : null}
         {request.permission.connectors.length ? <AccountConnectionSection
           eyebrow="Service"
           meta={undefined}
@@ -2766,4 +2775,17 @@ function errorMessage(error: unknown) {
   }
   if (message) return message;
   return "The passkey ceremony failed. Try again or reject the request.";
+}
+
+function SshImportConsent({ target, completed = false }: Readonly<{ target: SshTarget; completed?: boolean }>) {
+  return <AccountConnectionSection eyebrow="SSH" title="Import local private key" titleId="ssh-import-title">
+    <p>{completed ? "Approved. Return to the terminal to finish the SSH key import." : "After you approve, the Nanocodex CLI will send your local private key directly to the credential broker. This page cannot access the key."}</p>
+    <dl>
+      <dt>Reference</dt><dd>{target.reference}</dd>
+      <dt>Server</dt><dd>{target.hostname}</dd>
+      <dt>Port</dt><dd>{target.port}</dd>
+      <dt>Username</dt><dd>{target.username}</dd>
+      <dt>Host key SHA-256</dt><dd style={{ overflowWrap: "anywhere" }}>{target.host_key_sha256}</dd>
+    </dl>
+  </AccountConnectionSection>;
 }

@@ -103,7 +103,7 @@ impl AttachmentMachine {
 
     /// Adds a measured host resource sample without changing routing identity.
     #[must_use]
-    pub fn with_resources(mut self, resources: AttachmentResourceObservation) -> Self {
+    pub const fn with_resources(mut self, resources: AttachmentResourceObservation) -> Self {
         self.resources = Some(resources);
         self
     }
