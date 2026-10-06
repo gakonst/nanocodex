@@ -7,9 +7,10 @@ import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 import { build } from "esbuild";
 import { Miniflare } from "miniflare";
+import WebSocket from "ws";
 
 // Actual account HTTP proxy/authentication, Managed Session, SQLite, R2,
-// Just Bash, SDK and WASM. Only the external account catalog/model/HTTP target
+// Just Bash, SDK and WASM. Only the external account metadata/model/HTTP target
 // are synthetic. The catalog waits for the configured shell HTTP request:
 // serialized startup fails the ordering assertion rather than passing by luck.
 // Registration fault injection wraps the actual UserAccount HTTP boundary: one
@@ -56,11 +57,13 @@ export class FixtureSandbox extends DurableObject {
   async destroy() {}
 }
 export class FixtureModel extends DurableObject {
+  walletEnabled=false; releaseWallet;
   events=[]; setupStarted=false; catalogStarted=false; catalogReleased=false; setupFinished=false; published=false; publicationAttempts=0; holdCatalog=false; catalogGate; release; releasePublication;
   record(event,extra={}) { const row={type:'fixture.startup',event,at:Date.now(),...extra};this.events.push(row);console.info(row); }
   async fetch(request) {
     const url=new URL(request.url);
     if(url.pathname==='/trace') return Response.json(this.events);
+    if(url.pathname==='/allow-wallet') { this.walletEnabled=true;this.releaseWallet?.();return new Response(null,{status:204}); }
     if(url.pathname==='/registry-prepare') { this.record('registry.prepare');return new Response(null,{status:204}); }
     if(url.pathname==='/publication') {
       this.record('publication.start');
@@ -84,6 +87,7 @@ export class FixtureModel extends DurableObject {
     if(url.pathname==='/vault') { this.record('vault.read');return Response.json([]); }
     if(url.pathname.endsWith('/wallet')) {
       this.record('wallet.read',{combined:request.headers.get('accept')==='application/vnd.nanocodex.wallet-snapshot+json'});
+      if(!this.walletEnabled) await new Promise(resolve=>{this.releaseWallet=resolve;});
       return Response.json({address:'0x'+'1'.repeat(40),created_at:1,balance:{account:'0x'+'1'.repeat(40),balance:'12345678',decimals:6,symbol:'MACH',token:'0x20c000000000000000000000f37de3740adec032'}});
     }
     if(url.pathname.endsWith('/wallet/balance')) { this.record('wallet.redundant_balance_read');return new Response(null,{status:503}); }
@@ -108,6 +112,10 @@ export class FixtureModel extends DurableObject {
           server.send(JSON.stringify({type:'response.completed',response:{id,status:'completed',end_turn:false,output:[{type:'function_call',name:'exec_command',call_id:'call_startup_read',arguments:JSON.stringify({cmd:'cat /brain/setup-output.txt',workdir:'/brain'})}],usage:{input_tokens:1,output_tokens:1,total_tokens:2}}}));
           return;
         }
+        if(requestIndex===4) {
+          server.send(JSON.stringify({type:'response.completed',response:{id,status:'completed',end_turn:false,output:[{type:'custom_tool_call',name:'exec',call_id:'call_wallet_environment',input:'text(await tools.environment({}));'}],usage:{input_tokens:1,output_tokens:1,total_tokens:2}}}));
+          return;
+        }
         server.send(JSON.stringify({type:'response.created',response:{id,status:'in_progress'}}));
         server.send(JSON.stringify({type:'response.output_text.delta',output_index:0,delta:'STARTUP_OK'}));
         server.send(JSON.stringify({type:'response.completed',response:{id,status:'completed',end_turn:true,
@@ -128,12 +136,12 @@ export default {async fetch(request,env,ctx) {
       subjectId:'api_key:'+user,credentialId:'fixture',capabilities:auth.grant.capabilities},'synthetic startup'));
   }
   if(url.pathname==='/__trace') return env.MODEL.getByName('startup').fetch('https://fixture.internal/trace');
-  if(url.pathname==='/__hold-catalog' || url.pathname==='/__release-catalog') return env.MODEL.getByName('startup').fetch('https://fixture.internal/'+url.pathname.slice(3));
+  if(url.pathname==='/__hold-catalog' || url.pathname==='/__release-catalog' || url.pathname==='/__allow-wallet') return env.MODEL.getByName('startup').fetch('https://fixture.internal/'+url.pathname.slice(3));
   return worker.fetch(request,env,ctx);
 }};
 `;
 
-test("normal public API overlaps account discovery with configured setup and retains warm tools", { timeout: 90_000 }, async () => {
+test("public HTTP and WebSocket startup omit wallet I/O while explicit environment remains live", { timeout: 90_000 }, async () => {
   await mkdir(output, { recursive: true });
   const runtime = [], records = [], http = [];
   const capture = line => { runtime.push(line); const offset=line.indexOf('{"type":');if(offset>=0)try{records.push(JSON.parse(line.slice(offset)));}catch{} };
@@ -154,7 +162,7 @@ test("normal public API overlaps account discovery with configured setup and ret
           MODEL:{className:"FixtureModel",useSQLite:true},NANOCODEX_MEMORY:{className:"FixtureModel",useSQLite:true},NANOCODEX_SANDBOXES:{className:"FixtureSandbox",useSQLite:true}},
         serviceBindings:{NANOCODEX:{name:"managed",entrypoint:"FixtureEgress"}},r2Buckets:["NANOCODEX_HISTORY","NANOCODEX_WORKSPACES"]},
     ]});
-  let failure, evidence={};
+  let failure, live, evidence={};
   try {
     const base=await mf.ready,backend=await mf.getWorker("managed");
     const fixture=async()=>{const response=await backend.fetch("https://fixture.internal/__fixture",{method:"POST",body:JSON.stringify({user:crypto.randomUUID()})});assert.equal(response.status,200);return response.json();};
@@ -169,8 +177,8 @@ test("normal public API overlaps account discovery with configured setup and ret
     assert.equal((await (await backend.fetch("https://fixture.internal/__trace")).json()).length,0,"invalid input starts no metadata or model work");
     const started=performance.now();
     const run=await call("/v1/agent-runs","POST",{input:"Reply STARTUP_OK",settings,configuration},201,token,{"idempotency-key":"startup-overlap"});
-    const waitTurn=async id=>{
-      for(let i=0;i<1000;i++){const value=await call(`/v1/agents/${run.agent_id}/turns/${id}`);assert.ok(!["failed","cancelled"].includes(value.state),JSON.stringify(value));if(value.state==="completed")return value;await delay(10);}
+    const waitTurn=async (id,agentId=run.agent_id)=>{
+      for(let i=0;i<1000;i++){const value=await call(`/v1/agents/${agentId}/turns/${id}`);assert.ok(!["failed","cancelled"].includes(value.state),JSON.stringify(value));if(value.state==="completed")return value;await delay(10);}
       throw Error("turn did not finish");
     };
     const cold=await waitTurn(run.turn_id),coldMs=performance.now()-started;assert.match(JSON.stringify(cold),/STARTUP_OK/);
@@ -192,16 +200,50 @@ test("normal public API overlaps account discovery with configured setup and ret
     const requests=trace.filter(row=>row.event==="provider.request");assert.equal(requests.length,3);
     for(const request of requests){assert.equal(request.catalog_ready,true);assert.equal(request.setup_ready,true);assert.ok(request.tools.includes("exec"),JSON.stringify(request.tools));}
     assert.match(JSON.stringify(requests[0].input),/startup_context/);
-    assert.match(JSON.stringify(requests[0].input),/12345678/,"first prompt includes the combined live balance");
-    assert.equal(first("wallet.read")?.combined,true,"startup requests the combined snapshot");
-    assert.equal(trace.filter(row=>row.event==="wallet.read").length,1,"one live wallet read for first startup");
+    const startupText=requests[0].input.filter(item=>item.role==='developer').flatMap(item=>item.content??[]).map(item=>item.text??'').join('\n');
+    const startupEnvironment=JSON.parse(startupText.match(/<environment>\s*([\s\S]*?)\s*<\/environment>/)[1].replaceAll('&lt;','<').replaceAll('&gt;','>').replaceAll('&amp;','&'));
+    assert.equal(Object.hasOwn(startupEnvironment,"wallet"),false,"startup leaves unrequested wallet metadata unknown");
+    assert.deepEqual(startupEnvironment.identity,{});
+    assert.deepEqual(startupEnvironment.stablecoins,[]);
+    assert.equal(trace.filter(row=>row.event==="wallet.read").length,0,"model startup never requests a wallet snapshot");
     assert.equal(trace.filter(row=>row.event==="wallet.redundant_balance_read").length,0,"no sequential balance fetch");
     assert.match(JSON.stringify(requests[2].input),/SETUP_OK/,"real shell reads the R2 file created by setup");
     assert.equal(trace.filter(row=>row.event==="catalog.start").length,1,"warm turn reuses bounded discovery");
     assert.equal(trace.filter(row=>row.event==="setup.start").length,1,"warm turn never repeats setup side effects");
     evidence={source_root:root,cold_public_completion_ms:coldMs,warm_public_completion_ms:warmMs,setup_catalog_overlap_ms:first("catalog.finish").at-first("setup.start").at,
       setup_once:true,catalog_reads:1,provider_requests:3,prepared_file_read:true,tools_preserved:true,cross_owner_denied:true,
-      discovery_before_registration:true,failed_publication_retried:true,no_effect_before_registration:true,registry_prepare_requests:0,trace};
+      discovery_before_registration:true,failed_publication_retried:true,no_effect_before_registration:true,registry_prepare_requests:0,startup_wallet_reads:0,trace};
+    // Exercise native create-on-upgrade with speculative preparation while
+    // the external wallet service is held. No wallet read may even start.
+    const liveUrl=new URL('/v1/agents/live',base);liveUrl.protocol='ws:';
+    for(const [key,value] of Object.entries(settings))liveUrl.searchParams.set(key,String(value));
+    const wire=[];let socketError;
+    live=new WebSocket(liveUrl,{headers:{authorization:'Bearer '+token,'x-nanocodex-prepare':'active-conversation'}});
+    live.on('message',data=>wire.push(JSON.parse(String(data))));live.on('error',error=>{socketError=error;});
+    const waitMessage=async predicate=>{
+      for(let i=0;i<2000;i++){if(socketError)throw socketError;const message=wire.find(predicate);if(message)return message;await delay(10);}
+      throw Error('WebSocket startup did not complete: '+JSON.stringify(wire));
+    };
+    const ready=await waitMessage(message=>message.type==='ready'),liveTurn=crypto.randomUUID();
+    live.send(JSON.stringify({type:'prompt',id:liveTurn,input:'Reply STARTUP_OK'}));
+    await waitMessage(message=>message.type==='turn_accepted' && message.id===liveTurn);
+    assert.match(JSON.stringify(await waitTurn(liveTurn,ready.session_id)),/STARTUP_OK/);
+    const liveTrace=await(await backend.fetch('https://fixture.internal/__trace')).json();
+    assert.equal(liveTrace.filter(row=>row.event==='provider.request').length,4);
+    assert.equal(liveTrace.filter(row=>row.event==='wallet.read').length,0,'HTTP and prepared WebSocket startup perform no wallet I/O');
+    live.close();
+
+    // An explicit environment tool call still retrieves the live snapshot.
+    await backend.fetch('https://fixture.internal/__allow-wallet');
+    const inspected=await call(`/v1/agents/${run.agent_id}/turns`,'POST',{id:crypto.randomUUID(),input:'Read the account wallet with environment and reply STARTUP_OK'},202);
+    assert.match(JSON.stringify(await waitTurn(inspected.turn_id)),/STARTUP_OK/);
+    const inspectedTrace=await(await backend.fetch('https://fixture.internal/__trace')).json();
+    assert.equal(inspectedTrace.filter(row=>row.event==='wallet.read').length,1,'only explicit environment reads the wallet');
+    assert.equal(inspectedTrace.find(row=>row.event==='wallet.read').combined,true);
+    const inspectedRequests=inspectedTrace.filter(row=>row.event==='provider.request');
+    assert.equal(inspectedRequests.length,6);
+    assert.match(JSON.stringify(inspectedRequests.at(-1).input),/12345678/,'live environment result reaches the model');
+    evidence={...evidence,websocket_startup_wallet_reads:0,explicit_environment_wallet_reads:1,explicit_environment_balance:true,provider_requests:6,wire};
     // A second owner has no L1 snapshot. Delete the admitted turn while its
     // read-only metadata request is held, then release the old read. The public
     // deletion fence establishes ordering without a sleep-based race assertion.
@@ -228,11 +270,12 @@ test("normal public API overlaps account discovery with configured setup and ret
     }
     await call(`/v1/agents/${cancelled.agent_id}`,"GET",undefined,404,other);
     const finalTrace=await (await backend.fetch("https://fixture.internal/__trace")).json();
-    assert.equal(finalTrace.filter(row=>row.event==="provider.request").length,3,"late discovery never resurrects a deleted turn");
+    assert.equal(finalTrace.filter(row=>row.event==="provider.request").length,6,"late discovery never resurrects a deleted turn");
     evidence={...evidence,invalid_input_no_work:true,deletion_during_discovery_fenced:true,trace:finalTrace};
-    console.log("STARTUP_OVERLAP_EVIDENCE",JSON.stringify({...evidence,trace:undefined,output}));
+    console.log("STARTUP_OVERLAP_EVIDENCE",JSON.stringify({...evidence,trace:undefined,wire:undefined,output}));
   } catch(error) {failure=error;throw error;}
   finally {
+    live?.terminate();
     await mf.dispose();
     await Promise.all([writeFile(join(output,"evidence.json"),JSON.stringify({command:"node --test test/startup-overlap-journey.test.mjs",status:failure?"FAIL":"PASS",error:failure?.stack,...evidence,http,records},null,2)),
       writeFile(join(output,"runtime.log"),runtime.join("\n")),writeFile(join(output,"fixture-source.mjs"),source),writeFile(join(output,"source-resolution.json"),JSON.stringify(bundle.metafile.inputs,null,2))]);

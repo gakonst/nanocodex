@@ -9137,6 +9137,8 @@ export class DurableAgentSession extends DurableComputerObject {
         allowedConnectors: accountConnectorProjection(authorization),
         allowedConnections: accountConnectionProjection(authorization),
         enabled: session.runtime_profile === "managed", signal,
+        // Wallet reads belong to explicit environment inspection, never model startup.
+        includeWallet: false,
         ...(session.runtime_profile === "managed" ? {
           catalog: this.#catalog(session),
           vault: this.#accountCatalog.vault(this.env.NANOCODEX, session.owner_id,
