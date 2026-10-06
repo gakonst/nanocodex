@@ -33,6 +33,7 @@ where
             history,
             client_authored,
             context_baseline,
+            reasoning,
             checkpoint,
         } = snapshot.into_resume()?;
         Arc::make_mut(&mut config).model = model;
@@ -59,6 +60,7 @@ where
                     client_authored,
                     prompt_cache_key: Arc::clone(&restored_cache_key),
                     context_baseline,
+                    reasoning,
                 }))
             },
             |checkpoint| InitialResume::Exact(Box::new(checkpoint)),

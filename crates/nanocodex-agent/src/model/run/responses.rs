@@ -47,7 +47,17 @@ where
                 previous_response_id,
             },
         )?;
-        let request = factory.generation(call_index, &request_history, model, thinking, fast_mode);
+        let request = factory.generation(
+            call_index,
+            &request_history,
+            model,
+            conversation.reasoning.request_effort(
+                model,
+                thinking,
+                self.config.supports_reasoning_effort_updates(model),
+            ),
+            fast_mode,
+        );
         let (input_item_count, input_bytes, input_content) = trace_model_input(&request);
         let span = model_call_span(
             call_index,

@@ -770,6 +770,7 @@ type ManagedTurnRow = {
   id: string;
   input_json: string;
   dispatch_input_chunks: number | null;
+  inference_settings_json: string | null;
   may_have_inner_operation: number;
   authorization_json: string;
   request_hash: string;
@@ -3846,7 +3847,7 @@ export class DurableAgentSession extends DurableComputerObject {
     }),
   });
   #attachments?: SessionAttachments;
-  readonly #settingsRequests = new Set<Promise<Response>>();
+  readonly #settingsRequests = new Set<Promise<unknown>>();
   #recoveryTask?: Promise<void>;
   #recoveryRequested = false;
   #historyProjectionTask?: Promise<void>;
@@ -3959,6 +3960,7 @@ export class DurableAgentSession extends DurableComputerObject {
         input_json TEXT NOT NULL,
         dispatch_input_chunks INTEGER CHECK (dispatch_input_chunks IS NULL OR dispatch_input_chunks > 0),
         authorization_json TEXT NOT NULL,
+        inference_settings_json TEXT,
         state TEXT NOT NULL CHECK (
           state IN ('accepted', 'cancelling', 'completed', 'cancelled', 'failed')
         ),
@@ -4048,6 +4050,10 @@ export class DurableAgentSession extends DurableComputerObject {
       );
     `);
     this.#constructorSqlMs = roundMilliseconds(performance.now() - schemaStartedAt);
+    if (!this.ctx.storage.sql.exec<{ name: string }>("PRAGMA table_info(managed_turns)")
+      .toArray().some(({ name }) => name === "inference_settings_json")) {
+      this.ctx.storage.sql.exec("ALTER TABLE managed_turns ADD COLUMN inference_settings_json TEXT");
+    }
     initializeManagedAgentSettingsSchema(this.ctx.storage);
     initializeVmHostScopeSchema(this.ctx.storage);
     this.#operations = new SessionOperations(this.ctx.storage);
@@ -6683,7 +6689,7 @@ export class DurableAgentSession extends DurableComputerObject {
     return this.#trackSettingsMutation(previous => this.#patchSettings(request, previous));
   }
 
-  #trackSettingsMutation(operation: (previous: Promise<void>) => Promise<Response>): Promise<Response> {
+  #trackSettingsMutation<Result>(operation: (previous: Promise<void>) => Promise<Result>): Promise<Result> {
     const previous = this.#settingsMutationTail.catch(() => {});
     let release!: () => void;
     const reservation = new Promise<void>((resolve) => { release = resolve; });
@@ -8185,14 +8191,19 @@ export class DurableAgentSession extends DurableComputerObject {
       }
       this.ctx.storage.sql.exec(
         `INSERT INTO managed_turns (
-           id, request_key, request_hash, input_json, authorization_json, state,
+           id, request_key, request_hash, input_json, authorization_json, inference_settings_json, state,
            accepted_cursor, may_have_inner_operation, created_at, accepted_at, updated_at
-         ) VALUES (?, ?, ?, ?, ?, ?, CAST(? AS INTEGER), 0, ?, ?, ?)`,
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, CAST(? AS INTEGER), 0, ?, ?, ?)`,
         id,
         requestKey,
         requestHash,
         storeTurnInput(this.ctx.storage, id, JSON.stringify(input)),
         JSON.stringify(authorization),
+        // Classification selects its provider/model later. Only ordinary
+        // threads capture mutable inference defaults at public acceptance.
+        this.#configuration().model_routing ? null : JSON.stringify({
+          thinking: this.#settings().thinking, fast_mode: this.#settings().fast_mode,
+        }),
         cancellationRequested ? "cancelling" : "accepted",
         event.cursor,
         now,
@@ -8517,13 +8528,49 @@ export class DurableAgentSession extends DurableComputerObject {
         admission_ms: roundMilliseconds(performance.now() - admissionStartedAt),
         ...(row.accepted_at === null ? {} : { accepted_to_dispatch_ms: Date.now() - row.accepted_at }),
       });
-      turn = agent.turn.prompt({
-        id: row.id,
-        input: JSON.parse(dispatchInputJson) as PromptInput,
-        cancelOnAdmission: dispatchable.state === "cancelling",
-      } as Parameters<typeof agent.turn.prompt>[0] & { cancelOnAdmission: boolean });
-      this.#turns.set(row.id, turn);
-      const durableId = await turn.accepted();
+      const durableId = await this.#trackSettingsMutation(async previous => {
+        await previous;
+        assertAgentActive();
+        const defaults = this.#settings();
+        const pinned = row.inference_settings_json === null || this.#configuration().model_routing
+          || defaults.model.startsWith("claude-") ? undefined
+          : JSON.parse(row.inference_settings_json) as Pick<ManagedAgentSettings, "thinking" | "fast_mode">;
+        const thinkingChanged = pinned !== undefined && pinned.thinking !== defaults.thinking;
+        const fastChanged = pinned !== undefined && pinned.fast_mode !== defaults.fast_mode;
+        let admissionError: unknown;
+        try {
+          // Rust captures these defaults when accepting the operation. Hold the
+          // settings queue through that receipt, then restore future defaults.
+          if (thinkingChanged) await agent.session.setThinking(pinned!.thinking);
+          if (fastChanged) await agent.session.setFastMode(pinned!.fast_mode);
+          assertAgentActive();
+          turn = agent.turn.prompt({
+            id: row.id,
+            input: JSON.parse(dispatchInputJson!) as PromptInput,
+            cancelOnAdmission: dispatchable.state === "cancelling",
+          } as Parameters<typeof agent.turn.prompt>[0] & { cancelOnAdmission: boolean });
+          this.#turns.set(row.id, turn);
+          return await turn.accepted();
+        } catch (error) {
+          admissionError = error;
+          throw error;
+        } finally {
+          if (thinkingChanged || fastChanged) {
+            try {
+              assertAgentActive();
+              if (thinkingChanged) await agent.session.setThinking(defaults.thinking);
+              if (fastChanged) await agent.session.setFastMode(defaults.fast_mode);
+            } catch (cause) {
+              // The operation may already be durable. Recover its exact ID on
+              // a fresh runtime instead of turning a restore error terminal.
+              throw Object.assign(new Error("agent inference defaults could not be restored", {
+                cause: admissionError === undefined ? cause : new AggregateError([admissionError, cause]),
+              }), { code: "reopen_required" });
+            }
+          }
+        }
+      });
+      turn = this.#turns.get(row.id)!;
       if (durableId !== undefined && durableId !== row.id) {
         throw new Error(`durable admission returned unexpected turn id ${durableId}`);
       }
@@ -13270,7 +13317,7 @@ function managedTurns(storage: DurableObjectStorage, clause: string, ...args: (s
   return storage.sql
     .exec<ManagedTurnRow>(
       `SELECT id, request_key, request_hash, input_json, authorization_json, state,
-            dispatch_input_chunks,
+            dispatch_input_chunks, inference_settings_json,
             CAST(accepted_cursor AS TEXT) AS accepted_cursor,
             terminal_json, CAST(terminal_cursor AS TEXT) AS terminal_cursor,
             error, may_have_inner_operation, attempt_count, CAST(retry_at AS INTEGER) AS retry_at,
@@ -13295,6 +13342,7 @@ function managedTurnRowFromReceipt(receipt: ManagedTurnReceipt): ManagedTurnRow 
   return {
     ...receipt,
     dispatch_input_chunks: null,
+    inference_settings_json: null,
     authorization_json: JSON.stringify({ capabilities: [] } satisfies TurnAuthorization),
   };
 }

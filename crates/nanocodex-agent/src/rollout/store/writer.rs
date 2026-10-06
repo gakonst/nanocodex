@@ -8,6 +8,7 @@ pub(in crate::rollout) struct RolloutWriter {
     written_revision: Option<u64>,
     written_len: usize,
     written_context_baseline: Option<ContextBaseline>,
+    written_reasoning: Option<crate::reasoning::ReasoningState>,
     written_client_authored: Option<std::collections::BTreeSet<String>>,
     workspace: PathBuf,
     window_number: u64,
@@ -31,6 +32,7 @@ impl RolloutWriter {
             written_len: 0,
             written_context_baseline: None,
             written_client_authored: None,
+            written_reasoning: None,
             workspace,
             window_number: 0,
             first_window_id: initial_window_id.clone(),
@@ -49,6 +51,7 @@ impl RolloutWriter {
             written_len: state.written_len,
             written_context_baseline: state.context_baseline,
             written_client_authored: None,
+            written_reasoning: None,
             workspace: state.workspace,
             window_number: state.window_number,
             first_window_id: state.first_window_id,
@@ -182,10 +185,12 @@ impl RolloutWriter {
                     turn: commit.turn.clone(),
                     model: commit.model,
                     context_baseline: commit.context_baseline.clone(),
+                    reasoning: commit.reasoning.clone(),
                     client_authored: commit.client_authored.clone(),
                     write_state: self.written_context_baseline.as_ref()
                         != Some(&commit.context_baseline)
-                        || self.written_client_authored.as_ref() != Some(&commit.client_authored),
+                        || self.written_client_authored.as_ref() != Some(&commit.client_authored)
+                        || self.written_reasoning.as_ref() != Some(&commit.reasoning),
                 })
             }
             None => Ok(PreparedAppend {
@@ -199,10 +204,12 @@ impl RolloutWriter {
                 turn: commit.turn.clone(),
                 model: commit.model,
                 context_baseline: commit.context_baseline.clone(),
+                reasoning: commit.reasoning.clone(),
                 client_authored: commit.client_authored.clone(),
                 write_state: self.written_context_baseline.as_ref()
                     != Some(&commit.context_baseline)
-                    || self.written_client_authored.as_ref() != Some(&commit.client_authored),
+                    || self.written_client_authored.as_ref() != Some(&commit.client_authored)
+                    || self.written_reasoning.as_ref() != Some(&commit.reasoning),
             }),
             Some(revision) if revision == commit.revision => {
                 if len < self.written_len {
@@ -222,10 +229,12 @@ impl RolloutWriter {
                     turn: commit.turn.clone(),
                     model: commit.model,
                     context_baseline: commit.context_baseline.clone(),
+                    reasoning: commit.reasoning.clone(),
                     client_authored: commit.client_authored.clone(),
                     write_state: self.written_context_baseline.as_ref()
                         != Some(&commit.context_baseline)
-                        || self.written_client_authored.as_ref() != Some(&commit.client_authored),
+                        || self.written_client_authored.as_ref() != Some(&commit.client_authored)
+                        || self.written_reasoning.as_ref() != Some(&commit.reasoning),
                 })
             }
             Some(_) => {
@@ -249,6 +258,7 @@ impl RolloutWriter {
                     turn: commit.turn.clone(),
                     model: commit.model,
                     context_baseline: commit.context_baseline.clone(),
+                    reasoning: commit.reasoning.clone(),
                     client_authored: commit.client_authored.clone(),
                     // A compaction starts a new history window, whose context
                     // baseline must be independently reconstructable.
@@ -311,6 +321,7 @@ impl RolloutWriter {
                         full: true,
                         state: PersistedContextState {
                             nanocodex_context: &prepared.context_baseline,
+                            nanocodex_reasoning: &prepared.reasoning,
                             nanocodex_client_authored: &prepared.client_authored,
                         },
                     }),
@@ -419,6 +430,7 @@ impl RolloutWriter {
         self.written_len = prepared.len;
         if prepared.write_state {
             self.written_context_baseline = Some(prepared.context_baseline);
+            self.written_reasoning = Some(prepared.reasoning);
             self.written_client_authored = Some(prepared.client_authored);
         }
         if let Some(window) = prepared.window {
@@ -447,6 +459,7 @@ struct PreparedAppend {
     turn: RolloutTurn,
     model: Model,
     context_baseline: ContextBaseline,
+    reasoning: crate::reasoning::ReasoningState,
     client_authored: std::collections::BTreeSet<String>,
     write_state: bool,
 }
