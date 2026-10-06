@@ -11,6 +11,9 @@ has a process; it does not assert that its account connection is healthy. Pendin
 sign-in and stopped services have separate states. The helper never signs in,
 creates a Hand identity, publishes a screen, or reads account credentials.
 
+The icon starts near the right edge on first launch so it stays clear of the
+notch on crowded menu bars. Later launches preserve the position you choose.
+
 Its separate Aqua LaunchAgent starts the icon when the user logs in. Quitting the
 menu bar leaves the Hand service running. `nanocodex hand menu-bar` restores the
 icon. Closing the desktop app and exiting the CLI do not stop the menu helper.

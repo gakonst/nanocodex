@@ -35,8 +35,16 @@ final class HandMenuBar: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
+        let autosaveName = "NanocodexStandaloneHand"
+        let positionKey = "NSStatusItem Preferred Position " + autosaveName
+        // AppKit's default insertion at the left edge of menu extras can hide
+        // a new icon behind the camera housing. Seed only our first position;
+        // preserve every subsequent user arrangement saved by AppKit.
+        if UserDefaults.standard.object(forKey: positionKey) == nil {
+            UserDefaults.standard.set(180, forKey: positionKey)
+        }
         let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
-        statusItem.autosaveName = "NanocodexStandaloneHand"
+        statusItem.autosaveName = autosaveName
         statusItem.isVisible = true
         statusItem.button?.image = NSImage(systemSymbolName: "hand.raised.fill", accessibilityDescription: "Nanocodex Hand")
         statusItem.button?.image?.isTemplate = true
