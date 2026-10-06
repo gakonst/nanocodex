@@ -14,6 +14,8 @@ mod continue_auth;
 mod continue_sessions;
 mod control;
 mod device_hand;
+#[path = "../hand_login.rs"]
+mod hand_login;
 mod hand_observability;
 mod hand_recording;
 mod hand_recording_control;
@@ -710,7 +712,11 @@ async fn run(cli: Cli) -> Result<(), ManagedError> {
         Some(Command::Computer(command)) => {
             return command.run().await.map_err(ManagedError::Configuration);
         }
-        Some(Command::Login(command)) => return command.run().await.map_err(auth_error),
+        Some(Command::Login(command)) => {
+            let receipt = command.run_with_receipt().await.map_err(auth_error)?;
+            hand_login::connect_after_login(&receipt).await;
+            return Ok(());
+        }
         Some(Command::Status(command)) => {
             return nanocodex_cli_auth::AccountCommand::Status(command)
                 .run()
@@ -723,7 +729,12 @@ async fn run(cli: Cli) -> Result<(), ManagedError> {
                 .await
                 .map_err(auth_error);
         }
-        Some(Command::Account(command)) => return command.run().await.map_err(auth_error),
+        Some(Command::Account(command)) => {
+            if let Some(receipt) = command.run_with_receipt().await.map_err(auth_error)? {
+                hand_login::connect_after_login(&receipt).await;
+            }
+            return Ok(());
+        }
         Some(Command::VmRunConfig(command)) => return vm_hand::run_config(&command.config),
         Some(Command::VmCloneImage {
             source,

@@ -15,6 +15,7 @@ import WebSocket from "ws";
 import { mergeAccountHands, restoredAccountHands } from "./account-hands.mjs";
 import { createVmTools, supportsLocalVms } from "./vm-tools.mjs";
 import { describeDeviceHand, connectDeviceHand, saveDeviceHandLogin } from "./device-hand.mjs";
+import { prepareHandService } from "./hand-service.mjs";
 import { runtimeDataDirectory } from "./data-directory.mjs";
 import { desktopFactoryRecipe, superviseVmFactory } from "./vm-factory.mjs";
 
@@ -203,6 +204,7 @@ export class DesktopRuntime extends EventEmitter {
   #dataDirectory;
   #folderPreparations = new Map();
   #defaultPreparation;
+  #handServicePreparation;
   #deviceIdentity;
   #helperPreparations = new Map();
   #refreshPending;
@@ -364,6 +366,7 @@ export class DesktopRuntime extends EventEmitter {
 
   async #resetAccount() {
     this.#defaultPreparation?.abort.abort();
+    await this.#cancelHandServicePreparation();
     ++this.#generation;
     this.#state.accountScope = randomUUID();
     for (const id of this.#threads.keys()) this.closeThread(id);
@@ -617,6 +620,40 @@ export class DesktopRuntime extends EventEmitter {
     await this.#save(); this.#emit(); return this.state();
   }
 
+  async prepareHandService() {
+    if (process.platform !== "darwin" || this.#closed || !this.#state.defaultHandEnabled || !this.#state.defaults.deviceBinary) return this.state();
+    if (this.#handServicePreparation) return this.#handServicePreparation.promise;
+    const pending = { generation: this.#generation, abort: new AbortController() };
+    this.#state.handServicePreparation = { status: "preparing" };
+    this.#emit();
+    pending.promise = prepareHandService(this.#state.defaults.deviceBinary, { signal: pending.abort.signal })
+      .then(() => {
+        if (pending.abort.signal.aborted || this.#closed || pending.generation !== this.#generation) return;
+        this.#state.handServicePreparation = { status: "prepared" };
+        this.#emit();
+      }).catch(error => {
+        if (pending.abort.signal.aborted || this.#closed || pending.generation !== this.#generation) return;
+        const message = this.#safeError(error);
+        this.#state.handServicePreparation = { status: "error", error: message };
+        // Existing native clients display state.error. Authentication remains
+        // available and may clear this warning; the separate receipt remains.
+        this.#state.error ??= message;
+        this.#emit();
+      }).finally(() => {
+        if (this.#handServicePreparation === pending) this.#handServicePreparation = undefined;
+      }).then(() => this.state());
+    this.#handServicePreparation = pending;
+    return pending.promise;
+  }
+
+  async #cancelHandServicePreparation() {
+    const pending = this.#handServicePreparation;
+    if (!pending) return;
+    pending.abort.abort();
+    await pending.promise;
+    if (this.#state.handServicePreparation?.status === "preparing") delete this.#state.handServicePreparation;
+  }
+
   async prepareDefaultHand() {
     this.#requireConnection();
     if (!this.#state.defaultHandEnabled) return null;
@@ -728,10 +765,11 @@ export class DesktopRuntime extends EventEmitter {
   async setDefaultHandEnabled(enabled) {
     if (typeof enabled !== "boolean") throw new Error("Choose whether this device Hand is enabled.");
     this.#state.defaultHandEnabled = enabled;
+    const preparation = !enabled ? this.#cancelHandServicePreparation() : Promise.resolve();
     // Stop synchronously before awaiting disk IO or a pending handshake.
     const hand = this.#state.hands.find(hand => this.#isDefaultHand(hand.id));
     const stopping = !enabled && hand ? this.#stopHand(hand.id) : Promise.resolve();
-    await Promise.all([this.#save(), stopping]);
+    await Promise.all([this.#save(), stopping, preparation]);
     this.#emit();
     return this.state();
   }
@@ -1155,11 +1193,13 @@ export class DesktopRuntime extends EventEmitter {
     if (this.#closed) return this.#accountTransition;
     this.#closed = true;
     this.#defaultPreparation?.abort.abort();
+    const preparation = this.#cancelHandServicePreparation();
     ++this.#connectionAttempt;
     ++this.#generation;
     for (const id of this.#threads.keys()) this.closeThread(id);
     await Promise.all(this.#state.hands.map(hand => this.#stopHand(hand.id)));
     await this.#accountTransition.catch(() => {});
+    await preparation;
   }
 }
 

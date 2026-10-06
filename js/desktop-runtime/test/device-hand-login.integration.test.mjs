@@ -33,7 +33,7 @@ test("app login uses the real native private store without changing the CLI logi
   let launches = 0;
   const spawnProcess = (executable, args, options) => {
     launches++;
-    assert.deepEqual(args, ["account", "login", "--with-api-key"]);
+    assert.deepEqual(args, ["account", "login", "--with-api-key", "--no-hand"]);
     assert.equal(options.env.NANOCODEX_API_KEY, undefined);
     assert.equal(options.env.NC_API_KEY, undefined);
     assert.equal(options.env.NANOCODEX_ACCOUNT_FILE, accountFile);

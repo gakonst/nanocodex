@@ -117,3 +117,6 @@ process.on("SIGINT", () => { void close(); });
 process.stdout.on("error", () => { void close(); });
 send({ event: nativeEvents.encode({ type: "state", state: runtime.state() }) });
 void runtime.refresh();
+
+// Deliver the initial UI/auth state before preparing a dormant macOS service.
+setImmediate(() => { if (!closing) void runtime.prepareHandService(); });

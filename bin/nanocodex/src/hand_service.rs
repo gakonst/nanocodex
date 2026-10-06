@@ -11,6 +11,7 @@ use std::{
 use tokio::process::Command;
 
 const LABEL: &str = "com.nanocodex.hand";
+const PENDING_LOGIN: &str = "NanocodexPendingLogin";
 #[derive(Debug, Serialize)]
 pub(crate) struct ServiceStatus {
     pub installed: bool,
@@ -40,7 +41,11 @@ fn plist_path() -> Result<PathBuf> {
 }
 async fn domain() -> Result<String> {
     supported()?;
-    let out = Command::new("/usr/bin/id").arg("-u").output().await?;
+    let out = Command::new("/usr/bin/id")
+        .arg("-u")
+        .kill_on_drop(true)
+        .output()
+        .await?;
     let uid = String::from_utf8(out.stdout)?.trim().parse::<u32>()?;
     if !out.status.success() || uid == 0 {
         bail!("Run Hand service commands as the desktop user, without sudo");
@@ -49,7 +54,11 @@ async fn domain() -> Result<String> {
 }
 async fn launch(args: &[&str]) -> Result<std::process::Output> {
     supported()?;
-    Ok(Command::new("/bin/launchctl").args(args).output().await?)
+    Ok(Command::new("/bin/launchctl")
+        .args(args)
+        .kill_on_drop(true)
+        .output()
+        .await?)
 }
 async fn checked(args: &[&str]) -> Result<()> {
     if !launch(args).await?.status.success() {
@@ -87,6 +96,7 @@ async fn read_plist_path(path: &Path) -> Result<Value> {
     let out = Command::new("/usr/bin/plutil")
         .args(["-convert", "json", "-o", "-"])
         .arg(path)
+        .kill_on_drop(true)
         .output()
         .await?;
     if !out.status.success() {
@@ -135,6 +145,7 @@ fn render(value: &Value) -> Result<String> {
     })
 }
 fn write_plist(value: &Value) -> Result<()> {
+    validate_plist(value)?;
     let path = plist_path()?;
     let parent = path.parent().unwrap();
     fs::create_dir_all(parent)?;
@@ -308,6 +319,9 @@ pub(crate) async fn start() -> Result<()> {
     if !state.installed {
         bail!("Install the Hand service first with nanocodex hand install");
     }
+    if pending_login(&read_plist().await?) {
+        bail!("Hand is installed and awaiting login; sign in to connect this computer");
+    }
     let domain = domain().await?;
     if !state.loaded {
         checked(&[
@@ -342,25 +356,12 @@ pub(crate) async fn switch_executable(path: &Path) -> Result<()> {
     value["ExitTimeOut"] = json!(90);
     write_plist(&value)
 }
-pub(crate) async fn install(binary: Option<PathBuf>, account_file: Option<PathBuf>) -> Result<()> {
-    refuse_system_service().await?;
-    domain().await?;
-    if plist_path()?.exists() {
-        bail!(
-            "Hand LaunchAgent already exists; use hand restart or update to preserve its configuration"
-        );
-    }
-    let binary =
-        executable(&binary.unwrap_or(std::env::current_exe()?.with_file_name("nanocodex2")))?;
-    validate_candidate(&binary).await?;
+fn pending_login(value: &Value) -> bool {
+    value[PENDING_LOGIN] == true
+}
+
+fn service_plist(binary: &Path) -> Result<Value> {
     let home = home()?;
-    let account = account_file
-        .or_else(|| std::env::var_os("NANOCODEX_ACCOUNT_FILE").map(PathBuf::from))
-        .unwrap_or_else(|| home.join(".codex/nanocodex-account.json"));
-    if !account.is_absolute() {
-        bail!("Account file path must be absolute");
-    }
-    // Do not open, copy, or serialize account credentials.
     let logs = home.join(".nanocodex/service");
     fs::create_dir_all(&logs)?;
     #[cfg(unix)]
@@ -385,9 +386,133 @@ pub(crate) async fn install(binary: Option<PathBuf>, account_file: Option<PathBu
         use std::os::unix::fs::PermissionsExt;
         file.set_permissions(fs::Permissions::from_mode(0o600))?;
     }
-    write_plist(
-        &json!({"Label":LABEL,"ProgramArguments":[binary,"hand"],"RunAtLoad":true,"KeepAlive":{"SuccessfulExit":false},"ThrottleInterval":10,"ExitTimeOut":90,"WorkingDirectory":home,"StandardOutPath":log,"StandardErrorPath":log,"EnvironmentVariables":{"HOME":home,"NANOCODEX_ACCOUNT_FILE":account,"NANOCODEX_MANAGED_URL":nanocodex_cli_auth::managed_url_from_environment(None)?,"PATH":"/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"}}),
-    )?;
+    let mut value = json!({"Label":LABEL,"ProgramArguments":[binary,"hand"],"RunAtLoad":true,"KeepAlive":{"SuccessfulExit":false},"ThrottleInterval":10,"ExitTimeOut":90,"WorkingDirectory":home,"StandardOutPath":log,"StandardErrorPath":log,"EnvironmentVariables":{"HOME":home,"PATH":"/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"}});
+    if std::env::var("NANOCODEX_COMPUTER").as_deref() == Ok("off") {
+        value["EnvironmentVariables"]["NANOCODEX_COMPUTER"] = json!("off");
+    }
+    validate_plist(&value)?;
+    Ok(value)
+}
+
+/// Install a dormant service without selecting credentials or contacting an account.
+/// The caller holds the shared service/update lock.
+pub(crate) async fn prepare(binary: Option<PathBuf>) -> Result<()> {
+    let state = status().await?;
+    if state.installed || state.loaded {
+        return Ok(());
+    }
+    let binary =
+        executable(&binary.unwrap_or(std::env::current_exe()?.with_file_name("nanocodex2")))?;
+    validate_candidate(&binary).await?;
+    let mut value = service_plist(&binary)?;
+    value[PENDING_LOGIN] = json!(true);
+    value["RunAtLoad"] = json!(false);
+    value["KeepAlive"] = json!(false);
+    write_plist(&value)
+}
+
+pub(crate) async fn is_pending() -> Result<bool> {
+    Ok(plist_path()?.exists() && pending_login(&read_plist().await?))
+}
+
+/// Bind the exact saved login, retaining every previously configured owner.
+/// The caller holds the shared service/update lock. Never read account secrets.
+pub(crate) async fn connect_saved_login(
+    account_file: PathBuf,
+    managed_url: String,
+    credentials_changed: bool,
+) -> Result<()> {
+    supported()?;
+    if !account_file.is_absolute() {
+        bail!("Account file path must be absolute");
+    }
+    let account_file =
+        fs::canonicalize(account_file).wrap_err("Saved account credential file is unavailable")?;
+    regular_file(&account_file).wrap_err("Saved account credential file is unavailable")?;
+    let origin = nanocodex_cli_auth::canonical_managed_origin(&managed_url)?;
+    tokio::time::timeout(Duration::from_secs(60), async {
+        prepare(None).await?;
+        let state = status().await?;
+        if !state.installed {
+            bail!("Loaded Hand has no installed LaunchAgent; cannot bind a login safely");
+        }
+        let mut value = read_plist().await?;
+        let binary = executable(Path::new(value["ProgramArguments"][0].as_str().unwrap()))?;
+        if state.loaded && state.executable.as_deref() != Some(binary.as_path()) {
+            bail!("Loaded Hand differs from its installed LaunchAgent; recover it before connecting");
+        }
+        let pending = pending_login(&value);
+        if !pending {
+            let env = &value["EnvironmentVariables"];
+            let configured_origin = nanocodex_cli_auth::canonical_managed_origin(
+                env["NANOCODEX_MANAGED_URL"]
+                    .as_str()
+                    .unwrap_or(nanocodex_cli_auth::DEFAULT_MANAGED_ORIGIN),
+            )?;
+            let configured_account = env["NANOCODEX_ACCOUNT_FILE"]
+                .as_str()
+                .filter(|path| Path::new(path).is_absolute())
+                .map(fs::canonicalize)
+                .transpose()?;
+            if configured_account.as_deref() != Some(account_file.as_path())
+                || configured_origin != origin
+                || env.get("NANOCODEX_API_KEY").is_some()
+                || env.get("NC_API_KEY").is_some()
+            {
+                bail!("Hand belongs to a different saved login or managed origin; its configuration was preserved");
+            }
+        }
+        let since = SystemTime::now();
+        if !pending && !credentials_changed
+            && let Some(catalog) =
+                connected_catalog(&state, &binary, SystemTime::UNIX_EPOCH, Readiness::Hand).await?
+        {
+            // Catalogs publish on attachment changes, not on a timer. The
+            // matching live owner is independently rechecked by this probe.
+            warn_unavailable_screen(&catalog)?;
+            return Ok(());
+        }
+        if state.loaded {
+            stop().await?;
+        }
+        if pending {
+            value["EnvironmentVariables"]["NANOCODEX_ACCOUNT_FILE"] = json!(account_file);
+            value["EnvironmentVariables"]["NANOCODEX_MANAGED_URL"] = json!(origin);
+            value.as_object_mut().unwrap().remove(PENDING_LOGIN);
+            value["RunAtLoad"] = json!(true);
+            value["KeepAlive"] = json!({"SuccessfulExit":false});
+            write_plist(&value)?;
+        }
+        start().await?;
+        verify_catalog(&binary, since, Duration::from_secs(60), Readiness::Hand).await?;
+        Ok::<(), eyre::Report>(())
+    }).await.wrap_err("Hand connection timed out; the installed service was retained. Retry hand connect with the same saved login")?
+    .wrap_err("Hand connection failed; the installed service and saved login were retained")
+}
+
+pub(crate) async fn install(binary: Option<PathBuf>, account_file: Option<PathBuf>) -> Result<()> {
+    refuse_system_service().await?;
+    domain().await?;
+    if plist_path()?.exists() {
+        bail!(
+            "Hand LaunchAgent already exists; use hand restart or update to preserve its configuration"
+        );
+    }
+    let binary =
+        executable(&binary.unwrap_or(std::env::current_exe()?.with_file_name("nanocodex2")))?;
+    validate_candidate(&binary).await?;
+    let home = home()?;
+    let account = account_file
+        .or_else(|| std::env::var_os("NANOCODEX_ACCOUNT_FILE").map(PathBuf::from))
+        .unwrap_or_else(|| home.join(".codex/nanocodex-account.json"));
+    if !account.is_absolute() {
+        bail!("Account file path must be absolute");
+    }
+    let mut value = service_plist(&binary)?;
+    value["EnvironmentVariables"]["NANOCODEX_ACCOUNT_FILE"] = json!(account);
+    value["EnvironmentVariables"]["NANOCODEX_MANAGED_URL"] =
+        json!(nanocodex_cli_auth::managed_url_from_environment(None)?);
+    write_plist(&value)?;
     let since = SystemTime::now();
     if let Err(error) = async {
         start().await?;
@@ -412,12 +537,26 @@ pub(crate) async fn install(binary: Option<PathBuf>, account_file: Option<PathBu
 pub(crate) async fn ensure(binary: Option<PathBuf>, account_file: Option<PathBuf>) -> Result<()> {
     let candidate =
         executable(&binary.unwrap_or(std::env::current_exe()?.with_file_name("nanocodex2")))?;
-    let state = status().await?;
+    let mut state = status().await?;
     if !state.installed && !state.loaded {
         return install(Some(candidate), account_file).await;
     }
     if !state.installed {
         bail!("Loaded Hand has no installed LaunchAgent; cannot safely repair it");
+    }
+    if is_pending().await? {
+        let account = match account_file {
+            Some(path) => path,
+            None => nanocodex_cli_auth::saved_enrollment_account_file()?,
+        };
+        connect_saved_login(
+            account,
+            nanocodex_cli_auth::managed_url_from_environment(None)?,
+            false,
+        )
+        .await?;
+        // Continue normal repair if setup selected a newer companion binary.
+        state = status().await?;
     }
     let selected = state.executable.as_deref().map(executable).transpose()?;
     if selected.as_deref() == Some(candidate.as_path()) {
@@ -826,12 +965,12 @@ pub(crate) async fn prepare_update(
     let legacy_guards = lock_legacy_launchers(&home()?.join(".nanocodex/hands"))?;
     let path = plist_path()?;
     regular_file(&path)?;
-    read_plist_path(&path).await?;
+    let pending = pending_login(&read_plist_path(&path).await?);
     let previous = fs::read(&path)?;
     let backup = path.with_extension("plist.update-backup");
     let mut file = tempfile::NamedTempFile::new_in(path.parent().unwrap())?;
     let mut snapshot = read_plist_path(&path).await?;
-    snapshot["NanocodexUpdateWasLoaded"] = json!(state.loaded);
+    snapshot["NanocodexUpdateWasLoaded"] = json!(state.loaded && !pending);
     write!(
         file,
         "<?xml version=\"1.0\"?><plist version=\"1.0\">{}</plist>",
@@ -843,8 +982,8 @@ pub(crate) async fn prepare_update(
     Ok(Some(ServiceUpdate {
         candidate,
         previous,
-        was_loaded: state.loaded,
-        start_stopped,
+        was_loaded: state.loaded && !pending,
+        start_stopped: start_stopped && !pending,
         backup,
         _legacy_guards: legacy_guards,
     }))
@@ -948,6 +1087,14 @@ const fn competing_owner(plist_exists: bool, system_loaded: bool) -> bool {
     plist_exists || system_loaded
 }
 fn validate_plist(value: &Value) -> Result<()> {
+    if value.get(PENDING_LOGIN).is_some()
+        && (!pending_login(value)
+            || value["RunAtLoad"] != false
+            || value["KeepAlive"] != false
+            || !value["EnvironmentVariables"].is_object())
+    {
+        bail!("Pending Hand LaunchAgent must remain dormant until login");
+    }
     let args = value["ProgramArguments"]
         .as_array()
         .ok_or_else(|| eyre!("Missing Hand arguments"))?;

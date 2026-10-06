@@ -128,23 +128,44 @@ pub struct Login {
     /// Read an existing account-issued ncx_live key from stdin instead of SMS.
     #[arg(long)]
     with_api_key: bool,
+    /// Keep app-owned account imports separate from the global Hand service.
+    #[arg(long, hide = true)]
+    no_hand: bool,
     /// Name for the newly issued key in your account's API Keys menu.
     #[arg(long, default_value = "Nanocodex CLI", conflicts_with = "with_api_key")]
     label: String,
 }
 
+/// Safe metadata for the credential saved by this successful login.
+/// API keys never leave the authentication layer through this receipt.
+#[derive(Debug, Clone)]
+pub struct LoginReceipt {
+    pub origin: String,
+    pub account_file: PathBuf,
+    pub credentials_changed: bool,
+    pub skip_hand: bool,
+}
+
 impl Account {
     pub async fn run(self) -> Result<()> {
-        self.command.run().await
+        self.run_with_receipt().await.map(|_| ())
+    }
+
+    pub async fn run_with_receipt(self) -> Result<Option<LoginReceipt>> {
+        self.command.run_with_receipt().await
     }
 }
 
 impl AccountCommand {
     pub async fn run(self) -> Result<()> {
+        self.run_with_receipt().await.map(|_| ())
+    }
+
+    pub async fn run_with_receipt(self) -> Result<Option<LoginReceipt>> {
         match self {
-            Self::Login(login) => login.run().await,
-            Self::Status(options) => status(options).await,
-            Self::Logout(options) => logout(options),
+            Self::Login(login) => login.run_with_receipt().await.map(Some),
+            Self::Status(options) => status(options).await.map(|()| None),
+            Self::Logout(options) => logout(options).map(|()| None),
         }
     }
 }
@@ -167,6 +188,10 @@ impl Options {
 
 impl Login {
     pub async fn run(self) -> Result<()> {
+        self.run_with_receipt().await.map(|_| ())
+    }
+
+    pub async fn run_with_receipt(self) -> Result<LoginReceipt> {
         let (origin, path) = self.options.resolve()?;
         let label = self.label.trim();
         if label.is_empty() || label.chars().count() > 120 || label.chars().any(char::is_control) {
@@ -249,6 +274,10 @@ impl Login {
                 )
             };
             check_cancelled(&cancel)?;
+            let credentials_changed = !store
+                .accounts
+                .get(&origin)
+                .is_some_and(|saved| saved.api_key == *key);
             store.accounts.insert(
                 origin.clone(),
                 store::Credential {
@@ -256,14 +285,17 @@ impl Login {
                 },
             );
             store::save(&path, &store)?;
-            Ok(())
+            Ok(credentials_changed)
         }
         .await;
         if let Err(error) = session.finish(result.is_ok()).await {
             eprintln!("Warning: {error}");
         }
         signal.abort();
-        result?;
+        let credentials_changed = result?;
+        let account_file = path
+            .canonicalize()
+            .map_err(|_| Error::message("Cannot locate the saved account credential file"))?;
         println!(
             "Signed in to {origin}. Account credential saved to {}.",
             path.display()
@@ -273,8 +305,23 @@ impl Login {
                 "NANOCODEX_API_KEY or NC_API_KEY is set and takes precedence over this saved login."
             );
         }
-        Ok(())
+        Ok(LoginReceipt {
+            origin,
+            account_file,
+            credentials_changed,
+            skip_hand: self.no_hand,
+        })
     }
+}
+
+/// Resolve the default account file selection without reading any credential.
+pub fn default_account_file() -> Result<PathBuf> {
+    store::default_path()
+}
+
+/// Validate and canonicalize a managed origin without disclosing its input on error.
+pub fn canonical_managed_origin(value: &str) -> Result<String> {
+    canonical_origin(value)
 }
 
 /// Whether the default managed account selection has a usable local
@@ -309,16 +356,22 @@ pub fn saved_enrollment_account_file() -> std::result::Result<PathBuf, ManagedEr
 /// Run the normal SMS login against the default managed account and credential
 /// file. Used by the guided first-run flow without inventing a second auth path.
 pub async fn login_default() -> std::result::Result<(), Error> {
+    login_default_with_receipt().await.map(|_| ())
+}
+
+/// Run the default login and retain the exact saved selection for Hand setup.
+pub async fn login_default_with_receipt() -> Result<LoginReceipt> {
     Login {
         options: Options {
-            managed_url: None,
+            managed_url: optional_env("NANOCODEX_MANAGED_URL")?,
             account_file: None,
         },
         phone: None,
         with_api_key: false,
+        no_hand: false,
         label: "Nanocodex CLI".into(),
     }
-    .run()
+    .run_with_receipt()
     .await
 }
 

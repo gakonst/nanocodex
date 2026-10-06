@@ -32,7 +32,7 @@ export async function saveDeviceHandLogin(binary, env, accountFile, { signal, sp
   const loginEnvironment = { ...env, NANOCODEX_ACCOUNT_FILE: accountFile };
   delete loginEnvironment.NANOCODEX_API_KEY;
   delete loginEnvironment.NC_API_KEY;
-  const child = spawnProcess(binary, ["account", "login", "--with-api-key"], {
+  const child = spawnProcess(binary, ["account", "login", "--with-api-key", "--no-hand"], {
     env: loginEnvironment, stdio: ["pipe", "ignore", "ignore"], windowsHide: true,
   });
   const abort = () => child.kill("SIGTERM");

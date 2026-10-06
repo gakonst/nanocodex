@@ -46,7 +46,7 @@ for (const failSetup of [false, true]) {
     await runtime.startHand(machine.id);
     assert.equal(runtime.state().hands[0].status, "connected");
     assert.deepEqual((await readFile(calls, "utf8")).trim().split("\n").map(JSON.parse), [
-      ["__device-hand", "--describe"], ["account", "login", "--with-api-key"],
+      ["__device-hand", "--describe"], ["account", "login", "--with-api-key", "--no-hand"],
       ["__device-hand", "--parent-pipe"], ["__device-hand", "--parent-pipe"],
     ]);
   });

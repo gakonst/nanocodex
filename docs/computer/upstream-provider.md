@@ -23,8 +23,11 @@ nanocodex2 computer setup --refresh # check OpenAI's feed and update changed com
 # Both commands are also available as nanocodex computer setup.
 ```
 
-`nanocodex setup` is the guided, resumable path: it signs in to the shared account,
-installs CUA, and ensures Hand is connected. On macOS it does not install or offer
+`nanocodex setup` is the guided, resumable path. On macOS it installs the dormant
+Hand first, starts CUA preparation in the background, then signs in and connects
+the Hand. CLI account sign-in also connects the installed Hand automatically;
+CUA download completion is not a prerequisite. `setup --skip-account` prepares
+an unsigned-in Mac for later login. On macOS setup does not install or offer
 the official browser extension, whose native bridge still depends on app-server.
 CUA uses the direct MCP host without the official Codex binary or desktop GUI.
 The trusted host owns app-access consent; protected-target and OS permission

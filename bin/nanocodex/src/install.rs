@@ -62,7 +62,9 @@ impl Install {
         if no_setup {
             return Ok(());
         }
-        if !std::io::stdin().is_terminal() && !nanocodex_cli_auth::has_default_login() {
+        let unattended =
+            !std::io::stdin().is_terminal() && !nanocodex_cli_auth::has_default_login();
+        if unattended && !cfg!(target_os = "macos") {
             println!(
                 "No interactive terminal detected. Finish setup with: {} setup",
                 executable.display()
@@ -77,6 +79,11 @@ impl Install {
             .stdin(Stdio::inherit())
             .stdout(Stdio::inherit())
             .stderr(Stdio::inherit());
+        if unattended {
+            // Installing the macOS service needs no account or interactive
+            // terminal. CLI sign-in will connect this prepared Hand later.
+            command.arg("--skip-account");
+        }
         if std::env::var_os("NANOCODEX_COMPUTER").is_some_and(|value| !value.is_empty()) {
             command.arg("--skip-computer");
         }

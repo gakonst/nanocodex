@@ -111,9 +111,15 @@ provider does not prevent shell access; initialization of an installed automatic
 provider is limited to 500 milliseconds before falling back to native controls. An
 explicitly selected custom provider still reports its configuration errors.
 
-On first authenticated CLI launch, a missing current-user LaunchAgent is
-installed automatically using the matching saved CLI login. An existing user or
-system service retains its configuration and identity. On app sign-in, the runtime
+The installer prepares the current-user LaunchAgent before sign-in. It stays
+dormant until `nanocodex account login` or `nanocodex2 login` succeeds, then connects
+automatically using the exact saved account file and origin. Repeating the same
+login preserves a connected service; changed credentials reconnect it. A failed
+login leaves the installed service ready for the next attempt. An existing service
+configured for another account file or origin retains its owner.
+
+The Mac app bundles both the Hand and its matching installer and prepares the
+service on first launch. On app sign-in, the runtime
 verifies its Keychain credential through the native CLI over stdin and saves it
 in an account-specific private file under its runtime `hand-accounts` directory.
 The new LaunchAgent uses that file; the global CLI login and existing service

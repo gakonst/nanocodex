@@ -126,11 +126,16 @@ irm https://nanocodex.paradigm.xyz/install.ps1 | iex
 nanocodex
 ```
 
-The installer runs `nanocodex setup` automatically when a terminal or saved
-account login is available. After sign-in it connects the persistent Hand first;
-optional Computer Use components prepare in the background. You can start using
-the Hand while they download. An unattended install without saved credentials
-prints the command to finish sign-in. Setup remains idempotent and resumable.
+On macOS, the installer prepares the persistent Hand immediately, before sign-in,
+even without an interactive terminal. Sign in once with `nanocodex account login`
+or `nanocodex2 login`; the Hand connects automatically using that saved login.
+There is no separate Hand setup command. An existing service keeps its account
+configuration. Optional Computer Use components prepare in the background while
+you use Nanocodex. `--no-setup` explicitly opts out of automatic preparation.
+
+On Linux and Windows, the installer runs guided setup when a terminal or saved
+account login is available; unattended installs print the command to resume.
+Setup remains idempotent and resumable.
 
 The POSIX or PowerShell script only selects and checksum-verifies one platform
 bootstrap.

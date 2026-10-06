@@ -19,6 +19,7 @@ mod eval;
 )))]
 #[path = "eval_unsupported.rs"]
 mod eval;
+mod hand_login;
 mod hand_service;
 mod hand_setup;
 mod install;
@@ -297,7 +298,12 @@ async fn run(cli: Cli) -> Result<()> {
         Some(Command::Tui(command)) => command.run().await.map_err(Into::into),
         Some(Command::Computer(command)) => command.run().await.map_err(|error| eyre!(error)),
         Some(Command::Hand(command)) => command.run().await,
-        Some(Command::Account(command)) => command.run().await.map_err(Into::into),
+        Some(Command::Account(command)) => {
+            if let Some(receipt) = command.run_with_receipt().await? {
+                hand_login::connect_after_login(&receipt).await;
+            }
+            Ok(())
+        }
         Some(Command::Auth(command)) => {
             command
                 .run(cli.agent.selected_harness()?, cli.agent.claude_auth)
