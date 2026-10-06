@@ -915,12 +915,12 @@ jobs:
             output/claude-connection/popover-*.png
           if-no-files-found: warn
       - name: Test linked Tempo wallet and funding journeys
-        if: needs.changes.outputs.tests == 'true'
+        # Wallet custody journeys run even while the broader test matrix is paused.
         run: |
           pnpm --filter nanocodex-egress-service run test:wallet-link
           WALLET_BROWSER_CHANNEL=chromium pnpm --filter nanocodex-web run test:wallet
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        if: always() && needs.changes.outputs.tests == 'true'
+        if: always()
         with:
           name: linked-wallet-journeys
           path: |
