@@ -19,7 +19,7 @@
     "test:mcp-hosted-authorization": "node --test test/mcp-hosted-authorization-journey.test.mjs",
     "test:browser-login": "node --experimental-strip-types scripts/browser-login-chrome.mjs",
     "test:apps": "vitest run --config vitest.apps.config.ts",
-    "test:agent-runs": "node --test test/agent-run-stream-journey.test.mjs",
+    "test:agent-runs": "node ../egress/scripts/prepare-whatsapp.mjs && node scripts/prepare-code-evaluator.mjs && node scripts/prepare-just-bash-lazy.mjs && node --test test/agent-run-stream-journey.test.mjs",
     "test:apps:native": "node --test test/native-app-validation-journey.test.mjs",
     "test:discovery-cache": "node --test test/account-discovery-isolates.test.mjs",
     "test:native-input-discovery": "node --test test/native-input-discovery-journey.test.mjs",
@@ -65,7 +65,7 @@
     "test:code-mode-only": "node --test test/code-mode-only-journey.test.mjs",
     "test:provider-vault": "node ../egress/scripts/prepare-whatsapp.mjs && node scripts/prepare-code-evaluator.mjs && node scripts/prepare-just-bash-lazy.mjs && node --test test/same-origin-mutation.test.mjs test/mercator-private-result-journey.test.mjs test/provider-vault-journey.test.mjs",
     "test:account-links": "node --test test/account-navigation-journey.test.mjs",
-    "test:services": "node --test test/services-api-journey.test.mjs test/phone-provider-journey.test.mjs test/phone-stack-journey.test.mjs"
+    "test:services": "node ../egress/scripts/prepare-whatsapp.mjs && node scripts/prepare-code-evaluator.mjs && node scripts/prepare-just-bash-lazy.mjs && node --test test/services-api-journey.test.mjs test/phone-provider-journey.test.mjs test/phone-stack-journey.test.mjs"
   },
   "dependencies": {
     "nanocodex-computer": "workspace:*",
