@@ -76,8 +76,12 @@ never automatically replay that input.
 ## Browser selection
 
 The lean managed macOS runtime does not expose the dedicated browser surface.
-Use `cua.getApp` and the upstream native UI APIs for browser windows. Do not use
-`cua.getTab`, `cua.createBrowserTab`, or DOM APIs on that launcher. A custom,
+Browser tasks that require background tabs or agent-owned tab groups are
+unavailable on this launcher. Native `cua.getApp` control is appropriate only
+when interaction with that browser window is authorized; it is not a background
+tab substitute. Do not open or focus the user's browser to work around a missing
+browser surface. Use another supported non-disruptive surface or report the
+limitation. Do not use `cua.getTab`, `cua.createBrowserTab`, or DOM APIs on this launcher. A custom,
 explicit browser-enabled provider may have different dependencies and semantics;
 read its actual discovered contract. Enabling it does not establish that it is
 free of Codex/app-server.

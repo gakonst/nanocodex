@@ -1,3 +1,4 @@
+import { sshImportFromResources, type SshTarget } from "./sshImportPolicy.mjs";
 import {
   connectorProviderMatchesCapabilities,
   connectorStatusesFromWire,
@@ -16,7 +17,7 @@ export type RegisteredApp = Readonly<{
   origin: string;
 }>;
 
-export type ConnectPolicy = Readonly<{ chatGptCredentialImport: boolean }>;
+export type ConnectPolicy = Readonly<{ chatGptCredentialImport: boolean; sshCredentialImport?: SshTarget }>;
 
 export type McpConnectionStatus =
   | "authorization_required"
@@ -349,6 +350,17 @@ export function parseConnectPolicy(resources: unknown): ConnectPolicy {
       && browserCookieResources[0] !== browserCookieSyncResource
       && parseCliBrowserCookieSyncResource(browserCookieResources[0]) === undefined)) {
     throw new Error("The signed browser cookie sync resource is invalid.");
+  }
+  const sshImport = sshImportFromResources(signedResources);
+  if (sshImport) {
+    const apps = signedResources.filter(resource => resource.startsWith("urn:nanocodex:app:"));
+    const origins = signedResources.filter(resource => resource.startsWith("urn:nanocodex:origin:"));
+    if (apps.length !== 1 || apps[0] !== "urn:nanocodex:app:nanocodex-cli"
+      || origins.length !== 1 || origins[0] !== "urn:nanocodex:origin:https%3A%2F%2Fcli.nanocodex.xyz"
+      || signedResources.filter(resource => resource.startsWith(credentialImportResourcePrefix)).length !== 1) {
+      throw new Error("SSH import requires an exact Nanocodex CLI approval.");
+    }
+    return Object.freeze({ chatGptCredentialImport: false, sshCredentialImport: sshImport.target });
   }
   const credentialImports = signedResources.filter((resource) =>
     resource.startsWith(credentialImportResourcePrefix));

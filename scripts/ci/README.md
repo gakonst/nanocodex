@@ -10,7 +10,7 @@ Jobs are selected by the packages they build:
 | --- | --- | --- |
 | `rust` | fmt + Clippy on affected crates (fast lane) | any affected package |
 | `rust_extra` | independent crate checks, docs | any affected package |
-| `hands` | Linux/macOS shared Hand | `nanocodex2-bin` closure, `js/desktop-runtime`, CUA bridges |
+| `hands` | Linux/macOS shared Hand | `nanocodex-bin`/`nanocodex2-bin` closure, `js/desktop-runtime`, CUA bridges |
 | `windows` | Windows Hand and installer | `nanocodex-bin`/`nanocodex2-bin` closure, `windows/`, `install.ps1` |
 | `vm` | static guest and Docker Hand | `nanocodex-vm` closure, CUA bridges |
 | `voice` | native voice runtime | `nanocodex-voice-native` closure, `third_party/codex-voice` |
@@ -31,8 +31,12 @@ policy, JS typecheck/build); marking ready reruns CI with the heavy lane. Only
 superseded PR runs are cancelled. `pnpm check:fast` runs the fast-lane
 fmt + Clippy command locally for crates changed since `origin/master`.
 
-Automatic tests are paused: they run only when `NANOCODEX_CI_TESTS` in `ci.yml`
-is `on`. Rust tests use `cargo nextest run --profile ci` (`.config/nextest.toml`).
+Broader automatic tests are paused: gated steps run only when `NANOCODEX_CI_TESTS`
+in `ci.yml` is `on`. The shared Hand job still runs its Managed2 and SSH import
+CLI journeys, plus the private-input journey on Linux, whenever the job is
+selected. Legacy CLI source and SSH journey script changes select that job;
+draft PRs still suppress it with the other heavy jobs.
+Rust tests use `cargo nextest run --profile ci` (`.config/nextest.toml`).
 When re-enabling, add `hands` to `vm-guest`'s condition (its Docker tests run
 `nanocodex2`).
 

@@ -241,6 +241,121 @@ impl ManagedClient {
         validate_agent_receipt(receipt)
     }
 
+    /// Creates an agent and admits its first prompt under one stable operation key.
+    /// Reconcile an uncertain outcome by repeating the same key and input.
+    ///
+    /// # Errors
+    /// Returns validation, transport, HTTP, or receipt-schema failures.
+    pub async fn create_and_prompt(
+        &self,
+        settings: AgentSettings,
+        idempotency_key: &str,
+        input: &PromptInput,
+        chatgpt_account: Option<&str>,
+    ) -> Result<crate::AgentRunReceipt, ManagedError> {
+        let (receipt, _) = self
+            .create_run(settings, idempotency_key, input, chatgpt_account, false)
+            .await?;
+        Ok(receipt)
+    }
+
+    pub(crate) async fn create_run(
+        &self,
+        settings: AgentSettings,
+        idempotency_key: &str,
+        input: &PromptInput,
+        chatgpt_account: Option<&str>,
+        streaming: bool,
+    ) -> Result<(crate::AgentRunReceipt, Option<ManagedEventStream>), ManagedError> {
+        let settings = settings.validate()?;
+        validate_idempotency_key(idempotency_key)?;
+        let mut body = serde_json::json!({ "settings": settings, "input": input });
+        if let Some(account) = chatgpt_account {
+            if account.is_empty()
+                || account.len() > 256
+                || !account.bytes().all(|byte| (0x21..=0x7e).contains(&byte))
+                || settings.model.oai().is_none()
+            {
+                return Err(ManagedError::Configuration(
+                    "invalid ChatGPT account pin".to_owned(),
+                ));
+            }
+            body["configuration"] = serde_json::json!({"chatgpt_account_id": account});
+        }
+        let body = serde_json::to_vec(&body)
+            .map_err(|_| ManagedError::InvalidResponse("failed to encode agent run"))?;
+        let url = self.url("v1/agent-runs")?;
+        let mut failure = None;
+        for attempt in 0..SUBMIT_ATTEMPTS {
+            let result = async {
+                let request = self
+                    .http
+                    .post(url.clone())
+                    .header(CONTENT_TYPE, "application/json")
+                    .header("idempotency-key", idempotency_key)
+                    .header(
+                        "accept",
+                        if streaming {
+                            "text/event-stream"
+                        } else {
+                            "application/json"
+                        },
+                    )
+                    .body(body.clone());
+                let response = self
+                    .send_with_access(request, &url)
+                    .await
+                    .map_err(ManagedError::Transport)?;
+                if !response.status().is_success() {
+                    return Err(response_error(response).await);
+                }
+                let (receipt, events) = if streaming {
+                    let (receipt, events) =
+                        ManagedEventStream::from_run_response(self.clone(), response).await?;
+                    (receipt, Some(events))
+                } else {
+                    (
+                        decode_response::<crate::AgentRunReceipt>(response).await?,
+                        None,
+                    )
+                };
+                validate_id("agent", &receipt.agent_id)?;
+                validate_id("session", &receipt.session_id)?;
+                validate_id("turn", &receipt.turn.turn_id)?;
+                validate_idempotency_key(&receipt.turn_idempotency_key)?;
+                crate::sse::validate_numeric_cursor(&receipt.turn.accepted_cursor)?;
+                if receipt.turn.accepted_cursor == "0" || receipt.turn.input != *input {
+                    return Err(ManagedError::InvalidResponse(
+                        "agent run receipt differs from submitted input",
+                    ));
+                }
+                Ok((receipt, events))
+            }
+            .await;
+            match result {
+                Ok(result) => return Ok(result),
+                Err(error)
+                    if attempt + 1 < SUBMIT_ATTEMPTS
+                        && (matches!(&error, ManagedError::Transport(_))
+                            || matches!(
+                                &error,
+                                ManagedError::InvalidResponse(
+                                    "agent run disconnected before receipt"
+                                )
+                            )
+                            || matches!(&error, ManagedError::Http { status, .. } if status.is_server_error() || status.as_u16() == 429 || status.as_u16() == 408)) =>
+                {
+                    failure = Some(error);
+                    tokio::time::sleep(Duration::from_millis(100 * (1 << attempt))).await;
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        Err(failure.unwrap_or(ManagedError::InvalidResponse(
+            "agent run retry lost its failure",
+        )))
+    }
+
     /// Forks a managed agent at the service's latest committed model boundary.
     ///
     /// The fork request contains no prompt or copied transcript. The supplied
@@ -1413,7 +1528,9 @@ impl ManagedClient {
         if let Some(origin) = &self.request_origin {
             request = request.header("x-nanocodex-client-context", origin.clone());
         }
-        let eligible = (url.path() == "/v1/agents" || url.path().starts_with("/v1/agents/"))
+        let eligible = (url.path() == "/v1/agent-runs"
+            || url.path() == "/v1/agents"
+            || url.path().starts_with("/v1/agents/"))
             && ![
                 "ws",
                 "events",

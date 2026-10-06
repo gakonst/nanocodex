@@ -74,7 +74,7 @@ it.each([undefined, "ZZZ", "SJC"])("ignores public placement headers at managed 
     sessionRequests.push(new Request(input, init)); return Response.json({});
   } }));
   const sessionEnv = { ...env, NANOCODEX_SESSIONS: { idFromName: () => ({ toString: () => "a".repeat(64) }), getByName: sessions } } as unknown as Env;
-  const create = new Request("https://fixture.invalid/v1/agents", { method: "POST", headers: request.headers, body: "", ...(colo ? { cf: { colo } } : {}) });
+  const create = new Request("https://fixture.invalid/v1/agents", { method: "POST", headers: request.headers, body: JSON.stringify({ settings: { model: "gpt-6.1-sol", thinking: "low", reasoning_mode: "standard", fast_mode: false } }), ...(colo ? { cf: { colo } } : {}) });
   const created = await worker.fetch(create, sessionEnv, createExecutionContext());
   expect(created.status, await created.text()).toBe(201);
   expect(sessions).toHaveBeenCalledWith(expect.stringMatching(/^[0-9a-f-]{36}$/), colo === "SJC" ? { locationHint: "wnam" } : undefined);

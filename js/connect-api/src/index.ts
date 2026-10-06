@@ -1,3 +1,5 @@
+import { parseSshCredentialImport, sshCredentialImportDigest, sshImportFromResources, sshTargetResource } from "./sshCredentialImport.mts";
+import type { SshCredentialImport } from "./sshCredentialImport.mts";
 import { machOnramp, type MachOnrampEnv } from "./machOnramp";
 import { Handler, Kv } from "accounts/server";
 import { oauthMcp, activeMcpGrant, type McpGrant, type McpOAuthHooks, oauthJson } from "./oauthMcp.mts";
@@ -2222,6 +2224,8 @@ async function createConnection(
     requested,
   );
 
+  const sshImport = await approvedSshCredentialImport(body.ssh_credential_import, approval, app);
+
   const retainedIdentity = approval.profileLinked === true && isBrokerUserId(approval.brokerUserId)
     ? { linked: true, userId: approval.brokerUserId }
     : undefined;
@@ -2292,6 +2296,9 @@ async function createConnection(
   if (JSON.stringify(consumedApproval) !== JSON.stringify(approval)) {
     throw new ApiFailure(403, "approval_unavailable", "The signed Connect approval changed before it was consumed.");
   }
+  // Consume the one-use approval before the SSH mutation. A timeout may mean
+  // the broker stored the key; never replay this PUT under the same approval.
+  if (sshImport) await importSshCredential(env, identity.userId, sshImport);
   const appScope = await scopedAppId(app);
   const grantId = await digestHex(`grant:${randomSubject()}`);
   const grantCapabilities = [
@@ -2438,6 +2445,7 @@ async function connectionRequestBody(request: Request): Promise<Record<string, u
     "approval_id",
     "authorization_mode",
     "chatgpt_credential_import",
+    "ssh_credential_import",
     "key_authorization",
     "permission",
     "principal",
@@ -2451,6 +2459,54 @@ async function connectionRequestBody(request: Request): Promise<Record<string, u
     throw new ApiFailure(400, "invalid_connection_request", "The connection request contains an unknown field.");
   }
   return body;
+}
+
+async function approvedSshCredentialImport(
+  value: unknown,
+  approval: ConnectApproval,
+  app: CallerApp,
+): Promise<SshCredentialImport | undefined> {
+  let approved;
+  try { approved = sshImportFromResources(approval.resources); }
+  catch { throw new ApiFailure(403, "invalid_ssh_import_resource", "The signed SSH import resources are invalid."); }
+  if ((value === undefined) !== (approved === undefined)) {
+    throw new ApiFailure(403, "ssh_import_mismatch", "The SSH credential and signed import resources must be provided together.");
+  }
+  if (value === undefined || !approved) return undefined;
+  if (approval.resources.filter(resource => resource.startsWith("urn:nanocodex:credential-import:")).length !== 1) {
+    throw new ApiFailure(403, "ssh_import_mismatch", "An SSH import requires exactly one credential import commitment.");
+  }
+  if (app.appId !== CLI_APP_ID || app.origin !== CLI_APP_ORIGIN
+    || approval.appId !== CLI_APP_ID || approval.appOrigin !== CLI_APP_ORIGIN
+    || approval.hostPrincipal !== undefined) {
+    throw new ApiFailure(403, "ssh_import_not_approved", "SSH credential import requires an exact Nanocodex CLI approval.");
+  }
+  let credential: SshCredentialImport;
+  try { credential = parseSshCredentialImport(value); }
+  catch { throw new ApiFailure(400, "invalid_ssh_credential", "The SSH credential import is invalid."); }
+  if (sshTargetResource(credential) !== sshTargetResource(approved.target)
+    || await sshCredentialImportDigest(credential) !== approved.digest) {
+    throw new ApiFailure(403, "ssh_import_mismatch", "The SSH credential does not match its signed target and commitment.");
+  }
+  return credential;
+}
+
+async function importSshCredential(env: Env, userId: string, credential: SshCredentialImport): Promise<void> {
+  const { reference, ...payload } = credential;
+  let response: Response;
+  try {
+    response = await env.EGRESS.fetch(new Request(
+      `https://nanocodex.internal/users/${encodeURIComponent(userId)}/credentials/ssh/${encodeURIComponent(reference)}`,
+      { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify(payload) },
+    ));
+  } catch {
+    throw new ApiFailure(502, "ssh_import_outcome_unknown", "The SSH import outcome is unknown. Check your saved SSH targets before starting a new import.");
+  }
+  // Broker response content can contain credentials or provider diagnostics.
+  // Keep only a fixed status receipt and never log or return that content.
+  await response.body?.cancel().catch(() => undefined);
+  if (response.status === 409) throw new ApiFailure(409, "ssh_reference_exists", "That SSH reference already exists; no credential was replaced.");
+  if (response.status !== 204) throw new ApiFailure(502, "ssh_import_failed", "The credential broker rejected the SSH import. Check your saved SSH targets before starting a new import.");
 }
 
 async function approvedChatGptCredentialImport(

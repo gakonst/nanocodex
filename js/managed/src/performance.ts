@@ -220,7 +220,7 @@ export function performanceSocketEvent(sessionId: string, observation: unknown, 
   if (typeof input.provider_request_id === "string" && (correlationId(input.provider_request_id)
     || /^req_[A-Za-z0-9_-]{1,128}$/.test(input.provider_request_id))) safe.provider_request_id = input.provider_request_id;
   if (typeof input.response_id === "string" && /^resp_[A-Za-z0-9_-]{1,160}$/.test(input.response_id)) safe.response_id = input.response_id;
-  for (const key of ["elapsed_ms", "send_wait_ms", "first_message_ms", "first_output_ms", "last_message_age_ms",
+  for (const key of ["elapsed_ms", "send_wait_ms", "first_message_ms", "first_output_ms", "first_reasoning_delta_ms", "first_answer_delta_ms", "first_tool_delta_ms", "last_message_age_ms",
     "socket_queue_residence_max_ms", "pre_inference_ms", "engine_queue_max_ms", "engine_service_ttft_total_ms"]) {
     const value = input[key];
     if (typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 86_400_000) safe[key] = value;
@@ -234,6 +234,8 @@ export function performanceSocketEvent(sessionId: string, observation: unknown, 
   for (const key of ["intentional", "close_clean"]) if (typeof input[key] === "boolean") safe[key] = input[key];
   if (typeof input.phase === "string" && ["generation", "compaction", "warmup"].includes(input.phase)) safe.phase = input.phase;
   if (typeof input.outcome === "string" && ["completed", "failed", "send_failed", "superseded"].includes(input.outcome)) safe.outcome = input.outcome;
+  if (typeof input.provider_event_type === "string" && PROVIDER_EVENTS.has(input.provider_event_type)) safe.provider_event_type = input.provider_event_type;
+  if (typeof input.output_kind === "string" && ["item", "reasoning", "answer", "tool"].includes(input.output_kind)) safe.output_kind = input.output_kind;
   const observationRecord = { type: "managed.performance", stage: `transport.${event}`, session_id: sessionId, thread_id: sessionId, ...safe };
   try { record?.(observationRecord); } catch { /* Persistence is optional diagnostics. */ }
   try { console.info(observationRecord); }
@@ -241,7 +243,12 @@ export function performanceSocketEvent(sessionId: string, observation: unknown, 
 }
 
 const SOCKET_EVENTS = new Set(["socket.connecting", "socket.connect_waiting", "socket.opened", "socket.closed", "socket.error",
-  "request.send_started", "request.send_waiting", "request.sent", "request.waiting", "request.first_message", "request.first_output", "request.finished", "provider.timing"]);
+  "request.send_started", "request.send_waiting", "request.sent", "request.waiting", "request.first_message", "request.first_output", "request.first_reasoning_delta", "request.first_answer_delta", "request.first_tool_delta", "request.finished", "provider.timing"]);
+const PROVIDER_EVENTS = new Set(["unclassified", "response.created", "response.in_progress", "response.queued",
+  "response.completed", "response.failed", "response.incomplete", "error", "responsesapi.websocket_timing",
+  "response.output_item.added", "response.output_item.done", "response.output_text.delta", "response.reasoning_text.delta",
+  "response.reasoning_summary_text.delta", "response.reasoning_summary.delta", "response.reasoning_content.delta",
+  "response.function_call_arguments.delta", "response.custom_tool_call_input.delta"]);
 function correlationId(value: unknown): value is string { return typeof value === "string" && /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(value); }
 
 /** Post-policy WebSocket request controls; no input, tool schema, IDs or metadata. */
