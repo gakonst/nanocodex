@@ -15,7 +15,7 @@ export function createAccountServices(request) {
     connectors: Object.freeze({
       catalog: (controls) => call('/connectors/catalog', 'GET', undefined, controls),
       list: (controls) => call('/connectors', 'GET', undefined, controls),
-      start: (provider, input, controls) => call(`/connectors/${oauthProvider(provider)}`, 'POST', input, controls),
+      start: (provider, input = {}, controls) => call(`/connectors/${oauthProvider(provider)}`, 'POST', input, controls),
       disconnect: (provider, id, controls) => call(`/connectors/${connectorProvider(provider)}/connections/${opaque(id, 43, 43)}`, 'DELETE', undefined, controls),
       cloudflare: (input, controls) => {
         opaque(input?.vault_id, 22, 64);
@@ -35,7 +35,7 @@ export function createAccountServices(request) {
       mcp: Object.freeze({
         list: (controls) => call('/connectors/mcp-connections', 'GET', undefined, controls),
         create: (input, controls) => call('/connectors/mcp-connections', 'POST', input, controls),
-        start: (id, input, controls) => call(`/connectors/mcp-connections/${opaque(id, 43, 43)}/start`, 'POST', input, controls),
+        start: (id, input = {}, controls) => call(`/connectors/mcp-connections/${opaque(id, 43, 43)}/start`, 'POST', input, controls),
         disconnect: (id, controls) => call(`/connectors/mcp-connections/${opaque(id, 43, 43)}`, 'DELETE', undefined, controls),
       }),
     }),
@@ -115,6 +115,10 @@ function project(value, depth = 0) {
   if (Array.isArray(value)) return Object.freeze(value.map(item => project(item, depth + 1)));
   const result = {};
   for (const [key, item] of Object.entries(value)) {
+    if (['authorization_url', 'verification_url', 'verification_uri', 'verification_uri_complete'].includes(key) && item !== undefined) {
+      const url = new URL(item);
+      if (url.protocol !== 'https:' || url.username || url.password) throw new TypeError('Invalid authorization URL');
+    }
     if ((strings.has(key) || key === 'default_model' || key === 'provider_id' || key === 'attempt_id') && typeof item === 'string'
       || numbers.has(key) && typeof item === 'number' && Number.isFinite(item)
       || booleans.has(key) && typeof item === 'boolean'

@@ -1,5 +1,5 @@
 import type { AccountServices } from "./account.mjs";
-export type { AccountServices, AccountReceipt, AccountInput, ConnectorProvider } from "./account.mjs";
+export type { AccountServices, AccountReceipt, AccountInput, ConnectorProvider, OAuthProvider, ConnectorCapability, ConnectorStatus, ConnectorCatalog, AccountLinks, AccountLinksQuery, ConnectorStart, VaultInputs, SshInput, CapturedStore, CardInput } from "./account.mjs";
 /** Exact account-owned resources authorized by a signed Connect grant. */
 export type ServiceCapabilities = Readonly<{
   vault?: Readonly<{ ids: readonly string[]; origins: readonly string[]; request: boolean }>;
