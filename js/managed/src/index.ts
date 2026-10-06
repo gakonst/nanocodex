@@ -3490,6 +3490,7 @@ function createManagedNamespaceRuntime(
   authorizationKey: (context: ToolContext) => string = () => "account",
   processStorage?: NamespaceProcessStorage,
   threadId?: string,
+  localPreparation?: (context: ToolContext, name: string | undefined, input: unknown) => NamespaceCaptureFilter | undefined,
 ): Readonly<{ tools: NamedTool[]; capture(context: ToolContext): Promise<void> }> {
   const runtime = createNamespaceExecutionRuntime(
     machines,
@@ -3501,13 +3502,30 @@ function createManagedNamespaceRuntime(
     threadId,
   );
   const captured = new Set<string>();
+  const locallyCaptured = new Set<string>();
   const preparations = new Map<string, Promise<void>>();
   const cellKey = (context: ToolContext): string => (
     `${context.sessionId}\u0000${context.parentCallId || context.callId}`
   );
-  const capture = async (context: ToolContext, toolName?: string): Promise<void> => {
+  const capture = async (context: ToolContext, toolName?: string, input?: unknown): Promise<void> => {
     const key = cellKey(context);
     if (captured.has(key)) return;
+    // A selected session route is already authorized and generation-bound by
+    // the local broker. Do not gate it on unrelated account or VM availability.
+    const localStarted = performance.now();
+    const localFilter = localPreparation?.(context, toolName, input);
+    if (localFilter) {
+      const workdir = (input as { workdir: string }).workdir;
+      runtime.capture(context, localFilter, false, true);
+      if (runtime.hasRoute(context, workdir)) {
+        if (!locallyCaptured.has(key)) {
+          locallyCaptured.add(key);
+          observeHandCall("namespace.prepare", toolName ?? "other", localStarted, "ok", context.callId,
+            { thread_id: threadId, session_id: context.sessionId, turn_id: context.turnId, parent_call_id: context.parentCallId });
+        }
+        return;
+      }
+    }
     const pending = preparations.get(key);
     if (pending !== undefined) return pending;
     const authority = authorizationKey(context);
@@ -3518,7 +3536,7 @@ function createManagedNamespaceRuntime(
         throw new ManagedRequestError(403, "namespace_forbidden", "the current authorization cannot use execution hands");
       }
       context.signal.throwIfAborted();
-      runtime.capture(context, filter || undefined);
+      runtime.capture(context, filter || undefined, true);
       captured.add(key);
     })();
     preparations.set(key, preparation);
@@ -3538,6 +3556,9 @@ function createManagedNamespaceRuntime(
     const prefix = `${sessionId}\u0000`;
     for (const key of captured) {
       if (key.startsWith(prefix)) captured.delete(key);
+    }
+    for (const key of locallyCaptured) {
+      if (key.startsWith(prefix)) locallyCaptured.delete(key);
     }
     for (const key of preparations.keys()) {
       if (key.startsWith(prefix)) preparations.delete(key);
@@ -3561,7 +3582,7 @@ function createManagedNamespaceRuntime(
           "the current authorization cannot use execution hands",
         );
       }
-      await capture(context, name);
+      await capture(context, name, input);
       return tool.handler(input, context);
     },
     releaseSession: (sessionId: string) => {
@@ -3570,6 +3591,7 @@ function createManagedNamespaceRuntime(
     },
     dispose: () => {
       captured.clear();
+      locallyCaptured.clear();
       preparations.clear();
       tool.dispose?.();
       if (name === "exec_command") brain?.tool.dispose?.();
@@ -10122,7 +10144,7 @@ export class DurableAgentSession extends DurableComputerObject {
           },
     };
     const sandboxToolsByMount = new Map<string, ReturnType<typeof cloudflareSandboxTools>>();
-    const namespaceMachines = (context: ToolContext) => {
+    const namespaceMachines = (context: ToolContext): readonly NamespaceMachine[] => {
       const authorization = this.#authorizationForToolContext(context);
       if (!this.#canUseExecutionNamespace(authorization)) return [];
       const userHands = this.#hasFullAccountAuthority(authorization) ? this.#userHandMachines(context) : [];
@@ -10264,6 +10286,20 @@ export class DurableAgentSession extends DurableComputerObject {
       ]),
       this.#processSessions,
       session.session_id,
+      (context, name, input) => {
+        // CUA can also depend on the independently published account screen;
+        // retain full discovery for that contract and for inventory/process tools.
+        if (name !== "exec_command" || !input || typeof input !== "object") return undefined;
+        const workdir = (input as { workdir?: unknown }).workdir;
+        if (typeof workdir !== "string" || !workdir.startsWith("/")) return undefined;
+        const cwd = resolveNamespaceCwd("/brain", workdir);
+        const local = namespaceMachines(context).filter(machine => machine.id.startsWith("user:")
+          && this.#hostedTools.machineOnline(machine.id.slice("user:".length)));
+        if (!local.some(machine => [machine.root!, ...(machine.aliases ?? [])]
+          .some(root => cwd === root || cwd.startsWith(`${root}/`)))) return undefined;
+        const ids = new Set(local.map(machine => machine.id));
+        return machine => ids.has(machine.id);
+      },
     );
     const cloudTools: NamedTool[] = [
       ...(browserRuntime?.tools.map(tool => ({

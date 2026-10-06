@@ -20,6 +20,7 @@ const thread = "00000000-0000-7000-8000-000000000052";
 const organization = "00000000-0000-7000-8000-000000000053";
 const team = "00000000-0000-7000-8000-000000000054";
 const machine = "synthetic-preparation-hand";
+const localMachine = "synthetic-session-hand";
 const command = "pnpm --filter nanocodex-managed-service test:hand-preparation";
 const trials = Array.from({ length: 7 }, (_, i) => `MEASURE_${i}`);
 const scripts = Object.fromEntries(trials.map(scenario => [scenario, `
@@ -27,6 +28,30 @@ const scripts = Object.fromEntries(trials.map(scenario => [scenario, `
   for (const workdir of ["/slow-vm", "/fast-vm"]) { try { await tools.exec_command({cmd:"printf MUST_NOT_RUN",workdir}); text("UNSAFE_VM"); } catch(error) { text({excluded:workdir,error:error.message}); } }
   text(results);
 `]));
+scripts.LOCAL = `text(await tools.exec_command({cmd:"printf LOCAL_INDEPENDENT",workdir:"/${localMachine}",shell:"/bin/sh",login:false}));`;
+scripts.MIXED = `
+  text(await tools.exec_command({cmd:"printf LOCAL_FIRST",workdir:"/${localMachine}",shell:"/bin/sh",login:false}));
+  text(await tools.exec_command({cmd:"printf ACCOUNT_SECOND",workdir:"/${machine}",shell:"/bin/sh",login:false}));
+  text(await tools.exec_command({cmd:"printf LOCAL_AGAIN",workdir:"/${localMachine}",shell:"/bin/sh",login:false}));
+  try { await tools.exec_command({cmd:"printf MUST_NOT_RUN",workdir:"/unknown-hand"}); } catch(error) { text({unknown:error.message}); }
+`;
+scripts.RECONNECT = `
+  text(await tools.exec_command({cmd:"printf PINNED_LOCAL",workdir:"/${localMachine}",shell:"/bin/sh",login:false}));
+  text(await tools.exec_command({cmd:"printf DISCOVERED_ACCOUNT",workdir:"/${machine}",shell:"/bin/sh",login:false}));
+  try { const result=await tools.exec_command({cmd:"printf WRONG_GENERATION",workdir:"/${localMachine}",shell:"/bin/sh",login:false}); text(result); }
+  catch(error) { text({stale_route:error.message}); }
+`;
+scripts.RECOVER = scripts.LOCAL;
+scripts.PROCESS = `
+  const started=await tools.exec_command({cmd:"sleep 0.3; printf PROCESS_RESUMED",workdir:"/${localMachine}",shell:"/bin/sh",login:false,yield_time_ms:1});
+  if(!started.session_id) throw Error("expected retained native process");
+  text(await tools.write_stdin({session_id:started.session_id,yield_time_ms:1000}));
+`;
+scripts.INVENTORY = `
+  text(await tools.exec_command({cmd:"printf BEFORE_INVENTORY",workdir:"/${localMachine}",shell:"/bin/sh",login:false}));
+  const env=await tools.environment({});text({inventory:Object.keys(env.hands)});
+`;
+for (let i=0;i<7;i++) scripts[`DIRECT_MEASURE_${i}`] = scripts.LOCAL;
 scripts.BRAIN = 'text(await tools.exec_command({cmd:"printf BRAIN_INDEPENDENT",workdir:"/brain"}));';
 scripts.FAIL = `try { text(await tools.exec_command({cmd:"printf MUST_NOT_RUN",workdir:"/${machine}"})); } catch(error) { text({expected_failure:error.message}); }`;
 const mounts = ["slow", "fast"].map((name, i) => ({ id: `fixture-${name}`, root: `/${name}-vm`, provider: "host", name,
@@ -50,6 +75,7 @@ export class ObservedAccountHostedTools extends AccountHostedTools {
       const config=await this.ctx.storage.get('fixture')??{},started=Date.now();
       console.info({type:'fixture.snapshot',stage:'start',at:started});
       await new Promise(resolve=>setTimeout(resolve,config.delay_ms??0));
+      while((await this.ctx.storage.get('fixture'))?.hold) await new Promise(resolve=>setTimeout(resolve,10));
       const response=config.fail?new Response('fixture discovery failure',{status:503}):await super.fetch(request);
       console.info({type:'fixture.snapshot',stage:'end',at:Date.now(),status:response.status}); return response;
     }
@@ -102,7 +128,7 @@ export default {fetch(request,env) {
 }};
 `;
 
-test("fresh shipped Code Mode cells join independent readiness and discovery without changing dispatch safety", { timeout: 90_000 }, async () => {
+test("fresh shipped Code Mode cells prepare selected routes without changing dispatch safety", { timeout: 90_000 }, async () => {
   const label = process.env.NANOCODEX_BENCHMARK_LABEL ?? "local";
   assert.match(label, /^[a-zA-Z0-9_-]+$/);
   const output = join(repo, "output/hand-preparation-journey", `${label}-${Date.now()}-${process.pid}`);
@@ -110,9 +136,9 @@ test("fresh shipped Code Mode cells join independent readiness and discovery wit
   await mkdir(workspace, { recursive: true });
   const records = [], wire = [], http = [], runtime = [], samples = [];
   const result = { command, label, inputs: { owner, thread, machine, scripts, mounts, snapshot_delay_ms: 120, vm_delay_ms: [160,40], warmups: 2 },
-    expected: { once_only_effects: 14, concurrent_cell_capture_count: 7, unavailable_vms_excluded: true, brain_bypasses_prepare: true, discovery_failure_predispatch: true }, observed: {} };
+    expected: { once_only_effects: 14, concurrent_cell_capture_count: 7, unavailable_vms_excluded: true, brain_bypasses_prepare: true, discovery_failure_predispatch: true, local_bypasses_failed_discovery: true, mixed_cell_routes: true, reconnect_keeps_pinned_generation: true, fresh_cell_recovers: true }, observed: {} };
   const capture = line => { runtime.push(line); const start=line.indexOf('{"type":'); if(start>=0) {try {records.push(JSON.parse(line.slice(start)));} catch {}} };
-  let mf, native, tools, attachment, failure;
+  let mf, native, tools, attachment, localAttachment, failure;
   const prepSource = process.env.NANOCODEX_NAMESPACE_PREP_SOURCE;
   try {
     const assets = [];
@@ -123,8 +149,8 @@ test("fresh shipped Code Mode cells join independent readiness and discovery wit
     if (prepSource) plugins.push({name:"preparation-source",setup(builder) {builder.onLoad({filter:/\/managed\/src\/index\.ts$/},async()=>({contents:await readFile(prepSource,"utf8"),loader:"ts",resolveDir:join(root,"src")}));}});
     const bundle = await build({stdin:{contents:source,resolveDir:root},bundle:true,write:false,metafile:true,format:"esm",platform:"node",conditions:["workerd"],target:"es2022",
       banner:{js:'import { createRequire } from "node:module"; const require=createRequire("/worker.mjs");'},external:["cloudflare:*","node:*"],
-      alias:{"nanocodex-tools/hosted":join(repo,"js/nanocodex-tools/src/hosted/index.ts"),"node-rsa":join(root,"../nanocodex/tools/browser/unsupportedNodeRsa.mjs")},plugins,logLevel:"silent"});
-    const hashes = Object.fromEntries(await Promise.all(["js/managed/src/index.ts","js/managed/src/hand-call-observation.ts","js/managed/src/account-hosted-tools.ts","js/nanocodex-tools/src/hosted/broker-core.ts","js/nanocodex-tools/tools/processOutput.mjs"].map(async path => [path,createHash("sha256").update(await readFile(path.endsWith("/index.ts")&&prepSource?prepSource:join(repo,path))).digest("hex")])));
+      alias:{"nanocodex-tools/internal/hosted-machine":join(repo,"js/nanocodex-tools/tools/hostedMachine.mjs"),"nanocodex-tools/hosted":join(repo,"js/nanocodex-tools/src/hosted/index.ts"),"node-rsa":join(root,"../nanocodex/tools/browser/unsupportedNodeRsa.mjs")},plugins,logLevel:"silent"});
+    const hashes = Object.fromEntries(await Promise.all(["js/managed/src/index.ts","js/managed/src/namespace-tools.ts","js/nanocodex/pkg-web/nanocodex_bg.wasm","js/managed/src/hand-call-observation.ts","js/managed/src/account-hosted-tools.ts","js/nanocodex-tools/src/hosted/broker-core.ts","js/nanocodex-tools/tools/processOutput.mjs"].map(async path => [path,createHash("sha256").update(await readFile(path.endsWith("/index.ts")&&prepSource?prepSource:join(repo,path))).digest("hex")])));
     await writeFile(join(output,"source-resolution.json"),JSON.stringify({prepSource:prepSource??null,hashes,bundleInputs:Object.keys(bundle.metafile.inputs)},null,2));
     await writeFile(join(output,"fixture-source.mjs"),source); await writeFile(join(output,"worker.mjs"),bundle.outputFiles[0].text);
     const date="2026-07-30";
@@ -141,6 +167,14 @@ test("fresh shipped Code Mode cells join independent readiness and discovery wit
     const endpoint=new URL("/tool-host",base);endpoint.protocol="ws:";
     attachment=createAttachment(tools,{endpoint:endpoint.href,transport:{connect(){const socket=new WebSocket(endpoint,{headers:{"x-nanocodex-owner-id":owner}}),send=socket.send.bind(socket);socket.send=(data,...args)=>{wire.push({direction:"host",frame:JSON.parse(String(data))});return send(data,...args);};socket.on("message",data=>wire.push({direction:"broker",frame:JSON.parse(String(data))}));return socket;}}},{machines:[{id:machine,name:"Synthetic Preparation Hand",workspace,capabilities:["shell"]}],attachmentId:machine});
     assert.equal((await attachment.connect()).connected,true);
+    const localEndpoint=new URL(`/v1/agents/${thread}/tool-host`,base);localEndpoint.protocol="ws:";
+    const connectLocal=()=>createAttachment(tools,{endpoint:localEndpoint.href,transport:{connect(){
+      const socket=new WebSocket(localEndpoint,{headers}),send=socket.send.bind(socket);
+      socket.send=(data,...args)=>{wire.push({direction:"local-host",frame:JSON.parse(String(data))});return send(data,...args);};
+      socket.on("message",data=>wire.push({direction:"local-broker",frame:JSON.parse(String(data))}));return socket;
+    }}},{machines:[{id:localMachine,name:"Synthetic Session Hand",workspace,capabilities:["shell"]}],attachmentId:localMachine});
+    localAttachment=connectLocal();
+    assert.equal((await localAttachment.connect()).connected,true);
     let number=100;
     const runTurn=async scenario=>{const started=performance.now(),id=`00000000-0000-7000-8000-${String(number++).padStart(12,"0")}`;
       const accepted=await request(`/v1/agents/${thread}/turns`,{method:"POST",body:JSON.stringify({id,input:`PREPARATION_${scenario}`})});assert.equal(accepted.status,202,JSON.stringify(accepted));
@@ -160,10 +194,47 @@ test("fresh shipped Code Mode cells join independent readiness and discovery wit
       samples.push({scenario,prepare_ms:stages[0].duration_ms,public_turn_ms:value.elapsed_ms,snapshot_started_before_slow_vm_finished:snapshot.at<slowEnd.at,
         ...(readiness?{host_readiness_ms:readiness.duration_ms}:{}),...(discovery?{account_discovery_ms:discovery.duration_ms}:{})});
     }
+    const localSamples=[];
+    for(let i=0;i<7;i++) {
+      const scenario=`DIRECT_MEASURE_${i}`,start=records.length,value=await runTurn(scenario),rows=records.slice(start);
+      assert.match(JSON.stringify(value.turn),/LOCAL_INDEPENDENT/);
+      const stage=rows.find(row=>row.type==="hand.tool.stage"&&row.parent_call_id===`call_preparation_${scenario}`&&row.stage==="namespace.prepare");
+      assert.ok(stage);
+      const snapshots=rows.filter(row=>row.type==="fixture.snapshot"&&row.stage==="start").length;
+      const pools=rows.filter(row=>row.type==="fixture.pool"&&row.stage==="start").length;
+      assert.equal(snapshots,prepSource?1:0);assert.equal(pools,prepSource?2:0);
+      if(i>=2) localSamples.push({scenario,prepare_ms:stage.duration_ms,public_turn_ms:value.elapsed_ms,snapshots,pools});
+    }
+    const processTurn=await runTurn("PROCESS");assert.match(JSON.stringify(processTurn.turn),/PROCESS_RESUMED/);
+    const inventory=await runTurn("INVENTORY");
+    for(const id of [machine,localMachine]) assert.match(JSON.stringify(inventory.turn),new RegExp(id));
+    const mixed=await runTurn("MIXED");
+    for(const marker of ["LOCAL_FIRST","ACCOUNT_SECOND","LOCAL_AGAIN","unknown"]) assert.match(JSON.stringify(mixed.turn),new RegExp(marker));
+    if(!prepSource) {
+    assert.equal((await request("/account-tools/__fixture",{method:"POST",body:JSON.stringify({hold:true})})).status,204);
+    const reconnectStart=records.length;
+    const reconnectTurn=runTurn("RECONNECT");
+    void reconnectTurn.catch(()=>{});
+    for(let i=0;i<1000&&!records.slice(reconnectStart).some(row=>row.type==="fixture.snapshot"&&row.stage==="start");i++) await delay(5);
+    assert.ok(records.slice(reconnectStart).some(row=>row.type==="fixture.snapshot"&&row.stage==="start"));
+    await localAttachment.close();localAttachment=connectLocal();assert.equal((await localAttachment.connect()).connected,true);
+    assert.equal((await request("/account-tools/__fixture",{method:"POST",body:JSON.stringify({delay_ms:0})})).status,204);
+    const reconnected=await reconnectTurn;
+    assert.match(JSON.stringify(reconnected.turn),/stale_route/);
+    assert.doesNotMatch(JSON.stringify(reconnected.turn),/WRONG_GENERATION/);
+    const recovered=await runTurn("RECOVER");assert.match(JSON.stringify(recovered.turn),/LOCAL_INDEPENDENT/);
+    }
     const before=wire.filter(row=>row.direction==="broker"&&row.frame.type==="call").length;
     const brain=await runTurn("BRAIN");assert.match(JSON.stringify(brain.turn),/BRAIN_INDEPENDENT/);
     assert.ok(!records.some(row=>row.type==="hand.tool.stage"&&row.parent_call_id==="call_preparation_BRAIN"&&row.stage==="namespace.prepare"));
     assert.equal((await request("/account-tools/__fixture",{method:"POST",body:JSON.stringify({delay_ms:30,fail:true})})).status,204);
+    if(!prepSource) {
+    const localStart=records.length;
+    const local=await runTurn("LOCAL");assert.match(JSON.stringify(local.turn),/LOCAL_INDEPENDENT/);
+    const localRows=records.slice(localStart);
+    assert.equal(localRows.filter(row=>row.type==="fixture.pool"||row.type==="fixture.snapshot").length,0,"known session-local route must not prepare unrelated account/VM routes even when discovery fails");
+    assert.equal(localRows.filter(row=>row.type==="hand.tool.stage"&&row.stage==="namespace.prepare").length,1);
+    }
     const failedId=`00000000-0000-7000-8000-${String(number++).padStart(12,"0")}`;
     const failureAdmission=await request(`/v1/agents/${thread}/turns`,{method:"POST",body:JSON.stringify({id:failedId,input:"PREPARATION_FAIL"})});
     assert.equal(failureAdmission.status,202);
@@ -178,11 +249,23 @@ test("fresh shipped Code Mode cells join independent readiness and discovery wit
     assert.equal(failedTurn.value.state,"cancelled",JSON.stringify(failedTurn));
     assert.equal(wire.filter(row=>row.direction==="broker"&&row.frame.type==="call").length,before,"discovery failure and Brain must never dispatch to a Hand");
     const effects=(await readFile(join(workspace,"effect.log"),"utf8")).trim().split("\n").sort();
-    assert.deepEqual(effects,trials.flatMap(scenario=>[`${scenario}:a`,`${scenario}:b`]).sort());assert.equal(before,14);
+    assert.deepEqual(effects,trials.flatMap(scenario=>[`${scenario}:a`,`${scenario}:b`]).sort());assert.equal(before,prepSource?15:16);
     const diagnostics=await request(`/v1/agents/${thread}/diagnostics?limit=1024`);assert.equal(diagnostics.status,200);
     if(!prepSource) {
       const managed=diagnostics.value.services.find(service=>service.service==="managed");
       assert.equal(managed.available,true);
+      // The additional route journeys can fill a diagnostics page. Follow the
+      // public cursor before asserting on the final failure/cancelled turn.
+      let after=managed.next_after;
+      for (;;) {
+        const next=await request(`/v1/agents/${thread}/diagnostics?limit=1024&after_managed=${after}`);
+        assert.equal(next.status,200);
+        const page=next.value.services.find(service=>service.service==="managed");
+        assert.equal(page.available,true);
+        managed.events.push(...page.events);
+        if (page.next_after===after) break;
+        after=page.next_after;
+      }
       for(const stage of ["namespace.host_readiness","namespace.account_discovery"]) {
         assert.ok(managed.events.some(event=>event.stage===stage&&event.parent_call_id==="call_preparation_MEASURE_2"&&event.outcome==="ok"),`owner diagnostics must expose ${stage}`);
       }
@@ -191,10 +274,10 @@ test("fresh shipped Code Mode cells join independent readiness and discovery wit
       assert.ok(failedRows.some(event=>event.stage==="namespace.host_readiness"&&event.outcome==="ok"),"failed discovery must join ongoing VM readiness before completing preparation");
     }
     await writeFile(join(output,"diagnostics.json"),JSON.stringify(diagnostics.value,null,2));
-    result.observed={once_only_effects:effects.length,concurrent_cell_capture_count:7,unavailable_vms_excluded:true,brain_bypasses_prepare:true,discovery_failure_predispatch:true,failed_discovery_cancelled:true,samples};
+    result.observed={once_only_effects:effects.length,concurrent_cell_capture_count:7,unavailable_vms_excluded:true,brain_bypasses_prepare:true,discovery_failure_predispatch:true,failed_discovery_cancelled:true,local_bypasses_failed_discovery:!prepSource,mixed_cell_routes:true,reconnect_keeps_pinned_generation:!prepSource,fresh_cell_recovers:!prepSource,process_resumed:true,full_inventory:true,samples,localSamples};
     console.log(JSON.stringify({evidence:output,label,...result.observed}));
   } catch(error){failure=error;result.error=error.stack;throw error;}
-  finally {try{await attachment?.close();await tools?.close();await native?.close();await mf?.dispose();}finally{
+  finally {try{await localAttachment?.close();await attachment?.close();await tools?.close();await native?.close();await mf?.dispose();}finally{
     await writeFile(join(output,"trace.json"),JSON.stringify({result,records},null,2));await writeFile(join(output,"wire.json"),JSON.stringify(wire,null,2));await writeFile(join(output,"http.json"),JSON.stringify(http,null,2));await writeFile(join(output,"runtime.log"),runtime.join("\n")+"\n");
     await writeFile(join(output,"README.md"),`Run: \`${command}\`\n\nLabel: ${label}\nStatus: ${failure?"FAIL: "+failure.message:"PASS"}\nInputs: ${JSON.stringify(result.inputs)}\nExpected: ${JSON.stringify(result.expected)}\nObserved: ${JSON.stringify(result.observed)}\n\nActual public HTTP turn admission/results and shipped fresh-cell Session callback, WASM Code Mode, account discovery, SQLite ledger, reverse WebSocket and native /bin/sh. Synthetic external VM pool negative receipts wait 160/40ms; a wrapper around the real account DO adds 120ms to the actual snapshot response. These injected waits demonstrate overlap only, not production network latency. First two cells excluded as warmups. Optional NANOCODEX_NAMESPACE_PREP_SOURCE bundles a saved baseline index.ts with all other source resolutions unchanged (source-resolution.json hashes). Retain paired runs and outliers. trace.json, wire.json, http.json, diagnostics.json, runtime.log, fixture-source.mjs, worker.mjs and SQLite are the inspection evidence.\n`);
   }}

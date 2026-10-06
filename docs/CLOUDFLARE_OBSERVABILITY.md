@@ -109,3 +109,45 @@ publishing source maps to application clients.
 
 See [Just Bash execution logs](just-bash-observability.md) for `/brain` exit codes,
 failure categories, call correlation, and queries for command retry sequences.
+
+
+## Brain–Hand timing boundaries
+
+Correlate `hand.call.broker` observations by `transport_call_id` and connection
+identity. A session-attached Hand uses the session broker directly; an account
+Hand can use the account broker or a regional relay. Measure the route actually
+selected, since those paths have different preparation and transport costs.
+
+On WebSocket `host_progress` and `receipt` observations:
+
+| Field | Local boundary |
+| --- | --- |
+| `dispatch_to_message_ms` | Broker dispatch to entry into its message handler; omitted after owner recovery when the original monotonic clock is unavailable |
+| `frame_decode_ms` | Parsing and validation of the incoming frame |
+| `lease_validation_ms` | Awaited leased-attachment authority check, including any continuation scheduling |
+| `message_to_handler_ms` | Message-handler entry through decode and lease validation, before progress/result processing |
+| `roundtrip_ms` | Existing dispatch-to-result-processing duration, including the preceding receive work |
+| `settlement_ms` | Synchronous result processing through the existing receipt observation boundary |
+
+Handler entry is not a network arrival timestamp. These measurements exclude
+Worker scheduling before entry and output-gate delays after a send. Native
+`host_timing` ends around result encoding; subtracting it from the broker
+roundtrip leaves combined transport, flush, scheduling, and storage overhead,
+not a pure network RTT. Persisted diagnostic fields survive owner restart;
+no tool inputs, results, or credentials are included.
+
+Native attachment tracing additionally emits `attachment.transport_rtt` for a
+matched heartbeat control ping/pong on the established socket. This measures the
+WebSocket peer, which can be Cloudflare's transport endpoint rather than the
+Durable Object application. `attachment.result_send_started`,
+`attachment.result_flush_started`, and `attachment.result_sent` expose terminal
+feed, flush, and total send durations. A local flush does not prove peer receipt
+or ACK. Replays emit `attachment.result_replayed` without changing the immutable
+journaled receipt. Pending terminal diagnostic frames share the result flush;
+live execution progress still flushes promptly.
+
+Run `pnpm --filter nanocodex-managed-service run test:hand-communication` for the
+local workerd/account-broker journey and `test:hand-preparation` for managed
+Code Mode route preparation. Their ignored `output/` artifacts contain source
+hashes, timings, public diagnostics, and ownership/recovery evidence. Local
+journey durations do not establish a production WAN latency improvement.

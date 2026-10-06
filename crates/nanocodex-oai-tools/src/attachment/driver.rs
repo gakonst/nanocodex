@@ -810,6 +810,7 @@ where
     heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let mut pong_timeout = Box::pin(tokio::time::sleep(PONG_TIMEOUT));
     let mut awaiting_pong: Option<Vec<u8>> = None;
+    let mut ping_started: Option<Instant> = None;
     let mut detach_deadline = Box::pin(tokio::time::sleep(Duration::from_secs(10)));
     let mut detaching = false;
     let mut draining = false;
@@ -848,6 +849,7 @@ where
             _ = heartbeat.tick() => {
                 if awaiting_pong.is_some() { break ConnectionEnd::HeartbeatTimeout; }
                 let nonce = uuid::Uuid::new_v4().as_bytes().to_vec();
+                ping_started = Some(Instant::now());
                 if let Err(error) = socket.send(Message::Ping(nonce.clone().into())).await.map_err(|error| AttachmentError::Transport(error.to_string().into())) {
                     break if detaching { ConnectionEnd::DetachFailed(error) } else { ConnectionEnd::Failed(error) };
                 }
@@ -876,6 +878,8 @@ where
                 if let Some(Ok(Message::Pong(payload))) = &incoming {
                     if awaiting_pong.as_deref() == Some(payload.as_ref()) {
                         awaiting_pong = None;
+                        let roundtrip_ms = ping_started.take().expect("pending ping clock").elapsed().as_secs_f64() * 1000.0;
+                        tracing::info!(target: "nanocodex_oai_tools::attachment", stage = "attachment.transport_rtt", connection_id, roundtrip_ms, "established socket heartbeat roundtrip observed");
                         tracing::info!(target: "nanocodex_oai_tools::attachment", stage = "attachment.heartbeat_pong", pending_calls = journal.values().filter(|call| call.task.is_some()).count(), pending_receipts = journal.values().filter(|call| call.receipt.is_some()).count(), "attachment heartbeat acknowledged");
                     }
                     continue;
@@ -1168,6 +1172,7 @@ where
         }
         pending
     };
+    let pending_count = phases.len();
     for (stage, elapsed_ms, span) in phases {
         if matches!(
             stage,
@@ -1175,7 +1180,7 @@ where
         ) {
             span.in_scope(|| tracing::info!(target: "nanocodex_oai_tools::attachment", stage = stage.name(), elapsed_ms, "attachment execution phase"));
         }
-        send(
+        feed(
             socket,
             &ExecutorFrame::Diagnostic {
                 call_id,
@@ -1184,6 +1189,13 @@ where
             },
         )
         .await?;
+    }
+    // Live progress remains promptly visible; terminal phases share the result flush.
+    if !prepared && pending_count > 0 {
+        socket
+            .flush()
+            .await
+            .map_err(|error| AttachmentError::Transport(error.to_string().into()))?;
     }
     Ok(())
 }
@@ -1196,9 +1208,15 @@ async fn send_retained<S>(
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
+    let started = Instant::now();
+    let received = call.timing.lock().unwrap().received;
+    tracing::info!(target: "nanocodex_oai_tools::attachment",
+        stage = "attachment.result_send_started", transport_call_id = call.identity.call_id.as_ref(),
+        replayed, elapsed_ms = started.duration_since(received).as_secs_f64() * 1000.0,
+        "attachment terminal transmission started");
     send_diagnostics(socket, &call.identity.call_id, &call.timing, true).await?;
     socket
-        .send(Message::Text(
+        .feed(Message::Text(
             call.receipt
                 .as_ref()
                 .expect("terminal receipt")
@@ -1207,10 +1225,27 @@ where
         ))
         .await
         .map_err(|error| AttachmentError::Transport(error.to_string().into()))?;
+    let flush_started = Instant::now();
+    tracing::info!(target: "nanocodex_oai_tools::attachment",
+        stage = "attachment.result_flush_started", transport_call_id = call.identity.call_id.as_ref(),
+        replayed, feed_ms = flush_started.duration_since(started).as_secs_f64() * 1000.0,
+        elapsed_ms = flush_started.duration_since(received).as_secs_f64() * 1000.0,
+        "attachment terminal flush started");
+    socket
+        .flush()
+        .await
+        .map_err(|error| AttachmentError::Transport(error.to_string().into()))?;
+    let flushed = Instant::now();
+    // Local flush completion is not peer receipt or acknowledgement. Keep these
+    // observations out of the immutable journaled result and its replay identity.
     tracing::info!(target: "nanocodex_oai_tools::attachment",
         stage = if replayed { "attachment.result_replayed" } else { "attachment.result_sent" },
         transport_call_id = call.identity.call_id.as_ref(),
-        "attachment terminal receipt sent");
+        feed_ms = flush_started.duration_since(started).as_secs_f64() * 1000.0,
+        flush_ms = flushed.duration_since(flush_started).as_secs_f64() * 1000.0,
+        send_ms = flushed.duration_since(started).as_secs_f64() * 1000.0,
+        elapsed_ms = flushed.duration_since(received).as_secs_f64() * 1000.0,
+        "attachment terminal receipt flushed");
     Ok(())
 }
 
@@ -1254,6 +1289,21 @@ where
         .map_err(|error| AttachmentError::Transport(error.to_string().into()))?;
     socket
         .send(Message::Text(text.into()))
+        .await
+        .map_err(|error| AttachmentError::Transport(error.to_string().into()))
+}
+
+async fn feed<S, T: serde::Serialize>(
+    socket: &mut tokio_tungstenite::WebSocketStream<S>,
+    frame: &T,
+) -> Result<(), AttachmentError>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    let text = serde_json::to_string(frame)
+        .map_err(|error| AttachmentError::Transport(error.to_string().into()))?;
+    socket
+        .feed(Message::Text(text.into()))
         .await
         .map_err(|error| AttachmentError::Transport(error.to_string().into()))
 }

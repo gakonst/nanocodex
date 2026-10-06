@@ -129,6 +129,10 @@ test("measure real Brain–Hand shell journeys with preserved correlated phases"
       const retainedBurst = persisted.filter(row => row.type === "hand.call.broker" && row.source_call_id?.startsWith("burst50-"));
       assert.equal(retainedBurst.length, 650);
       assert.ok(retainedBurst.every(row => Number.isFinite(row.runtime_generation)), "runtime_generation must survive public diagnostics after restart");
+      for (const row of retainedBurst.filter(row => ["receipt", "host_progress"].includes(row.stage)))
+        for (const field of ["frame_decode_ms", "lease_validation_ms", "message_to_handler_ms"])
+          assert.ok(Number.isFinite(row[field]), `${field} must survive owner restart`);
+      assert.ok(retainedBurst.filter(row => row.stage === "receipt").every(row => Number.isFinite(row.dispatch_to_message_ms)));
     }
     ownership.push({ stage, snapshot_owner_status: snapshot.status, wrong_snapshot_status: wrongSnapshot.status,
       wrong_invoke_status: wrongInvoke.status, wrong_claim_status: wrongClaimStatus, accepted_again_status: acceptedAgain.status,
@@ -170,6 +174,7 @@ export default {fetch(request,env){const path=new URL(request.url).pathname;
       bundle: true, write: false, metafile: true, format: "esm", platform: "node", conditions: ["workerd"], target: "es2022",
       external: ["cloudflare:*", "node:*"], alias: {
         "nanocodex-tools/hosted": join(repo, "js/nanocodex-tools/src/hosted/index.ts"),
+        "nanocodex-tools/internal/hosted-machine": join(repo, "js/nanocodex-tools/tools/hostedMachine.mjs"),
         "nanocodex-tools": join(repo, "js/nanocodex-tools/src/index.ts"),
         "node-rsa": join(repo, "js/nanocodex/tools/browser/unsupportedNodeRsa.mjs"),
       }, logLevel: "silent" });
@@ -281,13 +286,27 @@ export default {fetch(request,env){const path=new URL(request.url).pathname;
         assert.ok(correlated.some(row => row.type === "hand.call.broker" && row.stage === "host_progress" && row.host_stage === stage), `${journey.call_id} missing correlated host ${stage}`);
       }
       assert.ok(broker.host_timing);
+      if (repo === checkout || broker.frame_decode_ms !== undefined) {
+        for (const row of correlated.filter(row => row.type === "hand.call.broker" && ["receipt", "host_progress"].includes(row.stage))) {
+          for (const field of ["frame_decode_ms", "lease_validation_ms", "message_to_handler_ms"])
+            assert.ok(Number.isFinite(row[field]) && row[field] >= 0, `${journey.call_id} missing ${field}`);
+        }
+        assert.ok(Number.isFinite(broker.dispatch_to_message_ms) && broker.dispatch_to_message_ms >= 0);
+        assert.ok(broker.dispatch_to_message_ms + broker.message_to_handler_ms <= broker.roundtrip_ms + .001,
+          "message entry and pre-handler time must fit within dispatch-to-result time");
+      }
       assert.equal(broker.success, true);
       return { ...journey, provider_total_ms: provider.total_ms, provider_fetch_ms: provider.fetch_ms,
         provider_decode_ms: provider.decode_ms, account_total_ms: account.total_ms,
         ...(account.input_decode_ms === undefined ? {} : { account_input_decode_ms: account.input_decode_ms }),
         account_ownership_ms: account.ownership_ms, account_resolve_ms: account.resolve_ms, account_handler_ms: account.handler_ms,
         broker_admission_ms: broker.admission_ms, broker_roundtrip_ms: broker.roundtrip_ms,
-        broker_settlement_ms: broker.settlement_ms, transit_return_overhead_ms: broker.transit_return_overhead_ms,
+        broker_settlement_ms: broker.settlement_ms,
+        broker_dispatch_to_message_ms: broker.dispatch_to_message_ms,
+        broker_frame_decode_ms: broker.frame_decode_ms,
+        broker_lease_validation_ms: broker.lease_validation_ms,
+        broker_message_to_handler_ms: broker.message_to_handler_ms,
+        transit_return_overhead_ms: broker.transit_return_overhead_ms,
         ...Object.fromEntries(Object.entries(broker.host_timing).map(([key, value]) => [`hand_${key}`, value])),
         namespace_route_ms: correlated.find(row => row.stage === "namespace.route")?.duration_ms,
         namespace_invoke_ms: correlated.find(row => row.stage === "namespace.invoke")?.duration_ms,

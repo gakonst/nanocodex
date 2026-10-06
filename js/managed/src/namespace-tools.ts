@@ -56,6 +56,7 @@ type MountedHand = Readonly<{
   cuaReset?: RoutedTool;
   cuaBackend?: "upstream" | "native_screen";
   screen?: RoutedTool;
+  computerDeferred?: boolean;
 }>;
 
 type CellBinding = Readonly<{
@@ -134,7 +135,8 @@ export type NamespaceCaptureFilter = (machine: NamespaceMachine) => boolean;
 
 export type NamespaceExecutionRuntime = Readonly<{
   tools: ToolMap;
-  capture(context: ToolContext, filter?: NamespaceCaptureFilter): void;
+  capture(context: ToolContext, filter?: NamespaceCaptureFilter, extend?: boolean, deferComputer?: boolean): void;
+  hasRoute(context: ToolContext, workdir: string): boolean;
 }>;
 
 /**
@@ -162,7 +164,7 @@ export function createNamespaceExecutionRuntime(
   const cells = new Map<string, AuthorizedCellBinding>();
   const sessions = new Map<number, ProcessBinding>();
 
-  const cell = (context: ToolContext, filter?: NamespaceCaptureFilter): AuthorizedCellBinding => {
+  const cell = (context: ToolContext, filter?: NamespaceCaptureFilter, extend = false, deferComputer = false): AuthorizedCellBinding => {
     // Direct tools have an empty parentCallId. Pin those to their own call,
     // while nested Code Mode tools keep sharing their parent's captured lease.
     const key = `${context.sessionId}\u0000${context.parentCallId || context.callId}`;
@@ -170,10 +172,10 @@ export function createNamespaceExecutionRuntime(
     const authority = authorizationKey(context);
     if (retained !== undefined) {
       if (retained.authorizationKey !== authority) throw new Error("namespace cell belongs to another authorization");
-      return retained;
+      if (!extend) return retained;
     }
     const created = Object.freeze({
-      ...createCellBinding(brain, machines(context).filter(filter ?? (() => true)), resolveMachineTool, context, key, resolveScreenTool),
+      ...createCellBinding(brain, machines(context).filter(filter ?? (() => true)), resolveMachineTool, context, key, resolveScreenTool, retained, deferComputer),
       authorizationKey: authority,
     });
     cells.set(key, created);
@@ -438,7 +440,13 @@ export function createNamespaceExecutionRuntime(
   };
   return Object.freeze({
     tools,
-    capture: (context: ToolContext, filter?: NamespaceCaptureFilter) => { void cell(context, filter); },
+    capture: (context: ToolContext, filter?: NamespaceCaptureFilter, extend = false, deferComputer = false) => { void cell(context, filter, extend, deferComputer); },
+    hasRoute: (context, workdir) => {
+      const retained = cells.get(`${context.sessionId}\u0000${context.parentCallId || context.callId}`);
+      if (!retained || retained.authorizationKey !== authorizationKey(context)) return false;
+      const cwd = canonicalCwd(retained, workdir);
+      return [...retained.hands.values()].some(hand => cwd === hand.root || cwd.startsWith(`${hand.root}/`));
+    },
   });
 }
 
@@ -464,22 +472,46 @@ function createCellBinding(
   context: ToolContext,
   key: string,
   resolveScreenTool: ScreenToolResolver,
+  retained?: CellBinding,
+  deferComputer = false,
 ): CellBinding {
-  const hands: MountedHand[] = [brain];
-  const roots = new Set([brain.root]);
-  const aliases = new Map<string, string>();
+  // Completing discovery adds routes; it never replaces a handle already pinned
+  // by this cell, even if its publisher has reconnected in the meantime.
+  const hands: MountedHand[] = retained ? [...retained.hands.values()] : [brain];
+  const roots = new Set(hands.map(hand => hand.root));
+  const pinned = new Set(hands.map(hand => hand.machineId));
+  const aliases = new Map(retained?.aliases);
   const keyHash = stableHash(key);
-  for (const machine of sourceMachines) {
-    const root = machine.root ?? machineMountRoot(machine.id);
-    if (roots.has(root)) throw new Error(`duplicate namespace mount root ${root}`);
-    roots.add(root);
-    const screen = resolveScreenTool(machine.id, context);
-    const upstreamCua = resolveMachineTool(machine.id, CUA_JS_NAME, context);
-    const upstreamReset = resolveMachineTool(machine.id, CUA_RESET_NAME, context);
+  const captureComputer = (machineId: string): Pick<MountedHand, "cua" | "cuaReset" | "cuaBackend" | "screen" | "computerDeferred"> => {
+    if (deferComputer) return { computerDeferred: true };
+    const screen = resolveScreenTool(machineId, context);
+    const upstreamCua = resolveMachineTool(machineId, CUA_JS_NAME, context);
+    const upstreamReset = resolveMachineTool(machineId, CUA_RESET_NAME, context);
     const upstream = upstreamCua !== undefined && upstreamReset !== undefined
       ? { cua: upstreamCua, cuaReset: upstreamReset } : undefined;
     const fallback = upstream === undefined && screen !== undefined
       ? nativeScreenCua(screen) : undefined;
+    return {
+      cua: upstream ? withNativeRecording(upstream.cua, screen) : fallback?.cua,
+      cuaReset: upstream?.cuaReset ?? fallback?.cuaReset,
+      cuaBackend: upstream ? "upstream" : fallback ? "native_screen" : undefined,
+      screen,
+      computerDeferred: false,
+    };
+  };
+  for (const machine of sourceMachines) {
+    if (pinned.has(machine.id)) {
+      const index = hands.findIndex(hand => hand.machineId === machine.id);
+      // Only the initial computer capture was deferred. Preserve all shell and
+      // process handles, and never refresh a captured (even unavailable) CUA pair.
+      if (!deferComputer && hands[index].computerDeferred) {
+        hands[index] = Object.freeze({ ...hands[index], ...captureComputer(machine.id) });
+      }
+      continue;
+    }
+    const root = machine.root ?? machineMountRoot(machine.id);
+    if (roots.has(root) || aliases.has(root)) throw new Error(`duplicate namespace mount root ${root}`);
+    roots.add(root);
     hands.push(Object.freeze({
       mountId: `mount:user:${machine.id}`,
       machineId: machine.id,
@@ -488,10 +520,7 @@ function createCellBinding(
       exec: resolveMachineTool(machine.id, "exec_command", context),
       writeStdin: resolveMachineTool(machine.id, "write_stdin", context),
       preview: resolveMachineTool(machine.id, "preview", context),
-      cua: upstream ? withNativeRecording(upstream.cua, screen) : fallback?.cua,
-      cuaReset: upstream?.cuaReset ?? fallback?.cuaReset,
-      cuaBackend: upstream ? "upstream" : fallback ? "native_screen" : undefined,
-      screen,
+      ...captureComputer(machine.id),
     }));
   }
   const manifest = createNamespaceManifest({
@@ -506,6 +535,7 @@ function createCellBinding(
     })),
   });
   for (const machine of sourceMachines) {
+    if (pinned.has(machine.id)) continue;
     const root = machine.root ?? machineMountRoot(machine.id);
     for (const alias of machine.aliases ?? []) {
       if (alias === root) continue;
