@@ -73,9 +73,13 @@ it.each([
   ["cloudflare", "workers_ai", "binding"], ["openrouter", "cloudflare", "binding"], ["cloudflare", "cloudflare", "binding"],
   ["cloudflare", "workers_ai", "rest"], ["openrouter", "cloudflare", "rest"], ["cloudflare", "cloudflare", "rest"],
 ] as const)("opt-in %s root and %s child (%s) pin independent live transports and never resurrect children after unload", async (provider, childProvider, transport) => {
+  // Chat Completions tool calls require a supported pinned model.
+  const rootModel = provider === "cloudflare" ? "gpt-6.1-sol" : "gpt-6-astra";
   const childModel = childProvider === "cloudflare" ? "gpt-6-astra" : OSS_MODEL;
   const childCandidate = ROUTING_CANDIDATES.find(c => c.backend === childProvider && c.model === childModel && c.thinking === "high")!;
-  const rootCandidate = ROUTING_CANDIDATES.find(c => c.backend === provider && c.model === "gpt-6.1-sol" && c.thinking === "low")!;
+  const rootCandidate = ROUTING_CANDIDATES.find(c => c.backend === provider && c.model === rootModel && c.thinking === "low")!;
+  expect(rootCandidate, "root fixture must select an admitted tool-capable model").toBeDefined();
+  expect(childCandidate, "child fixture must select an admitted model").toBeDefined();
   const sessions = (env as unknown as { NANOCODEX_SESSIONS: DurableObjectNamespace<DurableAgentSession> }).NANOCODEX_SESSIONS;
   await runInDurableObject(sessions.getByName(crypto.randomUUID()), async (session, state) => {
     let choices = 0, rootCalls = 0, childCalls = 0, childToolResults = 0, submissions = 0;
@@ -107,7 +111,7 @@ it.each([
           if (choices === 2) expect(chooserState.opening_prompt).toContain("child-fixture-task");
           return { answers: { candidate: { choice: candidate.id, confidence: .99 }, family: { choice: "terminal", confidence: .99 } } };
         }
-        if (provider === "cloudflare" && model === "openai/gpt-6.1-sol") {
+        if (provider === "cloudflare" && model === `openai/${rootModel}`) {
           expect(input.reasoning).toEqual({ effort: "low" });
           return toNative(await (await rootResponse(fromNative(input))).json());
         }
@@ -176,10 +180,10 @@ it.each([
       rootCalls++;
       expect(rootCalls).toBeLessThanOrEqual(20);
       if (provider !== "cloudflare") {
-        expect(body.model).toBe("openai/gpt-6.1-sol");
+        expect(body.model).toBe(`openai/${rootModel}`);
         expect(provider === "openrouter" ? body.reasoning.effort : body.reasoning_effort).toBe("low");
       }
-      expect(JSON.parse(String(table("managed_thread_route")[0].route_json))).toMatchObject({ backend: provider, model: "gpt-6.1-sol", thinking: "low" });
+      expect(JSON.parse(String(table("managed_thread_route")[0].route_json))).toMatchObject({ backend: provider, model: rootModel, thinking: "low" });
       const last = body.messages.at(-1);
       if (phase === 1 && step++ === 0) return Response.json(call(body, "spawn_agent", {
         role: "fixture specialist", task: "child-fixture-task: read /brain/child-input.txt and submit the value.", model: null, thinking: null, output_contract: contract,
@@ -272,7 +276,7 @@ it.each([
         ).toArray();
         expect(routeEvents).toHaveLength(1);
         expect(JSON.parse(routeEvents[0].message_json)).toMatchObject({ type: "event", event: { type: "run.started" },
-          model_route: { backend: provider, model: "gpt-6.1-sol", thinking: "low" }, model_routing_automatic: true });
+          model_route: { backend: provider, model: rootModel, thinking: "low" }, model_routing_automatic: true });
         const opening = sql.exec<{ accepted_cursor: number; terminal_cursor: number }>(
           "SELECT accepted_cursor,terminal_cursor FROM managed_turns WHERE id = 'fixture-turn-1'",
         ).one();
@@ -283,7 +287,7 @@ it.each([
         const status: any = await (await request("/state", "GET")).json();
         expect(status.model_routing_enabled).toBe(true);
         expect(status.model_route).toEqual(JSON.parse(String(table("managed_thread_route")[0].route_json)));
-        expect(status.model_route).toMatchObject({ backend: provider, model: "gpt-6.1-sol", thinking: "low" });
+        expect(status.model_route).toMatchObject({ backend: provider, model: rootModel, thinking: "low" });
         expect(choices).toBe(2);
         expectNoDurableChildren();
         if (phase === 2) {
@@ -305,7 +309,7 @@ it.each([
           const ready = new Promise<any>(resolve => socket.addEventListener("message", event => resolve(JSON.parse(String(event.data))), { once: true }));
           socket.accept();
           expect(await ready).toMatchObject({ type: "ready", restored: true, active_turns: [], settings: {
-            model: "gpt-6.1-sol", thinking: "low", reasoning_mode: "standard", fast_mode: false,
+            model: rootModel, thinking: "low", reasoning_mode: "standard", fast_mode: false,
           } });
           socket.close(1000, "fixture reconnect complete");
           expect(choices).toBe(2);
