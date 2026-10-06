@@ -727,7 +727,12 @@ async fn run_reconnects_the_same_local_host_after_a_ready_socket_disconnect() {
     assert_eq!(state.tool_host_attempts.load(Ordering::SeqCst), 2);
     let catalogs = state.catalogs.lock().unwrap();
     assert_eq!(catalogs.len(), 2);
-    assert_eq!(catalogs[0], catalogs[1]);
+    assert_ne!(catalogs[0]["connection_id"], catalogs[1]["connection_id"]);
+    let mut first = catalogs[0].clone();
+    let mut second = catalogs[1].clone();
+    first.as_object_mut().unwrap().remove("connection_id");
+    second.as_object_mut().unwrap().remove("connection_id");
+    assert_eq!(first, second);
     assert_eq!(
         catalogs[0]["attachment_id"],
         catalogs[0]["machines"][0]["id"]
@@ -1539,7 +1544,10 @@ async fn serve_tool_host(mut socket: WebSocket, state: TestState, disconnect_aft
             "machines",
             "attachment_id",
             "capabilities",
-            "runtime_id"
+            "runtime_id",
+            "command_recovery",
+            "diagnostics",
+            "connection_id"
         ]
         .into_iter()
         .collect(),
@@ -1622,11 +1630,18 @@ async fn serve_tool_host(mut socket: WebSocket, state: TestState, disconnect_aft
         ))
         .await
         .unwrap();
-    let Some(Ok(Message::Text(result))) = socket.recv().await else {
-        return;
+    let result = loop {
+        let Some(Ok(Message::Text(frame))) = socket.recv().await else {
+            return;
+        };
+        let frame: serde_json::Value = serde_json::from_str(&frame).unwrap();
+        if frame["type"] == "diagnostic" {
+            assert_eq!(frame["call_id"], "call-managed");
+            continue;
+        }
+        assert_eq!(frame["type"], "result");
+        break frame;
     };
-    let result: serde_json::Value = serde_json::from_str(&result).unwrap();
-    assert_eq!(result["type"], "result");
     assert_eq!(result["call_id"], "call-managed");
     assert_eq!(result["outcome"]["status"], "completed");
     assert_eq!(result["outcome"]["output"]["success"], true, "{result}");
@@ -2351,3 +2366,201 @@ async fn docker_preflight_errors_are_actionable_before_account_login() {
 #[cfg(unix)]
 #[path = "native_screen_lifecycle.rs"]
 mod native_screen_lifecycle;
+
+// Real executable over HTTP/WS: optional catalog failure must not gate an
+// explicit model, while default selection and live authentication remain live.
+#[tokio::test]
+async fn explicit_model_startup_does_not_read_catalog() {
+    for catalog_mode in ["held", "unavailable", "available"] {
+        for explicit in [true, false] {
+            startup_catalog_journey(catalog_mode, explicit, false).await;
+        }
+    }
+    startup_catalog_journey("held", true, true).await;
+}
+
+async fn startup_catalog_journey(catalog_mode: &'static str, explicit: bool, revoked: bool) {
+    let reads = Arc::new(AtomicUsize::new(0));
+    let prompts = Arc::new(AtomicUsize::new(0));
+    let admissions = Arc::new(AtomicUsize::new(0));
+    let key = format!("ncx_live_{}_{}", "a".repeat(12), "b".repeat(43));
+    let authorization = format!("Bearer {key}");
+    let catalog_reads = reads.clone();
+    let prompt_count = prompts.clone();
+    let admission_count = admissions.clone();
+    let app = Router::new()
+        .route(
+            "/v1/models",
+            get(move || async move {
+                catalog_reads.fetch_add(1, Ordering::SeqCst);
+                match catalog_mode {
+                    "held" => std::future::pending().await,
+                    "unavailable" => json_response(
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        serde_json::json!({"error": "model_availability_unavailable"}),
+                    ),
+                    _ => json_response(StatusCode::OK, fixture_model_catalog()),
+                }
+            }),
+        )
+        .route(
+            "/v1/agents/live",
+            get(
+                move |headers: HeaderMap,
+                      Query(query): Query<HashMap<String, String>>,
+                      upgrade: WebSocketUpgrade| async move {
+                    admission_count.fetch_add(1, Ordering::SeqCst);
+                    assert_eq!(
+                        headers.get("authorization").unwrap(),
+                        authorization.as_str()
+                    );
+                    if revoked {
+                        return unauthorized().into_response();
+                    }
+                    if explicit {
+                        assert_eq!(query.get("model").unwrap(), "gpt-6.1-sol");
+                        assert_eq!(query.get("thinking").unwrap(), "xhigh");
+                        assert_eq!(query.get("fast_mode").unwrap(), "true");
+                    } else {
+                        assert_catalog_creation_query(&query);
+                    }
+                    upgrade
+                        .on_upgrade(move |mut socket| async move {
+                            if explicit {
+                                socket.send(Message::Text(serde_json::json!({
+                                    "type": "ready", "session_id": AGENT_ID, "restored": false,
+                                    "active_turns": [], "capabilities": agent_capabilities(),
+                                    "settings": {"model": "gpt-6.1-sol", "thinking": "xhigh",
+                                        "reasoning_mode": "standard", "fast_mode": true},
+                                    "latest_event_cursor": "0"
+                                }).to_string().into())).await.unwrap();
+                            } else {
+                                send_ready(&mut socket, "0", false).await;
+                            }
+                            let Some(Ok(Message::Text(prompt))) = socket.recv().await else {
+                                return;
+                            };
+                            let prompt: serde_json::Value = serde_json::from_str(&prompt).unwrap();
+                            assert_eq!(prompt["type"], "prompt");
+                            assert_eq!(prompt["input"], "startup answer");
+                            prompt_count.fetch_add(1, Ordering::SeqCst);
+                            let id = prompt["id"].as_str().unwrap();
+                            send_accepted(&mut socket, id, "startup answer", 1).await;
+                            send_turn_messages(&mut socket, id, "catalog-independent answer", 2, 1)
+                                .await;
+                            while socket.recv().await.is_some() {}
+                        })
+                        .into_response()
+                },
+            ),
+        )
+        .route(
+            "/v1/agents/{agent}/tool-host",
+            get(|upgrade: WebSocketUpgrade| async move {
+                upgrade.on_upgrade(|mut socket| async move {
+                    let Some(Ok(Message::Text(catalog))) = socket.recv().await else {
+                        return;
+                    };
+                    let catalog: serde_json::Value = serde_json::from_str(&catalog).unwrap();
+                    assert_eq!(catalog["type"], "catalog");
+                    socket
+                        .send(Message::Text(
+                            serde_json::json!({"type":"ready"}).to_string().into(),
+                        ))
+                        .await
+                        .unwrap();
+                    serve_until_drain(&mut socket).await;
+                })
+            }),
+        );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let home = tempfile::tempdir().unwrap();
+    let mut command = fixture_command(home.path());
+    command
+        .env("NANOCODEX_MANAGED_URL", format!("http://{address}"))
+        .env("NC_API_KEY", key)
+        .args(["run", "startup answer"])
+        .kill_on_drop(true);
+    if explicit {
+        command.args(["--model", "sol"]);
+    }
+    let result = tokio::time::timeout(std::time::Duration::from_secs(8), command.output()).await;
+    if !explicit && catalog_mode == "held" {
+        assert!(result.is_err(), "default must wait for the catalog");
+    } else {
+        let output = result.expect("CLI journey timed out").unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        eprintln!(
+            "catalog={catalog_mode} explicit={explicit} revoked={revoked}: status={} stdout={stdout} stderr={stderr}",
+            output.status
+        );
+        if revoked || (!explicit && catalog_mode == "unavailable") {
+            assert!(!output.status.success());
+            if revoked {
+                assert!(
+                    stderr.contains("401") || stderr.contains("Unauthorized"),
+                    "{stderr}"
+                );
+            } else {
+                assert!(
+                    stderr.contains("model_availability_unavailable"),
+                    "{stderr}"
+                );
+            }
+        } else {
+            assert!(output.status.success(), "{stderr}");
+            assert!(stdout.contains("catalog-independent answer"), "{stdout}");
+        }
+    }
+    assert_eq!(reads.load(Ordering::SeqCst) == 0, explicit);
+    assert_eq!(
+        prompts.load(Ordering::SeqCst),
+        usize::from(!revoked && (explicit || catalog_mode == "available"))
+    );
+    assert_eq!(
+        admissions.load(Ordering::SeqCst) > 0,
+        explicit || catalog_mode == "available"
+    );
+    server.abort();
+}
+
+#[tokio::test]
+async fn explicit_model_rejects_invalid_options_before_network() {
+    let home = tempfile::tempdir().unwrap();
+    for flags in [
+        vec![
+            "--model",
+            "claude-sonnet-4-6",
+            "--chatgpt-account",
+            "synthetic-pin",
+        ],
+        vec!["--model", "claude-sonnet-4-6", "--thinking", "xhigh"],
+        vec!["--model", "claude-sonnet-4-6", "--reasoning-mode", "pro"],
+        vec!["--model", "claude-sonnet-4-6", "--fast-mode"],
+        vec!["--model", "unknown-model"],
+    ] {
+        let output = fixture_command(home.path())
+            .env("NANOCODEX_MANAGED_URL", "http://127.0.0.1:1")
+            .env(
+                "NC_API_KEY",
+                format!("ncx_live_{}_{}", "a".repeat(12), "b".repeat(43)),
+            )
+            .args(["run", "startup answer"])
+            .args(&flags)
+            .output()
+            .await
+            .unwrap();
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(!output.status.success());
+        assert!(
+            stderr.contains("cannot be pinned")
+                || stderr.contains("not offered")
+                || stderr.contains("supported managed model"),
+            "{flags:?}: {stderr}"
+        );
+        eprintln!("invalid flags={flags:?}: {stderr}");
+    }
+}
