@@ -1239,23 +1239,22 @@ pub(crate) async fn run_observed(
     }
     let display_cleanup = startup::stop_display(&mut display).await;
     let replacement_cleanup = async {
-        if let Some(mut replacement) = model_replacement {
-            if let Some(Ok(configured)) = replacement
+        if let Some(mut replacement) = model_replacement
+            && let Some(Ok(configured)) = replacement
                 .task
                 .cancel()
                 .await
                 .wrap_err("model initialization task failed")?
-            {
-                let _ = configured.handle.shutdown().await;
-                shutdown_runtime(
-                    None,
-                    configured.child_agents,
-                    configured.mpp_adapter,
-                    configured.browser,
-                    configured.vm,
-                )
-                .await?;
-            }
+        {
+            let _ = configured.handle.shutdown().await;
+            shutdown_runtime(
+                None,
+                configured.child_agents,
+                configured.mpp_adapter,
+                configured.browser,
+                configured.vm,
+            )
+            .await?;
         }
         Ok::<(), eyre::Report>(())
     }
