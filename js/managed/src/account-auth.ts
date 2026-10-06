@@ -208,6 +208,8 @@ export type Principal = Readonly<{
   role: OrganizationRole;
   subjectId: `user:${string}` | `api_key:${string}`;
   credentialId: string;
+  /** Verified key routing hint; live resolution still checks every authority field. */
+  apiKeyObjectId?: string;
   authorizationEpoch: number;
   capabilities: readonly OrganizationCapability[];
   connectGrant?: ConnectGrantSlice;
@@ -428,8 +430,19 @@ export async function requestApiKeyPermissions(
 export async function resolvePermissionKey(
   env: AccountAuthEnv,
   identity: PermissionRequestIdentity,
+  apiKeyObjectId?: string,
 ): Promise<{ capabilities: readonly OrganizationCapability[] } | undefined> {
-  const key = await permissionKey(env, identity);
+  let key: DurableObjectStub<ApiKeyRecord> | undefined;
+  if (apiKeyObjectId === undefined) {
+    // Retained sockets and older ingress versions have only the public key ID.
+    key = await permissionKey(env, identity);
+  } else {
+    // Routing is not authority: resolve the live key and compare its complete
+    // identity below, including owner, organization, team, and epoch.
+    if (!/^[0-9a-f]{64}$/.test(apiKeyObjectId)) return undefined;
+    try { key = env.NANOCODEX_API_KEYS.get(env.NANOCODEX_API_KEYS.idFromString(apiKeyObjectId)); }
+    catch { return undefined; }
+  }
   if (!key) return undefined;
   const record = consumeRpcData(await key.resolveAuthorizedKey());
   if (!record || record.id !== identity.keyId || record.userId !== identity.userId
@@ -639,6 +652,18 @@ export async function routeAccountRequest(
     const principal = await authenticatePersistentAccount(request, env, url);
     if (!principal) return unauthorized();
     return proxyAccountWalletRequest(env, principal.userId, "/balance");
+  }
+  if (["/v1/wallet/link", "/v1/wallet/link/poll", "/v1/wallet/link/cancel", "/v1/wallet/unlink"].includes(url.pathname)) {
+    if (request.method !== "POST") return methodNotAllowed();
+    const principal = await authenticatePersistentAccount(request, env, url);
+    if (!principal) return unauthorized();
+    const originFailure = requireSameOriginMutation(request, url, principal);
+    if (originFailure) return originFailure;
+    const body = await readJson(request, MAX_WALLET_MUTATION_BODY_BYTES);
+    if (body instanceof Response) return body;
+    if (containsBrowserPrivateKey(body)) return json({ error: "invalid_wallet_request" }, { status: 400 });
+    const suffix = url.pathname.slice("/v1/wallet".length) as "/link" | "/link/poll" | "/link/cancel" | "/unlink";
+    return proxyAccountWalletRequest(env, principal.userId, suffix, body);
   }
   if (url.pathname === "/v1/wallet/connect" || url.pathname === "/v1/wallet/revoke-access-key") {
     if (request.method !== "POST") return methodNotAllowed();
@@ -980,7 +1005,7 @@ async function authenticateLive(request: Request, env: AccountAuthEnv, url: URL)
     if (response.headers.get("x-nanocodex-api-key-authorized") !== "1"
       && !await apiKeyAuthorized(env, record)) return undefined;
   }
-  return apiKeyPrincipal(record, digest);
+  return apiKeyPrincipal(record, digest, stub.id?.toString());
 }
 
 async function apiKeyAuthorized(env: AccountAuthEnv, record: StoredApiKey): Promise<boolean> {
@@ -1640,7 +1665,7 @@ async function readAccountWallet(
   let response: Response;
   try {
     response = await env.NANOCODEX.fetch(
-      `https://broker.internal/users/${encodeURIComponent(userId)}/wallet`,
+      `https://broker.internal/users/${encodeURIComponent(userId)}/wallet/identity`,
     );
   } catch {
     throw new Error("wallet unavailable");
@@ -1656,7 +1681,7 @@ async function readAccountWallet(
 async function proxyAccountWalletRequest(
   env: AccountAuthEnv,
   userId: string,
-  suffix: "" | "/balance" | "/connect" | "/revoke-access-key",
+  suffix: "" | "/balance" | "/connect" | "/revoke-access-key" | "/link" | "/link/poll" | "/link/cancel" | "/unlink",
   body?: Record<string, unknown>,
 ): Promise<Response> {
   if (!env.NANOCODEX) return json({ error: "wallet_unavailable" }, { status: 503 });

@@ -1,3 +1,4 @@
+import { useActiveWallet } from "./useActiveWallet";
 import { useQueryClient } from "@tanstack/react-query";
 import { refreshAccountResource } from "./accountQueries";
 import { useAccountQuery } from "./useAccountQuery";
@@ -22,7 +23,8 @@ export function useWalletFunding(enabled: boolean) {
   const session = useAccountSession();
   const queryClient = useQueryClient();
   const accountId = session.account?.id;
-  const address = session.account?.address;
+  const activeWallet = useActiveWallet(enabled);
+  const address = activeWallet.wallet?.address;
   const refreshSession = session.refresh;
   const [operationError, setError] = useState<string | null>(null);
   const [operation, setOperation] = useState<WalletFundingOperation | null>(null);
@@ -38,7 +40,7 @@ export function useWalletFunding(enabled: boolean) {
 
   const { query: configQuery } = useAccountQuery(accountId, "/v1/machine-usd/config", decodeMachineUsdConfig, { enabled, staleTime: 5 * 60_000 });
   const config = configQuery.data ?? null;
-  const error = operationError ?? (configQuery.error ? "Adding funds is temporarily unavailable. Please try again later." : null);
+  const error = operationError ?? (activeWallet.error ? "Couldn’t verify the active wallet. Reload before adding funds." : null) ?? (configQuery.error ? "Adding funds is temporarily unavailable. Please try again later." : null);
 
   useEffect(() => {
     cancel();
@@ -145,11 +147,11 @@ export function useWalletFunding(enabled: boolean) {
     checkoutUrl,
     message,
     amountCents: config ? defaultFundingAmountCents(config) : 500,
-    available: config?.onrampEnabled === true,
+    available: Boolean(address) && config?.onrampEnabled === true,
     error,
     errorSource: operationError ? "order" : configQuery.error ? "configuration" : null,
     fund,
-    loading: configQuery.isLoading,
+    loading: configQuery.isLoading || activeWallet.loading,
     operation,
   } as const;
 }

@@ -3,6 +3,9 @@
 Portions of this directory are derived from
 [clabby/tact](https://github.com/clabby/tact) revision
 `e20b1584642339546bb2310aad6968edeec66a53`, modified for Nanocodex2.
+Recent-prompt relevance ranking and completed-response copying also incorporate
+changes from revision `9835324e170b7f3e0c574fc1cad2fd1c20b594cd`, adapted to
+Nanocodex's managed sessions and clipboard transport.
 
 Those portions are distributed under the Apache License 2.0. The upstream
 project did not contain a separate `NOTICE` file at the pinned revision. The

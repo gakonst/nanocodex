@@ -211,6 +211,15 @@ Hosted WebSocket diagnostics are always enabled in Workers Logs. The
 `transport.socket.opened`, `transport.request.sent`,
 `transport.request.first_message`, `transport.request.first_output`, and
 `transport.request.finished` describe each socket/request lifecycle.
+`first_message` and `first_output` include an allowlisted `provider_event_type`;
+`first_output` also identifies its `output_kind`. This historical output marker
+includes empty item announcements, so it is not a first-token measurement.
+`transport.request.first_reasoning_delta`, `first_answer_delta`, and
+`first_tool_delta` separately mark the first nonempty string delta of each kind.
+Waiting and finished records include the corresponding elapsed `*_delta_ms` values.
+These are frame-arrival times at the host, before runtime consumption or UI rendering.
+Classification inspects envelopes up to 16,384 UTF-16 code units; larger/unknown initial frames are
+`unclassified`, and an absent delta marker does not prove the provider emitted none.
 `transport.socket.connect_waiting`, `transport.request.send_waiting`, and
 `transport.request.waiting` first emit after one second of silence, then at
 2/4/5-second intervals. Each incoming frame resets the silence interval.

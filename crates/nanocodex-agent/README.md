@@ -40,6 +40,11 @@ and process state. Cloning [`Nanocodex`] only clones its command capability;
 [`Nanocodex::spawn`] creates a clean sibling and [`Nanocodex::fork`] creates an
 independent branch from committed history.
 
+The runtime appends the selected model ID to developer instructions, including
+when the caller replaces the built-in prompt. It derives this identity from the
+current agent configuration on model changes, child creation, and completed-session
+resume. Codex and Nanocodex name the harness and product, not the underlying model.
+
 ## Remote tool environments
 
 When tools execute in a VM or remote workspace, provide one coherent snapshot

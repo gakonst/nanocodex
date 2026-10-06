@@ -24,12 +24,7 @@ import { ConnectionLogo } from "nanocodex-connect-ui/ConnectionLogo";
 import { deploymentHealth } from "./deploymentHealth";
 import { localDevelopmentCredential } from "./localDevelopmentCredential";
 import { ProfileConnectors } from "./ProfileConnectors";
-import {
-  decodeWalletBalance,
-  formatWalletBalance,
-} from "./walletFunding";
-import { TempoWalletConnectionCard } from "./TempoWalletConnectionCard";
-import { useWalletFunding } from "./useWalletFunding";
+import { ActiveTempoWalletConnectionCard } from "./TempoWalletConnectionCard";
 
 type ApiKeyMetadata = Readonly<{
   id: string;
@@ -56,7 +51,6 @@ function AccountMenuContent({ inline }: { inline: boolean }) {
   const accountId = session.account?.id;
   const accountPersistent = session.account?.persistent === true;
   const [open, setOpen] = useState(() => inline || new URL(window.location.href).searchParams.has("connector_result") || new URL(window.location.href).searchParams.get("connect") === "whatsapp");
-  const walletFunding = useWalletFunding(inline || open);
   const [keyOperationError, setKeyError] = useState<string | null>(null);
   const [keyOperation, setKeyOperation] = useState<string | null>(null);
   const [newKey, setNewKey] = useState<NewApiKey | null>(null);
@@ -71,14 +65,7 @@ function AccountMenuContent({ inline }: { inline: boolean }) {
   const enabled = inline || open;
   const { query: keysQuery, refresh: loadKeys } = useAccountQuery(accountId, "/v1/api-keys", decodeApiKeys, { enabled });
   const { query: credentialsQuery, refresh: refreshCredentials } = useAccountQuery(accountId, "/v1/credentials", decodeCredentialStatus, { enabled });
-  const address = session.account?.address;
-  const selectBalance = useCallback((value: unknown) => decodeWalletBalance(value, address!), [address]);
-  const { query: balanceQuery } = useAccountQuery(accountId, "/v1/wallet/balance", selectBalance, {
-    enabled: enabled && Boolean(address), staleTime: 30_000, refetchInterval: enabled ? 5 * 60_000 : false,
-  });
   const keys = keysQuery.data ?? null;
-  const walletBalance = balanceQuery.data ?? null;
-  const walletBalanceError = balanceQuery.error ? failureMessage(balanceQuery.error, "Couldn’t load the Wallet balance.") : null;
   const keyError = keyOperationError ?? (keysQuery.error ? failureMessage(keysQuery.error, "Couldn’t load API keys.") : null);
   const credentialError = credentialOperationError ?? (credentialsQuery.error ? failureMessage(credentialsQuery.error, "Couldn’t load model connections.") : null);
   const credentials = credentialsQuery.data ? {
@@ -368,21 +355,7 @@ function AccountMenuContent({ inline }: { inline: boolean }) {
               presentation="wizard"
               refreshSession={refreshSession}
             >
-              <TempoWalletConnectionCard
-                address={session.account.address}
-                balance={walletBalanceError
-                  ? walletBalance ? `${formatWalletBalance(walletBalance)} · refresh failed` : "Balance unavailable"
-                  : walletBalance ? formatWalletBalance(walletBalance) : "Loading balance…"}
-                fundingAmountCents={walletFunding.amountCents}
-                fundingAvailable={walletFunding.available}
-                fundingError={walletFunding.error}
-                fundingErrorSource={walletFunding.errorSource}
-                fundingOperation={walletFunding.operation}
-                checkoutUrl={walletFunding.checkoutUrl}
-                fundingMessage={walletFunding.message}
-                fundingLoading={walletFunding.loading}
-                onFund={walletFunding.fund}
-              />
+              <ActiveTempoWalletConnectionCard enabled={enabled} />
               {credentials ? (
                 <>
                   <ClaudeConnection status={credentials.claude} disabled={!accountPersistent || providerOperation !== null}

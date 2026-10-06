@@ -8,6 +8,8 @@ import { Provider, ProviderRequest, secp256k1, Storage } from "accounts";
 import { createClient, http } from "viem";
 import { Account as TempoAccount, Actions } from "viem/tempo";
 import { tempo } from "viem/tempo/chains";
+import { linkedWalletProvider, newWalletLink, pairWallet, publicLinkedWallet, publicWalletLink,
+  verifiedAuthorization, WALLET_OPERATION, type LinkedWallet, type WalletLink } from "./linked-wallet";
 
 import {
   CredentialVault,
@@ -187,6 +189,10 @@ type CredentialState = {
   ssh?: Record<string, BrokeredSshIdentity>;
   vault?: Record<string, VaultEntryMetadata>;
   wallet?: RootWallet;
+  linkedWallet?: LinkedWallet;
+  walletLinks?: Record<string, WalletLink>;
+  walletUnlinks?: Record<string, { address: string }>;
+
   browserCookieJars?: Record<string, BrowserCookieJarMetadata>;
 };
 type StoredRow = { envelope: EncryptedEnvelope };
@@ -344,6 +350,7 @@ export class UserCredentialBroker extends DurableObject<BrokerEnv> {
   #claude: Promise<ClaudeSubscription.Subscription> | undefined;
   #claudeCredential: ClaudeCredential | undefined;
   #tail: Promise<void> = Promise.resolve();
+  #liveWalletLink: { operationId: string; controller: AbortController } | undefined;
 
   constructor(state: DurableObjectState, env: BrokerEnv) {
     super(state, env);
@@ -374,6 +381,7 @@ export class UserCredentialBroker extends DurableObject<BrokerEnv> {
     const url = new URL(request.url);
     if (request.method === "GET" && url.pathname === "/v1/wallet"
       && request.headers.get("accept") === "application/vnd.nanocodex.wallet-snapshot+json") return this.#walletSnapshot(request);
+    if (url.pathname === "/v1/wallet/link") return this.#startWalletLink(request);
     if (url.pathname === "/v1/wallet/connect") return this.#walletConnect(request);
     const queuedAt = Date.now();
     const measureCredential = request.method === "POST"
@@ -472,7 +480,7 @@ export class UserCredentialBroker extends DurableObject<BrokerEnv> {
   async #walletSnapshot(request: Request): Promise<Response> {
     const wallet = await this.#exclusive(async () => {
       await this.#ready;
-      return this.#credentials.wallet ? publicRootWallet(this.#credentials.wallet) : undefined;
+      return this.#publicWallet();
     }, { operation: "http" });
     if (!wallet) return jsonError(404, "wallet_not_configured");
     const controller = new AbortController();
@@ -852,11 +860,17 @@ export class UserCredentialBroker extends DurableObject<BrokerEnv> {
         }
         return this.#setSponsoredPromptLifecycle(promptId, attempt, action);
       }
+      if (url.pathname === "/v1/wallet/identity") {
+        if (request.method !== "GET") return jsonError(405, "method_not_allowed");
+        return this.#credentials.wallet ? json(publicRootWallet(this.#credentials.wallet), 200) : jsonError(404, "wallet_not_configured");
+      }
+      if (["/v1/wallet/link/poll", "/v1/wallet/link/cancel", "/v1/wallet/unlink"].includes(url.pathname)) {
+        return this.#walletLinkAction(request, url.pathname);
+      }
       if (url.pathname === "/v1/wallet") {
         if (request.method === "GET") {
-          return this.#credentials.wallet
-            ? json(publicRootWallet(this.#credentials.wallet), 200)
-            : jsonError(404, "wallet_not_configured");
+          const wallet = this.#publicWallet();
+          return wallet ? json(wallet, 200) : jsonError(404, "wallet_not_configured");
         }
         if (request.method === "PUT") {
           if (await hasRequestPayload(request)) return jsonError(400, "invalid_request");
@@ -866,11 +880,11 @@ export class UserCredentialBroker extends DurableObject<BrokerEnv> {
       }
       if (url.pathname === "/v1/wallet/balance") {
         if (request.method !== "GET") return jsonError(405, "method_not_allowed");
-        const wallet = this.#credentials.wallet;
+        const wallet = this.#publicWallet();
         if (!wallet) return jsonError(404, "wallet_not_configured");
-        const provider = rootWalletProvider(wallet);
-        const balance = await Actions.token.getBalance(provider.getClient({ chainId: tempo.id }), {
-          account: wallet.address,
+        const client = createClient({ chain: tempo, transport: http(TEMPO_RPC, { retryCount: 0, timeout: 5_000 }) });
+        const balance = await Actions.token.getBalance(client, {
+          account: wallet.address as `0x${string}`,
           decimals: 6,
           token: MACHINE_USD,
         });
@@ -885,14 +899,13 @@ export class UserCredentialBroker extends DurableObject<BrokerEnv> {
       if (url.pathname === "/v1/wallet/mercator/credential") {
         if (request.method !== "POST") return jsonError(405, "method_not_allowed");
         if (!isJsonContentType(request.headers.get("content-type"))) return jsonError(415, "invalid_content_type");
-        const wallet = this.#credentials.wallet;
-        if (!wallet) return jsonError(404, "wallet_not_configured");
+        if (!this.#credentials.wallet) return jsonError(404, "wallet_not_configured");
         let paymentRequest: unknown;
         try { paymentRequest = await readJson(request, 64 * 1024); }
         catch { return jsonError(400, "invalid_mercator_payment_request"); }
         try {
           return json({ credential: await createMercatorMcpCredential(paymentRequest, {
-            store: this.#state.storage, wallet: rootWalletProvider(wallet), signal: request.signal,
+            store: this.#state.storage, wallet: await this.#spendingWalletProvider(), signal: request.signal,
           }) }, 200);
         } catch (error) {
           return error instanceof MercatorPaymentInputError
@@ -1642,6 +1655,131 @@ export class UserCredentialBroker extends DurableObject<BrokerEnv> {
     } satisfies SponsoredConnectionState);
   }
 
+  #publicWallet() {
+    const root = this.#credentials.wallet;
+    if (!root) return undefined;
+    if (this.#credentials.linkedWallet) return publicLinkedWallet(this.#credentials.linkedWallet, root.address);
+    return { ...publicRootWallet(root), mode: "internal" as const, original_address: root.address };
+  }
+
+  async #spendingWalletProvider() {
+    if (this.#credentials.linkedWallet) return linkedWalletProvider(this.#credentials.linkedWallet);
+    if (!this.#credentials.wallet) throw new BrokerFailure(404, "wallet_not_configured");
+    return rootWalletProvider(this.#credentials.wallet);
+  }
+
+  async #startWalletLink(request: Request): Promise<Response> {
+    let started: WalletLink | undefined;
+    const initial = await this.#exclusive(async () => {
+      await this.#ready;
+      try {
+        if (request.method !== "POST") return jsonError(405, "method_not_allowed");
+        if (!isJsonContentType(request.headers.get("content-type"))) return jsonError(415, "invalid_content_type");
+        const body = await readJson(request, 1_024);
+        if (!isRecord(body) || !hasExactKeys(body, ["operation_id"]) || typeof body.operation_id !== "string"
+          || !WALLET_OPERATION.test(body.operation_id)) return jsonError(400, "invalid_wallet_link_request");
+        const id = body.operation_id;
+        const old = this.#credentials.walletLinks?.[id];
+        if (old) return json(publicWalletLink(old), 200);
+        if (this.#credentials.walletUnlinks?.[id]) return jsonError(409, "wallet_operation_conflict");
+        if (this.#credentials.linkedWallet) return jsonError(409, "wallet_already_linked");
+        if (Object.values(this.#credentials.walletLinks ?? {}).some(link => link.status === "pending")) {
+          return jsonError(409, "wallet_link_pending");
+        }
+        if (Object.keys(this.#credentials.walletLinks ?? {}).length >= 100) return jsonError(409, "wallet_link_operation_limit");
+        await this.#ensureRootWallet();
+        started = newWalletLink(id);
+        this.#credentials.walletLinks = { ...this.#credentials.walletLinks, [id]: started };
+        await this.#persist();
+        return undefined;
+      } catch (error) {
+        const problem = await this.#recoverFailedOperation(error);
+        return jsonError(problem.status, problem.code);
+      }
+    }, { operation: "http" });
+    if (initial) return initial;
+    const link = started!;
+    const controller = new AbortController();
+    this.#liveWalletLink = { operationId: link.operationId, controller };
+    let surfaced!: () => void;
+    const prompt = new Promise<void>(resolve => { surfaced = resolve; });
+    const work = pairWallet(link, controller.signal, async value => {
+      await this.#exclusive(async () => {
+        const current = this.#credentials.walletLinks?.[link.operationId];
+        if (current?.status !== "pending" || controller.signal.aborted) throw new Error("wallet_link_cancelled");
+        Object.assign(current, value);
+        await this.#persist();
+      }, { operation: "http" });
+      surfaced();
+    }).then(wallet => this.#exclusive(async () => {
+      const current = this.#credentials.walletLinks?.[link.operationId];
+      if (current?.status !== "pending" || controller.signal.aborted) return;
+      if (current.expiresAt <= Date.now()) current.status = "expired";
+      else {
+        verifiedAuthorization(wallet);
+        this.#credentials.linkedWallet = wallet;
+        current.status = "linked";
+      }
+      delete current.privateKey;
+      try { await this.#persist(); }
+      catch (error) { await this.#recoverFailedOperation(error); throw error; }
+    }, { operation: "http" })).catch(() => this.#exclusive(async () => {
+      const current = this.#credentials.walletLinks?.[link.operationId];
+      if (current?.status !== "pending") return;
+      current.status = current.expiresAt <= Date.now() ? "expired" : "rejected";
+      delete current.privateKey;
+      try { await this.#persist(); }
+      catch (error) { await this.#recoverFailedOperation(error); }
+    }, { operation: "http" })).finally(() => {
+      if (this.#liveWalletLink?.operationId === link.operationId) this.#liveWalletLink = undefined;
+      surfaced();
+    });
+    this.#state.waitUntil(work);
+    await prompt;
+    return this.#exclusive(async () => json(publicWalletLink(this.#credentials.walletLinks![link.operationId]!), 200), { operation: "http" });
+  }
+
+  async #walletLinkAction(request: Request, path: string): Promise<Response> {
+    if (request.method !== "POST") return jsonError(405, "method_not_allowed");
+    if (!isJsonContentType(request.headers.get("content-type"))) return jsonError(415, "invalid_content_type");
+    const body = await readJson(request, 1_024);
+    const unlink = path === "/v1/wallet/unlink";
+    if (!isRecord(body) || !hasExactKeys(body, unlink ? ["operation_id", "expected_address"] : ["operation_id"])
+      || typeof body.operation_id !== "string" || !WALLET_OPERATION.test(body.operation_id)) return jsonError(400, "invalid_wallet_link_request");
+    const id = body.operation_id;
+    if (unlink) {
+      if (typeof body.expected_address !== "string" || !ROOT_WALLET_ADDRESS.test(body.expected_address)) return jsonError(400, "invalid_wallet_link_request");
+      const address = body.expected_address.toLowerCase();
+      const old = this.#credentials.walletUnlinks?.[id];
+      if (old && old.address !== address) return jsonError(409, "wallet_operation_conflict");
+      if (this.#credentials.walletLinks?.[id]) return jsonError(409, "wallet_operation_conflict");
+      if (!old) {
+        if (this.#credentials.linkedWallet?.address.toLowerCase() !== address) return jsonError(409, "wallet_address_mismatch");
+        if (Object.keys(this.#credentials.walletUnlinks ?? {}).length >= 100) return jsonError(409, "wallet_link_operation_limit");
+        this.#credentials.walletUnlinks = { ...this.#credentials.walletUnlinks, [id]: { address } };
+        delete this.#credentials.linkedWallet;
+        await this.#persist();
+      }
+      return json({ operation_id: id, status: "unlinked", address, onchain_revoked: false, wallet: this.#publicWallet() }, 200);
+    }
+    let current = this.#credentials.walletLinks?.[id];
+    if (!current && path.endsWith("/cancel")) {
+      if (this.#credentials.walletUnlinks?.[id]) return jsonError(409, "wallet_operation_conflict");
+      if (Object.keys(this.#credentials.walletLinks ?? {}).length >= 100) return jsonError(409, "wallet_link_operation_limit");
+      current = { operationId: id, status: "cancelled", expiresAt: Date.now() };
+      this.#credentials.walletLinks = { ...this.#credentials.walletLinks, [id]: current };
+      await this.#persist();
+    }
+    if (!current) return jsonError(404, "wallet_link_not_found");
+    if (current.status === "pending" && (path.endsWith("/cancel") || current.expiresAt <= Date.now())) {
+      current.status = path.endsWith("/cancel") ? "cancelled" : "expired";
+      delete current.privateKey;
+      await this.#persist();
+      if (this.#liveWalletLink?.operationId === id) this.#liveWalletLink.controller.abort();
+    }
+    return json(publicWalletLink(current), 200);
+  }
+
   async #ensureRootWallet(): Promise<RootWallet> {
     const current = this.#credentials.wallet;
     if (current) return current;
@@ -2066,6 +2204,13 @@ export class UserCredentialBroker extends DurableObject<BrokerEnv> {
   }> {
     let changed = false;
     const legacy: VaultEntry[] = [];
+    for (const link of Object.values(restored.walletLinks ?? {})) {
+      if (link.status === "pending") {
+        link.status = link.expiresAt <= Date.now() ? "expired" : "interrupted";
+        delete link.privateKey;
+        changed = true;
+      }
+    }
     if (restored.wallet !== undefined && !validStoredRootWallet(restored.wallet)) {
       delete restored.wallet;
       changed = true;

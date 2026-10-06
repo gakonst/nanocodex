@@ -33,6 +33,8 @@ test("account funding journey reaches MACH and preserves identity, capability, r
   let order;
   let original;
   let enabled = true;
+  let selected = account;
+  const identity = "0x7777777777777777777777777777777777777777";
   const env = { CONNECT_STATE: { idFromName: x => x, get: () => ({}) }, MACH_ONRAMP: {
     async fetch(request) {
       requests.push(request.clone());
@@ -85,10 +87,12 @@ test("account funding journey reaches MACH and preserves identity, capability, r
   }
   const accountEnv = {
     NANOCODEX_BACKEND: { async fetch(request) {
-      assert.equal(new URL(request.url).pathname, "/v1/me");
+      const pathname = new URL(request.url).pathname;
+      assert.ok(["/v1/me", "/v1/wallet"].includes(pathname));
       const cookie = request.headers.get("cookie");
       if (!cookie) return Response.json({}, { status: 401 });
-      return Response.json({ authentication: "account_session", user: { persistent: true, address: cookie === "fixture=a" ? account : other } });
+      if (pathname === "/v1/wallet") return Response.json({ address: cookie === "fixture=a" ? selected : other, mode: "linked", created_at: 1 });
+      return Response.json({ authentication: "account_session", user: { persistent: true, address: identity } });
     } },
     NANOCODEX_CONNECT_API: { fetch: request => connect.fetch(request, env, context) },
   };
@@ -108,7 +112,7 @@ test("account funding journey reaches MACH and preserves identity, capability, r
   const base = `http://127.0.0.1:${server.address().port}/v1/machine-usd`;
   const create = (overrides = {}, cookie = "fixture=a", origin = canonical) => fetch(`${base}/orders`, {
     method: "POST", headers: { ...(cookie ? { cookie } : {}), origin, "content-type": "application/json", "idempotency-key": "fixture-retry" },
-    body: JSON.stringify({ wallet_address: other, order_token: "fixture-capability", payment_mode: "hosted_checkout", usd_amount_cents: 500,
+    body: JSON.stringify({ wallet_address: account, order_token: "fixture-capability", payment_mode: "hosted_checkout", usd_amount_cents: 500,
       checkout_return_url: "https://untrusted.example/", ...overrides }),
   });
   const read = (cookie = "fixture=a", token = "fixture-capability") => fetch(`${base}/orders/${id}`, { headers: { ...(cookie ? { cookie } : {}), authorization: `Bearer ${token}` } });
@@ -120,6 +124,13 @@ test("account funding journey reaches MACH and preserves identity, capability, r
   assert.equal((await create({}, "fixture=a", "https://attacker.example")).status, 403);
   assert.equal((await create({ usd_amount_cents: 499 })).status, 400);
   assert.equal((await create({ usd_amount_cents: 10001 })).status, 400);
+  const beforeStale = requests.length;
+  assert.equal((await create({ wallet_address: identity })).status, 409);
+  assert.equal(requests.length, beforeStale, "identity address cannot accidentally receive linked-wallet funding");
+  selected = other;
+  assert.equal((await create()).status, 409);
+  assert.equal(requests.length, beforeStale, "a concurrent wallet switch must not create a redirected order");
+  selected = account;
   response = await create();
   assert.equal(response.status, 201);
   assert.equal(decodeFundingAttempt(await response.json(), "fixture-capability", account, 500).id, id);

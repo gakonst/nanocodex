@@ -891,6 +891,8 @@ type ManagedRealtimeRouteResult = Readonly<{
 type TurnAuthorization = Readonly<{
   /** Verified API-key identity, never a bearer token; absent for Connect and service turns. */
   apiKeyId?: string;
+  /** Server-authenticated object route; never substitutes for live authorization. */
+  apiKeyObjectId?: string;
   capabilities: readonly OrganizationCapability[];
   connectGrant?: ConnectGrantSlice;
   guestShareLinkId?: string;
@@ -1156,6 +1158,7 @@ function forwardedPrincipal(headers: Headers): Readonly<{
     authorization = parseTurnAuthorization(JSON.stringify({
       capabilities: JSON.parse(encodedCapabilities),
       ...(headers.has("x-nanocodex-api-key-id") ? { apiKeyId: headers.get("x-nanocodex-api-key-id") } : {}),
+      ...(headers.has("x-nanocodex-api-key-object-id") ? { apiKeyObjectId: headers.get("x-nanocodex-api-key-object-id") } : {}),
       ...(grantId === null ? {} : {
         connectGrant: {
           grantId,
@@ -1179,13 +1182,14 @@ function forwardedPrincipal(headers: Headers): Readonly<{
 function parseTurnAuthorization(encoded: string): TurnAuthorization {
   const value = JSON.parse(encoded) as unknown;
   if (!value || typeof value !== "object" || Array.isArray(value)
-    || Object.keys(value).some((key) => key !== "capabilities" && key !== "connectGrant" && key !== "guestShareLinkId" && key !== "apiKeyId")
+    || Object.keys(value).some((key) => key !== "capabilities" && key !== "connectGrant" && key !== "guestShareLinkId" && key !== "apiKeyId" && key !== "apiKeyObjectId")
     || !isOrganizationCapabilities((value as { capabilities?: unknown }).capabilities)) {
     throw new Error("invalid turn authorization");
   }
   const parsed = value as {
     capabilities: OrganizationCapability[];
     apiKeyId?: unknown;
+    apiKeyObjectId?: unknown;
     connectGrant?: unknown;
     guestShareLinkId?: unknown;
   };
@@ -1195,8 +1199,12 @@ function parseTurnAuthorization(encoded: string): TurnAuthorization {
   if (parsed.apiKeyId !== undefined && (typeof parsed.apiKeyId !== "string"
     || !/^[A-Za-z0-9_-]{12}$/.test(parsed.apiKeyId) || parsed.connectGrant !== undefined
     || parsed.guestShareLinkId !== undefined)) throw new Error("invalid API-key turn authorization");
+  if (parsed.apiKeyObjectId !== undefined && (typeof parsed.apiKeyObjectId !== "string"
+    || !/^[0-9a-f]{64}$/.test(parsed.apiKeyObjectId) || parsed.apiKeyId === undefined))
+    throw new Error("invalid API-key object route");
   if (parsed.connectGrant === undefined) return { capabilities: parsed.capabilities,
-    ...(typeof parsed.apiKeyId === "string" ? { apiKeyId: parsed.apiKeyId } : {}) };
+    ...(typeof parsed.apiKeyId === "string" ? { apiKeyId: parsed.apiKeyId } : {}),
+    ...(typeof parsed.apiKeyObjectId === "string" ? { apiKeyObjectId: parsed.apiKeyObjectId } : {}) };
   if (!isConnectGrantSlice(parsed.connectGrant)) throw new Error("invalid turn authorization");
   return { capabilities: parsed.capabilities, connectGrant: parsed.connectGrant,
     ...(parsed.guestShareLinkId === undefined ? {} : { guestShareLinkId: parsed.guestShareLinkId }) };
@@ -3761,7 +3769,8 @@ const LazyWorkspaceOwner = withWorkspace(WorkspaceOwner, (self) => ({
 }));
 
 export class DurableAgentSession extends DurableComputerObject {
-  #handPaths: HandPaths;
+  #handPathsValue?: HandPaths;
+  get #handPaths(): HandPaths { return this.#handPathsValue ??= new HandPaths(this.ctx.storage); }
   #processSessions: NamespaceProcessSessions;
   #workspaceHolder?: InstanceType<typeof LazyWorkspaceOwner>;
 
@@ -3804,7 +3813,12 @@ export class DurableAgentSession extends DurableComputerObject {
   #turnArchiveTask?: Promise<ManagedTurnSealResult>;
   readonly #realtimeArchive: ManagedRealtimeArchive;
   #realtimeArchiveTask?: Promise<ManagedRealtimeSealResult>;
-  readonly #portabilityArchive: ManagedPortabilityArchive;
+  #portabilityArchiveValue?: ManagedPortabilityArchive;
+  get #portabilityArchive(): ManagedPortabilityArchive {
+    return this.#portabilityArchiveValue ??= new ManagedPortabilityArchive(
+      this.ctx.storage, this.env.NANOCODEX_HISTORY, this.ctx.id.toString(),
+    );
+  }
   readonly #turns = new Map<string, Turn>();
   readonly #deliveredCancellationTurnIds = new Set<string>();
   readonly #reopenInterruptedTurnIds = new Set<string>();
@@ -3869,8 +3883,10 @@ export class DurableAgentSession extends DurableComputerObject {
   #runtimeOwnershipGeneration = 0;
   readonly #recoverySafety: ManagedRecoverySafety;
   readonly #codeEffectJournal: ReturnType<typeof createManagedCodeEffectJournal>;
-  readonly #commandReceipts: CommandReceipts;
-  readonly #shareLinks: ThreadShareLinks;
+  #commandReceiptsValue?: CommandReceipts;
+  get #commandReceipts(): CommandReceipts { return this.#commandReceiptsValue ??= new CommandReceipts(this.ctx.storage); }
+  #shareLinksValue?: ThreadShareLinks;
+  get #shareLinks(): ThreadShareLinks { return this.#shareLinksValue ??= new ThreadShareLinks(this.ctx.storage); }
   readonly #constructorEnteredAtMs: number;
   #constructorBaseMs = 0;
   #constructorReadyAtMs?: number;
@@ -3890,14 +3906,11 @@ export class DurableAgentSession extends DurableComputerObject {
     ctx = this.ctx;
     this.#diagnostics = new DiagnosticJournal(ctx.storage, "managed");
     this.#recoverySafety = new ManagedRecoverySafety(ctx.storage);
-    this.#commandReceipts = new CommandReceipts(ctx.storage);
-    this.#shareLinks = new ThreadShareLinks(ctx.storage);
     initializeTurnInputs(ctx.storage, "managed_history_projection_chunks");
     this.#cronTriggers = new CronTriggers(ctx.storage);
     this.#goals = new Goals(ctx.storage, () => this.#sessionId()!);
     this.#goalRuntime = new GoalRuntime(ctx.storage, this.#goals);
     this.#startupContext = new ManagedStartupContext(ctx.storage);
-    this.#handPaths = new HandPaths(ctx.storage);
     this.#processSessions = new NamespaceProcessSessions(ctx.storage);
     const schemaStartedAt = performance.now();
     this.ctx.storage.sql.exec(`
@@ -4047,7 +4060,8 @@ export class DurableAgentSession extends DurableComputerObject {
         turn_id TEXT PRIMARY KEY,
         payload_json TEXT NOT NULL,
         attempt_count INTEGER NOT NULL DEFAULT 0,
-        retry_at INTEGER NOT NULL DEFAULT 0
+        retry_at INTEGER NOT NULL DEFAULT 0,
+        source_cursor TEXT NOT NULL DEFAULT '0'
       );
       CREATE TABLE IF NOT EXISTS turn_history_citations (
         turn_id TEXT PRIMARY KEY,
@@ -4109,11 +4123,6 @@ export class DurableAgentSession extends DurableComputerObject {
       this.env.NANOCODEX_HISTORY,
       this.ctx.id.toString(),
       optionalPositiveInteger(this.env.MANAGED_REALTIME_ARCHIVE_RECENT_OPERATIONS),
-    );
-    this.#portabilityArchive = new ManagedPortabilityArchive(
-      this.ctx.storage,
-      this.env.NANOCODEX_HISTORY,
-      this.ctx.id.toString(),
     );
     this.#deleted = this.#initializationOwnership()?.state === "deleted";
     const retainedSession = this.#session();
@@ -8152,7 +8161,7 @@ export class DurableAgentSession extends DurableComputerObject {
     // Autonomous continuations keep the authority captured by their trigger.
     // They cannot later use an interactive consent receipt to refresh it.
     if (!userInitiated && authorization.apiKeyId) {
-      const { apiKeyId: _apiKeyId, ...pinned } = authorization;
+      const { apiKeyId: _apiKeyId, apiKeyObjectId: _apiKeyObjectId, ...pinned } = authorization;
       authorization = pinned;
     }
     // A native socket can outlive an explicit permission approval. Revalidate
@@ -8968,6 +8977,9 @@ export class DurableAgentSession extends DurableComputerObject {
     ]));
     this.#assertDeletionGeneration(generation);
     CloudflareAgent.destroy(this);
+    const initializedTables = new Set(this.ctx.storage.sql.exec<{ name: string }>(
+      "SELECT name FROM sqlite_master WHERE type = 'table'",
+    ).toArray().map(({ name }) => name));
     this.ctx.storage.transactionSync(() => {
       for (const table of ["managed_recovery_safety", "managed_recovery_progress", "managed_recovery_call_indices", "managed_code_effect_legacy_parents", "managed_code_effect_legacy_sessions", "managed_code_effect_migration", "managed_code_effect_runtime", "managed_code_effects", "managed_code_effect_receipt_chunks", "managed_configuration", "managed_environment_setup", "managed_webhook", "managed_webhook_deliveries", "managed_turn_usage", "managed_model_usage", "managed_artifacts", "managed_artifact_publications", "managed_output_checkpoints", "managed_output_checkpoint_chunks", "managed_turn_file_owners", "managed_connect_inputs"]) this.ctx.storage.sql.exec(`DELETE FROM ${table}`);
       this.ctx.storage.sql.exec("DROP TABLE IF EXISTS managed_fork_seed");
@@ -8982,27 +8994,27 @@ export class DurableAgentSession extends DurableComputerObject {
       this.ctx.storage.sql.exec("DELETE FROM managed_turn_origin");
       this.ctx.storage.sql.exec("DELETE FROM managed_turn_effective_origin");
       this.ctx.storage.sql.exec("DELETE FROM managed_startup_caller");
-      this.ctx.storage.sql.exec("DELETE FROM managed_hand_paths");
+      if (initializedTables.has("managed_hand_paths")) this.ctx.storage.sql.exec("DELETE FROM managed_hand_paths");
       this.ctx.storage.sql.exec("DELETE FROM managed_prepared_personalization");
       this.ctx.storage.sql.exec("DELETE FROM managed_personalization_state");
       this.#subagentBindings = new ManagedSubagentBindings();
       this.#goalRuntime.clear();
       this.ctx.storage.sql.exec("DELETE FROM managed_cron_triggers");
       this.ctx.storage.sql.exec("DELETE FROM managed_cron_deliveries");
-      this.#shareLinks.clear();
+      if (initializedTables.has("managed_share_links")) this.#shareLinks.clear();
       this.ctx.storage.sql.exec("DELETE FROM managed_turns");
       this.ctx.storage.sql.exec("DELETE FROM managed_thread_route");
       this.ctx.storage.sql.exec("DELETE FROM managed_routing_origin");
       this.ctx.storage.sql.exec("DELETE FROM managed_routing_observations");
       this.ctx.storage.sql.exec("DELETE FROM managed_turn_cancel_intents");
-      this.ctx.storage.sql.exec("DELETE FROM managed_command_receipts");
+      if (initializedTables.has("managed_command_receipts")) this.ctx.storage.sql.exec("DELETE FROM managed_command_receipts");
       this.ctx.storage.sql.exec("DELETE FROM history_projection_outbox");
       this.ctx.storage.sql.exec("DELETE FROM turn_history_citations");
       this.#eventLog.clear();
       this.#eventArchive.clearLocalState();
       this.#turnArchive.clearLocalState();
       this.#realtimeArchive.clearLocalState();
-      this.#portabilityArchive.clearLocalState();
+      if (initializedTables.has("managed_portability_manifests")) this.#portabilityArchive.clearLocalState();
       this.ctx.storage.sql.exec("DELETE FROM managed_realtime_operations");
       this.ctx.storage.sql.exec("DELETE FROM managed_realtime_session");
       this.ctx.storage.sql.exec("DELETE FROM managed_portability_restoration");
@@ -9206,6 +9218,8 @@ export class DurableAgentSession extends DurableComputerObject {
         allowedConnectors: accountConnectorProjection(authorization),
         allowedConnections: accountConnectionProjection(authorization),
         enabled: session.runtime_profile === "managed", signal,
+        // Wallet reads belong to explicit environment inspection, never model startup.
+        includeWallet: false,
         ...(session.runtime_profile === "managed" ? {
           catalog: this.#catalog(session),
           vault: this.#accountCatalog.vault(this.env.NANOCODEX, session.owner_id,
@@ -10675,7 +10689,7 @@ export class DurableAgentSession extends DurableComputerObject {
   }
 
   async #refreshApiKeyAuthorization(authorization: TurnAuthorization): Promise<TurnAuthorization> {
-    const key = await resolvePermissionKey(this.env, this.#permissionIdentity(authorization));
+    const key = await resolvePermissionKey(this.env, this.#permissionIdentity(authorization), authorization.apiKeyObjectId);
     if (!key) throw new ManagedRequestError(403, "login_unavailable", "This login was revoked or its account permissions changed. Sign in again.");
     return { ...authorization, capabilities: key.capabilities };
   }
