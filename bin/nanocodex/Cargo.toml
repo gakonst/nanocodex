@@ -217,3 +217,7 @@ path = "tests/claude_cross_workspace.rs"
 [[test]]
 name = "claude_workflow"
 path = "tests/claude_workflow.rs"
+
+[[test]]
+name = "codex_resume_picker"
+path = "tests/codex_resume_picker.rs"
