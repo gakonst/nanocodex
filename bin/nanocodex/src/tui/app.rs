@@ -2982,7 +2982,7 @@ impl App {
     pub(super) fn can_change_start_settings(&self) -> bool {
         self.main.run_generation == 0
             && self.main.pending_turns == 0
-            && self.main.transcript.is_empty()
+            && !self.main.transcript.has_conversation()
             && self.main_branches.is_empty()
             && self.btw.is_none()
     }
@@ -3018,12 +3018,14 @@ impl App {
     }
 
     pub(super) fn model_options(&self) -> Vec<(HarnessModel, &'static str)> {
-        match self.model.family() {
-            HarnessFamily::Codex => MODEL_OPTIONS.to_vec(),
-            HarnessFamily::Claude => HarnessModel::for_family(HarnessFamily::Claude)
-                .map(|model| (model, model.as_str()))
-                .collect(),
-        }
+        MODEL_OPTIONS
+            .iter()
+            .copied()
+            .chain(
+                HarnessModel::for_family(HarnessFamily::Claude)
+                    .map(|model| (model, model.as_str())),
+            )
+            .collect()
     }
 
     pub(super) fn open_model_picker(&mut self) {

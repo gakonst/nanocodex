@@ -96,8 +96,10 @@ impl Clone for Transcript {
 }
 
 impl Transcript {
-    pub(super) const fn is_empty(&self) -> bool {
-        self.entries.is_empty()
+    pub(super) fn has_conversation(&self) -> bool {
+        self.entries
+            .iter()
+            .any(|entry| !matches!(entry.kind, EntryKind::Error))
     }
 
     #[cfg(test)]

@@ -53,7 +53,7 @@ enum CookieSource {
 }
 
 /// Legacy browser configuration retained for explicit browser utilities.
-#[derive(Args)]
+#[derive(Args, Clone)]
 pub(crate) struct BrowserArgs {
     /// Legacy browser selection; ignored by agent sessions, which use CUA.
     ///

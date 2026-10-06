@@ -18,6 +18,12 @@ nanocodex run "inspect the repository" --harness claude --model opus
 nanocodex --claude auth logout
 ```
 
+You can also launch `nanocodex` and use `/model` or `/model sonnet` before the
+first prompt to select Claude. The picker includes both families; model selection
+is locked once the thread starts. A missing Claude login leaves the previous
+selection intact and shows the login command. Claude-only credentials are sufficient
+when the first prompt selects a Claude model.
+
 Login opens the authorization URL and accepts the browser's `code#state` through
 private terminal input. `--no-open` prints the URL for opening manually; piped
 stdin is also accepted. Never put the code in command arguments or agent prompts.

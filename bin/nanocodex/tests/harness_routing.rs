@@ -2616,6 +2616,21 @@ async fn native_cli_cross_family_children_resolve_defaults_and_preserve_explicit
                         assert!(!inherited.contains("fixture-agents-context"));
                         assert!(!inherited.contains("fixture-claude-context"));
                         assert_eq!(system, inherited);
+                    } else if target == "codex" {
+                        // Every Codex request appends the current model identity,
+                        // including children launched by a Claude root.
+                        let (instructions, identity) = system
+                            .split_once("\n\n<runtime_model_identity>")
+                            .expect("Codex child omitted runtime model identity");
+                        assert_eq!(instructions, "fixture-cross-family-override");
+                        assert!(
+                            identity.contains(&format!(
+                                "model_id: {}",
+                                call["model"].as_str().unwrap()
+                            ))
+                        );
+                        assert!(!system.contains("fixture-agents-context"));
+                        assert!(!system.contains("fixture-claude-context"));
                     } else {
                         assert_eq!(system, "fixture-cross-family-override");
                     }
