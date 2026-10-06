@@ -35,6 +35,7 @@ export class FixtureSession extends DurableAgentSession {
     return super.fetch(request);
   }
 }
+const codeCall = (name, callId, args) => ({type:'custom_tool_call',name:'exec',call_id:callId,input:'text(await tools.'+name+'('+JSON.stringify(args)+'));'});
 export class FixtureModel extends DurableObject {
   async fetch(request) {
     if (request.headers.get('upgrade') !== 'websocket') return Response.json({tools:[],machines:[],connections:[]});
@@ -47,19 +48,18 @@ export class FixtureModel extends DurableObject {
       const nextScenario=['FIXTURE_ERROR_ONLY','FIXTURE_LOST_RESULT','FIXTURE_RECONNECTED'].find(marker=>latestUser?.includes(marker));
       if(!child && nextScenario && nextScenario!==scenario){scenario=nextScenario;index=0;scenarioIndex++;}
       const call=++index;
-      const output=child ? call===1 ? [{type:'function_call', name:'exec_command',call_id:'call_fixture_child_command',arguments:JSON.stringify({cmd:'printf CHILD_OK',workdir:'/brain'})}]
-        : call===2 ? [{type:'function_call',name:'submit_result',call_id:'call_fixture_child_submit',arguments:JSON.stringify({output:'CHILD_OK'})}]
+      const output=child ? call===1 ? [codeCall('exec_command','call_fixture_child_command',{cmd:'printf CHILD_OK',workdir:'/brain'})]
+        : call===2 ? [codeCall('submit_result','call_fixture_child_submit',{output:'CHILD_OK'})]
         : [{type:'message',role:'assistant',content:[{type:'output_text',text:'CHILD_OK'}]}]
-        : scenario ? call===1 ? [{type:'function_call',name:'exec_command',call_id:'call_fixture_'+scenario+'_'+crypto.randomUUID(),
-          arguments:JSON.stringify({cmd:scenario==='FIXTURE_RECONNECTED'?'printf RECONNECTED_OK':
-            'printf '+(scenario==='FIXTURE_ERROR_ONLY'?'E':'L')+' >> hand-effects.log; sleep 0.5; printf LOST_EFFECT',workdir:'/fixture-hand',yield_time_ms:1000})}]
+        : scenario ? call===1 ? [codeCall('exec_command','call_fixture_'+scenario+'_'+crypto.randomUUID(),{cmd:scenario==='FIXTURE_RECONNECTED'?'printf RECONNECTED_OK':
+            'printf '+(scenario==='FIXTURE_ERROR_ONLY'?'E':'L')+' >> hand-effects.log; sleep 0.5; printf LOST_EFFECT',workdir:'/fixture-hand',yield_time_ms:1000})]
           : [{type:'message',role:'assistant',content:[{type:'output_text',text:'BOUNDARY_'+scenario+'_OK'}]}]
         : call===1 ? [{type:'custom_tool_call', name:'exec', call_id:'call_fixture_outer', input:
         'text(await tools.exec_command({cmd:"sleep 0.35; printf HAND_OK",workdir:"/fixture-hand",yield_time_ms:1000})); '+
         'text(await tools.exec_command({cmd:"printf BRAIN_OK",workdir:"/brain"})); '+
         'text(await tools.exec_command({cmd:"printf SHOULD_NOT_RUN",workdir:"/fixture-hand",tty:true}));'}]
-        : call===2 ? [{type:'function_call',name:'spawn_agent',call_id:'call_fixture_spawn',arguments:JSON.stringify({role:'Fixture child',task:'THREAD_CHILD_FIXTURE',model:'sol',thinking:'low',output_contract:{kind:'string'}})}]
-        : call===3 ? [{type:'function_call',name:'wait_agent',call_id:'call_fixture_wait',arguments:JSON.stringify({agent_ids:[1],timeout_ms:10000})}]
+        : call===2 ? [codeCall('spawn_agent','call_fixture_spawn',{role:'Fixture child',task:'THREAD_CHILD_FIXTURE',model:'sol',thinking:'low',output_contract:{kind:'string'}})]
+        : call===3 ? [codeCall('wait_agent','call_fixture_wait',{agent_ids:[1],timeout_ms:10000})]
         : [{type:'message',role:'assistant',content:[{type:'output_text',text:'TOOL_TIMELINE_OK'}]}];
       server.send(JSON.stringify({type:'response.completed',response:{id:'resp_fixture_'+(child?'child_':'root_')+(scenario?scenarioIndex+'_':'')+call,status:'completed',end_turn:child?call>2:scenario?call>1:call>3,output,usage:{input_tokens:1,output_tokens:1,total_tokens:2}}}));
     });
@@ -177,14 +177,21 @@ test("one thread exposes every nested tool and separates Hand execution from rou
     await writeFile(join(output, "events.json"), JSON.stringify(await history.json(), null, 2) + "\n");
     assert.match(JSON.stringify(completed), /TOOL_TIMELINE_OK/);
     const calls = records.filter(row => row.type === "managed.agent.tool");
-    assert.equal(calls.filter(row => row.message_type === "tool.call").length, 8, JSON.stringify(calls));
-    assert.equal(calls.filter(row => row.message_type === "tool.result").length, 8);
+    assert.equal(calls.filter(row => row.message_type === "tool.call").length, 12, JSON.stringify(calls));
+    assert.equal(calls.filter(row => row.message_type === "tool.result").length, 12);
     assert.ok(calls.every(row => row.thread_id === threadId));
     assert.ok(calls.every(row => row.turn_id === turnId));
     assert.ok(calls.some(row => row.agent_id === 1 && row.tool === "exec_command"));
     assert.ok(calls.some(row => row.agent_id === 1 && row.tool === "submit_result"));
     assert.equal(new Set(calls.filter(row => row.message_type === "tool.call").map(row => row.runtime_session_id)).size, 2);
     assert.ok(calls.some(row => row.parent_call_id === "call_fixture_outer"));
+    const toolCalls = calls.filter(row => row.message_type === "tool.call");
+    assert.equal(toolCalls.filter(row => row.tool === "exec").length, 5);
+    for (const [parent, tool] of [["call_fixture_spawn", "spawn_agent"], ["call_fixture_wait", "wait_agent"],
+      ["call_fixture_child_command", "exec_command"], ["call_fixture_child_submit", "submit_result"]]) {
+      assert.ok(toolCalls.some(row => row.tool === tool && row.parent_call_id === parent
+        && row.tool_call_id === parent + "/code-1"), JSON.stringify(toolCalls));
+    }
     assert.ok(calls.some(row => row.outcome === "failure"));
     const broker = records.filter(row => row.type === "hand.call.broker");
     assert.ok(broker.length >= 2, JSON.stringify(records.filter(row => row.type?.startsWith("hand."))));
@@ -417,8 +424,8 @@ test("one thread exposes every nested tool and separates Hand execution from rou
     await writeFile(join(output, "diagnostics.json"), JSON.stringify(completeDiagnostics, null, 2) + "\n");
     await writeFile(join(output, "disconnect-diagnostics.json"), JSON.stringify(afterError, null, 2) + "\n");
     console.log(JSON.stringify({ evidence: output, thread_id: threadId, turn_id: turnId,
-      initial_tool_calls: 8, tool_calls: records.filter(record => record.type === "managed.agent.tool" && record.message_type === "tool.call").length,
-      child_tools: 2, replay_without_redispatch: true,
+      initial_tool_calls: 12, tool_calls: records.filter(record => record.type === "managed.agent.tool" && record.message_type === "tool.call").length,
+      child_tools: 4, replay_without_redispatch: true,
       hand_calls: wire.filter(row => row.direction === "call").length, reconnect_attempts: connectAttempts,
       error_without_close_recovered: true, lost_receipt_recovered: true, remote_click_not_replayed: true, timing }));
   } finally {

@@ -7,6 +7,7 @@ import { authenticate } from "./auth";
 import { ToolTiming } from "./toolTiming";
 import { managedWeb } from "./web";
 import { createJustBashTool } from "./just-bash";
+import { managedCodeEvaluator } from "./code-evaluator";
 
 type ChatGptImport = Readonly<{
   access_token: string; refresh_token: string; account_id: string;
@@ -494,7 +495,7 @@ export class Session extends DurableObject<Env> {
     });
     const options = { tools: [currentTime, this.#bash, web].map(tool => this.#toolTiming.instrument(tool,
       context => this.#toolTiming.correlation(context))),
-      instructions: "You are a concise assistant. Use exec_command for shell tasks in /brain." };
+      instructions: "You are a concise assistant. Use Code Mode exec to call tools.exec_command for shell tasks in /brain." };
     Object.defineProperty(options, Symbol.for("nanocodex.cloudflare.internalConfiguration"), { value: {
       model: "gpt-6.1-sol", thinking: "low", reasoning_mode: "standard", fast_mode: false,
     } });
@@ -502,6 +503,8 @@ export class Session extends DurableObject<Env> {
       ...(this.env.RESPONSES_TRANSPORT === "websocket"
         ? { waitForPreconnect: true }
         : { inferenceForSession: () => ({ model: "gpt-6.1-sol", thinking: "low" }) }),
+      toolMode: "code-only",
+      codeEvaluator: managedCodeEvaluator(),
       subagentsEnabled: false,
       onResponseCreateSent: () => this.#modelSent(),
     } });

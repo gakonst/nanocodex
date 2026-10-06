@@ -195,7 +195,7 @@ it("admits a substantial prompt without an arbitrary JSON-body cap", async () =>
   }, { timeout: 15_000 }).toBe("completed");
 });
 
-it("completes a real model-tool-model turn and reports separate tool and continuation timings", async () => {
+it("calls current_time through Code Mode and reports wrapper, nested tool, and continuation timings", async () => {
   const authorization = `Bearer ${fixtureKeys["fixture-user"]}`;
   expect((await SELF.fetch("https://api.test/v1/credentials/openai", {
     method: "PUT", headers: { authorization }, body: JSON.stringify({ value: "sk-fixture-only" }),
@@ -216,14 +216,15 @@ it("completes a real model-tool-model turn and reports separate tool and continu
     return status?.state;
   }, { timeout: 10_000 }).toBe("completed");
   expect(status!.message).toMatch(/^Current UTC: \d{4}-\d\d-\d\dT/);
-  expect(status!.timing.tool_calls).toBe(1);
+  expect(status!.timing.tool_calls).toBe(2);
   expect(status!.timing.first_tool_call_ms).toBeGreaterThanOrEqual(status!.timing.first_model_call_ms!);
   expect(status!.timing.first_tool_result_ms).toBeGreaterThanOrEqual(status!.timing.first_tool_call_ms!);
   expect(status!.timing.post_tool_model_call_ms).toBeGreaterThanOrEqual(status!.timing.first_tool_result_ms!);
   expect(status!.timing.result_ms).toBeGreaterThanOrEqual(status!.timing.post_tool_model_call_ms!);
   expect(status!.timing.tool_duration_ms).toBeGreaterThanOrEqual(0);
-  expect(status!.tool_timing).toHaveLength(1);
-  const observedTool = status!.tool_timing[0]!;
+  expect(status!.tool_timing.map(tool => tool.tool).sort()).toEqual(["current_time", "exec"]);
+  const observedTool = status!.tool_timing.find(tool => tool.tool === "current_time")!;
+  expect(observedTool.call_id).toMatch(/^call-time\/code-\d+$/);
   expect(observedTool.tool).toBe("current_time");
   expect(observedTool.started_at).toBeGreaterThan(0);
   expect(observedTool.started_ms).toBeGreaterThanOrEqual(status!.timing.first_model_call_ms!);
@@ -259,12 +260,12 @@ it("executes web__run end-to-end through credential-isolating Egress2 and resume
   }, { timeout: 15_000 }).toBe("completed");
   expect(result?.message).toContain("[synthetic citation](https://example.org/source)");
   expect(result?.message).not.toContain("provider-only");
-  expect(result?.timing.tool_calls).toBe(1);
-  expect(result?.tool_timing).toHaveLength(1);
-  expect(result?.tool_timing[0]?.tool).toBe("web__run");
-  expect(result?.tool_timing[0]?.status).toBe("completed");
+  expect(result?.timing.tool_calls).toBe(2);
+  expect(result?.tool_timing.map(tool => tool.tool).sort()).toEqual(["exec", "web__run"]);
+  const web = result?.tool_timing.find(tool => tool.tool === "web__run");
+  expect(web?.status).toBe("completed");
   for (const phase of ["handler", "preparation", "egress_dispatch", "egress_credential", "egress_upstream", "parse"]) {
-    expect(result?.tool_timing[0]?.phases[phase]?.duration_ms).toBeGreaterThanOrEqual(0);
+    expect(web?.phases[phase]?.duration_ms).toBeGreaterThanOrEqual(0);
   }
 }, 20_000);
 

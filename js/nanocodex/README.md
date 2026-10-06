@@ -326,10 +326,17 @@ membership, room, quota, or application routing policy. Event frames are
 `1013`, then continues by reconnecting with that pause cursor as
 `?cursor=<decimal>`.
 
+`toolMode: "code-only"` exposes only `exec` and `wait` to the model. Workspace,
+application, discovery (`tools.tool_search`) and local subagent tools are callable
+inside Code Mode. Discovery returns tool information as cell output; it does not
+add direct schemas. Newly discovered tools are available in the next cell. The
+existing `"code"` mode retains direct workspace/subagent controls, and `"direct"`
+continues to expose function tools without requiring an evaluator.
+
 Cloudflare Agents default to direct tool mode because Workers prohibit dynamic
 `eval`/`new Function`. Caller-defined tools therefore work without a code
-evaluator. Select `toolMode: "code"` only when also supplying an evaluator that
-is explicitly compatible with the deployed Worker runtime. Runtime-owned
+evaluator. Select `toolMode: "code"` or `toolMode: "code-only"` only when also
+supplying an evaluator explicitly compatible with the deployed Worker runtime. Runtime-owned
 Subagents are installed by default, including on a durable root. All children are
 ephemeral: their identities, topology, conversations, results, and routing exist
 only for the lifetime of the root runtime. Root shutdown or restart discards the

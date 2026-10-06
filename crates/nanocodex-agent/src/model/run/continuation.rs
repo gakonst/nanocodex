@@ -70,6 +70,28 @@ where
         }
         let mut session = self.empty_session(Some(&saved.workspace))?;
         session.validate_workspace(requested_workspace)?;
+        #[cfg(target_family = "wasm")]
+        let (history, prefix) = if session.tools.is_code_only() {
+            let mut history = history;
+            clear_code_only_schemas(&mut history);
+            // Keep admitted instructions, but the embedding's strict capability
+            // boundary applies to an active continuation as well as a new turn.
+            let mut prefix = prefix;
+            prefix.retain(|item| !matches!(item, ResponseItem::AdditionalTools { .. }));
+            clear_code_only_schemas(&mut prefix);
+            prefix.extend(
+                session
+                    .factory
+                    .profile()
+                    .prefix()
+                    .iter()
+                    .filter(|item| matches!(item, ResponseItem::AdditionalTools { .. }))
+                    .cloned(),
+            );
+            (history, prefix)
+        } else {
+            (history, prefix)
+        };
         self.model = saved
             .model
             .parse::<crate::Model>()

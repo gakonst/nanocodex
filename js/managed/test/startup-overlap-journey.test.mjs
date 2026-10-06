@@ -55,6 +55,7 @@ export class FixtureSandbox extends DurableObject {
   async clearRemoteDesktop() {}
   async destroy() {}
 }
+const codeCall = (name, callId, args) => ({type:'custom_tool_call',name:'exec',call_id:callId,input:'text(await tools.'+name+'('+JSON.stringify(args)+'));'});
 export class FixtureModel extends DurableObject {
   events=[]; setupStarted=false; catalogStarted=false; catalogReleased=false; setupFinished=false; published=false; publicationAttempts=0; holdCatalog=false; catalogGate; release; releasePublication;
   record(event,extra={}) { const row={type:'fixture.startup',event,at:Date.now(),...extra};this.events.push(row);console.info(row); }
@@ -105,7 +106,7 @@ export class FixtureModel extends DurableObject {
           tools:effectiveTools,input:body.input});
         const id='resp_'+crypto.randomUUID();
         if(++requestIndex===2) {
-          server.send(JSON.stringify({type:'response.completed',response:{id,status:'completed',end_turn:false,output:[{type:'function_call',name:'exec_command',call_id:'call_startup_read',arguments:JSON.stringify({cmd:'cat /brain/setup-output.txt',workdir:'/brain'})}],usage:{input_tokens:1,output_tokens:1,total_tokens:2}}}));
+          server.send(JSON.stringify({type:'response.completed',response:{id,status:'completed',end_turn:false,output:[codeCall('exec_command','call_startup_read',{cmd:'cat /brain/setup-output.txt',workdir:'/brain'})],usage:{input_tokens:1,output_tokens:1,total_tokens:2}}}));
           return;
         }
         server.send(JSON.stringify({type:'response.created',response:{id,status:'in_progress'}}));

@@ -5,14 +5,17 @@
   "type": "module",
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "test": "pnpm prepare:just-bash && vitest run --config vitest.config.ts test/flow.test.ts test/bash-flow.test.ts",
-    "test:websocket": "pnpm prepare:just-bash && MANAGED2_TEST_TRANSPORT=websocket vitest run --config vitest.config.ts test/relay-websocket.test.ts",
-    "build": "pnpm prepare:just-bash && rm -rf dist && wrangler deploy --dry-run --outdir dist --config wrangler.jsonc",
-    "prepare:just-bash": "node scripts/prepare-just-bash-lazy.mjs"
+    "test": "pnpm prepare:code-evaluator && pnpm prepare:just-bash && vitest run --config vitest.config.ts test/flow.test.ts test/bash-flow.test.ts",
+    "test:websocket": "pnpm prepare:code-evaluator && pnpm prepare:just-bash && MANAGED2_TEST_TRANSPORT=websocket vitest run --config vitest.config.ts test/relay-websocket.test.ts",
+    "build": "pnpm prepare:code-evaluator && pnpm prepare:just-bash && rm -rf dist && wrangler deploy --dry-run --outdir dist --config wrangler.jsonc",
+    "prepare:just-bash": "node scripts/prepare-just-bash-lazy.mjs",
+    "prepare:code-evaluator": "node scripts/prepare-code-evaluator.mjs"
   },
   "dependencies": {
     "nanocodex": "workspace:*",
-    "nanocodex-tools": "workspace:*"
+    "nanocodex-tools": "workspace:*",
+    "@jitl/quickjs-wasmfile-release-asyncify": "0.32.0",
+    "quickjs-emscripten-core": "0.32.0"
   },
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "^0.19.0",

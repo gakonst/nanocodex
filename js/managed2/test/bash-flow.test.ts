@@ -5,7 +5,7 @@ import type { Session } from "../src/index";
 
 // Failure modes: VFS writes lost after eviction, one agent reading another's
 // files, shell writes escaping /brain, and a chat-only turn loading Bash.
-it("runs Just Bash through a real Worker/model/tool continuation with per-agent durable SQLite", async () => {
+it("runs Just Bash through Code Mode with per-agent durable SQLite across eviction", async () => {
   const authorization = `Bearer ${fixtureKeys["fixture-user"]}`;
   expect((await SELF.fetch("https://api.test/v1/credentials/openai", {
     method: "PUT", headers: { authorization }, body: JSON.stringify({ value: "sk-fixture-only" }),
@@ -26,10 +26,11 @@ it("runs Just Bash through a real Worker/model/tool continuation with per-agent 
       status = await (await SELF.fetch(`https://api.test/v1/agents/${agent}/turns/${turn_id}`, { headers: { authorization } })).json();
       return status?.state;
     }, { timeout: 20_000 }).toBe("completed");
-    expect(status?.timing?.tool_calls).toBe(1);
-    expect(status?.tool_timing?.[0]?.tool).toBe("exec_command");
+    expect(status?.timing?.tool_calls).toBe(2);
+    expect(status?.tool_timing?.map(tool => tool.tool).sort()).toEqual(["exec", "exec_command"]);
+    const shell = status?.tool_timing?.find(tool => tool.tool === "exec_command");
     for (const phase of ["setup", "vfs_hydrate", "execute", "vfs_flush", "handler"]) {
-      expect(status?.tool_timing?.[0]?.phases[phase]?.duration_ms).toBeGreaterThanOrEqual(0);
+      expect(shell?.phases[phase]?.duration_ms).toBeGreaterThanOrEqual(0);
     }
     return status!.message!;
   }

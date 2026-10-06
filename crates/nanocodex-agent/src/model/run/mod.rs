@@ -503,6 +503,46 @@ impl<S> ModelRun<S> {
     }
 }
 
+// Old discovery results can install direct schemas even after the request prefix
+// has been rebuilt. Preserve the transcript and call/output pairing, but remove
+// provider capability declarations when restoring an embedded strict runtime.
+#[cfg(target_family = "wasm")]
+fn code_only_checkpoint(mut checkpoint: ModelCheckpoint, runtime: &ToolRuntime) -> ModelCheckpoint {
+    if !runtime.is_code_only() {
+        return checkpoint;
+    }
+    let has_schemas = checkpoint
+        .conversation
+        .managed
+        .history()
+        .any(|item| match item {
+            ResponseItem::ToolSearchOutput { tools, .. } => !tools.is_empty(),
+            ResponseItem::AdditionalTools { tools, .. } => !tools.is_empty(),
+            _ => false,
+        });
+    if has_schemas {
+        let mut history = checkpoint.conversation.flattened_history();
+        clear_code_only_schemas(&mut history);
+        checkpoint
+            .conversation
+            .managed
+            .replace_prepared_history(history);
+        checkpoint.preserve_inherited_delta = false;
+    }
+    checkpoint
+}
+
+#[cfg(target_family = "wasm")]
+fn clear_code_only_schemas(history: &mut [ResponseItem]) {
+    for item in history {
+        match item {
+            ResponseItem::ToolSearchOutput { tools, .. } => tools.clear(),
+            ResponseItem::AdditionalTools { tools, .. } => tools.clear(),
+            _ => {}
+        }
+    }
+}
+
 pub(crate) fn prepare_checkpoint(
     checkpoint: ModelCheckpoint,
     config: &ModelConfig,
@@ -513,6 +553,8 @@ pub(crate) fn prepare_checkpoint(
     let selected_agents_md = context_source
         .project_instructions(checkpoint.workspace())
         .map(Arc::from);
+    #[cfg(target_family = "wasm")]
+    let checkpoint = code_only_checkpoint(checkpoint, &runtime);
     PreparedCheckpoint {
         checkpoint,
         runtime,
@@ -555,6 +597,8 @@ pub(crate) fn prepare_resumed_checkpoint(
     let selected_agents_md = context_source
         .project_instructions(checkpoint.workspace())
         .map(Arc::from);
+    #[cfg(target_family = "wasm")]
+    let checkpoint = code_only_checkpoint(checkpoint, &runtime);
     Ok(PreparedCheckpoint {
         checkpoint,
         runtime,
@@ -604,6 +648,8 @@ pub(crate) fn prepare_history_checkpoint(
         context_source.global_instructions(),
         context_baseline,
     )?;
+    #[cfg(target_family = "wasm")]
+    let checkpoint = code_only_checkpoint(checkpoint, &runtime);
     Ok(PreparedCheckpoint {
         checkpoint,
         runtime,
