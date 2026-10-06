@@ -1273,24 +1273,21 @@ async fn build_workspace_agent_with_settings(
         client
             .clone()
             .with_request_origin("nanocodex2", Some(&hand_key), Some(&hand_cwd))?;
-    let mut tools = Tools::builder()
+    // Required workspace configuration is validated before cloud admission.
+    let tools = Tools::builder()
         .without_defaults()
-        .add(WorkspaceTools::new(&workspace));
-    let computer = {
-        let _timing = startup_timing::Stage::new("computer_discovery");
-        native_hand::computer_tools().await?
-    };
-    if let Some(computer) = computer {
-        for tool in computer.tools() {
-            tools = tools.add(tool);
-        }
-    }
-    // The terminal owns its local tool runtime. Cloudflare managed-agent MCP
-    // defaults are not inherited by nanocodex2's workspace-backed driver.
-    let tools = tools
+        .add(WorkspaceTools::new(&workspace))
         .add(default_mercator_mcp()?)
         .build()
         .map_err(|error| ManagedError::Configuration(error.to_string()))?;
+    // Explicit providers preserve their fail-before-admission contract.
+    let explicit_computer =
+        std::env::var_os("NANOCODEX_COMPUTER").is_some_and(|value| !value.is_empty());
+    let tools = if explicit_computer {
+        prepare_workspace_computer(tools).await?
+    } else {
+        tools
+    };
     let backend = match (agent_id, state) {
         (None, None) if initial_prompt.is_some() => {
             Managed::create(client.clone()).with_settings(settings)
@@ -1306,9 +1303,21 @@ async fn build_workspace_agent_with_settings(
             ));
         }
     };
-    let builder = Nanocodex::builder(backend)
-        .tools(tools)
-        .attachment_metadata(attachment_metadata);
+    let builder = Nanocodex::builder(backend).attachment_metadata(attachment_metadata);
+    let builder = if explicit_computer {
+        builder.tools(tools)
+    } else {
+        builder.tools_async(async move {
+            let fallback = tools.clone();
+            match prepare_workspace_computer(tools).await {
+                Ok(tools) => tools,
+                Err(error) => {
+                    tracing::warn!(%error, "optional computer tools unavailable; retaining workspace tools");
+                    fallback
+                }
+            }
+        })
+    };
     let builder = match event_observer {
         Some(observer) => builder.event_observer(observer),
         None => builder,
@@ -1331,6 +1340,20 @@ async fn build_workspace_agent_with_settings(
     };
     let agent_id = agent.agent_id().to_owned();
     Ok((agent, events, agent_id, workspace, turn))
+}
+
+async fn prepare_workspace_computer(tools: Tools) -> Result<Tools, ManagedError> {
+    let _timing = startup_timing::Stage::new("computer_discovery");
+    let Some(computer) = native_hand::computer_tools().await? else {
+        return Ok(tools);
+    };
+    let mut builder = tools.into_builder();
+    for tool in computer.tools() {
+        builder = builder.add(tool);
+    }
+    builder
+        .build()
+        .map_err(|error| ManagedError::Configuration(error.to_string()))
 }
 
 fn default_mercator_mcp() -> Result<Mcp, ManagedError> {

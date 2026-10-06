@@ -392,21 +392,105 @@ async fn run_flushes_each_assistant_delta_before_completion() {
 
 #[tokio::test]
 async fn run_uses_managed_lifecycle_with_the_configured_local_workspace() {
-    run_workspace_lifecycle(false).await;
+    run_workspace_lifecycle(false, false).await;
 }
 
 #[tokio::test]
 async fn pinned_run_creates_once_then_opens_the_saved_session() {
-    run_workspace_lifecycle(true).await;
+    run_workspace_lifecycle(true, false).await;
 }
 
-async fn run_workspace_lifecycle(pinned: bool) {
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn run_admits_while_optional_computer_is_pending_and_preserves_workspace_tools() {
+    run_workspace_lifecycle(false, true).await;
+}
+
+#[tokio::test]
+async fn explicit_missing_computer_fails_before_cloud_admission() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin = format!("http://{}", listener.local_addr().unwrap());
+    let requests = Arc::new(AtomicUsize::new(0));
+    let observed = requests.clone();
+    let app = Router::new().fallback(move || {
+        observed.fetch_add(1, Ordering::SeqCst);
+        async { StatusCode::INTERNAL_SERVER_ERROR }
+    });
+    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let workspace = tempfile::tempdir().unwrap();
+    let (config_home, decoy) = configure_workspace(workspace.path());
+    let output = tokio::time::timeout(
+        PROCESS_TIMEOUT,
+        fixture_command(config_home.path())
+            .env("NANOCODEX_MANAGED_URL", origin)
+            .env(
+                "NC_API_KEY",
+                format!("ncx_live_{}_{}", "a".repeat(12), "b".repeat(43)),
+            )
+            .env(
+                "NANOCODEX_COMPUTER",
+                config_home.path().join("missing-provider"),
+            )
+            .args([
+                "run",
+                "do not admit this",
+                "--model",
+                "gpt-6.1-sol",
+                "--thinking",
+                "low",
+            ])
+            .current_dir(decoy.path())
+            .output(),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("Cannot start upstream Sky MCP provider")
+    );
+    assert_eq!(requests.load(Ordering::SeqCst), 0);
+    eprintln!("JOURNEY explicit unavailable provider: error before any cloud request");
+    server.abort();
+}
+
+async fn run_workspace_lifecycle(pinned: bool, automatic_computer: bool) {
+    let computer_home = tempfile::tempdir().unwrap();
+    let idempotency_key = if automatic_computer {
+        "stable-request-computer"
+    } else {
+        "stable-request"
+    };
+    // Block automatic installation in the isolated test HOME, without contacting
+    // the real service or a component feed. Only our MCP fixture is available.
+    let _setup_lock = if automatic_computer {
+        let root = computer_home.path().join("runtimes/openai-cua");
+        std::fs::create_dir_all(&root).unwrap();
+        let lock = std::fs::File::create(root.join("background.lock")).unwrap();
+        lock.lock().unwrap();
+        let provider = computer_home.path().join("provider");
+        // Never finish MCP initialization: the existing optional-provider
+        // deadline must retain workspace tools without delaying admission.
+        std::fs::write(&provider, "IFS= read -r initialize\nIFS= read -r blocked\n").unwrap();
+        std::fs::write(
+            root.join("provider.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "status":"installed", "transport":"mcp", "executable":"/bin/sh", "args":[provider],
+                "dependency_contract":"nanocodex-direct-cua-v2"
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        Some(lock)
+    } else {
+        None
+    };
     let api_key = format!("ncx_live_{}_{}", "a".repeat(12), "b".repeat(43));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let state = TestState {
         authorization: format!("Bearer {api_key}"),
-        idempotency_key: "stable-request",
+        idempotency_key,
         authorized_requests: Arc::new(AtomicUsize::new(0)),
         tool_host_attempts: Arc::new(AtomicUsize::new(0)),
         completed: Arc::new(tokio::sync::Notify::new()),
@@ -457,22 +541,28 @@ async fn run_workspace_lifecycle(pinned: bool) {
     git(&["add", "fixture.txt"]);
 
     let (config_home, decoy) = configure_workspace(workspace.path());
+    let mut command = fixture_command(config_home.path());
+    if automatic_computer {
+        command
+            .env_remove("NANOCODEX_COMPUTER")
+            .env("NANOCODEX_DIR", computer_home.path())
+            .env("NANOCODEX_STARTUP_TIMING", "1");
+    }
     let output = tokio::time::timeout(
         PROCESS_TIMEOUT,
-        fixture_command(config_home.path())
+        command
             .env("NANOCODEX_DISABLE_HAND", "1")
             .args([
                 "run",
                 "answer from managed",
                 "--idempotency-key",
-                "stable-request",
+                idempotency_key,
             ])
             .args(if pinned {
                 vec!["--chatgpt-account", "account-a"]
             } else {
                 vec![]
             })
-            .env("NANOCODEX_COMPUTER", "off")
             .env("NANOCODEX_MANAGED_URL", &state.origin)
             .env("NC_API_KEY", &api_key)
             .env_remove("NANOCODEX_API_KEY")
@@ -492,6 +582,34 @@ async fn run_workspace_lifecycle(pinned: bool) {
     );
     let stdout = String::from_utf8(output.stdout).unwrap();
     let stderr = String::from_utf8(output.stderr).unwrap();
+    let stderr = if automatic_computer {
+        let stages = stderr
+            .lines()
+            .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+            .collect::<Vec<_>>();
+        let admitted = stages
+            .iter()
+            .position(|event| event["stage"] == "managed_backend")
+            .unwrap();
+        let discovered = stages
+            .iter()
+            .position(|event| event["stage"] == "computer_discovery")
+            .unwrap();
+        assert!(
+            admitted < discovered,
+            "cloud admission waited for optional discovery: {stderr}"
+        );
+        eprintln!(
+            "JOURNEY optional computer pending: cloud admission precedes discovery; workspace tool executes; timings={stages:?}"
+        );
+        stderr
+            .lines()
+            .filter(|line| !line.starts_with('{'))
+            .map(|line| format!("{line}\n"))
+            .collect::<String>()
+    } else {
+        stderr
+    };
     let lines = stdout.lines().collect::<Vec<_>>();
     assert_eq!(lines.len(), 2);
     let agent_event: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
