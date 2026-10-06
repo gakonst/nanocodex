@@ -10,6 +10,47 @@ import type { EgressEnv } from "../src/egress";
 const workerEnv = env as unknown as EgressEnv;
 
 describe("per-user root wallets", () => {
+  it("reads only public committed identity through the control route and RPC", async () => {
+    const owner = "wallet-identity-rpc";
+    const missing = await SELF.fetch(`https://broker.internal/users/${owner}/wallet/identity`);
+    expect(missing.status).toBe(404);
+    const wallet = await provision(owner);
+    const response = await SELF.fetch(`https://broker.internal/users/${owner}/wallet/identity`);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual(wallet);
+    const identity = await workerEnv.USER_CREDENTIALS.getByName(owner).readWalletIdentity();
+    expect(identity).toEqual(wallet);
+    expect(Object.keys(identity!).sort()).toEqual(["address", "created_at"]);
+  });
+
+  it("returns identity while an unrelated credential operation waits on its provider", async () => {
+    const user = "wallet-identity-queue";
+    const wallet = await provision(user);
+    const control = async (action: string) => {
+      const response = await fetch("https://rpc.tempo.xyz/__wallet-balance-fixture", {
+        method: "POST", body: JSON.stringify({ action, account: wallet.address }),
+      });
+      return response.json<{ started: boolean }>();
+    };
+    await control("hold");
+    let pending: Promise<Response> | undefined;
+    try {
+      pending = SELF.fetch(`https://broker.internal/users/${user}/wallet/balance`);
+      for (let attempt = 0; !(await control("status")).started; attempt++) {
+        expect(attempt).toBeLessThan(100);
+        await new Promise(resolve => setTimeout(resolve, 5));
+      }
+      const identityRequest = SELF.fetch(`https://broker.internal/users/${user}/wallet/identity`);
+      expect(await Promise.race([identityRequest.then(() => "identity"), pending.then(() => "balance")])).toBe("identity");
+      const identity = await identityRequest;
+      expect(identity.status).toBe(200);
+      expect(await identity.json()).toEqual(wallet);
+    } finally {
+      await control("clear");
+      await pending;
+    }
+  });
+
   it("provisions once, keeps root material encrypted, and separates users", async () => {
     const first = await provision("wallet-provision-a");
     const second = await provision("wallet-provision-a");
