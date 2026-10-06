@@ -842,6 +842,7 @@ private struct NativeVaultView: View {
         run { client in
             let value = try await client.nativeCredentialOperation(path: "/v1/credentials/chatgpt/login", method: method)
             guard model.vaultIntakeAccount == account else { return }
+            guard scenePhase == .active else { return }
             login = try ChatGPTLoginReceipt(value)
             await model.refreshModelCatalog()
         }
@@ -854,6 +855,7 @@ private struct NativeVaultView: View {
         Task { @MainActor in
             defer { busy = false }
             do {
+                guard !Task.isCancelled, model.vaultIntakeAccount == account else { return }
                 let client = try model.vaultManagementClient()
                 try await action(client)
                 let loaded = try await client.vaultOverview()
@@ -919,6 +921,7 @@ private struct NativeVaultAddView: View {
         Task { @MainActor in
             defer { busy = false }
             do {
+                guard !Task.isCancelled, model.vaultIntakeAccount == account else { return }
                 let client = try model.vaultManagementClient()
                 if kind == "openai" {
                     _ = try await client.nativeCredentialOperation(path: "/v1/credentials/openai", method: "PUT", body: .object(["api_key": .string(values["api_key"] ?? "")]))
