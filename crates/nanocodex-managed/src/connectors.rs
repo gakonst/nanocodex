@@ -59,10 +59,18 @@ pub struct ConnectorReceipt {
 }
 #[derive(Debug, Deserialize, Serialize)]
 pub struct WhatsAppStartReceipt {
-    pub status: Option<String>,
-    pub phase: Option<String>,
-    pub operation_id: Option<String>,
+    pub connected: bool,
+    pub state: String,
+    pub connection_id: Option<String>,
+    pub attempt: Option<WhatsAppAttempt>,
 }
+#[derive(Debug, Deserialize, Serialize)]
+pub struct WhatsAppAttempt {
+    pub operation_id: String,
+    pub state: String,
+    pub expires_at: u64,
+}
+
 fn invalid() -> ManagedError {
     ManagedError::InvalidResponse("invalid connector request or receipt")
 }
