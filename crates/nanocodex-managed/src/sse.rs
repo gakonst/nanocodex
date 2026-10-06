@@ -171,6 +171,59 @@ impl ManagedEventStream {
         }
     }
 
+    pub(crate) async fn from_run_response(
+        client: ManagedClient,
+        mut response: Response,
+    ) -> Result<(crate::AgentRunReceipt, Self), ManagedError> {
+        if !response
+            .headers()
+            .get(CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.split(';').next())
+            .is_some_and(|value| value.trim().eq_ignore_ascii_case("text/event-stream"))
+        {
+            return Err(ManagedError::InvalidResponse(
+                "agent run response is not text/event-stream",
+            ));
+        }
+        let mut buffer = Vec::new();
+        let mut search_from = 0;
+        loop {
+            if let Some(frame) = take_sse_frame(&mut buffer, &mut search_from) {
+                let parsed = parse_sse_frame(&frame)?;
+                let Some(data) = parsed.data else {
+                    continue;
+                };
+                if parsed.event.as_deref() != Some("run") || parsed.id.is_some() {
+                    return Err(ManagedError::InvalidResponse(
+                        "agent run omitted its initial receipt",
+                    ));
+                }
+                let receipt: crate::AgentRunReceipt = serde_json::from_str(&data)
+                    .map_err(|_| ManagedError::InvalidResponse("invalid agent run receipt"))?;
+                let mut stream =
+                    Self::new(client, receipt.agent_id.clone(), EventCursor::parse("0")?);
+                stream.response = Some(response);
+                stream.buffer = buffer;
+                stream.search_from = search_from;
+                return Ok((receipt, stream));
+            }
+            if buffer.len() > 1024 * 1024 {
+                return Err(ManagedError::InvalidResponse(
+                    "agent run receipt exceeds size limit",
+                ));
+            }
+            match response.chunk().await.map_err(ManagedError::Transport)? {
+                Some(chunk) => buffer.extend_from_slice(&chunk),
+                None => {
+                    return Err(ManagedError::InvalidResponse(
+                        "agent run disconnected before receipt",
+                    ));
+                }
+            }
+        }
+    }
+
     /// Returns the last completely observed durable cursor.
     #[must_use]
     pub const fn cursor(&self) -> &EventCursor {

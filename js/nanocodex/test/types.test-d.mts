@@ -485,6 +485,17 @@ async function check() {
     url: "https://paid.example/mcp",
     payment: mcpPayment({ methods: [{}] }),
   };
+  const lazyPayment = mcpPayment(async () => ({ methods: [{}] }));
+  const lazyPaidServer: McpServer = {
+    url: "https://paid.example/mcp",
+    payment: mcpPayment(lazyPayment),
+  };
+  // @ts-expect-error Lazy payments have no eager methods to read.
+  lazyPayment.methods;
+  // @ts-expect-error Raw factories must be wrapped by the SDK.
+  const unwrappedFactory: McpServer = { url: "https://paid.example/mcp", payment: async () => ({ methods: [{}] }) };
+  void lazyPaidServer;
+  void unwrappedFactory;
   // @ts-expect-error Paid MCP servers require mcpPayment() from nanocodex/tempo.
   const unwrappedPaidServer: McpServer = { url: "https://paid.example/mcp", payment: { methods: [{}] } };
   void paidServer;
