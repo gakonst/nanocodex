@@ -77,7 +77,10 @@ test("MCP Events public OAuth, durable turn observation and signed callbacks", {
       subscription: request.headers.get("x-mcp-subscription-id"), authorization: request.headers.get("authorization") };
     deliveries.push(delivery);
     if (body.type === "verification") {
-      if (receiver.verificationStatus) return new Response(null, { status: receiver.verificationStatus, headers: { location: callbackUrl("redirect-target") } });
+      if (receiver.verificationStatus) return new Response(null, { status: receiver.verificationStatus, headers: { location: receiver.location ?? callbackUrl("redirect-target") } });
+      if (receiver.stalledBody) return new Response(new ReadableStream({
+        start(controller) { controller.enqueue(new TextEncoder().encode('{"challenge":"')); },
+      }));
       if (receiver.verificationBody) return new Response(receiver.verificationBody);
       return Response.json({ challenge: receiver.challenge ?? body.challenge });
     }
@@ -90,7 +93,7 @@ test("MCP Events public OAuth, durable turn observation and signed callbacks", {
   const options = {
     ...transport.miniflareOptions,
     modules: [{ type: "ESModule", path: path.join(outdir, "index.js") }], modulesRoot: outdir,
-    compatibilityDate: "2026-08-23", compatibilityFlags: ["nodejs_compat"],
+    compatibilityDate: "2026-08-23", compatibilityFlags: ["nodejs_compat", "global_fetch_strictly_public"],
     durableObjects: { CONNECT_STATE: { className: "ConnectNonceStorage", useSQLite: true }, MCP_EVENTS: { className: "McpEvents", useSQLite: true } },
     durableObjectsPersist: path.join(outdir, "state"), log: new Log(LogLevel.ERROR),
     serviceBindings: { ACCOUNTS: account, EGRESS: egress },
@@ -156,13 +159,20 @@ test("MCP Events public OAuth, durable turn observation and signed callbacks", {
   function finish(turn_id, status = "completed", updatedAt = Date.now()) {
     for (const turns of agents.values()) if (turns.has(turn_id)) Object.assign(turns.get(turn_id), { state: status, updated_at: updatedAt });
   }
-  t.after(() => t.diagnostic(`Public HTTP/RPC transcript (credentials omitted):\n${transcript.join("\n")}\nManaged polling evidence: ${JSON.stringify(upstream)}\nCallback evidence: ${JSON.stringify(deliveries)}\nDNS/TCP/TLS evidence: ${JSON.stringify(transport.trace)}`));
+  t.after(() => t.diagnostic(`Public HTTP/RPC transcript (credentials omitted):\n${transcript.join("\n")}\nManaged polling evidence: ${JSON.stringify(upstream)}\nCallback evidence: ${JSON.stringify(deliveries)}\nPublic-only network/TCP/TLS evidence: ${JSON.stringify(transport.trace)}`));
   let tokens = await authorize();
   const discovery = await result(tokens.access_token, "server/discover");
   assert.equal(discovery.resultType, "complete");
   assert.ok(discovery.supportedVersions.includes("2026-07-28"));
   assert.equal(discovery._meta["io.modelcontextprotocol/serverInfo"].name, "nanocodex");
   assert.ok(discovery.capabilities.events);
+  assert.equal(discovery.ttlMs, 0);
+  assert.equal(discovery.cacheScope, "private");
+  assert.deepEqual(await result(tokens.access_token, "server/discover"), discovery, "discovery is deterministic for the same grant");
+  const toolsCatalog = await result(tokens.access_token, "tools/list");
+  assert.equal(toolsCatalog.ttlMs, 0);
+  assert.equal(toolsCatalog.cacheScope, "private");
+  assert.deepEqual(await result(tokens.access_token, "tools/list"), toolsCatalog, "tool catalog is deterministic for the same grant");
   const catalog = await result(tokens.access_token, "events/list");
   assert.deepEqual(catalog.events.map(event => event.name), ["agent.turn.completed"]);
   assert.equal((await rpc(tokens.access_token, "server/discover", {}, { "mcp-method": "tools/list" }, 400)).error.code, -32020);
@@ -208,13 +218,13 @@ test("MCP Events public OAuth, durable turn observation and signed callbacks", {
   assert.equal((await rpc(dataOnly.access_token, "events/subscribe", subscription("unapproved"))).error.code, -32012);
   assert.equal((await rpc(tokens.access_token, "events/subscribe", subscription("mode", { delivery: { mode: "stream", url: callbackUrl("mode"), secret } }))).error.code, -32014);
   assert.equal((await rpc(tokens.access_token, "events/subscribe", subscription("secret", { delivery: { mode: "webhook", url: callbackUrl("secret"), secret: "whsec_short" } }))).error.code, -32602);
-  for (const hostname of ["private.mcp-events.example", "mismatch.mcp-events.example"]) {
+  for (const hostname of ["private.mcp-events.example", "rfc1918.mcp-events.example", "metadata.mcp-events.example", "mismatch.mcp-events.example"]) {
     const before = deliveries.length;
     const connections = transport.trace.filter(row => row.kind === "connect").length;
     assert.equal((await rpc(tokens.access_token, "events/subscribe", { ...subscription("transport-denied"),
       delivery: { mode: "webhook", url: `https://${hostname}/transport-denied`, secret } })).error.code, -32015);
     assert.equal(deliveries.length, before, "private DNS and TLS hostname mismatch fail before callback HTTP");
-    assert.equal(transport.trace.filter(row => row.kind === "connect").length - connections, hostname.startsWith("private.") ? 0 : 1,
+    assert.equal(transport.trace.filter(row => row.kind === "connect").length - connections, hostname.startsWith("mismatch.") ? 1 : 0,
       "private DNS is rejected before connect; wrong certificate hostname is rejected after real TCP connect");
   }
   const foreign = await authorize();
@@ -224,6 +234,16 @@ test("MCP Events public OAuth, durable turn observation and signed callbacks", {
   receivers.set("/redirect", { verificationStatus: 302 });
   assert.equal((await rpc(tokens.access_token, "events/subscribe", subscription("redirect"))).error.code, -32015);
   assert.equal(verifyAt("redirect-target").length, 0, "verification never follows redirects");
+  receivers.set("/private-redirect", { verificationStatus: 307, location: "https://private.mcp-events.example/redirect-target" });
+  const beforePrivateRedirect = transport.trace.filter(row => row.kind === "connect" && !row.target.startsWith("93.184.216.34:")).length;
+  assert.equal((await rpc(tokens.access_token, "events/subscribe", subscription("private-redirect", { delivery: { mode: "webhook", url: "https://transport-checks.mcp-events.example/private-redirect", secret } }))).error.code, -32015);
+  assert.equal(transport.trace.filter(row => row.kind === "connect" && !row.target.startsWith("93.184.216.34:")).length, beforePrivateRedirect,
+    "a redirect to private DNS never connects to the target");
+  receivers.set("/stalled", { stalledBody: true });
+  const stalledAt = Date.now();
+  assert.equal((await rpc(tokens.access_token, "events/subscribe", subscription("stalled", { delivery: { mode: "webhook", url: "https://transport-checks.mcp-events.example/stalled", secret } }))).error.code, -32015);
+  assert.ok(Date.now() - stalledAt >= 9_000 && Date.now() - stalledAt < 15_000, "deadline includes verification response streaming");
+  t.diagnostic("Stalled verification response body rejected within the 10-second transport deadline");
   receivers.set("/oversized", { verificationBody: "x".repeat(5000) });
   assert.equal((await rpc(tokens.access_token, "events/subscribe", subscription("oversized"))).error.code, -32015);
   const main = await subscribe("main");

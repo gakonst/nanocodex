@@ -159,7 +159,7 @@ provider and selected-identity enforcement. They never forward caller-supplied
 internal authorization headers or return the underlying Connect token.
 
 `mcpServer.mts` implements stateless JSON Streamable HTTP for MCP 2025-03-26,
-2025-06-18, 2025-11-25, and the MCP2 draft revision 2026-07-28. Legacy clients
+2025-06-18, 2025-11-25, and the MCP released revision 2026-07-28. Legacy clients
 continue to use `initialize`. MCP2 clients use `server/discover` and send these
 fields on every request:
 
@@ -278,15 +278,23 @@ OAuth-family and Connect-grant checks fence both polling and delivery after
 revocation. Expired subscriptions stop delivery automatically.
 
 The callback transport accepts public HTTPS DNS names only, without credentials,
-fragments, IP literals, or private host suffixes. It validates DNS answers,
-pins the TCP destination to a public address, retains TLS hostname validation,
-and never follows redirects. Cloudflare's TCP platform restrictions also apply;
-a destination served exclusively through Cloudflare's proxy cannot be reached
-through this socket transport. There is no fallback that bypasses these checks.
-Cloudflare also has an open [production SNI issue](https://github.com/cloudflare/workerd/issues/6903)
-with `startTls({ expectedServerHostname })`: local workerd success does not prove
-production-edge compatibility. Verify the intended receiver on the deployed
-edge before enabling the integration; SNI-dependent receivers may fail closed.
+fragments, IP literals, or private host suffixes. It sends one POST using global
+`fetch()` with manual redirects, an allowlist of webhook headers, a 64 KiB request
+limit, a 4 KiB verification response limit, and a 10-second deadline. Delivery
+responses are acknowledged by status without buffering their bodies. TLS hostname
+verification and public DNS routing are enforced by the runtime.
+
+Both production and development explicitly enable
+[`global_fetch_strictly_public`](https://developers.cloudflare.com/workers/configuration/compatibility-flags/#global-fetch-strictly-public).
+This is a security requirement: requests to the Worker's own zone pass through
+Cloudflare's public front door, avoiding the legacy origin bypass described in
+Cloudflare's [bindings security explanation](https://blog.cloudflare.com/workers-environment-live-object-bindings/).
+Webhook delivery never uses an origin or service binding, nor caller-provided
+routing metadata. Cloudflare-proxied HTTPS receivers use the same public fetch
+path as other receivers. Standalone workerd deployments must retain a public-only
+`globalOutbound` network; its [runtime contract](https://github.com/cloudflare/workerd/blob/main/src/workerd/io/compatibility-date.capnp)
+rejects DNS destinations resolving to private addresses. The compatibility flag
+controls Cloudflare routing and does not change standalone workerd networking.
 
 Run from the repository root under Node 24 with workspace dependencies installed:
 
@@ -299,7 +307,7 @@ The event journey requires Linux with `unshare`, `mount`, `umount`, `ip` and
 `openssl` (the `util-linux`, `iproute2` and `openssl` packages on Ubuntu), and
 permission to create unprivileged user, network and mount namespaces. Its runner
 creates these namespaces automatically and fails explicitly if unavailable.
-The fixture binds synthetic public IPs and a private DNS hosts mapping only
+The fixture binds synthetic public and private IPs and a DNS hosts mapping only
 inside those namespaces; the host network and DNS configuration stay unchanged.
 The dedicated MCP CI workflow prepares these permissions on its disposable
 Ubuntu runner and publishes the journey log.
@@ -309,7 +317,8 @@ SQLite Durable Object storage. The legacy journey also uses the official MCP
 JavaScript client. The event journey exercises public OAuth/MCP requests,
 signed verification and callbacks, actual turn polling alarms, token/key
 rotation, retry identity, exact-turn filtering across restart, recovery from
-invalid source timestamps, private DNS and wrong TLS hostname rejection,
+invalid source timestamps, loopback/RFC1918/metadata DNS and wrong TLS hostname
+rejection, redirect refusal, oversized and stalled verification response rejection,
 unsubscribe, expiry and revocation. Only external
 account, DNS and callback services are synthetic fixtures. Diagnostics provide
 HTTP, managed polling and callback evidence; capture generated evidence in

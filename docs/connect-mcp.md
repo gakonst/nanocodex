@@ -86,7 +86,7 @@ the `Authorization` header. Refresh tokens rotate; reuse invalidates the token
 family. Revocation and expiry are checked again before tool execution.
 
 The transport supports legacy MCP revisions `2025-03-26`, `2025-06-18`, and
-`2025-11-25`, plus the MCP2 draft revision `2026-07-28`, with JSON responses
+`2025-11-25`, plus the released MCP revision `2026-07-28`, with JSON responses
 over Streamable HTTP. Legacy clients use `initialize`; MCP2 clients use
 `server/discover` and send matching protocol metadata and method headers on
 every request. It is stateless and does not issue MCP session IDs or offer a

@@ -133,7 +133,7 @@ export async function mcpServer(request: Request, store: Kv.Kv, hooks: McpOAuthH
     ? { ...(isRecord(result) ? result : {}), resultType: "complete", _meta: { ...(isRecord(result) && isRecord(result._meta) ? result._meta : {}), [`${metaPrefix}serverInfo`]: serverInfo } }
     : result });
   const capabilities = { tools: { listChanged: false }, ...(tools.events?.capabilities(grant) ?? {}) };
-  if (message.method === "server/discover") return success({ supportedVersions: versions, capabilities });
+  if (message.method === "server/discover") return success({ supportedVersions: versions, capabilities, ttlMs: 0, cacheScope: "private" });
   if (message.method.startsWith("events/") && tools.events) {
     try { return success(await tools.events.call(message.method, params, grant, request)); }
     catch (error) {
@@ -150,7 +150,7 @@ export async function mcpServer(request: Request, store: Kv.Kv, hooks: McpOAuthH
   if (message.method === "ping") return success({});
   if (message.method === "tools/list") {
     if (params.cursor !== undefined) return rpcError(id, -32602, "This tool catalog has no additional pages.");
-    return success({ tools: mcpTools(grant) });
+    return success({ tools: mcpTools(grant), ...(modern ? { ttlMs: 0, cacheScope: "private" } : {}) });
   }
   if (message.method === "tools/call") {
     const selected = mcpTools(grant).find(tool => tool.name === params.name);

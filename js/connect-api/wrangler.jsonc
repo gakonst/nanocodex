@@ -4,7 +4,7 @@
   "main": "./src/index.ts",
   "upload_source_maps": true,
   "compatibility_date": "2026-08-23",
-  "compatibility_flags": ["nodejs_compat"],
+  "compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
   "workers_dev": true,
   "services": [
     { "binding": "ACCOUNTS", "service": "nanocodex-durable-agent" },
@@ -43,6 +43,7 @@
     "development": {
       "name": "nanocodex-connect-api",
       "compatibility_date": "2026-08-18",
+      "compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
       "services": [
         { "binding": "ACCOUNTS", "service": "nanocodex-durable-agent", "remote": false },
         { "binding": "EGRESS", "service": "nanocodex-egress", "remote": false },
