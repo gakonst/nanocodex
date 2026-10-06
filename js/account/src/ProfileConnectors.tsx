@@ -1,3 +1,4 @@
+import { CloudflareConnection } from "./CloudflareConnection";
 import { WhatsAppConnection } from "./WhatsAppConnection";
 import { useAccountQuery } from "./useAccountQuery";
 import { Fragment, useCallback, useEffect, useRef, useState, type ReactNode } from "react";
@@ -140,7 +141,7 @@ export function ProfileConnectors({
     focusApplied.current = true;
     target.classList.add("is-highlighted");
     target.scrollIntoView({ block: "center" });
-    target.querySelector<HTMLElement>("button:not(:disabled), input:not(:disabled)")?.focus({ preventScroll: true });
+    target.querySelector<HTMLElement>("button:not(:disabled), input:not(:disabled), select:not(:disabled)")?.focus({ preventScroll: true });
   });
   const [mcpOperationError, setMcpError] = useState<string | null>(null);
   const [mcpConnectionError, setMcpConnectionError] = useState<Readonly<{
@@ -638,6 +639,7 @@ export function ProfileConnectors({
           <h2 id="services-heading">Services</h2>
           <AccountConnectionGrid>
           <WhatsAppConnection key={accountId} accountId={accountId} />
+      <CloudflareConnection key={`cloudflare:${accountId}`} accountId={accountId} requiresLogin={requiresLogin} />
           {connectors ? connectorDefinitions.map((definition) => {
             const view = connectorProviderView(connectors, definition);
             return <div className={`account-service-row${focusedProvider === definition.provider ? " is-highlighted" : ""}`} key={definition.provider} role="listitem" data-provider={definition.provider}>
@@ -716,6 +718,7 @@ export function ProfileConnectors({
     <div className="profile-connectors connection-grid">
       {children}
       <WhatsAppConnection key={accountId} accountId={accountId} />
+      <CloudflareConnection key={`cloudflare:${accountId}`} accountId={accountId} requiresLogin={requiresLogin} />
       {result ? (
         <p className={`connector-result connector-result--${result.result}`} role="status">
           {connectorResultMessage(result)}

@@ -20,7 +20,7 @@ These routes accept neither Connect grants nor shared-thread credentials.
 | Operation | Endpoint |
 | --- | --- |
 | Safe Vault, SSH, and model-connection metadata | `GET /v1/credentials` |
-| Save a login, API key, card, address, or phone | `POST /v1/credentials/vault/{kind}` |
+| Save a login, API key, card, address, phone, or authenticator | `POST /v1/credentials/vault/{kind}` |
 | Delete an exact Vault item | `DELETE /v1/credentials/vault/{kind}/{id}` |
 | Update a login's website hint | `PUT /v1/credentials/vault/login/{id}/origin` |
 | Generate or import an SSH identity | `PUT /v1/credentials/ssh/{reference}` |
@@ -31,7 +31,7 @@ These routes accept neither Connect grants nor shared-thread credentials.
 | Save a privately captured provider item | `POST /v1/vault/store` |
 | Read or refresh a provider card | `POST /v1/vault/card` |
 
-`kind` is `login`, `api_key`, `card`, `address`, or `phone`. Secret entry belongs
+`kind` is `login`, `api_key`, `card`, `address`, `phone`, or `totp`. Secret entry belongs
 in a native private form that sends directly to the API. Responses return safe
 metadata, not passwords, API keys, full card numbers, or private SSH keys. SSH
 creation accepts `generate: true` plus the hostname, port, username, and trusted
@@ -63,7 +63,7 @@ browser; account management itself does not require opening web settings.
 
 ## Native clients
 
-The TUI opens private forms with `/vault add login|api_key|card|address|phone`,
+The TUI opens private forms with `/vault add login|api_key|card|address|phone|totp`,
 `/vault add openai`, and `/vault ssh-add REFERENCE`. `/vault list` reads metadata;
 `/vault delete KIND ID` and `/vault ssh-remove REFERENCE` remove exact items.
 `/vault card status|balance ID`, `/vault card refresh ID OPERATION_UUID`, and

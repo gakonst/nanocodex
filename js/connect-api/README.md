@@ -1,5 +1,78 @@
 # Connect API
 
+## Standalone Vault and phone services
+
+An app requests `capabilities.services` with explicit scopes:
+
+```ts
+{
+  vault: { ids: ["selected-vault-id"], origins: ["https://destination.example"], request: true },
+  phone: { numberIds: ["selected-number-uuid"], read: true, provision: true, release: false }
+}
+```
+
+The complete object is signed as one resource,
+`urn:nanocodex:services:` followed by `encodeURIComponent(JSON.stringify(services))`.
+The approval must also bind the app and exact app origin. A hosted service-only
+approval omits agent resources and exchanges with `permission: "services.use"`.
+It returns `grant.services` and omits `agent_id`; it provisions no managed agent,
+conversation or session. Agent approvals may explicitly include the same service
+resource. Existing grants gain no service authority, including through legacy
+Vault egress or account-info. To change IDs or origins, request fresh approval.
+The service resource is bounded to 12,288 characters; other resources retain the
+512-character bound. Each scope accepts at most 64 unique IDs or origins.
+
+All routes below start with `/v1/grants/:grantId/services` and require the opaque
+grant bearer token, `X-Nanocodex-App-Id`, and exact signed `Origin`. Every request
+resolves live grant state and rejects revoked or expired grants before contacting
+a service. The private broker owner is derived from the grant; caller identity
+headers are never forwarded. Responses are `no-store`.
+
+| Method | Path | Required authority | Result |
+| --- | --- | --- | --- |
+| GET | (service root) | Current grant | Catalog containing only approved service types |
+| GET | `/vault` | `vault.ids` | `{ vault }`, metadata only for selected IDs |
+| POST | `/vault/request` | `vault.request`, selected ID and exact HTTPS origin | `{ status, ok }` only |
+| GET | `/phone/numbers` | `phone.read` | `{ numbers }`, selected IDs only |
+| GET | `/phone/numbers/:id` | `phone.read`, selected number | `{ number }` |
+| GET | `/phone/numbers/:id/messages?limit=10&cursor=...` | `phone.read`, selected number | `{ messages, next_cursor? }` |
+| GET | `/phone/numbers/available?country=US&area_code=415&limit=10` | `phone.provision` | Available SMS numbers |
+| POST | `/phone/numbers` | `phone.provision` | Provisioning intent and concrete recurring quote |
+| DELETE | `/phone/numbers/:id` | `phone.release`, selected number | Release intent |
+| GET | `/phone/requests/:operationId` | Original intent's authority and grant | Intent status |
+
+Vault requests accept `vault_id`, `url`, optional `method`, `headers`, `body`,
+`body_encoding`, and `signing`. The credential broker validates templates and
+injects secrets. A TOTP item supports `{{NANOCODEX_VAULT_TOTP}}` only at its saved
+exact HTTPS origin, which must also appear in the grant. Seeds, codes, destination
+response bodies and headers never pass back through Connect.
+
+Provisioning takes `{ operation_id, phone_number, country: "US" }`; release takes
+`{ operation_id }`. Both operation IDs are UUIDs. Connect derives a private broker
+UUID from the grant and caller operation ID, and records the intent before
+dispatch. Retry an uncertain submission only with the same original operation ID
+and identical fields. Poll using the original caller UUID, also preserved in `request.operation_id`,
+even if the submission response was lost. Use `request.approval_request_id` only
+for the owner account UI; it identifies the private broker operation. Other grants
+cannot poll it, even within the same app. Connect never automatically retries a
+mutation. Intent creation does not buy or release a number: approval is available
+only in the owner's authenticated account UI. Connect cannot call approval or
+denial routes. A newly provisioned number needs a fresh signed ID scope before
+an app may read its SMS. SMS compatibility depends on the destination service.
+
+Run the public HTTP authorization journey with:
+
+```sh
+pnpm --filter @nanocodex/connect-api typecheck
+node --experimental-strip-types --test js/connect-api/test/vaultRoutes.test.mjs
+```
+
+The journey runs the shipped Worker and real Durable Objects in workerd, using
+synthetic account/provider services. It exercises service-only consent, filtered
+metadata, exact item/origin bounds, phone intents, cross-app and cross-grant
+isolation, revocation, legacy denial and uncertain responses without live spending.
+
+
 ## Fresh connector status for connected apps
 
 `GET /v1/grants/:grantId/connectors?providers=spotify,soundcloud` returns:

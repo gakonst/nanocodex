@@ -1,4 +1,7 @@
 export type VaultMetadata = Readonly<{
+  id: string; kind: "totp"; name: string; created_at: number; issuer: string; account: string; origin: string;
+  algorithm: "SHA1" | "SHA256" | "SHA512"; digits: 6 | 8; period: number;
+}> | Readonly<{
   id: string;
   kind: "api_key";
   name: string;

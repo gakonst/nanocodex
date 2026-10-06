@@ -81,7 +81,8 @@ test('installed upstream browser runtime uses the direct relay and turn cleanup 
   await writeFile(path.join(f.directory,'policy'),`#!/bin/sh\nexec ${q(node)} ${q(policy)} --policy "$@"\n`,{mode:0o700});
   await writeFile(path.join(f.directory,'repl'),`#!/bin/sh\nexec ${q(path.join(runtime,'bin/node_repl'))} --disable-sandbox "$@"\n`,{mode:0o700});
   const observed=[];let running=true;
-  const replies=(async()=>{while(running){const m=await f.extension.next();if(!running)break;observed.push(m);let result;
+  let heartbeatResolve; const heartbeatReceipt = new Promise(resolve => { heartbeatResolve = resolve; });
+  const replies=(async()=>{while(running){const m=await f.extension.next();if(!running)break;observed.push(m);if(m.id === "live-heartbeat" && !m.method){heartbeatResolve(m);continue;}let result;
     if(m.method==='getInfo')result={type:'extension',family:'chrome',name:'Synthetic browser',capabilities:{browser:[],tab:[]},metadata:{extensionInstanceId:'fixture'},agentRequestHeaderEnabled:false};
     else if(['getTabs','getUserTabs'].includes(m.method))result=[];
     else if(m.method==='turnEnded'||m.method==='nameSession')result={};
@@ -95,6 +96,10 @@ test('installed upstream browser runtime uses the direct relay and turn cleanup 
   assert.equal(result.success,true,result.output.map(c=>c.text??'').filter(s=>s.length<1000).join('\n'));
   assert.ok(result.output.some(c=>c.text?.includes('BROWSER_COUNT=1')));
   const text=result.output.map(c=>c.text??'').join('\n');assert.ok(!text.includes('# Computer Use Confirmations Policy'),'supported confirmation override was ignored');
+  f.extension.send(rpc("live-heartbeat", "ping"));
+  const heartbeat = await heartbeatReceipt;
+  console.log("Installed SDK idle heartbeat:", heartbeat);
+  assert.equal(heartbeat.result,"pong","a live idle SDK must preserve the browser control lease");
   await computer.endTurn(context.sessionId,context.turnId);
   await computer.endTurn(context.sessionId,context.turnId);
   assert.ok(observed.some(m=>m.method==='getInfo'&&m.params.session_id===context.sessionId&&m.params.turn_id===context.turnId));

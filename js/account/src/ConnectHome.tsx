@@ -1,6 +1,7 @@
+import { PhoneService } from "./PhoneService";
 import { useEffect, useRef, useState } from "react";
 import { NavLink, useLocation } from "react-router";
-import { ArrowUpRight, CircleUserRound, KeyRound, LockKeyhole, LogOut, Moon, Plug, Sun, Wallet } from "lucide-react";
+import { ArrowUpRight, CircleUserRound, KeyRound, LockKeyhole, LogOut, Moon, Phone, Plug, Sun, Wallet } from "lucide-react";
 import { AccountChooser } from "nanocodex-connect-ui/AccountChooser";
 import { AccountMenu } from "./AccountMenu";
 import { Vault } from "./Vault";
@@ -10,6 +11,7 @@ import "./AccountWorkspace.css";
 const sections = [
   { path: "/connect", label: "Connections", icon: Plug, section: "connections" },
   { path: "/connect/vault", label: "Vault", icon: LockKeyhole, section: "vault" },
+  { path: "/services/phone", label: "Phone numbers", icon: Phone, section: "phone" },
   { path: "/connect/wallet", label: "Wallet", icon: Wallet, section: "wallet" },
   { path: "/connect/access", label: "API access", icon: KeyRound, section: "access" },
 ] as const;
@@ -22,7 +24,7 @@ export function ConnectHome({ theme: controlledTheme, onThemeChange }: {
   const session = useAccountSession();
   const [localTheme, setLocalTheme] = useState<"light" | "dark">(() => document.documentElement.dataset.theme === "light" ? "light" : "dark");
   const theme = controlledTheme ?? localTheme;
-  const section = sections.find(item => item.path === location.pathname.replace(/\/+$/, "")) ?? sections[0];
+  const section = sections.find(item => item.path === (location.pathname.replace(/\/+$/, "") === "/vault" ? "/connect/vault" : location.pathname.replace(/\/+$/, ""))) ?? sections[0];
   const account = session.account?.persistent ? session.account : null;
   const heading = useRef<HTMLHeadingElement>(null);
   const previousPath = useRef(location.pathname);
@@ -88,7 +90,7 @@ export function ConnectHome({ theme: controlledTheme, onThemeChange }: {
           <section id="account-content" tabIndex={-1} className={`account-hub-body account-hub-${section.section}`} aria-label={section.label}>
             {section.section !== "vault" ? <header className="account-page-heading"><h1 ref={heading} tabIndex={-1}>{section.label}</h1></header> : null}
             {session.error ? <div className="account-workspace-error" role="alert">{session.error}<button type="button" onClick={() => void session.refresh()}>Try again</button></div> : null}
-            {section.section === "vault" ? <Vault key={account.id} /> : <AccountMenu key={`${account.id}:${section.section}`} inline section={section.section} />}
+            {section.section === "phone" ? <PhoneService /> : section.section === "vault" ? <Vault key={account.id} /> : <AccountMenu key={`${account.id}:${section.section}`} inline section={section.section} />}
           </section>
         </div>
       )}

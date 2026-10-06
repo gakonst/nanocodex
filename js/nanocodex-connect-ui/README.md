@@ -56,3 +56,12 @@ change each other's theme. Appearance does not change app identity or grants.
 
 The default typography uses system fonts, restrained medium-weight headings, and
 compact control labels. SMS sign-in uses a centered single column at every width. Authorization uses two columns with a 36px gap on desktop; mobile stacks. Both use the same 24px medium-weight headings and font family.
+
+### Standalone service consent
+
+Signed `urn:nanocodex:services:` resources display the exact Vault item IDs,
+website origins, phone number IDs, and requested actions. Phone read permission
+explicitly includes incoming verification messages; provisioning and release
+require later account approval. A services-only request does not display agent
+execution permission. Invalid or duplicate service resources reject the request
+before authorization. Enforcement remains in the Connect API and service broker.

@@ -1,4 +1,5 @@
 import { idempotentAgentId } from "nanocodex/cloudflare/managed-live";
+export { PhoneProvider } from "./phone-provider";
 import { routeAccountNavigation } from "./account-navigation";
 import { inventoryEntry, type HandInventoryEntry } from "./hand-inventory";
 import { CUA_JS_NAME, CUA_RESET_NAME } from "nanocodex-computer/contract";
@@ -93,6 +94,8 @@ import { PhoneContainer } from "./phone-container";
 export { PhoneContainer };
 import { createVaultIntakeTool } from "./vault-intake-tool";
 import { createVaultRequestTool, routeVaultRequest } from "./vault-request";
+import { routeServicesRequest } from "./services-http";
+import { createPhoneNumbersTool } from "./phone-numbers-tool";
 import { permissionRequestTool, type PermissionToolInput } from "./permission-request-tool";
 import { validateBrowserVaultTakeoverAction, type BrowserVaultTakeoverAction } from "./browser-vault-takeover";
 import {
@@ -1903,6 +1906,10 @@ async function managedFetchRoute(
     if (url.pathname === "/v1/vault/store" || url.pathname === "/v1/vault/card") {
       const principal = await authenticateVaultAccount(request, env, url);
       return routeProviderVaultRequest(request, env.NANOCODEX, principal);
+    }
+    if (url.pathname === "/v1/services" || url.pathname.startsWith("/v1/services/")) {
+      const principal = trustedAgentPrincipal ?? await authenticate(request, env, url);
+      return routeServicesRequest(request, env.NANOCODEX, principal);
     }
     if (url.pathname === "/v1/vault/request") {
       const principal = trustedAgentPrincipal ?? await authenticate(request, env, url);
@@ -9669,6 +9676,22 @@ export class DurableAgentSession extends DurableComputerObject {
         sessionId: session.session_id,
         publicOrigin: session.public_origin,
         authorizeVaultAccess: context => this.#authorizeVaultTool(context),
+        resolveVaultTotp: async (request, context) => {
+          this.#authorizeVaultTool(context);
+          const response = await this.env.NANOCODEX.fetch("https://browser-vault.internal/v1/totp", {
+            method: "POST",
+            headers: { "content-type": "application/json", "x-nanocodex-subject": this.#credentialSubject() },
+            body: JSON.stringify({ vault_id: request.totp_vault_id, expected_origin: request.expected_origin }),
+            signal: AbortSignal.any([context.signal, AbortSignal.timeout(10_000)]),
+          });
+          if (!response.ok) {
+            await response.body?.cancel();
+            throw new Error("Vault TOTP is unavailable for this account and origin");
+          }
+          const value = await response.json<{ code?: unknown }>();
+          if (typeof value.code !== "string" || !/^(?:[0-9]{6}|[0-9]{8})$/.test(value.code)) throw new Error("Invalid private Vault response");
+          return value.code;
+        },
         savePrivateVault: async entry => {
           const response=await this.env.NANOCODEX.fetch("https://browser-vault.internal/v1/save",{method:"POST",headers:{"content-type":"application/json","x-nanocodex-subject":this.#credentialSubject()},body:JSON.stringify(entry),signal:AbortSignal.timeout(10_000)});
           if(!response.ok){await response.body?.cancel();throw new Error("Vault save unavailable");}
@@ -10468,7 +10491,8 @@ export class DurableAgentSession extends DurableComputerObject {
       })),
       ...(multiplayer ? [] : this.#memoryTools()),
       ...(multiplayer ? [] : [createVaultIntakeTool(context => this.#authorizeVaultTool(context)),
-        createVaultRequestTool(this.env.NANOCODEX, () => this.#credentialSubject(), context => this.#authorizeVaultTool(context))]),
+        createVaultRequestTool(this.env.NANOCODEX, () => this.#credentialSubject(), context => this.#authorizeVaultTool(context)),
+        createPhoneNumbersTool(this.env.NANOCODEX, session.owner_id, context => this.#authorizeVaultTool(context))]),
       ...(multiplayer ? [] : createProviderVaultTools(this.env.NANOCODEX, session.owner_id, context => this.#authorizeVaultTool(context))),
       ...(multiplayer ? [] : [permissionRequestTool((input, context) => this.#requestPermissions(input, context))]),
       ...emailTools({

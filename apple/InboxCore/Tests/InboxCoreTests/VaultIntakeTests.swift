@@ -20,7 +20,7 @@ final class VaultIntakeTests: XCTestCase {
         func hint(_ kind: String, _ origin: String = "") -> JSON {
             .object(["type": .string("vault_intake"), "status": .string("input_required"), "kind": .string(kind), "origin": .string(origin)])
         }
-        for kind in ["login", "api_key", "card", "address", "phone"] {
+        for kind in ["login", "api_key", "card", "address", "phone", "totp"] {
             XCTAssertEqual(VaultIntake.parse(hint(kind))?.kind, kind)
         }
         XCTAssertNil(VaultIntake.parse(hint("ssh")))
@@ -70,6 +70,60 @@ final class VaultIntakeTests: XCTestCase {
         defer { client.close() }
         let receipt = try await client.saveVaultItem(kind: "login", values: ["name": "Example", "username": "user", "password": "secret-fixture"], configuration: fixture.configuration)
         XCTAssertEqual(receipt.name, "Example")
+    }
+
+    func testTotpEnrollmentTravelsDirectlyAndProjectsOnlySafeMetadata() async throws {
+        for method in ["seed", "uri"] {
+            let secret = method == "seed" ? "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ" : "otpauth://totp/Example:alice?secret=GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ&issuer=Example"
+            var values = ["name": "Example authenticator", "origin": "https://example.com"]
+            if method == "seed" {
+                values.merge(["seed": secret, "issuer": "Example", "account": "alice", "algorithm": "SHA1", "digits": "6", "period": "30"]) { _, new in new }
+            } else { values["otpauth_uri"] = secret }
+            let fixture = try HTTPFixture { request in
+                XCTAssertEqual(request.method, "POST")
+                XCTAssertEqual(request.path, "/v1/credentials/vault/totp")
+                XCTAssertEqual(request.headers["authorization"], "Bearer \(fixtureKey)")
+                XCTAssertEqual(request.headers["cache-control"], "no-store")
+                XCTAssertEqual(request.json[method == "seed" ? "seed" : "otpauth_uri"] as? String, secret)
+                if method == "seed" {
+                    XCTAssertEqual(request.json["digits"] as? Int, 6)
+                    XCTAssertEqual(request.json["period"] as? Int, 30)
+                } else { XCTAssertEqual(request.json.count, 3) }
+                return FixtureReply(body: #"{"id":"aaaaaaaaaaaaaaaaaaaaaa","kind":"totp","name":"untrusted name","issuer":"Example","account":"alice","origin":"https://example.com","algorithm":"SHA1","digits":6,"period":30,"seed":"private-response-seed","code":"123456"}"#)
+            }
+            defer { fixture.close() }
+            let client = ManagedClient(credential: try AccountCredential(origin: fixture.origin, apiKey: fixtureKey))
+            defer { client.close() }
+            let receipt = try await client.saveVaultItem(kind: "totp", values: values, configuration: fixture.configuration)
+            XCTAssertEqual(receipt.kind, "totp")
+            XCTAssertEqual(receipt.name, "Example authenticator")
+            XCTAssertEqual(receipt.totp?.issuer, "Example")
+            XCTAssertEqual(receipt.totp?.account, "alice")
+            XCTAssertEqual(receipt.totp?.origin, "https://example.com")
+            XCTAssertEqual(receipt.totp?.period, 30)
+            let rendered = String(describing: receipt)
+            for forbidden in [secret, "private-response-seed", "123456", "untrusted name"] {
+                XCTAssertFalse(rendered.contains(forbidden))
+            }
+        }
+    }
+
+    func testTotpRejectsSecretBearingToolHintsAndMismatchedReceipt() async throws {
+        let hint: [String: JSON] = ["type": .string("vault_intake"), "status": .string("input_required"), "kind": .string("totp")]
+        for key in ["seed", "otpauth_uri", "code"] {
+            var unsafe = hint; unsafe[key] = .string("private")
+            XCTAssertNil(VaultIntake.parse(.object(unsafe)))
+        }
+        let fixture = try HTTPFixture { _ in
+            FixtureReply(body: #"{"id":"aaaaaaaaaaaaaaaaaaaaaa","kind":"totp","issuer":"Example","account":"alice","origin":"https://other.example","algorithm":"SHA1","digits":6,"period":30}"#)
+        }
+        defer { fixture.close() }
+        let client = ManagedClient(credential: try AccountCredential(origin: fixture.origin, apiKey: fixtureKey))
+        defer { client.close() }
+        do {
+            _ = try await client.saveVaultItem(kind: "totp", values: ["name": "Example", "origin": "https://example.com", "otpauth_uri": "synthetic-private-uri"], configuration: fixture.configuration)
+            XCTFail("Mismatched origin must not confirm enrollment")
+        } catch { XCTAssertFalse(String(describing: error).contains("synthetic-private-uri")) }
     }
 
     func testFailureDiscardsServerBodyAndDoesNotReplay() async throws {

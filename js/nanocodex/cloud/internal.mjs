@@ -1,3 +1,4 @@
+import { normalizeServices } from '../services/scope.mjs';
 import { InvalidResponseError } from "./Errors.mjs";
 
 const CLOUD_ACCOUNT_PROVIDERS = Object.freeze([
@@ -50,6 +51,11 @@ export function connectionFromWire(value) {
     throw new InvalidResponseError("access-key connections require access-key and MPP authority");
   }
   const capabilities = strings(grant.capabilities, "connection.grant.capabilities");
+  if (grant.permission === "services.use" && (wire.agent_id !== undefined || authorization !== "hosted"
+    || grant.services === undefined || grant.conversation_id !== undefined || grant.app_tool_catalog_digest !== undefined
+    || capabilities.some(value => value === "nanocodex.agent" || value === "chatgpt" || value.startsWith("agent.") || value.startsWith("mcp:")))) {
+    throw new InvalidResponseError("Standalone service grants cannot contain agent or payment authority");
+  }
   const grantMcpConnections = mcpConnections(
     grant.mcp_connections,
     "connection.grant.mcp_connections",
@@ -67,7 +73,7 @@ export function connectionFromWire(value) {
   );
   return Object.freeze({
     ...owner,
-    agentId: string(wire.agent_id, "connection.agent_id"),
+    ...(grant.permission === "services.use" && wire.agent_id === undefined ? {} : { agentId: string(wire.agent_id, "connection.agent_id") }),
     grant: Object.freeze({
       id: hex(grant.id, "connection.grant.id"),
       permission: string(grant.permission, "connection.grant.permission"),
@@ -76,13 +82,14 @@ export function connectionFromWire(value) {
       ...(grant.conversation_id === undefined ? {} : {
         conversationId: agentConversationId(grant.conversation_id, "connection.grant.conversation_id"),
       }),
+      ...(grant.services === undefined ? {} : { services: normalizeServices(grant.services) }),
       capabilities,
       connectors: grantConnectors,
       ...(grantConnectorConnections === undefined ? {} : {
         connectorConnections: grantConnectorConnections,
       }),
       mcpConnections: grantMcpConnections,
-      visibility: agentVisibility(capabilities),
+      visibility: agentVisibility(capabilities, grant.permission === "services.use"),
       ...(grant.app_tool_catalog_digest === undefined ? {} : {
         appToolCatalogDigest: catalogDigest(
           grant.app_tool_catalog_digest,
@@ -134,6 +141,11 @@ export function connectionMatchesRequest(connection, options = {}) {
       || connection.grant.conversationId !== requested) {
       return false;
     }
+  }
+  if (Object.hasOwn(options.capabilities ?? {}, "services")) {
+    try {
+      if (JSON.stringify(normalizeServices(options.capabilities.services)) !== JSON.stringify(normalizeServices(connection.grant.services))) return false;
+    } catch { return false; }
   }
   const requestedCloudAccounts = options.capabilities?.cloudAccounts;
   if (requestedCloudAccounts !== undefined) {
@@ -190,6 +202,7 @@ export function reconnectRequestFromConnection(connection) {
 export function connectionRequestFromGrant(grant) {
   return Object.freeze({
     capabilities: Object.freeze({
+      services: grant.services,
       agent: grant.visibility,
       cloudAccounts: Object.freeze(Object.fromEntries(
         grant.connectors.map((provider) => [provider, true]),
@@ -297,13 +310,14 @@ export function grantFromWire(value) {
     ...(grant.conversation_id === undefined ? {} : {
       conversationId: agentConversationId(grant.conversation_id, "grant.conversation_id"),
     }),
+    ...(grant.services === undefined ? {} : { services: normalizeServices(grant.services) }),
     capabilities,
     connectors: grantConnectors,
     ...(grantConnectorConnections === undefined ? {} : {
       connectorConnections: grantConnectorConnections,
     }),
     mcpConnections: grantMcpConnections,
-    visibility: agentVisibility(capabilities),
+    visibility: agentVisibility(capabilities, grant.permission === "services.use"),
     ...(grant.app_tool_catalog_digest === undefined ? {} : {
       appToolCatalogDigest: catalogDigest(grant.app_tool_catalog_digest, "grant.app_tool_catalog_digest"),
     }),
@@ -329,7 +343,8 @@ const AGENT_VISIBILITY_CAPABILITIES = Object.freeze({
   rawTraces: "agent.trace.read",
 });
 
-function agentVisibility(capabilities) {
+function agentVisibility(capabilities, standalone = false) {
+  if (standalone) return Object.freeze({ finalMessages: false, actionSummaries: false, conversationHistory: false, rawTraces: false });
   const recognized = Object.values(AGENT_VISIBILITY_CAPABILITIES)
     .some((capability) => capabilities.includes(capability));
   const rawTraces = capabilities.includes(AGENT_VISIBILITY_CAPABILITIES.rawTraces);

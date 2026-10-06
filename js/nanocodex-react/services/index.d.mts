@@ -1,0 +1,20 @@
+import type { ReactNode, ReactElement, CSSProperties } from 'react';
+import type { UseMutationResult, UseQueryResult } from '@tanstack/react-query';
+import type { ServicesClient, VaultMetadata, PhoneNumber, PhoneMessage, PhoneRequest, PhoneProvision, PhoneRelease, PhoneMessagesQuery, VaultRequest, BrokerReceipt, HostedRequest, HostedResult } from 'nanocodex/services';
+export function ServicesProvider(props: { client: ServicesClient; children?: ReactNode }): ReactElement;
+export function useServices(): ServicesClient;
+export function useVault(): UseQueryResult<Readonly<{ vault: readonly VaultMetadata[] }>, Error>;
+export function usePhoneNumbers(): UseQueryResult<Readonly<{ numbers: readonly PhoneNumber[] }>, Error>;
+export function usePhoneMessages(id: string | undefined, query?: PhoneMessagesQuery): UseQueryResult<Readonly<{ messages: readonly PhoneMessage[]; next_cursor: string | null }>, Error>;
+export function usePhoneRequest(id: string | undefined): UseQueryResult<Readonly<{ request: PhoneRequest }>, Error>;
+export function useProvisionPhone(): UseMutationResult<Readonly<{ request: PhoneRequest }>, Error, PhoneProvision>;
+export function useReleasePhone(): UseMutationResult<Readonly<{ request: PhoneRequest }>, Error, PhoneRelease & Readonly<{ id: string }>>;
+export function useVaultRequest(): UseMutationResult<BrokerReceipt, Error, VaultRequest>;
+export function HostedServiceButton(props: {
+  request: HostedRequest;
+  children?: ReactNode;
+  className?: string;
+  style?: CSSProperties;
+  onError?: (error: unknown) => void;
+  onComplete?: (result: HostedResult) => void;
+}): ReactElement;

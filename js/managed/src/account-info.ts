@@ -26,6 +26,18 @@ type BrokerBinding = CloudflareAccountMetadataBinding;
 export type VaultEntry =
   | Readonly<{
       id: string;
+      kind: "totp";
+      name: string;
+      created_at: number;
+      issuer: string;
+      account: string;
+      origin: string;
+      algorithm: "SHA1" | "SHA256" | "SHA512";
+      digits: 6 | 8;
+      period: number;
+    }>
+  | Readonly<{
+      id: string;
       kind: "api_key";
       name: string;
       created_at: number;
@@ -369,6 +381,15 @@ function vaultEntry(value: unknown): VaultEntry | undefined {
     name: value.name,
     created_at: value.created_at as number,
   };
+  if (value.kind === "totp") {
+    if (!exactKeys(value, ["id", "kind", "name", "created_at", "issuer", "account", "origin", "algorithm", "digits", "period"])
+      || !vaultText(value.issuer, 256) || !vaultText(value.account, 256) || !safeBrowserOrigin(value.origin)
+      || (value.algorithm !== "SHA1" && value.algorithm !== "SHA256" && value.algorithm !== "SHA512")
+      || (value.digits !== 6 && value.digits !== 8) || !Number.isInteger(value.period)
+      || Number(value.period) < 15 || Number(value.period) > 120) return undefined;
+    return { ...common, kind: "totp", issuer: value.issuer, account: value.account, origin: value.origin,
+      algorithm: value.algorithm, digits: value.digits, period: value.period as number };
+  }
   if (value.kind === "api_key"
     && exactKeys(value, ["id", "kind", "name", "created_at"])) {
     return { ...common, kind: "api_key" };

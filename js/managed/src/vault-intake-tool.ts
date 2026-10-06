@@ -4,12 +4,12 @@ import type { NamedTool, ToolContext } from "nanocodex";
 export function createVaultIntakeTool(authorize: (context: ToolContext) => void): NamedTool {
   return {
     name: "request_vault_intake",
-    description: "Show an inline secure Vault form to the authenticated user. Use when the user asks to add credentials to their Vault. Never ask for or pass credential values in chat or tools. The user submits directly to Vault; input_required is not confirmation of storage. Wait for the saved receipt before using the item. Saved items are available for the user’s authorized tasks without another website-approval prompt. An optional login origin is an exact HTTPS website hint, not a permission grant.",
+    description: "Show an inline secure Vault form to the authenticated user. Use when the user asks to add credentials to their Vault. Supports TOTP enrollment from a seed or otpauth URI in the private form; never ask for or pass credentials, seeds, URIs or generated codes in chat or tools. The user submits directly to Vault; input_required is not confirmation of storage. Wait for the saved receipt before using the item. Saved items are available for the user’s authorized tasks without another website-approval prompt. An optional login origin is an exact HTTPS website hint, not a permission grant.",
     parameters: {
       type: "object", additionalProperties: false, required: ["kind"],
       properties: {
         operation: { type: "string", enum: ["create"] },
-        kind: { type: "string", enum: ["login", "api_key", "card", "address", "phone"] },
+        kind: { type: "string", enum: ["login", "api_key", "card", "address", "phone", "totp"] },
         name: { type: "string", minLength: 1, maxLength: 120, description: "Suggested non-secret item label." },
         origin: { type: "string", maxLength: 2048, description: "Optional HTTPS website hint for a login, without path, query, fragment or credentials." },
       },
@@ -19,7 +19,7 @@ export function createVaultIntakeTool(authorize: (context: ToolContext) => void)
       if (!input || typeof input !== "object" || Array.isArray(input)) throw new TypeError("Invalid Vault intake request");
       const value = input as Record<string, unknown>;
       if (Object.keys(value).some(key => !["kind", "name", "origin", "operation", "vault_id"].includes(key))
-        || !["login", "api_key", "card", "address", "phone"].includes(String(value.kind))
+        || !["login", "api_key", "card", "address", "phone", "totp"].includes(String(value.kind))
         || (value.name !== undefined && (typeof value.name !== "string" || !value.name.trim() || value.name.length > 120 || /[\u0000-\u001f\u007f]/.test(value.name)))) {
         throw new TypeError("Invalid Vault intake request");
       }

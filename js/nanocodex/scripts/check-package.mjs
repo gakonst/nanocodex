@@ -20,6 +20,10 @@ export function checkDocumentedBrowserVersion(readme, packageVersion) {
 }
 
 const requiredFiles = [
+  "services/index.mjs",
+  "services/index.d.mts",
+  "services/hosted.mjs",
+  "services/scope.mjs",
   "host/Claude.mjs",
   "host/Claude.d.mts",
   "node/Claude.mjs",
@@ -138,6 +142,9 @@ export async function checkPackage(packageRoot = root) {
   const readme = await readFile(new URL("README.md", packageRoot), "utf8");
 
   assert.equal(packageJson.name, "nanocodex");
+  assert.equal(packageJson.exports?.["./services"]?.import, "./services/index.mjs");
+  assert.equal(packageJson.exports?.["./services"]?.types, "./services/index.d.mts");
+  assert(packageJson.files.includes("services"));
   assert.equal(packageJson.type, "module");
   assert.equal(packageJson.engines?.node, ">=22.13.0");
   assert.equal(packageJson.publishConfig?.access, "public");

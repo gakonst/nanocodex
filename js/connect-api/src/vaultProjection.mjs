@@ -20,6 +20,12 @@ export function projectVaultEntries(value) {
       created_at: timestamp(entry.created_at),
     };
     switch (common.kind) {
+      case "totp": {
+        if (!["SHA1", "SHA256", "SHA512"].includes(entry.algorithm) || ![6, 8].includes(entry.digits)
+          || !Number.isInteger(entry.period) || entry.period < 15 || entry.period > 120) throw new TypeError("invalid TOTP metadata");
+        return { ...common, issuer: text(entry.issuer, 256), account: text(entry.account, 256),
+          origin: browserOrigin(entry.origin), algorithm: entry.algorithm, digits: entry.digits, period: entry.period };
+      }
       case "api_key": return common;
       case "login": return { ...common, username: text(entry.username, 512),
         ...(entry.browser_origin === undefined ? {} : { browser_origin: browserOrigin(entry.browser_origin) }) };
@@ -41,7 +47,7 @@ export function projectVaultEntries(value) {
 }
 
 function vaultKind(value) {
-  if (value !== "login" && value !== "api_key" && value !== "card" && value !== "address" && value !== "phone") {
+  if (value !== "login" && value !== "api_key" && value !== "card" && value !== "address" && value !== "phone" && value !== "totp") {
     throw new TypeError("invalid Vault metadata kind");
   }
   return value;

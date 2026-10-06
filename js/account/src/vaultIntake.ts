@@ -40,7 +40,7 @@ export function decodeVaultIntake(tool: ToolActivity): VaultIntake | undefined {
   if (!value || typeof value !== "object" || Array.isArray(value)) return;
   const record = value as Record<string, unknown>;
   if (record.type !== "vault_intake" || record.status !== "input_required"
-    || !["login", "api_key", "card", "address", "phone"].includes(String(record.kind))
+    || !["login", "api_key", "card", "address", "phone", "totp"].includes(String(record.kind))
     || Object.keys(record).some(key => !["type", "status", "operation", "vault_id", "kind", "name", "origin", "challenge_id", "agent_id"].includes(key))
     || (record.name !== undefined && (typeof record.name !== "string" || !record.name.trim() || record.name.length > 120 || /[\u0000-\u001f\u007f]/.test(record.name)))) return;
   const operation = record.operation ?? "create";
@@ -53,7 +53,7 @@ export function decodeVaultIntake(tool: ToolActivity): VaultIntake | undefined {
       || typeof record.agent_id !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(record.agent_id)) return;
   } else if (record.challenge_id !== undefined || record.agent_id !== undefined) return;
   if (record.origin !== undefined) {
-    if (record.kind !== "login" || typeof record.origin !== "string" || record.origin.length > 2048) return;
+    if (!["login", "totp"].includes(String(record.kind)) || typeof record.origin !== "string" || record.origin.length > 2048) return;
     try { const url = new URL(record.origin); if (url.protocol !== "https:" || url.origin !== record.origin) return; } catch { return; }
   }
   return { operation, ...(operation === "browser_verification" ? { challenge_id: record.challenge_id as string, agent_id: record.agent_id as string } : {}), ...(typeof record.vault_id === "string" ? { vault_id: record.vault_id } : {}), kind: record.kind as VaultEntryKind, ...(typeof record.name === "string" ? { name: record.name } : {}), ...(typeof record.origin === "string" ? { origin: record.origin } : {}) };
@@ -62,15 +62,15 @@ export function decodeVaultIntake(tool: ToolActivity): VaultIntake | undefined {
 /** Never forward arbitrary Vault response properties into the model transcript. */
 export function vaultIntakeReceipt(value: unknown, intake: VaultIntake): string {
   const entry = decodeVaultEntries([value])[0]!;
-  const origin = (value as Record<string, unknown>).browser_origin;
+  const origin = (value as Record<string, unknown>)[entry.kind === "totp" ? "origin" : "browser_origin"];
   if (entry.kind !== intake.kind || (intake.vault_id !== undefined && entry.id !== intake.vault_id)
     || (intake.origin !== undefined && origin !== intake.origin)) throw new Error("Invalid Vault receipt");
   if (origin !== undefined) {
-    if (entry.kind !== "login" || typeof origin !== "string") throw new Error("Invalid Vault receipt");
+    if (!["login", "totp"].includes(entry.kind) || typeof origin !== "string") throw new Error("Invalid Vault receipt");
     const url = new URL(origin);
     if (url.protocol !== "https:" || url.origin !== origin) throw new Error("Invalid Vault receipt");
   }
-  return JSON.stringify({ type: "vault_intake_receipt", operation: intake.operation, status: "saved", id: entry.id, kind: entry.kind, name: entry.name, ...(origin === undefined ? {} : { browser_origin: origin }) });
+  return JSON.stringify({ type: "vault_intake_receipt", operation: intake.operation, status: "saved", id: entry.id, kind: entry.kind, name: entry.name, ...(origin === undefined ? {} : { [entry.kind === "totp" ? "origin" : "browser_origin"]: origin }) });
 }
 
 /** Direct, ephemeral browser submission; never use transcript transport for code values. */

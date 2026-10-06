@@ -16,6 +16,10 @@
     "./agent": {
       "types": "./agent/index.d.mts",
       "import": "./agent/index.mjs"
+    },
+    "./services": {
+      "types": "./services/index.d.mts",
+      "import": "./services/index.mjs"
     }
   },
   "files": [
@@ -23,7 +27,8 @@
     "cloud",
     "index.d.mts",
     "index.mjs",
-    "README.md"
+    "README.md",
+    "services"
   ],
   "scripts": {
     "check:pack": "node scripts/check-pack.mjs",

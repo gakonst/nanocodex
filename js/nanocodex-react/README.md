@@ -154,3 +154,77 @@ preparation lifecycle.
 ```ts
 const config = createConfig({ agent: { /* tools and policy */ } });
 ```
+
+### Standalone Vault and phone services
+
+`nanocodex-react/services` needs a TanStack `QueryClientProvider` and a
+`ServicesProvider`. It does not need an agent provider. Create the client from a
+scoped Connect connection in browser apps; keep direct account keys server-side.
+
+```jsx
+import { useState } from "react";
+import { createServicesClient, createHostedRequest } from "nanocodex/services";
+import { ServicesProvider, HostedServiceButton, useVault } from "nanocodex-react/services";
+
+// connect and connection come from the user's service-only Connect approval.
+const services = createServicesClient({ connect, grantId: connection.grant.id });
+
+function VaultPanel() {
+  const vault = useVault();
+  const [request, setRequest] = useState();
+  return <>
+    <button onClick={() => setRequest(createHostedRequest({ appOrigin: location.origin }))}>
+      Add authenticator
+    </button>
+    {request && <HostedServiceButton request={request} onComplete={() => {
+      setRequest(undefined);
+      vault.refetch();
+    }} />}
+    {vault.data?.vault.map(item => <p key={item.id}>{item.name}</p>)}
+  </>;
+}
+
+// Place this inside your QueryClientProvider.
+<ServicesProvider client={services}><VaultPanel /></ServicesProvider>
+```
+
+Enrollment creates metadata in the account Vault. A Connect grant with a static
+Vault ID selection needs a new exact-ID approval to access the new item.
+
+`usePhoneNumbers`, `usePhoneMessages(numberId, { cursor, limit })`, and
+`usePhoneRequest(operationId)` read the approved service resources. A missing ID
+disables the corresponding query. Query caches are isolated by service client.
+`useProvisionPhone`, `useReleasePhone`, and `useVaultRequest` return TanStack
+mutations with retries disabled even when the enclosing QueryClient enables
+them. Phone writes require a caller-retained `operation_id` UUID.
+
+To review a phone request, pass
+`createHostedRequest({ service: "phone", operationId: result.request.approval_request_id ?? result.request.operation_id, appOrigin: location.origin })`
+to `HostedServiceButton`. Purchases and releases are approved on the account
+origin. A terminal callback returns only its operation ID and status; use
+`usePhoneRequest` with the original caller UUID to read the server receipt. An `outcome_unknown`
+operation stays available for reconciliation and is not reported as complete.
+TOTP callbacks contain Vault metadata only. The popup checks the exact origin, source window, and unique state. Secret entry
+and phone approvals require a top-level account window; embedded frames cannot
+perform them. The hosted page asks for consent before sharing completion metadata.
+
+For an existing item, `HostedServiceButton` also works before any provider or
+grant exists:
+
+```jsx
+const selection = createHostedRequest({
+  service: "vault", action: "select", appOrigin: location.origin,
+});
+<HostedServiceButton request={selection} onComplete={selected => {
+  if (selected.service === "vault" && selected.action === "select") {
+    // Request a separate Connect approval for selected.vault_id and exact origins.
+    setSelectedItem(selected);
+  }
+}}>Choose an existing Vault item</HostedServiceButton>
+```
+
+Create a fresh request for each selection flow. The account picker shows the
+recipient origin and shares only the chosen item's opaque ID, kind, and name
+after an explicit click. Selection grants no access. Replacing the request or
+unmounting the button cancels its wait and closes its popup. Closing the popup
+shows an error; it does not cancel an already-submitted phone operation.

@@ -1,4 +1,6 @@
+import { completeVaultEnrollment, completeVaultSelection, enrollmentTarget, vaultEnrollmentKind } from "./serviceEnrollment";
 import "./DeviceConnect.css";
+import "./Vault.css";
 import "./VaultWorkspace.css";
 import { useLocation, useSearchParams } from "react-router";
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem } from "./DropdownMenu";
@@ -39,6 +41,7 @@ const sections: readonly Readonly<{
   title: string;
   addLabel: string;
 }>[] = [
+  { kind: "totp", title: "Authenticator accounts", addLabel: "Add authenticator" },
   { kind: "login", title: "Logins", addLabel: "Add login" },
   { kind: "api_key", title: "API keys", addLabel: "Add API key" },
   { kind: "card", title: "Cards", addLabel: "Add card" },
@@ -47,14 +50,15 @@ const sections: readonly Readonly<{
 ];
 
 const filters = [
-  ["all", "All"], ["login", "Logins"], ["api_key", "API keys"],
+  ["all", "All"], ["totp", "Authenticators"], ["login", "Logins"], ["api_key", "API keys"],
   ["card", "Cards"], ["address", "Addresses"], ["phone", "Phones"], ["ssh", "SSH"],
 ] as const;
 type VaultFilter = typeof filters[number][0];
-const kindIcons = { login: LockKeyhole, api_key: KeyRound, card: CreditCard, address: MapPin, phone: Phone };
+const kindIcons = { totp: KeyRound, login: LockKeyhole, api_key: KeyRound, card: CreditCard, address: MapPin, phone: Phone };
 
 export function Vault() {
   const session = useAccountSession();
+  if (window.top !== window) return <p>Open Vault in a secure window.</p>;
   const accountId = session.account?.persistent ? session.account.id : undefined;
   if (session.status === "checking") return <div className="vault-workspace">
     <header className="vault-workspace-heading"><h1 tabIndex={-1}>Vault</h1></header>
@@ -80,6 +84,13 @@ function VaultWorkspace({ accountId }: { accountId: string }) {
   const session = useAccountSession();
   const [searchParams, setSearchParams] = useSearchParams();
   const location = useLocation();
+  const service = searchParams.get("service");
+  const enrollmentKind = vaultEnrollmentKind();
+  const selecting = service === "select";
+  const recipient = enrollmentTarget();
+  const [selectedId, setSelectedId] = useState("");
+  const [savedNotice, setSavedNotice] = useState<string>();
+  const [uncertain, setUncertain] = useState(false);
   const requestedKind = searchParams.get("add");
   const adding = sections.find((section) => section.kind === requestedKind)?.kind ?? null;
   const [filter, setFilter] = useState<VaultFilter>("all");
@@ -126,7 +137,7 @@ function VaultWorkspace({ accountId }: { accountId: string }) {
   };
 
   const mutate = async (path: string, init: RequestInit, label: string, saved = false) => {
-    if (pending.current) return;
+    if (pending.current || uncertain) return;
     const controller = new AbortController();
     pending.current = controller;
     const active = () => pending.current === controller && !controller.signal.aborted;
@@ -141,15 +152,28 @@ function VaultWorkspace({ accountId }: { accountId: string }) {
         if (active()) setFailure("Your session changed. Sign in and try again.");
         return;
       }
-      if (!response.ok) throw await responseFailure(response, "Couldn’t save the change.");
-      await response.body?.cancel();
+      if (!response.ok) {
+        if ([400,403,422].includes(response.status)) { await response.body?.cancel(); setFailure("Couldn’t save the item. Check the fields and your access."); return; }
+        throw await responseFailure(response, "Couldn’t save the change.");
+      }
+      if (saved) {
+        const wire: unknown = await response.json();
+        if (!active()) return;
+        const entry = decodeVaultEntries([wire])[0];
+        if (!entry) throw new Error("Invalid Vault receipt");
+        if (enrollmentKind === entry.kind) completeVaultEnrollment(entry, isRecord(wire) && typeof wire.origin === "string" ? wire.origin : isRecord(wire) && typeof wire.browser_origin === "string" ? wire.browser_origin : undefined);
+        setSavedNotice(entry.kind === "totp" ? "Authenticator saved to Vault." : "Item saved to Vault.");
+      } else await response.body?.cancel();
       if (!active()) return;
       // Clear secret inputs immediately after the confirmed save.
       if (saved) closeForm();
       setDeleting(null);
       await load();
     } catch (cause) {
-      if (active()) setFailure(clientFailureMessage(cause, "Couldn’t save the change. Check your vault before trying again."));
+      if (active()) {
+        if (saved) { setUncertain(true); closeForm(); }
+        setFailure("The save could not be confirmed. Check your Vault before adding this item again.");
+      }
     } finally {
       if (active()) {
         pending.current = null;
@@ -167,13 +191,33 @@ function VaultWorkspace({ accountId }: { accountId: string }) {
     .filter((entry) => (entry.reference + " " + entry.username + " " + entry.hostname).toLowerCase().includes(search.toLowerCase().trim()));
   const count = entries.length + ssh.length;
 
+  if (selecting) return <div className="vault-page"><div className="vault-content vault-picker">
+    <header className="vault-heading"><div><h1>Choose a Vault item</h1></div></header>
+    {recipient ? <>
+      <p>Share the selected item’s name, kind, and Vault ID with <strong>{recipient.origin}</strong>.</p>
+      <p>This selection does not grant access to use the item. You review that access separately in Connect.</p>
+      {failure ? <p role="alert">{failure}</p> : null}
+      {!status ? <p role="status">Loading your Vault…</p> : status.entries.length ? <>
+        <ul className="vault-picker-list">{status.entries.map(entry => <li key={entry.id}>
+          <label><input type="radio" name="vault-selection" value={entry.id} checked={selectedId === entry.id} onChange={() => {setSelectedId(entry.id); setSavedNotice(undefined);}} /><span><strong>{entry.name}</strong><small>{labelForKind(entry.kind)}</small></span></label>
+        </li>)}</ul>
+        <button className="vault-save" type="button" disabled={!status.entries.some(entry => entry.id === selectedId)} onClick={() => {
+          const entry = status.entries.find(item => item.id === selectedId);
+          if (entry && completeVaultSelection(entry)) setSavedNotice(`Shared ${entry.name} with ${recipient.origin}.`);
+          else setFailure("The requesting window is unavailable. Reopen the picker from your app.");
+        }}>Share selected item with {recipient.origin}</button>
+      </> : <p>No saved Vault items. Add an item in your Vault, then reopen this picker.</p>}
+      {savedNotice ? <p role="status">{savedNotice}</p> : null}
+    </> : <p role="alert">This picker needs a valid requesting origin and state. Reopen it from your app.</p>}
+  </div></div>;
+
   return (
     <div className="vault-workspace">
       <header className="vault-workspace-heading">
         <h1 tabIndex={-1}>Vault</h1>
         {!adding ? <DropdownMenu>
           <DropdownMenuTrigger asChild>
-            <button className="vault-primary-action" ref={addButtonRef} disabled={operation !== null} type="button">
+            <button className="vault-primary-action" ref={addButtonRef} disabled={operation !== null || uncertain} type="button">
               <Plus aria-hidden="true" /> Add item <ChevronDown aria-hidden="true" />
             </button>
           </DropdownMenuTrigger>
@@ -192,11 +236,12 @@ function VaultWorkspace({ accountId }: { accountId: string }) {
           </DropdownMenuContent>
         </DropdownMenu> : null}
       </header>
+      {savedNotice ? <p role="status">{savedNotice}</p> : null}
       {adding ? <>
         <button className="vault-back" disabled={operation !== null} onClick={closeForm} type="button"><ArrowLeft aria-hidden="true" /> All items</button>
         <VaultEntryDialog key={location.key + adding} busy={operation !== null} kind={adding}
           onClose={closeForm} onSave={save} returnFocusRef={returnFocusRef}
-          error={session.error ?? operationFailure} presentation="page" description="" />
+          completionOrigin={enrollmentKind === adding ? recipient?.origin : undefined} error={session.error ?? operationFailure} presentation="page" description="" />
       </> : <>
         <div className="vault-workspace-tools">
           <label className="vault-search"><Search aria-hidden="true" /><input aria-label="Search vault" placeholder="Search vault" value={search} onChange={(event) => setSearch(event.target.value)} type="search" /></label>
@@ -252,6 +297,7 @@ export function VaultEntryDialog({
   description = "Values are encrypted in your vault.",
   error,
   children,
+  completionOrigin,
   presentation = "dialog",
 }: Readonly<{
   busy: boolean;
@@ -265,9 +311,12 @@ export function VaultEntryDialog({
   description?: string;
   error?: string | null;
   children?: ReactNode;
+  completionOrigin?: string;
   presentation?: "dialog" | "page";
 }>) {
   const titleId = useId();
+  const [shareCompletion, setShareCompletion] = useState(false);
+  const [validationError, setValidationError] = useState<string>();
   const backdropRef = useRef<HTMLDivElement>(null);
   const dialogRef = useRef<HTMLElement>(null);
   const firstInputRef = useRef<HTMLInputElement>(null);
@@ -296,6 +345,7 @@ export function VaultEntryDialog({
   const submitting = useRef(false);
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    if (completionOrigin && !shareCompletion) return;
     if (busy || submitting.current) return;
     const data = new FormData(event.currentTarget);
     const values = Object.fromEntries(
@@ -303,8 +353,20 @@ export function VaultEntryDialog({
         ? [[key, key === "password" || key === "api_key" ? value : value.trim()]]
         : []),
     );
+    if (kind === "totp") {
+      try {
+        const url = new URL(values.origin ?? "");
+        if (url.protocol !== "https:" || url.origin !== values.origin || url.username || url.password) throw new Error();
+      } catch { setValidationError("Enter an exact HTTPS origin, such as https://example.com, without a path or trailing slash."); return; }
+    }
+    setValidationError(undefined);
+    // Clear private inputs before handing off the ephemeral same-origin request.
+    for (const input of event.currentTarget.querySelectorAll<HTMLInputElement>('input[type="password"]')) input.value = "";
     submitting.current = true;
-    void onSave(kind, values).finally(() => { submitting.current = false; });
+    void onSave(kind, values).finally(() => {
+      submitting.current = false;
+      for (const key of Object.keys(values)) delete values[key];
+    });
   };
 
   return (
@@ -320,16 +382,18 @@ export function VaultEntryDialog({
           {presentation === "dialog" ? <button aria-label="Close" disabled={busy} onClick={onClose} type="button"><X aria-hidden="true" /></button> : null}
         </header>
         {children}
-        {error ? <p role="alert">{error}</p> : null}
+        {error || validationError ? <p role="alert">{error ?? validationError}</p> : null}
         <form autoComplete="off" onSubmit={submit} ref={formRef}>
           <fieldset className="vault-dialog-fields" disabled={busy}>
             <VaultField autoComplete="off" defaultValue={name} inputRef={firstInputRef} label="Name" maxLength={120} name="name" placeholder={namePlaceholder(kind)} required />
             {kind === "login" ? <VaultField autoComplete="off" defaultValue={origin} label="Website (optional)" maxLength={2048} name="browser_origin" placeholder="https://example.com" type="url" /> : null}
+            {kind === "totp" ? <VaultField autoComplete="off" defaultValue={origin} label="Website origin" maxLength={2048} name="origin" placeholder="https://example.com" type="url" required /> : null}
             {fieldsForKind(kind)}
           </fieldset>
+          {completionOrigin ? <label className="vault-share-consent"><input type="checkbox" checked={shareCompletion} onChange={event => setShareCompletion(event.target.checked)} />Share completion with {completionOrigin}. This includes the saved name, kind, and Vault ID.</label> : null}
           <footer>
             <button disabled={busy} onClick={onClose} type="button">Cancel</button>
-            <button className="vault-save" disabled={busy} type="submit">{busy ? "Saving…" : "Save"}</button>
+            <button className="vault-save" disabled={busy || Boolean(completionOrigin && !shareCompletion)} type="submit">{busy ? "Saving…" : "Save"}</button>
           </footer>
         </form>
       </section>
@@ -338,6 +402,7 @@ export function VaultEntryDialog({
 }
 
 function fieldsForKind(kind: VaultEntryKind): ReactNode {
+  if (kind === "totp") return <TotpFields />;
   if (kind === "api_key") return <VaultField autoCapitalize="none" autoComplete="off" label="API key" maxLength={8192} name="api_key" required spellCheck={false} type="password" secure />;
   // This edits a third-party credential, rather than signing in to this site.
   // Explicitly disable autocomplete on both fields: Chromium's address-on-typing
@@ -375,6 +440,19 @@ function fieldsForKind(kind: VaultEntryKind): ReactNode {
   return <VaultField autoComplete="tel" inputMode="tel" label="Phone number" maxLength={64} name="phone_number" required />;
 }
 
+function TotpFields() {
+  const [mode, setMode] = useState("uri");
+  return <>
+    <label className="vault-field"><span>Enrollment format</span><select value={mode} onChange={event => setMode(event.target.value)}><option value="uri">Authenticator URI</option><option value="seed">Setup key</option></select></label>
+    {mode === "uri" ? <VaultField key="uri" label="Authenticator URI" name="otpauth_uri" type="password" autoComplete="off" autoCapitalize="none" spellCheck={false} maxLength={4096} required secure /> : <>
+      <VaultField key="seed" label="Setup key" name="seed" type="password" autoComplete="off" autoCapitalize="none" spellCheck={false} maxLength={208} required secure />
+      <VaultField label="Issuer" name="issuer" maxLength={256} required />
+      <VaultField label="Account label" name="account" maxLength={256} required />
+    </>}
+    <p>Paste your otpauth URI or setup key here. It goes directly to your encrypted Vault. Only account metadata is returned.</p>
+  </>;
+}
+
 function VaultField({ inputRef, label, secure = false, ...input }: Readonly<{
   inputRef?: RefObject<HTMLInputElement | null>;
   label: string;
@@ -390,7 +468,7 @@ function VaultField({ inputRef, label, secure = false, ...input }: Readonly<{
 }
 
 function labelForKind(kind: VaultEntryKind): string {
-  return kind === "api_key" ? "API key" : kind === "login" ? "Login" : kind === "card" ? "Card" : kind === "address" ? "Address" : "Phone";
+  return kind === "totp" ? "Authenticator" : kind === "api_key" ? "API key" : kind === "login" ? "Login" : kind === "card" ? "Card" : kind === "address" ? "Address" : "Phone";
 }
 
 function namePlaceholder(kind: VaultEntryKind): string {
@@ -404,8 +482,9 @@ async function vaultRequest(path: string, init: RequestInit = {}): Promise<Respo
   return fetch(path, {
     ...init,
     cache: "no-store",
-    credentials: "same-origin",
     redirect: "error",
+    referrerPolicy: "no-referrer",
+    credentials: "same-origin",
     signal: init.signal ? AbortSignal.any([init.signal, AbortSignal.timeout(30_000)]) : AbortSignal.timeout(30_000),
     headers: {
       accept: "application/json",

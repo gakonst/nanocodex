@@ -111,3 +111,57 @@ Use the root [README.md](../../README.md) for checkout setup and the root
 [AGENTS.md](../../AGENTS.md) for deployment order and verification guidance. This package exposes
 the supporting `dev`, `build`, `test`, `typecheck`, `check:docs`, and `deploy`
 scripts, but the repository instructions own how they are run.
+
+## Standalone services
+
+`/vault?service=totp` opens authenticator enrollment without an agent conversation.
+The form accepts an authenticator URI or a Base32 setup key with issuer and account
+labels. Both require an exact HTTPS website origin (for example,
+`https://login.example.com`, without a path or trailing slash). The setup material
+is sent directly to the authenticated Vault endpoint and cleared from the form.
+Saved items expose metadata; the broker supplies verification codes only in an
+authorized request to the saved origin.
+
+`/services/phone` lists dedicated numbers and incoming SMS. Search currently offers
+US local numbers. Selecting a number requests a quote; approval requires a separate
+checkbox and button after reviewing the recurring monthly and incoming SMS prices.
+Release likewise requires a separate confirmation that linked accounts may lose
+verification access. Browser operation IDs survive reloads, and an uncertain result
+only exposes a status check for that same operation. Carrier configuration and
+provisioning limits must be enabled by the operator. Website acceptance of these
+numbers for two-factor authentication varies.
+
+Hosted enrollment accepts `enrollment_origin` and a 16–128 character URL-safe
+`state`. Hosted forms open in a popup; cross-origin framing remains blocked by
+CSP and X-Frame-Options. `/vault?service=totp` requires an unchecked, explicit
+recipient checkbox before saving and sharing metadata. A general `/vault` URL
+never sends enrollment callbacks, even if it carries callback parameters.
+A successful explicitly shared authenticator save posts a `nanocodex:service-enrollment`
+message to that exact origin with `service: "vault"`, `state`, `vault_id`, `kind`,
+`name`, and `origin`.
+
+`/vault?service=select` lets a user choose an existing item. It shows the exact
+recipient origin, requires a radio selection and a separate “Share selected item”
+action, and returns the same envelope with `action: "select"` and only `vault_id`, `kind`,
+and `name` as item metadata.
+It does not create an item or grant access. Apps use the selected ID to request
+scoped Connect consent separately. Missing or invalid callback parameters do not
+expose a selectable list.
+
+Phone approval uses the same parameters plus `operation_id`;
+for Connect requests, set the hosted `operation_id` to the returned
+`approval_request_id`, which is distinct from the app’s original operation ID.
+Explicitly shared terminal results post `service: "phone"`, `state`, `operation_id`, and `status`.
+Requesting apps must validate the message source, origin, and state. Setup keys,
+verification codes, and inbox contents are never included in these callbacks.
+
+Run `pnpm --filter nanocodex-web test:services` after building the workspace UI
+packages and installing Playwright Chromium. This journey renders the production
+React forms in Chromium and sends their HTTP requests through the real managed
+authentication routes, egress broker, and Durable Objects in workerd. Only sign-in
+enrollment and the external carrier are synthetic. It covers seed/URI intake,
+invalid origins, recipient consent, general-Vault callback suppression, existing-item
+selection without grants, cross-origin popup and frame behavior, number search, priced approval, denial,
+incoming SMS, release confirmation, and reload/status recovery after an uncertain
+purchase. Screenshots and a redacted HTTP transcript are saved in ignored
+`output/services-ui/`; no live number is purchased.

@@ -8,34 +8,42 @@ use zeroize::Zeroizing;
 
 #[derive(Deserialize, Serialize)]
 struct Overview {
-    vault: Vec<Item>,
-    ssh: Vec<VaultSshTarget>,
+    pub vault: Vec<Item>,
+    pub ssh: Vec<VaultSshTarget>,
 }
 #[derive(Deserialize, Serialize)]
-struct Item {
-    id: String,
-    kind: String,
-    name: String,
+pub struct Item {
+    pub issuer: Option<String>,
+    pub account: Option<String>,
+    pub origin: Option<String>,
+    pub algorithm: Option<String>,
+    pub digits: Option<u8>,
+    pub period: Option<u16>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    username: Option<String>,
+    pub created_at: Option<u64>,
+    pub id: String,
+    pub kind: String,
+    pub name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    browser_origin: Option<String>,
+    pub username: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    last4: Option<String>,
+    pub browser_origin: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    phone_number: Option<String>,
+    pub last4: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    address_line_1: Option<String>,
+    pub phone_number: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    address_line_2: Option<String>,
+    pub address_line_1: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    city: Option<String>,
+    pub address_line_2: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    state: Option<String>,
+    pub city: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    zip: Option<String>,
+    pub state: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    country: Option<String>,
+    pub zip: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub country: Option<String>,
 }
 /// Provider receipt containing only safe references and observed balance metadata.
 #[derive(Debug, Deserialize, Serialize)]
@@ -285,7 +293,7 @@ fn reference_check(s: &str) -> Result<(), ManagedError> {
     Ok(())
 }
 fn kind_check(s: &str) -> Result<(), ManagedError> {
-    if ["login", "api_key", "card", "address", "phone"].contains(&s) {
+    if ["login", "api_key", "card", "address", "phone", "totp"].contains(&s) {
         Ok(())
     } else {
         Err(invalid())

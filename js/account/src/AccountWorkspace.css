@@ -61,7 +61,7 @@
   .account-hub-layout { display: block; width: 100%; margin: 4px auto 48px; }
   .account-hub-sidebar { position: static; padding: 0 20px; }
   .account-nav-label, .account-hub-identity { display: none; }
-  .account-hub-sidebar nav { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 4px; border-bottom: 1px solid var(--workspace-line); padding-bottom: 14px; }
+  .account-hub-sidebar nav { display: grid; grid-template-columns: repeat(5, minmax(70px, 1fr)); overflow-x: auto; gap: 4px; border-bottom: 1px solid var(--workspace-line); padding-bottom: 14px; }
   .account-hub-sidebar nav a { flex-direction: column; gap: 6px; font-size: 11px; padding: 10px 4px; text-align: center; }
   .account-hub-sidebar nav svg { width: 19px; height: 19px; }
   .account-hub-body { padding: 28px 20px; }

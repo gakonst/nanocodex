@@ -3,6 +3,8 @@ import { parseSshCredentialImport, sshCredentialImportDigest, sshImportFromResou
 import type { SshCredentialImport } from "./sshCredentialImport.mts";
 import { machOnramp, type MachOnrampEnv } from "./machOnramp";
 import { Handler, Kv } from "accounts/server";
+import { serviceRoute, serviceVaultRequest, scopedVaultMetadata } from "./serviceRoutes";
+import { approvedServices, isServiceCapabilities, type ServiceCapabilities } from "./servicePolicy.mts";
 import { oauthMcp, activeMcpGrant, type McpGrant, type McpOAuthHooks, oauthJson } from "./oauthMcp.mts";
 import { mcpServer } from "./mcpServer.mts";
 import { McpEventService, McpEventFailure, mcpEventsAllowed, type McpEventStorage } from "./mcpEvents.mts";
@@ -431,6 +433,7 @@ type GrantRecord = Readonly<{
   status: "active" | "revoked";
   expiresAt: number;
   capabilities: readonly string[];
+  services?: ServiceCapabilities;
   conversationId?: string;
   appToolCatalogDigest?: `0x${string}`;
   mcpConnections?: readonly Readonly<{ id: string; name: string }>[];
@@ -1682,7 +1685,7 @@ async function createHostedAuthorization(
   store: Kv.Kv,
   trustedBody?: Record<string, unknown>,
 ): Promise<Response> {
-  const body = trustedBody ?? await boundedJson(request, 16 * 1024, "hosted authorization");
+  const body = trustedBody ?? await boundedJson(request, 32 * 1024, "hosted authorization");
   const encodedResources = stringResources(body.resources);
   let hostExchange: ReturnType<typeof hostPrincipalExchangeFromResources>;
   try {
@@ -2007,7 +2010,7 @@ function isHostedAuthorizationIdentity(value: unknown): value is {
 
 function stringResources(value: unknown): string[] {
   if (!Array.isArray(value) || value.length === 0 || value.length > 64
-    || value.some((resource) => typeof resource !== "string" || resource.length === 0 || resource.length > 512)
+    || value.some((resource) => typeof resource !== "string" || resource.length === 0 || resource.length > (resource.startsWith("urn:nanocodex:services:") ? 12288 : 512))
     || new Set(value).size !== value.length) {
     throw new ApiFailure(400, "invalid_resources", "Hosted authorization resources are invalid.");
   }
@@ -2108,7 +2111,7 @@ function isPendingMcpAccountLink(value: unknown): value is PendingMcpAccountLink
     && isPublicAppOrigin(value.appOrigin)
     && Array.isArray(value.resources)
     && value.resources.length <= 64
-    && value.resources.every((resource) => typeof resource === "string" && resource.length <= 512);
+    && value.resources.every((resource) => typeof resource === "string" && resource.length <= (resource.startsWith("urn:nanocodex:services:") ? 12288 : 512));
 }
 
 async function brokerIdentity(
@@ -2172,8 +2175,8 @@ async function createConnection(
   if (app.appId !== appId) throw new ApiFailure(403, "app_identity_mismatch", "The approved app does not match this request.");
   const approvalId = requiredString(body.approval_id, "approval_id");
   const permission = requiredString(body.permission, "permission");
-  if (permission !== "agent.run") {
-    throw new ApiFailure(403, "permission_not_supported", "This app may request only the agent.run permission.");
+  if (permission !== "agent.run" && permission !== "services.use") {
+    throw new ApiFailure(403, "permission_not_supported", "Request agent.run or services.use.");
   }
   const requested = requestedConnectors(body.requested_connectors);
   const requestedMcpIds = requestedMcpConnections(body.requested_mcp_connections);
@@ -2223,7 +2226,12 @@ async function createConnection(
       || approvedAppToolCatalogDigest === undefined)) {
     throw new ApiFailure(403, "chrome_grant_mismatch", "The Chrome extension grant must be ChatGPT-only hosted authorization.");
   }
-  const agentCapabilities = approvedAgentCapabilities(approval.resources);
+  const services = signedServices(approval.resources);
+  const agentEnabled = approval.resources.includes("urn:nanocodex:agent:run");
+  if (permission !== (agentEnabled ? "agent.run" : "services.use")) {
+    throw new ApiFailure(403, "permission_not_approved", "The permission must match the signed authorization.");
+  }
+  const agentCapabilities = agentEnabled ? approvedAgentCapabilities(approval.resources) : [];
   const credentialImport = await approvedChatGptCredentialImport(
     body.chatgpt_credential_import,
     approval,
@@ -2309,7 +2317,7 @@ async function createConnection(
   const appScope = await scopedAppId(app);
   const grantId = await digestHex(`grant:${randomSubject()}`);
   const grantCapabilities = [
-    "nanocodex.agent",
+    ...(agentEnabled ? ["nanocodex.agent"] : []),
     ...approvedHostedCapabilities(approval.resources),
     ...agentCapabilities,
     ...connectors,
@@ -2338,7 +2346,7 @@ async function createConnection(
     );
   }
   const [durableAgentId, egressSubject] = await Promise.all([
-    isConnectAgentId(approval.durableAgentId)
+    !agentEnabled ? Promise.resolve("") : isConnectAgentId(approval.durableAgentId)
       ? Promise.resolve(approval.durableAgentId)
       : connectManagedAgent(env, store, appScope, grantAssertion, conversationId),
     connectEgressSubject(env, store, identity.userId, appScope),
@@ -2356,6 +2364,7 @@ async function createConnection(
     status: "active",
     expiresAt,
     capabilities: grantCapabilities,
+    ...(services === undefined ? {} : { services }),
     ...(connectorConnections === undefined ? {} : { connectorConnections }),
     ...(legacyConnectorCapabilities.length === 0 ? {} : { legacyConnectorCapabilities }),
     ...(conversationId ? { conversationId } : {}),
@@ -2823,8 +2832,21 @@ async function handleGrantRoute(
   const grantId = grantRoute[1] as `0x${string}`;
   const action = grantRoute[2];
   let { grant, token } = await authenticatedGrant(request, env, grantId);
+  if (grant.permission === "services.use" && (action === "threads" || action?.startsWith("threads/"))) {
+    throw new ApiFailure(403, "agent_not_granted", "This authorization grants standalone services only.");
+  }
   if (action === "threads" || action?.startsWith("threads/")) {
     return handleAppThreads(request, env, grant, token, action, url);
+  }
+  if (action === "services" || action?.startsWith("services/")) {
+    requireGrantAppOrigin(request, grant);
+    if (grant.status !== "active" || grant.expiresAt <= Math.floor(Date.now() / 1000)) {
+      throw new ApiFailure(401, "grant_inactive", "This connection has expired or was revoked.");
+    }
+    return serviceRoute(request, env.EGRESS, grant, action.slice("services/".length), store);
+  }
+  if (grant.permission === "services.use" && (action?.startsWith("agents/") || action === "model/ticket")) {
+    throw new ApiFailure(403, "agent_not_granted", "This authorization grants standalone services only.");
   }
   const selectedAgent = action?.match(/^agents\/([^/]+)/)?.[1];
   if (selectedAgent && grant.capabilities.includes(APP_THREADS_CAPABILITY)) {
@@ -3714,6 +3736,9 @@ async function handleAgentToolRoute(
       ...(value.body === undefined ? {} : { body: JSON.stringify(value.body) }),
     }, target, request.signal);
   }
+  if (grant.permission === "services.use") {
+    throw new ApiFailure(403, "agent_not_granted", "Use the scoped standalone service routes.");
+  }
   if (isAccountInfo) return Response.json(await connectAccountInfo(env, store, grant));
   if (isEgress) return grantBrowserEgress(request, env, grant);
   if (isWeb) return grantWebSearch(request, env, grant);
@@ -3721,6 +3746,9 @@ async function handleAgentToolRoute(
 }
 
 async function connectAccountInfo(env: Env, store: Kv.Kv, current: GrantRecord) {
+  if (current.status !== "active" || current.expiresAt <= Math.floor(Date.now() / 1000)) {
+    throw new ApiFailure(401, "grant_inactive", "This connection has expired or was revoked.");
+  }
   if (current.hostPrincipal) {
     const broker = await brokerAccountSnapshot(env, current.brokerUserId);
     return {
@@ -3728,7 +3756,7 @@ async function connectAccountInfo(env: Env, store: Kv.Kv, current: GrantRecord) 
       identity: { hostPrincipal: { kind: "host", id: current.hostPrincipal.id } },
       stablecoins: [],
       authorizations: [grantAuthorization(current)],
-      vault: broker.vault,
+      vault: scopedVaultMetadata(broker.vault, current),
     };
   }
   if (!current.accountAddress) {
@@ -3748,7 +3776,7 @@ async function connectAccountInfo(env: Env, store: Kv.Kv, current: GrantRecord) 
       { token: USDC_E, symbol: "USDC.e", balance: settlement.toString(), decimals: 6 },
     ],
     authorizations,
-    vault: broker.vault,
+    vault: scopedVaultMetadata(broker.vault, current),
   };
 }
 
@@ -3917,16 +3945,7 @@ async function grantBrowserEgress(request: Request, env: Env, grant: GrantRecord
     if (!EGRESS_SUBJECT.test(grant.egressSubject)) {
       throw new ApiFailure(403, "invalid_grant_binding", "The grant's broker binding is invalid.");
     }
-    return env.EGRESS.fetch(new Request("https://vault-egress.internal/v1/request", {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        "x-nanocodex-subject": grant.egressSubject,
-      },
-      body: JSON.stringify(vaultEnvelope),
-      redirect: "manual",
-      signal: request.signal,
-    }));
+    return serviceVaultRequest(request, env.EGRESS, grant, vaultEnvelope);
   }
   if (connector) {
     return grantConnectorRequest(env, grant, connector, {
@@ -4781,6 +4800,7 @@ function isGrantRecord(value: unknown): value is GrantRecord {
     && Number.isSafeInteger(value.expiresAt)
     && Array.isArray(value.capabilities)
     && value.capabilities.every((capability) => typeof capability === "string")
+    && (value.services === undefined || isServiceCapabilities(value.services))
     && (value.connectorConnections === undefined
       || isConnectorConnectionSnapshot(value.connectorConnections))
     && (value.legacyConnectorCapabilities === undefined
@@ -6367,6 +6387,11 @@ function approvalOwnerMatches(
     && approval.accountAddress?.toLowerCase() === owner.accountAddress.toLowerCase();
 }
 
+function signedServices(resources: readonly string[]): ServiceCapabilities | undefined {
+  try { return approvedServices(resources); }
+  catch { throw new ApiFailure(403, "invalid_service_authorization", "The signed service scope is invalid."); }
+}
+
 function requireApprovedCapabilities(
   resources: readonly string[],
   appId: string,
@@ -6375,10 +6400,17 @@ function requireApprovedCapabilities(
   exact = false,
 ) {
   const approvedResources = new Set(resources);
+  const services = signedServices(resources);
+  const standalone = services !== undefined && !approvedResources.has("urn:nanocodex:agent:run");
+  if (standalone && (!approvedResources.has(HOSTED_AUTHORIZATION_RESOURCE)
+    || requested.includes("chatgpt") || requestedMcpIds.length > 0
+    || resources.some(r => r.startsWith("urn:nanocodex:agent:") || r.startsWith("urn:nanocodex:mpp:")))) {
+    throw new ApiFailure(403, "invalid_service_authorization", "Standalone services require hosted approval without agent or payment authority.");
+  }
   // Hosted account approvals never delegate a spending key. Apply that policy
   // to every hosted app, not just the built-in CLI and Chrome clients.
   const required = [
-    ...(approvedResources.has(HOSTED_AUTHORIZATION_RESOURCE)
+    ...(standalone ? [] : approvedResources.has(HOSTED_AUTHORIZATION_RESOURCE)
       || exact || appId === CHROME_EXTENSION_APP_ID || appId === CLI_APP_ID
       ? ["urn:nanocodex:agent:run"]
       : BASE_APPROVAL_RESOURCES),
@@ -6538,7 +6570,7 @@ function connectionWire(grant: GrantRecord, grantToken: string) {
     ...(grant.hostPrincipal ? {
       principal: { kind: "host" as const, id: grant.hostPrincipal.id },
     } : {}),
-    agent_id: grant.agentId,
+    ...(grant.agentId ? { agent_id: grant.agentId } : {}),
     grant: grantWire(grant),
     mcp_connections: grant.mcpConnections ?? [],
     authorization_mode: grant.accessKey ? "access_key" : "hosted",
@@ -6574,6 +6606,7 @@ function grantWire(grant: GrantRecord) {
     status: grant.status,
     expires_at: grant.expiresAt,
     capabilities: grant.capabilities,
+    ...(grant.services === undefined ? {} : { services: grant.services }),
     ...(grant.connectorConnections === undefined
       ? {}
       : { connector_connections: grant.connectorConnections }),

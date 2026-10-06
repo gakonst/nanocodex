@@ -13,11 +13,12 @@ import { readPlan, releaseFingerprints, buildSelected } from './release-plan.mjs
 import { resolveReleasedImages } from './released-images.mjs';
 import { configureReleasedAccount } from './released-account-image.mjs';
 
-const commands=Object.fromEntries([...phases.infrastructure,...phases.consumers,
+const commands=Object.fromEntries([...Object.values(phases).flat(),
   ['managed','js/managed',[process.execPath,'../../scripts/cloudflare/managed-crm.mjs','deploy','--config','wrangler.ci.jsonc','--containers-rollout','immediate']],
   ['account','js/account',['npx','wrangler','deploy','--config','dist/nanocodex/wrangler.ci.json']],
 ].map(([name,directory,command])=>[name,{directory,command}]));
-export const releasePhases=[['egress','x'],['media'],['managed'],['email','dialog','connect-api','astra','chief-of-staff','playground'],['account']];
+// Publish named managed entry points before the broker binds to them.
+export const releasePhases=[['x'],['media'],['managed'],['egress'],['email','dialog','connect-api','astra','chief-of-staff','playground'],['account']];
 
 export async function guardedCommand(command, {cwd=process.cwd(),directory='.',env=process.env,input,launch=spawn}={}) {
   const temporary=mkdtempSync(join(tmpdir(),'nanocodex-release-'));

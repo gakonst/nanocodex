@@ -6,7 +6,7 @@ const INTERNAL_ORIGIN = "https://nanocodex.internal";
 const EXCHANGE_TTL_DEFAULT = 120;
 const EXCHANGE_TTL_MIN = 30;
 const EXCHANGE_TTL_MAX = 300;
-const MAX_BODY_BYTES = 20 * 1_024;
+const MAX_BODY_BYTES = 32 * 1_024;
 const MAX_RESOURCES = 64;
 const MAX_RESOURCE_BYTES = 512;
 const APP_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
@@ -445,7 +445,7 @@ function hostResources(value: unknown): readonly string[] | undefined {
   const result: string[] = [];
   for (const item of value) {
     if (typeof item !== "string" || !item
-      || new TextEncoder().encode(item).byteLength > MAX_RESOURCE_BYTES
+      || new TextEncoder().encode(item).byteLength > (item.startsWith("urn:nanocodex:services:") ? 12_288 : MAX_RESOURCE_BYTES)
       || seen.has(item) || forbiddenAuthority(item)) return undefined;
     seen.add(item);
     result.push(item);

@@ -10,8 +10,8 @@ export function logout(client: Client): logout.ReturnType;
 
 export declare namespace links {
   type Options = Readonly<{
-    connect?: "claude" | "chatgpt" | "openai" | "mcp" | "github" | "google" | "slack" | "x" | "spotify" | "soundcloud" | "link" | "whatsapp" | undefined;
-    add?: "login" | "api_key" | "card" | "address" | "phone" | undefined;
+    connect?: "claude" | "chatgpt" | "openai" | "mcp" | "cloudflare" | "github" | "google" | "slack" | "x" | "spotify" | "soundcloud" | "link" | "whatsapp" | undefined;
+    add?: "login" | "api_key" | "card" | "address" | "phone" | "totp" | undefined;
   }>;
   type Result = Readonly<{ connections: string; vault: string; wallet: string; access: string }>;
   type ReturnType = Promise<Result>;

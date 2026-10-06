@@ -12,9 +12,19 @@ describe('secure Vault intake tool', () => {
     expect(() => denied.handler({ kind: 'login' }, context)).toThrow('denied');
   });
   it('supports each kind without accepting credential values', () => {
-    for (const kind of ['login', 'api_key', 'card', 'address', 'phone']) {
+    for (const kind of ['login', 'api_key', 'card', 'address', 'phone', 'totp']) {
       expect(run({ kind })).toEqual({ type: 'vault_intake', status: 'input_required', operation: 'create', kind });
       expect(() => run({ kind, password: 'secret' })).toThrow();
+    }
+  });
+  it('routes TOTP enrollment as a value-free private form request', async () => {
+    const router = new ToolRouter([toolMapSource('vault', { [tool.name]: tool })]);
+    const invoke = (value: unknown) => router.snapshot().invoke(tool.name, value, context);
+    expect(await invoke({ kind: 'totp', name: 'Example authenticator' })).toEqual({
+      type: 'vault_intake', status: 'input_required', operation: 'create', kind: 'totp', name: 'Example authenticator',
+    });
+    for (const key of ['seed', 'otpauth_uri', 'code']) {
+      await expect(invoke({ kind: 'totp', [key]: 'synthetic-private-material' })).rejects.toThrow();
     }
   });
   it('routes legacy website approval to a no-input receipt', async () => {

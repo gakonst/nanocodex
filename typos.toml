@@ -59,6 +59,8 @@ extend-ignore-re = ['\bwaymote-streamd\b', '\bgrantUniveralAccess\b', '\bitms-be
 mappin = "mappin"
 
 [default.extend-words]
+# Twilio uses PN as the exact phone-number SID prefix.
+PN = "PN"
 # Laso is the provider name used by the card integration.
 Laso = "Laso"
 laso = "laso"

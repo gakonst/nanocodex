@@ -400,7 +400,7 @@ function manualDialogClose(options) {
 }
 
 function refreshMppBalance(client, connection, publish) {
-  if (connection.mpp.balanceStatus === "ready") return;
+  if (!connection.mpp || connection.mpp.balanceStatus === "ready") return;
   void client.mpp.getBalance({ grantId: connection.grant.id }).then(publish).catch((error) => {
     console.error("Nanocodex Connect balance refresh failed", error);
   });

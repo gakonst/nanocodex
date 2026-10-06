@@ -17,6 +17,9 @@ export async function create(client, options) {
   if (!connection || typeof connection !== "object") {
     throw new TypeError("agent.create requires an active connection");
   }
+  if (connection.grant?.permission === "services.use" || !connection.agentId) {
+    throw new Error("This Connect grant has no agent authority.");
+  }
   if (connection.grant?.status !== "active") {
     throw new Error("The Connect authorization is not active.");
   }

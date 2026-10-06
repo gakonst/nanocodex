@@ -211,6 +211,7 @@ pub struct VaultRequest {
     #[serde(default)]
     pub headers: BTreeMap<String, String>,
     /// Public body template, never a resolved credential.
+    /// `{{NANOCODEX_VAULT_TOTP}}` is resolved only by the broker at the item’s saved origin.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub body: Option<String>,
     /// Escaping applied to substituted body values by the broker.
@@ -357,6 +358,14 @@ impl ManagedClient {
         &self,
         request: &VaultRequest,
     ) -> Result<VaultRequestReceipt, ManagedError> {
+        self.vault_request_at("v1/vault/request", request).await
+    }
+
+    pub(crate) async fn vault_request_at(
+        &self,
+        path: &str,
+        request: &VaultRequest,
+    ) -> Result<VaultRequestReceipt, ManagedError> {
         validate_id(&request.vault_id)?;
         let invalid = || ManagedError::Configuration("invalid_vault_request".into());
         if request.url.len() > 8 * 1024
@@ -403,7 +412,7 @@ impl ManagedClient {
         // This endpoint is not eligible for the client's agent access-token
         // refresh/retry path. Never retry a potentially consequential dispatch.
         let mut response = self
-            .request(Method::POST, "v1/vault/request", Some(&body), None)
+            .request(Method::POST, path, Some(&body), None)
             .await
             .map_err(|_| vault_outcome_unknown())?;
         let status = response.status();

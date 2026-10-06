@@ -217,3 +217,8 @@
     :scope.connect-wizard .wizard-actions button:last-child { flex: 1; color: var(--connect-on-accent, var(--surface)); background: var(--connect-accent, var(--text)); border-color: transparent; }
   }
 }
+
+.service-permissions { display: grid; gap: 16px; min-width: 0; }
+.service-permissions section { display: grid; gap: 8px; }
+.service-permissions h3, .service-permissions p { margin: 0; }
+.service-permissions p { font-size: 13px; line-height: 1.5; overflow-wrap: anywhere; }

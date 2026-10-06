@@ -161,6 +161,8 @@ jobs:
           node-version: 24
       - name: Exercise native connector and Vault account APIs
         run: |
+          cargo test --locked -p nanocodex-managed --lib account_services
+          cargo test --locked -p nanocodex-managed --lib phone_services
           cargo test --locked -p nanocodex2-bin --test nanocodex2_connectors --test nanocodex2_vault
           cargo test --locked -p nanocodex2-bin --bin nanocodex2 account_management_journeys
       - name: Exercise Managed2 CLI through HTTP and WebSocket
@@ -927,6 +929,28 @@ jobs:
             output/account-workspace/*requests.json
             output/account-workspace/browser-progress.md
             output/account-workspace/connect-api/requests.json
+          if-no-files-found: warn
+      - name: Exercise standalone Vault, TOTP and service clients
+        timeout-minutes: 12
+        run: |
+          CHROME_PATH=$(node --input-type=module -e 'import {createRequire} from "node:module"; const require = createRequire(new URL("./js/account/package.json", import.meta.url)); process.stdout.write(require("playwright-core").chromium.executablePath());')
+          export CHROME_PATH
+          pnpm --filter nanocodex-managed-service run test:services
+          pnpm --filter nanocodex-managed-service run test:vault-requests
+          pnpm --filter nanocodex-egress-service run test:vault-requests
+          pnpm --filter nanocodex-egress-service run test:phone-service
+          node --experimental-strip-types --test js/nanocodex/test/services*.test.mjs js/nanocodex-react/test/services.test.mjs
+          node --experimental-transform-types js/managed/test/browser-vault-totp.chrome.mjs
+          pnpm --filter nanocodex-web run test:services
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: standalone-services-journeys
+          path: |
+            output/services-parity/
+            output/services-ui/
+            output/browser-vault-totp/
+            output/phone-stack/
           if-no-files-found: warn
       - name: Test private Claude connection and model picker
         if: needs.changes.outputs.tests == 'true'

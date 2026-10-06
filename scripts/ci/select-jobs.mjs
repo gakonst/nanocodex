@@ -122,7 +122,9 @@ export function selectJobs(paths, graph) {
     } else if (path.startsWith("scripts/tests/openai-cua-")) {
       jobs.hands = jobs.windows = jobs.vm = true; // Bridges embedded by the native Hand.
     } else if (path.startsWith("scripts/cloudflare/")) {
-      // Cloudflare workflow inputs; their script tests run in the policy job.
+      // Service release ordering is also checked while broad tests are paused.
+      if (/^scripts\/cloudflare\/(?:deploy-workers|release-workers|release-plan)(?:\.test)?\.mjs$/.test(path)) jobs.bindings = true;
+      // Other Cloudflare workflow inputs have script tests in the policy job.
     } else if (path.startsWith("third_party/codex-voice/") || path === "scripts/build-voice-native.py") {
       jobs.voice = true;
     } else if (path.startsWith("py/") || path.startsWith("examples/python/")) {
@@ -138,6 +140,13 @@ export function selectJobs(paths, graph) {
       jobs.windows = true;
     } else if (path.startsWith(".github/")) {
       jobs.codeql = true; // Other workflows run separately; CodeQL still audits them.
+    } else if (["js/account/worker/index.ts", "js/account/worker/managedProxy.ts",
+      "js/managed/src/browser-runtime.ts", "js/managed/src/browser-vault-totp.ts",
+      "js/managed/test/browser-vault-totp.chrome.mjs",
+      "js/egress/src/phone-service.ts", "js/egress/src/vault-totp.ts"].includes(path)) {
+      // The public phone HTTP journey consumes the account entrypoint from
+      // bindings; private browser service journeys consume managed from apps.
+      jobs.apps = jobs.bindings = true;
     } else if (parts[0] === "js" && parts.length > 2 && cloudflarePackages.has(parts[1])) {
       // Checked by the Cloudflare workflow's own path filter.
     } else if (parts[0] === "js" && parts.length > 2

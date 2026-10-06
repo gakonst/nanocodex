@@ -189,3 +189,29 @@ test("ci success accepts reduced matrices and rejects failures, cancellations, a
   assert.equal(passes({ ...needs(families), changes: { result: "success", outputs: {} } }), false, "missing selection");
   assert.equal(passes({ ...needs(families), "new-job": { result: "success" } }), false, "unmapped job");
 });
+
+test("draft service changes retain their HTTP and browser consumers while general tests stay paused", t => {
+  const w = workspace(t);
+  for (const [path, expected] of [
+    ["scripts/cloudflare/release-workers.mjs", only("bindings", "wasm", "policy")],
+    ["scripts/cloudflare/deploy-workers.test.mjs", only("bindings", "wasm", "policy")],
+    ["js/account/worker/index.ts", only("apps", "bindings", "wasm", "policy")],
+    ["js/account/worker/managedProxy.ts", only("apps", "bindings", "wasm", "policy")],
+    ["js/managed/src/browser-runtime.ts", only("apps", "bindings", "wasm", "policy")],
+    ["js/managed/src/browser-vault-totp.ts", only("apps", "bindings", "wasm", "policy")],
+    ["js/managed/test/browser-vault-totp.chrome.mjs", only("apps", "bindings", "wasm", "policy")],
+    ["js/egress/src/phone-service.ts", only("apps", "bindings", "wasm", "policy")],
+    ["js/egress/src/vault-totp.ts", only("apps", "bindings", "wasm", "policy")],
+    ["js/managed/test/phone-stack-journey.test.mjs", only("bindings", "wasm", "policy")],
+    ["js/nanocodex/services/index.mjs", only("apps", "bindings", "wasm", "policy")],
+    ["js/account/src/PhoneService.tsx", only("apps", "wasm", "policy")],
+  ]) {
+    w.git("checkout", "-q", "--detach", w.initial);
+    w.write(path, "// changed service consumer\n");
+    const head = w.commit();
+    const selected = w.select("pull_request", { pull_request: { draft: true, base: { sha: w.initial }, head: { sha: head } } }, { NANOCODEX_CI_TESTS: "paused" });
+    assert.deepEqual(selected.jobs, expected, path);
+    assert.equal(selected.raw.tests, "false", path);
+    assert.equal(selected.raw.heavy, "false", path);
+  }
+});

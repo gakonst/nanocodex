@@ -1520,3 +1520,135 @@ The SDK snapshots the configuration when the dialog is created and carries it
 in the `nanocodex_appearance` URL parameter to wallet and funding iframes or the
 account popup. The hosted dialog limits the JSON value to 1,024 characters and
 uses native defaults for malformed values. Omit `appearance` for native defaults.
+
+### Standalone account services
+
+`nanocodex/services` accesses Vault and dedicated SMS numbers without an agent,
+thread, model, or WASM runtime. Keep direct account API keys on your server:
+
+```js
+import { createServicesClient } from "nanocodex/services";
+
+const services = createServicesClient({ apiKey: process.env.NANOCODEX_API_KEY });
+const { vault } = await services.vault.list();
+const { status, ok } = await services.vault.request({
+  vault_id: vault[0].id,
+  url: "https://example.com/verify",
+  method: "POST",
+  body_encoding: "json",
+  body: '{"code":"{{NANOCODEX_VAULT_TOTP}}"}',
+});
+```
+
+Direct calls use `https://nanocodex.gakonst.workers.dev/v1/services`. Reads require
+`data:read`, Vault requests require `tools:use`, and phone intents require
+`data:write` plus `tools:use`. Vault returns metadata and destination HTTP status
+only. TOTP seeds and generated codes stay in the broker; the saved exact HTTPS
+origin bounds code injection. There is no code-export method.
+
+Browser apps use an existing Connect client and exact signed service capabilities:
+
+```js
+import { Client } from "nanocodex/connect";
+import { createServicesClient } from "nanocodex/services";
+
+const connect = Client.create({ appId: "example-app" });
+const connection = await connect.connection.connect({
+  capabilities: {
+    services: {
+      vault: { ids: ["selected-vault-id"], origins: ["https://example.com"], request: true },
+      phone: { numberIds: [], read: false, provision: true, release: false },
+    },
+  },
+});
+const services = createServicesClient({ connect, grantId: connection.grant.id });
+```
+
+Service-only connections default to `services.use` and hosted authorization.
+They contain no `agentId`, access key, or MPP budget. Scope is bound into the
+signed approval and checked against the returned grant. Reconnect with the same
+`capabilities.services` to require that exact scope. Service requests use
+`/v1/grants/:grantId/services/...` and the Connect session. Number and Vault IDs
+are explicit; they never expand to the entire account.
+
+Use `phone.available({ country: "US", area_code: "202" })`, `phone.list()`,
+`phone.get(id)`, and `phone.messages(id, { limit: 20, cursor })` for reads. SMS
+messages expire according to the service's retention policy; support for
+verification messages depends on the sender and carrier.
+
+Provisioning and release create requests for human review:
+
+```js
+import { createHostedRequest, openHostedPopup } from "nanocodex/services";
+
+// Persist this UUID before sending; keep it when reconciling an uncertain request.
+const operation_id = crypto.randomUUID();
+const { request } = await services.phone.provision({
+  operation_id, phone_number: "+12025550101", country: "US",
+});
+const approval = createHostedRequest({
+  service: "phone", operationId: request.approval_request_id ?? request.operation_id, appOrigin: location.origin,
+});
+// Open from a separate click handler after the request is ready.
+await openHostedPopup(approval);
+const result = await services.phone.requests.get(request.operation_id);
+```
+
+`phone.release(numberId, { operation_id })` also requires hosted human approval.
+Poll with the **original** caller UUID, including after a dropped intent response.
+Connect returns an additional `request.approval_request_id` for the hosted owner
+approval; use `request.approval_request_id ?? request.operation_id` for its link.
+Any deliberate identical intent replay must retain the original caller UUID.
+A newly provisioned number needs a fresh exact-ID Connect approval before inbox
+access. The SDK never automatically retries a write. `ServiceError` exposes
+`status`, `code`, and `outcomeUnknown`; an unknown outcome requires reconciliation,
+not a new operation ID. No SDK method approves purchases or releases.
+
+TOTP enrollment uses a private hosted form:
+
+```js
+const enrollment = createHostedRequest({ appOrigin: location.origin });
+// Call from a user click. Inputs stay on the account origin.
+const metadata = await openHostedPopup(enrollment);
+if (metadata.service === "vault") console.log(metadata.vault_id);
+```
+
+The popup helper checks the sender window, exact hosted origin, and a unique
+state. Only fixed metadata fields reach the caller. `createHostedRequest`
+also accepts `host` for a trusted HTTPS account deployment and `state` for a
+caller-managed unique nonce. Secret entry and approvals require a top-level window; embedded frames cannot
+perform them. React applications can open the same request with
+`HostedServiceButton` from `nanocodex-react/services`.
+
+To use an existing Vault item before granting access, open the account picker
+from a user click. No service client or Connect grant is needed:
+
+```js
+const selection = createHostedRequest({
+  service: "vault", action: "select", appOrigin: location.origin,
+});
+const selected = await openHostedPopup(selection);
+if (selected.service === "vault" && selected.action === "select") {
+  // The user sees the recipient origin and explicitly chooses this item.
+  // Only its opaque vault_id, kind, and name are shared.
+  const connection = await connect.connection.connect({
+    capabilities: { services: { vault: {
+      ids: [selected.vault_id], origins: ["https://example.com"], request: true,
+    } } },
+  });
+}
+```
+
+The picker does not create or expand a grant and does not enroll the item again.
+The separate Connect approval authorizes the exact selected ID and destination
+origins. Closing the popup or aborting its `signal` cancels the local wait;
+closing a phone approval window does not cancel a server-side operation. Poll
+that operation with its original caller UUID to learn its outcome.
+
+Account management is available through `createServicesClient({ apiKey }).account`
+without an agent or WASM. Use `client.links({ connect: 'google', add: 'login' })`
+for ordinary Connections/Vault URLs, or
+`client.hosted({ service: 'vault', kind: 'card' })` for a private enrollment link.
+OAuth, Cloudflare, MCP, model sign-in, Vault/SSH management, and captured-card
+save/balance methods share the account REST contracts. See the
+[REST, JavaScript and Rust guide](../../docs/STANDALONE_SERVICES.md#account-management-and-browser-links).

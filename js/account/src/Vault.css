@@ -1,0 +1,13 @@
+.vault-share-consent { display: flex; align-items: flex-start; gap: 10px; margin: 16px 0; line-height: 1.5; }
+.vault-share-consent input { flex-shrink: 0; margin-top: 5px; }
+
+.vault-picker { overflow-wrap: anywhere; }
+.vault-picker p { line-height: 1.5; }
+.vault-picker-list { list-style: none; padding: 0; margin: 16px 0; }
+.vault-picker-list li { border-bottom: 1px solid var(--border-soft); }
+.vault-picker-list label { display: flex; align-items: center; gap: 12px; min-height: 64px; cursor: pointer; }
+.vault-picker-list input { flex-shrink: 0; }
+.vault-picker-list span { display: grid; gap: 4px; }
+.vault-picker-list small { color: var(--text-secondary); }
+.vault-picker .vault-save { padding: 12px 16px; min-height: 44px; border: 1px solid var(--border); border-radius: 8px; background: var(--text); color: var(--surface); font: inherit; overflow-wrap: anywhere; max-width: 100%; cursor: pointer; }
+.vault-picker .vault-save:disabled { opacity: .45; cursor: default; }

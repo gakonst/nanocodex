@@ -18,7 +18,7 @@ const APP_ORIGIN_RESOURCE_PREFIX = "urn:nanocodex:origin:";
 const INTERNAL_ORIGIN = "https://nanocodex.internal";
 const NANOCODEX_ORIGIN = "https://nanocodex.gakonst.workers.dev";
 const AUTHORIZATION_TTL_SECONDS = 5 * 60;
-const MAX_HOSTED_AUTHORIZATION_BYTES = 20 * 1_024;
+const MAX_HOSTED_AUTHORIZATION_BYTES = 32 * 1_024;
 const MAX_HOSTED_RESOURCES = 32;
 const MAX_HOSTED_RESOURCE_BYTES = 512;
 const ADDRESS = /^0x[0-9a-fA-F]{40}$/;
@@ -546,7 +546,7 @@ function parseHostedResources(value: unknown): string[] | undefined {
   for (const resource of value) {
     if (typeof resource !== "string"
       || resource.length === 0
-      || new TextEncoder().encode(resource).byteLength > MAX_HOSTED_RESOURCE_BYTES
+      || new TextEncoder().encode(resource).byteLength > (resource.startsWith("urn:nanocodex:services:") ? 12_288 : MAX_HOSTED_RESOURCE_BYTES)
       || seen.has(resource)) return undefined;
     seen.add(resource);
     resources.push(resource);

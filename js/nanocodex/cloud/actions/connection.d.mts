@@ -47,6 +47,8 @@ export type AuthorizeAccessKey = Readonly<{
 }>;
 
 export type Capabilities = Readonly<{
+  /** Exact standalone Vault and phone authority. */
+  services?: import("../../services/index.mjs").ServiceCapabilities | undefined;
   /** SIWE authentication folded into the same passkey ceremony. */
   auth?: Auth | undefined;
   /** Access key authorized by the same passkey ceremony. */
@@ -111,7 +113,7 @@ export function disconnect(client: Client, options?: disconnect.Options | undefi
 export declare namespace reconnect {
   type Options = Readonly<{
     /** Reject a retained grant outside these app capability boundaries. */
-    capabilities?: Pick<Capabilities, "agent" | "cloudAccounts"> | undefined;
+    capabilities?: Pick<Capabilities, "agent" | "cloudAccounts" | "services"> | undefined;
     /** Defaults to the retained connection mode, then to hosted. */
     authorization?: "access_key" | "hosted" | undefined;
     tools?: readonly NamedTool[] | undefined;

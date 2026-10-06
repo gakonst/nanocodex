@@ -689,6 +689,9 @@ importers:
       hyparquet-writer:
         specifier: 0.16.6
         version: 0.16.6
+      miniflare:
+        specifier: 4.20260730.0
+        version: 4.20260730.0
       mppx:
         specifier: 0.9.1
         version: 0.9.1(@modelcontextprotocol/sdk@1.30.0(@cfworker/json-schema@4.1.1)(supports-color@10.2.2)(zod@4.5.4))(express@5.2.1(supports-color@10.2.2))(hono@4.13.5)(typescript@5.9.3)(viem@2.55.13(typescript@5.9.3)(zod@4.5.4))

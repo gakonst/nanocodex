@@ -18,6 +18,6 @@ const links = await client.account.links({ connect: 'github', add: 'login' });
 
 `connections`, `vault`, `wallet`, and `access` point to `/connect`, `/connect/vault`, `/connect/wallet`, and `/connect/access`. A Vault add link preserves the selected form through sign-in. A connector link focuses the selected provider; connecting still requires an explicit action.
 
-Optional `connect` accepts `github`, `google`, `slack`, `x`, `spotify`, `soundcloud`, `link`, `whatsapp`, `claude`, `chatgpt`, `openai`, or `mcp`. Optional `add` accepts `login`, `api_key`, `card`, `address`, or `phone`. Unknown, empty, or repeated parameters return 400; non-GET requests return 405. Responses use `Cache-Control: no-store`.
+Optional `connect` accepts `cloudflare`, `github`, `google`, `slack`, `x`, `spotify`, `soundcloud`, `link`, `whatsapp`, `claude`, `chatgpt`, `openai`, or `mcp`. Optional `add` accepts `login`, `api_key`, `card`, `address`, `phone`, or `totp`. Unknown, empty, or repeated parameters return 400; non-GET requests return 405. Responses use `Cache-Control: no-store`.
 
 Production URLs open the account web app. Loopback and Nanocodex local development retain their origin. Neither request headers nor query parameters can supply an alternative destination.

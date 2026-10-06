@@ -12,7 +12,7 @@ await checkpoint('Draft saved; building production bundle.');
 const require=createRequire(path.resolve('js/account/package.json'));
 const {build}=require('esbuild');const {chromium}=require('playwright-core');
 await build({stdin:{contents:`import React from 'react';import {createRoot} from 'react-dom/client';import {QueryClient,QueryClientProvider} from '@tanstack/react-query';import {BrowserRouter} from 'react-router';import {AccountSessionProvider} from './src/AccountSession';import {DeviceConnect} from './src/DeviceConnect';import './src/index.css';createRoot(document.getElementById('root')).render(<QueryClientProvider client={new QueryClient({defaultOptions:{queries:{retry:false}}})}><BrowserRouter><AccountSessionProvider><DeviceConnect/></AccountSessionProvider></BrowserRouter></QueryClientProvider>);`,resolveDir:path.resolve('js/account'),sourcefile:'account-journey.tsx',loader:'tsx'},bundle:true,external:['/paradigm-mark.svg'],format:'esm',jsx:'automatic',outfile:`${out}/journey.js`,loader:{'.woff2':'dataurl','.png':'dataurl','.svg':'dataurl'}});
-const requests=[],errors=[],shots=[];let signedOut=false, credentialsFailure=false, pendingChatGpt=false;
+const requests=[],errors=[],shots=[];let signedOut=false, credentialsFailure=false, pendingChatGpt=false, cloudflareConnected=false, cloudflareLostReply=false;
 const wallet='0x1111111111111111111111111111111111111111';
 const user={id:'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',persistent:true,address:wallet};
 let entries=[['login','Example account'],['api_key','Development key'],['card','Travel card'],['address','Home address']].map(([kind,name],i)=>({id:String(i+1).repeat(22),kind,name,created_at:1}));
@@ -27,6 +27,13 @@ if(url.pathname.startsWith('/v1/')){
   if(req.method==='POST'){let raw='';for await(const chunk of req)raw+=chunk;const values=JSON.parse(raw);const entry={id:'z'.repeat(22),kind:url.pathname.split('/').at(-1),name:values.name,created_at:2};entries.push(entry);return reply(entry);}
   if(req.method==='DELETE'){entries=entries.filter(e=>e.id!==url.pathname.split('/').at(-1));return reply({deleted:true});}
  }
+ if(url.pathname==='/v1/connectors/cloudflare'&&req.method==='POST'){
+  let raw='';for await(const chunk of req)raw+=chunk;const input=JSON.parse(raw);
+  assert.deepEqual(input,{vault_id:'2'.repeat(22),account_id:'a'.repeat(32)});
+  cloudflareConnected=true;if(cloudflareLostReply)return reply({error:'synthetic unconfirmed update'},503);
+  return reply({connected:true});
+ }
+ if(url.pathname==='/v1/connectors/cloudflare/connections/'+ 'f'.repeat(43)&&req.method==='DELETE'){cloudflareConnected=false;return reply({disconnected:true});}
  if(req.method!=='GET')return reply({error:'Unexpected fixture mutation'},405);
  if(url.pathname==='/v1/me')return reply(signedOut?{error:'unauthorized'}:{user},signedOut?401:200);
  if(url.pathname==='/v1/credentials'){
@@ -37,7 +44,7 @@ if(url.pathname.startsWith('/v1/')){
  if(url.pathname==='/v1/wallet')return reply({address:wallet,original_address:wallet,mode:'internal'});
  if(url.pathname==='/v1/wallet/balance')return reply({account:wallet,balance:'5000000',decimals:6,symbol:'MACH',token:'0x20c000000000000000000000f37de3740adec032'});
  if(url.pathname==='/v1/machine-usd/config')return reply({min_usd_amount_cents:500,max_usd_amount_cents:10000,onramp_enabled:true,chain_id:4217,token_address:'0x20c000000000000000000000f37de3740adec032',stripe_publishable_key:'pk_test_fixture'});
- if(url.pathname==='/v1/connectors')return reply({connectors:{github:{connected:true,connections:[{id:'a'.repeat(43),label:'Example developer',account_id:'example',capabilities:['github']}]}}});
+ if(url.pathname==='/v1/connectors')return reply({connectors:{cloudflare:cloudflareConnected?{connected:true,connections:[{id:'f'.repeat(43),label:'Synthetic Cloudflare',account_id:'a'.repeat(32)}]}:{connected:false},github:{connected:true,connections:[{id:'a'.repeat(43),label:'Example developer',account_id:'example',capabilities:['github']}]}}});
  if(url.pathname==='/v1/connectors/mcp-connections')return reply({mcp_connections:[]});
  if(url.pathname==='/v1/account/communication')return reply({email:null,phone:null});
  if(url.pathname==='/v1/account/admin')return reply({admin:false});
@@ -93,6 +100,18 @@ try{
  }
  await page.goto(origin+'/connect?connect=constructor');await page.getByRole('heading',{level:1,name:'Connections',exact:true}).waitFor();
  await page.goto(origin+'/connect?connect=github');await page.locator('[data-provider="github"] button').first().waitFor();assert.equal(await page.locator('[data-provider="github"] button').first().evaluate(el=>el===document.activeElement),true);
+ await page.goto(origin+'/connect?connect=cloudflare');
+ const cf=page.locator('[data-provider="cloudflare"]');await cf.getByLabel('Cloudflare Vault API key').waitFor();
+ assert.equal(requests.filter(r=>r.method==='POST'&&r.path==='/v1/connectors/cloudflare').length,0);
+ assert.equal(await cf.getByRole('button',{name:'Connect Cloudflare',exact:true}).isEnabled(),false);
+ await cf.getByLabel('Cloudflare Vault API key').selectOption('2'.repeat(22));await cf.getByLabel('Cloudflare account ID').fill('a'.repeat(32));
+ await screenshot(page,'mobile-cloudflare-from-vault');cloudflareLostReply=true;
+ await cf.getByRole('button',{name:'Connect Cloudflare',exact:true}).click();await cf.getByRole('alert').waitFor();
+ assert.equal(await cf.getByRole('button',{name:'Connect Cloudflare',exact:true}).isEnabled(),false);
+ await cf.getByRole('button',{name:'Check status',exact:true}).click();await cf.getByText('Synthetic Cloudflare',{exact:true}).waitFor();
+ assert.equal(requests.filter(r=>r.method==='POST'&&r.path==='/v1/connectors/cloudflare').length,1);
+ await cf.getByRole('button',{name:'Revoke Synthetic Cloudflare',exact:true}).click();await cf.getByText('Synthetic Cloudflare',{exact:true}).waitFor({state:'detached'});
+ assert.equal(requests.filter(r=>r.method==='DELETE'&&r.path==='/v1/connectors/cloudflare/connections/'+'f'.repeat(43)).length,1);
  await page.goto(origin+'/connect?connector=github&connector_result=failed');await page.getByText('GitHub couldn’t be connected. Try again.',{exact:true}).waitFor();
  pendingChatGpt=true;await page.goto(origin+'/connect');await page.getByText('SYNTHETIC',{exact:true}).waitFor();await page.reload();await page.getByText('SYNTHETIC',{exact:true}).waitFor();pendingChatGpt=false;
  credentialsFailure=true;await page.goto(origin+'/connect/vault');await page.getByRole('alert').waitFor();credentialsFailure=false;await page.getByRole('button',{name:'Retry',exact:true}).click();await page.getByText('Example account',{exact:true}).waitFor();

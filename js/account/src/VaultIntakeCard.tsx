@@ -47,7 +47,7 @@ function IntakeCard({ intake, authenticated, onReceipt }: { intake: VaultIntake;
         if (alive.current) setError(response.status === 401 ? "Sign in to your account before saving." : "Couldn’t save. Check the fields and try again.");
         return;
       }
-      const receipt = vaultIntakeReceipt(await response.json(), { ...intake, origin: values.browser_origin });
+      const receipt = vaultIntakeReceipt(await response.json(), { ...intake, origin: kind === "totp" ? values.origin : values.browser_origin });
       if (!alive.current) return;
       setSaved(true);
       setOpen(false);

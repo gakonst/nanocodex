@@ -1,3 +1,4 @@
+import { validateTotpEnrollment, validateTotpMetadata, type TotpMaterial, type TotpMetadata } from "./vault-totp";
 import { providerVaultRoute } from "./provider-result-vault";
 import { ClaudeSubscription } from "nanocodex/worker";
 import claudeModule from "nanocodex/wasm";
@@ -138,8 +139,9 @@ type RootWallet = {
   address: `0x${string}`;
   createdAt: number;
 };
-export type VaultKind = "login" | "api_key" | "card" | "address" | "phone";
+export type VaultKind = "login" | "api_key" | "card" | "address" | "phone" | "totp";
 export type VaultEntryPayload =
+  | (TotpMaterial & Readonly<{ kind: "totp"; name: string }>)
   | Readonly<{ kind: "api_key"; name: string; api_key: string }>
   | Readonly<{ kind: "login"; name: string; username: string; password: string; browser_origin?: string }>
   | Readonly<{
@@ -164,6 +166,7 @@ export type VaultEntryPayload =
   | Readonly<{ kind: "phone"; name: string; phone_number: string }>;
 export type VaultEntry = VaultEntryPayload & Readonly<{ id: string; createdAt: number }>;
 type VaultEntryMetadata = (
+  | (TotpMetadata & Readonly<{ kind: "totp"; name: string }>)
   | Readonly<{ kind: "api_key"; name: string }>
   | Readonly<{ kind: "login"; name: string; username: string; browser_origin?: string }>
   | Readonly<{ kind: "card"; name: string; last4: string }>
@@ -1077,7 +1080,7 @@ export class UserCredentialBroker extends DurableObject<BrokerEnv> {
         return jsonError(405, "method_not_allowed");
       }
       const vaultMatch = url.pathname.match(
-        /^\/v1\/vault\/(login|api_key|card|address|phone)(?:\/([A-Za-z0-9_-]{22,64}))?$/,
+        /^\/v1\/vault\/(login|api_key|card|address|phone|totp)(?:\/([A-Za-z0-9_-]{22,64}))?$/,
       );
       if (vaultMatch) {
         const kind = vaultMatch[1] as VaultKind;
@@ -2691,6 +2694,11 @@ export function validateVaultEntryPayload(
   kind: VaultKind,
 ): VaultEntryPayload | undefined {
   if (!isRecord(value)) return undefined;
+  if (kind === "totp") {
+    const name = vaultText(value.name, 120);
+    const material = validateTotpEnrollment(value);
+    return name && material ? { kind, name, ...material } : undefined;
+  }
   const expected = vaultPayloadKeys(kind, Object.prototype.hasOwnProperty.call(value, "address_line_2"), Object.prototype.hasOwnProperty.call(value, "browser_origin"), Object.prototype.hasOwnProperty.call(value, "cvv"));
   const keys = Object.keys(value);
   if (keys.length !== expected.length || keys.some((key) => !expected.includes(key))) {
@@ -2757,6 +2765,7 @@ export function validateVaultEntryPayload(
 
 function vaultPayloadKeys(kind: VaultKind, hasAddressLine2 = false, hasBrowserOrigin = false, hasCvv = true): readonly string[] {
   switch (kind) {
+    case "totp": return ["name", "seed", "issuer", "account", "origin", "algorithm", "digits", "period"];
     case "api_key": return ["name", "api_key"];
     case "login": return ["name", "username", "password", ...(hasBrowserOrigin ? ["browser_origin"] : [])];
     case "card": return [
@@ -2774,7 +2783,7 @@ function vaultPayloadKeys(kind: VaultKind, hasAddressLine2 = false, hasBrowserOr
 function validateStoredVaultEntry(id: string, value: unknown): VaultEntry | undefined {
   if (!VAULT_ID.test(id) || !isRecord(value) || value.id !== id
     || !Number.isSafeInteger(value.createdAt) || (value.createdAt as number) < 0
-    || !["login", "api_key", "card", "address", "phone"].includes(String(value.kind))) return undefined;
+    || !["login", "api_key", "card", "address", "phone", "totp"].includes(String(value.kind))) return undefined;
   const kind = value.kind as VaultKind;
   const payloadKeys = vaultPayloadKeys(
     kind,
@@ -2805,7 +2814,7 @@ function validateStoredVaultMetadata(
 ): VaultEntryMetadata | undefined {
   if (!VAULT_ID.test(id) || !isRecord(value) || value.id !== id
     || !Number.isSafeInteger(value.createdAt) || (value.createdAt as number) < 0
-    || !["login", "api_key", "card", "address", "phone"].includes(String(value.kind))) {
+    || !["login", "api_key", "card", "address", "phone", "totp"].includes(String(value.kind))) {
     return undefined;
   }
   const kind = value.kind as VaultKind;
@@ -2816,6 +2825,11 @@ function validateStoredVaultMetadata(
     createdAt: value.createdAt as number,
   };
   if (!common.name) return undefined;
+  if (kind === "totp") {
+    const metadata = validateTotpMetadata(value);
+    return metadata && hasExactKeys(value, ["id", "kind", "name", "createdAt", "issuer", "account", "origin", "algorithm", "digits", "period"])
+      ? { ...common, kind, name: common.name, ...metadata } : undefined;
+  }
   if (kind === "api_key") {
     return hasExactKeys(value, ["id", "kind", "name", "createdAt"])
       ? { ...common, kind, name: common.name } : undefined;
@@ -2877,6 +2891,8 @@ function vaultEntryMetadata(entry: VaultEntry): VaultEntryMetadata {
     createdAt: entry.createdAt,
   };
   switch (entry.kind) {
+    case "totp": return { ...common, kind: entry.kind, issuer: entry.issuer, account: entry.account,
+      origin: entry.origin, algorithm: entry.algorithm, digits: entry.digits, period: entry.period };
     case "api_key": return { ...common, kind: entry.kind };
     case "login": return { ...common, kind: entry.kind, username: entry.username, ...(entry.browser_origin ? { browser_origin: entry.browser_origin } : {}) };
     case "card": return {
@@ -2905,6 +2921,8 @@ function sameVaultEntryMetadata(
   if (left.id !== right.id || left.kind !== right.kind || left.name !== right.name
     || left.createdAt !== right.createdAt) return false;
   switch (left.kind) {
+    case "totp": return right.kind === left.kind && left.issuer === right.issuer && left.account === right.account
+      && left.origin === right.origin && left.algorithm === right.algorithm && left.digits === right.digits && left.period === right.period;
     case "api_key": return true;
     case "login": return right.kind === left.kind && left.username === right.username && left.browser_origin === right.browser_origin;
     case "card": return right.kind === left.kind && left.last4 === right.last4;
@@ -2932,6 +2950,12 @@ function publicVaultEntry(entry: VaultEntry | VaultEntryMetadata): Readonly<{
   kind: VaultKind;
   name: string;
   created_at: number;
+  issuer?: string;
+  account?: string;
+  origin?: string;
+  algorithm?: "SHA1" | "SHA256" | "SHA512";
+  digits?: 6 | 8;
+  period?: number;
   username?: string;
   browser_origin?: string;
   last4?: string;
@@ -2943,7 +2967,7 @@ function publicVaultEntry(entry: VaultEntry | VaultEntryMetadata): Readonly<{
   country?: string;
   phone_number?: string;
 }> {
-  const metadata = "password" in entry || "api_key" in entry || "card_number" in entry
+  const metadata = "seed" in entry || "password" in entry || "api_key" in entry || "card_number" in entry
     ? vaultEntryMetadata(entry as VaultEntry)
     : entry as VaultEntryMetadata;
   const common = {
@@ -2953,6 +2977,8 @@ function publicVaultEntry(entry: VaultEntry | VaultEntryMetadata): Readonly<{
     created_at: metadata.createdAt,
   };
   switch (metadata.kind) {
+    case "totp": return { ...common, issuer: metadata.issuer, account: metadata.account, origin: metadata.origin,
+      algorithm: metadata.algorithm, digits: metadata.digits, period: metadata.period };
     case "api_key": return common;
     case "login": return { ...common, username: metadata.username, ...(metadata.browser_origin ? { browser_origin: metadata.browser_origin } : {}) };
     case "card": return { ...common, last4: metadata.last4 };

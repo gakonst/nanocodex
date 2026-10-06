@@ -11,6 +11,8 @@ const [manifest] = JSON.parse(packed.stdout);
 const files = manifest.files.map(({ path }) => path);
 
 assert(files.includes("index.mjs"));
+assert(files.includes("services/index.mjs"));
+assert(files.includes("services/index.d.mts"));
 assert(files.includes("index.d.mts"));
 assert(files.includes("agent/index.mjs"));
 assert(files.includes("agent/index.d.mts"));

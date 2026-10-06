@@ -72,6 +72,8 @@ enum Command {
     ///
     /// JSON must contain vault_id and url, with optional method, headers, body,
     /// body_encoding and signing. Use Vault placeholders, never raw credentials.
+    /// For TOTP use {{NANOCODEX_VAULT_TOTP}} at the saved HTTPS origin.
+    /// The broker generates the code; seeds and codes are never returned.
     /// Input defaults to stdin. An unknown outcome must not be retried automatically.
     Request {
         /// Read public request JSON from this file instead of stdin.

@@ -82,6 +82,13 @@ export async function routeLinkPreview(
     headers.delete("last-modified");
     return new Response(request.method === "HEAD" ? null : await assetResponse.text(), { headers, status: 200 });
   }
+  // Hosted service callbacks need to retain their cross-origin opener. The
+  // normal account policy severs it; framing protections remain unchanged.
+  if ((pathname === "/vault" || pathname === "/services/phone")
+    && url.searchParams.has("enrollment_origin") && url.searchParams.has("state")) {
+    headers.set("cross-origin-opener-policy", "unsafe-none");
+    headers.set("cache-control", "no-store");
+  }
   if (pathname === "/artifact-runtime") {
     headers.set("access-control-allow-origin", "*");
     headers.set("content-security-policy", ARTIFACT_RUNTIME_CSP);
@@ -150,6 +157,7 @@ export function documentStatusForPath(pathname: string): 200 | 404 | null {
     || pathname === "/changelog" || pathname === "/code" || pathname === "/commits"
     || pathname === "/requests" || pathname === "/router" || pathname === "/connect"
     || pathname === "/connect/device" || pathname === "/connect/vault"
+    || pathname === "/vault" || pathname === "/services/phone"
     || pathname === "/connect/wallet" || pathname === "/connect/access") return 200;
   if (Object.hasOwn(docsPreview, pathname) || isEvalDocumentPath(pathname)) return 200;
   if (pathname.startsWith("/docs/") || pathname.startsWith("/evals/")) return 404;
@@ -246,6 +254,8 @@ async function previewForUrl(url: URL, env: LinkPreviewEnv): Promise<Preview> {
   if (pathname === "/requests") return fixed(pathname, "Requests", "Track proposed changes to the published Nanocodex source tree.", "REQUESTS");
   if (pathname === "/connect") return fixed(pathname, "Connect", "Manage your Nanocodex identity, connections, and API keys.", "NANOCODEX CONNECT");
   if (pathname === "/connect/device") return fixed(pathname, "Connect device", "Authorize a Nanocodex device with your passkey-backed account.", "NANOCODEX CONNECT");
+  if (pathname === "/connect/vault" || pathname === "/vault") return fixed(pathname, "Vault", "Manage encrypted credentials and authenticator accounts.", "NANOCODEX SERVICES");
+  if (pathname === "/services/phone") return fixed(pathname, "Phone services", "Manage dedicated numbers, SMS and purchase approvals.", "NANOCODEX SERVICES");
   if (pathname === "/connect/wallet") return fixed(pathname, "Wallet", "Manage your MACH wallet and funding.", "NANOCODEX CONNECT");
   if (pathname === "/connect/access") return fixed(pathname, "API access", "Manage Nanocodex API keys for your apps and devices.", "NANOCODEX CONNECT");
   if (pathname === "/connect/vault") return fixed(pathname, "Vault", "Store encrypted SSH keys, logins, API keys, cards, addresses, and phone numbers.", "NANOCODEX CONNECT");

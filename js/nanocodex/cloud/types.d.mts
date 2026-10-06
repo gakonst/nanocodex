@@ -120,6 +120,7 @@ export type ConnectAgent = Readonly<{
 }>;
 
 export type Grant = Readonly<{
+  services?: import("../services/index.mjs").ServiceCapabilities | undefined;
   id: Hex;
   permission: string;
   status: "active" | "revoked" | "expired";
@@ -153,7 +154,8 @@ export type MppPermission = Readonly<{
 }>;
 
 type ConnectionBase = Readonly<{
-  agentId: string;
+  /** Absent on a standalone services grant. */
+  agentId?: string;
   grant: Grant;
 }>;
 

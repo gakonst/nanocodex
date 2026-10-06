@@ -1,0 +1,16 @@
+.phone-service { overflow-wrap: anywhere; }
+.phone-service h2 { font-size: 18px; }
+.phone-service p { line-height: 1.5; }
+.phone-service form, .phone-service dl { display: grid; gap: 12px; }
+.phone-service dd { margin: 0 0 8px; }
+.phone-service dt, .phone-service small { color: var(--text-secondary, #777); }
+.phone-service form label { display: grid; gap: 8px; }
+.phone-service input:not([type="checkbox"]) { padding: 10px; border: 1px solid currentColor; border-radius: 8px; color: inherit; background: transparent; }
+.phone-service button { padding: 9px 12px; border: 1px solid currentColor; border-radius: 8px; color: inherit; background: transparent; cursor: pointer; }
+.phone-service button:disabled { opacity: .45; cursor: default; }
+.phone-service .phone-consent { display: flex; align-items: flex-start; gap: 10px; line-height: 1.5; margin: 16px 0; }
+.phone-consent input { flex-shrink: 0; margin-top: 5px; }
+.phone-actions { display: flex; gap: 8px; flex-wrap: wrap; margin: 12px 0; }
+.phone-list { list-style: none; padding: 0; }
+.phone-list li { display: flex; align-items: start; justify-content: space-between; gap: 12px; flex-wrap: wrap; padding: 16px 0; border-bottom: 1px solid color-mix(in srgb, currentColor 15%, transparent); }
+.phone-message { white-space: pre-wrap; }

@@ -264,6 +264,47 @@ async fn vault_cli_dropped_connection_is_not_retried() {
 }
 
 #[tokio::test]
+async fn vault_cli_totp_template_is_broker_owned_and_status_only() {
+    let input = json!({"vault_id": ID, "url": "https://example.com/verify", "method": "POST",
+        "body_encoding": "json", "body": "{\"code\":\"{{NANOCODEX_VAULT_TOTP}}\"}"});
+    let expected = input.clone();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let seen = calls.clone();
+    let app = Router::new().route(
+        "/v1/vault/request",
+        post(
+            move |headers: HeaderMap, axum::Json(body): axum::Json<Value>| {
+                let expected = expected.clone();
+                let seen = seen.clone();
+                async move {
+                    seen.fetch_add(1, Ordering::SeqCst);
+                    assert!(headers.contains_key("authorization"));
+                    assert_eq!(body["vault_id"], expected["vault_id"]);
+                    assert_eq!(body["body"], expected["body"]);
+                    assert_eq!(body["body_encoding"], "json");
+                    axum::Json(json!({"status": 204, "ok": true}))
+                }
+            },
+        ),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin = format!("http://{}", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let output = invoke(&origin, &input.to_string(), false).await;
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        serde_json::from_slice::<Value>(&output.stdout).unwrap(),
+        json!({"status": 204, "ok": true})
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    server.abort();
+}
+
+#[tokio::test]
 async fn vault_cli_ssh_targets_public_projection_and_sanitized_errors() {
     let target = json!({
         "reference": "example-server", "hostname": "server.example.com", "port": 22,

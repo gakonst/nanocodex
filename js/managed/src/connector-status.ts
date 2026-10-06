@@ -19,9 +19,10 @@ export const CONNECTOR_CAPABILITY_IDS = [
 
 export const CONNECTOR_PROVIDER_IDS = ["cloudflare", "github", "google", "slack", "x", "spotify", "soundcloud", "link", "whatsapp"] as const;
 
-// OAuth/settings-button catalog. Cloudflare enrollment uses the private Vault intake
-// and account_connectors tool; adding an OAuth button would start the wrong flow.
+// Connector catalog. Cloudflare uses a saved Vault token, not an OAuth popup.
 export const CONNECTOR_PROVIDER_CATALOG = Object.freeze([
+  { id: "cloudflare", name: "Cloudflare", description: "Workers, storage, and account services using a saved Vault API token",
+    capabilities: Object.freeze([{ id: "cloudflare", name: "Cloudflare" }]) },
   {
     id: "github",
     name: "GitHub",

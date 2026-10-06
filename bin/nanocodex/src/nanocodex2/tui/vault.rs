@@ -167,7 +167,7 @@ pub(crate) fn intake_summary(value: &Value) -> Option<String> {
     let intake: Intake = serde_json::from_value(value.clone()).ok()?;
     if intake.type_ != "vault_intake"
         || intake.status != "input_required"
-        || !["login", "api_key", "card", "address", "phone"].contains(&intake.kind.as_str())
+        || !["login", "api_key", "card", "address", "phone", "totp"].contains(&intake.kind.as_str())
         || intake.name.as_deref().is_some_and(|s| !safe_name(s))
         || intake
             .origin

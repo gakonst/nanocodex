@@ -25,7 +25,8 @@
     "test:claude-connection": "node scripts/claude-connection-smoke.mjs",
     "test:whatsapp": "node scripts/whatsapp-ui-journey.mjs",
     "test:vault": "node scripts/vault-ui-journey.mjs",
-    "test:account-workspace": "node scripts/account-workspace-journey.mjs"
+    "test:account-workspace": "node scripts/account-workspace-journey.mjs",
+    "test:services": "node scripts/services-ui-journey.mjs"
   },
   "portless": {
     "name": "nanocodex",

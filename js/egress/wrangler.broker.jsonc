@@ -27,6 +27,7 @@
     }
   },
   "services": [
+    { "binding": "TWILIO_PHONE_PROVIDER", "service": "nanocodex-durable-agent", "entrypoint": "PhoneProvider" },
     {
       "binding": "MANAGED_AGENT_OWNERSHIP",
       "service": "nanocodex-durable-agent",
@@ -35,10 +36,15 @@
   ],
   "vars": {
     "ENVIRONMENT": "production",
-    "CHATGPT_VOICE_RELAY_RPC": "true"
+    "CHATGPT_VOICE_RELAY_RPC": "true",
+    "PHONE_PROVISIONING_ENABLED": "false",
+    "PHONE_MAX_NUMBERS_PER_OWNER": "3",
+    "PHONE_MESSAGE_TTL_SECONDS": "86400",
+    "PHONE_WEBHOOK_URL": "https://nanocodex.gakonst.workers.dev/v1/services/phone/webhook"
   },
   "durable_objects": {
     "bindings": [
+      { "name": "PHONE_SERVICE_ACCOUNTS", "class_name": "PhoneServiceAccount" },
       { "name": "GMAIL_PUSH_MAILBOXES", "class_name": "GmailPushMailbox" },
       { "name": "WHATSAPP_ACCOUNTS", "class_name": "WhatsAppAccount" },
       {
@@ -101,12 +107,14 @@
       "new_sqlite_classes": ["SpotifyRateLimit"]
     },
     { "tag": "v7", "new_sqlite_classes": ["GmailPushMailbox"] },
-    { "tag": "v8", "new_sqlite_classes": ["WhatsAppAccount"] }
+    { "tag": "v8", "new_sqlite_classes": ["WhatsAppAccount"] },
+    { "tag": "v9", "new_sqlite_classes": ["PhoneServiceAccount"] }
   ],
   "env": {
     "development": {
       "name": "nanocodex-egress",
       "services": [
+        { "binding": "TWILIO_PHONE_PROVIDER", "service": "nanocodex-durable-agent", "entrypoint": "PhoneProvider", "remote": false },
         {
           "binding": "MANAGED_AGENT_OWNERSHIP",
           "service": "nanocodex-durable-agent",
@@ -120,6 +128,7 @@
       },
       "durable_objects": {
         "bindings": [
+          { "name": "PHONE_SERVICE_ACCOUNTS", "class_name": "PhoneServiceAccount" },
           { "name": "GMAIL_PUSH_MAILBOXES", "class_name": "GmailPushMailbox" },
           { "name": "WHATSAPP_ACCOUNTS", "class_name": "WhatsAppAccount" },
           { "name": "USER_CREDENTIALS", "class_name": "UserCredentialBroker" },

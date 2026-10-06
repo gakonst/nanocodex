@@ -166,7 +166,7 @@ private struct MeetingDocumentView: View {
         guard let record else { return "" }
         return "# \(title)\n\n\(record.summary)\n\n## My notes\n\(notes)\n\n## Transcript\n\(transcript)"
     }
-    var body: some View {
+    private var documentContent: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
                 if let record, scenePhase == .active {
@@ -252,6 +252,9 @@ private struct MeetingDocumentView: View {
                 }
             }.padding(20).frame(maxWidth: 620).frame(maxWidth: .infinity).privacySensitive()
         }
+    }
+    var body: some View {
+        documentContent
         .background(ChatPalette.background).navigationTitle("Meeting").navigationBarTitleDisplayMode(.inline)
         .toolbar(.visible, for: .navigationBar)
         .navigationBarBackButtonHidden(hasChanges)

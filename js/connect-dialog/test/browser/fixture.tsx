@@ -26,7 +26,10 @@ const request: ConnectRequest = {
         `urn:nanocodex:origin:${encodeURIComponent(appOrigin)}`,
         ...(new URLSearchParams(window.location.search).has("fresh-auth") ? [] : ["urn:nanocodex:authorization:hosted"]),
         ...(new URLSearchParams(window.location.search).has("spending") ? ["urn:nanocodex:mpp:machusd:spend"] : []),
-        "urn:nanocodex:agent:run",
+        ...(new URLSearchParams(window.location.search).has("services") ? ["urn:nanocodex:services:" + encodeURIComponent(JSON.stringify({
+          vault: {ids: ["synthetic_vault_item"], origins: ["https://login.example.test"], request: true},
+          phone: {numberIds: ["synthetic_number"], read: true, provision: true, release: true},
+        }))] : ["urn:nanocodex:agent:run"]),
         ...(new URLSearchParams(window.location.search).has("focused") ? ["urn:nanocodex:connector-focus:gmail"] : []),
         ...(new URLSearchParams(window.location.search).has("connections") ? [
           "urn:nanocodex:connectors:github,gmail,gcalendar",

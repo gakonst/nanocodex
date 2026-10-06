@@ -1,3 +1,4 @@
+import { normalizeServices, serviceResource } from '../../services/scope.mjs';
 import {
   connectionRequestFromGrant,
   connectionFromWire,
@@ -57,11 +58,14 @@ const AGENT_VISIBILITY_NAMES = Object.freeze({
 
 export async function connect(client, options) {
   options ??= {};
-  const permission = options.permission ?? "agent.run";
+  const services = normalizeServices(options.capabilities?.services);
+  const permission = options.permission ?? (services ? "services.use" : "agent.run");
+  const standalone = permission === "services.use";
+  if (standalone && !services) throw new TypeError("services.use requires exact service capabilities");
   if (typeof permission !== "string" || permission.length === 0) throw new TypeError("connect permission must be a non-empty string");
   const requestedConnectors = normalizeCloudAccounts(options.capabilities?.cloudAccounts);
-  const agentVisibility = normalizeAgentVisibility(options.capabilities?.agent);
-  const authorization = options.authorization ?? (client.principal ? "hosted" : "access_key");
+  const agentVisibility = normalizeAgentVisibility(options.capabilities?.agent ?? (standalone ? { finalMessages: false, actionSummaries: false } : undefined));
+  const authorization = options.authorization ?? (client.principal || standalone ? "hosted" : "access_key");
   if (authorization !== "access_key" && authorization !== "hosted") {
     throw new TypeError("connect authorization must be access_key or hosted");
   }
@@ -71,6 +75,9 @@ export async function connect(client, options) {
   if (client.principal && options.capabilities?.authorizeAccessKey !== undefined) {
     throw new TypeError("host principal connections cannot request access-key or MPP authority");
   }
+  if (standalone && (authorization !== "hosted" || options.capabilities?.authorizeAccessKey || options.capabilities?.agent || requestedConnectors.includes("chatgpt") || options.tools?.length || options.mcpConnections?.length || options.conversationId)) {
+    throw new TypeError("Standalone services require hosted authorization without agent or payment capabilities");
+  }
   const appToolCatalog = hostedAppToolCatalog(options.tools ?? []);
   const appToolCatalogDigest = appToolCatalog.length === 0
     ? undefined
@@ -79,6 +86,7 @@ export async function connect(client, options) {
   const mcpConnections = normalizeMcpConnections(options.mcpConnections ?? []);
   const focusMcpConnectionId = normalizeMcpFocus(options.focusMcpConnectionId, mcpConnections);
   const exactRequest = connectionRequestFromGrant({
+    services,
     connectors: requestedConnectors,
     mcpConnections,
     permission,
@@ -98,6 +106,8 @@ export async function connect(client, options) {
     conversationId,
     authorization,
     appToolCatalogDigest,
+    services,
+    standalone,
   );
   if (client.principal
     && baseAuth.resources.some((resource) => resource.startsWith(MPP_RESOURCE_PREFIX))) {
@@ -311,10 +321,14 @@ function withConnectionResources(
   conversationId,
   authorization,
   appToolCatalogDigest,
+  services,
+  standalone,
 ) {
   const configured = typeof auth === "object" && auth !== null
     ? (auth.resources ?? []).filter((resource) =>
-      !Object.values(AGENT_VISIBILITY_RESOURCES).includes(resource)
+      !(standalone && (resource.startsWith("urn:nanocodex:agent:") || resource.startsWith(MPP_RESOURCE_PREFIX)))
+      && !resource.startsWith("urn:nanocodex:services:")
+      && !Object.values(AGENT_VISIBILITY_RESOURCES).includes(resource)
       && !resource.startsWith(AGENT_VISIBILITY_RESOURCE_PREFIX)
       && !resource.startsWith(AGENT_CONVERSATION_RESOURCE_PREFIX)
       && !resource.startsWith(CONNECTOR_RESOURCE_PREFIX)
@@ -332,6 +346,7 @@ function withConnectionResources(
     .map(([, value]) => value);
   const resources = [...new Set([
     ...configured,
+    ...(services ? [serviceResource(services)] : []),
     `${APP_RESOURCE_PREFIX}${encodeURIComponent(appId)}`,
     ...(appOrigin ? [`${APP_ORIGIN_RESOURCE_PREFIX}${encodeURIComponent(appOrigin)}`] : []),
     ...(requestedConnectors.length === 0

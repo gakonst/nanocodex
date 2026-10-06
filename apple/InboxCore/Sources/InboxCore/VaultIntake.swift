@@ -83,7 +83,7 @@ public struct VaultIntake: Codable, Equatable, Sendable {
                          challengeID: value["challenge_id"].string, agentID: value["agent_id"].string, expiresAt: expiry)
         }
         if value["type"].string == "vault_intake", value["status"].string == "input_required",
-           ["login", "api_key", "card", "address", "phone"].contains(value["kind"].string) {
+           ["login", "api_key", "card", "address", "phone", "totp"].contains(value["kind"].string) {
             guard case .object(let fields) = value,
                   Set(fields.keys).isSubset(of: ["type", "status", "kind", "name", "origin", "operation", "vault_id", "challenge_id", "agent_id"]) else { return nil }
             let name = value["name"].string
@@ -128,21 +128,64 @@ public struct VaultIntake: Codable, Equatable, Sendable {
     }
 }
 
+/// Value-free TOTP details; seed, URI and generated codes have no representation here.
+public struct VaultTotpMetadata: Equatable, Sendable {
+    public let issuer: String
+    public let account: String
+    public let origin: String
+    public let algorithm: String
+    public let digits: Int
+    public let period: Int
+
+    static func parse(_ value: JSON) throws -> VaultTotpMetadata {
+        let issuer = value["issuer"].string, account = value["account"].string
+        let origin = value["origin"].string, algorithm = value["algorithm"].string
+        guard [issuer, account].allSatisfy({ !$0.isEmpty && $0.utf8.count <= 256
+            && $0.trimmingCharacters(in: .whitespacesAndNewlines) == $0
+            && !$0.unicodeScalars.contains(where: { $0.value < 32 || $0.value == 127 }) }),
+              VaultIntake.parse(.object(["type": .string("vault_intake"), "status": .string("input_required"),
+                  "kind": .string("login"), "origin": .string(origin)]))?.origin == origin,
+              ["SHA1", "SHA256", "SHA512"].contains(algorithm),
+              case .number(let digits) = value["digits"], [6.0, 8.0].contains(digits),
+              case .number(let period) = value["period"], period.isFinite, period.rounded() == period,
+              (15...120).contains(period) else { throw APIError.invalidResponse }
+        return .init(issuer: issuer, account: account, origin: origin, algorithm: algorithm,
+                     digits: Int(digits), period: Int(period))
+    }
+}
+
 public struct VaultIntakeReceipt: Equatable, Sendable {
     public let id: String
     public let kind: String
     public let name: String
+    public var totp: VaultTotpMetadata? = nil
 }
 
 extension ManagedClient {
     public func saveVaultItem(kind: String, values: [String: String], configuration: URLSessionConfiguration = .ephemeral, operationID: UUID? = nil) async throws -> VaultIntakeReceipt {
-        guard ["login", "api_key", "card", "address", "phone"].contains(kind) else { throw APIError.invalidResponse }
+        guard ["login", "api_key", "card", "address", "phone", "totp"].contains(kind) else { throw APIError.invalidResponse }
+        var payload = values.mapValues(JSON.string)
+        if kind == "totp" {
+            // Native controls keep text in memory; the enrollment API requires numeric parameters.
+            let allowed: Set<String> = values["otpauth_uri"] == nil
+                ? ["name", "origin", "issuer", "account", "seed", "algorithm", "digits", "period"]
+                : ["name", "origin", "otpauth_uri"]
+            guard Set(values.keys).isSubset(of: allowed) else { throw APIError.invalidResponse }
+            for key in ["digits", "period"] {
+                if let text = values[key] {
+                    guard let number = Int(text), key == "digits" ? [6, 8].contains(number) : (15...120).contains(number) else { throw APIError.invalidResponse }
+                    payload[key] = .number(Double(number))
+                }
+            }
+        }
         let response = try await vaultIntakeJSON(path: "/v1/credentials/vault/" + kind, method: "POST",
-            body: .object(values.mapValues(JSON.string)), configuration: configuration, operationID: operationID)
+            body: .object(payload), configuration: configuration, operationID: operationID)
         let id = response["id"].string
         guard id.range(of: #"^[A-Za-z0-9_-]{22,64}$"#, options: .regularExpression) != nil,
               response["kind"].string == kind else { throw APIError.invalidResponse }
-        return .init(id: id, kind: kind, name: values["name"] ?? "")
+        let totp = kind == "totp" ? try VaultTotpMetadata.parse(response) : nil
+        if let totp, totp.origin != values["origin"] { throw APIError.invalidResponse }
+        return .init(id: id, kind: kind, name: values["name"] ?? "", totp: totp)
     }
 }
 

@@ -1,3 +1,4 @@
+import { ServicePermissions, servicesFromResources } from "./servicePermissions.js";
 import type { SshTarget } from "./sshImportPolicy.mjs";
 import { appearanceStyle, type ConnectAppearance } from "./appearance.js";
 export type { ConnectAppearance } from "./appearance.js";
@@ -1806,7 +1807,7 @@ function ConnectionWizard({
           />
         </AccountConnectionSection> : null}
 
-        {!focused && !focusedMcp ? <AccountConnectionSection
+        {(!focused && !focusedMcp) || servicesFromResources(request.auth.resources) ? <AccountConnectionSection
           eyebrow="Access"
           meta={undefined}
           title="App permissions"
@@ -1904,6 +1905,7 @@ function WizardRequestSummary({ appVisibility, request }: Readonly<{
         {request.auth.resources.includes("urn:nanocodex:agent:run") ? <PermissionIcon label="Run agents" detail="Start tasks using the approved access." kind="agent" /> : null}
         {appVisibility.map(permission => <PermissionIcon key={permission.resource} label={permission.label === "Reply" ? "Read replies" : permission.label === "Actions" ? "View tool calls" : permission.label} detail={permission.detail} kind={permission.label === "Reply" ? "reply" : "actions"} />)}
       </div>
+      <ServicePermissions services={servicesFromResources(request.auth.resources)} />
       {request.mpp ? <p className="section-description">Spend: {formatToken(request.mpp.maxPerRequest, request.mpp.symbol)} / request · {formatToken(request.mpp.limit, request.mpp.symbol)} / day{request.mpp.recipient ? ` · to ${shortAddress(request.mpp.recipient)}` : ""}</p> : null}
     </section>
   );
@@ -2578,6 +2580,7 @@ function walletConnectContext(request: WalletRequest) {
     throw new Error("The host principal exchange does not match this Connect request.");
   }
   const connectPolicy = parseConnectPolicy(resources);
+  servicesFromResources(resources);
   focusedConnectorFromResources(resources, requestedConnectorIdsFromResources(resources));
   requestedMcpConnectionsFromRequest(request, resources);
   return { app, connectPolicy, resources };

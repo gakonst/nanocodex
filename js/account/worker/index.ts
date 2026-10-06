@@ -121,6 +121,7 @@ type WorkerEnv = ElevenLabsEnv & GitStorageEnv & ThreadGitStorageEnv & EvalStora
   CHATGPT_SESSIONS?: DurableObjectNamespace;
   EGRESS?: Fetcher;
   GMAIL_PUSH_EGRESS?: Fetcher;
+  PHONE_SERVICE_EGRESS?: Fetcher;
   NANOCODEX_BACKEND?: Fetcher;
   NANOCODEX_ACCESS_SECRET?: string;
   NANOCODEX_HAND_BROKER?: DurableObjectNamespace;
@@ -160,6 +161,17 @@ export default {
     if (insecure) return insecure;
     const nativeInputDiscovery = await routeNativeInputDiscoveryProxy(request, env, url);
     if (nativeInputDiscovery) return nativeInputDiscovery;
+    if (url.pathname === "/v1/services/phone/webhook" && !url.search) {
+      if (request.method !== "POST") return json({ error: "method_not_allowed" }, { status: 405 });
+      if (!env.PHONE_SERVICE_EGRESS) return json({ error: "phone_service_unavailable" }, { status: 503 });
+      const headers = new Headers();
+      for (const key of ["content-type", "x-twilio-signature"]) {
+        const value = request.headers.get(key); if (value !== null) headers.set(key, value);
+      }
+      return env.PHONE_SERVICE_EGRESS.fetch(new Request("https://phone-service.internal/v1/phone/webhook", {
+        method: "POST", headers, body: request.body, redirect: "manual", signal: request.signal,
+      }));
+    }
     // Only this fixed public path reaches the egress Pub/Sub JWT verifier.
     if (/^\/v1\/gmail-push\/[^/]+\/[^/]+$/.test(url.pathname)) {
       if (!env.GMAIL_PUSH_EGRESS) return json({ error: "gmail_push_unavailable" }, { status: 503 });

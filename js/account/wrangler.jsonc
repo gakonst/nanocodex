@@ -41,6 +41,8 @@
       "/code",
       "/commits",
       "/requests",
+      "/vault",
+      "/services/phone",
       "/connect",
       "/connect/*",
       "/connect-dialog",
@@ -57,6 +59,7 @@
     ]
   },
   "services": [
+    { "binding": "PHONE_SERVICE_EGRESS", "service": "nanocodex-egress" },
     { "binding": "GMAIL_PUSH_EGRESS", "service": "nanocodex-egress" },
     { "binding": "NANOCODEX_X", "service": "nanocodex-x" },
     {
@@ -220,6 +223,7 @@
       "name": "nanocodex",
       "services": [
         { "binding": "GMAIL_PUSH_EGRESS", "service": "nanocodex-egress", "remote": false },
+        { "binding": "PHONE_SERVICE_EGRESS", "service": "nanocodex-egress", "remote": false },
         { "binding": "NANOCODEX_X", "service": "nanocodex-x", "remote": false },
         {
           "binding": "NANOCODEX_BACKEND",

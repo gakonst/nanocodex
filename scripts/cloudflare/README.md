@@ -79,8 +79,9 @@ Managed preview validation uses `pnpm run preview` in `js/managed`: an isolated
 local CRM migration followed by a Worker dry-run. It replaces production D1 IDs,
 removes named environments and cloud credentials, and creates no cloud database.
 
-Selected deployments preserve dependency phases: egress/X, private media, managed,
-consumers, then account. A scoped `RELEASE_ONLY=managed` also selects and redeploys
+Selected deployments preserve dependency phases: X, private media, managed, egress,
+consumers, then account. Managed publishes the private `PhoneProvider` entry point
+before egress adds its service binding. A scoped `RELEASE_ONLY=managed` also selects and redeploys
 media before managed; unchanged media is otherwise safely reused through the live
 Worker deployment ledger. Independent members run concurrently. Every mutation rechecks current
 master; failed phases prevent later ones. Astra secrets are applied additively in

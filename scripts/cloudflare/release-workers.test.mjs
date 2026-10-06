@@ -28,6 +28,9 @@ test('all selected Workers preserve dependency barriers, literal arguments and a
     const next = releasePhases[i].map(name => f.events.findIndex(row => row[0] === 'start' && row[1] === name));
     assert.ok(Math.max(...previous) < Math.min(...next));
   }
+  assert.ok(f.events.findIndex(row => row[0] === 'success' && row[1] === 'managed')
+    < f.events.findIndex(row => row[0] === 'start' && row[1] === 'egress'),
+  'publish the private PhoneProvider entry point before the egress binding');
   for (const { command } of f.calls) {
     assert.equal(command[command.indexOf('--message') + 1], f.options.env.DEPLOY_MESSAGE);
     assert.equal(command[command.indexOf('--tag') + 1], `nc-ci-${'a'.repeat(64)}`);
@@ -43,12 +46,12 @@ test('all selected Workers preserve dependency barriers, literal arguments and a
 });
 
 test('phase failure waits for siblings, records failure, and blocks dependent deployments', async () => {
-  const f = fixture(['egress', 'x', 'managed', 'account']);
-  f.options.run = async (_, { directory }) => { if (directory === 'js/egress') throw Error('deploy failed'); await new Promise(resolve => setImmediate(resolve)); return true; };
+  const f = fixture(['email', 'dialog', 'account']);
+  f.options.run = async (_, { directory }) => { if (directory === 'js/email') throw Error('deploy failed'); await new Promise(resolve => setImmediate(resolve)); return true; };
   await assert.rejects(f.release(), /Release phase failed/);
-  assert.ok(f.events.some(row => row[0] === 'failure' && row[1] === 'egress'));
-  assert.ok(f.events.some(row => row[0] === 'success' && row[1] === 'x'));
-  assert.ok(!f.events.some(row => ['managed', 'account'].includes(row[1])));
+  assert.ok(f.events.some(row => row[0] === 'failure' && row[1] === 'email'));
+  assert.ok(f.events.some(row => row[0] === 'success' && row[1] === 'dialog'));
+  assert.ok(!f.events.some(row => row[1] === 'account'));
 });
 
 test('supersession before deployment avoids ledger writes and guarded skips cannot become successes', async () => {
@@ -86,7 +89,7 @@ test('Astra secrets use a private temporary file in the single tagged guarded de
 });
 
 test('health failures cannot certify account, managed, or any API-only phase', async () => {
-  for (const selected of [['account'], ['managed'], ['x'], ['egress', 'x'], ['email', 'astra']]) {
+  for (const selected of [['account'], ['managed'], ['x'], ['egress'], ['email', 'astra']]) {
     const f = fixture(selected, { health: async () => { f.events.push(['health']); throw Error('unhealthy'); } });
     await assert.rejects(f.release(), /Release phase failed/);
     assert.equal(f.events.filter(row => row[0] === 'health').length, 1);
@@ -211,11 +214,11 @@ test('preparation failure preserves earlier releases and blocks dependent upload
   const f = fixture(['egress', 'managed', 'account']), prepared = [];
   f.options.prepare = async plan => {
     prepared.push(...plan.selected);
-    if (plan.selected.includes('managed')) throw Error('synthetic build failure');
+    if (plan.selected.includes('egress')) throw Error('synthetic build failure');
   };
   await assert.rejects(f.release(), /phase preparation failed/);
-  assert.deepEqual(prepared, ['egress', 'managed']);
-  assert.deepEqual(f.events, [['start', 'egress'], ['health'], ['success', 'egress']]);
+  assert.deepEqual(prepared, ['managed', 'egress']);
+  assert.deepEqual(f.events, [['start', 'managed'], ['health'], ['success', 'managed']]);
 });
 
 test('superseded phases skip compilation and freshness is rechecked after building', async () => {

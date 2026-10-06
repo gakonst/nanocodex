@@ -29,11 +29,11 @@ test("public account navigation through managed HTTP and account proxy", { timeo
       const post=await call(`${prefix}/v1/account/links`,"POST"); assert.equal(post.status,405); assert.equal(post.headers.get("allow"),"GET");
       const transport=http(base.href,{fetch:(url,init)=>{const target=new URL(url);target.pathname=prefix+target.pathname;return fetch(target,init);}}).setup({appId:"account-links-journey"});
       const client=connectActions()({request: request => {trace.push({method:request.method,path:request.path});return transport.request(request);}});
-      for(const connect of ["github","google","slack","x","spotify","soundcloud","link","whatsapp","claude","chatgpt","openai","mcp"]) {
+      for(const connect of ["cloudflare","github","google","slack","x","spotify","soundcloud","link","whatsapp","claude","chatgpt","openai","mcp"]) {
         const links=await client.account.links({connect,add:"login"});
         assert.equal(links.connections,`${base.origin}/connect?connect=${connect}`); assert.equal(links.vault,`${base.origin}/connect/vault?add=login`);
       }
-      for(const add of ["api_key","card","address","phone"]) assert.equal((await client.account.links({add})).vault,`${base.origin}/connect/vault?add=${add}`);
+      for(const add of ["api_key","card","address","phone","totp"]) assert.equal((await client.account.links({add})).vault,`${base.origin}/connect/vault?add=${add}`);
     }
     for(const origin of ["https://managed.nanocodex.gakonst.workers.dev","https://nanocodex.gakonst.workers.dev","https://api.nanocodex.xyz"]) {
       const r=await call(`/v1/account/links?__origin=${encodeURIComponent(origin)}`); assert.equal(r.status,200); assert.equal((await r.json()).connections,"https://nanocodex.gakonst.workers.dev/connect");

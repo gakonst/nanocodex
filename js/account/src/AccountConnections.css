@@ -112,3 +112,12 @@
 .account-hub #claude-connection .connector-logo svg { fill: none; }
 .account-hub #claude-connection .connection-card-action { text-transform: none; letter-spacing: 0; }
 .account-hub .account-inline .connection-card-copy > .tempo-wallet-balance { font-size: 18px; color: var(--text); }
+
+.cloudflare-connection-form { display: grid; gap: 12px; padding: 14px; border-top: 1px solid var(--workspace-line, var(--border)); }
+.cloudflare-connection-form label { display: grid; gap: 6px; min-width: 0; }
+.cloudflare-connection-form :is(input, select) { width: 100%; min-width: 0; padding: 8px 10px; background: var(--surface); color: var(--text); border: 1px solid var(--workspace-line, var(--border)); border-radius: 8px; font: inherit; }
+.cloudflare-connection-form p { margin: 0; color: var(--workspace-muted, var(--text-secondary)); font-size: 12px; }
+.cloudflare-connection-form > button { justify-self: start; }
+.cloudflare-connection-form a { color: inherit; text-decoration: underline; text-underline-offset: 3px; }
+.account-hub [data-provider="cloudflare"] .connector-logo svg { fill: none; }
+@media (max-width: 540px) { .cloudflare-connection-form :is(input, select) { font-size: 16px; } }

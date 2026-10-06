@@ -6,6 +6,7 @@
 compile_error!("nanocodex-managed is a native lifecycle backend");
 
 mod auth;
+mod account_services;
 mod builder;
 mod claude;
 mod client;
@@ -15,6 +16,7 @@ mod error;
 mod model;
 mod native_secure_input;
 mod private_input;
+mod phone_services;
 mod share;
 mod sse;
 mod types;
@@ -32,11 +34,14 @@ mod vm_host;
 #[cfg(feature = "tools")]
 mod attachment;
 
+pub use account_services::*;
+pub use vault_management::Item as VaultItemMetadata;
 pub use auth::ManagedApiKey;
 pub use builder::{Managed, ManagedBuilder, ManagedRequest, ManagedResponse, ManagedService};
 pub use claude::{ClaudeLogin, ClaudeLoginCode, ClaudeLoginStatus};
 pub use client::{ManagedClient, ManagedClientBuilder};
 pub use connectors::*;
+pub use phone_services::*;
 pub use driver::ManagedAgent;
 pub use error::ManagedError;
 pub use model::{
