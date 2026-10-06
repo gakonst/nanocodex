@@ -143,12 +143,15 @@ journeys on a shared user's Hand:
    selected and pending state names the new pair after updater exit.
 4. `update --apply` must keep the staged pair deferred while an owner is installed;
    `update --apply --restart-hand` explicitly hands over to the exact new worker,
-   proves fresh Hand/screen readiness, commits the CLI, clears pending and removes
+   proves a fresh Hand connection, commits the CLI, clears pending and removes
    rollback evidence. Also verify explicit `hand restart`, and `hand start` when
    the owner is stopped, use the same staged-pair transaction. Close the updater
    and CLI sessions, then recheck persistence. On Linux capture the separate
    factory PID/executable hash, unit definition and guest inventory before/after:
-   they must remain unchanged.
+   they must remain unchanged. On macOS, repeat with screen capture unavailable:
+   the exact Hand owner must still connect and commit, with an explicit screen
+   availability warning. Screen capture readiness must not roll back a connected
+   service. Check committed `hand recover` finalization under the same condition.
 5. Supply an actual new Hand that starts but cannot reconnect to the synthetic
    account. Explicit restart must fail, restoring the old CLI, old worker bytes,
    original configuration and prior loaded/stopped state. Assert account readiness

@@ -465,7 +465,7 @@ pub(crate) async fn connect_saved_login(
         let since = SystemTime::now();
         if !pending && !credentials_changed
             && let Some(catalog) =
-                connected_catalog(&state, &binary, SystemTime::UNIX_EPOCH, Readiness::Hand).await?
+                connected_catalog(&state, &binary, SystemTime::UNIX_EPOCH).await?
         {
             // Catalogs publish on attachment changes, not on a timer. The
             // matching live owner is independently rechecked by this probe.
@@ -484,7 +484,7 @@ pub(crate) async fn connect_saved_login(
             write_plist(&value)?;
         }
         start().await?;
-        verify_catalog(&binary, since, Duration::from_secs(60), Readiness::Hand).await?;
+        verify_connected(&binary, since, Duration::from_secs(60)).await?;
         Ok::<(), eyre::Report>(())
     }).await.wrap_err("Hand connection timed out; the installed service was retained. Retry hand connect with the same saved login")?
     .wrap_err("Hand connection failed; the installed service and saved login were retained")
@@ -516,7 +516,7 @@ pub(crate) async fn install(binary: Option<PathBuf>, account_file: Option<PathBu
     let since = SystemTime::now();
     if let Err(error) = async {
         start().await?;
-        verify_catalog(&binary, since, Duration::from_secs(60), Readiness::Hand).await?;
+        verify_connected(&binary, since, Duration::from_secs(60)).await?;
         Ok::<(), eyre::Report>(())
     }
     .await
@@ -560,8 +560,7 @@ pub(crate) async fn ensure(binary: Option<PathBuf>, account_file: Option<PathBuf
     }
     let selected = state.executable.as_deref().map(executable).transpose()?;
     if selected.as_deref() == Some(candidate.as_path()) {
-        if let Some(catalog) =
-            connected_catalog(&state, &candidate, SystemTime::UNIX_EPOCH, Readiness::Hand).await?
+        if let Some(catalog) = connected_catalog(&state, &candidate, SystemTime::UNIX_EPOCH).await?
         {
             warn_unavailable_screen(&catalog)?;
             return Ok(());
@@ -572,7 +571,7 @@ pub(crate) async fn ensure(binary: Option<PathBuf>, account_file: Option<PathBuf
         } else {
             start().await?;
         }
-        verify_catalog(&candidate, since, Duration::from_secs(60), Readiness::Hand).await?;
+        verify_connected(&candidate, since, Duration::from_secs(60)).await?;
         return Ok(());
     }
     let mut update = prepare_update(&candidate, true)
@@ -602,7 +601,6 @@ async fn connected_catalog(
     state: &ServiceStatus,
     expected: &Path,
     since: SystemTime,
-    readiness: Readiness,
 ) -> Result<Option<Value>> {
     if !state.loaded
         || !state.pid.is_some_and(|pid| pid > 0)
@@ -622,10 +620,8 @@ async fn connected_catalog(
                     return None;
                 }
                 let value: Value = serde_json::from_slice(&fs::read(path).ok()?).ok()?;
-                (value["status"] == "connected"
-                    && daemon_matches(&value, state.pid, expected)
-                    && (matches!(readiness, Readiness::Hand) || screen_ready(&value)))
-                .then_some(value)
+                (value["status"] == "connected" && daemon_matches(&value, state.pid, expected))
+                    .then_some(value)
             })
         });
     if catalog.is_none() {
@@ -656,55 +652,29 @@ fn warn_unavailable_screen(catalog: &Value) -> Result<()> {
     Ok(())
 }
 
-#[derive(Clone, Copy)]
-enum Readiness {
-    Hand,
-    Screen,
-}
-
-/// Require a fresh connected WebRTC screen and the expected launchd owner.
+/// Require a fresh connected Hand and the expected launchd owner. Screen
+/// availability is reported separately and must not prevent service updates.
 pub(crate) async fn verify_connected(
     expected: &Path,
     since: SystemTime,
     timeout: Duration,
 ) -> Result<ServiceStatus> {
-    verify_catalog(expected, since, timeout, Readiness::Screen).await
-}
-
-async fn verify_catalog(
-    expected: &Path,
-    since: SystemTime,
-    timeout: Duration,
-    readiness: Readiness,
-) -> Result<ServiceStatus> {
     let expected = executable(expected)?;
     let deadline = tokio::time::Instant::now() + timeout;
     eprintln!(
-        "Waiting up to {} seconds for the Hand to connect{}… Logs: {}",
+        "Waiting up to {} seconds for the Hand to connect… Logs: {}",
         timeout.as_secs(),
-        if matches!(readiness, Readiness::Screen) {
-            " and its screen to become ready"
-        } else {
-            ""
-        },
         home()?.join(".nanocodex/service/daemon.log").display()
     );
     loop {
         let state = status().await?;
-        if let Some(catalog) = connected_catalog(&state, &expected, since, readiness).await? {
-            if matches!(readiness, Readiness::Hand) {
-                warn_unavailable_screen(&catalog)?;
-            }
+        if let Some(catalog) = connected_catalog(&state, &expected, since).await? {
+            warn_unavailable_screen(&catalog)?;
             return Ok(state);
         }
         if tokio::time::Instant::now() >= deadline {
             bail!(
-                "Hand did not publish a fresh connected catalog{} with the expected daemon PID/executable before timeout. Check the saved account login and {}",
-                if matches!(readiness, Readiness::Screen) {
-                    " with a ready WebRTC screen"
-                } else {
-                    ""
-                },
+                "Hand did not publish a fresh connected catalog with the expected daemon PID/executable before timeout. Check the saved account login and {}",
                 home()?.join(".nanocodex/service/daemon.log").display()
             );
         }
