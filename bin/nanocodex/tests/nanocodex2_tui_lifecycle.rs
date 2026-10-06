@@ -17,7 +17,7 @@ use axum::{
         Query, State, WebSocketUpgrade,
         ws::{Message, WebSocket},
     },
-    routing::{get, post, put},
+    routing::{get, patch, post, put},
 };
 use base64::Engine as _;
 use portable_pty::{CommandBuilder, PtySize, native_pty_system};
@@ -977,6 +977,8 @@ struct Service {
     native_key: Arc<p256::SecretKey>,
     native_expiry: u64,
     routing_requests: Arc<Mutex<Vec<String>>>,
+    routing_bodies: Arc<Mutex<Vec<Value>>>,
+    settings_requests: Arc<Mutex<Vec<Value>>>,
     model_route: Arc<Mutex<Option<Value>>>,
     listed_agent: Arc<Mutex<String>>,
     resume_gate: Arc<tokio::sync::Semaphore>,
@@ -995,6 +997,28 @@ struct Service {
 }
 
 impl Service {
+    fn routing_enabled(&self) -> bool {
+        self.routing_bodies
+            .lock()
+            .unwrap()
+            .last()
+            .is_some_and(|body| {
+                body.get("model").is_none()
+                    || matches!(
+                        body["model"].as_str(),
+                        Some("@cf/zai-org/glm-5.3" | "kimi-k3" | "mimo-v2.6-pro")
+                    )
+            })
+    }
+
+    fn routing_automatic(&self) -> bool {
+        self.routing_bodies
+            .lock()
+            .unwrap()
+            .last()
+            .is_some_and(|body| body.get("model").is_none())
+    }
+
     fn active_turns(&self) -> Vec<String> {
         let mut active = std::collections::BTreeSet::new();
         if self.active {
@@ -1198,22 +1222,90 @@ async fn state(
             "workspace": "cloudflare-computer",
             "execution_environments": true, "execution_namespace": "cwd-root-v1", "native_cross_mounts": false},
         "settings": service.settings.lock().unwrap().clone(),
-        "model_routing_enabled": !service.routing_requests.lock().unwrap().is_empty(),
+        "model_routing_enabled": service.routing_enabled(),
+        "model_routing_automatic": service.routing_automatic(),
         "model_route": service.model_route.lock().unwrap().clone(),
         "latest_event_cursor": service.latest_cursor(), "stream_error": null
     })))
 }
 
+// Model selection crosses the same HTTP boundary as the managed service:
+// gateway settings require POST /routing; PATCH /settings rejects them.
 async fn enable_routing(
     State(service): State<Service>,
     axum::extract::Path(agent): axum::extract::Path<String>,
-) -> Json<Value> {
+    body: axum::body::Bytes,
+) -> Result<Json<Value>, (axum::http::StatusCode, Json<Value>)> {
+    let body: Value = if body.is_empty() {
+        json!({})
+    } else {
+        serde_json::from_slice(&body).unwrap()
+    };
     service.routing_requests.lock().unwrap().push(agent);
-    Json(json!({
-        "enabled": true,
-        "model_routing": {"strategy": "direct", "preferences": {}},
+    service.routing_bodies.lock().unwrap().push(body.clone());
+    if !service.history.lock().unwrap().is_empty() {
+        return Err((
+            axum::http::StatusCode::CONFLICT,
+            Json(
+                json!({"error": "routing_requires_new_thread", "message": "routing requires an empty thread"}),
+            ),
+        ));
+    }
+    assert!(
+        body.as_object()
+            .unwrap()
+            .keys()
+            .all(|key| matches!(key.as_str(), "model" | "thinking"))
+    );
+    if let Some(model) = body.get("model") {
+        let thinking = body["thinking"]
+            .as_str()
+            .expect("manual routing requires thinking");
+        let supported = match model.as_str().unwrap() {
+            "kimi-k3" => ["low", "high"].contains(&thinking),
+            "@cf/zai-org/glm-5.3" | "mimo-v2.6-pro" => {
+                ["low", "medium", "high"].contains(&thinking)
+            }
+            "gpt-6-astra" => ["low", "medium", "high", "xhigh", "max"].contains(&thinking),
+            other => panic!("unexpected routing model: {other}"),
+        };
+        assert!(
+            supported,
+            "unsupported effort reached the routing API: {body}"
+        );
+        *service.settings.lock().unwrap() = json!({"model": model, "thinking": thinking,
+            "reasoning_mode": "standard", "fast_mode": false});
+    }
+    Ok(Json(json!({
+        "enabled": service.routing_enabled(),
+        "automatic": service.routing_automatic(),
+        "model_routing": service.routing_enabled().then(|| json!({"strategy": "direct", "preferences": {}})),
         "settings": service.settings.lock().unwrap().clone()
-    }))
+    })))
+}
+
+async fn patch_settings(
+    State(service): State<Service>,
+    Json(body): Json<Value>,
+) -> Result<Json<Value>, (axum::http::StatusCode, Json<Value>)> {
+    service.settings_requests.lock().unwrap().push(body.clone());
+    let gateway = matches!(
+        body["model"].as_str(),
+        Some("@cf/zai-org/glm-5.3" | "kimi-k3" | "mimo-v2.6-pro")
+    );
+    if gateway || service.routing_enabled() {
+        return Err((
+            axum::http::StatusCode::CONFLICT,
+            Json(
+                json!({"error": "invalid_request", "message": "model_routing owns model and thinking; omit settings"}),
+            ),
+        ));
+    }
+    let mut settings = service.settings.lock().unwrap();
+    for (key, value) in body.as_object().unwrap() {
+        settings[key] = value.clone();
+    }
+    Ok(Json(json!({"settings": settings.clone()})))
 }
 
 async fn submit(State(service): State<Service>, Json(input): Json<Value>) -> Json<Value> {
@@ -1302,6 +1394,8 @@ struct Fixture {
     native_writes: Arc<Mutex<Vec<Value>>>,
     native_key: Arc<p256::SecretKey>,
     routing_requests: Arc<Mutex<Vec<String>>>,
+    routing_bodies: Arc<Mutex<Vec<Value>>>,
+    settings_requests: Arc<Mutex<Vec<Value>>>,
     model_route: Arc<Mutex<Option<Value>>>,
     listed_agent: Arc<Mutex<String>>,
     resume_gate: Arc<tokio::sync::Semaphore>,
@@ -1415,16 +1509,28 @@ impl Fixture {
         let receipts = Arc::new(Mutex::new(std::collections::HashMap::new()));
         let receipts_enabled = Arc::new(AtomicBool::new(false));
         let routing_requests = Arc::new(Mutex::new(Vec::new()));
+        let routing_bodies = Arc::new(Mutex::new(Vec::new()));
+        let settings_requests = Arc::new(Mutex::new(Vec::new()));
         let model_route = Arc::new(Mutex::new(None));
         let app = Router::new()
             .route("/v1/models", get(|headers: axum::http::HeaderMap| async move {
                 let authorization = format!("Bearer ncx_live_{}_{}", "a".repeat(12), "b".repeat(43));
-                assert_eq!(headers.get("authorization").and_then(|value| value.to_str().ok()), Some(authorization.as_str()));
+                let isolated_login = format!("Bearer ncx_live_{}_{}", "a".repeat(12), "c".repeat(43));
+                let supplied = headers.get("authorization").and_then(|value| value.to_str().ok());
+                assert!(supplied == Some(authorization.as_str()) || supplied == Some(isolated_login.as_str()));
                 Json(json!({
                     "object": "list", "default_model": "gpt-6-astra",
-                    "data": [{"id": "gpt-6-astra", "name": "Astra", "provider": "openai",
-                        "thinking": ["low"],
-                        "fast_mode": false, "reasoning_modes": ["standard"]}]
+                    "data": [
+                        {"id": "gpt-6-astra", "name": "Astra", "provider": "openai",
+                            "thinking": ["low", "medium", "high", "xhigh", "max"],
+                            "fast_mode": true, "reasoning_modes": ["standard"]},
+                        {"id": "@cf/zai-org/glm-5.3", "name": "GLM 5.3", "provider": "workers_ai",
+                            "thinking": ["low", "medium", "high"], "fast_mode": false, "reasoning_modes": ["standard"]},
+                        {"id": "kimi-k3", "name": "Kimi K3", "provider": "gateway",
+                            "thinking": ["low", "high"], "fast_mode": false, "reasoning_modes": ["standard"]},
+                        {"id": "mimo-v2.6-pro", "name": "MiMo V2.6 Pro", "provider": "gateway",
+                            "thinking": ["low", "medium", "high"], "fast_mode": false, "reasoning_modes": ["standard"]}
+                    ]
                 }))
             }))
             .route("/v1/me", get(|headers: axum::http::HeaderMap| async move {
@@ -1451,6 +1557,7 @@ impl Fixture {
             .route("/v1/agents/{agent}/ws", get(socket))
             .route("/v1/agents/{agent}/events/history", get(event_history))
             .route("/v1/agents/{agent}/routing", post(enable_routing))
+            .route("/v1/agents/{agent}/settings", patch(patch_settings))
             .route("/v1/agents/{agent}/turns", post(submit))
             .route("/v1/agents/{agent}/turns/{turn}/steer", post(steer))
             .route("/v1/agents/{agent}/turns/{turn}/steer-receipt", get(steer_receipt))
@@ -1462,6 +1569,8 @@ impl Fixture {
                 vault_writes: vault_writes.clone(),
                 native_writes: native_writes.clone(), native_key: native_key.clone(), native_expiry,
                 routing_requests: routing_requests.clone(),
+                routing_bodies: routing_bodies.clone(),
+                settings_requests: settings_requests.clone(),
                 model_route: model_route.clone(),
                 listed_agent: listed_agent.clone(),
                 resume_gate: resume_gate.clone(),
@@ -1502,6 +1611,8 @@ impl Fixture {
             native_writes,
             native_key,
             routing_requests,
+            routing_bodies,
+            settings_requests,
             model_route,
             listed_agent,
             resume_gate,
@@ -4250,6 +4361,8 @@ async fn terminal_batch_children_expand_independently_and_collapse_with_parent()
         }),
     );
     fixture.complete(REMOTE_TURN);
+    // Completion appends an answer and moves the batch row; wait before hit testing.
+    fixture.terminal.wait_text("Enter send").await;
     fixture.terminal.wait_text("2 tools").await;
     fixture.terminal.wait_no_text("check-first").await;
     fixture.terminal.wait_no_text("check-second").await;
@@ -5002,5 +5115,680 @@ async fn terminal_link_clicks_open_once_and_drag_still_copies() {
     eprintln!(
         "DRAG selects via OSC52 without launching a URL\n{}",
         fixture.terminal.screen.lock().unwrap().screen().contents()
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn terminal_gateway_model_picker_routes_manual_selection_and_keeps_prompt_usable() {
+    // Use the service's explicit fast=false state rather than fresh-CLI defaults.
+    let mut fixture = Fixture::start_with_history(false, true, Vec::new()).await;
+    fixture.terminal.wait_text("Enter send").await;
+    fixture.terminal.input("/fast");
+    fixture.terminal.wait_text("Enable fast mode").await;
+    fixture.terminal.input("\r");
+    tokio::time::timeout(TIMEOUT, async {
+        while fixture.settings.lock().unwrap()["fast_mode"] != true {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    fixture.terminal.prompt("/thinking xhigh", "\r");
+    fixture.terminal.wait_text("xhigh").await;
+    for (index, model) in ["@cf/zai-org/glm-5.3", "kimi-k3", "mimo-v2.6-pro"]
+        .into_iter()
+        .enumerate()
+    {
+        fixture.terminal.prompt("/model", "\r");
+        fixture.terminal.wait_text("Select model").await;
+        fixture.terminal.input("\x1b[B\r");
+        fixture.terminal.wait_no_text("Select model").await;
+        tokio::time::timeout(TIMEOUT, async {
+            while fixture.routing_bodies.lock().unwrap().len() <= index {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        fixture.terminal.wait_text(model).await;
+        fixture.terminal.wait_text("Enter send").await;
+        let bodies = fixture.routing_bodies.lock().unwrap().clone();
+        assert_eq!(bodies[index]["model"], model);
+        assert!(["low", "medium", "high"].contains(&bodies[index]["thinking"].as_str().unwrap()));
+        assert_eq!(fixture.settings.lock().unwrap()["fast_mode"], false);
+        fixture.terminal.wait_no_text("Auto · choosing").await;
+        fixture
+            .terminal
+            .wait_no_text("Could not select model")
+            .await;
+        println!("Manual selection HTTP: {}", bodies[index]);
+    }
+    assert!(
+        fixture
+            .settings_requests
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|body| body.get("model").is_none() || body["model"] == "gpt-6-astra")
+    );
+    fixture.terminal.prompt("/thinking high", "\r");
+    tokio::time::timeout(TIMEOUT, async {
+        while fixture.settings.lock().unwrap()["thinking"] != "high" {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| {
+        panic!(
+            "Effort did not reach service; routes={:?}; terminal=\n{}",
+            fixture.routing_bodies.lock().unwrap(),
+            fixture.terminal.screen.lock().unwrap().screen().contents()
+        )
+    });
+    fixture.terminal.wait_text("high").await;
+    assert_eq!(
+        fixture.routing_bodies.lock().unwrap().last().unwrap(),
+        &json!({"model": "mimo-v2.6-pro", "thinking": "high"})
+    );
+    fixture.terminal.prompt("/autoroute", "\r");
+    fixture.terminal.wait_text("Auto · choosing").await;
+    fixture.terminal.prompt("/thinking high", "\r");
+    fixture
+        .terminal
+        .wait_text("Automatic routing controls the model and effort")
+        .await;
+    fixture.terminal.prompt("/model gpt-6-astra", "\r");
+    fixture.terminal.wait_no_text("Auto · choosing").await;
+    fixture.terminal.wait_text("gpt-6-astra").await;
+    fixture.terminal.wait_text("Enter send").await;
+    tokio::time::timeout(TIMEOUT, async {
+        while fixture.settings.lock().unwrap()["model"] != "gpt-6-astra" {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    fixture.terminal.prompt("/model kimi-k3", "\r");
+    fixture.terminal.wait_text("kimi-k3").await;
+    fixture.terminal.wait_text("Enter send").await;
+    fixture
+        .terminal
+        .prompt("MANUALLY_SELECTED_MODEL_TASK", "\r");
+    let turn = fixture.submission("MANUALLY_SELECTED_MODEL_TASK").await;
+    assert_eq!(fixture.settings.lock().unwrap()["model"], "kimi-k3");
+    *fixture.model_route.lock().unwrap() =
+        Some(json!({"backend": "vercel", "model": "kimi-k3", "thinking": "high"}));
+    fixture.complete(&turn);
+    fixture.terminal.wait_text("done").await;
+    fixture.terminal.wait_text("Vercel").await;
+    fixture.terminal.wait_no_text("Auto · choosing").await;
+    let requests = fixture.routing_bodies.lock().unwrap().len();
+    fixture.terminal.prompt("/model gpt-6-astra", "\r");
+    fixture
+        .terminal
+        .wait_text("The model can only be changed before the first prompt")
+        .await;
+    fixture.terminal.prompt("/thinking low", "\r");
+    fixture
+        .terminal
+        .wait_text("effort is fixed after the first prompt")
+        .await;
+    fixture.terminal.prompt("MANUAL_MODEL_FOLLOWUP", "\r");
+    let followup = fixture.submission("MANUAL_MODEL_FOLLOWUP").await;
+    fixture.complete(&followup);
+    fixture.terminal.wait_text("done").await;
+    assert_eq!(fixture.routing_bodies.lock().unwrap().len(), requests);
+    println!(
+        "Verified terminal after manual routing and follow-up:\n{}",
+        fixture.terminal.screen.lock().unwrap().screen().contents()
+    );
+}
+
+// Exercises local reuse through two real terminal processes without server history.
+#[tokio::test]
+async fn terminal_prompt_cache_survives_restart_and_scopes_sessions() {
+    const OTHER: &str = "019fc927-b280-79a7-8445-1b9996ad2fc1";
+    let mut fixture = Fixture::start().await;
+    let original = "CACHE_EXACT_短\n  preserve indentation\n\nlast line";
+    fixture.terminal.prompt(original, "\r");
+    let turn = fixture.submission(original).await;
+    fixture.complete(&turn);
+    fixture.terminal.wait_text("Enter send").await;
+    // The newer loose match must rank below the older exact match.
+    let distractor = "C A C H E E X A C T distractor";
+    fixture.terminal.prompt(distractor, "\r");
+    let turn = fixture.submission(distractor).await;
+    fixture.complete(&turn);
+    fixture.terminal.wait_text("Enter send").await;
+    // Exit directly; no picker lookup may mask a missed background save.
+    let account_home = fixture.terminal._workspace.path().join(".codex");
+    fixture.terminal.input("\x03\x03");
+    fixture.terminal.wait_output("\x1b[?1049l").await;
+    tokio::time::timeout(TIMEOUT, async {
+        while fixture.terminal.child.try_wait().unwrap().is_none() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("prompt cache flush must finish on exit");
+    fixture.history.lock().unwrap().clear();
+
+    let mut reopened = Terminal::start_with_command(&fixture.origin, false, None, |command| {
+        command.args(["attach", OTHER]);
+        command.env("CODEX_HOME", &account_home);
+    });
+    let events = tokio::time::timeout(TIMEOUT, fixture.connections.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    reopened.wait_text("Enter send").await;
+    reopened.prompt("UNSENT_DRAFT_短", "");
+    reopened.input("\x12");
+    reopened.wait_text("Recent prompts").await;
+    reopened.wait_text("CACHE_EXACT_短").await;
+    reopened.input("\x06");
+    reopened.wait_text("Current session").await;
+    reopened.wait_text("No prompts in this scope").await;
+    reopened.input("\x1b");
+    reopened.wait_no_text("Recent prompts").await;
+    reopened.wait_text("UNSENT_DRAFT_短").await;
+    assert!(fixture.submissions.try_recv().is_err());
+    reopened.input("\x12");
+    reopened.wait_text("Recent prompts").await;
+    reopened.prompt("cacheexact", "");
+    reopened.wait_text("cacheexact").await;
+    reopened.wait_text("CACHE_EXACT_短").await;
+    eprintln!(
+        "prompt cache after process restart, empty remote history, and fuzzy lookup:\n{}",
+        reopened.screen.lock().unwrap().screen().contents()
+    );
+    reopened.input("\r");
+    reopened.wait_no_text("Recent prompts").await;
+    reopened.wait_text("preserve indentation").await;
+    assert!(
+        fixture.submissions.try_recv().is_err(),
+        "picker selection must only edit the draft"
+    );
+    reopened.input("\r");
+    let sent = tokio::time::timeout(TIMEOUT, fixture.submissions.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(prompt_text(&sent["input"]), original);
+    let turn = sent["id"].as_str().unwrap();
+    events.send(json!({"type":"turn_accepted","id":turn,"turn_id":turn,"cursor":"1","input":sent["input"],"replayed":false})).unwrap();
+    events.send(json!({"type":"turn_completed","id":turn,"turn_id":turn,"cursor":"2","final_message":"CACHE_REUSE_CONFIRMED","usage":null,"citations":[],"usage_error":null})).unwrap();
+    reopened.wait_text("CACHE_REUSE_CONFIRMED").await;
+
+    // Same service, different login credential: no prompts from the prior login.
+    let mut different_login =
+        Terminal::start_with_command(&fixture.origin, true, None, |command| {
+            command.env("CODEX_HOME", &account_home);
+            command.env(
+                "NANOCODEX_API_KEY",
+                format!("ncx_live_{}_{}", "a".repeat(12), "c".repeat(43)),
+            );
+        });
+    different_login.wait_text("Enter send").await;
+    different_login.input("\x12");
+    different_login.wait_text("Recent prompts").await;
+    different_login.wait_text("No prompts in this scope").await;
+    eprintln!("same service, different login: cached prompts isolated");
+
+    // A separate service using the same local storage must not see the first cache.
+    let other_service = Fixture::start().await;
+    let mut isolated = Terminal::start_with_command(&other_service.origin, true, None, |command| {
+        command.env("CODEX_HOME", &account_home);
+    });
+    isolated.wait_text("Enter send").await;
+    isolated.input("\x12");
+    isolated.wait_text("Recent prompts").await;
+    isolated.wait_text("No prompts in this scope").await;
+    eprintln!(
+        "different service with shared local home:\n{}",
+        isolated.screen.lock().unwrap().screen().contents()
+    );
+}
+
+#[tokio::test]
+async fn terminal_prompt_cache_merges_concurrent_terminals_and_preserves_corruption() {
+    const OTHER: &str = "019fc927-b280-79a7-8445-1b9996ad2fc2";
+    let mut fixture = Fixture::start().await;
+    let account_home = fixture.terminal._workspace.path().join(".codex");
+    let mut peer = Terminal::start_with_command(&fixture.origin, false, None, |command| {
+        command.args(["attach", OTHER]);
+        command.env("CODEX_HOME", &account_home);
+    });
+    let _peer_events = tokio::time::timeout(TIMEOUT, fixture.connections.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    peer.wait_text("Enter send").await;
+    fixture.terminal.prompt("CONCURRENT_PROMPT_ALPHA", "\r");
+    peer.prompt("CONCURRENT_PROMPT_BETA", "\r");
+    let mut sent = Vec::new();
+    for _ in 0..2 {
+        let input = tokio::time::timeout(TIMEOUT, fixture.submissions.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        sent.push(prompt_text(&input["input"]));
+    }
+    sent.sort();
+    assert_eq!(sent, ["CONCURRENT_PROMPT_ALPHA", "CONCURRENT_PROMPT_BETA"]);
+    // Each terminal waits for its own merge; reopening then sees both writers.
+    for terminal in [&mut fixture.terminal, &mut peer] {
+        terminal.input("\x12");
+        terminal.wait_text("Recent prompts").await;
+        terminal.input("\x1b");
+        terminal.wait_no_text("Recent prompts").await;
+    }
+    peer.input("\x12");
+    peer.wait_text("Recent prompts").await;
+    peer.wait_text("CONCURRENT_PROMPT_ALPHA").await;
+    peer.wait_text("CONCURRENT_PROMPT_BETA").await;
+    eprintln!(
+        "concurrent writers preserved:\n{}",
+        peer.screen.lock().unwrap().screen().contents()
+    );
+    peer.input("\x06");
+    peer.wait_text("Current session").await;
+    peer.wait_text("CONCURRENT_PROMPT_BETA").await;
+    peer.wait_no_text("CONCURRENT_PROMPT_ALPHA").await;
+    peer.input("\x1b");
+    peer.wait_no_text("Recent prompts").await;
+    peer.prompt("DRAFT_SURVIVES_CORRUPTION", "");
+    let entries = std::fs::read_dir(account_home.join("prompt-history")).unwrap();
+    let data = entries
+        .map(|entry| entry.unwrap().path())
+        .find(|path| {
+            path.extension()
+                .is_some_and(|extension| extension == "json")
+        })
+        .unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(
+            std::fs::metadata(&data).unwrap().permissions().mode() & 0o077,
+            0
+        );
+    }
+    // A blocked cache read must not prevent cancellation or replace a later overlay.
+    peer.input("\x03");
+    peer.wait_no_text("DRAFT_SURVIVES_CORRUPTION").await;
+    let lock = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(data.with_extension("json.lock"))
+        .unwrap();
+    lock.lock().unwrap();
+    peer.input("\x12");
+    peer.wait_text("Loading recent prompts").await;
+    peer.input("\x1b");
+    peer.wait_no_text("Loading recent prompts").await;
+    peer.prompt("/id", "\r");
+    peer.wait_text("Agent ID").await;
+    // The file operation has a one-second timeout; observe after that response.
+    tokio::time::sleep(Duration::from_millis(1300)).await;
+    peer.wait_text("Agent ID").await;
+    peer.wait_no_text("Recent prompts").await;
+    drop(lock);
+    peer.input("\x1b");
+    peer.wait_no_text("Agent ID").await;
+    peer.prompt("DRAFT_SURVIVES_CORRUPTION", "");
+    std::fs::write(&data, b"corrupt-history-for-recovery-journey").unwrap();
+    peer.input("\x12");
+    peer.wait_text("Recent prompts").await;
+    peer.wait_text("CONCURRENT_PROMPT_BETA").await;
+    peer.input("\x1b");
+    peer.wait_no_text("Recent prompts").await;
+    peer.wait_text("DRAFT_SURVIVES_CORRUPTION").await;
+    peer.wait_text("Saved prompt history unavailable").await;
+    assert_eq!(
+        std::fs::read(&data).unwrap(),
+        b"corrupt-history-for-recovery-journey"
+    );
+    assert!(fixture.submissions.try_recv().is_err());
+    eprintln!(
+        "corrupt cache retained with editable local draft:\n{}",
+        peer.screen.lock().unwrap().screen().contents()
+    );
+}
+
+async fn copy_journey_expect(fixture: &mut Fixture, command: &str, key: &str, expected: &str) {
+    let start = fixture.terminal.output.lock().unwrap().len();
+    fixture.terminal.prompt(command, key);
+    let actual = tokio::time::timeout(TIMEOUT, async {
+        loop {
+            let payload = {
+                let bytes = fixture.terminal.output.lock().unwrap();
+                let output = String::from_utf8_lossy(&bytes[start..]);
+                output.split_once("\x1b]52;c;").and_then(|(_, rest)| {
+                    rest.split_once('\x07')
+                        .map(|(encoded, _)| encoded.to_owned())
+                })
+            };
+            if let Some(encoded) = payload {
+                break String::from_utf8(
+                    base64::engine::general_purpose::STANDARD
+                        .decode(encoded)
+                        .unwrap(),
+                )
+                .unwrap();
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| {
+        panic!(
+            "no clipboard output for {command:?}: {}",
+            fixture.terminal.screen.lock().unwrap().screen().contents()
+        )
+    });
+    assert_eq!(actual, expected, "raw Markdown for {command:?}");
+    eprintln!("PTY command={command:?} key={key:?}; decoded OSC52={actual:?}");
+}
+
+async fn copy_journey_error(fixture: &mut Fixture, command: &str, expected: &str) {
+    fixture.terminal.prompt(command, "\r");
+    fixture.terminal.wait_text(expected).await;
+    eprintln!(
+        "PTY rejected {command:?}: {}",
+        fixture.terminal.screen.lock().unwrap().screen().contents()
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn terminal_copy_keeps_raw_markdown_and_skips_unfinished_messages() {
+    let mut fixture = Fixture::start().await;
+    copy_journey_error(&mut fixture, "/copy", "No completed assistant response").await;
+    fixture.terminal.prompt("COPY_STREAM_JOURNEY", "\r");
+    let turn = fixture.submission("COPY_STREAM_JOURNEY").await;
+    fixture.nested(&turn, "assistant.delta", json!({"model_call_index": 1, "item_id": "first-copy", "phase": "final_answer", "text": "COPY_PARTIAL_ONLY"}));
+    fixture.terminal.wait_text("COPY_PARTIAL_ONLY").await;
+    copy_journey_error(&mut fixture, "/copy", "No completed assistant response").await;
+
+    let first = "# COPY_FIRST\n\n**bold** and [source](https://example.test/copy)\n\n```rust\nlet answer = 42;\n```\n";
+    fixture.nested(&turn, "assistant.message", json!({"model_call_index": 1, "item_id": "first-copy", "phase": "final_answer", "text": first}));
+    fixture.terminal.wait_text("COPY_FIRST").await;
+    // A completed message is available while its turn is still running.
+    copy_journey_expect(&mut fixture, "/copy", "\r", first).await;
+    fixture.emit(
+        &turn,
+        json!({"type":"event", "agent_id":1, "event": {
+            "protocol_version":1, "request_id":"copy-child", "seq":fixture.cursor+1,
+            "type":"assistant.message", "payload":{"model_call_index":1,"item_id":"child-answer",
+            "phase":"final_answer","text":"COPY_CHILD_MUST_NOT_REPLACE_PARENT"}
+        }}),
+    );
+    fixture.nested(&turn, "assistant.delta", json!({"model_call_index": 2, "item_id": "second-copy", "phase": "final_answer", "text": "COPY_SECOND_STREAM"}));
+    fixture.terminal.wait_text("COPY_SECOND_STREAM").await;
+    // Tab normally queues a live-turn prompt; /copy must remain local there too.
+    copy_journey_expect(&mut fixture, "/copy 1", "\t", first).await;
+    copy_journey_error(
+        &mut fixture,
+        "/copy 2",
+        "No completed assistant response at position 2",
+    )
+    .await;
+
+    let second = "## COPY_SECOND_COMPLETE\n\n- café 界\n- `raw_markdown`\n";
+    fixture.nested(&turn, "assistant.message", json!({"model_call_index": 2, "item_id": "second-copy", "phase": "final_answer", "text": second}));
+    fixture.terminal.wait_text("COPY_SECOND_COMPLETE").await;
+    copy_journey_expect(&mut fixture, "/copy", "\r", second).await;
+    copy_journey_expect(&mut fixture, "/copy 2", "\r", first).await;
+    fixture.complete(&turn);
+    fixture.terminal.wait_text("Enter send").await;
+    copy_journey_expect(&mut fixture, "/copy 2", "\r", first).await;
+    copy_journey_error(
+        &mut fixture,
+        "/copy 3",
+        "No completed assistant response at position 3",
+    )
+    .await;
+
+    for command in [
+        "/copy 0",
+        "/copy -1",
+        "/copy nope",
+        "/copy 1 2",
+        "/copy 999999999999999999999999999999999999",
+    ] {
+        copy_journey_error(&mut fixture, command, "Usage: /copy [N]").await;
+    }
+    // Exercise typed action-menu arguments as well as bracketed paste commands.
+    fixture.terminal.input("/copy response");
+    fixture.terminal.wait_text("copy response").await;
+    fixture.terminal.input("\r");
+    fixture.terminal.wait_text("Usage: /copy [N]").await;
+
+    // A successful copy is a terminal-input barrier after all rejected commands.
+    copy_journey_expect(&mut fixture, "/copy", "\r", second).await;
+    let output = fixture.terminal.output.lock().unwrap().clone();
+    assert_eq!(
+        String::from_utf8_lossy(&output)
+            .matches("\x1b]52;c;")
+            .count(),
+        6,
+        "errors must not copy and a streamed item must not count"
+    );
+    // The next real prompt must be the next submission: no copy command may have
+    // escaped as input, a queued follow-up, or a live steering request.
+    fixture.terminal.prompt("COPY_SUBMISSION_BARRIER", "\r");
+    let barrier = fixture.submission("COPY_SUBMISSION_BARRIER").await;
+    assert!(fixture.submissions.try_recv().is_err());
+    assert!(fixture.steers.try_recv().is_err());
+    fixture.complete(&barrier);
+    fixture.terminal.wait_text("Enter send").await;
+    assert!(fixture.submissions.try_recv().is_err());
+    eprintln!(
+        "COPY journey: six exact clipboard payloads; no copy submission or steer\n{}",
+        fixture.terminal.screen.lock().unwrap().screen().contents()
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn terminal_copy_reads_restored_history_before_live_completion() {
+    let older = "# COPY_HISTORY_OLDER\n\n**original Markdown**\n";
+    let newer = "# COPY_HISTORY_NEWER\n\n[source](https://example.test/history)\n";
+    let second_turn = "019fc927-b282-79a7-8445-1b9996ad2fb0";
+    let history = vec![
+        json!({"cursor": "1", "turn_id": REMOTE_TURN, "type": "turn_accepted", "id": REMOTE_TURN, "input": "COPY_HISTORY_FIRST_PROMPT", "replayed": false}),
+        json!({"cursor": "2", "turn_id": REMOTE_TURN, "type": "turn_completed", "id": REMOTE_TURN, "final_message": older, "usage": null, "citations": [], "usage_error": null}),
+        json!({"cursor": "3", "turn_id": second_turn, "type": "turn_accepted", "id": second_turn, "input": "COPY_HISTORY_SECOND_PROMPT", "replayed": false}),
+        json!({"cursor": "4", "turn_id": second_turn, "type": "turn_completed", "id": second_turn, "final_message": newer, "usage": null, "citations": [], "usage_error": null}),
+    ];
+    let mut fixture = Fixture::start_with_history(false, true, history).await;
+    fixture.terminal.wait_text("COPY_HISTORY_NEWER").await;
+    copy_journey_expect(&mut fixture, "/copy", "\r", newer).await;
+    copy_journey_expect(&mut fixture, "/copy 2", "\r", older).await;
+    fixture.terminal.prompt("COPY_AFTER_RESTORE", "\r");
+    let turn = fixture.submission("COPY_AFTER_RESTORE").await;
+    fixture.nested(&turn, "assistant.delta", json!({"model_call_index": 1, "item_id": "restored-live", "phase": "final_answer", "text": "COPY_RESTORED_LIVE_STREAM"}));
+    fixture
+        .terminal
+        .wait_text("COPY_RESTORED_LIVE_STREAM")
+        .await;
+    copy_journey_expect(&mut fixture, "/copy", "\r", newer).await;
+    copy_journey_expect(&mut fixture, "/copy 2", "\r", older).await;
+    copy_journey_error(
+        &mut fixture,
+        "/copy 3",
+        "No completed assistant response at position 3",
+    )
+    .await;
+    let live = "# COPY_RESTORED_LIVE_FINAL\n\n`unchanged bytes`\n";
+    fixture.nested(&turn, "assistant.message", json!({"model_call_index": 1, "item_id": "restored-live", "phase": "final_answer", "text": live}));
+    fixture.complete(&turn);
+    fixture.terminal.wait_text("Enter send").await;
+    copy_journey_expect(&mut fixture, "/copy", "\r", live).await;
+    copy_journey_expect(&mut fixture, "/copy 3", "\r", older).await;
+    assert!(fixture.submissions.try_recv().is_err());
+    assert!(fixture.steers.try_recv().is_err());
+    let output = fixture.terminal.output.lock().unwrap().clone();
+    assert_eq!(
+        String::from_utf8_lossy(&output)
+            .matches("\x1b]52;c;")
+            .count(),
+        6
+    );
+    eprintln!(
+        "COPY history journey: restored indexes stay stable during streaming and shift once on completion\n{}",
+        fixture.terminal.screen.lock().unwrap().screen().contents()
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn terminal_prompt_cache_flushes_failed_and_coalesced_writes_on_exit() {
+    let mut fixture = Fixture::start().await;
+    fixture.terminal.prompt("CACHE_RETRY_SEED", "\r");
+    let seed = fixture.submission("CACHE_RETRY_SEED").await;
+    fixture.complete(&seed);
+    fixture.terminal.wait_text("Enter send").await;
+    // Establish the data and lock files before introducing contention. This is
+    // the last picker read before exit, so a later lookup cannot repair a save.
+    fixture.terminal.input("\x12");
+    fixture.terminal.wait_text("Recent prompts").await;
+    fixture.terminal.wait_text("CACHE_RETRY_SEED").await;
+    fixture.terminal.input("\x1b");
+    fixture.terminal.wait_no_text("Recent prompts").await;
+    let account_home = fixture.terminal._workspace.path().join(".codex");
+    let data = std::fs::read_dir(account_home.join("prompt-history"))
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .find(|path| {
+            path.extension()
+                .is_some_and(|extension| extension == "json")
+        })
+        .unwrap();
+    let lock = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(data.with_extension("json.lock"))
+        .unwrap();
+    lock.lock().unwrap();
+    let locked_at = std::time::Instant::now();
+    for prompt in ["CACHE_RETRY_FIRST_短", "CACHE_RETRY_COALESCED_SECOND"] {
+        fixture.terminal.prompt(prompt, "\r");
+        let turn = fixture.submission(prompt).await;
+        fixture.complete(&turn);
+        fixture.terminal.wait_text("Enter send").await;
+    }
+    // The second submission arrives while the first write is blocked. Keep
+    // the lock through the one-second attempt and the delayed one-second retry.
+    fixture
+        .terminal
+        .wait_text("Could not save recent prompts")
+        .await;
+    tokio::time::sleep(Duration::from_millis(1600)).await;
+    let blocked_data = std::fs::read_to_string(&data).unwrap();
+    assert!(!blocked_data.contains("CACHE_RETRY_FIRST_短"));
+    assert!(!blocked_data.contains("CACHE_RETRY_COALESCED_SECOND"));
+    eprintln!(
+        "cache lock held {:?}; both real submissions completed but background save failed; before unlock:\n{}",
+        locked_at.elapsed(),
+        fixture.terminal.screen.lock().unwrap().screen().contents()
+    );
+    drop(lock);
+    // Exit immediately after releasing the lock. Do not use Ctrl+R: shutdown
+    // must retain and flush the failed batch together with coalesced prompts.
+    fixture.terminal.input("\x03\x03");
+    fixture.terminal.wait_output("\x1b[?1049l").await;
+    tokio::time::timeout(TIMEOUT, async {
+        while fixture.terminal.child.try_wait().unwrap().is_none() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("failed prompt cache writes must flush before process exit");
+    fixture.history.lock().unwrap().clear();
+    let mut reopened = Terminal::start_with_command(&fixture.origin, true, None, |command| {
+        command.env("CODEX_HOME", &account_home);
+    });
+    let _events = tokio::time::timeout(TIMEOUT, fixture.connections.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    reopened.wait_text("Enter send").await;
+    reopened.input("\x12");
+    reopened.wait_text("Recent prompts").await;
+    reopened.wait_text("CACHE_RETRY_FIRST_短").await;
+    reopened.wait_text("CACHE_RETRY_COALESCED_SECOND").await;
+    assert!(fixture.submissions.try_recv().is_err());
+    eprintln!(
+        "restart with empty server history recovered both failed/coalesced writes from CODEX_HOME={} without a pre-exit picker read:\n{}",
+        account_home.display(),
+        reopened.screen.lock().unwrap().screen().contents()
+    );
+}
+
+// Linux permits arbitrary filename bytes; APFS rejects this cwd with EILSEQ.
+#[cfg(target_os = "linux")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn terminal_prompt_cache_persists_from_a_non_utf8_workspace() {
+    use std::os::unix::ffi::OsStringExt;
+
+    let mut fixture = Fixture::start().await;
+    let local = tempfile::tempdir().unwrap();
+    let workspace = local.path().join(std::ffi::OsString::from_vec(
+        b"prompt-cache-workspace-\xff".to_vec(),
+    ));
+    std::fs::create_dir(&workspace).unwrap();
+    assert!(workspace.to_str().is_none());
+    let account_home = local.path().join("account-home");
+    // Start the shipped executable in an actual non-UTF-8 cwd, rather than
+    // manufacturing JSON (which cannot represent an invalid UTF-8 path).
+    fixture.terminal = Terminal::start_with_command(&fixture.origin, true, None, |command| {
+        command.cwd(&workspace);
+        command.env("CODEX_HOME", &account_home);
+    });
+    fixture.events = tokio::time::timeout(TIMEOUT, fixture.connections.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    fixture.terminal.wait_text("Enter send").await;
+    let prompt = "CACHE_NON_UTF8_WORKSPACE_短\n  preserve this prompt exactly";
+    fixture.terminal.prompt(prompt, "\r");
+    let turn = fixture.submission(prompt).await;
+    fixture.complete(&turn);
+    fixture.terminal.wait_text("Enter send").await;
+    fixture.terminal.input("\x03\x03");
+    fixture.terminal.wait_output("\x1b[?1049l").await;
+    tokio::time::timeout(TIMEOUT, async {
+        while fixture.terminal.child.try_wait().unwrap().is_none() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("non-UTF-8 workspace prompt must flush before process exit");
+    fixture.history.lock().unwrap().clear();
+    let mut reopened = Terminal::start_with_command(&fixture.origin, true, None, |command| {
+        command.env("CODEX_HOME", &account_home);
+    });
+    let _events = tokio::time::timeout(TIMEOUT, fixture.connections.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    reopened.wait_text("Enter send").await;
+    reopened.input("\x12");
+    reopened.wait_text("Recent prompts").await;
+    reopened.wait_text("CACHE_NON_UTF8_WORKSPACE_短").await;
+    reopened.input("\r");
+    reopened.wait_no_text("Recent prompts").await;
+    reopened.wait_text("preserve this prompt exactly").await;
+    assert!(fixture.submissions.try_recv().is_err());
+    reopened.input("\r");
+    let sent = tokio::time::timeout(TIMEOUT, fixture.submissions.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(prompt_text(&sent["input"]), prompt);
+    eprintln!(
+        "non-UTF-8 native cwd={:?}; persisted exact prompt after process exit and cleared server history: {prompt:?}\n{}",
+        workspace.as_os_str(),
+        reopened.screen.lock().unwrap().screen().contents()
     );
 }

@@ -163,6 +163,7 @@ pub(crate) struct HistoryCheckpoint {
     pub(crate) client_authored: std::collections::BTreeSet<String>,
     pub(crate) prompt_cache_key: Arc<str>,
     pub(crate) context_baseline: Option<ContextBaseline>,
+    pub(crate) reasoning: crate::reasoning::ReasoningState,
 }
 
 impl ModelCheckpoint {
@@ -192,6 +193,14 @@ impl ModelCheckpoint {
 
     pub(crate) const fn client_authored(&self) -> &std::collections::BTreeSet<String> {
         self.conversation.managed.client_authored()
+    }
+
+    pub(crate) const fn reasoning(&self) -> &crate::reasoning::ReasoningState {
+        &self.conversation.reasoning
+    }
+
+    pub(crate) fn restore_reasoning(&mut self, reasoning: crate::reasoning::ReasoningState) {
+        self.conversation.reasoning = reasoning;
     }
 
     pub(crate) fn context_usage(&self) -> crate::session::ContextUsage {
@@ -578,6 +587,7 @@ pub(crate) fn prepare_history_checkpoint(
         client_authored,
         prompt_cache_key,
         context_baseline,
+        reasoning,
     } = resume;
     let selected_agents_md = context_source
         .project_instructions(&workspace)
@@ -593,7 +603,7 @@ pub(crate) fn prepare_history_checkpoint(
     )?
     .prefix()
     .to_vec();
-    let checkpoint = ModelCheckpoint::resume(
+    let mut checkpoint = ModelCheckpoint::resume(
         workspace,
         provider_session_id,
         request_prefix,
@@ -604,6 +614,7 @@ pub(crate) fn prepare_history_checkpoint(
         context_source.global_instructions(),
         context_baseline,
     )?;
+    checkpoint.restore_reasoning(reasoning);
     Ok(PreparedCheckpoint {
         checkpoint,
         runtime,

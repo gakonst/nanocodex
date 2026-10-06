@@ -17,6 +17,7 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap},
 };
+use std::cmp::Reverse;
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
@@ -139,7 +140,7 @@ impl RecentPromptPicker {
 
     fn refresh_visible(&mut self) {
         let query = self.query.to_ascii_lowercase();
-        self.visible = self
+        let mut visible = self
             .prompts
             .iter()
             .enumerate()
@@ -149,9 +150,11 @@ impl RecentPromptPicker {
                 {
                     return None;
                 }
-                fuzzy_score(&prompt.text, &query).map(|_| index)
+                fuzzy_score(&prompt.text, &query).map(|score| (index, score))
             })
             .collect::<Vec<_>>();
+        visible.sort_by_key(|(index, score)| (Reverse(*score), *index));
+        self.visible = visible.into_iter().map(|(index, _)| index).collect();
         self.selected = 0;
         self.preview_scroll = 0;
     }

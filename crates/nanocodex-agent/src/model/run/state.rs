@@ -29,6 +29,7 @@ pub(super) struct ContinuationPolicy {
     pub(super) model: Model,
     pub(super) thinking: Thinking,
     pub(super) fast_mode: bool,
+    pub(super) reasoning_effort_updates: bool,
 }
 
 #[derive(Clone)]
@@ -36,6 +37,7 @@ pub(super) struct ConversationState {
     pub(super) canonical_context: Arc<ResponseItem>,
     pub(super) managed: ManagedSessionState,
     pub(super) continuation_policy: Option<ContinuationPolicy>,
+    pub(super) reasoning: crate::reasoning::ReasoningState,
 }
 
 impl ConversationState {
@@ -44,6 +46,7 @@ impl ConversationState {
             canonical_context: Arc::new(canonical_context),
             managed: ManagedSessionState::new(Vec::new()),
             continuation_policy: None,
+            reasoning: Default::default(),
         }
     }
 
@@ -59,6 +62,7 @@ impl ConversationState {
             canonical_context: Arc::new(canonical_context),
             managed: ManagedSessionState::new(history),
             continuation_policy: None,
+            reasoning: Default::default(),
         })
     }
 
@@ -78,6 +82,7 @@ impl ConversationState {
             canonical_context: Arc::new(canonical_context),
             managed,
             continuation_policy: None,
+            reasoning: Default::default(),
         };
         state.prepare_replay_images();
         Ok(state)
@@ -139,6 +144,7 @@ impl ConversationState {
         request_prefix: &[ResponseItem],
     ) {
         self.managed.install_compaction(item, [], request_prefix);
+        self.reasoning.compacted();
     }
 
     pub(super) fn install_mid_turn_compaction(
@@ -152,6 +158,7 @@ impl ConversationState {
         let initial_context = [canonical_developer_context, canonical_context];
         self.managed
             .install_compaction(item, initial_context, request_prefix);
+        self.reasoning.compacted();
     }
 
     pub(super) fn append_canonical_context(
@@ -173,10 +180,12 @@ impl ConversationState {
     }
 
     pub(super) fn prepare_request_policy(&mut self, policy: ContinuationPolicy) {
-        if self
-            .continuation_policy
-            .is_some_and(|previous| previous != policy)
-        {
+        if self.continuation_policy.is_some_and(|previous| {
+            previous.model != policy.model
+                || previous.fast_mode != policy.fast_mode
+                || previous.reasoning_effort_updates != policy.reasoning_effort_updates
+                || (previous.thinking != policy.thinking && !policy.reasoning_effort_updates)
+        }) {
             self.reset_for_full_request();
         }
         self.continuation_policy = Some(policy);

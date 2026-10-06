@@ -220,6 +220,24 @@ impl TranscriptModel {
         }
     }
 
+    /// Adapted from clabby/tact's Transcript::assistant_response (Apache-2.0).
+    /// Use the same projection for live and restored history. Child activity is
+    /// displayed separately and must not replace this pane's assistant answer.
+    pub(crate) fn assistant_response(&self, index: usize) -> Option<&str> {
+        self.entries
+            .iter()
+            .rev()
+            .filter_map(|entry| match &entry.kind {
+                EntryKind::Assistant {
+                    text,
+                    complete: true,
+                    agent_id: None,
+                } if !entry.hidden && !text.trim().is_empty() => Some(text.as_str()),
+                _ => None,
+            })
+            .nth(index.checked_sub(1)?)
+    }
+
     pub(crate) fn entries(&self) -> &[TranscriptEntry] {
         &self.entries
     }

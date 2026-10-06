@@ -244,6 +244,10 @@ pub(super) enum ScrollCommand {
 }
 
 impl Transcript {
+    pub(super) fn assistant_response(&self, index: usize) -> Option<&str> {
+        self.model.assistant_response(index)
+    }
+
     pub(crate) fn secure_input_request(
         &self,
         command: &crate::tui::secure_input::Command,
