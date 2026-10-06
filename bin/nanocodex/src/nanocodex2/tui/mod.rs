@@ -1465,7 +1465,10 @@ impl DriverRuntime {
     }
 
     fn refresh_routing(&mut self) {
-        if self.agent_id.is_empty() || !self.routing_updates.is_empty() {
+        if self.agent_id.is_empty()
+            || !self.routing_updates.is_empty()
+            || !self.settings_updates.is_empty()
+        {
             return;
         }
         let client = self.client.clone();
@@ -1504,6 +1507,11 @@ impl DriverRuntime {
             return;
         };
         let client = self.client.clone();
+        let was_routed = self.routing_enabled;
+        let model = self.settings.model;
+        // A read started before this mutation must not restore an obsolete route.
+        self.routing_generation = self.routing_generation.wrapping_add(1);
+        self.routing_updates = JoinSet::new();
         self.settings_updates.spawn(async move {
             let result = match mutation {
                 SettingsMutation::AutoRoute => client
@@ -1511,10 +1519,29 @@ impl DriverRuntime {
                     .await
                     .map(|receipt| receipt.settings),
                 SettingsMutation::Complete(settings) => {
-                    client.set_settings(&agent_id, settings).await
+                    if gateway_model(settings.model) || was_routed {
+                        match client
+                            .set_manual_routing(&agent_id, settings.model, settings.thinking)
+                            .await
+                        {
+                            Ok(receipt) if gateway_model(settings.model) => Ok(receipt.settings),
+                            Ok(receipt) if receipt.settings == settings => Ok(receipt.settings),
+                            Ok(_) => client.set_settings(&agent_id, settings).await,
+                            Err(error) => Err(error),
+                        }
+                    } else {
+                        client.set_settings(&agent_id, settings).await
+                    }
                 }
                 SettingsMutation::Thinking(thinking) => {
-                    client.set_thinking(&agent_id, thinking).await
+                    if gateway_model(model) {
+                        client
+                            .set_manual_routing(&agent_id, model, thinking)
+                            .await
+                            .map(|receipt| receipt.settings)
+                    } else {
+                        client.set_thinking(&agent_id, thinking).await
+                    }
                 }
                 SettingsMutation::FastMode(enabled) => {
                     client.set_fast_mode(&agent_id, enabled).await
@@ -1532,7 +1559,7 @@ impl DriverRuntime {
         let resolve_default = matches!(target, RetryTarget::Default);
         let (agent_id, settings) = match target {
             RetryTarget::Default => (None, AgentSettings::default()),
-            RetryTarget::Create(settings) => (None, settings),
+            RetryTarget::Create(settings) => (None, fresh_thread_settings(false, settings)),
             RetryTarget::Agent(agent_id) => (Some(agent_id), AgentSettings::default()),
         };
         self.connection.spawn(async move {
@@ -2407,13 +2434,14 @@ async fn run_inner(
                     runtime.routing_enabled = status.enabled;
                     runtime.routing_resolved = status.route.is_some();
 
+                    let automatic = status.automatic.unwrap_or(status.enabled);
                     let (provider, model, effort) = status.route.map_or((None, None, None), |route| {
                         runtime.settings.model = route.model;
                         runtime.settings.thinking = route.thinking;
                         (Some(route.backend.label().to_owned()), Some(route.model), Some(effort_from_thinking(route.thinking)))
                     });
                     request_render(app.update(AppEvent::RoutingHydrated { pane: PaneId::Main,
-                        enabled: status.enabled, provider, model, effort }), &mut scheduler);
+                        enabled: automatic, provider, model, effort }), &mut scheduler);
                 }
             }
             _ = clone_tick.tick(), if runtime.clone_panel.as_ref().is_some_and(|panel| matches!(panel.state, voice_clone::State::Recording(_))) => {
@@ -3201,6 +3229,14 @@ async fn run_inner(
                                     let mode = reasoning_mode_from_managed(settings.reasoning_mode);
                                     root.set_reasoning_modes(mode, mode);
                                 }
+                                if matches!(mutation, SettingsMutation::Complete(_))
+                                    || matches!(mutation, SettingsMutation::Thinking(_)) && gateway_model(settings.model)
+                                {
+                                    runtime.routing_enabled = gateway_model(settings.model);
+                                    runtime.routing_resolved = false;
+                                    request_render(app.update(AppEvent::RoutingHydrated { pane, enabled: false,
+                                        provider: None, model: None, effort: None }), &mut scheduler);
+                                }
                                 if matches!(mutation, SettingsMutation::AutoRoute) {
                                     runtime.routing_generation = runtime.routing_generation.wrapping_add(1);
                                     runtime.routing_updates = JoinSet::new();
@@ -3214,13 +3250,22 @@ async fn run_inner(
                                     }), &mut scheduler);
                                 }
                             },
-                            Err(error) => request_render(
-                                app.update(AppEvent::NotifyError {
+                            Err(error) => {
+                                // Switching from routing to native settings can require two
+                                // requests. Re-read retained settings if only the first applied.
+                                if let Ok(state) = runtime.client.state(&agent_id).await {
+                                    runtime.settings = state.settings;
+                                    if let Some(root) = app.root_mut(pane) {
+                                        let mode = reasoning_mode_from_managed(state.settings.reasoning_mode);
+                                        root.set_reasoning_modes(mode, mode);
+                                    }
+                                }
+                                runtime.refresh_routing();
+                                request_render(app.update(AppEvent::NotifyError {
                                     pane,
                                     error: format!("Could not {}: {error}", mutation.failure_subject()),
-                                }),
-                                &mut scheduler,
-                            ),
+                                }), &mut scheduler);
+                            },
                         }
                     }
                     runtime.start_next_settings_update();
@@ -3654,10 +3699,17 @@ async fn run_inner(
     }
 }
 
+fn gateway_model(model: ManagedModel) -> bool {
+    matches!(
+        model,
+        ManagedModel::Oai(Model::Glm53 | Model::Kimi | Model::Mimo)
+    )
+}
+
 fn fresh_thread_settings(was_routed: bool, settings: AgentSettings) -> AgentSettings {
-    // A routed GLM/provider choice is owned by the old conversation, not a new
-    // manual default (GLM is only admissible through an explicit routing policy).
-    if was_routed {
+    // Routed provider choices belong to the old conversation. Gateway settings
+    // must never be passed to the fixed-settings agent creation endpoint.
+    if was_routed || gateway_model(settings.model) {
         new_agent_settings()
     } else {
         settings
@@ -3704,7 +3756,7 @@ async fn apply_update(
                     runtime.client.clone(),
                     runtime.agent_id.clone(),
                     fresh_thread_settings(
-                        runtime.routing_enabled || runtime.settings.model == Model::Glm53,
+                        runtime.routing_enabled || gateway_model(runtime.settings.model),
                         runtime.settings,
                     ),
                     runtime.workspace.clone(),
@@ -4477,7 +4529,7 @@ async fn apply_update(
                             &runtime.live_records,
                         );
                         let client = runtime.client.clone();
-                        let settings = runtime.settings;
+                        let settings = fresh_thread_settings(runtime.routing_enabled, runtime.settings);
                         let task = runtime.connection.spawn(async move {
                             ConnectionResult::Agent {
                                 purpose: ConnectionPurpose::Bug(pane),
@@ -4664,10 +4716,11 @@ async fn apply_update(
                         if runtime.agent.is_none() {
                             runtime.settings = requested;
                             runtime.pending_settings = Some(requested);
+                            runtime.pending_autoroute = None;
                             if let Some(RetryTarget::Create(settings)) =
                                 runtime.retry_target.as_mut()
                             {
-                                *settings = requested;
+                                *settings = fresh_thread_settings(false, requested);
                             }
                             continue;
                         }
@@ -4681,7 +4734,9 @@ async fn apply_update(
                             if let Some(RetryTarget::Create(settings)) =
                                 runtime.retry_target.as_mut()
                             {
-                                settings.thinking = thinking;
+                                if !gateway_model(runtime.settings.model) {
+                                    settings.thinking = thinking;
+                                }
                             }
                             continue;
                         }
