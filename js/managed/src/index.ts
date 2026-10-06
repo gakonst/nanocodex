@@ -4256,14 +4256,34 @@ export class DurableAgentSession extends DurableComputerObject {
   #registerWorkspaceHands(): void {
     // Broker construction can notify before the Session field is assigned.
     this.ctx.waitUntil(Promise.resolve().then(async () => {
-      const session = this.#session();
-      if (!session) return;
-      const result = this.listWorkspaceHands(session.owner_id);
-      // Retain known identities even when conflicting routes make discovery partial.
-      // listWorkspaceHands reports uncertainty on every subsequent discovery RPC.
-      if (result.data.length === 0) return;
-      await this.env.NANOCODEX_ACCOUNT_TOOLS.getByName(session.owner_id)
-        .registerWorkspaceHands(session.owner_id, session.session_id, result.data);
+      for (let attempt = 0; attempt < 3; attempt++) {
+        const session = this.#session();
+        if (!session) return;
+        const result = this.listWorkspaceHands(session.owner_id);
+        // Retain known identities even when conflicting routes make discovery partial.
+        // Discovery always reads the Session again; this is an idempotent index entry.
+        if (result.data.length === 0) {
+          if (this.#hostedTools.machines().length) console.info({
+            type: "hand.inventory.registration_skipped", thread_id: session.session_id,
+            reason: "no_account_scoped_hands",
+          });
+          return;
+        }
+        try {
+          const accepted = await withHardDeadline("workspace Hand registration", 4_000, () =>
+            this.env.NANOCODEX_ACCOUNT_TOOLS.getByName(session.owner_id)
+              .registerWorkspaceHands(session.owner_id, session.session_id, result.data));
+          console.info({ type: accepted ? "hand.inventory.registered" : "hand.inventory.registration_rejected",
+            thread_id: session.session_id, hand_count: result.data.length, attempt: attempt + 1 });
+          // Rejection is an ownership/registry fence, never a transient retry.
+          return;
+        } catch (error) {
+          if (attempt === 2) throw error;
+          // Deployment can reset the account broker between publisher hydration
+          // and index publication. Retry this safe write without reconnecting a Hand.
+          await new Promise<void>(resolve => setTimeout(resolve, attempt === 0 ? 250 : 1_000));
+        }
+      }
     }).catch(error => console.warn({ type: "hand.inventory.registration_failed", error: String(error) })));
   }
 

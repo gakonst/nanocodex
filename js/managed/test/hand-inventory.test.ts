@@ -114,6 +114,35 @@ it.each([
   ]);
 });
 
+it("recovers a workspace publication interrupted by an account broker reset without reconnecting", async () => {
+  const f = fixture(), session = await seedSession(f);
+  let original: unknown;
+  let attempts = 0;
+  await runInDurableObject(session.stub, async instance => {
+    const internal = instance as unknown as { env: { NANOCODEX_ACCOUNT_TOOLS: typeof bindings.NANOCODEX_ACCOUNT_TOOLS } };
+    original = internal.env.NANOCODEX_ACCOUNT_TOOLS;
+    const namespace = internal.env.NANOCODEX_ACCOUNT_TOOLS;
+    internal.env.NANOCODEX_ACCOUNT_TOOLS = { getByName: (name: string) => ({
+      registerWorkspaceHands: (owner: string, id: string, entries: Parameters<AccountHostedTools["registerWorkspaceHands"]>[2]) => {
+        if (++attempts === 1) throw new Error("Durable Object reset because its code was updated.");
+        return namespace.getByName(name).registerWorkspaceHands(owner, id, entries);
+      },
+    }) } as typeof bindings.NANOCODEX_ACCOUNT_TOOLS;
+  });
+  const socket = await publish(session.stub, f.owner, "recovered-workspace", f.principal);
+  try {
+    await expect.poll(async () => (await (await f.call()).json() as any).data, { timeout: 5000 }).toEqual([
+      { id: "recovered-workspace", name: "recovered-workspace", kind: "workspace", online: true, health: "connected" },
+    ]);
+    expect(attempts).toBeGreaterThan(1);
+  } finally {
+    await runInDurableObject(session.stub, async instance => {
+      (instance as unknown as { env: { NANOCODEX_ACCOUNT_TOOLS: unknown } }).env.NANOCODEX_ACCOUNT_TOOLS = original;
+    });
+    socket.close(1000);
+  }
+}, 10_000);
+
 it("filters current Connect rows and treats conflicting identity as unknown", async () => {
   const f = fixture(), session = await seedSession(f);
   await runInDurableObject(session.stub, async (_, state) => {

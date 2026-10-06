@@ -23,7 +23,9 @@ details.
 
 The account-only `GET /v1/account/hands/inventory` combines retained account
 registrations with workspace publishers registered when their sessions hydrate
-or update their catalogs. It excludes Connect-scoped routes and returns only
+or update their catalogs. Transient publication failures retry up to three times
+with a bounded deadline, without reconnecting the Hand. It excludes
+Connect-scoped routes and returns only
 names, IDs, kind and connection state. Discovery has a four-second deadline and
 eight concurrent workspace reads. Unavailable sources retain known identities
 as unknown; a full 64-session registry marks coverage partial rather than
