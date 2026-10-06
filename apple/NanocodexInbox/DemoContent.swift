@@ -400,6 +400,8 @@ private final class StartupFixtureProtocol: URLProtocol, @unchecked Sendable {
     private static let queue = DispatchQueue(label: "nanocodex.startup-fixture")
     private static var historyLive = false
     private static var crmFailed = false
+    private static var memoryFailures: Set<String> = []
+    private var memoryBody = Data()
     // Opt-in external-backend replacement only. The production create/send,
     // durable PendingMessage admission and native composers are not bypassed.
     private static var composerJourney: Bool { ProcessInfo.processInfo.environment["NANOCODEX_STARTUP_COMPOSER_JOURNEY"] == "1" }
@@ -437,6 +439,13 @@ private final class StartupFixtureProtocol: URLProtocol, @unchecked Sendable {
                 event["id"] = payload["id"]
             }
         }
+        if request.url?.path.hasPrefix("/v1/memories/") == true,
+           let payload = (try? JSONSerialization.jsonObject(with: memoryBody)) as? [String: Any] {
+            // Only synthetic memory request fields; never headers or credentials.
+            for key in ["path", "cursor", "line_offset", "max_lines", "max_results"] {
+                event["memory_" + key] = payload[key]
+            }
+        }
         let url = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].appendingPathComponent("startup-requests.jsonl")
         let data = (try! JSONSerialization.data(withJSONObject: event)) + Data("\n".utf8)
         if !FileManager.default.fileExists(atPath: url.path) { FileManager.default.createFile(atPath: url.path, contents: nil) }
@@ -449,6 +458,7 @@ private final class StartupFixtureProtocol: URLProtocol, @unchecked Sendable {
         Self.queue.async { [self] in
             guard !stopped else { return }
             if Self.composerJourney, request.url?.path.hasPrefix("/v1/agents") == true { composerBody = readComposerBody() }
+            if request.url?.path.hasPrefix("/v1/memories/") == true { memoryBody = readComposerBody() }
             record("start")
             // A second process launch reuses the on-disk account cache while
             // every transport operation fails, including roster and history.
@@ -459,6 +469,7 @@ private final class StartupFixtureProtocol: URLProtocol, @unchecked Sendable {
             }
             let path = request.url!.path
             if Self.composerJourney, serveComposerJourney(path) { return }
+            if path.hasPrefix("/v1/memories/"), serveMemoryJourney(path) { return }
             // Only the simulator fixture may bridge meetings to a real local
             // Worker. Account bootstrap remains synthetic; meeting responses,
             // database persistence and mutation semantics are never mocked.
@@ -602,6 +613,96 @@ private final class StartupFixtureProtocol: URLProtocol, @unchecked Sendable {
             data.append(contentsOf: buffer.prefix(count))
         }
         return data
+    }
+
+    /// Replace only the remote account service. The real account client,
+    /// decoding, directory state, reader and navigation run unchanged.
+    private func serveMemoryJourney(_ endpoint: String) -> Bool {
+        guard ProcessInfo.processInfo.environment["NANOCODEX_MEMORY_FIXTURE"] == "1" else { return false }
+        let payload = (try? JSONSerialization.jsonObject(with: memoryBody)) as? [String: Any] ?? [:]
+        let path = payload["path"] as? String ?? ""
+        let cursor = payload["cursor"] as? String ?? ""
+        let offset = payload["line_offset"] as? Int ?? 1
+        let failureKey = "\(endpoint):\(path):\(cursor):\(offset)"
+        var status = 200
+        var body: [String: Any]
+        if request.httpMethod != "POST" {
+            status = 405; body = ["error": "fixture_expected_post"]
+        } else if ProcessInfo.processInfo.environment["NANOCODEX_MEMORY_RETRY_FIXTURE"] == "1",
+                  Self.memoryFailures.insert(failureKey).inserted {
+            status = 503; body = ["error": "memory_fixture_temporarily_unavailable"]
+        } else if endpoint == "/v1/memories/list" {
+            var entries: [[String: String]] = []
+            var next: String?
+            switch (path, cursor) {
+            case ("", "") where ProcessInfo.processInfo.environment["NANOCODEX_MEMORY_EMPTY_ROOT"] == "1":
+                break
+            case ("", ""):
+                entries = [["path": "MEMORY.md", "entry_type": "file"],
+                           ["path": "empty", "entry_type": "directory"],
+                           ["path": "memory", "entry_type": "directory"]]
+                next = "root-page-2"
+            case ("", "root-page-2"):
+                entries = [["path": "team", "entry_type": "directory"]]
+            case ("memory", ""):
+                entries = [["path": "memory/projects", "entry_type": "directory"]]
+                next = "memory-page-2"
+            case ("memory", "memory-page-2"):
+                entries = [["path": "memory/2026-10-06.md", "entry_type": "file"]]
+            case ("memory/projects", ""):
+                entries = [["path": "memory/projects/garden.md", "entry_type": "file"]]
+            case ("team", ""):
+                entries = [["path": "team/MEMORY.md", "entry_type": "file"]]
+            case ("empty", ""): break
+            default: status = 400
+            }
+            body = status == 200 ? ["path": path, "entries": entries,
+                                    "next_cursor": next as Any? ?? NSNull(), "truncated": next != nil]
+                                 : ["error": "fixture_unknown_directory_page"]
+        } else if endpoint == "/v1/memories/read" {
+            // Deliberately small server pages keep the real continuation UI
+            // reachable on a phone while checking the exact next line offset.
+            switch (path, offset) {
+            case ("memory/projects/garden.md", 1):
+                body = ["path": path, "content": "# Garden plan\nFirst page: plant native flowers.\n",
+                        "start_line_number": 1, "truncated": true]
+            case ("memory/projects/garden.md", 3):
+                body = ["path": path, "content": "Final page: water on Tuesday.\n",
+                        "start_line_number": 3, "truncated": false]
+            case ("MEMORY.md", 1) where ProcessInfo.processInfo.environment["NANOCODEX_MEMORY_EMPTY_FILE"] == "1":
+                body = ["path": path, "content": "", "start_line_number": 1, "truncated": false]
+            case ("MEMORY.md", 1) where ProcessInfo.processInfo.environment["NANOCODEX_MEMORY_BYTE_LIMIT_FIXTURE"] == "1":
+                let wide = (payload["max_lines"] as? Int ?? 200) > 100
+                body = ["path": path,
+                        "content": wide ? String(repeating: "x", count: 80_000) + "omitted-window-tail\n"
+                                        : "# Bounded memory\nSmaller window: all lines remain in order.\n",
+                        "start_line_number": 1, "truncated": true]
+            case ("MEMORY.md", 3) where ProcessInfo.processInfo.environment["NANOCODEX_MEMORY_BYTE_LIMIT_FIXTURE"] == "1":
+                body = ["path": path, "content": "After the smaller window: no skipped lines.\n",
+                        "start_line_number": 3, "truncated": false]
+            case ("MEMORY.md", 1):
+                body = ["path": path, "content": "Personal memory: prefers morning walks.\n",
+                        "start_line_number": 1, "truncated": false]
+            case ("team/MEMORY.md", 1):
+                body = ["path": path, "content": "Shared memory: the garden opens on Friday.\n",
+                        "start_line_number": 1, "truncated": false]
+            case ("memory/2026-10-06.md", 1):
+                body = ["path": path, "content": "Daily memory: reviewed the planting plan.\n",
+                        "start_line_number": 1, "truncated": false]
+            default:
+                status = 400; body = ["error": "fixture_unknown_file_or_line_offset"]
+            }
+        } else {
+            status = 404; body = ["error": "fixture_unknown_memory_operation"]
+        }
+        record("memory-status-\(status)")
+        let data = try! JSONSerialization.data(withJSONObject: body)
+        let response = HTTPURLResponse(url: request.url!, statusCode: status, httpVersion: "HTTP/1.1",
+                                       headerFields: ["Content-Type": "application/json"])!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: data)
+        client?.urlProtocolDidFinishLoading(self)
+        return true
     }
 
     private static func composerHistory(_ id: String) -> [[String: Any]] {

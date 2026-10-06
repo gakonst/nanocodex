@@ -197,7 +197,7 @@ struct InboxView: View {
     @State private var mainSurface: MainSurface = (ProcessInfo.processInfo.arguments.contains("--demo")
         && !ProcessInfo.processInfo.arguments.contains("--todo-ui-fixture")) ? .chat : .todo
     @State private var newThreadInputFocused = false
-    private enum MainSurface: Hashable { case todo, chat, crm, meetings, apps }
+    private enum MainSurface: Hashable { case todo, chat, crm, meetings, memories, apps }
     @State private var selectedGeneratedApp: String?
     @State private var showCreateApp = false
     @State private var showConversations = false
@@ -237,6 +237,9 @@ struct InboxView: View {
                         MeetingsHomeView(model: model) { showMeeting = true }
                     } else if model.connected && mainSurface == .crm {
                         CRMView(model: model)
+                    } else if model.connected && mainSurface == .memories {
+                        MemoriesView(model: model)
+                            .id(model.vaultIntakeAccount)
                     } else if model.connected && mainSurface == .apps {
                         GeneratedAppsView(model: model, selection: $selectedGeneratedApp, create: { showCreateApp = true }, openChat: { selectMainSurface(.chat); model.openThread() })
                     } else { inbox }
@@ -448,6 +451,7 @@ struct InboxView: View {
             mainNavigationButton(.chat, title: "Chat", symbol: "bubble.left", identifier: "main-tab-chat")
             mainNavigationButton(.crm, title: "CRM", symbol: "person.2", identifier: "main-tab-crm")
             mainNavigationButton(.meetings, title: "Meetings", symbol: "text.bubble", identifier: "main-tab-meetings")
+            mainNavigationButton(.memories, title: "Memories", symbol: "folder", identifier: "main-tab-memories")
             if !model.isDemo || !model.generatedApps.isEmpty {
                 Menu {
                     ForEach(model.generatedApps) { app in

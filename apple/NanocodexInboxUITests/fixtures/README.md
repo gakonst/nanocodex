@@ -27,3 +27,47 @@ account-owned screen service. The desktop journey injects the loopback service
 into an isolated model with runtime requests stubbed.
 
 `FrontiersMerchSample.mp4` is a four-second, low-resolution excerpt of the user-requested Paradigm Frontiers merch launch video, used solely to exercise Quick Look and the share sheet in the output-link UI test. The full video stays in private Brain outputs, not the app bundle.
+
+## Memories browser
+
+The Memories journeys use the existing Debug Simulator `StartupFixtureProtocol`
+transport fixture in `DemoContent.swift`. They launch the production app shell,
+account client, expandable tree and file reader with a new synthetic profile per
+test. No fixture views or live account credentials are involved. This replaces
+the remote memory service at URLSession's protocol boundary; it does not exercise
+a TCP connection, the deployed Worker, or real account authorization.
+
+Run on macOS from the repository root with the normal app build prerequisites
+(including the shared voice core) installed. Set `device` to one existing iPhone
+or iPad Simulator UDID; run destinations sequentially:
+
+```sh
+mkdir -p output/memories-ui
+scripts/xcodebuild-guard.sh \
+  -project apple/NanocodexInbox.xcodeproj -scheme NanocodexInbox \
+  -configuration Debug -destination "platform=iOS Simulator,id=$device" \
+  -derivedDataPath output/memories-ui/build \
+  -resultBundlePath "output/memories-ui/memories-$(date +%Y%m%dT%H%M%S).xcresult" \
+  -only-testing:NanocodexInboxUITests/InboxUITests/testMemoriesExpandReadAndRecoverFailedPages \
+  -only-testing:NanocodexInboxUITests/InboxUITests/testMemoriesRootPaginationSharedFilesAndEmptyFolder \
+  -only-testing:NanocodexInboxUITests/InboxUITests/testMemoriesEmptyLibraryAndEmptyFile \
+  -only-testing:NanocodexInboxUITests/InboxUITests/testMemoriesByteLimitedReadUsesSmallerWindowBeforeContinuing \
+  CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- test
+```
+
+The journeys assert collapse/re-expansion, nested and root page continuation,
+failed-page recovery without lost or duplicate content, distinct personal/shared
+files with the same basename, empty states, and smaller read windows after the
+service's byte limit. Synthetic server pages are intentionally small so the
+continuation controls remain reachable on a phone. The byte-limit case returns
+an oversized initial window and accepts a smaller one before continuation.
+
+Screenshots are kept as XCTest attachments. The simulator application's
+`Documents/startup-requests.jsonl` records each memory request's path, cursor,
+line offset, requested limits and response status, with no credential headers.
+After a run, copy that file from the data container reported by
+`xcrun simctl get_app_container "$device" xyz.paradigm.centaur data` into the
+run's ignored evidence directory. The trace spans the test process launches.
+The bounded PR selection in `apple-inbox.yml` runs these four methods and exports
+named recordings alongside the XCTest attachments. Compiling the test target
+alone is not a UI pass.

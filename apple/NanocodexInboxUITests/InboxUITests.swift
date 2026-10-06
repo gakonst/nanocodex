@@ -520,6 +520,195 @@ final class InboxUITests: XCTestCase {
         XCTAssertFalse(app.secureTextFields["secure-input-field:card"].exists)
     }
 
+    // Production account decoding and navigation with synthetic remote responses.
+    // Every page fails once, so retries must preserve existing folders/text and
+    // repeat the failed cursor/line offset rather than skipping or duplicating it.
+    func testMemoriesExpandReadAndRecoverFailedPages() {
+        let app = launchMemoryJourney(retry: true)
+        let rootRetry = app.buttons["memory-retry-list-"]
+        XCTAssertTrue(rootRetry.waitForExistence(timeout: 10))
+        rootRetry.tap()
+        let memory = app.buttons["memory-folder-memory"]
+        XCTAssertTrue(memory.waitForExistence(timeout: 10))
+        XCTAssertFalse(app.buttons["memory-folder-memory/projects"].exists)
+        memory.tap()
+        let folderRetry = app.buttons["memory-retry-list-memory"]
+        XCTAssertTrue(folderRetry.waitForExistence(timeout: 5))
+        folderRetry.tap()
+        let projects = app.buttons["memory-folder-memory/projects"]
+        XCTAssertTrue(projects.waitForExistence(timeout: 5))
+        memory.tap()
+        XCTAssertFalse(projects.exists, "Collapsing a folder removes its descendants")
+        memory.tap()
+        XCTAssertTrue(projects.waitForExistence(timeout: 5))
+        projects.tap()
+        let nestedRetry = app.buttons["memory-retry-list-memory/projects"]
+        XCTAssertTrue(nestedRetry.waitForExistence(timeout: 5))
+        nestedRetry.tap()
+        let file = app.buttons["memory-file-memory/projects/garden.md"]
+        XCTAssertTrue(file.waitForExistence(timeout: 5))
+        capture(app, "memories-expanded-nested-tree")
+        file.tap()
+        let retryRead = app.buttons["memory-retry-read"]
+        XCTAssertTrue(retryRead.waitForExistence(timeout: 5))
+        retryRead.tap()
+        expectMemoryContent(app, containing: "First page: plant native flowers.")
+        let more = app.buttons["memory-read-more"]
+        XCTAssertTrue(more.waitForExistence(timeout: 5))
+        more.tap()
+        XCTAssertTrue(retryRead.waitForExistence(timeout: 5))
+        expectMemoryContent(app, containing: "First page: plant native flowers.")
+        capture(app, "memories-reader-continuation-error-keeps-text")
+        retryRead.tap()
+        expectMemoryContent(app, containing: "Final page: water on Tuesday.")
+        let text = app.staticTexts["memory-content"].label
+        XCTAssertTrue(text.contains("First page: plant native flowers."))
+        XCTAssertEqual(text.components(separatedBy: "First page:").count - 1, 1)
+        XCTAssertEqual(text.components(separatedBy: "Final page:").count - 1, 1)
+        XCTAssertFalse(more.exists, "The completed file must not offer another page")
+        capture(app, "memories-reader-complete-after-retry")
+        app.navigationBars.buttons.element(boundBy: 0).tap()
+        XCTAssertTrue(file.waitForExistence(timeout: 5))
+        let nextFolderPage = app.buttons["memory-load-more-memory"]
+        revealMemoryControl(nextFolderPage, in: app)
+        XCTAssertTrue(nextFolderPage.waitForExistence(timeout: 5))
+        nextFolderPage.tap()
+        XCTAssertTrue(folderRetry.waitForExistence(timeout: 5))
+        XCTAssertTrue(projects.exists, "A failed next page must preserve loaded entries")
+        folderRetry.tap()
+        let daily = app.buttons["memory-file-memory/2026-10-06.md"]
+        revealMemoryControl(daily, in: app)
+        XCTAssertTrue(daily.waitForExistence(timeout: 5))
+        XCTAssertEqual(app.buttons.matching(identifier: "memory-folder-memory/projects").count, 1)
+        XCTAssertFalse(nextFolderPage.exists)
+        capture(app, "memories-folder-page-recovered")
+    }
+
+    func testMemoriesRootPaginationSharedFilesAndEmptyFolder() {
+        let app = launchMemoryJourney(retry: true)
+        let rootRetry = app.buttons["memory-retry-list-"]
+        XCTAssertTrue(rootRetry.waitForExistence(timeout: 10))
+        rootRetry.tap()
+        let empty = app.buttons["memory-folder-empty"]
+        XCTAssertTrue(empty.waitForExistence(timeout: 5))
+        empty.tap()
+        let emptyRetry = app.buttons["memory-retry-list-empty"]
+        XCTAssertTrue(emptyRetry.waitForExistence(timeout: 5))
+        emptyRetry.tap()
+        XCTAssertTrue(app.staticTexts["This folder is empty."].waitForExistence(timeout: 5))
+        empty.tap()
+        let more = app.buttons["memory-load-more-"]
+        XCTAssertTrue(more.waitForExistence(timeout: 5))
+        XCTAssertFalse(app.buttons["memory-folder-team"].exists)
+        more.tap()
+        XCTAssertTrue(rootRetry.waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["memory-file-MEMORY.md"].exists)
+        rootRetry.tap()
+        let team = app.buttons["memory-folder-team"]
+        XCTAssertTrue(team.waitForExistence(timeout: 5))
+        XCTAssertFalse(more.exists)
+        XCTAssertEqual(app.buttons.matching(identifier: "memory-file-MEMORY.md").count, 1)
+        team.tap()
+        let teamRetry = app.buttons["memory-retry-list-team"]
+        XCTAssertTrue(teamRetry.waitForExistence(timeout: 5))
+        teamRetry.tap()
+        let shared = app.buttons["memory-file-team/MEMORY.md"]
+        XCTAssertTrue(shared.waitForExistence(timeout: 5))
+        shared.tap()
+        let retryRead = app.buttons["memory-retry-read"]
+        XCTAssertTrue(retryRead.waitForExistence(timeout: 5))
+        retryRead.tap()
+        expectMemoryContent(app, containing: "Shared memory: the garden opens on Friday.")
+        XCTAssertFalse(app.staticTexts["memory-content"].label.contains("Personal memory:"))
+        XCTAssertFalse(app.buttons["memory-read-more"].exists)
+        capture(app, "memories-shared-file-reader")
+        app.navigationBars.buttons.element(boundBy: 0).tap()
+        let personal = app.buttons["memory-file-MEMORY.md"]
+        XCTAssertTrue(personal.waitForExistence(timeout: 5))
+        personal.tap()
+        XCTAssertTrue(retryRead.waitForExistence(timeout: 5))
+        retryRead.tap()
+        expectMemoryContent(app, containing: "Personal memory: prefers morning walks.")
+        XCTAssertFalse(app.staticTexts["memory-content"].label.contains("Shared memory:"))
+        app.buttons["main-tab-chat"].tap()
+        XCTAssertTrue(app.buttons["conversation-drawer-open"].waitForExistence(timeout: 15))
+        app.buttons["main-tab-memories"].tap()
+        XCTAssertTrue(app.buttons["memory-folder-memory"].waitForExistence(timeout: 10),
+                      "Switching back to Memories must leave the pushed reader")
+        capture(app, "memories-return-to-tree")
+    }
+
+    func testMemoriesEmptyLibraryAndEmptyFile() {
+        let app = launchMemoryJourney(retry: false, environment: ["NANOCODEX_MEMORY_EMPTY_ROOT": "1"])
+        XCTAssertTrue(app.staticTexts["No memories yet"].waitForExistence(timeout: 10))
+        XCTAssertFalse(app.buttons["memory-load-more-"].exists)
+        XCTAssertFalse(app.buttons["memory-retry-list-"].exists)
+        capture(app, "memories-empty-library")
+        app.terminate()
+        app.launchEnvironment["NANOCODEX_STARTUP_PROFILE"] = UUID().uuidString
+        app.launchEnvironment["NANOCODEX_MEMORY_EMPTY_ROOT"] = "0"
+        app.launchEnvironment["NANOCODEX_MEMORY_EMPTY_FILE"] = "1"
+        app.launch()
+        XCTAssertTrue(app.buttons["main-tab-memories"].waitForExistence(timeout: 25))
+        app.buttons["main-tab-memories"].tap()
+        let file = app.buttons["memory-file-MEMORY.md"]
+        XCTAssertTrue(file.waitForExistence(timeout: 10))
+        file.tap()
+        XCTAssertTrue(app.staticTexts["This file is empty."].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.buttons["memory-read-more"].exists)
+        XCTAssertFalse(app.buttons["memory-retry-read"].exists)
+        capture(app, "memories-empty-file")
+    }
+
+    func testMemoriesByteLimitedReadUsesSmallerWindowBeforeContinuing() {
+        let app = launchMemoryJourney(retry: false,
+                                      environment: ["NANOCODEX_MEMORY_BYTE_LIMIT_FIXTURE": "1"])
+        let file = app.buttons["memory-file-MEMORY.md"]
+        XCTAssertTrue(file.waitForExistence(timeout: 10))
+        file.tap()
+        expectMemoryContent(app, containing: "Smaller window: all lines remain in order.")
+        XCTAssertFalse(app.staticTexts["memory-content"].label.contains("omitted-window-tail"),
+                       "A byte-truncated head/tail response must not become the displayed file")
+        let more = app.buttons["memory-read-more"]
+        XCTAssertTrue(more.waitForExistence(timeout: 5))
+        more.tap()
+        expectMemoryContent(app, containing: "After the smaller window: no skipped lines.")
+        let text = app.staticTexts["memory-content"].label
+        XCTAssertEqual(text.components(separatedBy: "Smaller window:").count - 1, 1)
+        XCTAssertFalse(more.exists)
+        capture(app, "memories-byte-limited-window-recovered")
+    }
+
+    private func revealMemoryControl(_ control: XCUIElement, in app: XCUIApplication) {
+        let tree = app.descendants(matching: .any)["memories-tree"].firstMatch
+        for _ in 0..<5 {
+            if control.exists && control.isHittable { return }
+            tree.swipeUp()
+        }
+        XCTAssertTrue(control.isHittable, "The directory control must remain reachable")
+    }
+
+    private func launchMemoryJourney(retry: Bool, environment: [String: String] = [:]) -> XCUIApplication {
+        let app = XCUIApplication()
+        app.launchEnvironment = ["NANOCODEX_STARTUP_FIXTURE": "1",
+                                 "NANOCODEX_STARTUP_PROFILE": UUID().uuidString,
+                                 "NANOCODEX_MEMORY_FIXTURE": "1",
+                                 "NANOCODEX_MEMORY_RETRY_FIXTURE": retry ? "1" : "0"]
+        app.launchEnvironment.merge(environment) { _, supplied in supplied }
+        app.launch()
+        let tab = app.buttons["main-tab-memories"]
+        XCTAssertTrue(tab.waitForExistence(timeout: 25))
+        tab.tap()
+        return app
+    }
+
+    private func expectMemoryContent(_ app: XCUIApplication, containing value: String) {
+        let content = app.staticTexts["memory-content"]
+        let expected = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "exists == true AND label CONTAINS %@", value), object: content)
+        XCTAssertEqual(XCTWaiter.wait(for: [expected], timeout: 5), .completed, app.debugDescription)
+    }
+
     // CRM failure scenarios: failed fetch must be retryable; filters must not retain
     // old rows; profile facts/notes must render; relationships must open their target.
     func testCRMBrowseAndRelationshipNavigation() {

@@ -1730,6 +1730,27 @@ final class InboxModel: ObservableObject {
         return result
     }
 
+    // Memory paths are JSON data; the authenticated client determines the private
+    // account/team scope. Never retain a response across a connection generation.
+    func memoryList(path: String, cursor: String? = nil) async throws -> JSON {
+        var body: [String: JSON] = ["path": .string(path), "max_results": .number(100)]
+        if let cursor { body["cursor"] = .string(cursor) }
+        return try await memoryRequest(operation: "list", body: body)
+    }
+    func memoryRead(path: String, lineOffset: Int, maxLines: Int) async throws -> JSON {
+        try await memoryRequest(operation: "read", body: [
+            "path": .string(path), "line_offset": .number(Double(lineOffset)), "max_lines": .number(Double(maxLines))
+        ])
+    }
+    private func memoryRequest(operation: String, body: [String: JSON]) async throws -> JSON {
+        guard connected, let client else { throw APIError.invalidCredential }
+        let epoch = generation
+        let result = try await client.json(path: "/v1/memories/" + operation, method: "POST", body: .object(body))
+        try Task.checkCancellation()
+        guard connected, generation == epoch, self.client === client else { throw CancellationError() }
+        return result
+    }
+
     private var generatedAgentJournal: GeneratedAppAgentJournal?
     private func appAgentJournal() throws -> GeneratedAppAgentJournal {
         guard !scope.isEmpty, !isDemo else { throw APIError.invalidCredential }
