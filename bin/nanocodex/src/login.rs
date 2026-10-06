@@ -117,7 +117,7 @@ pub(crate) struct Login {
 #[derive(Args, Clone)]
 pub(crate) struct Connect {
     /// Services: ssh, chatgpt, github, gmail, gdrive, gcalendar, gtasks, gdocs, gsheets,
-    /// gslides, gcontacts, slack, x, spotify, soundcloud, link; or a public remote MCP host
+    /// gslides, gcontacts, slack, x, spotify, soundcloud, link, figma; or a public remote MCP host
     /// (mcp.example.com).
     #[arg(required = true, num_args = 1.., value_name = "SERVICE")]
     services: Vec<ConnectTarget>,
@@ -184,6 +184,9 @@ impl FromStr for ConnectTarget {
     type Err = String;
 
     fn from_str(value: &str) -> std::result::Result<Self, Self::Err> {
+        if value == "figma" {
+            return Ok(Self::RemoteMcp("mcp.figma.com".to_owned()));
+        }
         if value == "ssh" {
             return Ok(Self::Ssh);
         }

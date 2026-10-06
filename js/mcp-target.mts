@@ -2,11 +2,12 @@ const DNS_NAME = /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]
 const PRIVATE_SUFFIXES = [".internal", ".invalid", ".local", ".localhost", ".test", ".home.arpa"];
 const KNOWN_MCP_NAMES = new Map([
   ["mercator.sh", "Mercator"],
+  ["mcp.figma.com", "Figma"],
   ["mercator.tempo.xyz", "Mercator"],
 ]);
 
 /**
- * Turns the one supported bare MCP host into its endpoint and verifies HTTPS
+ * Turns supported bare MCP hosts into their endpoints and verifies HTTPS
  * URLs before either Account or the broker persists them.
  */
 export function canonicalRemoteMcpTarget(value: unknown): Readonly<{
@@ -17,8 +18,8 @@ export function canonicalRemoteMcpTarget(value: unknown): Readonly<{
     throw new Error("Remote MCP target must be a bounded public host or HTTPS URL.");
   }
   let endpoint: URL;
-  if (value === "mcp.linear.app") {
-    endpoint = new URL("https://mcp.linear.app/mcp");
+  if (value === "mcp.linear.app" || value === "mcp.figma.com" || value === "figma") {
+    endpoint = new URL(value === "mcp.linear.app" ? "https://mcp.linear.app/mcp" : "https://mcp.figma.com/mcp");
   } else {
     try { endpoint = new URL(value); } catch { throw new Error("Remote MCP target is invalid."); }
   }

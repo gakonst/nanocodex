@@ -678,6 +678,14 @@ export function ProfileConnectors({
             onClick={() => void loadMcpConnections()}
             title="MCP connections"
           /> : null}
+          {mcpConnections ? <AccountConnectionCard
+            action="Add connection"
+            detail="Add the official Figma MCP, then connect with Figma OAuth"
+            disabled={operation !== null}
+            logo={<ConnectionLogo id="mcp" />}
+            onClick={() => void createMcp("https://mcp.figma.com/mcp")}
+            title="Figma"
+          /> : null}
           {mcpConnections ? <McpConnectionAddCard
             disabled={operation !== null}
             error={mcpError ?? undefined}
@@ -766,6 +774,16 @@ export function ProfileConnectors({
           </button>)}
         </Fragment>);
       }) : null}
+      {mcpConnections ? <button
+        className="connection-card connector-row mcp-connector-row"
+        disabled={operation !== null}
+        onClick={() => void createMcp("https://mcp.figma.com/mcp")}
+        type="button"
+      >
+        <ConnectionLogo id="mcp" />
+        <span className="connection-card-copy"><strong>Figma</strong><span>Add the official Figma MCP, then connect with Figma OAuth</span></span>
+        <span className="connection-card-action">Add connection</span>
+      </button> : null}
       {mcpConnections ? <McpConnectionAddCard
         disabled={operation !== null}
         error={mcpError ?? undefined}

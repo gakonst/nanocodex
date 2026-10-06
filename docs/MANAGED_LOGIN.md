@@ -30,6 +30,19 @@ inspecting services independently of a CLI request. A CLI connect page is the
 focused form of the same UI and shows only the connector named by the signed
 request.
 
+Figma is available in the account catalog as an **Add connection** preset for
+`https://mcp.figma.com/mcp`. Add it, then choose **Connect** on the new Figma row
+to authorize through the existing remote MCP OAuth flow. Connected rows support
+**Revoke**; expired authorization uses **Reconnect**. Adding a connection does
+not grant an installation access automatically. Use `nanocodex connect figma`
+(or `nanocodex connect mcp.figma.com`) to authorize Figma for an installation.
+Creation and OAuth failures leave the existing retry controls available.
+
+[Figma's remote server documentation](https://developers.figma.com/docs/figma-mcp-server/remote-server-installation/)
+requires Figma OAuth and says clients must be approved in its MCP catalog.
+Provider approval failures are reported through the existing MCP error flow;
+adding this preset does not bypass Figma's client approval policy.
+
 The interactive CLI receives a scoped Nanocodex Connect grant. It must not
 silently mint a general-purpose Nanocodex API key. API keys remain an explicit
 operation for CI, curl, or another machine.
