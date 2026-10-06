@@ -3699,7 +3699,7 @@ async fn run_inner(
     }
 }
 
-fn gateway_model(model: ManagedModel) -> bool {
+const fn gateway_model(model: ManagedModel) -> bool {
     matches!(
         model,
         ManagedModel::Oai(Model::Glm53 | Model::Kimi | Model::Mimo)
