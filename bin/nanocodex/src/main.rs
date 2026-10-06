@@ -109,7 +109,7 @@ struct Cli {
 enum Command {
     /// Install the verified release bundle and start guided setup.
     Install(install::Install),
-    /// Sign in and set up Computer Use, Hand, and the browser extension.
+    /// Sign in and set up Computer Use, Hand, and the browser bridge.
     Setup(setup::Setup),
     /// Discover and control a running interactive terminal.
     Tui(nanocodex_tui_control::Cli),

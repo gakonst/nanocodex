@@ -1,3 +1,4 @@
+import { createTurnLifecycle } from "./turn-lifecycle.mjs";
 import { createCodeTools } from "./code-tools.mjs";
 import { stringify, storeSnapshot, normalizeImage, normalizeAudio, generatedImageItems } from "./code-values.mjs";
 import { limitCodeOutput } from "./code-output.mjs";
@@ -56,6 +57,7 @@ export function createCodeRuntime(toolConfiguration = {}, extras = {}) {
   const toolByName = new Map();
   const subagentBindingsBySession = new Map();
   const subagentSessions = extras.subagentSessions;
+  const turnLifecycle = createTurnLifecycle((...args) => router.endTurn(...args));
 
   function addTools(configuration = {}) {
     const added = {};
@@ -81,6 +83,7 @@ export function createCodeRuntime(toolConfiguration = {}, extras = {}) {
   }
 
   async function executeTool(name, encodedInput, sessionId = "default", callId = "tool", model = "unknown", turnId) {
+    turnLifecycle.call(sessionId, callId, turnId, subagentBindingsBySession.has(sessionId));
     let input;
     try {
       input = JSON.parse(encodedInput);
@@ -223,6 +226,7 @@ export function createCodeRuntime(toolConfiguration = {}, extras = {}) {
   }
 
   async function executeCode(source, sessionId = "default", parentCallId = "exec", model = "unknown", observer, cell, turnId) {
+    turnLifecycle.call(sessionId, parentCallId, turnId, subagentBindingsBySession.has(sessionId));
     if (typeof model === "function" && observer === undefined) {
       observer = model;
       model = "unknown";
@@ -834,6 +838,7 @@ export function createCodeRuntime(toolConfiguration = {}, extras = {}) {
   }
 
   function releaseSession(sessionId) {
+    turnLifecycle.release(sessionId);
     cancel(sessionId);
     const binding = subagentBindingsBySession.get(sessionId);
     if (binding !== undefined) {
@@ -847,6 +852,7 @@ export function createCodeRuntime(toolConfiguration = {}, extras = {}) {
   }
 
   function reset() {
+    turnLifecycle.reset();
     for (const execution of activeExecutions) {
       execution.controller.abort(new Error(CANCELLATION_MESSAGE));
     }
@@ -859,6 +865,7 @@ export function createCodeRuntime(toolConfiguration = {}, extras = {}) {
   }
 
   return Object.freeze({
+    observeEvent: turnLifecycle.observe,
     addTools,
     addProvider(provider, options = {}) {
       if (!provider || typeof provider.definitions !== "function" || typeof provider.resolve !== "function") {

@@ -7,7 +7,7 @@ pub(crate) struct Setup {
     /// Recheck OpenAI's component feed in the background even when CUA is installed.
     #[arg(long)]
     refresh: bool,
-    /// Compatibility option; native computer control needs no browser extension.
+    /// Compatibility option; setup never opens a browser or installs an extension.
     #[arg(long, hide = true)]
     no_open_browser: bool,
     /// Skip managed account sign-in.

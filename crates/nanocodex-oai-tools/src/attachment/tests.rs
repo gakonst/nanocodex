@@ -203,7 +203,7 @@ async fn catalog_call_result_and_drain_use_exact_frames() {
     std::fs::create_dir_all(&evidence_dir).unwrap();
     let evidence_path = evidence_dir.join("rust-native-lifecycle.log");
     let subscriber = tracing_subscriber::fmt()
-        .with_env_filter("nanocodex_tools::attachment=info")
+        .with_env_filter("nanocodex_oai_tools::attachment=info")
         .with_ansi(false)
         .with_span_events(
             tracing_subscriber::fmt::format::FmtSpan::NEW
@@ -219,7 +219,8 @@ async fn catalog_call_result_and_drain_use_exact_frames() {
         let mut socket = accept(&listener).await;
         let catalog = recv_json(&mut socket).await;
         assert_eq!(catalog["type"], "catalog");
-        assert_eq!(catalog.as_object().unwrap().len(), 9);
+        assert_eq!(catalog.as_object().unwrap().len(), 10);
+        assert_eq!(catalog["turn_lifecycle"], true);
         assert_catalog_diagnostics(&catalog);
         assert!(
             catalog["runtime_id"]
@@ -1199,4 +1200,85 @@ async fn silent_peer_without_control_pong_reconnects_within_finite_bound() {
     send_json(&mut second, json!({"type":"draining"})).await;
     detach.await.unwrap().unwrap();
     eprintln!("native silent peer: finite reconnect within 1s; same runtime ownership");
+}
+
+struct TurnLifecycleTool(std::sync::Arc<std::sync::Mutex<Vec<(String, String, String)>>>);
+
+#[async_trait]
+impl Tool for TurnLifecycleTool {
+    fn definition(&self) -> ToolDefinition {
+        ToolDefinition::function(
+            "lifecycle_probe",
+            "Synthetic lifecycle probe",
+            json!({"type":"object"}),
+        )
+    }
+    async fn execute(&self, _input: ToolInput, _context: ToolContext<'_>) -> ToolResult {
+        Ok(ToolOutput::json(&*self.0.lock().unwrap()))
+    }
+    async fn end_turn(
+        &self,
+        session_id: &str,
+        turn_id: &str,
+        hook_event_name: &str,
+    ) -> Result<(), crate::contract::ToolError> {
+        self.0
+            .lock()
+            .unwrap()
+            .push((session_id.into(), turn_id.into(), hook_event_name.into()));
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn native_attachment_delivers_trusted_turn_cleanup_outside_model_catalog() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let ended = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let tools = Tools::builder()
+        .without_defaults()
+        .tool(TurnLifecycleTool(ended.clone()))
+        .build()
+        .unwrap();
+    let (attachment, _) = tools
+        .attach(
+            AttachmentTarget::new(
+                format!("ws://{}/tools", listener.local_addr().unwrap()),
+                "synthetic-bearer",
+            )
+            .unwrap(),
+        )
+        .start()
+        .unwrap();
+    let (mut socket, catalog) = ready_with_catalog(&listener).await;
+    assert_eq!(catalog["turn_lifecycle"], true);
+    assert_eq!(catalog["tools"].as_array().unwrap().len(), 1);
+    assert_eq!(catalog["tools"][0]["definition"]["name"], "lifecycle_probe");
+    send_json(
+        &mut socket,
+        json!({"type":"turn_ended","session_id":"session:one","turn_id":"turn:cancelled","hook_event_name":"Interrupt"}),
+    )
+    .await;
+    // A subsequent ordinary call acts as an ordered transport barrier.
+    send_json(
+        &mut socket,
+        json!({"type":"call","session_id":"session:one","turn_id":"turn:next",
+        "call_id":"probe","model":"fixture","name":"lifecycle_probe","input":{},
+        "output_token_budget":1024,"output_byte_budget":16384,"deadline_at":now_ms()+5000}),
+    )
+    .await;
+    let result = recv_json(&mut socket).await;
+    assert_eq!(result["type"], "result");
+    assert_eq!(
+        *ended.lock().unwrap(),
+        vec![(
+            "session:one".into(),
+            "turn:cancelled".into(),
+            "Interrupt".into()
+        )]
+    );
+    send_json(&mut socket, json!({"type":"ack","call_id":"probe"})).await;
+    let detach = tokio::spawn(async move { attachment.detach().await });
+    assert_eq!(recv_json(&mut socket).await, json!({"type":"drain"}));
+    send_json(&mut socket, json!({"type":"draining"})).await;
+    detach.await.unwrap().unwrap();
 }

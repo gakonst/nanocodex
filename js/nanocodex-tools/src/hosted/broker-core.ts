@@ -121,6 +121,7 @@ type HostedToolsSocketAttachment = {
   machines?: readonly HostedMachine[];
   runtimeId?: string;
   commandRecovery?: true;
+  turnLifecycle?: true;
   hostConnectionId?: string;
   diagnostics?: true;
   last_heartbeat_at?: number;
@@ -217,6 +218,7 @@ export type HostedToolsCodeTool = Readonly<{
   definition?: HostedToolsCodeDefinition;
   /** Opaque immutable route identity for trusted broker-to-broker relays. */
   routeToken?: string;
+  endTurn?(sessionId: string, turnId: string, event: "Stop" | "Interrupt" | "SubagentStop"): Promise<void>;
   handler(
     input: unknown,
     context: HostedToolsInvocationContext,
@@ -234,6 +236,7 @@ export type HostedToolsAuthorizationContext = Pick<ToolContext, "sessionId" | "s
 export type HostedMachineToolName = (typeof HOSTED_MACHINE_TOOL_NAMES)[number] | `mcp__cua_repl__${string}`;
 
 export interface HostedToolsDynamicProvider {
+  endTurn?(sessionId: string, turnId: string, event: "Stop" | "Interrupt" | "SubagentStop"): Promise<void>;
   definitions(): readonly HostedToolsCodeDefinition[];
   resolve(name: string): HostedToolsCodeTool | undefined;
   /** Installed by the owning ToolRouter to reject non-parity catalogs before ACK. */
@@ -400,6 +403,7 @@ export type HostedToolsLeasedAttachmentRenewal = Readonly<{
 export class HostedToolsBrokerCore {
   readonly #provider: HostedToolsDynamicProvider;
   readonly #pending = new Map<string, PendingCall>();
+  readonly #turnSockets = new Map<string, Set<HostedToolsSocket>>();
   readonly #now: () => number;
   readonly #onCallTiming: HostedToolsBrokerCoreOptions["onCallTiming"];
   readonly #onCallObservation: HostedToolsBrokerCoreOptions["onCallObservation"];
@@ -498,6 +502,7 @@ export class HostedToolsBrokerCore {
       }
     }
     this.#provider = Object.freeze({
+      endTurn: (session: string, turn: string, event: "Stop" | "Interrupt" | "SubagentStop") => this.endTurn(session, turn, event),
       // ToolRouter owns the one aggregate tool_search. This provider exposes
       // only the current attached definitions, which stay deferred and can be
       // overlaid onto exact cloud contracts by that router.
@@ -884,6 +889,20 @@ export class HostedToolsBrokerCore {
     }
   }
 
+  async endTurn(sessionId: string, turnId: string, hookEventName: "Stop" | "Interrupt" | "SubagentStop"): Promise<void> {
+    const key = JSON.stringify([sessionId, turnId]);
+    const sockets = this.#turnSockets.get(key) ?? new Set<HostedToolsSocket>();
+    this.#turnSockets.delete(key);
+    // Only the original live socket may receive cleanup; a restored broker has
+    // no such ownership and must not reconstruct it from a reconnectable ledger.
+    for (const socket of sockets) {
+      const attachment = this.#attachment(socket);
+      // Never move cleanup to a replacement runtime, reconnect, or unadvertised host.
+      if (!attachment?.active || !attachment.turnLifecycle || socket.readyState !== OPEN) continue;
+      this.#send(socket, { type: "turn_ended", session_id: sessionId, turn_id: turnId, hook_event_name: hookEventName });
+    }
+  }
+
   cancel(callId: string): boolean {
     const row = this.#persistence.call(callId);
     if (!row || row.state !== "dispatched") return false;
@@ -1139,6 +1158,7 @@ export class HostedToolsBrokerCore {
       lease_expires_at: expiresAt,
       ...(frame.runtime_id === undefined ? {} : { runtimeId: frame.runtime_id }),
       ...(frame.command_recovery === true ? { commandRecovery: true as const } : {}),
+      ...(frame.turn_lifecycle === true ? { turnLifecycle: true as const } : {}),
       ...(frame.connection_id === undefined ? {} : { hostConnectionId: frame.connection_id }),
       ...(frame.diagnostics === true ? { diagnostics: true as const } : {}),
     } satisfies HostedToolsSocketAttachment;
@@ -1869,6 +1889,12 @@ export class HostedToolsBrokerCore {
     try {
       this.#observe("send_started", proposed);
       this.#send(socket, call);
+      if (call.turn_id !== undefined && this.#attachment(socket)?.turnLifecycle) {
+        const key = JSON.stringify([call.session_id, call.turn_id]);
+        let sockets = this.#turnSockets.get(key);
+        if (!sockets) { sockets = new Set(); this.#turnSockets.set(key, sockets); }
+        sockets.add(socket);
+      }
       this.#observe("sent", proposed);
     } catch {
       this.#observe("send_failed", proposed, { reason_code: "call_send_failed" });
@@ -2017,6 +2043,10 @@ export class HostedToolsBrokerCore {
   }
 
   #retire(socket: HostedToolsSocket, reason: string, reasonCode: HostedToolsDiagnosticReason = "transport_closed"): void {
+    for (const [key, sockets] of this.#turnSockets) {
+      sockets.delete(socket);
+      if (!sockets.size) this.#turnSockets.delete(key);
+    }
     const attachment = this.#attachment(socket);
     if (reasonCode === "call_send_failed" || reasonCode === "cancel_send_failed"
       || reasonCode === "ack_send_failed" || reasonCode === "lease_validation_unavailable") {

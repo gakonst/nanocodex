@@ -256,6 +256,7 @@ function createClient(endpoint, transport, options, admission, machines, attachm
       capabilities: ["turn_metadata"],
       diagnostics: true,
       command_recovery: true,
+      turn_lifecycle: true,
       connection_id: state.connection.id,
       runtime_id: state.runtimeId,
       tools: state.catalog,
@@ -286,6 +287,10 @@ function createClient(endpoint, transport, options, admission, machines, attachm
       case "call":
         if (!state.readyReceived || state.drainAcknowledged) throw new Error("call received outside a routing-ready socket");
         await handleCall(frame, socket, timing);
+        break;
+      case "turn_ended":
+        if (!state.readyReceived || state.drainAcknowledged) throw new Error("turn_ended received outside a routing-ready socket");
+        await admission.endTurn(frame.session_id, frame.turn_id, frame.hook_event_name);
         break;
       case "cancel":
         if (!state.readyReceived) throw new Error("cancel received outside a routing-ready socket");
@@ -673,6 +678,10 @@ function parseFrame(encoded) {
     positiveInteger(frame.output_token_budget, "output_token_budget");
     positiveInteger(frame.output_byte_budget, "output_byte_budget");
     positiveInteger(frame.deadline_at, "deadline_at");
+  } else if (frame.type === "turn_ended") {
+    requiredIdentifier(frame.session_id, "session_id");
+    if (typeof frame.turn_id !== "string" || !frame.turn_id || utf8ByteLength(frame.turn_id) > 256) throw new TypeError("invalid turn_id");
+    if (!["Stop", "Interrupt", "SubagentStop"].includes(frame.hook_event_name)) throw new TypeError("invalid lifecycle event");
   } else if (frame.type === "cancel" || frame.type === "ack") requiredIdentifier(frame.call_id, "call_id");
   else if (frame.type === "recover") {
     if (!Array.isArray(frame.call_ids) || frame.call_ids.length > 100 || new Set(frame.call_ids).size !== frame.call_ids.length) throw new Error("recover requires at most 100 unique call ids");
@@ -732,6 +741,7 @@ function immutableIdentity(frame) {
 
 const DO_KEYS = Object.freeze({
   ready: ["type"],
+  turn_ended: ["type", "session_id", "turn_id", "hook_event_name"],
   call: ["type", "session_id", "turn_id", "call_id", "model", "name", "input", "output_token_budget", "output_byte_budget", "deadline_at"],
   cancel: ["type", "call_id"],
   ack: ["type", "call_id"],

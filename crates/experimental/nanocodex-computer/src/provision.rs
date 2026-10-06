@@ -40,16 +40,22 @@ pub(crate) fn managed_provider_config() -> Option<crate::ComputerConfig> {
         return None;
     }
     let receipt: serde_json::Value = serde_json::from_slice(&std::fs::read(path).ok()?).ok()?;
-    if !no_codex_managed_receipt(&receipt) {
+    if !no_codex_managed_receipt(&receipt, std::env::consts::OS) {
         return None;
     }
     config_from_receipt(&receipt).ok()
 }
 
-const NO_CODEX_DEPENDENCY_CONTRACT: &str = "nanocodex-native-no-codex-v1";
+const NO_CODEX_DEPENDENCY_CONTRACT: &str = "nanocodex-direct-cua-v2";
 
-fn no_codex_managed_receipt(receipt: &serde_json::Value) -> bool {
-    receipt["dependency_contract"].as_str() == Some(NO_CODEX_DEPENDENCY_CONTRACT)
+fn no_codex_managed_receipt(receipt: &serde_json::Value, platform: &str) -> bool {
+    let contract = match platform {
+        "macos" => NO_CODEX_DEPENDENCY_CONTRACT,
+        // The separately installed Linux Sky host remains computer-only.
+        "linux" => "nanocodex-native-no-codex-v1",
+        _ => return false,
+    };
+    receipt["dependency_contract"].as_str() == Some(contract)
         && receipt["environment"].get("CODEX_CLI_PATH").is_none()
 }
 
@@ -59,11 +65,17 @@ mod managed_dependency_tests {
     fn legacy_and_cli_bearing_managed_receipts_are_not_selected() {
         let mut receipt = serde_json::json!({"status":"installed","transport":"mcp",
             "executable":"/legacy/cua-provider","environment":{}});
-        assert!(!super::no_codex_managed_receipt(&receipt));
+        assert!(!super::no_codex_managed_receipt(&receipt, "macos"));
         receipt["dependency_contract"] = super::NO_CODEX_DEPENDENCY_CONTRACT.into();
-        assert!(super::no_codex_managed_receipt(&receipt));
+        assert!(super::no_codex_managed_receipt(&receipt, "macos"));
+        assert!(!super::no_codex_managed_receipt(&receipt, "linux"));
+        receipt["dependency_contract"] = "nanocodex-native-no-codex-v1".into();
+        assert!(super::no_codex_managed_receipt(&receipt, "linux"));
+        assert!(!super::no_codex_managed_receipt(&receipt, "macos"));
         receipt["environment"]["CODEX_CLI_PATH"] = "/legacy/codex".into();
-        assert!(!super::no_codex_managed_receipt(&receipt));
+        assert!(!super::no_codex_managed_receipt(&receipt, "linux"));
+        receipt["dependency_contract"] = super::NO_CODEX_DEPENDENCY_CONTRACT.into();
+        assert!(!super::no_codex_managed_receipt(&receipt, "macos"));
     }
 }
 
@@ -77,10 +89,13 @@ pub async fn provision_upstream(force_refresh: bool) -> Result<serde_json::Value
         if let Some(home) = std::env::var_os("HOME") {
             applications.push(PathBuf::from(home).join("Applications"));
         }
+        let home = std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .ok_or("HOME is required to register the browser bridge")?;
         let cancellation = mac::Cancellation::new();
         let mut commands = mac::System::new(cancellation.flag());
         tokio::task::spawn_blocking(move || {
-            mac::provision(&root, &applications, force_refresh, &mut commands)
+            mac::provision(&root, &home, &applications, force_refresh, &mut commands)
         })
         .await
         .map_err(|e| format!("OpenAI CUA installation task failed: {e}"))?
@@ -96,18 +111,11 @@ pub async fn provision_upstream(force_refresh: bool) -> Result<serde_json::Value
     }
 }
 
-/// Dedicated browser APIs are unsupported by the native-computer-only runtime.
-/// Browsers remain controllable through the native computer UI.
+/// Prepare the complete managed provider and return its browser bridge receipt.
+/// Browser registration shares the installer's lock and verified host generation.
 pub async fn configure_browser_bridge() -> Result<serde_json::Value, String> {
-    #[cfg(target_os = "macos")]
-    {
-        let root = runtime_root()?;
-        tokio::task::spawn_blocking(move || mac::configure_browser(&root))
-            .await
-            .map_err(|e| format!("Browser bridge setup task failed: {e}"))?
-    }
-    #[cfg(not(target_os = "macos"))]
-    Ok(serde_json::json!({"status":"unsupported","platform":std::env::consts::OS}))
+    let receipt = provision_upstream(false).await?;
+    Ok(receipt.get("browser_bridge").cloned().unwrap_or(receipt))
 }
 
 /// Interpret the installer's bounded receipt without adding legacy companion arguments.
@@ -543,7 +551,7 @@ mod mac {
 
     fn verify_lean_layout(app: &Path) -> Result<(), String> {
         if requires_fresh_generation(app)? {
-            return Err("OpenAI CUA runtime requires a fresh native-computer-only generation (no Codex CLI or Chrome plugin)".into());
+            return Err("OpenAI CUA runtime requires a fresh direct-CUA generation (no Codex CLI or official Chrome plugin)".into());
         }
         Ok(())
     }
@@ -756,17 +764,15 @@ mod mac {
         Ok(format!("'{}'", text.replace('\'', "'\"'\"'")))
     }
 
-    fn launcher(version: &Path) -> Result<String, String> {
+    fn launcher(version: &Path, host: &Path) -> Result<String, String> {
         let resources = version.join(APP).join(RESOURCES);
         let runtime = resources.join("cua_node");
         let modules = resources.join(MODULES);
-        // These are the actual shipped node_repl and cua-repl environment
-        // contracts. CODEX_BINARY_PATH is not supported by this upstream.
-        // Enable only the native computer surface. Browser Tab/DOM APIs need
-        // the official app-server proxy and are intentionally unsupported.
+        // The direct host supplies only our policy responder as CODEX_CLI_PATH.
+        // The kernel wrapper explicitly bypasses Codex sandbox process launch.
         Ok(format!(
-            "#!/bin/sh\nset -eu\nunset CODEX_CLI_PATH BROWSER_USE_TINYSKY_ENABLED\nexport CUA_REPL_NODE_REPL_PATH={}\nexport CUA_REPL_ENABLED_SURFACES=computer\nexport NODE_REPL_NODE_PATH={}\nexport NODE_REPL_NODE_MODULE_DIRS={}\nexport NODE_REPL_TRUSTED_CODE_PATHS={}\nexport SKY_CUA_SERVICE_PATH={}\nexport NODE_REPL_UNTRUSTED_ENV_ALLOWLIST=\"${{NODE_REPL_UNTRUSTED_ENV_ALLOWLIST:+$NODE_REPL_UNTRUSTED_ENV_ALLOWLIST,}}SKY_CUA_SERVICE_PATH,SKY_CUA_SERVICE_NATIVE_PIPE_PATH\"\nexport PATH={}:\"$PATH\"\nexec {} {} \"$@\"\n",
-            quote(&runtime.join("bin/node_repl"))?,
+            "#!/bin/sh\nset -eu\nexport BROWSER_USE_TINYSKY_ENABLED=1\nexport BROWSER_USE_DISABLE_AMBIENT_NETWORK=1\nexport CUA_REPL_NODE_REPL_PATH={}\nexport CUA_REPL_ENABLED_SURFACES=browser,computer\nexport NODE_REPL_NODE_PATH={}\nexport NODE_REPL_NODE_MODULE_DIRS={}\nexport NODE_REPL_TRUSTED_CODE_PATHS={}\nexport SKY_CUA_SERVICE_PATH={}\nexport NODE_REPL_UNTRUSTED_ENV_ALLOWLIST=\"${{NODE_REPL_UNTRUSTED_ENV_ALLOWLIST:+$NODE_REPL_UNTRUSTED_ENV_ALLOWLIST,}}SKY_CUA_SERVICE_PATH,SKY_CUA_SERVICE_NATIVE_PIPE_PATH\"\nexport PATH={}:\"$PATH\"\nexec {} {} \"$@\"\n",
+            quote(&host.join("node-repl"))?,
             quote(&runtime.join("bin/node"))?,
             quote(&modules)?,
             quote(&modules)?,
@@ -781,6 +787,8 @@ mod mac {
         root: &Path,
         commands: &mut impl Commands,
         refresh: bool,
+        home: &Path,
+        applications: &[PathBuf],
     ) -> Result<Option<serde_json::Value>, String> {
         let current = root.join("current");
         match fs::symlink_metadata(&current) {
@@ -815,7 +823,16 @@ mod mac {
             commands.check_cancelled()?;
             let host = ensure_host(root, &version, HOST_MODULES)?;
             commands.check_cancelled()?;
-            publish_receipt(root, &host, &build, fingerprint.as_deref(), commands).map(Some)
+            let bridge = register_browser_bridge(root, &host, home, applications)?;
+            publish_receipt(
+                root,
+                &host,
+                &build,
+                fingerprint.as_deref(),
+                bridge,
+                commands,
+            )
+            .map(Some)
         });
         result.map_err(|error| {
             if error == CANCELLED {
@@ -826,8 +843,13 @@ mod mac {
         })
     }
 
-    const HOST_MODULES: &[(&str, &str)] =
-        &[("direct-cua-host.mjs", include_str!("direct-cua-host.mjs"))];
+    const HOST_MODULES: &[(&str, &str)] = &[
+        ("direct-cua-host.mjs", include_str!("direct-cua-host.mjs")),
+        (
+            "direct-browser-host.mjs",
+            include_str!("direct-browser-host.mjs"),
+        ),
+    ];
 
     fn host_launcher(
         root: &Path,
@@ -857,8 +879,32 @@ mod mac {
         ))
     }
 
+    fn node_repl_launcher(version: &Path) -> Result<String, String> {
+        Ok(format!(
+            "#!/bin/sh\nset -eu\nexec {} --disable-sandbox \"$@\"\n",
+            quote(
+                &version
+                    .join(APP)
+                    .join(RESOURCES)
+                    .join("cua_node/bin/node_repl")
+            )?,
+        ))
+    }
+
+    fn browser_launcher(version: &Path, host: &Path) -> Result<String, String> {
+        Ok(format!(
+            "#!/bin/sh\nset -eu\nunset NODE_OPTIONS NODE_PATH CODEX_CLI_PATH CODEX_HOME\nexec {} {} \"$@\"\n",
+            quote(&version.join(APP).join(RESOURCES).join("cua_node/bin/node"))?,
+            quote(&host.join("direct-browser-host.mjs"))?,
+        ))
+    }
+
     fn executable_host_asset(name: &str) -> bool {
-        name.ends_with("cua-provider") || name == "cua-policy-host"
+        name.ends_with("cua-provider")
+            || matches!(
+                name,
+                "cua-policy-host" | "native-browser-host" | "node-repl"
+            )
     }
 
     // The signed bundle and generated host have independent lifetimes. Source
@@ -868,13 +914,14 @@ mod mac {
         version: &Path,
         modules: &[(&str, &str)],
     ) -> Result<PathBuf, String> {
-        let direct = launcher(version)?;
+        let template = root.join("hosts/HASH");
+        let direct_template = launcher(version, &template)?;
         let mut digest = Sha256::new();
         for content in modules
             .iter()
             .flat_map(|(name, source)| [*name, *source])
             .chain([
-                direct.as_str(),
+                direct_template.as_str(),
                 version.join(APP).to_str().ok_or("Invalid bundle path")?,
             ])
         {
@@ -888,7 +935,9 @@ mod mac {
             &root.join("hosts/HASH"),
             "HASH",
         )?);
-        digest.update(policy_launcher(version, &root.join("hosts/HASH"))?);
+        digest.update(policy_launcher(version, &template)?);
+        digest.update(browser_launcher(version, &template)?);
+        digest.update(node_repl_launcher(version)?);
         let hash: String = digest
             .finalize()
             .iter()
@@ -897,6 +946,9 @@ mod mac {
         let host = root.join("hosts").join(&hash);
         let wrapper = host_launcher(root, version, &host, &hash)?;
         let policy = policy_launcher(version, &host)?;
+        let direct = launcher(version, &host)?;
+        let browser = browser_launcher(version, &host)?;
+        let node_repl = node_repl_launcher(version)?;
         let assets: Vec<_> = modules
             .iter()
             .copied()
@@ -904,6 +956,8 @@ mod mac {
                 ("upstream-cua-provider", direct.as_str()),
                 ("cua-provider", wrapper.as_str()),
                 ("cua-policy-host", policy.as_str()),
+                ("native-browser-host", browser.as_str()),
+                ("node-repl", node_repl.as_str()),
             ])
             .collect();
         let validate = || -> Result<(), String> {
@@ -972,12 +1026,14 @@ mod mac {
         host: &Path,
         build: &str,
         fingerprint: Option<&str>,
+        bridge: serde_json::Value,
         commands: &impl Commands,
     ) -> Result<serde_json::Value, String> {
         commands.check_cancelled()?;
         let mut receipt = serde_json::json!({"status": "installed", "build": build,
             "dependency_contract": super::NO_CODEX_DEPENDENCY_CONTRACT,
-            "executable": host.join("cua-provider"), "transport": "mcp", "args": [], "environment": {}});
+            "executable": host.join("cua-provider"), "transport": "mcp", "args": [], "environment": {},
+            "browser_bridge": bridge});
         if let Some(fingerprint) = fingerprint {
             receipt["catalog_cache"] = serde_json::to_value(
                 crate::startup_cache::CatalogCache::managed(root, host, fingerprint),
@@ -1007,6 +1063,164 @@ mod mac {
         }
         result?;
         Ok(receipt)
+    }
+
+    const BROWSER_HOST_NAME: &str = "com.openai.codexextension";
+    const BROWSER_HOST_DESCRIPTION: &str = "Nanocodex direct browser bridge";
+    const BROWSER_ORIGINS: [&str; 2] = [
+        "chrome-extension://hehggadaopoacecdllhhajmbjkdcmajg/",
+        "chrome-extension://odlomjlbamekndcpllcnffbgeohgkmjh/",
+    ];
+    const BROWSERS: &[(&str, &str)] = &[
+        ("Google Chrome.app", "Google/Chrome"),
+        ("Google Chrome Beta.app", "Google/Chrome Beta"),
+        ("Google Chrome Dev.app", "Google/Chrome Dev"),
+        ("Google Chrome Canary.app", "Google/Chrome Canary"),
+        ("Chromium.app", "Chromium"),
+        ("Brave Browser.app", "BraveSoftware/Brave-Browser"),
+        ("Microsoft Edge.app", "Microsoft Edge"),
+        ("Arc.app", "Arc/User Data"),
+    ];
+
+    fn browser_manifest(host: &Path) -> serde_json::Value {
+        serde_json::json!({
+            "name": BROWSER_HOST_NAME,
+            "description": BROWSER_HOST_DESCRIPTION,
+            "path": host.join("native-browser-host"),
+            "type": "stdio",
+            "allowed_origins": BROWSER_ORIGINS,
+        })
+    }
+
+    // Ownership requires our exact schema and a launcher in this installation's
+    // content-addressed host tree. A matching extension name alone is not ours.
+    fn owned_browser_manifest(root: &Path, value: &serde_json::Value) -> bool {
+        let Some(path) = value["path"].as_str().map(Path::new) else {
+            return false;
+        };
+        let Ok(relative) = path.strip_prefix(root.join("hosts")) else {
+            return false;
+        };
+        let parts: Vec<_> = relative.components().collect();
+        if parts.len() != 2 || parts[1].as_os_str() != "native-browser-host" {
+            return false;
+        }
+        let hash = parts[0].as_os_str().to_string_lossy();
+        hash.len() == 64
+            && hash.bytes().all(|b| b.is_ascii_hexdigit())
+            && path
+                .parent()
+                .is_some_and(|host| *value == browser_manifest(host))
+    }
+
+    fn read_browser_manifest(path: &Path) -> Result<Option<Vec<u8>>, String> {
+        match fs::symlink_metadata(path) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(error.to_string()),
+            Ok(metadata) if metadata.is_file() && metadata.len() <= 65536 => {
+                io(fs::read(path)).map(Some)
+            }
+            Ok(_) => Err(format!(
+                "Browser native-messaging manifest is not a bounded regular file: {}",
+                path.display()
+            )),
+        }
+    }
+
+    fn register_browser_bridge(
+        root: &Path,
+        host: &Path,
+        home: &Path,
+        applications: &[PathBuf],
+    ) -> Result<serde_json::Value, String> {
+        if !home.is_absolute() {
+            return Err("Browser bridge HOME must be absolute".into());
+        }
+        let manifest = browser_manifest(host);
+        let bytes = serde_json::to_vec_pretty(&manifest).map_err(|error| error.to_string())?;
+        let support = home.join("Library/Application Support");
+        let mut planned = Vec::new();
+        for (app, directory) in BROWSERS {
+            if !applications.iter().any(|base| base.join(app).is_dir()) {
+                continue;
+            }
+            let path = support
+                .join(directory)
+                .join("NativeMessagingHosts")
+                .join(format!("{BROWSER_HOST_NAME}.json"));
+            // Never follow profile/support symlinks while registering a host.
+            for ancestor in path
+                .parent()
+                .unwrap()
+                .ancestors()
+                .take_while(|p| *p != home)
+            {
+                match fs::symlink_metadata(ancestor) {
+                    Ok(metadata) if !metadata.is_dir() => {
+                        return Err(format!(
+                            "Browser registration directory is not a directory: {}",
+                            ancestor.display()
+                        ));
+                    }
+                    Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
+                        return Err(error.to_string());
+                    }
+                    _ => {}
+                }
+            }
+            let previous = read_browser_manifest(&path)?;
+            if let Some(previous) = &previous {
+                let owned = serde_json::from_slice(previous)
+                    .ok()
+                    .is_some_and(|value| owned_browser_manifest(root, &value));
+                if !owned {
+                    return Err(format!(
+                        "Browser native-messaging manifest conflict at {}. Existing registration was preserved; resolve ownership explicitly before rerunning setup",
+                        path.display()
+                    ));
+                }
+            }
+            planned.push((path, previous));
+        }
+        // Preflight every browser before publishing any manifest. A conflicting
+        // official Codex registration never causes a partial takeover.
+        for (path, previous) in &planned {
+            if previous.as_deref() == Some(bytes.as_slice()) {
+                continue;
+            }
+            io(fs::create_dir_all(path.parent().unwrap()))?;
+            let temporary = path.with_extension(format!("{}.tmp", nonce()));
+            let result = (|| {
+                let mut file = io(OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(&temporary))?;
+                io(file.write_all(&bytes))?;
+                io(file.sync_all())?;
+                if read_browser_manifest(path)? != *previous {
+                    return Err(format!(
+                        "Browser registration changed during setup: {}",
+                        path.display()
+                    ));
+                }
+                if previous.is_none() {
+                    // No clobber: a concurrent external installer wins its path.
+                    io(fs::hard_link(&temporary, path))?;
+                } else {
+                    io(fs::rename(&temporary, path))?;
+                }
+                Ok(())
+            })();
+            let _ = fs::remove_file(&temporary);
+            result?;
+        }
+        Ok(serde_json::json!({
+            "status": "installed",
+            "executable": host.join("native-browser-host"),
+            "manifest_name": BROWSER_HOST_NAME,
+            "manifests": planned.iter().map(|(path, _)| path).collect::<Vec<_>>(),
+            "allowed_origins": BROWSER_ORIGINS,
+        }))
     }
 
     struct Staging {
@@ -1559,7 +1773,8 @@ mod mac {
 
     pub(super) fn provision(
         root: &Path,
-        _applications: &[PathBuf],
+        home: &Path,
+        applications: &[PathBuf],
         refresh: bool,
         commands: &mut impl Commands,
     ) -> Result<serde_json::Value, String> {
@@ -1576,7 +1791,7 @@ mod mac {
             .open(root.join("provision.lock")))?;
         io(lock.lock_exclusive())?;
         commands.check_cancelled()?;
-        if !refresh && let Some(receipt) = cached(root, commands, false)? {
+        if !refresh && let Some(receipt) = cached(root, commands, false, home, applications)? {
             return Ok(receipt);
         }
         io(fs::create_dir_all(root.join("versions")))?;
@@ -1588,7 +1803,7 @@ mod mac {
         io(fs::create_dir(stage.path.join("payload")))?;
         let release = latest_release(&stage.path, commands)?;
         if refresh {
-            match cached(root, commands, true) {
+            match cached(root, commands, true, home, applications) {
                 Ok(Some(existing)) if existing["build"].as_str() == Some(&release.build) => {
                     return Ok(existing);
                 }
@@ -1608,6 +1823,7 @@ mod mac {
         // Finish the host before changing the selected bundle. Failed host
         // preparation must leave the previous selection and receipt intact.
         let host = ensure_host(root, &version, HOST_MODULES)?;
+        let bridge = register_browser_bridge(root, &host, home, applications)?;
         // Publication is a single rename. Previous versions remain available to
         // processes already using their absolute bundle paths.
         let next = stage.path.join("next");
@@ -1618,11 +1834,14 @@ mod mac {
         let fingerprint = crate::startup_cache::fingerprint(&version.join(APP));
         commands.check_cancelled()?;
         io(fs::rename(&next, root.join("current")))?;
-        publish_receipt(root, &host, &build, fingerprint.as_deref(), commands)
-    }
-
-    pub(super) fn configure_browser(_root: &Path) -> Result<serde_json::Value, String> {
-        Err("Dedicated browser Tab/DOM APIs and the Chrome native-messaging bridge are unsupported by the native-computer-only CUA runtime; control browsers through the native computer UI instead".into())
+        publish_receipt(
+            root,
+            &host,
+            &build,
+            fingerprint.as_deref(),
+            bridge,
+            commands,
+        )
     }
 
     #[cfg(test)]

@@ -703,7 +703,7 @@ export function createBrowserHost(options = {}) {
     toolMode: () => toolMode,
     toolDefinitions: code.toolDefinitions,
     releaseSession: (sessionId) => { effectIdentity.release(sessionId); socketObservations?.release(sessionId); return code.releaseSession(sessionId); },
-    emitEvent: (event, ...args) => { effectIdentity.observe(event); socketObservations?.runtime(event); return onEvent(event, ...args); },
+    emitEvent: (event, ...args) => { code.observeEvent(event); effectIdentity.observe(event); socketObservations?.runtime(event); return onEvent(event, ...args); },
     reset: () => { effectIdentity.reset(); return code.reset(); },
     dispose,
   });

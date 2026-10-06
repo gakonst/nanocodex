@@ -6,6 +6,7 @@ import { validRecordingCapability, screenTool, type ScreenTarget } from "./hand-
 import { HandHosts, boundedJSON } from "./hand-hosts";
 import { remoteICE, type RemoteICEEnv } from "./hand-remote-ice";
 import {
+  parseHostedToolsManagedFrame,
   HOSTED_TOOLS_PRE_ADMISSION_UNAVAILABLE,
   HOSTED_MACHINE_TOOL_NAMES,
   type HostedMachine,
@@ -175,7 +176,7 @@ export class AccountHostedTools extends DurableObject<AccountHostedToolsEnv> {
   async #fetchRequest(request: Request): Promise<Response> {
     const url = new URL(request.url);
     if (url.pathname.startsWith("/regional/")) return this.#regionalRequest(request, url);
-    if (this.#regional && !["/tool-host", "/snapshot", "/invoke", "/diagnostics"].includes(url.pathname)) {
+    if (this.#regional && !["/tool-host", "/snapshot", "/invoke", "/turn-ended", "/diagnostics"].includes(url.pathname)) {
       return Response.json({ error: "not_found" }, { status: 404 });
     }
     if (url.pathname === "/diagnostics") {
@@ -363,6 +364,17 @@ export class AccountHostedTools extends DurableObject<AccountHostedToolsEnv> {
         return Response.json({ error: "not_found" }, { status: 404 });
       }
       return Response.json(await this.#snapshot(), { headers: { "cache-control": "no-store" } });
+    }
+
+    if (request.method === "POST" && url.pathname === "/turn-ended") {
+      const body = await request.json<{ owner_id: string; frame: unknown }>();
+      if (!isUserId(body.owner_id) || !this.#owns(body.owner_id)) return Response.json({ error: "not_found" }, { status: 404 });
+      let frame;
+      try { frame = parseHostedToolsManagedFrame(JSON.stringify(body.frame)); }
+      catch { return Response.json({ error: "invalid_request" }, { status: 400 }); }
+      if (frame.type !== "turn_ended") return Response.json({ error: "invalid_request" }, { status: 400 });
+      await this.#broker.endTurn(frame.session_id, frame.turn_id, frame.hook_event_name);
+      return new Response(null, { status: 204 });
     }
 
     if (request.method === "POST" && url.pathname === "/invoke") {
@@ -742,6 +754,7 @@ export class AccountHostedToolsCallRoutes {
 /** Dynamic provider proxy from one agent DO to its account's shared hand DO. */
 export class AccountHostedToolsProvider implements HostedToolsDynamicProvider {
   readonly sourceId = "account-hands";
+  readonly #turnTargets = new Map<string, Map<string, DurableObjectStub>>();
   readonly #namespace: DurableObjectNamespace<AccountHostedTools>;
   readonly #relays: DurableObjectNamespace<RegionalHandRelay> | undefined;
   readonly #callRoutes: AccountHostedToolsCallRoutes | undefined;
@@ -778,6 +791,21 @@ export class AccountHostedToolsProvider implements HostedToolsDynamicProvider {
     this.#ownerId = ownerId;
     this.#threadId = threadId;
     this.#allowed = allowed;
+  }
+
+  async endTurn(sessionId: string, turnId: string, hookEventName: "Stop" | "Interrupt" | "SubagentStop"): Promise<void> {
+    const key = JSON.stringify([sessionId, turnId]);
+    const targets = this.#turnTargets.get(key);
+    this.#turnTargets.delete(key);
+    await Promise.all([...targets?.values() ?? []].map(async target => {
+      const response = await target.fetch("https://account-tools.internal/turn-ended", {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ owner_id: this.#ownerId, frame: {
+          type: "turn_ended", session_id: sessionId, turn_id: turnId, hook_event_name: hookEventName,
+        } }),
+      });
+      if (!response.ok) throw new Error(`Hand turn cleanup failed (${response.status}); not retried`);
+    }));
   }
 
   definitions(): readonly HostedToolsCodeDefinition[] {
@@ -1057,6 +1085,12 @@ export class AccountHostedToolsProvider implements HostedToolsDynamicProvider {
     if (routeToken.startsWith("hand-relay:") && !relay) return failed("Invalid regional Hand route", "unavailable", true);
     if (relay && !this.#relays) return failed("Regional Hand relay is unavailable", "unavailable", true);
     const target = relay ? this.#relays!.getByName(handRelayName(this.#ownerId, relay.region)) : this.#namespace.getByName(this.#ownerId);
+    if (context.turnId !== undefined) {
+      const key = JSON.stringify([context.sessionId, context.turnId]);
+      let targets = this.#turnTargets.get(key);
+      if (!targets) { targets = new Map(); this.#turnTargets.set(key, targets); }
+      targets.set(relay?.region ?? "account", target);
+    }
     let response: Response;
     try {
       response = await target.fetch("https://account-tools.internal/invoke", {

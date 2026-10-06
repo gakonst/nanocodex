@@ -31,6 +31,33 @@ test("provider owns arguments, errors, and post-error behavior", async t => {
   assert.equal((await js.handler({}, context("contracts"))).success, true);
 });
 
+test("JavaScript attachments forward the native confirmation defaults and trusted overrides", async t => {
+  const original = process.env.NANOCODEX_COMPUTER_CONFIRMATION_POLICIES;
+  t.after(() => {
+    if (original === undefined) delete process.env.NANOCODEX_COMPUTER_CONFIRMATION_POLICIES;
+    else process.env.NANOCODEX_COMPUTER_CONFIRMATION_POLICIES = original;
+  });
+  for (const [configured, option, expected] of [
+    [undefined, undefined, "No confirmation policy applies."],
+    ["upstream host policy", undefined, "upstream host policy"],
+    ["off", undefined, undefined],
+    ["upstream host policy", null, undefined],
+    ["off", "task host policy", "task host policy"],
+  ]) {
+    if (configured === undefined) delete process.env.NANOCODEX_COMPUTER_CONFIRMATION_POLICIES;
+    else process.env.NANOCODEX_COMPUTER_CONFIRMATION_POLICIES = configured;
+    const computer = await connectComputerTools({ ...provider(), confirmationPolicies: option });
+    t.after(computer.close);
+    const result = await computer.tool("js").handler({ source: "1 + 1" }, { ...context("policy"), turnId: "turn" });
+    const call = JSON.parse(result.output[0].text);
+    assert.deepEqual(call._meta["openai/confirmation_policies"], expected === undefined ? undefined : { browser_use: expected, computer_use: expected });
+    assert.deepEqual(call._meta["x-codex-turn-metadata"], {
+      session_id: "policy", thread_id: "policy", turn_id: "turn", call_id: "test", model: "fixture",
+    });
+    assert.deepEqual(call.arguments, { source: "1 + 1" });
+  }
+});
+
 test("queued cancellation rejects promptly without running or resetting the active process", async t => {
   const computer = await open(t), js = computer.tool("js");
   await js.handler({set:"kept"}, context("queue"));
@@ -226,4 +253,28 @@ test("dispatched transport failure blocks already queued work until explicit res
   await computer.tool("js_reset").handler({}, context("transport"));
   assert.equal((await js.handler({get:true}, context("transport"))).output[0].text, "undefined");
   assert.deepEqual((await fixture.calls()).map(call => call.arguments), [{crash:true}, {}, {get:true}]);
+});
+
+
+test("turn completion calls the upstream hook once for retained turns without starting a new session", async t => {
+  const directory = await mkdtemp(join(tmpdir(), "cua-lifecycle-"));
+  t.after(() => rm(directory, {recursive:true,force:true}));
+  const callLog = join(directory, "calls");
+  const computer = await connectComputerTools(provider({callLog, lifecycle:true}));
+  t.after(computer.close);
+  assert.equal(computer.tools.some(tool => tool.name.endsWith("turn_ended")), false);
+  await computer.endTurn("unused", "turn");
+  const current = {...context("owner"), turnId:"one"};
+  await computer.tool("js").handler({set:"retained"}, current);
+  await computer.endTurn("owner", "one");
+  await computer.endTurn("owner", "one");
+  assert.equal((await computer.tool("js").handler({get:true}, {...current,turnId:"two"})).output[0].text, "retained");
+  await computer.endTurn("owner", "two", "Interrupt");
+  const calls = (await readFile(callLog, "utf8")).trim().split("\n").map(JSON.parse);
+  const ends = calls.filter(call => call.name === "turn_ended");
+  assert.deepEqual(ends.map(call => call.arguments), [
+    {hook_event_name:"Stop",session_id:"owner",turn_id:"one"},
+    {hook_event_name:"Interrupt",session_id:"owner",turn_id:"two"},
+  ]);
+  assert.equal(ends[0]._meta["x-codex-turn-metadata"].turn_id, "one");
 });

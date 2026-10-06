@@ -90,6 +90,7 @@ export class ToolRouter {
       tools: built.tools,
       catalog: (provider = "javascript") => catalogSnapshot(built, provider),
       invoke: (name, input, context, observe) => this.#invoke(built, name, input, context, observe),
+      endTurn: (sessionId, turnId, event) => this.endTurn(sessionId, turnId, event),
       release() {},
     });
   }
@@ -121,6 +122,13 @@ export class ToolRouter {
   async execute(name, input, context) {
     const admission = await this.admit(context?.signal);
     try { return await admission.invoke(name, input, context); } finally { admission.release(); }
+  }
+
+  async endTurn(sessionId, turnId, event = "Stop") {
+    if (!["Stop", "Interrupt", "SubagentStop"].includes(event)) throw new TypeError("invalid turn lifecycle event");
+    const owners = new Set([...this.#sources.values(), ...this.#allTools()]);
+    await settleCleanup([...owners].filter(owner => typeof owner.endTurn === "function")
+      .map(owner => () => owner.endTurn(sessionId, turnId, event)), "turn cleanup failed");
   }
 
   releaseSession(sessionId) {
@@ -310,6 +318,7 @@ export function toolMapSource(id, configuration = {}, options = {}) {
       summary: value.summary,
       timeoutMs: value.timeoutMs,
       dispose: typeof value.dispose === "function" ? value.dispose : undefined,
+      endTurn: typeof value.endTurn === "function" ? (...args) => value.endTurn(...args) : undefined,
       releaseSession: typeof value.releaseSession === "function" ? value.releaseSession : undefined,
     }));
   }
@@ -337,6 +346,7 @@ export function providerSource(id, provider, options = {}) {
     search: typeof provider.search === "function" ? (input, context) => provider.search(input, context) : undefined,
     deferred: options.deferred ?? provider.deferred,
     settled: () => provider.settled?.(),
+    ...(typeof provider.endTurn === "function" ? { endTurn: (...args) => provider.endTurn(...args) } : {}),
     ...(typeof provider.close === "function" ? { close: () => provider.close() } : {}),
   });
 }
@@ -526,6 +536,7 @@ function overlayTool(attached, cloud) {
         ? cloud.handler(input, context)
         : result;
     },
+    async endTurn(...args) { await Promise.all([attached.endTurn?.(...args), cloud.endTurn?.(...args)]); },
     releaseSession(sessionId) {
       attached.releaseSession?.(sessionId);
       cloud.releaseSession?.(sessionId);

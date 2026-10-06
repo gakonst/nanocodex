@@ -264,7 +264,7 @@ export function createNamespaceExecutionRuntime(
 
   const tools: ToolMap = {
     [CUA_JS_NAME]: {
-      description: "Use a Hand's CUA provider. Set workdir on every call, just like exec_command. First call with only {workdir} to read that Hand's exact descriptions and schemas without executing an action; then add those provider arguments alongside workdir. OpenAI CUA is preferred when attached; VM, Cloudflare, and native Hands can fall back to their controllable screen action contract. Nanocodex strips only workdir before forwarding. Calls dispatch immediately; follow the provider’s contract for concurrent calls. /brain has no desktop.",
+      description: "Use a Hand's CUA provider. Set workdir on every call, just like exec_command. First call with only {workdir} to read that Hand's exact descriptions and schemas without executing an action; then add those provider arguments alongside workdir. OpenAI Sky/CUA is preferred when attached. For browser work use its browser API and agent-owned background tabs/tab groups; preserve the user’s foreground focus. Use native browser-window input only when the browser API cannot handle the task. VM, Cloudflare, and native Hands can fall back to their controllable screen action contract. Nanocodex strips only workdir before forwarding. Calls dispatch immediately; follow the provider’s contract for concurrent calls. /brain has no desktop.",
       parameters: computerParameters,
       supportsParallelToolCalls: true,
       handler: (input, context) => computerCall(CUA_JS_NAME, input, context),

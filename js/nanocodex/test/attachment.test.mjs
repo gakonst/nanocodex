@@ -34,6 +34,7 @@ test("attachment publishes one exact catalog and exchanges ready, call, result, 
     capabilities: ["turn_metadata"],
     diagnostics: true,
     command_recovery: true,
+    turn_lifecycle: true,
     connection_id: socket.frames()[0].connection_id,
     tools: [{
       provider: "javascript",
@@ -773,4 +774,19 @@ test("attachment dispatches nonparallel calls beyond the former call and receipt
   }
   await drain(fixture.client, fixture.socket);
   await fixture.tools.close();
+});
+
+
+test("trusted turn completion reaches tool lifecycle outside its public catalog", async () => {
+  const ended = [];
+  const { socket, tools, client } = await readyAttachment({ handler: () => "ok",
+    endTurn: async (...args) => { ended.push(args); } });
+  assert.equal(socket.frames()[0].turn_lifecycle, true);
+  assert.deepEqual(socket.frames()[0].tools.map(tool => tool.definition.name), ["echo"]);
+  for (const hook_event_name of ["Stop", "Interrupt", "SubagentStop"]) {
+    socket.receive({ type: "turn_ended", session_id: "session:1", turn_id: "session:1:7", hook_event_name });
+    await waitFor(() => ended.length === ["Stop", "Interrupt", "SubagentStop"].indexOf(hook_event_name) + 1);
+  }
+  assert.deepEqual(ended, ["Stop", "Interrupt", "SubagentStop"].map(event => ["session:1", "session:1:7", event]));
+  await drain(client, socket); await tools.close();
 });

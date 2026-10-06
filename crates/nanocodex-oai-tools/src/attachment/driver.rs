@@ -737,6 +737,7 @@ where
             capabilities: ["turn_metadata"],
             runtime_id,
             command_recovery: true,
+            turn_lifecycle: true,
             diagnostics: Some(true),
             connection_id: Some(connection_id),
             tools: &config.tools,
@@ -926,6 +927,15 @@ where
                         }
                         let task = start_call(runtime, active, identity.clone(), Arc::clone(&timing), tool_timeout, call_events, completed_tx.clone(), events);
                         journal.insert(call_id.into(), RetainedCall { identity, task: Some(task), timing, receipt: None });
+                    }
+                    RemoteFrame::TurnEnded { session_id, turn_id, hook_event_name } => {
+                        // The trusted broker sends this only after the turn has
+                        // settled. Keep cleanup ordered before another turn can
+                        // use this same retained provider session.
+                        if tokio::time::timeout(Duration::from_secs(5), runtime.end_turn(&session_id, &turn_id, &hook_event_name)).await.is_err() {
+                            tracing::warn!(target: "nanocodex_oai_tools::attachment",
+                                "turn cleanup timed out; not retried");
+                        }
                     }
                     RemoteFrame::Cancel { call_id } => {
                         tracing::info!(target: "nanocodex_oai_tools::attachment", stage = "attachment.call.cancel_received", transport_call_id = call_id.as_str(), pending_calls = journal.values().filter(|call| call.task.is_some()).count(), pending_receipts = journal.values().filter(|call| call.receipt.is_some()).count(), reason_code = "cancel_received", "attachment cancellation received");

@@ -556,3 +556,38 @@ test("manual compaction and historical forks preserve exact committed boundaries
     await server.close();
   }
 });
+
+test("actual terminal turns dispatch the hidden tool lifecycle with original ABI identity", { timeout: 15000 }, async (t) => {
+  const server = await startResponsesServer();
+  t.after(() => server.close());
+  const calls = [], ended = [];
+  const cleanupDone = deferred();
+  const { readFile } = await import("node:fs/promises");
+  const module = await WebAssembly.compile(await readFile(new URL("../pkg-web/nanocodex_bg.wasm", import.meta.url)));
+  const agent = await createWarmAgent({ module, apiKey: "fixture", websocketUrl: server.url,
+    thinking: "low", sessionId: "018f1f9a-7b3c-7a31-8000-000000000031",
+    tools: { probe: { description: "Lifecycle probe", parameters: { type: "object" },
+      handler: (_input, context) => { calls.push({ session: context.sessionId, turn: context.turnId }); return "observed"; },
+      endTurn: async (...args) => { ended.push(args); cleanupDone.resolve(); },
+    } },
+  });
+  const scenario = (async () => {
+    const socket = await server.nextConnection();
+    const reader = messageReader(socket);
+    await reader.next(); sendWarmup(socket, "lifecycle-warmup");
+    await reader.next();
+    send(socket, { type: "response.completed", response: { id: "lifecycle-probe", status: "completed", end_turn: false,
+      output: [{ type: "custom_tool_call", name: "exec", call_id: "probe-call",
+        input: "text(await tools.probe({}));" }],
+      usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } } });
+    await reader.next(); sendFinal(socket, "lifecycle-final", "DONE");
+  })();
+  try {
+    const result = await agent.turn.prompt({ input: "Run probe then finish" }).result();
+    assert.equal(result.finalMessage, "DONE");
+    await scenario; await cleanupDone.promise;
+    assert.equal(calls.length, 1);
+    assert.equal(typeof calls[0].turn, "string");
+    assert.deepEqual(ended, [[calls[0].session, calls[0].turn, "Stop"]]);
+  } finally { agent.dispose(); }
+});

@@ -86,9 +86,12 @@ export function policyReply(request, allowApps) {
   let result;
   switch (request.method) {
     case 'initialize': result = { userAgent: 'nanocodex-cua-policy-host/1', platformFamily: 'unix', platformOs: 'macos' }; break;
+    // Upstream asks for status while initializing its config client. Local CUA
+    // has no OpenAI account or token; never inspect or synthesize credentials.
+    case 'getAuthStatus': result = { authMethod: null, authToken: null, requiresOpenaiAuth: false }; break;
     case 'configRequirements/read': result = { requirements: { computerUse: { allowLockedComputerUse: false, allowPersistentApproval: false } } }; break;
     case 'config/read': result = { config: { computer_use: { default_app_access: allowApps ? 'allow' : 'deny' } }, origins: {}, layers: null }; break;
-    default: return { jsonrpc: '2.0', id: request.id, error: { code: -32601, message: 'Unsupported Nanocodex CUA policy request.' } };
+    default: return { jsonrpc: '2.0', id: request.id, error: { code: -32601, message: `Unsupported Nanocodex CUA policy request${typeof request.method === 'string' && /^[A-Za-z0-9_/-]{1,128}$/.test(request.method) ? ': ' + request.method : ''}.` } };
   }
   return { jsonrpc: '2.0', id: request.id, result };
 }
@@ -99,13 +102,20 @@ const APP_ACCESS_TOOLS = new Set(['click', 'drag', 'get_app_state', 'paste',
   'perform_secondary_action', 'press_key', 'scroll', 'select_text', 'set_value', 'type_text']);
 export function appConsent(request, allowApps, executing) {
   const p = request.params, meta = p?._meta, schema = p?.requestedSchema;
-  const permitted = allowApps && executing && request.method === 'elicitation/create'
+  const emptyConsent = allowApps && executing && request.method === 'elicitation/create'
     && p?.mode === 'form' && record(schema) && schema.type === 'object'
     && record(schema.properties) && Object.keys(schema.properties).length === 0
     && (!schema.required || (Array.isArray(schema.required) && schema.required.length === 0))
-    && meta?.connector_id === 'computer-use' && meta?.codex_approval_kind === 'mcp_tool_call'
-    && APP_ACCESS_TOOLS.has(meta?.tool_name)
+    && meta?.codex_approval_kind === 'mcp_tool_call';
+  const nativeAccess = meta?.connector_id === 'computer-use' && APP_ACCESS_TOOLS.has(meta?.tool_name)
     && typeof meta?.tool_params?.app === 'string' && /^[A-Za-z0-9._-]{1,256}$/.test(meta.tool_params.app);
+  // These are the upstream's application-access prompts, not page forms.
+  // The task's normal authorization still governs actions inside an origin.
+  let browserAccess = false;
+  if (meta?.connector_id === 'browser-use' && ['access_browser_origin', 'download_browser_files', 'upload_browser_files'].includes(meta?.tool_name)) {
+    try { const origin = new URL(meta.tool_params.origin); browserAccess = ['https:', 'http:'].includes(origin.protocol) && !origin.username && !origin.password; } catch {}
+  }
+  const permitted = emptyConsent && (nativeAccess || browserAccess);
   return { jsonrpc: '2.0', id: request.id, result: permitted ? { action: 'accept', content: {} } : { action: 'decline' } };
 }
 
@@ -124,11 +134,13 @@ export function configuration(env = process.env, platform = process.platform) {
     allowApps: env.NANOCODEX_CUA_APP_CONSENT === 'allow', env };
 }
 
-// Only host-selected desktop variables reach the provider. In particular no
-// CODEX_CLI_PATH is given to node_repl (its kernel runs without Codex), and no
-// tokens or inherited NODE_OPTIONS can cross into model-controlled JavaScript.
+// The upstream config protocol talks only to our local config responder.
+// The generated node-repl launcher starts the kernel directly, never Codex.
+// No tokens or inherited NODE_OPTIONS enter model-controlled JavaScript.
 function environment(config, socket) {
-  const env = { SKY_CUA_SERVICE_NATIVE_PIPE_PATH: socket, NODE_REPL_DISABLE_ANALYTICS: '1' };
+  const env = { SKY_CUA_SERVICE_NATIVE_PIPE_PATH: socket, NODE_REPL_DISABLE_ANALYTICS: '1',
+    CODEX_CLI_PATH: config.policyHost, CODEX_HOME: path.dirname(socket),
+    NANOCODEX_CUA_APP_CONSENT: config.allowApps ? 'allow' : 'deny' };
   for (const key of ['PATH', 'HOME', 'USER', 'LOGNAME', 'TMPDIR', 'LANG', 'LC_ALL']) if (config.env[key]) env[key] = config.env[key];
   env.NODE_REPL_UNTRUSTED_ENV_ALLOWLIST = 'SKY_CUA_SERVICE_PATH,SKY_CUA_SERVICE_NATIVE_PIPE_PATH';
   return env;

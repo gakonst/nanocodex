@@ -70,57 +70,13 @@ fn parses_bounded_classic_zip_directory() {
 }
 
 #[test]
-fn launcher_uses_only_headless_upstream_components() {
-    let script = launcher(Path::new("/tmp/runtime")).unwrap();
-    assert!(!script.contains("Contents/Resources/codex"));
-    assert!(script.contains("unset CODEX_CLI_PATH BROWSER_USE_TINYSKY_ENABLED"));
-    assert!(!script.contains("export CODEX_CLI_PATH"));
-    assert!(
-        script
-            .contains("${NODE_REPL_UNTRUSTED_ENV_ALLOWLIST:+$NODE_REPL_UNTRUSTED_ENV_ALLOWLIST,}")
-    );
-    assert!(script.contains("SKY_CUA_SERVICE_PATH,SKY_CUA_SERVICE_NATIVE_PIPE_PATH"));
-    assert!(script.contains("cua_node/bin/node"));
-    assert!(script.contains("export CUA_REPL_ENABLED_SURFACES=computer\n"));
-    assert!(!script.contains("export BROWSER_USE_TINYSKY_ENABLED"));
-    assert!(!script.contains("SURFACES=browser"));
-    assert!(!script.contains("Contents/MacOS"));
-    assert_eq!(HOST_MODULES.len(), 1);
-    assert_eq!(HOST_MODULES[0].0, "direct-cua-host.mjs");
-    assert!(
-        HOST_MODULES
-            .iter()
-            .all(|(name, _)| !name.contains("app-server"))
-    );
-}
-
-#[test]
 fn node_path_delimiters_are_rejected() {
-    assert!(launcher(Path::new("/tmp/invalid:modules")).is_err());
-    assert!(launcher(Path::new("/tmp/new\nline")).is_err());
+    assert!(launcher(Path::new("/tmp/invalid:modules"), Path::new("/tmp/host")).is_err());
+    assert!(launcher(Path::new("/tmp/new\nline"), Path::new("/tmp/host")).is_err());
 }
 
 #[test]
-fn dedicated_browser_setup_is_explicitly_unsupported_without_mutation() {
-    let directory = test_directory("unsupported-browser");
-    let root = directory.path.join("runtime");
-    fs::create_dir_all(&root).unwrap();
-    fs::write(root.join("provider.json"), b"live receipt").unwrap();
-    let error = configure_browser(&root).unwrap_err();
-    assert!(error.contains("Tab/DOM APIs"), "{error}");
-    assert!(error.contains("native-computer-only"), "{error}");
-    assert!(error.contains("native computer UI"), "{error}");
-    assert_eq!(
-        fs::read(root.join("provider.json")).unwrap(),
-        b"live receipt"
-    );
-    assert_eq!(fs::read_dir(&root).unwrap().count(), 1);
-    assert!(configure_browser(&root.join("missing")).is_err());
-    assert!(!root.join("missing").exists());
-}
-
-#[test]
-fn native_host_is_immutable_and_has_no_chrome_assets() {
+fn host_generations_are_immutable_and_independent_of_official_chrome_assets() {
     use std::os::unix::fs::PermissionsExt as _;
 
     let directory = test_directory("native-host");
@@ -129,9 +85,9 @@ fn native_host_is_immutable_and_has_no_chrome_assets() {
     // Host construction does not require or read any Chrome plugin assets.
     let host = ensure_host(&root, &version, &[("host.mjs", "export default true;")]).unwrap();
     assert!(!host.join("browser").exists());
-    assert_eq!(fs::read_dir(&host).unwrap().count(), 4);
+    assert_eq!(fs::read_dir(&host).unwrap().count(), 6);
     let upstream = fs::read_to_string(host.join("upstream-cua-provider")).unwrap();
-    assert!(upstream.contains("CUA_REPL_ENABLED_SURFACES=computer\n"));
+    assert!(upstream.contains("CUA_REPL_ENABLED_SURFACES=browser,computer\n"));
     assert!(!upstream.contains("installManifest"));
     assert!(!upstream.contains("ChatGPT for Chrome"));
     assert!(!version.exists());
@@ -292,7 +248,17 @@ fn old_selected_generation_requires_refresh_without_mutation() {
     fs::write(&config, b"old live browser config").unwrap();
     for refresh in [false, true] {
         let mut commands = RecordingCommands::default();
-        assert!(cached(&root, &mut commands, refresh).unwrap().is_none());
+        assert!(
+            cached(
+                &root,
+                &mut commands,
+                refresh,
+                &directory.path.join("home"),
+                &[]
+            )
+            .unwrap()
+            .is_none()
+        );
         assert!(commands.calls.is_empty());
         assert_eq!(fs::read(&codex).unwrap(), b"old running CLI");
         assert_eq!(fs::read(&config).unwrap(), b"old live browser config");
@@ -333,7 +299,7 @@ fn warm_verification_cache_cannot_authorize_a_codex_bearing_layout() {
     assert!(
         verified_cached(&directory.path, &app, &mut commands, false)
             .unwrap_err()
-            .contains("fresh native-computer-only")
+            .contains("fresh direct-CUA")
     );
     assert!(commands.calls.is_empty());
     fs::remove_file(&codex).unwrap();
@@ -369,7 +335,17 @@ fn browser_containing_cached_generation_is_rejected_without_mutation() {
     .unwrap();
     for refresh in [false, true] {
         let mut commands = RecordingCommands::default();
-        assert!(cached(&root, &mut commands, refresh).unwrap().is_none());
+        assert!(
+            cached(
+                &root,
+                &mut commands,
+                refresh,
+                &directory.path.join("home"),
+                &[]
+            )
+            .unwrap()
+            .is_none()
+        );
         assert!(commands.calls.is_empty());
         assert_eq!(fs::read(&proxy).unwrap(), b"old running app-server proxy");
         assert_eq!(
@@ -787,5 +763,128 @@ fn official_component_download_journey() {
         release.length,
         fs::metadata(archive).unwrap().len(),
         began.elapsed().as_millis()
+    );
+}
+
+// Attestation commands are the only fixture boundary: the complete cached setup
+// publishes real immutable assets, manifests and receipts under an isolated home.
+#[test]
+fn full_setup_registers_browser_bridge_and_preserves_conflicts() {
+    let directory = test_directory("browser-registration");
+    let root = directory.path.join("runtime");
+    let home = directory.path.join("home");
+    let applications = directory.path.join("Applications");
+    let version = root.join("versions/fixture");
+    lean_fixture(&version.join(APP));
+    fs::create_dir_all(applications.join("Google Chrome.app")).unwrap();
+    fs::create_dir_all(applications.join("Brave Browser.app")).unwrap();
+    std::os::unix::fs::symlink("versions/fixture", root.join("current")).unwrap();
+    let browsers = [applications];
+    let mut commands = RecordingCommands::default();
+    let receipt = provision(&root, &home, &browsers, false, &mut commands).unwrap();
+    assert_eq!(receipt["dependency_contract"], "nanocodex-direct-cua-v2");
+    assert_eq!(receipt["environment"], serde_json::json!({}));
+    let paths = receipt["browser_bridge"]["manifests"].as_array().unwrap();
+    assert_eq!(paths.len(), 2);
+    let host = Path::new(receipt["executable"].as_str().unwrap())
+        .parent()
+        .unwrap();
+    for path in paths {
+        let manifest: serde_json::Value =
+            serde_json::from_slice(&fs::read(path.as_str().unwrap()).unwrap()).unwrap();
+        assert_eq!(manifest, browser_manifest(host));
+        assert!(Path::new(manifest["path"].as_str().unwrap()).is_file());
+    }
+    assert!(
+        !home
+            .join("Library/Application Support/Microsoft Edge")
+            .exists()
+    );
+    assert_eq!(
+        provision(&root, &home, &browsers, false, &mut commands).unwrap(),
+        receipt
+    );
+    let previous_receipt = fs::read(root.join("provider.json")).unwrap();
+    let first_manifest = PathBuf::from(paths[0].as_str().unwrap());
+    let conflicting_manifest = PathBuf::from(paths[1].as_str().unwrap());
+    // Even if the first browser needs repair, preflight protects it when another
+    // browser belongs to the official Codex installation.
+    fs::remove_file(&first_manifest).unwrap();
+    let external =
+        br#"{"name":"com.openai.codexextension","path":"/Applications/Codex.app/official-host"}"#;
+    fs::write(&conflicting_manifest, external).unwrap();
+    let error = provision(&root, &home, &browsers, false, &mut commands).unwrap_err();
+    assert!(error.contains("manifest conflict"), "{error}");
+    assert!(!first_manifest.exists());
+    assert_eq!(fs::read(&conflicting_manifest).unwrap(), external);
+    assert_eq!(
+        fs::read(root.join("provider.json")).unwrap(),
+        previous_receipt
+    );
+    assert_eq!(
+        fs::read_link(root.join("current")).unwrap(),
+        Path::new("versions/fixture")
+    );
+    fs::remove_file(&conflicting_manifest).unwrap();
+    let recovered = provision(&root, &home, &browsers, false, &mut commands).unwrap();
+    assert_eq!(recovered, receipt);
+    eprintln!(
+        "fixture setup: installed 2 browser manifests; cached rerun unchanged; official registration conflict preserved receipt and all other browser paths; recovery succeeded"
+    );
+}
+
+#[test]
+fn generated_launchers_execute_standalone_kernel_and_own_browser_host() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let directory = test_directory("launch-contract");
+    let root = directory.path.join("runtime");
+    let version = directory.path.join("version with spaces");
+    let bin = version.join(APP).join(RESOURCES).join("cua_node/bin");
+    fs::create_dir_all(&bin).unwrap();
+    // Probe executables observe real shell argv/environment without launching any
+    // upstream process, browser, app server or live native messaging registration.
+    for binary in ["node", "node_repl"] {
+        let file = bin.join(binary);
+        fs::write(&file, b"#!/bin/sh\nprintf '%s\\n' \"$@\"\nprintf 'surfaces=%s\\ntinysky=%s\\nambient=%s\\npolicy=%s\\n' \"${CUA_REPL_ENABLED_SURFACES-}\" \"${BROWSER_USE_TINYSKY_ENABLED-}\" \"${BROWSER_USE_DISABLE_AMBIENT_NETWORK-}\" \"${CODEX_CLI_PATH-}\"\nif [ -n \"${CUA_REPL_NODE_REPL_PATH-}\" ]; then printf 'kernel=%s\\n' \"$CUA_REPL_NODE_REPL_PATH\"; fi\n").unwrap();
+        fs::set_permissions(file, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let host = ensure_host(&root, &version, HOST_MODULES).unwrap();
+    let invoke = |name: &str, arg: &str| {
+        let output = std::process::Command::new(host.join(name))
+            .env_clear()
+            .env("PATH", "/usr/bin:/bin")
+            .env("CODEX_CLI_PATH", "/own/policy-only-host")
+            .arg(arg)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8(output.stdout).unwrap()
+    };
+    let upstream = invoke("upstream-cua-provider", "argument with spaces");
+    assert!(upstream.contains(
+        "surfaces=browser,computer\ntinysky=1\nambient=1\npolicy=/own/policy-only-host\n"
+    ));
+    assert!(upstream.contains(&format!("kernel={}\n", host.join("node-repl").display())));
+    let kernel = invoke("node-repl", "kernel argument");
+    assert!(
+        kernel.starts_with("--disable-sandbox\nkernel argument\n"),
+        "{kernel}"
+    );
+    let browser = invoke("native-browser-host", BROWSER_ORIGINS[0]);
+    assert!(
+        browser.starts_with(&format!(
+            "{}\n{}\n",
+            host.join("direct-browser-host.mjs").display(),
+            BROWSER_ORIGINS[0]
+        )),
+        "{browser}"
+    );
+    assert!(browser.contains("policy=\n"), "{browser}");
+    eprintln!(
+        "fixture launcher argv: kernel=--disable-sandbox; provider=browser,computer + TinySky; native messaging=own bundled JS; ambient CLI removed from browser relay"
     );
 }

@@ -47,6 +47,7 @@ pub(crate) enum ExecutorFrame<'a> {
         capabilities: [&'static str; 1],
         runtime_id: &'a str,
         command_recovery: bool,
+        turn_lifecycle: bool,
         #[serde(skip_serializing_if = "Option::is_none")]
         diagnostics: Option<bool>,
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -91,6 +92,11 @@ pub(crate) enum RemoteFrame {
         output_byte_budget: u64,
         deadline_at: u64,
     },
+    TurnEnded {
+        session_id: String,
+        turn_id: String,
+        hook_event_name: String,
+    },
     Cancel {
         call_id: String,
     },
@@ -109,6 +115,7 @@ impl RemoteFrame {
             Self::Ready {} => "ready",
             Self::Call { .. } => "call",
             Self::Cancel { .. } => "cancel",
+            Self::TurnEnded { .. } => "turn_ended",
             Self::Ack { .. } => "ack",
             Self::Recover { .. } => "recover",
             Self::Draining {} => "draining",
@@ -149,6 +156,24 @@ impl RemoteFrame {
                     return Err("invalid call");
                 }
                 Ok(())
+            }
+            Self::TurnEnded {
+                session_id,
+                turn_id,
+                hook_event_name,
+            } => {
+                if valid_identifier(session_id)
+                    && !turn_id.is_empty()
+                    && turn_id.len() <= 256
+                    && matches!(
+                        hook_event_name.as_str(),
+                        "Stop" | "Interrupt" | "SubagentStop"
+                    )
+                {
+                    Ok(())
+                } else {
+                    Err("invalid turn identity")
+                }
             }
             Self::Cancel { call_id } | Self::Ack { call_id } => {
                 if valid_identifier(call_id) {

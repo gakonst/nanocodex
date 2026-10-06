@@ -54,6 +54,7 @@ test('policy shim identifies its own host and exposes no auth/model/thread APIs'
   assert.equal(policyReply(rpc(1, 'initialize'), true).result.userAgent, 'nanocodex-cua-policy-host/1');
   for (const method of ['account/read', 'thread/start', 'model/list']) assert.equal(policyReply(rpc(1, method), true).error.code, -32601);
   assert.equal(policyReply(rpc(1, 'config/read'), false).result.config.computer_use.default_app_access, 'deny');
+  assert.deepEqual(policyReply(rpc(1, 'getAuthStatus', {includeToken:true}), true).result, {authMethod:null,authToken:null,requiresOpenaiAuth:false});
   assert.equal(policyReply(rpc(1, 'configRequirements/read'), true).result.requirements.computerUse.allowLockedComputerUse, false);
 });
 test('blanket app consent excludes audio, data forms, unknown connectors and no active JS', () => {
@@ -103,8 +104,9 @@ test('upstream initialization/results/errors/notifications preserved and provide
   assert.deepEqual(returned, [result, notification]);
   assert.equal(f.invocations[0].settings.env.CODEX_TOKEN, undefined);
   assert.equal(f.invocations[0].settings.env.NODE_OPTIONS, undefined);
-  assert.equal(f.invocations[0].settings.env.CODEX_CLI_PATH, undefined);
-  assert.equal(f.invocations[0].settings.env.CODEX_HOME, undefined);
+  assert.equal(f.invocations[0].settings.env.CODEX_CLI_PATH, '/synthetic/policy');
+  assert.equal(path.dirname(f.invocations[0].settings.env.SKY_CUA_SERVICE_NATIVE_PIPE_PATH), f.invocations[0].settings.env.CODEX_HOME);
+  assert.ok(f.invocations[0].settings.env.CODEX_HOME.startsWith(f.state + path.sep));
 });
 test('EOF reports uncertainty and removes private session state without replay', async t => {
   const f = await fixture(t), replies = [];

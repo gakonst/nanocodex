@@ -115,6 +115,8 @@ export async function create(options = {}) {
     throw new TypeError("workspace must match filesystem.root when both are provided");
   }
   const events = createEventChannel();
+  // Host lifecycle observers need terminal events even without a public watcher.
+  events.subscribe(() => {});
   const tempoMcp = mpp?.[Symbol.for("nanocodex.tempo.mcp")];
   let hostDefinitionId;
   const host = createBrowserHost({

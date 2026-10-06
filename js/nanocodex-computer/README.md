@@ -26,8 +26,10 @@ platforms return no provider unless an explicit MCP executable is configured.
 A supported managed receipt supplies its exact arguments and environment.
 Mac setup selects immutable host assets separately from the signed bundle. CUA
 then starts the direct MCP host, bundled Node/node_repl, and signed Sky helper,
-with no official Codex CLI or app server. Its default surface is native computer
-UI only; dedicated browser Tab/DOM APIs are unsupported. See the
+with no official Codex CLI or app server. It enables upstream `browser,computer` surfaces with TinySky and Nanocodex's
+own native-message relay. Setup registers manifests for supported installed
+browsers, preserves conflicting registrations, and leaves extension installation
+and browser profiles unchanged. See the
 [managed Mac host](../../docs/computer/direct-mcp-host.md).
 
 `connectComputerTools` discovers the full paginated MCP catalog before exposing
