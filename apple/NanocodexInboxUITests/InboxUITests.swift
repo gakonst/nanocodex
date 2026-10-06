@@ -1959,7 +1959,7 @@ final class InboxUITests: XCTestCase {
         XCTAssertEqual(composer(app).value as? String, "Keep this draft through navigation")
         app.buttons["add-attachments"].tap()
         XCTAssertTrue(app.buttons["choose-photos"].waitForExistence(timeout: 5))
-        XCTAssertTrue(app.buttons["choose-context"].exists)
+        XCTAssertFalse(app.buttons["choose-context"].exists)
         capture(app, "muse-attachment-sheet")
         dismissAttachmentLibrary(app)
         XCTAssertEqual(composer(app).value as? String, "Keep this draft through navigation")

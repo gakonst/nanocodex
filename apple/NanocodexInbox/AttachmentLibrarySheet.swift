@@ -11,14 +11,15 @@ struct AttachmentLibrarySheet: View {
     let onPhotos: () -> Void
     let onFiles: () -> Void
     let onVideos: () -> Void
-    let onContext: () -> Void
     let onRecentPhotos: ([NSItemProvider]) -> Void
     @StateObject private var library = AttachmentRecentPhotos()
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var manageLimitedAccess = false
     @State private var selectedPhotoIDs: [String] = []
     @State private var submitting = false
+    @State private var sheetDetent: PresentationDetent = .height(380)
 
     var body: some View {
         ScrollView {
@@ -106,12 +107,7 @@ struct AttachmentLibrarySheet: View {
                 .background(Color(uiColor: .secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 22))
                 .padding(.horizontal, 24)
 
-                Button(action: onContext) {
-                    Label("Context from other apps", systemImage: "tray.full")
-                        .font(.subheadline)
-                        .frame(maxWidth: .infinity, minHeight: 44)
-                }
-                .accessibilityIdentifier("choose-context")
+
             }
             .padding(.top, 20)
             .padding(.bottom, 16)
@@ -121,26 +117,38 @@ struct AttachmentLibrarySheet: View {
                 Button(action: addSelectedPhotos) {
                     Text(selectedPhotoIDs.count == 1 ? "Add 1 Attachment" : "Add \(selectedPhotoIDs.count) Attachments")
                         .font(.body.weight(.semibold))
-                        .frame(maxWidth: .infinity, minHeight: 50)
+                        .frame(maxWidth: .infinity, minHeight: 28)
                 }
                 .buttonStyle(.borderedProminent)
+                .controlSize(.regular)
                 .tint(.blue)
                 .buttonBorderShape(.capsule)
                 .accessibilityIdentifier("add-selected-attachments")
-                .padding(.horizontal, 24).padding(.top, 12).padding(.bottom, 12)
+                .padding(.horizontal, 24).padding(.vertical, 8)
                 .background(Color(uiColor: .systemGroupedBackground))
+                .transition(reduceMotion ? .opacity : .move(edge: .bottom).combined(with: .opacity))
             }
         }
+        .animation(reduceMotion ? nil : .smooth(duration: 0.28), value: selectedPhotoIDs.isEmpty)
         .buttonStyle(.plain)
         .foregroundStyle(.primary)
         .disabled(isPreparing || submitting)
         .background(Color(uiColor: .systemGroupedBackground))
         .presentationBackground(Color(uiColor: .systemGroupedBackground))
-        .presentationDetents(dynamicTypeSize.isAccessibilitySize ? [.large] : [.height((library.authorization == .limited ? 445 : 405) + (selectedPhotoIDs.isEmpty ? 0 : 76)), .large])
+        .presentationDetents(dynamicTypeSize.isAccessibilitySize ? [.large] : [.height(380), .height(440), .large], selection: $sheetDetent)
         .presentationDragIndicator(.visible)
         .presentationCornerRadius(32)
         .background(AttachmentLimitedLibraryPresenter(isPresented: $manageLimitedAccess, onFinish: library.reload).frame(width: 0, height: 0))
         .task { library.reload() }
+        .onChange(of: selectedPhotoIDs.isEmpty) { _, empty in
+            guard !dynamicTypeSize.isAccessibilitySize, sheetDetent != .large else { return }
+            withAnimation(reduceMotion ? nil : .smooth(duration: 0.28)) {
+                sheetDetent = .height(empty ? 380 : 440)
+            }
+        }
+        .onChange(of: dynamicTypeSize.isAccessibilitySize) { _, accessible in
+            sheetDetent = accessible ? .large : .height(selectedPhotoIDs.isEmpty ? 380 : 440)
+        }
         .onChange(of: library.assets.map(\.localIdentifier)) { _, available in
             selectedPhotoIDs.removeAll { !available.contains($0) }
         }
