@@ -78,6 +78,7 @@ test('Managed native Claude and mixed-family public delegation, account gates, c
   const trace = [], upstream = [], providerErrors = []; let calls=0, summaries=0, writes=0, taskWrites=0, canonicalWrites=0, codexWrites=0, nestedWrites=0, allowResponses=false, sidebarCalls=0, holds=0, responsesAttempts=0, catalogOutage=false, catalogUnsupportedOnly=false, catalogRequests=0, catalogHold, retainedTaskId, mf;
   const mcpTrace = [], mcpOrigins = new Set(['https://developers.openai.com','https://mcp.tempo.xyz','https://mercator.sh','https://docs.mcp.cloudflare.com','https://viem.sh','https://vocs.dev']);
   let holdMcp = false, releaseMcp;
+  let compacting = false;
   let mcpHold = Promise.resolve();
   const mcpStarts = () => mcpTrace.filter(row => row.method === 'initialize').length;
   const providerImpl = async request => {
@@ -157,6 +158,22 @@ test('Managed native Claude and mixed-family public delegation, account gates, c
       ].map(value=>`data: ${typeof value==='string'?value:JSON.stringify(value)}\n\n`).join(''),{headers:{'content-type':'text/event-stream'}});
       const use=(name,input)=>reply({tool_calls:[{id:'mixed-'+crypto.randomUUID(),type:'function',function:{name:tool(name),arguments:JSON.stringify(input)}}]},'tool_calls');
       const latest=body.messages.at(-1);
+      // Inspect what the real managed Worker + WASM sends to the provider.
+      // The fixture cannot establish an LLM's natural-language compliance, but
+      // it must reject a missing identity or one inherited from a parent route.
+      const instructions=body.messages.filter(message=>['system','developer'].includes(message.role))
+        .map(message=>typeof message.content==='string'?message.content:message.content.map(part=>part.text??'').join('')).join('\n');
+      const identities=[...instructions.matchAll(/<runtime_model_identity>\nmodel_id: ([^\n]+)\n/g)].map(match=>match[1]);
+      assert.deepEqual(identities,[body.model.split('/').at(-1)],'runtime identity agrees with the actual gateway model');
+      if (JSON.stringify(body.messages).includes('MODEL_IDENTITY_PROBE')) {
+        assert.equal(body.model,'xiaomi/mimo-v2.6-pro');
+        if (JSON.stringify(latest.content).includes('arent u mimo')) {
+          assert.ok(body.messages.some(message=>message.role==='assistant'&&message.content==='CLAUDE_TOOL_DONE_MODEL_IDENTITY: mimo-v2.6-pro'),
+            'the second question restores the first answer after a Worker restart');
+        }
+        trace.push({scenario:'managed model identity',model:body.model,identity:identities[0],question:latest.content});
+        return reply({content:'CLAUDE_TOOL_DONE_MODEL_IDENTITY: '+identities[0]},'stop');
+      }
       if (body.model==='xiaomi/mimo-v2.6-pro') {
         assert.match(JSON.stringify(body.messages),/GATEWAY_GRANDCHILD_TASK/);
         const used=body.messages.flatMap(message=>message.tool_calls??[]).map(call=>call.function.name);
@@ -298,7 +315,7 @@ test('Managed native Claude and mixed-family public delegation, account gates, c
         return sse({type:'text',text:`CLAUDE_TOOL_DONE_${calls}`},'end_turn',`message-${calls}`);
       }
       const prompt = JSON.stringify(latest.content);
-      if(prompt.includes('CRITICAL: Respond with TEXT ONLY')) {
+      if(compacting) {
         summaries++; return sse({type:'text',text:'NATIVE_SUMMARY durable proof already written; never repeat Write'},'end_turn',`summary-${calls}`);
       }
       if(prompt.includes('Try forbidden Read')) {
@@ -421,7 +438,11 @@ test('Managed native Claude and mixed-family public delegation, account gates, c
     const history=await call(`/v1/agents/${agent}/events/history?after=0&limit=256`);assert.match(JSON.stringify(history),/Write|Read|Bash/);
     await call(`/v1/agents/${agent}/durability`,'POST',undefined,409);
     await call(`/v1/agents/${agent}/forks`,'POST',undefined,409,{'idempotency-key':'claude-fork-denial'});
-    await call(`/v1/agents/${agent}/compact`,'POST');
+    // Script the external model for the requested operation, without coupling
+    // the fixture to the runtime's exact compaction-prompt wording.
+    compacting=true;
+    try { await call(`/v1/agents/${agent}/compact`,'POST'); }
+    finally { compacting=false; }
     assert.equal(summaries,1);
     await mf.dispose(); mf=new Miniflare(options);
     await turn(agent,'Read durable proof after summary','journey-after-summary');
@@ -560,6 +581,17 @@ test('Managed native Claude and mixed-family public delegation, account gates, c
     const gatewayCredentials=await call('/v1/credentials');for(const name of ['openai','chatgpt','claude'])assert.equal(gatewayCredentials[name].connected,false);
     const gatewayOnly=await call('/v1/models');assert.deepEqual(gatewayOnly.data.map(model=>model.id),['@cf/zai-org/glm-5.3','kimi-k3','mimo-v2.6-pro']);
     assert.equal(gatewayOnly.default_model,'@cf/zai-org/glm-5.3');assert.equal(gatewayOnly.availability.claude.available,false);
+    // Reproduce the two user questions through the public manual-routing API,
+    // whose managed instructions replace the model's built-in prompt.
+    const mimo=(await call('/v1/agents','POST',{},201)).agent_id;
+    await call(`/v1/agents/${mimo}/routing`,'POST',{model:'mimo-v2.6-pro',thinking:'low'});
+    assert.equal((await call(`/v1/agents/${mimo}`)).settings.model,'mimo-v2.6-pro');
+    await turn(mimo,'MODEL_IDENTITY_PROBE: hich model r u','journey-mimo-identity');
+    await mf.dispose();mf=new Miniflare(options);
+    await turn(mimo,'MODEL_IDENTITY_PROBE: arent u mimo','journey-mimo-identity-reopen');
+    const identityHistory=await call(`/v1/agents/${mimo}/events/history?after=0&limit=256`);
+    assert.match(JSON.stringify(identityHistory),/CLAUDE_TOOL_DONE_MODEL_IDENTITY: mimo-v2.6-pro/);
+    await call(`/v1/agents/${mimo}`,'DELETE',undefined,204);
     token=ownerToken;
     const legacy=await call('/v1/models');for(const model of ['@cf/zai-org/glm-5.3','kimi-k3','mimo-v2.6-pro'])assert.ok(legacy.data.some(row=>row.id===model));
     const gateway=await call('/v1/agents','POST',{},201);await call(`/v1/agents/${gateway.agent_id}/routing`,'POST',{model:'kimi-k3',thinking:'low'});assert.equal((await call(`/v1/agents/${gateway.agent_id}`)).settings.model,'kimi-k3');
