@@ -9,7 +9,7 @@ OS -> Hand daemon <--- outbound WebSocket ---> AccountHostedTools <- agent
 ```
 
 On macOS, CLI Hand setup also installs a standalone menu-bar companion. It
-shows local service status, verified account sign-in, connected Hands and
+shows local service status, verified account sign-in, known connected and disconnected Hands and
 Start/Stop/Restart controls without requiring the Nanocodex desktop app. A fresh
 installation keeps the companion running while signed out; its sign-in action
 opens the CLI account flow in Terminal. Network or permission failures remain
@@ -20,6 +20,16 @@ closing the menu. `nanocodex hand menu-bar` installs, repairs, or reopens the ic
 `nanocodex hand menu-status` returns the read-only status snapshot used by the menu.
 See the [menu-bar companion](../../macos/HandMenuBar/README.md) for build and lifecycle
 details.
+
+The account-only `GET /v1/account/hands/inventory` combines retained account
+registrations with workspace publishers registered when their sessions hydrate
+or update their catalogs. It excludes Connect-scoped routes and returns only
+names, IDs, kind and connection state. Discovery has a four-second deadline and
+eight concurrent workspace reads. Unavailable sources retain known identities
+as unknown; a full 64-session registry marks coverage partial rather than
+silently presenting an incomplete list as complete. Older workspace sessions
+join this registry when next opened. Existing `/v1/account/hands` consumers
+retain their live-only contract; screen advertisements remain a separate source.
 
 The broker durably claims each call before sending it once. The daemon owns execution; a socket carries requests and replies. Each admitted source call has one durable transport command ID. The living Hand keeps its running task or immutable terminal receipt until the broker records the result and acknowledges it.
 
