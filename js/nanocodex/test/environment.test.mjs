@@ -18,7 +18,7 @@ test("environment presents exact Hand paths and connection selectors without nat
   assert.deepEqual(result, {
     ...host, status: "ready",
     hands: { "user:desktop": { name: "Desktop", path: "/desktop", capabilities: ["exec_command", "vm_factory:desktop"],
-      kind: "user", online: true, vm_provider: "desktop" } },
+      kind: "user", online: true, vm_provider: "desktop", resources: { status: "unknown" } } },
     accounts: {
       github: { connections: [{ id: "work", label: "Work" }], tool: "github_request", description: "GitHub", documentation: "https://docs.github.com" },
       slack: { connections: [], label: "Legacy team" },

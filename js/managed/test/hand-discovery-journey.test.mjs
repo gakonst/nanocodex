@@ -27,6 +27,30 @@ const scripts = {
     try { text(await tools.exec_command({cmd:"printf MUST_NOT_RUN",workdir:"/${machine}"})); } catch(error) { text({error:error.message}); }`,
   FRESH: `text(await tools.exec_command({cmd:"printf ONCE >> effect.log; printf DISCOVERED_OK",workdir:"/${machine}",shell:"/bin/sh",login:false,yield_time_ms:1000}));`,
   ABSENT: `try { text(await tools.exec_command({cmd:"printf MUST_NOT_RUN",workdir:"/genuinely-absent-hand"})); } catch(error) { text({error:error.message}); }`,
+  RESOURCE_ONLINE: `const env = await tools.environment({}); const hand = env.hands["user:${machine}"];
+    if (hand?.resources?.status !== "fresh" || !(hand.resources.cpu_logical_count > 0) || !(hand.resources.disk_total_bytes > 0)
+      || !(hand.resources.disk_available_bytes >= 0) || !(hand.resources.observed_at_ms > 0)
+      || env.execution_preferences?.native?.recommended_workdir !== "/${machine}"
+      || env.execution_preferences?.computer?.recommended_workdir !== "/${machine}"
+      || JSON.stringify(hand).includes("PRIVATE_RESOURCE_VALUE")) throw Error(JSON.stringify(env));
+    text({resource_check:"RESOURCE_ONLINE_OK",resources:hand.resources});`,
+  RESOURCE_PRESSURE: `const env = await tools.environment({}); const candidates = env.execution_preferences?.native?.candidates;
+    const constrained = candidates?.find(candidate=>candidate.hand === "user:synthetic-resource-pressured-hand");
+    if (env.execution_preferences?.native?.recommended_workdir !== "/${machine}" || !constrained?.constraints.includes("low_disk")
+      || env.hands["user:synthetic-resource-pressured-hand"]?.resources?.disk_available_bytes !== 0) throw Error(JSON.stringify(env));
+    text({resource_check:"RESOURCE_PRESSURE_OK",preferences:env.execution_preferences});`,
+  RESOURCE_CAPACITY: `const env = await tools.environment({});
+    if (env.execution_preferences?.native?.candidates[0]?.hand !== "user:synthetic-resource-capacity-hand") throw Error(JSON.stringify(env));
+    text({resource_check:"RESOURCE_CAPACITY_OK",preferences:env.execution_preferences});`,
+  RESOURCE_ORIGIN: `const env = await tools.environment({});
+    if (env.request_origin?.hand?.key !== "user:${machine}" || env.execution_preferences?.native?.recommended_workdir !== "/${machine}"
+      || env.execution_preferences?.computer?.recommended_workdir !== "/${machine}") throw Error(JSON.stringify(env));
+    text({resource_check:"RESOURCE_ORIGIN_OK",origin:env.request_origin,preferences:env.execution_preferences});`,
+  RESOURCE_OFFLINE: `const env = await tools.environment({}); const hand = env.hands["user:${machine}"];
+    if (hand !== undefined && (hand.online !== false || hand.resources?.status !== "stale")
+      || env.execution_preferences?.native?.recommended_workdir !== null
+      || env.execution_preferences.native.candidates.length !== 0) throw Error(JSON.stringify(env));
+    text({resource_check:"RESOURCE_OFFLINE_OK",resources:hand?.resources ?? {status:"unknown"}});`,
   BRAIN: `text(await tools.exec_command({cmd:"printf BRAIN_INDEPENDENT",workdir:"/brain"}));`,
 };
 
@@ -99,7 +123,7 @@ test("a warm managed shell cell discovers a newly published Hand without retarge
     const offset = line.indexOf('{"type":');
     if (offset >= 0) { try { records.push(JSON.parse(line.slice(offset))); } catch {} }
   };
-  let mf, native, tools, attachment, failure;
+  let mf, native, tools, attachment, pressuredAttachment, failure;
   try {
     const resolutions = Object.fromEntries(["nanocodex/tools", "nanocodex-tools/attachment", "nanocodex-tools/node", "nanocodex-tools/runtime/tool-router"]
       .map(name => [name, fileURLToPath(import.meta.resolve(name))]));
@@ -183,7 +207,7 @@ test("a warm managed shell cell discovers a newly published Hand without retarge
       socket.on("message", data => wire.push({ direction: "broker", frame: JSON.parse(String(data)) }));
       socket.on("close", (code, reason) => wire.push({ event: "close", code, reason: String(reason) }));
       return socket;
-    } } }, { machines: [{ id: machine, name: "Synthetic Discovery Hand", workspace, capabilities: ["shell"] }], attachmentId: machine });
+    } } }, { machines: [{ id: machine, name: "Synthetic Discovery Hand", workspace, capabilities: ["shell", "computer"], resources: { ...native.resources, private_path: "PRIVATE_RESOURCE_VALUE" } }], attachmentId: machine });
     assert.equal((await attachment.connect()).connected, true);
     assert.ok(wire.some(row => row.direction === "broker" && row.frame.type === "ready"));
     const catalog = await request("/account-tools/snapshot", { method: "POST", body: JSON.stringify({ owner_id: owner }) });
@@ -205,6 +229,26 @@ test("a warm managed shell cell discovers a newly published Hand without retarge
     assert.equal(await readFile(join(workspace, "effect.log"), "utf8"), "ONCE");
     const sameRuntime = records.filter(row => row.type === "fixture.model.request" && ["WARM", "PINNED", "FRESH"].includes(row.scenario));
     assert.equal(new Set(sameRuntime.map(row => row.socket_id)).size, 1, "the successful cell must use the warm runtime, not a fresh agent");
+    const resourceOnline = await runTurn("RESOURCE_ONLINE");
+    assert.match(JSON.stringify(resourceOnline), /RESOURCE_ONLINE_OK/);
+    assert.equal(catalog.value.machines.find(entry => entry.machine.id === machine)?.machine.resources.observed_at_ms, native.resources.observed_at_ms);
+    assert.ok(!JSON.stringify(catalog.value).includes("PRIVATE_RESOURCE_VALUE"));
+    pressuredAttachment = createAttachment(tools, { endpoint: endpoint.href,
+      transport: { connect: () => new WebSocket(endpoint, { headers: { "x-nanocodex-owner-id": owner } }) } }, {
+      machines: [{ id: "synthetic-resource-pressured-hand", name: "Synthetic full-disk Hand", workspace, capabilities: ["shell"],
+        resources: { ...native.resources, cpu_logical_count: 1024, disk_available_bytes: 0 } }], attachmentId: "synthetic-resource-pressured-hand" });
+    assert.equal((await pressuredAttachment.connect()).connected, true);
+    const resourcePressure = await runTurn("RESOURCE_PRESSURE");
+    assert.match(JSON.stringify(resourcePressure), /RESOURCE_PRESSURE_OK/);
+    await pressuredAttachment.close();
+    pressuredAttachment = createAttachment(tools, { endpoint: endpoint.href,
+      transport: { connect: () => new WebSocket(endpoint, { headers: { "x-nanocodex-owner-id": owner } }) } }, {
+      machines: [{ id: "synthetic-resource-capacity-hand", name: "Synthetic capacity Hand", workspace, capabilities: ["shell", "computer"],
+        resources: { ...native.resources, cpu_logical_count: 1024 } }], attachmentId: "synthetic-resource-capacity-hand" });
+    assert.equal((await pressuredAttachment.connect()).connected, true);
+    assert.match(JSON.stringify(await runTurn("RESOURCE_CAPACITY")), /RESOURCE_CAPACITY_OK/);
+    assert.match(JSON.stringify(await runTurn("RESOURCE_ORIGIN", {"x-nanocodex-client-context":JSON.stringify({client:"desktop",hand:"user:"+machine,cwd:"/"+machine})})), /RESOURCE_ORIGIN_OK/);
+    await pressuredAttachment.close();
     const absent = await runTurn("ABSENT"); unavailable(absent);
     const restricted = await request(`/v1/agents/${thread}/turns`, { method: "POST",
       headers: { "x-nanocodex-connect-grant-id": `0x${"a".repeat(64)}`,
@@ -217,21 +261,28 @@ test("a warm managed shell cell discovers a newly published Hand without retarge
     assert.equal(callFrames().length, 1, "absent, restricted and brain calls must never reach the native publisher");
     assert.ok(!records.some(row => row.type === "hand.tool.stage" && row.parent_call_id === "call_discovery_BRAIN"
       && row.stage === "namespace.prepare"), "/brain must bypass Hand namespace preparation");
+    await attachment.close();
+    await waitFor(async () => {
+      const snapshot = await request("/account-tools/snapshot", { method: "POST", body: JSON.stringify({ owner_id: owner }) });
+      return !snapshot.value.machines.some(entry => entry.machine.id === machine && entry.online === true);
+    }, "offline resource sample");
+    const resourceOffline = await runTurn("RESOURCE_OFFLINE");
+    assert.match(JSON.stringify(resourceOffline), /RESOURCE_OFFLINE_OK/);
     const history = await request(`/v1/agents/${thread}/events/history?after=0&limit=256`);
     assert.equal(history.status, 200);
     await writeFile(join(output, "events.json"), JSON.stringify(history.value, null, 2));
-    result.observed = { warm_absent: true, old_cell_pinned: true, fresh_output: "DISCOVERED_OK", fresh_exit_code: 0, same_warm_runtime: true,
+    result.observed = { warm_absent: true, old_cell_pinned: true, fresh_output: "DISCOVERED_OK", fresh_exit_code: 0, same_warm_runtime: true, resource_sample: native.resources, online_resources: "fresh", full_disk_hand_deprioritized: true, higher_capacity_fallback: true, submitting_hand_preferred: true, computer_only_cua_eligible: true, offline_hands_excluded: true, offline_resources: "absent_or_stale", unknown_resource_fields_stripped: true,
       native_dispatches: callFrames().length, effect: "ONCE", absent_predispatch: true, restricted_predispatch: true, brain_output: "BRAIN_INDEPENDENT" };
     console.log(JSON.stringify({ evidence: output, ...result.observed }));
   } catch (error) { failure = error; result.error = error.stack; throw error; }
   finally {
-    try { await attachment?.close(); await tools?.close(); await native?.close(); await mf?.dispose(); }
+    try { await pressuredAttachment?.close(); await attachment?.close(); await tools?.close(); await native?.close(); await mf?.dispose(); }
     finally {
       await writeFile(join(output, "trace.json"), JSON.stringify({ result, records, activity }, null, 2));
       await writeFile(join(output, "wire.json"), JSON.stringify(wire, null, 2));
       await writeFile(join(output, "http.json"), JSON.stringify(http, null, 2));
       await writeFile(join(output, "runtime.log"), runtime.join("\n") + "\n");
-      await writeFile(join(output, "README.md"), `Run: \`${command}\`\n\nInputs: ${JSON.stringify(result.inputs)}\n\nExpected: ${JSON.stringify(result.expected)}\n\nObserved: ${JSON.stringify(result.observed)}\n\nStatus: ${failure ? "FAIL: " + failure.message : "PASS"}\n\nEvidence: http.json (real HTTP admission, turn receipts and public catalog), wire.json (actual publisher WebSocket frames), events.json (public history), trace.json (model requests, namespace diagnostics, native activity), runtime.log, hand/effect.log, source-resolution.json, exact fixture-source.mjs/worker.mjs and persisted sqlite/. Only synthetic admission/account seed and external model are fixtures. No environment tool call is issued. Production Session callback and namespace wrapper are imported unchanged. The 3-second old-cell pause gives the publisher time to become ready; failure to publish before the second old-cell call fails the fresh/online assertions.\n\nScope: local production managed runtime, account tools, public JS publisher and native shell. Live hosted account authentication, Rust publisher and deployed service rollout require the parent's live gate. /brain independence is observed by its result, no native dispatch and no namespace preparation diagnostic.\n`);
+      await writeFile(join(output, "README.md"), `Run: \`${command}\`\n\nInputs: ${JSON.stringify(result.inputs)}\n\nExpected: ${JSON.stringify(result.expected)}\n\nObserved: ${JSON.stringify(result.observed)}\n\nStatus: ${failure ? "FAIL: " + failure.message : "PASS"}\n\nEvidence: http.json (real HTTP admission, turn receipts and public catalog), wire.json (actual publisher WebSocket frames), events.json (public history), trace.json (model requests, namespace diagnostics, native activity), runtime.log, hand/effect.log, source-resolution.json, exact fixture-source.mjs/worker.mjs and persisted sqlite/. Only synthetic admission/account seed and external model are fixtures. The model invokes the public environment tool before and after publisher disconnect: real Node host CPU/disk measurements remain timestamped, arbitrary resource fields are stripped, and a disconnected publisher is excluded from recommendations (a retained offline sample, when present, is stale). Production Session callback and namespace wrapper are imported unchanged. The 3-second old-cell pause gives the publisher time to become ready; failure to publish before the second old-cell call fails the fresh/online assertions.\n\nScope: local production managed runtime, account tools, public JS publisher and native shell. Live hosted account authentication, Rust publisher and deployed service rollout require the parent's live gate. /brain independence is observed by its result, no native dispatch and no namespace preparation diagnostic.\n`);
     }
   }
 });

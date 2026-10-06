@@ -1,3 +1,4 @@
+import type { HandResourceObservation } from "./hostedMachine.mjs";
 import type { NamedTool } from "./types.mjs";
 export function createNodeProcessTools(options: {
   workspace: string;
@@ -7,4 +8,4 @@ export function createNodeProcessTools(options: {
     processId: number;
     exitCode?: number;
   }) => void;
-}): Promise<{ tools: readonly NamedTool[]; close(): Promise<void> }>;
+}): Promise<{ tools: readonly NamedTool[]; resources: HandResourceObservation; close(): Promise<void> }>;

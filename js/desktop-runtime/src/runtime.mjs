@@ -848,7 +848,7 @@ export class DesktopRuntime extends EventEmitter {
     const vmTools = this.#localVmTools(hand, resource);
     const computer = computerExecutable ? await connectComputerTools({ executable: computerExecutable }) : undefined;
     if (computer) resource.add(computer.close);
-    const tools = await createTools({ tools: [...processes.tools, ...vmTools, ...(computer?.tools ?? [])], workspace, attachmentId: hand.id, machines: [{ id: hand.id, name: hand.name, workspace: hand.workspace, capabilities: ["native", "shell", "filesystem", "process", "pipes", ...(computer ? ["computer"] : []), ...(vmTools.length ? ["vm_host"] : [])] }] });
+    const tools = await createTools({ tools: [...processes.tools, ...vmTools, ...(computer?.tools ?? [])], workspace, attachmentId: hand.id, machines: [{ id: hand.id, name: hand.name, workspace: hand.workspace, resources: processes.resources, capabilities: ["native", "shell", "filesystem", "process", "pipes", ...(computer ? ["computer"] : []), ...(vmTools.length ? ["vm_host"] : [])] }] });
     resource.add(() => tools.close());
     resource.abort.signal.throwIfAborted();
     const endpoint = new URL(hand.agentId ? `/v1/agents/${encodeURIComponent(hand.agentId)}/tool-host` : "/v1/account/tool-host", this.#options.baseUrl);
