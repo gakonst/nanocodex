@@ -122,6 +122,14 @@ export class RegionalHandDirectory {
     if (!this.placement(machineId, runtimeId)) this.select(machineId, runtimeId, "legacy");
     this.storage.sql.exec("UPDATE regional_hand_placements SET retired=1 WHERE machine_id=? AND runtime_id=?", machineId, runtimeId);
   }
+  retirePublication(publication: HandPublication): void {
+    const current = this.entries().find(entry => entry.machine.id === publication.machine.id);
+    if (!current || current.pending || current.publication_id !== publication.publication_id
+      || current.region !== publication.region || current.runtime_id !== publication.runtime_id
+      || !publication.runtime_id) throw new Error("Hand publication changed");
+    this.retire(publication.machine.id, publication.runtime_id);
+    this.storage.sql.exec("DELETE FROM regional_hand_directory WHERE machine_id=?", publication.machine.id);
+  }
   #save(entry: DirectoryEntry): void {
     this.storage.sql.exec("INSERT INTO regional_hand_directory VALUES(?,?) ON CONFLICT(machine_id) DO UPDATE SET publication_json=excluded.publication_json", entry.machine.id, JSON.stringify(entry));
   }

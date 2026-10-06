@@ -4239,6 +4239,9 @@ export class DurableAgentSession extends DurableComputerObject {
    * even if legacy retained rows predate the publisher's scope validation. */
   listWorkspaceHands(ownerId: string): { data: HandInventoryEntry[]; complete: boolean } {
     const session = this.#session();
+    // A durable deletion tombstone can confirm retirement only to its owner.
+    const ownership = this.#initializationOwnership();
+    if (ownership?.state === "deleted" && ownership.owner_id === ownerId) return { data: [], complete: true };
     if (!session || session.owner_id !== ownerId || this.#deleted || this.#deleting
       || this.#durabilityExported || this.#durabilityImportState === "pending") return { data: [], complete: false };
     const rows = this.ctx.storage.sql.exec<{ machines_json: string; connect_grant_id: string | null }>(
@@ -4258,27 +4261,29 @@ export class DurableAgentSession extends DurableComputerObject {
       // with the same ID. Conflicts remain unknown and do not expose that route.
       const ambiguous = counts.get(machine.id)! > 1;
       if (ambiguous) complete = false;
-      data.push(inventoryEntry(machine, ambiguous ? null : online.get(machine.id) ?? false, true));
+      const connected = online.get(machine.id);
+      if (!ambiguous && connected === false) continue;
+      // Absence from discovery is uncertainty, not proof of disconnection.
+      if (connected === undefined) complete = false;
+      data.push(inventoryEntry(machine, ambiguous ? null : connected ?? null, true));
     }
     return { data, complete };
   }
 
+  #workspacePublicationQueue: Promise<void> = Promise.resolve();
+
   #registerWorkspaceHands(): void {
     // Broker construction can notify before the Session field is assigned.
-    this.ctx.waitUntil(Promise.resolve().then(async () => {
+    // Serialize refreshes and read state inside the queue. Retirement belongs
+    // to account polling, which compares the revision before deleting.
+    this.#workspacePublicationQueue = this.#workspacePublicationQueue.then(async () => {
       for (let attempt = 0; attempt < 3; attempt++) {
         const session = this.#session();
         if (!session) return;
         const result = this.listWorkspaceHands(session.owner_id);
-        // Retain known identities even when conflicting routes make discovery partial.
-        // Discovery always reads the Session again; this is an idempotent index entry.
-        if (result.data.length === 0) {
-          if (this.#hostedTools.machines().length) console.info({
-            type: "hand.inventory.registration_skipped", thread_id: session.session_id,
-            reason: "no_account_scoped_hands",
-          });
-          return;
-        }
+        // Never send unversioned empty writes: an RPC that timed out may still
+        // arrive after a reconnect. Account polling reclaims empty sessions.
+        if (result.data.length === 0) return;
         try {
           const accepted = await withHardDeadline("workspace Hand registration", 4_000, () =>
             this.env.NANOCODEX_ACCOUNT_TOOLS.getByName(session.owner_id)
@@ -4294,7 +4299,8 @@ export class DurableAgentSession extends DurableComputerObject {
           await new Promise<void>(resolve => setTimeout(resolve, attempt === 0 ? 250 : 1_000));
         }
       }
-    }).catch(error => console.warn({ type: "hand.inventory.registration_failed", error: String(error) })));
+    }).catch(error => console.warn({ type: "hand.inventory.registration_failed", error: String(error) }));
+    this.ctx.waitUntil(this.#workspacePublicationQueue);
   }
 
   #calendarPushQueue: Promise<unknown> = Promise.resolve();

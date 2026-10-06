@@ -33,8 +33,8 @@ export function mergeInventory(sources: readonly (readonly HandInventoryEntry[])
     coverage: "known_account_and_workspace", complete };
 }
 
-// Lifetime retention: no TTL evicts offline workspace identities. The cap bounds
-// menu polling and storage. Overflow is durable and visibly fences completeness;
+// Retain live or uncertain workspace publishers; reclaim definitively ended ones.
+// The cap bounds polling and storage. Overflow durably fences completeness;
 // it never silently represents a partial registry as a complete account list.
 export const WORKSPACE_INVENTORY_SESSION_LIMIT = 64;
 export const WORKSPACE_INVENTORY_CONCURRENCY = 8;
@@ -45,6 +45,10 @@ export class WorkspaceHandRegistry {
     storage.sql.exec(`CREATE TABLE IF NOT EXISTS workspace_hand_inventory (
       session_id TEXT PRIMARY KEY, entries_json TEXT NOT NULL
     )`);
+    if (!storage.sql.exec<{ name: string }>("PRAGMA table_info(workspace_hand_inventory)")
+      .toArray().some(row => row.name === "revision")) {
+      storage.sql.exec("ALTER TABLE workspace_hand_inventory ADD COLUMN revision TEXT NOT NULL DEFAULT 'legacy'");
+    }
   }
   register(sessionId: string, entries: readonly HandInventoryEntry[]): boolean {
     if (entries.length === 0) return true;
@@ -54,14 +58,18 @@ export class WorkspaceHandRegistry {
       this.storage.kv.put("workspace_hand_inventory_overflow", true);
       return false;
     }
-    this.storage.sql.exec(`INSERT INTO workspace_hand_inventory(session_id,entries_json) VALUES (?,?)
-      ON CONFLICT(session_id) DO UPDATE SET entries_json=excluded.entries_json`, sessionId, JSON.stringify(entries));
+    this.storage.sql.exec(`INSERT INTO workspace_hand_inventory(session_id,entries_json,revision) VALUES (?,?,?)
+      ON CONFLICT(session_id) DO UPDATE SET entries_json=excluded.entries_json,revision=excluded.revision`, sessionId, JSON.stringify(entries), crypto.randomUUID());
     return true;
   }
-  entries(): { sessionId: string; entries: HandInventoryEntry[] }[] {
-    return this.storage.sql.exec<{ session_id: string; entries_json: string }>(
-      "SELECT session_id,entries_json FROM workspace_hand_inventory ORDER BY session_id").toArray()
-      .map(row => ({ sessionId: row.session_id, entries: JSON.parse(row.entries_json) }));
+  /** A stale poll must never delete a publication accepted while it awaited RPC. */
+  prune(sessionId: string, revision: string): void {
+    this.storage.sql.exec("DELETE FROM workspace_hand_inventory WHERE session_id=? AND revision=?", sessionId, revision);
+  }
+  entries(): { sessionId: string; entries: HandInventoryEntry[]; revision: string }[] {
+    return this.storage.sql.exec<{ session_id: string; entries_json: string; revision: string }>(
+      "SELECT session_id,entries_json,revision FROM workspace_hand_inventory ORDER BY session_id").toArray()
+      .map(row => ({ sessionId: row.session_id, revision: row.revision, entries: JSON.parse(row.entries_json) }));
   }
   get complete(): boolean { return this.storage.kv.get("workspace_hand_inventory_overflow") !== true; }
 }

@@ -57,7 +57,7 @@ agent lifecycle and durability extension:
 
 ```toml
 [dependencies]
-nanocodex = { version = "0.6.5", features = ["claude"] }
+nanocodex = { version = "0.6.6", features = ["claude"] }
 reqwest = "0.13"
 ```
 
@@ -89,12 +89,13 @@ agent.shutdown().await?;
 must survive process restarts. The facade automatically enables the Claude
 adapter whenever `claude` and `durability` are enabled together.
 
-Default features remain `durability`, `openai`, and `tools`. For the minimal
+Default features remain `durability`, `mcp`, `openai`, and `tools`. For the minimal
 Claude provider path, use `default-features = false, features = ["claude"]`.
 Add `durability` for the extension above; durability retains its existing
-OpenAI dependency. On native targets, add `workspace-tools` to expose Claude's optional workspace
-file tools as well as the standard workspace runtime. The `claude` feature
-alone does not enable durability or workspace tools.
+OpenAI dependency. Add `claude-tools` to expose Claude's optional tool adapters
+through `nanocodex::claude_tools`. The separate `workspace-tools` feature enables
+the OpenAI workspace runtime. The `claude` feature alone does not enable
+durability or tool adapters.
 
 ## Reusable native harnesses
 

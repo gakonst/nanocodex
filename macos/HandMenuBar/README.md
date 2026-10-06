@@ -12,15 +12,19 @@ not establish account or server connectivity. Account verification, expired
 sign-in, network errors, and denied access each have distinct states. A failed
 or pending refresh never displays an old inventory as currently available.
 
-Hands use friendly names and are grouped into computers and workspaces,
-virtual machines, and screens when the server supplies those classifications.
-Tool connections appear under Computers & workspaces. Connected describes the
-server connection; it does not claim an execution health probe. Disconnected
-devices remain visible with their connection state. Screen-only
-entries show that a screen is advertised without claiming playback or input
-works. Large inventories continue in the More connections submenu. Copy Status
-includes every safe summary. The helper consumes the CLI's versioned
-`hand menu-status` JSON and never reads account credentials itself.
+The root menu stays compact: Computers, Workspaces, Virtual machines, Screens,
+Other connections, and Offline are collapsed submenus with counts; empty groups
+are omitted. Connected entries sort first within each group. Disconnected entries
+are kept under Offline, and groups larger than twenty entries have numbered
+pages. Every known connection remains available without expanding the root menu.
+The summary counts connected **connections**, since workspace sessions and screen
+publications are not additional physical computers. Copy Status includes all
+categories and entries.
+
+Connected describes the server connection, not an execution health probe.
+Screen-only entries say that a screen is advertised without claiming playback or
+input works. The helper consumes the CLI's versioned `hand menu-status` JSON and
+never reads account credentials itself.
 
 Choose **Sign In…** to open the existing `nanocodex account login` flow in Terminal.
 The helper creates a private executable command file containing the safely quoted

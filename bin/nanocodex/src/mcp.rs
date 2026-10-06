@@ -69,7 +69,7 @@ fn default_parallel_tools(name: &str) -> &'static [&'static str] {
     }
 }
 
-#[derive(Args)]
+#[derive(Args, Clone)]
 pub(crate) struct McpArgs {
     #[arg(skip)]
     disabled: bool,

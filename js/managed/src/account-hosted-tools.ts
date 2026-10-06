@@ -216,6 +216,7 @@ export class AccountHostedTools extends DurableObject<AccountHostedToolsEnv> {
             complete = false;
             sources.push(retained.entries.map(entry => ({ ...entry, online: null, health: "unknown" })));
           }
+          if (result.complete && result.data.length === 0) registry.prune(retained.sessionId, retained.revision);
           sources.push(result.data);
         } catch {
           complete = false;
@@ -682,19 +683,80 @@ export class AccountHostedTools extends DurableObject<AccountHostedToolsEnv> {
     this.ctx.storage.sql.exec("DELETE FROM regional_local_publications WHERE candidate_id IS NULL AND publication_json IS NULL");
   }
 
+  // No awaits between this check and the exact local fence. Unknown or changing
+  // publications must never be mistaken for disconnected hardware.
+  #regionalRetirementStatus(publication: HandPublication) {
+    const local = this.ctx.storage.sql.exec<{ candidate_id: string | null; publication_json: string | null }>(
+      "SELECT candidate_id,publication_json FROM regional_local_publications WHERE route_id=?", publication.route_id).toArray()[0];
+    const active = local?.publication_json ? JSON.parse(local.publication_json) as HandPublication : undefined;
+    const changed = (active !== undefined && active.publication_id !== publication.publication_id)
+      || (local?.candidate_id != null && local.candidate_id !== publication.publication_id);
+    const online = this.#broker.machineOnline(publication.machine.id);
+    const pending = this.ctx.storage.sql.exec<{ count: number }>(
+      "SELECT COUNT(*) AS count FROM hosted_tool_calls WHERE hand_id=? AND state IN ('admitted','dispatched')", publication.machine.id).toArray()[0]!.count;
+    return { online, pending_calls: pending, publication_changed: changed, retirable: !changed && !online && pending === 0 };
+  }
+
+  async #regionalRetirementRPC(publication: HandPublication, operation: "inspect" | "retire-inactive") {
+    if (publication.region === "legacy" || !this.env.NANOCODEX_HAND_RELAYS) throw new Error("regional relay unavailable");
+    return fetchResponseWithDeadline(this.env.NANOCODEX_HAND_RELAYS.getByName(handRelayName(this.#ownerId!, publication.region)),
+      `https://account-tools.internal/regional/${operation}`, {
+        method: "POST", headers: { [OWNER_ASSERTION]: this.#ownerId!, "content-type": "application/json" }, body: JSON.stringify(publication),
+      }, 5_000, "regional Hand retirement", async response => {
+        if (!response.ok) throw new Error("regional publication is not inactive");
+        return response.json<{ online: boolean; pending_calls: number; retirable: boolean; retired?: boolean }>();
+      });
+  }
+
+  async #retireRegional(body: Record<string, unknown>): Promise<Response> {
+    if (Object.keys(body).length !== 4 || !validPublisherId(body.machine_id) || !validPublisherId(body.runtime_id)
+      || !validPublisherId(body.publication_id) || !isHandRelayRegion(body.region)) return Response.json({ error: "invalid_request" }, { status: 400 });
+    const result = this.#publicationQueue.then(async () => {
+      const receiptKey = `regional_retirement:${body.machine_id}`;
+      const receipt = this.ctx.storage.kv.get<{ publication_id: string; runtime_id: string; region: string }>(receiptKey);
+      if (receipt && receipt.publication_id === body.publication_id && receipt.runtime_id === body.runtime_id && receipt.region === body.region) {
+        return Response.json({ retired: true, ...body });
+      }
+      const current = this.#directory.entries().find(entry => entry.machine.id === body.machine_id);
+      if (!current || current.pending || current.publication_id !== body.publication_id
+        || current.runtime_id !== body.runtime_id || current.region !== body.region) {
+        return Response.json({ error: "regional_publication_changed" }, { status: 409 });
+      }
+      try {
+        const status = await this.#regionalRetirementRPC(current, "retire-inactive");
+        if (!status.retired) throw new Error("retirement not confirmed");
+      } catch { return Response.json({ error: "regional_retirement_unconfirmed" }, { status: 409 }); }
+      this.ctx.storage.transactionSync(() => {
+        this.#directory.retirePublication(current);
+        this.ctx.storage.kv.put(receiptKey, { publication_id: body.publication_id, runtime_id: body.runtime_id, region: body.region });
+      });
+      return Response.json({ retired: true, ...body });
+    });
+    this.#publicationQueue = result.then(() => {}, () => {});
+    return result;
+  }
+
   async #regionalRequest(request: Request, url: URL): Promise<Response> {
     const owner = request.headers.get(OWNER_ASSERTION);
     if (!isUserId(owner) || !this.#claim(owner)) return Response.json({ error: "not_found" }, { status: 404 });
     if (url.pathname === "/regional/status" && !this.#regional && request.method === "GET" && !url.search) {
-      const rows = this.ctx.storage.sql.exec<{ runtime_id: string | null; machines_json: string | null }>(
-        "SELECT runtime_id,machines_json FROM hosted_tool_routes WHERE machines_json IS NOT NULL").toArray();
+      const rows = this.ctx.storage.sql.exec<{ runtime_id: string | null; generation: number; machines_json: string | null }>(
+        "SELECT runtime_id,generation,machines_json FROM hosted_tool_routes WHERE machines_json IS NOT NULL").toArray();
       const legacy = rows.flatMap(row => (JSON.parse(row.machines_json!) as HostedMachine[]).map(machine => {
         const pending = this.ctx.storage.sql.exec<{ count: number }>(
-          "SELECT COUNT(*) AS count FROM hosted_tool_calls WHERE hand_id=? AND host_runtime_id=? AND state IN ('admitted','dispatched')", machine.id, row.runtime_id).toArray()[0]!.count;
+          "SELECT COUNT(*) AS count FROM hosted_tool_calls WHERE hand_id=? AND host_runtime_id IS ? AND state IN ('admitted','dispatched')", machine.id, row.runtime_id).toArray()[0]!.count;
         const online = this.#broker.machineOnline(machine.id);
-        return { machine_id: machine.id, runtime_id: row.runtime_id, online, pending_calls: pending, retirable: !online && pending === 0 && row.runtime_id !== null };
+        return { machine_id: machine.id, runtime_id: row.runtime_id, generation: row.generation, online, pending_calls: pending, retirable: !online && pending === 0 };
       }));
-      return Response.json({ legacy }, { headers: { "cache-control": "no-store" } });
+      const regional = await Promise.all(this.#directory.entries().filter(entry => entry.region !== "legacy").map(async entry => {
+        const identity = { machine_id: entry.machine.id, runtime_id: entry.runtime_id ?? null, publication_id: entry.publication_id, region: entry.region };
+        if (!entry.pending && entry.runtime_id) try {
+          const status = await this.#regionalRetirementRPC(entry, "inspect");
+          return { ...identity, ...status, status: "confirmed", pending_publication: false };
+        } catch { /* Discovery failure is unknown, never evidence of inactivity. */ }
+        return { ...identity, status: "unknown", online: null, pending_calls: null, pending_publication: entry.pending, retirable: false };
+      }));
+      return Response.json({ legacy, regional }, { headers: { "cache-control": "no-store" } });
     }
     if (request.method !== "POST" || url.search) return Response.json({ error: "invalid_request" }, { status: 400 });
     let body: Record<string, unknown>;
@@ -716,26 +778,44 @@ export class AccountHostedTools extends DurableObject<AccountHostedToolsEnv> {
       return Response.json({ region: pinned ?? this.#directory.select(body.machine_id, body.runtime_id, body.region) });
     }
     if (url.pathname === "/regional/retire" && !this.#regional) {
-      if (!validPublisherId(body.machine_id) || !validPublisherId(body.runtime_id) || Object.keys(body).length !== 2) {
+      if (body.publication_id !== undefined || body.region !== undefined) return this.#retireRegional(body);
+      const unversioned = body.runtime_id === null;
+      if (!validPublisherId(body.machine_id) || (unversioned
+        ? !Number.isSafeInteger(body.generation) || (body.generation as number) <= 0 || Object.keys(body).length !== 3
+        : !validPublisherId(body.runtime_id) || Object.keys(body).length !== 2)) {
         return Response.json({ error: "invalid_request" }, { status: 400 });
       }
-      if (this.#directory.retired(body.machine_id, body.runtime_id)
-        && this.#directory.placement(body.machine_id, body.runtime_id) === "legacy") {
+      if (!unversioned && this.#directory.retired(body.machine_id, body.runtime_id as string)
+        && this.#directory.placement(body.machine_id, body.runtime_id as string) === "legacy") {
         return Response.json({ retired: true, machine_id: body.machine_id, runtime_id: body.runtime_id });
       }
       const rows = this.ctx.storage.sql.exec<{ route_id: string; runtime_id: string | null; machines_json: string | null; lease_id: string | null; generation: number }>(
         "SELECT route_id,runtime_id,machines_json,lease_id,generation FROM hosted_tool_routes").toArray();
       const route = rows.find(row => row.machines_json && (JSON.parse(row.machines_json) as HostedMachine[]).some(machine => machine.id === body.machine_id));
+      // One receipt per machine bounds retained markers. Verify the ledger still
+      // names that generation: a retry must never act on a later reconnect.
+      const receiptKey = `legacy_retirement:${body.machine_id}`;
+      const receipt = unversioned ? this.ctx.storage.kv.get<{ route_id: string; generation: number }>(receiptKey) : undefined;
+      if (!route && receipt && receipt.generation === body.generation && rows.some(row =>
+        row.route_id === receipt.route_id && row.generation === receipt.generation
+        && row.runtime_id === null && row.machines_json === null && row.lease_id === null)) {
+        return Response.json({ retired: true, machine_id: body.machine_id, runtime_id: null, generation: body.generation });
+      }
       if (!route || route.runtime_id !== body.runtime_id) {
         return Response.json({ error: "legacy_runtime_not_found" }, { status: 409 });
       }
+      if (unversioned && route.generation !== body.generation) return Response.json({ error: "legacy_generation_changed" }, { status: 409 });
       if (this.#broker.machineOnline(body.machine_id)) return Response.json({ error: "legacy_runtime_still_connected" }, { status: 409 });
       const pending = this.ctx.storage.sql.exec<{ count: number }>(
-        "SELECT COUNT(*) AS count FROM hosted_tool_calls WHERE hand_id=? AND host_runtime_id=? AND state IN ('admitted','dispatched')", body.machine_id, body.runtime_id).toArray()[0]!.count;
+        "SELECT COUNT(*) AS count FROM hosted_tool_calls WHERE hand_id=? AND host_runtime_id IS ? AND state IN ('admitted','dispatched')", body.machine_id, body.runtime_id).toArray()[0]!.count;
       if (pending) return Response.json({ error: "legacy_runtime_has_pending_calls" }, { status: 409 });
-      this.#broker.retireRoute(route.route_id, "Owner explicitly retired disconnected legacy runtime", 1012);
-      this.#directory.retire(body.machine_id, body.runtime_id);
-      return Response.json({ retired: true, machine_id: body.machine_id, runtime_id: body.runtime_id });
+      this.ctx.storage.transactionSync(() => {
+        this.#broker.retireRoute(route.route_id, "Owner explicitly retired disconnected legacy runtime", 1012);
+        if (unversioned) this.ctx.storage.kv.put(receiptKey, { route_id: route.route_id, generation: route.generation });
+        else this.#directory.retire(body.machine_id as string, body.runtime_id as string);
+      });
+      return Response.json({ retired: true, machine_id: body.machine_id, runtime_id: body.runtime_id,
+        ...(unversioned ? { generation: body.generation } : {}) });
     }
     const publication = body as unknown as HandPublication;
     if (!validPublisherId(publication.machine?.id) || !validPublisherId(publication.publication_id)
@@ -745,6 +825,14 @@ export class AccountHostedTools extends DurableObject<AccountHostedToolsEnv> {
       || !Array.isArray(publication.tool_names) || publication.tool_names.length > 256
       || publication.tool_names.some(name => typeof name !== "string" || name.length > 256)
       || (publication.runtime_id !== undefined && !validPublisherId(publication.runtime_id))) return Response.json({ error: "invalid_request" }, { status: 400 });
+    if (this.#regional && (url.pathname === "/regional/inspect" || url.pathname === "/regional/retire-inactive")) {
+      if (publication.region !== this.#region || !publication.runtime_id) return Response.json({ error: "invalid_request" }, { status: 400 });
+      const status = this.#regionalRetirementStatus(publication);
+      if (url.pathname === "/regional/inspect") return Response.json(status);
+      if (!status.retirable) return Response.json({ error: "regional_publication_not_inactive" }, { status: 409 });
+      this.#fencePublication(publication);
+      return Response.json({ ...status, retired: true });
+    }
     if (url.pathname === "/regional/fence") {
       this.#fencePublication(publication);
       return Response.json({ fenced: true });

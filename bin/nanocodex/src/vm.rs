@@ -29,7 +29,7 @@ const CAPABILITY_DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
 const CAPABILITY_DRAIN_INTERVAL: Duration = Duration::from_millis(10);
 
 /// Opt-in VM workspace-tool configuration for normal agent sessions.
-#[derive(Args, Default)]
+#[derive(Args, Clone, Default)]
 pub(crate) struct VmArgs {
     /// Run workspace-mutating tools in this writable VM root filesystem.
     ///

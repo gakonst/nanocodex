@@ -78,13 +78,25 @@ export function isUserId(value: unknown): value is string {
 
 // Keep the SDK's nonce protocol and stored entries compatible. SMS transitions
 // additionally need a transaction spanning the active pointer and challenge.
-export class NonceStorage extends Kv.NonceStorage {
+export class NonceStorage extends DurableObject<unknown> {
+  private readonly nonce: Kv.NonceStorage;
   constructor(private readonly smsState: DurableObjectState, env: unknown) {
-    super(smsState as unknown as Kv.NonceStorage.State, env);
+    super(smsState, env);
+    this.nonce = new Kv.NonceStorage(smsState as unknown as Kv.NonceStorage.State, env);
+  }
+
+  // Preserve the existing SDK storage envelope and expiry/revocation semantics,
+  // but return session data in one RPC reply instead of a streamed HTTP body.
+  async readAccountSession(token: string): Promise<AccountSessionPayload | undefined> {
+    if (!ANONYMOUS_SESSION_TOKEN.test(token) && !SMS_SESSION_TOKEN.test(token)) return undefined;
+    const entry = await this.smsState.storage.get<{ value: AccountSessionPayload; expiresAt?: number }>(accountSessionKey(token));
+    if (!entry || (entry.expiresAt !== undefined && entry.expiresAt <= Date.now())) return undefined;
+    const session = entry.value;
+    return session && isUserId(session.userId) && session.expiresAt > Date.now() / 1_000 ? session : undefined;
   }
 
   override async fetch(request: Request): Promise<Response> {
-    if (new URL(request.url).pathname !== "/sms") return super.fetch(request);
+    if (new URL(request.url).pathname !== "/sms") return this.nonce.fetch(request);
     const input = await request.json<SmsOtpTransition>();
     const result = await this.smsState.storage.transaction(async storage => {
       const now = Math.floor(Date.now() / 1_000);
@@ -139,7 +151,7 @@ export interface AccountAuthEnv extends IngressPlacement {
   NANOCODEX_ACCESS_SECRET?: string;
   ENVIRONMENT?: string;
   NANOCODEX_MOCK_TWILIO_VERIFY_CODE?: string;
-  NANOCODEX_AUTH: DurableObjectNamespace;
+  NANOCODEX_AUTH: DurableObjectNamespace<NonceStorage>;
   NANOCODEX_USERS: DurableObjectNamespace<UserAccount>;
   NANOCODEX_API_KEYS: DurableObjectNamespace<ApiKeyRecord>;
   NANOCODEX_LOCAL_WEBAUTHN_HMAC_KEY?: string;
@@ -637,7 +649,12 @@ export async function routeAccountRequest(
       (cookie): cookie is string => Boolean(cookie),
     );
     const headers = new Headers();
-    headers.set("server-timing", `connect_session;dur=${sessionMs.toFixed(1)}, connect_metadata;dur=${(performance.now() - metadataStarted).toFixed(1)}, connect_total;dur=${(performance.now() - started).toFixed(1)}`);
+    const metadataMs = performance.now() - metadataStarted;
+    const totalMs = performance.now() - started;
+    headers.set("server-timing", `connect_session;dur=${sessionMs.toFixed(1)}, connect_metadata;dur=${metadataMs.toFixed(1)}, connect_total;dur=${totalMs.toFixed(1)}`);
+    console.info({ type: "connect.session_timing", auth_kind: principal.kind,
+      connect: url.searchParams.get("connect") === "1", session_ms: sessionMs,
+      metadata_ms: metadataMs, total_ms: totalMs });
     for (const cookie of cookies) headers.append("set-cookie", cookie);
     return json({
       user: {
@@ -1829,7 +1846,11 @@ async function readBrowserSession(
 ): Promise<AccountSessionPayload | undefined> {
   const token = cookieValue(request, ACCOUNT_COOKIE);
   if (!token) return undefined;
-  const session = await authStore(env, "account").get<AccountSessionPayload>(accountSessionKey(token));
+  const stub = env.NANOCODEX_AUTH.get(env.NANOCODEX_AUTH.idFromName("account"));
+  const rpc = stub.readAccountSession;
+  const session: AccountSessionPayload | undefined = typeof rpc === "function"
+    ? consumeRpcData(await Reflect.apply(rpc, stub, [token]))
+    : await authStore(env, "account").get<AccountSessionPayload>(accountSessionKey(token));
   if (!session || !isUserId(session.userId) || session.expiresAt <= Date.now() / 1_000) {
     return undefined;
   }

@@ -64,7 +64,24 @@ impl Commands {
         }
     }
 
-    fn cancel(&mut self, app: &mut App, target: PaneId) {
+    pub(super) fn has_model_selection(&self) -> bool {
+        self.0
+            .iter()
+            .any(|command| matches!(command, WorkerCommand::SetModel { .. }))
+    }
+
+    pub(super) fn recovery_model(&mut self) -> Option<HarnessModel> {
+        let index = self
+            .0
+            .iter()
+            .position(|command| matches!(command, WorkerCommand::SetModel { .. }))?;
+        match self.0.remove(index)? {
+            WorkerCommand::SetModel { model } => Some(model),
+            _ => unreachable!(),
+        }
+    }
+
+    pub(super) fn cancel(&mut self, app: &mut App, target: PaneId) {
         const CANCELLED: &str = "Cancelled before initialization finished";
         let mut commands = std::mem::take(&mut self.0);
         while let Some(command) = commands.pop_front() {

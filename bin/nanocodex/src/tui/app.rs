@@ -1339,6 +1339,8 @@ pub(super) struct App {
     tool_details_expanded: bool,
     fast_mode: bool,
     model: HarnessModel,
+    has_rejected_start_input: bool,
+    restored_thread: bool,
     thinking: Thinking,
     model_picker: Option<usize>,
     reasoning_picker: Option<ReasoningPicker>,
@@ -1365,9 +1367,20 @@ impl App {
     pub(super) fn reject_external(&mut self, target: PaneId, id: u64, steer: bool, error: String) {
         if steer {
             self.steer_failed(target, id, error);
-        } else if let Some(conversation) = self.conversation_mut(target) {
-            conversation.remove_queued_prompt(id);
-            conversation.push_output(TranscriptItem::Error(error));
+        } else {
+            // Rejected input remains visible and in composer history, but is not
+            // a started conversation. Pending turns and run_generation still
+            // prevent model changes once any prompt is admitted.
+            if target == PaneId::Main && self.main.run_generation == 0 {
+                self.has_rejected_start_input = true;
+            }
+            if let Some(conversation) = self.conversation_mut(target) {
+                conversation.remove_queued_prompt(id);
+                conversation.push_output(TranscriptItem::Error(error));
+                if !conversation.running && conversation.pending_turns == 0 {
+                    "Ready".clone_into(&mut conversation.status);
+                }
+            }
         }
     }
 
@@ -1423,6 +1436,8 @@ impl App {
             tool_details_expanded: true,
             fast_mode: false,
             model: HarnessModel::default(),
+            has_rejected_start_input: false,
+            restored_thread: false,
             thinking: Thinking::default(),
             model_picker: None,
             reasoning_picker: None,
@@ -1433,6 +1448,7 @@ impl App {
         &mut self,
         transcript: impl IntoIterator<Item = RolloutTranscriptItem>,
     ) {
+        self.restored_thread = true;
         for activity in transcript {
             let item = match activity {
                 RolloutTranscriptItem::User(message) => TranscriptItem::User(message),
@@ -2980,9 +2996,10 @@ impl App {
     }
 
     pub(super) fn can_change_start_settings(&self) -> bool {
-        self.main.run_generation == 0
+        !self.restored_thread
+            && self.main.run_generation == 0
             && self.main.pending_turns == 0
-            && self.main.transcript.is_empty()
+            && (self.has_rejected_start_input || !self.main.transcript.has_conversation())
             && self.main_branches.is_empty()
             && self.btw.is_none()
     }
@@ -3018,12 +3035,14 @@ impl App {
     }
 
     pub(super) fn model_options(&self) -> Vec<(HarnessModel, &'static str)> {
-        match self.model.family() {
-            HarnessFamily::Codex => MODEL_OPTIONS.to_vec(),
-            HarnessFamily::Claude => HarnessModel::for_family(HarnessFamily::Claude)
-                .map(|model| (model, model.as_str()))
-                .collect(),
-        }
+        MODEL_OPTIONS
+            .iter()
+            .copied()
+            .chain(
+                HarnessModel::for_family(HarnessFamily::Claude)
+                    .map(|model| (model, model.as_str())),
+            )
+            .collect()
     }
 
     pub(super) fn open_model_picker(&mut self) {
@@ -5135,7 +5154,7 @@ mod tests {
         let second = app.begin_btw();
         app.btw_failed(first, "stale".to_owned());
         assert_eq!(app.btw_id(), Some(second));
-        assert!(app.btw.as_ref().unwrap().conversation.transcript.is_empty());
+        assert_eq!(app.btw.as_ref().unwrap().conversation.transcript.len(), 0);
     }
 
     #[test]
@@ -5156,7 +5175,7 @@ mod tests {
 
         app.steer_admitted(PaneId::Main, steer_id);
         assert_eq!(app.main.pending_steers.len(), 1);
-        assert!(app.main.transcript.is_empty());
+        assert_eq!(app.main.transcript.len(), 0);
         assert_eq!(app.main.status, "Steer pending");
 
         app.main.on_agent_event(&event(
@@ -5183,7 +5202,7 @@ mod tests {
             &json!({ "steer_index": 1, "instruction_bytes": 15 }),
         ));
         assert_eq!(app.main.pending_steers.len(), 1);
-        assert!(app.main.transcript.is_empty());
+        assert_eq!(app.main.transcript.len(), 0);
 
         app.steer_admitted(PaneId::Main, steer_id);
         assert!(app.main.pending_steers.is_empty());
@@ -5367,7 +5386,7 @@ mod tests {
             ));
         }
 
-        assert!(app.main.transcript.is_empty());
+        assert_eq!(app.main.transcript.len(), 0);
         assert!(app.main.pending_code_execs.is_empty());
     }
 
