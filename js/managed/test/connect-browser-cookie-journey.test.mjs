@@ -123,6 +123,30 @@ test("Browser Connect SMS stores and reuses persistent account cookie", { timeou
     assert.equal(trace.some(entry => entry.path?.endsWith("/authorize")), false);
     trace.push({label:"second browser flow authenticated",...me});
     assert.equal(sends, 1); assert.equal(checks, 1);
+    // Exercise the API-key /me path without the browser session cookie, then
+    // revoke through the signed-in browser and require immediate rejection.
+    const issued = await context.request.post(new URL("/v1/api-keys", base).href, {
+      headers: { origin: base.origin }, data: { label: "Synthetic session profile" },
+    });
+    assert.equal(issued.status(), 201);
+    const key = await issued.json();
+    const apiContext = await browser.newContext({ ignoreHTTPSErrors: true });
+    try {
+      const requestMe = () => apiContext.request.get(new URL("/v1/me", base).href, {
+        headers: { authorization: "Bearer " + key.api_key },
+      });
+      const keyed = await requestMe();
+      assert.equal(keyed.status(), 200);
+      const keyedAccount = await keyed.json();
+      assert.equal(keyedAccount.authentication, "api_key");
+      assert.equal(keyedAccount.user.persistent, true);
+      const revoked = await context.request.delete(new URL("/v1/api-keys/" + key.key.id, base).href, {
+        headers: { origin: base.origin },
+      });
+      assert.equal(revoked.status(), 204);
+      assert.equal((await requestMe()).status(), 401);
+      trace.push({ label: "API-key account metadata remains live and revoked key is rejected", passed: true });
+    } finally { await apiContext.close(); }
     const logout = await second.evaluate(async () => (await fetch("/v1/auth/logout", {method:"POST"})).status);
     assert.equal(logout, 204);
     assert.equal((await context.cookies()).some(c => c.name === "nanocodex_account"), false);

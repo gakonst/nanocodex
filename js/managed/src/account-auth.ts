@@ -1011,13 +1011,13 @@ async function authenticateLive(request: Request, env: AccountAuthEnv, url: URL)
   const stub = env.NANOCODEX_API_KEYS.getByName(digest, durablePlacementOptions(env.trustedClientIngressColo));
   // RPC returns the small record in one reply. A fetch Response transports its
   // headers and JSON stream separately across Durable Object locations.
-  let record: StoredApiKey | undefined;
+  let record: (StoredApiKey & { account?: UserRecord }) | undefined;
   const rpc = stub.resolveAuthorizedKey;
   if (typeof rpc === "function") {
     const observeCreate = request.method === "POST"
       && (url.pathname === "/v1/agents" || url.pathname === "/v1/agent-runs");
     const rpcStartedAt = performance.now();
-    record = consumeRpcData(await Reflect.apply(rpc, stub, [observeCreate]));
+    record = consumeRpcData(await Reflect.apply(rpc, stub, [observeCreate, url.pathname === "/v1/me"]));
     if (observeCreate) console.info({ type: "managed.auth.api_key_rpc",
       resolve_rpc_ms: Math.round((performance.now() - rpcStartedAt) * 100) / 100 });
 
@@ -1032,23 +1032,33 @@ async function authenticateLive(request: Request, env: AccountAuthEnv, url: URL)
     if (response.headers.get("x-nanocodex-api-key-authorized") !== "1"
       && !await apiKeyAuthorized(env, record)) return undefined;
   }
-  return apiKeyPrincipal(record, digest, stub.id?.toString());
+  const principal = apiKeyPrincipal(record, digest, stub.id?.toString());
+  if (principal && isUserRecord(record?.account)
+    && record.account.id === principal.userId
+    && record.account.organizationId === principal.organizationId) {
+    resolvedPrincipalAccounts.set(principal, record.account);
+  }
+  return principal;
 }
 
 async function apiKeyAuthorized(env: AccountAuthEnv, record: StoredApiKey): Promise<boolean> {
+  return Boolean(await authorizedApiKeyAccount(env, record));
+}
+
+async function authorizedApiKeyAccount(env: AccountAuthEnv, record: StoredApiKey): Promise<UserRecord | undefined> {
   const [account, grant] = await Promise.all([
     readAccount(env, record.userId),
     resolveOrganizationGrant(env, { id: record.userId, organizationId: record.organizationId }),
   ]);
-  if (!account || account.organizationId !== record.organizationId) return false;
+  if (!account || account.organizationId !== record.organizationId) return undefined;
   if (!grant
     || grant.teamId !== record.teamId
     || grant.authorizationEpoch !== record.authorizationEpoch
     || organizationRoleRank(record.role) > organizationRoleRank(grant.role)
     || record.capabilities.some((capability) => !grant.capabilities.includes(capability))) {
-    return false;
+    return undefined;
   }
-  return true;
+  return account;
 }
 
 async function resolveUserPrincipal(
@@ -1788,7 +1798,7 @@ async function resolveOrCreateBrowserAccount(
       if (!account) throw new Error("browser account is unavailable");
       return { principal, persistent: account.persistent };
     }
-    const account = await readAccount(env, principal.userId);
+    const account = resolvedPrincipalAccounts.get(principal) ?? await readAccount(env, principal.userId);
     if (!account) throw new Error("API key account is unavailable");
     return { principal, persistent: account.persistent };
   }
@@ -2643,19 +2653,20 @@ export class ApiKeyRecord extends DurableObject<AccountAuthEnv> {
     return enteredAt;
   }
 
-  async resolveAuthorizedKey(observeCreate = false): Promise<StoredApiKey | undefined> {
+  async resolveAuthorizedKey(observeCreate = false, includeAccount = false): Promise<(StoredApiKey & { account?: UserRecord }) | undefined> {
     const startedAt = performance.now();
     const record = await this.ctx.storage.get<StoredApiKey>("record");
     const storageMs = performance.now() - startedAt;
     // Read current key, account and membership on every request, including
     // repeated voice starts. RPC changes transport, not revocation semantics.
-    const authorized = isStoredApiKey(record) && await apiKeyAuthorized(this.env, record);
+    const account = isStoredApiKey(record) ? await authorizedApiKeyAccount(this.env, record) : undefined;
+    const authorized = Boolean(account);
     if (observeCreate) console.info({ type: "managed.auth.api_key_handler",
       storage_ms: Math.round(storageMs * 100) / 100,
       membership_ms: Math.round((performance.now() - startedAt - storageMs) * 100) / 100,
       handler_ms: Math.round((performance.now() - startedAt) * 100) / 100,
       authorized });
-    return authorized ? record : undefined;
+    return authorized ? (includeAccount ? { ...record!, account } : record) : undefined;
   }
 
   async fetch(request: Request): Promise<Response> {
