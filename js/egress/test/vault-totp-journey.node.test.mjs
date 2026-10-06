@@ -140,6 +140,9 @@ test('TOTP intake, RFC 6238 injection, encrypted persistence and revocation thro
     const privateBody = { vault_id: entry.id, expected_origin: origin };
     await call('https://fixture.test/__model', 'POST', privateBody, 403);
     const privateHeaders = { 'content-type': 'application/json', 'x-nanocodex-subject': subject, 'x-fixture-time': '59' };
+    await call('https://browser-vault.internal/v1/fields', 'POST', { ...privateBody, fields: ['username'] }, 403, privateHeaders);
+    await call('https://browser-vault.internal/v1/fields', 'POST', { ...privateBody, fields: ['seed'] }, 400, privateHeaders);
+    await call('https://browser-vault.internal/v1/fields', 'POST', { ...privateBody, fields: ['code'] }, 400, privateHeaders);
     const privateResponse = await mf.dispatchFetch(privateUrl, { method: 'POST', headers: privateHeaders, body: JSON.stringify(privateBody) });
     assert.equal(privateResponse.status, 200); assert.equal(privateResponse.headers.get('cache-control'), 'no-store');
     assert.deepEqual(await privateResponse.json(), { code: '287082' });

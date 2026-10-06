@@ -25,12 +25,12 @@ export type ConnectorStart = Readonly<{ return_to?: string }>;
 export type VaultInputs = {
   login: Readonly<{ name: string; username: string; password: string; browser_origin?: string }>;
   api_key: Readonly<{ name: string; api_key: string }>;
-  card: Readonly<{ name: string; card_number: string; expiry_month: string; expiry_year: string; cvv?: string; billing_zip?: string }>;
+  card: Readonly<{ name: string; card_number: string; expiry_month: string; expiry_year: string; cvv?: string; billing_zip: string }>;
   address: Readonly<{ name: string; address_line_1: string; address_line_2?: string; city: string; state: string; zip: string; country: string }>;
   phone: Readonly<{ name: string; phone_number: string }>;
   totp: Readonly<{ name: string; origin: string }> & (Readonly<{ otpauth_uri: string }> | Readonly<{ seed: string; issuer: string; account: string; algorithm?: 'SHA1' | 'SHA256' | 'SHA512'; digits?: 6 | 8; period?: number }>);
 };
-export type SshInput = Readonly<{ hostname: string; port?: number; username: string; host_key_sha256: string; generate?: boolean; private_key?: string }>;
+export type SshInput = Readonly<{ hostname: string; port: number; username: string; host_key_sha256: string }> & (Readonly<{ generate: true; private_key?: never }> | Readonly<{ private_key: string; generate?: never }>);
 export type CapturedStore = Readonly<{ capture_id: string; operation_id: string; name?: string; address_vault_id?: string }>;
 export type CardInput = (Readonly<{ vault_id: string; capture_id?: never }> | Readonly<{ capture_id: string; vault_id?: never }>) & (Readonly<{ operation: 'status' | 'balance'; operation_id?: string }> | Readonly<{ operation: 'refresh'; operation_id: string }>);
 type Read = (options?: RequestOptions) => Promise<AccountReceipt | undefined>;

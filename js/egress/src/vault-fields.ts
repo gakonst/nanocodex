@@ -14,6 +14,8 @@ export function validVaultFields(value: unknown): value is VaultField[] {
     && value.every(field => typeof field === 'string' && Object.values(VAULT_FIELDS).some(fields => (fields as readonly string[]).includes(field)));
 }
 export function materializeVaultFields(entry: VaultEntry, fields: readonly VaultField[]): Record<string, string> {
+  // Authenticator material is available only through the document-bound TOTP path.
+  if (entry.kind === 'totp') throw new Error('Vault field kind mismatch');
   if (fields.some(field => !(VAULT_FIELDS[entry.kind] as readonly string[]).includes(field))) throw new Error('Vault field kind mismatch');
   if (fields.includes('cvv') && entry.kind === 'card' && !entry.cvv) throw new Error('Vault field unavailable');
   return Object.fromEntries(fields.map(field => [field, field === 'card_expiry' && entry.kind === 'card'
