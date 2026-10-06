@@ -90,7 +90,9 @@ export async function createClaude(options, load, type, harnessDefaults) {
   config.subagentRouting = internalRuntime?.subagentRouting !== undefined;
   if (options.subagents !== undefined) config.subagents = options.subagents.maxConcurrency === undefined ? {} : { max_concurrency: options.subagents.maxConcurrency };
   options = undefined; // Do not retain caller credentials in runtime lifecycle closures.
-  const hostDefinitionId = registerDefinitionHost(host);
+  // Retain the durable owner so a reconstructed Cloudflare runtime can replace
+  // this host without weakening the cross-owner session guard.
+  const hostDefinitionId = registerDefinitionHost(host, reservation);
   config.hostDefinitionId = hostDefinitionId;
   config.authHostId = hostDefinitionId;
   config.tools = JSON.parse(host.toolDefinitions());
@@ -141,7 +143,8 @@ export async function createClaude(options, load, type, harnessDefaults) {
         const Nanoclaude = await load(module);
         activateHost(host);
         if (typeof Nanoclaude?.create !== 'function') throw new Error('this WASM build does not expose Nanoclaude');
-        bindHostSession(host, config.sessionId, reservation);
+        // Construction acquires the durable fence before adoption replaces
+        // the live host route, matching the Codex lifecycle.
         const raw = await Nanoclaude.create(JSON.stringify(config));
         if (!raw || typeof raw.prompt !== 'function') {
           raw?.free?.();

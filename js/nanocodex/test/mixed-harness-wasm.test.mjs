@@ -111,7 +111,7 @@ test('public SDK shares canonical children across both native harness families',
       assert.equal(admittedChildren, 0, 'the entire rejected batch leaves no admitted child');
       rejectedBatches.push({ override, providerRequests: trace.length - before, admittedChildren });
     }
-    for (const [index, harness, model] of [[0, 'claude', 'sonnet'], [1, 'codex', 'sol'], [2, 'codex', 'sol'], [3, 'codex', 'sol'], [4, undefined, undefined]]) {
+    for (const [index, harness, model] of [[0, 'claude', 'claude-opus-5-5'], [1, 'codex', 'sol'], [2, 'codex', 'sol'], [3, 'codex', 'sol'], [4, undefined, undefined]]) {
       const root = roots[index], watcher = root.events.watch();
       const off = watcher.onEvent(event => events.push(event));
       const spawned = await Subagents.spawn(root, { role: 'fixture specialist', task: 'Perform proof once, then submit the typed result.', harness, model, outputSchema: { type: 'object', properties: { ok: { type: 'boolean' }, model: { type: 'string' } }, required: ['ok', 'model'], additionalProperties: false } });
@@ -124,6 +124,7 @@ test('public SDK shares canonical children across both native harness families',
       off(); watcher.off();
     }
     assert.equal(effects.length, 5, 'one real host effect per child');
+    assert.equal(effects[0].model, 'claude-opus-5-5', 'Codex dispatches the explicitly selected Opus child');
     assert.equal(effects[4].model, 'claude-proxy-fixture', 'native models inherit without catalog coercion');
     assert.equal(codeCalls, 2, 'host explicit evaluator and Node default evaluator execute actual Code Mode');
     for (const effect of effects.slice(2, 4)) assert.match(effect.parentCallId, /^proof-code-/, 'the actual host effect belongs to the Code Mode cell');
@@ -140,7 +141,7 @@ test('public SDK shares canonical children across both native harness families',
     assert.equal(trace.length, before, 'invalid family/model fails before dispatch');
 
     const root = roots[0];
-    const child = await Subagents.spawn(root, { role: 'interrupt fixture', task: 'BLOCK_UNTIL_INTERRUPT: call await_abort, then submit the typed result.', harness: 'claude', model: 'sonnet', thinking: 'low', outputSchema: { type: 'object', properties: { ok: { type: 'boolean' }, model: { type: 'string' } }, required: ['ok', 'model'], additionalProperties: false } });
+    const child = await Subagents.spawn(root, { role: 'interrupt fixture', task: 'BLOCK_UNTIL_INTERRUPT: call await_abort, then submit the typed result.', harness: 'claude', model: 'claude-opus-5-5', thinking: 'low', outputSchema: { type: 'object', properties: { ok: { type: 'boolean' }, model: { type: 'string' } }, required: ['ok', 'model'], additionalProperties: false } });
     await within(started, 'the child handler to start');
     const interrupted = await within(Subagents.interrupt(root, child.agent_id), 'native child interruption');
     assert.equal(interrupted.agents[0].status.state, 'interrupted', JSON.stringify(interrupted));
@@ -152,6 +153,7 @@ test('public SDK shares canonical children across both native harness families',
     assert.equal(recovered.agents[0].status.state, 'completed', JSON.stringify(recovered));
     assert.equal(recovered.agents[0].status.output.ok, true);
     assert.equal(effects.length, 7, 'recovered child executes exactly one fresh proof');
+    assert.equal(effects[6].model, 'claude-opus-5-5', 'interruption and resume preserve the selected Opus model');
     assert.equal(effects[6].sessionId, blockedContext.sessionId, 'recovery preserves the child session');
     assert.equal(effects[6].subagent.agentId, blockedContext.subagent.agentId, 'recovery preserves canonical child identity');
     await Subagents.close(root, child.agent_id);

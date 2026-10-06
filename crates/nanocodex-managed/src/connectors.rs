@@ -310,17 +310,17 @@ fn bounded_metadata(value: &serde_json::Value, depth: usize) -> Result<(), Manag
                 if k == "id" {
                     identifier(v.as_str().ok_or_else(invalid)?, 1, 64)?;
                 }
-                if k == "body" {
-                    if let Some(body) = v.as_str() {
-                        if body.len() > 8192
-                            || body
-                                .chars()
-                                .any(|c| c.is_control() && !matches!(c, '\n' | '\r' | '\t'))
-                        {
-                            return Err(invalid());
-                        }
-                        continue;
+                if k == "body"
+                    && let Some(body) = v.as_str()
+                {
+                    if body.len() > 8192
+                        || body
+                            .chars()
+                            .any(|c| c.is_control() && !matches!(c, '\n' | '\r' | '\t'))
+                    {
+                        return Err(invalid());
                     }
+                    continue;
                 }
                 bounded_metadata(v, depth + 1)?;
             }

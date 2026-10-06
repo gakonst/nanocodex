@@ -22,7 +22,7 @@ const NUMBER_FIELDS = new Set([
   "received_message_count", "queued_message_count", "socket_delivered_message_count", "buffered_send_bytes",
   "pending_calls", "pending_call_count", "heartbeat_count", "close_code", "attempt_count", "attempt", "retry_delay_ms",
   "next_attempt", "max_attempts", "status_code",
-  "renewal_count",
+  "renewal_count", "dispatch_to_message_ms", "frame_decode_ms", "lease_validation_ms", "message_to_handler_ms",
 ]);
 const BOOLEAN_FIELDS = new Set(["success", "intentional", "close_clean", "replayed", "start_observed", "reconnect_enabled", "opens_new_socket", "server_requested_delay", "active", "connected"]);
 const HOST_TIMING_FIELDS = new Set(["scheduler_ms", "execution_gate_ms", "execution_ms", "result_encode_ms", "result_queue_ms", "host_elapsed_ms"]);

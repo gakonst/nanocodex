@@ -85,7 +85,7 @@ test("changed crates select only the jobs in their reverse-dependency closure", 
   for (const path of ["js/managed/src/browser-vault-save.ts", "js/managed/test/private-input-tui.chrome.mjs", "js/egress/src/vault-fields.ts"]) {
     assert.deepEqual(push(path).jobs, only("hands", "bindings", "wasm", "policy"), path);
   }
-  assert.deepEqual(push("js/account/worker/managedProxy.ts").jobs, only("hands", "apps", "wasm", "policy"));
+  assert.deepEqual(push("js/account/worker/managedProxy.ts").jobs, only("hands", "apps", "bindings", "wasm", "policy"));
   assert.equal(shared.raw.tests, "false", "tests stay paused unless the owner switch is on");
 });
 

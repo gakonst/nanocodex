@@ -130,6 +130,13 @@ type HostedToolsSocketAttachment = {
   lease_expires_at?: number;
 };
 
+type HostFrameTiming = Readonly<{
+  receivedAt: number;
+  frame_decode_ms: number;
+  lease_validation_ms: number;
+  message_to_handler_ms: number;
+}>;
+
 type PendingCall = {
   threadId?: string;
   receivedAt: number;
@@ -317,6 +324,11 @@ export type HostedToolsCallObservation = Readonly<{
   admission_ms?: number;
   roundtrip_ms?: number;
   settlement_ms?: number;
+  /** Broker handler entry is not a transport-level arrival timestamp. */
+  dispatch_to_message_ms?: number;
+  frame_decode_ms?: number;
+  lease_validation_ms?: number;
+  message_to_handler_ms?: number;
   host_timing?: HostedToolReceiptTiming;
   /** Combined transit, return, and unmeasured socket/serialization overhead. */
   transit_return_overhead_ms?: number;
@@ -832,6 +844,7 @@ export class HostedToolsBrokerCore {
   }
 
   async webSocketMessage(socket: HostedToolsSocket, message: string | ArrayBuffer): Promise<void> {
+    const receivedAt = performance.now();
     if (!this.handles(socket)) return;
     if (typeof message !== "string") {
       this.#fence(socket, "Hosted Tools requires bounded text frames", 1003);
@@ -839,8 +852,10 @@ export class HostedToolsBrokerCore {
     }
     let frame: HostedToolsHostFrame;
     try {
+      const decodeStarted = performance.now();
       frame = parseHostedToolsHostFrame(message);
-      await this.#dispatchHostFrame(socket, frame);
+      const frameDecodeMs = Math.max(0, performance.now() - decodeStarted);
+      await this.#dispatchHostFrame(socket, frame, receivedAt, frameDecodeMs);
     } catch (error) {
       const protocol = error instanceof HostedToolsProtocolError
         ? error
@@ -930,14 +945,21 @@ export class HostedToolsBrokerCore {
     }
   }
 
-  async #dispatchHostFrame(socket: HostedToolsSocket, frame: HostedToolsHostFrame): Promise<void> {
+  async #dispatchHostFrame(
+    socket: HostedToolsSocket, frame: HostedToolsHostFrame, receivedAt: number, frameDecodeMs: number,
+  ): Promise<void> {
     if (frame.type === "catalog") {
       const publication = this.#catalogPublication.then(() => this.#publishCatalog(socket, frame));
       this.#catalogPublication = publication.catch(() => {});
       await publication;
       return;
     }
+    const validationStarted = performance.now();
     await this.#validateLeasedAttachment(socket);
+    const handlerStarted = performance.now();
+    const timing: HostFrameTiming = { receivedAt, frame_decode_ms: frameDecodeMs,
+      lease_validation_ms: Math.max(0, handlerStarted - validationStarted),
+      message_to_handler_ms: Math.max(0, handlerStarted - receivedAt) };
     if (frame.type === "ping") {
       // Older publishers do not advertise command recovery and still expect
       // JSON pongs. Preserve ownership/authority checks without a liveness TTL.
@@ -945,11 +967,13 @@ export class HostedToolsBrokerCore {
       this.#send(socket, { type: "pong", nonce: frame.nonce });
     } else if (frame.type === "status") this.#recoverStatus(socket, frame);
     else if (frame.type === "drain") this.#drain(socket);
-    else if (frame.type === "diagnostic") this.#hostProgress(socket, frame);
-    else this.#completeResult(socket, frame);
+    else if (frame.type === "diagnostic") this.#hostProgress(socket, frame, timing);
+    else this.#completeResult(socket, frame, timing);
   }
 
-  #hostProgress(socket: HostedToolsSocket, frame: Extract<HostedToolsHostFrame, { type: "diagnostic" }>): void {
+  #hostProgress(
+    socket: HostedToolsSocket, frame: Extract<HostedToolsHostFrame, { type: "diagnostic" }>, timing: HostFrameTiming,
+  ): void {
     const attachment = this.#activeAttachment(socket);
     if (attachment.diagnostics !== true) {
       throw new HostedToolsProtocolError("diagnostics_not_advertised", "host diagnostics require catalog opt-in");
@@ -960,7 +984,16 @@ export class HostedToolsBrokerCore {
     }
     // A result can settle before queued progress arrives. Same-generation terminal
     // rows retain identity and remain observable without changing their outcome.
-    this.#observe("host_progress", row, { host_stage: frame.stage, host_elapsed_ms: frame.elapsed_ms });
+    this.#observe("host_progress", row, { host_stage: frame.stage, host_elapsed_ms: frame.elapsed_ms,
+      ...this.#frameObservation(frame.call_id, timing) });
+  }
+
+  #frameObservation(callId: string, timing?: HostFrameTiming): Partial<HostedToolsCallObservation> {
+    if (!timing) return {};
+    const { receivedAt, ...durations } = timing;
+    const pending = this.#pending.get(callId);
+    return { ...durations, ...(pending && !pending.restored
+      ? { dispatch_to_message_ms: Math.max(0, receivedAt - pending.dispatchedAt) } : {}) };
   }
 
   #activeAttachment(socket: HostedToolsSocket): HostedToolsSocketAttachment {
@@ -1401,8 +1434,10 @@ export class HostedToolsBrokerCore {
   #completeResult(
     socket: HostedToolsSocket,
     frame: Extract<HostedToolsHostFrame, { type: "result" }>,
+    timing?: HostFrameTiming,
   ): void {
     const resultAt = performance.now();
+    const receiveTiming = this.#frameObservation(frame.call_id, timing);
     const attachment = this.#activeAttachment(socket);
     const row = this.#persistence.call(frame.call_id);
     const stored = JSON.stringify(frame.outcome);
@@ -1420,13 +1455,13 @@ export class HostedToolsBrokerCore {
         throw new HostedToolsProtocolError("result_conflict", "late terminal receipt conflicts with retained proof");
       }
       this.#ackResult(socket, frame);
-      this.#observe("late_receipt", row, { outcome: frame.outcome.status, ...(frame.timing ? { host_timing: frame.timing } : {}) });
+      this.#observe("late_receipt", row, { ...receiveTiming, outcome: frame.outcome.status, ...(frame.timing ? { host_timing: frame.timing } : {}) });
       return;
     }
     if (row.state !== "dispatched") {
       if (row.result_json === stored && row.state === outcomeState(frame.outcome)) {
         this.#ackResult(socket, frame);
-        this.#observe("receipt_replay", row, { outcome: frame.outcome.status, ...(frame.timing ? { host_timing: frame.timing } : {}) });
+        this.#observe("receipt_replay", row, { ...receiveTiming, outcome: frame.outcome.status, ...(frame.timing ? { host_timing: frame.timing } : {}) });
         return;
       }
       throw new HostedToolsProtocolError("result_conflict", "terminal call result cannot be changed");
@@ -1439,7 +1474,7 @@ export class HostedToolsBrokerCore {
         throw new HostedToolsProtocolError("result_conflict", "late terminal receipt conflicts with retained proof");
       }
       this.#ackResult(socket, frame);
-      this.#observe("late_receipt", row, { outcome: frame.outcome.status, ...(frame.timing ? { host_timing: frame.timing } : {}) });
+      this.#observe("late_receipt", row, { ...receiveTiming, outcome: frame.outcome.status, ...(frame.timing ? { host_timing: frame.timing } : {}) });
       return;
     }
     if (frame.outcome.status === "completed"
@@ -1463,6 +1498,7 @@ export class HostedToolsBrokerCore {
     this.#ackResult(socket, frame);
     pending?.resolve(frame.outcome);
     this.#observe("receipt", { ...row, thread_id: row.thread_id ?? pending?.threadId }, {
+      ...receiveTiming,
       outcome: frame.outcome.status,
       ...(frame.outcome.status === "completed" ? { success: frame.outcome.output.success } : {}),
       ...(frame.timing ? { host_timing: frame.timing } : {}),

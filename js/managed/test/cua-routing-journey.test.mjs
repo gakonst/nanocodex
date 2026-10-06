@@ -24,9 +24,14 @@ const thread = "00000000-0000-7000-8000-000000000042";
 const organization = "00000000-0000-7000-8000-000000000043";
 const team = "00000000-0000-7000-8000-000000000044";
 const machine = "synthetic-cua-hand";
+const localMachine = "synthetic-local-screen-hand";
 const command = "pnpm --filter nanocodex-managed-service test:cua-routing";
 const discovery = `text(await tools.mcp__cua_repl__js({workdir:"/${machine}"}));`;
 const scripts = {
+  SHELL_SCREEN: `text(await tools.exec_command({cmd:"printf LOCAL_SHELL_OK",workdir:"/${localMachine}",shell:"/bin/sh",login:false}));
+    await new Promise(resolve=>setTimeout(resolve,3000));
+    text(await tools.mcp__cua_repl__js({workdir:"/${localMachine}"}));
+    text(await tools.mcp__cua_repl__js({workdir:"/${localMachine}",action:"observe"}));`,
   UPSTREAM: `text({hand:(await tools.environment({})).hands["user:${machine}"]}); ${discovery}
     text(await tools.mcp__cua_repl__js({workdir:"/${machine}",code:"UPSTREAM_OK"}));
     text(await tools.mcp__cua_repl__js_reset({workdir:"/${machine}"}));`,
@@ -108,13 +113,13 @@ test("managed CUA cells prefer live upstream, pin routes, and recover screen fal
   const result = { command, inputs: { owner, thread, machine, scripts },
     expected: { upstream_preferred: true, environment_agrees: true, old_cell_pinned: true,
       fresh_screen_fallback: true, discovered_scroll_schema_validated: true, invalid_scroll_predispatch: true, complete_scroll_forwarded: true,
-      missing_route_predispatch: true, same_hand_recovery: true }, observed: {} };
+      missing_route_predispatch: true, same_hand_recovery: true, shell_then_screen_discovery: true }, observed: {} };
   const capture = line => {
     runtime.push(line);
     const offset = line.indexOf('{"type":');
     if (offset >= 0) { try { records.push(JSON.parse(line.slice(offset))); } catch {} }
   };
-  let mf, native, tools, attachment, failure, upstreamSocket, upstreamDisconnected = false;
+  let mf, native, tools, attachment, localTools, localAttachment, failure, upstreamSocket, upstreamDisconnected = false;
   try {
     const resolutions = Object.fromEntries(["nanocodex/tools", "nanocodex-tools/attachment", "nanocodex-tools/node", "nanocodex-tools/runtime/tool-router"]
       .map(name => [name, fileURLToPath(import.meta.resolve(name))]));
@@ -208,8 +213,9 @@ test("managed CUA cells prefer live upstream, pin routes, and recover screen fal
       const response = await request("/account-tools/snapshot", { method: "POST", body: JSON.stringify({ owner_id: owner }) });
       assert.equal(response.status, 200); return response.value;
     };
-    const screenCalls = () => screenWire.filter(row => row.direction === "broker" && row.frame.type === "agent_call");
-    const publishScreen = async () => {
+    let screenCallOffset = 0;
+    const screenCalls = () => screenWire.filter(row => row.direction === "broker" && row.frame.type === "agent_call").slice(screenCallOffset);
+    const publishScreen = async (screenMachine = machine) => {
       const response = await mf.dispatchFetch("https://fixture.internal/account-tools/hands/host", { headers: { ...headers, upgrade: "websocket" } });
       assert.equal(response.status, 101);
       const socket = response.webSocket;
@@ -225,11 +231,11 @@ test("managed CUA cells prefer live upstream, pin routes, and recover screen fal
       });
       socket.accept();
       await waitFor(() => received.find(frame => frame.type === "ready"), "screen socket ready");
-      const catalog = { type: "catalog", machine_id: machine, machine_name: "Synthetic CUA Hand",
+      const catalog = { type: "catalog", machine_id: screenMachine, machine_name: "Synthetic CUA Hand",
         surfaces: [{ id: "desktop", name: "Synthetic desktop", kind: "desktop", width: 1, height: 1, controllable: true, agent_tools: true }] };
       screenWire.push({ direction: "host", frame: catalog }); socket.send(JSON.stringify(catalog));
       await waitFor(() => received.find(frame => frame.type === "published"), "screen published");
-      assert.ok((await snapshot()).screens.some(screen => screen.machine_id === machine));
+      assert.ok((await snapshot()).screens.some(screen => screen.machine_id === screenMachine));
       return socket;
     };
     const stages = (scenario, stage) => records.filter(row => row.type === "hand.tool.stage"
@@ -238,6 +244,34 @@ test("managed CUA cells prefer live upstream, pin routes, and recover screen fal
     const returnedValues = turn => JSON.parse(turn.terminal.final_message).output.flatMap(item => {
       try { return [JSON.parse(item.text)]; } catch { return []; }
     });
+
+    // A local shell capture must defer its independently published screen until
+    // full CUA discovery, without requiring another Code Mode cell.
+    localTools = await createTools({ tools: Object.fromEntries(native.tools.map(tool => [tool.name, tool])) });
+    const localEndpoint = new URL(`/v1/agents/${thread}/tool-host`, base); localEndpoint.protocol = "ws:";
+    localAttachment = createAttachment(localTools, { endpoint: localEndpoint.href, transport: { connect() {
+      const socket = new WebSocket(localEndpoint, { headers });
+      const send = socket.send.bind(socket);
+      socket.send = (data, ...args) => { wire.push({ direction: "local-host", frame: JSON.parse(String(data)) }); return send(data, ...args); };
+      socket.on("message", data => wire.push({ direction: "local-broker", frame: JSON.parse(String(data)) }));
+      return socket;
+    } } }, { machines: [{ id: localMachine, name: "Synthetic local screen Hand", workspace, capabilities: ["shell"] }], attachmentId: localMachine });
+    assert.equal((await localAttachment.connect()).connected, true);
+    const shellDone = await startTurn("SHELL_SCREEN");
+    await waitFor(() => stages("SHELL_SCREEN", "namespace.invoke").some(row => row.tool === "exec_command" && row.outcome === "ok"), "local shell finished before screen publication");
+    const localScreen = await publishScreen(localMachine);
+    assert.equal(stages("SHELL_SCREEN", "namespace.route").length, 1, "screen publication must precede CUA discovery");
+    const shellScreen = await shellDone();
+    assert.match(rendered(shellScreen), /LOCAL_SHELL_OK/);
+    assert.match(rendered(shellScreen), /native_screen/);
+    assert.match(rendered(shellScreen), /Screen action completed/);
+    assert.equal(screenCalls().length, 1);
+    assert.deepEqual(screenCalls()[0].frame.input, { action: "observe" });
+    assert.equal(wire.filter(row => row.direction === "local-broker" && row.frame.type === "call").length, 1);
+    localScreen.close(1000);
+    await waitFor(async () => !(await snapshot()).screens.some(entry => entry.machine_id === localMachine), "local screen disconnected");
+    // Keep the existing reconnect assertions scoped to the original Hand.
+    screenCallOffset = 1;
 
     // With no screen publisher, the complete online CUA pair alone must advertise computer.
     const upstream = await runTurn("UPSTREAM");
@@ -314,11 +348,11 @@ test("managed CUA cells prefer live upstream, pin routes, and recover screen fal
     assert.equal(history.status, 200);
     await writeFile(join(output, "events.json"), JSON.stringify(history.value, null, 2));
     result.observed = { ...result.expected, same_warm_runtime: true, upstream_dispatches: callFrames().length,
-      screen_dispatches: screenCalls().length };
+      screen_dispatches: screenCalls().length, local_screen_dispatches: screenCallOffset };
     console.log(JSON.stringify({ evidence: output, ...result.observed }));
   } catch (error) { failure = error; result.error = error.stack; throw error; }
   finally {
-    try { for (const socket of screenSockets) if (socket.readyState < 2) socket.close(1000); await attachment?.close(); await tools?.close(); await native?.close(); await mf?.dispose(); }
+    try { for (const socket of screenSockets) if (socket.readyState < 2) socket.close(1000); await localAttachment?.close(); await localTools?.close(); await attachment?.close(); await tools?.close(); await native?.close(); await mf?.dispose(); }
     finally {
       await writeFile(join(output, "trace.json"), JSON.stringify({ result, records, activity }, null, 2));
       await writeFile(join(output, "wire.json"), JSON.stringify(wire, null, 2));
