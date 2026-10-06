@@ -225,6 +225,10 @@ type UserRecord = Readonly<{
   lastAuthenticatedAt: number;
 }>;
 
+// Snapshots belong only to a freshly resolved principal, never to a user/session key.
+// Every authentication still resolves live account and organization authority.
+const resolvedPrincipalAccounts = new WeakMap<Principal, UserRecord>();
+
 type OrganizationGrant = Readonly<{
   organizationId: string;
   teamId: string;
@@ -612,15 +616,20 @@ export async function routeAccountRequest(
     return webAuthnHandler(env, url).fetch(request);
   }
   if (url.pathname === "/v1/me" && request.method === "GET") {
+    const started = performance.now();
     const resolved = await resolveOrCreateBrowserAccount(request, env, url);
     if (resolved instanceof Response) return resolved;
+    const sessionMs = performance.now() - started;
+    const metadataStarted = performance.now();
     const principal = resolved.principal;
-    const accountAddress = resolved.persistent
-      ? await readAccountWallet(env, principal.userId).then((wallet) => wallet?.address).catch(() => undefined)
-      : await accountAddressForRequest(request, env, url, principal.userId).catch(() => undefined);
-    const portableCookie = resolved.persistent
-      ? await portableLocalCredentialCookieForSession(request, env, url, principal)
-      : undefined;
+    const [accountAddress, portableCookie] = await Promise.all([
+      resolved.persistent
+        ? readAccountWallet(env, principal.userId).then((wallet) => wallet?.address).catch(() => undefined)
+        : accountAddressForRequest(request, env, url, principal.userId).catch(() => undefined),
+      resolved.persistent
+        ? portableLocalCredentialCookieForSession(request, env, url, principal)
+        : undefined,
+    ]);
     const persistentCookie = resolved.persistent
       ? serializePersistentSessionCookie(request, url.protocol)
       : undefined;
@@ -628,6 +637,7 @@ export async function routeAccountRequest(
       (cookie): cookie is string => Boolean(cookie),
     );
     const headers = new Headers();
+    headers.set("server-timing", `connect_session;dur=${sessionMs.toFixed(1)}, connect_metadata;dur=${(performance.now() - metadataStarted).toFixed(1)}, connect_total;dur=${(performance.now() - started).toFixed(1)}`);
     for (const cookie of cookies) headers.append("set-cookie", cookie);
     return json({
       user: {
@@ -639,9 +649,7 @@ export async function routeAccountRequest(
       team: { id: principal.teamId },
       role: principal.role,
       authentication: principal.kind,
-    }, cookies.length
-      ? { headers }
-      : undefined);
+    }, { headers });
   }
   if (url.pathname === "/v1/wallet") {
     if (request.method !== "GET") return methodNotAllowed();
@@ -1031,23 +1039,34 @@ async function resolveUserPrincipal(
   userId: string,
   credentialId: string,
 ): Promise<Principal | undefined> {
-  // Resolve live membership beside the account record, avoiding a second
-  // edge-to-Durable-Object round trip for browser/passkey sessions.
-  const response = await env.NANOCODEX_USERS.getByName(userId, durablePlacementOptions(env.trustedClientIngressColo)).fetch("https://user.internal/authorization");
-  if (!response.ok) {
-    await response.body?.cancel();
-    return undefined;
+  const stub = env.NANOCODEX_USERS.getByName(userId, durablePlacementOptions(env.trustedClientIngressColo));
+  // Return the small live authorization snapshot in one RPC reply instead of
+  // transporting Response headers and its JSON stream across DO locations.
+  let value: { userId?: unknown; grant?: unknown; account?: unknown } | undefined;
+  const rpc = stub.resolveAuthorization;
+  if (typeof rpc === "function") {
+    value = consumeRpcData(await Reflect.apply(rpc, stub, []));
+  } else {
+    const response = await stub.fetch("https://user.internal/authorization");
+    if (!response.ok) {
+      await response.body?.cancel();
+      return undefined;
+    }
+    value = await response.json();
   }
-  const value = await response.json<{ userId?: unknown; grant?: unknown }>();
-  if (value.userId !== userId || !isOrganizationGrant(value.grant)) return undefined;
-  const grant = value.grant;
-  return {
+  if (!value || value.userId !== userId || !isOrganizationGrant(value.grant)) return undefined;
+  const principal: Principal = {
     kind: "account_session",
     userId,
-    ...grant,
+    ...value.grant,
     subjectId: `user:${userId}`,
     credentialId,
   };
+  if (isUserRecord(value.account) && value.account.id === userId
+    && value.account.organizationId === principal.organizationId) {
+    resolvedPrincipalAccounts.set(principal, value.account);
+  }
+  return principal;
 }
 
 export async function resolveChiefOfStaffPrincipal(
@@ -1071,7 +1090,7 @@ export async function authenticatePersistentAccount(
 ): Promise<Principal | undefined> {
   const principal = await authenticate(request, env, url);
   if (!principal || principal.kind !== "account_session") return undefined;
-  const account = await readAccount(env, principal.userId);
+  const account = resolvedPrincipalAccounts.get(principal) ?? await readAccount(env, principal.userId);
   return account?.persistent === true ? principal : undefined;
 }
 
@@ -1084,7 +1103,7 @@ export async function authenticateVaultAccount(
     || principal.connectGrant
     || !principal.capabilities.includes("agents:write")
     || !principal.capabilities.includes("tools:use")) return undefined;
-  const account = await readAccount(env, principal.userId);
+  const account = resolvedPrincipalAccounts.get(principal) ?? await readAccount(env, principal.userId);
   return account?.persistent === true ? principal : undefined;
 }
 
@@ -1748,7 +1767,7 @@ async function resolveOrCreateBrowserAccount(
   const principal = await authenticate(request, env, url);
   if (principal) {
     if (principal.kind === "account_session") {
-      const account = await readAccount(env, principal.userId);
+      const account = resolvedPrincipalAccounts.get(principal) ?? await readAccount(env, principal.userId);
       if (!account) throw new Error("browser account is unavailable");
       return { principal, persistent: account.persistent };
     }
@@ -2060,6 +2079,17 @@ export class UserAccount extends DurableObject<AccountAuthEnv> {
     return this.ctx.storage.get<UserRecord>("account");
   }
 
+  async resolveAuthorization(): Promise<{ userId: string; grant: OrganizationGrant; account: UserRecord } | undefined> {
+    const account = await this.ctx.storage.get<UserRecord>("account");
+    if (!isUserRecord(account)) return undefined;
+    const grant = await resolveOrganizationGrant(this.env, account);
+    // Recheck ownership after the remote membership read, including deletion.
+    const current = await this.ctx.storage.get<UserRecord>("account");
+    if (!grant || !isUserRecord(current)
+      || current.id !== account.id || current.organizationId !== account.organizationId) return undefined;
+    return { userId: current.id, grant, account: current };
+  }
+
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
     if (url.pathname === "/todo/source-health") {
@@ -2104,16 +2134,8 @@ export class UserAccount extends DurableObject<AccountAuthEnv> {
       return configurationCatalog(request, this.ctx.storage);
     }
     if (url.pathname === "/authorization" && request.method === "GET") {
-      const account = await this.ctx.storage.get<UserRecord>("account");
-      if (!isUserRecord(account)) return json({ error: "not_found" }, { status: 404 });
-      const grant = await resolveOrganizationGrant(this.env, account);
-      // Account ownership may change while the membership request is in flight.
-      const current = await this.ctx.storage.get<UserRecord>("account");
-      if (!grant || !isUserRecord(current)
-        || current.id !== account.id || current.organizationId !== account.organizationId) {
-        return json({ error: "not_found" }, { status: 404 });
-      }
-      return json({ userId: account.id, grant });
+      const authorization = await this.resolveAuthorization();
+      return authorization ? json(authorization) : json({ error: "not_found" }, { status: 404 });
     }
     if (url.pathname === "/account") {
       if (request.method === "PUT") {

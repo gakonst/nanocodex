@@ -41,3 +41,36 @@ directory. Run only these journeys with:
 ```sh
 pnpm --filter @nanocodex/connect-dialog run test:browser session.spec.ts
 ```
+
+## Login cookie and latency
+
+The HTTPS cookie journey runs the actual account proxy, managed auth routes and
+SQLite Durable Objects in workerd, with production React and a real browser.
+Only Twilio, wallet metadata and requesting-app metadata are synthetic. It checks
+SMS cookie issuance, HttpOnly/Secure/SameSite attributes, reuse in a second page,
+explicit consent, logout, expiry and the session route's `Server-Timing` header:
+
+```sh
+node --test js/managed/test/connect-browser-cookie-journey.test.mjs
+```
+
+Evidence is retained in `output/cookie-profile/`; no session cookie values are
+included. This journey does not send live SMS or approve a production grant.
+
+To profile the production-built UI with reproducible 0/150ms API latency:
+
+```sh
+pnpm --filter @nanocodex/connect-dialog run build
+cd js/connect-dialog
+pnpm exec vite build --config test/browser/profile.vite.config.ts
+PROFILE_LABEL=baseline node test/browser/profile.mjs
+```
+
+Use distinct labels before/after a change. `output/connect-profile/<label>/`
+contains API start/completion times, resource timings, screenshots and traces.
+The regular Connect fixture exercises the real component, not SDK popup
+transport. Automated milestones include browser-driver polling overhead; use
+request dependency timings to compare network waits. This synthetic profile
+cannot measure production backend latency. On successful `/v1/me` responses,
+`connect_session`, `connect_metadata` and `connect_total` report server durations
+in milliseconds without credentials or account identifiers.

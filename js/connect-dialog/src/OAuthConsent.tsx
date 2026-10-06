@@ -54,9 +54,15 @@ export function OAuthConsent() {
     }
     void (async () => {
       try {
-        const response = await fetch(requestUrl, {
-          cache: "no-store", credentials: "omit", headers: routingHeaders, signal: abort.signal,
-        });
+        const [response, session] = await Promise.all([
+          fetch(requestUrl, {
+            cache: "no-store", credentials: "omit", headers: routingHeaders, signal: abort.signal,
+          }),
+          readBrowserAccountSession().catch(error => {
+            if (error instanceof BrowserAccountReauthenticationRequiredError) return null;
+            throw error;
+          }),
+        ]);
         const body: unknown = await response.json();
         if (!response.ok || !isConsentRequest(body)) {
           throw new Error("This authorization request is invalid, expired, or already used. Start a new connection from your MCP client.");
@@ -64,14 +70,7 @@ export function OAuthConsent() {
         if (abort.signal.aborted) return;
         setRequest(body);
         setSelectedScopes(body.scope.split(" ").includes("agent:run") ? ["agent:run"] : []);
-        try {
-          const session = await readBrowserAccountSession();
-          if (!abort.signal.aborted) setAccount(session?.persistent && session.address ? session : null);
-        } catch (error) {
-          if (error instanceof BrowserAccountReauthenticationRequiredError) {
-            if (!abort.signal.aborted) setAccount(null);
-          } else throw error;
-        }
+        setAccount(session?.persistent && session.address ? session : null);
       } catch (error) {
         if (!abort.signal.aborted) setFailure(errorMessage(error));
       }
@@ -83,7 +82,7 @@ export function OAuthConsent() {
     const abort = new AbortController();
     setConnectors(undefined);
     setConnectorFailure(undefined);
-    if (!account?.address) return;
+    if (!account?.address || !request?.scope.split(" ").some(requiredConnector)) return;
     void (async () => {
       try {
         const response = await fetch("/v1/connectors", {
@@ -102,7 +101,7 @@ export function OAuthConsent() {
       }
     })();
     return () => abort.abort();
-  }, [account?.address]);
+  }, [account?.address, request?.scope]);
 
   const selectableScopes = selectedScopes.filter(scope => scopeAvailable(scope, connectors));
 
