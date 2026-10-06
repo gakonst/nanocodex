@@ -15,8 +15,8 @@ installation keeps the companion running while signed out; its sign-in action
 opens the CLI account flow in Terminal. Network or permission failures remain
 separate from signed-out state, and screen-only connections are labeled separately
 from native Hands. Its separate login LaunchAgent observes the existing Hand; it
-never creates another Hand identity. Quitting the menu bar leaves the service
-running. `nanocodex hand menu-bar` installs, repairs, or reopens the icon;
+never creates another Hand identity. Quit Hand stops the local service before
+closing the menu. `nanocodex hand menu-bar` installs, repairs, or reopens the icon;
 `nanocodex hand menu-status` returns the read-only status snapshot used by the menu.
 See the [menu-bar companion](../../macos/HandMenuBar/README.md) for build and lifecycle
 details.

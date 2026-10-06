@@ -5,17 +5,18 @@ the local Hand. The Nanocodex desktop app is not required. The helper is compile
 with AppKit at CLI build time and shipped inside the CLI; users do not need Xcode
 or Swift installed.
 
-Click the Hand icon to see the companion, local service, account, and connected
-Hands separately. A fresh installation shows the companion running and the
+Click the Hand icon to see the companion, local service, account, and the Hand
+inventory separately. A fresh installation shows the companion running and the
 account signed out; the local service can wait for sign-in. A local process does
 not establish account or server connectivity. Account verification, expired
 sign-in, network errors, and denied access each have distinct states. A failed
 or pending refresh never displays an old inventory as currently available.
 
-Connected Hands use friendly names and are grouped into computers and workspaces,
+Hands use friendly names and are grouped into computers and workspaces,
 virtual machines, and screens when the server supplies those classifications.
 Tool connections appear under Computers & workspaces. Connected describes the
-server connection; it does not claim an execution health probe. Screen-only
+server connection; it does not claim an execution health probe. Disconnected
+devices remain visible with their connection state. Screen-only
 entries show that a screen is advertised without claiming playback or input
 works. Large inventories continue in the More connections submenu. Copy Status
 includes every safe summary. The helper consumes the CLI's versioned
@@ -36,10 +37,13 @@ the observed state. Read-only status commands have a twenty-second deadline.
 
 The icon starts near the right edge on first launch so it stays clear of the
 notch on crowded menu bars. Later launches preserve the position you choose.
-Its separate Aqua LaunchAgent starts the icon when the user logs in. Quitting the
-menu bar leaves the Hand service and any pending service action or Terminal
-sign-in running. `nanocodex hand menu-bar` restores the icon. Closing the desktop
-app and exiting the CLI do not stop the menu helper.
+Its separate Aqua LaunchAgent starts the icon when the user logs in. **Quit Hand**
+stops the local Hand service, including its VM factory, and closes the menu only
+after Stop succeeds. If stopping fails, the menu stays open with an error so its
+state can be refreshed. A slow status refresh does not delay Quit. Quit is
+unavailable while another service action or Terminal sign-in is in progress. `nanocodex hand menu-bar` restores the icon; choose Start Hand to resume
+a stopped service. Closing the desktop app and exiting the CLI do not stop the
+menu helper.
 
 To build only the helper for development:
 

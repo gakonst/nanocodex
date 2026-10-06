@@ -92,16 +92,18 @@ struct MenuPresentation {
         }
         if signingIn { lines.append("Sign-in: Continue in Terminal") }
         if busy {
-            lines.append("Connected Hands: Refreshing…")
+            lines.append("Hands: Refreshing…")
         } else if let inventory = status?.inventory {
             switch inventory.state {
             case "ready":
-                lines.append("Connected Hands: Server reached")
-            case "signed_out": lines.append("Connected Hands: Sign in to view")
-            case "expired": lines.append("Connected Hands: Sign in again to view")
-            case "network_error": lines.append("Connected Hands: Server unavailable")
-            case "permission_denied": lines.append("Connected Hands: Access denied")
-            default: lines.append("Connected Hands: Status unavailable")
+                let connected = inventory.hands.filter { $0.health == "connected" }.count
+                lines.append("Hands: \(inventory.hands.count) listed · \(connected) connected")
+            case "signed_out": lines.append("Hands: Sign in to view")
+            case "expired": lines.append("Hands: Sign in again to view")
+            case "partial": lines.append("Hands: Some connections unavailable")
+            case "network_error": lines.append("Hands: Server unavailable")
+            case "permission_denied": lines.append("Hands: Access denied")
+            default: lines.append("Hands: Status unavailable")
             }
             if inventory.state == "ready" || !inventory.hands.isEmpty {
                 let groups: [(String, [String])] = [
@@ -125,17 +127,17 @@ struct MenuPresentation {
                     resources.append("Other connections")
                     resources.append(contentsOf: others.map { resource($0, complete: true) })
                 }
-                if resources.isEmpty { resources.append("No connected Hands") }
+                if resources.isEmpty { resources.append("No Hands registered") }
                 if inventory.state != "ready" { resources.insert("Partial inventory · some connections unavailable", at: 0) }
             }
-        } else { lines.append("Connected Hands: Status unavailable") }
+        } else { lines.append("Hands: Status unavailable") }
         if let failure { lines.append(failure) }
         return MenuPresentation(summary: lines, resources: resources,
             canToggle: !busy && failure == nil && localKnown && local?.installed == true && !waiting,
             canRestart: !busy && failure == nil && localKnown && running,
             canSignIn: !busy && !signingIn && ["signed_out", "expired"].contains(accountState),
             stop: local?.loaded == true,
-            warning: failure != nil || (!checking && (local?.error != nil || ["expired", "network_error", "permission_denied", "unknown"].contains(accountState) || ["network_error", "permission_denied", "unknown"].contains(status?.inventory.state ?? "unknown"))))
+            warning: failure != nil || (!checking && (local?.error != nil || ["expired", "network_error", "permission_denied", "unknown"].contains(accountState) || ["partial", "network_error", "permission_denied", "unknown"].contains(status?.inventory.state ?? "unknown"))))
     }
 
     private static func resource(_ hand: HandStatus.Inventory.Hand, complete: Bool) -> String {
@@ -146,6 +148,7 @@ struct MenuPresentation {
         case "connected": state = "Connected"
         case "screen_advertised": state = "Screen advertised"
         case "available": state = ["screen", "screen_only"].contains(hand.kind) ? "Screen available" : "Available"
+        case "offline", "disconnected": state = "Disconnected"
         case "unavailable": state = "Unavailable"
         default: state = "Status unknown"
         }
@@ -164,6 +167,8 @@ final class HandMenuBar: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var timer: Timer?
     private var command: Process?
     private var lastFailure: String?
+    private var quitFailure: String?
+    private var quitting = false
     private var commandGeneration = 0
     private var signInScript: URL?
     private var signInFailure: String?
@@ -222,6 +227,7 @@ final class HandMenuBar: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.removeAllItems()
         add("Nanocodex Hand · \(MenuPresentation.text(Host.current().localizedName ?? "This Mac"))")
         for line in view.summary { add(line) }
+        if let quitFailure { add(quitFailure) }
         if !view.resources.isEmpty {
             menu.addItem(.separator())
             // Every connection remains accessible in the native menu.
@@ -249,8 +255,7 @@ final class HandMenuBar: NSObject, NSApplicationDelegate, NSMenuDelegate {
         add("Open Hand Log", #selector(openLog), enabled: true)
         add("Copy Status", #selector(copyStatus), enabled: true)
         menu.addItem(.separator())
-        add("The Hand keeps running when this menu quits.")
-        add("Quit Menu Bar", #selector(quitMenuBar), enabled: true)
+        add("Quit Hand", #selector(quitHand), enabled: !quitting && signInScript == nil && (!busy || pendingOperation == "menu-status"))
         item?.button?.toolTip = view.summary.joined(separator: "\n")
         item?.button?.setAccessibilityLabel("Nanocodex Hand · " + view.summary.dropFirst().joined(separator: ". "))
         item?.button?.image = NSImage(systemSymbolName: view.warning ? "exclamationmark.triangle" : "hand.raised.fill", accessibilityDescription: "Nanocodex Hand")
@@ -331,7 +336,10 @@ final class HandMenuBar: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func perform(_ operation: String) {
         run(operation) { [weak self] result in
             guard let self else { return }
-            if result.succeeded { self.refreshStatus() }
+            if result.succeeded {
+                self.quitFailure = nil
+                self.refreshStatus()
+            }
             else {
                 // A failed mutation may have changed the service; invalidate
                 // its old observation and let Refresh reconcile without retry.
@@ -398,10 +406,37 @@ final class HandMenuBar: NSObject, NSApplicationDelegate, NSMenuDelegate {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(lines.joined(separator: "\n"), forType: .string)
     }
-    @objc private func quitMenuBar() { NSApp.terminate(nil) }
+    @objc private func quitHand() {
+        guard !quitting && signInScript == nil && (!busy || pendingOperation == "menu-status") else { return }
+        quitting = true
+        quitFailure = nil
+        if busy, let observation = command {
+            // A slow network observation must not prevent quitting. Only this
+            // read-only child is cancelled; service actions remain serialized.
+            commandGeneration += 1
+            observation.terminate()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+                if observation.isRunning { kill(observation.processIdentifier, SIGKILL) }
+            }
+            command = nil
+            busy = false
+        }
+        run("stop") { [weak self] result in
+            guard let self else { return }
+            if result.succeeded {
+                NSApp.terminate(nil)
+            } else {
+                self.status = nil
+                self.quitting = false
+                self.lastFailure = nil
+                self.quitFailure = "Could not stop Hand; menu remains open — refresh status"
+                self.render()
+            }
+        }
+    }
     func applicationWillTerminate(_ notification: Notification) {
         timer?.invalidate()
-        // Quit leaves pending service mutations and interactive login intact.
+        // Quit Hand waits for Stop; OS termination must not cancel a controller.
         if command?.arguments?.last == "menu-status" { command?.terminate() }
     }
 }

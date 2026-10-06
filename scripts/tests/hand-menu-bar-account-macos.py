@@ -46,7 +46,7 @@ func walk(_ element: AXUIElement, _ depth: Int) {
 walk(app, 0)
 if CommandLine.arguments.count > 2 {
     let title = CommandLine.arguments[2]
-    guard title == "Refresh Status" || title == "Open Menu" else { exit(64) }
+    guard title == "Refresh Status" || title == "Open Menu" || title == "Quit Hand" || title == "Start Hand" || title == "More connections…" else { exit(64) }
     guard let target = elements.first(where: { title == "Open Menu" ? $0.0 == kAXMenuBarItemRole : ($0.0 == kAXMenuItemRole && $0.1 == title) }) else { exit(3) }
     var result = AXUIElementPerformAction(target.2, kAXPressAction as CFString)
     if result != .success, let bar = elements.first(where: { $0.0 == kAXMenuBarItemRole }) {
@@ -94,12 +94,19 @@ def main():
             elif self.path == "/v1/me":
                 value = {"authentication": "api_key", "user": {"id": "synthetic-user", "name": "Synthetic account"},
                          "organization": {"id": "synthetic-org"}, "team": {"id": "synthetic-team"}, "role": "owner"}
-            elif self.path == "/v1/account/hands":
+            elif self.path == "/v1/account/hands/inventory":
                 if mode["name"] == "denied":
                     status, value = 403, {}
                 else:
-                    value = {"data": [{"id": "synthetic-mac", "name": "Synthetic Mac", "capabilities": ["native", "filesystem", "process"]},
-                                      {"id": "vm:synthetic-vm", "name": "Build VM", "capabilities": ["shell", "vm"]}]}
+                    data = [{"id": "synthetic-mac", "name": "Synthetic Mac", "kind": "hand", "online": True, "health": "connected"},
+                            {"id": "vm:synthetic-vm", "name": "Build VM", "kind": "vm", "online": True, "health": "connected"},
+                            {"id": "offline-laptop", "name": "Sleeping laptop", "kind": "hand", "online": False, "health": "offline"},
+                            {"id": "project", "name": "Project workspace", "kind": "workspace", "online": True, "health": "connected"}]
+                    if mode["name"] == "large":
+                        data += [{"id": "extra-" + str(i), "name": f"Additional Mac {i:02d}", "kind": "hand", "online": False, "health": "offline"} for i in range(1, 41)]
+                    if mode["name"] == "partial":
+                        data[3].update(online=None, health="unknown")
+                    value = {"data": data, "coverage": "known_account_and_workspace", "complete": mode["name"] != "partial"}
             elif self.path == "/v1/account/hands/screens":
                 value = {"surfaces": [{"machine_id": "synthetic-screen", "machine_name": "Synthetic screen", "transport": "frames-v1"}]}
             else:
@@ -177,19 +184,43 @@ def main():
                 credential.write_text(json.dumps({"version": 1, "accounts": {origin: {"api_key": synthetic_key}}}))
                 credential.chmod(0o600)
                 refresh()
-                expect("signed-in", ["Account: Signed in · Synthetic account", "Synthetic Mac · Connected", "Build VM · Connected", "Synthetic screen · Screen advertised"], sign_in=False)
+                expect("signed-in", ["Account: Signed in · Synthetic account", "Hands: 5 listed · 3 connected", "Synthetic Mac · Connected", "Build VM · Connected", "Project workspace · Connected", "Sleeping laptop · Disconnected", "Synthetic screen · Screen advertised"], sign_in=False)
+                mode["name"] = "large"
+                refresh()
+                expect("large-inventory", ["Hands: 45 listed · 3 connected", "More connections…"])
+                subprocess.run([str(reader), str(process.pid), "More connections…"], capture_output=True, check=True, timeout=10)
+                expect("inventory-overflow", ["Additional Mac 40 · Disconnected", "Project workspace · Connected"])
+                mode["name"] = "partial"
+                refresh()
+                expect("partial-inventory", ["Hands: Some connections unavailable", "Project workspace · Status unknown", "Sleeping laptop · Disconnected"], ["Project workspace · Connected"])
                 mode["name"] = "network"
                 refresh()
                 expect("network-error", ["Account: Unable to verify", "Server unavailable"], ["Synthetic Mac", "Build VM", "Synthetic screen", "Account: Signed out"], False)
                 mode["name"] = "denied"
                 refresh()
-                expect("permission-denied", ["Account: Signed in", "Connected Hands: Access denied"], ["Synthetic Mac · Connected"], False)
+                expect("permission-denied", ["Account: Signed in", "Hands: Access denied"], ["Synthetic Mac · Connected"], False)
                 mode["name"] = "expired"
                 refresh()
                 expect("expired", ["Account: Sign-in expired", "Sign in again to view"], ["Synthetic Mac", "Build VM"], True)
                 mode["name"] = "ready"
                 refresh()
                 expect("recovered", ["Synthetic Mac · Connected", "Build VM · Connected", "Account: Signed in"], sign_in=False)
+                process.terminate()
+                process.wait(timeout=10)
+                process = None
+                # A missing installed CLI is a real stop failure: the menu must
+                # remain visible. Never exercise Stop against the live service
+                # from this synthetic account-state journey.
+                missing_cli = root / "missing-cli"
+                assert not missing_cli.exists()
+                process = subprocess.Popen([str(executable), "--cli", str(missing_cli)], cwd=root, env=env,
+                                           stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=log)
+                open_menu()
+                expect("quit-unavailable-before", ["Unable to read Hand status", "Quit Hand"])
+                subprocess.run([str(reader), str(process.pid), "Quit Hand"], capture_output=True, check=True, timeout=10)
+                open_menu()
+                expect("quit-stop-unavailable", ["Could not stop Hand; menu remains open", "Quit Hand"])
+                assert process.poll() is None, "Failed Stop closed the native menu"
                 process.terminate()
                 process.wait(timeout=10)
                 process = None

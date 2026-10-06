@@ -515,17 +515,26 @@ async fn hand_menu_status_observes_real_http_without_mutations_or_secret_output(
                 return axum::Json(json!({"authentication": "api_key", "user": {"id": "synthetic-user"},
                     "organization": {"id": "synthetic-org"}, "team": {"id": "synthetic-team"}, "role": "owner"})).into_response();
             }
-            if uri.path() == "/v1/account/hands" {
+            if uri.path() == "/v1/account/hands/inventory" {
                 if mode == 2 { return (StatusCode::FORBIDDEN, key()).into_response(); }
                 if mode == 3 { return StatusCode::SERVICE_UNAVAILABLE.into_response(); }
                 if mode == 6 { tokio::time::sleep(std::time::Duration::from_secs(30)).await; }
-                if mode == 7 { return axum::Json(json!({"data": [{"id": "bad", "name": key(), "capabilities": []}]})).into_response(); }
-                return axum::Json(json!({"data": [{"id": "synthetic-mac", "name": "Synthetic Mac", "capabilities": ["native"],
-                    "workspace": "/private/path-that-must-not-leak", "route_token": key()}]})).into_response();
+                let mut data = vec![
+                    json!({"id": "synthetic-mac", "name": "Synthetic Mac", "kind": "hand", "online": true, "health": "connected",
+                        "workspace": "/private/path-that-must-not-leak", "route_token": key()}),
+                    json!({"id": "offline-laptop", "name": "Sleeping laptop", "kind": "hand", "online": false, "health": "offline"}),
+                    json!({"id": "workspace", "name": "Project workspace", "kind": "workspace", "online": true, "health": "connected"}),
+                    json!({"id": "vm:build", "name": "Build VM", "kind": "vm", "online": true, "health": "connected"}),
+                ];
+                if mode == 7 { data[0]["name"] = key().into(); }
+                if mode == 8 { data[2]["online"] = Value::Null; data[2]["health"] = "unknown".into(); }
+                if mode == 9 { data[1]["online"] = true.into(); }
+                return axum::Json(json!({"data": data, "coverage": "known_account_and_workspace", "complete": mode != 8})).into_response();
             }
             assert_eq!(uri.path(), "/v1/account/hands/screens");
             axum::Json(json!({"surfaces": [{"machine_id": "synthetic-screen", "machine_name": "Synthetic screen",
-                "id": "display", "generation": key(), "transport": "frames-v1", "controllable": true}]})).into_response()
+                "id": "display", "generation": key(), "transport": "frames-v1", "controllable": true},
+                {"machine_id": "offline-laptop", "machine_name": "Sleeping laptop", "transport": "frames-v1"}]})).into_response()
         }
     });
     let server = tokio::spawn(async move {
@@ -591,6 +600,8 @@ async fn hand_menu_status_observes_real_http_without_mutations_or_secret_output(
         (5, "unknown", "unknown"),
         (6, "verified", "network_error"),
         (7, "verified", "unknown"),
+        (8, "verified", "partial"),
+        (9, "verified", "unknown"),
         (0, "verified", "ready"), // Recovery reads current state; no sticky cache.
     ] {
         mode.store(scenario, Ordering::SeqCst);
@@ -612,7 +623,18 @@ async fn hand_menu_status_observes_real_http_without_mutations_or_secret_output(
         }
         if scenario == 0 {
             let hands = value["inventory"]["hands"].as_array().unwrap();
-            assert_eq!(hands.len(), 2);
+            assert_eq!(hands.len(), 5);
+            let offline = hands
+                .iter()
+                .find(|hand| hand["id"] == "offline-laptop")
+                .unwrap();
+            assert_eq!(offline["health"], "offline");
+            assert_eq!(offline["online"], false);
+            assert_eq!(offline["detail"], "Screen also advertised");
+            assert_eq!(
+                hands.iter().find(|hand| hand["id"] == "workspace").unwrap()["kind"],
+                "workspace"
+            );
             assert_eq!(
                 hands
                     .iter()
@@ -627,6 +649,16 @@ async fn hand_menu_status_observes_real_http_without_mutations_or_secret_output(
             assert_eq!(screen["online"], Value::Null);
             assert_eq!(screen["health"], "screen_advertised");
             assert_eq!(screen["transport"], "screen_frames");
+        }
+        if scenario == 8 {
+            let workspace = value["inventory"]["hands"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|hand| hand["id"] == "workspace")
+                .unwrap();
+            assert_eq!(workspace["online"], Value::Null);
+            assert_eq!(workspace["health"], "unknown");
         }
         assert_eq!(std::fs::read(&path).unwrap(), credential);
         assert_eq!(
