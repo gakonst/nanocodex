@@ -1241,12 +1241,14 @@ private struct AgentComposerView: View {
     @State private var showFiles = false
     @State private var showAttachmentMenu = false
     @State private var attachmentAction: AttachmentAction?
+    @State private var attachmentMenuTarget: InboxModel.AttachmentTarget?
     @State private var selectedPhotos: [PhotosPickerItem] = []
+    @State private var photosFilter: PHPickerFilter = .any(of: [.images, .videos])
     @State private var photoTarget: InboxModel.AttachmentTarget?
     @State private var fileTarget: InboxModel.AttachmentTarget?
     @State private var pickerError: String?
     @State private var queueContentHeight: CGFloat = 64
-    private enum AttachmentAction { case camera, photos, files, context }
+    private enum AttachmentAction { case camera, photos, videos, files, context, recentPhoto(NSItemProvider) }
     #if os(iOS)
     @State private var showCamera = false
     @State private var cameraTarget: InboxModel.AttachmentTarget?
@@ -1391,7 +1393,11 @@ private struct AgentComposerView: View {
                 composerText.frame(minHeight: 52, alignment: .topLeading).padding(.horizontal, 12)
             }
             HStack(alignment: .bottom, spacing: 2) {
-                Button { focused = false; showAttachmentMenu = true } label: {
+                Button {
+                    focused = false
+                    attachmentMenuTarget = model.captureAttachmentTarget()
+                    showAttachmentMenu = true
+                } label: {
                     Image(systemName: "plus").frame(width: 44, height: 44).contentShape(Rectangle())
                 }.accessibilityLabel("Add attachments").accessibilityIdentifier("add-attachments")
                     .disabled(!model.focusedSupportsRichInput)
@@ -1447,29 +1453,15 @@ private struct AgentComposerView: View {
                 focused = false
             }
             .sheet(isPresented: $showAttachmentMenu, onDismiss: openSelectedAttachmentAction) {
-                NavigationStack {
-                    List {
-                        Section {
-                            attachmentOption("Photos & Videos", icon: "photo.on.rectangle", action: .photos, identifier: "choose-photos")
-                            attachmentOption("Camera", icon: "camera", action: .camera, identifier: "choose-camera")
-                            attachmentOption("Files", icon: "folder", action: .files, identifier: "choose-files")
-                        }
-                        Section {
-                            attachmentOption("Context from other apps", icon: "tray.full", action: .context, identifier: "choose-context")
-                        }
-                    }
-                    .navigationTitle("Add to conversation")
-                    .navigationBarTitleDisplayMode(.inline)
-                    .toolbar {
-                        ToolbarItem(placement: .confirmationAction) {
-                            Button("Done") { showAttachmentMenu = false }
-                        }
-                    }
-                }
-                .tint(Ink.accent)
-                .presentationDetents([.medium, .large])
-                .presentationDragIndicator(.visible)
-                .presentationCornerRadius(30)
+                AttachmentLibrarySheet(
+                    isPreparing: model.preparingAttachments,
+                    onCamera: { chooseAttachmentAction(.camera) },
+                    onPhotos: { chooseAttachmentAction(.photos) },
+                    onFiles: { chooseAttachmentAction(.files) },
+                    onVideos: { chooseAttachmentAction(.videos) },
+                    onContext: { chooseAttachmentAction(.context) },
+                    onRecentPhoto: { chooseAttachmentAction(.recentPhoto($0)) }
+                )
             }
             .sheet(isPresented: $showExpandedEditor) {
                 ExpandedAgentComposer(
@@ -1501,7 +1493,7 @@ private struct AgentComposerView: View {
                 Button("Cancel", role: .cancel) {}
             } message: { Text("Enable Camera in Settings to take a photo for your message.") }
             #endif
-            .photosPicker(isPresented: $showPhotos, selection: $selectedPhotos, maxSelectionCount: nil, matching: .any(of: [.images, .videos]), preferredItemEncoding: .current)
+            .photosPicker(isPresented: $showPhotos, selection: $selectedPhotos, maxSelectionCount: nil, matching: photosFilter, preferredItemEncoding: .current)
             .task(id: showPhotos ? [] : selectedPhotos) {
                 // Selection can arrive in several updates. Keep the picker binding
                 // intact until dismissal, then import the complete batch once.
@@ -1543,37 +1535,38 @@ private struct AgentComposerView: View {
                     }
     }
 
-    private func attachmentOption(_ title: String, icon: String, action: AttachmentAction, identifier: String) -> some View {
-        Button {
-            attachmentAction = action
-            showAttachmentMenu = false
-        } label: {
-            Label(title, systemImage: icon).frame(minHeight: 32)
-        }
-        .disabled(model.preparingAttachments)
-        .accessibilityIdentifier(identifier)
+    private func chooseAttachmentAction(_ action: AttachmentAction) {
+        attachmentAction = action
+        showAttachmentMenu = false
     }
 
     private func openSelectedAttachmentAction() {
+        let target = attachmentMenuTarget
+        attachmentMenuTarget = nil
         guard let action = attachmentAction else { return }
         attachmentAction = nil
         switch action {
         case .camera:
-            Task { await openCamera() }
-        case .photos:
-            guard let target = model.captureAttachmentTarget() else { return }
+            guard let target else { return }
+            Task { await openCamera(target: target) }
+        case .photos, .videos:
+            photosFilter = if case .videos = action { .videos } else { .any(of: [.images, .videos]) }
+            guard let target else { return }
             photoTarget = target; selectedPhotos = []; pickerError = nil; showPhotos = true
         case .files:
-            guard let target = model.captureAttachmentTarget() else { return }
+            guard let target else { return }
             fileTarget = target; pickerError = nil; showFiles = true
         case .context:
             model.showContext = true
+        case .recentPhoto(let provider):
+            guard let target else { return }
+            pickerError = nil
+            model.importAttachmentProviders([provider], target: target)
         }
     }
 
     #if os(iOS)
-    @MainActor private func openCamera() async {
-        guard let target = model.captureAttachmentTarget() else { return }
+    @MainActor private func openCamera(target: InboxModel.AttachmentTarget) async {
         pickerError = nil
         guard UIImagePickerController.isSourceTypeAvailable(.camera) else {
             pickerError = "Camera is unavailable on this device. Choose Photos or Files instead."
