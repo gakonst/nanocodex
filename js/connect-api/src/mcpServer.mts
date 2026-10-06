@@ -3,8 +3,31 @@ import { connectorCapabilities } from "./connectorPolicy.mts";
 import { authenticateMcp, boundedObject, OAuthFailure, oauthJson, type McpGrant, type McpOAuthHooks } from "./oauthMcp.mts";
 
 type Tool = { name: string; description: string; inputSchema: Record<string, unknown>; annotations: Record<string, boolean> };
-export type McpTools = { call(name: string, args: Record<string, unknown>, grant: McpGrant, request: Request): Promise<Response> };
-const versions = ["2025-03-26", "2025-06-18", "2025-11-25"];
+export type McpTools = {
+  call(name: string, args: Record<string, unknown>, grant: McpGrant, request: Request): Promise<Response>;
+  events?: {
+    capabilities(grant: McpGrant): Record<string, unknown>;
+    call(method: string, params: Record<string, unknown>, grant: McpGrant, request: Request): Promise<unknown>;
+  };
+};
+const legacyVersions = ["2025-03-26", "2025-06-18", "2025-11-25"];
+const modernVersion = "2026-07-28";
+const versions = [...legacyVersions, modernVersion];
+const metaPrefix = "io.modelcontextprotocol/";
+const serverInfo = { name: "nanocodex", version: "1.0.0" };
+// Only Mcp-Name supports the UTF-8 base64 sentinel. Decode before comparison,
+// rejecting malformed encodings rather than accepting a lossy header value.
+function headerName(value: string | null): string | null {
+  if (value === null) return null;
+  if (!value.startsWith("=?base64?") || !value.endsWith("?=")) return /^[\x20-\x7e\t]*$/.test(value) && value.trim() === value ? value : null;
+  try {
+    const encoded = value.slice(9, -2);
+    if (!/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(encoded)) return null;
+    const decoded = atob(encoded);
+    if (btoa(decoded) !== encoded) return null;
+    return new TextDecoder("utf-8", { fatal: true }).decode(Uint8Array.from(decoded, char => char.charCodeAt(0)));
+  } catch { return null; }
+}
 const dataRead = ["document_get", "document_list", "timeseries_list", "timeseries_query", "timeseries_aggregate", "object_get", "object_list"];
 const dataWrite = ["document_put", "document_delete", "timeseries_write", "object_put", "object_delete"];
 const memoryRead = ["list", "read", "search", "status"];
@@ -72,12 +95,11 @@ export async function mcpServer(request: Request, store: Kv.Kv, hooks: McpOAuthH
     { "www-authenticate": `Bearer resource_metadata="${metadata}", error="invalid_token"` });
   if (request.method !== "POST") return oauthJson({ error: "method_not_allowed" }, 405, { allow: "POST" });
   const version = request.headers.get("mcp-protocol-version");
-  if (version !== null && !versions.includes(version)) return oauthJson({ error: "unsupported_protocol_version", supported: versions }, 400);
   if (!request.headers.get("content-type")?.toLowerCase().startsWith("application/json")) return oauthJson({ error: "unsupported_media_type" }, 415);
   const accepts = request.headers.get("accept") ?? "";
   if (!accepts.includes("application/json") || !accepts.includes("text/event-stream")) return oauthJson({ error: "not_acceptable", error_description: "Accept application/json and text/event-stream." }, 406);
   let message: Record<string, unknown>;
-  const rpcError = (id: unknown, code: number, message: string, status = 200) => oauthJson({ jsonrpc: "2.0", id, error: { code, message } }, status);
+  const rpcError = (id: unknown, code: number, message: string, status = 200, data?: unknown) => oauthJson({ jsonrpc: "2.0", ...(id === null && version === modernVersion ? {} : { id }), error: { code, message, ...(data === undefined ? {} : { data }) } }, status);
   try { message = await boundedObject(request); } catch (error) {
     return rpcError(null, error instanceof OAuthFailure && error.error === "invalid_json" ? -32700 : -32600, "Invalid JSON-RPC request.", error instanceof OAuthFailure && error.status === 413 ? 413 : 400);
   }
@@ -90,15 +112,45 @@ export async function mcpServer(request: Request, store: Kv.Kv, hooks: McpOAuthH
     return new Response(null, { status: 202, headers: { "cache-control": "no-store" } });
   }
   const params = (message.params ?? {}) as Record<string, unknown>;
-  const success = (result: unknown) => oauthJson({ jsonrpc: "2.0", id, result });
-  if (message.method === "initialize") {
+  const meta = isRecord(params._meta) ? params._meta : {};
+  const bodyVersion = meta[`${metaPrefix}protocolVersion`];
+  const modern = version === modernVersion || bodyVersion !== undefined || message.method === "server/discover";
+  if (modern) {
+    if (version === null || typeof bodyVersion !== "string" || version !== bodyVersion
+      || request.headers.get("mcp-method") !== message.method
+      || (["tools/call", "prompts/get", "resources/read"].includes(message.method)
+        && (headerName(request.headers.get("mcp-name")) === null || headerName(request.headers.get("mcp-name")) !== (message.method === "resources/read" ? params.uri : params.name)))) {
+      return rpcError(id, -32020, "Required MCP headers are missing or do not match the request body.", 400);
+    }
+    if (!versions.includes(version)) return rpcError(id, -32022, "Unsupported protocol version.", 400, { supported: versions, requested: version });
+    if (!isRecord(meta[`${metaPrefix}clientCapabilities`])) return rpcError(id, -32602, "Per-request clientCapabilities must be an object.");
+    const info = meta[`${metaPrefix}clientInfo`];
+    if (info !== undefined && (!isRecord(info) || typeof info.name !== "string" || typeof info.version !== "string")) return rpcError(id, -32602, "Invalid clientInfo.");
+  } else if (version !== null && !versions.includes(version)) {
+    return rpcError(id, -32022, "Unsupported protocol version.", 400, { supported: versions, requested: version });
+  }
+  const success = (result: unknown) => oauthJson({ jsonrpc: "2.0", id, result: modern
+    ? { ...(isRecord(result) ? result : {}), resultType: "complete", _meta: { ...(isRecord(result) && isRecord(result._meta) ? result._meta : {}), [`${metaPrefix}serverInfo`]: serverInfo } }
+    : result });
+  const capabilities = { tools: { listChanged: false }, ...(tools.events?.capabilities(grant) ?? {}) };
+  if (message.method === "server/discover") return success({ supportedVersions: versions, capabilities, ttlMs: 0, cacheScope: "private" });
+  if (message.method.startsWith("events/") && tools.events) {
+    try { return success(await tools.events.call(message.method, params, grant, request)); }
+    catch (error) {
+      if (error !== null && typeof error === "object" && "code" in error && typeof error.code === "number" && "message" in error && typeof error.message === "string") {
+        return rpcError(id, error.code, error.message, modern && error.code === -32601 ? 404 : 200, "data" in error ? error.data : undefined);
+      }
+      throw error;
+    }
+  }
+  if (message.method === "initialize" && !modern) {
     if (typeof params.protocolVersion !== "string" || !isRecord(params.capabilities) || !isRecord(params.clientInfo) || typeof params.clientInfo.name !== "string" || typeof params.clientInfo.version !== "string") return rpcError(id, -32602, "initialize requires protocolVersion, capabilities, and clientInfo.");
-    return success({ protocolVersion: versions.includes(params.protocolVersion) ? params.protocolVersion : versions.at(-1), capabilities: { tools: { listChanged: false } }, serverInfo: { name: "nanocodex", version: "1.0.0" }, instructions: "Tools use only the permissions approved in Nanocodex Connect. Mutations require the user's authorization. Retain operation IDs after an uncertain agent start." });
+    return success({ protocolVersion: legacyVersions.includes(params.protocolVersion) ? params.protocolVersion : legacyVersions.at(-1), capabilities, serverInfo, instructions: "Tools use only the permissions approved in Nanocodex Connect. Mutations require the user's authorization. Retain operation IDs after an uncertain agent start." });
   }
   if (message.method === "ping") return success({});
   if (message.method === "tools/list") {
     if (params.cursor !== undefined) return rpcError(id, -32602, "This tool catalog has no additional pages.");
-    return success({ tools: mcpTools(grant) });
+    return success({ tools: mcpTools(grant), ...(modern ? { ttlMs: 0, cacheScope: "private" } : {}) });
   }
   if (message.method === "tools/call") {
     const selected = mcpTools(grant).find(tool => tool.name === params.name);
@@ -119,5 +171,5 @@ export async function mcpServer(request: Request, store: Kv.Kv, hooks: McpOAuthH
       return success({ content: [{ type: "text", text: error instanceof Error ? error.message : "The tool failed." }], isError: true });
     }
   }
-  return rpcError(id, -32601, "Method not found.");
+  return rpcError(id, -32601, "Method not found.", modern ? 404 : 200);
 }

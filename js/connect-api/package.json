@@ -20,6 +20,7 @@
   },
   "devDependencies": {
     "typescript": "5.9.3",
-    "wrangler": "4.127.1"
+    "wrangler": "4.127.1",
+    "miniflare": "4.20260730.0"
   }
 }

@@ -54,6 +54,7 @@ type MountedHand = Readonly<{
   preview?: RoutedTool;
   cua?: RoutedTool;
   cuaReset?: RoutedTool;
+  cuaBackend?: "upstream" | "native_screen";
   screen?: RoutedTool;
 }>;
 
@@ -219,7 +220,8 @@ export function createNamespaceExecutionRuntime(
     const hand = binding.hands.get(route.mount.mountId);
     if (!hand?.cua || !hand.cuaReset) {
       observeHandCall("namespace.invoke", name, routeStarted, "unavailable", context.callId, correlation(context));
-      throw new Error(`namespace mount ${route.mount.root} has no CUA runtime or controllable native screen. Use environment to find a CUA-capable Hand.`);
+      if (route.mount.root === DEFAULT_CWD) throw new Error("/brain has no desktop. Use an explicit Hand workdir for CUA.");
+      throw new Error(`CUA is unavailable for ${route.mount.root} in this cell's captured routes. No action was dispatched. A screen publisher may be disconnected or reconnecting; discover this same workdir in a new Code Mode cell before sending input. Use environment to inspect current Hand availability.`);
     }
     const providerInput = without(value, "workdir");
     // JS with only a workdir discovers the actual provider API without executing
@@ -235,7 +237,7 @@ export function createNamespaceExecutionRuntime(
         return { ...definition, name: toolName };
       });
       return { workdir: hand.root, machine_id: hand.machineId,
-        tools: [CUA_JS_NAME, CUA_RESET_NAME], definitions,
+        backend: hand.cuaBackend, tools: [CUA_JS_NAME, CUA_RESET_NAME], definitions,
         browser_interaction: BACKGROUND_BROWSER_INSTRUCTIONS,
         browser_selection: "For providers exposing cua.createBrowserTab, browser display names are not necessarily accepted identifiers. OpenAI's provider accepts lowercase family aliases (for example 'brave', not 'Brave Browser') or exact discovered browser IDs. Reuse an ID from current provider state; when browser/profile selection is ambiguous, inspect the provider's browser inventory first and match the requested instance. Do not guess IDs or silently retry a browser action with a different target.",
         native_app_recovery: "For native macOS providers exposing cua.getApp, app selection may launch only in the background. If its initial observation stalls, follow any required js_reset, then use supported CUA and an observed app launcher only when foreground interaction with that app is authorized. Do not use this recovery to take over the user's browser when background tab APIs are unavailable. After a transient menu or window closes, cgWindowNotFound can mean the bound window is gone; select the same app again and inspect fresh state. Do not replay input actions, modify permissions, or switch automation backends to recover.",
@@ -488,6 +490,7 @@ function createCellBinding(
       preview: resolveMachineTool(machine.id, "preview", context),
       cua: upstream ? withNativeRecording(upstream.cua, screen) : fallback?.cua,
       cuaReset: upstream?.cuaReset ?? fallback?.cuaReset,
+      cuaBackend: upstream ? "upstream" : fallback ? "native_screen" : undefined,
       screen,
     }));
   }

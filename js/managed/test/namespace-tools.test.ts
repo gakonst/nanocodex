@@ -150,7 +150,7 @@ describe("cwd-root namespace execution", () => {
     expect(replacement).not.toHaveBeenCalled();
     await runtime.tools[CUA_JS_NAME]!.handler({ workdir: "/vm", code: "next" }, context({ parentCallId: "next-cell" }));
     expect(replacement).toHaveBeenCalledWith({ code: "next" }, expect.anything());
-    await expect(runtime.tools[CUA_JS_NAME]!.handler({ workdir: "/brain" }, context())).rejects.toThrow("no CUA runtime");
+    await expect(runtime.tools[CUA_JS_NAME]!.handler({ workdir: "/brain" }, context())).rejects.toThrow("/brain has no desktop");
     await expect(runtime.tools[CUA_JS_NAME]!.handler({ workdir: "/missing", code: "1" }, context())).rejects.toThrow();
   });
 

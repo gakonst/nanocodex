@@ -2,8 +2,10 @@ import { parseSshCredentialImport, sshCredentialImportDigest, sshImportFromResou
 import type { SshCredentialImport } from "./sshCredentialImport.mts";
 import { machOnramp, type MachOnrampEnv } from "./machOnramp";
 import { Handler, Kv } from "accounts/server";
-import { oauthMcp, type McpGrant, type McpOAuthHooks, oauthJson } from "./oauthMcp.mts";
+import { oauthMcp, activeMcpGrant, type McpGrant, type McpOAuthHooks, oauthJson } from "./oauthMcp.mts";
 import { mcpServer } from "./mcpServer.mts";
+import { McpEventService, McpEventFailure, mcpEventsAllowed, type McpEventStorage } from "./mcpEvents.mts";
+import { mcpWebhookFetch } from "./mcpEventTransport.mts";
 import { appThreadStorage, type AppThread } from "./appThreads.mts";
 import { withManagedAccess } from "nanocodex/managed";
 import { custom } from "viem";
@@ -410,6 +412,7 @@ type ConnectLogContext = Readonly<{
 type Env = MachOnrampEnv & Readonly<{
   ACCOUNTS: Fetcher;
   CONNECT_STATE: Kv.durableObject.Namespace;
+  MCP_EVENTS: Kv.durableObject.Namespace;
   EGRESS: Fetcher;
   NANOCODEX: Fetcher;
   NANOCODEX_LOCAL_OAUTH_RELAY_HMAC_KEY?: string;
@@ -518,6 +521,10 @@ export default {
       if (url.pathname === "/mcp") {
         return cors(await mcpServer(request, store, oauthHooks, {
           call: (name, args, grant, source) => callMcpTool(env, store, name, args, grant, source),
+          events: {
+            capabilities: grant => mcpEventsAllowed(grant) ? { events: { listChanged: false } } : {},
+            call: (method, params, grant) => callMcpEvents(env, method, params, grant),
+          },
         }), request);
       }
 
@@ -1533,6 +1540,64 @@ async function mcpGrantRecord(store: Kv.Kv, reference: McpGrant): Promise<GrantR
     || grant.status !== "active" || grant.expiresAt <= Math.floor(Date.now() / 1000) || grant.hostPrincipal !== undefined) return undefined;
   return grant;
 }
+/** Separate per-grant objects own subscription secrets and alarm-driven delivery.
+ * No public HTTP route forwards to this private control surface. */
+export class McpEvents {
+  private events: McpEventService;
+  constructor(ctx: { storage: McpEventStorage; waitUntil(promise: Promise<unknown>): void }, env: Env) {
+    const store = Kv.durableObject(env.CONNECT_STATE);
+    const oauth = mcpOAuthHooks(env, store, ctx);
+    this.events = new McpEventService(ctx.storage, {
+      active: grant => activeMcpGrant(grant, store, oauth),
+      status: async (reference, turnId) => {
+        // Keep managed-agent assertions current; never pass stored bearer tokens upstream.
+        if (!await activeMcpGrant(reference, store, oauth)) return undefined;
+        const grant = await mcpGrantRecord(store, reference);
+        if (!grant) return undefined;
+        const path = `${grant.agentId}/turns/${encodeURIComponent(turnId)}`;
+        const response = await proxyManagedAgent(new Request(`https://nanocodex.internal/v1/agents/${path}`), env, grant, path);
+        if (response.status === 404) return undefined;
+        if (!response.ok) throw new Error("MCP event source unavailable");
+        const value = JSON.parse(await boundedResponseText(response, MAX_MANAGED_DATA_RESPONSE_BYTES)) as Record<string, unknown>;
+        if (typeof value.state !== "string" || typeof value.updated_at !== "number"
+          || !Number.isFinite(value.updated_at) || !Number.isFinite(new Date(value.updated_at).getTime())) {
+          throw new Error("Invalid MCP event source response");
+        }
+        return { state: value.state, completedAt: new Date(value.updated_at).toISOString() };
+      },
+      webhookFetch: mcpWebhookFetch,
+    });
+  }
+  async fetch(request: Request): Promise<Response> {
+    if (request.method !== "POST") return new Response(null, { status: 405 });
+    const body = await request.json() as { method: string; params: Record<string, unknown>; grant: McpGrant };
+    try {
+      let result: unknown;
+      switch (body.method) {
+        case "events/list": result = await this.events.list(body.grant, body.params); break;
+        case "events/subscribe": result = await this.events.subscribe(body.grant, body.params); break;
+        case "events/unsubscribe": result = await this.events.unsubscribe(body.grant, body.params); break;
+        case "track": await this.events.track(body.grant, String(body.params.turn_id)); result = {}; break;
+        case "forget": await this.events.forget(body.grant, String(body.params.turn_id)); result = {}; break;
+        default: throw new McpEventFailure(-32601, "Method not found.");
+      }
+      return oauthJson({ result });
+    } catch (error) {
+      if (error instanceof McpEventFailure) return oauthJson({ error: { code: error.code, message: error.message, data: error.data } });
+      throw error;
+    }
+  }
+  async alarm(): Promise<void> { await this.events.alarm(); }
+}
+async function callMcpEvents(env: Env, method: string, params: Record<string, unknown>, grant: McpGrant): Promise<unknown> {
+  const stub = env.MCP_EVENTS.get(env.MCP_EVENTS.idFromName(grant.id));
+  const response = await stub.fetch("https://mcp-events.internal/", { method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ method, params, grant }) });
+  if (!response.ok) throw new McpEventFailure(-32603, "Event service unavailable.");
+  const value = await response.json() as { result?: unknown; error?: { code: number; message: string; data?: Record<string, unknown> } };
+  if (value.error) throw new McpEventFailure(value.error.code, value.error.message, value.error.data);
+  return value.result;
+}
 async function callMcpTool(env: Env, store: Kv.Kv, name: string, args: Record<string, unknown>, reference: McpGrant, source: Request): Promise<Response> {
   const grant = await mcpGrantRecord(store, reference);
   if (!grant) throw new ApiFailure(401, "grant_inactive", "The Connect grant was revoked or expired.");
@@ -1570,7 +1635,13 @@ async function callMcpTool(env: Env, store: Kv.Kv, name: string, args: Record<st
       method: start ? "POST" : "GET", headers: start ? { "content-type": "application/json", "idempotency-key": String(args.operation_id) } : {},
       ...(start ? { body: JSON.stringify({ id: args.operation_id, input: args.prompt }) } : {}), signal: source.signal,
     });
+    // Durable registration precedes upstream acceptance, closing the crash window
+    // between an accepted turn and its completion monitor. Unknown outcomes stay tracked.
+    if (start) await callMcpEvents(env, "track", { turn_id: args.operation_id }, reference);
     const response = await proxyManagedAgent(command, env, grant, `${grant.agentId}${suffix}`);
+    if (start && response.status >= 400 && response.status < 500 && response.status !== 409) {
+      await callMcpEvents(env, "forget", { turn_id: args.operation_id }, reference);
+    }
     return safeManagedJsonResponse(response);
   }
   let path: string;
@@ -6647,7 +6718,7 @@ function cors(response: Response, request: Request) {
     }
     response.headers.set(
       "access-control-allow-headers",
-      "accept-payment, authorization, content-type, git-protocol, idempotency-key, last-event-id, mcp-protocol-version, mcp-session-id, payment-session, payment-session-snapshot, payment-signature, x-nanocodex-app-id, x-nanocodex-client-context, x-nanocodex-connect-client, x-nanocodex-connector-connection, x-nanocodex-voice-session-id",
+      "accept-payment, authorization, content-type, git-protocol, idempotency-key, last-event-id, mcp-protocol-version, mcp-method, mcp-name, mcp-session-id, payment-session, payment-session-snapshot, payment-signature, x-nanocodex-app-id, x-nanocodex-client-context, x-nanocodex-connect-client, x-nanocodex-connector-connection, x-nanocodex-voice-session-id",
     );
     response.headers.set("access-control-allow-methods", "GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS");
     response.headers.set("access-control-max-age", "86400");

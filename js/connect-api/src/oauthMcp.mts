@@ -13,6 +13,8 @@ export type McpAuthorization = {
 export type McpGrant = {
   id: string; token: string; appId: string; appOrigin: string; expiresAt: number;
   capabilities: readonly string[]; agentId: string; scope?: string;
+  /** Internal refresh-family fence retained by durable event subscriptions. */
+  familyId?: string;
 };
 type Family = { clientId: string; resource: string; scope: string; grant: McpGrant; revoked?: boolean };
 type Token = { family: string };
@@ -156,7 +158,15 @@ export async function authenticateMcp(request: Request, store: Kv.Kv, hooks: Mcp
   const family = entry && await liveFamily(store, entry.family, hooks);
   if (!family || family.resource !== new URL("/mcp", request.url).href) return undefined;
   checkOrigin(request, [family.grant.appOrigin]);
-  return { ...family.grant, scope: family.scope };
+  return { ...family.grant, scope: family.scope, familyId: entry!.family };
+}
+/** A subscription outlives an access token, but never its OAuth family or grant. */
+export async function activeMcpGrant(reference: McpGrant, store: Kv.Kv, hooks: McpOAuthHooks): Promise<boolean> {
+  if (!reference.familyId) return false;
+  const family = await liveFamily(store, reference.familyId, hooks);
+  return !!family && family.grant.id === reference.id && family.grant.token === reference.token
+    && family.grant.appId === reference.appId && family.grant.appOrigin === reference.appOrigin
+    && family.grant.agentId === reference.agentId && family.scope === reference.scope;
 }
 export async function oauthMcp(request: Request, store: Kv.Kv, hooks: McpOAuthHooks): Promise<Response | undefined> {
   const url = new URL(request.url), origin = url.origin, path = url.pathname;

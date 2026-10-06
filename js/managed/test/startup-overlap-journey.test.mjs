@@ -110,7 +110,7 @@ export class FixtureModel extends DurableObject {
         const definitions=[...(body.tools??[]),...(body.input??[]).filter(item=>item.type==='additional_tools').flatMap(item=>item.tools??[])];
         if(definitions.length) effectiveTools=definitions.map(tool=>tool.name??tool.function?.name);
         this.record('provider.request',{catalog_ready:this.catalogReleased,setup_ready:this.setupFinished,
-          tools:effectiveTools,input:body.input});
+          tools:effectiveTools,input:body.input,reasoning:body.reasoning,service_tier:body.service_tier});
         const id='resp_'+crypto.randomUUID();
         ++requestIndex;
         const inputText=JSON.stringify(body.input??[]);
@@ -332,6 +332,65 @@ test("normal public API overlaps account discovery with configured setup and ret
     assert.equal(environmentOutput(newVoiceResult,"call_voice_new_origin").request_origin.client.name,"new-voice-device");
     await call(`/v1/agents/${run.agent_id}/realtime/stop`,"POST",{voice_session_id:voice,operation_id:crypto.randomUUID()});
     evidence={...evidence,voice_effective_origin:true,voice_origin_receipt_replay:true,voice_adopted_origin:true};
+    // Hold a fresh owner's bootstrap after public acceptance, then change
+    // defaults. The accepted turn must retain its original inference settings.
+    const raceToken=(await fixture()).token;
+    const raceSettings={...settings,model:"gpt-6-astra"};
+    await backend.fetch("https://fixture.internal/__hold-catalog");
+    const racing=await call("/v1/agent-runs","POST",{input:"Reply SETTINGS_PINNED",settings:raceSettings},201,raceToken,{"idempotency-key":"settings-during-bootstrap"});
+    let settingsPatch;
+    try {
+      for(let i=0;;i++) {
+        const pendingTrace=await (await backend.fetch("https://fixture.internal/__trace")).json();
+        if(pendingTrace.some(row=>row.event==="catalog.held"))break;
+        assert.ok(i<200,"settings journey discovery did not start");await delay(10);
+      }
+      settingsPatch=call(`/v1/agents/${racing.agent_id}/settings`,"PATCH",{thinking:"high",fast_mode:true},200,raceToken);
+      for(let i=0;;i++) {
+        const agent=await call(`/v1/agents/${racing.agent_id}`,"GET",undefined,200,raceToken);
+        if(agent.settings?.thinking==="high" && agent.settings?.fast_mode===true)break;
+        assert.ok(i<200,"settings PATCH did not update defaults during bootstrap");await delay(10);
+      }
+    } finally {
+      await backend.fetch("https://fixture.internal/__release-catalog");
+      if(settingsPatch)await settingsPatch;
+    }
+    const waitRace=async id=>{
+      for(let i=0;i<1000;i++) {
+        const turn=await call(`/v1/agents/${racing.agent_id}/turns/${id}`,"GET",undefined,200,raceToken);
+        assert.ok(!["failed","cancelled"].includes(turn.state),JSON.stringify(turn));
+        if(turn.state==="completed")return turn;await delay(10);
+      }
+      throw Error("settings journey turn did not finish");
+    };
+    await waitRace(racing.turn_id);
+    const raceTrace=await(await backend.fetch("https://fixture.internal/__trace")).json();
+    const pinnedRequest=raceTrace.filter(row=>row.event==="provider.request").at(-1);
+    evidence={...evidence,settings_race:{accepted:raceSettings,patched:{thinking:"high",fast_mode:true},first_request:{reasoning:pinnedRequest.reasoning,service_tier:pinnedRequest.service_tier}}};
+    assert.equal(pinnedRequest.reasoning?.effort,"low","public acceptance pins reasoning across bootstrap");
+    assert.equal(Object.hasOwn(pinnedRequest,"service_tier"),false,"public acceptance pins fast-off and omits service_tier across bootstrap");
+    assert.deepEqual(pinnedRequest.input.at(-1),{type:"configuration_update",reasoning:{effort:"low"}},"first accepted turn retains its selected effort update");
+    assert.equal(pinnedRequest.input.at(-2).role,"user","initial config update follows the accepted user input");
+    evidence.settings_race.first_request.configuration_update=pinnedRequest.input.at(-1);
+    const next=await call(`/v1/agents/${racing.agent_id}/turns`,"POST",{id:crypto.randomUUID(),input:"Reply SETTINGS_UPDATED"},202,raceToken);
+    await waitRace(next.turn_id);
+    const nextTrace=await(await backend.fetch("https://fixture.internal/__trace")).json();
+    const nextRequests=nextTrace.filter(row=>row.event==="provider.request").slice(raceTrace.filter(row=>row.event==="provider.request").length);
+    const updatedRequest=nextRequests[0];
+    evidence.settings_race.next_request={reasoning:updatedRequest.reasoning,service_tier:updatedRequest.service_tier,configuration_update:updatedRequest.input.at(-1)};
+    for(const request of nextRequests) {
+      assert.equal(request.reasoning?.effort,"low","later turn and tool continuation retain request effort for caching");
+      assert.equal(request.service_tier,"priority","later turn adopts fast mode update");
+    }
+    assert.deepEqual(updatedRequest.input.at(-1),{type:"configuration_update",reasoning:{effort:"high"}},"later selected effort is appended to prompt history");
+    assert.equal(updatedRequest.input.at(-2).role,"user","changed config update follows new user input");
+    assert.match(JSON.stringify(updatedRequest.input.at(-2)),/Reply SETTINGS_UPDATED/);
+    const providerCount=nextTrace.filter(row=>row.event==="provider.request").length;
+    const replay=await call(`/v1/agents/${racing.agent_id}/turns`,"POST",{id:racing.turn_id,input:"Reply SETTINGS_PINNED"},200,raceToken);
+    assert.equal(replay.turn_id,racing.turn_id);
+    const replayTrace=await(await backend.fetch("https://fixture.internal/__trace")).json();
+    assert.equal(replayTrace.filter(row=>row.event==="provider.request").length,providerCount,"idempotent retry does not rerun the pinned turn");
+    evidence.settings_race.replayed_without_inference=true;
     // A second owner has no L1 snapshot. Delete the admitted turn while its
     // read-only metadata request is held, then release the old read. The public
     // deletion fence establishes ordering without a sleep-based race assertion.
@@ -341,7 +400,7 @@ test("normal public API overlaps account discovery with configured setup and ret
     try {
       for(let i=0;;i++) {
         const pendingTrace=await (await backend.fetch("https://fixture.internal/__trace")).json();
-        if(pendingTrace.some(row=>row.event==="catalog.held"))break;
+        if(pendingTrace.filter(row=>row.event==="catalog.held").length>=2)break;
         assert.ok(i<200,"second owner discovery did not start");await delay(10);
       }
       deletion=call(`/v1/agents/${cancelled.agent_id}`,"DELETE",undefined,204,other);
@@ -358,7 +417,7 @@ test("normal public API overlaps account discovery with configured setup and ret
     }
     await call(`/v1/agents/${cancelled.agent_id}`,"GET",undefined,404,other);
     const finalTrace=await (await backend.fetch("https://fixture.internal/__trace")).json();
-    assert.equal(finalTrace.filter(row=>row.event==="provider.request").length,voiceRequests.length,"late discovery never resurrects a deleted turn");
+    assert.equal(finalTrace.filter(row=>row.event==="provider.request").length,providerCount,"late discovery never resurrects a deleted turn");
     evidence={...evidence,invalid_input_no_work:true,deletion_during_discovery_fenced:true,trace:finalTrace};
     console.log("STARTUP_OVERLAP_EVIDENCE",JSON.stringify({...evidence,trace:undefined,output}));
   } catch(error) {failure=error;throw error;}

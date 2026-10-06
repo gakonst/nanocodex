@@ -46,7 +46,7 @@ test("MCP HTTP journey: discovery, hosted consent, PKCE, scoped tools and token 
   const mf = new Miniflare(convertV4MiniflareOptions({
     modules: true, modulesRoot: outdir, scriptPath: path.join(outdir, "index.js"),
     compatibilityDate: "2026-08-23", compatibilityFlags: ["nodejs_compat"],
-    durableObjects: { CONNECT_STATE: { className: "ConnectNonceStorage", useSQLite: true } },
+    durableObjects: { CONNECT_STATE: { className: "ConnectNonceStorage", useSQLite: true }, MCP_EVENTS: { className: "McpEvents", useSQLite: true } },
     log: new Log(LogLevel.ERROR),
     serviceBindings: {
       ACCOUNTS: async request => {
@@ -107,6 +107,7 @@ test("MCP HTTP journey: discovery, hosted consent, PKCE, scoped tools and token 
           agents.get(id).push(body);
           return Response.json({ turn_id: body.id, status: "accepted" }, { status: 202 });
         }
+        if (suffix.startsWith("/turns/") && request.method === "GET") return Response.json({ state: "running", updated_at: Date.now() });
         if (!suffix) return Response.json({ agent_id: id, active_turns: [], accepted_turns: agents.get(id).length });
         assert.fail(`Unexpected managed resource ${suffix}`);
       },

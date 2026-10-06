@@ -78,7 +78,14 @@ async fn latest_fork_during_streaming_inherits_the_active_prompt_delta() -> Resu
         let mut branch = accept_async(stream).await?;
         let fork = next_json(&mut branch).await?;
         assert!(fork.get("previous_response_id").is_none());
-        assert_eq!(fork["reasoning"]["effort"], "high");
+        assert_eq!(
+            fork["reasoning"]["effort"], "low",
+            "fork retains the inherited baseline"
+        );
+        assert_eq!(
+            fork["input"].as_array().unwrap().last().unwrap(),
+            &json!({"type": "configuration_update", "reasoning": {"effort": "high"}})
+        );
         let fork_text = fork.to_string();
         assert!(fork_text.contains("active root prompt"));
         assert!(fork_text.contains("BTW question"));
