@@ -128,3 +128,50 @@ test('real workerd WhatsApp pairing, read, privacy, revocation and recovery jour
     await mf.dispose();
   }
 });
+
+for (const initializationFails of [false, true]) test(`status stays available and pairing handles optional transport ${initializationFails ? 'failure' : 'success'}`, { timeout: 30000 }, async () => {
+  const bundle = await build({
+    stdin: { contents: `import { WhatsAppAccount } from './src/whatsapp-account';
+      export { WhatsAppAccount };
+      export default { fetch(request, env) { return env.ACCOUNTS.getByName('lazy-status').fetch(request); } };`,
+      resolveDir: root, loader: 'ts' },
+    bundle: true, write: false, format: 'esm', platform: 'browser', external: ['cloudflare:workers'],
+    plugins: [{ name: 'unavailable-upstream-transport', setup(b) {
+      b.onResolve({ filter: /^\.\/whatsapp-runtime$/ }, () => ({ path: 'unavailable-transport', namespace: 'optional-upstream' }));
+      b.onLoad({ filter: /.*/, namespace: 'optional-upstream' }, () => ({
+        contents: initializationFails
+          ? `throw new Error('synthetic private transport initialization failure');
+             export function createWhatsAppTransportFactory() { throw new Error('unreachable'); }`
+          : `export function createWhatsAppTransportFactory() { return { async connect() { return {
+               async requestPairingCode() { return 'TEST-5678'; }, async close() {}, async logout() {},
+             }; } }; }`, loader: 'js',
+      }));
+    } }],
+  });
+  const mf = new Miniflare(convertV4MiniflareOptions({ workers: [{
+    name: 'lazy-whatsapp', modules: true, script: bundle.outputFiles[0].text,
+    compatibilityDate: '2026-07-29', durableObjects: { ACCOUNTS: { className: 'WhatsAppAccount', useSQLite: true } },
+    bindings: { ENVIRONMENT: 'test' }, outboundService: () => new Response('unexpected network', { status: 599 }),
+  }] }));
+  const trace = [];
+  try {
+    const status = await mf.dispatchFetch('https://fixture/status');
+    const initial = await status.json();
+    trace.push({ path: '/status', status: status.status, connected: initial.connected });
+    assert.equal(status.status, 200); assert.equal(initial.connected, false);
+    const start = await mf.dispatchFetch('https://fixture/start', { method: 'POST',
+      headers: { 'content-type': 'application/json' }, body: JSON.stringify({ operation_id: op, phone: '+15550000001' }) });
+    const result = await start.json();
+    trace.push({ path: '/start', status: start.status, result });
+    assert.equal(JSON.stringify(result).includes('synthetic private'), false);
+    assert.equal(start.status, 202);
+    assert.equal(result.connected, false); assert.equal(result.attempt.state, initializationFails ? 'unknown' : 'ready');
+    if (!initializationFails) {
+      const pairing = await mf.dispatchFetch(`https://fixture/pairing?operation_id=${op}`);
+      assert.equal(pairing.status, 200); assert.equal((await pairing.json()).code, 'TEST-5678');
+    }
+    assert.equal((await mf.dispatchFetch('https://fixture/status')).status, 200);
+    await mkdir(root + '../../output/whatsapp-account', { recursive: true });
+    await writeFile(root + `../../output/whatsapp-account/lazy-status-${initializationFails ? 'failure' : 'success'}.json`, JSON.stringify(trace, null, 2));
+  } finally { await mf.dispose(); }
+});
