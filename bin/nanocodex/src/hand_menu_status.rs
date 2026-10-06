@@ -67,7 +67,7 @@ fn failed_account(failure: Failure) -> (Value, Value) {
 
 fn failed_inventory(failure: Failure) -> Value {
     json!({"state": failure.state, "hands": [], "error": failure.message,
-        "coverage": "currently_advertised", "probe_performed": false})
+        "coverage": "known_account_and_workspace", "probe_performed": false})
 }
 
 async fn account_status() -> (Value, Value) {
@@ -77,7 +77,7 @@ async fn account_status() -> (Value, Value) {
             return (
                 json!({"state": "signed_out", "display_name": null, "error": null}),
                 json!({"state": "signed_out", "hands": [], "error": null,
-                "coverage": "currently_advertised", "probe_performed": false}),
+                "coverage": "known_account_and_workspace", "probe_performed": false}),
             );
         }
         Err(_) => {
@@ -135,14 +135,22 @@ async fn account_status() -> (Value, Value) {
         .or_else(|| identity["user"]["email"].as_str().and_then(safe_text));
     let mut account = json!({"state": "verified", "display_name": display_name, "error": null});
     let (machines, screens) = tokio::join!(
-        get(&client, &origin, "/v1/account/hands"),
+        get(&client, &origin, "/v1/account/hands/inventory"),
         get(&client, &origin, "/v1/account/hands/screens")
     );
     let mut hands = Vec::new();
     let mut failure = None;
     match machines {
         Ok(value) => match project_machines(&value) {
-            Ok(found) => hands = found,
+            Ok(found) => {
+                hands = found;
+                if value["complete"] == false {
+                    failure = Some(Failure {
+                        state: "partial",
+                        message: "Some Hand connections could not be checked.",
+                    });
+                }
+            }
             Err(error) => failure = Some(error),
         },
         Err(error) => failure = Some(error),
@@ -164,7 +172,7 @@ async fn account_status() -> (Value, Value) {
     hands.sort_by(|a, b| a["name"].as_str().cmp(&b["name"].as_str()));
     let inventory = json!({"state": failure.map_or("ready", |error| error.state),
         "hands": hands, "error": failure.map(|error| error.message),
-        "coverage": "currently_advertised", "probe_performed": false});
+        "coverage": "known_account_and_workspace", "probe_performed": false});
     (account, inventory)
 }
 
@@ -231,6 +239,9 @@ fn safe_text(text: &str) -> Option<&str> {
 }
 
 fn project_machines(value: &Value) -> std::result::Result<Vec<Value>, Failure> {
+    if value["coverage"] != "known_account_and_workspace" || !value["complete"].is_boolean() {
+        return Err(UNKNOWN);
+    }
     let machines = value["data"]
         .as_array()
         .filter(|items| items.len() <= HAND_LIMIT)
@@ -245,21 +256,21 @@ fn project_machines(value: &Value) -> std::result::Result<Vec<Value>, Failure> {
         if result.iter().any(|item: &Value| item["id"] == id) {
             return Err(UNKNOWN);
         }
-        let capabilities = machine["capabilities"].as_array().ok_or(UNKNOWN)?;
-        let background = capabilities
-            .iter()
-            .any(|capability| capability == "background_limited");
-        let screen_only = !capabilities.is_empty()
-            && capabilities
-                .iter()
-                .all(|capability| capability == "screen" || capability == "computer");
-        let kind = if screen_only {
-            "screen_only"
-        } else if id.starts_with("vm:") {
-            "vm"
-        } else {
-            "hand"
+        let kind = match machine["kind"].as_str() {
+            Some(kind @ ("hand" | "workspace" | "vm")) => kind,
+            _ => return Err(UNKNOWN),
         };
+        let (online, health, availability) =
+            match (machine.get("online"), machine["health"].as_str()) {
+                (Some(Value::Bool(true)), Some("connected")) => {
+                    (json!(true), "connected", "connected")
+                }
+                (Some(Value::Bool(false)), Some("offline")) => {
+                    (json!(false), "offline", "disconnected")
+                }
+                (Some(Value::Null), Some("unknown")) => (Value::Null, "unknown", "unknown"),
+                _ => return Err(UNKNOWN),
+            };
         let name = if name == id && id.starts_with("vm:") {
             format!(
                 "VM {}",
@@ -272,11 +283,8 @@ fn project_machines(value: &Value) -> std::result::Result<Vec<Value>, Failure> {
             name.to_owned()
         };
         result.push(json!({"id": id, "name": name, "kind": kind,
-            "online": if screen_only { Value::Null } else { json!(true) },
-            "transport": if screen_only { "screen_only" } else { "tool_host" },
-            "availability": "advertised",
-            "health": if screen_only { "screen_advertised" } else { "connected" },
-            "detail": if background { Some("Background availability limited") } else { None }}));
+            "online": online, "transport": "tool_host", "availability": availability,
+            "health": health, "detail": if health == "unknown" { Some("Connection status unavailable") } else { None }}));
     }
     Ok(result)
 }

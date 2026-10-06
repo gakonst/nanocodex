@@ -28,6 +28,9 @@ function startupEnvironmentText(environment: StartupEnvironment): string {
     "Mercator is a default MCP server for every account. Discover, quote, and call its create_job through MCP with the exact quoted total and one stable idempotency key. A funded Nanocodex account wallet can settle the MCP payment challenge automatically after the same MCP quotes the exact plan and total; do not configure a separate CLI wallet or use an extra payment tool. Respect any user budget or restriction. Poll the same job via get_job; if a payment outcome is unknown, never submit a replacement with another key.",
     "Past threads are available through authorized recall tools; they have not all been loaded. Verify relevant turns before relying on them. A missing prepared memory snapshot does not mean there are no saved memories.",
     contextData("history_context", { scope: "active team", loaded: false, search: "find_session", read: "read_session", memory: "memories.search/read" }),
+    ...(environment.accountInfo.status === "pending" ? [
+      "Account, Vault and tool discovery is loading in the background. Empty startup fields mean not yet loaded, not disconnected or absent. Use environment() or tool_search when the task needs those capabilities; ordinary conversation can proceed immediately.",
+    ] : []),
     contextData("environment", projectEnvironment(environment.accountInfo, environment)),
     contextData("scope", environment.scope),
     contextData("request_origin", environment.request_origin),

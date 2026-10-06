@@ -165,6 +165,9 @@ jobs:
           cargo test --locked -p nanocodex2-bin --bin nanocodex2 account_management_journeys
       - name: Exercise Managed2 CLI through HTTP and WebSocket
         run: node bin/nanocodex/tests/managed2_cli_e2e.mjs
+      - name: Resolve the trusted loopback origin on macOS
+        if: runner.os == 'macOS'
+        run: printf '\n::1 nanocodex.localhost\n' | sudo tee -a /etc/hosts > /dev/null
       - name: Exercise local SSH key import through signed Connect consent
         run: node bin/nanocodex/tests/ssh_import_cli_e2e.mjs
       - name: Exercise private TUI input and encrypted Vault reuse

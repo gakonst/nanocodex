@@ -25,7 +25,7 @@ const routes: [string, string][] = [
   ["GET", "/v1/connectors/github?client=onboarding"], ["GET", "/v1/connections"],
   ["GET", "/connect-dialog"], ["GET", "/api/chief-of-staff/status"],
   ["GET", "/api/chief-of-staff/slack/install"], ["GET", "/v1/me"],
-  ["GET", "/v1/account/hands"], ["POST", "/v1/agents"],
+  ["GET", "/v1/account/hands"], ["GET", "/v1/account/hands/inventory"], ["POST", "/v1/agents"],
   ["GET", "/v1/inference-other"], ["GET", "/unknown"],
   ["POST", "/v1/responses/"], ["GET", "/v1/responses/response-id"],
   ["POST", "/v1/responses-other"], ["GET", "/v1/models/"],

@@ -84,7 +84,7 @@ class Journey:
         require(result.returncode == 0, "Cannot inspect executable process names")
         processes = []
         for line in result.stdout.decode("utf-8", "replace").splitlines():
-            match = re.fullmatch(r"\s*(\d+)\s+(\d+)\s+(.+)", line)
+            match = re.fullmatch(r"\s*(\d+)\s+(-?\d+)\s+(.+)", line)
             require(match is not None, "Unrecognized ps executable record")
             processes.append((int(match[1]), int(match[2]), match[3]))
         return processes

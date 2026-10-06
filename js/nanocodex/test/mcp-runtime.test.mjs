@@ -643,3 +643,163 @@ test("prepared MCP handlers preserve real turn metadata and omit absent context"
     }
   } finally { await mcp.close(); }
 });
+
+async function sdkInventoryFixture(t, { listGate, listed, onCall } = {}) {
+  const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
+  const { Server } = await import("@modelcontextprotocol/sdk/server/index.js");
+  const { InMemoryTransport } = await import("@modelcontextprotocol/sdk/inMemory.js");
+  const { ListToolsRequestSchema, CallToolRequestSchema } = await import("@modelcontextprotocol/sdk/types.js");
+  const server = new Server({ name: "inventory-fixture", version: "1" }, { capabilities: { tools: {} } });
+  let lists = 0;
+  server.setRequestHandler(ListToolsRequestSchema, async () => {
+    lists += 1;
+    listed?.();
+    await listGate;
+    return { tools: [{ name: "lookup", description: "Look up inventory records", inputSchema: { type: "object" } }] };
+  });
+  server.setRequestHandler(CallToolRequestSchema, async () => {
+    onCall?.();
+    return { content: [{ type: "text", text: "SDK result" }] };
+  });
+  const client = new Client({ name: "inventory-test", version: "1" });
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  await server.connect(serverTransport);
+  await client.connect(clientTransport);
+  t.after(async () => { await client.close(); await server.close(); });
+  return { client, lists: () => lists };
+}
+
+function inventoryGate() {
+  let resolve;
+  const promise = new Promise((release) => { resolve = release; });
+  return { promise, resolve };
+}
+
+test("SDK background inventory allows first provider definitions and Code Mode before discovery", { timeout: 5000 }, async (t) => {
+  const gate = inventoryGate();
+  let loads = 0;
+  const fixture = await sdkInventoryFixture(t);
+  const mcp = await createMcpRuntime({}, { loadServers: async () => { loads += 1; return gate.promise; } });
+  t.after(() => mcp.close());
+  const runtime = createCodeRuntime();
+  runtime.addProvider(mcp);
+  const definitions = JSON.parse(runtime.toolDefinitions());
+  assert.equal(definitions.length, 1);
+  assert.equal(definitions[0].type, "tool_search");
+  const first = JSON.parse(await runtime.executeCode('text("first provider continues")', "inventory", "first"));
+  assert.equal(first.success, true);
+  assert.equal(mcp.search({ query: "inventory" }).output.pending_inventory, true);
+  for (let index = 0; index < 5; index += 1) mcp.definitions();
+  assert.equal(loads, 1);
+  let settled = false;
+  const settling = mcp.settled().then(() => { settled = true; });
+  await Promise.resolve();
+  assert.equal(settled, false);
+  gate.resolve({ account: { client: fixture.client } });
+  await settling;
+  assert.equal(fixture.lists(), 1);
+  assert.equal(mcp.search({ query: "inventory" }).output.tools[0].name, "mcp__account__lookup");
+  const call = await mcp.resolve("mcp__account__lookup").handler({});
+  assert.match(JSON.stringify(call), /SDK result/);
+});
+
+test("SDK inventory retries, refreshes and retires handlers while preserving fixed servers", { timeout: 5000 }, async (t) => {
+  const fixed = await sdkInventoryFixture(t);
+  let calls = 0;
+  const account = await sdkInventoryFixture(t, { onCall: () => { calls += 1; } });
+  let available = true;
+  const accountConfig = { client: account.client, isAvailable: () => available };
+  let inventory = { fixed: { client: account.client }, account: accountConfig };
+  let loads = 0;
+  const mcp = await createMcpRuntime({ fixed: { client: fixed.client } }, {
+    loadServers: async () => {
+      loads += 1;
+      if (loads === 1) throw new Error("private broker details");
+      return inventory;
+    },
+  });
+  t.after(() => mcp.close());
+  await mcp.settled();
+  assert.equal(mcp.search({ query: "inventory" }).output.inventory_error, "MCP server inventory loading failed");
+  assert.doesNotMatch(JSON.stringify(mcp.search({ query: "inventory" })), /private broker details/);
+  mcp.invalidateInventory();
+  mcp.definitions();
+  await mcp.settled();
+  assert.equal(loads, 2);
+  assert.equal(mcp.search({ query: "inventory" }).output.inventory_error, undefined);
+  const handler = mcp.resolve("mcp__account__lookup");
+  available = false;
+  assert.equal(mcp.resolve("mcp__account__lookup"), undefined);
+  await assert.rejects(handler.handler({}), /unavailable/);
+  available = true;
+  await handler.handler({});
+  assert.equal(calls, 1);
+  mcp.invalidateInventory();
+  await mcp.settled();
+  assert.equal(account.lists(), 1, "unchanged inventory reuses discovery");
+  const added = await sdkInventoryFixture(t);
+  inventory = { ...inventory, added: { client: added.client } };
+  mcp.invalidateInventory();
+  await mcp.settled();
+  assert.equal(account.lists(), 1, "adding another connection preserves existing clients");
+  assert.match(JSON.stringify(await handler.handler({})), /SDK result/);
+  inventory = {};
+  mcp.invalidateInventory();
+  await mcp.settled();
+  assert.equal(mcp.resolve("mcp__account__lookup"), undefined);
+  await assert.rejects(handler.handler({}), /unavailable/);
+  assert.ok(mcp.resolve("mcp__fixed__lookup"));
+  assert.equal(fixed.lists(), 1);
+  inventory = { account: accountConfig };
+  mcp.invalidateInventory();
+  await mcp.settled();
+  assert.ok(mcp.resolve("mcp__account__lookup"));
+  assert.equal(account.lists(), 2);
+  await assert.rejects(handler.handler({}), /unavailable/, "retired handlers stay retired after re-add");
+});
+
+test("SDK inventory refresh is lazy and single-flight and cannot publish after close", { timeout: 5000 }, async (t) => {
+  const fixture = await sdkInventoryFixture(t);
+  const gate = inventoryGate();
+  let loads = 0;
+  const mcp = await createMcpRuntime({}, {
+    inventoryRefreshMs: 1,
+    loadServers: async () => { loads += 1; return loads === 1 ? {} : gate.promise; },
+  });
+  t.after(() => mcp.close());
+  await mcp.settled();
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  assert.equal(loads, 1, "no timer polls inventory while idle");
+  mcp.definitions();
+  mcp.search({ query: "inventory" });
+  await Promise.resolve();
+  assert.equal(loads, 2);
+  mcp.invalidateInventory();
+  mcp.definitions();
+  assert.equal(loads, 2, "invalidation never overlaps an in-flight load");
+  const settling = mcp.settled();
+  await mcp.close();
+  await settling;
+  gate.resolve({ late: { client: fixture.client } });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(fixture.lists(), 0);
+  assert.equal(mcp.resolve("mcp__late__lookup"), undefined);
+  assert.equal(mcp.search({ query: "inventory" }).output.pending_inventory, false);
+});
+
+test("SDK inventory removal during tools/list prevents late publication", { timeout: 5000 }, async (t) => {
+  const gate = inventoryGate();
+  const started = inventoryGate();
+  const fixture = await sdkInventoryFixture(t, { listGate: gate.promise, listed: started.resolve });
+  let inventory = { account: { client: fixture.client } };
+  const mcp = await createMcpRuntime({}, { loadServers: async () => inventory });
+  t.after(() => mcp.close());
+  await started.promise;
+  inventory = {};
+  mcp.invalidateInventory();
+  await mcp.settled();
+  gate.resolve();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(mcp.resolve("mcp__account__lookup"), undefined);
+  assert.deepEqual(mcp.search({ query: "inventory" }).output.tools, []);
+});
