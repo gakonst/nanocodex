@@ -5,8 +5,8 @@
 #[cfg(target_family = "wasm")]
 compile_error!("nanocodex-managed is a native lifecycle backend");
 
-mod auth;
 mod account_services;
+mod auth;
 mod builder;
 mod claude;
 mod client;
@@ -15,8 +15,8 @@ mod driver;
 mod error;
 mod model;
 mod native_secure_input;
-mod private_input;
 mod phone_services;
+mod private_input;
 mod share;
 mod sse;
 mod types;
@@ -35,13 +35,11 @@ mod vm_host;
 mod attachment;
 
 pub use account_services::*;
-pub use vault_management::Item as VaultItemMetadata;
 pub use auth::ManagedApiKey;
 pub use builder::{Managed, ManagedBuilder, ManagedRequest, ManagedResponse, ManagedService};
 pub use claude::{ClaudeLogin, ClaudeLoginCode, ClaudeLoginStatus};
 pub use client::{ManagedClient, ManagedClientBuilder};
 pub use connectors::*;
-pub use phone_services::*;
 pub use driver::ManagedAgent;
 pub use error::ManagedError;
 pub use model::{
@@ -53,6 +51,7 @@ pub use native_secure_input::{
     NativeSecureInputDescription, NativeSecureInputEnvelope, NativeSecureInputReceipt,
     NativeSecureInputRequest, NativeSecureInputStatus,
 };
+pub use phone_services::*;
 pub use private_input::{
     PrivateInputBody, PrivateInputKind, PrivateInputRequest, PrivateVaultItem,
     private_input_output_text,
@@ -67,6 +66,7 @@ pub use vault::{
     VaultRequest, VaultRequestMethod, VaultRequestReceipt, VaultSignatureEncoding, VaultSigning,
     VaultSigningAlgorithm, VaultSshTarget,
 };
+pub use vault_management::Item as VaultItemMetadata;
 
 #[cfg(feature = "tools")]
 #[cfg_attr(docsrs, doc(cfg(feature = "tools")))]
