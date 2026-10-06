@@ -14,7 +14,8 @@ import WebSocket from "ws";
 // are synthetic. Catalog, Vault and configured setup remain externally gated
 // until the first public answer; mandatory startup joins cannot pass by timing.
 // Registration fault injection wraps the actual UserAccount HTTP boundary: one
-// publish fails before commit, then all retries use the unchanged production DO.
+// publish is held until the first answer, then fails once before the normal
+// background publication retries against the production account DO.
 const candidateRoot = fileURLToPath(new URL("..", import.meta.url));
 const root = process.env.NANOCODEX_STARTUP_SOURCE_ROOT ?? candidateRoot;
 const output = join(candidateRoot, "../../output/startup-overlap-journey", `${Date.now()}-${process.pid}`);
@@ -62,6 +63,7 @@ export class FixtureSandbox extends DurableObject {
 const codeCall = (name, callId, args) => ({type:'custom_tool_call',name:'exec',call_id:callId,input:'text(await tools.'+name+'('+JSON.stringify(args)+'));'});
 export class FixtureModel extends DurableObject {
   voiceHoldSent=false; voiceEnvironmentSent=false; voiceNewEnvironmentSent=false; originEnvironmentSent=false; walletEnvironmentSent=false; releaseVoice;
+  holdPublication=true; releaseRegistration;
   walletEnabled=false; releaseWallet; holdVault=true; releaseVault; vaultReady=false; holdSetup=true; releaseSetup;
   events=[]; setupStarted=false; catalogStarted=false; catalogReleased=false; setupFinished=false; published=false; publicationAttempts=0; holdCatalog=true; catalogGate; release; releasePublication;
   record(event,extra={}) { const row={type:'fixture.startup',event,at:Date.now(),...extra};this.events.push(row);console.info(row); }
@@ -72,8 +74,10 @@ export class FixtureModel extends DurableObject {
     if(url.pathname==='/key-lookup') { this.record('key.lookup');return new Response(null,{status:204}); }
     if(url.pathname==='/allow-wallet') { this.walletEnabled=true;this.releaseWallet?.();return new Response(null,{status:204}); }
     if(url.pathname==='/registry-prepare') { this.record('registry.prepare');return new Response(null,{status:204}); }
+    if(url.pathname==='/release-publication') { this.holdPublication=false;this.releaseRegistration?.();return new Response(null,{status:204}); }
     if(url.pathname==='/publication') {
       this.record('publication.start');
+      if(this.holdPublication) { this.record('publication.held');await new Promise(resolve=>{this.releaseRegistration=resolve;}); }
       if(!this.catalogStarted) await new Promise(resolve=>{this.releasePublication=resolve;setTimeout(resolve,3000);});
       this.record('publication.catalog_observed',{observed:this.catalogStarted});
       if(++this.publicationAttempts===1) { this.record('publication.fail');return new Response(null,{status:503}); }
@@ -171,6 +175,7 @@ export default {async fetch(request,env,ctx) {
     return Response.json(await createApiKey(env,{kind:'api_key',userId:user,...auth.grant,
       subjectId:'api_key:'+user,credentialId:'fixture',capabilities:auth.grant.capabilities},'synthetic startup'));
   }
+  if(url.pathname==='/__release-publication') return env.MODEL.getByName('startup').fetch('https://fixture.internal/release-publication');
   if(url.pathname==='/__trace') return env.MODEL.getByName('startup').fetch('https://fixture.internal/trace');
   if(url.pathname==='/__release-voice') return env.MODEL.getByName('startup').fetch('https://fixture.internal/release-voice');
   if(url.pathname==='/__hold-vault' || url.pathname==='/__release-vault' || url.pathname==='/__release-setup' || url.pathname==='/__hold-catalog' || url.pathname==='/__release-catalog' || url.pathname==='/__allow-wallet') return env.MODEL.getByName('startup').fetch('https://fixture.internal/'+url.pathname.slice(3));
@@ -226,6 +231,15 @@ test("public HTTP and WebSocket startup omit wallet I/O while explicit environme
     };
     const cold=await waitTurn(run.turn_id),coldMs=performance.now()-started;assert.match(JSON.stringify(cold),/STARTUP_OK/);
     const coldTrace=await(await backend.fetch("https://fixture.internal/__trace")).json();
+    assert.equal(coldTrace.some(row=>row.event==="publication.committed"),false,"first answer precedes held registry publication");
+    await backend.fetch("https://fixture.internal/__release-publication");
+    for(let i=0;;i++) {
+      const trace=await(await backend.fetch("https://fixture.internal/__trace")).json();
+      if(trace.some(row=>row.event==="publication.committed"))break;
+      assert.ok(i<500,"background registry publication did not retry");await delay(10);
+    }
+    const listed=await call("/v1/agents");
+    assert.ok(listed.data.includes(run.agent_id),"completed thread remains discoverable");
     assert.equal(coldTrace.filter(row=>row.event==="provider.request").length,1);
     for(const event of ["catalog.finish","vault.finish","setup.start","setup.finish"]) assert.equal(coldTrace.some(row=>row.event===event),false,"first answer precedes "+event);
     await call(`/v1/agents/${run.agent_id}/turns/${run.turn_id}`,"GET",undefined,404,other);
@@ -263,9 +277,9 @@ test("public HTTP and WebSocket startup omit wallet I/O while explicit environme
     assert.equal(trace.filter(row=>row.event==="registry.prepare").length,0,"fused creation publishes directly without an unused registry preparation request");
     assert.equal(first("publication.catalog_observed")?.observed,true,"metadata read starts while registration is still pending");
     assert.equal(trace.filter(row=>row.event==="publication.fail").length,1,"fault injector fails the first publication before commit");
-    assert.equal(trace.filter(row=>row.event==="publication.start").length,2,"the same public request safely retries registration");
+    assert.equal(trace.filter(row=>row.event==="publication.start").length,2,"background publication retries without resubmitting the prompt");
     assert.equal(first("setup.start").published,true,"no configured side effect before committed registration");
-    assert.equal(first("provider.connect").published,true,"no model capability before committed registration");
+    assert.equal(first("provider.connect").published,false,"provider connects while optional registration is held");
     assert.equal(first("catalog.setup_observed")?.observed,true,"configured setup must run while catalog is pending");
     assert.ok(first("setup.start").at<first("catalog.finish").at);
     const requests=trace.filter(row=>row.event==="provider.request");assert.equal(requests.length,3);
@@ -284,7 +298,7 @@ test("public HTTP and WebSocket startup omit wallet I/O while explicit environme
     assert.equal(trace.filter(row=>row.event==="setup.start").length,1,"warm turn never repeats setup side effects");
     evidence={source_root:root,cold_public_completion_ms:coldMs,warm_public_completion_ms:warmMs,setup_catalog_overlap_ms:first("catalog.finish").at-first("setup.start").at,
       setup_once:true,catalog_reads:1,provider_requests:3,prepared_file_read:true,tools_preserved:true,cross_owner_denied:true,
-      discovery_before_registration:true,failed_publication_retried:true,no_effect_before_registration:true,registry_prepare_requests:0,startup_wallet_reads:0,trace};
+      discovery_before_registration:true,failed_publication_retried:true,first_answer_before_registration:true,registry_prepare_requests:0,startup_wallet_reads:0,trace};
     // Exercise native create-on-upgrade with speculative preparation while
     // the external wallet service is held. No wallet read may even start.
     const liveToken=(await fixture()).token;

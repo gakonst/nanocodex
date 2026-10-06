@@ -198,41 +198,39 @@ async fn combined_first_prompt_journey() {
 
 #[cfg(feature = "tools")]
 #[tokio::test]
-async fn combined_first_prompt_with_local_tools_uses_sequential_creation() {
+async fn combined_first_prompt_with_local_tools_does_not_wait_for_attachment() {
     tokio::time::timeout(TEST_TIMEOUT, async {
         let api_key = format!("ncx_live_{}_{}", "a".repeat(12), "b".repeat(43));
         let fixture = Fixture::new(&api_key);
-        // A combined POST is intentionally unavailable when tools must attach.
+        // Attachment cannot reply until the turn has completed at the public API.
+        let release = Arc::new(tokio::sync::Notify::new());
+        let gate = release.clone();
         let app = Router::new()
-            .route("/v1/agents", post(|state: State<Fixture>, headers: HeaderMap, Json(mut body): Json<Value>| async move {
-                assert_eq!(body["configuration"]["chatgpt_account_id"], "synthetic-chatgpt-account");
-                body.as_object_mut().unwrap().remove("configuration");
-                create_agent(state, headers, Bytes::from(serde_json::to_vec(&body).unwrap())).await
+            .route("/v1/agent-runs", post(combined_run))
+            .route("/v1/agents/{agent_id}/tool-host", get(move |state: State<Fixture>, headers: HeaderMap, upgrade: WebSocketUpgrade| {
+                let gate = gate.clone();
+                async move { gate.notified().await; tool_host(state, Path(AGENT_ID.to_owned()), headers, upgrade).await }
             }))
-            .route("/v1/agents/{agent_id}", get(agent_state))
-            .route("/v1/agents/{agent_id}/events", get(events))
-            .route("/v1/agents/{agent_id}/turns", post(submit_turn))
-            .route("/v1/agents/{agent_id}/tool-host", get(tool_host))
             .with_state(fixture.clone());
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
-        let client = ManagedClient::new(format!("http://{address}"), ManagedApiKey::parse(api_key).unwrap()).unwrap();
+        let client = ManagedClient::new(format!("http://{address}"), ManagedApiKey::parse(api_key).unwrap()).unwrap()
+            .with_request_origin("nanocodex2", Some("user:synthetic-host"), Some("/synthetic-host")).unwrap();
         let (agent, _, turn) = Nanocodex::builder(Managed::create(client).with_settings(AgentSettings::default()))
             .chatgpt_account("synthetic-chatgpt-account")
             .tools(Tools::builder().without_defaults().build().unwrap())
-            .build_with_prompt("live prompt", ACTIVE_REQUEST_ID).await.unwrap();
-        fixture.wait_for_catalog().await;
-        fixture.send_event(nested_event(42, ROOT_SOURCE_REQUEST_ID, None, "run.completed", json!({"status":"completed"}))).await;
-        fixture.send_event(completed_event(43, ACTIVE_REQUEST_ID, "attached answer")).await;
-        assert_eq!(turn.result().await.unwrap().final_message(), "attached answer");
-        assert_eq!(*lock(&fixture.inner.operations), ["create", "submit"]);
+            .build_with_prompt("combined immediate", "combined-operation").await.unwrap();
+        assert_eq!(turn.request_id(), Some("combined-operation"));
+        assert_eq!(turn.result().await.unwrap().final_message(), "combined answer");
         assert_eq!(lock(&fixture.inner.create_bodies).len(), 1);
-        assert_eq!(lock(&fixture.inner.submissions).len(), 1);
+        assert!(lock(&fixture.inner.submissions).is_empty());
+        release.notify_one();
+        fixture.wait_for_catalog().await;
         agent.disconnect().await.unwrap();
-        println!("JOURNEY local tools: sequential create=1, prompt POST=1, account pin preserved, attachment catalog received, final_message=attached answer; no combined route");
+        println!("JOURNEY delayed local tools: one combined POST, caller request ID preserved, result before attachment readiness, catalog received after release, no separate prompt");
         server.abort();
-    }).await.expect("attached first prompt should finish within the public journey deadline");
+    }).await.expect("combined prompt must not wait for attachment readiness");
 }
 
 async fn combined_run(
@@ -694,6 +692,7 @@ async fn public_managed_lifecycle_threads_attachment_metadata() {
                 "runtime_id": runtime_id,
                 "connection_id": connection_id,
                 "command_recovery": true,
+                "turn_lifecycle": true,
                 "diagnostics": true,
                 "tools": [],
                 "attachment_id": "machine-public-1",

@@ -665,7 +665,7 @@ impl<S> ManagedBuilder<S> {
         self
     }
 
-    /// Creates and starts the known first prompt, batching when no tools must attach.
+    /// Creates and starts the known first prompt in one request.
     ///
     /// HTTP recipes receive the receipt and events on the same POST; live
     /// recipes reconnect their WebSocket from zero after admission. The first
@@ -673,9 +673,9 @@ impl<S> ManagedBuilder<S> {
     /// key and prompt to recover an uncertain combined creation. Open recipes
     /// are rejected.
     ///
-    /// Builders with local tools use ordinary creation and attachment before
-    /// submitting the prompt. This preserves the existing attachment ordering;
-    /// that sequential path does not make agent creation idempotent.
+    /// Local tools attach in the background once the server returns the agent
+    /// identity, just as ordinary build starts an asynchronous attachment.
+    /// The first prompt does not wait for optional local tool discovery.
     ///
     /// # Errors
     /// Returns input, creation, attachment, stream, or lifecycle failures.
@@ -705,21 +705,6 @@ impl<S> ManagedBuilder<S> {
             crate::driver::managed_prompt(prompt.clone(), settings.unwrap_or_default().model)?;
         let idempotency_key = idempotency_key.into();
         crate::client::validate_idempotency_key(&idempotency_key).map_err(backend_error)?;
-        #[cfg(feature = "tools")]
-        if self.tools.is_some() {
-            let (agent, events) = self.build().await?;
-            let turn = match agent
-                .prompt(PromptRequest::new(prompt).request_id(idempotency_key))
-                .await
-            {
-                Ok(turn) => turn,
-                Err(error) => {
-                    let _ = agent.disconnect().await;
-                    return Err(error);
-                }
-            };
-            return Ok((agent, events, turn));
-        }
         let response = call(
             &mut self.managed.service,
             ManagedRequest::CreateAndPrompt {
