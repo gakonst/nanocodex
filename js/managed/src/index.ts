@@ -9916,9 +9916,11 @@ export class DurableAgentSession extends DurableComputerObject {
       };
     };
     const codeEvaluatorStartedAt = performance.now();
-    const hostedRuntime = hostedProviders.length === 0 ? undefined : {
+    // Every managed session uses Code Mode, including restricted tool catalogs
+    // and sessions with no attached provider. Evaluation remains lazy.
+    const hostedRuntime = {
       codeEvaluator: managedCodeEvaluator(),
-      toolMode: "code" as const,
+      toolMode: "code-only" as const,
       toolProviders: hostedProviders,
     };
     const codeEvaluatorMs = performance.now() - codeEvaluatorStartedAt;
@@ -10410,7 +10412,7 @@ export class DurableAgentSession extends DurableComputerObject {
         // Astra's model prompt owns general behavior; these rules describe its host.
         [this.#settings().model === "gpt-6-astra" ? "additionalInstructions" : "instructions"]: multiplayer
           ? [
-            "You are the shared Nanocodex participant in a short-lived Multiplayer chat room.",
+            "You are the shared Nanocodex participant in a short-lived Multiplayer chat room. Run tool actions through Code Mode exec using tools.*; use wait to observe yielded cells.",
             "Reply conversationally and concisely to the room message. Use the normal Nanocodex tools when they materially help answer the room.",
             "GitHub, Gmail, Google Drive, and other account connectors are unavailable in shared rooms.",
             "Never claim to have performed an external action unless its tool completed successfully, and never expose internal runtime, routing, credential, or correlation identifiers.",
@@ -10418,7 +10420,7 @@ export class DurableAgentSession extends DurableComputerObject {
             "No process sandbox is attached. Bounded Just Bash is the complete local execution boundary.",
           ].join("\n\n")
           : [
-            "You are the durable Nanocodex brain running on Cloudflare Workers. Use Code Mode, tools, and Just Bash in /brain first. /brain is durable shared scratch mounted read-write in every Cloudflare hand; it never contains credentials or control-plane authority.",
+            "You are the durable Nanocodex brain running on Cloudflare Workers. Run tool actions through Code Mode exec using tools.*; use wait to observe yielded cells. Use Just Bash in /brain first. /brain is durable shared scratch mounted read-write in every Cloudflare hand; it never contains credentials or control-plane authority.",
             computer.instructions,
             "The agent starts without a sandbox hand. File work, text processing, HTTP, supported Git/GitHub commands, local video/audio inspection with ffprobe and ffmpeg, and JavaScript computation in Code Mode need no hand. Run ffprobe and ffmpeg directly in /brain for metadata, JPEG frames/contact sheets, and WAV audio extraction. They execute real single-threaded FFmpeg WASM without mounting a sandbox (one local input and output; Cloudflare runtime limits apply). Use their --help for supported options; unsupported codecs/operations need a native hand. When the task needs native binaries, package installation, builds, tests, a server, or a process session, follow the Hand selection and recovery order below; mount with provider cf_sandbox only after suitable attached Hands and authorized SSH recovery are unavailable, or when the user requests isolation. A known native command such as cargo test should go directly to a suitable hand. If a brain command reveals an unsupported binary or runtime capability, select a suitable Hand using that order and continue there, checking for partial effects before retrying. A compiler error or failing test on a hand should be investigated there. When the user requests a VM on a particular computer, discover that online computer in environment().hands and use its exact vm_provider as mount.provider. The computer itself is already a native hand; creating a VM gives it a separate isolated workspace and screen. Do not ask the user for an internal factory name. Offline historical registrations do not override an online computer's current capabilities. Do not ask the user to request a routine sandbox mount. mount provisions and attaches the hand before it returns.",
             HAND_EXECUTION_INSTRUCTIONS,
@@ -10485,7 +10487,7 @@ export class DurableAgentSession extends DurableComputerObject {
         if (configuredNames.some(name => !nativeNames.has(name))) throw new Error("configuration names an unavailable Claude capability");
       }
       const claudeInstructions = [
-            "You are the durable Nanocodex assistant running the native Claude Messages backend on Cloudflare Workers.",
+            "You are the durable Nanocodex assistant running the native Claude Messages backend on Cloudflare Workers. Run every tool action inside Code Mode exec with tools.*; use wait to observe yielded cells.",
             "Use only the capabilities actually declared for this session. Bash(command, workdir) executes a shell command. Read(file_path), Write(file_path, content), and Edit(file_path, old_string, new_string) operate on /brain files. BashOutput polls an exact retained native shell session, if available. No process sandbox starts attached.",
             computer.instructions.replaceAll("exec_command", "Bash").replaceAll("write_stdin", "BashOutput"),
             "Use durable /brain for file work first. Native commands, package installation, builds, tests and servers require a suitable Hand: follow the placement and recovery order below before mounting cf_sandbox. A Hand's logical root already maps to its workspace: never append the host absolute workspace to workdir. Polls remain pinned to the original Hand. Never claim a build, installation, booking or payment succeeded merely because it started.",
@@ -10504,6 +10506,7 @@ export class DurableAgentSession extends DurableComputerObject {
             ...(configuration.environment?.skills.map(skill => `Available skill: ${skill.name}. Read /brain/skills/${skill.name}/SKILL.md before applying it.`) ?? []),
           ].join("\n\n");
       const claudeCapability: ClaudeOptions | undefined = claudeTools === undefined ? undefined : { model: isClaude ? this.#settings().model : "claude-sonnet-4-6", thinking: "low", instructions: claudeInstructions,
+            toolMode: "code-only", codeEvaluator: managedCodeEvaluator(),
             ...(configuredNames === undefined && configuration.multi_agent?.enabled !== false
               ? { subagents: { maxConcurrency: configuration.multi_agent?.enabled ? configuration.multi_agent.max_concurrent_subagents ?? 6 : 6 } } : {}),
             tools: [...claudeTools!.tools, ...(claudeTasks?.tools.filter(tool => configuredNames === undefined || configuredNames.includes(tool.name)) ?? [])],
@@ -10531,8 +10534,8 @@ export class DurableAgentSession extends DurableComputerObject {
         ...(isClaude && configuredNames === undefined && configuration.multi_agent?.enabled !== false ? {
           codex: { model: "gpt-6.1-sol", thinking: "low",
             instructions: agentOptions.instructions ?? agentOptions.additionalInstructions,
-            tools: agentOptions.tools, toolMode: hostedRuntime?.toolMode ?? "direct",
-            codeEvaluator: hostedRuntime?.codeEvaluator },
+            tools: agentOptions.tools, toolMode: hostedRuntime.toolMode,
+            codeEvaluator: hostedRuntime.codeEvaluator },
         } : {}),
         ...(isClaude ? { claude: { create: async (input: ClaudeOptions) => {
           const options: ClaudeOptions = { ...input, ...claudeCapability!, model: input.model, thinking: input.thinking };

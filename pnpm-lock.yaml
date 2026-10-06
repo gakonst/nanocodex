@@ -584,12 +584,18 @@ importers:
 
   js/managed2:
     dependencies:
+      '@jitl/quickjs-wasmfile-release-asyncify':
+        specifier: 0.32.0
+        version: 0.32.0
       nanocodex:
         specifier: workspace:*
         version: link:../nanocodex
       nanocodex-tools:
         specifier: workspace:*
         version: link:../nanocodex-tools
+      quickjs-emscripten-core:
+        specifier: 0.32.0
+        version: 0.32.0
     devDependencies:
       '@cloudflare/vitest-pool-workers':
         specifier: ^0.19.0

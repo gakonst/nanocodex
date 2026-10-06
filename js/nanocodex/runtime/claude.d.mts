@@ -40,13 +40,17 @@ export type CodexHarnessOptions = Readonly<{
   thinking?: import('../types.mjs').Thinking;
   instructions?: string;
   workspace?: string;
-  toolMode?: 'code' | 'direct';
+  toolMode?: 'code' | 'code-only' | 'direct';
   /** Overrides Node's native evaluator; required for Code Mode in non-Worker Web API hosts. */
   codeEvaluator?: import('../types.mjs').CodeEvaluator;
   tools?: import('../types.mjs').ToolConfiguration;
 }>;
 export type Options = Readonly<{
   harness?: 'claude';
+  /** Direct native tools by default; code-only exposes only exec and wait. */
+  toolMode?: 'direct' | 'code-only';
+  /** Required for code-only; evaluation is never inferred from ambient JavaScript. */
+  codeEvaluator?: import('../types.mjs').CodeEvaluator;
   /** Opt in to the canonical shared subagent task tree. */
   subagents?: Readonly<{ maxConcurrency?: number }>;
   /** Explicit alternate-family capability; no credentials are inferred. */

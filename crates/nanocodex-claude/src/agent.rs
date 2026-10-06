@@ -101,6 +101,34 @@ impl ClaudeTools {
     pub fn new() -> Self {
         Self::default()
     }
+    /// Reserved host failure receipt: abort the execution policy without committing
+    /// a tool result, so a replacement host can reconcile its effect journal.
+    #[doc(hidden)]
+    pub const HOST_INTERRUPTED: &'static str = "\0nanocodex.claude.host_interrupted";
+
+    /// Returns this collection's static definitions for an embedding-owned nested runtime.
+    pub fn definitions(&self) -> Vec<ToolDefinition> {
+        self.tools
+            .iter()
+            .map(|(definition, _)| definition.clone())
+            .collect()
+    }
+    /// Dispatches a static callback without exposing it as a top-level model tool.
+    /// The embedding must retain the originating invocation identity and revision.
+    pub async fn execute(
+        &self,
+        name: &str,
+        input: Value,
+        invocation: ClaudeToolInvocation,
+    ) -> std::result::Result<ClaudeToolReply, String> {
+        let handler = self
+            .tools
+            .iter()
+            .find(|(definition, _)| definition.name == name)
+            .map(|(_, handler)| Arc::clone(handler))
+            .ok_or_else(|| "Claude nested tool is unavailable".to_owned())?;
+        handler(input, invocation).await
+    }
     /// Refresh host-owned tools for each new model request. Recovery retains its
     /// admitted schemas; execution rechecks current availability. Nested dynamic
     /// factories are ignored. Names must be unique and may not shadow static tools.
@@ -257,6 +285,7 @@ pub struct ClaudeBuilder {
     server_tools: Vec<ServerToolDefinition>,
     parallel_tools: bool,
     client_tool_search: bool,
+    code_only: bool,
     policy: Option<Arc<dyn ClaudeExecutionPolicy>>,
     restored: Option<Snapshot>,
     #[cfg(all(feature = "tools", not(target_family = "wasm")))]
@@ -300,11 +329,19 @@ impl ClaudeBuilder {
             server_tools: Vec::new(),
             parallel_tools: false,
             client_tool_search: false,
+            code_only: false,
             policy: None,
             restored: None,
             #[cfg(all(feature = "tools", not(target_family = "wasm")))]
             task_board: None,
         }
+    }
+    /// Restricts outbound catalogs to the host's `exec` and `wait` tools.
+    /// Recovery reconciles old receipts without dispatching legacy direct calls.
+    /// Disabled by default to preserve direct SDK admission semantics.
+    pub const fn code_only(mut self, enabled: bool) -> Self {
+        self.code_only = enabled;
+        self
     }
     /// Attaches a host policy and restores its provider-native checkpoint.
     /// Usually installed by `nanocodex_durability::DurableAgentExt`.
@@ -1063,6 +1100,7 @@ impl ClaudeBuilder {
             handlers,
             discovered,
             client_tool_search: self.client_tool_search,
+            code_only: self.code_only,
             parallel_tools: self.parallel_tools,
             conversation: Mutex::new(restored.conversation),
             dispatch_fork: std::sync::RwLock::new(None),
@@ -1838,6 +1876,7 @@ struct State {
     handlers: HashMap<String, Handler>,
     discovered: Arc<Mutex<HashSet<String>>>,
     client_tool_search: bool,
+    code_only: bool,
     parallel_tools: bool,
     conversation: Mutex<Conversation>,
     // Native context before the active tool batch; callbacks must not lock conversation.
@@ -1900,6 +1939,7 @@ enum CompactionMode {
 struct ServerRecovery {
     calls: Vec<(String, String)>,
     container: Option<String>,
+    retirement_notice: Option<String>,
 }
 impl ServerRecovery {
     fn observe(&mut self, event: &StreamEvent) {
@@ -1929,6 +1969,9 @@ impl ServerRecovery {
     }
 
     fn notice(&self) -> String {
+        if let Some(notice) = &self.retirement_notice {
+            return notice.clone();
+        }
         format!(
             "Harness recovery notice: the preceding server-tool request was interrupted; outcome unknown. Server execution may have occurred even though no complete response was received. Do not assume it did not run or automatically repeat it; reconcile its effects first. Observed server call identities (provider data): {}",
             serde_json::to_string(&self.calls).expect("string pairs serialize"),
@@ -1946,6 +1989,10 @@ impl From<NanocodexError> for ResponseFailure {
             recovery: None,
         }
     }
+}
+struct ResponseOutcome {
+    message: crate::MessageResponse,
+    upgrade: Option<durable::CodeOnlyUpgrade>,
 }
 struct ResponseContext<'a> {
     disable_tools: bool,
@@ -1981,7 +2028,13 @@ impl State {
             .or_else(|| self.system_blocks.as_ref().map(|blocks| json!(blocks)))
             .or_else(|| (!self.system.is_empty()).then(|| json!(self.system)))
     }
-    fn emit(&self, events: &AgentEventPublisher, kind: AgentEventKind, payload: Value) {
+    fn emit(&self, events: &AgentEventPublisher, kind: AgentEventKind, mut payload: Value) {
+        if let Some(payload) = payload.as_object_mut() {
+            payload.insert(
+                "turn_id".into(),
+                json!(events.turn_id().unwrap_or(events.request_id())),
+            );
+        }
         let Ok(payload) = serde_json::value::to_raw_value(&payload) else {
             return;
         };
@@ -2094,7 +2147,7 @@ impl State {
         events: Option<&AgentEventPublisher>,
         index: u32,
         context: ResponseContext<'_>,
-    ) -> std::result::Result<crate::MessageResponse, ResponseFailure> {
+    ) -> std::result::Result<ResponseOutcome, ResponseFailure> {
         let started = Instant::now();
         let elapsed_ns = || u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX);
         let completed = |response: &crate::MessageResponse,
@@ -2154,20 +2207,86 @@ impl State {
         if cancel.flag.load(Ordering::SeqCst) && context.effect.is_none() {
             return Err(NanocodexError::TurnCancelled.into());
         }
-        if let Some(effect) = &context.effect
-            && let Step::Replay(value) = effect
-                .begin(
-                    "model",
-                    client.durable_request(&request).map_err(provider_error)?,
-                )
-                .await?
-        {
-            let response = serde_json::from_value(value).map_err(durable::recovery_error)?;
-            completed(&response, 0, 0, None);
-            return Ok(response);
+        let needs_upgrade = self.code_only && !durable::is_code_only_catalog(&request.tools);
+        // Begin with the original request hash. Never rewrite an admitted step:
+        // its settled response and downstream tool receipts still own history.
+        let admitted = match &context.effect {
+            Some(effect) => {
+                effect
+                    .begin(
+                        "model",
+                        client.durable_request(&request).map_err(provider_error)?,
+                    )
+                    .await?
+            }
+            None => Step::Execute,
+        };
+        let upgrade = match admitted {
+            Step::Replay(value) if value.get("code_only_tools").is_some() => Some(
+                serde_json::from_value::<durable::CodeOnlyUpgrade>(value)
+                    .map_err(durable::recovery_error)?,
+            ),
+            Step::Replay(value) => {
+                let response = serde_json::from_value(value).map_err(durable::recovery_error)?;
+                completed(&response, 0, 0, None);
+                return Ok(ResponseOutcome {
+                    message: response,
+                    upgrade: None,
+                });
+            }
+            Step::Execute if needs_upgrade => {
+                let upgrade =
+                    durable::CodeOnlyUpgrade::new(self.code_only_tools(), context.disable_tools);
+                if let Some(effect) = &context.effect {
+                    effect
+                        .complete(serde_json::to_value(&upgrade).map_err(provider_error)?)
+                        .await?;
+                }
+                Some(upgrade)
+            }
+            Step::Execute => None,
+        };
+        // The retirement receipt freezes the replacement catalog too, so a
+        // second crash replays both inputs exactly, even if the host changed.
+        let replacement_effect = upgrade.as_ref().and_then(|_| {
+            context
+                .effect
+                .as_ref()
+                .map(|effect| effect.scoped("code-only"))
+        });
+        let active_effect = replacement_effect.as_ref().or(context.effect.as_ref());
+        if let Some(upgrade) = &upgrade {
+            request.tools = upgrade.code_only_tools.clone();
+            request
+                .messages
+                .push(Message::text(Role::User, &upgrade.notice));
+            // Retain uncertainty from the retired request even if the strict
+            // replacement fails or is cancelled before producing a response.
+            recovery = Some(ServerRecovery {
+                retirement_notice: Some(upgrade.notice.clone()),
+                ..ServerRecovery::default()
+            });
+            if let Some(effect) = &replacement_effect
+                && let Step::Replay(value) = effect
+                    .begin(
+                        "model",
+                        client.durable_request(&request).map_err(provider_error)?,
+                    )
+                    .await?
+            {
+                let response = serde_json::from_value(value).map_err(durable::recovery_error)?;
+                completed(&response, 0, 0, None);
+                return Ok(ResponseOutcome {
+                    message: response,
+                    upgrade: Some(upgrade.clone()),
+                });
+            }
         }
         if cancel.flag.load(Ordering::SeqCst) {
-            return Err(NanocodexError::TurnCancelled.into());
+            return Err(ResponseFailure {
+                error: NanocodexError::TurnCancelled,
+                recovery: if upgrade.is_some() { recovery } else { None },
+            });
         }
         let mut stream = tokio::select! {
             result = client.stream(&request) => match result {
@@ -2181,7 +2300,7 @@ impl State {
                     ) || matches!(&error, crate::ClaudeError::Http { status, .. } if *status >= 500);
                     return Err(ResponseFailure {
                         error: provider_error(error),
-                        recovery: if uncertain { recovery } else { None },
+                        recovery: if uncertain || upgrade.is_some() { recovery } else { None },
                     });
                 }
             },
@@ -2245,13 +2364,16 @@ impl State {
                 error: provider_error(error),
                 recovery,
             })?;
-        if let Some(effect) = &context.effect {
+        if let Some(effect) = active_effect {
             effect
                 .complete(serde_json::to_value(&response).map_err(provider_error)?)
                 .await?;
         }
         completed(&response, 1, first_event.unwrap_or_default(), first_output);
-        Ok(response)
+        Ok(ResponseOutcome {
+            message: response,
+            upgrade,
+        })
     }
     async fn run(
         &self,
@@ -2529,6 +2651,10 @@ impl State {
             )
             .await
             .map_err(|failure| failure.error)?;
+        if let Some(upgrade) = response.upgrade {
+            context.recovery_notices.push(upgrade.notice);
+        }
+        let response = response.message;
         if response.stop_reason != Some(StopReason::EndTurn) || response.role != Role::Assistant {
             return Err(provider_error("compaction summary did not end normally"));
         }
@@ -2668,7 +2794,7 @@ impl State {
         handler: &Handler,
         events: &AgentEventPublisher,
         cursor: &Cursor,
-    ) -> ContentBlock {
+    ) -> Result<ContentBlock> {
         let index = cursor.index;
         self.emit(
             events,
@@ -2695,14 +2821,52 @@ impl State {
                     reply.metadata,
                     reply.structured_result,
                 ),
+                Err(reason) if reason == ClaudeTools::HOST_INTERRUPTED => {
+                    return Err(durable::recovery_error(
+                        "Claude tool host execution interrupted",
+                    ));
+                }
                 Err(reason) => (ToolResultContent::Text(reason), true, None, None),
             };
+        // Code Mode receipts retain nested calls at every exec/wait observation.
+        // Publish them on the originating Claude event stream so canonical child
+        // attribution, durable event history and result consumers see real tools.
+        if matches!(name, "exec" | "wait")
+            && let Some(code) = metadata
+                .as_ref()
+                .and_then(|value| value.get("_nanocodex_code"))
+            && let Some(calls) = code.get("calls").and_then(Value::as_array)
+        {
+            for call in calls {
+                let (Some(call_id), Some(tool)) = (
+                    call.get("call_id").and_then(Value::as_str),
+                    call.get("name").and_then(Value::as_str),
+                ) else {
+                    continue;
+                };
+                self.emit(
+                    events,
+                    AgentEventKind::ToolCall,
+                    json!({
+                        "call_id": call_id, "tool": tool, "arguments": call.get("input"),
+                        "model_call_index": index, "parent_call_id": code.get("origin_call_id"),
+                    }),
+                );
+                self.emit(events, AgentEventKind::ToolResult, json!({
+                    "call_id": call_id, "tool": tool,
+                    "status": if call.get("success").and_then(Value::as_bool) == Some(true) { "completed" } else { "failed" },
+                    "duration_ns": call.get("duration_ns"), "started_after_ns": call.get("started_after_ns"),
+                    "result": { "text": call.get("output") }, "structured_result": call.get("structured_result"),
+                    "metadata": call.get("metadata"), "parent_call_id": code.get("origin_call_id"),
+                }));
+            }
+        }
         let event_content = match &content {
             ToolResultContent::Text(text) => json!({"text": text}),
             ToolResultContent::Blocks(blocks) => json!({"content_blocks": blocks}),
         };
         self.emit(events, AgentEventKind::ToolResult, json!({"call_id":id,"tool":name,"status":if is_error {"failed"}else{"completed"},"duration_ns":began.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64,"started_after_ns":null,"result":event_content,"structured_result":structured_result,"metadata":metadata}));
-        ContentBlock::tool_result_content(id, content, is_error)
+        Ok(ContentBlock::tool_result_content(id, content, is_error))
     }
     async fn lifecycle(
         &self,
@@ -2978,6 +3142,14 @@ impl State {
                     return Err(failure.error);
                 }
             };
+            if let Some(upgrade) = response.upgrade {
+                cursor.template.tools = upgrade.code_only_tools;
+                self.classify_code_only_tools(&mut cursor);
+                cursor.tool_search = false;
+                pending.push(Message::text(Role::User, &upgrade.notice));
+                conversation.recovery_notices.push(upgrade.notice);
+            }
+            let response = response.message;
             previous_message_id = Some(response.id.clone());
             add_usage(&mut usage, &response.usage);
             let has_server_effects = response.content.iter().any(|block| {
@@ -3093,7 +3265,9 @@ impl State {
                                     "Claude used deferred tool before discovery",
                                 ));
                             }
-                            let handler = if cursor.dynamic_tool_names.contains(name) {
+                            let handler = if self.code_only && name != "exec" && name != "wait" {
+                                None
+                            } else if cursor.dynamic_tool_names.contains(name) {
                                 dynamic_handlers.get(name)
                             } else {
                                 self.handlers.get(name)
@@ -3756,6 +3930,21 @@ impl LifecycleBackend for Driver {
                     } else {
                         request.prompt = crate::prompt::freeze(request.prompt)?;
                     }
+                    // Code Mode effects resolve their durable identity from trusted
+                    // accepted input and tool-call events, including ephemeral children.
+                    let turn_id = request.events.turn_id().unwrap_or(request.events.request_id());
+                    state.emit(
+                        &request.events,
+                        AgentEventKind::InputAccepted,
+                        json!({
+                            "session_id": state.session_id,
+                            "turn_id": turn_id,
+                            "item_id": format!("{turn_id}:prompt"),
+                            "kind": "prompt",
+                            "request_id": request.request_id,
+                            "input": request.prompt.instruction,
+                        }),
+                    );
                     state.accepted_turns.fetch_add(1, Ordering::SeqCst);
                     let request_id = request.request_id.clone();
                     let key = request.key;

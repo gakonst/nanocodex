@@ -4,6 +4,15 @@ This Worker is Nanocodex's account-owned hosted-agent surface on Cloudflare. It
 authenticates public requests, projects the caller's authority, and routes work
 to durable, account-scoped services.
 
+Managed sessions always use `toolMode: "code-only"`. The model sees `exec` and
+`wait`; shell, planning, discovery, account tools and subagent actions run through
+`tools.*` inside Code Mode. Tool allowlists and sessions without attached providers
+retain this policy. Recreated sessions select the same policy from backend code.
+The public SDK keeps its existing `code` and `direct` modes for other embedders.
+
+Run `pnpm --filter nanocodex-managed-service test:code-mode-only` for the real
+Worker/WASM/QuickJS journey, including blocked direct calls and durable recovery.
+
 Managed agents have a native `browseX` tool for public X posts, profiles, search,
 followers, and following. `environment().apis` advertises the tool independently
 of connector authentication. It calls the private [X Worker](../x-api/README.md)

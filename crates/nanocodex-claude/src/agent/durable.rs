@@ -88,6 +88,14 @@ pub(super) struct Effect<'a> {
     step: String,
 }
 impl Effect<'_> {
+    pub(super) fn scoped(&self, scope: &str) -> Effect<'_> {
+        Effect {
+            policy: self.policy,
+            operation: self.operation,
+            step: format!("{scope}-{}", self.step),
+        }
+    }
+
     pub(super) async fn begin(&self, kind: &str, input: Value) -> Result<Step> {
         self.policy
             .begin_step(
@@ -104,7 +112,51 @@ impl Effect<'_> {
             .await
     }
 }
+/// An interrupted old request is retired explicitly, never represented as a
+/// successful model response. The replacement has an independent effect ID.
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct CodeOnlyUpgrade {
+    pub(super) code_only_tools: Vec<ClaudeToolSpec>,
+    pub(super) notice: String,
+}
+impl CodeOnlyUpgrade {
+    pub(super) fn new(code_only_tools: Vec<ClaudeToolSpec>, tools_disabled: bool) -> Self {
+        Self {
+            code_only_tools,
+            notice: if tools_disabled {
+                "Harness recovery notice: the interrupted summary request was reissued with the current tool catalog. Produce the requested text-only summary."
+            } else {
+                "Harness recovery notice: this operation was upgraded to Code Mode. The preceding direct-tool model request was retired with outcome unknown; provider-side effects may already have occurred. Do not automatically repeat them. Reconcile effects before continuing through exec and wait."
+            }.into(),
+        }
+    }
+}
+pub(super) fn is_code_only_catalog(tools: &[ClaudeToolSpec]) -> bool {
+    tools.len() == 2
+        && ["exec", "wait"].iter().all(|name| {
+            tools
+                .iter()
+                .any(|tool| matches!(tool, ClaudeToolSpec::Client(tool) if tool.name == *name))
+        })
+}
 impl State {
+    pub(super) fn code_only_tools(&self) -> Vec<ClaudeToolSpec> {
+        self.available_tools().into_iter().filter(|tool| {
+            matches!(tool, ClaudeToolSpec::Client(tool) if tool.name == "exec" || tool.name == "wait")
+        }).collect()
+    }
+    pub(super) fn classify_code_only_tools(&self, cursor: &mut Cursor) {
+        cursor.dynamic_tool_names = self
+            .dynamic_catalog()
+            .into_iter()
+            .filter_map(|(definition, _)| {
+                cursor.template.tools.iter().any(|tool| {
+                    matches!(tool, ClaudeToolSpec::Client(admitted) if admitted == &definition)
+                }).then_some(definition.name)
+            })
+            .collect();
+    }
     #[cfg_attr(
         not(all(feature = "tools", not(target_family = "wasm"))),
         allow(clippy::missing_const_for_fn)
@@ -238,6 +290,14 @@ impl State {
         cursor: &mut Cursor,
         conversation: &Conversation,
     ) -> Result<()> {
+        // Only settled boundaries may replace an admitted catalog. Pending
+        // model requests are reconciled by response(), and tool receipts by
+        // durable_tool(), before the journal permits this advance.
+        if self.code_only && !is_code_only_catalog(&cursor.template.tools) {
+            cursor.template.tools = self.code_only_tools();
+            self.classify_code_only_tools(cursor);
+            cursor.tool_search = false;
+        }
         cursor.snapshot = self.snapshot(conversation).await?;
         if let (Some(policy), Some(operation)) = (&self.policy, &cursor.operation) {
             policy
@@ -336,9 +396,17 @@ impl State {
         } else if let Some(handler) = handler {
             tokio::select! {
                 biased;
-                result = self.call_tool(id, name, input, handler, events, cursor) => result,
+                result = self.call_tool(id, name, input, handler, events, cursor) => result?,
                 () = cancel.cancelled() => unknown(),
             }
+        } else if self.code_only && name != "exec" && name != "wait" {
+            ContentBlock::tool_result_content(
+                id,
+                ToolResultContent::Text(format!(
+                    "Direct tool {name} was retired during Code Mode recovery. Its prior outcome is unknown; no handler was invoked in this attempt. Reconcile effects before repeating through exec."
+                )),
+                true,
+            )
         } else {
             ContentBlock::tool_result_content(
                 id,

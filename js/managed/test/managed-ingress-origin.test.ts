@@ -44,7 +44,9 @@ describe("trusted managed ingress", () => {
 
   it.each(["/v1/agents", "/v1/agent-runs"])("preserves trusted context through %s creation", async path => {
     const calls: string[] = [];
-    const runtime = { ...env, NANOCODEX_SESSIONS: {
+    const runtime = { ...env,
+      NANOCODEX: { fetch: async () => Response.json({ chatgpt: { connected: true } }) },
+      NANOCODEX_SESSIONS: {
       idFromName: () => ({ toString: () => "fixture-session" }),
       getByName: () => ({ fetch: async (input: RequestInfo, init?: RequestInit) => {
         const request = new Request(input, init);
@@ -74,9 +76,10 @@ describe("trusted managed ingress", () => {
       let rootCalls = 0, childCalls = 0, childId: number | undefined;
       const completed = () => ({ object: "response", status: "completed", output: [{ id: "fixture-message", type: "message", role: "assistant", content: [{ type: "output_text", text: "DONE" }] }] });
       const toolCall = (input: any, name: string, args: unknown) => {
-        const tool = input.tools.find((tool: any) => tool.description.startsWith(`${name}\n`));
+        expect(input.tools.map((tool: any) => tool.description.split("\n")[0]).sort()).toEqual(["exec", "wait"]);
+        const tool = input.tools.find((tool: any) => tool.description.startsWith("exec\n"));
         expect(tool).toBeDefined();
-        return { object: "response", status: "completed", output: [{ id: "fixture-call", type: "function_call", call_id: `call-${rootCalls}-${childCalls}`, name: tool.name, arguments: JSON.stringify(args) }] };
+        return { object: "response", status: "completed", output: [{ id: "fixture-call", type: "function_call", call_id: `call-${rootCalls}-${childCalls}`, name: tool.name, arguments: JSON.stringify({ input: `text("NESTED_RECEIPT:"+JSON.stringify(await tools.${name}(${JSON.stringify(args)})));` }) }] };
       };
       const streamed = (response: any) => new ReadableStream<Uint8Array>({ start(controller) {
         const item = response.output[0];
@@ -114,9 +117,14 @@ describe("trusted managed ingress", () => {
           } else {
             rootCalls++;
             if (rootCalls === 1) response = toolCall(input, "spawn_agent", { role: "origin specialist", task: "Return synthetic result",
-              output_schema: { type: "object", properties: { value: { type: "string" } }, required: ["value"] } });
+              output_contract: { kind: "object", fields: [{ name: "value", schema: { kind: "string" }, required: true }] } });
             else if (rootCalls === 2) {
-              childId = JSON.parse(input.input.at(-1).output).agent_id;
+              const output = input.input.at(-1).output;
+              const text = typeof output === "string" ? output : output.map((block: any) => block.text ?? "").join("\n");
+              const receipt = text.match(/NESTED_RECEIPT:(.+)/);
+              expect(receipt).not.toBeNull();
+              const value = JSON.parse(receipt[1]);
+              childId = (typeof value === "string" ? JSON.parse(value) : value).agent_id;
               response = toolCall(input, "wait_agent", { agent_ids: [childId], timeout_ms: 5_000 });
             } else response = completed();
           }

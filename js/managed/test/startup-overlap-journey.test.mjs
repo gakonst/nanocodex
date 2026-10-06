@@ -59,6 +59,7 @@ export class FixtureSandbox extends DurableObject {
   async clearRemoteDesktop() {}
   async destroy() {}
 }
+const codeCall = (name, callId, args) => ({type:'custom_tool_call',name:'exec',call_id:callId,input:'text(await tools.'+name+'('+JSON.stringify(args)+'));'});
 export class FixtureModel extends DurableObject {
   voiceHoldSent=false; voiceEnvironmentSent=false; voiceNewEnvironmentSent=false; originEnvironmentSent=false; walletEnvironmentSent=false; releaseVoice;
   walletEnabled=false; releaseWallet;
@@ -123,7 +124,7 @@ export class FixtureModel extends DurableObject {
         const inputText=JSON.stringify(body.input??[]);
         if(inputText.includes('VOICE_ORIGIN_HOLD') && !this.voiceHoldSent) {
           this.voiceHoldSent=true;
-          server.send(JSON.stringify({type:'response.completed',response:{id,status:'completed',end_turn:false,output:[{type:'function_call',name:'exec_command',call_id:'call_voice_hold',arguments:JSON.stringify({cmd:'curl -fsS https://startup-fixture.example/voice-hold',workdir:'/brain'})}],usage:{input_tokens:1,output_tokens:1,total_tokens:2}}}));
+          server.send(JSON.stringify({type:'response.completed',response:{id,status:'completed',end_turn:false,output:[codeCall('exec_command','call_voice_hold',{cmd:'curl -fsS https://startup-fixture.example/voice-hold',workdir:'/brain'})],usage:{input_tokens:1,output_tokens:1,total_tokens:2}}}));
           return;
         }
         const voiceEnvironment=inputText.includes('VOICE_ORIGIN_STEER') && !this.voiceEnvironmentSent;
@@ -140,7 +141,7 @@ export class FixtureModel extends DurableObject {
           return;
         }
         if(requestIndex===2) {
-          server.send(JSON.stringify({type:'response.completed',response:{id,status:'completed',end_turn:false,output:[{type:'function_call',name:'exec_command',call_id:'call_startup_read',arguments:JSON.stringify({cmd:'cat /brain/setup-output.txt',workdir:'/brain'})}],usage:{input_tokens:1,output_tokens:1,total_tokens:2}}}));
+          server.send(JSON.stringify({type:'response.completed',response:{id,status:'completed',end_turn:false,output:[codeCall('exec_command','call_startup_read',{cmd:'cat /brain/setup-output.txt',workdir:'/brain'})],usage:{input_tokens:1,output_tokens:1,total_tokens:2}}}));
           return;
         }
         if(inputText.includes('Read the account wallet with environment') && !this.walletEnvironmentSent) {

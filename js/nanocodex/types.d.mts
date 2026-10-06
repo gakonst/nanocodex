@@ -503,6 +503,8 @@ export type ToolConfiguration<Extension = never> =
   | import("./tools/Tools.mjs").Tools;
 
 export type CodeEvaluatorEnvironment = {
+  /** Trusted session identity; lets shared evaluators schedule child agents independently. */
+  sessionId?: string;
   tools: Readonly<Record<string, (input: unknown) => Promise<unknown>>>;
   toolDefinitions: readonly Record<string, unknown>[];
   text(value: unknown): void;
