@@ -1014,6 +1014,14 @@ pub(crate) fn managed_prompt(
     prompt: Prompt,
     model: ManagedModel,
 ) -> nanocodex_agent::Result<PromptInput> {
+    managed_prompt_for_selection(prompt, Some(model))
+}
+
+/// Unknown models defer only family-specific admission to the managed server.
+pub(crate) fn managed_prompt_for_selection(
+    prompt: Prompt,
+    model: Option<ManagedModel>,
+) -> nanocodex_agent::Result<PromptInput> {
     if !prompt.transcript().is_empty() {
         return Err(NanocodexError::UnsupportedCapability {
             capability: "prompt_transcript",
@@ -1042,7 +1050,7 @@ pub(crate) fn managed_prompt(
                 UserInput::File {
                     file_data,
                     filename,
-                } if model.oai().is_none() => Ok(PromptContent::File {
+                } if model.is_none_or(|model| model.oai().is_none()) => Ok(PromptContent::File {
                     file_data,
                     filename,
                 }),

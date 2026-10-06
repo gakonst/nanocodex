@@ -312,6 +312,71 @@ async fn combined_first_prompt_with_deferred_tools_preserves_lifecycle() {
     }).await.expect("deferred tool preparation cannot block admission, events, or cancellation");
 }
 
+#[tokio::test]
+async fn selected_first_prompt_document_uses_authoritative_model() {
+    use nanocodex_agent::input::{Prompt, UserInput};
+    use nanocodex_managed::InitialSettingsSelection;
+    tokio::time::timeout(TEST_TIMEOUT, async {
+        for claude in [true, false] {
+            let requests = Arc::new(AtomicUsize::new(0));
+            let observed = requests.clone();
+            let app = Router::new().route("/v1/agent-runs", post(move |headers: HeaderMap, Json(body): Json<Value>| {
+                let observed = observed.clone();
+                async move {
+                    observed.fetch_add(1, Ordering::SeqCst);
+                    assert_eq!(headers["idempotency-key"], "selected-document");
+                    assert_eq!(headers["accept"], "text/event-stream");
+                    assert_eq!(body["settings_selection"], json!({"policy":"sdk"}));
+                    assert!(body.get("settings").is_none());
+                    assert_eq!(body["input"], json!([
+                        {"type":"text", "text":"summarize synthetic document"},
+                        {"type":"file", "file_data":"data:text/plain;base64,aGVsbG8=", "filename":"fixture.txt"}
+                    ]));
+                    if !claude {
+                        return (StatusCode::BAD_REQUEST, Json(json!({"error":"unsupported_input"}))).into_response();
+                    }
+                    let mut receipt = turn_view(ACTIVE_REQUEST_ID, "accepted", "", "41", None, None);
+                    receipt["input"] = body["input"].clone();
+                    receipt["agent_id"] = AGENT_ID.into();
+                    receipt["session_id"] = SESSION_ID.into();
+                    receipt["turn_idempotency_key"] = "agent-run:document".into();
+                    let mut bytes = format!("event: run\ndata: {receipt}\n\n").into_bytes();
+                    bytes.extend_from_slice(&accepted_event(41, ACTIVE_REQUEST_ID, "summarize synthetic document"));
+                    bytes.extend_from_slice(&nested_event(42, ROOT_SOURCE_REQUEST_ID, None,
+                        "run.completed", json!({"status":"completed"})));
+                    bytes.extend_from_slice(&completed_event(43, ACTIVE_REQUEST_ID, "document answer"));
+                    Response::builder().status(StatusCode::CREATED)
+                        .header("content-type", "text/event-stream")
+                        .header("x-nanocodex-settings", json!({"model":"claude-sonnet-4-6","thinking":"medium","reasoning_mode":"standard","fast_mode":false}).to_string())
+                        .body(Body::from(bytes)).unwrap()
+                }
+            }));
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+            let client = ManagedClient::new(format!("http://{address}"), ManagedApiKey::parse(format!("ncx_live_{}_{}", "a".repeat(12), "b".repeat(43))).unwrap()).unwrap();
+            let prompt = Prompt::content([
+                UserInput::Text { text: "summarize synthetic document".into() },
+                UserInput::File { file_data: "data:text/plain;base64,aGVsbG8=".into(), filename: Some("fixture.txt".into()) },
+            ]);
+            let result = Nanocodex::builder(Managed::create(client))
+                .settings_selection(InitialSettingsSelection::default())
+                .build_with_prompt(prompt, "selected-document").await;
+            if claude {
+                let (agent, _, turn) = result.unwrap();
+                assert_eq!(turn.result().await.unwrap().final_message(), "document answer");
+                agent.disconnect().await.unwrap();
+            } else {
+                let error = match result { Ok(_) => panic!("OpenAI must reject inline documents"), Err(error) => error };
+                assert!(error.to_string().contains("unsupported_input"), "{error}");
+            }
+            assert_eq!(requests.load(Ordering::SeqCst), 1, "document reaches exactly one authoritative admission");
+            println!("JOURNEY selected document: claude={claude}, POST=1, expected={}", if claude { "document answer" } else { "HTTP 400 unsupported_input" });
+            server.abort();
+        }
+    }).await.expect("selected document public HTTP/SSE journey timed out");
+}
+
 async fn combined_run(
     State(fixture): State<Fixture>,
     headers: HeaderMap,

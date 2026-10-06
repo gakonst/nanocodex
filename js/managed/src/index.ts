@@ -303,6 +303,8 @@ import {
 import {
   DEFAULT_AGENT_SETTINGS,
   isAgentModel,
+  isAgentThinking,
+  INITIAL_MODEL_THINKING,
   agentSettingsQuery,
   parseAgentCreateBody,
   parseAgentRunBody,
@@ -568,6 +570,7 @@ type SessionInitialization = {
   runtime_profile?: unknown;
   settings?: unknown;
   configuration?: unknown;
+  selection_fingerprint?: unknown;
 };
 
 type DeviceHostAttachment = {
@@ -2236,6 +2239,8 @@ async function managedFetchRoute(
         return json({ error: "turn_admission_invalid_response" }, { status: 502 });
       }
       const combined = json(receipt, { status: created.status });
+      const selectedSettings = created.headers.get("x-nanocodex-settings");
+      if (selectedSettings) combined.headers.set("x-nanocodex-settings", selectedSettings);
       const timing = created.headers.get("server-timing");
       if (timing) combined.headers.set("server-timing", timing);
       return combined;
@@ -2259,6 +2264,7 @@ async function managedFetchRoute(
       let durabilityArchive: unknown;
       let creationSettings = DEFAULT_AGENT_SETTINGS;
       let settingsProvided = false;
+      let settingsSelection: ReturnType<typeof parseAgentCreateBody>["settingsSelection"];
       let creationConfiguration: AgentConfiguration = {};
       let modelCatalog: Awaited<ReturnType<typeof availableManagedModels>> | undefined;
       try {
@@ -2290,7 +2296,9 @@ async function managedFetchRoute(
             throw new TypeError("model_routing owns model and thinking; omit settings");
           }
         }
-        if (!settingsProvided && !creationConfiguration.settings && !creationConfiguration.model_routing && body.durability === undefined) {
+        settingsSelection = body.settingsSelection;
+        if (settingsSelection && !firstTurn) throw new TypeError("settings_selection requires combined creation and prompt");
+        if (!settingsSelection && !settingsProvided && !creationConfiguration.settings && !creationConfiguration.model_routing && body.durability === undefined) {
           try {
             const selection = await selectDefaultManagedModel(env.NANOCODEX, principal.userId, principal.connectGrant ? {} : env);
             modelCatalog = selection.catalog;
@@ -2298,7 +2306,7 @@ async function managedFetchRoute(
             if (selection.default_model?.startsWith("claude-")) creationSettings = { ...DEFAULT_AGENT_SETTINGS, model: selection.default_model };
           } catch { return json({ error: "model_availability_unavailable" }, { status: 503 }); }
         }
-        if (creationSettings.model.startsWith("claude-")) {
+        if (!settingsSelection && creationSettings.model.startsWith("claude-")) {
           if (creationConfiguration.output_schema !== undefined || creationConfiguration.prompt_cache !== undefined || creationConfiguration.tools?.includes("WebSearch")) return json({ error: "claude_capability_unsupported" }, { status: 409 });
           if (principal.connectGrant) return json({ error: "claude_forbidden" }, { status: 403 });
           let catalog;
@@ -2393,6 +2401,7 @@ async function managedFetchRoute(
               organization_id: principal.organizationId, team_id: principal.teamId,
               authorization_epoch: principal.authorizationEpoch, public_origin: url.origin,
               settings: creationSettings, configuration: creationConfiguration,
+              ...(settingsSelection ? { settings_selection: settingsSelection } : {}),
               ...(firstTurn ? { first_turn: firstTurn } : {}),
             }),
           }, ownershipTimeoutMs, "agent creation", 5, (attempt) => {
@@ -2410,7 +2419,7 @@ async function managedFetchRoute(
         const streaming = firstTurn !== undefined && created.headers.get("content-type")?.startsWith("text/event-stream");
         // Keep full input in the body; only bounded timing/identity metadata
         // crosses this internal header on the streaming response.
-        const phases: Record<string, number> & { first_turn?: Record<string, unknown>; first_turn_status?: number; first_turn_summary?: unknown } = streaming
+        const phases: Record<string, number> & { first_turn?: Record<string, unknown>; first_turn_status?: number; first_turn_summary?: unknown; first_turn_settings?: ManagedAgentSettings } = streaming
           ? JSON.parse(created.headers.get("x-nanocodex-run-phases") ?? "null")
           : await created.json();
         if (!phases) {
@@ -2486,6 +2495,7 @@ async function managedFetchRoute(
             turn_idempotency_key: firstTurn.key, ...phases.first_turn },
           { status: phases.first_turn_status === 202 ? 201 : 200 });
         } else response = agentCreationResponse(url, agentId, creationSettings, true);
+        if (firstTurn && !streaming && phases.first_turn_settings) response.headers.set("x-nanocodex-settings", JSON.stringify(phases.first_turn_settings));
         response.headers.append("server-timing", `managed_create;dur=${createMs}, managed_session_create;dur=${sessionCreateMs}`);
         if (firstTurn && Number.isFinite(phases.first_turn_admit_ms)) response.headers.append("server-timing", `managed_first_turn_admit;dur=${phases.first_turn_admit_ms}`);
         if (preHandlerMs !== undefined) response.headers.append("server-timing", `managed_session_pre_handler;dur=${preHandlerMs}`);
@@ -5971,6 +5981,82 @@ export class DurableAgentSession extends DurableComputerObject {
       || (asserted.authorization.connectGrant
         && !asserted.authorization.connectGrant.connectors.includes("chatgpt")))
       return json({ error: "not_found" }, { status: 404 });
+    // Resolve exactly once inside the existing creation RPC. The durable record
+    // precedes initialization so crash/retry never needs a changed live catalog.
+    // It binds the caller's policy, pin, configuration and first input, not the
+    // resulting settings, and never stores the prompt itself.
+    const selectionRecordKey = "managed_initial_selection_v1";
+    if (initialization.settings_selection !== undefined || this.ctx.storage.kv.get(selectionRecordKey) !== undefined) {
+      try {
+        const selectionFailure = await this.ctx.blockConcurrencyWhile(async () => {
+          try {
+            if (this.#deleting || this.#deleted || this.#durabilityExported)
+              throw new ManagedRequestError(409, "agent_unavailable", "agent is unavailable");
+            const retained = this.ctx.storage.kv.get<{ fingerprint: string; settings: ManagedAgentSettings }>(selectionRecordKey);
+            const selection = initialization.settings_selection === undefined ? undefined
+              : parseAgentCreateBody(JSON.stringify({ settings_selection: initialization.settings_selection,
+                configuration: initialization.configuration })).settingsSelection;
+            const fingerprint = await hashText(canonicalJson({
+              session_id: initialization.session_id, owner_id: initialization.owner_id,
+              selection: selection ?? null, configuration: initialization.configuration ?? {}, first_turn: turn,
+            }));
+            if (retained) {
+              if (retained.fingerprint !== fingerprint)
+                throw new ManagedRequestError(409, "idempotency_conflict", "creation policy or first input differs from retained operation");
+              initialization.settings = this.#session() ? this.#settings() : retained.settings;
+              if (this.#session()) initialization.configuration = this.#configuration();
+              initialization.selection_fingerprint = fingerprint;
+              delete initialization.settings_selection;
+              return;
+            }
+            if (!selection) return;
+            if (this.#session())
+              throw new ManagedRequestError(409, "idempotency_conflict", "agent was created without this selection policy");
+            const configuration = parseConfiguration(initialization.configuration);
+            let catalog: Awaited<ReturnType<typeof availableManagedModels>>;
+            try { catalog = await availableManagedModels(this.env.NANOCODEX, asserted.ownerId,
+              asserted.authorization.connectGrant ? {} : this.env); }
+            catch { throw new ManagedRequestError(503, "model_availability_unavailable", "model catalog is unavailable"); }
+            const pinned = configuration.chatgpt_account_id !== undefined;
+            const entry = pinned
+              ? catalog.data.find(model => model.provider === "openai" && model.id === "gpt-6.1-sol")
+                ?? catalog.data.find(model => model.provider === "openai")
+              : catalog.data.find(model => model.id === catalog.default_model);
+            if (!entry) throw new ManagedRequestError(409, pinned ? "chatgpt_model_unavailable" : "no_available_models", "no model is available");
+            const modelDefault = INITIAL_MODEL_THINKING[entry.id];
+            const preferred = selection.policy === "cli" && entry.provider === "openai" ? "xhigh" : modelDefault;
+            const thinking = selection.thinking ?? (entry.thinking.includes(preferred) ? preferred
+              : entry.thinking.includes(modelDefault) ? modelDefault : entry.thinking[0]);
+            const reasoning_mode = selection.reasoning_mode ?? "standard";
+            const fast_mode = selection.fast_mode ?? (selection.policy === "cli" && entry.fast_mode);
+            if (!isAgentThinking(thinking) || !entry.thinking.includes(thinking)
+              || !entry.reasoning_modes.includes(reasoning_mode) || (fast_mode && !entry.fast_mode))
+              throw new ManagedRequestError(400, "model_settings_unavailable", "requested settings are unavailable");
+            const settings = validateAgentAdmissionSettings({ model: entry.id, thinking, reasoning_mode, fast_mode });
+            if (settings.model.startsWith("claude-")) {
+              if (asserted.authorization.connectGrant)
+                throw new ManagedRequestError(403, "claude_forbidden", "Claude requires account authority");
+              if (configuration.output_schema !== undefined || configuration.prompt_cache !== undefined || configuration.tools?.includes("WebSearch"))
+                throw new ManagedRequestError(409, "claude_capability_unsupported", "configuration is unsupported by Claude");
+            }
+            // Keep both model-independent validation above and model-specific
+            // admission here, before session creation or provider preparation.
+            assertModelAcceptsInput(settings.model, turn.input as PromptInput);
+            if (this.#session()) throw new ManagedRequestError(409, "idempotency_conflict", "agent was initialized concurrently");
+            this.ctx.storage.kv.put(selectionRecordKey, { fingerprint, settings });
+            initialization.settings = settings;
+            initialization.selection_fingerprint = fingerprint;
+            delete initialization.settings_selection;
+          } catch (error) { return error; }
+        });
+        if (selectionFailure) throw selectionFailure;
+      } catch (error) {
+        if (error instanceof ManagedRequestError) return json({ error: error.code, message: error.message }, {
+          status: error.status, headers: { "x-nanocodex-admission-rejected": "1" },
+        });
+        return json({ error: "invalid_request", message: errorMessage(error) }, { status: 400 });
+      }
+    }
     const created = await this.#createHttp(new Request("https://session.internal/create", {
       method: "POST", headers: request.headers, body: JSON.stringify(initialization),
     }), (session) => {
@@ -6026,7 +6112,7 @@ export class DurableAgentSession extends DurableComputerObject {
         first_turn_status: admitted.status, first_turn_admit_ms: admissionMs }));
       return new Response(events.body, { status: admitted.status === 202 ? 201 : 200, headers });
     }
-    return json({ ...phases, first_turn: turnReceipt, first_turn_status: admitted.status,
+    return json({ ...phases, first_turn: turnReceipt, first_turn_settings: this.#settings(), first_turn_status: admitted.status,
       first_turn_admit_ms: admissionMs,
       ...(admitted.headers.get("x-nanocodex-turn-created") === "1" ? { first_turn_summary: summary } : {}),
     });
@@ -6064,6 +6150,7 @@ export class DurableAgentSession extends DurableComputerObject {
       cancel(reason) { return reader.cancel(reason); },
     });
     const headers = new Headers(events.headers);
+    headers.set("x-nanocodex-settings", JSON.stringify(this.#settings()));
     headers.set("x-nanocodex-agent-id", sessionId);
     headers.set("x-nanocodex-turn-id", turnId);
     headers.set("location", `/v1/agents/${sessionId}/events`);
@@ -6340,6 +6427,13 @@ export class DurableAgentSession extends DurableComputerObject {
     let event: DurableEvent<StreamMessage> | undefined;
     try {
       this.ctx.storage.transactionSync(() => {
+        // Every initializer (combined, standalone, live and import) must honor
+        // a selection reserved before a crash or a failed initialization.
+        const reservation = this.ctx.storage.kv.get<{ fingerprint: string; settings: ManagedAgentSettings }>("managed_initial_selection_v1");
+        if (reservation && (initialization.selection_fingerprint !== reservation.fingerprint
+          || (!current && !sameAgentSettings(settings, reservation.settings)))) {
+          throw new ManagedRequestError(409, "idempotency_conflict", "initialization differs from reserved selection");
+        }
         const ownership = this.#initializationOwnership();
         if (this.#deleting || this.#deleted || ownership?.state === "deleted") {
           throw new ManagedRequestError(
@@ -14163,6 +14257,13 @@ async function fetchCreateStage(
     try {
       onAttemptStart?.(attempt + 1);
       const response = await fetchWithDeadline(binding, input, init, timeoutMs, operation);
+      // Authoritative pre-admission selection errors are safe receipts, not
+      // uncertain transport failures. Preserve the catalog error for clients.
+      if (response.headers.get("x-nanocodex-admission-rejected") === "1") {
+        const headers = new Headers(response.headers);
+        headers.delete("x-nanocodex-admission-rejected");
+        return new Response(response.body, { status: response.status, headers });
+      }
       // A streaming create may have durably accepted the turn before finding
       // its subscriber limit. Preserve that 429/Retry-After for a keyed retry.
       if (response.status !== 408 && (response.status !== 429 || options.retryThrottled === false) && response.status < 500) {

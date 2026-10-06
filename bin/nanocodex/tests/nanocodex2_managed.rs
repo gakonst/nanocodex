@@ -322,6 +322,7 @@ async fn run_flushes_each_assistant_delta_before_completion() {
                     }
                 });
                 Response::builder().status(StatusCode::CREATED).header("content-type", "text/event-stream")
+        .header("x-nanocodex-settings", agent_settings().to_string())
                     .body(Body::from_stream(stream)).unwrap()
             }
         }));
@@ -396,7 +397,7 @@ async fn run_uses_managed_lifecycle_with_the_configured_local_workspace() {
 }
 
 #[tokio::test]
-async fn pinned_run_creates_once_then_opens_the_saved_session() {
+async fn pinned_run_combines_creation_and_first_prompt() {
     run_workspace_lifecycle(true, false).await;
 }
 
@@ -505,19 +506,19 @@ async fn run_workspace_lifecycle(pinned: bool, automatic_computer: bool) {
     let app = Router::new()
         .route("/v1/models", fixture_catalog(state.authorization.clone()))
         .route(
-            "/v1/agents",
+            "/v1/agent-runs",
             post(
-                |axum::Json(body): axum::Json<serde_json::Value>| async move {
-                    assert_eq!(body["configuration"]["chatgpt_account_id"], "account-a");
-                    axum::Json(serde_json::json!({
-                        "agent_id": AGENT_ID, "session_id": AGENT_ID,
-                        "events_url": format!("/v1/agents/{AGENT_ID}/events"),
-                        "websocket_url": format!("/v1/agents/{AGENT_ID}/live"),
-                    }))
+                move |State(state): State<TestState>,
+                      headers: HeaderMap,
+                      axum::Json(body): axum::Json<serde_json::Value>| async move {
+                    assert_eq!(
+                        body["configuration"]["chatgpt_account_id"].as_str(),
+                        pinned.then_some("account-a")
+                    );
+                    combined_cli_run(State(state), headers, axum::Json(body)).await
                 },
             ),
         )
-        .route("/v1/agent-runs", post(combined_cli_run))
         .route("/v1/agents/{agent}", get(agent_state))
         .route("/v1/agents/{agent}/tool-host", get(tool_host))
         .route("/v1/agents/{agent}/ws", get(managed_socket))
@@ -1328,6 +1329,7 @@ where
     Response::builder()
         .status(StatusCode::OK)
         .header("content-type", "text/event-stream")
+        .header("x-nanocodex-settings", agent_settings().to_string())
         .body(body)
         .unwrap()
 }
@@ -1501,6 +1503,7 @@ where
     Response::builder()
         .status(StatusCode::CREATED)
         .header("content-type", "text/event-stream")
+        .header("x-nanocodex-settings", agent_settings().to_string())
         .body(Body::from_stream(stream))
         .unwrap()
 }
@@ -1514,7 +1517,10 @@ async fn combined_cli_run(
     assert_eq!(headers["idempotency-key"], state.idempotency_key);
     assert_eq!(headers["accept"], "text/event-stream");
     assert_eq!(body["input"], "answer from managed");
-    assert_eq!(body["settings"], agent_settings());
+    assert_eq!(
+        body["settings_selection"],
+        serde_json::json!({"policy":"cli"})
+    );
     state.completed.notify_one();
     combined_stream("answer from managed", async move {
         if state.disconnect_after_ready {
@@ -2507,13 +2513,21 @@ mod native_screen_lifecycle;
 async fn explicit_model_startup_does_not_read_catalog() {
     for catalog_mode in ["held", "unavailable", "available"] {
         for explicit in [true, false] {
-            startup_catalog_journey(catalog_mode, explicit, false).await;
+            startup_catalog_journey(catalog_mode, explicit, false, false).await;
         }
     }
-    startup_catalog_journey("held", true, true).await;
+    startup_catalog_journey("held", true, true, false).await;
+    startup_catalog_journey("held", false, false, true).await;
+    startup_catalog_journey("held", true, false, true).await;
+    startup_catalog_journey("held", false, true, true).await;
 }
 
-async fn startup_catalog_journey(catalog_mode: &'static str, explicit: bool, revoked: bool) {
+async fn startup_catalog_journey(
+    catalog_mode: &'static str,
+    explicit: bool,
+    revoked: bool,
+    pinned: bool,
+) {
     let reads = Arc::new(AtomicUsize::new(0));
     let prompts = Arc::new(AtomicUsize::new(0));
     let admissions = Arc::new(AtomicUsize::new(0));
@@ -2544,11 +2558,19 @@ async fn startup_catalog_journey(catalog_mode: &'static str, explicit: bool, rev
                 assert_eq!(headers["authorization"], authorization);
                 assert_eq!(headers["accept"], "text/event-stream");
                 if revoked { return unauthorized(); }
+                if pinned { assert_eq!(body["configuration"]["chatgpt_account_id"], "synthetic-pin"); }
                 if explicit {
                     assert_eq!(body["settings"]["model"], "gpt-6.1-sol");
                     assert_eq!(body["settings"]["thinking"], "xhigh");
                     assert_eq!(body["settings"]["fast_mode"], true);
-                } else { assert_eq!(body["settings"], agent_settings()); }
+                } else {
+                    assert_eq!(body["settings_selection"], if pinned {
+                        serde_json::json!({"policy":"cli", "thinking":"high", "fast_mode":false})
+                    } else { serde_json::json!({"policy":"cli"}) });
+                    if catalog_mode == "unavailable" {
+                        return json_response(StatusCode::SERVICE_UNAVAILABLE, serde_json::json!({"error":"model_availability_unavailable"}));
+                    }
+                }
                 assert_eq!(body["input"], "startup answer");
                 prompt_count.fetch_add(1, Ordering::SeqCst);
                 combined_stream("startup answer", async { durable_turn_events(TURN_ID, "catalog-independent answer", 2, 1) })
@@ -2586,15 +2608,19 @@ async fn startup_catalog_journey(catalog_mode: &'static str, explicit: bool, rev
     if explicit {
         command.args(["--model", "sol"]);
     }
+    if pinned {
+        command.args(["--chatgpt-account", "synthetic-pin"]);
+        if !explicit {
+            command.args(["--thinking", "high", "--fast-mode=false"]);
+        }
+    }
     let result = tokio::time::timeout(std::time::Duration::from_secs(8), command.output()).await;
-    if !explicit && catalog_mode == "held" {
-        assert!(result.is_err(), "default must wait for the catalog");
-    } else {
+    {
         let output = result.expect("CLI journey timed out").unwrap();
         let stdout = String::from_utf8_lossy(&output.stdout);
         let stderr = String::from_utf8_lossy(&output.stderr);
         eprintln!(
-            "catalog={catalog_mode} explicit={explicit} revoked={revoked}: status={} stdout={stdout} stderr={stderr}",
+            "catalog={catalog_mode} explicit={explicit} revoked={revoked} pinned={pinned}: status={} stdout={stdout} stderr={stderr}",
             output.status
         );
         if revoked || (!explicit && catalog_mode == "unavailable") {
@@ -2615,15 +2641,19 @@ async fn startup_catalog_journey(catalog_mode: &'static str, explicit: bool, rev
             assert!(stdout.contains("catalog-independent answer"), "{stdout}");
         }
     }
-    assert_eq!(reads.load(Ordering::SeqCst) == 0, explicit);
+    assert_eq!(reads.load(Ordering::SeqCst), 0);
     assert_eq!(
         prompts.load(Ordering::SeqCst),
-        usize::from(!revoked && (explicit || catalog_mode == "available"))
+        usize::from(!revoked && (explicit || catalog_mode != "unavailable"))
     );
-    assert_eq!(
-        admissions.load(Ordering::SeqCst) > 0,
-        explicit || catalog_mode == "available"
-    );
+    if revoked || explicit || catalog_mode != "unavailable" {
+        assert_eq!(admissions.load(Ordering::SeqCst), 1, "one startup POST");
+    } else {
+        assert!(
+            admissions.load(Ordering::SeqCst) > 0,
+            "catalog error comes from startup POST"
+        );
+    }
     server.abort();
 }
 

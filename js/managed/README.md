@@ -714,6 +714,28 @@ inference, network geography or production cold activation.
   `turn_cancelled` event, so curl exits normally. Resuming at/after a retained
   terminal cursor returns the receipt then closes. The existing GET event stream
   stays open. A changed input under the same key remains an idempotency conflict.
+  Fresh callers may opt into `settings_selection: { policy: "cli" | "sdk",
+  thinking?, reasoning_mode?, fast_mode? }` instead of complete `settings`.
+  Selection runs inside the existing combined creation RPC against the
+  authoritative account catalog before session creation;
+  CLI policy prefers xhigh and available fast mode, SDK policy model-default
+  effort and fast mode off. Both default to standard reasoning. A ChatGPT pin
+  chooses an OpenAI catalog model (Sol preferred), never Claude. Explicit
+  overrides must be offered by the selected model. Catalog failures return 503,
+  no available model returns 409, and unsupported overrides return 400.
+  Selection cannot be combined with complete settings, template settings,
+  model routing, or imports. Existing omitted-settings bodies retain their
+  historical defaults. Combined JSON and SSE responses expose retained session
+  settings in `X-Nanocodex-Settings`; opt-in native clients require this header
+  instead of guessing a model locally. The DO durably binds a canonical request
+  fingerprint (policy, overrides, pin/configuration and first input) to the
+  resolved settings. Identical retries reuse it without consulting the catalog;
+  changed requests conflict even when the catalog is unavailable. Concurrent
+  selection is serialized within that DO; no existence-preflight RPC is added.
+  `settings_selection` requires `/v1/agent-runs`, not standalone creation.
+  Unknown-model document input is validated against the selected family before
+  session creation/provider preparation: Claude accepts inline PDF/text, OpenAI
+  rejects it. Deploy the API before opting clients in.
   Agent routes create later turns, read state,
   cancel or steer work, delete an agent, and support explicit durability import
   and export. Stable `Idempotency-Key` values make create and turn retries safe.

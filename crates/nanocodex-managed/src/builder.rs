@@ -57,6 +57,17 @@ pub enum ManagedRequest {
         /// Optional connected ChatGPT account pin.
         chatgpt_account: Option<String>,
     },
+    /// Creates and prompts using server-side catalog selection.
+    CreateAndPromptSelected {
+        /// Selection policy and explicit overrides.
+        selection: crate::InitialSettingsSelection,
+        /// Stable operation key.
+        idempotency_key: String,
+        /// First input.
+        input: PromptInput,
+        /// Optional ChatGPT account pin.
+        chatgpt_account: Option<String>,
+    },
     /// Reads current durable agent state.
     State {
         /// Stable managed agent identifier.
@@ -177,6 +188,16 @@ pub enum ManagedResponse {
         /// Stream already opened by the combined POST for the HTTP transport.
         events: Option<ManagedEvents>,
     },
+    /// Combined admission with authoritative server-selected settings.
+    CreatedAndPromptedSelected {
+        /// Durable admission receipt.
+        receipt: crate::AgentRunReceipt,
+        /// Owned initial stream.
+        events: Option<ManagedEvents>,
+        /// Settings resolved before admission.
+        settings: AgentSettings,
+    },
+
     /// Current durable agent state.
     State(AgentState),
     /// Opened durable event stream.
@@ -271,9 +292,10 @@ impl Service<ManagedRequest> for ManagedService {
                         Some(settings) => settings,
                         None => client.default_settings().await?,
                     };
-                    let (receipt, events) = client
+                    let (receipt, events, _) = client
                         .create_run(
-                            settings,
+                            Some(settings),
+                            None,
                             &idempotency_key,
                             &input,
                             chatgpt_account.as_deref(),
@@ -281,6 +303,30 @@ impl Service<ManagedRequest> for ManagedService {
                         )
                         .await?;
                     Ok(ManagedResponse::CreatedAndPrompted {
+                        receipt,
+                        events: events.map(ManagedEvents::new),
+                    })
+                }
+                ManagedRequest::CreateAndPromptSelected {
+                    selection,
+                    idempotency_key,
+                    input,
+                    chatgpt_account,
+                } => {
+                    let (receipt, events, settings) = client
+                        .create_run(
+                            None,
+                            Some(selection),
+                            &idempotency_key,
+                            &input,
+                            chatgpt_account.as_deref(),
+                            matches!(transport, ManagedTransport::Http),
+                        )
+                        .await?;
+                    Ok(ManagedResponse::CreatedAndPromptedSelected {
+                        settings: settings.ok_or(ManagedError::InvalidResponse(
+                            "agent run omitted selected settings",
+                        ))?,
                         receipt,
                         events: events.map(ManagedEvents::new),
                     })
@@ -564,6 +610,7 @@ impl<S> BuilderBackend for Managed<S> {
             managed: self,
             event_observer: None,
             chatgpt_account: None,
+            selection: None,
             #[cfg(feature = "tools")]
             tools: None,
             #[cfg(feature = "tools")]
@@ -578,6 +625,7 @@ pub struct ManagedBuilder<S = ManagedService> {
     managed: Managed<S>,
     event_observer: Option<mpsc::UnboundedSender<ManagedEvent>>,
     chatgpt_account: Option<String>,
+    selection: Option<crate::InitialSettingsSelection>,
     #[cfg(feature = "tools")]
     tools: Option<ToolPreparation>,
     #[cfg(feature = "tools")]
@@ -585,6 +633,13 @@ pub struct ManagedBuilder<S = ManagedService> {
 }
 
 impl<S> ManagedBuilder<S> {
+    /// Select defaults on the server for `build_with_prompt`; explicit settings take precedence.
+    #[must_use]
+    pub fn settings_selection(mut self, selection: crate::InitialSettingsSelection) -> Self {
+        self.selection = Some(selection);
+        self
+    }
+
     /// Replaces the managed Tower service while preserving create/open intent.
     #[must_use]
     pub fn service<T>(self, service: T) -> ManagedBuilder<T> {
@@ -595,6 +650,7 @@ impl<S> ManagedBuilder<S> {
             },
             event_observer: self.event_observer,
             chatgpt_account: self.chatgpt_account,
+            selection: self.selection,
             #[cfg(feature = "tools")]
             tools: self.tools,
             #[cfg(feature = "tools")]
@@ -612,6 +668,7 @@ impl<S> ManagedBuilder<S> {
             managed,
             event_observer,
             chatgpt_account,
+            selection,
             #[cfg(feature = "tools")]
             tools,
             #[cfg(feature = "tools")]
@@ -624,6 +681,7 @@ impl<S> ManagedBuilder<S> {
             },
             event_observer,
             chatgpt_account,
+            selection,
             #[cfg(feature = "tools")]
             tools,
             #[cfg(feature = "tools")]
@@ -718,26 +776,46 @@ impl<S> ManagedBuilder<S> {
         prompt
             .validate()
             .map_err(|error| NanocodexError::InvalidRequest(error.to_string()))?;
-        let input =
-            crate::driver::managed_prompt(prompt.clone(), settings.unwrap_or_default().model)?;
+        let selected = self.selection.filter(|_| settings.is_none());
+        let input = if selected.is_some() {
+            crate::driver::managed_prompt_for_selection(prompt.clone(), None)?
+        } else {
+            crate::driver::managed_prompt(prompt.clone(), settings.unwrap_or_default().model)?
+        };
         let idempotency_key = idempotency_key.into();
         crate::client::validate_idempotency_key(&idempotency_key).map_err(backend_error)?;
         #[cfg(feature = "tools")]
         {
             self.tools = self.tools.map(ToolPreparation::start);
         }
-        let response = call(
-            &mut self.managed.service,
+        let request = if let Some(selection) = selected {
+            ManagedRequest::CreateAndPromptSelected {
+                selection,
+                idempotency_key: idempotency_key.clone(),
+                input: input.clone(),
+                chatgpt_account: self.chatgpt_account.take(),
+            }
+        } else {
             ManagedRequest::CreateAndPrompt {
                 settings,
                 idempotency_key: idempotency_key.clone(),
                 input: input.clone(),
                 chatgpt_account: self.chatgpt_account.take(),
-            },
-        )
-        .await?;
-        let ManagedResponse::CreatedAndPrompted { receipt, events } = response else {
-            return Err(unexpected_response());
+            }
+        };
+        let response = call(&mut self.managed.service, request).await?;
+        let (receipt, events, model) = match response {
+            ManagedResponse::CreatedAndPrompted { receipt, events }
+                if self.selection.is_none() || settings.is_some() =>
+            {
+                (receipt, events, settings.unwrap_or_default().model)
+            }
+            ManagedResponse::CreatedAndPromptedSelected {
+                receipt,
+                events,
+                settings,
+            } => (receipt, events, settings.model),
+            _ => return Err(unexpected_response()),
         };
         let initial_turn = crate::driver::InitialTurn {
             request_id: idempotency_key.clone(),
@@ -748,7 +826,7 @@ impl<S> ManagedBuilder<S> {
             .start(
                 receipt.agent_id,
                 receipt.session_id,
-                settings.unwrap_or_default().model,
+                model,
                 EventCursor::parse("0").map_err(backend_error)?,
                 events,
                 Some(initial_turn),
@@ -779,6 +857,11 @@ impl<S> ManagedBuilder<S> {
         S::Future: Send + 'static,
         S::Error: std::error::Error + Send + Sync + 'static,
     {
+        if self.selection.is_some() {
+            return Err(backend_error(ManagedError::Configuration(
+                "settings_selection requires build_with_prompt".to_owned(),
+            )));
+        }
         if self.chatgpt_account.is_some()
             && !matches!(self.managed.operation, ManagedOperation::Create(_))
         {

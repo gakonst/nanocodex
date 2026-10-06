@@ -1472,3 +1472,33 @@ mod image_file_prompt_tests {
         }
     }
 }
+
+/// Server-side catalog selection for a fresh agent, before admission.
+#[derive(Clone, Copy, Debug, Default, Serialize)]
+pub struct InitialSettingsSelection {
+    /// CLI defaults prefer xhigh and available fast mode; SDK defaults do not.
+    pub policy: InitialSettingsPolicy,
+    /// Explicit effort override.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thinking: Option<Thinking>,
+    /// Explicit reasoning override.
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        with = "optional_reasoning_mode_serde"
+    )]
+    pub reasoning_mode: Option<ReasoningMode>,
+    /// Explicit fast-mode override.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fast_mode: Option<bool>,
+}
+
+/// Defaults applied after authoritative catalog selection.
+#[derive(Clone, Copy, Debug, Default, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InitialSettingsPolicy {
+    /// Model-default effort, standard reasoning, fast mode off.
+    #[default]
+    Sdk,
+    /// Prefer xhigh effort and catalog-supported fast mode.
+    Cli,
+}

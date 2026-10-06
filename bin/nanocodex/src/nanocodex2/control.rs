@@ -35,6 +35,18 @@ pub(crate) struct InitialSettings {
 }
 
 impl InitialSettings {
+    /// Defer only omitted-model selection; explicit models retain local validation.
+    pub(crate) fn server_selection(&self) -> Option<nanocodex_managed::InitialSettingsSelection> {
+        self.model
+            .is_none()
+            .then_some(nanocodex_managed::InitialSettingsSelection {
+                policy: nanocodex_managed::InitialSettingsPolicy::Cli,
+                thinking: self.thinking,
+                reasoning_mode: self.reasoning_mode,
+                fast_mode: self.fast_mode,
+            })
+    }
+
     pub(crate) fn is_explicit(&self) -> bool {
         self.model.is_some()
             || self.thinking.is_some()

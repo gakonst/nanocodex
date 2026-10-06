@@ -253,28 +253,48 @@ impl ManagedClient {
         input: &PromptInput,
         chatgpt_account: Option<&str>,
     ) -> Result<crate::AgentRunReceipt, ManagedError> {
-        let (receipt, _) = self
-            .create_run(settings, idempotency_key, input, chatgpt_account, false)
+        let (receipt, _, _) = self
+            .create_run(
+                Some(settings),
+                None,
+                idempotency_key,
+                input,
+                chatgpt_account,
+                false,
+            )
             .await?;
         Ok(receipt)
     }
 
     pub(crate) async fn create_run(
         &self,
-        settings: AgentSettings,
+        settings: Option<AgentSettings>,
+        selection: Option<crate::InitialSettingsSelection>,
         idempotency_key: &str,
         input: &PromptInput,
         chatgpt_account: Option<&str>,
         streaming: bool,
-    ) -> Result<(crate::AgentRunReceipt, Option<ManagedEventStream>), ManagedError> {
-        let settings = settings.validate()?;
+    ) -> Result<
+        (
+            crate::AgentRunReceipt,
+            Option<ManagedEventStream>,
+            Option<AgentSettings>,
+        ),
+        ManagedError,
+    > {
+        let settings = settings.map(AgentSettings::validate).transpose()?;
         validate_idempotency_key(idempotency_key)?;
-        let mut body = serde_json::json!({ "settings": settings, "input": input });
+        let mut body = serde_json::json!({ "input": input });
+        if let Some(settings) = settings {
+            body["settings"] = serde_json::json!(settings);
+        } else {
+            body["settings_selection"] = serde_json::json!(selection.unwrap_or_default());
+        }
         if let Some(account) = chatgpt_account {
             if account.is_empty()
                 || account.len() > 256
                 || !account.bytes().all(|byte| (0x21..=0x7e).contains(&byte))
-                || settings.model.oai().is_none()
+                || settings.is_some_and(|settings| settings.model.oai().is_none())
             {
                 return Err(ManagedError::Configuration(
                     "invalid ChatGPT account pin".to_owned(),
@@ -309,6 +329,19 @@ impl ManagedClient {
                 if !response.status().is_success() {
                     return Err(response_error(response).await);
                 }
+                let selected_settings = if selection.is_some() {
+                    let settings: AgentSettings = response
+                        .headers()
+                        .get("x-nanocodex-settings")
+                        .and_then(|value| value.to_str().ok())
+                        .and_then(|value| serde_json::from_str(value).ok())
+                        .ok_or(ManagedError::InvalidResponse(
+                            "agent run omitted selected settings",
+                        ))?;
+                    Some(settings.validate()?)
+                } else {
+                    None
+                };
                 let (receipt, events) = if streaming {
                     let (receipt, events) =
                         ManagedEventStream::from_run_response(self.clone(), response).await?;
@@ -329,7 +362,7 @@ impl ManagedClient {
                         "agent run receipt differs from submitted input",
                     ));
                 }
-                Ok((receipt, events))
+                Ok((receipt, events, selected_settings))
             }
             .await;
             match result {

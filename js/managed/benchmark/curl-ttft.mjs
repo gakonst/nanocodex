@@ -27,7 +27,9 @@ const family=opts.family??'codex';assert.ok(['codex','claude'].includes(family))
 const settings={model:family==='codex'?'gpt-6.1-sol':'claude-sonnet-4-6',thinking:'low',reasoning_mode:'standard',fast_mode:false};
 const hash=bytes=>createHash('sha256').update(bytes).digest('hex');
 const rows=[],runtime=[],providerCalls=[],buildInfo=[];
-const bootstrap=`import managed from './src/index.ts';export * from './src/index.ts';import {ensureAccount,createApiKey} from './src/account-auth.ts';export default {async fetch(request,env,ctx){if(new URL(request.url).pathname==='/__fixture/chatgpt'){const expires_at=(Math.ceil(Date.now()/1000)+3600)*1000;const payload={exp:Math.ceil(expires_at/1000),'https://api.openai.com/auth':{chatgpt_account_id:'synthetic-account',chatgpt_account_is_fedramp:false}};const jwt=btoa(JSON.stringify({alg:'none'})).replaceAll('=','')+'.'+btoa(JSON.stringify(payload)).replaceAll('=','')+'.fixture';return env.NANOCODEX.fetch('https://broker.internal/users/${owner}/credentials/chatgpt',{method:'PUT',headers:{'content-type':'application/json'},body:JSON.stringify({access_token:jwt,refresh_token:'synthetic-refresh',account_id:'synthetic-account',expires_at,fedramp:false})});}if(new URL(request.url).pathname==='/__fixture/openai')return env.NANOCODEX.fetch('https://broker.internal/users/${owner}/credentials/openai',{method:'PUT',headers:{'content-type':'application/json'},body:JSON.stringify({api_key:'sk-synthetic-openai-runtime'})});if(new URL(request.url).pathname==='/__fixture'){const {user,capabilities}=await request.json();await ensureAccount(env,user,true);const auth=await(await env.NANOCODEX_USERS.getByName(user).fetch('https://user.internal/authorization')).json();return Response.json(await createApiKey(env,{kind:'api_key',userId:user,...auth.grant,...(capabilities?{capabilities}:{}),subjectId:'fixture:'+user,credentialId:'fixture'},'synthetic-ttft'));}return managed.fetch(request,env,ctx);}};`;
+let failCatalog = false;
+let catalogModel = settings.model;
+const bootstrap=`import managed from './src/index.ts';export * from './src/index.ts';import {ensureAccount,createApiKey} from './src/account-auth.ts';export default {async fetch(request,env,ctx){if(new URL(request.url).pathname==='/__fixture/disconnect'){await env.NANOCODEX.fetch('https://broker.internal/users/${owner}/credentials/chatgpt',{method:'DELETE'});return env.NANOCODEX.fetch('https://broker.internal/users/${owner}/credentials/openai',{method:'DELETE'});}if(new URL(request.url).pathname==='/__fixture/chatgpt'){const expires_at=(Math.ceil(Date.now()/1000)+3600)*1000;const payload={exp:Math.ceil(expires_at/1000),'https://api.openai.com/auth':{chatgpt_account_id:'synthetic-account',chatgpt_account_is_fedramp:false}};const jwt=btoa(JSON.stringify({alg:'none'})).replaceAll('=','')+'.'+btoa(JSON.stringify(payload)).replaceAll('=','')+'.fixture';return env.NANOCODEX.fetch('https://broker.internal/users/${owner}/credentials/chatgpt',{method:'PUT',headers:{'content-type':'application/json'},body:JSON.stringify({access_token:jwt,refresh_token:'synthetic-refresh',account_id:'synthetic-account',expires_at,fedramp:false})});}if(new URL(request.url).pathname==='/__fixture/openai')return env.NANOCODEX.fetch('https://broker.internal/users/${owner}/credentials/openai',{method:'PUT',headers:{'content-type':'application/json'},body:JSON.stringify({api_key:'sk-synthetic-openai-runtime'})});if(new URL(request.url).pathname==='/__fixture'){const {user,capabilities}=await request.json();await ensureAccount(env,user,true);const auth=await(await env.NANOCODEX_USERS.getByName(user).fetch('https://user.internal/authorization')).json();return Response.json(await createApiKey(env,{kind:'api_key',userId:user,...auth.grant,...(capabilities?{capabilities}:{}),subjectId:'fixture:'+user,credentialId:'fixture'},'synthetic-ttft'));}return managed.fetch(request,env,ctx);}};`;
 await mkdir(output,{recursive:true});
 const git=args=>{try{return execFileSync('git',['-C',root,...args],{encoding:'utf8'});}catch{return null;}};
 const config={label,root,mode,family,credential,samples:count,process_samples:processCount,command:[process.execPath,...process.argv.slice(1)],git_head:git(['rev-parse','HEAD'])?.trim(),node:process.version,curl:execFileSync('curl',['--version'],{encoding:'utf8'}).split('\n')[0],started_at:new Date().toISOString(),methodology:'Actual js/account routeManaged front proxy, normal js/managed and js/egress production workers, real account/API-key authorization, account and Session SQLite DOs, Rust WASM runtime and SessionModelEgress. Only synthetic account bootstrap and external OAuth/catalog/model HTTP are fixtures. No live inference, Internet/TLS, Cloudflare geography, production latency claim. Local workerd on loopback. Stopwatch begins before first curl spawn and ends on first nonempty current-turn assistant.delta.text. Headers and initial SSE receipt are not TTFT. Legacy fresh=POST create + POST turn + GET SSE; combined fresh=POST agent-runs JSON + GET SSE; stream fresh=one POST agent-runs SSE. Warm existing sessions use one POST turn SSE in stream mode and POST turn + GET SSE otherwise. Process samples restart workerd; account/key/OAuth setup excluded and warms API/account/Egress before first Session. Fresh-session samples reuse process after recorded untimed warmup; warm samples are second turns of paired fresh sessions. No synthetic latency added during timing. Contract-only disconnect case holds provider text 100ms to verify receipt precedes completion.'};
@@ -64,7 +66,7 @@ const providerSource=`export default {async fetch(request,env){
  const [client,server]=Object.values(new WebSocketPair());server.accept();server.addEventListener('close',()=>server.close(1000));
  server.addEventListener('message',async event=>{const body=JSON.parse(event.data);
   if(body.type!=='response.create')throw new Error('Unexpected provider frame '+body.type);
-  if(body.model!=='gpt-6.1-sol'||!JSON.stringify(body.input).includes('BENCH_SAMPLE_'))throw new Error('Non synthetic benchmark prompt');
+  if(!['gpt-6.1-sol','gpt-6-astra'].includes(body.model)||!JSON.stringify(body.input).includes('BENCH_SAMPLE_'))throw new Error('Non synthetic benchmark prompt');
   await env.CONTROL.fetch('https://fixture.internal/__provider/trace',{method:'POST',body:JSON.stringify({model:body.model,input:body.input})});
   if(JSON.stringify(body.input).includes('BENCH_SAMPLE_disconnect'))await new Promise(r=>setTimeout(r,100));
   const id='resp_'+crypto.randomUUID();server.send(JSON.stringify({type:'response.created',response:{id,status:'in_progress'}}));
@@ -80,11 +82,12 @@ async function boot(){
  const provider=async request=>{
   const url=new URL(request.url);
   if(url.pathname==='/__provider/trace'){const body=await request.json();providerCalls.push({process,at_ms:Date.now(),model:body.model,request_sha256:hash(JSON.stringify(body))});return new Response(null,{status:204});}
-  if(url.origin==='https://api.anthropic.com'&&url.pathname==='/v1/models')return Response.json({data:[{id:settings.model,display_name:'Synthetic benchmark Sonnet'}],has_more:false});
+  if(url.origin==='https://api.anthropic.com'&&url.pathname==='/v1/models'&&failCatalog)return new Response('synthetic catalog unavailable',{status:503});
+  if(url.origin==='https://api.anthropic.com'&&url.pathname==='/v1/models')return Response.json({data:[{id:catalogModel,display_name:'Synthetic benchmark Claude'}],has_more:false});
   if(url.origin==='https://api.anthropic.com'&&url.pathname==='/v1/messages'){
    assert.equal(request.headers.get('authorization'),'Bearer synthetic-claude-ttft-runtime');
    for(const name of ['x-nanocodex-subject','x-nanocodex-session-model-owner','x-api-key','cookie'])assert.equal(request.headers.has(name),false,'private header stripped: '+name);
-   const body=await request.json();assert.equal(body.model,settings.model);assert.equal(body.stream,true);assert.match(JSON.stringify(body.messages),/BENCH_SAMPLE_/);
+   const body=await request.json();assert.equal(body.model,settings.model);assert.equal(body.stream,true);if(JSON.stringify(body.messages).includes('BENCH_SAMPLE_document'))assert.ok(body.messages.some(message=>Array.isArray(message.content)&&message.content.some(block=>block.type==='document'&&block.source?.type==='text'&&block.source?.media_type==='text/plain'&&block.source?.data==='hello')),'selected document reached provider');assert.match(JSON.stringify(body.messages),/BENCH_SAMPLE_/);
    providerCalls.push({process,at_ms:Date.now(),model:body.model,request_sha256:hash(JSON.stringify(body)),message_count:body.messages.length});if(JSON.stringify(body.messages).includes('BENCH_SAMPLE_disconnect'))await delay(100);
    const id='msg_'+randomUUID(),events=[{type:'message_start',message:{id,role:'assistant',model:settings.model,content:[],usage:{input_tokens:10,output_tokens:0}}},{type:'content_block_start',index:0,content_block:{type:'text',text:''}},{type:'content_block_delta',index:0,delta:{type:'text_delta',text}},{type:'content_block_stop',index:0},{type:'message_delta',delta:{stop_reason:'end_turn',stop_sequence:null},usage:{output_tokens:2}},{type:'message_stop'}];
    return new Response(events.map(e=>`event: ${e.type}\ndata: ${JSON.stringify(e)}\n\n`).join(''),{headers:{'content-type':'text/event-stream'}});
@@ -149,6 +152,7 @@ async function verifyStreamContract(server){
  const reconnected=await reconnect.done;assert.equal(reconnected.status,200);assert.ok(reconnectFrames.some(v=>v.type==='event'&&v.event?.type==='assistant.delta'&&v.turn_id===accepted.turn_id));assert.ok(reconnectFrames.some(v=>v.type==='turn_completed'&&v.turn_id===accepted.turn_id));
  const retained=await request(server,`/v1/agents/${accepted.agent_id}/turns/${accepted.turn_id}`);assert.equal(retained.value.state,'completed');checks.push({name:'disconnect after receipt leaves admitted turn durable and GET resumes through completion',accepted,detached,reconnected,reconnectFrames,retained});
  await verifyWarmStreamContract(server, checks, seed, scoped, foreign);
+ await verifySelectedStartup(server, checks);
  await writeFile(join(output,'contract-checks.json'),JSON.stringify(checks,null,2));console.log('Streaming contract checks passed: '+checks.length);
 }
 async function verifyWarmStreamContract(server, checks, seed, scoped, foreign) {
@@ -302,3 +306,168 @@ try{
  if(mode==='stream')await verifyStreamContract(server);
  const summary={...config,completed_at:new Date().toISOString(),groups:Object.fromEntries(['new_process_first_session','fresh_session','warm_session'].map(regime=>[regime,summarize(rows.filter(r=>r.regime===regime).map(r=>r.ttft_ms))]))};await writeFile(join(output,'summary.json'),JSON.stringify(summary,null,2));console.log(JSON.stringify(summary.groups,null,2));
 }catch(error){await writeFile(join(output,'failure.txt'),error.stack??String(error));throw error;}finally{if(server)await server.mf.dispose();await writeFile(join(output,'runtime.json'),JSON.stringify(runtime,null,2));await writeFile(join(output,'provider-calls.json'),JSON.stringify(providerCalls,null,2));}
+
+// Opt-in creation policy exercised through the real public Worker/DO/SSE path.
+async function verifySelectedStartup(server, checks) {
+ const catalog = await request(server, '/v1/models');
+ assert.equal(catalog.status, 200);
+ const model = catalog.value.default_model;
+ const defaults = {model, thinking: family === 'codex' ? 'xhigh' : 'medium', reasoning_mode:'standard', fast_mode:family === 'codex'};
+ const cases = [
+  ['cli default', {settings_selection:{policy:'cli'}}, defaults],
+  ['explicit overrides', {settings_selection:{policy:'cli',thinking:'high',fast_mode:false}}, {...defaults,thinking:'high',fast_mode:false}],
+  ['sdk opt-in', {settings_selection:{policy:'sdk'}}, {...defaults,thinking:family==='codex'?'low':'medium',fast_mode:false}],
+ ];
+ if (family === 'codex') cases.push(['pinned default', {settings_selection:{policy:'cli'},configuration:{chatgpt_account_id:'synthetic-account'}}, {...defaults,model:'gpt-6.1-sol'}]);
+ for (const [name, selection, expected] of cases) {
+  const frames=[];
+  const result=await curl(server,'/v1/agent-runs','POST',{input:'BENCH_SAMPLE_selection: synthetic startup.',...selection},
+   {'Idempotency-Key':randomUUID(),Accept:'text/event-stream'},(value,at,frame)=>frames.push({value,frame})).done;
+  assert.equal(result.status,201,name+': '+result.stdout);
+  const receipt=frames.find(f=>f.frame.includes('event: run')).value;
+  const selectedHeader = result.headers.match(/^x-nanocodex-settings:\s*(.+)$/im);
+  assert.ok(selectedHeader,name+': selected settings header');
+  assert.deepEqual(JSON.parse(selectedHeader[1]),expected,name);
+  assert.ok(frames.some(f=>f.value.type==='turn_completed'&&f.value.turn_id===receipt.turn_id),name+': completed SSE');
+  checks.push({name:'selected startup '+name,expected,receipt,result,frames});
+ }
+ await verifySelectedReplay(server, checks);
+ await verifyReservedSelection(server, checks);
+ if (family==='claude') {
+  const frames=[];
+  const result=await curl(server,'/v1/agent-runs','POST',{
+   settings_selection:{policy:'sdk'},input:[{type:'text',text:'BENCH_SAMPLE_document summarize synthetic document'},
+    {type:'file',file_data:'data:text/plain;base64,aGVsbG8=',filename:'fixture.txt'}]},
+   {'Idempotency-Key':randomUUID(),Accept:'text/event-stream'},value=>frames.push(value)).done;
+  await writeFile(join(output,'selected-document.json'),JSON.stringify({result,frames},null,2));
+  assert.equal(result.status,201,result.stdout);
+  assert.ok(frames.some(value=>value.type==='turn_completed'),JSON.stringify({result,frames}));
+  checks.push({name:'selected Claude first prompt inline document reaches provider and completes',result,frames});
+ }
+ const before=providerCalls.length;
+ const agentsBefore=await request(server,'/v1/agents');
+ assert.equal(agentsBefore.status,200);
+ const rejected = async(name, body, status) => {
+  const result=await request(server,'/v1/agent-runs','POST',{input:'BENCH_SAMPLE_rejected: synthetic startup.',...body},
+   {'Idempotency-Key':randomUUID(),Accept:'text/event-stream'});
+  assert.equal(result.status,status,name+': '+JSON.stringify(result));
+  assert.equal(providerCalls.length,before,name+': no model invocation');
+  const agentsAfter=await request(server,'/v1/agents');
+  assert.equal(agentsAfter.status,200);
+  assert.deepEqual(agentsAfter.value.data,agentsBefore.value.data,name+': no agent created');
+  checks.push({name,...result});
+ };
+ await rejected('selection conflicts with complete settings',{settings,settings_selection:{policy:'cli'}},400);
+ await rejected('unknown selection policy fails closed',{settings_selection:{policy:'future'}},400);
+ if(family==='codex') await rejected('selected OpenAI rejects document before creation',{
+  settings_selection:{policy:'sdk'},input:[{type:'file',file_data:'data:text/plain;base64,aGVsbG8=',filename:'fixture.txt'}]},400);
+ if (family==='claude') {
+  await rejected('pin cannot select Claude',{settings_selection:{policy:'cli'},configuration:{chatgpt_account_id:'synthetic-account'}},409);
+  await rejected('unsupported selected effort',{settings_selection:{policy:'cli',thinking:'xhigh'}},400);
+  failCatalog=true;
+  try { await rejected('catalog failure rejects startup',{settings_selection:{policy:'cli'}},503);
+   assert.equal(checks.at(-1).value.error,'model_availability_unavailable');
+  }
+  finally { failCatalog=false; }
+ }
+}
+
+async function verifySelectedReplay(server, checks) {
+ const concurrentKey=randomUUID(), concurrentBody={settings_selection:{policy:'cli'},input:'BENCH_SAMPLE_disconnect concurrent selected start'};
+ const concurrentBefore=providerCalls.length;
+ const concurrent=await Promise.all([0,1].map(async()=>{
+  const frames=[];
+  const result=await curl(server,'/v1/agent-runs','POST',concurrentBody,{'Idempotency-Key':concurrentKey,Accept:'text/event-stream'},
+   (value,at,frame)=>frames.push({value,frame})).done;
+  assert.ok([200,201].includes(result.status),result.stdout);
+  assert.ok(frames.some(f=>f.value.type==='turn_completed'));
+  return {result,frames,receipt:frames.find(f=>f.frame.includes('event: run')).value};
+ }));
+ assert.equal(concurrent[0].receipt.turn_id,concurrent[1].receipt.turn_id);
+ assert.equal(providerCalls.length,concurrentBefore+1,'concurrent selection admits one model call');
+ checks.push({name:'concurrent selected requests share one durable admission',concurrent,provider_invocations:providerCalls.length-concurrentBefore});
+ const key=randomUUID(), body={settings_selection:{policy:'cli'},input:'BENCH_SAMPLE_disconnect selected replay'}, headers={'Idempotency-Key':key,Accept:'text/event-stream'};
+ const before=providerCalls.length;
+ let receipt;
+ const disconnected=curl(server,'/v1/agent-runs','POST',body,headers,(value,at,frame)=>{
+  if(frame.includes('event: run')) { receipt=value; disconnected.child.kill(); }
+ });
+ const initial=await disconnected.done;
+ assert.equal(initial.status,201,initial.stdout);assert.ok(receipt?.turn_id);
+ const initialSettings=JSON.parse(initial.headers.match(/^x-nanocodex-settings:\s*(.+)$/im)[1]);
+ const replay=async(name)=>{
+  const frames=[];
+  const result=await curl(server,'/v1/agent-runs','POST',body,headers,(value,at,frame)=>frames.push({value,frame})).done;
+  assert.equal(result.status,200,name+': '+result.stdout);
+  assert.equal(frames.find(f=>f.frame.includes('event: run')).value.turn_id,receipt.turn_id);
+  assert.deepEqual(JSON.parse(result.headers.match(/^x-nanocodex-settings:\s*(.+)$/im)[1]),initialSettings);
+  assert.ok(frames.some(f=>f.value.type==='turn_completed'&&f.value.turn_id===receipt.turn_id));
+  assert.equal(providerCalls.length,before+1,name+': no second model invocation');
+  checks.push({name,initial,receipt,result,frames,provider_invocations:providerCalls.length-before});
+ };
+ // Finish the admitted turn before disconnecting credentials; replay must not
+ // reauthorize model availability, but still checks caller/session authority.
+ await replay('lost selected response resumes same admitted turn');
+ if(family==='claude') failCatalog=true;
+ else assert.equal((await request(server,'/__fixture/disconnect','POST')).status,204);
+ try {
+  const catalog=await request(server,'/v1/models');
+  if(family==='claude') assert.equal(catalog.status,503);
+  else {assert.equal(catalog.status,200);assert.equal(catalog.value.default_model,null);}
+  await replay('selected replay survives unavailable live catalog');
+  const jsonReplay=await curl(server,'/v1/agent-runs','POST',body,{...headers,Accept:'application/json'}).done;
+  assert.equal(jsonReplay.status,200,jsonReplay.stdout);
+  assert.equal(JSON.parse(jsonReplay.stdout).turn_id,receipt.turn_id);
+  assert.deepEqual(JSON.parse(jsonReplay.headers.match(/^x-nanocodex-settings:\s*(.+)$/im)[1]),initialSettings);
+  assert.equal(providerCalls.length,before+1);
+  checks.push({name:'selected JSON replay also reuses retained settings without catalog',result:jsonReplay});
+  for(const [name, changed] of [
+   ['input',{...body,input:body.input+' changed'}],
+   ['policy',{...body,settings_selection:{policy:'sdk'}}],
+   ['effort',{...body,settings_selection:{policy:'cli',thinking:'high'}}],
+   ['fast',{...body,settings_selection:{policy:'cli',fast_mode:false}}],
+   ['pin',{...body,configuration:{chatgpt_account_id:'different-synthetic-account'}}],
+  ]) {
+   const result=await request(server,'/v1/agent-runs','POST',changed,headers);
+   assert.equal(result.status,409,name+': '+JSON.stringify(result));
+   assert.equal(providerCalls.length,before+1);
+   checks.push({name:'selected replay rejects changed '+name,...result});
+  }
+  const unauthorized=await request(server,'/v1/agent-runs','POST',body,{...headers,authorization:'Bearer invalid-synthetic'});
+  assert.equal(unauthorized.status,401);checks.push({name:'selected replay still requires authorization',...unauthorized});
+ } finally {
+  if(family==='claude') failCatalog=false;
+  else assert.equal((await request(server,'/__fixture/'+credential,'POST')).status,204);
+ }
+ if(family==='claude') {
+  catalogModel='claude-opus-4-6';
+  try {
+   const catalog=await request(server,'/v1/models');assert.equal(catalog.value.default_model,catalogModel);
+   await replay('selected replay retains model after catalog default changes');
+  } finally {catalogModel=settings.model;}
+ }
+}
+
+async function verifyReservedSelection(server, checks) {
+ const key=randomUUID(), headers={'Idempotency-Key':key,Accept:'text/event-stream'};
+ // Exercise a real public failure after selection, before initialization: the
+ // configuration parser accepts these instructions but creation's existing
+ // bounded initialization envelope rejects them. No test-only DO mutation.
+ const body={settings_selection:{policy:'cli'},configuration:{instructions:'synthetic reservation '.repeat(160)},
+  input:'BENCH_SAMPLE_reserved initialization failure'};
+ const before=providerCalls.length;
+ const failed=await request(server,'/v1/agent-runs','POST',body,headers);
+ assert.equal(failed.status,400,JSON.stringify(failed));
+ for(const configuration of [{},{chatgpt_account_id:'synthetic-replacement'}]) {
+  const replacement=await request(server,'/v1/agents','POST',{
+   settings:{model:'gpt-6-astra',thinking:'high',reasoning_mode:'standard',fast_mode:false},configuration},headers);
+  assert.equal(replacement.status,409,JSON.stringify(replacement));
+  checks.push({name:'standalone creation cannot replace reserved selection',failed,replacement,configuration});
+ }
+ const changed=await request(server,'/v1/agent-runs','POST',{...body,input:body.input+' changed'},headers);
+ assert.equal(changed.status,409,JSON.stringify(changed));
+ const replay=await request(server,'/v1/agent-runs','POST',body,headers);
+ assert.equal(replay.status,400,'original request must retain its original failed initialization, not adopt replacement: '+JSON.stringify(replay));
+ assert.equal(providerCalls.length,before,'failed reservation/replacement never invokes provider');
+ checks.push({name:'failed selected creation retains original policy/input across alternate initialization paths',failed,changed,replay,provider_invocations:providerCalls.length-before});
+}
