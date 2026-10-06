@@ -52,6 +52,8 @@ enum HandCommand {
         #[arg(long)]
         credentials_changed: bool,
     },
+    /// Install, repair, or reopen the standalone macOS Hand menu bar.
+    MenuBar,
     /// Show local Hand service status as JSON.
     Status,
     /// Start the local Hand service.
@@ -88,6 +90,7 @@ async fn install_missing_user_service(executable: Option<PathBuf>) -> Result<()>
     let _lock = service_lock().await?;
     let state = crate::hand_service::status().await?;
     if (state.installed || state.loaded) && !crate::hand_service::is_pending().await? {
+        crate::hand_menu_bar::ensure_with_warning(false).await;
         return Ok(());
     }
     let account_file = nanocodex_cli_auth::saved_enrollment_account_file()?;
@@ -97,7 +100,9 @@ async fn install_missing_user_service(executable: Option<PathBuf>) -> Result<()>
         nanocodex_cli_auth::managed_url_from_environment(None)?,
         false,
     )
-    .await
+    .await?;
+    crate::hand_menu_bar::ensure_with_warning(false).await;
+    Ok(())
 }
 
 /// Serialize preparation, sign-in activation, repairs, and coordinated updates.
@@ -126,6 +131,7 @@ pub(crate) async fn prepare_default(executable: Option<PathBuf>) -> Result<()> {
     }
     let _lock = service_lock().await?;
     crate::hand_service::prepare(executable).await?;
+    crate::hand_menu_bar::ensure_with_warning(false).await;
     eprintln!("Hand service is installed; sign in to connect this computer.");
     Ok(())
 }
@@ -142,6 +148,7 @@ pub(crate) async fn connect_saved_login(
     let _lock = service_lock().await?;
     crate::hand_service::connect_saved_login(account_file, managed_url, credentials_changed)
         .await?;
+    crate::hand_menu_bar::ensure_with_warning(false).await;
     eprintln!("Hand service is installed and connected.");
     Ok(())
 }
@@ -170,6 +177,7 @@ async fn install_with(
         let _lock = service_lock().await?;
         eprintln!("Installing or repairing the local Hand service…");
         crate::hand_service::ensure(executable, account_file).await?;
+        crate::hand_menu_bar::ensure_with_warning(true).await;
         eprintln!("Hand service is installed and connected.");
         return Ok(());
     }
@@ -375,7 +383,10 @@ impl Hand {
     pub(crate) async fn run(self) -> Result<()> {
         let _service_lock = if matches!(
             &self.command,
-            HandCommand::Install { .. } | HandCommand::Connect { .. } | HandCommand::Status
+            HandCommand::Install { .. }
+                | HandCommand::Connect { .. }
+                | HandCommand::Status
+                | HandCommand::MenuBar
         ) {
             None
         } else {
@@ -414,6 +425,7 @@ impl Hand {
                 };
                 connect_saved_login(account_file, managed_url, credentials_changed).await
             }
+            HandCommand::MenuBar => crate::hand_menu_bar::show().await,
             HandCommand::Status => {
                 #[cfg(target_os = "linux")]
                 {

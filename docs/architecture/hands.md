@@ -8,6 +8,13 @@ OS -> Hand daemon <--- outbound WebSocket ---> AccountHostedTools <- agent
        `-- VM factory helper -> VMs published as separate mountable Hands
 ```
 
+On macOS, CLI Hand setup also installs a standalone menu-bar companion. It
+shows local service status and Start/Stop/Restart controls without requiring the
+Nanocodex desktop app. Its separate login LaunchAgent observes the existing Hand;
+it never creates another Hand identity. Quitting the menu bar leaves the service
+running. `nanocodex hand menu-bar` installs, repairs, or reopens the icon. See the
+[menu-bar companion](../../macos/HandMenuBar/README.md) for build and lifecycle details.
+
 The broker durably claims each call before sending it once. The daemon owns execution; a socket carries requests and replies. Each admitted source call has one durable transport command ID. The living Hand keeps its running task or immutable terminal receipt until the broker records the result and acknowledges it.
 
 - Offline before dispatch: not started.

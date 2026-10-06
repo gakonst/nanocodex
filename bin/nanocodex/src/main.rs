@@ -20,6 +20,7 @@ mod eval;
 #[path = "eval_unsupported.rs"]
 mod eval;
 mod hand_login;
+mod hand_menu_bar;
 mod hand_service;
 mod hand_setup;
 mod install;
