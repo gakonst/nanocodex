@@ -360,6 +360,7 @@ pub(crate) enum RootEffect {
         text: String,
     },
     Copy(String),
+    CopyResponse(String),
     Handoff,
     Review {
         download_assets: bool,
@@ -480,6 +481,7 @@ pub(crate) struct RootNode {
     theme_mode: ThemeMode,
     preferred_reasoning_mode: ReasoningMode,
     subagents: SubagentTree,
+    pending_recent_prompts: bool,
     context_diagnostics: ContextDiagnostics,
     recent_prompts: Vec<RecentPromptDraft>,
     seen_vault_requests: std::collections::HashSet<String>,
@@ -566,6 +568,7 @@ impl RootNode {
             theme_mode: ThemeMode::Auto,
             preferred_reasoning_mode: ReasoningMode::Standard,
             subagents,
+            pending_recent_prompts: false,
             context_diagnostics: ContextDiagnostics::default(),
             recent_prompts: Vec::new(),
             seen_vault_requests: Default::default(),
@@ -850,6 +853,7 @@ impl RootNode {
         fast_mode: bool,
         mut projection: RestoredSessionProjection,
     ) {
+        self.pending_recent_prompts = false;
         let preserve_active_submission = !self.resuming_session
             && (self.has_active_turns()
                 || !self.queue.component().is_empty()
@@ -901,6 +905,10 @@ impl RootNode {
 
     pub(crate) fn allows_pane_switch(&self) -> bool {
         self.overlay.is_none() && !self.composer.component().draft().starts_with('/')
+    }
+
+    pub(crate) const fn recent_prompts_loading(&self) -> bool {
+        self.pending_recent_prompts
     }
 
     pub(crate) const fn composer(&self) -> &Composer {
@@ -1243,6 +1251,11 @@ impl RootNode {
         if is_confirmation_key_repeat(&event) {
             return ComponentUpdate::none();
         }
+        if self.pending_recent_prompts && (is_escape(&event) || is_control_c(&event)) {
+            self.pending_recent_prompts = false;
+            self.key_confirmation = None;
+            return self.resume_after_session_lookup();
+        }
         if self.pending_session_list.is_some() && (is_escape(&event) || is_control_c(&event)) {
             return self.cancel_session_list();
         }
@@ -1359,7 +1372,8 @@ impl RootNode {
                     && matches!(
                         self.composer.component().draft().split_whitespace().next(),
                         Some(
-                            "/share"
+                            "/copy"
+                                | "/share"
                                 | "/voice"
                                 | "/screen"
                                 | "/zoom"
@@ -1401,7 +1415,7 @@ impl RootNode {
             }
             return self.update_composer(ComposerEvent::Terminal(event), RenderRequest::Immediate);
         }
-        if !self.interactive || self.pending_session_list.is_some() {
+        if !self.interactive || self.pending_session_list.is_some() || self.pending_recent_prompts {
             return ComponentUpdate::none();
         }
         if self.queue_edit.is_some() {
@@ -2161,10 +2175,12 @@ impl RootNode {
         if self.side_pane {
             match update.effects.first() {
                 Some(ActionsEffect::Dismiss | ActionsEffect::Trigger(Action::Keybindings))
-                | Some(ActionsEffect::Trigger(Action::AgentId | Action::Zoom))
+                | Some(ActionsEffect::Trigger(Action::AgentId | Action::Zoom | Action::Copy))
                 | Some(ActionsEffect::Settings(
                     SettingsCommand::CloseBtw | SettingsCommand::Zoom,
                 )) => {}
+                Some(ActionsEffect::Submit(command))
+                    if command.split_whitespace().next() == Some("/copy") => {}
                 Some(_) => {
                     self.overlay = None;
                     self.notification = Some(Notification::plain("Use /btw for questions and /close to leave; other controls belong to the main thread".into(), Color::Yellow));
@@ -2176,6 +2192,10 @@ impl RootNode {
         match update.effects.into_iter().next() {
             Some(ActionsEffect::Dismiss) => self.overlay = None,
             Some(ActionsEffect::Submit(command)) => return self.submit_action_command(command),
+            Some(ActionsEffect::Trigger(Action::Copy)) => {
+                self.overlay = None;
+                return self.copy_response("");
+            }
             Some(ActionsEffect::Trigger(Action::Share)) => {
                 return self.submit_action_command("/share".to_owned());
             }
@@ -2537,17 +2557,14 @@ impl RootNode {
         update
     }
 
+    fn recent_prompt_lookup_status(&mut self) -> RenderRequest {
+        self.session_loading_status("Loading recent prompts… · Esc cancel")
+    }
+
     fn load_recent_prompts(&mut self) -> ComponentUpdate<RootEffect> {
         self.overlay = None;
-        self.interactive = false;
-        let _ = self
-            .composer
-            .component_mut()
-            .update(ComposerEvent::Activity {
-                active: true,
-                status: Some("Loading recent prompts…".to_owned()),
-                now: Instant::now(),
-            });
+        self.pending_recent_prompts = true;
+        let _ = self.recent_prompt_lookup_status();
         ComponentUpdate {
             effects: vec![RootEffect::LoadRecentPrompts(self.recent_prompts.clone())],
             render: RenderRequest::Immediate,
@@ -2559,11 +2576,14 @@ impl RootNode {
         session_id: String,
         prompts: Vec<RecentPrompt>,
     ) -> ComponentUpdate<RootEffect> {
-        self.restore_session_activity();
+        if !std::mem::take(&mut self.pending_recent_prompts) {
+            return ComponentUpdate::none();
+        }
+        let update = self.resume_after_session_lookup();
         self.overlay = Some(Overlay::RecentPrompts(Node::new(RecentPromptPicker::new(
             prompts, session_id,
         ))));
-        ComponentUpdate::render(RenderRequest::Immediate)
+        update
     }
 
     fn update_recent_prompt_picker(&mut self, event: Event) -> ComponentUpdate<RootEffect> {
@@ -2591,8 +2611,11 @@ impl RootNode {
     }
 
     fn recent_prompt_load_failed(&mut self, message: String) -> ComponentUpdate<RootEffect> {
+        if !std::mem::take(&mut self.pending_recent_prompts) {
+            return ComponentUpdate::none();
+        }
         self.notification = Some(Notification::plain(message, Color::Red));
-        self.restore_session_activity()
+        self.resume_after_session_lookup()
     }
 
     fn sessions_loaded(
@@ -3037,6 +3060,12 @@ impl RootNode {
     }
 
     fn finish_queue_edit(&mut self, save: bool) -> ComponentUpdate<RootEffect> {
+        // A local command typed into the queue editor must never become a
+        // future model prompt; leave the editor open so it can be corrected.
+        if save && self.composer.component().draft().split_whitespace().next() == Some("/copy") {
+            let argument = self.composer.component().draft().trim()["/copy".len()..].to_owned();
+            return self.copy_response(&argument);
+        }
         let Some(edit) = self.queue_edit.take() else {
             return ComponentUpdate::none();
         };
@@ -3100,6 +3129,37 @@ impl RootNode {
         update
     }
 
+    // Adapted from clabby/tact's /copy command (Apache-2.0).
+    fn copy_response(&mut self, argument: &str) -> ComponentUpdate<RootEffect> {
+        let argument = argument.trim();
+        let index = if argument.is_empty() {
+            Some(1)
+        } else if argument.bytes().all(|byte| byte.is_ascii_digit()) {
+            argument.parse::<usize>().ok().filter(|index| *index > 0)
+        } else {
+            None
+        };
+        let result = match index {
+            Some(index) => self
+                .transcript
+                .component()
+                .assistant_response(index)
+                .map(|text| RootEffect::CopyResponse(text.to_owned()))
+                .ok_or_else(|| format!("No completed assistant response at position {index}.")),
+            None => Err("Usage: /copy [N], where N is a positive integer (1 = latest).".to_owned()),
+        };
+        match result {
+            Ok(effect) => ComponentUpdate {
+                effects: vec![effect],
+                render: RenderRequest::Immediate,
+            },
+            Err(message) => {
+                self.notification = Some(Notification::plain(message, Color::Red));
+                ComponentUpdate::render(RenderRequest::Immediate)
+            }
+        }
+    }
+
     fn update_composer(
         &mut self,
         event: ComposerEvent,
@@ -3110,6 +3170,13 @@ impl RootNode {
             && let Some(ComposerEffect::Settings(command)) = &update.effect
         {
             return self.apply_settings_command(command.clone());
+        }
+        // Copy is a local control even while a turn is active. Intercept both
+        // submit and queue before changing thread state or delivering input.
+        if let Some(ComposerEffect::Submit(prompt) | ComposerEffect::Queue(prompt)) = &update.effect
+            && prompt.display_text().split_whitespace().next() == Some("/copy")
+        {
+            return self.copy_response(prompt.display_text().trim()["/copy".len()..].trim());
         }
         let delivered = matches!(
             &update.effect,
@@ -3548,6 +3615,10 @@ impl RootNode {
             let _ = self.session_lookup_status();
             return ComponentUpdate::render(RenderRequest::Immediate);
         }
+        if self.pending_recent_prompts {
+            let _ = self.recent_prompt_lookup_status();
+            return ComponentUpdate::render(RenderRequest::Immediate);
+        }
         self.interactive = true;
         let active = self.has_active_turns();
         let status = active.then(|| {
@@ -3584,6 +3655,7 @@ impl RootNode {
     }
 
     fn agent_stream_closed(&mut self) -> ComponentUpdate<RootEffect> {
+        self.pending_recent_prompts = false;
         self.managed_active_turns = 0;
         self.interactive = false;
         self.reconnecting = Some(true);
@@ -3604,6 +3676,7 @@ impl RootNode {
         pending_local: bool,
         reasoning_mode: ReasoningMode,
     ) -> ComponentUpdate<RootEffect> {
+        self.pending_recent_prompts = false;
         self.set_reasoning_modes(reasoning_mode, reasoning_mode);
         self.reconnecting = None;
         self.interactive = self.pending_session_list.is_none() && !self.resuming_session;
@@ -3823,6 +3896,8 @@ impl RootNode {
             render.max(self.session_resume_status())
         } else if self.pending_session_list.is_some() && self.reconnecting.is_none() {
             render.max(self.session_lookup_status())
+        } else if self.pending_recent_prompts && self.reconnecting.is_none() {
+            render.max(self.recent_prompt_lookup_status())
         } else {
             render
         }
@@ -3840,6 +3915,7 @@ impl RootNode {
             // reconnection or a session lookup owns the input controls.
             if self.reconnecting.is_some()
                 || self.pending_session_list.is_some()
+                || self.pending_recent_prompts
                 || self.resuming_session
             {
                 continue;
@@ -4104,6 +4180,7 @@ impl Component for RootNode {
             }
             RootEvent::AgentStreamClosed => self.agent_stream_closed(),
             RootEvent::AgentConnecting => {
+                self.pending_recent_prompts = false;
                 self.interactive = false;
                 self.reconnecting = Some(true);
                 self.reconnection_status("Connecting…")
@@ -4114,6 +4191,7 @@ impl Component for RootNode {
                 reasoning_mode,
             } => self.agent_reconnected(active_turns, pending_local, reasoning_mode),
             RootEvent::AgentReconnectFailed(error) => {
+                self.pending_recent_prompts = false;
                 self.reconnecting = Some(false);
                 self.notification = Some(Notification::plain(error, Color::Red));
                 self.reconnection_status("Connection lost · Enter to reconnect")
@@ -6783,12 +6861,9 @@ mod live_control_tests {
         use crate::tui::theme::Theme;
         use ratatui::{Terminal, backend::TestBackend};
 
-        let callbacks: [fn() -> RootEvent; 6] = [
-            || RootEvent::RecentPromptsLoaded {
-                session_id: "session".to_owned(),
-                prompts: Vec::new(),
-            },
-            || RootEvent::RecentPromptLoadFailed("lookup failed".to_owned()),
+        // Prompt lookup now has request/cancellation state and is covered by
+        // the executable terminal prompt-cache journeys.
+        let callbacks: [fn() -> RootEvent; 4] = [
             || RootEvent::SessionsLoaded {
                 request_id: 0,
                 sessions: Vec::new(),

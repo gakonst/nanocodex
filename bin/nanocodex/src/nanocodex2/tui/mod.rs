@@ -20,6 +20,7 @@ mod managed2;
 mod pane;
 mod private_input;
 mod prompt;
+mod prompt_cache;
 mod scheduler;
 mod screen;
 mod secure_input;
@@ -48,6 +49,7 @@ use self::{
     },
     pane::PaneId,
     prompt::Submission,
+    prompt_cache::PromptCache,
     scheduler::{RenderScheduler, STREAM_FRAME_INTERVAL},
     session::{RecentPrompt, SessionSummary},
     shell::ShellExecution,
@@ -481,6 +483,13 @@ enum ConnectionResult {
         request_id: u64,
         result: Option<Result<AgentList, ManagedError>>,
     },
+    RecentPrompts {
+        pane: PaneId,
+        request_id: u64,
+        session_id: String,
+        local: Vec<RecentPrompt>,
+        result: Result<Vec<RecentPrompt>, String>,
+    },
     Disconnected(Result<(), NanocodexError>),
 }
 
@@ -614,6 +623,14 @@ struct DriverRuntime {
     shell_context: Vec<String>,
     pending_submission: Option<(PaneId, TurnId, Submission)>,
     recent_prompts: Vec<RecentPrompt>,
+    prompt_cache: Result<PromptCache, String>,
+    prompt_cache_writes: JoinSet<(Vec<RecentPrompt>, Result<(), String>)>,
+    prompt_cache_pending: Vec<RecentPrompt>,
+    prompt_cache_retry_at: Option<Instant>,
+    prompt_cache_retries: u8,
+    prompt_cache_warned: bool,
+    recent_prompt_request: u64,
+    recent_prompt_loads: HashMap<PaneId, u64>,
     connection: JoinSet<ConnectionResult>,
     session_list_cancellations: HashMap<(PaneId, u64), CancellationToken>,
     session_searches: JoinSet<SessionSearchCompletion>,
@@ -770,6 +787,77 @@ async fn clone_elevenlabs_voice(name: String, path: PathBuf) -> Result<String, S
 }
 
 impl DriverRuntime {
+    fn pane_session_id(&self, pane: PaneId) -> String {
+        if pane == PaneId::Main {
+            self.agent_id.clone()
+        } else {
+            self.btw
+                .as_ref()
+                .filter(|btw| btw.pane == pane)
+                .and_then(|btw| btw.agent_id.clone())
+                .unwrap_or_default()
+        }
+    }
+
+    fn cache_prompts(&mut self, prompts: Vec<RecentPrompt>) {
+        if prompts.is_empty() || self.prompt_cache.is_err() {
+            return;
+        }
+        self.prompt_cache_pending.extend(prompts);
+        self.prompt_cache_pending =
+            prompt_cache::bounded(std::mem::take(&mut self.prompt_cache_pending));
+        self.prompt_cache_retries = 1;
+        self.prompt_cache_retry_at = None;
+        self.start_prompt_cache_write();
+    }
+
+    fn start_prompt_cache_write(&mut self) {
+        if !self.prompt_cache_writes.is_empty() || self.prompt_cache_pending.is_empty() {
+            return;
+        }
+        let Ok(cache) = self.prompt_cache.clone() else {
+            return;
+        };
+        let batch = std::mem::take(&mut self.prompt_cache_pending);
+        self.prompt_cache_writes.spawn(async move {
+            let result = cache.merge(batch.clone()).await.map(|_| ());
+            (batch, result)
+        });
+    }
+
+    fn load_prompt_cache(&mut self, pane: PaneId, drafts: Vec<components::RecentPromptDraft>) {
+        self.recent_prompt_request = self.recent_prompt_request.wrapping_add(1);
+        let request_id = self.recent_prompt_request;
+        self.recent_prompt_loads.insert(pane, request_id);
+        let session_id = self.pane_session_id(pane);
+        let mut local = if pane == PaneId::Main {
+            self.recent_prompts.clone()
+        } else {
+            Vec::new()
+        };
+        local.extend(drafts.into_iter().map(|draft| RecentPrompt {
+            text: draft.text,
+            recorded_at_unix_ms: draft.recorded_at_unix_ms,
+            session_id: session_id.clone(),
+            workspace: self.workspace.clone(),
+        }));
+        let local = prompt_cache::bounded(local);
+        let cache = self.prompt_cache.clone();
+        self.connection.spawn(async move {
+            let result = match cache {
+                Ok(cache) => cache.merge(local.clone()).await,
+                Err(error) => Err(error),
+            };
+            ConnectionResult::RecentPrompts {
+                pane,
+                request_id,
+                session_id,
+                local,
+                result,
+            }
+        });
+    }
+
     fn active_managed_turn_ids(&self) -> Vec<&str> {
         // Attached turns and locally controlled turns are counted separately by
         // the UI, but control clients need the complete durable active set.
@@ -1376,6 +1464,7 @@ impl DriverRuntime {
         self.sequence = self.sequence.max(prepared.next_sequence);
         self.next_turn = self.next_turn.max(self.sequence);
         self.history_records = prepared.history_records;
+        self.cache_prompts(prepared.older_prompts.clone());
         self.recent_prompts.append(&mut prepared.older_prompts);
         self.start_history_prefetch(pane);
         Ok(prepared.projection)
@@ -1446,6 +1535,7 @@ impl DriverRuntime {
             },
         );
         self.recent_prompts.truncate(100);
+        self.cache_prompts(vec![self.recent_prompts[0].clone()]);
         Ok(record)
     }
 
@@ -2063,6 +2153,14 @@ async fn run_inner(
         shell_context: Vec::new(),
         pending_submission: None,
         recent_prompts: Vec::new(),
+        prompt_cache: PromptCache::for_client(client),
+        prompt_cache_writes: JoinSet::new(),
+        prompt_cache_pending: Vec::new(),
+        prompt_cache_retry_at: None,
+        prompt_cache_retries: 1,
+        prompt_cache_warned: false,
+        recent_prompt_request: 0,
+        recent_prompt_loads: HashMap::new(),
         connection: JoinSet::new(),
         session_list_cancellations: HashMap::new(),
         session_searches: JoinSet::new(),
@@ -2348,6 +2446,7 @@ async fn run_inner(
 
         let render_deadline = scheduler.deadline();
         let animation_deadline = app.animation_deadline();
+        let prompt_cache_deadline = runtime.prompt_cache_retry_at;
         let (mut voice_status, mut voice_transcripts) =
             runtime.voice.as_mut().map_or((None, None), |voice| {
                 (Some(&mut voice.status), Some(&mut voice.transcripts))
@@ -2643,7 +2742,7 @@ async fn run_inner(
                             // Replay their transcript without changing its current active-turn set.
                             if let Some((record, prompt)) = runtime.project_managed_event(event)? {
                                 runtime.live_records.push(Arc::clone(&record));
-                                if let Some(prompt) = prompt { runtime.recent_prompts.insert(0, prompt); }
+                                if let Some(prompt) = prompt { runtime.cache_prompts(vec![prompt.clone()]); runtime.recent_prompts.insert(0, prompt); }
                                 let update = app.update(AppEvent::ExternalTranscript { pane: PaneId::Main, record });
                                 stopping |= apply_update(update, &mut app, &mut runtime, &mut terminal, &mut scheduler).await?;
                             }
@@ -2700,6 +2799,7 @@ async fn run_inner(
                         if let Some((record, prompt)) = runtime.project_managed_event(event)? {
                             runtime.live_records.push(Arc::clone(&record));
                             if let Some(prompt) = prompt {
+                                runtime.cache_prompts(vec![prompt.clone()]);
                                 runtime.recent_prompts.insert(0, prompt);
                                 runtime.recent_prompts.truncate(100);
                             }
@@ -2737,6 +2837,34 @@ async fn run_inner(
                     None => runtime.begin_recovery(&mut app, &mut scheduler, true),
                 }
             }
+            Some(result) = runtime.prompt_cache_writes.join_next(), if !runtime.prompt_cache_writes.is_empty() => {
+                let error = match result {
+                    Ok((_, Ok(()))) => {
+                        runtime.start_prompt_cache_write();
+                        None
+                    }
+                    Ok((mut batch, Err(error))) => {
+                        batch.append(&mut runtime.prompt_cache_pending);
+                        runtime.prompt_cache_pending = prompt_cache::bounded(batch);
+                        if runtime.prompt_cache_retries > 0 {
+                            runtime.prompt_cache_retries -= 1;
+                            runtime.prompt_cache_retry_at = Some(Instant::now() + Duration::from_millis(250));
+                        }
+                        Some(error)
+                    }
+                    Err(_) => Some("Prompt history task failed".to_owned()),
+                };
+                if let Some(error) = error && !runtime.prompt_cache_warned {
+                    runtime.prompt_cache_warned = true;
+                    request_render(app.update(AppEvent::NotifyError {
+                        pane: PaneId::Main, error: format!("Could not save recent prompts: {error}"),
+                    }), &mut scheduler);
+                }
+            }
+            () = wait_until(prompt_cache_deadline), if prompt_cache_deadline.is_some() => {
+                runtime.prompt_cache_retry_at = None;
+                runtime.start_prompt_cache_write();
+            }
             Some(event) = btw_updates.recv() => {
                 let pane = match &event {
                     btw::Event::Ready { pane, .. } | btw::Event::Record { pane, .. } | btw::Event::Finished(pane) | btw::Event::Failed { pane, .. } => *pane,
@@ -2751,7 +2879,20 @@ async fn run_inner(
                         request_render(update, &mut scheduler);
                         app.update(AppEvent::ForkReady { pane })
                     }
-                    btw::Event::Record { pane, record } => app.update(AppEvent::Transcript { pane, record }),
+                    btw::Event::Record { pane, record } => {
+                        if record.source() == "tact" && matches!(record.kind(), "user.submitted" | "user.steered") {
+                            #[derive(serde::Deserialize)]
+                            struct CachedInput { text: String }
+                            if let Ok(input) = record.decode_payload::<CachedInput>() {
+                                runtime.cache_prompts(vec![RecentPrompt {
+                                    text: vault::receipt_summary(&input.text).unwrap_or(input.text),
+                                    recorded_at_unix_ms: record.recorded_at_unix_ms(),
+                                    session_id: runtime.pane_session_id(pane), workspace: runtime.workspace.clone(),
+                                }]);
+                            }
+                        }
+                        app.update(AppEvent::Transcript { pane, record })
+                    },
                     btw::Event::Finished(pane) => app.update(AppEvent::WorkerTurnFinished { pane, terminal_expected: false }),
                     btw::Event::Failed { pane, error, opening: true } => {
                         runtime.btw.take();
@@ -2881,6 +3022,23 @@ async fn run_inner(
                                 error: format!("Could not reconnect: {}. Press Enter to retry.", failure.error),
                             }), &mut scheduler);
                         }
+                        ConnectionResult::RecentPrompts { pane, request_id, session_id, local, result } => {
+                            if runtime.recent_prompt_loads.get(&pane) != Some(&request_id)
+                                || runtime.pane_session_id(pane) != session_id { continue; }
+                            runtime.recent_prompt_loads.remove(&pane);
+                            if app.root(pane).is_none_or(|root| !root.recent_prompts_loading()) { continue; }
+                            let prompts = match result {
+                                Ok(prompts) => prompts,
+                                Err(error) => {
+                                    request_render(app.update(AppEvent::NotifyError { pane,
+                                        error: format!("Saved prompt history unavailable: {error}"),
+                                    }), &mut scheduler);
+                                    local
+                                }
+                            };
+                            let update = app.update(AppEvent::RecentPromptsLoaded { pane, session_id, prompts });
+                            stopping |= apply_update(update, &mut app, &mut runtime, &mut terminal, &mut scheduler).await?;
+                        }
                         ConnectionResult::Sessions { pane, request_id, result } => {
                             let cancelled = runtime.session_list_cancellations.remove(&(pane, request_id))
                                 .is_none_or(|token| token.is_cancelled());
@@ -2984,6 +3142,7 @@ async fn run_inner(
                             runtime.cancellation_had_effect = false;
                             runtime.cancellation_failed = false;
                             runtime.next_turn = runtime.next_turn.max(runtime.sequence);
+                            runtime.cache_prompts(prompts.clone());
                             runtime.recent_prompts = prompts;
                             runtime.observed_cursor = history.events.last().map_or_else(|| "0".to_owned(), |event| event.cursor.clone());
                             runtime.history = history;
@@ -3677,6 +3836,20 @@ async fn run_inner(
 
     runtime.cancel_secure_input(); // wipe before terminal restoration/shutdown
     drop(terminal);
+    // Finish already-scheduled local writes before /reload replaces this process.
+    while let Some(result) = runtime.prompt_cache_writes.join_next().await {
+        if let Ok((batch, Err(_))) = result {
+            runtime.prompt_cache_pending.extend(batch);
+        }
+    }
+    if !runtime.prompt_cache_pending.is_empty()
+        && let Ok(cache) = &runtime.prompt_cache
+    {
+        let pending = prompt_cache::bounded(std::mem::take(&mut runtime.prompt_cache_pending));
+        if cache.merge(pending).await.is_err() {
+            tracing::warn!("could not finish saving recent prompts");
+        }
+    }
     if let Some(voice) = runtime.voice.take() {
         voice.finish().await;
     }
@@ -3779,6 +3952,24 @@ async fn apply_update(
                 }
             }
             AppEffect::Pane { pane, effect } => {
+                if let RootEffect::CopyResponse(text) = effect {
+                    let event = match clipboard::copy_text(&text) {
+                        Ok(()) => AppEvent::NotifySuccess {
+                            pane,
+                            message: "Copied response".to_owned(),
+                        },
+                        Err(error) => AppEvent::NotifyError {
+                            pane,
+                            error: format!("Clipboard copy failed: {error}"),
+                        },
+                    };
+                    absorb(app.update(event), &mut effects, scheduler);
+                    continue;
+                }
+                if let RootEffect::LoadRecentPrompts(drafts) = effect {
+                    runtime.load_prompt_cache(pane, drafts);
+                    continue;
+                }
                 if pane != PaneId::Main {
                     match effect {
                         RootEffect::Submit(prompt) | RootEffect::ContinueSubagent(prompt) => {
@@ -4299,6 +4490,11 @@ async fn apply_update(
                         {
                             runtime.unconfirmed_steer = None;
                         }
+                        let prompt = RecentPrompt { text: text.clone(), recorded_at_unix_ms: unix_ms(),
+                            session_id: runtime.agent_id.clone(), workspace: runtime.workspace.clone() };
+                        runtime.cache_prompts(vec![prompt.clone()]);
+                        runtime.recent_prompts.insert(0, prompt);
+                        runtime.recent_prompts.truncate(100);
                         let record = runtime.local_record(LocalEvent::UserSteered { text })?;
                         absorb(
                             app.update(AppEvent::Transcript { pane, record }),
@@ -4392,6 +4588,7 @@ async fn apply_update(
                             );
                         }
                     }
+                    RootEffect::CopyResponse(_) => unreachable!("handled before pane routing"),
                     RootEffect::SetTheme(_) => {}
                     RootEffect::SearchSessions {
                         picker_id,
@@ -4461,17 +4658,7 @@ async fn apply_update(
                             }
                         }
                     }
-                    RootEffect::LoadRecentPrompts(_) => {
-                        absorb(
-                            app.update(AppEvent::RecentPromptsLoaded {
-                                pane,
-                                session_id: runtime.agent_id.clone(),
-                                prompts: runtime.recent_prompts.clone(),
-                            }),
-                            &mut effects,
-                            scheduler,
-                        );
-                    }
+                    RootEffect::LoadRecentPrompts(_) => unreachable!("handled before pane routing"),
                     RootEffect::LoadOlderHistory => {
                         runtime.history_prefetch.request_replay();
                         runtime.start_requested_history_replay(pane);
@@ -5531,6 +5718,14 @@ mod tests {
             shell_context: Vec::new(),
             pending_submission: None,
             recent_prompts,
+            prompt_cache: Err("disabled in runtime fixture".into()),
+            prompt_cache_writes: JoinSet::new(),
+            prompt_cache_pending: Vec::new(),
+            prompt_cache_retry_at: None,
+            prompt_cache_retries: 1,
+            prompt_cache_warned: false,
+            recent_prompt_request: 0,
+            recent_prompt_loads: HashMap::new(),
             connection: JoinSet::new(),
             session_list_cancellations: HashMap::new(),
             session_searches: JoinSet::new(),
