@@ -283,7 +283,7 @@ export function App({ configuration }: Readonly<{ configuration: PublicConfigura
           <h2>{connection ? "Host principal connected" : "Approve the hosted agent"}</h2>
           <p>
             {connection
-              ? `Grant ${short(connection.grant.id)} · agent ${short(connection.agentId)}`
+              ? `Grant ${short(connection.grant.id)}${connection.agentId ? ` · agent ${short(connection.agentId)}` : ""}`
               : "The popup grants hosted agent access only—no wallet, access key, or MPP authority."}
           </p>
           <button

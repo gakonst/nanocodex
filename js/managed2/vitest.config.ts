@@ -149,9 +149,21 @@ export default defineConfig({
             const pair = new WebSocketPair();
             const [client, server] = Object.values(pair);
             server.accept();
+            const responses = new Map();
             server.addEventListener("message", event => {
               const frame = JSON.parse(event.data);
-              for (const reply of respond(frame.response ?? frame)) server.send(JSON.stringify(reply));
+              if (frame.type !== "response.create") throw new Error("Unexpected provider frame: " + frame.type);
+              const incoming = frame.response ?? frame;
+              const previous = incoming.previous_response_id ? responses.get(incoming.previous_response_id) : undefined;
+              if (incoming.previous_response_id && !previous) throw new Error("Unknown previous response");
+              // Responses WebSockets may send incremental input and omit stable
+              // tools when continuing a known response on this same socket.
+              const body = { ...previous, ...incoming, input: [...(previous?.input ?? []), ...(incoming.input ?? [])] };
+              for (const reply of respond(body)) {
+                if (reply.type === "response.completed") responses.set(reply.response.id,
+                  { ...body, input: [...body.input, ...(reply.response.output ?? [])] });
+                server.send(JSON.stringify(reply));
+              }
             });
             return new Response(null, { status: 101, webSocket: client });
           } }

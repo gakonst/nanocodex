@@ -935,6 +935,7 @@ jobs:
         run: |
           CHROME_PATH=$(node --input-type=module -e 'import {createRequire} from "node:module"; const require = createRequire(new URL("./js/account/package.json", import.meta.url)); process.stdout.write(require("playwright-core").chromium.executablePath());')
           export CHROME_PATH
+          pnpm --filter nanocodex-managed-service run prepare:code-evaluator
           pnpm --filter nanocodex-managed-service run test:services
           pnpm --filter nanocodex-managed-service run test:vault-requests
           pnpm --filter nanocodex-egress-service run test:vault-requests
