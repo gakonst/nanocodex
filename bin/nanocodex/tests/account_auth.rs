@@ -147,9 +147,15 @@ impl Fixture {
         if option_env!("CARGO_BIN_EXE_nanocodex2").is_none() {
             command.arg("account");
         }
+        command.args(args);
+        // Account fixtures must never enroll or reconfigure the GUI user's Hand.
+        if args.first() == Some(&"login") {
+            command.arg("--no-hand");
+        }
         command
-            .args(args)
             .current_dir(self.dir.path())
+            .env("HOME", self.dir.path())
+            .env("NANOCODEX_DIR", self.dir.path().join("install"))
             .env_remove("NANOCODEX_API_KEY")
             .env_remove("NC_API_KEY")
             .env("CODEX_HOME", self.dir.path())
