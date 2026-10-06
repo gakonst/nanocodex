@@ -48,7 +48,7 @@ import { gatewayAvailability, gatewayRuntime } from "./gateway-runtime";
 import { createSubagentRouteController, subagentRoutingPolicy, type RetainedChildRoute } from "./subagent-model-routing";
 import { SqliteProviderTelemetryStore, normalizeProviderColo, type ProviderObservation } from "./provider-telemetry";
 import { resolveThreadRoute, ROUTING_CANDIDATES, routingPolicySchema, ThreadRoutePin, type ThreadRoute, type RoutingAi } from "./thread-model-routing";
-import { AgentPresentationWriter, generatePresentationText, presentationPending, presentationRetryAt } from "./agent-presentation";
+import { AgentPresentationWriter, threadTitleSource, generateThreadTitle, generatePresentationText, presentationPending, presentationRetryAt } from "./agent-presentation";
 import { retireSessionProjects, isRetiredProjectCompletion } from "./retired-projects";
 import { downloadPath, downloadBrainFile, downloadHandFile, fileDownloadFailure, FileDownloadError } from "./file-download";
 import { callerContext, type CallerContext } from "./request-origin";
@@ -8116,7 +8116,7 @@ export class DurableAgentSession extends DurableComputerObject {
     // Persist it with the managed adoption so cold recovery never derives a
     // different account- or memory-enriched form for the routed operation.
     const dispatchChunks = dispatchInputChunks(JSON.stringify(dispatchInput));
-    const firstPrompt = conversationTitle(promptInputText(input));
+    const firstPrompt = conversationTitle(threadTitleSource(promptInputText(input)));
     let event: DurableEvent<StreamMessage> | undefined;
     this.ctx.storage.transactionSync(() => {
       this.#assertDurabilityAdmissionActive();
@@ -8315,7 +8315,7 @@ export class DurableAgentSession extends DurableComputerObject {
     const now = Date.now();
     const accepted: StreamMessage = { type: "turn_accepted", id, input, replayed: false,
       ...(authorization.guestShareLinkId ? { author: "guest", share_link_id: authorization.guestShareLinkId } : {}) };
-    const firstPrompt = conversationTitle(promptInputText(input));
+    const firstPrompt = conversationTitle(threadTitleSource(promptInputText(input)));
     let event: DurableEvent<StreamMessage> | undefined;
     let cancellingEvent: DurableEvent<StreamMessage> | undefined;
     let cancellationRequested = false;
@@ -12376,12 +12376,17 @@ export class DurableAgentSession extends DurableComputerObject {
       await response.body?.cancel();
       if (!response.ok) throw new Error("presentation delivery failed");
     }, async (kind, source) => {
-      // Advisory titles must not cross a provider-pinned Claude thread into
-      // Responses or borrow an unrelated OpenAI credential. Retain the
-      // deterministic admission title until native title generation exists.
-      if (this.#settings().model.startsWith("claude-")) return undefined;
-      const text = await generatePresentationText(this.#modelEgress(), this.ctx.id.toString(), kind, source,
-        this.#configuration().chatgpt_account_id);
+      // Titles use deployment-owned GLM even for Claude or gateway threads;
+      // they never borrow the main conversation's provider credential or route.
+      let text: string | undefined;
+      if (kind === "title") {
+        if (!this.env.AI) return undefined;
+        text = await generateThreadTitle(this.env.AI, source);
+      } else {
+        if (this.#settings().model.startsWith("claude-")) return undefined;
+        text = await generatePresentationText(this.#modelEgress(), this.ctx.id.toString(), kind, source,
+          this.#configuration().chatgpt_account_id);
+      }
       return this.#deleting || this.#deleted || this.#durabilityExported ? undefined : text;
     }, promise => this.ctx.waitUntil(promise.finally(() => this.#scheduleNextAlarm())));
   }

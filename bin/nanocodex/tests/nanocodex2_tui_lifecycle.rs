@@ -981,6 +981,7 @@ struct Service {
     settings_requests: Arc<Mutex<Vec<Value>>>,
     model_route: Arc<Mutex<Option<Value>>>,
     listed_agent: Arc<Mutex<String>>,
+    listed_title: Arc<Mutex<String>>,
     resume_gate: Arc<tokio::sync::Semaphore>,
     active: bool,
     state_available: Arc<AtomicBool>,
@@ -1077,8 +1078,9 @@ async fn approve_vault_origin(
 async fn list_agents(State(service): State<Service>) -> Json<Value> {
     let _permit = service.session_list_gate.acquire().await.unwrap();
     let agent = service.listed_agent.lock().unwrap().clone();
+    let title = service.listed_title.lock().unwrap().clone();
     Json(
-        json!({"data": [agent], "summaries": {agent: {"title": "RETAINED_REMOTE_WORK", "created_at": 1, "updated_at": 1, "turn_count": 1}}}),
+        json!({"data": [agent], "summaries": {agent: {"title": title, "created_at": 1, "updated_at": 1, "turn_count": 1}}}),
     )
 }
 
@@ -1398,6 +1400,7 @@ struct Fixture {
     settings_requests: Arc<Mutex<Vec<Value>>>,
     model_route: Arc<Mutex<Option<Value>>>,
     listed_agent: Arc<Mutex<String>>,
+    listed_title: Arc<Mutex<String>>,
     resume_gate: Arc<tokio::sync::Semaphore>,
     origin: String,
     terminal: Terminal,
@@ -1494,6 +1497,7 @@ impl Fixture {
         let history_requests = Arc::new(Mutex::new(Vec::new()));
         let session_list_gate = Arc::new(tokio::sync::Semaphore::new(1));
         let listed_agent = Arc::new(Mutex::new(AGENT.to_owned()));
+        let listed_title = Arc::new(Mutex::new("RETAINED_REMOTE_WORK".to_owned()));
         let resume_gate = Arc::new(tokio::sync::Semaphore::new(1));
         let socket_paths = Arc::new(Mutex::new(Vec::new()));
         let vault_writes = Arc::new(Mutex::new(Vec::new()));
@@ -1573,6 +1577,7 @@ impl Fixture {
                 settings_requests: settings_requests.clone(),
                 model_route: model_route.clone(),
                 listed_agent: listed_agent.clone(),
+                listed_title: listed_title.clone(),
                 resume_gate: resume_gate.clone(),
                 active,
                 state_available: state_available.clone(),
@@ -1615,6 +1620,7 @@ impl Fixture {
             settings_requests,
             model_route,
             listed_agent,
+            listed_title,
             resume_gate,
             origin,
             terminal,
@@ -3840,6 +3846,58 @@ async fn terminal_live_restore_keeps_an_attached_tool_running() {
     fixture.terminal.input("\r");
     let next = fixture.submission("DRAFT_AFTER_ATTACH").await;
     fixture.complete(&next);
+}
+
+#[tokio::test]
+async fn terminal_resumes_by_generated_title() {
+    const OTHER_AGENT: &str = "019fc927-b280-79a7-8445-1b9996ad2fb1";
+    const GENERATED_TITLE: &str = "Repair cobalt deployment";
+    let mut fixture = Fixture::start().await;
+    *fixture.listed_agent.lock().unwrap() = OTHER_AGENT.to_owned();
+    // The service supplies the persisted generated title through GET /v1/agents.
+    *fixture.listed_title.lock().unwrap() = GENERATED_TITLE.to_owned();
+    fixture.terminal.input("/");
+    fixture.terminal.wait_text("Resume session").await;
+    fixture.terminal.input("restore\r");
+    fixture.terminal.wait_text(GENERATED_TITLE).await;
+    fixture.terminal.wait_text(OTHER_AGENT).await;
+    fixture.terminal.input("unmatchedquartz");
+    fixture.terminal.wait_text("No matching threads").await;
+    fixture.terminal.wait_no_text(GENERATED_TITLE).await;
+    fixture.terminal.input("\x15cobalt");
+    fixture.terminal.wait_text(GENERATED_TITLE).await;
+    fixture.terminal.wait_no_text("No matching threads").await;
+    eprintln!(
+        "Resume title search (query=cobalt):\n{}",
+        fixture.terminal.screen.lock().unwrap().screen().contents()
+    );
+    fixture.terminal.input("\r");
+    fixture.replacement_connection().await;
+    fixture.terminal.wait_no_text("Resuming session").await;
+    fixture
+        .terminal
+        .prompt("CONTINUE_GENERATED_TITLE_THREAD", "\r");
+    let message = tokio::time::timeout(TIMEOUT, fixture.submissions.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(message["fixture_agent_id"], OTHER_AGENT);
+    assert_eq!(
+        prompt_text(&message["input"]),
+        "CONTINUE_GENERATED_TITLE_THREAD"
+    );
+    eprintln!(
+        "Resume submission reached agent {} with input {}",
+        message["fixture_agent_id"], message["input"]
+    );
+    let turn = message["id"].as_str().unwrap().to_owned();
+    fixture.emit(
+        &turn,
+        json!({"type": "turn_accepted", "id": turn, "input": message["input"], "replayed": false}),
+    );
+    fixture.complete(&turn);
+    fixture.terminal.wait_text("Enter send").await;
+    assert!(fixture.submissions.try_recv().is_err());
 }
 
 #[tokio::test]

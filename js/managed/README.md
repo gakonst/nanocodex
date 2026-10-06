@@ -18,6 +18,25 @@ followers, and following. `environment().apis` advertises the tool independently
 of connector authentication. It calls the private [X Worker](../x-api/README.md)
 through `NANOCODEX_X`; deploy it with `pnpm deploy:x` before `pnpm deploy:managed`.
 
+## Automatic thread titles
+
+Managed threads generate a short title from their opening request with GLM 5.3
+(`@cf/zai-org/glm-5.3`, low reasoning) through the deployment's Workers AI binding.
+This runs after the first commentary or terminal event, outside the primary turn,
+for every conversation model including Claude. No OpenAI account is needed for
+title generation. At most 4,000 characters of the opening request are retained
+for naming; complete leading client context envelopes are excluded.
+
+The title is persisted and projected into `GET /v1/agents` for Resume and the
+account sidebar. Later turns retain it. An unavailable binding, provider timeout,
+or invalid title leaves the prompt-derived preview in place; later turn events
+can retry after a one-minute cooldown. The naming source survives Worker restarts
+and is cleared after success. Opening Resume again fetches the saved title.
+Existing named threads retain their names; this does not bulk-rename idle history.
+
+Run `pnpm --filter nanocodex-managed-service test:thread-title` for the real Worker
+HTTP, persistence, and provider-failure journey.
+
 ## Images
 
 The hosted image tool relays generation and editing through the account's existing
