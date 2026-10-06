@@ -1,6 +1,5 @@
 import { DurableObject } from "cloudflare:workers";
 import { CredentialVault, type CredentialVaultEnv, type EncryptedEnvelope } from "./credential-vault";
-import { createWhatsAppTransportFactory } from "./whatsapp-runtime";
 import type { WhatsAppAuthStore, WhatsAppEvent, WhatsAppMessage, WhatsAppStatus, WhatsAppTransport, WhatsAppTransportFactory } from "./whatsapp-transport";
 
 type Meta = { authorized: boolean; id: string; state: WhatsAppStatus["state"]; attempt: WhatsAppStatus["attempt"]; retries: number; retry_at: number | null; oldest: number | null; received: number | null; history_complete: boolean };
@@ -49,7 +48,13 @@ export class WhatsAppAccount extends DurableObject<CredentialVaultEnv> {
     });
   }
 
-  protected transportFactory(): WhatsAppTransportFactory { return createWhatsAppTransportFactory(); }
+  protected transportFactory(): WhatsAppTransportFactory {
+    // Status/catalog reads do not need the protocol stack or its WASM bridge.
+    return { connect: async callbacks => {
+      const { createWhatsAppTransportFactory } = await import("./whatsapp-runtime");
+      return createWhatsAppTransportFactory().connect(callbacks);
+    } };
+  }
   private serial<T>(fn: () => Promise<T>): Promise<T> {
     const work = this.queue.then(fn);
     this.queue = work.catch(() => undefined);

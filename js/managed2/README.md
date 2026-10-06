@@ -2,7 +2,10 @@
 
 One public API Worker → one Session Durable Object per agent → standard
 `nanocodex/cloudflare` JS/WASM Agent → private `egress2` service binding.
-No Just Bash, connector tools, or old-session migration in this slice.
+Every model turn uses Code Mode. The model receives only `exec` and `wait`;
+`current_time`, `exec_command`, and `web__run` are available through `tools.*`
+inside `exec`. QuickJS initializes lazily on the first code execution.
+No connector tools or old-session migration are included in this slice.
 
 ## Authentication
 
@@ -65,9 +68,9 @@ The private Egress2 service binding must not be exposed as a public HTTP route.
 
 In a small staging two-tool trial, relay+WebSocket matched relay+HTTP at 6.53 s
 median first-turn completion and measured 5.19 s versus 5.94 s on the second
-turn. These samples do not prove a general latency improvement. Managed2 initially shipped with no tools. The first increment exposes only `current_time`
-(UTC, no account access or filesystem), with HTTP and persistent-WebSocket
-model→tool→model E2E coverage. Other tool families remain unavailable.
+turn. These samples do not prove a general latency improvement. HTTP and persistent-WebSocket
+model→Code Mode→tool→model journeys verify that only `exec` and `wait` are
+exposed, alongside credential isolation, durable Bash storage, and tool timing.
 
 ## Latency observation
 
@@ -175,9 +178,13 @@ model completion; check the turn status and streamed answer.
 
 ## Tool observability and sandbox-free tools
 
-`GET /v1/agents/:id/turns/:turn` includes `tool_timing` for each provider call ID: name,
+`GET /v1/agents/:id/turns/:turn` includes `tool_timing` for the Code Mode wrapper
+and each nested tool call ID: name,
 status, start/result offset, duration, and accumulated phase timings. These rows are
 persisted in Session SQLite without arguments, results, file contents, or search queries.
+Nested tool timings retain the original registered tool name and handler phases.
+The turn’s `tool_calls` counts both the `exec` wrapper and nested calls; their
+durations overlap and must not be added as independent elapsed time.
 The generic wrapper applies to every registered tool. `exec_command` lazily loads an
 in-process Bash interpreter and a per-agent durable `/brain` VFS; its phases are
 `setup`, `vfs_hydrate`, `execute`, `vfs_flush`, and outer `handler`. It does not

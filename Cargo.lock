@@ -6587,6 +6587,7 @@ dependencies = [
  "sha2 0.11.0",
  "shlex 2.0.1",
  "syntect",
+ "sysinfo",
  "tar",
  "tempfile",
  "thiserror 2.0.18",

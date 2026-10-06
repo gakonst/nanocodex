@@ -901,6 +901,11 @@ These are reference consumers, not portability promises. Cloudflare, Rivet,
 Vercel, exe.dev, and the native VM layer each keep their platform policy above
 the stable crates.
 
+External products built on the published crates include
+[popcorn-nanocodex](https://github.com/sriharshakaramchati/popcorn-nanocodex),
+which drives a rented [Popcorn](https://popcorn.reclaimprotocol.org) TEE
+browser session from a Nanocodex agent over CDP.
+
 ## What is stable
 
 “Experimental” describes API stability. Only computer and evaluation APIs retain

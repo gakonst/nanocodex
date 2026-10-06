@@ -487,7 +487,7 @@ export type TurnResult = Readonly<{
   dispose(): void;
 }>;
 
-import type { NamedTool, ToolMap } from "nanocodex-tools";
+import type { NamedTool, ToolContext, ToolMap } from "nanocodex-tools";
 export type {
   NamedTool,
   SubagentToolContext,
@@ -503,6 +503,8 @@ export type ToolConfiguration<Extension = never> =
   | import("./tools/Tools.mjs").Tools;
 
 export type CodeEvaluatorEnvironment = {
+  /** Trusted session identity; lets shared evaluators schedule child agents independently. */
+  sessionId?: string;
   tools: Readonly<Record<string, (input: unknown) => Promise<unknown>>>;
   toolDefinitions: readonly Record<string, unknown>[];
   text(value: unknown): void;
@@ -590,9 +592,13 @@ export type CodeEffectJournal = Readonly<{
 }>;
 
 declare const mcpPaymentBrand: unique symbol;
+declare const lazyMcpPaymentBrand: unique symbol;
 
 /** MCP payment options returned by `mcpPayment()` from `nanocodex/tempo`. */
 export type PaidMcpPayment = McpPayment & { readonly [mcpPaymentBrand]: true };
+
+/** Deferred payment setup. Methods and context exist only after its factory resolves. */
+export type LazyPaidMcpPayment = { readonly [lazyMcpPaymentBrand]: true };
 
 export type McpPayment = {
   /** MPPx client methods, such as `tempo.session({ account, getClient, channelStore })`. */
@@ -628,6 +634,18 @@ export type McpTool = {
   } | undefined;
 };
 
+/** Trusted host interception; callbacks must never log or throw private values. */
+export type McpPrivateResultPolicy = {
+  /** Runs after payment context validation and before remote execution; throw to reject a call.
+   * privateContext is trusted state scoped to this invocation. An own result
+   * property replays an already-safe receipt, bypassing dispatch and transform. */
+  beforeCall?: ((call: { name: string; arguments: Record<string, unknown> }, context: ToolContext | undefined) => void | { privateContext?: unknown; result?: unknown } | Promise<void | { privateContext?: unknown; result?: unknown }>) | undefined;
+  /** Receives the raw result and this invocation's preflight state (undefined when
+   * beforeCall is absent). Returns ONLY model-safe MCP content. Private state is
+   * never included in tool results or tracing unless this callback returns it. */
+  transformResult: (call: { name: string; arguments: Record<string, unknown>; result: unknown; privateContext: unknown }, context: ToolContext | undefined) => unknown | Promise<unknown>;
+};
+
 export type McpServer = {
   /** Public Streamable HTTP MCP endpoint. Omit when supplying an initialized client. */
   url?: string | URL | undefined;
@@ -637,7 +655,12 @@ export type McpServer = {
   headers?: HeadersInit | undefined;
   fetch?: typeof globalThis.fetch | undefined;
   /** Created with `mcpPayment()` from `nanocodex/tempo` (requires the `mppx` peer). */
-  payment?: PaidMcpPayment | undefined;
+  payment?: PaidMcpPayment | LazyPaidMcpPayment | undefined;
+  /** Host-only interception before all result projections. Errors are replaced with
+   * fixed failures. Caller-owned clients/fetch functions remain trusted and must
+   * not independently log results, notifications, progress, or exceptions. */
+  privateResult?: McpPrivateResultPolicy | undefined;
+
   enabledTools?: readonly string[] | undefined;
   disabledTools?: readonly string[] | undefined;
   /** Declares every remote tool on this server safe for concurrent nested calls. */

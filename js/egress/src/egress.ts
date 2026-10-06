@@ -2392,6 +2392,14 @@ async function handleControl(request: Request, url: URL, env: EgressEnv): Promis
     });
   }
 
+  const providerCapture = url.pathname.match(/^\/users\/([A-Za-z0-9][A-Za-z0-9._:-]{0,127})\/credentials\/(provider-capture|provider-store|provider-card|provider-bindings)$/);
+  if (providerCapture) {
+    if (request.method !== "POST") return jsonError(405, "method_not_allowed");
+    return userBroker(env, providerCapture[1]!).fetch(`https://credentials.internal/v1/${providerCapture[2]}`, {
+      method: "POST", headers: { "content-type": "application/json", "x-nanocodex-provider-owner": providerCapture[1]! }, body: request.body,
+    });
+  }
+
   const vaultOwner = url.pathname.match(/^\/users\/([A-Za-z0-9][A-Za-z0-9._:-]{0,127})\/credentials\/vault$/)?.[1];
   if (vaultOwner) {
     if (request.method !== "GET") return jsonError(405, "method_not_allowed");

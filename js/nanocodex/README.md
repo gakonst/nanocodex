@@ -326,10 +326,17 @@ membership, room, quota, or application routing policy. Event frames are
 `1013`, then continues by reconnecting with that pause cursor as
 `?cursor=<decimal>`.
 
+`toolMode: "code-only"` exposes only `exec` and `wait` to the model. Workspace,
+application, discovery (`tools.tool_search`) and local subagent tools are callable
+inside Code Mode. Discovery returns tool information as cell output; it does not
+add direct schemas. Newly discovered tools are available in the next cell. The
+existing `"code"` mode retains direct workspace/subagent controls, and `"direct"`
+continues to expose function tools without requiring an evaluator.
+
 Cloudflare Agents default to direct tool mode because Workers prohibit dynamic
 `eval`/`new Function`. Caller-defined tools therefore work without a code
-evaluator. Select `toolMode: "code"` only when also supplying an evaluator that
-is explicitly compatible with the deployed Worker runtime. Runtime-owned
+evaluator. Select `toolMode: "code"` or `toolMode: "code-only"` only when also
+supplying an evaluator explicitly compatible with the deployed Worker runtime. Runtime-owned
 Subagents are installed by default, including on a durable root. All children are
 ephemeral: their identities, topology, conversations, results, and routing exist
 only for the lifetime of the root runtime. Root shutdown or restart discards the
@@ -790,6 +797,22 @@ fixed Mercator relay because Mercator's job endpoint is not itself CORS-enabled;
 the relay preserves MPP challenges, credentials, and receipts but never signs.
 Passing a generic `MppSession`, an OpenAI key, or ChatGPT host auth does not
 initialize Mercator. Pass `mcp: false` to opt out explicitly.
+
+Trusted hosts can set a server's `privateResult` policy to intercept raw MCP
+results before model output, Code Mode values, and tool-result tracing.
+`beforeCall({ name, arguments }, context)` runs after payment context validation
+and before remote dispatch. It may reject the call or return `{ privateContext }`. An own
+`result` property instead supplies an already-safe receipt and bypasses both
+remote dispatch and `transformResult`, allowing durable policies to replay a
+receipt without repeating an effect.
+`transformResult({ name, arguments, result, privateContext }, context)` receives
+that invocation's `privateContext` and must return only safe MCP content. State stays local
+to each call, including concurrent calls; it is `undefined` without `beforeCall`.
+Both hooks run within the tool deadline. Failed private requests return a fixed
+failure receipt without the original error or cause. Discovery failures also use
+a fixed message. Callbacks and caller-owned clients remain trusted: they must
+not independently log private payloads or return private state. No notification
+consumer is configured by this policy.
 
 Remote Streamable HTTP MCP servers are configured directly on the agent. The
 JavaScript binding uses the official MCP SDK transport, keeps remote tools

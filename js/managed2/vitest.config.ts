@@ -75,46 +75,49 @@ export default defineConfig({
             }
             const respond = body => {
               const input = body.input || [];
+              const offered = [...(body.tools || []), ...input.filter(item => item.type === "additional_tools").flatMap(item => item.tools || [])];
+              if (JSON.stringify(offered.map(tool => tool.name).sort()) !== JSON.stringify(["exec", "wait"])) {
+                throw new Error("Managed2 must expose only exec and wait: " + JSON.stringify(offered.map(tool => tool.name)));
+              }
+              const execCall = (call_id, source) => ({ type: "custom_tool_call", call_id, name: "exec", input: source });
+              const continuationText = item => {
+                const result = item.output;
+                return typeof result === "string" ? result : Array.isArray(result)
+                  ? result.map(part => part.text || "").join("\\n") : JSON.stringify(result);
+              };
               const latestUser = input.findLastIndex(item => item.role === "user");
               const currentTurn = input.slice(Math.max(0, latestUser));
-              const shellContinuation = currentTurn.find(item => item.type === "function_call_output" && item.call_id === "call-shell");
-              const shellTool = input.find(item => item.type === "additional_tools")?.tools?.find(tool => tool.name === "exec_command");
+              const shellContinuation = currentTurn.find(item => item.type === "custom_tool_call_output" && item.call_id === "call-shell");
               const shellMatch = JSON.stringify(currentTurn).match(/Use exec_command: ([^"\\\\]+)/);
               if (shellContinuation) {
-                let result;
-                try { result = JSON.parse(shellContinuation.output); } catch { result = shellContinuation.output; }
-                const text = "Shell: " + JSON.stringify(result);
+                const text = "Shell: " + continuationText(shellContinuation);
                 return [{ type: "response.completed", response: { id: "fixture-shell-result", status: "completed", end_turn: true,
                   output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text }] }],
                   usage: { input_tokens: 10, output_tokens: 4, total_tokens: 14 } } }];
               }
               if (shellMatch) {
-                if (!shellTool) throw new Error("exec_command was not offered to the provider");
                 return [{ type: "response.completed", response: { id: "fixture-shell-call", status: "completed", end_turn: false,
-                  output: [{ type: "function_call", call_id: "call-shell", name: "exec_command", arguments: JSON.stringify({ cmd: shellMatch[1] }) }],
+                  output: [execCall("call-shell", "text(await tools.exec_command(" + JSON.stringify({ cmd: shellMatch[1] }) + "));" )],
                   usage: { input_tokens: 10, output_tokens: 4, total_tokens: 14 } } }];
               }
-              const continuation = input.find(item => item.type === "function_call_output" && item.call_id === "call-time");
-              const timeTool = input.find(item => item.type === "additional_tools")?.tools?.find(tool => tool.name === "current_time");
-              const webTool = input.find(item => item.type === "additional_tools")?.tools?.find(tool => tool.name === "web__run");
-              const webContinuation = input.find(item => item.type === "function_call_output" && item.call_id === "call-web");
+              const continuation = currentTurn.find(item => item.type === "custom_tool_call_output" && item.call_id === "call-time");
+              const webContinuation = currentTurn.find(item => item.type === "custom_tool_call_output" && item.call_id === "call-web");
               if (webContinuation) {
-                const result = webContinuation.output;
+                const result = continuationText(webContinuation);
                 const text = "Search: " + result;
                 return [{ type: "response.completed", response: { id: "fixture-web-result", status: "completed", end_turn: true,
                   output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text }] }],
                   usage: { input_tokens: 10, output_tokens: 4, total_tokens: 14 } } }];
               }
-              if (JSON.stringify(input).includes("Use web__run")) {
-                if (!webTool) throw new Error("web__run was not offered");
+              if (JSON.stringify(currentTurn).includes("Use web__run")) {
                 return [{ type: "response.completed", response: { id: "fixture-web-call", status: "completed", end_turn: false,
-                  output: [{ type: "function_call", call_id: "call-web", name: "web__run",
-                    arguments: JSON.stringify({ search_query: [{ q: "a synthetic question" }] }) }],
+                  output: [execCall("call-web", 'text(await tools.web__run({ search_query: [{ q: "a synthetic question" }] }));')],
                   usage: { input_tokens: 10, output_tokens: 4, total_tokens: 14 } } }];
               }
-              const requested = JSON.stringify(input).includes("Use current_time");
+              const requested = JSON.stringify(currentTurn).includes("Use current_time");
               if (continuation) {
-                const utc = JSON.parse(continuation.output).utc;
+                const utc = continuationText(continuation).match(/\\d{4}-\\d\\d-\\d\\dT[^"\\s]+/)?.[0];
+                if (!utc) throw new Error("Code Mode did not return the current_time result");
                 const text = "Current UTC: " + utc;
                 return [
                   { type: "response.output_item.added", output_index: 0, item: { id: "fixture-message", type: "message", role: "assistant", status: "in_progress", content: [{ type: "output_text", text: "" }] } },
@@ -125,9 +128,8 @@ export default defineConfig({
                 ];
               }
               if (requested) {
-                if (!timeTool) throw new Error("current_time was not offered to the provider");
                 return [{ type: "response.completed", response: { id: "fixture-time-call", status: "completed", end_turn: false,
-                  output: [{ type: "function_call", call_id: "call-time", name: "current_time", arguments: "{}" }],
+                  output: [execCall("call-time", "text(await tools.current_time({}));")],
                   usage: { input_tokens: 10, output_tokens: 4, total_tokens: 14 } } }];
               }
               const text = "hello from test model";

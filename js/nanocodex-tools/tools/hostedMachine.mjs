@@ -17,7 +17,7 @@ export function normalizeHostedMachines(machines = []) {
     if (!machine || typeof machine !== "object" || Array.isArray(machine)) {
       throw new TypeError(`machines[${index}] must be an object`);
     }
-    const allowed = new Set(["id", "name", "workspace", "capabilities"]);
+    const allowed = new Set(["id", "name", "workspace", "capabilities", "resources"]);
     for (const key of Object.keys(machine)) {
       if (!allowed.has(key)) throw new TypeError(`machines[${index}] contains unsupported field ${key}`);
     }
@@ -44,7 +44,9 @@ export function normalizeHostedMachines(machines = []) {
     if (capabilities.length !== machine.capabilities.length) {
       throw new TypeError(`machines[${index}].capabilities must be unique`);
     }
+    const resources = normalizeHandResources(machine.resources);
     return Object.freeze({
+      ...(resources === undefined ? {} : { resources }),
       id: machine.id,
       name: machine.name.trim(),
       workspace: machine.workspace,
@@ -53,4 +55,26 @@ export function normalizeHostedMachines(machines = []) {
   }));
   normalizedSnapshots.add(normalized);
   return normalized;
+}
+
+/** Whitelist publisher observations. Missing/invalid measurements remain unknown;
+ * in particular a missing free-space sample never becomes zero or total capacity. */
+export function normalizeHandResources(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)
+    || !Number.isSafeInteger(value.observed_at_ms) || value.observed_at_ms <= 0) return undefined;
+  const result = { observed_at_ms: value.observed_at_ms };
+  for (const field of ["cpu_logical_count", "memory_total_bytes", "memory_available_bytes", "disk_total_bytes", "disk_available_bytes"]) {
+    const count = value[field];
+    if (!Number.isSafeInteger(count) || count < 0) continue;
+    if (field === "cpu_logical_count" && (count < 1 || count > 65_536)) continue;
+    if (field.endsWith("total_bytes") && count === 0) continue;
+    result[field] = count;
+  }
+  if (Number.isFinite(value.load_average_1m) && value.load_average_1m >= 0 && value.load_average_1m <= 65_536)
+    result.load_average_1m = value.load_average_1m;
+  for (const kind of ["memory", "disk"]) {
+    if (result[`${kind}_total_bytes`] !== undefined && result[`${kind}_available_bytes`] > result[`${kind}_total_bytes`])
+      delete result[`${kind}_available_bytes`];
+  }
+  return Object.keys(result).length > 1 ? Object.freeze(result) : undefined;
 }

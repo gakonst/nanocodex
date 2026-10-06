@@ -8,7 +8,7 @@ import { prepareHarnesses } from './harnesses.mjs';
 import { createClaudeHost } from './claude-host.mjs';
 
 const OPTION_KEYS = new Set([
-  'auth', 'fetch', 'endpoint', 'compatibilityProfile', 'subscriptionIdentity', 'model', 'instructions', 'sessionId', 'tools',
+  'toolMode', 'codeEvaluator', 'auth', 'fetch', 'endpoint', 'compatibilityProfile', 'subscriptionIdentity', 'model', 'instructions', 'sessionId', 'tools',
   'harness', 'harnesses', 'subagents', 'serverTools', 'durability', 'durabilityId', 'module', 'maxTokens', 'workspace',
   'cache', 'adaptiveThinking', 'keepThinking', 'thinking', 'parallelTools', 'clientToolSearch',
   'contextWindowTokens', 'autoCompactWindowTokens', 'autoCompact', 'systemBlocks', 'terminalReceiptRetention',
@@ -17,6 +17,10 @@ const OPTION_KEYS = new Set([
 export function toClaudeConfig(options = {}) {
   if (!options || typeof options !== 'object' || Array.isArray(options)) throw new TypeError('Claude options must be an object');
   for (const key of Object.keys(options)) if (!OPTION_KEYS.has(key)) throw new TypeError('unsupported Claude option');
+  if (options.toolMode !== undefined && !['direct', 'code-only'].includes(options.toolMode)) throw new TypeError('unsupported Claude toolMode');
+  if (options.codeEvaluator !== undefined && typeof options.codeEvaluator !== 'function') throw new TypeError('Claude codeEvaluator must be a function');
+  if (options.toolMode === 'code-only' && typeof options.codeEvaluator !== 'function') throw new TypeError('Claude Code Mode requires an explicit codeEvaluator');
+  if (options.toolMode === 'code-only' && (options.serverTools?.length || options.clientToolSearch)) throw new TypeError('Claude Code Mode does not expose provider or client search tools directly');
   if (options.harness !== undefined && options.harness !== 'claude') throw new TypeError('Claude requires harness claude');
   if (options.subagents !== undefined && (!options.subagents || typeof options.subagents !== 'object' || Array.isArray(options.subagents) || Object.keys(options.subagents).some(key => key !== 'maxConcurrency') || (options.subagents.maxConcurrency !== undefined && (!Number.isSafeInteger(options.subagents.maxConcurrency) || options.subagents.maxConcurrency < 1)))) throw new TypeError('subagents maxConcurrency must be positive');
   if (typeof options.model !== 'string' || !options.model.trim()) throw new TypeError('Claude model must be non-empty');
@@ -49,7 +53,7 @@ export function toClaudeConfig(options = {}) {
     }
   }
   const config = {};
-  for (const key of OPTION_KEYS) if (!['auth', 'fetch', 'tools', 'module', 'durability', 'compatibilityProfile', 'harness', 'harnesses', 'subagents'].includes(key) && options[key] !== undefined) config[key] = options[key];
+  for (const key of OPTION_KEYS) if (!['codeEvaluator', 'auth', 'fetch', 'tools', 'module', 'durability', 'compatibilityProfile', 'harness', 'harnesses', 'subagents'].includes(key) && options[key] !== undefined) config[key] = options[key];
   if (options.compatibilityProfile !== undefined) {
     config.subscriptionCompatibility = true;
     config.subscriptionIdentity = { ...config.subscriptionIdentity };
@@ -71,13 +75,17 @@ export async function createClaude(options, load, type, harnessDefaults) {
   const { durability, durabilityId, module } = options;
   const events = createEventChannel();
   const host = createClaudeHost({ auth: options.auth, tools: options.tools, onEvent: events.emit, fetch: options.fetch, endpoint: options.endpoint,
-    subagentSessions: internalRuntime?.subagentSessions, subagentRouting: internalRuntime?.subagentRouting });
+    subagentSessions: internalRuntime?.subagentSessions, subagentRouting: internalRuntime?.subagentRouting,
+    toolMode: options.toolMode, codeEvaluator: options.codeEvaluator,
+    codeEffectJournal: internalRuntime?.codeEffectJournal, traceTool: internalRuntime?.traceTool });
+  const stopJournalEvents = internalRuntime?.codeEffectJournal ? events.subscribe(() => {}) : undefined;
   let harnesses;
   try { harnesses = await prepareHarnesses(options.harnesses, events.emit, { ...harnessDefaults,
     subagentSessions: internalRuntime?.subagentSessions, subagentRouting: internalRuntime?.subagentRouting,
     toolProviders: internalRuntime?.toolProviders,
+    codeEffectJournal: internalRuntime?.codeEffectJournal, traceTool: internalRuntime?.traceTool,
   }); }
-  catch (error) { host.dispose(); throw error; }
+  catch (error) { stopJournalEvents?.(); host.dispose(); throw error; }
   config.codexHarness = harnesses.codex;
   config.subagentRouting = internalRuntime?.subagentRouting !== undefined;
   if (options.subagents !== undefined) config.subagents = options.subagents.maxConcurrency === undefined ? {} : { max_concurrency: options.subagents.maxConcurrency };
@@ -117,6 +125,7 @@ export async function createClaude(options, load, type, harnessDefaults) {
     owner?.release();
     owner?.abandon();
     releaseDefinitionHost(hostDefinitionId);
+    stopJournalEvents?.();
     host.dispose();
     void harnesses.close();
   };

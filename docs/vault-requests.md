@@ -44,6 +44,15 @@ continue to work. Native third-party commands do not automatically inherit the
 hosted HTTP proxy. Use the explicit Vault request API or CLI on a Hand. This
 change does not turn native process environment variables into secret values.
 
+## Public SSH targets
+
+`nanocodex2 vault ssh-targets` uses the CLI's existing account authentication to
+read `GET /v1/credentials`. It prints a JSON array containing only `reference`,
+`hostname`, `port`, `username`, `host_key_sha256`, and optional `public_key`.
+A legacy target whose public key is unavailable omits that field. The command
+is read-only; it returns no private keys or other Vault entries. HTTP and decode
+errors discard arbitrary response bodies.
+
 ## Substitution and signing
 
 Login items support `USERNAME`, `PASSWORD` and `BASIC`; API-key items support
@@ -132,3 +141,45 @@ upstream verifies generated signatures independently and attempts to echo
 credentials. Client results and traces must contain only the closed receipt.
 Tests also cover wrong owners, deleted items, denied destinations, malformed
 signing requests, escaping and uncertain dispatch without replay.
+
+## Provider-issued cards
+
+The managed host's default Mercator MCP transport privately captures Laso US
+card issuance results before projecting either MCP text or structured results
+into model context and tool history. The supported plan contains one node for
+service `x402-laso-finance-9ad65ae7`, `GET /get-card`, with `amount` and
+`format: "json"`. Issuance requires user authorization for the purchase and the
+normal Mercator payment approval. Keep the same `idempotency_key` when recovering
+an uncertain job. A repeated operation returns its known job for `get_job` recovery
+without dispatching issuance again. If the first response was lost before its job
+ID was recorded, the receipt remains `outcome_unknown`; reconcile through
+Mercator before further purchases. Do not issue another card to recover a failed
+save.
+
+The host binds the account, request, node and returned card ID in encrypted
+account storage, so a pending job can resume from another conversation. Laso's upstream
+payer identity is not asserted by this integration. It reads only that exact
+card ID and never enumerates the token holder's cards. Provider tokens and card
+credentials remain in the encrypted credential broker. This boundary applies to
+the default hosted transport; Hand-routed and third-party MCP connections do not
+have this capture policy and must not be used for secret-bearing card requests.
+
+`vault_store` accepts an opaque `capture_id` and stable `operation_id`, with an
+optional `address_vault_id` for a saved billing address. It accepts no raw secret.
+The authorized issuance workflow attempts the save automatically. A pending
+card can be resumed using `provider_card`; an absent billing ZIP remains
+`awaiting_billing_address` until a real provider or saved address is available.
+Only a `saved` receipt with `vault_id` confirms Vault storage.
+
+`provider_card` accepts either `capture_id` or `vault_id` and an operation of
+`status`, `balance`, or `refresh`. Balance receipts include the observation time
+and the provider update time when supplied. Refresh requires a stable UUID and
+requests an asynchronous issuer update; acceptance does not mean the balance is
+fresh or a payment has been credited. The tool never purchases, funds, or
+charges for authentication. Connect grants and shared guests cannot use these
+private continuations.
+
+Ordinary Mercator history and results remain available. For an older unbound
+job without payment service metadata, read its history or request its plan with
+`get_job(include_plan: true)` to establish the service before accessing details.
+Unbound Laso jobs remain private and cannot be adopted by supplying a job ID.

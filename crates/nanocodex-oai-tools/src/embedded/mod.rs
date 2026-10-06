@@ -125,6 +125,8 @@ pub enum EmbeddedToolMode {
     /// Expose one Code Mode `exec` tool and nest application tools below it.
     #[default]
     Code,
+    /// Expose only Code Mode controls; workspace, discovery and local tools are nested.
+    CodeOnly,
     /// Expose application tools directly without dynamic code evaluation.
     Direct,
 }
@@ -198,6 +200,28 @@ pub trait CodeModeHost: Send + Sync + 'static {
                 observer.update(CodeModeUpdate::NestedCallCompleted(call));
             }
             Ok(execution)
+        })
+    }
+
+    /// Executes a cell with Rust-owned tools pinned to its original context.
+    /// Older hosts retain their behavior when no local tools are configured.
+    fn execute_with_local_tools<'a>(
+        &'a self,
+        source: &'a str,
+        context: ToolContext<'a>,
+        tools: Vec<std::sync::Arc<dyn crate::Tool>>,
+        observer: Option<&'a mut dyn CodeModeObserver>,
+    ) -> HostFuture<'a, Result<CodeModeExecution, CodeModeHostError>> {
+        Box::pin(async move {
+            if !tools.is_empty() {
+                return Err(CodeModeHostError::new(
+                    "embedded host does not support nested local tools",
+                ));
+            }
+            match observer {
+                Some(observer) => self.execute_with_updates(source, context, observer).await,
+                None => self.execute(source, context).await,
+            }
         })
     }
 

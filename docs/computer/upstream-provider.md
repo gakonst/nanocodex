@@ -87,6 +87,32 @@ reported as conflicts; resolve ownership explicitly before rerunning setup.
 Setup never installs an extension, opens or restarts a browser, or modifies a
 profile. See [the bridge setup contract](direct-mcp-host.md#browser-and-computer-surfaces).
 
+If a running provider reports Browser APIs disabled, its native app controls do
+not provide background tab isolation. Use a supported background browser or an
+isolated desktop; do not activate the user's browser as a fallback.
+
+## Capability boundaries
+
+Browser background tabs and native background apps are separate capabilities.
+The extension owns browser tab groups, leases, handoff marks and tab cleanup;
+the direct relay preserves the upstream protocol. Availability depends on the
+installed extension's advertised capabilities. A successful catalog or synthetic
+relay test does not verify live background screenshots, input, or handoff.
+The extension supports `markHandoff` to retain a tab between turns; the pinned
+API lists `requestManualHandoff` as a cloud-browser feature unavailable by default
+on extension backends. A retained tab does not provide a private credential form.
+
+The pinned macOS Sky API targets native apps by name, path or bundle ID. It does
+not expose the old custom runtime's exact-window selection, independent input
+lanes or per-window agent cursors. Background app launch and an app-scoped action
+do not establish simultaneous human/agent input isolation. Linux and Windows
+window APIs have different contracts; discover the selected provider's API.
+
+Audio capture is not supported by the direct host: it does not forward the
+upstream audio opt-in and declines recording consent. Locked-computer access,
+persistent per-app approval and full managed-policy import are also unavailable.
+These require explicit host integrations, not enabling a browser surface.
+
 ## Native app recovery
 
 On macOS, the pinned provider's `cua.getApp` launches an app in the background

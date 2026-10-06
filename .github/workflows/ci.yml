@@ -154,12 +154,15 @@ jobs:
         if: needs.changes.outputs.tests == 'true'
         # The ci profile serializes and retries these host IPC tests.
         run: cargo nextest run --locked --profile ci -p nanocodex2-bin --bin nanocodex2 -E 'test(hand)'
-      - run: cargo build --locked -p nanocodex2-bin --bin nanocodex2
+      - name: Build both public CLI journey executables
+        run: cargo build --locked -p nanocodex2-bin -p nanocodex-bin --bins
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 24
       - name: Exercise Managed2 CLI through HTTP and WebSocket
         run: node bin/nanocodex/tests/managed2_cli_e2e.mjs
+      - name: Exercise local SSH key import through signed Connect consent
+        run: node bin/nanocodex/tests/ssh_import_cli_e2e.mjs
       - name: Exercise private TUI input and encrypted Vault reuse
         if: runner.os == 'Linux'
         timeout-minutes: 10
@@ -913,6 +916,19 @@ jobs:
             output/claude-connection/browser-api-trace.json
             output/claude-connection/inline-*.png
             output/claude-connection/popover-*.png
+          if-no-files-found: warn
+      - name: Test private provider capture and Vault recovery
+        # Exercise custody even while the broader test matrix is paused.
+        run: |
+          node --test js/nanocodex/test/mcp-private-result.test.mjs
+          pnpm --filter nanocodex-egress-service run prepare:whatsapp
+          pnpm --filter nanocodex-egress-service exec vitest run test/provider-vault.test.ts
+          pnpm --filter nanocodex-managed-service run test:provider-vault
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: provider-vault-journeys
+          path: output/provider-vault-journey/
           if-no-files-found: warn
       - name: Test linked Tempo wallet and funding journeys
         # Wallet custody journeys run even while the broader test matrix is paused.

@@ -1,3 +1,4 @@
+import { providerVaultRoute } from "./provider-result-vault";
 import { ClaudeSubscription } from "nanocodex/worker";
 import claudeModule from "nanocodex/wasm";
 import { createMercatorMcpCredential, MercatorPaymentInputError } from "./mercator-payment";
@@ -731,6 +732,9 @@ export class UserCredentialBroker extends DurableObject<BrokerEnv> {
 
   async #dispatch(request: Request): Promise<Response> {
     const url = new URL(request.url);
+    if (["/v1/provider-capture", "/v1/provider-store", "/v1/provider-card", "/v1/provider-bindings"].includes(url.pathname)) {
+      return providerVaultRoute(request, { storage: this.#state.storage, vault: this.#vault, validEntry: (value, kind) => Boolean(validateVaultEntryPayload(value, kind)), dispatch: request => this.#dispatch(request) });
+    }
     try {
       if (request.method === "GET" && url.pathname === "/v1/health") {
         return json({ ready: true }, 200);
@@ -1206,6 +1210,18 @@ export class UserCredentialBroker extends DurableObject<BrokerEnv> {
           } else {
             const parsed = validateSshIdentity(body);
             if (!parsed) return jsonError(400, "invalid_ssh_identity");
+            const retained = this.#credentials.ssh?.[sshIdentity];
+            if (retained) {
+              // HTTP dispatch holds #exclusive across validation and persistence.
+              // Reconciliation of the exact import is a no-op; a reference can
+              // never rotate to a different key or target through PUT.
+              if (retained.privateKey === parsed.privateKey
+                && retained.hostname === parsed.hostname && retained.port === parsed.port
+                && retained.username === parsed.username && retained.hostKeySha256 === parsed.hostKeySha256) {
+                return new Response(null, { status: 204, headers: noStoreHeaders() });
+              }
+              return jsonError(409, "ssh_identity_already_exists");
+            }
             try { identity = { ...parsed, publicKey: await sshPublicKey(parsed.privateKey) }; }
             catch { return jsonError(400, "invalid_ssh_identity"); }
           }

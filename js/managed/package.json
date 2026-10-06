@@ -13,7 +13,7 @@
     "deploy": "node ../../scripts/cloudflare/managed-crm.mjs deploy",
     "prebuild": "npm run prepare:code-evaluator",
     "prepare:code-evaluator": "node scripts/prepare-code-evaluator.mjs && node scripts/prepare-hand-image.mjs && node scripts/prepare-just-bash-lazy.mjs",
-    "test": "vitest run && npm run test:sms-otp && npm run test:connect-signin && npm run test:mcp-hosted-authorization && npm run test:native-input-discovery && npm run test:hosted-tools && npm run test:apps && npm run test:rpc-lifecycle && npm run test:discovery-cache && npm run test:routing && npm run test:todo-mail && npm run test:done && npm run test:meetings && npm run test:recovery && npm run test:startup && npm run test:model-pause && npm run test:tool-timing && npm run test:regional-hand-relay && npm run test:hand-reconnect && npm run test:hand-owner-restart && npm run test:hand-leased-recovery && npm run test:hand-communication && npm run test:hand-discovery && npm run test:cua-routing && npm run test:claude-managed && npm run test:hand-catalog-scaling && npm run test:hand-preparation && npm run test:code-mode-warm && npm run test:user-data && npm run test:whatsapp && npm run test:permissions && npm run test:crm-search && npm run test:vault-requests && npm run test:agent-runs",
+    "test": "vitest run && npm run test:sms-otp && npm run test:connect-signin && npm run test:mcp-hosted-authorization && npm run test:native-input-discovery && npm run test:hosted-tools && npm run test:apps && npm run test:rpc-lifecycle && npm run test:discovery-cache && npm run test:routing && npm run test:todo-mail && npm run test:done && npm run test:meetings && npm run test:recovery && npm run test:startup && npm run test:model-pause && npm run test:tool-timing && npm run test:regional-hand-relay && npm run test:hand-reconnect && npm run test:hand-owner-restart && npm run test:hand-leased-recovery && npm run test:hand-communication && npm run test:hand-discovery && npm run test:cua-routing && npm run test:claude-managed && npm run test:hand-catalog-scaling && npm run test:hand-preparation && npm run test:code-mode-warm && npm run test:user-data && npm run test:whatsapp && npm run test:permissions && npm run test:crm-search && npm run test:vault-requests && npm run test:agent-runs && npm run test:code-mode-only && npm run test:provider-vault",
     "test:sms-otp": "node --test test/sms-otp-journey.test.mjs",
     "test:connect-signin": "node ../egress/scripts/prepare-whatsapp.mjs && node --test test/connect-signin-broker-journey.test.mjs",
     "test:mcp-hosted-authorization": "node --test test/mcp-hosted-authorization-journey.test.mjs",
@@ -61,7 +61,9 @@
     "test:permissions": "node --test test/permission-requests-journey.test.mjs test/permission-tool-journey.test.mjs",
     "test:crm-search": "node scripts/prepare-code-evaluator.mjs && node scripts/prepare-just-bash-lazy.mjs && node --test test/crm-greek-search-journey.test.mjs",
     "test:vault-requests": "node --test test/vault-request-journey.test.mjs",
-    "test:regional-hand-relay": "node --test test/regional-hand-relay-journey.test.mjs"
+    "test:regional-hand-relay": "node --test test/regional-hand-relay-journey.test.mjs",
+    "test:code-mode-only": "node --test test/code-mode-only-journey.test.mjs",
+    "test:provider-vault": "node --test test/mercator-private-result-journey.test.mjs test/provider-vault-journey.test.mjs"
   },
   "dependencies": {
     "nanocodex-computer": "workspace:*",
@@ -69,7 +71,7 @@
     "@cloudflare/computer": "0.2.1",
     "@cloudflare/sandbox": "0.12.4",
     "@jitl/quickjs-wasmfile-release-asyncify": "0.32.0",
-    "accounts": "https://pkg.pr.new/tempoxyz/accounts@31708a31ea324cd2cdd5e666e4ad777bd65d6c24",
+    "accounts": "https://pkg.pr.new/tempoxyz/accounts@232cc59cb4f8b4c8daf2113d0881b161e76a69d3",
     "agents": "0.22.0",
     "ai": "7.0.90",
     "cron-parser": "5.6.0",

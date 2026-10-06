@@ -1,3 +1,4 @@
+import { isAllowedSshCredentialImportResource, parseSshTargetResource, sshImportFromResources } from "./sshCredentialImport.mts";
 import { Address, PublicKey } from "ox";
 import {
   credentialImportDigestFromResources,
@@ -118,6 +119,10 @@ export function parseCliWalletRequest(value: unknown): ParsedCliWalletRequest {
   }
   const requestedConnectors = connectorResources(signedResources);
   const credentialImport = credentialImportDigestFromResources(signedResources);
+  const sshImport = sshImportFromResources(signedResources);
+  if (sshImport && credentialImport !== undefined) {
+    throw new Error("An SSH import requires exactly one credential import commitment.");
+  }
   if (credentialImport !== undefined && !requestedConnectors.has("chatgpt")) {
     throw new Error("A ChatGPT credential import requires the signed ChatGPT connector.");
   }
@@ -380,6 +385,7 @@ function isAllowedResource(resource: string): boolean {
   if (isAllowedMcpResource(resource)) return true;
   if (isAllowedAppToolCatalogResource(resource)) return true;
   if (isAllowedChatGptCredentialImportResource(resource)) return true;
+  if (isAllowedSshCredentialImportResource(resource) || parseSshTargetResource(resource)) return true;
   if (resource.startsWith(CLI_BROWSER_COOKIE_SYNC_RESOURCE_PREFIX)) {
     return parseCliBrowserCookieSyncResource(resource) !== undefined;
   }

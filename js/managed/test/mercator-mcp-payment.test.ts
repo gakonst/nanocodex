@@ -15,7 +15,7 @@ function content(result: unknown) {
 const plan = { nodes: [{ id: "one", serviceId: "synthetic", method: "GET", path: "/lookup" }] };
 const args = { idempotency_key: "synthetic-key-123", plan, approved_total: "0.05" };
 const challenge = Challenge.from({ id: "synthetic-mcp-challenge", method: "tempo", intent: "charge", realm: "mercator.sh",
-  expires: new Date(Date.now() + 60_000).toISOString(), request: { amount: "50000", currency: "0x20c000000000000000000000b9537d11c60e8b50",
+  expires: new Date(Date.now() + 300_000).toISOString(), request: { amount: "50000", currency: "0x20c000000000000000000000b9537d11c60e8b50",
     recipient: "0x0000000000000000000000000000000000000002", methodDetails: { chainId: 4217, feePayer: true, supportedModes: ["pull"], machineTokenEnabled: true } },
 });
 describe("default Mercator MCP wallet payment", () => {
@@ -44,7 +44,8 @@ describe("default Mercator MCP wallet payment", () => {
       expect(calls.map(c => c.name)).toEqual(["quote_plan", "quote_plan", "create_job", "create_job"]);
       expect(broker.fetch).toHaveBeenCalledTimes(1);
     } finally { await runtime.close(); }
-  });
+  // This journey includes the cold Workers module load now deferred to tool use.
+  }, 30_000);
   it("rejects a stale or mismatched quote before a paid MCP call", async () => {
     const callTool = vi.fn(async (_params: any) => ({ content: [{ type: "text", text: JSON.stringify({ totalAmount: "0.04",
       validUntil: new Date(Date.now() + 60_000).toISOString() }) }] }));
@@ -85,4 +86,41 @@ describe("default Mercator MCP wallet payment", () => {
       expect(broker.fetch).toHaveBeenCalledTimes(1);
     } finally { await runtime.close(); }
   });
+  it.each(["cancel_quote", "revoke_quote", "revoke_challenge", "revoke_credential"])(
+    "stops a paid call after %s without a credential retry", async (stage) => {
+      const controller = new AbortController();
+      let allowed = true;
+      const calls: any[] = [];
+      const client = { async listTools() { return { tools: [{ name: "create_job", inputSchema: { type: "object" } }] }; },
+        async callTool(params: any, _schema: unknown, options: any) {
+          calls.push(params);
+          if (params.name === "quote_plan") {
+            expect(options.signal).toBeInstanceOf(AbortSignal);
+            if (stage === "cancel_quote") controller.abort();
+            if (stage === "revoke_quote") allowed = false;
+            return { structuredContent: { totalAmount: "0.05", validUntil: new Date(Date.now() + 60_000).toISOString() }, content: [] };
+          }
+          if (stage === "revoke_challenge") allowed = false;
+          return { content: [], _meta: { [Mcp.paymentRequiredMetaKey]: { challenges: [challenge] } } };
+        } };
+      const broker = { fetch: vi.fn(async () => {
+        allowed = false;
+        return Response.json({ credential: Credential.serialize({ challenge, payload: { type: "transaction", signature: "0xsynthetic" } }) });
+      }) };
+      const runtime = await createMcpRuntime({ mercator: { client, payment: mercatorMcpPayment(broker as never, "owner", (call: any) => {
+        expect(call.sessionId).toBe(context.sessionId);
+        if (!allowed) throw Error("forbidden");
+      }) } });
+      try {
+        await runtime.settled();
+        await expect(tool(runtime, "mcp__mercator__create_job").handler(args, { ...context, signal: controller.signal }))
+          .rejects.toThrow(stage === "cancel_quote" ? /cancelled/ : /forbidden/);
+        // Let an uncooperative quote settle after cancellation before inspecting effects.
+        await new Promise(resolve => setTimeout(resolve, 0));
+        expect(calls.map(call => call.name)).toEqual(stage.endsWith("quote") ? ["quote_plan"] : ["quote_plan", "create_job"]);
+        expect(calls.some(call => call._meta?.[Mcp.credentialMetaKey])).toBe(false);
+        expect(broker.fetch).toHaveBeenCalledTimes(stage === "revoke_credential" ? 1 : 0);
+      } finally { await runtime.close(); }
+    });
+
 });

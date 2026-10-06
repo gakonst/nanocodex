@@ -530,6 +530,8 @@ async function createOwned(module, resolved, options, hostAgent, lifecycle, prep
           subagentSessions: cloudflareSubagentSessions(reservation, internalRuntime?.subagentLifecycle),
           subagentRouting: internalRuntime?.subagentRouting,
           toolProviders: internalRuntime?.toolProviders,
+          codeEffectJournal: internalRuntime?.codeEffectJournal,
+          traceTool: internalRuntime?.traceTool,
         },
         harnesses,
         model: internalConfiguration.model, thinking: internalConfiguration.thinking,
