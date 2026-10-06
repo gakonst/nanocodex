@@ -102,7 +102,8 @@ export class CronTriggers {
       authorization_json TEXT NOT NULL, authorization_epoch INTEGER NOT NULL,
       request_hash TEXT NOT NULL, next_run_at INTEGER, retry_at INTEGER, last_run_at INTEGER,
       last_turn_id TEXT, last_skipped_at INTEGER,
-      created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+      created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+      session_mode TEXT NOT NULL DEFAULT 'continue', last_agent_id TEXT
     )`);
     initializeTurnInputs(storage, "managed_cron_input_chunks");
     // Rows written before execution modes existed must keep continuing their session.

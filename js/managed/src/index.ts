@@ -3763,7 +3763,8 @@ const LazyWorkspaceOwner = withWorkspace(WorkspaceOwner, (self) => ({
 }));
 
 export class DurableAgentSession extends DurableComputerObject {
-  #handPaths: HandPaths;
+  #handPathsValue?: HandPaths;
+  get #handPaths(): HandPaths { return this.#handPathsValue ??= new HandPaths(this.ctx.storage); }
   #processSessions: NamespaceProcessSessions;
   #workspaceHolder?: InstanceType<typeof LazyWorkspaceOwner>;
 
@@ -3806,7 +3807,12 @@ export class DurableAgentSession extends DurableComputerObject {
   #turnArchiveTask?: Promise<ManagedTurnSealResult>;
   readonly #realtimeArchive: ManagedRealtimeArchive;
   #realtimeArchiveTask?: Promise<ManagedRealtimeSealResult>;
-  readonly #portabilityArchive: ManagedPortabilityArchive;
+  #portabilityArchiveValue?: ManagedPortabilityArchive;
+  get #portabilityArchive(): ManagedPortabilityArchive {
+    return this.#portabilityArchiveValue ??= new ManagedPortabilityArchive(
+      this.ctx.storage, this.env.NANOCODEX_HISTORY, this.ctx.id.toString(),
+    );
+  }
   readonly #turns = new Map<string, Turn>();
   readonly #deliveredCancellationTurnIds = new Set<string>();
   readonly #reopenInterruptedTurnIds = new Set<string>();
@@ -3871,8 +3877,10 @@ export class DurableAgentSession extends DurableComputerObject {
   #runtimeOwnershipGeneration = 0;
   readonly #recoverySafety: ManagedRecoverySafety;
   readonly #codeEffectJournal: ReturnType<typeof createManagedCodeEffectJournal>;
-  readonly #commandReceipts: CommandReceipts;
-  readonly #shareLinks: ThreadShareLinks;
+  #commandReceiptsValue?: CommandReceipts;
+  get #commandReceipts(): CommandReceipts { return this.#commandReceiptsValue ??= new CommandReceipts(this.ctx.storage); }
+  #shareLinksValue?: ThreadShareLinks;
+  get #shareLinks(): ThreadShareLinks { return this.#shareLinksValue ??= new ThreadShareLinks(this.ctx.storage); }
   readonly #constructorEnteredAtMs: number;
   #constructorBaseMs = 0;
   #constructorReadyAtMs?: number;
@@ -3892,14 +3900,11 @@ export class DurableAgentSession extends DurableComputerObject {
     ctx = this.ctx;
     this.#diagnostics = new DiagnosticJournal(ctx.storage, "managed");
     this.#recoverySafety = new ManagedRecoverySafety(ctx.storage);
-    this.#commandReceipts = new CommandReceipts(ctx.storage);
-    this.#shareLinks = new ThreadShareLinks(ctx.storage);
     initializeTurnInputs(ctx.storage, "managed_history_projection_chunks");
     this.#cronTriggers = new CronTriggers(ctx.storage);
     this.#goals = new Goals(ctx.storage, () => this.#sessionId()!);
     this.#goalRuntime = new GoalRuntime(ctx.storage, this.#goals);
     this.#startupContext = new ManagedStartupContext(ctx.storage);
-    this.#handPaths = new HandPaths(ctx.storage);
     this.#processSessions = new NamespaceProcessSessions(ctx.storage);
     const schemaStartedAt = performance.now();
     this.ctx.storage.sql.exec(`
@@ -4048,7 +4053,8 @@ export class DurableAgentSession extends DurableComputerObject {
         turn_id TEXT PRIMARY KEY,
         payload_json TEXT NOT NULL,
         attempt_count INTEGER NOT NULL DEFAULT 0,
-        retry_at INTEGER NOT NULL DEFAULT 0
+        retry_at INTEGER NOT NULL DEFAULT 0,
+        source_cursor TEXT NOT NULL DEFAULT '0'
       );
       CREATE TABLE IF NOT EXISTS turn_history_citations (
         turn_id TEXT PRIMARY KEY,
@@ -4106,11 +4112,6 @@ export class DurableAgentSession extends DurableComputerObject {
       this.env.NANOCODEX_HISTORY,
       this.ctx.id.toString(),
       optionalPositiveInteger(this.env.MANAGED_REALTIME_ARCHIVE_RECENT_OPERATIONS),
-    );
-    this.#portabilityArchive = new ManagedPortabilityArchive(
-      this.ctx.storage,
-      this.env.NANOCODEX_HISTORY,
-      this.ctx.id.toString(),
     );
     this.#deleted = this.#initializationOwnership()?.state === "deleted";
     const retainedSession = this.#session();
@@ -8909,6 +8910,9 @@ export class DurableAgentSession extends DurableComputerObject {
     ]));
     this.#assertDeletionGeneration(generation);
     CloudflareAgent.destroy(this);
+    const initializedTables = new Set(this.ctx.storage.sql.exec<{ name: string }>(
+      "SELECT name FROM sqlite_master WHERE type = 'table'",
+    ).toArray().map(({ name }) => name));
     this.ctx.storage.transactionSync(() => {
       for (const table of ["managed_recovery_safety", "managed_recovery_progress", "managed_recovery_call_indices", "managed_code_effect_legacy_parents", "managed_code_effect_legacy_sessions", "managed_code_effect_migration", "managed_code_effect_runtime", "managed_code_effects", "managed_code_effect_receipt_chunks", "managed_configuration", "managed_environment_setup", "managed_webhook", "managed_webhook_deliveries", "managed_turn_usage", "managed_model_usage", "managed_artifacts", "managed_artifact_publications", "managed_output_checkpoints", "managed_output_checkpoint_chunks", "managed_turn_file_owners", "managed_connect_inputs"]) this.ctx.storage.sql.exec(`DELETE FROM ${table}`);
       this.ctx.storage.sql.exec("DROP TABLE IF EXISTS managed_fork_seed");
@@ -8921,27 +8925,27 @@ export class DurableAgentSession extends DurableComputerObject {
       this.ctx.storage.sql.exec("DELETE FROM managed_startup_environment");
       this.ctx.storage.sql.exec("DELETE FROM managed_startup_origin");
       this.ctx.storage.sql.exec("DELETE FROM managed_startup_caller");
-      this.ctx.storage.sql.exec("DELETE FROM managed_hand_paths");
+      if (initializedTables.has("managed_hand_paths")) this.ctx.storage.sql.exec("DELETE FROM managed_hand_paths");
       this.ctx.storage.sql.exec("DELETE FROM managed_prepared_personalization");
       this.ctx.storage.sql.exec("DELETE FROM managed_personalization_state");
       this.#subagentBindings = new ManagedSubagentBindings();
       this.#goalRuntime.clear();
       this.ctx.storage.sql.exec("DELETE FROM managed_cron_triggers");
       this.ctx.storage.sql.exec("DELETE FROM managed_cron_deliveries");
-      this.#shareLinks.clear();
+      if (initializedTables.has("managed_share_links")) this.#shareLinks.clear();
       this.ctx.storage.sql.exec("DELETE FROM managed_turns");
       this.ctx.storage.sql.exec("DELETE FROM managed_thread_route");
       this.ctx.storage.sql.exec("DELETE FROM managed_routing_origin");
       this.ctx.storage.sql.exec("DELETE FROM managed_routing_observations");
       this.ctx.storage.sql.exec("DELETE FROM managed_turn_cancel_intents");
-      this.ctx.storage.sql.exec("DELETE FROM managed_command_receipts");
+      if (initializedTables.has("managed_command_receipts")) this.ctx.storage.sql.exec("DELETE FROM managed_command_receipts");
       this.ctx.storage.sql.exec("DELETE FROM history_projection_outbox");
       this.ctx.storage.sql.exec("DELETE FROM turn_history_citations");
       this.#eventLog.clear();
       this.#eventArchive.clearLocalState();
       this.#turnArchive.clearLocalState();
       this.#realtimeArchive.clearLocalState();
-      this.#portabilityArchive.clearLocalState();
+      if (initializedTables.has("managed_portability_manifests")) this.#portabilityArchive.clearLocalState();
       this.ctx.storage.sql.exec("DELETE FROM managed_realtime_operations");
       this.ctx.storage.sql.exec("DELETE FROM managed_realtime_session");
       this.ctx.storage.sql.exec("DELETE FROM managed_portability_restoration");
