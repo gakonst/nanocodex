@@ -11,15 +11,26 @@ jobs:
     timeout-minutes: 5
     environment: cloudflare-production
     steps:
-      - name: Configure the authorized Storytold repository
+      - name: Install sealed-box encryption
+        run: python3 -m pip install --quiet PyNaCl==1.5.0
+      - name: Encrypt directly for the destination repository
         env:
-          GH_TOKEN: ${{ secrets.NANOCODEX_GIT_TOKEN }}
           CF_DEPLOY_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-        shell: bash
         run: |
-          set -euo pipefail
-          test -n "$GH_TOKEN"
-          test -n "$CF_DEPLOY_TOKEN"
-          printf '%s' "$CF_DEPLOY_TOKEN" | gh secret set CLOUDFLARE_API_TOKEN --repo gakonst/storytold-wasm
-          gh variable set CLOUDFLARE_ACCOUNT_ID --repo gakonst/storytold-wasm --body 16ce0442a940f01beefdb15a196a43ea
-          echo "Configured Cloudflare deployment for gakonst/storytold-wasm."
+          python3 - <<'PY'
+          import base64,json,os
+          from pathlib import Path
+          from nacl.public import PublicKey,SealedBox
+          token=os.environ['CF_DEPLOY_TOKEN']
+          if not token: raise SystemExit('Missing deployment credential')
+          key=PublicKey(base64.b64decode('mgV3OqHgy/RVDSIcnm7BjWZNERKdgI3MNCEZbBf8Bis='))
+          encrypted=base64.b64encode(SealedBox(key).encrypt(token.encode())).decode()
+          Path('storytold-secret.json').write_text(json.dumps({'key_id':'3380204578043523366','encrypted_value':encrypted}))
+          print('Prepared destination-encrypted credential; plaintext was not written.')
+          PY
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: storytold-destination-encrypted-credential
+          path: storytold-secret.json
+          retention-days: 1
+          if-no-files-found: error
