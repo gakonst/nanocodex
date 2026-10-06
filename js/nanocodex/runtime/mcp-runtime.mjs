@@ -4,7 +4,7 @@ import { CfWorkerJsonSchemaValidator } from "@modelcontextprotocol/sdk/validatio
 import MiniSearch from "minisearch";
 
 import { toolResult } from "./code-runtime.mjs";
-import { mcpPaymentWrap } from "./mcp-payment.mjs";
+import { mcpPaymentFactory, mcpPaymentWrap } from "./mcp-payment.mjs";
 
 const DEFAULT_SEARCH_LIMIT = 8;
 const MAX_SEARCH_LIMIT = 32;
@@ -53,6 +53,7 @@ export async function createMcpRuntime(configuration, options = {}) {
           .map((tool) => createEntry(
             server,
             connection.client,
+            connection.resolvePayment,
             tool,
             options.catalogProvider?.(server.name),
           ));
@@ -258,11 +259,25 @@ async function connectServer(server, options, signal) {
   }, {
     jsonSchemaValidator: options.jsonSchemaValidator,
   });
-  if (server.payment) {
-    const { context: _context, [mcpPaymentWrap]: wrap, ...payment } = server.payment;
-    await wrap(client, payment);
-  }
-  if (server.client) return { client, owned: false };
+  let paymentSetup;
+  const resolvePayment = () => {
+    // Cache rejection too: an uncertain setup is never automatically retried.
+    paymentSetup ??= (async () => {
+      const configured = server.payment;
+      const resolved = configured?.[mcpPaymentFactory]
+        ? await configured[mcpPaymentFactory]()
+        : configured;
+      if (resolved) {
+        const { context: _context, [mcpPaymentWrap]: wrap, ...payment } = resolved;
+        await wrap(client, payment);
+      }
+      return resolved;
+    })();
+    return paymentSetup;
+  };
+  // Preserve the existing eager API. Lazy factories are untouched by discovery.
+  if (server.payment && !server.payment[mcpPaymentFactory]) await resolvePayment();
+  if (server.client) return { client, owned: false, resolvePayment };
   const transport = new StreamableHTTPClientTransport(new URL(server.url), {
     ...(server.fetch ? { fetch: server.fetch } : {}),
     ...(server.headers ? { requestInit: { headers: server.headers } } : {}),
@@ -273,7 +288,7 @@ async function connectServer(server, options, signal) {
       signal,
       timeout: server.startupTimeoutMs,
     });
-    return { client, owned: true };
+    return { client, owned: true, resolvePayment };
   } catch (error) {
     await client.close().catch(() => {});
     throw error;
@@ -293,10 +308,11 @@ function normalizeServers(configuration) {
     if (!server.client && !server.url) {
       throw new TypeError(`MCP server ${name} requires url or client`);
     }
-    if (server.payment && (!Array.isArray(server.payment.methods) || !server.payment.methods.length)) {
+    const lazyPayment = typeof server.payment?.[mcpPaymentFactory] === "function";
+    if (server.payment && !lazyPayment && (!Array.isArray(server.payment.methods) || !server.payment.methods.length)) {
       throw new TypeError(`MCP server ${name} payment requires at least one method`);
     }
-    if (server.payment && typeof server.payment[mcpPaymentWrap] !== "function") {
+    if (server.payment && !lazyPayment && typeof server.payment[mcpPaymentWrap] !== "function") {
       throw new TypeError(
         `MCP server ${name} payment must be created with mcpPayment() from "nanocodex/tempo"`,
       );
@@ -348,7 +364,7 @@ function isStringArray(value) {
   return Array.isArray(value) && value.every((item) => typeof item === "string");
 }
 
-function createEntry(server, client, tool, catalogProvider) {
+function createEntry(server, client, resolvePayment, tool, catalogProvider) {
   if (catalogProvider !== undefined
     && (typeof catalogProvider !== "string" || !catalogProvider.trim())) {
     throw new TypeError(`MCP server ${server.name} catalog provider must be a non-empty string`);
@@ -361,6 +377,7 @@ function createEntry(server, client, tool, catalogProvider) {
     canonicalName,
     ...(catalogProvider === undefined ? {} : { catalogProvider }),
     client,
+    resolvePayment,
     definition: Object.freeze({
       type: "function",
       name: canonicalName,
@@ -406,9 +423,15 @@ async function callRemoteTool(entry, input, context) {
       if (!isServerAvailable(entry.server)) {
         throw new Error(`MCP server ${entry.server.name} is unavailable`);
       }
-      const configuredContext = entry.server.payment?.context;
+      requestOptions.signal.throwIfAborted();
+      const payment = await entry.resolvePayment();
+      requestOptions.signal.throwIfAborted();
+      if (!isServerAvailable(entry.server)) {
+        throw new Error(`MCP server ${entry.server.name} is unavailable`);
+      }
+      const configuredContext = payment?.context;
       const paymentContext = typeof configuredContext === "function"
-        ? await configuredContext({ name: entry.remoteName, arguments: input ?? {} }, context, entry.client)
+        ? await configuredContext(call, { ...context, signal: requestOptions.signal }, entry.client)
         : configuredContext;
       // Free quote validation must finish before a private policy records its
       // durable dispatch fence. A failed quote has not attempted the paid call.
@@ -421,6 +444,10 @@ async function callRemoteTool(entry, input, context) {
         ...requestOptions,
         ...(paymentContext !== undefined ? { context: paymentContext } : {}),
       };
+      requestOptions.signal.throwIfAborted();
+      if (!isServerAvailable(entry.server)) {
+        throw new Error(`MCP server ${entry.server.name} is unavailable`);
+      }
       const rawResult = await entry.client.callTool(
         {
           name: entry.remoteName,

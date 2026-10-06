@@ -2,7 +2,7 @@ import { expect, it } from "vitest";
 import { serverHandID, serverHandTool, SERVER_HAND_INSTALL } from "../src/ssh-hand-setup";
 
 const owner = "11111111-1111-4111-8111-111111111111";
-const identity = { reference: "lab", hostname: "lab.example.com", port: 2222, username: "deploy", host_key_sha256: "SHA256:" + "a".repeat(43) };
+const identity = { reference: "lab", hostname: "lab.example.com", port: 2222, username: "deploy", host_key_sha256: "SHA256:" + "a".repeat(43), public_key: "ssh-rsa AAAA" };
 const credential = "s".repeat(43);
 const context = () => ({ callId: "call", parentCallId: "", sessionId: "session", model: "test", signal: new AbortController().signal });
 
@@ -14,7 +14,7 @@ async function fixture(options: { denied?: boolean; installExit?: number; image?
     const path = new URL(input).pathname;
     const body = init?.body ? JSON.parse(String(init.body)) : undefined;
     calls.push({ path, method: init?.method ?? "GET", body });
-    if (path.endsWith("/credentials")) return Response.json({ ssh: [identity], private_fixture: "must-not-be-projected" });
+    if (path.endsWith("/credentials")) return Response.json({ ssh: [{ ...identity, private_key: "must-not-be-projected" }], private_fixture: "must-not-be-projected" });
     if (path === "/v1/execute") {
       sshCount += 1;
       return Response.json({ exit_code: sshCount === 2 ? options.installExit ?? 0 : 0,

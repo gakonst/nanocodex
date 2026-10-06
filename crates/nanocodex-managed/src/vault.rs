@@ -18,6 +18,30 @@ pub struct VaultLogin {
     pub browser_origin: Option<String>,
 }
 
+/// Public metadata for a saved SSH target; never contains private key material.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VaultSshTarget {
+    /// Opaque identity reference used to select the saved target.
+    pub reference: String,
+    /// Saved destination hostname.
+    pub hostname: String,
+    /// Saved SSH port.
+    pub port: u16,
+    /// Saved SSH username.
+    pub username: String,
+    /// Pinned server host-key SHA-256 fingerprint.
+    pub host_key_sha256: String,
+    /// Public key for installation on the server, when available.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub public_key: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct SshCredentials {
+    // Deserialize only the public SSH projection, ignoring all other credentials.
+    ssh: Vec<VaultSshTarget>,
+}
+
 #[derive(Deserialize)]
 struct VaultEntry {
     id: String,
@@ -32,6 +56,19 @@ struct Credentials {
 }
 
 impl ManagedClient {
+    /// Lists saved SSH targets using only the account endpoint's public metadata.
+    ///
+    /// # Errors
+    /// Rejects unsuccessful requests or malformed metadata without reflecting
+    /// arbitrary response bodies. An absent public key is omitted from output.
+    pub async fn vault_ssh_targets(&self) -> Result<Vec<VaultSshTarget>, ManagedError> {
+        let response = self
+            .request(Method::GET, "v1/credentials", None, None)
+            .await?;
+        let credentials: SshCredentials = decode(response).await?;
+        Ok(credentials.ssh)
+    }
+
     /// Returns the configured account website's Vault page for secure browser handoff.
     pub fn vault_url(&self) -> String {
         let mut url = self.base_url.clone();

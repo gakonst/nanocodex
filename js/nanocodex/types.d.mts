@@ -590,9 +590,13 @@ export type CodeEffectJournal = Readonly<{
 }>;
 
 declare const mcpPaymentBrand: unique symbol;
+declare const lazyMcpPaymentBrand: unique symbol;
 
 /** MCP payment options returned by `mcpPayment()` from `nanocodex/tempo`. */
 export type PaidMcpPayment = McpPayment & { readonly [mcpPaymentBrand]: true };
+
+/** Deferred payment setup. Methods and context exist only after its factory resolves. */
+export type LazyPaidMcpPayment = { readonly [lazyMcpPaymentBrand]: true };
 
 export type McpPayment = {
   /** MPPx client methods, such as `tempo.session({ account, getClient, channelStore })`. */
@@ -649,11 +653,12 @@ export type McpServer = {
   headers?: HeadersInit | undefined;
   fetch?: typeof globalThis.fetch | undefined;
   /** Created with `mcpPayment()` from `nanocodex/tempo` (requires the `mppx` peer). */
-  payment?: PaidMcpPayment | undefined;
+  payment?: PaidMcpPayment | LazyPaidMcpPayment | undefined;
   /** Host-only interception before all result projections. Errors are replaced with
    * fixed failures. Caller-owned clients/fetch functions remain trusted and must
    * not independently log results, notifications, progress, or exceptions. */
   privateResult?: McpPrivateResultPolicy | undefined;
+
   enabledTools?: readonly string[] | undefined;
   disabledTools?: readonly string[] | undefined;
   /** Declares every remote tool on this server safe for concurrent nested calls. */

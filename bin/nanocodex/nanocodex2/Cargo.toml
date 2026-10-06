@@ -60,6 +60,7 @@ serde_json.workspace = true
 shlex.workspace = true
 sha2.workspace = true
 syntect.workspace = true
+sysinfo.workspace = true
 nanocodex-subagents = { path = "../../../crates/nanocodex-subagents", version = "0.6.6" }
 tempfile.workspace = true
 thiserror.workspace = true

@@ -5,18 +5,24 @@ import { createRoot } from "react-dom/client";
 import { ConnectOnboarding, type ConnectRequest } from "nanocodex-connect-ui/App";
 import "nanocodex-connect-ui/styles.css";
 
-const appOrigin = "http://atlas.nanocodex.localhost";
+const sshImport = new URLSearchParams(location.search).has("ssh-import");
+const appId = sshImport ? "nanocodex-cli" : "modal-journey";
+const appOrigin = sshImport ? "https://cli.nanocodex.xyz" : "http://atlas.nanocodex.localhost";
 const request: ConnectRequest = {
   type: "walletConnect",
   id: "synthetic-modal-request",
-  appId: "modal-journey",
+  appId,
   origin: appOrigin,
   rpc: {
     method: "wallet_connect",
     params: [{ capabilities: { auth: {
       url: `${window.location.origin}/v1/connect/auth`,
       resources: [
-        "urn:nanocodex:app:modal-journey",
+        `urn:nanocodex:app:${appId}`,
+        ...(sshImport ? [
+          `urn:nanocodex:credential-import:ssh:pem-v1:sha256:${"a".repeat(43)}`,
+          `urn:nanocodex:ssh-target:synthetic-lab:server.example.com:2222:deploy:SHA256%3A${"a".repeat(43)}`,
+        ] : []),
         `urn:nanocodex:origin:${encodeURIComponent(appOrigin)}`,
         ...(new URLSearchParams(window.location.search).has("fresh-auth") ? [] : ["urn:nanocodex:authorization:hosted"]),
         ...(new URLSearchParams(window.location.search).has("spending") ? ["urn:nanocodex:mpp:machusd:spend"] : []),

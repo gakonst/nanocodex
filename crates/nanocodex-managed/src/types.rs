@@ -10,7 +10,7 @@ use serde_json::{Value, value::RawValue};
 use crate::{ManagedError, ManagedModel, client::validate_id};
 
 /// User input accepted by a managed turn or live steer operation.
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 #[serde(untagged)]
 pub enum PromptInput {
     /// A plain UTF-8 prompt.
@@ -20,7 +20,7 @@ pub enum PromptInput {
 }
 
 /// One item in a multimodal managed prompt.
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum PromptContent {
     /// UTF-8 text content.
@@ -156,6 +156,20 @@ pub struct AgentReceipt {
     /// Initial durable state when the service can return it atomically with creation.
     #[serde(default)]
     pub initial_state: Option<AgentState>,
+}
+
+/// Durable receipt for combined creation and first-turn admission.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct AgentRunReceipt {
+    /// Stable managed agent identifier.
+    pub agent_id: String,
+    /// Stable managed session identifier.
+    pub session_id: String,
+    /// Server-owned idempotency key for the admitted turn.
+    pub turn_idempotency_key: String,
+    /// The admitted turn, including its replay fence and retained result.
+    #[serde(flatten)]
+    pub turn: TurnView,
 }
 
 /// Account-owned managed agents and their available summaries.

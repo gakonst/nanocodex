@@ -1,6 +1,4 @@
 import "./browserBuffer.mjs";
-import git from "isomorphic-git";
-import http from "isomorphic-git/http/web";
 import { createOpfsGitFs, openOpfsGitFs, openOpfsWorkspaceRoot } from "./opfsGit.mjs";
 export const THREAD_GIT_DIRECTORY = "/workspace";
 export const THREAD_GIT_AUTHOR = { name: "Nanocodex", email: "agent@nanocodex.dev" };
@@ -55,6 +53,8 @@ export async function threadGitStatus(thread) {
     });
 }
 export async function commitAndPushThread(thread, message = "Update workspace", notificationSource) {
+    const { default: http } = await import("isomorphic-git/http/web");
+    const { default: git } = await import("isomorphic-git");
     return withThreadGitLock(thread, async () => {
         const fs = await openOpfsGitFs(thread.workspaceName);
         if (!(await exists(fs, `${directory}/.git/config`)))
@@ -88,6 +88,8 @@ export async function commitAndPushThread(thread, message = "Update workspace", 
     });
 }
 export async function pullThread(thread, notificationSource) {
+    const { default: http } = await import("isomorphic-git/http/web");
+    const { default: git } = await import("isomorphic-git");
     return withThreadGitLock(thread, async () => {
         const fs = await openOpfsGitFs(thread.workspaceName);
         if (!(await exists(fs, `${directory}/.git/config`)))
@@ -129,6 +131,7 @@ export function notifyThreadGitChanged(thread, source) {
     channel.close();
 }
 async function initializeOrRestore(fs, thread) {
+    const { default: git } = await import("isomorphic-git");
     const refs = await remoteRefs(thread);
     await git.init({ fs, dir: directory, defaultBranch: thread.branch });
     await configureRemote(fs, thread);
@@ -137,6 +140,8 @@ async function initializeOrRestore(fs, thread) {
     }
 }
 async function restoreRemote(fs, thread) {
+    const { default: http } = await import("isomorphic-git/http/web");
+    const { default: git } = await import("isomorphic-git");
     const fetched = await git.fetch({
         fs,
         http,
@@ -152,6 +157,7 @@ async function restoreRemote(fs, thread) {
     await git.checkout({ fs, dir: directory, ref: thread.branch, force: true });
 }
 async function configureRemote(fs, thread) {
+    const { default: git } = await import("isomorphic-git");
     if (await git.getConfig({ fs, dir: directory, path: configuredRemotePath }) === thread.remoteUrl)
         return;
     await git.addRemote({ fs, dir: directory, remote: "origin", url: thread.remoteUrl, force: true });
@@ -167,6 +173,7 @@ async function configureRemote(fs, thread) {
     await git.setConfig({ fs, dir: directory, path: configuredRemotePath, value: thread.remoteUrl });
 }
 async function status(fs, thread) {
+    const { default: git } = await import("isomorphic-git");
     const matrix = await git.statusMatrix({ fs, dir: directory });
     return {
         branch: thread.branch,
@@ -178,9 +185,12 @@ async function status(fs, thread) {
     };
 }
 async function remoteRefs(thread) {
+    const { default: http } = await import("isomorphic-git/http/web");
+    const { default: git } = await import("isomorphic-git");
     return git.listServerRefs({ http, url: thread.remoteUrl, protocolVersion: 2, prefix: "refs/heads/" });
 }
 async function resolveHead(fs) {
+    const { default: git } = await import("isomorphic-git");
     return git.resolveRef({ fs, dir: directory, ref: "HEAD" }).catch(() => undefined);
 }
 async function exists(fs, path) {

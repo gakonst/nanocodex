@@ -1,3 +1,5 @@
+import type { HandResourceObservation } from "nanocodex-tools/internal/hosted-machine";
+
 /** Public account metadata; a funded wallet does not imply payment authorization. */
 export type EnvironmentWallet = Readonly<
   | { status: "disabled" | "not_configured" | "unavailable" }
@@ -6,6 +8,7 @@ export type EnvironmentWallet = Readonly<
 >;
 export type EnvironmentHand = Readonly<{
   name: string; path: string; capabilities: readonly string[];
+  resources: EnvironmentHandResources;
   kind?: string; online?: boolean; provider?: string; vm_provider?: string;
 }>;
 export type EnvironmentConnection = Readonly<{
@@ -24,6 +27,7 @@ export type AccountEnvironmentSource = Readonly<{
   machines?: readonly Readonly<{
     id: string; name: string; mount: string; capabilities: readonly string[];
     kind?: string; online?: boolean; provider?: string; vm_provider?: string;
+    resources?: HandResourceObservation;
   }>[];
   apis: readonly unknown[]; identity: Readonly<Record<string, unknown>>;
   stablecoins: readonly unknown[]; authorizations: readonly unknown[]; vault: readonly unknown[];
@@ -47,3 +51,7 @@ export type RequestOriginContext = Readonly<{ client?: string; hand?: string; cw
 /** Drops invalid optional location samples or samples older than five minutes / over 30 seconds in the future. */
 export function requestOriginLocation(value: unknown, now?: number): RequestOriginLocation | undefined;
 export function requestOriginContext(value: unknown, now?: number): RequestOriginContext;
+
+export type EnvironmentHandResources = Readonly<{ status: "unknown" } | (HandResourceObservation & { status: "fresh" | "stale" })>;
+/** Samples older than five minutes or from offline hands are stale; missing/future samples are unknown. */
+export function projectHandResources(value: unknown, online?: boolean, now?: number): EnvironmentHandResources;

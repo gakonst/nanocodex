@@ -1,4 +1,4 @@
-//! Public-template CLI for broker-owned Vault requests.
+//! Public SSH metadata and public-template CLI for broker-owned Vault requests.
 use std::{
     fs::File,
     io::{self, Read},
@@ -16,6 +16,8 @@ pub(super) struct Vault {
 
 #[derive(Subcommand)]
 enum Command {
+    /// List saved SSH targets as a JSON array containing only public metadata.
+    SshTargets,
     /// Send a public request template once; print only destination status and ok.
     ///
     /// JSON must contain vault_id and url, with optional method, headers, body,
@@ -33,7 +35,16 @@ enum Command {
 
 impl Vault {
     pub(super) async fn run(self, client: &ManagedClient) -> Result<(), ManagedError> {
-        let Command::Request { file, .. } = self.command;
+        let file = match self.command {
+            Command::SshTargets => {
+                let targets = client.vault_ssh_targets().await?;
+                let output = serde_json::to_string(&targets)
+                    .map_err(|_| ManagedError::InvalidResponse("invalid Vault SSH metadata"))?;
+                println!("{output}");
+                return Ok(());
+            }
+            Command::Request { file, .. } => file,
+        };
         let invalid = || ManagedError::Configuration("invalid_vault_request_input".into());
         let reader: Box<dyn Read> = match file {
             Some(path) => Box::new(File::open(path).map_err(|_| invalid())?),

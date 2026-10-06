@@ -58,8 +58,11 @@ describe("trusted managed ingress", () => {
           : Response.json({});
       } }),
     } } as unknown as Parameters<typeof worker.fetch>[1];
-    const response = await worker.fetch(publicRequest(path, "FRA", path.endsWith("agent-runs") ? { input: "Synthetic task" } : undefined), runtime, createExecutionContext(), principal);
-    expect(response.status).toBe(201);
+    // Select a deterministic model so this ingress fixture does not depend on
+    // the external default-model catalog before reaching the session boundary.
+    const body = { settings: DEFAULT_AGENT_SETTINGS, ...(path.endsWith("agent-runs") ? { input: "Synthetic task" } : {}) };
+    const response = await worker.fetch(publicRequest(path, "FRA", body), runtime, createExecutionContext(), principal);
+    expect(response.status, await response.clone().text()).toBe(201);
     expect(calls).toEqual(path.endsWith("agent-runs") ? ["/create-run"] : ["/create"]);
   });
 

@@ -12,7 +12,7 @@ use axum::{
     Router,
     body::Body,
     http::{HeaderMap, Response, StatusCode},
-    routing::post,
+    routing::{get, post},
 };
 use serde_json::{Value, json};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -35,7 +35,7 @@ fn command(home: &std::path::Path, origin: &str) -> tokio::process::Command {
             "NANOCODEX_API_KEY",
             format!("ncx_live_{}_{}", "a".repeat(12), "b".repeat(43)),
         )
-        .args(["vault", "request"])
+        .arg("vault")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
@@ -45,6 +45,7 @@ fn command(home: &std::path::Path, origin: &str) -> tokio::process::Command {
 async fn invoke(origin: &str, input: &str, from_file: bool) -> std::process::Output {
     let home = tempfile::tempdir().unwrap();
     let mut command = command(home.path(), origin);
+    command.arg("request");
     if from_file {
         let file = home.path().join("request.json");
         std::fs::write(&file, input).unwrap();
@@ -260,4 +261,101 @@ async fn vault_cli_dropped_connection_is_not_retried() {
     assert_eq!(calls.load(Ordering::SeqCst), 1);
     println!("vault CLI dropped response: outcome_unknown, one connection, no retry");
     server.abort();
+}
+
+#[tokio::test]
+async fn vault_cli_ssh_targets_public_projection_and_sanitized_errors() {
+    let target = json!({
+        "reference": "example-server", "hostname": "server.example.com", "port": 22,
+        "username": "operator", "host_key_sha256": format!("SHA256:{}", "a".repeat(43)),
+        "public_key": "ssh-rsa AAAA"
+    });
+    let mut legacy = target.clone();
+    legacy["reference"] = "legacy-server".into();
+    legacy.as_object_mut().unwrap().remove("public_key");
+    let expected = json!([target, legacy]);
+    let mut targets = expected.clone();
+    for entry in targets.as_array_mut().unwrap() {
+        entry["private_key"] = PRIVATE.into();
+        entry["unexpected"] = json!({"nested_secret": PRIVATE});
+    }
+    let cases = [
+        (
+            200,
+            json!({"ssh": targets, "vault": [{"password": PRIVATE}], "token": PRIVATE}).to_string(),
+            Some(expected),
+            "",
+        ),
+        (200, json!({"ssh": []}).to_string(), Some(json!([])), ""),
+        (
+            403,
+            json!({"error": PRIVATE, "message": PRIVATE}).to_string(),
+            None,
+            "vault_request_failed",
+        ),
+        (503, PRIVATE.into(), None, "vault_request_failed"),
+        (
+            200,
+            json!({"ssh": [{"reference": PRIVATE}]}).to_string(),
+            None,
+            "invalid Vault metadata",
+        ),
+        (200, PRIVATE.into(), None, "invalid Vault metadata"),
+    ];
+    for (http_status, body, expected, expected_error) in cases {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let count = calls.clone();
+        let app = Router::new()
+            .route(
+                "/v1/credentials",
+                get(move |headers: HeaderMap| {
+                    let count = count.clone();
+                    let body = body.clone();
+                    async move {
+                        count.fetch_add(1, Ordering::SeqCst);
+                        assert_eq!(
+                            headers["authorization"],
+                            format!("Bearer ncx_live_{}_{}", "a".repeat(12), "b".repeat(43))
+                        );
+                        Response::builder()
+                            .status(http_status)
+                            .body(Body::from(body))
+                            .unwrap()
+                    }
+                }),
+            )
+            .fallback(|| async {
+                panic!("SSH target listing used a non-public endpoint");
+                #[allow(unreachable_code)]
+                StatusCode::INTERNAL_SERVER_ERROR
+            });
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let origin = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let home = tempfile::tempdir().unwrap();
+        let output = tokio::time::timeout(
+            Duration::from_secs(15),
+            command(home.path(), &origin).arg("ssh-targets").output(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        let stdout = String::from_utf8(output.stdout).unwrap();
+        let stderr = String::from_utf8(output.stderr).unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert_eq!(output.status.success(), expected.is_some(), "{stderr}");
+        assert!(!stdout.contains(PRIVATE) && !stderr.contains(PRIVATE));
+        assert!(!stdout.contains("ncx_live_") && !stderr.contains("ncx_live_"));
+        if let Some(expected) = expected {
+            assert_eq!(serde_json::from_str::<Value>(&stdout).unwrap(), expected);
+            assert!(stderr.is_empty());
+        } else {
+            assert!(stdout.is_empty());
+            assert!(stderr.contains(expected_error), "{stderr}");
+        }
+        println!(
+            "vault ssh-targets HTTP {http_status}: one authenticated public GET; exact public projection or sanitized failure"
+        );
+        server.abort();
+    }
 }

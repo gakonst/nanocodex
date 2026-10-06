@@ -432,17 +432,24 @@ pub fn client_from_environment(
 pub fn enrollment_credentials(
     fallback: Option<&str>,
 ) -> std::result::Result<(String, zeroize::Zeroizing<String>), ManagedError> {
-    let resolve = || -> Result<(String, zeroize::Zeroizing<String>)> {
+    optional_enrollment_credentials(fallback)?.ok_or_else(|| ManagedError::Configuration(
+        "No account login for this origin; run nanocodex2 login (or nanocodex account login), or set NANOCODEX_API_KEY / NC_API_KEY to an account-issued ncx_live key".into(),
+    ))
+}
+
+/// Read-only selection for status consumers. Missing login is distinct from an
+/// invalid configuration or unreadable credential store; this never writes files.
+pub fn optional_enrollment_credentials(
+    fallback: Option<&str>,
+) -> std::result::Result<Option<(String, zeroize::Zeroizing<String>)>, ManagedError> {
+    let resolve = || -> Result<Option<(String, zeroize::Zeroizing<String>)>> {
         let origin = managed_url_from_environment(fallback)?;
         // An explicit environment key never requires a local credential file.
-        let key = if let Some((key, _)) = env_key()? {
-            key
-        } else {
-            resolve_key(&origin, &store::default_path()?)?.map(|(key, _)| key)
-                .ok_or_else(|| Error::message("No account login for this origin; run nanocodex2 login (or nanocodex account login), or set NANOCODEX_API_KEY / NC_API_KEY to an account-issued ncx_live key"))?
+        let selected = match env_key()? {
+            Some((key, _)) => Some(key),
+            None => resolve_key(&origin, &store::default_path()?)?.map(|(key, _)| key),
         };
-        validate_key(&key)?;
-        Ok((origin, key))
+        Ok(selected.map(|key| (origin, key)))
     };
     resolve().map_err(|error| ManagedError::Configuration(error.to_string()))
 }

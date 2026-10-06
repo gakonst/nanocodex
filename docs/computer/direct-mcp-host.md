@@ -87,8 +87,10 @@ model-supplied `timeout_ms` or add a second execution timer.
 
 The managed launcher sets `CUA_REPL_ENABLED_SURFACES=computer`. The sparse
 bundle excludes the official Chrome plugin as well as `Resources/codex`; no
-native-messaging manifest is installed. Browser windows can still be controlled
-through native UI, but dedicated Tab/DOM/browser APIs are unsupported. The
+native-messaging manifest is installed. Dedicated Tab/DOM/browser APIs and
+background tab groups are unsupported. Native UI control of a browser window
+requires authorization to interact with that window; it must not be used as a
+foreground workaround for unavailable background browsing. The
 shipped Chrome native-messaging host contains an app-server proxy, so preserving
 that surface requires a separate port, not pointing it at the policy-only shim.
 Automatic Windows upstream setup is disabled pending verification of its native

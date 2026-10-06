@@ -7,9 +7,10 @@ import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 import { build } from "esbuild";
 import { Miniflare } from "miniflare";
+import WebSocket from "ws";
 
 // Actual account HTTP proxy/authentication, Managed Session, SQLite, R2,
-// Just Bash, SDK and WASM. Only the external account catalog/model/HTTP target
+// Just Bash, SDK and WASM. Only the external account metadata/model/HTTP target
 // are synthetic. The catalog waits for the configured shell HTTP request:
 // serialized startup fails the ordering assertion rather than passing by luck.
 // Registration fault injection wraps the actual UserAccount HTTP boundary: one
@@ -26,6 +27,9 @@ export { DurableAgentSession, AccountHostedTools, Organization, ApiKeyRecord, No
 export class UserAccount extends RealUserAccount {
   constructor(state,env) { super(state,env); this.fixture=env.MODEL; }
   async fetch(request) {
+    if(request.method==='GET' && new URL(request.url).pathname.startsWith('/api-keys/')) {
+      await this.fixture.getByName('startup').fetch('https://fixture.internal/key-lookup');
+    }
     if(request.method==='POST' && new URL(request.url).pathname.endsWith('/prepare')) {
       await this.fixture.getByName('startup').fetch('https://fixture.internal/registry-prepare');
     }
@@ -56,11 +60,16 @@ export class FixtureSandbox extends DurableObject {
   async destroy() {}
 }
 export class FixtureModel extends DurableObject {
+  voiceHoldSent=false; voiceEnvironmentSent=false; voiceNewEnvironmentSent=false; originEnvironmentSent=false; walletEnvironmentSent=false; releaseVoice;
+  walletEnabled=false; releaseWallet;
   events=[]; setupStarted=false; catalogStarted=false; catalogReleased=false; setupFinished=false; published=false; publicationAttempts=0; holdCatalog=false; catalogGate; release; releasePublication;
   record(event,extra={}) { const row={type:'fixture.startup',event,at:Date.now(),...extra};this.events.push(row);console.info(row); }
   async fetch(request) {
     const url=new URL(request.url);
     if(url.pathname==='/trace') return Response.json(this.events);
+    if(url.pathname==='/release-voice') { this.releaseVoice?.();return new Response(null,{status:204}); }
+    if(url.pathname==='/key-lookup') { this.record('key.lookup');return new Response(null,{status:204}); }
+    if(url.pathname==='/allow-wallet') { this.walletEnabled=true;this.releaseWallet?.();return new Response(null,{status:204}); }
     if(url.pathname==='/registry-prepare') { this.record('registry.prepare');return new Response(null,{status:204}); }
     if(url.pathname==='/publication') {
       this.record('publication.start');
@@ -84,6 +93,7 @@ export class FixtureModel extends DurableObject {
     if(url.pathname==='/vault') { this.record('vault.read');return Response.json([]); }
     if(url.pathname.endsWith('/wallet')) {
       this.record('wallet.read',{combined:request.headers.get('accept')==='application/vnd.nanocodex.wallet-snapshot+json'});
+      if(!this.walletEnabled) await new Promise(resolve=>{this.releaseWallet=resolve;});
       return Response.json({address:'0x'+'1'.repeat(40),created_at:1,balance:{account:'0x'+'1'.repeat(40),balance:'12345678',decimals:6,symbol:'MACH',token:'0x20c000000000000000000000f37de3740adec032'}});
     }
     if(url.pathname.endsWith('/wallet/balance')) { this.record('wallet.redundant_balance_read');return new Response(null,{status:503}); }
@@ -91,6 +101,11 @@ export class FixtureModel extends DurableObject {
       this.setupStarted=true;this.record('setup.start',{published:this.published});this.release?.();
       await new Promise(resolve=>setTimeout(resolve,100));
       this.setupFinished=true;this.record('setup.finish');return new Response('SETUP_OK');
+    }
+    if(request.headers.get('x-nanocodex-target-url')==='https://startup-fixture.example/voice-hold') {
+      this.record('voice.tool.held');
+      await new Promise(resolve=>{this.releaseVoice=resolve;});
+      return new Response('VOICE_RELEASED');
     }
     if(request.headers.get('upgrade')==='websocket') {
       this.record('provider.connect',{published:this.published});
@@ -104,8 +119,33 @@ export class FixtureModel extends DurableObject {
         this.record('provider.request',{catalog_ready:this.catalogReleased,setup_ready:this.setupFinished,
           tools:effectiveTools,input:body.input,reasoning:body.reasoning,service_tier:body.service_tier});
         const id='resp_'+crypto.randomUUID();
-        if(++requestIndex===2) {
+        ++requestIndex;
+        const inputText=JSON.stringify(body.input??[]);
+        if(inputText.includes('VOICE_ORIGIN_HOLD') && !this.voiceHoldSent) {
+          this.voiceHoldSent=true;
+          server.send(JSON.stringify({type:'response.completed',response:{id,status:'completed',end_turn:false,output:[{type:'function_call',name:'exec_command',call_id:'call_voice_hold',arguments:JSON.stringify({cmd:'curl -fsS https://startup-fixture.example/voice-hold',workdir:'/brain'})}],usage:{input_tokens:1,output_tokens:1,total_tokens:2}}}));
+          return;
+        }
+        const voiceEnvironment=inputText.includes('VOICE_ORIGIN_STEER') && !this.voiceEnvironmentSent;
+        const voiceNewEnvironment=inputText.includes('VOICE_ORIGIN_NEW') && !this.voiceNewEnvironmentSent;
+        if(voiceEnvironment || voiceNewEnvironment) {
+          if(voiceEnvironment) this.voiceEnvironmentSent=true;
+          if(voiceNewEnvironment) this.voiceNewEnvironmentSent=true;
+          server.send(JSON.stringify({type:'response.completed',response:{id,status:'completed',end_turn:false,output:[{type:'custom_tool_call',name:'exec',call_id:voiceEnvironment?'call_voice_origin':'call_voice_new_origin',input:'text(await tools.environment({}));'}],usage:{input_tokens:1,output_tokens:1,total_tokens:2}}}));
+          return;
+        }
+        if(inputText.includes('Inspect current environment origin') && !this.originEnvironmentSent) {
+          this.originEnvironmentSent=true;
+          server.send(JSON.stringify({type:'response.completed',response:{id,status:'completed',end_turn:false,output:[{type:'custom_tool_call',name:'exec',call_id:'call_current_origin',input:'text(await tools.environment({}));'}],usage:{input_tokens:1,output_tokens:1,total_tokens:2}}}));
+          return;
+        }
+        if(requestIndex===2) {
           server.send(JSON.stringify({type:'response.completed',response:{id,status:'completed',end_turn:false,output:[{type:'function_call',name:'exec_command',call_id:'call_startup_read',arguments:JSON.stringify({cmd:'cat /brain/setup-output.txt',workdir:'/brain'})}],usage:{input_tokens:1,output_tokens:1,total_tokens:2}}}));
+          return;
+        }
+        if(inputText.includes('Read the account wallet with environment') && !this.walletEnvironmentSent) {
+          this.walletEnvironmentSent=true;
+          server.send(JSON.stringify({type:'response.completed',response:{id,status:'completed',end_turn:false,output:[{type:'custom_tool_call',name:'exec',call_id:'call_wallet_environment',input:'text(await tools.environment({}));'}],usage:{input_tokens:1,output_tokens:1,total_tokens:2}}}));
           return;
         }
         server.send(JSON.stringify({type:'response.created',response:{id,status:'in_progress'}}));
@@ -128,12 +168,13 @@ export default {async fetch(request,env,ctx) {
       subjectId:'api_key:'+user,credentialId:'fixture',capabilities:auth.grant.capabilities},'synthetic startup'));
   }
   if(url.pathname==='/__trace') return env.MODEL.getByName('startup').fetch('https://fixture.internal/trace');
-  if(url.pathname==='/__hold-catalog' || url.pathname==='/__release-catalog') return env.MODEL.getByName('startup').fetch('https://fixture.internal/'+url.pathname.slice(3));
+  if(url.pathname==='/__release-voice') return env.MODEL.getByName('startup').fetch('https://fixture.internal/release-voice');
+  if(url.pathname==='/__hold-catalog' || url.pathname==='/__release-catalog' || url.pathname==='/__allow-wallet') return env.MODEL.getByName('startup').fetch('https://fixture.internal/'+url.pathname.slice(3));
   return worker.fetch(request,env,ctx);
 }};
 `;
 
-test("normal public API overlaps account discovery with configured setup and retains warm tools", { timeout: 90_000 }, async () => {
+test("public HTTP and WebSocket startup omit wallet I/O while explicit environment remains live", { timeout: 90_000 }, async () => {
   await mkdir(output, { recursive: true });
   const runtime = [], records = [], http = [];
   const capture = line => { runtime.push(line); const offset=line.indexOf('{"type":');if(offset>=0)try{records.push(JSON.parse(line.slice(offset)));}catch{} };
@@ -147,14 +188,16 @@ test("normal public API overlaps account discovery with configured setup and ret
   const common={modules,compatibilityDate:"2026-07-30",compatibilityFlags:["nodejs_compat","enable_request_signal"]};
   const mf=new Miniflare({port:0,handleRuntimeStdio(stdout,stderr){createInterface({input:stdout}).on("line",capture);createInterface({input:stderr}).on("line",capture);},
     durableObjectsPersist:join(output,"sqlite"),r2Persist:join(output,"r2"),workers:[
-      {...common,name:"edge",bindings:{EDGE:true},serviceBindings:{NANOCODEX_BACKEND:"managed"}},
+      {...common,name:"edge",bindings:{EDGE:true},serviceBindings:{NANOCODEX_BACKEND:"managed"},
+        durableObjects:{NANOCODEX_LIVE_API_KEYS:{className:"ApiKeyRecord",scriptName:"managed",useSQLite:true},
+          NANOCODEX_LIVE_SESSIONS:{className:"DurableAgentSession",scriptName:"managed",useSQLite:true}}},
       {...common,name:"managed",bindings:{NANOCODEX_PERFORMANCE_TRACE:"true",MANAGED_AGENT_DIRECT_CREDENTIALS:"true",AGENT_IDLE_TIMEOUT_MS:"60000"},
         durableObjects:{NANOCODEX_SESSIONS:{className:"DurableAgentSession",useSQLite:true},NANOCODEX_USERS:{className:"UserAccount",useSQLite:true},NANOCODEX_ORGANIZATIONS:{className:"Organization",useSQLite:true},
           NANOCODEX_API_KEYS:{className:"ApiKeyRecord",useSQLite:true},NANOCODEX_AUTH:{className:"NonceStorage",useSQLite:true},NANOCODEX_ACCOUNT_TOOLS:{className:"AccountHostedTools",useSQLite:true},
           MODEL:{className:"FixtureModel",useSQLite:true},NANOCODEX_MEMORY:{className:"FixtureModel",useSQLite:true},NANOCODEX_SANDBOXES:{className:"FixtureSandbox",useSQLite:true}},
         serviceBindings:{NANOCODEX:{name:"managed",entrypoint:"FixtureEgress"}},r2Buckets:["NANOCODEX_HISTORY","NANOCODEX_WORKSPACES"]},
     ]});
-  let failure, evidence={};
+  let failure, live, evidence={};
   try {
     const base=await mf.ready,backend=await mf.getWorker("managed");
     const fixture=async()=>{const response=await backend.fetch("https://fixture.internal/__fixture",{method:"POST",body:JSON.stringify({user:crypto.randomUUID()})});assert.equal(response.status,200);return response.json();};
@@ -168,15 +211,19 @@ test("normal public API overlaps account discovery with configured setup and ret
     await call("/v1/agent-runs","POST",{input:null,settings},400);
     assert.equal((await (await backend.fetch("https://fixture.internal/__trace")).json()).length,0,"invalid input starts no metadata or model work");
     const started=performance.now();
-    const run=await call("/v1/agent-runs","POST",{input:"Reply STARTUP_OK",settings,configuration},201,token,{"idempotency-key":"startup-overlap"});
-    const waitTurn=async id=>{
-      for(let i=0;i<1000;i++){const value=await call(`/v1/agents/${run.agent_id}/turns/${id}`);assert.ok(!["failed","cancelled"].includes(value.state),JSON.stringify(value));if(value.state==="completed")return value;await delay(10);}
+    const run=await call("/v1/agent-runs","POST",{input:"Reply STARTUP_OK",settings,configuration},201,token,{"idempotency-key":"startup-overlap", "x-nanocodex-client-context":JSON.stringify({client:"nanocodex2",timezone:"Europe/Athens"})});
+    const waitTurn=async (id,agentId=run.agent_id,credential=token)=>{
+      for(let i=0;i<1000;i++){const value=await call(`/v1/agents/${agentId}/turns/${id}`,"GET",undefined,200,credential);assert.ok(!["failed","cancelled"].includes(value.state),JSON.stringify(value));if(value.state==="completed")return value;await delay(10);}
       throw Error("turn did not finish");
     };
     const cold=await waitTurn(run.turn_id),coldMs=performance.now()-started;assert.match(JSON.stringify(cold),/STARTUP_OK/);
     const environment=await call(`/v1/agents/${run.agent_id}/environment`);assert.equal(environment.state,"ready");
     await call(`/v1/agents/${run.agent_id}/turns/${run.turn_id}`,"GET",undefined,404,other);
-    const warmStarted=performance.now(),warm=await call(`/v1/agents/${run.agent_id}/turns`,"POST",{id:crypto.randomUUID(),input:"Read the prepared file and reply STARTUP_OK"},202);
+    const warmInput={id:crypto.randomUUID(),input:"Read the prepared file and reply STARTUP_OK"};
+    const originHeaders=client=>client?{"x-nanocodex-client-context":JSON.stringify({client,timezone:"UTC"})}:{};
+    const warmStarted=performance.now(),warm=await call(`/v1/agents/${run.agent_id}/turns`,"POST",warmInput,202,token,originHeaders("iphone"));
+    const warmRetry=await call(`/v1/agents/${run.agent_id}/turns`,"POST",warmInput,200,token,originHeaders("different-retry-device"));
+    assert.equal(warmRetry.turn_id,warm.turn_id);
     assert.match(JSON.stringify(await waitTurn(warm.turn_id)),/STARTUP_OK/);
     const warmMs=performance.now()-warmStarted,trace=await(await backend.fetch("https://fixture.internal/__trace")).json();
     evidence={source_root:root,cold_public_completion_ms:coldMs,warm_public_completion_ms:warmMs,trace};
@@ -192,16 +239,173 @@ test("normal public API overlaps account discovery with configured setup and ret
     const requests=trace.filter(row=>row.event==="provider.request");assert.equal(requests.length,3);
     for(const request of requests){assert.equal(request.catalog_ready,true);assert.equal(request.setup_ready,true);assert.ok(request.tools.includes("exec"),JSON.stringify(request.tools));}
     assert.match(JSON.stringify(requests[0].input),/startup_context/);
-    assert.match(JSON.stringify(requests[0].input),/12345678/,"first prompt includes the combined live balance");
-    assert.equal(first("wallet.read")?.combined,true,"startup requests the combined snapshot");
-    assert.equal(trace.filter(row=>row.event==="wallet.read").length,1,"one live wallet read for first startup");
+    const startupText=requests[0].input.filter(item=>item.role==='developer').flatMap(item=>item.content??[]).map(item=>item.text??'').join('\n');
+    const startupEnvironment=JSON.parse(startupText.match(/<environment>\s*([\s\S]*?)\s*<\/environment>/)[1].replaceAll('&lt;','<').replaceAll('&gt;','>').replaceAll('&amp;','&'));
+    assert.equal(Object.hasOwn(startupEnvironment,"wallet"),false,"startup leaves unrequested wallet metadata unknown");
+    assert.deepEqual(startupEnvironment.identity,{});
+    assert.deepEqual(startupEnvironment.stablecoins,[]);
+    assert.equal(trace.filter(row=>row.event==="wallet.read").length,0,"model startup never requests a wallet snapshot");
     assert.equal(trace.filter(row=>row.event==="wallet.redundant_balance_read").length,0,"no sequential balance fetch");
     assert.match(JSON.stringify(requests[2].input),/SETUP_OK/,"real shell reads the R2 file created by setup");
     assert.equal(trace.filter(row=>row.event==="catalog.start").length,1,"warm turn reuses bounded discovery");
     assert.equal(trace.filter(row=>row.event==="setup.start").length,1,"warm turn never repeats setup side effects");
     evidence={source_root:root,cold_public_completion_ms:coldMs,warm_public_completion_ms:warmMs,setup_catalog_overlap_ms:first("catalog.finish").at-first("setup.start").at,
       setup_once:true,catalog_reads:1,provider_requests:3,prepared_file_read:true,tools_preserved:true,cross_owner_denied:true,
-      discovery_before_registration:true,failed_publication_retried:true,no_effect_before_registration:true,registry_prepare_requests:0,trace};
+      discovery_before_registration:true,failed_publication_retried:true,no_effect_before_registration:true,registry_prepare_requests:0,startup_wallet_reads:0,trace};
+    // Exercise native create-on-upgrade with speculative preparation while
+    // the external wallet service is held. No wallet read may even start.
+    const liveToken=(await fixture()).token;
+    await backend.fetch('https://fixture.internal/__hold-catalog');
+    const liveUrl=new URL('/v1/agents/live',base);liveUrl.protocol='ws:';
+    for(const [key,value] of Object.entries(settings))liveUrl.searchParams.set(key,String(value));
+    const wire=[];let socketError,upgradeStatus;
+    live=new WebSocket(liveUrl,{headers:{authorization:'Bearer '+liveToken,'x-nanocodex-prepare':'active-conversation','x-nanocodex-api-key-object-id':'a'.repeat(64)}});
+    live.on('upgrade',response=>{upgradeStatus=response.statusCode;});
+    live.on('message',data=>wire.push(JSON.parse(String(data))));live.on('error',error=>{socketError=error;});
+    const waitMessage=async predicate=>{
+      for(let i=0;i<2000;i++){if(socketError)throw socketError;const message=wire.find(predicate);if(message)return message;await delay(10);}
+      throw Error('WebSocket startup did not complete: '+JSON.stringify(wire));
+    };
+    const ready=await waitMessage(message=>message.type==='ready'),liveTurn=crypto.randomUUID();
+    assert.equal(upgradeStatus,101,'prepared live request upgrades while fresh discovery is held');
+    live.send(JSON.stringify({type:'prompt',id:liveTurn,input:'Reply STARTUP_OK'}));
+    await waitMessage(message=>message.type==='turn_accepted' && message.id===liveTurn);
+    // A fresh owner's discovery is withheld at the real service boundary.
+    // Ready and prompt acceptance must remain independent of metadata readiness.
+    try {
+      for(let i=0;;i++) {
+        const pending=await(await backend.fetch('https://fixture.internal/__trace')).json();
+        if(pending.filter(row=>row.event==='catalog.held').length===1 && pending.filter(row=>row.event==='vault.read').length===2) {
+          assert.equal(pending.filter(row=>row.event==='catalog.finish').length,1,'fresh live catalog remains held after ready and prompt acceptance');
+          assert.equal(pending.filter(row=>row.event==='provider.request').length,3,'first prompt waits for complete discovery');
+          break;
+        }
+        assert.ok(i<200,'prepared live discovery did not dispatch both components');await delay(10);
+      }
+    } finally { await backend.fetch('https://fixture.internal/__release-catalog'); }
+    assert.match(JSON.stringify(await waitTurn(liveTurn,ready.session_id,liveToken)),/STARTUP_OK/);
+    const liveTrace=await(await backend.fetch('https://fixture.internal/__trace')).json();
+    const liveRequests=liveTrace.filter(row=>row.event==='provider.request');
+    assert.equal(liveRequests.length,4);
+    assert.ok(liveRequests[3].tools.includes('exec'),'first live prompt retains tools after discovery');
+    assert.match(JSON.stringify(liveRequests[3].input),/startup_context/,'first live prompt retains the startup snapshot');
+    assert.equal(liveTrace.filter(row=>row.event==='catalog.finish').length,2,'fresh live discovery finishes before the first provider request');
+    assert.equal(liveTrace.filter(row=>row.event==='catalog.start').length,2,'prepared live prompt reuses its discovery read');
+    assert.equal(liveTrace.filter(row=>row.event==='vault.read').length,2,'prepared live prompt reuses its Vault metadata read');
+    assert.equal(liveTrace.filter(row=>row.event==='key.lookup').length,0,'verified key route avoids the account locator hop');
+    assert.equal(liveTrace.filter(row=>row.event==='wallet.read').length,0,'HTTP and prepared WebSocket startup perform no wallet I/O');
+    live.close();
+
+    // An explicit environment tool call still retrieves the live snapshot.
+    await backend.fetch('https://fixture.internal/__allow-wallet');
+    const inspected=await call(`/v1/agents/${run.agent_id}/turns`,'POST',{id:crypto.randomUUID(),input:'Read the account wallet with environment and reply STARTUP_OK'},202);
+    assert.match(JSON.stringify(await waitTurn(inspected.turn_id)),/STARTUP_OK/);
+    const inspectedTrace=await(await backend.fetch('https://fixture.internal/__trace')).json();
+    assert.equal(inspectedTrace.filter(row=>row.event==='wallet.read').length,1,'only explicit environment reads the wallet');
+    assert.equal(inspectedTrace.find(row=>row.event==='wallet.read').combined,true);
+    const inspectedRequests=inspectedTrace.filter(row=>row.event==='provider.request');
+    assert.equal(inspectedRequests.length,6);
+    assert.match(JSON.stringify(inspectedRequests.at(-1).input),/12345678/,'live environment result reaches the model');
+    evidence={...evidence,websocket_startup_wallet_reads:0,websocket_key_locator_reads:0,websocket_upgrade_status:upgradeStatus,websocket_ready_while_discovery_held:true,websocket_first_tools_preserved:true,websocket_discovery_reads_coalesced:true,forged_key_route_overwritten:true,explicit_environment_wallet_reads:1,explicit_environment_balance:true,provider_requests:6,wire};
+    // Exercise device changes through public HTTP and WebSocket admission. Origin
+    // travels in the actual model input; it must not bleed between queued turns.
+    const userText=request=>(request.input??[]).filter(item=>item.role==="user")
+      .map(item=>(item.content??[]).filter(part=>part.type==="input_text").map(part=>part.text).join("\n")).at(-1)??"";
+    const currentOrigins=request=>[...userText(request).matchAll(/<current_request_context>([\s\S]*?)<\/current_request_context>/g)]
+      .map(match=>JSON.parse(match[1].match(/<request_origin>\s*([\s\S]*?)\s*<\/request_origin>/)[1]));
+    const environmentOutput=(request,callId="call_current_origin")=>{
+      const output=request.input.find(item=>item.type==="custom_tool_call_output" && item.call_id===callId);
+      assert.ok(output,"environment result reaches the actual provider boundary");
+      return output.output.filter(part=>part.type==="input_text").map(part=>{try{return JSON.parse(part.text);}catch{return null;}})
+        .find(value=>value?.request_origin);
+    };
+    assert.equal(currentOrigins(requests[0]).at(-1).client.name,"nanocodex2");
+    assert.equal(currentOrigins(requests[1]).at(-1).client.name,"iphone","retry from another device cannot replace admitted origin");
+    const originRequestOffset=inspectedRequests.length;
+    const envTurn=await call(`/v1/agents/${run.agent_id}/turns`,"POST",{id:crypto.randomUUID(),input:"Inspect current environment origin"},202,token,originHeaders("linux-cli"));
+    await waitTurn(envTurn.turn_id);
+    const envTrace=await(await backend.fetch("https://fixture.internal/__trace")).json();
+    const envRequests=envTrace.filter(row=>row.event==="provider.request");
+    assert.equal(currentOrigins(envRequests[originRequestOffset]).at(-1).client.name,"linux-cli");
+    const liveEnvironment=environmentOutput(envRequests[originRequestOffset+1]);
+    assert.equal(liveEnvironment.request_origin.client.name,"linux-cli","live environment reports this tool call's turn origin");
+    assert.equal(liveEnvironment.request_origin.transport,"http");
+    assert.equal(liveEnvironment.execution_preferences.advisory,true);
+    assert.equal(liveEnvironment.execution_preferences.origin_hand,null);
+    const pending=await Promise.all(["web",undefined,"desktop"].map((client,index)=>call(`/v1/agents/${run.agent_id}/turns`,"POST",
+      {id:crypto.randomUUID(),input:"QUEUED_ORIGIN_"+index},202,token,originHeaders(client))));
+    for(const turn of pending) await waitTurn(turn.turn_id);
+    const queuedTrace=await(await backend.fetch("https://fixture.internal/__trace")).json();
+    const queuedRequests=queuedTrace.filter(row=>row.event==="provider.request").slice(originRequestOffset+2);
+    for(let index=0;index<3;index++) {
+      const request=queuedRequests.find(row=>userText(row).startsWith("QUEUED_ORIGIN_"+index+"\n"));
+      assert.ok(request,"queued request reaches real provider boundary");
+      const origin=currentOrigins(request).at(-1);
+      assert.equal(origin.client?.name??null,["web",null,"desktop"][index]);
+      assert.equal(origin.transport,"http");assert.equal(origin.hand,null);
+    }
+    const socket=new WebSocket(new URL(`/v1/agents/${run.agent_id}/ws`,base).href.replace(/^http/,"ws"),
+      {headers:{authorization:"Bearer "+token,...originHeaders("terminal-websocket")}});
+    try {
+      await new Promise((resolve,reject)=>{socket.once("open",resolve);socket.once("error",reject);});
+      const id=crypto.randomUUID();
+      const accepted=new Promise((resolve,reject)=>{
+        const timer=setTimeout(()=>reject(Error("WebSocket prompt admission timed out")),10000);
+        const observe=data=>{const frame=JSON.parse(data);if(frame.type==="turn_accepted" && frame.id===id){clearTimeout(timer);socket.off("message",observe);resolve();}};
+        socket.on("message",observe);
+      });
+      socket.send(JSON.stringify({type:"prompt",id,input:"WEBSOCKET_ORIGIN"}));
+      await accepted;
+      await waitTurn(id);
+    } finally { socket.close(); }
+    const originTrace=await(await backend.fetch("https://fixture.internal/__trace")).json();
+    const originRequests=originTrace.filter(row=>row.event==="provider.request");
+    const wsOrigin=currentOrigins(originRequests.at(-1)).at(-1);
+    assert.equal(wsOrigin.transport,"websocket");assert.equal(wsOrigin.client.name,"terminal-websocket");
+    evidence={...evidence,per_turn_origin:true,idempotent_origin:true,queued_origin_isolation:true,unknown_caller_cleared:true,websocket_origin:true,live_environment_origin:true};
+    // Keep a real typed run inside an admitted tool while two voice requests
+    // steer it. Replaying the earlier receipt must not restore its older origin.
+    const voice=crypto.randomUUID();
+    await call(`/v1/agents/${run.agent_id}/realtime/start`,"POST",{voice_session_id:voice,operation_id:crypto.randomUUID()});
+    const held=await call(`/v1/agents/${run.agent_id}/turns`,"POST",{id:crypto.randomUUID(),input:"VOICE_ORIGIN_HOLD"},202,token,originHeaders("desktop-before-voice"));
+    for(let i=0;;i++) {
+      const heldTrace=await(await backend.fetch("https://fixture.internal/__trace")).json();
+      if(heldTrace.some(row=>row.event==="voice.tool.held"))break;
+      assert.ok(i<200,"voice gate tool did not start");await delay(10);
+    }
+    const voiceFirst={voice_session_id:voice,operation_id:crypto.randomUUID(),input:"VOICE_ORIGIN_STEER first"};
+    const voiceNext={voice_session_id:voice,operation_id:crypto.randomUUID(),input:"VOICE_ORIGIN_STEER latest"};
+    try {
+      const firstSteer=await call(`/v1/agents/${run.agent_id}/realtime/delegate`,"POST",voiceFirst,202,token,originHeaders("iphone-voice"));
+      const nextSteer=await call(`/v1/agents/${run.agent_id}/realtime/delegate`,"POST",voiceNext,202,token,originHeaders("linux-voice"));
+      assert.equal(firstSteer.route,"steered");assert.equal(firstSteer.turn_id,held.turn_id);
+      assert.equal(nextSteer.route,"steered");assert.equal(nextSteer.turn_id,held.turn_id);
+      const replay=await call(`/v1/agents/${run.agent_id}/realtime/delegate`,"POST",voiceFirst,202,token,originHeaders("retry-device"));
+      assert.deepEqual(replay,firstSteer);
+    } finally { await backend.fetch("https://fixture.internal/__release-voice"); }
+    await waitTurn(held.turn_id);
+    const steeredTrace=await(await backend.fetch("https://fixture.internal/__trace")).json();
+    const steeredRequests=steeredTrace.filter(row=>row.event==="provider.request");
+    const voiceResultRequest=steeredRequests.find(row=>row.input?.some(item=>item.call_id==="call_voice_origin" && item.type==="custom_tool_call_output"));
+    assert.ok(voiceResultRequest,"voice environment tool completed through actual routing");
+    const voiceEnvironment=environmentOutput(voiceResultRequest,"call_voice_origin");
+    assert.equal(voiceEnvironment.request_origin.client.name,"linux-voice","older receipt replay cannot overwrite the latest effective origin");
+    assert.equal(voiceEnvironment.request_origin.transport,"voice");
+    const steeredPrompt=steeredRequests.find(row=>userText(row).startsWith("VOICE_ORIGIN_STEER latest"));
+    assert.ok(steeredPrompt,"latest voice steer reaches the actual provider boundary");
+    assert.deepEqual(voiceEnvironment.request_origin,currentOrigins(steeredPrompt).at(-1));
+    // Idle routing adopts a fresh managed ID; its first environment call must
+    // observe that voice origin rather than the preceding steered turn.
+    const newVoice=await call(`/v1/agents/${run.agent_id}/realtime/delegate`,"POST",{voice_session_id:voice,operation_id:crypto.randomUUID(),input:"VOICE_ORIGIN_NEW"},202,token,originHeaders("new-voice-device"));
+    assert.equal(newVoice.route,"started");assert.notEqual(newVoice.turn_id,held.turn_id);
+    await waitTurn(newVoice.turn_id);
+    const voiceTrace=await(await backend.fetch("https://fixture.internal/__trace")).json();
+    const voiceRequests=voiceTrace.filter(row=>row.event==="provider.request");
+    const newVoiceResult=voiceRequests.find(row=>row.input?.some(item=>item.call_id==="call_voice_new_origin" && item.type==="custom_tool_call_output"));
+    assert.ok(newVoiceResult);
+    assert.equal(environmentOutput(newVoiceResult,"call_voice_new_origin").request_origin.client.name,"new-voice-device");
+    await call(`/v1/agents/${run.agent_id}/realtime/stop`,"POST",{voice_session_id:voice,operation_id:crypto.randomUUID()});
+    evidence={...evidence,voice_effective_origin:true,voice_origin_receipt_replay:true,voice_adopted_origin:true};
     // Hold a fresh owner's bootstrap after public acceptance, then change
     // defaults. The accepted turn must retain its original inference settings.
     const raceToken=(await fixture()).token;
@@ -212,7 +416,7 @@ test("normal public API overlaps account discovery with configured setup and ret
     try {
       for(let i=0;;i++) {
         const pendingTrace=await (await backend.fetch("https://fixture.internal/__trace")).json();
-        if(pendingTrace.some(row=>row.event==="catalog.held"))break;
+        if(pendingTrace.filter(row=>row.event==="catalog.held").length>=2)break;
         assert.ok(i<200,"settings journey discovery did not start");await delay(10);
       }
       settingsPatch=call(`/v1/agents/${racing.agent_id}/settings`,"PATCH",{thinking:"high",fast_mode:true},200,raceToken);
@@ -270,7 +474,7 @@ test("normal public API overlaps account discovery with configured setup and ret
     try {
       for(let i=0;;i++) {
         const pendingTrace=await (await backend.fetch("https://fixture.internal/__trace")).json();
-        if(pendingTrace.filter(row=>row.event==="catalog.held").length>=2)break;
+        if(pendingTrace.filter(row=>row.event==="catalog.held").length>=3)break;
         assert.ok(i<200,"second owner discovery did not start");await delay(10);
       }
       deletion=call(`/v1/agents/${cancelled.agent_id}`,"DELETE",undefined,204,other);
@@ -289,9 +493,10 @@ test("normal public API overlaps account discovery with configured setup and ret
     const finalTrace=await (await backend.fetch("https://fixture.internal/__trace")).json();
     assert.equal(finalTrace.filter(row=>row.event==="provider.request").length,providerCount,"late discovery never resurrects a deleted turn");
     evidence={...evidence,invalid_input_no_work:true,deletion_during_discovery_fenced:true,trace:finalTrace};
-    console.log("STARTUP_OVERLAP_EVIDENCE",JSON.stringify({...evidence,trace:undefined,output}));
+    console.log("STARTUP_OVERLAP_EVIDENCE",JSON.stringify({...evidence,trace:undefined,wire:undefined,output}));
   } catch(error) {failure=error;throw error;}
   finally {
+    live?.terminate();
     await mf.dispose();
     await Promise.all([writeFile(join(output,"evidence.json"),JSON.stringify({command:"node --test test/startup-overlap-journey.test.mjs",status:failure?"FAIL":"PASS",error:failure?.stack,...evidence,http,records},null,2)),
       writeFile(join(output,"runtime.log"),runtime.join("\n")),writeFile(join(output,"fixture-source.mjs"),source),writeFile(join(output,"source-resolution.json"),JSON.stringify(bundle.metafile.inputs,null,2))]);

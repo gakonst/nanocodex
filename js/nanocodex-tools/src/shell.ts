@@ -1,6 +1,5 @@
-import git, { type GitHttpRequest, type HttpClient } from "isomorphic-git";
+import type { GitHttpRequest, HttpClient } from "isomorphic-git";
 import type { Workspace, WorkspaceEntry } from "../tools/types.mjs";
-import { downloadRepositoryArchive } from "./repository-archive.js";
 
 export type ShellFetchOptions = Readonly<{
   method?: string | undefined;
@@ -220,6 +219,9 @@ export function createGitCommand(
         }
         const dir = await gitDirectory(mounted, context.cwd);
         const fs = workspaceFs(mounted);
+        // Keep Git and its compression runtime cold for chat, gh API calls, and archive clones.
+        const { default: git } = await import("isomorphic-git");
+        context.signal?.throwIfAborted();
         if (command === "status") {
           const matrix = await git.statusMatrix({ fs, dir });
           const changed = matrix.filter(([, head, workdir, stage]) => head !== workdir || head !== stage);
@@ -338,9 +340,12 @@ async function cloneRepository(
   if (await workspaceEntry(workspace, dir)) throw new Error(`destination path '${destination}' already exists`);
   try {
     if (depth === undefined) {
+      const { downloadRepositoryArchive } = await import("./repository-archive.js");
       await downloadRepositoryArchive(fetch, commandWorkspace(workspace, signal), repository, branch ?? "HEAD", dir, signal);
       return `Downloaded source files into '${destination}' (no .git or history).\n`;
     }
+    const { default: git } = await import("isomorphic-git");
+    signal?.throwIfAborted();
     await git.clone({
       fs: workspaceFs(commandWorkspace(workspace, signal)),
       http: managedGitHttp(fetch, signal),

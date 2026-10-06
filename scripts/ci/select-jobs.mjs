@@ -13,7 +13,7 @@ const heavyFamilies = ["hands", "windows", "vm", "voice", "python", "rust_extra"
 // Workspace packages whose build a job exercises. A change to any package in
 // their dependency closure (normal, build, or dev) selects the job.
 const jobRoots = {
-  hands: ["nanocodex2-bin"],
+  hands: ["nanocodex-bin", "nanocodex2-bin"],
   windows: ["nanocodex-bin", "nanocodex2-bin"],
   vm: ["nanocodex-vm"],
   voice: ["nanocodex-voice-native"],

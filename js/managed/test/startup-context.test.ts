@@ -439,3 +439,43 @@ it("retires legacy startup receipts and pending facts once while preserving Mark
     expect(runtime.appendDeveloperMessage.mock.calls[1]?.[0]).toBe(canonicalContext);
   });
 });
+
+it("successful voice steering survives reconstruction without replacing immutable admission provenance", async () => {
+  await withStartup(async (startup, state) => {
+    startup.reserveTurnOrigin("typed", "http", { reported: { client: "desktop" } });
+    startup.reserveTurnOrigin("voice-first", "voice", { reported: { client: "iphone" } });
+    const admitted = startup.enrichTurnOrigin("typed", "Original request");
+    startup.steerTurnOrigin("voice-first", "typed");
+    const restored = new ManagedStartupContext(state.storage);
+    expect(restored.effectiveTurnRequestOrigin("typed").client?.name).toBe("iphone");
+    expect(restored.effectiveTurnRequestOrigin("typed").transport).toBe("voice");
+    expect(restored.turnRequestOrigin("typed").client?.name).toBe("desktop");
+    expect(restored.enrichTurnOrigin("typed", "Original request")).toBe(admitted);
+    // A retry cannot replace the reserved source, and deleting that temporary
+    // source cannot invalidate the effective snapshot owned by the active turn.
+    restored.reserveTurnOrigin("voice-first", "voice", { reported: { client: "retry-device" } });
+    restored.steerTurnOrigin("voice-first", "typed");
+    state.storage.sql.exec("DELETE FROM managed_turn_origin WHERE turn_id = 'voice-first'");
+    expect(new ManagedStartupContext(state.storage).effectiveTurnRequestOrigin("typed").client?.name).toBe("iphone");
+    restored.reserveTurnOrigin("voice-next", "voice");
+    restored.steerTurnOrigin("voice-next", "typed");
+    expect(restored.effectiveTurnRequestOrigin("typed")).toEqual({ transport: "voice", client: null, hand: null });
+    expect(restored.effectiveTurnRequestOrigin("unrelated")).toEqual({ transport: "unknown", client: null, hand: null });
+    expect(restored.effectiveTurnRequestOrigin(undefined)).toEqual({ transport: "unknown", client: null, hand: null });
+    restored.pruneArchived();
+    expect(state.storage.sql.exec("SELECT * FROM managed_turn_effective_origin").toArray()).toEqual([]);
+  });
+});
+
+
+it("voice attribution survives source archival while runtime routing is awaited", async () => {
+  await withStartup(async (startup, state) => {
+    startup.reserveTurnOrigin("temporary-voice", "voice", {reported:{client:"voice-device"}});
+    const snapshot = startup.originSnapshot("temporary-voice");
+    state.storage.sql.exec("DELETE FROM managed_turn_origin WHERE turn_id = ?", "temporary-voice");
+    startup.adoptTurnOrigin("temporary-voice", "adopted", snapshot);
+    startup.steerTurnOrigin("temporary-voice", "active", snapshot);
+    expect(startup.turnRequestOrigin("adopted").client?.name).toBe("voice-device");
+    expect(startup.effectiveTurnRequestOrigin("active").client?.name).toBe("voice-device");
+  });
+});
