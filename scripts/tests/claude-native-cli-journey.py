@@ -64,6 +64,7 @@ def main():
     (workspace / "pixel.png").write_bytes(png)
     (workspace / "notebook.ipynb").write_text(json.dumps({"nbformat":4, "nbformat_minor":5,"metadata":{},"cells":[{"id":"example","cell_type":"code","execution_count":1,"metadata":{},"source":["print('old')"],"outputs":[{"output_type":"stream","name":"stdout","text":["old\n"]}]}]}))
     requests, errors = [], []
+    bash_schema = json.loads((Path(__file__).resolve().parents[2] / "bin/nanocodex/src/config/claude/bash.input_schema.json").read_text())
     task_ids = {}
     expected_names = {"Read", "Write", "Edit", "Bash", "Glob", "Grep", "TaskCreate", "TaskUpdate", "TaskGet"}
     steps = [
@@ -102,9 +103,27 @@ def main():
             stage = len(requests) - phase["start"]
             current_steps = phase["steps"]
             requests.append(request)
+            for index, tool in enumerate(request.get("tools", [])):
+                schema = tool.get("input_schema")
+                if schema is None:  # Anthropic-executed server tool.
+                    continue
+                forbidden = [key for key in ("oneOf", "allOf", "anyOf") if key in schema]
+                if forbidden:
+                    message = f"tools.{index}.custom.input_schema: input_schema does not support oneOf, allOf, or anyOf at the top level ({tool['name']})"
+                    errors.append(message)
+                    (artifact / "provider.json").write_text(json.dumps(requests, indent=2))
+                    response = json.dumps({"type": "error", "error": {"type": "invalid_request_error", "message": message}}).encode()
+                    self.send_response(400)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(response)))
+                    self.end_headers()
+                    self.wfile.write(response)
+                    return
             try:
                 require(self.path == "/v1/messages", "unexpected provider route")
                 require(self.headers.get("x-api-key") == "synthetic-claude-key", "wrong synthetic authentication")
+                bash = next(tool for tool in request["tools"] if tool["name"] == "Bash")
+                require(bash["input_schema"] == bash_schema, "Bash input schema diverged from the pinned Orca Claude Code capture")
                 names = {tool["name"] for tool in request.get("tools", [])}
                 require(expected_names <= names, f"native tools missing: {expected_names - names}")
                 if stage:

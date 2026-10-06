@@ -16,6 +16,12 @@ The [OrcaPromptVault comparison](https://github.com/Continuum-AI-Corp/OrcaPrompt
 is pinned to `33ce5a020cfcb5fe747d40d0a89e84743fabdd40`. Its September captures
 contain conditional product catalogs, not one universal tool protocol:
 
+The native CLI's [Bash input schema](../bin/nanocodex/src/config/claude/bash.input_schema.json)
+is copied verbatim from [the pinned Opus 5 capture](https://github.com/Continuum-AI-Corp/OrcaPromptVault/blob/33ce5a020cfcb5fe747d40d0a89e84743fabdd40/Claude-Code/claude-code-opus-5-tools.json).
+The other three captures have the identical Bash input schema. Keep this schema
+unchanged; host limits and mode-specific timeout validation belong in execution.
+The native CLI journey checks the transmitted schema against this capture.
+
 | Capture | Names | Differences from the 35-name interactive set |
 | --- | ---: | --- |
 | Opus 5 interactive | 35 | None |

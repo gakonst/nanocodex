@@ -10,7 +10,7 @@ use std::{
 };
 use tokio::{net::TcpListener, process::Command};
 
-fn sse(block: Value) -> String {
+fn sse(block: Value) -> impl axum::response::IntoResponse {
     let tool = block["type"] == "tool_use";
     let start = if tool {
         json!({"type":"tool_use","id":block["id"],"name":block["name"],"input":{}})
@@ -22,8 +22,9 @@ fn sse(block: Value) -> String {
     } else {
         json!({"type":"text_delta","text":block["text"]})
     };
-    [json!({"type":"message_start","message":{"id":"fixture","role":"assistant","model":"claude-sonnet-5-5","content":[],"usage":{"input_tokens":1,"output_tokens":0}}}),
-    json!({"type":"content_block_start","index":0,"content_block":start}), json!({"type":"content_block_delta","index":0,"delta":delta}), json!({"type":"content_block_stop","index":0}), json!({"type":"message_delta","delta":{"stop_reason":if tool {"tool_use"} else {"end_turn"}},"usage":{"output_tokens":1}}),json!({"type":"message_stop"})].iter().map(|v|format!("data: {v}\n\n")).collect()
+    let body: String = [json!({"type":"message_start","message":{"id":"fixture","role":"assistant","model":"claude-sonnet-5-5","content":[],"usage":{"input_tokens":1,"output_tokens":0}}}),
+    json!({"type":"content_block_start","index":0,"content_block":start}), json!({"type":"content_block_delta","index":0,"delta":delta}), json!({"type":"content_block_stop","index":0}), json!({"type":"message_delta","delta":{"stop_reason":if tool {"tool_use"} else {"end_turn"}},"usage":{"output_tokens":1}}),json!({"type":"message_stop"})].iter().map(|v|format!("data: {v}\n\n")).collect();
+    ([("content-type", "text/event-stream")], body)
 }
 fn tool(stage: usize, name: &str, input: Value) -> Value {
     json!({"type":"tool_use","id":format!("call-{stage}"),"name":name,"input":input})
@@ -170,7 +171,7 @@ async fn native_cli_background_bash_tasks_and_agent_lifecycle() {
                     _ => json!({"type":"text","text":"native-host-journey-complete"}),
                 }
             };
-            ([("content-type","text/event-stream")],sse(reply))
+            sse(reply)
         }
     }));
     let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });

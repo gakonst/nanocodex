@@ -84,22 +84,10 @@ impl Shell {
         schema["description"] = json!(
             "Run Bash in the authorized workspace. Foreground working-directory changes inside the project carry to the next Bash call; outside-project directories reset to the project root. Background jobs snapshot the current directory without changing it. A foreground command that reaches its timeout moves to the background with a background deadline (30 minutes by default), except commands starting with sleep or when CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1. Environment exports do not carry. Explicit background timeout sets its execution deadline: 30 minutes by default, at most 2 hours. BASH_DEFAULT_TIMEOUT_MS and BASH_MAX_TIMEOUT_MS can raise background limits but cannot lower them. Foreground timeout remains 120000ms by default and at most 600000ms. Background commands return a task_id for TaskOutput and TaskStop. Timeout includes process cleanup; output is bounded. No sandbox bypass."
         );
-        schema["input_schema"]["properties"]["run_in_background"]["description"] = json!(
-            "Run as a retained background task; use TaskOutput to read its result and TaskStop to stop it."
-        );
-        let limits = BackgroundLimits::read().unwrap_or(BackgroundLimits {
-            default_ms: BACKGROUND_DEFAULT_MS,
-            maximum_ms: BACKGROUND_MAX_MS,
-        });
-        schema["input_schema"]["properties"]["timeout"] = json!({
-            "type":"integer", "minimum":1,
-            "description":"Foreground return window: default 120000ms, maximum 600000ms. With run_in_background=true this is the background execution deadline; separate default and maximum are in the conditional schema."
-        });
-        schema["input_schema"]["allOf"] = json!([{
-            "if":{"properties":{"run_in_background":{"const":true}},"required":["run_in_background"]},
-            "then":{"properties":{"timeout":{"maximum":limits.maximum_ms,"default":limits.default_ms}}},
-            "else":{"properties":{"timeout":{"maximum":FOREGROUND_MAX_MS,"default":FOREGROUND_DEFAULT_MS}}}
-        }]);
+        // Preserve the pinned Orca Claude Code input schema verbatim. Runtime
+        // limits belong in execute; schema additions can invalidate Messages.
+        schema["input_schema"] = serde_json::from_str(include_str!("bash.input_schema.json"))
+            .expect("captured Bash input schema");
         serde_json::from_value(schema).expect("Bash definition")
     }
     pub(super) async fn execute(
