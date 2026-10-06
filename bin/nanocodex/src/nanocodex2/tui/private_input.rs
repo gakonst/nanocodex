@@ -329,10 +329,10 @@ impl Flow {
         self.drain = true;
     }
     pub(crate) fn scope_matches(&self, a: &str, g: u64, p: Option<super::pane::PaneId>) -> bool {
-        if let Phase::Display(_, expiry) = &self.phase {
-            if *expiry <= current_millis() {
-                return false;
-            }
+        if let Phase::Display(_, expiry) = &self.phase
+            && *expiry <= current_millis()
+        {
+            return false;
         }
         matches!(self.phase, Phase::Status(_))
             || (a == self.request.agent_id
