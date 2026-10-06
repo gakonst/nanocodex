@@ -405,17 +405,20 @@ pub struct RoutingStatus {
     /// Whether routing has explicitly been enabled; absent on older servers.
     #[serde(default, rename = "model_routing_enabled")]
     pub enabled: bool,
+    /// Whether the router chooses the model; absent on older servers.
+    #[serde(default, rename = "model_routing_automatic")]
+    pub automatic: Option<bool>,
     /// Pinned route, or none while waiting for the opening task.
     #[serde(default, rename = "model_route")]
     pub route: Option<ModelRoute>,
 }
 
-/// Receipt for explicitly enabling automatic routing before the first message.
+/// Receipt for selecting routing before the first message.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct AutoRoutingStatus {
-    /// Whether this session has automatic routing enabled.
+    /// Whether this session has a routing policy enabled.
     pub enabled: bool,
-    /// Current settings; the opening message selects the pinned route.
+    /// Current settings after the routing selection.
     pub settings: AgentSettings,
 }
 

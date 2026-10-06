@@ -17,7 +17,7 @@ use axum::{
         Query, State, WebSocketUpgrade,
         ws::{Message, WebSocket},
     },
-    routing::{get, post, put},
+    routing::{get, patch, post, put},
 };
 use base64::Engine as _;
 use portable_pty::{CommandBuilder, PtySize, native_pty_system};
@@ -977,6 +977,8 @@ struct Service {
     native_key: Arc<p256::SecretKey>,
     native_expiry: u64,
     routing_requests: Arc<Mutex<Vec<String>>>,
+    routing_bodies: Arc<Mutex<Vec<Value>>>,
+    settings_requests: Arc<Mutex<Vec<Value>>>,
     model_route: Arc<Mutex<Option<Value>>>,
     listed_agent: Arc<Mutex<String>>,
     resume_gate: Arc<tokio::sync::Semaphore>,
@@ -995,6 +997,28 @@ struct Service {
 }
 
 impl Service {
+    fn routing_enabled(&self) -> bool {
+        self.routing_bodies
+            .lock()
+            .unwrap()
+            .last()
+            .is_some_and(|body| {
+                body.get("model").is_none()
+                    || matches!(
+                        body["model"].as_str(),
+                        Some("@cf/zai-org/glm-5.3" | "kimi-k3" | "mimo-v2.6-pro")
+                    )
+            })
+    }
+
+    fn routing_automatic(&self) -> bool {
+        self.routing_bodies
+            .lock()
+            .unwrap()
+            .last()
+            .is_some_and(|body| body.get("model").is_none())
+    }
+
     fn active_turns(&self) -> Vec<String> {
         let mut active = std::collections::BTreeSet::new();
         if self.active {
@@ -1198,22 +1222,90 @@ async fn state(
             "workspace": "cloudflare-computer",
             "execution_environments": true, "execution_namespace": "cwd-root-v1", "native_cross_mounts": false},
         "settings": service.settings.lock().unwrap().clone(),
-        "model_routing_enabled": !service.routing_requests.lock().unwrap().is_empty(),
+        "model_routing_enabled": service.routing_enabled(),
+        "model_routing_automatic": service.routing_automatic(),
         "model_route": service.model_route.lock().unwrap().clone(),
         "latest_event_cursor": service.latest_cursor(), "stream_error": null
     })))
 }
 
+// Model selection crosses the same HTTP boundary as the managed service:
+// gateway settings require POST /routing; PATCH /settings rejects them.
 async fn enable_routing(
     State(service): State<Service>,
     axum::extract::Path(agent): axum::extract::Path<String>,
-) -> Json<Value> {
+    body: axum::body::Bytes,
+) -> Result<Json<Value>, (axum::http::StatusCode, Json<Value>)> {
+    let body: Value = if body.is_empty() {
+        json!({})
+    } else {
+        serde_json::from_slice(&body).unwrap()
+    };
     service.routing_requests.lock().unwrap().push(agent);
-    Json(json!({
-        "enabled": true,
-        "model_routing": {"strategy": "direct", "preferences": {}},
+    service.routing_bodies.lock().unwrap().push(body.clone());
+    if !service.history.lock().unwrap().is_empty() {
+        return Err((
+            axum::http::StatusCode::CONFLICT,
+            Json(
+                json!({"error": "routing_requires_new_thread", "message": "routing requires an empty thread"}),
+            ),
+        ));
+    }
+    assert!(
+        body.as_object()
+            .unwrap()
+            .keys()
+            .all(|key| matches!(key.as_str(), "model" | "thinking"))
+    );
+    if let Some(model) = body.get("model") {
+        let thinking = body["thinking"]
+            .as_str()
+            .expect("manual routing requires thinking");
+        let supported = match model.as_str().unwrap() {
+            "kimi-k3" => ["low", "high"].contains(&thinking),
+            "@cf/zai-org/glm-5.3" | "mimo-v2.6-pro" => {
+                ["low", "medium", "high"].contains(&thinking)
+            }
+            "gpt-6-astra" => ["low", "medium", "high", "xhigh", "max"].contains(&thinking),
+            other => panic!("unexpected routing model: {other}"),
+        };
+        assert!(
+            supported,
+            "unsupported effort reached the routing API: {body}"
+        );
+        *service.settings.lock().unwrap() = json!({"model": model, "thinking": thinking,
+            "reasoning_mode": "standard", "fast_mode": false});
+    }
+    Ok(Json(json!({
+        "enabled": service.routing_enabled(),
+        "automatic": service.routing_automatic(),
+        "model_routing": service.routing_enabled().then(|| json!({"strategy": "direct", "preferences": {}})),
         "settings": service.settings.lock().unwrap().clone()
-    }))
+    })))
+}
+
+async fn patch_settings(
+    State(service): State<Service>,
+    Json(body): Json<Value>,
+) -> Result<Json<Value>, (axum::http::StatusCode, Json<Value>)> {
+    service.settings_requests.lock().unwrap().push(body.clone());
+    let gateway = matches!(
+        body["model"].as_str(),
+        Some("@cf/zai-org/glm-5.3" | "kimi-k3" | "mimo-v2.6-pro")
+    );
+    if gateway || service.routing_enabled() {
+        return Err((
+            axum::http::StatusCode::CONFLICT,
+            Json(
+                json!({"error": "invalid_request", "message": "model_routing owns model and thinking; omit settings"}),
+            ),
+        ));
+    }
+    let mut settings = service.settings.lock().unwrap();
+    for (key, value) in body.as_object().unwrap() {
+        settings[key] = value.clone();
+    }
+    Ok(Json(json!({"settings": settings.clone()})))
 }
 
 async fn submit(State(service): State<Service>, Json(input): Json<Value>) -> Json<Value> {
@@ -1302,6 +1394,8 @@ struct Fixture {
     native_writes: Arc<Mutex<Vec<Value>>>,
     native_key: Arc<p256::SecretKey>,
     routing_requests: Arc<Mutex<Vec<String>>>,
+    routing_bodies: Arc<Mutex<Vec<Value>>>,
+    settings_requests: Arc<Mutex<Vec<Value>>>,
     model_route: Arc<Mutex<Option<Value>>>,
     listed_agent: Arc<Mutex<String>>,
     resume_gate: Arc<tokio::sync::Semaphore>,
@@ -1415,6 +1509,8 @@ impl Fixture {
         let receipts = Arc::new(Mutex::new(std::collections::HashMap::new()));
         let receipts_enabled = Arc::new(AtomicBool::new(false));
         let routing_requests = Arc::new(Mutex::new(Vec::new()));
+        let routing_bodies = Arc::new(Mutex::new(Vec::new()));
+        let settings_requests = Arc::new(Mutex::new(Vec::new()));
         let model_route = Arc::new(Mutex::new(None));
         let app = Router::new()
             .route("/v1/models", get(|headers: axum::http::HeaderMap| async move {
@@ -1422,9 +1518,17 @@ impl Fixture {
                 assert_eq!(headers.get("authorization").and_then(|value| value.to_str().ok()), Some(authorization.as_str()));
                 Json(json!({
                     "object": "list", "default_model": "gpt-6-astra",
-                    "data": [{"id": "gpt-6-astra", "name": "Astra", "provider": "openai",
-                        "thinking": ["low"],
-                        "fast_mode": false, "reasoning_modes": ["standard"]}]
+                    "data": [
+                        {"id": "gpt-6-astra", "name": "Astra", "provider": "openai",
+                            "thinking": ["low", "medium", "high", "xhigh", "max"],
+                            "fast_mode": true, "reasoning_modes": ["standard"]},
+                        {"id": "@cf/zai-org/glm-5.3", "name": "GLM 5.3", "provider": "workers_ai",
+                            "thinking": ["low", "medium", "high"], "fast_mode": false, "reasoning_modes": ["standard"]},
+                        {"id": "kimi-k3", "name": "Kimi K3", "provider": "gateway",
+                            "thinking": ["low", "high"], "fast_mode": false, "reasoning_modes": ["standard"]},
+                        {"id": "mimo-v2.6-pro", "name": "MiMo V2.6 Pro", "provider": "gateway",
+                            "thinking": ["low", "medium", "high"], "fast_mode": false, "reasoning_modes": ["standard"]}
+                    ]
                 }))
             }))
             .route("/v1/me", get(|headers: axum::http::HeaderMap| async move {
@@ -1451,6 +1555,7 @@ impl Fixture {
             .route("/v1/agents/{agent}/ws", get(socket))
             .route("/v1/agents/{agent}/events/history", get(event_history))
             .route("/v1/agents/{agent}/routing", post(enable_routing))
+            .route("/v1/agents/{agent}/settings", patch(patch_settings))
             .route("/v1/agents/{agent}/turns", post(submit))
             .route("/v1/agents/{agent}/turns/{turn}/steer", post(steer))
             .route("/v1/agents/{agent}/turns/{turn}/steer-receipt", get(steer_receipt))
@@ -1462,6 +1567,8 @@ impl Fixture {
                 vault_writes: vault_writes.clone(),
                 native_writes: native_writes.clone(), native_key: native_key.clone(), native_expiry,
                 routing_requests: routing_requests.clone(),
+                routing_bodies: routing_bodies.clone(),
+                settings_requests: settings_requests.clone(),
                 model_route: model_route.clone(),
                 listed_agent: listed_agent.clone(),
                 resume_gate: resume_gate.clone(),
@@ -1502,6 +1609,8 @@ impl Fixture {
             native_writes,
             native_key,
             routing_requests,
+            routing_bodies,
+            settings_requests,
             model_route,
             listed_agent,
             resume_gate,
@@ -5001,6 +5110,131 @@ async fn terminal_link_clicks_open_once_and_drag_still_copies() {
     }
     eprintln!(
         "DRAG selects via OSC52 without launching a URL\n{}",
+        fixture.terminal.screen.lock().unwrap().screen().contents()
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn terminal_gateway_model_picker_routes_manual_selection_and_keeps_prompt_usable() {
+    let mut fixture = Fixture::start().await;
+    fixture.terminal.wait_text("Enter send").await;
+    fixture.terminal.input("/fast");
+    fixture.terminal.wait_text("Enable fast mode").await;
+    fixture.terminal.input("\r");
+    tokio::time::timeout(TIMEOUT, async {
+        while fixture.settings.lock().unwrap()["fast_mode"] != true {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    fixture.terminal.prompt("/thinking xhigh", "\r");
+    fixture.terminal.wait_text("xhigh").await;
+    for (index, model) in ["@cf/zai-org/glm-5.3", "kimi-k3", "mimo-v2.6-pro"]
+        .into_iter()
+        .enumerate()
+    {
+        fixture.terminal.prompt("/model", "\r");
+        fixture.terminal.wait_text("Select model").await;
+        fixture.terminal.input("\x1b[B\r");
+        fixture.terminal.wait_no_text("Select model").await;
+        tokio::time::timeout(TIMEOUT, async {
+            while fixture.routing_bodies.lock().unwrap().len() <= index {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        fixture.terminal.wait_text(model).await;
+        fixture.terminal.wait_text("Enter send").await;
+        let bodies = fixture.routing_bodies.lock().unwrap().clone();
+        assert_eq!(bodies[index]["model"], model);
+        assert!(["low", "medium", "high"].contains(&bodies[index]["thinking"].as_str().unwrap()));
+        assert_eq!(fixture.settings.lock().unwrap()["fast_mode"], false);
+        fixture.terminal.wait_no_text("Auto · choosing").await;
+        fixture
+            .terminal
+            .wait_no_text("Could not select model")
+            .await;
+        println!("Manual selection HTTP: {}", bodies[index]);
+    }
+    assert!(
+        fixture
+            .settings_requests
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|body| body.get("model").is_none() || body["model"] == "gpt-6-astra")
+    );
+    fixture.terminal.prompt("/thinking high", "\r");
+    tokio::time::timeout(TIMEOUT, async {
+        while fixture.settings.lock().unwrap()["thinking"] != "high" {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| {
+        panic!(
+            "Effort did not reach service; routes={:?}; terminal=\n{}",
+            fixture.routing_bodies.lock().unwrap(),
+            fixture.terminal.screen.lock().unwrap().screen().contents()
+        )
+    });
+    fixture.terminal.wait_text("high").await;
+    assert_eq!(
+        fixture.routing_bodies.lock().unwrap().last().unwrap(),
+        &json!({"model": "mimo-v2.6-pro", "thinking": "high"})
+    );
+    fixture.terminal.prompt("/autoroute", "\r");
+    fixture.terminal.wait_text("Auto · choosing").await;
+    fixture.terminal.prompt("/thinking high", "\r");
+    fixture
+        .terminal
+        .wait_text("Automatic routing controls the model and effort")
+        .await;
+    fixture.terminal.prompt("/model gpt-6-astra", "\r");
+    fixture.terminal.wait_no_text("Auto · choosing").await;
+    fixture.terminal.wait_text("gpt-6-astra").await;
+    fixture.terminal.wait_text("Enter send").await;
+    tokio::time::timeout(TIMEOUT, async {
+        while fixture.settings.lock().unwrap()["model"] != "gpt-6-astra" {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    fixture.terminal.prompt("/model kimi-k3", "\r");
+    fixture.terminal.wait_text("kimi-k3").await;
+    fixture.terminal.wait_text("Enter send").await;
+    fixture
+        .terminal
+        .prompt("MANUALLY_SELECTED_MODEL_TASK", "\r");
+    let turn = fixture.submission("MANUALLY_SELECTED_MODEL_TASK").await;
+    assert_eq!(fixture.settings.lock().unwrap()["model"], "kimi-k3");
+    *fixture.model_route.lock().unwrap() =
+        Some(json!({"backend": "vercel", "model": "kimi-k3", "thinking": "high"}));
+    fixture.complete(&turn);
+    fixture.terminal.wait_text("done").await;
+    fixture.terminal.wait_text("Vercel").await;
+    fixture.terminal.wait_no_text("Auto · choosing").await;
+    let requests = fixture.routing_bodies.lock().unwrap().len();
+    fixture.terminal.prompt("/model gpt-6-astra", "\r");
+    fixture
+        .terminal
+        .wait_text("The model can only be changed before the first prompt")
+        .await;
+    fixture.terminal.prompt("/thinking low", "\r");
+    fixture
+        .terminal
+        .wait_text("effort is fixed after the first prompt")
+        .await;
+    fixture.terminal.prompt("MANUAL_MODEL_FOLLOWUP", "\r");
+    let followup = fixture.submission("MANUAL_MODEL_FOLLOWUP").await;
+    fixture.complete(&followup);
+    fixture.terminal.wait_text("done").await;
+    assert_eq!(fixture.routing_bodies.lock().unwrap().len(), requests);
+    println!(
+        "Verified terminal after manual routing and follow-up:\n{}",
         fixture.terminal.screen.lock().unwrap().screen().contents()
     );
 }
