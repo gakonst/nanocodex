@@ -315,6 +315,12 @@ async function intakeAndReuseJourneys(){
    pass('Later turn can open identical native intake metadata again');
   }
  }
+ const localPhone='+15555550189';privateValues.push(localPhone);
+ type('/vault add phone');await keypress('\r');await unlock();await fill(['Local TUI phone',localPhone]);
+ const beforeLocal=intakeReceipts.length;await keypress(ctrlEnter);await wait(()=>intakeReceipts.length>beforeLocal,'caller-local Vault creation');await dismiss();
+ assert.equal(intakeReceipts.at(-1).kind,'phone');
+ await wait(()=>parsedReceipts().some(r=>r.id===intakeReceipts.at(-1).id),'safe local Vault receipt');
+ pass('Caller-local /vault add opens private TUI form and saves through account API without a model request');
  const rows=await vault.encryptedRows();assert.ok(rows.length>=entries.length&&rows.every(r=>r.encrypted&&r.keys.join(',')==='envelope'));
  const brokerLog=vault.logs.join('\n');
  for(const [index,secret] of privateValues.entries()){

@@ -7,7 +7,7 @@ extension ManagedClient {
     /// Vault forms bypass transcript transport and all persistent HTTP caches.
     /// Never follow redirects or automatically replay credential submissions.
     func vaultIntakeJSON(path: String, method: String = "GET", body: JSON? = nil,
-                         configuration: URLSessionConfiguration = .ephemeral, maximumResponseBytes: Int = 64 * 1024) async throws -> JSON {
+                         configuration: URLSessionConfiguration = .ephemeral, maximumResponseBytes: Int = 64 * 1024, operationID: UUID? = nil) async throws -> JSON {
         configuration.urlCache = nil
         configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
         configuration.httpCookieStorage = nil
@@ -18,11 +18,13 @@ extension ManagedClient {
         var request = try request(path: path, method: method, body: body)
         request.cachePolicy = .reloadIgnoringLocalCacheData
         request.setValue("no-store", forHTTPHeaderField: "Cache-Control")
+        if let operationID { request.setValue(operationID.uuidString, forHTTPHeaderField: "X-Nanocodex-Operation-Id") }
         let (data, response) = try await session.data(for: request)
         guard let response = response as? HTTPURLResponse else { throw APIError.invalidResponse }
         // Server error bodies can contain arbitrary text. Never display or retain them.
         guard (200..<300).contains(response.statusCode) else { throw APIError.http(response.statusCode) }
         guard data.count <= maximumResponseBytes else { throw APIError.invalidResponse }
+        if response.statusCode == 204 && data.isEmpty { return .null }
         return try JSONDecoder().decode(JSON.self, from: data)
     }
 }
@@ -133,10 +135,10 @@ public struct VaultIntakeReceipt: Equatable, Sendable {
 }
 
 extension ManagedClient {
-    public func saveVaultItem(kind: String, values: [String: String], configuration: URLSessionConfiguration = .ephemeral) async throws -> VaultIntakeReceipt {
+    public func saveVaultItem(kind: String, values: [String: String], configuration: URLSessionConfiguration = .ephemeral, operationID: UUID? = nil) async throws -> VaultIntakeReceipt {
         guard ["login", "api_key", "card", "address", "phone"].contains(kind) else { throw APIError.invalidResponse }
         let response = try await vaultIntakeJSON(path: "/v1/credentials/vault/" + kind, method: "POST",
-            body: .object(values.mapValues(JSON.string)), configuration: configuration)
+            body: .object(values.mapValues(JSON.string)), configuration: configuration, operationID: operationID)
         let id = response["id"].string
         guard id.range(of: #"^[A-Za-z0-9_-]{22,64}$"#, options: .regularExpression) != nil,
               response["kind"].string == kind else { throw APIError.invalidResponse }

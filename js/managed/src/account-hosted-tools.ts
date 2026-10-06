@@ -20,7 +20,8 @@ import {
 import type { SubagentToolContext } from "nanocodex-tools";
 
 import { isUserId } from "./account-auth";
-import { fetchResponseWithDeadline } from "./deadline";
+import { fetchResponseWithDeadline, withHardDeadline } from "./deadline";
+import { inventoryEntry, mergeInventory, WorkspaceHandRegistry, HAND_INVENTORY_DEADLINE_MS, WORKSPACE_INVENTORY_CONCURRENCY, type HandInventoryEntry, type HandInventory } from "./hand-inventory";
 import { HostedToolsBroker } from "./hosted-tools-broker";
 import { observeHandCall, observeHandSummary } from "./hand-call-observation";
 import { annotateToolSpan, traceToolInvocation } from "./tool-tracing";
@@ -55,6 +56,7 @@ type AccountHostedToolsSnapshot = Readonly<{
   screens?: readonly ScreenTarget[];
   publications?: readonly HandPublication[];
   mount_roots?: Readonly<Record<string, string>>;
+  inventory_unknown_ids?: readonly string[];
 }>;
 
 type RoutedHostedTool = HostedToolsCodeTool & Readonly<{
@@ -64,7 +66,9 @@ type RoutedHostedTool = HostedToolsCodeTool & Readonly<{
   timeoutMs: number;
 }>;
 
-type AccountHostedToolsEnv = RemoteICEEnv & RegionalHandEnv;
+type AccountHostedToolsEnv = RemoteICEEnv & RegionalHandEnv & {
+  NANOCODEX_SESSIONS?: DurableObjectNamespace<import("./index").DurableAgentSession>;
+};
 
 type InvocationRequest = Readonly<{
   owner_id: string;
@@ -167,6 +171,60 @@ export class AccountHostedTools extends DurableObject<AccountHostedToolsEnv> {
     const roots = new HandPaths(this.ctx.storage).assign(snapshot.machines.map(entry => entry.machine));
     return snapshot.machines.filter(entry => entry.online)
       .map(({ machine }) => ({ id: machine.id, name: machine.name, capabilities: machine.capabilities, workspace: roots.get(machine.id)! }));
+  }
+
+  /** Internal publication RPC; immutable account ownership fences the registry. */
+  registerWorkspaceHands(ownerId: string, sessionId: string, entries: readonly HandInventoryEntry[]): boolean {
+    // Session IDs include UUIDv7 and deterministic UUIDv8; account user IDs
+    // remain UUIDv4. Do not apply the narrower account identity validator here.
+    if (!isUserId(ownerId) || !/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/.test(sessionId)
+      || !this.#claim(ownerId)) return false;
+    return new WorkspaceHandRegistry(this.ctx.storage).register(sessionId, entries);
+  }
+
+  async handInventory(ownerId: string): Promise<HandInventory> {
+    if (!isUserId(ownerId) || !this.#claim(ownerId)) return mergeInventory([], false);
+    const registry = new WorkspaceHandRegistry(this.ctx.storage);
+    const sessions = registry.entries();
+    let complete = registry.complete;
+    const sources: HandInventoryEntry[][] = [];
+    const deadline = Date.now() + HAND_INVENTORY_DEADLINE_MS;
+    const account = (async () => {
+      try {
+        const snapshot = await withHardDeadline("account Hand inventory", HAND_INVENTORY_DEADLINE_MS,
+          () => this.#snapshot());
+        const unknown = new Set(snapshot.inventory_unknown_ids ?? []);
+        if (unknown.size) complete = false;
+        sources.push(snapshot.machines.map(({ machine, online }) => inventoryEntry(machine, unknown.has(machine.id) ? null : online)));
+      } catch {
+        complete = false;
+        // Preserve retained identities when regional discovery itself failed.
+        const local = this.#localSnapshot().machines.map(({ machine }) => inventoryEntry(machine, null));
+        const retained = this.#directory.entries().map(({ machine }) => inventoryEntry(machine, null));
+        sources.push([...local, ...retained]);
+      }
+    })();
+    let next = 0;
+    const workers = Array.from({ length: Math.min(WORKSPACE_INVENTORY_CONCURRENCY, sessions.length) }, async () => {
+      while (next < sessions.length) {
+        const retained = sessions[next++]!;
+        try {
+          if (!this.env.NANOCODEX_SESSIONS || Date.now() >= deadline) throw new Error("workspace inventory unavailable");
+          const result = await withHardDeadline("workspace Hand inventory", Math.max(1, deadline - Date.now()),
+            () => this.env.NANOCODEX_SESSIONS!.getByName(retained.sessionId).listWorkspaceHands(ownerId));
+          if (!result.complete) {
+            complete = false;
+            sources.push(retained.entries.map(entry => ({ ...entry, online: null, health: "unknown" })));
+          }
+          sources.push(result.data);
+        } catch {
+          complete = false;
+          sources.push(retained.entries.map(entry => ({ ...entry, online: null, health: "unknown" })));
+        }
+      }
+    });
+    await Promise.all([account, ...workers]);
+    return mergeInventory(sources, complete);
   }
 
   async fetch(request: Request): Promise<Response> {
@@ -521,6 +579,7 @@ export class AccountHostedTools extends DurableObject<AccountHostedToolsEnv> {
         return response ? { region, snapshot: response } : undefined;
       } catch { return undefined; }
     }));
+    const inventoryUnknownIds: string[] = [];
     const regionalNames = new Set(directory.filter(entry => entry.region !== "legacy" || entry.pending).flatMap(entry => entry.tool_names));
     const tools = local.tools.filter(tool => !regionalNames.has(tool.definition.name));
     const machines = new Map(local.machines.filter(entry => {
@@ -530,6 +589,7 @@ export class AccountHostedTools extends DurableObject<AccountHostedToolsEnv> {
     for (const selected of directory) {
       if (selected.region === "legacy" && !selected.pending) continue;
       const remote = snapshots.find(snapshot => snapshot?.region === selected.region)?.snapshot;
+      if (selected.pending || (selected.region !== "legacy" && !remote)) inventoryUnknownIds.push(selected.machine.id);
       const current = !selected.pending && remote?.publications?.some(publication => publication.machine.id === selected.machine.id
         && publication.publication_id === selected.publication_id);
       const machine = current ? remote?.machines.find(entry => entry.machine.id === selected.machine.id) : undefined;
@@ -541,7 +601,7 @@ export class AccountHostedTools extends DurableObject<AccountHostedToolsEnv> {
         if (selected.tool_names.includes(tool.definition.name)) tools.push({ ...tool, route_token: relayRouteToken(region, tool.route_token) });
       }
     }
-    return this.#withRoots({ tools, machines: [...machines.values()], screens: local.screens });
+    return this.#withRoots({ tools, machines: [...machines.values()], screens: local.screens, inventory_unknown_ids: inventoryUnknownIds });
   }
 
   #withRoots(snapshot: AccountHostedToolsSnapshot): AccountHostedToolsSnapshot {

@@ -63,7 +63,7 @@
     "test:vault-requests": "node --test test/vault-request-journey.test.mjs",
     "test:regional-hand-relay": "node --test test/regional-hand-relay-journey.test.mjs",
     "test:code-mode-only": "node --test test/code-mode-only-journey.test.mjs",
-    "test:provider-vault": "node --test test/mercator-private-result-journey.test.mjs test/provider-vault-journey.test.mjs"
+    "test:provider-vault": "node ../egress/scripts/prepare-whatsapp.mjs && node scripts/prepare-code-evaluator.mjs && node scripts/prepare-just-bash-lazy.mjs && node --test test/mercator-private-result-journey.test.mjs test/provider-vault-journey.test.mjs"
   },
   "dependencies": {
     "nanocodex-computer": "workspace:*",

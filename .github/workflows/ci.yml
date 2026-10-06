@@ -159,8 +159,15 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 24
+      - name: Exercise native connector and Vault account APIs
+        run: |
+          cargo test --locked -p nanocodex2-bin --test nanocodex2_connectors --test nanocodex2_vault
+          cargo test --locked -p nanocodex2-bin --bin nanocodex2 account_management_journeys
       - name: Exercise Managed2 CLI through HTTP and WebSocket
         run: node bin/nanocodex/tests/managed2_cli_e2e.mjs
+      - name: Resolve the trusted loopback origin on macOS
+        if: runner.os == 'macOS'
+        run: printf '\n::1 nanocodex.localhost\n' | sudo tee -a /etc/hosts > /dev/null
       - name: Exercise local SSH key import through signed Connect consent
         run: node bin/nanocodex/tests/ssh_import_cli_e2e.mjs
       - name: Exercise private TUI input and encrypted Vault reuse

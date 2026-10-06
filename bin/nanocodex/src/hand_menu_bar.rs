@@ -17,7 +17,7 @@ pub(crate) async fn show() -> Result<()> {
     #[cfg(target_os = "macos")]
     {
         ensure(true).await?;
-        eprintln!("Nanocodex Hand menu bar launch requested. Closing it does not stop the Hand.");
+        eprintln!("Nanocodex Hand menu bar launch requested. Quit Hand stops the local service.");
         Ok(())
     }
     #[cfg(not(target_os = "macos"))]

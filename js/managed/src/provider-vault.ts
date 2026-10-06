@@ -1,4 +1,5 @@
 import type { NamedTool, ToolContext } from "nanocodex";
+import { requireSameOriginMutation, type Principal } from "./account-auth";
 
 const ID = /^[A-Za-z0-9_-]{22,64}$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -66,11 +67,7 @@ export function createProviderVaultTools(binding: Pick<Fetcher, "fetch">, owner:
     } },
     handler: async (input, context) => {
       authorize(context);
-      if (!record(input) || Object.keys(input).some(key => !["capture_id", "operation_id", "name", "address_vault_id"].includes(key))
-        || typeof input.capture_id !== "string" || !ID.test(input.capture_id)
-        || typeof input.operation_id !== "string" || !UUID.test(input.operation_id)
-        || (input.name !== undefined && (typeof input.name !== "string" || !input.name.trim() || input.name.length > 120 || /[\u0000-\u001f\u007f]/.test(input.name)))
-        || (input.address_vault_id !== undefined && (typeof input.address_vault_id !== "string" || !ID.test(input.address_vault_id)))) return { error: "invalid_provider_request" };
+      if (!validStoreInput(input)) return { error: "invalid_provider_request" };
       return providerVaultRequest(binding, owner, "store", input, context.signal);
     },
   }, {
@@ -81,16 +78,79 @@ export function createProviderVaultTools(binding: Pick<Fetcher, "fetch">, owner:
     } },
     handler: async (input, context) => {
       authorize(context);
-      if (!record(input) || Object.keys(input).some(key => !["operation", "capture_id", "vault_id", "operation_id"].includes(key))
-        || !["status", "balance", "refresh"].includes(String(input.operation))
-        || (input.operation === "refresh" && (typeof input.operation_id !== "string" || !UUID.test(input.operation_id)))
-        || (input.operation_id !== undefined && (typeof input.operation_id !== "string" || !UUID.test(input.operation_id)))
-        || (input.capture_id === undefined) === (input.vault_id === undefined)
-        || !ID.test(String(input.capture_id ?? input.vault_id))) return { error: "invalid_provider_request" };
+      if (!validCardInput(input)) return { error: "invalid_provider_request" };
       return providerVaultRequest(binding, owner, "card", input, context.signal);
     },
   }];
 }
 function record(value: unknown): value is Record<string, any> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function validStoreInput(input: unknown): boolean {
+  return !(!record(input) || Object.keys(input).some(key => !["capture_id", "operation_id", "name", "address_vault_id"].includes(key))
+        || typeof input.capture_id !== "string" || !ID.test(input.capture_id)
+        || typeof input.operation_id !== "string" || !UUID.test(input.operation_id)
+        || (input.name !== undefined && (typeof input.name !== "string" || !input.name.trim() || input.name.length > 120 || /[\u0000-\u001f\u007f]/.test(input.name)))
+        || (input.address_vault_id !== undefined && (typeof input.address_vault_id !== "string" || !ID.test(input.address_vault_id))));
+}
+
+function validCardInput(input: unknown): boolean {
+  return !(!record(input) || Object.keys(input).some(key => !["operation", "capture_id", "vault_id", "operation_id"].includes(key))
+        || !["status", "balance", "refresh"].includes(String(input.operation))
+        || (input.operation === "refresh" && (typeof input.operation_id !== "string" || !UUID.test(input.operation_id)))
+        || (input.operation_id !== undefined && (typeof input.operation_id !== "string" || !UUID.test(input.operation_id)))
+        || (input.capture_id === undefined) === (input.vault_id === undefined)
+        || !ID.test(String(input.capture_id ?? input.vault_id)));
+}
+
+/** Native account clients use opaque captures and safe receipts, never card values. */
+export async function routeProviderVaultRequest(
+  request: Request, binding: Pick<Fetcher, "fetch">, principal: Principal | null | undefined,
+): Promise<Response> {
+  const json = (body: unknown, status = 200) => Response.json(body, {
+    status, headers: { "cache-control": "no-store", "x-content-type-options": "nosniff" },
+  });
+  if (!principal) return json({ error: "unauthorized" }, 401);
+  if (principal.connectGrant || !["api_key", "account_session"].includes(principal.kind)
+    || !principal.capabilities.includes("agents:write") || !principal.capabilities.includes("tools:use")) {
+    return json({ error: "forbidden" }, 403);
+  }
+  const url = new URL(request.url);
+  if (request.method !== "POST") return json({ error: "method_not_allowed" }, 405);
+  if (url.search) return json({ error: "invalid_provider_request" }, 400);
+  const originFailure = requireSameOriginMutation(request, url, principal);
+  if (originFailure) return originFailure;
+  if (request.headers.get("content-type")?.split(";", 1)[0]?.trim().toLowerCase() !== "application/json") {
+    return json({ error: "invalid_content_type" }, 415);
+  }
+  const operation = url.pathname === "/v1/vault/store" ? "store" : url.pathname === "/v1/vault/card" ? "card" : undefined;
+  if (!operation) return json({ error: "not_found" }, 404);
+  const reader = request.body?.getReader();
+  if (!reader) return json({ error: "invalid_provider_request" }, 400);
+  let input: unknown;
+  try {
+    const decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: false });
+    let text = "", length = 0;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      length += value.byteLength;
+      if (length > 4096) { await reader.cancel(); return json({ error: "body_too_large" }, 413); }
+      text += decoder.decode(value, { stream: true });
+    }
+    input = JSON.parse(text + decoder.decode());
+  } catch { return json({ error: "invalid_provider_request" }, 400); }
+  finally { reader.releaseLock(); }
+  if (!(operation === "store" ? validStoreInput(input) : validCardInput(input))) {
+    return json({ error: "invalid_provider_request" }, 400);
+  }
+  const receipt = await providerVaultRequest(binding, principal.userId, operation, input, request.signal);
+  const error = typeof receipt.error === "string" ? receipt.error : undefined;
+  // Uncertain writes are surfaced explicitly; callers retain the same operation
+  // ID to reconcile instead of automatically submitting another operation.
+  const status = !error ? 200 : error.includes("outcome_unknown") ? 502
+    : error.includes("conflict") ? 409 : error.includes("not_found") || error === "capture_expired" ? 404
+    : error.includes("limited") ? 429 : error.startsWith("invalid_") || error === "address_required" ? 400 : 503;
+  return json(receipt, status);
 }

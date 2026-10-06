@@ -6,8 +6,34 @@ use serde_json::Value;
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum Command {
     Latest,
-    Review { id: String, origin: String },
+    Review {
+        id: String,
+        origin: String,
+    },
     Open,
+    Add {
+        kind: String,
+    },
+    Delete {
+        kind: String,
+        id: String,
+    },
+    SshAdd {
+        reference: String,
+    },
+    SshRemove {
+        reference: String,
+    },
+    Card {
+        operation: String,
+        id: String,
+        capture: bool,
+        operation_id: Option<String>,
+    },
+    Store {
+        capture_id: String,
+        operation_id: String,
+    },
     Help,
 }
 impl Command {
@@ -18,7 +44,67 @@ impl Command {
         }
         Some(match words.as_slice() {
             [_] | [_, "review"] => Self::Latest,
-            [_, "open"] => Self::Open,
+            [_, "open"] | [_, "list"] => Self::Open,
+            [_, "add", kind]
+                if ["login", "api_key", "card", "address", "phone", "openai"].contains(kind) =>
+            {
+                Self::Add {
+                    kind: (*kind).into(),
+                }
+            }
+            [_, "delete", kind, id]
+                if ["login", "api_key", "card", "address", "phone"].contains(kind)
+                    && valid_id(id) =>
+            {
+                Self::Delete {
+                    kind: (*kind).into(),
+                    id: (*id).into(),
+                }
+            }
+            [_, "ssh-add", reference] => Self::SshAdd {
+                reference: (*reference).into(),
+            },
+            [_, "ssh-remove", reference] => Self::SshRemove {
+                reference: (*reference).into(),
+            },
+            [_, "store", capture, operation]
+                if valid_id(capture) && uuid::Uuid::parse_str(operation).is_ok() =>
+            {
+                Self::Store {
+                    capture_id: (*capture).into(),
+                    operation_id: (*operation).into(),
+                }
+            }
+            [_, "card", operation, id]
+                if ["status", "balance"].contains(operation) && valid_id(id) =>
+            {
+                Self::Card {
+                    operation: (*operation).into(),
+                    id: (*id).into(),
+                    capture: false,
+                    operation_id: None,
+                }
+            }
+            [_, "capture", operation, id]
+                if ["status", "balance"].contains(operation) && valid_id(id) =>
+            {
+                Self::Card {
+                    operation: (*operation).into(),
+                    id: (*id).into(),
+                    capture: true,
+                    operation_id: None,
+                }
+            }
+            [_, "card", "refresh", id, operation_id]
+                if valid_id(id) && uuid::Uuid::parse_str(operation_id).is_ok() =>
+            {
+                Self::Card {
+                    operation: "refresh".into(),
+                    id: (*id).into(),
+                    capture: false,
+                    operation_id: Some((*operation_id).into()),
+                }
+            }
             [_, "review", id, origin] if valid_id(id) && valid_origin(origin) => Self::Review {
                 id: (*id).into(),
                 origin: (*origin).into(),

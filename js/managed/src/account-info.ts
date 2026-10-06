@@ -80,7 +80,7 @@ export type AccountMachine = Readonly<HostedMachine & {
 )>;
 
 export type AccountInfo = Readonly<{
-  status: "disabled" | "ready" | "unavailable";
+  status: "disabled" | "ready" | "unavailable" | "pending";
   /** Native public APIs available independently of account connectors. */
   apis: readonly (typeof X_API)[];
   /** Legacy capability-level summary retained for existing agents. */

@@ -1,6 +1,5 @@
 import {
   authenticate,
-  authenticatePersistentAccount,
   authenticateVaultAccount,
   requireSameOriginMutation,
   type AccountAuthEnv,
@@ -46,17 +45,15 @@ export async function routeCredentialRequest(
   if (!methods.has(request.method)) return json({ error: "method_not_allowed" }, 405);
   if (url.search) return json({ error: "invalid_request" }, 400);
 
-  // Metadata reads are safe for an ephemeral browser identity, but mutations
-  // must be tied to a passkey-backed account so a user-supplied provider secret
-  // cannot outlive the anonymous session that submitted it.
-  const vaultRoute = Boolean(vaultKind || originId || url.pathname === "/v1/credentials");
-  const claudeRoute = url.pathname.startsWith("/v1/credentials/claude");
-  const principal = claudeRoute ? await authenticateVaultAccount(request, env, url)
-    : request.method === "GET" ? await authenticate(request, env, url)
-    : vaultRoute ? await authenticateVaultAccount(request, env, url)
-    : await authenticatePersistentAccount(request, env, url);
-  if (!principal || principal.connectGrant || (principal.kind !== "account_session" && !((vaultRoute || claudeRoute) && principal.kind === "api_key"
-    && principal.capabilities.includes("agents:write") && principal.capabilities.includes("tools:use")))) {
+  // Native account clients manage the same encrypted credentials as account
+  // settings. Read-only ephemeral browser sessions can inspect metadata; all
+  // writes and subscription login polling require a persistent account.
+  const metadataRead = url.pathname === "/v1/credentials" && request.method === "GET";
+  const principal = metadataRead ? await authenticate(request, env, url)
+    : await authenticateVaultAccount(request, env, url);
+  if (!principal || principal.connectGrant
+    || (principal.kind !== "account_session" && !(principal.kind === "api_key"
+      && principal.capabilities.includes("agents:write") && principal.capabilities.includes("tools:use")))) {
     return json({ error: "unauthorized" }, 401);
   }
   if (request.method === "PUT" && (url.pathname === "/v1/credentials/openai" || sshIdentity)

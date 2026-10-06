@@ -948,9 +948,7 @@ async fn execute_javascript_code(
                     .with_turn_id(original.turn_id());
                     let input = if matches!(tool.definition(), ToolDefinition::Custom { .. }) {
                         ToolInput::Freeform(
-                            serde_json::from_str::<String>(&input)
-                                .map_err(js_error)?
-                                .into(),
+                            serde_json::from_str::<String>(&input).map_err(js_error)?,
                         )
                     } else {
                         ToolInput::Function(

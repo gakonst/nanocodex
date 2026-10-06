@@ -11,8 +11,8 @@ import WebSocket from "ws";
 
 // Actual account HTTP proxy/authentication, Managed Session, SQLite, R2,
 // Just Bash, SDK and WASM. Only the external account metadata/model/HTTP target
-// are synthetic. The catalog waits for the configured shell HTTP request:
-// serialized startup fails the ordering assertion rather than passing by luck.
+// are synthetic. Catalog, Vault and configured setup remain externally gated
+// until the first public answer; mandatory startup joins cannot pass by timing.
 // Registration fault injection wraps the actual UserAccount HTTP boundary: one
 // publish fails before commit, then all retries use the unchanged production DO.
 const candidateRoot = fileURLToPath(new URL("..", import.meta.url));
@@ -62,8 +62,8 @@ export class FixtureSandbox extends DurableObject {
 const codeCall = (name, callId, args) => ({type:'custom_tool_call',name:'exec',call_id:callId,input:'text(await tools.'+name+'('+JSON.stringify(args)+'));'});
 export class FixtureModel extends DurableObject {
   voiceHoldSent=false; voiceEnvironmentSent=false; voiceNewEnvironmentSent=false; originEnvironmentSent=false; walletEnvironmentSent=false; releaseVoice;
-  walletEnabled=false; releaseWallet;
-  events=[]; setupStarted=false; catalogStarted=false; catalogReleased=false; setupFinished=false; published=false; publicationAttempts=0; holdCatalog=false; catalogGate; release; releasePublication;
+  walletEnabled=false; releaseWallet; holdVault=true; releaseVault; vaultReady=false; holdSetup=true; releaseSetup;
+  events=[]; setupStarted=false; catalogStarted=false; catalogReleased=false; setupFinished=false; published=false; publicationAttempts=0; holdCatalog=true; catalogGate; release; releasePublication;
   record(event,extra={}) { const row={type:'fixture.startup',event,at:Date.now(),...extra};this.events.push(row);console.info(row); }
   async fetch(request) {
     const url=new URL(request.url);
@@ -80,7 +80,10 @@ export class FixtureModel extends DurableObject {
       return new Response(null,{status:204});
     }
     if(url.pathname==='/published') { this.published=true;this.record('publication.committed');return new Response(null,{status:204}); }
-    if(url.pathname==='/hold-catalog') { this.holdCatalog=true;return new Response(null,{status:204}); }
+    if(url.pathname==='/hold-catalog') { this.holdCatalog=true;this.catalogReleased=false;return new Response(null,{status:204}); }
+    if(url.pathname==='/hold-vault') { this.holdVault=true;this.vaultReady=false;return new Response(null,{status:204}); }
+    if(url.pathname==='/release-vault') { this.holdVault=false;this.releaseVault?.();return new Response(null,{status:204}); }
+    if(url.pathname==='/release-setup') { this.holdSetup=false;this.releaseSetup?.();return new Response(null,{status:204}); }
     if(url.pathname==='/release-catalog') { this.holdCatalog=false;this.catalogGate?.();return new Response(null,{status:204}); }
     if(url.pathname==='/catalog') {
       this.catalogStarted=true;this.record('catalog.start');this.releasePublication?.();
@@ -91,7 +94,7 @@ export class FixtureModel extends DurableObject {
       this.catalogReleased=true; this.record('catalog.finish');
       return Response.json({connectors:{},mcp_connections:[]});
     }
-    if(url.pathname==='/vault') { this.record('vault.read');return Response.json([]); }
+    if(url.pathname==='/vault') { this.record('vault.read');if(this.holdVault) { this.record('vault.held');await new Promise(resolve=>{this.releaseVault=resolve;}); } this.vaultReady=true;this.record('vault.finish');return Response.json([]); }
     if(url.pathname.endsWith('/wallet')) {
       this.record('wallet.read',{combined:request.headers.get('accept')==='application/vnd.nanocodex.wallet-snapshot+json'});
       if(!this.walletEnabled) await new Promise(resolve=>{this.releaseWallet=resolve;});
@@ -100,7 +103,7 @@ export class FixtureModel extends DurableObject {
     if(url.pathname.endsWith('/wallet/balance')) { this.record('wallet.redundant_balance_read');return new Response(null,{status:503}); }
     if(request.headers.get('x-nanocodex-target-url')==='https://startup-fixture.example/setup') {
       this.setupStarted=true;this.record('setup.start',{published:this.published});this.release?.();
-      await new Promise(resolve=>setTimeout(resolve,100));
+      if(this.holdSetup) { this.record('setup.held');await new Promise(resolve=>{this.releaseSetup=resolve;}); }
       this.setupFinished=true;this.record('setup.finish');return new Response('SETUP_OK');
     }
     if(request.headers.get('x-nanocodex-target-url')==='https://startup-fixture.example/voice-hold') {
@@ -117,7 +120,7 @@ export class FixtureModel extends DurableObject {
         const body=JSON.parse(event.data);
         const definitions=[...(body.tools??[]),...(body.input??[]).filter(item=>item.type==='additional_tools').flatMap(item=>item.tools??[])];
         if(definitions.length) effectiveTools=definitions.map(tool=>tool.name??tool.function?.name);
-        this.record('provider.request',{catalog_ready:this.catalogReleased,setup_ready:this.setupFinished,
+        this.record('provider.request',{catalog_ready:this.catalogReleased,vault_ready:this.vaultReady,setup_ready:this.setupFinished,
           tools:effectiveTools,input:body.input,reasoning:body.reasoning,service_tier:body.service_tier});
         const id='resp_'+crypto.randomUUID();
         ++requestIndex;
@@ -170,7 +173,7 @@ export default {async fetch(request,env,ctx) {
   }
   if(url.pathname==='/__trace') return env.MODEL.getByName('startup').fetch('https://fixture.internal/trace');
   if(url.pathname==='/__release-voice') return env.MODEL.getByName('startup').fetch('https://fixture.internal/release-voice');
-  if(url.pathname==='/__hold-catalog' || url.pathname==='/__release-catalog' || url.pathname==='/__allow-wallet') return env.MODEL.getByName('startup').fetch('https://fixture.internal/'+url.pathname.slice(3));
+  if(url.pathname==='/__hold-vault' || url.pathname==='/__release-vault' || url.pathname==='/__release-setup' || url.pathname==='/__hold-catalog' || url.pathname==='/__release-catalog' || url.pathname==='/__allow-wallet') return env.MODEL.getByName('startup').fetch('https://fixture.internal/'+url.pathname.slice(3));
   return worker.fetch(request,env,ctx);
 }};
 `;
@@ -180,10 +183,14 @@ test("public HTTP and WebSocket startup omit wallet I/O while explicit environme
   const runtime = [], records = [], http = [];
   const capture = line => { runtime.push(line); const offset=line.indexOf('{"type":');if(offset>=0)try{records.push(JSON.parse(line.slice(offset)));}catch{} };
   const assets=[];
-  const bundle=await build({stdin:{contents:source,resolveDir:root},bundle:true,write:false,metafile:true,format:"esm",platform:"node",conditions:["workerd"],target:"es2022",
+  const bundle=await build({stdin:{contents:source,resolveDir:root},bundle:true,write:false,metafile:true,nodePaths:[join(candidateRoot,"node_modules"),join(candidateRoot,"../nanocodex/node_modules"),join(candidateRoot,"../../node_modules")],format:"esm",platform:"node",conditions:["workerd"],target:"es2022",
     banner:{js:'import { createRequire } from "node:module"; const require=createRequire("/worker.mjs");'},external:["cloudflare:*","node:*"],
-    alias:{"node-rsa":join(root,"../nanocodex/tools/browser/unsupportedNodeRsa.mjs")},plugins:[{name:"wasm",setup(builder){builder.onResolve({filter:/\.wasm$/},async args=>{
-      const contents=await readFile(join(args.resolveDir,args.path)),name=`fixture-${assets.length}.wasm`;assets.push({type:"CompiledWasm",path:name,contents});return {path:`./${name}`,external:true};
+    alias:{"node-rsa":join(root,"../nanocodex/tools/browser/unsupportedNodeRsa.mjs")},plugins:[{name:"baseline-generated-artifacts",setup(builder){
+      // The comparison checkout supplies production source; generated runtime
+      // artifacts and installed packages come from this prepared test checkout.
+      if(root!==candidateRoot) builder.onResolve({filter:/^\.\/just-bash-lazy\.mjs$/},()=>({path:join(candidateRoot,"src/just-bash-lazy.mjs")}));
+    }},{name:"wasm",setup(builder){builder.onResolve({filter:/\.wasm$/},async args=>{
+      const contents=await readFile(root!==candidateRoot && args.path==="./quickjs.wasm" ? join(candidateRoot,"src/quickjs.wasm") : join(args.resolveDir,args.path)),name=`fixture-${assets.length}.wasm`;assets.push({type:"CompiledWasm",path:name,contents});return {path:`./${name}`,external:true};
     });}}],logLevel:"silent"});
   const modules=[{type:"ESModule",path:"worker.mjs",contents:bundle.outputFiles[0].text},...assets];
   const common={modules,compatibilityDate:"2026-07-30",compatibilityFlags:["nodejs_compat","enable_request_signal"]};
@@ -218,14 +225,38 @@ test("public HTTP and WebSocket startup omit wallet I/O while explicit environme
       throw Error("turn did not finish");
     };
     const cold=await waitTurn(run.turn_id),coldMs=performance.now()-started;assert.match(JSON.stringify(cold),/STARTUP_OK/);
-    const environment=await call(`/v1/agents/${run.agent_id}/environment`);assert.equal(environment.state,"ready");
+    const coldTrace=await(await backend.fetch("https://fixture.internal/__trace")).json();
+    assert.equal(coldTrace.filter(row=>row.event==="provider.request").length,1);
+    for(const event of ["catalog.finish","vault.finish","setup.start","setup.finish"]) assert.equal(coldTrace.some(row=>row.event===event),false,"first answer precedes "+event);
     await call(`/v1/agents/${run.agent_id}/turns/${run.turn_id}`,"GET",undefined,404,other);
     const warmInput={id:crypto.randomUUID(),input:"Read the prepared file and reply STARTUP_OK"};
     const originHeaders=client=>client?{"x-nanocodex-client-context":JSON.stringify({client,timezone:"UTC"})}:{};
     const warmStarted=performance.now(),warm=await call(`/v1/agents/${run.agent_id}/turns`,"POST",warmInput,202,token,originHeaders("iphone"));
     const warmRetry=await call(`/v1/agents/${run.agent_id}/turns`,"POST",warmInput,200,token,originHeaders("different-retry-device"));
     assert.equal(warmRetry.turn_id,warm.turn_id);
+    // Wait for the real SDK to dispatch exec, then verify its continuation is
+    // blocked on setup. Optional metadata remains held throughout the read.
+    for(let i=0;;i++) {
+      const pending=await(await backend.fetch("https://fixture.internal/__trace")).json();
+      if(pending.filter(row=>row.event==="provider.request").length===2 && pending.some(row=>row.event==="setup.held"))break;
+      assert.ok(i<500,"first-use exec was not requested while setup was held");await delay(10);
+    }
+    const heldTurn=await call(`/v1/agents/${run.agent_id}/turns/${warm.turn_id}`);
+    assert.notEqual(heldTurn.state,"completed","first exec cannot read configured output before setup completes");
+    await delay(100);
+    assert.equal((await(await backend.fetch("https://fixture.internal/__trace")).json()).filter(row=>row.event==="provider.request").length,2,"no tool continuation before setup release");
+    await backend.fetch("https://fixture.internal/__release-setup");
     assert.match(JSON.stringify(await waitTurn(warm.turn_id)),/STARTUP_OK/);
+    const afterExec=await(await backend.fetch("https://fixture.internal/__trace")).json();
+    for(const event of ["catalog.finish","vault.finish"]) assert.equal(afterExec.some(row=>row.event===event),false,"exec does not join optional "+event);
+    await backend.fetch("https://fixture.internal/__release-catalog");
+    await backend.fetch("https://fixture.internal/__release-vault");
+    for(let i=0;;i++) {
+      const finished=await(await backend.fetch("https://fixture.internal/__trace")).json();
+      if(finished.some(row=>row.event==="catalog.finish") && finished.some(row=>row.event==="vault.finish"))break;
+      assert.ok(i<500,"released discovery did not finish");await delay(10);
+    }
+    const environment=await call(`/v1/agents/${run.agent_id}/environment`);assert.equal(environment.state,"ready");
     const warmMs=performance.now()-warmStarted,trace=await(await backend.fetch("https://fixture.internal/__trace")).json();
     evidence={source_root:root,cold_public_completion_ms:coldMs,warm_public_completion_ms:warmMs,trace};
     const first=event=>trace.find(row=>row.event===event);
@@ -238,7 +269,8 @@ test("public HTTP and WebSocket startup omit wallet I/O while explicit environme
     assert.equal(first("catalog.setup_observed")?.observed,true,"configured setup must run while catalog is pending");
     assert.ok(first("setup.start").at<first("catalog.finish").at);
     const requests=trace.filter(row=>row.event==="provider.request");assert.equal(requests.length,3);
-    for(const request of requests){assert.equal(request.catalog_ready,true);assert.equal(request.setup_ready,true);assert.ok(request.tools.includes("exec"),JSON.stringify(request.tools));}
+    for(const request of requests){assert.equal(request.catalog_ready,false);assert.equal(request.vault_ready,false);assert.ok(request.tools.includes("exec"),JSON.stringify(request.tools));}
+    assert.equal(requests[0].setup_ready,false);assert.equal(requests[1].setup_ready,false);assert.equal(requests[2].setup_ready,true);
     assert.match(JSON.stringify(requests[0].input),/startup_context/);
     const startupText=requests[0].input.filter(item=>item.role==='developer').flatMap(item=>item.content??[]).map(item=>item.text??'').join('\n');
     const startupEnvironment=JSON.parse(startupText.match(/<environment>\s*([\s\S]*?)\s*<\/environment>/)[1].replaceAll('&lt;','<').replaceAll('&gt;','>').replaceAll('&amp;','&'));
@@ -257,6 +289,7 @@ test("public HTTP and WebSocket startup omit wallet I/O while explicit environme
     // the external wallet service is held. No wallet read may even start.
     const liveToken=(await fixture()).token;
     await backend.fetch('https://fixture.internal/__hold-catalog');
+    await backend.fetch('https://fixture.internal/__hold-vault');
     const liveUrl=new URL('/v1/agents/live',base);liveUrl.protocol='ws:';
     for(const [key,value] of Object.entries(settings))liveUrl.searchParams.set(key,String(value));
     const wire=[];let socketError,upgradeStatus;
@@ -276,21 +309,23 @@ test("public HTTP and WebSocket startup omit wallet I/O while explicit environme
     try {
       for(let i=0;;i++) {
         const pending=await(await backend.fetch('https://fixture.internal/__trace')).json();
-        if(pending.filter(row=>row.event==='catalog.held').length===1 && pending.filter(row=>row.event==='vault.read').length===2) {
+        if(pending.filter(row=>row.event==='catalog.held').length===2 && pending.filter(row=>row.event==='vault.read').length===2) {
           assert.equal(pending.filter(row=>row.event==='catalog.finish').length,1,'fresh live catalog remains held after ready and prompt acceptance');
-          assert.equal(pending.filter(row=>row.event==='provider.request').length,3,'first prompt waits for complete discovery');
+          assert.match(JSON.stringify(await waitTurn(liveTurn,ready.session_id,liveToken)),/STARTUP_OK/,'first live answer precedes discovery release');
           break;
         }
         assert.ok(i<200,'prepared live discovery did not dispatch both components');await delay(10);
       }
-    } finally { await backend.fetch('https://fixture.internal/__release-catalog'); }
+    } finally { await backend.fetch('https://fixture.internal/__release-catalog');await backend.fetch('https://fixture.internal/__release-vault'); }
     assert.match(JSON.stringify(await waitTurn(liveTurn,ready.session_id,liveToken)),/STARTUP_OK/);
     const liveTrace=await(await backend.fetch('https://fixture.internal/__trace')).json();
     const liveRequests=liveTrace.filter(row=>row.event==='provider.request');
     assert.equal(liveRequests.length,4);
     assert.ok(liveRequests[3].tools.includes('exec'),'first live prompt retains tools after discovery');
     assert.match(JSON.stringify(liveRequests[3].input),/startup_context/,'first live prompt retains the startup snapshot');
-    assert.equal(liveTrace.filter(row=>row.event==='catalog.finish').length,2,'fresh live discovery finishes before the first provider request');
+    assert.equal(liveRequests[3].catalog_ready,false,'live first request precedes catalog release');
+    assert.equal(liveRequests[3].vault_ready,false,'live first request precedes Vault release');
+    assert.ok(liveTrace.findIndex(row=>row===liveRequests[3])>liveTrace.findIndex(row=>row.event==='catalog.held'),'first live request occurs while discovery is held');
     assert.equal(liveTrace.filter(row=>row.event==='catalog.start').length,2,'prepared live prompt reuses its discovery read');
     assert.equal(liveTrace.filter(row=>row.event==='vault.read').length,2,'prepared live prompt reuses its Vault metadata read');
     assert.equal(liveTrace.filter(row=>row.event==='key.lookup').length,0,'verified key route avoids the account locator hop');
@@ -417,7 +452,7 @@ test("public HTTP and WebSocket startup omit wallet I/O while explicit environme
     try {
       for(let i=0;;i++) {
         const pendingTrace=await (await backend.fetch("https://fixture.internal/__trace")).json();
-        if(pendingTrace.filter(row=>row.event==="catalog.held").length>=2)break;
+        if(pendingTrace.filter(row=>row.event==="catalog.held").length>=3)break;
         assert.ok(i<200,"settings journey discovery did not start");await delay(10);
       }
       settingsPatch=call(`/v1/agents/${racing.agent_id}/settings`,"PATCH",{thinking:"high",fast_mode:true},200,raceToken);
@@ -466,18 +501,20 @@ test("public HTTP and WebSocket startup omit wallet I/O while explicit environme
     const replayTrace=await(await backend.fetch("https://fixture.internal/__trace")).json();
     assert.equal(replayTrace.filter(row=>row.event==="provider.request").length,providerCount,"idempotent retry does not rerun the pinned turn");
     evidence.settings_race.replayed_without_inference=true;
-    // A second owner has no L1 snapshot. Delete the admitted turn while its
-    // read-only metadata request is held, then release the old read. The public
+    // A second owner has no L1 snapshot. Its answer completes while metadata
+    // remains held. Delete the agent, then release that stale metadata read. The public
     // deletion fence establishes ordering without a sleep-based race assertion.
     await backend.fetch("https://fixture.internal/__hold-catalog");
     const cancelled=await call("/v1/agent-runs","POST",{input:"Reply STARTUP_OK",settings},201,other,{"idempotency-key":"delete-pending-discovery"});
-    let deletion;
+    let deletion,requestsBeforeDeletion;
     try {
       for(let i=0;;i++) {
         const pendingTrace=await (await backend.fetch("https://fixture.internal/__trace")).json();
-        if(pendingTrace.filter(row=>row.event==="catalog.held").length>=3)break;
+        if(pendingTrace.filter(row=>row.event==="catalog.held").length>=4)break;
         assert.ok(i<200,"second owner discovery did not start");await delay(10);
       }
+      await waitTurn(cancelled.turn_id,cancelled.agent_id,other);
+      requestsBeforeDeletion=(await(await backend.fetch("https://fixture.internal/__trace")).json()).filter(row=>row.event==="provider.request").length;
       deletion=call(`/v1/agents/${cancelled.agent_id}`,"DELETE",undefined,204,other);
       let fenced=false;
       for(let i=0;i<200;i++) {
@@ -492,7 +529,7 @@ test("public HTTP and WebSocket startup omit wallet I/O while explicit environme
     }
     await call(`/v1/agents/${cancelled.agent_id}`,"GET",undefined,404,other);
     const finalTrace=await (await backend.fetch("https://fixture.internal/__trace")).json();
-    assert.equal(finalTrace.filter(row=>row.event==="provider.request").length,providerCount,"late discovery never resurrects a deleted turn");
+    assert.equal(finalTrace.filter(row=>row.event==="provider.request").length,requestsBeforeDeletion,"late discovery never resurrects a deleted turn");
     evidence={...evidence,invalid_input_no_work:true,deletion_during_discovery_fenced:true,trace:finalTrace};
     console.log("STARTUP_OVERLAP_EVIDENCE",JSON.stringify({...evidence,trace:undefined,wire:undefined,output}));
   } catch(error) {failure=error;throw error;}

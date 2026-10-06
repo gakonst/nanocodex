@@ -2013,6 +2013,10 @@ final class InboxModel: ObservableObject {
         pending.append(message); busy.insert(agentID); persist()
         Task { await submit(message, epoch: account) }
     }
+    func vaultManagementClient() throws -> ManagedClient {
+        guard let client, connected, !isDemo else { throw APIError.invalidCredential }
+        return client
+    }
     func saveVaultItem(kind: String, values: [String: String], account: UUID) async throws -> VaultIntakeReceipt {
         guard let client, connected, !isDemo, generation == account else { throw APIError.invalidCredential }
         let receipt = try await client.saveVaultItem(kind: kind, values: values)

@@ -13,6 +13,8 @@ type DiscoverySnapshot = {
   readonly discovery: DiscoveryRead;
   readonly catalog: Promise<unknown>;
   vault?: Promise<readonly VaultEntry[]>;
+  catalogValue?: unknown;
+  vaultValue?: readonly VaultEntry[];
 };
 const snapshots = new WeakMap<object, Map<string, DiscoverySnapshot>>();
 
@@ -20,6 +22,13 @@ const snapshots = new WeakMap<object, Map<string, DiscoverySnapshot>>();
 export class AccountCatalogCache {
   #reload = false;
   #current?: { entries: Map<string, DiscoverySnapshot>; key: string };
+
+  /** Already-resolved metadata only: startup never waits for discovery. */
+  peek(broker: Fetcher, userId: string, authorityKey: string): Readonly<{ catalog: unknown; vault: readonly VaultEntry[] }> | undefined {
+    const entry = snapshots.get(broker)?.get(JSON.stringify([userId, authorityKey]));
+    return entry && entry.expiresAt > Date.now() && entry.catalogValue !== undefined && entry.vaultValue !== undefined
+      ? { catalog: entry.catalogValue, vault: entry.vaultValue } : undefined;
+  }
 
   invalidate(): void {
     this.#reload = true;
@@ -42,7 +51,7 @@ export class AccountCatalogCache {
       entry.vault = performanceStage("account.vault", () => withHardDeadline(
         "account vault", 10_000, signal => accountVaultMetadata(broker, userId, signal, entry.discovery),
       ));
-      void entry.vault.catch(() => {
+      void entry.vault.then(value => { entry.vaultValue = value; }).catch(() => {
         if (entries.get(key) === entry) entries.delete(key);
       });
     }
@@ -88,7 +97,7 @@ export class AccountCatalogCache {
       // An expired, invalidated or evicted read never removes its replacement.
       if (entries.get(key) === entry) entries.delete(key);
     };
-    void entry.catalog.catch(evict);
+    void entry.catalog.then(value => { entry.catalogValue = value; }).catch(evict);
     return entry;
   }
 }

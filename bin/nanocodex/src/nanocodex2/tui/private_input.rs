@@ -157,7 +157,9 @@ impl Inputs {
             .zip(&self.values)
             .filter(|(f, v)| {
                 f.id != "__vault_username"
-                    && (!matches!(r.kind, Kind::Vault(_)) || !f.optional || !v.value().is_empty())
+                    && (!matches!(r.kind, Kind::Vault(_) | Kind::Credential(_))
+                        || !f.optional
+                        || !v.value().is_empty())
             })
             .collect();
         if pairs
@@ -185,6 +187,28 @@ impl Inputs {
                     return None;
                 }
                 json!({"challenge_id":r.request_id,"code":code})
+            }
+            Kind::Connector(_) => return None,
+            Kind::Credential(kind) => {
+                let mut o = pairs
+                    .iter()
+                    .map(|(f, v)| (f.id.clone(), Value::String(v.value().into())))
+                    .collect::<serde_json::Map<_, _>>();
+                if kind == "ssh" {
+                    let port = o.remove("port")?.as_str()?.parse::<u16>().ok()?;
+                    if port == 0 {
+                        return None;
+                    }
+                    o.insert("port".into(), json!(port));
+                    if o.get("private_key")
+                        .and_then(Value::as_str)
+                        .is_none_or(str::is_empty)
+                    {
+                        o.remove("private_key");
+                        o.insert("generate".into(), json!(true));
+                    }
+                }
+                Value::Object(o)
             }
             Kind::Vault(_) => {
                 let mut o = pairs
@@ -251,6 +275,7 @@ pub(crate) enum Operation {
 }
 pub(crate) enum Outcome {
     VaultItems(Vec<PrivateVaultItem>),
+    Display(Zeroizing<String>, u64),
     Review(bool),
     Form(Form),
     Fallback,
@@ -258,6 +283,7 @@ pub(crate) enum Outcome {
     Failed,
 }
 enum Phase {
+    Display(Zeroizing<String>, u64),
     VaultLoading(Inputs),
     Loading,
     Review(bool),
@@ -303,6 +329,11 @@ impl Flow {
         self.drain = true;
     }
     pub(crate) fn scope_matches(&self, a: &str, g: u64, p: Option<super::pane::PaneId>) -> bool {
+        if let Phase::Display(_, expiry) = &self.phase
+            && *expiry <= current_millis()
+        {
+            return false;
+        }
         matches!(self.phase, Phase::Status(_))
             || (a == self.request.agent_id
                 && g == self.generation
@@ -372,6 +403,7 @@ impl Flow {
             _ => false,
         };
         self.phase = match o {
+            Outcome::Display(text, expiry) => Phase::Display(text, expiry),
             Outcome::VaultItems(_) => unreachable!(),
             Outcome::Review(approved) => Phase::Review(approved),
             Outcome::Form(f) => Phase::Fields(Inputs::new(f)),
@@ -388,7 +420,7 @@ impl Flow {
             self.focused = true;
             if matches!(
                 self.phase,
-                Phase::Fields(_) | Phase::Sending | Phase::VaultLoading(_)
+                Phase::Fields(_) | Phase::Display(_, _) | Phase::Sending | Phase::VaultLoading(_)
             ) {
                 self.cancel_local();
                 return Action::Cancel;
@@ -606,6 +638,13 @@ impl Flow {
                     Action::None
                 }
             }
+            (Phase::Display(_, _), Event::Key(k))
+                if k.kind == KeyEventKind::Press && k.code == KeyCode::F(5) =>
+            {
+                self.phase = Phase::Loading;
+                self.reset();
+                Action::Private(Operation::Open)
+            }
             (Phase::Fallback, Event::Key(k))
                 if k.kind == KeyEventKind::Press
                     && k.code == KeyCode::Char('b')
@@ -647,6 +686,7 @@ impl Flow {
             }
         );
         text.push_str(&match &self.phase {
+            Phase::Display(value, expiry)=>if *expiry > current_millis() { format!("{}\nF5: check the same attempt · Esc: close", value.as_str()) } else { "Private code expired. Close this panel.".into() },
             Phase::VaultLoading(_)=>"Loading safe Vault item names. No saved values enter this terminal. Esc: cancel.".into(),
             Phase::Loading=>"Loading authenticated private input. Esc: cancel.".into(),
             Phase::Review(approved)=>format!("{}\nAllowed websites: {}\nCtrl+Enter: review accepted; open private fields. Esc: cancel.",if *approved{"This session's website consent is already approved."}else{"Review the requested destination before entering private information."},self.request.allowed_origins.iter().map(|s|literal(s)).collect::<Vec<_>>().join(", ")),
@@ -815,6 +855,25 @@ fn field(id: &str, label: &str, kind: &str) -> Field {
 fn local_form(r: &Request) -> Option<Form> {
     let mut fields = match &r.kind {
         Kind::Otp => vec![field("code", "Verification code", "otp")],
+        Kind::Credential(kind) => {
+            if kind == "openai" {
+                vec![field("api_key", "OpenAI API key", "password")]
+            } else if kind == "ssh" {
+                vec![
+                    field("hostname", "Server hostname", "text"),
+                    field("port", "SSH port", "text"),
+                    field("username", "SSH username", "text"),
+                    field("host_key_sha256", "Trusted host SHA256 fingerprint", "text"),
+                    field(
+                        "private_key",
+                        "Private PEM key (empty generates in Vault)",
+                        "password",
+                    ),
+                ]
+            } else {
+                return None;
+            }
+        }
         Kind::Vault(kind) => {
             let mut f = vec![field("name", "Vault item name", "text")];
             f[0].initial = r.name.clone();
@@ -848,7 +907,14 @@ fn local_form(r: &Request) -> Option<Form> {
         _ => return None,
     };
     for f in &mut fields {
-        f.optional = f.id == "address_line_2";
+        f.optional = matches!(f.id.as_str(), "address_line_2" | "private_key");
+        if f.id == "private_key" {
+            f.multiline = true;
+            f.max = 32768;
+        }
+        if f.id == "port" {
+            f.initial = "22".into();
+        }
         if matches!(f.id.as_str(), "api_key" | "password") {
             f.max = 8192;
         }
@@ -1012,6 +1078,9 @@ async fn post(c: &ManagedClient, r: &Request, v: Value) -> Option<Value> {
         .ok()
 }
 pub(crate) async fn describe(c: &ManagedClient, r: &Request) -> Outcome {
+    if matches!(r.kind, Kind::Connector(_)) {
+        return connector_display(c, r, true).await;
+    }
     if let Some(form) = local_form(r) {
         return Outcome::Form(form);
     }
@@ -1054,6 +1123,9 @@ pub(crate) async fn run(c: &ManagedClient, r: &Request, operation: Operation) ->
             Err(_) => Outcome::Failed,
         },
         Operation::Open => {
+            if matches!(r.kind, Kind::Connector(_)) {
+                return connector_display(c, r, false).await;
+            }
             if r.kind == Kind::Login {
                 let Some(v) = post(c, r, r.control("describe")).await else {
                     return Outcome::Failed;
@@ -1101,6 +1173,7 @@ pub(crate) async fn run(c: &ManagedClient, r: &Request, operation: Operation) ->
                     }
                     finish(c, r, s(&v, "native_form_status") == "stale").await
                 }
+                Kind::Credential(_) => Outcome::Receipt(json!({"type":"private_input_receipt","request_id":r.request_id,"status":"saved"}).to_string(),"Account credential saved."),
                 Kind::Vault(kind) => {
                     let id = s(&v, "id");
                     if s(&v, "kind") != kind
@@ -1157,7 +1230,10 @@ pub(crate) async fn run(c: &ManagedClient, r: &Request, operation: Operation) ->
             Outcome::Receipt(receipt.to_string(), message)
         }
         Operation::Cancel => {
-            if matches!(r.kind, Kind::Vault(_) | Kind::Otp) {
+            if matches!(
+                r.kind,
+                Kind::Vault(_) | Kind::Credential(_) | Kind::Connector(_) | Kind::Otp
+            ) {
                 return Outcome::Receipt(json!({"type":"private_input_receipt","request_id":r.request_id,"status":"cancelled"}).to_string(),"Private input cancelled.");
             }
             if r.kind == Kind::Takeover {
@@ -1512,5 +1588,181 @@ mod tests {
         );
         assert_eq!(receipt["vault_save"]["status"], "saved");
         assert!(!receipt.to_string().contains("private-canary"));
+    }
+}
+
+fn current_millis() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+        .try_into()
+        .unwrap_or(u64::MAX)
+}
+async fn connector_display(c: &ManagedClient, r: &Request, start: bool) -> Outcome {
+    let Ok(mut value) = c.private_connector_input(r, start).await else {
+        return Outcome::Failed;
+    };
+    let outcome = match &r.kind {
+        Kind::Connector(kind) if kind == "whatsapp" => {
+            let code = s(&value, "code");
+            let expiry = value["expires_at"].as_u64().unwrap_or(0);
+            if s(&value, "operation_id") != r.name
+                || expiry <= current_millis()
+                || !(4..=32).contains(&code.len())
+                || !code.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+            {
+                Outcome::Failed
+            } else {
+                Outcome::Display(
+                    Zeroizing::new(format!(
+                        "WhatsApp pairing code: {code}\nIn WhatsApp: Settings → Linked devices → Link with phone number.\nAfter linking, close this panel and use /connectors list to verify."
+                    )),
+                    expiry.min(r.expires_at.unwrap_or(expiry)),
+                )
+            }
+        }
+        Kind::Connector(kind) if kind == "chatgpt" => {
+            if s(&value, "state") == "authenticated" {
+                Outcome::Receipt(
+                    "{\"status\":\"connected\",\"provider\":\"chatgpt\"}".into(),
+                    "ChatGPT connected.",
+                )
+            } else if s(&value, "state") == "pending" {
+                let code = s(&value, "user_code");
+                let expiry = value["expires_at"].as_u64().unwrap_or(0);
+                let link = s(&value, "verification_url");
+                let valid_link = reqwest::Url::parse(link).is_ok_and(|u| {
+                    u.scheme() == "https"
+                        && u.host_str() == Some("auth.openai.com")
+                        && u.username().is_empty()
+                        && u.password().is_none()
+                });
+                if expiry <= current_millis()
+                    || !valid_link
+                    || !(4..=32).contains(&code.len())
+                    || !code.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+                {
+                    Outcome::Failed
+                } else {
+                    Outcome::Display(
+                        Zeroizing::new(format!(
+                            "Open {link}\nDevice code: {code}\nAuthorize the device, then press F5 to verify."
+                        )),
+                        expiry.min(r.expires_at.unwrap_or(expiry)),
+                    )
+                }
+            } else {
+                Outcome::Failed
+            }
+        }
+        _ => Outcome::Failed,
+    };
+    wipe_value(&mut value);
+    outcome
+}
+
+#[cfg(test)]
+mod account_management_journeys {
+    use super::*;
+    use axum::{Json, Router, extract::Request as HttpRequest, response::IntoResponse};
+    use std::sync::{Arc, Mutex};
+    #[tokio::test]
+    async fn private_account_forms_and_provider_panels_use_owner_http_without_transcript_codes() {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let observed = calls.clone();
+        let expiry = current_millis() + 120_000;
+        let app = Router::new().fallback(move |request: HttpRequest| {
+            let calls = observed.clone();
+            async move {
+                assert!(request.headers()["authorization"].to_str().unwrap().starts_with("Bearer ncx_live_"));
+                let path = request.uri().path().to_owned();
+                let method = request.method().to_string();
+                let query = request.uri().query().unwrap_or_default().to_owned();
+                let body = axum::body::to_bytes(request.into_body(), 32768).await.unwrap();
+                calls.lock().unwrap().push((method.clone(), path.clone(), query, body.to_vec()));
+                if path == "/v1/credentials/openai" || path.starts_with("/v1/credentials/ssh/") {
+                    return axum::http::StatusCode::NO_CONTENT.into_response();
+                }
+                if path == "/v1/connectors/whatsapp/pairing" {
+                    return Json(json!({"operation_id":"11111111-1111-4111-8111-111111111111","code":"TEST-PAIR","expires_at":expiry})).into_response();
+                }
+                if method == "POST" { Json(json!({"state":"pending","user_code":"TEST-DEVICE","verification_url":"https://auth.openai.com/codex/device","expires_at":expiry,"poll_after_ms":1000})).into_response() }
+                else { Json(json!({"state":"authenticated"})).into_response() }
+            }
+        });
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let origin = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        let key = nanocodex_managed::ManagedApiKey::parse(format!(
+            "ncx_live_{}_{}",
+            "a".repeat(12),
+            "b".repeat(43)
+        ))
+        .unwrap();
+        let client = ManagedClient::new(origin, key).unwrap();
+        let make = |kind, name: &str| Request {
+            request_id: uuid::Uuid::new_v4().to_string(),
+            agent_id: "synthetic-agent".into(),
+            origin: String::new(),
+            expires_at: Some(expiry),
+            kind,
+            allowed_origins: vec![],
+            name: name.into(),
+        };
+        let openai = make(Kind::Credential("openai".into()), "");
+        let mut inputs = Inputs::new(local_form(&openai).unwrap());
+        inputs.values[0].set("synthetic-private-key");
+        let saved = run(
+            &client,
+            &openai,
+            Operation::Submit(inputs.body(&openai).unwrap()),
+        )
+        .await;
+        assert!(matches!(saved,Outcome::Receipt(ref r,_) if !r.contains("synthetic-private-key")));
+        let ssh = make(Kind::Credential("ssh".into()), "synthetic-server");
+        let mut inputs = Inputs::new(local_form(&ssh).unwrap());
+        for (i, value) in ["server.example", "22", "user", "SHA256:synthetic", ""]
+            .iter()
+            .enumerate()
+        {
+            inputs.values[i].set(value);
+        }
+        assert!(matches!(
+            run(&client, &ssh, Operation::Submit(inputs.body(&ssh).unwrap())).await,
+            Outcome::Receipt(_, _)
+        ));
+        let pairing = make(
+            Kind::Connector("whatsapp".into()),
+            "11111111-1111-4111-8111-111111111111",
+        );
+        let mut panel = Flow::loading(pairing.clone(), 1, super::super::pane::PaneId::Main);
+        panel.finish(describe(&client, &pairing).await);
+        assert!(matches!(&panel.phase,Phase::Display(code,_) if code.contains("TEST-PAIR")));
+        panel.intercept(Event::FocusLost);
+        assert!(matches!(panel.phase, Phase::Status(_)));
+        let chat = make(Kind::Connector("chatgpt".into()), "start");
+        assert!(
+            matches!(describe(&client,&chat).await,Outcome::Display(code,_) if code.contains("TEST-DEVICE"))
+        );
+        assert!(
+            matches!(run(&client,&chat,Operation::Open).await,Outcome::Receipt(ref r,_) if r.contains("connected") && !r.contains("TEST-DEVICE"))
+        );
+        let requests = calls.lock().unwrap();
+        assert_eq!(requests.len(), 5);
+        assert_eq!(requests[0].0, "PUT");
+        assert_eq!(requests[1].1, "/v1/credentials/ssh/synthetic-server");
+        let ssh_body: Value = serde_json::from_slice(&requests[1].3).unwrap();
+        assert_eq!(ssh_body["generate"], true);
+        assert_eq!(ssh_body["port"], 22);
+        assert_eq!(
+            requests[2].2,
+            "operation_id=11111111-1111-4111-8111-111111111111"
+        );
+        assert_eq!(requests[3].0, "POST");
+        assert_eq!(requests[4].0, "GET");
+        server.abort();
     }
 }
