@@ -54,6 +54,8 @@ enum HandCommand {
     },
     /// Install, repair, or reopen the standalone macOS Hand menu bar.
     MenuBar,
+    /// Read-only menu snapshot: local service, verified login and connected Hands.
+    MenuStatus,
     /// Show local Hand service status as JSON.
     Status,
     /// Start the local Hand service.
@@ -380,12 +382,17 @@ async fn linux_service_action(action: &str) -> Result<()> {
 }
 
 impl Hand {
+    pub(crate) fn is_observation(&self) -> bool {
+        matches!(self.command, HandCommand::MenuStatus | HandCommand::Status)
+    }
+
     pub(crate) async fn run(self) -> Result<()> {
         let _service_lock = if matches!(
             &self.command,
             HandCommand::Install { .. }
                 | HandCommand::Connect { .. }
                 | HandCommand::Status
+                | HandCommand::MenuStatus
                 | HandCommand::MenuBar
         ) {
             None
@@ -426,6 +433,7 @@ impl Hand {
                 connect_saved_login(account_file, managed_url, credentials_changed).await
             }
             HandCommand::MenuBar => crate::hand_menu_bar::show().await,
+            HandCommand::MenuStatus => crate::hand_menu_status::run().await,
             HandCommand::Status => {
                 #[cfg(target_os = "linux")]
                 {

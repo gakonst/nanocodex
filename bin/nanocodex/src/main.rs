@@ -21,6 +21,7 @@ mod eval;
 mod eval;
 mod hand_login;
 mod hand_menu_bar;
+mod hand_menu_status;
 mod hand_service;
 mod hand_setup;
 mod install;
@@ -283,7 +284,8 @@ fn process_exit_code(error: &eyre::Report) -> u8 {
 
 async fn run(cli: Cli) -> Result<()> {
     // Interactive startup owns maintenance after its first editable frame.
-    if !matches!(&cli.command, None | Some(Command::Resume(_))) {
+    let observation = matches!(&cli.command, Some(Command::Hand(hand)) if hand.is_observation());
+    if !observation && !matches!(&cli.command, None | Some(Command::Resume(_))) {
         if let Err(error) = update::prepare_legacy_nightly_bootstrap() {
             eprintln!("warning: failed to prepare the Nanocodex updater bootstrap: {error:#}");
         }
