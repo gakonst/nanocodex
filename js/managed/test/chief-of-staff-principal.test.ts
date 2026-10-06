@@ -82,7 +82,7 @@ function identityEnv(): ChiefOfStaffPrincipalEnv {
         },
       };
     },
-  } as unknown as DurableObjectNamespace;
+  } as unknown as AccountAuthEnv["NANOCODEX_AUTH"];
   const users = {
     getByName(userId: string) {
       return {
