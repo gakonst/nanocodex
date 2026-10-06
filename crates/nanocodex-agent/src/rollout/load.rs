@@ -81,6 +81,7 @@ impl DurableSession {
             materialized.history,
             materialized.client_authored,
             materialized.context_baseline,
+            materialized.reasoning,
         )
         .map_err(io::Error::other)?;
         Ok(Self {
@@ -374,6 +375,7 @@ fn materialize_rollout(path: &Path, thread_id: &str) -> io::Result<MaterializedR
     let mut history = Vec::new();
     let mut transcript = Vec::new();
     let mut context_baseline = None;
+    let mut reasoning = crate::reasoning::ReasoningState::default();
     let mut client_authored = std::collections::BTreeSet::new();
     let mut model = Model::Sol;
     for (index, line) in BufReader::new(File::open(path)?).lines().enumerate() {
@@ -465,6 +467,7 @@ fn materialize_rollout(path: &Path, thread_id: &str) -> io::Result<MaterializedR
                     )
                 })?;
                 context_baseline = None;
+                reasoning = crate::reasoning::ReasoningState::default();
             }
             Some("turn_context") => {
                 if let Some(selected) = value["payload"]["model"].as_str() {
@@ -482,6 +485,9 @@ fn materialize_rollout(path: &Path, thread_id: &str) -> io::Result<MaterializedR
                 }
             }
             Some("world_state") => {
+                if let Some(state) = value["payload"]["state"].get("nanocodex_reasoning") {
+                    reasoning = serde_json::from_value(state.clone()).map_err(io::Error::other)?;
+                }
                 if let Some(ids) = value["payload"]["state"].get("nanocodex_client_authored") {
                     client_authored =
                         serde_json::from_value(ids.clone()).map_err(io::Error::other)?;
@@ -536,6 +542,7 @@ fn materialize_rollout(path: &Path, thread_id: &str) -> io::Result<MaterializedR
         history,
         transcript,
         context_baseline,
+        reasoning,
         client_authored,
     })
 }
@@ -548,6 +555,7 @@ struct MaterializedRollout {
     history: Vec<ResponseItem>,
     transcript: Vec<RolloutTranscriptItem>,
     context_baseline: Option<ContextBaseline>,
+    reasoning: crate::reasoning::ReasoningState,
     client_authored: std::collections::BTreeSet<String>,
 }
 

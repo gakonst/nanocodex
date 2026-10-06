@@ -229,7 +229,7 @@ test("Node-hosted WASM preserves follow-ons, cache identity, events, and custom 
     const generation = await reader.next();
     assert.equal(generation.previous_response_id, "resp-warmup");
     assert.equal(generation.reasoning.effort, "low");
-    assert.equal(generation.service_tier, "default");
+    assert.equal(Object.hasOwn(generation, "service_tier"), false);
     sendCompleted(socket, "resp-tool", [{
       type: "custom_tool_call",
       call_id: "call-exec",
@@ -245,8 +245,13 @@ test("Node-hosted WASM preserves follow-ons, cache identity, events, and custom 
 
     const followOn = await reader.next();
     assert.equal(followOn.previous_response_id, undefined);
-    assert.equal(followOn.reasoning.effort, "high");
+    assert.equal(followOn.reasoning.effort, "low", "request effort remains pinned");
     assert.equal(followOn.service_tier, "priority");
+    assert.equal(followOn.prompt_cache_key, generation.prompt_cache_key);
+    assert.deepEqual(followOn.input.at(-1), {
+      type: "configuration_update", reasoning: { effort: "high" },
+    });
+    assert.equal(followOn.input.at(-2).role, "user");
     const replay = JSON.stringify(followOn.input);
     assert.match(replay, /Use multiply/);
     assert.match(replay, /42/);

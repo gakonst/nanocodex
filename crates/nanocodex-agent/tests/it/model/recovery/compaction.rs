@@ -263,7 +263,8 @@ async fn manual_compaction_after_a_turn_uses_the_live_session_and_reinjects_next
 }
 
 #[tokio::test]
-async fn manual_compaction_uses_current_defaults_and_a_fresh_logical_turn() -> Result<()> {
+async fn manual_compaction_retains_effort_pin_and_uses_current_speed_in_a_fresh_logical_turn()
+-> Result<()> {
     const TURN_STATE: &str = "x-codex-turn-state";
 
     let listener = TcpListener::bind("127.0.0.1:0").await?;
@@ -289,7 +290,7 @@ async fn manual_compaction_uses_current_defaults_and_a_fresh_logical_turn() -> R
             "warmup and generation belong to one logical turn"
         );
         assert_eq!(first["reasoning"]["effort"], "low");
-        assert_eq!(first["service_tier"], "default");
+        assert!(first.get("service_tier").is_none());
         send_final(&mut socket, "resp-first").await?;
 
         let compact = next_json(&mut socket).await?;
@@ -297,7 +298,10 @@ async fn manual_compaction_uses_current_defaults_and_a_fresh_logical_turn() -> R
             compact["client_metadata"].get(TURN_STATE).is_none(),
             "standalone compaction must clear the preceding turn's sticky state"
         );
-        assert_eq!(compact["reasoning"]["effort"], "high");
+        assert_eq!(
+            compact["reasoning"]["effort"], "low",
+            "compaction retains the surviving baseline"
+        );
         assert_eq!(compact["service_tier"], "priority");
         send_json(
             &mut socket,
@@ -1046,5 +1050,210 @@ async fn client_developer_provenance_survives_resume_and_compaction(
     timeout(std::time::Duration::from_secs(5), server)
         .await
         .map_err(|_| eyre!("provenance mock server did not finish"))???;
+    Ok(())
+}
+
+#[tokio::test]
+async fn supported_reasoning_compaction_commits_new_pin_only_on_success() -> Result<()> {
+    for fail_compaction in [false, true] {
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let endpoint = format!("http://{}", listener.local_addr()?);
+        let server = tokio::spawn(async move {
+            let mut requests = Vec::new();
+            for index in 0..6 {
+                let request = next_http_json(&listener).await?;
+                requests.push(request.body);
+                let mut stream = request.stream;
+                if index == 2 && fail_compaction {
+                    let body = json!({"error": {"type": "invalid_request_error", "code": "invalid_request_error", "message": "injected compaction rejection"}}).to_string();
+                    stream.write_all(format!("HTTP/1.1 400 Bad Request\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}", body.len()).as_bytes()).await?;
+                } else {
+                    let body = if index == 2 {
+                        let item = json!({"type": "response.output_item.done", "item": {
+                            "id": "cmp_policy", "type": "compaction", "encrypted_content": "policy-summary"
+                        }});
+                        let completed =
+                            completed_response_with_usage("resp-policy-compacted", &[], 120);
+                        format!("data: {item}\n\ndata: {completed}\n\ndata: [DONE]\n\n")
+                    } else {
+                        let response = completed_response(
+                            &format!("resp-compact-policy-{index}"),
+                            &[json!({
+                                "id": format!("msg_compact_policy_{index}"), "type": "message", "role": "assistant",
+                                "content": [{"type": "output_text", "text": "done"}]
+                            })],
+                        );
+                        format!("data: {response}\n\ndata: [DONE]\n\n")
+                    };
+                    stream.write_all(format!("HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}", body.len()).as_bytes()).await?;
+                }
+                stream.shutdown().await?;
+            }
+            Result::<_>::Ok(requests)
+        });
+        let workspace = temporary_workspace("supported-policy-compaction")?;
+        let openai = OpenAi::builder("test-key")
+            .model(Model::Astra)
+            .transport(ResponsesTransport::Https)
+            .api_base_url(endpoint)
+            .max_attempts(NonZeroU32::MIN)
+            .build()?;
+        let (agent, events) = Nanocodex::builder(openai)
+            .thinking(Thinking::Medium)
+            .fast_mode(false)
+            .instructions("Preserve the developer prompt across compaction.")
+            .workspace(&workspace)
+            .session_id(test_session_id())
+            .build()?;
+        agent.prompt("first medium").await?.result().await?;
+        agent.set_thinking(Thinking::High).await?;
+        agent.prompt("second high").await?.result().await?;
+        let before = serde_json::to_value(agent.snapshot().await?)?;
+        let compact = agent.compact().await;
+        if fail_compaction {
+            assert!(compact.is_err(), "mock provider rejected compaction");
+        } else {
+            compact?;
+        }
+        let after = serde_json::to_value(agent.snapshot().await?)?;
+        if fail_compaction {
+            assert_eq!(
+                after["history"], before["history"],
+                "failed compaction must not mutate retained history"
+            );
+        } else {
+            assert!(
+                after["history"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|item| item["type"] == "compaction"
+                        && item["encrypted_content"] == "policy-summary")
+            );
+            assert!(
+                after["history"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .all(|item| item["type"] != "configuration_update"),
+                "successful compaction retires old effort updates"
+            );
+        }
+        for (prompt, effort) in [
+            ("after compaction", Thinking::High),
+            ("unchanged high", Thinking::High),
+            ("changed low", Thinking::Low),
+        ] {
+            agent.set_thinking(effort).await?;
+            assert_eq!(
+                agent.prompt(prompt).await?.result().await?.final_message(),
+                "done"
+            );
+        }
+        agent.shutdown().await?;
+        drop((agent, events));
+        let requests = timeout(std::time::Duration::from_secs(5), server)
+            .await
+            .map_err(|_| eyre!("supported compaction server did not finish"))???;
+        let medium = json!({"type": "configuration_update", "reasoning": {"effort": "medium"}});
+        let high = json!({"type": "configuration_update", "reasoning": {"effort": "high"}});
+        let low = json!({"type": "configuration_update", "reasoning": {"effort": "low"}});
+        let retained = if fail_compaction {
+            vec![medium.clone(), high.clone()]
+        } else {
+            vec![]
+        };
+        let mut lowered = retained.clone();
+        lowered.push(low);
+        let expected_updates = [
+            vec![medium.clone()],
+            vec![medium.clone(), high.clone()],
+            vec![medium, high],
+            retained.clone(),
+            retained,
+            lowered,
+        ];
+        for (index, request) in requests.iter().enumerate() {
+            assert_eq!(request["model"], "gpt-6-astra");
+            let pin = if index < 3 || fail_compaction {
+                "medium"
+            } else {
+                "high"
+            };
+            assert_eq!(
+                request["reasoning"]["effort"], pin,
+                "compaction failed={fail_compaction}, request {index}"
+            );
+            assert_eq!(request["prompt_cache_key"], requests[0]["prompt_cache_key"]);
+            assert!(request.get("previous_response_id").is_none());
+            assert!(request.get("service_tier").is_none());
+            let input = request["input"].as_array().unwrap();
+            assert_eq!(&input[..2], &requests[0]["input"].as_array().unwrap()[..2]);
+            let updates = input
+                .iter()
+                .filter(|item| item["type"] == "configuration_update")
+                .cloned()
+                .collect::<Vec<_>>();
+            assert_eq!(
+                updates, expected_updates[index],
+                "compaction failed={fail_compaction}, request {index}"
+            );
+            if index == 2 {
+                assert_eq!(
+                    input.last().unwrap(),
+                    &json!({"type": "compaction_trigger"})
+                );
+                let history = before["history"].as_array().unwrap();
+                assert_eq!(
+                    &input[2..input.len() - 1],
+                    history,
+                    "compaction receives the exact pre-compaction transcript"
+                );
+            } else {
+                let has_update = matches!(index, 0 | 1 | 5);
+                let user_index = input.len() - 1 - usize::from(has_update);
+                let prompt = [
+                    "first medium",
+                    "second high",
+                    "",
+                    "after compaction",
+                    "unchanged high",
+                    "changed low",
+                ][index];
+                let mut user = input[user_index].clone();
+                remove_client_item_id(&mut user, "msg");
+                assert_eq!(
+                    user,
+                    json!({"type": "message", "role": "user", "content": [{"type": "input_text", "text": prompt}]})
+                );
+                if index == 1 || index >= 4 {
+                    let previous = requests[index - 1]["input"].as_array().unwrap();
+                    assert_eq!(
+                        &input[..previous.len()],
+                        previous,
+                        "new turns preserve every retained item and ID"
+                    );
+                    assert_eq!(input.len(), previous.len() + 2 + usize::from(has_update));
+                    assert_eq!(
+                        input[previous.len()],
+                        json!({
+                            "id": format!("msg_compact_policy_{}", index - 1), "type": "message", "role": "assistant",
+                            "content": [{"type": "output_text", "text": "done"}]
+                        })
+                    );
+                }
+                if index == 3 && fail_compaction {
+                    let history = before["history"].as_array().unwrap();
+                    assert_eq!(&input[2..2 + history.len()], history);
+                    assert_eq!(input.len(), history.len() + 3);
+                }
+            }
+            eprintln!(
+                "supported-compaction-wire failed={fail_compaction} request={index} pinned={pin} updates={}",
+                expected_updates[index].len()
+            );
+        }
+        std::fs::remove_dir_all(workspace)?;
+    }
     Ok(())
 }

@@ -88,12 +88,19 @@ async fn warmup_failure_falls_back_to_a_full_first_request() -> Result<()> {
         let generation = next_json(&mut second).await?;
         assert!(generation.get("previous_response_id").is_none());
         assert!(generation.get("generate").is_none());
-        assert_eq!(generation["input"].as_array().map(Vec::len), Some(5));
+        assert_eq!(generation["input"].as_array().map(Vec::len), Some(6));
         assert_eq!(generation["input"][0]["type"], "additional_tools");
         assert_eq!(generation["input"][1]["role"], "developer");
         assert_eq!(generation["input"][2]["role"], "developer");
         assert_eq!(generation["input"][3]["role"], "user");
         assert_eq!(generation["input"][4]["role"], "user");
+        assert_eq!(
+            generation["input"][5],
+            json!({
+                "type": "configuration_update", "reasoning": {"effort": generation["reasoning"]["effort"]}
+            }),
+            "failed prewarm leaves sampling to establish the initial effort"
+        );
         send_final(&mut second, "resp-final").await
     });
 
@@ -345,12 +352,19 @@ async fn warmup_connection_failure_falls_back_to_a_full_first_request() -> Resul
         let generation = next_json(&mut socket).await?;
         assert!(generation.get("previous_response_id").is_none());
         assert!(generation.get("generate").is_none());
-        assert_eq!(generation["input"].as_array().map(Vec::len), Some(5));
+        assert_eq!(generation["input"].as_array().map(Vec::len), Some(6));
         assert_eq!(generation["input"][0]["type"], "additional_tools");
         assert_eq!(generation["input"][1]["role"], "developer");
         assert_eq!(generation["input"][2]["role"], "developer");
         assert_eq!(generation["input"][3]["role"], "user");
         assert_eq!(generation["input"][4]["role"], "user");
+        assert_eq!(
+            generation["input"][5],
+            json!({
+                "type": "configuration_update", "reasoning": {"effort": generation["reasoning"]["effort"]}
+            }),
+            "failed prewarm leaves sampling to establish the initial effort"
+        );
         send_final(&mut socket, "resp-final").await
     });
 

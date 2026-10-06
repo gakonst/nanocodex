@@ -104,57 +104,256 @@ async fn https_ephemeral_replays_complete_follow_on_history() -> Result<()> {
     let listener = TcpListener::bind("127.0.0.1:0").await?;
     let endpoint = format!("http://{}", listener.local_addr()?);
     let server = tokio::spawn(async move {
-        let first = next_http_json(&listener).await?;
-        assert_eq!(first.body["store"], false);
-        assert!(first.body.get("type").is_none());
-        assert!(first.body.get("previous_response_id").is_none());
-        assert!(first.body.to_string().contains("first prompt"));
-        send_http_final(first.stream, "resp-first").await?;
-
-        let second = next_http_json(&listener).await?;
-        assert_eq!(second.body["store"], false);
-        assert!(second.body.get("type").is_none());
-        assert!(second.body.get("previous_response_id").is_none());
-        let replay = second.body.to_string();
-        assert!(replay.contains("first prompt"));
-        assert!(replay.contains("done"));
-        assert!(replay.contains("second prompt"));
-        send_http_final(second.stream, "resp-second").await
+        let mut requests = Vec::new();
+        for response_id in ["resp-first", "resp-second", "resp-third", "resp-fourth"] {
+            let request = next_http_json(&listener).await?;
+            requests.push(request.body);
+            send_http_final(request.stream, response_id).await?;
+        }
+        Result::<_>::Ok(requests)
     });
 
     let workspace = temporary_workspace("https-ephemeral-follow-on")?;
     let openai = OpenAi::builder("test-key")
+        .model(Model::Luna)
         .transport(ResponsesTransport::Https)
         .store(false)
         .api_base_url(endpoint)
         .build()?;
     let (agent, events) = Nanocodex::builder(openai)
         .thinking(Thinking::Low)
+        .fast_mode(false)
+        .instructions("Keep these developer instructions unchanged.")
         .workspace(&workspace)
         .session_id(test_session_id())
         .build()?;
-    assert_eq!(
-        agent
-            .prompt("first prompt")
-            .await?
-            .result()
-            .await?
-            .final_message(),
-        "done"
-    );
-    assert_eq!(
-        agent
-            .prompt("second prompt")
-            .await?
-            .result()
-            .await?
-            .final_message(),
-        "done"
-    );
+    for (prompt, thinking, fast) in [
+        ("first prompt", Thinking::Low, false),
+        ("second prompt", Thinking::High, false),
+        ("third prompt", Thinking::High, true),
+        ("fourth prompt", Thinking::High, false),
+    ] {
+        agent.set_thinking(thinking).await?;
+        agent.set_fast_mode(fast).await?;
+        assert_eq!(
+            agent.prompt(prompt).await?.result().await?.final_message(),
+            "done"
+        );
+    }
     drop((agent, events));
-    timeout(std::time::Duration::from_secs(5), server)
+    let requests = timeout(std::time::Duration::from_secs(5), server)
         .await
         .map_err(|_| eyre!("mock HTTPS Responses server did not finish"))???;
+    for (index, request) in requests.iter().enumerate() {
+        assert_eq!(request["store"], false);
+        assert!(request.get("type").is_none());
+        assert!(request.get("previous_response_id").is_none());
+        assert_eq!(
+            request["reasoning"]["effort"],
+            if index == 0 { "low" } else { "high" }
+        );
+        if index == 2 {
+            assert_eq!(request["service_tier"], "priority");
+        } else {
+            assert!(request.get("service_tier").is_none());
+        }
+        assert_eq!(request["prompt_cache_key"], requests[0]["prompt_cache_key"]);
+        assert_eq!(request.get("instructions"), requests[0].get("instructions"));
+        let input = request["input"].as_array().expect("HTTP input array");
+        assert!(
+            input
+                .iter()
+                .all(|item| item["type"] != "configuration_update")
+        );
+        assert_eq!(&input[..2], &requests[0]["input"].as_array().unwrap()[..2]);
+        if index > 0 {
+            let previous = requests[index - 1]["input"].as_array().unwrap();
+            assert_eq!(&input[..previous.len()], previous);
+            assert_eq!(input.len(), previous.len() + 2);
+            assert_eq!(input[previous.len()]["role"], "assistant");
+            assert_eq!(input[previous.len()]["content"][0]["text"], "done");
+        }
+        let prompt = [
+            "first prompt",
+            "second prompt",
+            "third prompt",
+            "fourth prompt",
+        ][index];
+        assert_eq!(input.last().unwrap()["role"], "user");
+        assert!(input.last().unwrap().to_string().contains(prompt));
+        println!(
+            "HTTP replay turn={} effort={} service_tier={} input_items={} prior_input_and_prefix=unchanged configuration_updates=0",
+            index + 1,
+            request["reasoning"]["effort"],
+            request
+                .get("service_tier")
+                .map_or("omitted", |tier| tier.as_str().unwrap()),
+            input.len()
+        );
+    }
+    std::fs::remove_dir_all(workspace)?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn https_restored_configuration_update_is_retained_but_not_sent() -> Result<()> {
+    let listener = TcpListener::bind("127.0.0.1:0").await?;
+    let endpoint = format!("http://{}", listener.local_addr()?);
+    let server = tokio::spawn(async move {
+        let mut requests = Vec::new();
+        for response_id in ["resp-original", "resp-restored"] {
+            let request = next_http_json(&listener).await?;
+            requests.push(request.body);
+            send_http_final(request.stream, response_id).await?;
+        }
+        let compact = next_http_json(&listener).await?;
+        requests.push(compact.body);
+        let item = json!({
+            "type": "response.output_item.done",
+            "item": {
+                "id": "cmp-http-restored",
+                "type": "compaction",
+                "encrypted_content": "opaque-http-summary"
+            }
+        });
+        let completed = completed_response_with_usage("resp-compacted", &[], 120);
+        let body = format!("data: {item}\n\ndata: {completed}\n\ndata: [DONE]\n\n");
+        let response = format!(
+            "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        let mut stream = compact.stream;
+        stream.write_all(response.as_bytes()).await?;
+        stream.shutdown().await?;
+        Result::<_>::Ok(requests)
+    });
+    let workspace = temporary_workspace("https-restored-configuration")?;
+    let openai = OpenAi::builder("test-key")
+        .model(Model::Luna)
+        .transport(ResponsesTransport::Https)
+        .store(false)
+        .api_base_url(endpoint)
+        .build()?;
+    let (agent, events) = Nanocodex::builder(openai.clone())
+        .thinking(Thinking::Low)
+        .instructions("Keep these developer instructions unchanged.")
+        .workspace(&workspace)
+        .session_id(test_session_id())
+        .build()?;
+    let first = agent.prompt("original user prompt").await?.result().await?;
+    assert_eq!(first.final_message(), "done");
+    let snapshot = first.snapshot().expect("completed local snapshot");
+    let (head, mut history, prefix) = snapshot.into_context_parts();
+    // Simulate a saved session from a client that emitted effort overrides.
+    // Developer history must survive the same outgoing-only filter.
+    history.push(serde_json::from_value(json!({
+        "type": "message",
+        "id": "msg_saved_developer",
+        "role": "developer",
+        "content": [{ "type": "input_text", "text": "Retain saved developer guidance." }]
+    }))?);
+    let configuration =
+        nanocodex_oai_api::responses::ResponseItem::configuration_update(Thinking::Low);
+    let configuration_json = serde_json::to_value(&configuration)?;
+    history.push(configuration);
+    let saved: SessionSnapshot =
+        serde_json::from_value(serde_json::to_value(head.with_context(history, prefix))?)?;
+    let saved_json = serde_json::to_value(&saved)?;
+    agent.shutdown().await?;
+    drop((agent, events, first));
+
+    let (resumed, events) = Nanocodex::builder(openai)
+        .thinking(Thinking::High)
+        .fast_mode(false)
+        .instructions("Keep these developer instructions unchanged.")
+        .resume(saved)
+        .build()?;
+    let result = resumed.prompt("resume user prompt").await?.result().await?;
+    assert_eq!(result.final_message(), "done");
+    let retained = serde_json::to_value(result.snapshot().expect("resumed local snapshot"))?;
+    let saved_history = saved_json["history"].as_array().unwrap();
+    let retained_history = retained["history"].as_array().unwrap();
+    assert_eq!(&retained_history[..saved_history.len()], saved_history);
+    assert_eq!(
+        retained_history
+            .iter()
+            .filter(|item| **item == configuration_json)
+            .count(),
+        1
+    );
+    resumed.compact().await?;
+    let compacted = serde_json::to_value(resumed.snapshot().await?)?;
+    assert!(compacted["history"].as_array().unwrap().iter().any(|item| {
+        item["type"] == "compaction" && item["encrypted_content"] == "opaque-http-summary"
+    }));
+    resumed.shutdown().await?;
+    drop((resumed, events, result));
+    let requests = timeout(std::time::Duration::from_secs(5), server)
+        .await
+        .map_err(|_| eyre!("mock HTTPS Responses server did not finish"))???;
+    let request = &requests[1];
+    assert_eq!(request["reasoning"]["effort"], "high");
+    assert!(request.get("service_tier").is_none());
+    assert!(request.get("previous_response_id").is_none());
+    assert_eq!(request["store"], false);
+    assert_eq!(request.get("instructions"), requests[0].get("instructions"));
+    assert_eq!(request["prompt_cache_key"], requests[0]["prompt_cache_key"]);
+    let input = request["input"]
+        .as_array()
+        .expect("restored HTTP input array");
+    assert_eq!(&input[..2], &requests[0]["input"].as_array().unwrap()[..2]);
+    assert!(
+        input
+            .iter()
+            .all(|item| item["type"] != "configuration_update")
+    );
+    let expected_history = saved_history
+        .iter()
+        .filter(|item| item["type"] != "configuration_update")
+        .cloned()
+        .collect::<Vec<_>>();
+    assert_eq!(&input[2..2 + expected_history.len()], &expected_history);
+    assert!(expected_history.iter().any(|item| item["role"] == "user"));
+    assert!(
+        expected_history
+            .iter()
+            .any(|item| item["role"] == "assistant")
+    );
+    assert!(
+        expected_history
+            .iter()
+            .any(|item| item["role"] == "developer")
+    );
+    assert!(
+        input
+            .last()
+            .unwrap()
+            .to_string()
+            .contains("resume user prompt")
+    );
+    let compact = &requests[2];
+    assert_eq!(compact["reasoning"]["effort"], "high");
+    assert!(compact.get("service_tier").is_none());
+    assert_eq!(compact["prompt_cache_key"], request["prompt_cache_key"]);
+    let compact_input = compact["input"]
+        .as_array()
+        .expect("compaction HTTP input array");
+    assert!(
+        compact_input
+            .iter()
+            .all(|item| item["type"] != "configuration_update")
+    );
+    assert_eq!(&compact_input[..input.len()], input);
+    assert_eq!(compact_input.last().unwrap()["type"], "compaction_trigger");
+    println!(
+        "HTTP compaction effort=high service_tier=omitted configuration_updates=0 prompt_cache_key=unchanged prior_input=unchanged compacted_snapshot=installed input_items={}",
+        compact_input.len()
+    );
+    println!(
+        "HTTP restored effort={} service_tier=omitted wire_configuration_updates=0 retained_configuration_updates=1 saved_effort=low prior_user_assistant_developer=unchanged prefix=unchanged input_items={}",
+        request["reasoning"]["effort"],
+        input.len()
+    );
     std::fs::remove_dir_all(workspace)?;
     Ok(())
 }
@@ -380,4 +579,183 @@ fn rejects_invalid_auth_storage_and_https_history_policies() {
             .to_string()
             .contains("HTTPS with store: false requires full client-history replay")
     );
+}
+
+#[tokio::test]
+async fn supported_reasoning_snapshot_resume_preserves_pin_and_appends_only_changes() -> Result<()>
+{
+    supported_reasoning_resume_preserves_pin(false).await
+}
+
+#[tokio::test]
+async fn supported_reasoning_rollout_resume_preserves_pin_and_appends_only_changes() -> Result<()> {
+    supported_reasoning_resume_preserves_pin(true).await
+}
+
+async fn supported_reasoning_resume_preserves_pin(durable_resume: bool) -> Result<()> {
+    let listener = TcpListener::bind("127.0.0.1:0").await?;
+    let endpoint = format!("http://{}", listener.local_addr()?);
+    let server = tokio::spawn(async move {
+        let mut requests = Vec::new();
+        for index in 0..4 {
+            let request = next_http_json(&listener).await?;
+            requests.push(request.body);
+            let response = completed_response(
+                &format!("resp-resume-{index}"),
+                &[json!({
+                    "id": format!("msg_resume_{index}"), "type": "message", "role": "assistant",
+                    "content": [{"type": "output_text", "text": "done"}]
+                })],
+            );
+            let body = format!("data: {response}\n\ndata: [DONE]\n\n");
+            let mut stream = request.stream;
+            stream.write_all(format!("HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}", body.len()).as_bytes()).await?;
+            stream.shutdown().await?;
+        }
+        Result::<_>::Ok(requests)
+    });
+    let workspace = temporary_workspace("supported-policy-resume")?;
+    let rollout_home = temporary_workspace("supported-policy-rollout")?;
+    let openai = OpenAi::builder("test-key")
+        .model(Model::Sol)
+        .transport(ResponsesTransport::Https)
+        .api_base_url(endpoint)
+        .max_attempts(NonZeroU32::MIN)
+        .build()?;
+    let (agent, events) = Nanocodex::builder(openai.clone())
+        .thinking(Thinking::Medium)
+        .fast_mode(false)
+        .instructions("Keep the saved developer instructions unchanged.")
+        .workspace(&workspace)
+        .session_id(test_session_id())
+        .rollout(RolloutConfig::new(&rollout_home))
+        .build()?;
+    agent.prompt("initial medium").await?.result().await?;
+    agent.set_thinking(Thinking::High).await?;
+    agent.prompt("changed high").await?.result().await?;
+    // Serialize and deserialize the public snapshot to exercise persistence,
+    // rather than reusing live transport state from the original agent.
+    let saved_json = serde_json::to_value(agent.snapshot().await?)?;
+    let saved: SessionSnapshot = serde_json::from_value(saved_json.clone())?;
+    agent.shutdown().await?;
+    drop((agent, events));
+    // Reassembling a snapshot cannot claim a trusted update that was removed
+    // from its retained history. Reject the inconsistent public resume input.
+    let (head, mut edited_history, prefix) = saved.clone().into_context_parts();
+    edited_history.retain(|item| {
+        !matches!(item,
+        nanocodex_oai_api::responses::ResponseItem::ConfigurationUpdate { reasoning }
+            if reasoning.effort == Thinking::High)
+    });
+    let invalid = head.with_context(edited_history, prefix);
+    assert!(matches!(
+        Nanocodex::builder(openai.clone()).resume(invalid).build(),
+        Err(NanocodexError::InvalidSessionSnapshot(_))
+    ));
+    let saved = if durable_resume {
+        let durable = RolloutConfig::new(&rollout_home).load_session(TEST_SESSION_ID)?;
+        assert_eq!(
+            serde_json::to_value(durable.snapshot())?["reasoning"],
+            saved_json["reasoning"]
+        );
+        durable.into_parts().1
+    } else {
+        saved
+    };
+    let (resumed, events) = Nanocodex::builder(openai)
+        .thinking(Thinking::High)
+        .fast_mode(false)
+        .instructions("Keep the saved developer instructions unchanged.")
+        .resume(saved)
+        .build()?;
+    assert_eq!(
+        resumed
+            .prompt("resumed high")
+            .await?
+            .result()
+            .await?
+            .final_message(),
+        "done"
+    );
+    resumed.set_thinking(Thinking::Low).await?;
+    assert_eq!(
+        resumed
+            .prompt("lowered low")
+            .await?
+            .result()
+            .await?
+            .final_message(),
+        "done"
+    );
+    let restored_json = serde_json::to_value(resumed.snapshot().await?)?;
+    resumed.shutdown().await?;
+    drop((resumed, events));
+    let requests = timeout(std::time::Duration::from_secs(5), server)
+        .await
+        .map_err(|_| eyre!("supported snapshot server did not finish"))???;
+    for (index, request) in requests.iter().enumerate() {
+        assert_eq!(request["model"], "gpt-6.1-sol");
+        assert_eq!(request["reasoning"]["effort"], "medium");
+        assert_eq!(request["prompt_cache_key"], requests[0]["prompt_cache_key"]);
+        assert!(request.get("previous_response_id").is_none());
+        assert!(request.get("service_tier").is_none());
+        let input = request["input"].as_array().unwrap();
+        assert_eq!(&input[..2], &requests[0]["input"].as_array().unwrap()[..2]);
+        if index > 0 {
+            let previous = requests[index - 1]["input"].as_array().unwrap();
+            assert_eq!(
+                &input[..previous.len()],
+                previous,
+                "resume must preserve every retained item and ID"
+            );
+            assert_eq!(input.len(), previous.len() + 2 + usize::from(index != 2));
+            assert_eq!(
+                input[previous.len()],
+                json!({
+                    "id": format!("msg_resume_{}", index - 1), "type": "message", "role": "assistant",
+                    "content": [{"type": "output_text", "text": "done"}]
+                })
+            );
+        }
+        let mut user = input[input.len() - 1 - usize::from(index != 2)].clone();
+        remove_client_item_id(&mut user, "msg");
+        assert_eq!(
+            user,
+            json!({"type": "message", "role": "user", "content": [{
+                "type": "input_text", "text": (["initial medium", "changed high", "resumed high", "lowered low"][index])
+            }]})
+        );
+        if index != 2 {
+            assert_eq!(
+                input.last().unwrap(),
+                &json!({"type": "configuration_update", "reasoning": {
+                    "effort": (["medium", "high", "high", "low"][index])
+                }})
+            );
+        }
+        assert_eq!(
+            input
+                .iter()
+                .filter(|item| item["type"] == "configuration_update")
+                .count(),
+            [1, 2, 2, 3][index]
+        );
+        eprintln!(
+            "supported-resume-wire durable={durable_resume} turn={index} pinned={} retained_items={} no_redundant_resume_update=true",
+            request["reasoning"]["effort"],
+            input.len()
+        );
+    }
+    let saved_history = saved_json["history"].as_array().unwrap();
+    assert_eq!(
+        &requests[2]["input"].as_array().unwrap()[2..2 + saved_history.len()],
+        saved_history
+    );
+    assert_eq!(
+        &restored_json["history"].as_array().unwrap()[..saved_history.len()],
+        saved_history
+    );
+    std::fs::remove_dir_all(workspace)?;
+    std::fs::remove_dir_all(rollout_home)?;
+    Ok(())
 }
