@@ -23,8 +23,9 @@ use tokio_tungstenite::{accept_async, tungstenite::Message};
 const TIMEOUT: Duration = Duration::from_secs(20);
 const DRAFT: &str = "unfinished local draft";
 
-// External clients prompt without an execution policy, run slash commands, and
-// follow state without re-reading it, all while the user's own draft survives.
+// Slash suggestions work through the shipped TUI, then external clients prompt
+// without an execution policy, run commands, and follow filtered state while
+// the user's own draft survives.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn external_client_prompts_runs_commands_and_filters_events_without_touching_the_draft()
 -> Result<()> {
@@ -81,6 +82,50 @@ async fn external_client_prompts_runs_commands_and_filters_events_without_touchi
     let snapshot = &hello["snapshot"];
     assert_eq!(snapshot["capabilities"]["commands"], true);
     assert_eq!(snapshot["capabilities"]["event_filter"], true);
+
+    keyboard.write_all(b"/")?;
+    keyboard.flush()?;
+    let deadline = Instant::now() + TIMEOUT;
+    loop {
+        let state = client.request("state.get", json!({})).await?;
+        if state["state"]["composer"]["text"] == "/" {
+            assert_eq!(state["state"]["menu"], "slash");
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "slash suggestions never opened in the TUI"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    keyboard.write_all(b"\x1b[B\t")?;
+    keyboard.flush()?;
+    let deadline = Instant::now() + TIMEOUT;
+    loop {
+        let state = client.request("state.get", json!({})).await?;
+        if state["state"]["composer"]["text"] == "/thinking " {
+            assert!(state["state"]["menu"].is_null());
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "arrow and Tab did not complete the selected slash command"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    keyboard.write_all(b"\x15")?;
+    keyboard.flush()?;
+    let deadline = Instant::now() + TIMEOUT;
+    while !client.request("state.get", json!({})).await?["state"]["composer"]["text"]
+        .as_str()
+        .is_some_and(str::is_empty)
+    {
+        assert!(
+            Instant::now() < deadline,
+            "completed slash command could not be cleared"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
 
     keyboard.write_all(DRAFT.as_bytes())?;
     keyboard.flush()?;

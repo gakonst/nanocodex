@@ -16,6 +16,7 @@ mod resume_picker;
 mod scheduler;
 mod selection;
 mod simplify;
+mod slash_commands;
 mod split;
 mod startup;
 mod telemetry;
@@ -3200,6 +3201,10 @@ fn handle_key(
         return Ok(action);
     }
 
+    if let Some(action) = handle_slash_suggestion_key(key, app) {
+        return Ok(action);
+    }
+
     if let Some(action) = handle_inline_historical_editor_key(key, app, commands)? {
         return Ok(action);
     }
@@ -3298,6 +3303,31 @@ fn handle_key(
         | KeyCode::Modifier(_) => {}
     }
     Ok(TerminalAction::Redraw)
+}
+
+fn handle_slash_suggestion_key(key: KeyEvent, app: &mut App) -> Option<TerminalAction> {
+    if app.slash_suggestions().is_empty() || !key.modifiers.is_empty() {
+        return None;
+    }
+    match key.code {
+        KeyCode::Up => {
+            app.move_slash_suggestion(-1);
+            Some(TerminalAction::Redraw)
+        }
+        KeyCode::Down => {
+            app.move_slash_suggestion(1);
+            Some(TerminalAction::Redraw)
+        }
+        KeyCode::Tab | KeyCode::BackTab => {
+            app.accept_slash_suggestion();
+            Some(TerminalAction::Redraw)
+        }
+        KeyCode::Enter if !app.slash_suggestion_is_exact() => {
+            app.accept_slash_suggestion();
+            Some(TerminalAction::Redraw)
+        }
+        _ => None,
+    }
 }
 
 fn handle_model_picker_key(

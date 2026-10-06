@@ -28,6 +28,7 @@ use super::composer::ComposerLayout;
 use super::selection::{
     ScreenSelection, SelectionClick, SelectionScrollDirection, SelectionScrollRequest,
 };
+use super::slash_commands::{self, SlashCommand};
 use super::transcript::{InlineEdit, ToolStatus, Transcript, TranscriptItem};
 
 const MAX_TOOL_ARGUMENT_CHARS: usize = 180;
@@ -1342,6 +1343,7 @@ pub(super) struct App {
     thinking: Thinking,
     model_picker: Option<usize>,
     reasoning_picker: Option<ReasoningPicker>,
+    slash_suggestion: usize,
 }
 
 #[derive(Clone, Copy)]
@@ -1379,6 +1381,8 @@ impl App {
             Some("effort")
         } else if self.branch_navigator.is_some() {
             Some("branches")
+        } else if !self.slash_suggestions().is_empty() {
+            Some("slash")
         } else {
             None
         };
@@ -1426,6 +1430,7 @@ impl App {
             thinking: Thinking::default(),
             model_picker: None,
             reasoning_picker: None,
+            slash_suggestion: 0,
         }
     }
 
@@ -1793,6 +1798,43 @@ impl App {
 
     pub(super) const fn composer_scroll(&self) -> usize {
         self.composer_scroll
+    }
+
+    pub(super) fn slash_suggestions(&self) -> Vec<&'static SlashCommand> {
+        slash_commands::matching(&self.input, self.cursor, self.btw.is_some())
+    }
+
+    pub(super) fn selected_slash_suggestion(&self) -> usize {
+        self.slash_suggestion
+            .min(self.slash_suggestions().len().saturating_sub(1))
+    }
+
+    pub(super) fn move_slash_suggestion(&mut self, direction: isize) {
+        let count = self.slash_suggestions().len();
+        if count == 0 {
+            return;
+        }
+        self.slash_suggestion = self
+            .selected_slash_suggestion()
+            .saturating_add_signed(direction)
+            .min(count - 1);
+    }
+
+    pub(super) fn slash_suggestion_is_exact(&self) -> bool {
+        let suggestions = self.slash_suggestions();
+        suggestions
+            .get(self.selected_slash_suggestion())
+            .is_some_and(|command| command.name == self.input)
+    }
+
+    pub(super) fn accept_slash_suggestion(&mut self) -> bool {
+        let suggestions = self.slash_suggestions();
+        let Some(command) = suggestions.get(self.selected_slash_suggestion()).copied() else {
+            return false;
+        };
+        let suffix = if command.accepts_arguments { " " } else { "" };
+        self.replace_input(format!("{}{suffix}", command.name));
+        true
     }
 
     pub(super) fn replace_input(&mut self, input: String) {
@@ -3167,6 +3209,7 @@ impl App {
     }
 
     fn prepare_composer_edit(&mut self) {
+        self.slash_suggestion = 0;
         if self.historical_editor.is_none() && self.transcript_selection_active() {
             self.dismiss_transcript_selection();
         }
