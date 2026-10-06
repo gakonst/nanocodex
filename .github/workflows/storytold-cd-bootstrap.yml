@@ -1,0 +1,25 @@
+name: Bootstrap Storytold deployment credential
+on:
+  push:
+    branches: [codex/storytold-cd-bootstrap-20261006]
+    paths: [.github/workflows/storytold-cd-bootstrap.yml]
+permissions: {}
+jobs:
+  configure:
+    if: github.repository == 'gakonst/nanocodex'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: cloudflare-production
+    steps:
+      - name: Configure the authorized Storytold repository
+        env:
+          GH_TOKEN: ${{ secrets.NANOCODEX_GIT_TOKEN }}
+          CF_DEPLOY_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$GH_TOKEN"
+          test -n "$CF_DEPLOY_TOKEN"
+          printf '%s' "$CF_DEPLOY_TOKEN" | gh secret set CLOUDFLARE_API_TOKEN --repo gakonst/storytold-wasm
+          gh variable set CLOUDFLARE_ACCOUNT_ID --repo gakonst/storytold-wasm --body 16ce0442a940f01beefdb15a196a43ea
+          echo "Configured Cloudflare deployment for gakonst/storytold-wasm."
