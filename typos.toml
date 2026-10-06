@@ -12,6 +12,11 @@ extend-exclude = [
     "js/account/worker-configuration.d.ts",
 ]
 
+# Preserve the intentionally misspelled model-identity prompt fixture.
+[type.mjs]
+extend-glob = ["*.mjs"]
+extend-ignore-re = ['MODEL_IDENTITY_PROBE: hich model r u']
+
 # Xcode object identifiers are hexadecimal, not prose.
 [type.pbxproj]
 extend-glob = ["*.pbxproj"]

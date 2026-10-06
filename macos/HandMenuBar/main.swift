@@ -172,6 +172,7 @@ final class HandMenuBar: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var commandGeneration = 0
     private var signInScript: URL?
     private var signInFailure: String?
+    private var signInStarted: Date?
     private var refreshTicks = 0
 
     init(cli: URL) { self.cli = cli; super.init() }
@@ -317,9 +318,7 @@ final class HandMenuBar: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc private func refreshStatus() {
         guard !busy else { return }
-        if let script = signInScript, !FileManager.default.fileExists(atPath: script.path) {
-            signInScript = nil
-        }
+        reconcileSignIn()
         run("menu-status") { [weak self] result in
             guard let self else { return }
             if result.succeeded, let state = try? JSONDecoder().decode(HandStatus.self, from: result.output), state.schema_version == 1 {
@@ -350,6 +349,38 @@ final class HandMenuBar: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
+    private func reconcileSignIn() {
+        guard let script = signInScript else { return }
+        let files = FileManager.default
+        let marker = script.deletingLastPathComponent().appendingPathComponent("owner")
+        var active = false
+        if let value = try? String(contentsOf: marker, encoding: .utf8) {
+            let fields = value.split(maxSplits: 1, whereSeparator: { $0.isWhitespace })
+            if fields.count == 2, let pid = Int32(fields[0]), pid > 1 {
+                let formatter = DateFormatter()
+                formatter.locale = Locale(identifier: "en_US_POSIX")
+                formatter.timeZone = TimeZone(secondsFromGMT: 0)
+                formatter.dateFormat = "EEE MMM d HH:mm:ss yyyy"
+                var info = proc_bsdinfo()
+                let size = Int32(MemoryLayout<proc_bsdinfo>.size)
+                if let started = formatter.date(from: String(fields[1]).trimmingCharacters(in: .whitespacesAndNewlines)),
+                   proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &info, size) == size {
+                    active = info.pbi_start_tvsec == UInt64(started.timeIntervalSince1970)
+                }
+            }
+        } else if files.fileExists(atPath: script.path),
+                  Date().timeIntervalSince(signInStarted ?? .distantPast) < 30 {
+            // Terminal may still be launching. The script publishes its PID and
+            // creation time before exec, so PID reuse cannot prolong this lease.
+            active = true
+        }
+        if !active {
+            try? files.removeItem(at: script.deletingLastPathComponent())
+            signInScript = nil
+            signInStarted = nil
+        }
+    }
+
     private static func shellQuote(_ text: String) -> String {
         "'" + text.replacingOccurrences(of: "'", with: "'\\''") + "'"
     }
@@ -366,12 +397,15 @@ final class HandMenuBar: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let script = directory.appendingPathComponent("Sign In to Nanocodex.command")
         do {
             try files.createDirectory(at: directory, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
-            let cleanup = "/bin/rm -f -- \(Self.shellQuote(script.path)); /bin/rmdir -- \(Self.shellQuote(directory.path))"
-            let source = "#!/bin/sh\ntrap \(Self.shellQuote(cleanup)) EXIT\n\(Self.shellQuote(cli.path)) account login\nresult=$?\nprintf '\\nNanocodex sign-in finished. You may close this window.\\n'\nexit \"$result\"\n"
+            let marker = directory.appendingPathComponent("owner")
+            // exec preserves the shell PID/start time. Reconcile actual process
+            // lifetime rather than relying on an EXIT trap after a crash.
+            let source = "#!/bin/sh\n[ -f \(Self.shellQuote(script.path)) ] || exit 1\n{ printf '%s ' \"$$\"; LC_ALL=C TZ=UTC /bin/ps -p \"$$\" -o lstart=; } > \(Self.shellQuote(marker.path + ".new"))\n/bin/mv \(Self.shellQuote(marker.path + ".new")) \(Self.shellQuote(marker.path)) || exit 1\n[ -f \(Self.shellQuote(script.path)) ] || exit 1\nexec \(Self.shellQuote(cli.path)) account login\n"
             guard files.createFile(atPath: script.path, contents: Data(source.utf8), attributes: [.posixPermissions: 0o700]) else {
                 throw NSError(domain: "HandMenuBar", code: 1)
             }
             signInScript = script
+            signInStarted = Date()
             signInFailure = nil
             render()
             let configuration = NSWorkspace.OpenConfiguration()

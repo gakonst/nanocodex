@@ -26,7 +26,8 @@ Choose **Sign In…** to open the existing `nanocodex account login` flow in Ter
 The helper creates a private executable command file containing the safely quoted
 installed CLI path, opens it explicitly with Terminal, and prevents repeated
 launches while that command remains open. Credentials are entered in the CLI's
-existing interactive flow. The command file removes itself when the shell exits.
+existing interactive flow. The companion reconciles the login process by PID and creation time and removes
+the private command directory when it exits, including after a crash.
 The companion refreshes every five seconds during sign-in, when reopened, and
 otherwise every thirty seconds. Opening the menu does not initiate sign-in.
 
