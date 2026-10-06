@@ -4361,6 +4361,8 @@ async fn terminal_batch_children_expand_independently_and_collapse_with_parent()
         }),
     );
     fixture.complete(REMOTE_TURN);
+    // Completion appends an answer and moves the batch row; wait before hit testing.
+    fixture.terminal.wait_text("Enter send").await;
     fixture.terminal.wait_text("2 tools").await;
     fixture.terminal.wait_no_text("check-first").await;
     fixture.terminal.wait_no_text("check-second").await;
@@ -5118,7 +5120,8 @@ async fn terminal_link_clicks_open_once_and_drag_still_copies() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn terminal_gateway_model_picker_routes_manual_selection_and_keeps_prompt_usable() {
-    let mut fixture = Fixture::start().await;
+    // Use the service's explicit fast=false state rather than fresh-CLI defaults.
+    let mut fixture = Fixture::start_with_history(false, true, Vec::new()).await;
     fixture.terminal.wait_text("Enter send").await;
     fixture.terminal.input("/fast");
     fixture.terminal.wait_text("Enable fast mode").await;
@@ -5293,6 +5296,7 @@ async fn terminal_prompt_cache_survives_restart_and_scopes_sessions() {
     reopened.input("\x12");
     reopened.wait_text("Recent prompts").await;
     reopened.prompt("cacheexact", "");
+    reopened.wait_text("cacheexact").await;
     reopened.wait_text("CACHE_EXACT_短").await;
     eprintln!(
         "prompt cache after process restart, empty remote history, and fuzzy lookup:\n{}",
@@ -5312,7 +5316,8 @@ async fn terminal_prompt_cache_survives_restart_and_scopes_sessions() {
         .unwrap();
     assert_eq!(prompt_text(&sent["input"]), original);
     let turn = sent["id"].as_str().unwrap();
-    events.send(json!({"type":"turn_completed","id":turn,"turn_id":turn,"cursor":"1","final_message":"CACHE_REUSE_CONFIRMED"})).unwrap();
+    events.send(json!({"type":"turn_accepted","id":turn,"turn_id":turn,"cursor":"1","input":sent["input"],"replayed":false})).unwrap();
+    events.send(json!({"type":"turn_completed","id":turn,"turn_id":turn,"cursor":"2","final_message":"CACHE_REUSE_CONFIRMED","usage":null,"citations":[],"usage_error":null})).unwrap();
     reopened.wait_text("CACHE_REUSE_CONFIRMED").await;
 
     // Same service, different login credential: no prompts from the prior login.
@@ -5632,5 +5637,158 @@ async fn terminal_copy_reads_restored_history_before_live_completion() {
     eprintln!(
         "COPY history journey: restored indexes stay stable during streaming and shift once on completion\n{}",
         fixture.terminal.screen.lock().unwrap().screen().contents()
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn terminal_prompt_cache_flushes_failed_and_coalesced_writes_on_exit() {
+    let mut fixture = Fixture::start().await;
+    fixture.terminal.prompt("CACHE_RETRY_SEED", "\r");
+    let seed = fixture.submission("CACHE_RETRY_SEED").await;
+    fixture.complete(&seed);
+    fixture.terminal.wait_text("Enter send").await;
+    // Establish the data and lock files before introducing contention. This is
+    // the last picker read before exit, so a later lookup cannot repair a save.
+    fixture.terminal.input("\x12");
+    fixture.terminal.wait_text("Recent prompts").await;
+    fixture.terminal.wait_text("CACHE_RETRY_SEED").await;
+    fixture.terminal.input("\x1b");
+    fixture.terminal.wait_no_text("Recent prompts").await;
+    let account_home = fixture.terminal._workspace.path().join(".codex");
+    let data = std::fs::read_dir(account_home.join("prompt-history"))
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .find(|path| {
+            path.extension()
+                .is_some_and(|extension| extension == "json")
+        })
+        .unwrap();
+    let lock = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(data.with_extension("json.lock"))
+        .unwrap();
+    lock.lock().unwrap();
+    let locked_at = std::time::Instant::now();
+    for prompt in ["CACHE_RETRY_FIRST_短", "CACHE_RETRY_COALESCED_SECOND"] {
+        fixture.terminal.prompt(prompt, "\r");
+        let turn = fixture.submission(prompt).await;
+        fixture.complete(&turn);
+        fixture.terminal.wait_text("Enter send").await;
+    }
+    // The second submission arrives while the first write is blocked. Keep
+    // the lock through the one-second attempt and the delayed one-second retry.
+    fixture
+        .terminal
+        .wait_text("Could not save recent prompts")
+        .await;
+    tokio::time::sleep(Duration::from_millis(1600)).await;
+    let blocked_data = std::fs::read_to_string(&data).unwrap();
+    assert!(!blocked_data.contains("CACHE_RETRY_FIRST_短"));
+    assert!(!blocked_data.contains("CACHE_RETRY_COALESCED_SECOND"));
+    eprintln!(
+        "cache lock held {:?}; both real submissions completed but background save failed; before unlock:\n{}",
+        locked_at.elapsed(),
+        fixture.terminal.screen.lock().unwrap().screen().contents()
+    );
+    drop(lock);
+    // Exit immediately after releasing the lock. Do not use Ctrl+R: shutdown
+    // must retain and flush the failed batch together with coalesced prompts.
+    fixture.terminal.input("\x03\x03");
+    fixture.terminal.wait_output("\x1b[?1049l").await;
+    tokio::time::timeout(TIMEOUT, async {
+        while fixture.terminal.child.try_wait().unwrap().is_none() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("failed prompt cache writes must flush before process exit");
+    fixture.history.lock().unwrap().clear();
+    let mut reopened = Terminal::start_with_command(&fixture.origin, true, None, |command| {
+        command.env("CODEX_HOME", &account_home);
+    });
+    let _events = tokio::time::timeout(TIMEOUT, fixture.connections.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    reopened.wait_text("Enter send").await;
+    reopened.input("\x12");
+    reopened.wait_text("Recent prompts").await;
+    reopened.wait_text("CACHE_RETRY_FIRST_短").await;
+    reopened.wait_text("CACHE_RETRY_COALESCED_SECOND").await;
+    assert!(fixture.submissions.try_recv().is_err());
+    eprintln!(
+        "restart with empty server history recovered both failed/coalesced writes from CODEX_HOME={} without a pre-exit picker read:\n{}",
+        account_home.display(),
+        reopened.screen.lock().unwrap().screen().contents()
+    );
+}
+
+// Linux permits arbitrary filename bytes; APFS rejects this cwd with EILSEQ.
+#[cfg(target_os = "linux")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn terminal_prompt_cache_persists_from_a_non_utf8_workspace() {
+    use std::os::unix::ffi::OsStringExt;
+
+    let mut fixture = Fixture::start().await;
+    let local = tempfile::tempdir().unwrap();
+    let workspace = local.path().join(std::ffi::OsString::from_vec(
+        b"prompt-cache-workspace-\xff".to_vec(),
+    ));
+    std::fs::create_dir(&workspace).unwrap();
+    assert!(workspace.to_str().is_none());
+    let account_home = local.path().join("account-home");
+    // Start the shipped executable in an actual non-UTF-8 cwd, rather than
+    // manufacturing JSON (which cannot represent an invalid UTF-8 path).
+    fixture.terminal = Terminal::start_with_command(&fixture.origin, true, None, |command| {
+        command.cwd(&workspace);
+        command.env("CODEX_HOME", &account_home);
+    });
+    fixture.events = tokio::time::timeout(TIMEOUT, fixture.connections.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    fixture.terminal.wait_text("Enter send").await;
+    let prompt = "CACHE_NON_UTF8_WORKSPACE_短\n  preserve this prompt exactly";
+    fixture.terminal.prompt(prompt, "\r");
+    let turn = fixture.submission(prompt).await;
+    fixture.complete(&turn);
+    fixture.terminal.wait_text("Enter send").await;
+    fixture.terminal.input("\x03\x03");
+    fixture.terminal.wait_output("\x1b[?1049l").await;
+    tokio::time::timeout(TIMEOUT, async {
+        while fixture.terminal.child.try_wait().unwrap().is_none() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("non-UTF-8 workspace prompt must flush before process exit");
+    fixture.history.lock().unwrap().clear();
+    let mut reopened = Terminal::start_with_command(&fixture.origin, true, None, |command| {
+        command.env("CODEX_HOME", &account_home);
+    });
+    let _events = tokio::time::timeout(TIMEOUT, fixture.connections.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    reopened.wait_text("Enter send").await;
+    reopened.input("\x12");
+    reopened.wait_text("Recent prompts").await;
+    reopened.wait_text("CACHE_NON_UTF8_WORKSPACE_短").await;
+    reopened.input("\r");
+    reopened.wait_no_text("Recent prompts").await;
+    reopened.wait_text("preserve this prompt exactly").await;
+    assert!(fixture.submissions.try_recv().is_err());
+    reopened.input("\r");
+    let sent = tokio::time::timeout(TIMEOUT, fixture.submissions.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(prompt_text(&sent["input"]), prompt);
+    eprintln!(
+        "non-UTF-8 native cwd={:?}; persisted exact prompt after process exit and cleared server history: {prompt:?}\n{}",
+        workspace.as_os_str(),
+        reopened.screen.lock().unwrap().screen().contents()
     );
 }

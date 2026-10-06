@@ -49,6 +49,11 @@ pub(super) fn bounded(prompts: Vec<RecentPrompt>) -> Vec<RecentPrompt> {
 
 fn normalize(mut prompts: Vec<RecentPrompt>) -> Result<(Vec<RecentPrompt>, Vec<u8>), String> {
     for prompt in &mut prompts {
+        // Workspace is display metadata, never a path to reopen. Unix folder
+        // names may contain non-UTF-8 bytes, which PathBuf cannot encode as JSON.
+        if prompt.workspace.to_str().is_none() {
+            prompt.workspace = PathBuf::from(prompt.workspace.to_string_lossy().into_owned());
+        }
         if let Some(summary) = super::vault::receipt_summary(&prompt.text) {
             prompt.text = summary;
         }

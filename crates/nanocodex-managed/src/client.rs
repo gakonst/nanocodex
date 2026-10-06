@@ -113,7 +113,12 @@ impl ManagedClient {
             hash.update((value.len() as u64).to_be_bytes());
             hash.update(value);
         }
-        format!("{:x}", hash.finalize())
+        use std::fmt::Write as _;
+        let mut namespace = String::with_capacity(64);
+        for byte in hash.finalize() {
+            let _ = write!(namespace, "{byte:02x}");
+        }
+        namespace
     }
 
     /// Starts configuring a native managed client.
