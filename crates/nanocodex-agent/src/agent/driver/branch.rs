@@ -226,6 +226,7 @@ where
                             client_authored: resume.client_authored,
                             prompt_cache_key: resume.prompt_cache_key,
                             context_baseline: resume.context_baseline,
+                            reasoning: resume.reasoning,
                         }))
                     },
                     |checkpoint| InitialResume::Exact(Box::new(checkpoint)),

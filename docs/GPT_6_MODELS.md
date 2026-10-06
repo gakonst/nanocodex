@@ -57,9 +57,28 @@ requests omit `reasoning.mode`. `ToolDefinition::with_async_execution()` marks
 application-owned async tools, whose jobs and original `call_id` remain the
 application's responsibility. Managed tools do not enable this automatically.
 Steering is applied at model-call boundaries, not through `response.steer`.
-`configuration_update` is a low-level wire item; changing thinking does not
-automatically append one. `misalignment_policy_violation` is terminal and does
-not retry or roll back earlier external actions.
+Nanocodex enables codex-rs's cache-preserving reasoning-effort update path for
+GPT-6 Astra and GPT-6.1 Sol, whose pinned model catalog advertises support.
+The agent pins the request-level `reasoning.effort` for the surviving context.
+When the selected effort changes, it appends a trusted `configuration_update`
+item after the new user input. It does not replace earlier instructions or
+rewrite the existing prefix. An effort-only change keeps the same request
+baseline, prompt cache key, and healthy previous-response continuation.
+Unchanged selections do not add redundant updates.
+
+The pin and authored-update provenance survive agent checkpoints and recovery.
+Compaction uses the surviving baseline; failed compaction leaves it intact.
+Successful compaction retires the old updates and lets the next model request
+establish the currently selected effort as its new baseline. A stable prefix
+preserves the opportunity for provider cache reuse; it does not guarantee a
+cache hit.
+
+Luna and gateway models retain request-level effort changes. Their outgoing
+requests filter saved configuration updates without removing the stored items.
+Fast mode remains a separate service-tier setting: changing it replays retained
+history because the request envelope changed. Active and already accepted turns
+keep their captured settings. `misalignment_policy_violation` is terminal and
+does not retry or roll back earlier external actions.
 
 ## Gateway transports
 
@@ -74,9 +93,10 @@ remain rejected.
 
 ## Costs and service tier
 
-Standard requests explicitly select `service_tier: "default"`; fast mode is
-opt-in and uses the accepted `priority` wire value. This keeps the caller's
-choice authoritative even when a provider catalog defaults to priority.
+Fast mode sends `service_tier: "priority"`; disabling it omits `service_tier`,
+matching [codex-rs request normalization](https://github.com/openai/codex/blob/822e58cc3d666166c7446c5b1ea2e52f5d09594c/codex-rs/protocol/src/openai_models.rs#L988-L1003).
+The selected mode remains explicit in session settings. It does not change the
+reasoning effort, reasoning context, or system/developer instructions.
 
 [Official pricing](https://developers.openai.com/api/docs/pricing), per million
 tokens at standard short-context rates:

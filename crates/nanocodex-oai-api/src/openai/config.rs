@@ -74,6 +74,14 @@ impl ModelConfig {
         }
     }
 
+    /// Whether this native OpenAI model accepts appended reasoning-effort updates.
+    ///
+    /// Namespaced gateway models retain request-level effort semantics.
+    #[must_use]
+    pub const fn supports_reasoning_effort_updates(&self, model: Model) -> bool {
+        model.supports_reasoning_effort_updates() && self.model_id_prefix.is_none()
+    }
+
     /// Returns the fixed orchestration mode sent to the supported model.
     #[must_use]
     pub const fn orchestration() -> &'static str {
