@@ -176,6 +176,12 @@ impl AgentWorker {
             command.finish(models());
             return;
         }
+        if self.model_selection_required
+            && matches!(command.request.method.as_str(), "prompt" | "steer")
+        {
+            command.finish(json!({"status":"rejected","code":"model_selection_required","message":MODEL_SELECTION_REQUIRED}));
+            return;
+        }
         let expected = command.request.params["expected_session_id"]
             .as_str()
             .unwrap_or("")

@@ -297,6 +297,9 @@ enum WorkerEvent {
         id: u64,
         request_id: Arc<str>,
     },
+    BtwModelSelectionRejected {
+        id: u64,
+    },
     BtwOpenFailed {
         id: u64,
         error: String,
@@ -961,6 +964,7 @@ pub(crate) async fn run_observed(
     pending.drain(&mut ui.app, &mut worker_rx);
     let worker = spawn_agent_worker(
         agent,
+        can_replace_backend,
         Arc::clone(&root_session_id),
         configured.realtime,
         configured.mcp,
@@ -1594,6 +1598,10 @@ fn handle_worker_update(
         }
         WorkerEvent::BtwOpened { id, request_id } => app.btw_opened(id, request_id),
         WorkerEvent::BtwOpenFailed { id, error } => app.btw_failed(id, error),
+        WorkerEvent::BtwModelSelectionRejected { id } => {
+            app.close_btw(id);
+            app.push_active_error(MODEL_SELECTION_REQUIRED);
+        }
         WorkerEvent::BtwAgentEvent { id, event } => {
             let _ = app.on_agent_event(PaneId::Btw(id), &event.event);
         }
@@ -1751,6 +1759,7 @@ fn handle_worker_update(
 
 fn spawn_agent_worker(
     root: Nanocodex,
+    can_replace_backend: bool,
     root_session_id: Arc<str>,
     realtime: Option<OpenAi>,
     mcp: Option<McpHandle>,
@@ -1771,6 +1780,8 @@ fn spawn_agent_worker(
             },
             archived_main: Vec::new(),
             next_turn_id: 1,
+            model_selection_required: false,
+            can_replace_backend,
             btw: None,
             finished: finished_tx,
             updates,
@@ -1856,6 +1867,8 @@ struct AgentWorker {
     main: MainWorkerBranch,
     archived_main: Vec<MainWorkerBranch>,
     next_turn_id: u64,
+    model_selection_required: bool,
+    can_replace_backend: bool,
     btw: Option<BtwWorker>,
     finished: mpsc::UnboundedSender<FinishedTurn>,
     updates: mpsc::UnboundedSender<WorkerEvent>,
@@ -1867,7 +1880,18 @@ struct AgentWorker {
     voice_agent_control: VoiceAgentControl,
 }
 
+const MODEL_SELECTION_REQUIRED: &str = "Input was not sent because model selection failed. Use /model to select a model again before submitting input.";
+
 impl AgentWorker {
+    fn reject_model_selection_input(&self, target: PaneId, input_id: u64, steer: bool) {
+        let _ = self.updates.send(WorkerEvent::ExternalRejected {
+            target,
+            input_id,
+            steer,
+            error: MODEL_SELECTION_REQUIRED.to_owned(),
+        });
+    }
+
     async fn handle_command(&mut self, command: WorkerCommand) {
         match command {
             WorkerCommand::AttachControl(bridge) => self.control = Some(bridge),
@@ -1963,6 +1987,12 @@ impl AgentWorker {
     }
 
     async fn control_voice(&mut self, control: VoiceControl) {
+        if self.model_selection_required {
+            let _ = self.updates.send(WorkerEvent::VoiceFailed {
+                error: MODEL_SELECTION_REQUIRED.to_owned(),
+            });
+            return;
+        }
         let running = self.voice_running();
         match control {
             VoiceControl::Mute => {
@@ -2184,7 +2214,8 @@ impl AgentWorker {
     }
 
     async fn change_model(&mut self, model: HarnessModel) -> Result<(), String> {
-        if self.next_turn_id != 1
+        if !self.can_replace_backend
+            || self.next_turn_id != 1
             || !self.archived_main.is_empty()
             || self.btw.is_some()
             || self.voice.is_some()
@@ -2192,11 +2223,17 @@ impl AgentWorker {
         {
             return Err("Cannot change model after a thread has started".into());
         }
+        self.model_selection_required = true;
         let (reply, receive) = tokio::sync::oneshot::channel();
         self.updates
             .send(WorkerEvent::ReplaceBackend { model, reply })
             .map_err(|error| error.to_string())?;
-        let replacement = receive.await.map_err(|error| error.to_string())??;
+        let replacement = receive
+            .await
+            .map_err(|error| error.to_string())?
+            .map_err(|error| {
+                format!("{error}. Use /model to select a model again before submitting input.")
+            })?;
         let previous = std::mem::replace(&mut self.main.agent, replacement.agent);
         if let Err(error) = previous.shutdown().await {
             tracing::warn!(%error, "could not shut down replaced model");
@@ -2204,6 +2241,7 @@ impl AgentWorker {
         self.main.request_id = replacement.request_id;
         self.realtime = replacement.realtime;
         self.mcp = replacement.mcp;
+        self.model_selection_required = false;
         self.publish_control_conversations();
         let _ = self.updates.send(WorkerEvent::ModelChanged { model });
         Ok(())
@@ -2249,6 +2287,10 @@ impl AgentWorker {
         prompt: SubmittedPrompt,
         request_id: Option<String>,
     ) -> bool {
+        if self.model_selection_required {
+            self.reject_model_selection_input(target, prompt_id, false);
+            return false;
+        }
         if target == PaneId::Main
             && let Some(voice) = &self.voice
         {
@@ -2315,6 +2357,10 @@ impl AgentWorker {
     }
 
     async fn steer(&mut self, target: PaneId, steer_id: u64, prompt: SubmittedPrompt) -> bool {
+        if self.model_selection_required {
+            self.reject_model_selection_input(target, steer_id, true);
+            return false;
+        }
         if target == PaneId::Main
             && let Some(voice) = &self.voice
         {
@@ -2477,6 +2523,15 @@ impl AgentWorker {
         steer_ids: Vec<u64>,
         prompt: SubmittedPrompt,
     ) {
+        if self.model_selection_required {
+            let _ = self
+                .updates
+                .send(WorkerEvent::InterruptedSteersKept { target, prompt_id });
+            for id in steer_ids {
+                self.reject_model_selection_input(target, id, true);
+            }
+            return;
+        }
         let already_running = match target {
             PaneId::Main => self
                 .main
@@ -2536,6 +2591,12 @@ impl AgentWorker {
     }
 
     async fn open_btw(&mut self, id: u64, prompt_id: Option<u64>, prompt: Option<SubmittedPrompt>) {
+        if self.model_selection_required {
+            let _ = self
+                .updates
+                .send(WorkerEvent::BtwModelSelectionRejected { id });
+            return;
+        }
         if self.voice_running() {
             drop(self.updates.send(WorkerEvent::BtwOpenFailed {
                 id,
@@ -5354,6 +5415,7 @@ mod tests {
             let (updates, mut update_rx) = mpsc::unbounded_channel();
             let worker = spawn_agent_worker(
                 agent,
+                true,
                 Arc::from(session.as_str()),
                 None,
                 None,
@@ -5416,6 +5478,7 @@ mod tests {
         let (updates, mut update_rx) = mpsc::unbounded_channel();
         let worker = spawn_agent_worker(
             agent,
+            true,
             Arc::from(session_id.to_string()),
             None,
             None,
@@ -5514,6 +5577,7 @@ mod tests {
         let (updates, mut update_rx) = mpsc::unbounded_channel();
         spawn_agent_worker(
             agent,
+            true,
             std::sync::Arc::from(session_id.to_string()),
             None,
             None,
@@ -5654,6 +5718,7 @@ mod tests {
         let (updates, mut update_rx) = mpsc::unbounded_channel();
         spawn_agent_worker(
             agent,
+            true,
             std::sync::Arc::from(session_id.to_string()),
             None,
             None,
@@ -5823,7 +5888,7 @@ mod tests {
             &commands,
         )?;
         assert_eq!(app.main.status, "Ready");
-        assert!(app.main.transcript.is_empty());
+        assert_eq!(app.main.transcript.len(), 0);
         Ok(())
     }
 

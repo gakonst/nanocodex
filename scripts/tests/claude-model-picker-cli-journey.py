@@ -71,7 +71,7 @@ def main():
     threading.Thread(target=server.serve_forever, daemon=True).start()
     base = f'http://127.0.0.1:{server.server_port}/v1'
 
-    def journey(name, initial, target, expected, codex_auth=True, claude_auth=True, picker=False, fail_first=False, queued=False):
+    def journey(name, initial, target, expected, codex_auth=True, claude_auth=True, picker=False, fail_first=False, queued=False, queued_failure=False):
         out = artifact / name
         out.mkdir()
         home = out / 'home'
@@ -131,8 +131,14 @@ def main():
         try:
             wait(lambda: 'Message' in screen.text(), 'initial composer absent')
             if fail_first:
-                send('/model sonnet')
+                if queued_failure:
+                    os.write(master, b'/model sonnet\rDo not send this queued prompt to the previous provider\r')
+                else:
+                    send('/model sonnet')
                 wait(lambda: 'nanocodex --claude auth login' in screen.text(), 'missing target-auth hint')
+                if queued_failure:
+                    wait(lambda: 'not sent' in screen.text(), 'queued prompt was not rejected after failed selection')
+                    (out / 'rejected-prompt.txt').write_text(screen.text())
                 h.require(len(requests) == start, 'failed selection dispatched inference')
             send('/model')
             wait(lambda: 'Select Model' in screen.text(), 'model picker absent')
@@ -187,6 +193,7 @@ def main():
         journey('claude-to-codex', 'claude', 'sol', 'gpt-6.1-sol')
         journey('haiku-effort', 'claude', 'haiku', 'claude-haiku-4-5')
         journey('failed-auth-retains-codex', 'codex', 'luna', 'gpt-6-luna', claude_auth=False, fail_first=True)
+        journey('queued-failed-auth', 'codex', 'luna', 'gpt-6-luna', claude_auth=False, fail_first=True, queued_failure=True)
         outcome = {'success': True, 'checks': checks, 'provider_requests': len(requests)}
     finally:
         (artifact / 'outcome.json').write_text(json.dumps(outcome, indent=2))
