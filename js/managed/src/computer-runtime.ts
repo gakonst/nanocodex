@@ -29,11 +29,12 @@ type DisposableComputerWorkspace = WorkspaceStorageClient & Readonly<{
 
 export type ManagedComputerRuntime = ComputerRuntime & Readonly<{
   dispose(): void;
+  workspace(): Promise<DisposableComputerWorkspace>;
 }>;
 
 /** Wires managed persistence, egress, and SSH policy into the generic JS tools. */
 export async function createManagedComputerRuntime(options: Readonly<{
-  computer: DisposableComputerWorkspace;
+  computer: DisposableComputerWorkspace | (() => Promise<DisposableComputerWorkspace>);
   networkPolicy?: NetworkPolicy;
   filesystem?: Workspace;
   connectorAllowed?: (
@@ -49,17 +50,29 @@ export async function createManagedComputerRuntime(options: Readonly<{
   sshPassword?: (reference: string) => Promise<string>;
 }>): Promise<ManagedComputerRuntime> {
   let disposed = false;
+  let computer = typeof options.computer === "function" ? undefined : options.computer;
+  let workspaceTask: Promise<DisposableComputerWorkspace> | undefined;
+  const workspace = async () => {
+    if (disposed) throw new Error("managed computer runtime is disposed");
+    if (computer) return computer;
+    return workspaceTask ??= (async () => {
+      const opened = await (options.computer as () => Promise<DisposableComputerWorkspace>)();
+      if (disposed) { opened[Symbol.dispose](); throw new Error("managed computer runtime is disposed"); }
+      computer = opened;
+      return opened;
+    })();
+  };
   const lifetime = new AbortController();
   const calls = new AsyncLocalStorage<ToolContext>();
   const dispose = () => {
     if (disposed) return;
     disposed = true;
     lifetime.abort(new Error("managed computer runtime is disposed"));
-    options.computer[Symbol.dispose]();
+    computer?.[Symbol.dispose]();
   };
 
   try {
-    const filesystem = options.filesystem ?? await createWorkspaceFilesystem(options.computer);
+    const filesystem = options.filesystem ?? await createWorkspaceFilesystem(await workspace());
     const fetch = createManagedShellFetch(
       options.egress,
       options.subject,
@@ -114,6 +127,7 @@ export async function createManagedComputerRuntime(options: Readonly<{
     return Object.freeze({
       ...runtime,
       dispose,
+      workspace,
       tool: Object.freeze({
         ...runtime.tool, dispose,
         handler: (input: unknown, context: ToolContext) => {

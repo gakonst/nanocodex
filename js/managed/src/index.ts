@@ -162,7 +162,6 @@ import {
   DEFAULT_MANAGED_MCP_CATALOG,
   managedAccountMcpServerName,
   managedAccountMcpServers,
-  type ManagedAccountMcpConnection,
 } from "./default-mcp";
 import {
   HostedToolsBroker,
@@ -3833,11 +3832,6 @@ export class DurableAgentSession extends DurableComputerObject {
   #accountDiscoveryKey?: string;
   #preparationTask?: Promise<void>;
   #preparationExpiresAt = 0;
-  #accountMcpConnections?: readonly ManagedAccountMcpConnection[];
-  #accountMcpRefreshTask?: {
-    key: string;
-    promise: Promise<readonly ManagedAccountMcpConnection[] | undefined>;
-  };
   readonly #cancellationTasks = new Map<string, Promise<void>>();
   readonly #hostedTools: HostedToolsBroker;
   readonly #diagnostics: DiagnosticJournal;
@@ -4827,7 +4821,6 @@ export class DurableAgentSession extends DurableComputerObject {
         || this.#pendingDeviceToolCalls.size > 0 || this.#inFlight.size > 0
         || this.#hostedTools.hasPendingCalls()
         || this.#agentPromise !== undefined
-        || this.#accountMcpRefreshTask !== undefined
         || this.#managedRealtimeSession() !== undefined
         || this.ctx.storage.sql.exec<{ count: number }>(
           "SELECT COUNT(*) AS count FROM managed_realtime_operations WHERE state = 'pending' AND blocked = 0",
@@ -5170,7 +5163,7 @@ export class DurableAgentSession extends DurableComputerObject {
       try {
         // A live router already owns the dynamic attachment catalog validator.
         // Re-discovering unrelated account tools delays every VM attachment.
-        await performanceStage("attachment.router_ready", () => this.#ensureAgent(undefined, { reuseReady: true }));
+        await performanceStage("attachment.router_ready", () => this.#ensureAgent({ reuseReady: true }));
       } catch (error) {
         console.error({ type: "managed.tool_router_startup_failed", error_kind: errorKind(error) });
         return json({ error: "tool_router_unavailable" }, { status: 503 });
@@ -8498,7 +8491,8 @@ export class DurableAgentSession extends DurableComputerObject {
         && session.runtime_profile === "managed" && accountToolsEnabled(this.#configuration())
         && this.#startupContext.needsEnvironment(row.id)
         ? this.#catalog(session) : undefined;
-      const agentReady = this.#ensureAgent(catalog).then((agent) => {
+      void catalog?.catch(() => {});
+      const agentReady = this.#ensureAgent().then((agent) => {
         assertActive();
         if (this.#agent !== agent) throw retryableError("agent became unavailable during admission");
         // Runtime replacement can clear the queue. Establish this turn's
@@ -9233,8 +9227,13 @@ export class DurableAgentSession extends DurableComputerObject {
   #startupAccountInfo(session: SessionRow, authorization: TurnAuthorization): Promise<AccountInfo> {
     // A public write-link turn inherits neither discovery nor Vault metadata.
     if (authorization.guestShareLinkId) return accountInfo(this.env.NANOCODEX, session.owner_id, { enabled: false });
-    // Cache raw discovery once; project the current turn's authority on every
-    // use. A second projected cache would extend an older snapshot's deadline.
+    // Project only resolved metadata. Explicit environment() still reads live.
+    const snapshot = this.#accountCatalog.peek(this.env.NANOCODEX, session.owner_id,
+      JSON.stringify([session.organization_id, session.team_id, session.authorization_epoch]));
+    if (!snapshot && session.runtime_profile === "managed") return Promise.resolve({
+      status: "pending", apis: [], authenticated: [], accounts: {}, connectorAccounts: {},
+      connectorTools: {}, machines: [], identity: {}, stablecoins: [], authorizations: [], vault: [],
+    });
     return withHardDeadline("startup accountInfo", 10_000, (signal) => accountInfo(
       this.env.NANOCODEX, session.owner_id, {
         allowedConnectors: accountConnectorProjection(authorization),
@@ -9243,9 +9242,8 @@ export class DurableAgentSession extends DurableComputerObject {
         // Wallet reads belong to explicit environment inspection, never model startup.
         includeWallet: false,
         ...(session.runtime_profile === "managed" ? {
-          catalog: this.#catalog(session),
-          vault: this.#accountCatalog.vault(this.env.NANOCODEX, session.owner_id,
-            JSON.stringify([session.organization_id, session.team_id, session.authorization_epoch])),
+          catalog: Promise.resolve(snapshot!.catalog),
+          vault: Promise.resolve(snapshot!.vault),
         } : {}),
       },
     )).catch(() => accountInfo(this.env.NANOCODEX, session.owner_id, { enabled: false })
@@ -9258,7 +9256,6 @@ export class DurableAgentSession extends DurableComputerObject {
   }
 
   async #ensureAgent(
-    catalog?: Promise<unknown>,
     options: { reuseReady?: boolean } = {},
   ): Promise<CloudflareAgent.Agent> {
     const storedModel: unknown = this.#settings().model;
@@ -9289,7 +9286,7 @@ export class DurableAgentSession extends DurableComputerObject {
     }
     if (this.#agent) {
       const agent = this.#agent;
-      await this.#refreshAgentAccount(catalog);
+      this.#refreshAgentAccount();
       if (this.#agent !== agent) return this.#ensureAgent();
       return agent;
     }
@@ -9321,7 +9318,7 @@ export class DurableAgentSession extends DurableComputerObject {
     this.#agentConstructions.add(construction);
     // Register ownership before starting credential/catalog I/O. Retirement
     // aborts preparation and joins this exact construction before replacement.
-    construction.promise = Promise.resolve().then(() => this.#createAgent(catalog, construction.abort.signal));
+    construction.promise = Promise.resolve().then(() => this.#createAgent(construction.abort.signal));
     const publication = this.#publishAgentConstruction(construction);
     construction.publication = publication;
     this.#agentPromise = publication;
@@ -9442,53 +9439,6 @@ export class DurableAgentSession extends DurableComputerObject {
     return shutdown;
   }
 
-  async #refreshAccountMcpConnections(session: SessionRow, catalog?: Promise<unknown>, preparationSignal?: AbortSignal): Promise<void> {
-    const keyFor = (value: SessionRow) => JSON.stringify([
-      value.owner_id, value.organization_id, value.team_id, value.authorization_epoch,
-    ]);
-    const key = keyFor(session);
-    let refreshing = this.#accountMcpRefreshTask;
-    if (refreshing?.key !== key) {
-      // Coalesce only the read. Every caller must install the shared result
-      // under its own current construction/authority, even after retirement.
-      const promise = connectedManagedAccountMcps(this.env.NANOCODEX, session.owner_id, catalog)
-        .then(connected => [...connected].sort((left, right) => left.id.localeCompare(right.id)))
-        .catch(error => {
-          console.warn({ type: "managed.account_mcp_listing_failed", error_kind: errorKind(error), fallback: "cached_or_empty" });
-          return undefined;
-        });
-      refreshing = { key, promise };
-      this.#accountMcpRefreshTask = refreshing;
-    }
-    try {
-      const connected = await refreshing.promise;
-      const currentSession = this.#session();
-      if (!currentSession || keyFor(currentSession) !== key) return;
-      if (connected === undefined) {
-        this.#accountMcpConnections ??= Object.freeze([]);
-        return;
-      }
-      if (sameAccountMcpConnections(this.#accountMcpConnections, connected)) return;
-      // Early construction owns a socket but has not captured any tools yet.
-      // Only that exact, still-active preparation may install its discovery.
-      if (preparationSignal !== undefined && !preparationSignal.aborted && !this.#agent
-        && this.#agentConstruction?.abort.signal === preparationSignal) {
-        this.#accountMcpConnections = Object.freeze(connected);
-        return;
-      }
-      // A later construction has already captured the catalog. Keep the old
-      // fingerprint so the next safe ensure retires that published runtime.
-      if (this.#agentPromise || this.#agentConstructions.size > 0) return;
-      const activeChildren = await this.#hasActiveSubagents();
-      if (this.#agentPromise || this.#agentConstructions.size > 0 || activeChildren
-        || this.#turns.size > 0 || this.#managedRealtimeSession() !== undefined) return;
-      this.#accountMcpConnections = Object.freeze(connected);
-      if (this.#agent) await this.#shutdownAgent();
-    } finally {
-      if (this.#accountMcpRefreshTask === refreshing) this.#accountMcpRefreshTask = undefined;
-    }
-  }
-
   #refreshAccountHostedTools(session: SessionRow): void {
     this.#accountHostedTools ??= new AccountHostedToolsProvider(
       this.env.NANOCODEX_ACCOUNT_TOOLS,
@@ -9598,79 +9548,63 @@ export class DurableAgentSession extends DurableComputerObject {
     ));
   }
 
-  async #refreshAgentAccount(catalog?: Promise<unknown>, preparationSignal?: AbortSignal): Promise<number> {
+  #refreshAgentAccount(): void {
     const session = this.#session();
-    let accountMcpRefreshMs = 0;
-    if (session?.runtime_profile === "managed" && accountToolsEnabled(this.#configuration())) {
-      const discoveryKey = JSON.stringify([session.owner_id, session.organization_id, session.team_id, session.authorization_epoch]);
-      if (this.#accountDiscoveryKey !== discoveryKey) {
-        this.#accountHostedTools?.invalidate({ clearCatalog: true });
-        this.#accountDiscoveryKey = discoveryKey;
-      }
-      catalog ??= this.#catalog(session);
-      const refreshStartedAt = performance.now();
-      // Optional hand inventory must not gate admission or reuse of a ready agent.
-      this.#refreshAccountHostedTools(session);
-      await performanceStage("account.mcp_discovery", () => this.#refreshAccountMcpConnections(session, catalog, preparationSignal));
-      accountMcpRefreshMs = roundMilliseconds(performance.now() - refreshStartedAt);
+    if (session?.runtime_profile !== "managed" || !accountToolsEnabled(this.#configuration())) return;
+    const key = JSON.stringify([session.owner_id, session.organization_id, session.team_id, session.authorization_epoch]);
+    if (this.#accountDiscoveryKey !== key) {
+      this.#accountHostedTools?.invalidate({ clearCatalog: true });
+      this.#accountDiscoveryKey = key;
     }
-    return accountMcpRefreshMs;
+    this.#refreshAccountHostedTools(session);
   }
 
-  async #createAgent(catalog: Promise<unknown> | undefined, signal: AbortSignal): Promise<CloudflareAgent.Agent> {
+  async #createAgent(signal: AbortSignal): Promise<CloudflareAgent.Agent> {
     signal.throwIfAborted();
     const preparation = { startedAt: performance.now(), credentialBindingMs: 0 };
-    const discovery = this.#refreshAgentAccount(catalog, signal);
-    void discovery.catch(() => {});
-    try {
-      const session = this.#session();
-      if (!session) throw new Error("session is not initialized");
-      const configuration = this.#configuration();
-      const complete = async (create?: (options: NonNullable<Parameters<typeof CloudflareAgent.create>[1]>) => Promise<CloudflareAgent.Agent>) => {
-        signal.throwIfAborted();
-        return this.#createPreparedAgent(discovery, create, signal, create ? preparation : { startedAt: preparation.startedAt });
-      };
-      // Routed and shared-room transports retain their existing admission path.
-      if (session.runtime_profile !== "managed" || configuration.model_routing || this.#threadRoute() || this.#settings().model.startsWith("claude-")) return await complete();
-      const bindingStartedAt = performance.now();
-      await this.#ensureCredentialBinding(session);
-      preparation.credentialBindingMs = performance.now() - bindingStartedAt;
+    this.#refreshAgentAccount();
+    const session = this.#session();
+    if (!session) throw new Error("session is not initialized");
+    const configuration = this.#configuration();
+    const complete = async (create?: (options: NonNullable<Parameters<typeof CloudflareAgent.create>[1]>) => Promise<CloudflareAgent.Agent>) => {
       signal.throwIfAborted();
-      let durabilityId = session.session_id;
-      try {
-        durabilityId = this.ctx.storage.sql.exec<{ state_id: string }>(
-          "SELECT state_id FROM nanocodex_cloudflare_durability WHERE singleton = 1",
-        ).toArray()[0]?.state_id ?? durabilityId;
-      } catch { /* The adapter creates its identity on first construction. */ }
-      const options = { durabilityId, eventPersistence: "caller" as const };
-      const hasForkSeedTable = this.ctx.storage.sql.exec<{ name: string }>(
-        "SELECT name FROM sqlite_master WHERE type='table' AND name='managed_fork_seed'",
-      ).toArray().length > 0;
-      const forkSeed = hasForkSeedTable ? this.ctx.storage.sql.exec<{ snapshot_json: string }>(
-        "SELECT snapshot_json FROM managed_fork_seed WHERE singleton = 1",
-      ).toArray()[0] : undefined;
-      const hasHead = this.ctx.storage.sql.exec<{ name: string }>(
-        "SELECT name FROM sqlite_master WHERE type='table' AND name='nanocodex_durable_states'",
-      ).toArray().length > 0 && this.ctx.storage.sql.exec<{ revision: string; payload: string | null }>(
-        "SELECT revision, payload FROM nanocodex_durable_states WHERE state_id = ?", durabilityId,
-      ).toArray().some(row => row.revision !== "0" || row.payload !== null);
-      if (forkSeed && !hasHead) Object.defineProperty(options,
-        Symbol.for("nanocodex.cloudflare.internalForkResume"),
-        { value: JSON.parse(forkSeed.snapshot_json) });
-      Object.defineProperty(options, Symbol.for("nanocodex.cloudflare.internalConfiguration"), { value: this.#settings() });
-      Object.defineProperty(options, Symbol.for("nanocodex.cloudflare.internalRuntime"), {
-        value: { prepare: complete, preparationSignal: signal },
-      });
-      return await CloudflareAgent.create({ ctx: this.ctx, env: { NANOCODEX: this.#modelEgress() } }, options);
-    } finally {
-      // A failed binding/create must not leave discovery owned by an obsolete
-      // construction that a retry can join without installing its MCP catalog.
-      await discovery.catch(() => {});
-    }
+      return this.#createPreparedAgent(create, signal, create ? preparation : { startedAt: preparation.startedAt });
+    };
+    // Routed and shared-room transports retain their existing admission path.
+    if (session.runtime_profile !== "managed" || configuration.model_routing || this.#threadRoute() || this.#settings().model.startsWith("claude-")) return await complete();
+    const bindingStartedAt = performance.now();
+    await this.#ensureCredentialBinding(session);
+    preparation.credentialBindingMs = performance.now() - bindingStartedAt;
+    signal.throwIfAborted();
+    let durabilityId = session.session_id;
+    try {
+      durabilityId = this.ctx.storage.sql.exec<{ state_id: string }>(
+        "SELECT state_id FROM nanocodex_cloudflare_durability WHERE singleton = 1",
+      ).toArray()[0]?.state_id ?? durabilityId;
+    } catch { /* The adapter creates its identity on first construction. */ }
+    const options = { durabilityId, eventPersistence: "caller" as const };
+    const hasForkSeedTable = this.ctx.storage.sql.exec<{ name: string }>(
+      "SELECT name FROM sqlite_master WHERE type='table' AND name='managed_fork_seed'",
+    ).toArray().length > 0;
+    const forkSeed = hasForkSeedTable ? this.ctx.storage.sql.exec<{ snapshot_json: string }>(
+      "SELECT snapshot_json FROM managed_fork_seed WHERE singleton = 1",
+    ).toArray()[0] : undefined;
+    const hasHead = this.ctx.storage.sql.exec<{ name: string }>(
+      "SELECT name FROM sqlite_master WHERE type='table' AND name='nanocodex_durable_states'",
+    ).toArray().length > 0 && this.ctx.storage.sql.exec<{ revision: string; payload: string | null }>(
+      "SELECT revision, payload FROM nanocodex_durable_states WHERE state_id = ?", durabilityId,
+    ).toArray().some(row => row.revision !== "0" || row.payload !== null);
+    if (forkSeed && !hasHead) Object.defineProperty(options,
+      Symbol.for("nanocodex.cloudflare.internalForkResume"),
+      { value: JSON.parse(forkSeed.snapshot_json) });
+    Object.defineProperty(options, Symbol.for("nanocodex.cloudflare.internalConfiguration"), { value: this.#settings() });
+    Object.defineProperty(options, Symbol.for("nanocodex.cloudflare.internalRuntime"), {
+      value: { prepare: complete, preparationSignal: signal },
+    });
+    return await CloudflareAgent.create({ ctx: this.ctx, env: { NANOCODEX: this.#modelEgress() } }, options);
   }
 
   async #createPreparedAgent(
-    discovery: Promise<number>,
     create?: (options: NonNullable<Parameters<typeof CloudflareAgent.create>[1]>) => Promise<CloudflareAgent.Agent>,
     signal?: AbortSignal,
     preparation?: { startedAt: number; credentialBindingMs?: number },
@@ -9695,7 +9629,7 @@ export class DurableAgentSession extends DurableComputerObject {
       ? undefined : await this.#managedBrowserRuntime(session);
     const browserRuntimeMs = performance.now() - phaseStartedAt;
     phaseStartedAt = performance.now();
-    const workspace = await this.#workspace();
+    const workspace = () => this.#workspace();
     const workspaceMs = performance.now() - phaseStartedAt;
     phaseStartedAt = performance.now();
     // Shared-room members can all admit turns. Never attach the room owner's
@@ -9716,19 +9650,20 @@ export class DurableAgentSession extends DurableComputerObject {
       sshIdentityAllowed: (_reference, context) => context !== undefined
         && this.#hasFullAccountAuthority(this.#authorizationForToolContext(context)),
     });
-    let accountMcpRefreshMs: number;
-    let discoveryJoinMs = 0;
-    try {
-      // Account MCP discovery owns only the dynamic catalog. Browser metadata,
-      // workspace construction and configured setup do not consume it, so let
-      // those finish while its read is in flight. Join before capturing tools;
-      // failed or superseded discovery must still dispose this construction.
-      if (!multiplayer) await performanceStage("runtime.environment_setup", () => this.#prepareEnvironment(computer));
-      const discoveryJoinStartedAt = performance.now();
-      accountMcpRefreshMs = await performanceStage("runtime.discovery_join", () => discovery);
-      discoveryJoinMs = performance.now() - discoveryJoinStartedAt;
-      signal?.throwIfAborted();
-    } catch (error) { computer.dispose(); throw error; }
+    const accountMcpRefreshMs = 0;
+    const discoveryJoinMs = 0;
+    let environmentReady: Promise<void> | undefined;
+    const ensureEnvironmentReady = () => environmentReady ??= multiplayer ? Promise.resolve()
+      : performanceStage("runtime.environment_setup", () => this.#prepareEnvironment(computer));
+    // Keep configured workspace preparation behind actual use. The original
+    // handler performs setup commands without recursively awaiting itself.
+    const executeBrain = computer.tool.handler;
+    const brainTool: NamedTool = { ...computer.tool, handler: async (input, context) => {
+      context.signal.throwIfAborted();
+      await ensureEnvironmentReady();
+      context.signal.throwIfAborted();
+      return executeBrain(input, context);
+    } };
     const sharedBrainWorkspace = createSharedBrainReadWorkspace(
       this.#brainBucket(),
       session.session_id,
@@ -9736,15 +9671,21 @@ export class DurableAgentSession extends DurableComputerObject {
         if (multiplayer || !path.startsWith("/")) return computer.filesystem.readFile(path);
         // Retain explicit legacy /workspace image paths without opening that
         // filesystem during ordinary brain-only startup or relative reads.
-        return (await createWorkspaceFilesystem(workspace)).readFile(path);
+        return (await createWorkspaceFilesystem(await computer.workspace())).readFile(path);
       } },
       { relativePathsUseBrain: !multiplayer },
     );
-    const brainViewImage = createR2ViewImage({
+    const rawBrainViewImage = createR2ViewImage({
       bucket: this.#brainBucket(), resourceId: session.session_id,
       images: this.env.NANOCODEX_ATTACHMENT_IMAGES,
       fallbackWorkspace: sharedBrainWorkspace, relativePathsUseBrain: !multiplayer,
     });
+    const brainViewImage: NamedTool = { ...rawBrainViewImage, handler: async (input, context) => {
+      context.signal.throwIfAborted();
+      await ensureEnvironmentReady();
+      context.signal.throwIfAborted();
+      return rawBrainViewImage.handler(input, context);
+    } };
     const computerRuntimeMs = performance.now() - phaseStartedAt - discoveryJoinMs;
     const currentAccountInfo = async (context: ToolContext) => {
       await this.#accountHostedTools?.refresh();
@@ -9924,11 +9865,33 @@ export class DurableAgentSession extends DurableComputerObject {
       toolProviders: hostedProviders,
     };
     const codeEvaluatorMs = performance.now() - codeEvaluatorStartedAt;
-    const accountMcpConnections = this.#accountMcpConnections ?? [];
-    const accountMcpProviders = new Map(accountMcpConnections.map((connection) => [
-      managedAccountMcpServerName(connection),
-      `mcp:${connection.id}`,
-    ]));
+    const accountMcpProviders = new Map<string, string>();
+    let accountMcpFingerprint: string | undefined;
+    let accountMcpNames = new Map<string, string>();
+    let accountMcpServers: ReturnType<typeof managedAccountMcpServers> = {};
+    const loadAccountMcpServers = async () => {
+      const connections = await connectedManagedAccountMcps(this.env.NANOCODEX, session.owner_id, this.#catalog(session));
+      assertRuntimeOwned();
+      signal?.throwIfAborted();
+      const fingerprint = JSON.stringify([...connections].sort((a, b) => a.id.localeCompare(b.id)));
+      if (fingerprint === accountMcpFingerprint) return accountMcpServers;
+      accountMcpFingerprint = fingerprint;
+      accountMcpProviders.clear();
+      for (const connection of connections) accountMcpProviders.set(managedAccountMcpServerName(connection), `mcp:${connection.id}`);
+      // Keep unchanged connection objects stable when a different connection
+      // changes; the SDK can retain their clients and admitted handlers.
+      const nextServers: typeof accountMcpServers = {};
+      for (const connection of connections) {
+        const name = managedAccountMcpServerName(connection);
+        nextServers[name] = accountMcpNames.get(connection.id) === connection.name && accountMcpServers[name]
+          ? accountMcpServers[name]
+          : managedAccountMcpServers([connection], this.env.NANOCODEX, this.#credentialSubject(),
+            connectionId => this.#activeTurnMcpAllowed(connectionId))[name]!;
+      }
+      accountMcpNames = new Map(connections.map(connection => [connection.id, connection.name]));
+      accountMcpServers = nextServers;
+      return accountMcpServers;
+    };
     const managedMcp = multiplayer
       ? {}
       : {
@@ -9946,12 +9909,6 @@ export class DurableAgentSession extends DurableComputerObject {
               }
             })),
           },
-          ...managedAccountMcpServers(
-            accountMcpConnections,
-            this.env.NANOCODEX,
-            this.#credentialSubject(),
-            (connectionId) => this.#activeTurnMcpAllowed(connectionId),
-          ),
     };
     const sandboxToolsByMount = new Map<string, ReturnType<typeof cloudflareSandboxTools>>();
     const namespaceMachines = (context: ToolContext) => {
@@ -10068,7 +10025,7 @@ export class DurableAgentSession extends DurableComputerObject {
         return hostResult.value;
       },
       {
-        tool: computer.tool,
+        tool: brainTool,
         allowed: (context) => this.#authorizationForToolContext(context)?.capabilities.includes("tools:use") === true,
       },
       (machineId, context) => {
@@ -10378,7 +10335,7 @@ export class DurableAgentSession extends DurableComputerObject {
     try {
       phaseStartedAt = performance.now();
       const guestUnsafeTools = new Set(["view_image", "image_gen__imagegen", "account_connectors"]);
-      const selectedTools = (restrictedEnvironment ? [computer.tool, brainViewImage, updatePlan()] : cloudTools)
+      const selectedTools = (restrictedEnvironment ? [brainTool, brainViewImage, updatePlan()] : cloudTools)
         .map(tool => guestUnsafeTools.has(tool.name) ? ({
           ...tool,
           handler: (input: unknown, context: ToolContext) => {
@@ -10396,6 +10353,7 @@ export class DurableAgentSession extends DurableComputerObject {
             configuredTools,
             !accountToolsEnabled(configuration) ? {} : managedMcp,
             (serverName) => accountMcpProviders.get(serverName),
+            accountToolsEnabled(configuration) ? loadAccountMcpServers : undefined,
           );
       managedToolsMs = performance.now() - phaseStartedAt;
       let durabilityId = session.session_id;
@@ -10468,8 +10426,9 @@ export class DurableAgentSession extends DurableComputerObject {
       const alternateClaude = !multiplayer && !isClaude && configuredNames === undefined && configuration.multi_agent?.enabled !== false
         && this.env.NANOCODEX_SESSION_MODEL_EGRESS !== undefined && this.#credentialBinding?.strategy === "session_v1";
       if (isClaude || alternateClaude) {
-        claudeTools = await createManagedClaudeTools({ filesystem: computer.filesystem,
-          bash: namespaceRuntime?.tools.find(tool => tool.name === "exec_command") ?? computer.tool, poll: namespaceRuntime?.tools.find(tool => tool.name === "write_stdin"), tools: configuredTools, allowedNames: configuredNames, providers: hostedProviders, mcp: !accountToolsEnabled(configuration) ? {} : managedMcp,
+        claudeTools = await createManagedClaudeTools({ filesystem: computer.filesystem, prepareFilesystem: ensureEnvironmentReady,
+          bash: namespaceRuntime?.tools.find(tool => tool.name === "exec_command") ?? brainTool, poll: namespaceRuntime?.tools.find(tool => tool.name === "write_stdin"), tools: configuredTools, allowedNames: configuredNames, providers: hostedProviders, mcp: !accountToolsEnabled(configuration) ? {} : managedMcp,
+          loadServers: accountToolsEnabled(configuration) ? loadAccountMcpServers : undefined,
           authorize: authorizeClaude });
         if (configuration.multi_agent?.enabled && configuredNames?.includes("Task")) claudeTasks = managedClaudeTasks({
           storage: this.ctx.storage, create: Claude.create, authorize: authorizeClaude,
@@ -14552,17 +14511,6 @@ function closeSocket(socket: WebSocket, code: number, reason: string): void {
   const standard = code >= 1000 && code <= 1014 && ![1004, 1005, 1006].includes(code);
   const safeCode = standard || (code >= 3000 && code <= 4999) ? code : 1011;
   socket.close(safeCode, reason.slice(0, 120));
-}
-
-function sameAccountMcpConnections(
-  left: readonly ManagedAccountMcpConnection[] | undefined,
-  right: readonly ManagedAccountMcpConnection[],
-): boolean {
-  return left !== undefined
-    && left.length === right.length
-    && left.every((connection, index) => (
-      connection.id === right[index]?.id && connection.name === right[index]?.name
-    ));
 }
 
 async function readBoundedText(response: Response, limit: number): Promise<string> {

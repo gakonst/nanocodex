@@ -134,10 +134,11 @@ export function createDefaultManagedTools(
   tools: readonly NamedTool[],
   mcp: McpServers = defaultManagedMcpServers(),
   catalogProvider?: (serverName: string) => string | undefined,
+  loadServers?: () => Promise<McpServers>,
 ): Promise<Tools> {
   // Explicit allowlists and restricted environments have no MCP discovery.
   // The SDK rejects both an empty map and mcpOptions when MCP is disabled.
-  if (Object.keys(mcp).length === 0) return createTools({ tools, mcp: false });
+  if (Object.keys(mcp).length === 0 && loadServers === undefined) return createTools({ tools, mcp: false });
   return createTools({
     tools,
     mcp,
@@ -145,6 +146,7 @@ export function createDefaultManagedTools(
       clientName: "nanocodex-managed",
       clientVersion: "0.5.0",
       ...(catalogProvider === undefined ? {} : { catalogProvider }),
+      ...(loadServers === undefined ? {} : { loadServers }),
     },
   });
 }
