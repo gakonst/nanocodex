@@ -1,3 +1,4 @@
+import { idempotentAgentId } from "nanocodex/cloudflare/managed-live";
 import { routeAccountNavigation } from "./account-navigation";
 import { inventoryEntry, type HandInventoryEntry } from "./hand-inventory";
 import { CUA_JS_NAME, CUA_RESET_NAME } from "nanocodex-computer/contract";
@@ -14742,17 +14743,6 @@ function uuidV7(): string {
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
 
-async function idempotentAgentId(userId: string, requestKey: string): Promise<string> {
-  const digest = new Uint8Array(await crypto.subtle.digest(
-    "SHA-256",
-    encoder.encode(`${userId}\0${requestKey}`),
-  ));
-  const bytes = digest.slice(0, 16);
-  bytes[6] = (bytes[6]! & 0x0f) | 0x80;
-  bytes[8] = (bytes[8]! & 0x3f) | 0x80;
-  const hex = [...bytes].map((byte) => byte.toString(16).padStart(2, "0")).join("");
-  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
-}
 
 function closeSocket(socket: WebSocket, code: number, reason: string): void {
   if (socket.readyState !== WebSocket.CONNECTING && socket.readyState !== WebSocket.OPEN) return;

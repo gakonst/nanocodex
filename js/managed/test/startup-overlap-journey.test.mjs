@@ -22,7 +22,7 @@ const output = join(candidateRoot, "../../output/startup-overlap-journey", `${Da
 const source = `
 import { DurableObject, WorkerEntrypoint } from 'cloudflare:workers';
 import worker, { DurableAgentSession, AccountHostedTools } from './src/index.ts';
-import { UserAccount as RealUserAccount, Organization, ApiKeyRecord, NonceStorage, ensureAccount, createApiKey } from './src/account-auth.ts';
+import { UserAccount as RealUserAccount, Organization, ApiKeyRecord, NonceStorage, ensureAccount, createApiKey, revokeApiKey } from './src/account-auth.ts';
 import { routeManaged } from '../account/worker/managedProxy.ts';
 export { DurableAgentSession, AccountHostedTools, Organization, ApiKeyRecord, NonceStorage };
 export class UserAccount extends RealUserAccount {
@@ -168,13 +168,17 @@ export class FixtureModel extends DurableObject {
 }
 export default {async fetch(request,env,ctx) {
   const url=new URL(request.url);
-  if(env.EDGE) return await routeManaged(request,env,url)??new Response(null,{status:404});
+  if(env.EDGE) {
+    if(request.headers.get('x-fixture-direct-run')==='required') env={...env,NANOCODEX_BACKEND:{fetch(){throw Error('managed Worker hop is held');}}};
+    return await routeManaged(request,env,url)??new Response(null,{status:404});
+  }
   if(url.pathname==='/__fixture') {
     const {user}=await request.json();await ensureAccount(env,user,true);
     const auth=await (await env.NANOCODEX_USERS.getByName(user).fetch('https://user.internal/authorization')).json();
-    return Response.json(await createApiKey(env,{kind:'api_key',userId:user,...auth.grant,
-      subjectId:'api_key:'+user,credentialId:'fixture',capabilities:auth.grant.capabilities},'synthetic startup'));
+    return Response.json({user,...await createApiKey(env,{kind:'api_key',userId:user,...auth.grant,
+      subjectId:'api_key:'+user,credentialId:'fixture',capabilities:auth.grant.capabilities},'synthetic startup')});
   }
+  if(url.pathname==='/__revoke-key') {const {user,id}=await request.json();return Response.json(await revokeApiKey(env,user,id));}
   if(url.pathname==='/__release-publication') return env.MODEL.getByName('startup').fetch('https://fixture.internal/release-publication');
   if(url.pathname==='/__trace') return env.MODEL.getByName('startup').fetch('https://fixture.internal/trace');
   if(url.pathname==='/__release-voice') return env.MODEL.getByName('startup').fetch('https://fixture.internal/release-voice');
@@ -545,6 +549,43 @@ test("public HTTP and WebSocket startup omit wallet I/O while explicit environme
     const finalTrace=await (await backend.fetch("https://fixture.internal/__trace")).json();
     assert.equal(finalTrace.filter(row=>row.event==="provider.request").length,requestsBeforeDeletion,"late discovery never resurrects a deleted turn");
     evidence={...evidence,invalid_input_no_work:true,deletion_during_discovery_fenced:true,trace:finalTrace};
+    // The native POST must work with the intermediate Worker unavailable.
+    // Session, live key authorization, SQLite, WASM and provider streaming are real.
+    const directOwner=await fixture(), directKey="native-direct-first-turn";
+    const directBody={settings,input:"Reply STARTUP_OK"};
+    const directFetch=(body=directBody,extra={})=>fetch(new URL("/v1/agent-runs",base),{
+      method:"POST",headers:{authorization:"Bearer "+directOwner.token,"content-type":"application/json",
+        accept:"text/event-stream","idempotency-key":directKey,"x-fixture-direct-run":"required",
+        "x-nanocodex-owner-id":crypto.randomUUID(),"x-nanocodex-api-key-object-id":"a".repeat(64),...extra},
+      body:JSON.stringify(body),signal:AbortSignal.timeout(20000)});
+    const directResponse=await directFetch();
+    const directText=await directResponse.text();
+    assert.equal(directResponse.status,201,directText);
+    assert.match(directText,/STARTUP_OK/);
+    assert.equal(directResponse.headers.has("x-nanocodex-run-phases"),false,"internal timing header is not public");
+    const directReceipt=JSON.parse(directText.match(/event: run\ndata: ([^\n]+)/)[1]);
+    const directTrace=await(await backend.fetch("https://fixture.internal/__trace")).json();
+    const directCount=directTrace.filter(row=>row.event==="provider.request").length;
+    await call(`/v1/agents/${directReceipt.agent_id}`,"GET",undefined,404,other);
+    const directReplay=await directFetch();
+    assert.equal(directReplay.status,200,await directReplay.clone().text());
+    assert.match(await directReplay.text(),/STARTUP_OK/);
+    const generalReplay=await call("/v1/agent-runs","POST",directBody,200,directOwner.token,{"idempotency-key":directKey});
+    assert.equal(generalReplay.agent_id,directReceipt.agent_id,"direct and general routes share creation identity");
+    assert.equal(generalReplay.turn_id,directReceipt.turn_id,"direct and general routes share turn identity");
+    const conflict=await directFetch({...directBody,input:"Different prompt"});
+    assert.equal(conflict.status,409,await conflict.text());
+    const invalid=await directFetch({...directBody,input:""},{"idempotency-key":"invalid-native-input"});
+    assert.equal(invalid.status,400,await invalid.text());
+    const richer=await directFetch({...directBody,configuration:{}});
+    assert.equal(richer.status,503,await richer.text(),"richer recipes retain general admission");
+    const revokedKey=await backend.fetch("https://fixture.internal/__revoke-key",{method:"POST",body:JSON.stringify({user:directOwner.user,id:directOwner.metadata.id})});
+    assert.equal(await revokedKey.json(),true,"fixture revokes the real stored key through the account lifecycle");
+    const revoked=await directFetch();
+    assert.equal(revoked.status,401,await revoked.text(),"direct admission checks live revocation on replay");
+    const afterDirect=await(await backend.fetch("https://fixture.internal/__trace")).json();
+    assert.equal(afterDirect.filter(row=>row.event==="provider.request").length,directCount,"replay, conflict, invalid input and revocation start no new inference");
+    evidence={...evidence,direct_run_without_managed_hop:true,direct_run_replay:true,direct_run_cross_route_identity:true,direct_run_live_revocation:true};
     console.log("STARTUP_OVERLAP_EVIDENCE",JSON.stringify({...evidence,trace:undefined,wire:undefined,output}));
   } catch(error) {failure=error;throw error;}
   finally {
