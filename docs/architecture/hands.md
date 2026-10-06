@@ -187,6 +187,28 @@ Its wire receipts and per-sample timings are retained in
 load and retain outliers. Local source improvements require a separately
 verified Hand build/update before being attributed to deployed machines.
 
+## CUA selection and recovery
+
+CUA discovery is scoped to the Hand's logical `workdir`. A workdir-only call
+returns `backend: "upstream"` for a complete JS/reset pair from an online
+publisher, or `backend: "native_screen"` for its published screen action API.
+Retained offline upstream catalogs do not take precedence over a live screen.
+An online upstream pair adds the `computer` capability even when the native
+publisher omitted that label. Shell connectivity and screen connectivity remain
+separate; capability labels alone do not prove that an input can be dispatched.
+
+Each Code Mode cell keeps its captured provider. A missing provider fails before
+input dispatch and directs the caller to rediscover the same Hand in a new
+cell. A disconnected or replaced screen does not redirect an admitted action to
+another screen or backend. Observe fresh state before issuing new input after
+an uncertain result. Native scroll actions require `x`, `y`, `deltaX`, and
+`deltaY`; a vertical scroll supplies `deltaX: 0`.
+
+Run `pnpm --filter nanocodex-managed-service test:cua-routing` for the public
+managed-turn journey through account discovery, Code Mode and the Hand
+transports. Evidence is written under `output/cua-routing-journey/`; the external
+model and native CUA/screen endpoints are synthetic.
+
 ## Native screen ownership
 
 Screen startup, display allocation, capture-helper supervision and reconnects

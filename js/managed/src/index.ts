@@ -1,3 +1,4 @@
+import { CUA_JS_NAME, CUA_RESET_NAME } from "nanocodex-computer/contract";
 import { parseNativeVaultInjection } from "./browser-vault-injection";
 import type { VaultFieldResolution } from "./browser-vault-injection";
 import { routeNativeInputDiscovery } from "./native-input-discovery";
@@ -9913,7 +9914,9 @@ export class DurableAgentSession extends DurableComputerObject {
       }
       const id = machineId.slice("user:".length);
       if (!this.#userHandMachines(context).some((machine) => machine.id === id)) return undefined;
-      return this.#hostedTools.machineTool(id, name, context)
+      const upstreamAvailable = name !== CUA_JS_NAME && name !== CUA_RESET_NAME
+        || this.#hostedTools.machineOnline(id);
+      return (upstreamAvailable ? this.#hostedTools.machineTool(id, name, context) : undefined)
         ?? this.#accountHostedTools?.machineTool(id, name, context);
     };
     const namespaceRuntime = multiplayer ? undefined : createManagedNamespaceRuntime(
@@ -11534,6 +11537,10 @@ export class DurableAgentSession extends DurableComputerObject {
     if (!this.#canUseExecutionNamespace(authorization)) return [];
     const userHands = this.#hasFullAccountAuthority(authorization) ? this.#userHandMachines(context) : [];
     const roots = this.#handPaths.assign(userHands, this.#managedMounts().map(mount => mount.root), this.#accountHostedTools?.machineRoots());
+    // Capability projection uses one indexed discovery view, not repeated
+    // catalog reconstruction inside namespace membership/route lookups.
+    const localCatalog = this.#hasFullAccountAuthority(authorization) ? this.#hostedTools.catalogSnapshot() : undefined;
+    const localOnline = new Set(localCatalog?.machines().filter(entry => entry.online).map(entry => entry.machine.id));
     return Object.freeze(projectHandProviders([
       ...this.#availableManagedMounts(authorization).map((mount) => {
         const hostMachine = mount.provider === "host" ? this.#hostMachineForMount(mount) : undefined;
@@ -11551,6 +11558,9 @@ export class DurableAgentSession extends DurableComputerObject {
       }),
       ...userHands.map((machine) => {
           const mount = roots.get(machine.id)!;
+          const upstream = localOnline.has(machine.id)
+            && localCatalog?.machineTool(machine.id, CUA_JS_NAME, context)
+            && localCatalog.machineTool(machine.id, CUA_RESET_NAME, context);
           return Object.freeze({
             id: `user:${machine.id}`,
             name: machine.name,
@@ -11560,7 +11570,7 @@ export class DurableAgentSession extends DurableComputerObject {
             mount,
             aliases: [machineMountRoot(machine.id)],
             workspace: mount,
-            capabilities: machine.capabilities,
+            capabilities: upstream ? [...new Set([...machine.capabilities, "computer"])] : machine.capabilities,
           });
         }),
     ]));

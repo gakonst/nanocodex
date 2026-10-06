@@ -1,4 +1,5 @@
 import { DurableObject } from "cloudflare:workers";
+import { CUA_JS_NAME, CUA_RESET_NAME } from "nanocodex-computer/contract";
 import { HandPaths } from "./hand-paths";
 import { HandRemoteBroker, REMOTE_VM_ASSERTION, type RemoteVMPublisher } from "./hand-remote";
 import { validRecordingCapability, screenTool, type ScreenTarget } from "./hand-remote-agent";
@@ -805,6 +806,11 @@ export class AccountHostedToolsProvider implements HostedToolsDynamicProvider {
     name: HostedMachineToolName,
     context?: AuthorizationContext,
   ): HostedToolsCodeTool | undefined {
+    // Retained machine catalogs can recover shell/process receipts, but an
+    // offline CUA pair must not mask this Hand's currently published screen.
+    // Already captured callers retain their original handlers and never switch
+    // backend after an input action has been admitted.
+    if ((name === CUA_JS_NAME || name === CUA_RESET_NAME) && !this.#onlineMachineIds.has(machineId)) return undefined;
     return this.#allowed(context) ? this.#machineTools.get(machineToolKey(machineId, name)) : undefined;
   }
 
@@ -935,8 +941,8 @@ export class AccountHostedToolsProvider implements HostedToolsDynamicProvider {
       };
       tools.set(definition.name, Object.freeze(tool));
     }
-    // Screen publishers remain available to the trusted viewer/internal route,
-    // but are not a model-facing alternative to an actual CUA MCP provider.
+    // Screen tools stay behind workdir-scoped CUA discovery; do not expose a
+    // second model-facing route that bypasses the selected Hand's contract.
     this.#definitions = Object.freeze(snapshot.tools
       .filter((entry) => entry.provider !== "screens")
       .map((entry) => entry.definition)
@@ -979,10 +985,12 @@ export class AccountHostedToolsProvider implements HostedToolsDynamicProvider {
       screenMachines.set(machineId, { id: machineId, name: target.machine_name,
         workspace: "/", capabilities: ["computer", "screen"] });
     }
-    this.#machines = Object.freeze(snapshot.machines.map(({ machine }) => ({ ...machine,
-        capabilities: screenTools.has(machine.id)
-          ? [...new Set([...machine.capabilities, "computer", "screen"])] : machine.capabilities,
-      })));
+    this.#machines = Object.freeze(snapshot.machines.map(({ machine, online }) => {
+      const upstream = online === true && machineTools.has(machineToolKey(machine.id, CUA_JS_NAME))
+        && machineTools.has(machineToolKey(machine.id, CUA_RESET_NAME));
+      return { ...machine, capabilities: [...new Set([...machine.capabilities,
+        ...(upstream ? ["computer"] : []), ...(screenTools.has(machine.id) ? ["computer", "screen"] : [])])] };
+    }));
     this.#screenMachines = Object.freeze([...screenMachines.values()]);
     this.#onlineMachineIds = new Set(snapshot.machines
       .filter(({ online }) => online === true)
