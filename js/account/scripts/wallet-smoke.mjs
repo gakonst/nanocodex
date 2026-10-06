@@ -28,7 +28,7 @@ function Fixture() { const [address,setAddress] = React.useState('${address}'); 
 `, resolveDir: new URL('..', import.meta.url).pathname, loader:'tsx' }, bundle:true, external:['/paradigm-mark.svg'], alias:{'nanocodex-connect-ui/ConnectionLogo':new URL('../../nanocodex-connect-ui/src/ConnectionLogo.tsx',import.meta.url).pathname}, write:false, outfile:'app.js', jsx:'automatic' });
 const server = createServer((_req,res) => { res.setHeader('Content-Type','text/html'); res.end(`<meta name="viewport" content="width=device-width,initial-scale=1"><div id="root"></div><style>${bundle.outputFiles.find(f=>f.path.endsWith('.css')).text}</style><script>${bundle.outputFiles.find(f=>f.path.endsWith('.js')).text}</script>`); });
 await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
-const browser = await chromium.launch({headless:true, ...(process.env.WALLET_BROWSER_CHANNEL ? {channel:process.env.WALLET_BROWSER_CHANNEL} : {})});
+const browser = await chromium.launch({headless:true, ...(process.env.WALLET_BROWSER_EXECUTABLE ? {executablePath:process.env.WALLET_BROWSER_EXECUTABLE} : {}), ...(process.env.WALLET_BROWSER_CHANNEL ? {channel:process.env.WALLET_BROWSER_CHANNEL} : {})});
 const output = new URL('../../../output/wallet-ui/', import.meta.url); mkdirSync(output,{recursive:true});
 try {
   for (const width of [1200,390]) {
@@ -56,6 +56,7 @@ try {
     await page.getByRole('button',{name:'Copy wallet address',exact:true}).click();
     await page.getByRole('alert').waitFor();
     assert.equal(await page.getByText('0x2222222222222222222222222222222222222222',{exact:true}).count(),1);
+    await page.route('**/v1/wallet', route => route.fulfill({json:{address, mode:'internal', original_address:address}}));
     const orders=[];
     await page.route('**/v1/machine-usd/config',route=>route.fulfill({json:{min_usd_amount_cents:500,max_usd_amount_cents:10000,onramp_enabled:true,chain_id:4217,token_address:'0x20c000000000000000000000f37de3740ADec032',stripe_publishable_key:'pk_test_fixture'}}));
     await page.route('**/v1/machine-usd/orders',route=>{
