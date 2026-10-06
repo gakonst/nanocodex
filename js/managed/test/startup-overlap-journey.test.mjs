@@ -183,8 +183,8 @@ test("public HTTP and WebSocket startup omit wallet I/O while explicit environme
     assert.equal((await (await backend.fetch("https://fixture.internal/__trace")).json()).length,0,"invalid input starts no metadata or model work");
     const started=performance.now();
     const run=await call("/v1/agent-runs","POST",{input:"Reply STARTUP_OK",settings,configuration},201,token,{"idempotency-key":"startup-overlap"});
-    const waitTurn=async (id,agentId=run.agent_id)=>{
-      for(let i=0;i<1000;i++){const value=await call(`/v1/agents/${agentId}/turns/${id}`);assert.ok(!["failed","cancelled"].includes(value.state),JSON.stringify(value));if(value.state==="completed")return value;await delay(10);}
+    const waitTurn=async (id,agentId=run.agent_id,credential=token)=>{
+      for(let i=0;i<1000;i++){const value=await call(`/v1/agents/${agentId}/turns/${id}`,"GET",undefined,200,credential);assert.ok(!["failed","cancelled"].includes(value.state),JSON.stringify(value));if(value.state==="completed")return value;await delay(10);}
       throw Error("turn did not finish");
     };
     const cold=await waitTurn(run.turn_id),coldMs=performance.now()-started;assert.match(JSON.stringify(cold),/STARTUP_OK/);
@@ -221,21 +221,44 @@ test("public HTTP and WebSocket startup omit wallet I/O while explicit environme
       discovery_before_registration:true,failed_publication_retried:true,no_effect_before_registration:true,registry_prepare_requests:0,startup_wallet_reads:0,trace};
     // Exercise native create-on-upgrade with speculative preparation while
     // the external wallet service is held. No wallet read may even start.
+    const liveToken=(await fixture()).token;
+    await backend.fetch('https://fixture.internal/__hold-catalog');
     const liveUrl=new URL('/v1/agents/live',base);liveUrl.protocol='ws:';
     for(const [key,value] of Object.entries(settings))liveUrl.searchParams.set(key,String(value));
-    const wire=[];let socketError;
-    live=new WebSocket(liveUrl,{headers:{authorization:'Bearer '+token,'x-nanocodex-prepare':'active-conversation','x-nanocodex-api-key-object-id':'a'.repeat(64)}});
+    const wire=[];let socketError,upgradeStatus;
+    live=new WebSocket(liveUrl,{headers:{authorization:'Bearer '+liveToken,'x-nanocodex-prepare':'active-conversation','x-nanocodex-api-key-object-id':'a'.repeat(64)}});
+    live.on('upgrade',response=>{upgradeStatus=response.statusCode;});
     live.on('message',data=>wire.push(JSON.parse(String(data))));live.on('error',error=>{socketError=error;});
     const waitMessage=async predicate=>{
       for(let i=0;i<2000;i++){if(socketError)throw socketError;const message=wire.find(predicate);if(message)return message;await delay(10);}
       throw Error('WebSocket startup did not complete: '+JSON.stringify(wire));
     };
     const ready=await waitMessage(message=>message.type==='ready'),liveTurn=crypto.randomUUID();
+    assert.equal(upgradeStatus,101,'prepared live request upgrades while fresh discovery is held');
     live.send(JSON.stringify({type:'prompt',id:liveTurn,input:'Reply STARTUP_OK'}));
     await waitMessage(message=>message.type==='turn_accepted' && message.id===liveTurn);
-    assert.match(JSON.stringify(await waitTurn(liveTurn,ready.session_id)),/STARTUP_OK/);
+    // A fresh owner's discovery is withheld at the real service boundary.
+    // Ready and prompt acceptance must remain independent of metadata readiness.
+    try {
+      for(let i=0;;i++) {
+        const pending=await(await backend.fetch('https://fixture.internal/__trace')).json();
+        if(pending.filter(row=>row.event==='catalog.held').length===1 && pending.filter(row=>row.event==='vault.read').length===2) {
+          assert.equal(pending.filter(row=>row.event==='catalog.finish').length,1,'fresh live catalog remains held after ready and prompt acceptance');
+          assert.equal(pending.filter(row=>row.event==='provider.request').length,3,'first prompt waits for complete discovery');
+          break;
+        }
+        assert.ok(i<200,'prepared live discovery did not dispatch both components');await delay(10);
+      }
+    } finally { await backend.fetch('https://fixture.internal/__release-catalog'); }
+    assert.match(JSON.stringify(await waitTurn(liveTurn,ready.session_id,liveToken)),/STARTUP_OK/);
     const liveTrace=await(await backend.fetch('https://fixture.internal/__trace')).json();
-    assert.equal(liveTrace.filter(row=>row.event==='provider.request').length,4);
+    const liveRequests=liveTrace.filter(row=>row.event==='provider.request');
+    assert.equal(liveRequests.length,4);
+    assert.ok(liveRequests[3].tools.includes('exec'),'first live prompt retains tools after discovery');
+    assert.match(JSON.stringify(liveRequests[3].input),/startup_context/,'first live prompt retains the startup snapshot');
+    assert.equal(liveTrace.filter(row=>row.event==='catalog.finish').length,2,'fresh live discovery finishes before the first provider request');
+    assert.equal(liveTrace.filter(row=>row.event==='catalog.start').length,2,'prepared live prompt reuses its discovery read');
+    assert.equal(liveTrace.filter(row=>row.event==='vault.read').length,2,'prepared live prompt reuses its Vault metadata read');
     assert.equal(liveTrace.filter(row=>row.event==='key.lookup').length,0,'verified key route avoids the account locator hop');
     assert.equal(liveTrace.filter(row=>row.event==='wallet.read').length,0,'HTTP and prepared WebSocket startup perform no wallet I/O');
     live.close();
@@ -250,7 +273,7 @@ test("public HTTP and WebSocket startup omit wallet I/O while explicit environme
     const inspectedRequests=inspectedTrace.filter(row=>row.event==='provider.request');
     assert.equal(inspectedRequests.length,6);
     assert.match(JSON.stringify(inspectedRequests.at(-1).input),/12345678/,'live environment result reaches the model');
-    evidence={...evidence,websocket_startup_wallet_reads:0,websocket_key_locator_reads:0,forged_key_route_overwritten:true,explicit_environment_wallet_reads:1,explicit_environment_balance:true,provider_requests:6,wire};
+    evidence={...evidence,websocket_startup_wallet_reads:0,websocket_key_locator_reads:0,websocket_upgrade_status:upgradeStatus,websocket_ready_while_discovery_held:true,websocket_first_tools_preserved:true,websocket_discovery_reads_coalesced:true,forged_key_route_overwritten:true,explicit_environment_wallet_reads:1,explicit_environment_balance:true,provider_requests:6,wire};
     // Hold a fresh owner's bootstrap after public acceptance, then change
     // defaults. The accepted turn must retain its original inference settings.
     const raceToken=(await fixture()).token;
@@ -261,7 +284,7 @@ test("public HTTP and WebSocket startup omit wallet I/O while explicit environme
     try {
       for(let i=0;;i++) {
         const pendingTrace=await (await backend.fetch("https://fixture.internal/__trace")).json();
-        if(pendingTrace.some(row=>row.event==="catalog.held"))break;
+        if(pendingTrace.filter(row=>row.event==="catalog.held").length>=2)break;
         assert.ok(i<200,"settings journey discovery did not start");await delay(10);
       }
       settingsPatch=call(`/v1/agents/${racing.agent_id}/settings`,"PATCH",{thinking:"high",fast_mode:true},200,raceToken);
@@ -319,7 +342,7 @@ test("public HTTP and WebSocket startup omit wallet I/O while explicit environme
     try {
       for(let i=0;;i++) {
         const pendingTrace=await (await backend.fetch("https://fixture.internal/__trace")).json();
-        if(pendingTrace.filter(row=>row.event==="catalog.held").length>=2)break;
+        if(pendingTrace.filter(row=>row.event==="catalog.held").length>=3)break;
         assert.ok(i<200,"second owner discovery did not start");await delay(10);
       }
       deletion=call(`/v1/agents/${cancelled.agent_id}`,"DELETE",undefined,204,other);

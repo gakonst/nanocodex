@@ -6042,7 +6042,7 @@ export class DurableAgentSession extends DurableComputerObject {
       }
       const settingsQuery = new URLSearchParams(url.searchParams);
       settingsQuery.delete("public_origin");
-      settings = parseAgentSettingsQuery(settingsQuery);
+      settings = validateAgentAdmissionSettings(parseAgentSettingsQuery(settingsQuery));
     } catch {
       return json({ error: "invalid_request" }, { status: 400 });
     }
@@ -6052,6 +6052,27 @@ export class DurableAgentSession extends DurableComputerObject {
       || typeof publicOrigin !== "string"
       || !validPublicOrigin(publicOrigin)) {
       return json({ error: "invalid_request" }, { status: 400 });
+    }
+    const prepare = request.headers.get(CONVERSATION_PREPARE_HEADER) === CONVERSATION_PREPARE_VALUE;
+    if (prepare && (!asserted.authorization.capabilities.includes("agents:write")
+      || !asserted.authorization.capabilities.includes("tools:use"))) {
+      return json({ error: "forbidden" }, { status: 403 });
+    }
+    if (asserted.authorization.connectGrant
+      && !asserted.authorization.connectGrant.connectors.includes("chatgpt")) {
+      return json({ error: "connector_forbidden" }, { status: 403 });
+    }
+    if (prepare && !asserted.authorization.guestShareLinkId) {
+      // Prime discovery before initialization writes can hold outgoing RPCs
+      // behind the SQLite output gate. Preparation reuses these exact promises;
+      // its existing joins still install every first-turn tool and snapshot.
+      const authorityKey = JSON.stringify([
+        asserted.organizationId, asserted.teamId, asserted.authorizationEpoch,
+      ]);
+      this.ctx.waitUntil(Promise.allSettled([
+        this.#accountCatalog.get(this.env.NANOCODEX, asserted.ownerId, authorityKey),
+        this.#accountCatalog.vault(this.env.NANOCODEX, asserted.ownerId, authorityKey),
+      ]).then(() => {}));
     }
     const credentialBinding: CredentialBindingOwnership = {
       cleanup_at: Date.now(),
@@ -6090,8 +6111,7 @@ export class DurableAgentSession extends DurableComputerObject {
         error_kind: errorKind(error),
       });
     }));
-    const response = this.#upgrade(asserted.authorization, null, callerContext(request.headers),
-      request.headers.get(CONVERSATION_PREPARE_HEADER) === CONVERSATION_PREPARE_VALUE);
+    const response = this.#upgrade(asserted.authorization, null, callerContext(request.headers), prepare);
     performanceCommit(this.ctx, "session.create.commit");
     return response;
   }
