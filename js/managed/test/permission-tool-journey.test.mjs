@@ -143,7 +143,7 @@ for (const keyKind of ["key-management", "legacy", "active-status"]) test(`${key
     }
     await call("/v1/data", "POST", { operation: "document_get", key: dataKey }, 403);
     const created = await call("/v1/agents", "POST", { settings: { model: "gpt-6.1-sol", thinking: "low", reasoning_mode: "standard", fast_mode: false } }, 201);
-    socket = new WebSocket(new URL(`/v1/agents/${created.agent_id}/ws`, base).href.replace(/^http/, "ws"), { headers: { authorization: "Bearer " + token, "x-nanocodex-api-key-id": "spoofedKey99" } });
+    socket = new WebSocket(new URL(`/v1/agents/${created.agent_id}/ws`, base).href.replace(/^http/, "ws"), { headers: { authorization: "Bearer " + token, "x-nanocodex-api-key-id": "spoofedKey99", "x-nanocodex-api-key-object-id": "a".repeat(64) } });
     socket.on("message", data => wire.push(JSON.parse(String(data))));
     let socketError;
     socket.on("error", error => { socketError = error; });

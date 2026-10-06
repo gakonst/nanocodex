@@ -74,8 +74,12 @@ export function forwardPrincipalAssertions(headers, principal) {
     // A non-secret identity for permission requests, written only after live
     // authentication. Never retain a caller's claimed key identity.
     headers.delete("x-nanocodex-api-key-id");
+    headers.delete("x-nanocodex-api-key-object-id");
     if (principal.kind === "api_key" && /^[A-Za-z0-9_-]{12}$/.test(principal.credentialId ?? "")) {
         headers.set("x-nanocodex-api-key-id", principal.credentialId);
+        if (/^[0-9a-f]{64}$/.test(principal.apiKeyObjectId ?? "")) {
+            headers.set("x-nanocodex-api-key-object-id", principal.apiKeyObjectId);
+        }
     }
     for (const name of [
         CONNECT_USER_HEADER,
@@ -120,8 +124,8 @@ export async function apiKeyDigest(request) {
     const token = authorization.slice("Bearer ".length);
     return API_KEY.test(token) ? sha256(token) : undefined;
 }
-export function apiKeyPrincipal(record, digest) {
+export function apiKeyPrincipal(record, digest, apiKeyObjectId) {
     if (!isStoredApiKey(record) || record.digest !== digest)
         return;
-    return { kind: "api_key", userId: record.userId, organizationId: record.organizationId, teamId: record.teamId, role: record.role, subjectId: `api_key:${record.id}`, credentialId: record.id, authorizationEpoch: record.authorizationEpoch, capabilities: record.capabilities };
+    return { kind: "api_key", ...(/^[0-9a-f]{64}$/.test(apiKeyObjectId ?? "") ? { apiKeyObjectId } : {}), userId: record.userId, organizationId: record.organizationId, teamId: record.teamId, role: record.role, subjectId: `api_key:${record.id}`, credentialId: record.id, authorizationEpoch: record.authorizationEpoch, capabilities: record.capabilities };
 }

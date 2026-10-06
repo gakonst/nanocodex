@@ -11,6 +11,7 @@ export type ManagedProxyEnv = PreviewBridgeEnv & {
   NANOCODEX_ACCESS_SECRET?: string;
   NANOCODEX_HAND_BROKER?: DurableObjectNamespace;
   NANOCODEX_LIVE_API_KEYS?: { getByName(name: string, options?: ReturnType<typeof durablePlacementOptions>): {
+    id?: { toString(): string };
     resolveAuthorizedKey?: () => Promise<unknown>;
   } };
   NANOCODEX_LIVE_SESSIONS?: { getByName(name: string, options?: ReturnType<typeof durablePlacementOptions>): {
@@ -151,7 +152,7 @@ async function directLiveAgent(request: Request, env: ManagedProxyEnv): Promise<
   // Older/unconfigured bindings keep the full managed route, before any create.
   const resolve = key.resolveAuthorizedKey;
   if (typeof resolve !== "function") return;
-  const principal = apiKeyPrincipal(consumeRpcData(await Reflect.apply(resolve, key, [])), digest);
+  const principal = apiKeyPrincipal(consumeRpcData(await Reflect.apply(resolve, key, [])), digest, key.id?.toString());
   const admitted = performance.now();
   const authFinishedAt = Date.now();
   const failure = liveAgentFailure(request, principal);

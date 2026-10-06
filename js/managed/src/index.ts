@@ -888,6 +888,8 @@ type ManagedRealtimeRouteResult = Readonly<{
 type TurnAuthorization = Readonly<{
   /** Verified API-key identity, never a bearer token; absent for Connect and service turns. */
   apiKeyId?: string;
+  /** Server-authenticated object route; never substitutes for live authorization. */
+  apiKeyObjectId?: string;
   capabilities: readonly OrganizationCapability[];
   connectGrant?: ConnectGrantSlice;
   guestShareLinkId?: string;
@@ -1153,6 +1155,7 @@ function forwardedPrincipal(headers: Headers): Readonly<{
     authorization = parseTurnAuthorization(JSON.stringify({
       capabilities: JSON.parse(encodedCapabilities),
       ...(headers.has("x-nanocodex-api-key-id") ? { apiKeyId: headers.get("x-nanocodex-api-key-id") } : {}),
+      ...(headers.has("x-nanocodex-api-key-object-id") ? { apiKeyObjectId: headers.get("x-nanocodex-api-key-object-id") } : {}),
       ...(grantId === null ? {} : {
         connectGrant: {
           grantId,
@@ -1176,13 +1179,14 @@ function forwardedPrincipal(headers: Headers): Readonly<{
 function parseTurnAuthorization(encoded: string): TurnAuthorization {
   const value = JSON.parse(encoded) as unknown;
   if (!value || typeof value !== "object" || Array.isArray(value)
-    || Object.keys(value).some((key) => key !== "capabilities" && key !== "connectGrant" && key !== "guestShareLinkId" && key !== "apiKeyId")
+    || Object.keys(value).some((key) => key !== "capabilities" && key !== "connectGrant" && key !== "guestShareLinkId" && key !== "apiKeyId" && key !== "apiKeyObjectId")
     || !isOrganizationCapabilities((value as { capabilities?: unknown }).capabilities)) {
     throw new Error("invalid turn authorization");
   }
   const parsed = value as {
     capabilities: OrganizationCapability[];
     apiKeyId?: unknown;
+    apiKeyObjectId?: unknown;
     connectGrant?: unknown;
     guestShareLinkId?: unknown;
   };
@@ -1192,8 +1196,12 @@ function parseTurnAuthorization(encoded: string): TurnAuthorization {
   if (parsed.apiKeyId !== undefined && (typeof parsed.apiKeyId !== "string"
     || !/^[A-Za-z0-9_-]{12}$/.test(parsed.apiKeyId) || parsed.connectGrant !== undefined
     || parsed.guestShareLinkId !== undefined)) throw new Error("invalid API-key turn authorization");
+  if (parsed.apiKeyObjectId !== undefined && (typeof parsed.apiKeyObjectId !== "string"
+    || !/^[0-9a-f]{64}$/.test(parsed.apiKeyObjectId) || parsed.apiKeyId === undefined))
+    throw new Error("invalid API-key object route");
   if (parsed.connectGrant === undefined) return { capabilities: parsed.capabilities,
-    ...(typeof parsed.apiKeyId === "string" ? { apiKeyId: parsed.apiKeyId } : {}) };
+    ...(typeof parsed.apiKeyId === "string" ? { apiKeyId: parsed.apiKeyId } : {}),
+    ...(typeof parsed.apiKeyObjectId === "string" ? { apiKeyObjectId: parsed.apiKeyObjectId } : {}) };
   if (!isConnectGrantSlice(parsed.connectGrant)) throw new Error("invalid turn authorization");
   return { capabilities: parsed.capabilities, connectGrant: parsed.connectGrant,
     ...(parsed.guestShareLinkId === undefined ? {} : { guestShareLinkId: parsed.guestShareLinkId }) };
@@ -8132,7 +8140,7 @@ export class DurableAgentSession extends DurableComputerObject {
     // Autonomous continuations keep the authority captured by their trigger.
     // They cannot later use an interactive consent receipt to refresh it.
     if (!userInitiated && authorization.apiKeyId) {
-      const { apiKeyId: _apiKeyId, ...pinned } = authorization;
+      const { apiKeyId: _apiKeyId, apiKeyObjectId: _apiKeyObjectId, ...pinned } = authorization;
       authorization = pinned;
     }
     // A native socket can outlive an explicit permission approval. Revalidate
@@ -10588,7 +10596,7 @@ export class DurableAgentSession extends DurableComputerObject {
   }
 
   async #refreshApiKeyAuthorization(authorization: TurnAuthorization): Promise<TurnAuthorization> {
-    const key = await resolvePermissionKey(this.env, this.#permissionIdentity(authorization));
+    const key = await resolvePermissionKey(this.env, this.#permissionIdentity(authorization), authorization.apiKeyObjectId);
     if (!key) throw new ManagedRequestError(403, "login_unavailable", "This login was revoked or its account permissions changed. Sign in again.");
     return { ...authorization, capabilities: key.capabilities };
   }

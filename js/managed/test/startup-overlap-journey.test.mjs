@@ -27,6 +27,9 @@ export { DurableAgentSession, AccountHostedTools, Organization, ApiKeyRecord, No
 export class UserAccount extends RealUserAccount {
   constructor(state,env) { super(state,env); this.fixture=env.MODEL; }
   async fetch(request) {
+    if(request.method==='GET' && new URL(request.url).pathname.startsWith('/api-keys/')) {
+      await this.fixture.getByName('startup').fetch('https://fixture.internal/key-lookup');
+    }
     if(request.method==='POST' && new URL(request.url).pathname.endsWith('/prepare')) {
       await this.fixture.getByName('startup').fetch('https://fixture.internal/registry-prepare');
     }
@@ -63,6 +66,7 @@ export class FixtureModel extends DurableObject {
   async fetch(request) {
     const url=new URL(request.url);
     if(url.pathname==='/trace') return Response.json(this.events);
+    if(url.pathname==='/key-lookup') { this.record('key.lookup');return new Response(null,{status:204}); }
     if(url.pathname==='/allow-wallet') { this.walletEnabled=true;this.releaseWallet?.();return new Response(null,{status:204}); }
     if(url.pathname==='/registry-prepare') { this.record('registry.prepare');return new Response(null,{status:204}); }
     if(url.pathname==='/publication') {
@@ -155,7 +159,9 @@ test("public HTTP and WebSocket startup omit wallet I/O while explicit environme
   const common={modules,compatibilityDate:"2026-07-30",compatibilityFlags:["nodejs_compat","enable_request_signal"]};
   const mf=new Miniflare({port:0,handleRuntimeStdio(stdout,stderr){createInterface({input:stdout}).on("line",capture);createInterface({input:stderr}).on("line",capture);},
     durableObjectsPersist:join(output,"sqlite"),r2Persist:join(output,"r2"),workers:[
-      {...common,name:"edge",bindings:{EDGE:true},serviceBindings:{NANOCODEX_BACKEND:"managed"}},
+      {...common,name:"edge",bindings:{EDGE:true},serviceBindings:{NANOCODEX_BACKEND:"managed"},
+        durableObjects:{NANOCODEX_LIVE_API_KEYS:{className:"ApiKeyRecord",scriptName:"managed",useSQLite:true},
+          NANOCODEX_LIVE_SESSIONS:{className:"DurableAgentSession",scriptName:"managed",useSQLite:true}}},
       {...common,name:"managed",bindings:{NANOCODEX_PERFORMANCE_TRACE:"true",MANAGED_AGENT_DIRECT_CREDENTIALS:"true",AGENT_IDLE_TIMEOUT_MS:"60000"},
         durableObjects:{NANOCODEX_SESSIONS:{className:"DurableAgentSession",useSQLite:true},NANOCODEX_USERS:{className:"UserAccount",useSQLite:true},NANOCODEX_ORGANIZATIONS:{className:"Organization",useSQLite:true},
           NANOCODEX_API_KEYS:{className:"ApiKeyRecord",useSQLite:true},NANOCODEX_AUTH:{className:"NonceStorage",useSQLite:true},NANOCODEX_ACCOUNT_TOOLS:{className:"AccountHostedTools",useSQLite:true},
@@ -218,7 +224,7 @@ test("public HTTP and WebSocket startup omit wallet I/O while explicit environme
     const liveUrl=new URL('/v1/agents/live',base);liveUrl.protocol='ws:';
     for(const [key,value] of Object.entries(settings))liveUrl.searchParams.set(key,String(value));
     const wire=[];let socketError;
-    live=new WebSocket(liveUrl,{headers:{authorization:'Bearer '+token,'x-nanocodex-prepare':'active-conversation'}});
+    live=new WebSocket(liveUrl,{headers:{authorization:'Bearer '+token,'x-nanocodex-prepare':'active-conversation','x-nanocodex-api-key-object-id':'a'.repeat(64)}});
     live.on('message',data=>wire.push(JSON.parse(String(data))));live.on('error',error=>{socketError=error;});
     const waitMessage=async predicate=>{
       for(let i=0;i<2000;i++){if(socketError)throw socketError;const message=wire.find(predicate);if(message)return message;await delay(10);}
@@ -230,6 +236,7 @@ test("public HTTP and WebSocket startup omit wallet I/O while explicit environme
     assert.match(JSON.stringify(await waitTurn(liveTurn,ready.session_id)),/STARTUP_OK/);
     const liveTrace=await(await backend.fetch('https://fixture.internal/__trace')).json();
     assert.equal(liveTrace.filter(row=>row.event==='provider.request').length,4);
+    assert.equal(liveTrace.filter(row=>row.event==='key.lookup').length,0,'verified key route avoids the account locator hop');
     assert.equal(liveTrace.filter(row=>row.event==='wallet.read').length,0,'HTTP and prepared WebSocket startup perform no wallet I/O');
     live.close();
 
@@ -243,7 +250,7 @@ test("public HTTP and WebSocket startup omit wallet I/O while explicit environme
     const inspectedRequests=inspectedTrace.filter(row=>row.event==='provider.request');
     assert.equal(inspectedRequests.length,6);
     assert.match(JSON.stringify(inspectedRequests.at(-1).input),/12345678/,'live environment result reaches the model');
-    evidence={...evidence,websocket_startup_wallet_reads:0,explicit_environment_wallet_reads:1,explicit_environment_balance:true,provider_requests:6,wire};
+    evidence={...evidence,websocket_startup_wallet_reads:0,websocket_key_locator_reads:0,forged_key_route_overwritten:true,explicit_environment_wallet_reads:1,explicit_environment_balance:true,provider_requests:6,wire};
     // A second owner has no L1 snapshot. Delete the admitted turn while its
     // read-only metadata request is held, then release the old read. The public
     // deletion fence establishes ordering without a sleep-based race assertion.

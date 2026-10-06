@@ -208,6 +208,8 @@ export type Principal = Readonly<{
   role: OrganizationRole;
   subjectId: `user:${string}` | `api_key:${string}`;
   credentialId: string;
+  /** Verified key routing hint; live resolution still checks every authority field. */
+  apiKeyObjectId?: string;
   authorizationEpoch: number;
   capabilities: readonly OrganizationCapability[];
   connectGrant?: ConnectGrantSlice;
@@ -428,8 +430,19 @@ export async function requestApiKeyPermissions(
 export async function resolvePermissionKey(
   env: AccountAuthEnv,
   identity: PermissionRequestIdentity,
+  apiKeyObjectId?: string,
 ): Promise<{ capabilities: readonly OrganizationCapability[] } | undefined> {
-  const key = await permissionKey(env, identity);
+  let key: DurableObjectStub<ApiKeyRecord> | undefined;
+  if (apiKeyObjectId === undefined) {
+    // Retained sockets and older ingress versions have only the public key ID.
+    key = await permissionKey(env, identity);
+  } else {
+    // Routing is not authority: resolve the live key and compare its complete
+    // identity below, including owner, organization, team, and epoch.
+    if (!/^[0-9a-f]{64}$/.test(apiKeyObjectId)) return undefined;
+    try { key = env.NANOCODEX_API_KEYS.get(env.NANOCODEX_API_KEYS.idFromString(apiKeyObjectId)); }
+    catch { return undefined; }
+  }
   if (!key) return undefined;
   const record = consumeRpcData(await key.resolveAuthorizedKey());
   if (!record || record.id !== identity.keyId || record.userId !== identity.userId
@@ -980,7 +993,7 @@ async function authenticateLive(request: Request, env: AccountAuthEnv, url: URL)
     if (response.headers.get("x-nanocodex-api-key-authorized") !== "1"
       && !await apiKeyAuthorized(env, record)) return undefined;
   }
-  return apiKeyPrincipal(record, digest);
+  return apiKeyPrincipal(record, digest, stub.id?.toString());
 }
 
 async function apiKeyAuthorized(env: AccountAuthEnv, record: StoredApiKey): Promise<boolean> {
