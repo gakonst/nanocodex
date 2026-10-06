@@ -1433,6 +1433,72 @@ final class InboxUITests: XCTestCase {
         }
     }
 
+    func testThreadScreenDockContainsRowsAcrossAppearanceAndSelection() throws {
+        guard ProcessInfo.processInfo.environment["NANOCODEX_SCREEN_FIXTURE"] == "1" else {
+            throw XCTSkip("Run fixtures/remote-screen.mjs on loopback port 18965")
+        }
+        let originalAppearance = XCUIDevice.shared.appearance
+        addTeardownBlock { XCUIDevice.shared.appearance = originalAppearance }
+        for appearance in ["light", "dark"] {
+            XCUIDevice.shared.appearance = appearance == "dark" ? .dark : .light
+            let app = launch(["NANOCODEX_DEMO_SCREENS": "1", "NANOCODEX_DEMO_APPEARANCE": appearance],
+                             arguments: ["-UIPreferredContentSizeCategoryName", "UICTContentSizeCategoryXXXL"])
+            selectInbox(app)
+            let draft = "Keep my draft while choosing a desktop"
+            composer(app).tap(); composer(app).typeText(draft)
+            navigationAction(app, "conversation-remote-screens").tap()
+            let panel = app.descendants(matching: .any)["thread-screen-panel"].firstMatch
+            XCTAssertTrue(panel.waitForExistence(timeout: 5))
+            let desktop = app.buttons["thread-screen:cf:fixture:desktop"]
+            XCTAssertTrue(desktop.waitForExistence(timeout: 10))
+
+            func requireContainedRow(_ id: String) {
+                let row = app.buttons["thread-screen:cf:fixture:" + id]
+                let list = app.scrollViews["thread-screen-devices"]
+                XCTAssertTrue(list.exists)
+                for _ in 0..<4 {
+                    if row.exists && row.isHittable && panel.frame.contains(row.frame) { break }
+                    list.swipeUp()
+                }
+                XCTAssertTrue(row.isHittable, "The entire screen row must be reachable")
+                XCTAssertFalse(row.frame.isEmpty)
+                XCTAssertTrue(panel.frame.contains(row.frame), "Rows must stay inside the dock")
+                XCTAssertGreaterThanOrEqual(row.frame.height, 44)
+                XCTAssertTrue(row.label.contains("Synthetic research workspace with a long desktop name that must stay inside its screen row"),
+                              "The complete device name must remain available to VoiceOver when the visible line truncates")
+                XCTAssertTrue(app.frame.contains(panel.frame), "The dock must fit on screen at large text sizes")
+                XCTAssertTrue(composer(app).isHittable, "The dock must leave the draft usable")
+                capture(app, "screen-dock-contained-" + appearance + "-" + id)
+            }
+
+            requireContainedRow("desktop")
+            desktop.tap()
+            XCTAssertTrue(app.staticTexts["Watching"].waitForExistence(timeout: 15))
+            let canvas = app.descendants(matching: .any)["thread-screen-canvas"].firstMatch
+            XCTAssertTrue(canvas.exists)
+            XCTAssertTrue(panel.frame.contains(canvas.frame))
+            XCTAssertTrue(app.staticTexts["View only"].exists)
+            XCTAssertEqual(composer(app).value as? String, draft)
+            capture(app, "screen-dock-selected-" + appearance)
+
+            app.buttons["thread-screen-options"].tap()
+            app.buttons["Change desktop"].tap()
+            requireContainedRow("gamepad")
+            app.buttons["thread-screen:cf:fixture:gamepad"].tap()
+            XCTAssertTrue(app.staticTexts["Watching"].waitForExistence(timeout: 15))
+            app.buttons["thread-screen-close"].tap()
+            gone(panel)
+            XCTAssertEqual(composer(app).value as? String, draft)
+            navigationAction(app, "conversation-remote-screens").tap()
+            XCTAssertTrue(panel.waitForExistence(timeout: 5))
+            XCTAssertTrue(app.staticTexts["Watching"].waitForExistence(timeout: 15), "Reopening must recover the selected screen")
+            XCTAssertEqual(composer(app).value as? String, draft)
+            capture(app, "screen-dock-reopened-" + appearance)
+            app.buttons["thread-screen-close"].tap()
+            app.terminate()
+        }
+    }
+
     func testThreadScreenDockPreservesDraftAndThreadNavigation() {
         let app = launch(["NANOCODEX_DEMO_PROFILE": UUID().uuidString,
                           "NANOCODEX_DEMO_SCREENS": "1"])
@@ -1442,7 +1508,7 @@ final class InboxUITests: XCTestCase {
         let panel = app.descendants(matching: .any)["thread-screen-panel"].firstMatch
         XCTAssertTrue(panel.waitForExistence(timeout: 5))
         if ProcessInfo.processInfo.environment["NANOCODEX_SCREEN_FIXTURE"] == "1" {
-            let desktop = app.buttons["thread-screen:fixture:desktop"]
+            let desktop = app.buttons["thread-screen:cf:fixture:desktop"]
             XCTAssertTrue(desktop.waitForExistence(timeout: 10))
             desktop.tap()
             XCTAssertTrue(app.staticTexts["Watching"].waitForExistence(timeout: 15))
@@ -1481,7 +1547,7 @@ final class InboxUITests: XCTestCase {
         let panel = app.descendants(matching: .any)["thread-screen-panel"].firstMatch
         XCTAssertTrue(panel.waitForExistence(timeout: 5))
         XCTAssertFalse(latest.exists)
-        let desktop = app.buttons["thread-screen:fixture:desktop"]
+        let desktop = app.buttons["thread-screen:cf:fixture:desktop"]
         XCTAssertTrue(desktop.waitForExistence(timeout: 5))
         desktop.tap()
         // frames-v1 reports Watching only after decoding its first JPEG frame.
@@ -1560,6 +1626,51 @@ final class InboxUITests: XCTestCase {
         XCTAssertEqual(composer(app).value as? String, "Keep my edge swipe draft")
     }
 
+    func testAttachmentLibrarySheetPreservesDraft() {
+        let originalAppearance = XCUIDevice.shared.appearance
+        addTeardownBlock { XCUIDevice.shared.appearance = originalAppearance }
+        for appearance in ["light", "dark"] {
+            XCUIDevice.shared.appearance = appearance == "dark" ? .dark : .light
+            let app = launch(["NANOCODEX_DEMO_APPEARANCE": appearance,
+                              "NANOCODEX_DEMO_COMPOSER_PHOTOS": "1"])
+            selectInbox(app)
+            let draft = "Keep this draft when the attachment library is dismissed"
+            composer(app).tap(); composer(app).typeText(draft)
+            let removals = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "remove-attachment-"))
+            XCTAssertTrue(removals.firstMatch.waitForExistence(timeout: 5))
+            let attachmentIDs = removals.allElementsBoundByIndex.map(\.identifier)
+            let sheet = app.descendants(matching: .any)["attachment-library-sheet"].firstMatch
+            for cycle in 1...2 {
+                app.buttons["add-attachments"].tap()
+                XCTAssertTrue(sheet.waitForExistence(timeout: 5))
+                XCTAssertTrue(app.staticTexts["Library"].exists)
+                XCTAssertTrue(app.scrollViews["recent-photos"].exists)
+                for identifier in ["choose-camera", "choose-photos", "choose-files", "choose-videos"] {
+                    let action = app.buttons[identifier]
+                    XCTAssertTrue(action.isHittable, "Library action must be reachable without scrolling: " + identifier)
+                    XCTAssertTrue(app.frame.contains(action.frame), "Library action must fit on screen: " + identifier)
+                }
+                capture(app, "attachment-library-" + appearance + "-" + String(cycle))
+                dismissAttachmentLibrary(app)
+                XCTAssertEqual(composer(app).value as? String, draft)
+                XCTAssertEqual(removals.allElementsBoundByIndex.map(\.identifier), attachmentIDs,
+                               "Opening and dismissing the library must preserve existing photo attachments")
+            }
+            capture(app, "attachment-library-preserved-draft-" + appearance)
+            app.terminate()
+        }
+    }
+
+    private func dismissAttachmentLibrary(_ app: XCUIApplication) {
+        let sheet = app.descendants(matching: .any)["attachment-library-sheet"].firstMatch
+        XCTAssertTrue(sheet.waitForExistence(timeout: 5))
+        let grabber = app.buttons["Sheet Grabber"]
+        XCTAssertTrue(grabber.waitForExistence(timeout: 5))
+        grabber.swipeDown()
+        gone(sheet)
+        XCTAssertTrue(app.buttons["add-attachments"].isHittable)
+    }
+
     func testConversationDrawerAndSheetsPreserveIndependentDrafts() {
         let app = launch(["NANOCODEX_DEMO_PROFILE": UUID().uuidString])
         selectInbox(app)
@@ -1580,7 +1691,7 @@ final class InboxUITests: XCTestCase {
         XCTAssertTrue(app.buttons["choose-photos"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.buttons["choose-context"].exists)
         capture(app, "muse-attachment-sheet")
-        app.buttons["Done"].tap()
+        dismissAttachmentLibrary(app)
         XCTAssertEqual(composer(app).value as? String, "Keep this draft through navigation")
         navigationAction(app, "Account settings").tap()
         XCTAssertTrue(app.navigationBars["Settings"].waitForExistence(timeout: 5))
@@ -2766,14 +2877,23 @@ final class InboxUITests: XCTestCase {
         XCTAssertEqual(XCTWaiter.wait(for: [seeded], timeout: 90), .completed)
         print("Live attachment UI conversation title: \(title)")
 
-        app.buttons["add-attachments"].tap()
-        app.buttons["choose-photos"].tap()
-        let cancelPhotos = app.buttons["Cancel"].firstMatch
-        XCTAssertTrue(cancelPhotos.waitForExistence(timeout: 10), "Open the native Photos picker.")
-        capture(app, "live-attachment-01-photos-picker")
-        cancelPhotos.tap()
-        gone(cancelPhotos)
-        XCTAssertFalse(app.scrollViews["composer-attachments"].exists)
+        let cancelledDraft = "Keep my draft while choosing an attachment"
+        composer(app).tap(); composer(app).typeText(cancelledDraft)
+        for identifier in ["choose-photos", "choose-files", "choose-videos"] {
+            app.buttons["add-attachments"].tap()
+            XCTAssertTrue(app.buttons[identifier].waitForExistence(timeout: 5))
+            app.buttons[identifier].tap()
+            let cancel = app.buttons["Cancel"].firstMatch
+            XCTAssertTrue(cancel.waitForExistence(timeout: 10), "Open the native picker: " + identifier)
+            capture(app, "live-attachment-01-picker-" + identifier)
+            cancel.tap()
+            gone(cancel)
+            XCTAssertEqual(composer(app).value as? String, cancelledDraft)
+            XCTAssertFalse(app.scrollViews["composer-attachments"].exists)
+            XCTAssertFalse(app.staticTexts["attachment-error"].exists, "Cancelling must not report an import failure")
+        }
+        composer(app).tap()
+        composer(app).typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: cancelledDraft.count))
 
         let removals = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "remove-attachment-"))
         func waitForAttachment() {

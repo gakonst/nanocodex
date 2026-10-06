@@ -7,7 +7,7 @@ import { randomUUID } from 'node:crypto';
 const require = createRequire(new URL('../../../../js/desktop-runtime/package.json', import.meta.url));
 const { WebSocketServer } = require('ws');
 const jpeg = readFileSync(new URL('./screen.jpg', import.meta.url)).toString('base64');
-const surface = { id: 'desktop', machine_id: 'cf:fixture', machine_name: 'Local workspace', name: 'Dashboard', kind: 'vm', width: 960, height: 600, controllable: false, generation: 'fixture-1', transport: 'frames-v1' };
+const surface = { id: 'desktop', machine_id: 'cf:fixture', machine_name: 'Synthetic research workspace with a long desktop name that must stay inside its screen row', name: 'Dashboard', kind: 'vm', width: 960, height: 600, controllable: false, generation: 'fixture-1', transport: 'frames-v1' };
 const controller = { ...surface, id: 'controller', name: 'Synthetic controller', controllable: true };
 const gamepad = { ...controller, id: 'gamepad', name: 'Synthetic native gamepad' };
 const gamepadButtons = new Set(['a', 'b', 'x', 'y', 'leftShoulder', 'rightShoulder', 'back', 'start', 'leftStick', 'rightStick', 'dpadUp', 'dpadDown', 'dpadLeft', 'dpadRight']);

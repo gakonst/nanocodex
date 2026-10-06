@@ -1,4 +1,9 @@
 import SwiftUI
+#if os(iOS)
+import UIKit
+#elseif os(macOS)
+import AppKit
+#endif
 
 /// A passive viewer owned by one conversation. Changing threads destroys this
 /// instance and closes its transport; expanding preserves the same viewer.
@@ -26,8 +31,16 @@ public struct RemoteThreadScreen: View {
     public var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: 8) {
-                Image(systemName: "display").foregroundStyle(.secondary)
-                Text(selection?.name ?? "Screen").font(.caption.weight(.medium)).lineLimit(1)
+                Image(systemName: "display")
+                    .foregroundStyle(.secondary)
+                    .accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Screens").font(.subheadline.weight(.semibold))
+                        .accessibilityAddTraits(.isHeader)
+                    Text(selectedName ?? "Choose a device")
+                        .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
                 Spacer(minLength: 0)
                 Menu {
                     Button("Change desktop") { viewer.close(); selection = nil }
@@ -43,7 +56,10 @@ public struct RemoteThreadScreen: View {
                     .accessibilityIdentifier("thread-screen-expand")
                 Button(action: onClose) { Image(systemName: "xmark").frame(width: 44, height: 44) }
                     .accessibilityLabel("Hide screen").accessibilityIdentifier("thread-screen-close")
-            }.padding(.horizontal, 12)
+            }
+            .padding(.leading, 14).padding(.trailing, 4)
+            .fixedSize(horizontal: false, vertical: true)
+            Divider()
             Group {
                 if selection == nil {
                     if !loaded { ProgressView("Finding desktops…") }
@@ -56,26 +72,14 @@ public struct RemoteThreadScreen: View {
                         ScrollView {
                             LazyVStack(spacing: 0) {
                                 ForEach(hands, id: \.identity) { hand in
-                                    Button {
-                                        selection = RemoteScreenSelection(hand: hand)
-                                        connectionTask?.cancel()
-                                        connectionTask = Task {
-                                            guard visible, scenePhase == .active, !Task.isCancelled else { return }
-                                            await viewer.connect(service: service, hand: hand)
-                                        }
-                                    } label: {
-                                        HStack {
-                                            VStack(alignment: .leading, spacing: 2) {
-                                                Text(hand.machineName).font(.subheadline)
-                                                Text(hand.name).font(.caption).foregroundStyle(.secondary)
-                                            }
-                                            Spacer()
-                                            Image(systemName: "chevron.right").font(.caption).foregroundStyle(.secondary)
-                                        }.padding(.horizontal, 16).padding(.vertical, 10).contentShape(Rectangle())
-                                    }.accessibilityIdentifier("thread-screen:" + hand.machineID + ":" + hand.id)
+                                    screenRow(hand)
                                 }
                             }
                         }
+                        .frame(minHeight: 0, maxHeight: .infinity)
+                        .clipped()
+                        .contentShape(Rectangle())
+                        .accessibilityIdentifier("thread-screen-devices")
                     }
                 } else if viewer.hand != nil {
                     RemoteCanvas(viewer: viewer).accessibilityIdentifier("thread-screen-canvas")
@@ -100,19 +104,31 @@ public struct RemoteThreadScreen: View {
                         }
                     }
                 }
-            }.frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+            .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
+            .clipped()
             if selection != nil {
+                Divider()
                 HStack {
                     Text(viewer.hand == nil ? (loaded ? "Offline" : "Finding desktop…") : viewer.status)
                     Spacer()
                     if viewer.hand != nil { RemotePerformanceView(viewer: viewer) }
                     Text("View only")
-                }.font(.caption2).foregroundStyle(.secondary).padding(.horizontal, 12).padding(.vertical, 5)
+                }
+                .font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                .padding(.horizontal, 12).padding(.vertical, 5)
+                .fixedSize(horizontal: false, vertical: true)
             }
         }
         .buttonStyle(.plain)
-        .background(Color.secondary.opacity(0.1), in: RoundedRectangle(cornerRadius: 14))
+        .background(panelBackground)
         .clipShape(RoundedRectangle(cornerRadius: 14))
+        .overlay {
+            RoundedRectangle(cornerRadius: 14)
+                .strokeBorder(.primary.opacity(0.12), lineWidth: 0.5)
+                .allowsHitTesting(false)
+        }
+        .contentShape(RoundedRectangle(cornerRadius: 14))
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("thread-screen-panel")
         .task(id: scenePhase) {
@@ -126,6 +142,58 @@ public struct RemoteThreadScreen: View {
         .onChange(of: scenePhase) { _, phase in if phase != .active { viewer.suspend() } }
         .onAppear { visible = true }
         .onDisappear { visible = false; connectionTask?.cancel(); viewer.close() }
+    }
+
+    private var panelBackground: Color {
+#if os(iOS)
+        Color(uiColor: .secondarySystemBackground)
+#else
+        Color(nsColor: .windowBackgroundColor)
+#endif
+    }
+
+    private var selectedName: String? {
+        guard let selection else { return nil }
+        if let hand = hands.first(where: selection.matches) {
+            return hand.screenDisplayName
+        }
+        return selection.screenDisplayName
+    }
+
+    private func screenRow(_ hand: RemoteHand) -> some View {
+        Button {
+            selection = RemoteScreenSelection(hand: hand)
+            connectionTask?.cancel()
+            connectionTask = Task {
+                guard visible, scenePhase == .active, !Task.isCancelled else { return }
+                await viewer.connect(service: service, hand: hand)
+            }
+        } label: {
+            HStack(spacing: 10) {
+                Image(systemName: hand.kind == .phone ? "iphone" : "display")
+                    .font(.body).foregroundStyle(.secondary)
+                    .frame(width: 24)
+                    .accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(hand.screenMachineName)
+                        .font(.subheadline.weight(.medium)).foregroundStyle(.primary)
+                        .lineLimit(1)
+                    Text(hand.screenSurfaceName)
+                        .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                Image(systemName: "chevron.right")
+                    .font(.caption.weight(.semibold)).foregroundStyle(.tertiary)
+                    .accessibilityHidden(true)
+            }
+            .padding(.horizontal, 14).padding(.vertical, 9)
+            .frame(minHeight: 52)
+            .contentShape(Rectangle())
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(hand.screenDisplayName)
+        .accessibilityHint("Watch this screen in the conversation")
+        .accessibilityIdentifier("thread-screen:" + hand.machineID + ":" + hand.id)
     }
 
     private func refresh(reconnect: Bool = false) async {
