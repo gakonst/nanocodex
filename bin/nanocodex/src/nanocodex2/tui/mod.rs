@@ -21,6 +21,7 @@ mod pane;
 mod private_input;
 mod prompt;
 mod prompt_cache;
+mod review;
 mod scheduler;
 mod screen;
 mod secure_input;

@@ -63,6 +63,37 @@ The side agent runs through hosted tools; the main thread's local tool-host conn
 is not cloned into it. Conversations are separate, but account tools and hosted
 workspace effects are not isolated. The Managed2 text-only preview does not support `/btw` yet.
 
+## Code review
+
+`/review` opens a scope picker in the managed terminal: compare against a base
+branch, review uncommitted changes, review a commit, or enter custom instructions.
+Use the arrow keys and Enter to choose. Enter a branch/ref, commit/ref, or custom
+scope when requested; Esc goes back or closes the picker without submitting.
+Inline shortcuts skip the picker:
+
+```text
+/review --uncommitted
+/review --base main
+/review --commit HEAD
+/review Check the authentication changes for regressions
+```
+
+The review request runs as a normal managed turn in the current conversation,
+using its model and authorized workspace. It asks for an independent reviewer
+subagent and prioritized, actionable findings with file/line locations. It
+instructs the reviewer to inspect current Git state, compare a branch from its
+merge base, and report missing refs, unavailable repositories, or incomplete
+coverage. Uncommitted review includes staged, unstaged, and untracked files.
+Review instructions prohibit edits, fixes, commits and publication; this is an
+agent instruction, not a separate filesystem sandbox. Results stream into the
+conversation and normal turn cancellation and reconnect behavior apply. Finish
+or interrupt active work before starting another review.
+
+The scope choices follow [Codex review targets](https://github.com/openai/codex/blob/rust-v0.107.0/codex-rs/core/src/review_prompts.rs).
+Nanocodex uses its existing managed turn transport rather than Codex's dedicated
+review-task protocol. The separate Managed2 text-only preview does not support
+`/review` or workspace tools.
+
 ## Hand screens
 
 Type `/screen`, filter by Hand name, then press Enter to watch its live screen

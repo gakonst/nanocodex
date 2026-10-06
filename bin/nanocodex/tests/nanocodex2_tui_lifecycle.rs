@@ -104,6 +104,16 @@ async fn managed2_uses_the_existing_tui_for_text_turns() {
         command.env("NANOCODEX_MANAGED2_API_KEY", &credential);
     });
     terminal.wait_output("\x1b[?1049h").await;
+    // Unsupported commands must be rejected on both submit and queue keys,
+    // keeping this text-only preview alive without creating a review turn.
+    for key in ["\r", "\t"] {
+        terminal.prompt("/review --uncommitted", key);
+        terminal
+            .wait_text("Managed2 accepts text, /id, and /exit only.")
+            .await;
+        terminal.input("\x15");
+        terminal.wait_no_text("/review --uncommitted").await;
+    }
     terminal.input("Managed2 TUI prompt");
     terminal.wait_text("Managed2 TUI prompt").await;
     terminal.input("\r");
@@ -5791,4 +5801,292 @@ async fn terminal_prompt_cache_persists_from_a_non_utf8_workspace() {
         workspace.as_os_str(),
         reopened.screen.lock().unwrap().screen().contents()
     );
+}
+
+// These journeys stub only the managed service. Commands, native overlays,
+// terminal input and streamed replies all pass through the shipped executable.
+fn review_journey_snapshot(fixture: &Fixture, step: &str) {
+    eprintln!(
+        "REVIEW PTY {step}\n{}",
+        fixture.terminal.screen.lock().unwrap().screen().contents()
+    );
+}
+
+async fn review_journey_menu(fixture: &mut Fixture) {
+    // Exercise the typed slash-action path as well as the pasted inline commands
+    // below. Enter must open the native picker rather than send literal /review.
+    fixture.terminal.input("/review");
+    fixture.terminal.wait_text("Search: review").await;
+    fixture.terminal.input("\r");
+    fixture.terminal.wait_text("Review").await;
+    let labels = ["Base branch", "Uncommitted", "Commit", "Custom"];
+    for label in labels {
+        fixture.terminal.wait_text(label).await;
+    }
+    let screen = fixture.terminal.screen.lock().unwrap().screen().contents();
+    let positions = labels.map(|label| screen.find(label).unwrap());
+    assert!(
+        positions.windows(2).all(|pair| pair[0] < pair[1]),
+        "review choices must be in keyboard navigation order: {screen}"
+    );
+    review_journey_snapshot(fixture, "typed /review + Enter opens scope menu");
+}
+
+async fn review_journey_reply(fixture: &mut Fixture, required: &[&str], reply: &str) {
+    let request = tokio::time::timeout(TIMEOUT, fixture.submissions.recv())
+        .await
+        .unwrap_or_else(|_| {
+            panic!(
+                "review target {required:?} never reached managed transport:\n{}",
+                fixture.terminal.screen.lock().unwrap().screen().contents()
+            )
+        })
+        .expect("managed service must remain connected");
+    let input = prompt_text(&request["input"]);
+    eprintln!("REVIEW HTTP expected target={required:?}; received={request}");
+    for target in required {
+        assert!(
+            input.contains(target),
+            "requested review target {target:?} was lost: {input}"
+        );
+    }
+    // Check the review contract, not one frozen rendering of the full prompt.
+    let instructions = input.to_lowercase();
+    assert!(instructions.contains("review"), "{input}");
+    assert!(instructions.contains("finding"), "{input}");
+    assert!(
+        instructions.contains("read-only")
+            || instructions.contains("read only")
+            || [
+                "do not edit",
+                "do not modify",
+                "do not change",
+                "never edit"
+            ]
+            .iter()
+            .any(|prohibition| instructions.contains(prohibition)),
+        "review must explicitly prohibit changing the code: {input}"
+    );
+    let turn = request["id"].as_str().unwrap().to_owned();
+    fixture.emit(
+        &turn,
+        json!({"type": "turn_accepted", "id": turn, "input": request["input"], "replayed": false}),
+    );
+    fixture.nested(
+        &turn,
+        "assistant.message",
+        json!({"model_call_index": 1, "item_id": reply, "phase": "final_answer", "text": reply}),
+    );
+    fixture.complete(&turn);
+    fixture.terminal.wait_text(reply).await;
+    fixture.terminal.wait_text("Enter send").await;
+    review_journey_snapshot(fixture, &format!("service reply visible: {reply}"));
+    assert!(fixture.submissions.try_recv().is_err(), "duplicate review");
+    assert!(
+        fixture.steers.try_recv().is_err(),
+        "review escaped as steering"
+    );
+}
+
+async fn review_journey_normal_turn(fixture: &mut Fixture, prompt: &str) {
+    // The exact next transport input is a barrier against delayed or queued
+    // commands escaping cancellation, validation, or the busy guard.
+    fixture.terminal.prompt(prompt, "\r");
+    let turn = fixture.submission(prompt).await;
+    let reply = format!("NORMAL_REPLY_{prompt}");
+    fixture.nested(
+        &turn,
+        "assistant.message",
+        json!({"model_call_index": 1, "item_id": "normal-after-review", "phase": "final_answer", "text": reply}),
+    );
+    fixture.complete(&turn);
+    fixture.terminal.wait_text(&reply).await;
+    fixture.terminal.wait_text("Enter send").await;
+    assert!(fixture.submissions.try_recv().is_err());
+    assert!(fixture.steers.try_recv().is_err());
+    assert!(fixture.cancellations.try_recv().is_err());
+    review_journey_snapshot(
+        fixture,
+        &format!("normal recovery prompt={prompt:?}, reply={reply:?}"),
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn terminal_review_picker_cancels_and_submits_each_scope() {
+    eprintln!(
+        "Reproduce: cargo test --locked -p nanocodex2-bin --test nanocodex2_tui_lifecycle terminal_review_ -- --nocapture"
+    );
+    let mut fixture = Fixture::start().await;
+    review_journey_menu(&mut fixture).await;
+    fixture.terminal.input("\x1b");
+    fixture.terminal.wait_no_text("Base branch").await;
+    review_journey_normal_turn(&mut fixture, "AFTER_REVIEW_MENU_CANCEL").await;
+
+    review_journey_menu(&mut fixture).await;
+    fixture.terminal.input("\r");
+    fixture.terminal.input("CANCELLED_REVIEW_BASE");
+    fixture.terminal.wait_text("CANCELLED_REVIEW_BASE").await;
+    review_journey_snapshot(&fixture, "base input typed; Esc must return to choices");
+    fixture.terminal.input("\x1b");
+    fixture.terminal.wait_text("Uncommitted").await;
+    fixture.terminal.wait_text("Custom").await;
+    fixture.terminal.input("\x1b");
+    fixture.terminal.wait_no_text("Base branch").await;
+    review_journey_normal_turn(&mut fixture, "AFTER_REVIEW_INPUT_CANCEL").await;
+
+    for (index, target, required, reply) in [
+        (
+            0,
+            Some("review-target/release-42"),
+            "review-target/release-42",
+            "REVIEW_MENU_BASE_RESULT",
+        ),
+        (1, None, "uncommitted", "REVIEW_MENU_UNCOMMITTED_RESULT"),
+        (
+            2,
+            Some("deadbeef0"),
+            "deadbeef0",
+            "REVIEW_MENU_COMMIT_RESULT",
+        ),
+        (
+            3,
+            Some("Check parser bounds and café handling"),
+            "Check parser bounds and café handling",
+            "REVIEW_MENU_CUSTOM_RESULT",
+        ),
+    ] {
+        review_journey_menu(&mut fixture).await;
+        fixture.terminal.input(&"\x1b[B".repeat(index));
+        fixture.terminal.input("\r");
+        if let Some(target) = target {
+            fixture.terminal.input(target);
+            fixture.terminal.wait_text(target).await;
+            review_journey_snapshot(
+                &fixture,
+                &format!("choice={index}, typed target={target:?}; Enter submits"),
+            );
+            fixture.terminal.input("\r");
+        }
+        review_journey_reply(&mut fixture, &[required], reply).await;
+    }
+    review_journey_normal_turn(&mut fixture, "AFTER_ALL_REVIEW_SCOPES").await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn terminal_review_inline_scopes_validate_locally_and_recover() {
+    let mut fixture = Fixture::start().await;
+    for (command, required, reply) in [
+        (
+            "/review --uncommitted",
+            "uncommitted",
+            "REVIEW_INLINE_UNCOMMITTED_RESULT",
+        ),
+        (
+            "/review --base origin/review-base",
+            "origin/review-base",
+            "REVIEW_INLINE_BASE_RESULT",
+        ),
+        (
+            "/review --commit HEAD~2",
+            "HEAD~2",
+            "REVIEW_INLINE_COMMIT_RESULT",
+        ),
+        (
+            "/review Check Unicode bounds in src/parser.rs",
+            "Check Unicode bounds in src/parser.rs",
+            "REVIEW_INLINE_CUSTOM_RESULT",
+        ),
+    ] {
+        eprintln!("REVIEW PTY inline command={command:?} + Enter");
+        fixture.terminal.prompt(command, "\r");
+        review_journey_reply(&mut fixture, &[required], reply).await;
+    }
+    for command in [
+        "/review --base",
+        "/review --commit",
+        "/review --unknown",
+        "/review --uncommitted extra",
+        "/review --base main --commit HEAD",
+    ] {
+        fixture.terminal.prompt(command, "");
+        fixture.terminal.wait_text(command).await;
+        fixture.terminal.input("\r");
+        fixture.terminal.wait_text("Usage: /review").await;
+        review_journey_snapshot(
+            &fixture,
+            &format!("invalid command={command:?} shows usage"),
+        );
+    }
+    review_journey_normal_turn(&mut fixture, "AFTER_REVIEW_USAGE_ERRORS").await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn terminal_review_busy_rejects_without_steering_or_queueing() {
+    let mut fixture = Fixture::start().await;
+    fixture.terminal.prompt("WORK_ACTIVE_DURING_REVIEW", "\r");
+    let active = fixture.submission("WORK_ACTIVE_DURING_REVIEW").await;
+    fixture.terminal.wait_text("Enter steer").await;
+    for command in ["/review", "/review --uncommitted"] {
+        fixture.terminal.prompt(command, "");
+        fixture.terminal.wait_text(command).await;
+        fixture.terminal.input("\r");
+        fixture
+            .terminal
+            .wait_text("Finish active work before starting a review")
+            .await;
+        review_journey_snapshot(
+            &fixture,
+            &format!("busy command={command:?} rejected locally"),
+        );
+        assert!(fixture.submissions.try_recv().is_err());
+        assert!(fixture.steers.try_recv().is_err());
+        assert!(fixture.cancellations.try_recv().is_err());
+    }
+    fixture.complete(&active);
+    fixture.terminal.wait_text("Enter send").await;
+    review_journey_normal_turn(&mut fixture, "AFTER_BUSY_REVIEW").await;
+    fixture
+        .terminal
+        .prompt("/review --base release/after-busy", "\r");
+    review_journey_reply(
+        &mut fixture,
+        &["release/after-busy"],
+        "REVIEW_AFTER_BUSY_RESULT",
+    )
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn terminal_review_interrupts_and_returns_to_normal_chat() {
+    let mut fixture = Fixture::start().await;
+    fixture.terminal.prompt("/review --uncommitted", "\r");
+    let request = tokio::time::timeout(TIMEOUT, fixture.submissions.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    let turn = request["id"].as_str().unwrap().to_owned();
+    fixture.emit(
+        &turn,
+        json!({"type":"turn_accepted","id":turn,"input":request["input"],"replayed":false}),
+    );
+    fixture.nested(
+        &turn,
+        "assistant.delta",
+        json!({"model_call_index":1,"item_id":"review-progress","phase":"commentary","text":"INSPECTING_REVIEW_DIFF"}),
+    );
+    fixture.terminal.wait_text("INSPECTING_REVIEW_DIFF").await;
+    fixture.terminal.input("\x1b");
+    fixture.terminal.wait_text("Interrupt").await;
+    fixture.terminal.input("\x1b");
+    assert_eq!(
+        tokio::time::timeout(TIMEOUT, fixture.cancellations.recv())
+            .await
+            .unwrap()
+            .unwrap(),
+        turn
+    );
+    fixture.emit(&turn, json!({"type":"turn_cancelled","id":turn}));
+    fixture.terminal.wait_text("Enter send").await;
+    review_journey_snapshot(&fixture, "Esc twice cancels the streamed review turn");
+    review_journey_normal_turn(&mut fixture, "AFTER_REVIEW_INTERRUPT").await;
 }

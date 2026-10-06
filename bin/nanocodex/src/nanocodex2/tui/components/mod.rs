@@ -5,6 +5,7 @@
 
 mod actions;
 mod app;
+mod code_review;
 mod composer;
 mod context_diagnostics;
 mod effort;

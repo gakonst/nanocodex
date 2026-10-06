@@ -65,6 +65,7 @@ pub(crate) enum ComposerEffect {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum SettingsCommand {
     Bug(String),
+    CodeReview(crate::tui::review::Command),
     Btw(String),
     CloseBtw,
     Attach,
@@ -83,6 +84,9 @@ pub(crate) enum SettingsCommand {
 
 impl SettingsCommand {
     pub(super) fn parse(input: &str) -> Option<Self> {
+        if let Some(command) = crate::tui::review::parse(input) {
+            return Some(Self::CodeReview(command));
+        }
         let mut parts = input.split_whitespace();
         let command = parts.next()?;
         match command {
@@ -1123,6 +1127,14 @@ impl Composer {
 
     fn take_local_command(&mut self) -> Option<ComposerUpdate> {
         if !self.images.is_empty() {
+            if self.draft.split_whitespace().next() == Some("/review") {
+                return Some(ComposerUpdate::effect(
+                    ComposerEffect::Settings(SettingsCommand::Invalid(
+                        "Remove image attachments before running /review.".into(),
+                    )),
+                    false,
+                ));
+            }
             if self.draft.split_whitespace().next() == Some("/secure-input") {
                 return Some(ComposerUpdate::effect(
                     ComposerEffect::Settings(SettingsCommand::Invalid(

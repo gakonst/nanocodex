@@ -20,7 +20,7 @@ use ratatui::{
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
-const ACTIONS: [Action; 20] = [
+const ACTIONS: [Action; 21] = [
     Action::Effort,
     Action::FastMode,
     Action::Goal,
@@ -34,6 +34,7 @@ const ACTIONS: [Action; 20] = [
     Action::DebugContext,
     Action::Bug,
     Action::Reflection,
+    Action::Review,
     Action::Model,
     Action::AutoRoute,
     Action::AgentId,

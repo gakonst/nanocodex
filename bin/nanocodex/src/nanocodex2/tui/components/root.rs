@@ -5,6 +5,7 @@
 
 use super::{
     actions::{Action, ActionAvailability, ActionsEffect, ActionsEvent, ActionsMenu},
+    code_review::{CodeReviewEffect, CodeReviewSelector},
     composer::{
         Composer, ComposerChromeTarget, ComposerDraft, ComposerEffect, ComposerEvent,
         SettingsCommand,
@@ -391,6 +392,7 @@ enum Overlay {
     VoiceMenu(Node<super::voice_menu::VoiceMenu>),
     VoiceClone(String, bool, u16, bool),
     Actions(Node<ActionsMenu>),
+    CodeReview(Node<CodeReviewSelector>),
     ContextDiagnostics(Node<ContextDiagnosticsPanel>),
     Effort(Node<EffortSelector>),
     Model(Node<ModelSelector>),
@@ -503,6 +505,7 @@ impl RootNode {
             Overlay::VoiceClone(..) => "voice_clone",
             Overlay::AgentId(_) => "agent_id",
             Overlay::Actions(_) => "actions",
+            Overlay::CodeReview(_) => "review",
             Overlay::ContextDiagnostics(_) => "context",
             Overlay::Effort(_) => "effort",
             Overlay::Model(_) => "model",
@@ -618,9 +621,9 @@ impl RootNode {
             {
                 return ComponentUpdate::none();
             }
-            if key.code == KeyCode::Enter && key.modifiers.is_empty() {
+            if matches!(key.code, KeyCode::Enter | KeyCode::Tab) && key.modifiers.is_empty() {
                 let draft = self.composer.component().draft().trim();
-                if matches!(draft, "/exit" | "/quit") {
+                if key.code == KeyCode::Enter && matches!(draft, "/exit" | "/quit") {
                     return ComponentUpdate {
                         effects: vec![RootEffect::Shutdown],
                         render: RenderRequest::None,
@@ -1199,6 +1202,7 @@ impl RootNode {
                 }
                 Overlay::VoiceMenu(menu) => menu.render(frame, area, theme),
                 Overlay::Actions(actions) => actions.render(frame, area, theme),
+                Overlay::CodeReview(selector) => selector.render(frame, area, theme),
                 Overlay::ContextDiagnostics(panel) => panel.render(frame, area, theme),
                 Overlay::Effort(selector) => selector.render(frame, area, theme),
                 Overlay::Model(selector) => selector.render(frame, area, theme),
@@ -1921,6 +1925,7 @@ impl RootNode {
                 self.update_voice_output(event)
             }
             Some(Overlay::Actions(_)) => self.update_actions(event),
+            Some(Overlay::CodeReview(_)) => self.update_code_review(event),
             Some(Overlay::ContextDiagnostics(_)) => self.update_context_diagnostics(event),
             Some(Overlay::Effort(_)) => self.update_effort(EffortEvent::Terminal { event, now }),
             Some(Overlay::Model(_)) => {
@@ -2307,12 +2312,7 @@ impl RootNode {
             }
             Some(ActionsEffect::Trigger(Action::Review)) => {
                 self.overlay = None;
-                return ComponentUpdate {
-                    effects: vec![RootEffect::Review {
-                        download_assets: false,
-                    }],
-                    render: RenderRequest::Immediate,
-                };
+                return self.apply_code_review(crate::tui::review::Command::Choose);
             }
             Some(ActionsEffect::Trigger(Action::Handoff)) => {
                 self.overlay = None;
@@ -3341,6 +3341,7 @@ impl RootNode {
             return ComponentUpdate::render(RenderRequest::Immediate);
         }
         match command {
+            SettingsCommand::CodeReview(command) => self.apply_code_review(command),
             SettingsCommand::Btw(question) => {
                 if self.side_pane {
                     self.notification =
@@ -3455,6 +3456,70 @@ impl RootNode {
                 self.notification = Some(Notification::plain(message, Color::Red));
                 ComponentUpdate::render(RenderRequest::Immediate)
             }
+        }
+    }
+
+    fn apply_code_review(
+        &mut self,
+        command: crate::tui::review::Command,
+    ) -> ComponentUpdate<RootEffect> {
+        use crate::tui::review::Command;
+        if let Command::Invalid(message) = command {
+            self.notification = Some(Notification::plain(message, Color::Red));
+            return ComponentUpdate::render(RenderRequest::Immediate);
+        }
+        if !self.action_availability().new_session {
+            self.notification = Some(Notification::plain(
+                "Finish active work before starting a review".into(),
+                Color::Yellow,
+            ));
+            return ComponentUpdate::render(RenderRequest::Immediate);
+        }
+        match command {
+            Command::Choose => {
+                self.overlay = Some(Overlay::CodeReview(Node::new(CodeReviewSelector::new())));
+                ComponentUpdate::render(RenderRequest::Immediate)
+            }
+            Command::Run(target) => {
+                self.overlay = None;
+                // Use ordinary admission, streaming, cancellation and recovery. Keep
+                // any unsent composer draft intact when launched from the palette.
+                self.thread = ThreadState::Started;
+                self.in_flight_turns = self.in_flight_turns.saturating_add(1);
+                self.update_transcript(TranscriptEvent::FollowTail);
+                self.sync_live_controls();
+                let _ = self
+                    .composer
+                    .component_mut()
+                    .update(ComposerEvent::Activity {
+                        active: true,
+                        status: Some("Reviewing…".into()),
+                        now: Instant::now(),
+                    });
+                ComponentUpdate {
+                    effects: vec![RootEffect::Submit(Submission::text(target.prompt()))],
+                    render: RenderRequest::Immediate,
+                }
+            }
+            Command::Invalid(_) => unreachable!(),
+        }
+    }
+
+    fn update_code_review(&mut self, event: Event) -> ComponentUpdate<RootEffect> {
+        let Some(Overlay::CodeReview(selector)) = &mut self.overlay else {
+            return ComponentUpdate::none();
+        };
+        let update = selector.update(event);
+        match update.effects.into_iter().next() {
+            Some(CodeReviewEffect::Run(target)) => {
+                self.overlay = None;
+                self.apply_code_review(crate::tui::review::Command::Run(target))
+            }
+            Some(CodeReviewEffect::Dismiss) => {
+                self.overlay = None;
+                ComponentUpdate::render(RenderRequest::Immediate)
+            }
+            None => ComponentUpdate::render(update.render),
         }
     }
 
