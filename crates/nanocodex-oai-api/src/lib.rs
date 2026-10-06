@@ -216,6 +216,12 @@ impl Model {
         }
     }
 
+    /// Whether the pinned Codex model catalog supports cache-preserving effort updates.
+    #[must_use]
+    pub const fn supports_reasoning_effort_updates(self) -> bool {
+        matches!(self, Self::Astra | Self::Sol)
+    }
+
     /// Returns whether the model accepts the requested reasoning execution mode.
     #[must_use]
     pub const fn supports_reasoning_mode(self, mode: ReasoningMode) -> bool {

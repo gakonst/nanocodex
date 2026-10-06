@@ -384,7 +384,10 @@ impl ResponseItem {
         Self::CompactionTrigger {}
     }
 
-    /// Creates an Astra reasoning-effort update for insertion before the next user message.
+    /// Creates a retained reasoning-effort protocol update.
+    ///
+    /// Nanocodex forwards these only to models supporting appended effort
+    /// updates. Unsupported models retain request-level effort semantics.
     #[must_use]
     pub const fn configuration_update(effort: Thinking) -> Self {
         Self::ConfigurationUpdate {

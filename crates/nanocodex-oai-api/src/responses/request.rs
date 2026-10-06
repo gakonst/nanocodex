@@ -549,6 +549,7 @@ impl Serialize for ResponsesInput<'_> {
 struct RequestInput<'a> {
     input: ResponsesInput<'a>,
     strip_image_detail: bool,
+    reasoning_effort_updates: bool,
 }
 
 impl Serialize for RequestInput<'_> {
@@ -556,8 +557,15 @@ impl Serialize for RequestInput<'_> {
     where
         S: serde::Serializer,
     {
-        let mut sequence = serializer.serialize_seq(Some(self.input.len()))?;
-        for item in self.input.iter() {
+        // As in codex-rs, unsupported models never receive effort updates.
+        // Filter only the wire view, leaving retained conversation untouched.
+        let supported = |item: &&ResponseItem| {
+            self.reasoning_effort_updates
+                || !matches!(item, ResponseItem::ConfigurationUpdate { .. })
+        };
+        let mut sequence =
+            serializer.serialize_seq(Some(self.input.iter().filter(supported).count()))?;
+        for item in self.input.iter().filter(supported) {
             sequence.serialize_element(&RequestResponseItem {
                 item,
                 strip_image_detail: self.strip_image_detail,
@@ -692,6 +700,10 @@ impl<'a> ResponseCreate<'a> {
             previous_response_id,
             input: RequestInput {
                 input,
+                reasoning_effort_updates: policy.model.supports_reasoning_effort_updates()
+                    && retained.map_or(config.model_id_prefix.is_none(), |retained| {
+                        retained.model_id_prefix.is_none()
+                    }),
                 strip_image_detail: matches!(
                     policy.model,
                     crate::Model::Sol | crate::Model::Luna | crate::Model::Astra
@@ -729,14 +741,12 @@ impl<'a> ResponseCreate<'a> {
             },
             // The API accepts both `fast` and `priority`. Codex currently uses
             // `priority` as the compatibility request value for Fast mode.
-            // GPT-6 standard mode is explicit so a project-level Fast default
-            // cannot silently change processing or the local cost estimate.
+            // As in codex-rs, explicit Fast-off is retained in session policy,
+            // but the default tier is omitted from the provider request.
             service_tier: match (policy.model, policy.fast_mode) {
                 (crate::Model::Glm53 | crate::Model::Kimi | crate::Model::Mimo, _) => None,
                 (_, true) => Some("priority"),
-                (crate::Model::Sol | crate::Model::Luna | crate::Model::Astra, false) => {
-                    Some("default")
-                }
+                (_, false) => None,
             },
             generate,
             client_metadata: ClientMetadata {
@@ -1343,7 +1353,7 @@ mod tests {
             None,
         ))
         .expect("fast request should serialize");
-        assert_eq!(standard["service_tier"], json!("default"));
+        assert!(standard.get("service_tier").is_none());
         assert_eq!(fast["service_tier"], json!("priority"));
 
         let astra_standard = serde_json::to_value(ResponseCreate::warmup(
@@ -1355,7 +1365,7 @@ mod tests {
             None,
         ))
         .expect("Astra standard request should serialize");
-        assert_eq!(astra_standard["service_tier"], json!("default"));
+        assert!(astra_standard.get("service_tier").is_none());
     }
 
     #[test]
