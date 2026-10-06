@@ -2,7 +2,7 @@ import { formatToolOutput, projectToolOutput } from "./tool-output.mjs";
 
 export function initialState(status = "Ready") {
   return {
-    entries: [], running: false, status, pendingTurns: 0, queuedPrompts: [],
+    runtimeIdentities: {}, entries: [], running: false, status, pendingTurns: 0, queuedPrompts: [],
     displayedQueuedPrompt: undefined, pendingSteers: [], appliedSteerRuns: [],
     runGeneration: 0, activeTurnId: undefined, streamedThisTurn: false,
     pendingRunError: undefined, modelCalls: 0, syntheticId: 0, terminalPolls: {},
@@ -203,6 +203,21 @@ export function applyAgentEvents(state, events) {
 
   for (const event of events) {
     const payload = event.payload ?? {};
+    if (event.type === "tool.result") {
+      let receipt = payload.structured_result ?? payload.result;
+      if (typeof receipt === "string") { try { receipt = JSON.parse(receipt); } catch { receipt = undefined; } }
+      const agents = Array.isArray(receipt?.agents) ? receipt.agents : [receipt];
+      for (const agent of agents) {
+        if (!agent || typeof agent.agent_id !== "number") continue;
+        const scope = JSON.stringify([payloadString(payload, "turn_id") ?? next.activeTurnId, agent.agent_id]);
+        const identity = {
+          ...(typeof agent.harness === "string" && agent.harness.trim() ? { harness: agent.harness } : {}),
+          ...(typeof agent.model === "string" && agent.model.trim() ? { model: agent.model } : {}),
+          ...next.runtimeIdentities?.[scope],
+        };
+        next.runtimeIdentities = { ...next.runtimeIdentities, [scope]: identity };
+      }
+    }
     if (event.type === "assistant.delta" || event.type === "reasoning.summary.delta") {
       const kind = event.type === "assistant.delta" ? "assistant" : "reasoning";
       const turnId = payloadString(payload, "turn_id") ?? next.activeTurnId;
@@ -239,6 +254,14 @@ export function applyAgentEvents(state, events) {
         break;
       }
       case "run.started": {
+        const scope = JSON.stringify([payloadString(payload, "turn_id") ?? next.activeTurnId, payload.managed_agent_id ?? null]);
+        const harness = payload.harness ?? ({ claude: "claude", openai_model: "codex" })[payload.mode];
+        const previous = next.runtimeIdentities?.[scope];
+        next.runtimeIdentities = { ...next.runtimeIdentities, [scope]: {
+          ...previous,
+          ...(typeof harness === "string" && harness.trim() ? { harness } : {}),
+          ...(typeof payload.model === "string" && payload.model.trim() ? { model: payload.model } : {}),
+        } };
         if (payload.managed_agent_id != null) break;
         const eventTurnId = payloadString(payload, "turn_id");
         const promptIndex = eventTurnId === undefined
@@ -387,6 +410,10 @@ export function applyAgentEvents(state, events) {
     }
   }
   flushDeltas();
+  next.entries = next.entries.map(entry => {
+    const identity = next.runtimeIdentities?.[JSON.stringify([entry.turnId, entry.responseIdentity?.agentId ?? null])];
+    return identity && entry.runtimeIdentity !== identity ? { ...entry, runtimeIdentity: identity } : entry;
+  });
   return next;
 }
 

@@ -30,6 +30,10 @@ const LEGACY_ROUTE_ID = "$legacy";
 export const HOSTED_MACHINE_TOOL_NAMES = Object.freeze([
   "exec_command",
   "write_stdin",
+  "apply_patch",
+  "view_image",
+  "workspace_tool",
+  "claude_bash",
   "preview",
   "native_secure_input",
   "validate_app",

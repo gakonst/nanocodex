@@ -285,6 +285,10 @@ pub struct AgentDescriptor {
     pub role: String,
     pub task: String,
     pub parent: Option<AgentId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub harness: Option<nanocodex_agent::HarnessFamily>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
 }
 
 #[derive(Debug)]

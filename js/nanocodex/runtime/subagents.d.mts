@@ -23,6 +23,8 @@ export type AgentStatus =
   | Readonly<{ state: "completed"; output: unknown }>
   | Readonly<{ state: "failed"; error: string }>;
 export type AgentSummary = Readonly<{
+  harness?: "codex" | "claude";
+  model?: string;
   agent_id: AgentId;
   role: string;
   task: string;
@@ -48,6 +50,8 @@ export type BatchSpawnOptions = Readonly<{
   outputSchema: JsonSchema;
 }>;
 export type SpawnReport = Readonly<{
+  harness?: "codex" | "claude";
+  model?: string;
   agent_id: AgentId;
   role: string;
   status: Readonly<{ state: "running" }>;

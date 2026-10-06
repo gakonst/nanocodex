@@ -19,6 +19,7 @@ futures-util.workspace = true
 js-sys.workspace = true
 nanocodex = { workspace = true, features = ["claude"] }
 nanocodex-claude.workspace = true
+nanocodex-claude-tools.workspace = true
 nanocodex-agent.workspace = true
 reqwest.workspace = true
 nanocodex-subagents = { workspace = true, features = ["claude"] }

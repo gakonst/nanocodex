@@ -171,6 +171,9 @@ impl SubagentTree {
         match update {
             AgentUpdate::Added(descriptor) => {
                 if let Some(node) = self.node_mut(descriptor.id) {
+                    let mut descriptor = descriptor;
+                    descriptor.harness = node.descriptor.harness.or(descriptor.harness);
+                    descriptor.model = node.descriptor.model.clone().or(descriptor.model);
                     node.descriptor = descriptor;
                 } else {
                     let id = descriptor.id;
@@ -189,6 +192,27 @@ impl SubagentTree {
                 let Some(node) = self.node_mut(id) else {
                     return false;
                 };
+                if event.kind == nanocodex::AgentEventKind::RunStarted {
+                    if let Ok(payload) =
+                        serde_json::from_str::<serde_json::Value>(event.payload.get())
+                    {
+                        if let Some(model) =
+                            payload["model"].as_str().filter(|v| !v.trim().is_empty())
+                        {
+                            node.descriptor.model = Some(model.to_owned());
+                        }
+                        let harness = payload["harness"].as_str().or_else(|| match payload["mode"]
+                            .as_str()
+                        {
+                            Some("claude") => Some("claude"),
+                            Some("openai_model") => Some("codex"),
+                            _ => None,
+                        });
+                        if let Some(harness) = harness.and_then(|v| v.parse().ok()) {
+                            node.descriptor.harness = Some(harness);
+                        }
+                    }
+                }
                 let record = TranscriptRecord::from_agent(event.seq, unix_time_ms(), event);
                 node.transcript
                     .update(TranscriptEvent::Record(Arc::new(record)));
@@ -483,7 +507,7 @@ impl SubagentTree {
         let title = format!(
             "{} · {} · #{}",
             node.descriptor.role,
-            model_name(Model::Oai(nanocodex::Model::Sol)),
+            agent_identity(&node.descriptor),
             node.descriptor.id
         );
         let keys: &[(&str, &str)] = if node.transcript.component().expandables_focused() {
@@ -492,10 +516,7 @@ impl SubagentTree {
             &TRANSCRIPT_KEYS
         };
         let layout = Floating::new(&title, area.width, area.height, keys)
-            .colors(
-                theme.border(),
-                theme.model(Model::Oai(nanocodex::Model::Sol)),
-            )
+            .colors(theme.border(), agent_color(&node.descriptor, theme))
             .render(frame, area, theme);
         node.transcript.render(frame, layout.body, theme);
     }
@@ -726,11 +747,11 @@ impl SubagentTree {
                     self.nodes.len(),
                     self.filter.label()
                 )),
-                Span::styled("    Model  ", Style::default().fg(theme.muted())),
+                Span::styled("    Runtime  ", Style::default().fg(theme.muted())),
                 Span::styled(
-                    model_name(Model::Oai(nanocodex::Model::Sol)),
+                    agent_identity(&node.descriptor),
                     Style::default()
-                        .fg(theme.model(Model::Oai(nanocodex::Model::Sol)))
+                        .fg(agent_color(&node.descriptor, theme))
                         .add_modifier(Modifier::BOLD),
                 ),
             ]),
@@ -862,9 +883,16 @@ fn render_node(
         &top,
         border_style,
     );
-    for (row, (text, style)) in [(title, text_style), (detail, detail_style)]
-        .into_iter()
-        .enumerate()
+    for (row, (text, style)) in [
+        (title, text_style),
+        (
+            centered_text(&agent_identity(&node.descriptor), NODE_WIDTH - 2),
+            Style::default().fg(agent_color(&node.descriptor, theme)),
+        ),
+        (detail, detail_style),
+    ]
+    .into_iter()
+    .enumerate()
     {
         let y = position.top + i32::try_from(row).unwrap_or_default() + 1;
         draw_world_string(frame, canvas, left, y, camera, "│", border_style);
@@ -1108,11 +1136,81 @@ fn unix_time_ms() -> u64 {
         })
 }
 
-fn model_name(model: Model) -> &'static str {
-    match model {
-        Model::Oai(nanocodex::Model::Luna) => "Luna",
-        Model::Oai(nanocodex::Model::Sol) => "Sol",
-        Model::Oai(nanocodex::Model::Astra) => "Astra",
-        _ => model.as_str(),
+/// Persisted descriptors may predate runtime identity metadata. Never infer a
+/// historical model from today's defaults or from the parent's identity.
+fn agent_identity(descriptor: &AgentDescriptor) -> String {
+    let harness = descriptor
+        .harness
+        .as_ref()
+        .map(|h| match h.as_str() {
+            "codex" => "Codex".to_owned(),
+            "claude" => "Claude".to_owned(),
+            other => other.to_owned(),
+        })
+        .unwrap_or_else(|| "unknown harness".to_owned());
+    let model = descriptor
+        .model
+        .as_ref()
+        .map(ToString::to_string)
+        .unwrap_or_else(|| "unknown model".to_owned());
+    sanitize_terminal_text_inline(&format!("{harness} · {model}"))
+}
+
+fn agent_color(descriptor: &AgentDescriptor, theme: &Theme) -> Color {
+    descriptor
+        .model
+        .as_ref()
+        .and_then(|model| model.to_string().parse::<Model>().ok())
+        .map_or_else(|| theme.muted(), |model| theme.model(model))
+}
+
+#[cfg(test)]
+mod identity_render_journey {
+    use super::*;
+    use ratatui::{Terminal, backend::TestBackend};
+
+    #[test]
+    fn historical_child_reconciles_actual_run_in_tree_and_inspector() {
+        let mut tree = SubagentTree::new(crate::config::ReasoningEffort::default());
+        let descriptor: AgentDescriptor = serde_json::from_value(serde_json::json!({
+            "id": 7, "session_id": "synthetic-child", "role": "reviewer", "task": "Review", "parent": null
+        })).unwrap();
+        let id = descriptor.id;
+        tree.apply(AgentUpdate::Added(descriptor.clone()));
+        let mut terminal = Terminal::new(TestBackend::new(120, 36)).unwrap();
+        let theme = Theme::default();
+        let render = |tree: &mut SubagentTree, terminal: &mut Terminal<TestBackend>, inspect| {
+            terminal
+                .draw(|frame| {
+                    if inspect {
+                        tree.render_transcript(id, frame, frame.area(), &theme);
+                    } else {
+                        tree.render_tree(frame, frame.area(), &theme);
+                    }
+                })
+                .unwrap();
+            terminal
+                .backend()
+                .buffer()
+                .content
+                .iter()
+                .map(|cell| cell.symbol())
+                .collect::<String>()
+        };
+        let historical = render(&mut tree, &mut terminal, false);
+        assert!(historical.contains("unknown harness · unknown model"));
+        assert!(!historical.contains("Sol"));
+        let event = serde_json::from_value(serde_json::json!({
+            "protocol_version": 1, "request_id": "synthetic-child", "seq": 1,
+            "type": "run.started", "payload": { "mode": "claude", "model": "claude-opus-5-5" }
+        }))
+        .unwrap();
+        tree.apply(AgentUpdate::Event { id, event });
+        tree.apply(AgentUpdate::Added(descriptor));
+        for inspect in [false, true] {
+            let rendered = render(&mut tree, &mut terminal, inspect);
+            assert!(rendered.contains("Claude · claude-opus-5-5"), "{rendered}");
+            println!("{}: {rendered}", if inspect { "inspector" } else { "tree" });
+        }
     }
 }

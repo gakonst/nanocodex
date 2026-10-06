@@ -31,6 +31,70 @@ struct ClaudeExecution {
 }
 
 impl ClaudeExecutionPolicy for ClaudeExecution {
+    fn accept_steer(
+        &self,
+        id: String,
+        accepted_after_model_call_index: u32,
+        message_id: Option<String>,
+        input: Value,
+        capacity: bool,
+    ) -> PolicyFuture<'_, Option<u32>> {
+        Box::pin(async move {
+            // Preserve the public Prompt serialization order used by browser receipt hashes.
+            let input: nanocodex_agent::Prompt =
+                serde_json::from_value(input).map_err(|error| {
+                    nanocodex_agent::NanocodexError::InvalidRequest(error.to_string())
+                })?;
+            self.owner
+                .accept_steer(
+                    id,
+                    accepted_after_model_call_index,
+                    &input,
+                    message_id,
+                    capacity,
+                )
+                .await
+                .map_err(agent_error)
+        })
+    }
+    fn retained_steers(
+        &self,
+        id: String,
+    ) -> PolicyFuture<'_, Vec<nanocodex_claude::execution::RetainedSteer>> {
+        Box::pin(async move {
+            self.owner
+                .retained_steers(id)
+                .await
+                .map_err(agent_error)?
+                .into_iter()
+                .map(|steer| {
+                    Ok(nanocodex_claude::execution::RetainedSteer {
+                        index: steer.index,
+                        message_id: steer.state.message_id,
+                        input: steer.state.input.decode().map_err(agent_error)?,
+                        model_call_index: steer.state.model_call_index,
+                    })
+                })
+                .collect()
+        })
+    }
+    fn bind_steer(&self, id: String, index: u32, model_call_index: u32) -> PolicyFuture<'_, ()> {
+        Box::pin(async move {
+            self.owner
+                .bind_steer(id, index, model_call_index)
+                .await
+                .map_err(agent_error)
+        })
+    }
+    fn withdraw_steer(&self, id: String, index: u32) -> PolicyFuture<'_, ()> {
+        Box::pin(async move {
+            self.owner
+                .withdraw_steer(id, index)
+                .await
+                .map_err(agent_error)
+        })
+    }
+
     fn state_id(&self) -> &str {
         &self.state_id
     }

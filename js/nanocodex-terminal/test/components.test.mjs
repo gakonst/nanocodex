@@ -575,7 +575,7 @@ test("child JSON is disclosed separately while root JSON survives live and repla
       const child = renderer.root.findByProps({ "data-agent-id": 7 });
       assert.equal(child.type, "details");
       assert.equal(child.props.open, undefined);
-      assert.equal(child.findByType("summary").children.join(""), "Agent 7 activity");
+      assert.equal(child.findByType("summary").children.join(""), "Agent 7 · Unknown harness · Unknown model activity");
       assert.ok(child.findAll(node => node.props.children === '{"report":"child"}').length > 0);
       const root = renderer.root.findAllByType("article").find(article => article.findAll(node => node.props.children === '{"answer":"root"}').length > 0);
       assert.ok(root);
@@ -617,5 +617,46 @@ test("queued owner messages remain visible and cancel targets the selected root"
     assert.equal(turns[1].cancelled, true);
     assert.equal(turns[2].cancelled, false);
     assert.ok(renderer.root.findByProps({ "aria-label": "Cancel queued message: follow-up A" }).props.disabled);
+  } finally { if (renderer) await act(async () => renderer.unmount()); }
+});
+
+test("runtime identity journey keeps root and children separate and reconciles old receipts", async () => {
+  const { applyAgentEvents, initialState } = await import("../../nanocodex-react/agent/transcript.mjs");
+  let state = initialState();
+  let renderer;
+  let seq = 0;
+  const events = [];
+  const props = { canLoadOlder: false, composer: null, inactiveMessage: "", isLoadingOlder: false, mode: "full", showToolCalls: true, status: "running", onLoadOlder: async () => false };
+  const emit = async (type, payload) => {
+    const event = { request_id: "synthetic", seq: ++seq, type, payload: { turn_id: "turn", ...payload } };
+    events.push(event);
+    state = applyAgentEvents(state, [event]);
+    await act(async () => {
+      const element = React.createElement(TerminalTranscriptSurface, { ...props, entries: state.entries });
+      if (renderer) renderer.update(element);
+      else renderer = TestRenderer.create(element, { createNodeMock: () => ({ clientHeight: 300, scrollHeight: 600, scrollTop: 0 }) });
+    });
+  };
+  const childLabel = id => renderer.root.findByProps({ "data-agent-id": id }).findByType("summary").children.join("");
+  try {
+    await emit("run.started", { mode: "openai_model", model: "gpt-6-astra" });
+    await emit("assistant.message", { text: "Root answer" });
+    await emit("assistant.message", { managed_agent_id: 7, text: "Child answer" });
+    assert.match(childLabel(7), /Unknown harness.*Unknown model/);
+    await emit("run.started", { managed_agent_id: 7, mode: "claude", model: "claude-opus-5-5" });
+    assert.match(childLabel(7), /Claude.*claude-opus-5-5/);
+    await emit("tool.result", { call_id: "spawn", tool: "spawn_agent", result: { agent_id: 7, harness: "codex", model: "stale-model" } });
+    assert.match(childLabel(7), /Claude.*claude-opus-5-5/);
+    await emit("assistant.message", { managed_agent_id: 8, text: "Historical child" });
+    assert.match(childLabel(8), /Unknown harness.*Unknown model/);
+    const root = renderer.root.findAllByProps({ className: "agent-terminal-markdown is-assistant" })[0];
+    assert.ok(root);
+    assert.match(root.findByProps({ className: "agent-terminal-entry-label" }).children.join(""), /Codex.*gpt-6-astra/);
+    assert.equal(state.running, true);
+    const replay = applyAgentEvents(initialState(), events);
+    await act(async () => renderer.update(React.createElement(TerminalTranscriptSurface, { ...props, entries: replay.entries })));
+    assert.match(childLabel(7), /Claude.*claude-opus-5-5/);
+    assert.match(childLabel(8), /Unknown harness.*Unknown model/);
+    console.log("identity journey: root Codex/gpt-6-astra; child 7 Claude/claude-opus-5-5 survives stale receipt; child 8 unknown; answers retained");
   } finally { if (renderer) await act(async () => renderer.unmount()); }
 });

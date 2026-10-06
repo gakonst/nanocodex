@@ -33,8 +33,54 @@ pub enum Step {
     /// Exact settled output, without invoking the handler.
     Replay(Value),
 }
+/// A native prompt retained in the shared steering journal.
+pub struct RetainedSteer {
+    /// Absolute acceptance ordinal within the operation.
+    pub index: u32,
+    /// Caller identity, when supplied.
+    pub message_id: Option<String>,
+    /// Serialized native Prompt, including frozen media.
+    pub input: Value,
+    /// One-based consuming model boundary; absent while withdrawable.
+    pub model_call_index: Option<u32>,
+}
 /// Host-owned durable execution, sharing Nanocodex's store and fencing rules.
 pub trait ClaudeExecutionPolicy: Send + Sync {
+    /// Persist admission; None means an identical accepted identity was replayed.
+    fn accept_steer(
+        &self,
+        _id: String,
+        _accepted_after_model_call_index: u32,
+        _message_id: Option<String>,
+        _input: Value,
+        _capacity: bool,
+    ) -> PolicyFuture<'_, Option<u32>> {
+        Box::pin(async {
+            Err(nanocodex_agent::NanocodexError::InvalidRequest(
+                "execution policy does not support steering".into(),
+            ))
+        })
+    }
+    /// Recover live input bodies in acceptance order.
+    fn retained_steers(&self, _id: String) -> PolicyFuture<'_, Vec<RetainedSteer>> {
+        Box::pin(async { Ok(Vec::new()) })
+    }
+    /// Fence withdrawal before appending input to its consuming request.
+    fn bind_steer(&self, _id: String, _index: u32, _model_call_index: u32) -> PolicyFuture<'_, ()> {
+        Box::pin(async {
+            Err(nanocodex_agent::NanocodexError::InvalidRequest(
+                "execution policy does not support steering".into(),
+            ))
+        })
+    }
+    /// Remove only the latest unbound input, retaining its identity tombstone.
+    fn withdraw_steer(&self, _id: String, _index: u32) -> PolicyFuture<'_, ()> {
+        Box::pin(async {
+            Err(nanocodex_agent::NanocodexError::InvalidRequest(
+                "execution policy does not support steering".into(),
+            ))
+        })
+    }
     fn state_id(&self) -> &str;
     fn admit(
         &self,

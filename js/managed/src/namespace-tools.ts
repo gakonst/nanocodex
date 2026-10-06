@@ -1,3 +1,4 @@
+import { rebasePatch } from "./claude-engine-runtime.mjs";
 import { BACKGROUND_BROWSER_INSTRUCTIONS } from "./execution-preferences";
 import type { ToolMap } from "nanocodex";
 import { observeHandCall } from "./hand-call-observation";
@@ -27,6 +28,7 @@ export type RoutedTool = Readonly<{
   handler(input: unknown, context: ToolContext): unknown | Promise<unknown>;
   /** Present only when this exact provider resource can recover process IDs. */
   processSessionKey?: string;
+  routeToken?: string;
 }>;
 
 export type NamespaceMachine = Readonly<{
@@ -51,6 +53,9 @@ type MountedHand = Readonly<{
   workspace: string;
   exec?: RoutedTool;
   writeStdin?: RoutedTool;
+  workspaceTool?: RoutedTool;
+  nativeBash?: RoutedTool;
+  patch?: RoutedTool;
   preview?: RoutedTool;
   cua?: RoutedTool;
   cuaReset?: RoutedTool;
@@ -132,9 +137,13 @@ function withNativeRecording(upstream: RoutedTool, screen: RoutedTool | undefine
 
 export type NamespaceCaptureFilter = (machine: NamespaceMachine) => boolean;
 
+export type NativeBashPin = Readonly<{ machineId: string; root: string; workspace: string; routeToken: string; authorizationKey: string }>;
 export type NamespaceExecutionRuntime = Readonly<{
   tools: ToolMap;
   capture(context: ToolContext, filter?: NamespaceCaptureFilter): void;
+  nativeBash(name: string, input: Record<string, unknown>, context: ToolContext, selection?: NativeBashPin, workdir?: string, admit?: (pin: NativeBashPin) => void): Promise<{output: Record<string, unknown>; pin: NativeBashPin}>;
+  patch(patch: string, paths: string[], context: ToolContext): Promise<{result: unknown} | undefined>;
+  workspaceTool(name: string, input: Record<string, unknown>, pathKey: string, context: ToolContext): Promise<unknown>;
 }>;
 
 /**
@@ -438,6 +447,89 @@ export function createNamespaceExecutionRuntime(
   };
   return Object.freeze({
     tools,
+    nativeBash: async (name, input, context, selection, workdir, admit) => {
+      context.signal.throwIfAborted();
+      const binding = cell(context);
+      const cwd = canonicalCwd(binding, workdir ?? selection?.root);
+      const route = routeNamespaceCwd(binding.scope, cwd, "process.exec");
+      const hand = binding.hands.get(route.mount.mountId);
+      if (!hand?.nativeBash || !hand.machineId || !hand.nativeBash.routeToken) throw new Error("native Bash RPC unavailable; update this Hand");
+      const pin = {machineId: hand.machineId, root: hand.root, workspace: hand.workspace, routeToken: hand.nativeBash.routeToken, authorizationKey: binding.authorizationKey};
+      if (selection && JSON.stringify(selection) !== JSON.stringify(pin)) throw new Error("native Bash Hand or authority changed; original job/cwd cannot be retargeted");
+      let nativeInput = input;
+      if (workdir !== undefined && name === "Bash") {
+        const native = nativeWorkdir(hand.workspace, route.relativePath);
+        nativeInput = {...input, command: `cd '${native.replace(/'/g, "'\\''")}' && ${input.command}`};
+      }
+      admit?.(pin);
+      const result = await hand.nativeBash.handler({tool: name, input: nativeInput}, context);
+      context.signal.throwIfAborted();
+      if (authorizationKey(context) !== binding.authorizationKey) throw new Error("namespace authority changed");
+      const output = executionResult(result);
+      if (!output || !Array.isArray(output.content) || typeof output.is_error !== "boolean") throw new Error("Hand did not return native Bash output");
+      const rebase = (value: unknown): unknown => {
+        if (typeof value === "string") return value.split(hand.workspace.replace(/\/$/, "") + "/").join(hand.root + "/");
+        if (Array.isArray(value)) return value.map(rebase);
+        if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, rebase(item)]));
+        return value;
+      };
+      return {output: rebase(output) as Record<string, unknown>, pin};
+    },
+    patch: async (patch, paths, context) => {
+      context.signal.throwIfAborted();
+      if (!paths.length) throw new Error("patch contains no file paths");
+      // Brain-only patches do not depend on Hand readiness or capture.
+      const logical = paths.map(path => resolveNamespaceCwd(DEFAULT_CWD, path));
+      if (logical.every(path => path.startsWith("/brain/"))) return undefined;
+      const binding = cell(context);
+      let selected: MountedHand | undefined;
+      const mappings: Record<string, string> = {};
+      for (const path of paths) {
+        const canonical = canonicalCwd(binding, path);
+        const route = routeNamespaceCwd(binding.scope, canonical, "filesystem.write");
+        const hand = binding.hands.get(route.mount.mountId);
+        if (!hand?.patch || hand.machineId === undefined) throw new Error("patch requires exactly one native Hand with apply_patch support");
+        if (selected && selected !== hand) throw new Error("patch cannot cross namespace mounts");
+        selected = hand;
+        mappings[path] = nativeWorkdir(hand.workspace, route.relativePath);
+      }
+      if (!selected?.patch) throw new Error("native patch Hand unavailable");
+      const result = await selected.patch.handler(rebasePatch(patch, mappings), context);
+      context.signal.throwIfAborted();
+      if (authorizationKey(context) !== binding.authorizationKey) throw new Error("namespace authority changed");
+      const nativeRoot = selected.workspace.replace(/\/$/, "");
+      const rebase = (value: unknown): unknown => {
+        if (typeof value === "string") return value.split(nativeRoot + "/").join(selected!.root + "/");
+        if (Array.isArray(value)) return value.map(rebase);
+        if (value && typeof value === "object") return Object.fromEntries(Reflect.ownKeys(value).map(key => [key, rebase((value as Record<PropertyKey, unknown>)[key])]));
+        return value;
+      };
+      return {result: rebase(result)};
+    },
+    workspaceTool: async (name, input, pathKey, context) => {
+      context.signal.throwIfAborted();
+      const binding = cell(context);
+      const canonical = canonicalCwd(binding, optionalString(input[pathKey], pathKey));
+      const write = ["Write", "Edit", "NotebookEdit"].includes(name);
+      const route = routeNamespaceCwd(binding.scope, canonical, write ? "filesystem.write" : "filesystem.read");
+      const hand = binding.hands.get(route.mount.mountId);
+      if (!hand?.workspaceTool) throw new Error("native workspace RPC unavailable; update this Hand");
+      const native = nativeWorkdir(hand.workspace, canonical.slice(hand.root.length) || "/");
+      const result = await hand.workspaceTool.handler({tool: name, input: {...input, [pathKey]: native}}, context);
+      context.signal.throwIfAborted();
+      if (authorizationKey(context) !== binding.authorizationKey) throw new Error("namespace authority changed");
+      const output = executionResult(result);
+      if (!output || !Array.isArray(output.content) || typeof output.is_error !== "boolean") throw new Error("Hand did not return native workspace output; update this Hand");
+      // Preserve native block ordering and all diagnostic fields. Rebase only
+      // native workspace prefixes, including paths embedded in text diagnostics.
+      const rebase = (value: unknown): unknown => {
+        if (typeof value === "string") return value.split(hand.workspace.replace(/\/$/, "") + "/").join(hand.root + "/");
+        if (Array.isArray(value)) return value.map(rebase);
+        if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, rebase(item)]));
+        return value;
+      };
+      return {content: rebase(output.content), isError: output.is_error, structuredResult: rebase(output.structured_result), metadata: rebase(output.metadata)};
+    },
     capture: (context: ToolContext, filter?: NamespaceCaptureFilter) => { void cell(context, filter); },
   });
 }
@@ -487,6 +579,9 @@ function createCellBinding(
       workspace: machine.workspace,
       exec: resolveMachineTool(machine.id, "exec_command", context),
       writeStdin: resolveMachineTool(machine.id, "write_stdin", context),
+      nativeBash: resolveMachineTool(machine.id, "claude_bash", context),
+      workspaceTool: resolveMachineTool(machine.id, "workspace_tool", context),
+      patch: resolveMachineTool(machine.id, "apply_patch", context),
       preview: resolveMachineTool(machine.id, "preview", context),
       cua: upstream ? withNativeRecording(upstream.cua, screen) : fallback?.cua,
       cuaReset: upstream?.cuaReset ?? fallback?.cuaReset,
@@ -531,6 +626,8 @@ function canonicalCwd(binding: CellBinding, workdir?: string): string {
 
 function handRights(hand: MountedHand): readonly NamespaceRight[] {
   const rights: NamespaceRight[] = ["namespace.discover"];
+  if (hand.workspaceTool !== undefined || hand.patch !== undefined) rights.push("filesystem.read", "filesystem.write");
+  if (hand.nativeBash !== undefined && hand.exec === undefined) rights.push("process.exec");
   if (hand.exec !== undefined) rights.push("process.exec");
   if (hand.writeStdin !== undefined) rights.push("process.stdin");
   if (hand.preview !== undefined) rights.push("network.preview");

@@ -4,6 +4,8 @@ export type SubagentToolContext = Readonly<{
   sessionId: string;
   role: string;
   task: string;
+  harness?: "codex" | "claude";
+  model?: string;
 }>;
 
 export type ToolContext = Readonly<{

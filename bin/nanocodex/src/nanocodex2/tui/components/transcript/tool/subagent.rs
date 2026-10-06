@@ -20,7 +20,8 @@ pub(super) fn present(tool: &ToolEntry, width: u16, theme: &Theme, expanded: boo
         "spawn_agent" => {
             for (key, label) in [
                 ("task", "Task"),
-                ("model", "Model"),
+                ("harness", "Requested harness"),
+                ("model", "Requested model"),
                 ("thinking", "Thinking"),
             ] {
                 if let Some(value) = tool.arguments.get(key) {
@@ -64,7 +65,11 @@ pub(super) fn present(tool: &ToolEntry, width: u16, theme: &Theme, expanded: boo
                     id.map_or_else(|| role.to_owned(), |id| format!("Agent {id} · {role}"));
                 sections.push((
                     heading,
-                    Value::String(state(agent).unwrap_or("unknown").replace('_', " ")),
+                    Value::String(format!(
+                        "{} · {}",
+                        runtime_identity(agent),
+                        state(agent).unwrap_or("unknown").replace('_', " ")
+                    )),
                 ));
                 if let Some(task) = agent.get("task") {
                     sections.push(("Task".into(), task.clone()));
@@ -203,8 +208,11 @@ fn outcome(tool: &ToolEntry) -> Option<String> {
             .and_then(Value::as_str)
             .or_else(|| result.get("status").and_then(Value::as_str));
         return match (id, state) {
-            (Some(id), Some(state)) => Some(format!("agent {id} · {state}")),
-            (Some(id), None) => Some(format!("agent {id}")),
+            (Some(id), Some(state)) => Some(format!(
+                "agent {id} · {} · {state}",
+                runtime_identity(result)
+            )),
+            (Some(id), None) => Some(format!("agent {id} · {}", runtime_identity(result))),
             (None, Some(state)) => Some(state.to_owned()),
             (None, None) => None,
         };
@@ -333,4 +341,17 @@ fn compact(text: &str, max_chars: usize) -> String {
     } else {
         compact
     }
+}
+
+fn runtime_identity(value: &Value) -> String {
+    let harness = match string(value, "harness") {
+        Some("codex") => "Codex",
+        Some("claude") => "Claude",
+        Some(other) if !other.trim().is_empty() => other,
+        _ => "Unknown harness",
+    };
+    let model = string(value, "model")
+        .filter(|v| !v.trim().is_empty())
+        .unwrap_or("Unknown model");
+    crate::tui::format::sanitize_terminal_text_inline(&format!("{harness} · {model}"))
 }

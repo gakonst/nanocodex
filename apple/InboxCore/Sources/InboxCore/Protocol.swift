@@ -127,6 +127,28 @@ public struct SSEParser: Sendable {
     }
 }
 
+/// Runtime identity is explicit metadata, never a guess from a configured default.
+public struct AgentRuntimeIdentity: Codable, Equatable, Sendable {
+    public var harness: String?
+    public var model: String?
+    public init(payload: JSON) {
+        let explicit = payload["harness"].string
+        let mode = payload["mode"].string
+        harness = !explicit.isEmpty ? explicit : mode == "claude" ? "claude" : mode == "openai_model" ? "codex" : nil
+        model = payload["model"].string.isEmpty ? nil : payload["model"].string
+    }
+    public func fillingMissing(from fallback: AgentRuntimeIdentity?) -> AgentRuntimeIdentity {
+        var value = self
+        value.harness = harness ?? fallback?.harness
+        value.model = model ?? fallback?.model
+        return value
+    }
+    public var label: String {
+        let family = harness == "codex" ? "Codex" : harness == "claude" ? "Claude" : harness ?? "Unknown harness"
+        return family + " · " + (model ?? "Unknown model")
+    }
+}
+
 public struct TranscriptRow: Identifiable, Codable, Equatable, Sendable {
     public internal(set) var id: String
     public var role: String
@@ -139,6 +161,7 @@ public struct TranscriptRow: Identifiable, Codable, Equatable, Sendable {
     public var imageFiles: [MessageAttachment]?
     public var turnID: String?
     public var agentID: String?
+    public var runtimeIdentity: AgentRuntimeIdentity?
     public var phase: String?
     public var itemID: String?
     public var modelCallID: String?
@@ -155,6 +178,7 @@ public struct TranscriptRow: Identifiable, Codable, Equatable, Sendable {
 /// Stream identity includes both the turn and subagent to prevent mixed output.
 public struct TranscriptProjection: Sendable {
     public private(set) var rows: [TranscriptRow] = []
+    private var runtimeIdentities: [String: AgentRuntimeIdentity] = [:]
     private var seen = Set<String>()
     private var seenToolCalls = Set<String>()
     private var seenToolResults = Set<String>()
@@ -264,6 +288,26 @@ public struct TranscriptProjection: Sendable {
                     lastStreamRow.removeValue(forKey: .init(turn: turn, agent: agent, role: "Agent"))
                 }
                 let modelCallID = p["model_call_index"] == .null ? nil : p["model_call_index"].pretty
+                if type == "tool.result" {
+                    let result = ToolPresentation.decoded(p["structured_result"] == .null ? p["result"] : p["structured_result"])
+                    let receipts: [JSON]
+                    if case .array(let agents) = result["agents"] { receipts = agents } else { receipts = [result] }
+                    for result in receipts where result["agent_id"] != .null {
+                        let scope = turn + ":" + result["agent_id"].pretty
+                        let receipt = AgentRuntimeIdentity(payload: result)
+                        runtimeIdentities[scope] = runtimeIdentities[scope]?.fillingMissing(from: receipt) ?? receipt
+                        for index in turnRows[turn] ?? [] where rows[index].agentID == result["agent_id"].pretty {
+                            rows[index].runtimeIdentity = runtimeIdentities[scope]
+                        }
+                    }
+                }
+                if type == "run.started" {
+                    let identity = AgentRuntimeIdentity(payload: p).fillingMissing(from: runtimeIdentities[prefix])
+                    runtimeIdentities[prefix] = identity
+                    for index in turnRows[turn] ?? [] where rows[index].agentID == (agent.isEmpty ? nil : agent) {
+                        rows[index].runtimeIdentity = identity
+                    }
+                }
                 switch type {
                 case "assistant.delta", "reasoning.summary.delta":
                     if let last = lastStreamRow[.init(turn: turn, agent: agent, role: role)], rows[last].running,
@@ -364,6 +408,7 @@ public struct TranscriptProjection: Sendable {
                 }
             }
             for index in firstNewRow..<rows.count {
+                rows[index].runtimeIdentity = runtimeIdentities[prefix]
                 rows[index].cursor = envelope.cursor
                 rows[index].turnID = turn
                 rows[index].agentID = agent.isEmpty ? nil : agent

@@ -6,6 +6,9 @@ pub mod bash;
 pub mod host;
 #[cfg(not(target_family = "wasm"))]
 pub mod notebook;
+pub mod portable_files;
+pub mod portable_notebook;
+pub mod portable_plan;
 pub mod tasks;
 pub mod web;
 #[cfg(not(target_family = "wasm"))]

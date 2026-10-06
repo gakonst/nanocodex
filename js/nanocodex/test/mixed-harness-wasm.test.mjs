@@ -119,7 +119,14 @@ test('public SDK shares canonical children across both native harness families',
       assert.equal(report.timed_out, false, JSON.stringify(report));
       assert.equal(report.agents[0].status.state, 'completed', JSON.stringify(report));
       assert.equal(report.agents[0].status.output.ok, true);
-      assert.equal((await Subagents.list(root, { includeCompleted: true })).agents.length, 1);
+      const expectedHarness = index === 0 || index === 4 ? 'claude' : 'codex';
+      const expectedModel = index === 0 ? 'claude-opus-5-5' : index === 4 ? 'claude-proxy-fixture' : 'gpt-6.1-sol';
+      const directory = (await Subagents.list(root, { includeCompleted: true })).agents;
+      assert.equal(directory.length, 1);
+      for (const actual of [spawned, report.agents[0], directory[0], effects.at(-1).subagent]) {
+        assert.equal(actual.harness, expectedHarness, 'resolved child harness is consistent across public receipts and actual host effects');
+        assert.equal(actual.model, expectedModel, 'resolved native model survives aliases and arbitrary explicit native IDs');
+      }
       await Subagents.close(root, spawned.agent_id);
       off(); watcher.off();
     }

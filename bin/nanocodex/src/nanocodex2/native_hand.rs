@@ -354,7 +354,13 @@ pub(super) async fn run_observed(
     // forward the account credential or ambient sensitive variables to programs.
     let mut tools = Tools::builder()
         .without_defaults()
-        .add(WorkspaceTools::new(state.machine.workspace()));
+        .add(WorkspaceTools::new(state.machine.workspace()))
+        .add(super::native_workspace::NativeWorkspace::new(
+            state.machine.workspace(),
+        ))
+        .add(super::native_bash::NativeBash::new(
+            state.machine.workspace(),
+        ));
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     if super::native_secure_input::NativeSecureInput::installed() {
         tools = tools.add(super::native_secure_input::NativeSecureInput);

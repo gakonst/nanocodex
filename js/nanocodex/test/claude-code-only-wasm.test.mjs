@@ -67,7 +67,13 @@ test('Claude code-only nests native tools and canonical children, resumes cells,
       }
       case 3:
         assert.match(history, /CHILD_OK/); assert.match(history, /Claude tool execution failed/);
-        assert.doesNotMatch(history, /PRIVATE_HOST_DETAIL/); return final('STRICT_CLAUDE_OK');
+        assert.doesNotMatch(history, /PRIVATE_HOST_DETAIL/);
+        return exec('missing-child', 'try { await tools.wait_agent({agent_ids:[999999],timeout_ms:1}); } catch (error) { text(error); } text(await tools.list_agents({include_completed:true}));');
+      case 4:
+        assert.match(history, /Subagent is unavailable in this runtime/);
+        assert.match(history, /reconcile previous effects before retrying work/);
+        assert.match(history, /CHILD_OK/);
+        return final('STRICT_CLAUDE_OK');
       default: throw new Error('unexpected request');
     }
   });

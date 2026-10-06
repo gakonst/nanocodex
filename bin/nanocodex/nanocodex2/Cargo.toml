@@ -20,6 +20,7 @@ chrono.workspace = true
 vergen = { workspace = true, features = ["build", "git", "gitcl"] }
 
 [dependencies]
+nanocodex-claude-tools.workspace = true
 nanocodex-tui-control = { path = "../tui-control", version = "0.6.6" }
 nanocodex-remote = { path = "../../../crates/nanocodex-remote", version = "0.6.6" }
 nanocodex-hand = { version = "0.6.6", path = "../../../crates/nanocodex-hand" }

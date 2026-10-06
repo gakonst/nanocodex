@@ -2,6 +2,29 @@ import XCTest
 @testable import InboxCore
 
 final class ProtocolTests: XCTestCase {
+    func testRuntimeIdentityAcrossReplayedRootAndChildren() throws {
+        func run(_ cursor: String, _ type: String, _ payload: [String: JSON]) throws -> AgentEvent {
+            try event(cursor, "event", ["event": .object(["type": .string(type), "payload": .object(payload)])])
+        }
+        var projection = TranscriptProjection()
+        let history = try [
+            run("1", "run.started", ["mode": .string("openai_model"), "model": .string("gpt-6-astra")]),
+            run("2", "assistant.message", ["text": .string("Root answer")]),
+            run("3", "assistant.message", ["managed_agent_id": .number(7), "text": .string("Child answer")])]
+        projection.append(history[...])
+        XCTAssertNil(projection.rows.last?.runtimeIdentity)
+        let actual = try run("4", "run.started", ["managed_agent_id": .number(7), "mode": .string("claude"), "model": .string("claude-opus-5-5")])
+        projection.append([actual][...])
+        let feed = ConversationItem.group(projection.rows)
+        XCTAssertEqual(feed.first?.message?.runtimeIdentity?.label, "Codex · gpt-6-astra")
+        XCTAssertEqual(feed.last?.activity.first?.runtimeIdentity?.label, "Claude · claude-opus-5-5")
+        XCTAssertEqual(feed.last?.activity.first?.text, "Child answer")
+        projection.append(history[...])
+        XCTAssertEqual(projection.rows.count, 2)
+        XCTAssertEqual(try JSONDecoder().decode([TranscriptRow].self, from: JSONEncoder().encode(projection.rows)), projection.rows)
+        print("Identity replay: root Codex/gpt-6-astra; historical child unknown then Claude/claude-opus-5-5; replay deduplicated; text retained")
+    }
+
     func testFeedPreservesPhasesSubagentsAndChronology() throws {
         func output(_ cursor: String, _ type: String, _ text: String, phase: String? = nil, agent: String? = nil) throws -> AgentEvent {
             var payload: [String: JSON] = ["text": .string(text)]

@@ -6,8 +6,8 @@
 use nanocodex_subagents::AgentId;
 use std::collections::{HashMap, HashSet};
 
-pub(super) const NODE_WIDTH: i32 = 24;
-pub(super) const NODE_HEIGHT: i32 = 4;
+pub(super) const NODE_WIDTH: i32 = 36;
+pub(super) const NODE_HEIGHT: i32 = 5;
 pub(super) const HORIZONTAL_GAP: i32 = 6;
 pub(super) const VERTICAL_GAP: i32 = 5;
 

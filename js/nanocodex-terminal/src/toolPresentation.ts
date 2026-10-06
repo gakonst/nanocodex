@@ -279,10 +279,11 @@ function summarizeSubagentOutput(family: string, output: JsonRecord): string | u
     const id = numberField(output, "agent_id");
     const state = nestedState(output.status);
     if (id !== undefined) parts.push(`Agent ${id}`);
+    parts.push(agentRuntimeLabel(output));
     if (state) parts.push(humanize(state));
     return parts.length ? parts.join(" · ") : undefined;
   }
-  if (family === "wait_agent") {
+  if (family === "wait_agent" || family === "list_agents") {
     if (output.timed_out === true) return "Timed out";
     const agents = arrayField(output, "agents");
     if (!agents?.length) return undefined;
@@ -292,7 +293,7 @@ function summarizeSubagentOutput(family: string, output: JsonRecord): string | u
       const role = stringField(agent, "role");
       const state = nestedState(agent.status);
       const identity = role ? compact(role) : id === undefined ? "Agent" : `Agent ${id}`;
-      return [`${identity}${role && id !== undefined ? ` (${id})` : ""}${state ? ` · ${humanize(state)}` : ""}`];
+      return [`${identity}${role && id !== undefined ? ` (${id})` : ""} · ${agentRuntimeLabel(agent)}${state ? ` · ${humanize(state)}` : ""}`];
     }).join("; ");
   }
   const state = nestedState(output.status);
@@ -411,4 +412,9 @@ function recordField(value: JsonRecord, key: string): JsonRecord | undefined {
 
 function arrayField(value: JsonRecord, key: string): unknown[] | undefined {
   return Array.isArray(value[key]) ? value[key] : undefined;
+}
+
+function agentRuntimeLabel(value: JsonRecord): string {
+  const harness = stringField(value, "harness");
+  return `${harness === "codex" ? "Codex" : harness === "claude" ? "Claude" : harness || "Unknown harness"} · ${stringField(value, "model") || "Unknown model"}`;
 }

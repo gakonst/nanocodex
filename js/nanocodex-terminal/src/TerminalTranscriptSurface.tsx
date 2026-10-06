@@ -365,7 +365,7 @@ const TerminalEntryView = memo(function TerminalEntryView({
   const voice = isVoiceEntry(entry);
   if (!voice && entry.responseIdentity?.agentId != null) return (
     <details className="agent-terminal-child" data-agent-id={entry.responseIdentity.agentId}>
-      <summary>Agent {entry.responseIdentity.agentId} activity</summary>
+      <summary>Agent {entry.responseIdentity.agentId} · {runtimeLabel(entry)} activity</summary>
       <TerminalEntryView entry={{ ...entry, responseIdentity: { ...entry.responseIdentity, agentId: undefined } }} showToolCalls={showToolCalls} renderTool={renderTool} userLabel={userLabel} />
     </details>
   );
@@ -374,7 +374,7 @@ const TerminalEntryView = memo(function TerminalEntryView({
   </pre>;
   if (entry.kind === "assistant" || entry.kind === "reasoning") return (
     <article className={`agent-terminal-markdown is-${entry.kind}`} data-source={voice ? "voice" : undefined}>
-      {voice ? <span className="agent-terminal-entry-label">voice</span> : null}
+      {voice ? <span className="agent-terminal-entry-label">voice</span> : entry.kind === "assistant" ? <span className="agent-terminal-entry-label">{runtimeLabel(entry)}</span> : null}
       {entry.kind === "reasoning" ? <span className="agent-terminal-entry-label">thinking{entry.streaming ? "…" : ""}</span> : null}
       <Streamdown
         caret={entry.streaming ? "block" : undefined}
@@ -512,4 +512,10 @@ function TerminalToolView({ isChild = false, tool }: { isChild?: boolean; tool: 
       {tool.children.map((child) => <TerminalToolView isChild key={child.callId} tool={child} />)}
     </div>
   </details>;
+}
+
+function runtimeLabel(entry: AgentEntry): string {
+  const identity = entry.runtimeIdentity;
+  const harness = identity?.harness === "codex" ? "Codex" : identity?.harness === "claude" ? "Claude" : identity?.harness || "Unknown harness";
+  return `${harness} · ${identity?.model || "Unknown model"}`;
 }

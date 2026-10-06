@@ -941,6 +941,8 @@ export function createCodeRuntime(toolConfiguration = {}, extras = {}) {
         sessionId: bindingContext.sessionId,
         role: bindingContext.role,
         task: bindingContext.task,
+        ...(bindingContext.harness === undefined ? {} : { harness: bindingContext.harness }),
+        ...(bindingContext.model === undefined ? {} : { model: bindingContext.model }),
       });
       const existing = subagentBindingsBySession.get(sessionId);
       if (sameSubagentBinding(existing, descriptor, hostContextRef)) return;
@@ -970,6 +972,8 @@ function sameSubagentBinding(binding, descriptor, hostContextRef) {
     && left.sessionId === descriptor.sessionId
     && left.role === descriptor.role
     && left.task === descriptor.task
+    && left.harness === descriptor.harness
+    && left.model === descriptor.model
     && binding.hostContextRef === hostContextRef;
 }
 

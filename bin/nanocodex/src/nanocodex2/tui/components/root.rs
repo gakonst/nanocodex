@@ -4165,6 +4165,36 @@ impl RootNode {
         if let Some(prompt) = recent_prompt(&record) {
             self.recent_prompts.push(prompt);
         }
+        if record.source() == "agent"
+            && record.kind() == "run.started"
+            && record.managed_agent_id().is_none()
+        {
+            if let Ok(payload) = record.decode_payload::<serde_json::Value>() {
+                let harness =
+                    payload["harness"]
+                        .as_str()
+                        .or_else(|| match payload["mode"].as_str() {
+                            Some("claude") => Some("claude"),
+                            Some("openai_model") => Some("codex"),
+                            _ => None,
+                        });
+                let family = match harness {
+                    Some("codex") => "Codex",
+                    Some("claude") => "Claude",
+                    Some(other) => other,
+                    None => "Unknown harness",
+                };
+                let model = payload["model"]
+                    .as_str()
+                    .filter(|v| !v.trim().is_empty())
+                    .unwrap_or("Unknown model");
+                self.composer.update(ComposerEvent::RuntimeIdentity(
+                    crate::tui::format::sanitize_terminal_text_inline(&format!(
+                        "{family} · {model}"
+                    )),
+                ));
+            }
+        }
         let turn_timer = turn_timer_event(&record);
         let observation = self.context_diagnostics.observe(&record);
         if let Some(Overlay::ContextDiagnostics(panel)) = &mut self.overlay {
@@ -5700,6 +5730,59 @@ mod live_control_tests {
             terminal_expected: false,
         });
         assert!(!rendered(&mut root).contains("Thinking…"));
+    }
+
+    #[test]
+    fn root_identity_render_journey_does_not_inherit_child_model() {
+        let mut root = root_with_draft("keep this steer");
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 30)).unwrap();
+        for (sequence, child, payload) in [
+            (
+                1,
+                None,
+                json!({"mode": "openai_model", "model": "gpt-6-astra"}),
+            ),
+            (
+                2,
+                Some(7),
+                json!({"mode": "claude", "model": "claude-opus-5-5"}),
+            ),
+        ] {
+            let record = TranscriptRecord::from_agent(
+                sequence,
+                sequence * 10,
+                AgentEvent {
+                    protocol_version: 1,
+                    request_id: Arc::from("synthetic"),
+                    seq: sequence,
+                    kind: AgentEventKind::RunStarted,
+                    payload: to_raw_value(&payload).unwrap().into(),
+                },
+            )
+            .with_managed_agent_id(child);
+            root.update(RootEvent::Transcript(Arc::new(record)));
+            terminal
+                .draw(|frame| {
+                    root.render_focused(
+                        frame,
+                        frame.area(),
+                        &crate::tui::theme::Theme::default(),
+                        true,
+                    )
+                })
+                .unwrap();
+            let rendered = terminal
+                .backend()
+                .buffer()
+                .content
+                .iter()
+                .map(|cell| cell.symbol())
+                .collect::<String>();
+            assert!(rendered.contains("Codex · gpt-6-astra"), "{rendered}");
+            assert!(rendered.contains("keep this steer"), "{rendered}");
+            println!("root after child={child:?}: {rendered}");
+        }
     }
 
     #[test]

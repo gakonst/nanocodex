@@ -157,6 +157,12 @@ pub trait LifecycleBackend: Send + Sync + 'static {
         crate::HarnessFamily::Codex
     }
 
+    /// Reads the actual selected native model, when exposed by this backend.
+    /// Unknown external backends must not be labeled with a family default.
+    fn native_model_id(&self) -> BackendFuture<Result<Option<String>>> {
+        Box::pin(async { Ok(None) })
+    }
+
     /// Admits one prompt and returns the complete accepted turn.
     fn submit(&self, prompt: BackendPrompt) -> BackendFuture<Result<BackendTurn>>;
 
@@ -400,6 +406,14 @@ pub(super) struct LocalLifecycle {
 
 #[cfg(feature = "openai")]
 impl LifecycleBackend for LocalLifecycle {
+    fn native_model_id(&self) -> BackendFuture<Result<Option<String>>> {
+        let handle = self.child_handle.clone();
+        Box::pin(async move {
+            let (model, _) = handle.settings().await?;
+            Ok(Some(model.as_str().to_owned()))
+        })
+    }
+
     fn submit(&self, request: BackendPrompt) -> BackendFuture<Result<BackendTurn>> {
         let commands = self.commands.clone();
         let execution = self.execution.clone();

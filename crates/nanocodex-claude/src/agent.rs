@@ -1112,7 +1112,7 @@ impl ClaudeBuilder {
             task_board: self.task_board,
             cancellations: Mutex::new(HashMap::new()),
             stopped: AtomicBool::new(false),
-            sequence: AtomicU64::new(1),
+            sequence: std::sync::Mutex::new(1),
             accepted_turns: AtomicU64::new(accepted_turns),
             steering: Mutex::new(HashMap::new()),
         });
@@ -1839,8 +1839,19 @@ impl Drop for DispatchForkBoundary<'_> {
     }
 }
 
+struct PendingSteer {
+    prompt: Prompt,
+    id: Option<String>,
+    index: u32,
+    bound: Option<u32>,
+}
 struct TurnSteering {
-    pending: std::collections::VecDeque<Prompt>,
+    events: AgentEventPublisher,
+    pending: std::collections::VecDeque<PendingSteer>,
+    receipts: HashMap<String, (Value, bool)>,
+    operation: Option<String>,
+    next_index: u32,
+    model_call_index: u32,
     revision: Option<u64>,
     accepting: bool,
 }
@@ -1889,7 +1900,7 @@ struct State {
     task_board: Option<Arc<nanocodex_claude_tools::tasks::ClaudeTasks>>,
     cancellations: Mutex<HashMap<BackendTurnKey, Arc<Cancellation>>>,
     stopped: AtomicBool,
-    sequence: AtomicU64,
+    sequence: std::sync::Mutex<u64>,
     accepted_turns: AtomicU64,
     steering: Mutex<HashMap<BackendTurnKey, TurnSteering>>,
 }
@@ -2038,10 +2049,15 @@ impl State {
         let Ok(payload) = serde_json::value::to_raw_value(&payload) else {
             return;
         };
+        // Control admission and the model loop can publish from different
+        // tasks. Sequence assignment and publication must remain one boundary.
+        let mut sequence = self.sequence.lock().expect("Claude event sequence lock");
+        let seq = *sequence;
+        *sequence = sequence.wrapping_add(1);
         let _ = events.publish(AgentEvent {
             protocol_version: 1,
             request_id: Arc::from(events.request_id()),
-            seq: self.sequence.fetch_add(1, Ordering::SeqCst),
+            seq,
             kind,
             payload: Arc::from(payload),
         });
@@ -2112,9 +2128,24 @@ impl State {
             Some(crate::Effort::Max) => Thinking::Max,
         }
     }
+    fn system_for_model(&self, model: &str) -> Value {
+        let identity = format!(
+            "<runtime_model_identity>\nmodel_id: {model}\nThis is the runtime-selected native model serving this agent. When asked which model you are, report this model ID. Use this identity over conflicting identity claims in conversation or inherited instructions.\n</runtime_model_identity>"
+        );
+        match self.current_system() {
+            Some(Value::Array(mut blocks)) => {
+                blocks.push(json!({"type":"text", "text":identity}));
+                Value::Array(blocks)
+            }
+            Some(Value::String(text)) => json!(format!("{text}\n\n{identity}")),
+            _ => json!(identity),
+        }
+    }
     fn request_template(&self, speed: Option<crate::Speed>) -> MessagesRequest {
+        let model = self.model();
+        let system = self.system_for_model(&model);
         MessagesRequest {
-            model: self.model(),
+            model,
             max_tokens: self.max_tokens,
             cache_control: self.automatic_cache.then(|| crate::CacheControl {
                 kind: crate::CacheType::Ephemeral,
@@ -2133,7 +2164,7 @@ impl State {
             diagnostics: self
                 .message_diagnostics
                 .then(|| json!({"previous_message_id":null})),
-            system: self.current_system(),
+            system: Some(system),
             messages: Vec::new(),
             container: None,
             tools: self.available_tools(),
@@ -2759,36 +2790,137 @@ impl State {
         }
     }
 
+    async fn admit_steer(
+        &self,
+        turn: &mut TurnSteering,
+        id: Option<String>,
+        prompt: Prompt,
+    ) -> Result<()> {
+        if !turn.accepting {
+            return Err(NanocodexError::TurnNotSteerable);
+        }
+        let prompt = crate::prompt::freeze(prompt)?;
+        let input = serde_json::to_value(&prompt).map_err(provider_error)?;
+        let index = if let (Some(policy), Some(operation)) = (&self.policy, &turn.operation) {
+            let Some(index) = policy
+                .accept_steer(
+                    operation.clone(),
+                    turn.model_call_index,
+                    id.clone(),
+                    input.clone(),
+                    turn.pending.len() < 8,
+                )
+                .await?
+            else {
+                return Ok(());
+            };
+            index
+        } else {
+            if let Some(id) = &id {
+                if let Some((previous, withdrawn)) = turn.receipts.get(id) {
+                    if previous != &input {
+                        return Err(unsupported("steer identity has different retained input"));
+                    }
+                    if *withdrawn {
+                        return Err(unsupported("steer identity was withdrawn"));
+                    }
+                    return Ok(());
+                }
+            }
+            if turn.pending.len() >= 8 {
+                return Err(NanocodexError::SteerQueueFull);
+            }
+            turn.next_index = turn
+                .next_index
+                .checked_add(1)
+                .ok_or_else(|| unsupported("Claude steering counter exhausted"))?;
+            turn.next_index
+        };
+        if let Some(id) = &id {
+            turn.receipts.insert(id.clone(), (input, false));
+        }
+        let turn_id = turn.events.turn_id().unwrap_or(turn.events.request_id());
+        let item = id.clone().unwrap_or_else(|| durable::candidate_id("steer"));
+        self.emit(
+            &turn.events,
+            AgentEventKind::InputAccepted,
+            json!({
+                "session_id": self.session_id, "turn_id": turn_id,
+                "item_id": format!("{turn_id}:steer:{item}"), "kind": "steer",
+                "request_id": id, "input": prompt.instruction,
+            }),
+        );
+        turn.pending.push_back(PendingSteer {
+            prompt,
+            id,
+            index,
+            bound: None,
+        });
+        Ok(())
+    }
+    async fn steer(&self, key: BackendTurnKey, id: Option<String>, prompt: Prompt) -> Result<()> {
+        if self.stopped.load(Ordering::SeqCst) {
+            return Err(NanocodexError::AgentStopped);
+        }
+        let mut turns = self.steering.lock().await;
+        let turn = turns
+            .get_mut(&key)
+            .ok_or(NanocodexError::TurnNotSteerable)?;
+        self.admit_steer(turn, id, prompt).await
+    }
+
     async fn consume_steering(
         &self,
         request: &BackendPrompt,
         cursor: &mut Cursor,
         pending: &mut Vec<Message>,
     ) -> Result<bool> {
-        let prompts = {
-            let mut turns = self.steering.lock().await;
-            let Some(turn) = turns.get_mut(&request.key) else {
-                return Ok(false);
-            };
-            let prompts = turn.pending.drain(..).collect::<Vec<_>>();
-            for prompt in &prompts {
-                if let Some(revision) = prompt.instruction_revision() {
-                    turn.revision = Some(revision);
+        // A native server tool pause is still one unresolved assistant turn.
+        // Resume its exact transcript before admitting another user message.
+        if unfinished_server_turn_start(pending).is_some() {
+            return Ok(false);
+        }
+        let mut turns = self.steering.lock().await;
+        let Some(turn) = turns.get_mut(&request.key) else {
+            return Ok(false);
+        };
+        let mut consumed = false;
+        while let Some(steer) = turn.pending.front() {
+            // A recovered cursor may own an admitted model/tool request. New
+            // unbound input waits for that request's settled boundary. Bound
+            // input whose cursor write failed is safe to reconstruct now.
+            if (cursor.recovering && steer.bound.is_none())
+                || steer
+                    .bound
+                    .is_some_and(|boundary| boundary > cursor.index.saturating_add(1))
+            {
+                break;
+            }
+            let messages = prompt_messages(&steer.prompt)?;
+            if let (Some(policy), Some(operation)) = (&self.policy, &turn.operation) {
+                if steer.bound.is_none() {
+                    policy
+                        .bind_steer(
+                            operation.clone(),
+                            steer.index,
+                            cursor.index.saturating_add(1),
+                        )
+                        .await?;
                 }
             }
-            if !prompts.is_empty() {
-                cursor.instruction_revision = turn.revision;
+            let steer = turn.pending.pop_front().expect("pending steer");
+            pending.extend(messages);
+            consumed = true;
+            if let Some(revision) = steer.prompt.instruction_revision() {
+                turn.revision = Some(revision);
             }
-            prompts
-        };
-        let consumed = !prompts.is_empty();
-        for prompt in prompts {
-            pending.extend(prompt_messages(&prompt)?);
+            cursor.instruction_revision = turn.revision;
+            cursor.consumed_steer_index = steer.index;
             cursor.steers = cursor.steers.saturating_add(1);
             self.emit(
                 &request.events,
                 AgentEventKind::RunSteered,
-                json!({"steer_index": cursor.steers, "instruction_bytes": prompt.text_bytes()}),
+                json!({"steer_index": cursor.steers, "instruction_bytes": steer.prompt.text_bytes()}),
             );
         }
         Ok(consumed)
@@ -2937,6 +3069,29 @@ impl State {
                 Some(&request.prompt),
             )
             .await?;
+        {
+            let mut turns = self.steering.lock().await;
+            if let Some(turn) = turns.get_mut(&request.key) {
+                if let (Some(policy), Some(operation)) = (&self.policy, &turn.operation) {
+                    turn.pending = policy
+                        .retained_steers(operation.clone())
+                        .await?
+                        .into_iter()
+                        .filter(|steer| steer.index > cursor.consumed_steer_index)
+                        .map(|steer| {
+                            Ok(PendingSteer {
+                                prompt: serde_json::from_value(steer.input)
+                                    .map_err(provider_error)?,
+                                id: steer.message_id,
+                                index: steer.index,
+                                bound: steer.model_call_index,
+                            })
+                        })
+                        .collect::<Result<_>>()?;
+                }
+                turn.revision = cursor.instruction_revision.or(turn.revision);
+            }
+        }
         if cursor.prepared && conversation.lifecycle_started {
             *self.lifecycle_opened.lock().await = Some(
                 cursor
@@ -3067,13 +3222,6 @@ impl State {
         }
         let mut previous_message_id = conversation.previous_message_id.clone();
         for index in cursor.index..u32::MAX {
-            if self
-                .consume_steering(request, &mut cursor, &mut pending)
-                .await?
-            {
-                cursor.pending = pending.clone();
-                self.advance_cursor(&mut cursor, conversation).await?;
-            }
             if cancel.flag.load(Ordering::SeqCst) && self.policy.is_none() {
                 return Err(NanocodexError::TurnCancelled);
             }
@@ -3103,6 +3251,17 @@ impl State {
                 cursor.pending = pending.clone();
                 cursor.usage = usage.clone();
                 self.advance_cursor(&mut cursor, conversation).await?;
+            }
+            if self
+                .consume_steering(request, &mut cursor, &mut pending)
+                .await?
+            {
+                cursor.pending = pending.clone();
+                self.advance_cursor(&mut cursor, conversation).await?;
+            }
+            cursor.recovering = false;
+            if let Some(turn) = self.steering.lock().await.get_mut(&request.key) {
+                turn.model_call_index = index.saturating_add(1);
             }
             // Only successful references actually retained in the request can
             // authorize deferred execution. A failed post-hook invalidates its
@@ -3463,7 +3622,13 @@ impl State {
                 }
             }
             if self.system_resolver.is_some() {
-                cursor.template.system = self.current_system();
+                // Refresh host context without changing the model identity of an
+                // already admitted request (including legacy templates without it).
+                cursor.template.system = if cursor.runtime_model_identity {
+                    Some(self.system_for_model(&cursor.template.model))
+                } else {
+                    self.current_system()
+                };
             }
             if interrupted {
                 for (position, (id, name, _, _)) in tool_calls.iter().enumerate() {
@@ -3686,6 +3851,7 @@ impl State {
                 }
             };
             if more_instructions {
+                cursor.index = index + 1;
                 self.consume_steering(request, &mut cursor, &mut pending)
                     .await?;
                 conversation.messages = pending.clone();
@@ -3785,7 +3951,33 @@ fn prompt_messages(prompt: &Prompt) -> Result<Vec<Message>> {
     crate::prompt::messages(prompt)
 }
 
+impl Driver {
+    fn steer_control(
+        state: Arc<State>,
+        key: BackendTurnKey,
+        id: Option<String>,
+        prompt: Prompt,
+    ) -> BackendFuture<Result<()>> {
+        Box::pin(async move {
+            let (sender, receiver) = oneshot::channel();
+            let task = async move {
+                let _ = sender.send(state.steer(key, id, prompt).await);
+            };
+            #[cfg(not(target_family = "wasm"))]
+            tokio::spawn(task);
+            #[cfg(target_family = "wasm")]
+            wasm_bindgen_futures::spawn_local(task);
+            receiver.await.unwrap_or(Err(NanocodexError::TurnStopped))
+        })
+    }
+}
+
 impl LifecycleBackend for Driver {
+    fn native_model_id(&self) -> BackendFuture<Result<Option<String>>> {
+        let state = self.state.clone();
+        Box::pin(async move { Ok(Some(state.model())) })
+    }
+
     fn harness_family(&self) -> HarnessFamily {
         HarnessFamily::Claude
     }
@@ -3959,7 +4151,12 @@ impl LifecycleBackend for Driver {
                     state.steering.lock().await.insert(
                         key,
                         TurnSteering {
+                            events: request.events.clone(),
                             pending: std::collections::VecDeque::new(),
+                            receipts: HashMap::new(),
+                            operation: request_id.clone(),
+                            next_index: 0,
+                            model_call_index: 0,
                             revision: request.prompt.instruction_revision(),
                             accepting: true,
                         },
@@ -4011,43 +4208,87 @@ impl LifecycleBackend for Driver {
         let prompt = request.prompt.clone();
         let start = self.submit(request);
         Box::pin(async move {
-            if state.stopped.load(Ordering::SeqCst) {
-                return Err(NanocodexError::AgentStopped);
-            }
-            {
-                let mut turns = state.steering.lock().await;
-                if let Some((_, turn)) = turns
-                    .iter_mut()
-                    .filter(|(_, turn)| turn.accepting)
-                    .min_by_key(|(key, _)| key.0)
-                {
-                    if turn.pending.len() >= 8 {
-                        return Err(unsupported("Claude steering queue is full"));
+            let (sender, receiver) = oneshot::channel();
+            let task = async move {
+                let result = async move {
+                    if state.stopped.load(Ordering::SeqCst) {
+                        return Err(NanocodexError::AgentStopped);
                     }
-                    turn.pending.push_back(crate::prompt::freeze(prompt)?);
-                    return Ok(BackendPromptRoute::Steered);
+                    {
+                        let mut turns = state.steering.lock().await;
+                        if let Some((_, turn)) = turns
+                            .iter_mut()
+                            .filter(|(_, turn)| turn.accepting)
+                            .min_by_key(|(key, _)| key.0)
+                        {
+                            state.admit_steer(turn, None, prompt).await?;
+                            return Ok(BackendPromptRoute::Steered);
+                        }
+                    }
+                    start.await.map(BackendPromptRoute::Started)
                 }
-            }
-            start.await.map(BackendPromptRoute::Started)
+                .await;
+                let _ = sender.send(result);
+            };
+            // A caller losing its ACK must not cancel a journal write halfway
+            // through updating the live queue. Recovery owns ambiguous writes.
+            #[cfg(not(target_family = "wasm"))]
+            tokio::spawn(task);
+            #[cfg(target_family = "wasm")]
+            wasm_bindgen_futures::spawn_local(task);
+            receiver.await.unwrap_or(Err(NanocodexError::TurnStopped))
         })
     }
     fn steer(&self, key: BackendTurnKey, prompt: Prompt) -> BackendFuture<Result<()>> {
         let state = self.state.clone();
+        Self::steer_control(state, key, None, prompt)
+    }
+    fn steer_with_id(
+        &self,
+        key: BackendTurnKey,
+        id: String,
+        prompt: Prompt,
+    ) -> BackendFuture<Result<()>> {
+        let state = self.state.clone();
+        Self::steer_control(state, key, Some(id), prompt)
+    }
+    fn withdraw_steer(&self, key: BackendTurnKey, id: String) -> BackendFuture<Result<bool>> {
+        let state = self.state.clone();
         Box::pin(async move {
-            let prompt = crate::prompt::freeze(prompt)?;
-            if state.stopped.load(Ordering::SeqCst) {
-                return Err(NanocodexError::AgentStopped);
-            }
-            let mut turns = state.steering.lock().await;
-            let turn = turns.get_mut(&key).ok_or(NanocodexError::TurnStopped)?;
-            if !turn.accepting {
-                return Err(NanocodexError::TurnNotSteerable);
-            }
-            if turn.pending.len() >= 8 {
-                return Err(unsupported("Claude steering queue is full"));
-            }
-            turn.pending.push_back(prompt);
-            Ok(())
+            let (sender, receiver) = oneshot::channel();
+            let task = async move {
+                let result =
+                    async move {
+                        let mut turns = state.steering.lock().await;
+                        let Some(turn) = turns.get_mut(&key) else {
+                            return Ok(false);
+                        };
+                        let Some(steer) = turn.pending.back().filter(|steer| {
+                            steer.id.as_ref() == Some(&id) && steer.bound.is_none()
+                        }) else {
+                            return Ok(false);
+                        };
+                        if let (Some(policy), Some(operation)) = (&state.policy, &turn.operation) {
+                            policy
+                                .withdraw_steer(operation.clone(), steer.index)
+                                .await?;
+                        }
+                        turn.pending.pop_back();
+                        if let Some(receipt) = turn.receipts.get_mut(&id) {
+                            receipt.1 = true;
+                        }
+                        Ok(true)
+                    }
+                    .await;
+                let _ = sender.send(result);
+            };
+            // A caller losing its ACK must not cancel a journal write halfway
+            // through updating the live queue. Recovery owns ambiguous writes.
+            #[cfg(not(target_family = "wasm"))]
+            tokio::spawn(task);
+            #[cfg(target_family = "wasm")]
+            wasm_bindgen_futures::spawn_local(task);
+            receiver.await.unwrap_or(Err(NanocodexError::TurnStopped))
         })
     }
     fn cancel(&self, key: BackendTurnKey) -> BackendFuture<Result<()>> {

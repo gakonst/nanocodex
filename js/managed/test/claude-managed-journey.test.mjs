@@ -90,6 +90,9 @@ const assertStrict = definitions => assert.deepEqual(definitions.map(tool=>tool.
 
 test('Managed native Claude and mixed-family public delegation, account gates, cancellation and recovery', {timeout:240_000}, async () => {
   await mkdir(evidence,{recursive:true});
+  let releaseChildSteer, childSteerReady;
+  const childSteerStarted = new Promise(resolve => {childSteerReady=resolve;});
+  let steeredChildId;
   const trace = [], upstream = [], providerErrors = [], mediaRequests = []; let calls=0, summaries=0, writes=0, taskWrites=0, canonicalWrites=0, codexWrites=0, nestedWrites=0, allowResponses=false, sidebarCalls=0, holds=0, responsesAttempts=0, catalogOutage=false, catalogUnsupportedOnly=false, catalogRequests=0, catalogHold, retainedTaskId, mf;
   const framingRequests = {crOnly:0,truncated:0}, activeSteerRequests = [];
   let releaseActiveSteer;
@@ -122,11 +125,22 @@ test('Managed native Claude and mixed-family public delegation, account gates, c
       assert.equal(request.headers.get('authorization'),'Bearer sk-synthetic-openai-runtime');
       if (request.headers.get('upgrade')==='websocket') {
         const [client,server]=Object.values(new WebSocketPair()); server.accept();
-        server.addEventListener('close',()=>server.close(1000));
-        server.addEventListener('message',event=>{
+        let nativeRootHistory;
+        server.addEventListener('close',()=>{ if(server.readyState===1) server.close(1000); });
+        server.addEventListener('message',async event=>{
           try {
             const body=JSON.parse(event.data);
             assert.equal(body.model,'gpt-6.1-sol');
+            if (nativeRootHistory || JSON.stringify(body.input).includes('CANONICAL_CODEX_PROOF')) {
+              nativeRootHistory = body.previous_response_id ? [...nativeRootHistory, ...body.input] : body.input;
+              body.input = nativeRootHistory; body.fixtureRoot = true;
+              const response = await providerImpl(new Request('https://api.openai.com/v1/responses',{method:'POST',headers:{authorization:'Bearer sk-synthetic-openai-runtime','content-type':'application/json'},body:JSON.stringify(body)}));
+              const event = JSON.parse((await response.text()).replace(/^data: /,'').trim());
+              nativeRootHistory = [...nativeRootHistory,...event.response.output];
+              server.send(JSON.stringify({type:'response.created',response:{id:event.response.id,status:'in_progress'}}));
+              server.send(JSON.stringify(event));
+              return;
+            }
             assert.match(JSON.stringify(body.input),/GPT_MCP_DISCOVERY_PROBE/);
             assertStrict([...(body.tools??[]),...(body.input??[]).filter(item=>item.type==='additional_tools').flatMap(item=>item.tools)]);
             upstream.push({provider:'openai',model:body.model,scenario:'GPT_MCP_DISCOVERY_PROBE',transport:'websocket'});
@@ -145,7 +159,7 @@ test('Managed native Claude and mixed-family public delegation, account gates, c
       }
       if (body.model==='gpt-6-luna') {
         assert.match(body.instructions,/Write a short session title/);
-        assert.match(encoded,/Delegate mixed Claude child|Try disconnected mixed child|Delegate nested gateway grandchild|GPT_MCP_DISCOVERY_PROBE|MCP_LAZY_/,'only the Codex gateway root requests a sidebar title');
+        assert.match(encoded,/Delegate mixed Claude child|Try disconnected mixed child|Delegate nested gateway grandchild|GPT_MCP_DISCOVERY_PROBE|MCP_LAZY_|CANONICAL_CODEX_PROOF/,'only the Codex gateway root requests a sidebar title');
         sidebarCalls++;
         return Response.json({id:'synthetic-title',output:[{type:'message',role:'assistant',content:[{type:'output_text',text:'Verify native Claude delegation'}]}],usage:{input_tokens:2,output_tokens:2,total_tokens:4}});
       }
@@ -158,10 +172,13 @@ test('Managed native Claude and mixed-family public delegation, account gates, c
       let output;
       if(!encoded.includes('CODEX_EFFECT_ACK')) {
         codexWrites++;
-        output=[{type:'custom_tool_call',call_id:'codex-effect-'+responsesAttempts,name:'exec',input:'const effect = await tools.exec_command({cmd:"printf CODEX_DURABLE_CHILD_PROOF > /brain/codex-child.txt",workdir:"/brain"}); if (effect.exit_code !== 0) throw new Error(JSON.stringify(effect)); text("CODEX_EFFECT_ACK");'}];
-      } else if(!body.input.some(item=>item.type==='custom_tool_call'&&item.input.includes('tools.submit_result('))) {
+        const patch = "*** Begin Patch\n*** Add File: /brain/codex-child.txt\n+CODEX_DURABLE_CHILD_PROOF\n*** End Patch";
+        const invalid = "*** Begin Patch\n*** Update File: /brain/codex-child.txt\n@@\n-NOT_THE_CONTENT\n+MUST_NOT_EXIST\n*** End Patch";
+        const code = `const names=ALL_TOOLS.map(t=>t.name); if(!names.includes("apply_patch") || !names.includes("exec_command") || names.includes("Bash") || names.includes("Read")) throw new Error("wrong Codex family catalog"); await tools.apply_patch(${JSON.stringify(patch)}); let rejected=false; try { await tools.apply_patch(${JSON.stringify(invalid)}); } catch { rejected=true; } if(!rejected) throw new Error("invalid hunk accepted"); const proof=await tools.exec_command({cmd:"cat /brain/codex-child.txt",workdir:"/brain"}); if(!proof.output.includes("CODEX_DURABLE_CHILD_PROOF") || proof.output.includes("MUST_NOT_EXIST")) throw new Error(JSON.stringify(proof)); text("CODEX_EFFECT_ACK");`;
+        output=[{type:'custom_tool_call',call_id:'codex-effect-'+responsesAttempts,name:'exec',input:code}];
+      } else if(!body.fixtureRoot && !body.input.some(item=>item.type==='custom_tool_call'&&item.input.includes('tools.submit_result('))) {
         output=[{type:'custom_tool_call',call_id:'codex-submit-'+responsesAttempts,name:'exec',input:nestedCode('submit_result',{output:'CODEX_DURABLE_CHILD_PROOF'})}];
-      } else output=[{type:'message',role:'assistant',content:[{type:'output_text',text:'Codex child finished'}]}];
+      } else output=[{type:'message',role:'assistant',content:[{type:'output_text',text:'CLAUDE_TOOL_DONE_CODEX_NATIVE'}]}];
       return new Response(`data: ${JSON.stringify({type:'response.completed',response:{id:'codex-response-'+responsesAttempts,status:'completed',output,usage:{input_tokens:10,output_tokens:2,total_tokens:12}}})}\n\n`,{headers:{'content-type':'text/event-stream'}});
     }
     if (url.origin === 'https://openrouter.ai' && url.pathname === '/api/v1/chat/completions') {
@@ -294,6 +311,66 @@ test('Managed native Claude and mixed-family public delegation, account gates, c
       const unavailableChild = encodedHistory.includes('Try unavailable canonical child');
       const disabledChild = encodedHistory.includes('Try disabled canonical child');
       const use = (name, input) => sse({type:'tool_use',id:`canonical-${name}-${calls}`,name:'exec',input:{code:nestedCode(name,input)}},'tool_use',`message-${calls}`);
+      if (encodedHistory.includes('PUBLIC_CHILD_STEER_TASK') && !encodedHistory.includes('PUBLIC_PARENT_STEER_TASK')) {
+        const uses=body.messages.flatMap(message=>Array.isArray(message.content)?message.content.filter(block=>block.type==='tool_use').flatMap(usedNested):[]);
+        if (uses.includes('submit_result')) return sse({type:'text',text:'child steering finished'},'end_turn',`message-${calls}`);
+        if (!encodedHistory.includes('CHILD_URGENT_CORRECTION')) {
+          const response=sse({type:'text',text:'original child answer'},'end_turn',`message-${calls}`);
+          await new Promise(resolve=>{releaseChildSteer=resolve;childSteerReady();});
+          return response;
+        }
+        return use('submit_result',{output:'CHILD_STEER_CONSUMED'});
+      }
+      if (encodedHistory.includes('PUBLIC_PARENT_STEER_TASK')) {
+        const uses=body.messages.flatMap(message=>Array.isArray(message.content)?message.content.filter(block=>block.type==='tool_use').flatMap(usedNested):[]);
+        if (!uses.length) return use('spawn_agent',{role:'steering proof',task:'PUBLIC_CHILD_STEER_TASK',harness:'claude',model:'claude-opus-4-6',thinking:'low',output_contract:{kind:'string'}});
+        const decoded=receiptValue(result.content);
+        if (uses.at(-1)==='spawn_agent') {
+          steeredChildId=decoded.agent_id;
+          await childSteerStarted;
+          return use('send_agent_message',{agent_id:steeredChildId,message:'CHILD_URGENT_CORRECTION',priority:'urgent'});
+        }
+        if (uses.at(-1)==='send_agent_message') {
+          assert.equal(decoded.disposition,'steered',JSON.stringify(decoded));
+          assert.ok(decoded.message_id!==undefined,'canonical message identity retained');
+          trace.push({scenario:'public child urgent steering',child:steeredChildId,receipt:decoded});
+          releaseChildSteer();
+          return use('wait_agent',{agent_ids:[steeredChildId],timeout_ms:10000});
+        }
+        assert.equal(decoded.agents[0].status.output,'CHILD_STEER_CONSUMED',JSON.stringify(decoded));
+        return sse({type:'text',text:'CLAUDE_TOOL_DONE_CHILD_STEER'},'end_turn',`message-${calls}`);
+      }
+      if (encodedHistory.includes('NATIVE_ENGINE_PROBE') || encodedHistory.includes('NATIVE_BOARD_REOPEN')) {
+        const lastUser = body.messages.filter(message => message.role === 'user').at(-1);
+        const reopening = encodedHistory.includes('NATIVE_BOARD_REOPEN');
+        if (result && JSON.stringify(result).includes(reopening ? 'NATIVE_REOPEN_OK' : 'NATIVE_ENGINE_OK')) return sse({type:'text',text:'CLAUDE_TOOL_DONE_NATIVE_ENGINE'},'end_turn',`message-${calls}`);
+        const code = reopening ? `const parse=x=>typeof x==="string"?JSON.parse(x):x; const board=parse(await tools.TaskList({})); if(board.tasks.length!==1 || board.tasks[0].id!=="1" || board.tasks[0].status!=="completed") throw new Error(JSON.stringify(board)); const next=parse(await tools.TaskCreate({subject:"after reopen",description:"watermark"})); if(next.task.id!=="2") throw new Error(JSON.stringify(next)); text("NATIVE_REOPEN_OK");` : `
+          const names=ALL_TOOLS.map(t=>t.name);
+          for(const name of ["Read","Write","Edit","Glob","Grep","NotebookEdit","TaskCreate","TaskGet","TaskList","TaskUpdate","TodoWrite","spawn_agent","send_agent_message"]) if(!names.includes(name)) throw new Error("missing "+name);
+          if(names.some(name=>name==="workspace_tool" || name==="apply_patch")) throw new Error("private/opposite tool leaked");
+          await tools.Write({file_path:"/brain/native-engine/a.txt",content:"alpha\\nalpha\\nomega\\n"});
+          let errors=0; try {await tools.Edit({file_path:"/brain/native-engine/a.txt",old_string:"alpha",new_string:"bad"});} catch {errors++;}
+          try {await tools.Read({file_path:"/brain/../escape"});} catch {errors++;}
+          try {await tools.Read({file_path:"/unattached-hand/a.txt"});} catch {errors++;}
+          if(errors!==3) throw new Error("native errors not preserved "+errors);
+          await tools.Edit({file_path:"/brain/native-engine/a.txt",old_string:"alpha",new_string:"beta",replace_all:true});
+          const read=await tools.Read({file_path:"/brain/native-engine/a.txt"}); if(!JSON.stringify(read).includes("beta") || JSON.stringify(read).includes("alpha")) throw new Error(JSON.stringify(read));
+          const glob=await tools.Glob({path:"/brain/native-engine",pattern:"**/*.txt"}); if(!JSON.stringify(glob).includes("a.txt")) throw new Error(JSON.stringify(glob));
+          const grep=await tools.Grep({path:"/brain/native-engine",pattern:"beta",output_mode:"count"}); if(!JSON.stringify(grep).includes("2")) throw new Error(JSON.stringify(grep));
+          await tools.Write({file_path:"/brain/native-engine/demo.ipynb",content:JSON.stringify({nbformat:4,nbformat_minor:5,metadata:{},cells:[{id:"cell-a",cell_type:"code",metadata:{},source:["old"],outputs:[],execution_count:null}]})});
+          await tools.NotebookEdit({notebook_path:"/brain/native-engine/demo.ipynb",cell_id:"cell-a",new_source:"new"});
+          const notebook=await tools.Read({file_path:"/brain/native-engine/demo.ipynb"}); if(!JSON.stringify(notebook).includes("new")) throw new Error(JSON.stringify(notebook));
+          const parse=x=>typeof x==="string"?JSON.parse(x):x; const created=parse(await tools.TaskCreate({subject:"native board",description:"durable"})); if(created.task.id!=="1") throw new Error(JSON.stringify(created));
+          await tools.TaskUpdate({taskId:"1",status:"completed"});
+          const task=parse(await tools.TaskGet({taskId:"1"})); if(task.task.status!=="completed") throw new Error(JSON.stringify(task));
+          await tools.TodoWrite({todos:[{content:"proof",activeForm:"proving",status:"completed"}]});
+          text("NATIVE_ENGINE_OK");`;
+        return sse({type:'tool_use',id:`native-engine-${calls}`,name:'exec',input:{code}},'tool_use',`message-${calls}`);
+      }
+      if (encodedHistory.includes('NATIVE_CATALOG_PROBE')) {
+        if (result) { assert.equal(result.is_error??false,false,JSON.stringify(result)); assert.match(JSON.stringify(result),/NATIVE_CATALOG_OK/); return sse({type:'text',text:'CLAUDE_TOOL_DONE_NATIVE_CATALOG'},'end_turn',`message-${calls}`); }
+        return sse({type:'tool_use',id:`native-catalog-${calls}`,name:'exec',input:{code:'const names=ALL_TOOLS.map(t=>t.name); if(!names.includes("Bash") || !names.includes("Read") || names.includes("apply_patch") || names.includes("exec_command") || names.includes("WebSearch")) throw new Error("wrong native family catalog: "+JSON.stringify(names)); let denied=0; for(const input of [{command:"true",dangerouslyDisableSandbox:true},{command:"true",run_in_background:true},{command:"cd /unattached-hand && true"}]) { try { await tools.Bash(input); } catch { denied++; } } if(denied!==3) throw new Error("unsupported Bash option or unauthorized Hand accepted"); const proof=await tools.Bash({command:"cd /brain && printf PINNED_BASH_PROOF"}); if(!proof.output.includes("PINNED_BASH_PROOF")) throw new Error(JSON.stringify(proof)); text("NATIVE_CATALOG_OK");'}},'tool_use',`message-${calls}`);
+      }
       if (encodedHistory.includes('MCP_LAZY_')) {
         const uses = body.messages.flatMap(message=>Array.isArray(message.content)?message.content.filter(block=>block.type==='tool_use').flatMap(usedNested):[]);
         if (!uses.length) {
@@ -328,7 +405,7 @@ test('Managed native Claude and mixed-family public delegation, account gates, c
       if (canonicalTask && !canonicalRoot && !unavailableChild && !disabledChild) {
         assert.equal(body.model,'claude-opus-4-6','explicit child model is routed separately from the root');
         const toolsUsed = body.messages.flatMap(message => Array.isArray(message.content) ? message.content.filter(block => block.type==='tool_use').flatMap(usedNested) : []);
-        if (!toolsUsed.includes('Write')) { canonicalWrites++; return use('Write',{file_path:'/brain/canonical-child.txt',content:'CANONICAL_DURABLE_CHILD_PROOF'}); }
+        if (!toolsUsed.includes('Write')) { canonicalWrites++; return sse({type:'tool_use',id:`child-files-${calls}`,name:'exec',input:{code:`const names=ALL_TOOLS.map(t=>t.name); if(!names.includes("TaskCreate") || names.includes("apply_patch")) throw new Error("wrong child catalog"); const board=JSON.parse(await tools.TaskList({})); if(board.tasks.length) throw new Error("child inherited another board"); const task=JSON.parse(await tools.TaskCreate({subject:"child board",description:"isolated"})); if(task.task.id!=="1") throw new Error("child ID watermark is not isolated"); await tools.Write({file_path:"/brain/canonical-child.txt",content:"CANONICAL_DURABLE_CHILD_PROOF"}); const read=await tools.Read({file_path:"/brain/canonical-child.txt"}); if(!JSON.stringify(read).includes("CANONICAL_DURABLE_CHILD_PROOF")) throw new Error(JSON.stringify(read)); text("CHILD_ENGINE_OK");`}},'tool_use',`message-${calls}`); }
         if (!toolsUsed.includes('submit_result')) {
           assert.equal(result?.is_error??false,false,'child Write retains managed execution authority');
           return use('submit_result',{output:'CANONICAL_DURABLE_CHILD_PROOF'});
@@ -394,7 +471,7 @@ test('Managed native Claude and mixed-family public delegation, account gates, c
         assert.ok(JSON.stringify(body.messages).includes(summaries?'NATIVE_SUMMARY':'CLAUDE_TOOL_DONE_2'),'prior native history/summary persisted');
         return use('Read',{file_path:'/brain/proof.txt'});
       }
-      return use('Bash',{command:prompt.includes('Check denied file')?'test ! -e /brain/denied.txt && echo NO_UNAUTHORIZED_FILE':'cat /brain/proof.txt',workdir:'/brain'});
+      return use('Bash',{command:prompt.includes('Check denied file')?'test ! -e /brain/denied.txt && echo NO_UNAUTHORIZED_FILE':'cat /brain/proof.txt'});
     }
     const response = await claudeProvider(request); if(response)return response;
     return new Response('Unexpected external fixture request '+url.origin+url.pathname,{status:502});
@@ -467,6 +544,88 @@ test('Managed native Claude and mixed-family public delegation, account gates, c
     assert.equal((await call('/v1/agents','POST',{},503)).error,'model_availability_unavailable');
     catalogOutage=false;
     const catalog=await call('/v1/models');assert.equal(catalog.availability.claude.available,true);assert.deepEqual(catalog.data.map(m=>m.id),['claude-sonnet-4-6','claude-opus-4-6']);assert.equal(catalog.default_model,'claude-sonnet-4-6');
+    async function steeringJourney() {
+      // HTTP + GPT Realtime delegation both steer one active Rust/WASM Claude turn.
+      const steered=(await call('/v1/agents','POST',{settings:{model:'claude-sonnet-4-6',thinking:'low',reasoning_mode:'standard',fast_mode:false}},201)).agent_id;
+      const activeVoice=crypto.randomUUID();
+      await call(`/v1/agents/${steered}/realtime/start`,'POST',{voice_session_id:activeVoice,operation_id:'active-voice-start'});
+      await call(`/v1/agents/${steered}/turns`,'POST',{input:'MANAGED_ACTIVE_STEER wait for both corrections',id:'journey-active-steer'},202);
+      for(let n=0;n<150&&!releaseActiveSteer;n++)await new Promise(r=>setTimeout(r,40));
+      assert.equal(typeof releaseActiveSteer,'function','model request started and is held at the terminal boundary');
+      const first='first managed steering correction', second='<realtime_delegation>\n<input>second managed é correction</input>\n</realtime_delegation>';
+      await call(`/v1/agents/${steered}/turns/journey-active-steer/steer`,'POST',{input:'WITHDRAWN_CORRECTION_MUST_NOT_APPEAR',message_id:'withdrawn-correction'},202);
+      const withdrawal=await call(`/v1/agents/${steered}/turns/journey-active-steer/withdraw-steer`,'POST',{message_id:'withdrawn-correction'});
+      assert.equal(withdrawal.withdrawn,true);
+      for(let replay=0;replay<2;replay++) await call(`/v1/agents/${steered}/turns/journey-active-steer/steer`,'POST',{input:first,message_id:'identified-correction'},202);
+      await call(`/v1/agents/${steered}/turns/journey-active-steer/steer`,'POST',{input:'conflicting input',message_id:'identified-correction'},409);
+      const delegated=await call(`/v1/agents/${steered}/realtime/delegate`,'POST',{
+        voice_session_id:activeVoice,operation_id:'active-voice-delegate',input:second},202);
+      assert.equal(delegated.route,'steered',JSON.stringify(delegated));
+      assert.equal(delegated.turn_id,'journey-active-steer','voice attribution stays on the existing active turn');
+      const queued=await call(`/v1/agents/${steered}/events/history?after=0&limit=256`);
+      assert.equal(queued.data.filter(row=>row.event?.type==='run.steered').length,0,'admission is not consumption');
+      assert.equal(activeSteerRequests.length,1,'queued steering cannot start concurrent model inference');
+      releaseActiveSteer();
+      let result;for(let n=0;n<600;n++) {
+        result=await call(`/v1/agents/${steered}/turns/journey-active-steer`);
+        if(['completed','failed','cancelled'].includes(result.state))break;
+        await new Promise(r=>setTimeout(r,40));
+      }
+      assert.equal(result.state,'completed',JSON.stringify(result));
+      assert.match(JSON.stringify(result),/CLAUDE_TOOL_DONE_ACTIVE_STEER/);
+      const consumed=await call(`/v1/agents/${steered}/events/history?after=0&limit=256`);
+      const acknowledgements=consumed.data.filter(row=>row.event?.type==='run.steered');
+      assert.deepEqual(acknowledgements.map(row=>row.event.payload.steer_index),[2,3]);
+      assert.equal(acknowledgements[0].event.payload.instruction_bytes,Buffer.byteLength(first));
+      assert.ok(acknowledgements[1].event.payload.instruction_bytes>=Buffer.byteLength(second),'voice delegation retains its origin context');
+      assert.ok(JSON.stringify(activeSteerRequests[1]).includes(JSON.stringify(second).slice(1,-1)),'voice steering preserves the complete instruction');
+      assert.equal(activeSteerRequests.length,2,'one initial request and one ordered continuation');
+      assert.ok(!JSON.stringify(activeSteerRequests[1]).includes('WITHDRAWN_CORRECTION_MUST_NOT_APPEAR'));
+      const acceptedReceipt=await call(`/v1/agents/${steered}/turns/journey-active-steer/steer-receipt?message_id=identified-correction`);
+      assert.equal(acceptedReceipt.state,'accepted'); assert.equal(acceptedReceipt.terminal,true);
+      const withdrawnReceipt=await call(`/v1/agents/${steered}/turns/journey-active-steer/steer-receipt?message_id=withdrawn-correction`);
+      assert.equal(withdrawnReceipt.state,'withdrawn');
+      await call(`/v1/agents/${steered}/turns/journey-active-steer/steer`,'POST',{input:first,message_id:'identified-correction'},202);
+      assert.equal(activeSteerRequests.length,2,'terminal replay cannot reopen inference');
+      const terminalIndex=consumed.data.findIndex(row=>row.event?.type==='run.completed');
+      assert.ok(terminalIndex>=0 && acknowledgements.every(row=>consumed.data.indexOf(row)<terminalIndex),'consumption precedes terminal completion');
+      const stopped=await call(`/v1/agents/${steered}/realtime/stop`,'POST',{
+        voice_session_id:activeVoice,operation_id:'active-voice-stop',transcript:[{role:'user',text:'ACTIVE_VOICE_TRANSCRIPT_PROOF'}]});
+      assert.equal(stopped.stopped,true);
+      assert.match(JSON.stringify(activeSteerRequests[0]),/Realtime conversation started/);
+      trace.push({scenario:'active Claude steering',requests:activeSteerRequests.length,steer_indices:[2,3],ordered:true,voice_route:delegated.route,voice_stopped:stopped.stopped,identified_replay:202,identity_conflict:409,withdrawn:true});
+
+    }
+    if (process.env.NANOCODEX_NATIVE_TOOLS_FOCUS === '1') {
+      const claudeRoot=(await call('/v1/agents','POST',{},201)).agent_id;
+      await turn(claudeRoot,'NATIVE_CATALOG_PROBE','native-catalog');
+      const engineRoot=(await call('/v1/agents','POST',{},201)).agent_id;
+      await turn(engineRoot,'NATIVE_ENGINE_PROBE','native-engine');
+      await mf.dispose(); mf=new Miniflare(options);
+      await turn(engineRoot,'NATIVE_BOARD_REOPEN','native-board-reopen');
+      await steeringJourney();
+      const childSteerRoot=(await call('/v1/agents','POST',{},201)).agent_id;
+      await turn(childSteerRoot,'PUBLIC_PARENT_STEER_TASK','native-child-steer');
+      const claudeChildRoot=(await call('/v1/agents','POST',{},201)).agent_id;
+      await turn(claudeChildRoot,'Delegate canonical Claude child','native-claude-child');
+      assert.equal(canonicalWrites,1);
+      await call('/__fixture/openai','POST',undefined,204);
+      allowResponses=true;
+      const codexChildRoot=(await call('/v1/agents','POST',{settings:{model:'claude-sonnet-4-6',thinking:'low',reasoning_mode:'standard',fast_mode:false}},201)).agent_id;
+      await turn(codexChildRoot,'Delegate canonical Codex child','native-codex-child');
+      assert.equal(codexWrites,1);
+      const codexRoot=(await call('/v1/agents','POST',{settings:{model:'gpt-6.1-sol',thinking:'low',reasoning_mode:'standard',fast_mode:false}},201)).agent_id;
+      await turn(codexRoot,'CANONICAL_CODEX_PROOF','native-codex-root');
+      assert.equal(codexWrites,2);
+      await mf.dispose(); options.workers[0].bindings.NANOCODEX_THREAD_ROUTING='true'; options.workers[0].bindings.OPENROUTER_API_KEY='synthetic-gateway-key'; options.workers[0].ai={binding:'AI'}; mf=new Miniflare(options);
+      const gateway=(await call('/v1/agents','POST',{},201)).agent_id;
+      await call(`/v1/agents/${gateway}/routing`,'POST',{model:'kimi-k3',thinking:'low'});
+      await turn(gateway,'Delegate mixed Claude child','native-codex-to-claude');
+      assert.equal(canonicalWrites,2,'Codex-family root executes Claude-native child Write');
+      assert.deepEqual(providerErrors,[]);
+      console.info('NATIVE_TOOLS_FOCUSED_JOURNEY',{canonicalWrites,codexWrites,unsupportedBashOptionsRejected:true,rustPatchHunkFailurePreservesFile:true});
+      return;
+    }
     const beforeClaudeDefault=catalogRequests;
     const created=await call('/v1/agents','POST',{},201), agent=created.agent_id;
     assert.equal(catalogRequests-beforeClaudeDefault,2,'Claude-only default and admission share one paginated live catalog');
@@ -616,50 +775,7 @@ test('Managed native Claude and mixed-family public delegation, account gates, c
     await turn(agent,'Run Bash durable proof after cancellation','journey-after-cancel');assert.equal(holds,1,'cancelled request not replayed');
 
     {
-      // HTTP + GPT Realtime delegation both steer one active Rust/WASM Claude turn.
-      const steered=(await call('/v1/agents','POST',{settings:{model:'claude-sonnet-4-6',thinking:'low',reasoning_mode:'standard',fast_mode:false}},201)).agent_id;
-      const activeVoice=crypto.randomUUID();
-      await call(`/v1/agents/${steered}/realtime/start`,'POST',{voice_session_id:activeVoice,operation_id:'active-voice-start'});
-      await call(`/v1/agents/${steered}/turns`,'POST',{input:'MANAGED_ACTIVE_STEER wait for both corrections',id:'journey-active-steer'},202);
-      for(let n=0;n<150&&!releaseActiveSteer;n++)await new Promise(r=>setTimeout(r,40));
-      assert.equal(typeof releaseActiveSteer,'function','model request started and is held at the terminal boundary');
-      const first='first managed steering correction', second='<realtime_delegation>\n<input>second managed é correction</input>\n</realtime_delegation>';
-      const unsupportedId=await call(`/v1/agents/${steered}/turns/journey-active-steer/steer`,'POST',{input:'identified correction must not be admitted',message_id:'unsupported-steer-id'},400);
-      assert.equal(unsupportedId.error,'invalid_request');
-      assert.match(unsupportedId.message,/identified steering is not supported by this backend/);
-      const unsupportedWithdrawal=await call(`/v1/agents/${steered}/turns/journey-active-steer/withdraw-steer`,'POST',{message_id:'unsupported-steer-id'},400);
-      assert.equal(unsupportedWithdrawal.error,'invalid_request');
-      assert.match(unsupportedWithdrawal.message,/steer withdrawal is not supported by this backend/);
-      await call(`/v1/agents/${steered}/turns/journey-active-steer/steer`,'POST',{input:first},202);
-      const delegated=await call(`/v1/agents/${steered}/realtime/delegate`,'POST',{
-        voice_session_id:activeVoice,operation_id:'active-voice-delegate',input:second},202);
-      assert.equal(delegated.route,'steered',JSON.stringify(delegated));
-      assert.equal(delegated.turn_id,'journey-active-steer','voice attribution stays on the existing active turn');
-      const queued=await call(`/v1/agents/${steered}/events/history?after=0&limit=256`);
-      assert.equal(queued.data.filter(row=>row.event?.type==='run.steered').length,0,'admission is not consumption');
-      assert.equal(activeSteerRequests.length,1,'queued steering cannot start concurrent model inference');
-      releaseActiveSteer();
-      let result;for(let n=0;n<600;n++) {
-        result=await call(`/v1/agents/${steered}/turns/journey-active-steer`);
-        if(['completed','failed','cancelled'].includes(result.state))break;
-        await new Promise(r=>setTimeout(r,40));
-      }
-      assert.equal(result.state,'completed',JSON.stringify(result));
-      assert.match(JSON.stringify(result),/CLAUDE_TOOL_DONE_ACTIVE_STEER/);
-      const consumed=await call(`/v1/agents/${steered}/events/history?after=0&limit=256`);
-      const acknowledgements=consumed.data.filter(row=>row.event?.type==='run.steered');
-      assert.deepEqual(acknowledgements.map(row=>row.event.payload.steer_index),[1,2]);
-      assert.equal(acknowledgements[0].event.payload.instruction_bytes,Buffer.byteLength(first));
-      assert.ok(acknowledgements[1].event.payload.instruction_bytes>=Buffer.byteLength(second),'voice delegation retains its origin context');
-      assert.ok(JSON.stringify(activeSteerRequests[1]).includes(JSON.stringify(second).slice(1,-1)),'voice steering preserves the complete instruction');
-      assert.equal(activeSteerRequests.length,2,'one initial request and one ordered continuation');
-      const terminalIndex=consumed.data.findIndex(row=>row.event?.type==='run.completed');
-      assert.ok(terminalIndex>=0 && acknowledgements.every(row=>consumed.data.indexOf(row)<terminalIndex),'consumption precedes terminal completion');
-      const stopped=await call(`/v1/agents/${steered}/realtime/stop`,'POST',{
-        voice_session_id:activeVoice,operation_id:'active-voice-stop',transcript:[{role:'user',text:'ACTIVE_VOICE_TRANSCRIPT_PROOF'}]});
-      assert.equal(stopped.stopped,true);
-      assert.match(JSON.stringify(activeSteerRequests[0]),/Realtime conversation started/);
-      trace.push({scenario:'active Claude steering',requests:activeSteerRequests.length,steer_indices:[1,2],ordered:true,voice_route:delegated.route,voice_stopped:stopped.stopped,identified_steering_denied:400,withdrawal_denied:400});
+      await steeringJourney();
 
       // CR-only SSE frames are valid; EOF without message_stop is not completion.
       const frames=[];
@@ -805,6 +921,7 @@ test('Managed native Claude and mixed-family public delegation, account gates, c
     console.info('CLAUDE_MANAGED_JOURNEY',{calls,summaries,writes,taskWrites,canonicalWrites,codexWrites,nestedWrites,sidebarCalls,holds,responsesAttempts,DOReopens:5,framingRequests,activeSteerRequests:activeSteerRequests.length,nativeTools:['Write','Read','Bash'],actualModels:catalog.data.map(m=>m.id),staleSelectionDenied:true,gatewayOnlyDefault:gatewayOnly.default_model,unsupportedOnlyAvailable:unsupportedOnly.availability.claude.available,exactToolAllowlist:true,uninstalledCapabilityDeniedBeforeInference:true});
   } finally {
     releaseActiveSteer?.();
+    releaseChildSteer?.();
     await mf?.dispose();
     await writeFile(resolve(evidence,'public-api-trace.json'),JSON.stringify(trace,null,2));
     await writeFile(resolve(evidence,'provider-trace.json'),JSON.stringify(upstream,null,2));

@@ -180,6 +180,7 @@ pub(super) enum ComposerChromeTarget {
 }
 
 pub(crate) enum ComposerEvent {
+    RuntimeIdentity(String),
     Terminal(Event),
     PasteImage(String),
     ContextTokens(u64),
@@ -237,6 +238,7 @@ pub(crate) struct Composer {
     thinking: ReasoningEffort,
     model: Model,
     auto_routing: bool,
+    runtime_identity: Option<String>,
     routed_model: Option<Model>,
     routed_provider: Option<&'static str>,
     routed_effort: Option<ReasoningEffort>,
@@ -404,6 +406,7 @@ impl Composer {
             thinking,
             model: Model::default(),
             auto_routing: false,
+            runtime_identity: None,
             routed_model: None,
             routed_provider: None,
             routed_effort: None,
@@ -472,10 +475,15 @@ impl Composer {
                 self.thinking = effort;
                 ComposerUpdate::changed()
             }
+            ComposerEvent::RuntimeIdentity(label) => {
+                self.runtime_identity = Some(label);
+                ComposerUpdate::changed()
+            }
             ComposerEvent::SetModel(model) => {
-                if self.model == model {
+                if self.model == model && self.runtime_identity.is_none() {
                     return ComposerUpdate::unchanged();
                 }
+                self.runtime_identity = None;
                 self.model = model;
                 ComposerUpdate::changed()
             }
@@ -844,20 +852,33 @@ impl Composer {
     }
 
     fn model_label(&self) -> String {
+        if let Some(label) = &self.runtime_identity {
+            return label.clone();
+        }
         let Some(model) = self.routed_model else {
             return if self.auto_routing {
                 "Auto · choosing…".to_owned()
             } else {
-                self.model.to_string()
+                format!(
+                    "{} · {}",
+                    if matches!(self.model, Model::Oai(_)) {
+                        "Codex"
+                    } else {
+                        "Claude"
+                    },
+                    self.model
+                )
             };
         };
-        let label = match model {
-            Model::Oai(nanocodex::Model::Glm53) => "glm-5.3",
-            Model::Oai(nanocodex::Model::Astra) => "Astra",
-            Model::Oai(nanocodex::Model::Sol) => "Sol",
-            Model::Oai(nanocodex::Model::Luna) => "Luna",
-            _ => model.as_str(),
-        };
+        let label = model.as_str();
+        let label = format!(
+            "{} · {label}",
+            if matches!(model, Model::Oai(_)) {
+                "Codex"
+            } else {
+                "Claude"
+            }
+        );
         match self.routed_provider {
             Some(provider) => format!("{label} · {provider}"),
             None => label.to_owned(),
@@ -2224,22 +2245,22 @@ mod tests {
             (
                 Model::Oai(nanocodex::Model::Glm53),
                 "Vercel",
-                "glm-5.3 · Vercel",
+                "Codex · glm-5.3 · Vercel",
             ),
             (
                 Model::Oai(nanocodex::Model::Glm53),
                 "Workers AI",
-                "glm-5.3 · Workers AI",
+                "Codex · glm-5.3 · Workers AI",
             ),
             (
                 Model::Oai(nanocodex::Model::Astra),
                 "OpenRouter",
-                "Astra · OpenRouter",
+                "Codex · gpt-6-astra · OpenRouter",
             ),
             (
                 Model::Oai(nanocodex::Model::Sol),
                 "ChatGPT",
-                "Sol · ChatGPT",
+                "Codex · gpt-6.1-sol · ChatGPT",
             ),
         ] {
             composer.update(ComposerEvent::RoutingHydrated {

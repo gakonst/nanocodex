@@ -162,6 +162,10 @@ impl SpawnAgentTask {
 
 #[derive(Serialize)]
 pub struct AgentStartReport {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub harness: Option<nanocodex_agent::HarnessFamily>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
     pub agent_id: AgentId,
     pub role: String,
     pub status: AgentStatus,
@@ -340,7 +344,11 @@ pub async fn start_agents_observed(
         .zip(capacities)
     {
         let id = reservation.id;
+        let harness = Some(child.harness_family());
+        let model = child.native_model_id().await?;
         let descriptor = AgentDescriptor {
+            harness,
+            model: model.clone(),
             id,
             session_id: child.session_id().to_string(),
             role: task.role.clone(),
@@ -372,6 +380,8 @@ pub async fn start_agents_observed(
         }
         startup.track(&reservation.root_session_id, id);
         reports.push(AgentStartReport {
+            harness,
+            model,
             agent_id: id,
             role: task.role,
             status: AgentStatus::Running,
@@ -532,7 +542,11 @@ async fn start_child(
         return Err(error.into());
     }
     let session_id = child.session_id().to_string();
+    let harness = Some(child.harness_family());
+    let model = child.native_model_id().await?;
     let descriptor = AgentDescriptor {
+        harness,
+        model: model.clone(),
         id,
         session_id,
         role: role.clone(),
@@ -570,6 +584,8 @@ async fn start_child(
         )
         .await?;
     Ok(AgentStartReport {
+        harness,
+        model,
         agent_id: id,
         role,
         status: AgentStatus::Running,
@@ -892,7 +908,7 @@ impl Tool for ListAgents {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition::function(
             LIST_AGENTS_TOOL,
-            "Lists a compact directory of agents in the same task tree. Active recipients are returned by default; completed agents can be included when a follow-up message is needed.",
+            "Lists a compact directory of agents in the same task tree. Active recipients are returned by default. Completed children remain reusable within this runtime; use include_completed=true to find them for follow-up work. A runtime restart drops the ephemeral registry; reconcile previous effects before starting replacements.",
             json!({
                 "type": "object",
                 "properties": {
@@ -1179,6 +1195,8 @@ fn spawn_agent_output_schema() -> Value {
         "type": "object",
         "properties": {
             "agent_id": { "type": "integer" },
+            "harness": { "type": "string", "enum": ["codex", "claude"] },
+            "model": { "type": "string" },
             "role": { "type": "string" },
             "status": {
                 "type": "object",
@@ -1202,6 +1220,8 @@ fn wait_agent_output_schema() -> Value {
                     "type": "object",
                     "properties": {
                         "agent_id": { "type": "integer" },
+                        "harness": { "type": "string", "enum": ["codex", "claude"] },
+                        "model": { "type": "string" },
                         "role": { "type": "string" },
                         "task": { "type": "string" },
                         "parent_agent_id": { "type": ["integer", "null"] },

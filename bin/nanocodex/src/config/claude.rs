@@ -32,18 +32,15 @@ use nanocodex::{
     claude::{
         ClaudeClient, ClaudeToolReply, ClaudeTools, Effort, ToolDefinition, ToolResultContent,
     },
-    claude_tools::{
-        BashRequest, BashResult, ClaudeBash, ClaudeWorkspaceFiles, SandboxBashExecutor,
-    },
+    claude_tools::ClaudeWorkspaceFiles,
     tools::{
         ToolContext, ToolInput,
         contract::{ToolOutputBody, ToolOutputContent},
         runtime::ToolRuntime,
-        workspace_runtime::WorkspaceToolRuntime,
     },
 };
 use serde_json::{Value, json, value::to_raw_value};
-use tokio::time::{Duration, Instant};
+use tokio::time::Duration;
 
 /// Task-tree workspace bindings. A new child snapshots its parent's current
 /// directory once; later transitions never retarget an existing child's tools.
@@ -1047,110 +1044,5 @@ impl Drop for RetainedHost {
     fn drop(&mut self) {
         let control = self.0.control();
         tokio::spawn(async move { control.cancel().await });
-    }
-}
-
-struct RetainedBash {
-    runtime: Arc<WorkspaceToolRuntime>,
-    gate: Arc<tokio::sync::Mutex<()>>,
-}
-
-struct CancelShell {
-    runtime: Option<Arc<WorkspaceToolRuntime>>,
-    gate: Option<tokio::sync::OwnedMutexGuard<()>>,
-}
-impl Drop for CancelShell {
-    fn drop(&mut self) {
-        if let Some(runtime) = self.runtime.take() {
-            let gate = self.gate.take();
-            tokio::spawn(async move {
-                runtime.control().cancel().await;
-                drop(gate);
-            });
-        }
-    }
-}
-
-impl SandboxBashExecutor for RetainedBash {
-    async fn execute(&self, request: BashRequest) -> std::result::Result<BashResult, String> {
-        let gate = Arc::clone(&self.gate).lock_owned().await;
-        let mut cleanup = CancelShell {
-            runtime: Some(Arc::clone(&self.runtime)),
-            gate: Some(gate),
-        };
-        let deadline = Instant::now() + Duration::from_millis(request.timeout_ms);
-        let context = ToolContext::new("claude", "native-bash", "bash", &[], 1024);
-        let input = json!({"cmd":request.command,"yield_time_ms":250,"max_output_tokens":1024});
-        let mut output = match tokio::time::timeout_at(
-            deadline,
-            self.runtime.execute_tool(
-                "exec_command",
-                ToolInput::Function(to_raw_value(&input).map_err(|e| e.to_string())?),
-                context,
-            ),
-        )
-        .await
-        {
-            Ok(output) => output,
-            Err(_) => {
-                self.runtime.control().cancel().await;
-                cleanup.runtime = None;
-                return Err("Bash timed out; retained process terminated".to_owned());
-            }
-        };
-        let mut stdout = String::new();
-        let mut truncated = false;
-        loop {
-            if !output.success {
-                return Err(output.structured_result().to_string());
-            }
-            let result = output.structured_result();
-            let chunk = result
-                .get("output")
-                .and_then(Value::as_str)
-                .unwrap_or_default();
-            let remaining = request.max_stdout_bytes.saturating_sub(stdout.len());
-            let mut end = chunk.len().min(remaining);
-            while !chunk.is_char_boundary(end) {
-                end -= 1;
-            }
-            stdout.push_str(&chunk[..end]);
-            truncated |= end < chunk.len();
-            truncated |= result
-                .get("original_token_count")
-                .and_then(Value::as_u64)
-                .is_some_and(|tokens| tokens.saturating_mul(4) > chunk.len() as u64 + 3);
-            if let Some(code) = result.get("exit_code").and_then(Value::as_i64) {
-                cleanup.runtime = None;
-                return Ok(BashResult {
-                    stdout,
-                    stderr: String::new(),
-                    exit_code: i32::try_from(code).map_err(|e| e.to_string())?,
-                    truncated,
-                });
-            }
-            let session = result
-                .get("session_id")
-                .and_then(Value::as_i64)
-                .ok_or("Bash host returned neither exit status nor retained process")?;
-            let input = json!({"session_id":session,"yield_time_ms":250,"max_output_tokens":1024});
-            output = match tokio::time::timeout_at(
-                deadline,
-                self.runtime.execute_tool(
-                    "write_stdin",
-                    ToolInput::Function(to_raw_value(&input).map_err(|e| e.to_string())?),
-                    context,
-                ),
-            )
-            .await
-            {
-                Ok(output) => output,
-                Err(_) => {
-                    self.runtime.control().cancel().await;
-                    cleanup.runtime = None;
-                    return Err("Bash timed out; retained process terminated".to_owned());
-                }
-            };
-        }
     }
 }

@@ -2094,6 +2094,7 @@ private struct ConversationMessageContent: View, Equatable {
                                 }
                             }.font(.caption).foregroundStyle(Ink.muted)
                         } else if row.role == "Agent", !row.text.isEmpty {
+                            Text(row.runtimeIdentity?.label ?? "Unknown harness · Unknown model").font(.caption).foregroundStyle(Ink.muted)
                             ChatMarkdown(text: row.text, compact: true)
                                 .environment(\.openURL, OpenURLAction { url in
                                     guard let link = PublishedOutputLink(url: url) else { return .systemAction }
@@ -2878,7 +2879,7 @@ private struct ConversationContentView: View {
                         tools.binding(content.id).wrappedValue.toggle()
                     } label: {
                         HStack {
-                            Text("Agent " + child + " activity")
+                            Text("Agent " + child + " · " + (content.activity.first?.runtimeIdentity?.label ?? "Unknown harness · Unknown model") + " activity")
                             Spacer()
                             Image(systemName: groupExpanded ? "chevron.up" : "chevron.down")
                         }.frame(minHeight: 44).contentShape(Rectangle())

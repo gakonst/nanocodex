@@ -286,6 +286,9 @@ async fn live_interrupted_effect_is_unknown_after_compaction_and_reopen() {
     tokio::time::timeout(Duration::from_secs(5), started.notified())
         .await
         .unwrap();
+    turn.steer_with_id("cancelled-input".into(), "CANCELLED_STEER_MUST_NOT_RUN")
+        .await
+        .unwrap();
     turn.cancel().await.unwrap();
     assert!(turn.result().await.is_err());
     agent.compact().await.unwrap();
@@ -302,6 +305,12 @@ async fn live_interrupted_effect_is_unknown_after_compaction_and_reopen() {
         .unwrap()
         .build()
         .unwrap();
+    assert!(
+        agent
+            .prompt(PromptRequest::new("perform effect once").request_id("interrupted"))
+            .await
+            .is_err()
+    );
     agent
         .prompt(PromptRequest::new("reconcile uncertainty").request_id("reconcile"))
         .await
@@ -312,6 +321,16 @@ async fn live_interrupted_effect_is_unknown_after_compaction_and_reopen() {
     assert_eq!(effects.load(Ordering::SeqCst), 1);
     let log = requests.lock().unwrap().clone();
     assert_eq!(log.len(), 3);
+    assert!(
+        !serde_json::to_string(&log)
+            .unwrap()
+            .contains("CANCELLED_STEER_MUST_NOT_RUN")
+    );
+    println!(
+        "STEERING_CANCEL accepted=true replay=cancelled effects={} requests={}",
+        effects.load(Ordering::SeqCst),
+        serde_json::to_string(&log).unwrap()
+    );
     assert_eq!(log[2]["messages"][1]["content"], json!(signed_round()));
     let unknown = &log[2]["messages"][2]["content"][0];
     assert_eq!(unknown["tool_use_id"], "effect-once");
@@ -2231,5 +2250,190 @@ async fn tool_only_policies_preserve_default_wire_and_durable_write_count() {
         .join("../../output/lifecycle-default-journal.json");
     std::fs::write(&artifact, serde_json::to_vec_pretty(&json!({"observations":observations,"provider_requests":*requests,"observed":"identical wire and revision count; four before policies still executed"})).unwrap()).unwrap();
     eprintln!("default lifecycle journal evidence: {}", artifact.display());
+    server.abort();
+}
+
+// Acknowledged steering survives an owner failure between the tool receipt and
+// the next model boundary. Reopen neither loses input nor repeats the effect.
+#[tokio::test]
+async fn identified_steering_survives_sqlite_reopen_without_repeating_tools() {
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use tokio::sync::Notify;
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("steering.sqlite");
+    let armed = Arc::new(AtomicBool::new(false));
+    let effects = Arc::new(AtomicUsize::new(0));
+    let started = Arc::new(Notify::new());
+    let release = Arc::new(Notify::new());
+    let resumed = Arc::new(Notify::new());
+    let finish = Arc::new(Notify::new());
+    let requests = Arc::new(Mutex::new(Vec::<Value>::new()));
+    let app = Router::new().route("/v1/messages", post({
+        let (requests, resumed, finish) = (requests.clone(), resumed.clone(), finish.clone());
+        move |Json(body): Json<Value>| {
+            let (requests, resumed, finish) = (requests.clone(), resumed.clone(), finish.clone());
+            async move {
+                let index = { let mut log = requests.lock().unwrap(); log.push(body); log.len() };
+                let output = if index == 1 {
+                    sse(vec![json!({"type":"tool_use","id":"write-once","name":"effect","input":{}})], "tool_use", 10)
+                } else {
+                    resumed.notify_one(); finish.notified().await;
+                    sse(text("steered answer"), "end_turn", 10)
+                };
+                ([("content-type", "text/event-stream")], output)
+            }
+        }
+    }));
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let client = ClaudeClient::new(
+        reqwest::Client::new(),
+        format!("http://{address}/v1/messages"),
+        "synthetic",
+    );
+    let state = DurableSession::open(
+        FaultStore {
+            inner: SqliteStore::open(&path).unwrap(),
+            writes: Arc::new(AtomicUsize::new(0)),
+            fail_at: None,
+            after_commit: true,
+            fail_when_armed: Some(armed.clone()),
+        },
+        "claude-synthetic",
+    )
+    .await
+    .unwrap();
+    let request = || PromptRequest::new("write once").request_id("steered-turn");
+    let (agent, events) = Nanocodex::builder(Claude::new(client.clone(), "original-model"))
+        .tool(tool(), {
+            let (effects, started, release, armed) = (
+                effects.clone(),
+                started.clone(),
+                release.clone(),
+                armed.clone(),
+            );
+            move |_| {
+                let (effects, started, release, armed) = (
+                    effects.clone(),
+                    started.clone(),
+                    release.clone(),
+                    armed.clone(),
+                );
+                async move {
+                    effects.fetch_add(1, Ordering::SeqCst);
+                    started.notify_one();
+                    release.notified().await;
+                    armed.store(true, Ordering::SeqCst);
+                    Ok("written".into())
+                }
+            }
+        })
+        .durability(state)
+        .await
+        .unwrap()
+        .build()
+        .unwrap();
+    let turn = agent.prompt(request()).await.unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(10), started.notified())
+        .await
+        .expect("first native tool must start");
+    turn.steer_with_id("keep".into(), "PRESERVED_STEER")
+        .await
+        .unwrap();
+    turn.steer_with_id("keep".into(), "PRESERVED_STEER")
+        .await
+        .unwrap();
+    assert!(turn.steer_with_id("keep".into(), "conflict").await.is_err());
+    turn.steer_with_id("undo".into(), "WITHDRAWN_STEER")
+        .await
+        .unwrap();
+    assert!(!turn.withdraw_steer("keep".into()).await.unwrap());
+    assert!(turn.withdraw_steer("undo".into()).await.unwrap());
+    assert!(
+        turn.steer_with_id("undo".into(), "WITHDRAWN_STEER")
+            .await
+            .is_err()
+    );
+    release.notify_one();
+    let error = turn.result().await.unwrap_err();
+    assert!(error.execution_policy_disposition().is_some(), "{error}");
+    let _ = agent.shutdown().await;
+    drop((agent, events));
+    let (agent, events) = Nanocodex::builder(Claude::new(client, "replacement-model"))
+        .tool(tool(), {
+            let effects = effects.clone();
+            move |_| {
+                let effects = effects.clone();
+                async move {
+                    effects.fetch_add(1, Ordering::SeqCst);
+                    Ok("unexpected repeat".into())
+                }
+            }
+        })
+        .durability(reopen(&path).await)
+        .await
+        .unwrap()
+        .build()
+        .unwrap();
+    let turn = agent.prompt(request()).await.unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(10), resumed.notified())
+        .await
+        .expect("resumed model must start");
+    turn.steer_with_id("keep".into(), "PRESERVED_STEER")
+        .await
+        .unwrap();
+    assert!(
+        turn.steer_with_id("keep".into(), "conflict after reopen")
+            .await
+            .is_err()
+    );
+    assert!(!turn.withdraw_steer("keep".into()).await.unwrap());
+    assert!(
+        turn.steer_with_id("undo".into(), "WITHDRAWN_STEER")
+            .await
+            .is_err()
+    );
+    finish.notify_one();
+    assert_eq!(
+        turn.result().await.unwrap().final_message(),
+        "steered answer"
+    );
+    assert_eq!(effects.load(Ordering::SeqCst), 1);
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        agent
+            .prompt(request())
+            .await
+            .unwrap()
+            .result()
+            .await
+            .unwrap()
+    })
+    .await
+    .expect("terminal receipt replay must not call the held provider");
+    agent.shutdown().await.unwrap();
+    drop((agent, events));
+    let log = requests.lock().unwrap();
+    assert_eq!(log.len(), 2);
+    assert_eq!(log[0]["model"], log[1]["model"]);
+    assert_eq!(log[0]["system"], log[1]["system"]);
+    assert!(
+        log[1]["system"]
+            .to_string()
+            .contains("model_id: original-model")
+    );
+    assert_eq!(
+        log[1]["messages"]
+            .to_string()
+            .matches("PRESERVED_STEER")
+            .count(),
+        1
+    );
+    assert!(!log[1]["messages"].to_string().contains("WITHDRAWN_STEER"));
+    println!(
+        "STEERING_SQLITE effects=1 requests={}",
+        serde_json::to_string(&*log).unwrap()
+    );
     server.abort();
 }

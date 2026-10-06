@@ -2,7 +2,7 @@
 
 This inventory distinguishes portable library adapters from the native CLI host.
 Tool names alone do not establish Claude Code parity. See the [runtime guide](CLAUDE_RUNTIME.md)
-for context/recovery and the [managed guide](CLAUDE_MANAGED.md) for that separate surface.
+for context/recovery and the [managed guide](CLAUDE_MANAGED.md) for its current native/conditional capability table. Managed Brain file tools share the Rust file engine and task-board transitions; native Hand calls use private workspace RPCs. CLI host capabilities below do not imply managed availability.
 
 Claude uses native Messages definitions and results. The CLI does not advertise
 Responses `exec_command`, `apply_patch`, `web__run`, `exec`, `wait`, or `tool_search`

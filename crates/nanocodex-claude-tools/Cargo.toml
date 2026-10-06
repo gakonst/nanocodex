@@ -16,12 +16,12 @@ mcp = []
 serde.workspace = true
 serde_json.workspace = true
 schemars.workspace = true
-
-[target.'cfg(not(target_family = "wasm"))'.dependencies]
-regex.workspace = true
 base64.workspace = true
+regex.workspace = true
 ignore.workspace = true
 globset = "0.4.19"
+
+[target.'cfg(not(target_family = "wasm"))'.dependencies]
 image.workspace = true
 tempfile.workspace = true
 serde_yaml_ng.workspace = true

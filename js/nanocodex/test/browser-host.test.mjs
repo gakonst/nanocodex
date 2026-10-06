@@ -188,6 +188,8 @@ test("browser host gives inherited tools the Rust-owned subagent descriptor", as
     sessionId: "child-session",
     role: "world-resident:fern",
     task: "Act as Fern.",
+    harness: "codex",
+    model: "gpt-6-astra",
   };
   const hostContextRef = "opaque-root-turn";
   host.bindSubagentSession("child-session", descriptor, hostContextRef);
@@ -197,7 +199,7 @@ test("browser host gives inherited tools the Rust-owned subagent descriptor", as
   ]]);
   assert.equal(Object.isFrozen(sessionLifecycle[0][2]), true);
   assert.deepEqual(Object.keys(sessionLifecycle[0][2]).sort(), [
-    "agentId", "parentAgentId", "role", "sessionId", "task",
+    "agentId", "harness", "model", "parentAgentId", "role", "sessionId", "task",
   ]);
   assert.equal(JSON.stringify(sessionLifecycle[0][2]).includes(hostContextRef), false);
   const replacementHostContextRef = "opaque-retried-root-turn";
@@ -210,7 +212,7 @@ test("browser host gives inherited tools the Rust-owned subagent descriptor", as
     "bind", "child-session", descriptor, replacementHostContextRef,
   ]);
   assert.deepEqual(Object.keys(sessionLifecycle[1][2]).sort(), [
-    "agentId", "parentAgentId", "role", "sessionId", "task",
+    "agentId", "harness", "model", "parentAgentId", "role", "sessionId", "task",
   ]);
 
   const child = JSON.parse(await host.executeTool(

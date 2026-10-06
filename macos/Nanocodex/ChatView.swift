@@ -463,7 +463,7 @@ private struct NativeActivityStep: View {
                 Image(systemName: entry.status == "failed" ? "exclamationmark.circle" : entry.kind == .tool ? "terminal" : "text.alignleft")
                     .foregroundStyle(entry.status == "failed" ? Color.orange : .secondary)
                 VStack(alignment: .leading, spacing: 3) {
-                    Text(entry.activityTitle).font(.subheadline).lineLimit(1)
+                    Text((entry.agent.map { "Agent " + $0 + " · " } ?? "") + (entry.runtimeIdentity?.label ?? "Unknown harness · Unknown model") + " · " + entry.activityTitle).font(.subheadline).lineLimit(1)
                     if !subject.isEmpty { Text(subject).font(.caption).foregroundStyle(.secondary).lineLimit(1) }
                 }.frame(maxWidth: .infinity, alignment: .leading)
                 if live { ProgressView().controlSize(.mini) }
@@ -500,6 +500,7 @@ struct MessageView: View, Equatable {
                 }.accessibilityIdentifier("user-message")
             case .assistant:
                 VStack(alignment: .leading, spacing: 12) {
+                    Text(entry.runtimeIdentity?.label ?? "Unknown harness · Unknown model").font(.caption).foregroundStyle(.secondary)
                     NativeMarkdown(text: entry.text)
                     if !entry.streaming {
                         ChatCopyButton(text: entry.text).padding(.leading, -8)

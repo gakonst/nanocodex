@@ -16,6 +16,14 @@ fn stream(blocks: Vec<Value>, stop: &str) -> String {
         json!({"type":"message_start","message":{"id":"msg","role":"assistant","model":"test","content":[],"usage":{"input_tokens":3,"cache_read_input_tokens":2,"cache_creation_input_tokens":1,"output_tokens":0}}}),
     );
     for (i, block) in blocks.iter().enumerate() {
+        if matches!(
+            block["type"].as_str(),
+            Some("server_tool_use" | "bash_code_execution_tool_result")
+        ) {
+            emit(json!({"type":"content_block_start","index":i,"content_block":block}));
+            emit(json!({"type":"content_block_stop","index":i}));
+            continue;
+        }
         let start = match block["type"].as_str() {
             Some("text") => json!({"type":"text","text":""}),
             Some("thinking") => {
@@ -1492,14 +1500,15 @@ async fn response_usage_arrives_before_tool_completion_and_excludes_summary() {
     server.abort();
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn steering_acknowledges_consumption_at_tool_and_terminal_boundaries() {
     use nanocodex_agent::events::{AgentEventData, RunEvent};
     use std::time::Duration;
     use tokio::sync::Notify;
 
     let _ = rustls::crypto::ring::default_provider().install_default();
-    for held_tool in [true, false] {
+    for (held_tool, server_pause) in [(true, false), (false, false), (false, true)] {
+        let consuming_call = if server_pause { 3 } else { 2 };
         let started = Arc::new(Notify::new());
         let release = Arc::new(Notify::new());
         let requests = Arc::new(Mutex::new(Vec::<Value>::new()));
@@ -1530,6 +1539,12 @@ async fn steering_acknowledges_consumption_at_tool_and_terminal_boundaries() {
                                 ],
                                 "tool_use",
                             )
+                        } else if server_pause && index == 1 {
+                            (vec![json!({"type":"server_tool_use","id":"server-once","name":"bash_code_execution","input":{"command":"synthetic write"}})], "pause_turn")
+                        } else if server_pause && index == 2 {
+                            let log = requests.lock().unwrap();
+                            assert!(!log[1]["messages"].to_string().contains("first steer"), "unresolved native server effects must finish before steering");
+                            (vec![json!({"type":"bash_code_execution_tool_result","tool_use_id":"server-once","content":{"type":"bash_code_execution_result","stdout":"written","stderr":"","return_code":0,"content":[]}}), json!({"type":"text","text":"done"})], "end_turn")
                         } else {
                             (vec![json!({"type":"text","text":"done"})], "end_turn")
                         };
@@ -1550,6 +1565,8 @@ async fn steering_acknowledges_consumption_at_tool_and_terminal_boundaries() {
             "synthetic",
         );
         let (agent, mut events) = Nanocodex::builder(Claude::new(client, "test"))
+            .system_resolver(|_| "Synthetic workspace context".into())
+            .server_tool(nanocodex_claude::ServerToolDefinition::code_execution_current())
             .tool(
                 ToolDefinition {
                     name: "hold".into(),
@@ -1574,19 +1591,60 @@ async fn steering_acknowledges_consumption_at_tool_and_terminal_boundaries() {
             )
             .build()
             .unwrap();
+        agent
+            .set_harness_model("claude-opus-5-5".parse().unwrap())
+            .await
+            .unwrap();
+        assert_eq!(
+            agent.native_model_id().await.unwrap().as_deref(),
+            Some("claude-opus-5-5")
+        );
         let turn = agent.prompt("begin").await.unwrap();
         tokio::time::timeout(Duration::from_secs(2), started.notified())
             .await
             .unwrap();
-        turn.steer("first steer").await.unwrap();
+        turn.steer_with_id("keep".into(), "first steer")
+            .await
+            .unwrap();
+        turn.steer_with_id("keep".into(), "first steer")
+            .await
+            .unwrap();
+        assert!(
+            turn.steer_with_id("keep".into(), "conflicting input")
+                .await
+                .is_err()
+        );
+        turn.steer_with_id("undo".into(), "never send this")
+            .await
+            .unwrap();
+        assert!(!turn.withdraw_steer("keep".into()).await.unwrap());
+        assert!(turn.withdraw_steer("undo".into()).await.unwrap());
+        assert!(!turn.withdraw_steer("undo".into()).await.unwrap());
+        assert!(
+            turn.steer_with_id("undo".into(), "never send this")
+                .await
+                .is_err()
+        );
         turn.steer("second é").await.unwrap();
+        let mut admissions = 0;
         while let Some(event) = events.try_recv_timed() {
+            if event.event.kind == AgentEventKind::InputAccepted {
+                let payload: Value = serde_json::from_str(event.event.payload.get()).unwrap();
+                if payload["kind"] == "steer" {
+                    admissions += 1;
+                }
+            }
             assert_ne!(
                 event.event.kind,
                 AgentEventKind::RunSteered,
                 "admission must not acknowledge consumption"
             );
         }
+        assert_eq!(
+            admissions, 3,
+            "duplicate and conflicting IDs must not publish another input; withdrawn input was admitted once"
+        );
+        let control = turn.control();
         release.notify_one();
         tokio::time::timeout(Duration::from_secs(2), turn.result())
             .await
@@ -1605,7 +1663,7 @@ async fn steering_acknowledges_consumption_at_tool_and_terminal_boundaries() {
             }
             if event.kind == AgentEventKind::ModelCallCompleted {
                 let payload: Value = serde_json::from_str(event.payload.get()).unwrap();
-                if payload["call_index"] == 2 {
+                if payload["call_index"] == consuming_call {
                     assert_eq!(
                         acknowledged.len(),
                         2,
@@ -1623,8 +1681,22 @@ async fn steering_acknowledges_consumption_at_tool_and_terminal_boundaries() {
         );
         {
             let log = requests.lock().unwrap();
-            assert_eq!(log.len(), 2);
-            let messages = log[1]["messages"].as_array().unwrap();
+            assert_eq!(log.len(), consuming_call);
+            for request in log.iter().skip(1) {
+                assert_eq!(log[0]["tools"], request["tools"]);
+                assert_eq!(log[0]["system"], request["system"]);
+                assert_eq!(log[0]["model"], request["model"]);
+            }
+            assert!(
+                log[0]["system"]
+                    .to_string()
+                    .contains("model_id: claude-opus-5-5")
+            );
+            println!(
+                "STEERING held_tool={held_tool} server_pause={server_pause} requests={}",
+                serde_json::to_string(&*log).unwrap()
+            );
+            let messages = log[consuming_call - 1]["messages"].as_array().unwrap();
             assert_eq!(
                 messages[messages.len() - 2]["content"][0]["text"],
                 "first steer"
@@ -1632,6 +1704,24 @@ async fn steering_acknowledges_consumption_at_tool_and_terminal_boundaries() {
             assert_eq!(
                 messages[messages.len() - 1]["content"][0]["text"],
                 "second é"
+            );
+        }
+        assert!(!control.withdraw_steer("keep".into()).await.unwrap());
+        assert!(control.steer("too late").await.is_err());
+        agent
+            .prompt("new selected model")
+            .await
+            .unwrap()
+            .result()
+            .await
+            .unwrap();
+        {
+            let log = requests.lock().unwrap();
+            assert_eq!(log[consuming_call]["model"], "claude-opus-5-5");
+            assert!(
+                log[consuming_call]["system"]
+                    .to_string()
+                    .contains("model_id: claude-opus-5-5")
             );
         }
         agent.shutdown().await.unwrap();

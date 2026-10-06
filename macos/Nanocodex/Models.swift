@@ -415,6 +415,7 @@ struct MessageEntry: Identifiable, Equatable, Sendable {
     var attachments: TranscriptInput?
     var status = ""
     var streaming = false
+    var runtimeIdentity: AgentRuntimeIdentity?
     var agent: String?
     var phase: String?
     var itemID: String?
@@ -424,7 +425,7 @@ struct MessageEntry: Identifiable, Equatable, Sendable {
         lhs.id == rhs.id && lhs.turnId == rhs.turnId && lhs.kind == rhs.kind && lhs.text == rhs.text &&
         lhs.name == rhs.name && lhs.output == rhs.output && lhs.generatedOutputs == rhs.generatedOutputs &&
         lhs.status == rhs.status && lhs.streaming == rhs.streaming && lhs.agent == rhs.agent &&
-        lhs.phase == rhs.phase && lhs.itemID == rhs.itemID && lhs.cursor == rhs.cursor
+        lhs.runtimeIdentity == rhs.runtimeIdentity && lhs.phase == rhs.phase && lhs.itemID == rhs.itemID && lhs.cursor == rhs.cursor
     }
     var isActivity: Bool { kind == .reasoning || kind == .tool || (kind == .assistant && (phase == "commentary" || agent != nil)) }
     var preparedActivityTitle: String? = nil
@@ -585,9 +586,26 @@ private func projectTimeline(_ events: [ManagedEvent], toolOutputs: inout [Strin
         if turns[turn] == nil { order.append(turn) }
         turns[turn, default: []].append(event)
     }
+    var runtimeIdentities: [String: AgentRuntimeIdentity] = [:]
     for envelope in order.flatMap({ turns[$0] ?? [] }) {
         let d = envelope.data, turn = envelope.turnId ?? d["id"].string
         let id = "\(turn):\(envelope.cursor)"
+        let provenance = d["agent_id"] == .null ? d["event"]["payload"]["managed_agent_id"] : d["agent_id"]
+        let runtimeScope = turn + "\0" + provenance.pretty
+        if d["event"]["type"].string == "run.started" {
+            runtimeIdentities[runtimeScope] = AgentRuntimeIdentity(payload: d["event"]["payload"].inboxJSON).fillingMissing(from: runtimeIdentities[runtimeScope])
+        }
+        if d["event"]["type"].string == "tool.result" {
+            let payload = d["event"]["payload"]
+            let result = ToolPresentation.decoded((payload["structured_result"] == .null ? payload["result"] : payload["structured_result"]).inboxJSON)
+            let receipts: [JSON]
+            if case .array(let agents) = result["agents"] { receipts = agents } else { receipts = [result] }
+            for receipt in receipts where receipt["agent_id"] != .null {
+                let scope = turn + "\0" + receipt["agent_id"].pretty
+                let identity = AgentRuntimeIdentity(payload: receipt)
+                runtimeIdentities[scope] = runtimeIdentities[scope]?.fillingMissing(from: identity) ?? identity
+            }
+        }
         let firstNewRow = rows.count
         switch d["type"].string {
         case "turn_accepted":
@@ -619,7 +637,7 @@ private func projectTimeline(_ events: [ManagedEvent], toolOutputs: inout [Strin
             }
         case "event":
             let event = d["event"], p = event["payload"], type = event["type"].string
-            let agent = d["agent_id"] == .null ? nil : d["agent_id"].pretty
+            let agent = provenance == .null ? nil : provenance.pretty
             let phase = p["phase"].string.isEmpty ? nil : p["phase"].string
             let itemID = p["item_id"].string.isEmpty ? nil : p["item_id"].string
             let toolID = "\(turn):\(agent ?? "root"):tool:\(p["call_id"].string)"
@@ -670,5 +688,8 @@ private func projectTimeline(_ events: [ManagedEvent], toolOutputs: inout [Strin
         for index in firstNewRow..<rows.count { rows[index].cursor = envelope.cursor }
     }
     toolOutputs = toolOutputs.filter { retainedOutputs.contains($0.key) }
+    for index in rows.indices {
+        rows[index].runtimeIdentity = runtimeIdentities[rows[index].turnId + "\0" + (rows[index].agent ?? "")]
+    }
     return rows
 }

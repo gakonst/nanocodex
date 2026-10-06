@@ -41,6 +41,8 @@ impl Snapshot {
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct Cursor {
+    #[serde(skip)]
+    pub(super) recovering: bool,
     #[serde(default)]
     pub(super) lifecycle_turn_id: String,
     #[serde(default)]
@@ -49,6 +51,8 @@ pub(super) struct Cursor {
     pub(super) instruction_revision: Option<u64>,
     pub(super) snapshot: Snapshot,
     pub(super) template: MessagesRequest,
+    #[serde(default)]
+    pub(super) runtime_model_identity: bool,
     /// Only these host-owned definitions may change between requests. Static
     /// definitions remain frozen throughout the admitted durable operation.
     #[serde(default)]
@@ -69,6 +73,8 @@ pub(super) struct Cursor {
     pub(super) index: u32,
     #[serde(default)]
     pub(super) steers: u32,
+    #[serde(default)]
+    pub(super) consumed_steer_index: u32,
     // The retry budget belongs to the admitted turn, including durable replay.
     #[serde(default)]
     pub(super) context_recovery_attempted: bool,
@@ -222,7 +228,7 @@ impl State {
         if let (Some(policy), Some(operation)) = (&self.policy, operation)
             && let Some(value) = policy.continuation(operation.to_owned()).await?
         {
-            let cursor: Cursor = serde_json::from_value(value).map_err(recovery_error)?;
+            let mut cursor: Cursor = serde_json::from_value(value).map_err(recovery_error)?;
             if cursor.operation.as_deref() != Some(operation)
                 || cursor.snapshot.provider != "claude"
                 || cursor.snapshot.version != 1
@@ -232,6 +238,7 @@ impl State {
             self.restore_snapshot(conversation, cursor.snapshot.clone())
                 .await
                 .map_err(recovery_error)?;
+            cursor.recovering = true;
             return Ok(cursor);
         }
         let template = self.request_template(speed);
@@ -251,11 +258,13 @@ impl State {
             })
             .collect();
         let mut cursor = Cursor {
+            recovering: false,
             lifecycle_turn_id: candidate_id("lifecycle"),
             stop_hook_active: false,
             instruction_revision: None,
             snapshot: self.snapshot(conversation).await?,
             template,
+            runtime_model_identity: true,
             dynamic_tool_names,
             wire_profile: Some(self.client.freeze_wire_profile()),
             threshold: self.compaction_threshold(),
@@ -275,6 +284,7 @@ impl State {
             usage: Usage::default(),
             index: 0,
             steers: 0,
+            consumed_steer_index: 0,
             context_recovery_attempted: false,
         };
         // Task state snapshots and receipts must advance in the same order.

@@ -236,6 +236,25 @@ struct HostToolReply {
     structured_result: Option<Value>,
 }
 
+fn nested_tool_error(error: String) -> JsValue {
+    let unknown_agent = error
+        .strip_prefix("unknown agent_id ")
+        .is_some_and(|id| !id.is_empty() && id.bytes().all(|byte| byte.is_ascii_digit()));
+    if unknown_agent
+        || matches!(
+            error.as_str(),
+            "subagent runtime is closed" | "subagent scope disappeared"
+        )
+    {
+        return js_error(
+            "Subagent is unavailable in this runtime. A parent runtime restart drops its children. \
+             Inspect list_agents with include_completed=true before delegating again, and \
+             reconcile previous effects before retrying work.",
+        );
+    }
+    js_error("Claude nested tool execution failed")
+}
+
 async fn execute_tool(
     host_definition_id: u32,
     name: &str,
@@ -290,7 +309,9 @@ async fn execute_tool(
                     let reply = tools
                         .execute(&name, input, invocation)
                         .await
-                        .map_err(|_| js_error("Claude nested tool execution failed"))?;
+                        // Preserve only fixed runtime-control diagnostics. Arbitrary native
+                        // callbacks may include credentials in their error strings.
+                        .map_err(nested_tool_error)?;
                     let output = match reply.content {
                         ToolResultContent::Text(text) => text,
                         ToolResultContent::Blocks(blocks) => {

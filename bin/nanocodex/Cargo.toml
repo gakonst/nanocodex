@@ -26,6 +26,8 @@ tempo = [
 ]
 
 [dependencies]
+nanocodex-oai-tools = { workspace = true, features = ["workspace-runtime"] }
+nanocodex-claude-tools.workspace = true
 aes-gcm = "0.10.3"
 nanocodex-tui-control = { path = "tui-control", version = "0.6.6" }
 nanocodex-computer.workspace = true

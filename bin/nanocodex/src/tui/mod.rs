@@ -4423,6 +4423,8 @@ mod tests {
                 session_id: format!("agent-{id}"),
                 role: "reviewer".to_owned(),
                 task: "review the change".to_owned(),
+                harness: None,
+                model: None,
                 parent,
             }),
         )

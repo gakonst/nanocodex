@@ -354,6 +354,11 @@ impl Nanocodex {
         self.backend.harness_family()
     }
 
+    /// Reads the actual selected native model without copying conversation history.
+    pub async fn native_model_id(&self) -> Result<Option<String>> {
+        self.backend.native_model_id().await
+    }
+
     /// Changes the selected model within this backend's family before first use.
     pub async fn set_harness_model(&self, model: crate::HarnessModel) -> Result<()> {
         if model.family() != self.harness_family() {

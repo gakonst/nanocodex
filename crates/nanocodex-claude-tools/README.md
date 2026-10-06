@@ -5,8 +5,9 @@ OpenAI tool runtime, agent, model transport, OAuth or ambient executor dependenc
 
 Modules: `bash`, `host`, `notebook`, `tasks`, `web`, `workspace_files`.
 Primary adapter/capability types are also exported at the crate root. Filesystem
-and notebook execution are native-only; portable contracts and the session task
-board do not require the OpenAI runtime or a native process implementation.
+and notebook adapters use native IO; their validators, transforms, search engines,
+and schemas also run in WASM through the portable snapshot planner. Neither the
+portable engine nor the session task board needs a model runtime or process host.
 
 Embeddings explicitly implement `ClaudeHost`, `SandboxBashExecutor`, approved
 web capabilities and/or `ClaudeMcpProvider`. Host/MCP outputs are native
@@ -37,3 +38,40 @@ The Claude backend integration suite includes actual loopback Messages/SSE
 continuations for host errors/media and reopened task checkpoints. Its caller
 MCP journey exercises this native contract over loopback JSON-RPC HTTP; it does
 not claim automatic dynamic-catalog builder wiring or production MCP services.
+
+## Async workspace file hosts
+
+`portable_plan::schemas()` returns the canonical Read, Write, Edit, Glob, Grep,
+and NotebookEdit definitions. `portable_plan::plan(Request)` consumes an
+explicitly authorized snapshot and returns `Plan { output, mutations, reads }`.
+The JavaScript WASM exports `claudeFileToolSchemas()` and
+`claudeFileToolPlan(requestJson)` use JSON strings with these same contracts.
+
+A request contains `root` (absolute workspace path), `name`, `input`, and `files`.
+Each file has a workspace-relative `path`, optional UTF-8 `content`, byte `size`,
+and optional `modified` timestamp in milliseconds since the Unix epoch. Missing
+content represents an unreadable, binary, or oversized file. `directories`
+contains directory paths, including empty search roots; file parents are inferred.
+`visits` records the host's traversal count, including skipped entries.
+
+For Grep, first send metadata with `prepare: true`. The engine validates the
+regex and options and returns `reads` after applying Rust globset and ripgrep
+file-type filters. Gather those files and execute a second request without
+`prepare`. Preparation checks the complete filtered scan budget, even when a
+later result limit might permit execution to stop early. Glob requires metadata
+only and sorts newest first, then by path; missing timestamps sort last.
+
+The host must enforce authorization and symlink isolation before reading, and
+bound gathering to 10,000 visited entries, 1 MiB per file, and 128 MiB per search
+(counting `min(size, 1 MiB + 1)` for each selected file, even when skipped).
+The planner repeats these bounds. Apply no writes until planning succeeds.
+Mutations contain `path`, `content`, and `before`; compare Edit/NotebookEdit
+before-images immediately before committing through the host's atomic write
+facility. Hosts requiring protection against concurrent writers must provide
+transactional compare-and-write or serialize those writers.
+
+Portable Read renders text and notebook cells/outputs through the native
+formatters. Images and PDFs require a host media capability and fail explicitly
+in the snapshot planner. Native `execute_output` retains image blocks and PDF
+rendering. Notebook images likewise fail explicitly in the portable text result;
+they are never silently discarded.

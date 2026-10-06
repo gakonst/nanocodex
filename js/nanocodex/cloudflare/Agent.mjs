@@ -1004,6 +1004,7 @@ function cloudflareSubagentSessions(reservation, lifecycle) {
         && typeof hostContextRef === "string" && descriptor.task === original.task;
       if (original.sessionId !== descriptor.sessionId || original.agentId !== descriptor.agentId
         || original.parentAgentId !== descriptor.parentAgentId || original.role !== descriptor.role
+        || original.harness !== descriptor.harness || original.model !== descriptor.model
         || (retained.hostContextRef !== hostContextRef && !attachesInitialProvenance)) {
         throw new Error("Subagent binding identity or host context changed");
       }

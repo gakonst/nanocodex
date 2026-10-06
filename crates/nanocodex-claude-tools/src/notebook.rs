@@ -12,7 +12,7 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
-const MAX_NOTEBOOK: usize = 1024 * 1024;
+use crate::portable_files::MAX_FILE as MAX_NOTEBOOK;
 static TEMP_ID: AtomicU64 = AtomicU64::new(0);
 
 /// NotebookEdit adapter scoped to an explicitly authorized directory.
@@ -43,22 +43,7 @@ impl ClaudeNotebook {
     /// Standalone NotebookEdit metadata; no Codex tool contract is used.
     #[must_use]
     pub fn definitions() -> Vec<Value> {
-        vec![json!({
-            "name": "NotebookEdit",
-            "description": "Replace, insert, or delete a cell in an existing Jupyter notebook. Inserts are after cell_id, or at the beginning when omitted; replacements and deletes require cell_id in this safe subset.",
-            "input_schema": {
-                "type": "object",
-                "properties": {
-                    "notebook_path": {"type": "string", "description": "Path of an existing .ipynb notebook within the authorized workspace."},
-                    "new_source": {"type": "string", "description": "New cell source; required even for delete (ignored on delete)."},
-                    "cell_id": {"type": "string", "description": "Existing cell ID (or zero-based cell index as a string)."},
-                    "cell_type": {"type": "string", "enum": ["code", "markdown"]},
-                    "edit_mode": {"type": "string", "enum": ["replace", "insert", "delete"], "default": "replace"}
-                },
-                "required": ["notebook_path", "new_source"],
-                "additionalProperties": false
-            }
-        })]
+        crate::portable_notebook::definitions()
     }
 
     /// Alias for [`Self::definitions`].
@@ -120,180 +105,14 @@ impl ClaudeNotebook {
     }
 
     fn edit(&self, input: &Value) -> Result<String, String> {
-        let fields = input
-            .as_object()
-            .ok_or("NotebookEdit input must be an object")?;
-        if let Some(key) = fields.keys().find(|key| {
-            !matches!(
-                key.as_str(),
-                "notebook_path" | "new_source" | "cell_id" | "cell_type" | "edit_mode"
-            )
-        }) {
-            return Err(format!("unsupported NotebookEdit option: {key}"));
-        }
         let path = self.notebook_path(Self::field(input, "notebook_path")?)?;
-        let new_source = Self::field(input, "new_source")?;
-        if new_source.len() > 32 * 1024 {
-            return Err("new_source exceeds 32 KiB output-safe limit".into());
-        }
-        let mode = input
-            .get("edit_mode")
-            .map_or(Some("replace"), Value::as_str)
-            .ok_or("invalid edit_mode")?;
-        if !matches!(mode, "replace" | "insert" | "delete") {
-            return Err("edit_mode must be replace, insert, or delete".into());
-        }
-        let cell_type = input
-            .get("cell_type")
-            .map(Value::as_str)
-            .transpose_option("cell_type")?;
-        if let Some(t) = cell_type
-            && !matches!(t, "code" | "markdown")
-        {
-            return Err("cell_type must be code or markdown".into());
-        }
-        let id = input
-            .get("cell_id")
-            .map(Value::as_str)
-            .transpose_option("cell_id")?;
-        if id == Some("") {
-            return Err("cell_id must not be empty".into());
-        }
-
         let before = read_bounded(&path)?;
-        let mut notebook: Value =
-            serde_json::from_slice(&before).map_err(|e| format!("invalid notebook JSON: {e}"))?;
-        if notebook.get("nbformat").and_then(Value::as_u64) != Some(4) {
-            return Err("NotebookEdit supports nbformat 4 notebooks".into());
-        }
-        let language = notebook
-            .pointer("/metadata/language_info/name")
-            .or_else(|| notebook.pointer("/metadata/kernelspec/language"))
-            .or_else(|| notebook.pointer("/metadata/kernelspec/name"))
-            .and_then(Value::as_str)
-            .unwrap_or("unknown")
-            .to_owned();
-        let cells = notebook
-            .get_mut("cells")
-            .and_then(Value::as_array_mut)
-            .ok_or("notebook has no cells array")?;
-        if mode != "insert" && id.is_none() {
-            return Err("cell_id is required for replace and delete".into());
-        }
-        let index = if let Some(id) = id {
-            // An exact ID takes precedence over index notation (including numeric IDs).
-            cells
-                .iter()
-                .position(|cell| cell.get("id").and_then(Value::as_str) == Some(id))
-                .or_else(|| id.parse::<usize>().ok().filter(|i| *i < cells.len()))
-                .ok_or_else(|| format!("cell_id not found: {id}"))?
-        } else {
-            0
-        };
-        let (out_id, out_type, old_source) = match mode {
-            "replace" => {
-                let cell = cells
-                    .get_mut(index)
-                    .ok_or("notebook has no cell to replace")?;
-                let obj = cell
-                    .as_object_mut()
-                    .ok_or("notebook cell is not an object")?;
-                let old_type = obj
-                    .get("cell_type")
-                    .and_then(Value::as_str)
-                    .ok_or("cell has no cell_type")?;
-                let old_type = old_type.to_owned();
-                let kind = cell_type.unwrap_or(&old_type).to_owned();
-                if !matches!(kind.as_str(), "code" | "markdown") {
-                    return Err("cell_type must be code or markdown".into());
-                }
-                let old_source = obj.get("source").map(source_text).unwrap_or_default();
-                let out_id = obj.get("id").and_then(Value::as_str).map(str::to_owned);
-                let as_string = obj.get("source").is_some_and(Value::is_string);
-                obj.insert("source".into(), source_value(new_source, as_string));
-                if kind != old_type {
-                    obj.insert("cell_type".into(), Value::String(kind.clone()));
-                    // nbformat code and markdown cells have different mandatory fields.
-                    if kind == "code" {
-                        obj.remove("attachments");
-                        obj.entry("execution_count").or_insert(Value::Null);
-                        obj.entry("outputs").or_insert_with(|| json!([]));
-                    } else {
-                        obj.remove("execution_count");
-                        obj.remove("outputs");
-                    }
-                }
-                (out_id, kind, Some(old_source))
-            }
-            "insert" => {
-                let kind = cell_type.ok_or("cell_type required for insert")?;
-                let mut cell = json!({
-                    "cell_type": kind,
-                    "metadata": {},
-                    "source": source_value(new_source, false)
-                });
-                // nbformat 4.5+ requires a unique cell ID. Keep old notebook and
-                // cell metadata untouched while assigning one to the new cell.
-                let new_cell_id = loop {
-                    let candidate = format!(
-                        "cell-{:x}-{:x}",
-                        std::process::id(),
-                        TEMP_ID.fetch_add(1, Ordering::Relaxed)
-                    );
-                    if !cells
-                        .iter()
-                        .any(|old| old.get("id").and_then(Value::as_str) == Some(&candidate))
-                    {
-                        break candidate;
-                    }
-                };
-                cell["id"] = Value::String(new_cell_id.clone());
-                if kind == "code" {
-                    cell["execution_count"] = Value::Null;
-                    cell["outputs"] = json!([]);
-                }
-                let at = if id.is_some() { index + 1 } else { 0 };
-                cells.insert(at, cell);
-                (Some(new_cell_id), kind.to_owned(), None)
-            }
-            "delete" => {
-                if index >= cells.len() {
-                    return Err("notebook has no cell to delete".into());
-                }
-                let removed = cells.remove(index);
-                let out_id = removed.get("id").and_then(Value::as_str).map(str::to_owned);
-                let kind = removed
-                    .get("cell_type")
-                    .and_then(Value::as_str)
-                    .ok_or("deleted cell has no cell_type")?
-                    .to_owned();
-                let old_source = removed.get("source").map(source_text).unwrap_or_default();
-                (out_id, kind, Some(old_source))
-            }
-            _ => unreachable!(),
-        };
-        let mut output =
-            serde_json::to_vec_pretty(&notebook).map_err(|e| format!("serialize notebook: {e}"))?;
-        output.push(b'\n');
-        if output.len() > MAX_NOTEBOOK {
-            return Err("edited notebook exceeds 1 MiB limit".into());
-        }
-        // Best-effort stale-read check. Filesystem isolation is still required to
-        // defend against concurrent hostile path replacement.
+        let (output, mut result) = crate::portable_notebook::edit(input, &before)?;
+        result["notebook_path"] = json!(path.display().to_string());
         if read_bounded(&path)? != before
             || fs::symlink_metadata(&path).is_ok_and(|m| m.file_type().is_symlink())
         {
             return Err("notebook changed during edit".into());
-        }
-        let mut result = json!({"new_source":new_source,"cell_type":out_type,"language":language,"edit_mode":mode,"notebook_path":path.display().to_string()});
-        if let Some(id) = out_id {
-            result["cell_id"] = json!(id);
-        }
-        if let Some(old) = old_source {
-            result["old_source"] = json!(old);
-        }
-        if result.to_string().len() > 64 * 1024 {
-            return Err("NotebookEdit output exceeds 64 KiB".into());
         }
         // Preserve the JSON result contract while supplying the same bounded
         // path-scoped guidance as the other native workspace operations.
@@ -309,38 +128,6 @@ impl ClaudeNotebook {
         }
         atomic_write(&path, &output)?;
         Ok(result)
-    }
-}
-
-trait OptionalString<'a> {
-    fn transpose_option(self, key: &str) -> Result<Option<&'a str>, String>;
-}
-impl<'a> OptionalString<'a> for Option<Option<&'a str>> {
-    fn transpose_option(self, key: &str) -> Result<Option<&'a str>, String> {
-        self.map_or(Ok(None), |value| {
-            value.map(Some).ok_or_else(|| format!("invalid {key}"))
-        })
-    }
-}
-
-fn source_text(value: &Value) -> String {
-    match value {
-        Value::String(s) => s.clone(),
-        Value::Array(items) => items.iter().filter_map(Value::as_str).collect(),
-        _ => String::new(),
-    }
-}
-
-fn source_value(source: &str, as_string: bool) -> Value {
-    if as_string {
-        Value::String(source.to_owned())
-    } else {
-        Value::Array(
-            source
-                .split_inclusive('\n')
-                .map(|s| Value::String(s.into()))
-                .collect(),
-        )
     }
 }
 

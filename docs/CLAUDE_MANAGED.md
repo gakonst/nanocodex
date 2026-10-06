@@ -60,9 +60,37 @@ streams are not silently replayed.
 
 ## Tools, durability and limits
 
-Managed Claude sessions expose native `Bash`, `Read`, `Write`, `Edit` and supported
-account/Hand capabilities. Discovery uses `ToolSearch`/`ToolExecute` and
-`MCPToolSearch`/`MCPExecute`, not Responses tool-search declarations.
+Managed Claude roots and children use Code Mode with the following native
+capabilities. An explicit configuration allowlist can narrow this catalog.
+
+| Capability | Managed implementation and boundary |
+| --- | --- |
+| `Read`, `Write`, `Edit`, `Glob`, `Grep`, `NotebookEdit` | Rust supplies native schemas and the shared file/notebook engine. Relative paths resolve under durable `/brain`; absolute Hand mount paths select that captured Hand workspace. Grep selects candidates in Rust before bounded UTF-8 reads. Brain images return native blocks; PDF and notebook embedded media require a native media-capable Hand. |
+| `TaskCreate`, `TaskGet`, `TaskList`, `TaskUpdate`, `TodoWrite` | Real Claude task-board transitions, one durable board per session, including isolated child boards. Checkpoint and call receipt commit atomically; IDs survive reopen and repeated call IDs cannot change their input. These are task records, not process or agent handles. |
+| `Bash` | Pinned native input schema. Default execution uses bounded Brain Just Bash. A leading `cd /HAND && command` selects the captured Hand. Managed execution rejects sandbox overrides, Brain background execution, and unsupported timeout values. |
+| `TaskOutput`, `TaskStop` | Native Hand Bash jobs retain exact session, authority, mount and runtime-route pins. Poll and stop never retarget a job or resubmit missing work after Hand restart. Hand selection survives Worker reopen; native cwd/jobs survive only while that Hand runtime remains alive. |
+| `BashOutput` | Legacy configuration only: polls or writes ordinary stdin to retained namespace process sessions. |
+| Shared subagent tools | `spawn_agent`, `list_agents`, `send_agent_message`, `wait_agent`, `interrupt_agent`, `close_agent`, and child `submit_result` retain the canonical shared runtime. |
+| Account, connector and MCP capabilities | Permission-checked account tools plus `ToolSearch`/`ToolExecute` and `MCPToolSearch`/`MCPExecute`. Availability depends on configuration, account authority and live attachments. |
+| Legacy `Task`, `TaskOutput`, `TaskStop` | Installed only by explicit legacy Task configuration. They operate on delegated Claude agents; they do not manage Bash jobs. |
+
+Private Hand `workspace_tool` and `apply_patch` transports are excluded from
+model discovery. Hand file calls preserve native blocks, error flags, structured
+results and metadata. They rebase input and reported workspace paths through the
+same captured mount and reject unavailable or unauthorized routes. No Hand is
+attached implicitly.
+
+Codex roots and children retain their own catalog, including canonical Rust
+`apply_patch`. A patch can target Brain or one authorized Hand; all source and
+move-destination paths must share that mount. Neither family acquires the other
+family's names through mixed delegation.
+
+Native CLI interaction, permission modes, hooks, skills/context loaders,
+worktrees, web search/fetch, scheduling,
+Monitor and Workflow are not implicitly installed in managed sessions. The
+[native inventory](CLAUDE_TOOL_MATRIX.md) documents their host flags and scope.
+Account cron and connector tools retain their own contracts; they are not renamed
+as conditional Claude product capabilities.
 
 Default managed Claude sessions expose the canonical `spawn_agent`, `list_agents`,
 `send_agent_message`, `wait_agent`, `interrupt_agent` and `close_agent` tools.
@@ -76,7 +104,7 @@ catalog before inference. Explicit `multi_agent: { enabled: false }` disables
 delegation, and an explicit tool allowlist does not acquire additional tools. Existing configurations
 that explicitly enable `Task` retain its blocking execution, durable receipts and
 uncertainty after interruption. The session's native prompt describes its actual
-tools rather than instructing Claude to call Codex Code Mode.
+tools and their Code Mode invocation contract.
 
 Native Messages history, opaque content and completed receipts survive normal
 Durable Object reopen in the shared durability store. Events retain streaming
@@ -89,9 +117,7 @@ remain unsupported; documents remain unsupported on GPT sessions.
 GPT Realtime can provide the voice frontend for a Claude thread. Completed voice
 transcripts and start/stop markers become bounded, once-consumed session context,
 not Messages audio or Responses history. Delegations start an idle Claude turn or
-steer an accepted active turn. Identified steering (`message_id`) and withdrawal
-remain unsupported by the native Claude backend and return a typed HTTP 400;
-they are never silently downgraded to non-idempotent steering. Snapshot forks and portable import/export remain
+steer an accepted active turn. Identified steering (`message_id`) retains admission receipts, accepts identical replay and rejects conflicting input. Pending identified steering can be withdrawn before consumption. Steering continues the active turn at a model boundary without replaying completed tool effects. Snapshot forks and portable import/export remain
 explicitly unsupported, rather than silently converting or discarding state.
 See the [Claude runtime](CLAUDE_RUNTIME.md),
 [JavaScript SDK](CLAUDE_JAVASCRIPT.md) and

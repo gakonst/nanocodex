@@ -177,6 +177,10 @@ impl Drop for BatchStartup {
 
 #[derive(Clone, Serialize)]
 pub struct AgentSummary {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub harness: Option<nanocodex_agent::HarnessFamily>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
     pub agent_id: AgentId,
     pub role: String,
     pub task: String,
@@ -188,6 +192,10 @@ pub struct AgentSummary {
 
 #[derive(Serialize)]
 pub struct AgentDirectoryEntry {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub harness: Option<nanocodex_agent::HarnessFamily>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
     pub agent_id: AgentId,
     pub role: String,
     pub task: String,
@@ -517,6 +525,8 @@ impl RegistryState {
                     && !matches!(session.status, AgentStatus::Closing | AgentStatus::Closed)
                     && scope.topology.authorize(session_id, id).is_ok();
                 Some(AgentDirectoryEntry {
+                    harness: session.descriptor.harness,
+                    model: session.descriptor.model.clone(),
                     agent_id: id,
                     role: bounded_summary(&session.descriptor.role),
                     task: bounded_summary(&session.descriptor.task),
@@ -2013,6 +2023,8 @@ impl ChildSession {
             self.last_output.clone()
         };
         AgentSummary {
+            harness: self.descriptor.harness,
+            model: self.descriptor.model.clone(),
             agent_id: self.descriptor.id,
             role: self.descriptor.role.clone(),
             task: self.descriptor.task.clone(),
@@ -2487,6 +2499,8 @@ mod tests {
             .insert(
                 reservation.root_session_id,
                 AgentDescriptor {
+                    harness: None,
+                    model: None,
                     id: reservation.id,
                     session_id: agent.session_id().to_string(),
                     role: "child".to_owned(),
@@ -2553,6 +2567,8 @@ mod tests {
     ) -> String {
         let session_id = events.request_id().to_owned();
         let descriptor = AgentDescriptor {
+            harness: None,
+            model: None,
             id: reservation.id,
             session_id: session_id.clone(),
             role: format!("agent-{}", reservation.id),
@@ -2633,6 +2649,8 @@ mod tests {
 
     fn test_session(id: AgentId, session_id: &str, parent: Option<AgentId>) -> ChildSession {
         let descriptor = AgentDescriptor {
+            harness: None,
+            model: None,
             id,
             session_id: session_id.to_owned(),
             role: format!("agent-{id}"),

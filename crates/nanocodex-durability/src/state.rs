@@ -412,13 +412,20 @@ impl OperationState {
 
     fn retire_steps(&mut self) {
         for (id, step) in &self.steps {
-            if step.kind == "model_call"
+            if matches!(step.kind.as_str(), "model_call" | "model")
                 && matches!(step.status, StepStatus::Completed(_))
                 && let Some(index) = id
                     .strip_prefix("model-")
                     .and_then(|id| id.parse::<u32>().ok())
             {
-                self.retired_model_calls = self.retired_model_calls.max(index);
+                // Claude keeps its existing zero-based native effect IDs;
+                // steering boundaries are one-based for both harnesses.
+                let boundary = if step.kind == "model" {
+                    index.saturating_add(1)
+                } else {
+                    index
+                };
+                self.retired_model_calls = self.retired_model_calls.max(boundary);
             }
         }
         self.steps.clear();
@@ -1229,7 +1236,13 @@ fn ensure_completed_steers_consumed(operation_id: &str, operation: &OperationSta
         let consumed = model_call_index <= operation.retired_model_calls
             || operation.steps.get(&step_id).is_some_and(|step| {
                 step.kind == "model_call" && matches!(step.status, StepStatus::Completed(_))
-            });
+            })
+            || operation
+                .steps
+                .get(&format!("model-{}", model_call_index - 1))
+                .is_some_and(|step| {
+                    step.kind == "model" && matches!(step.status, StepStatus::Completed(_))
+                });
         if !consumed {
             return Err(Error::InvalidState(format!(
                 "operation `{operation_id}` completed before steer {steer_index} was consumed by `{step_id}`"

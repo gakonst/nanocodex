@@ -60,7 +60,9 @@ use nanocodex_voice_protocol::{
 };
 
 mod claude;
+mod claude_files;
 mod claude_subscription;
+mod claude_tasks;
 mod transport;
 
 pub use claude::WasmNanoclaude;
@@ -1146,6 +1148,21 @@ async fn apply_browser_patch_plan(
 ///
 /// The browser host uses this internal binding for nested Code Mode calls so
 /// they share the direct `apply_patch` tool's verification and mutation path.
+/// Authorize all native patch sources/destinations before selecting a Hand.
+#[wasm_bindgen(js_name = nativePatchPaths)]
+pub fn native_patch_paths(patch: &str) -> Result<String, JsValue> {
+    let paths = nanocodex::tools::apply_patch::paths(patch).map_err(js_error)?;
+    serde_json::to_string(&paths).map_err(|error| js_error(error.to_string()))
+}
+
+/// Apply an explicit host-verified namespace mapping to native patch hunks.
+#[wasm_bindgen(js_name = rebaseNativePatch)]
+pub fn rebase_native_patch(patch: &str, mappings_json: &str) -> Result<String, JsValue> {
+    let mappings: HashMap<PathBuf, PathBuf> =
+        serde_json::from_str(mappings_json).map_err(|error| js_error(error.to_string()))?;
+    nanocodex::tools::apply_patch::rebase(patch, &mappings).map_err(js_error)
+}
+
 #[wasm_bindgen(js_name = applyBrowserPatch)]
 pub async fn apply_browser_patch(patch: &str, session_id: &str) -> Result<String, JsValue> {
     apply_browser_patch_plan(patch, session_id)
@@ -3458,13 +3475,19 @@ fn bind_subagent_session(
     descriptor: &AgentDescriptor,
     host_context_ref: Option<&str>,
 ) -> Result<(), JsValue> {
-    let context = serde_json::json!({
+    let mut context = serde_json::json!({
         "agentId": descriptor.id.to_string(),
         "parentAgentId": descriptor.parent.map(|id| id.to_string()),
         "sessionId": &descriptor.session_id,
         "role": &descriptor.role,
         "task": &descriptor.task,
     });
+    if let Some(harness) = descriptor.harness {
+        context["harness"] = serde_json::json!(harness);
+    }
+    if let Some(model) = &descriptor.model {
+        context["model"] = serde_json::json!(model);
+    }
     host_bind_subagent_session(
         host_definition_id,
         root_session_id,

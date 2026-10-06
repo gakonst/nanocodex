@@ -35,9 +35,11 @@ mod linux_hand_install;
 #[cfg(any(target_os = "linux", target_os = "macos", test))]
 mod linux_hand_update;
 mod managed2;
+mod native_bash;
 mod native_hand;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 mod native_secure_input;
+mod native_workspace;
 mod observation_providers;
 mod reload;
 mod screen_audio;
@@ -1277,6 +1279,8 @@ async fn build_workspace_agent_with_settings(
     let tools = Tools::builder()
         .without_defaults()
         .add(WorkspaceTools::new(&workspace))
+        .add(native_workspace::NativeWorkspace::new(&workspace))
+        .add(native_bash::NativeBash::new(&workspace))
         .add(default_mercator_mcp()?)
         .build()
         .map_err(|error| ManagedError::Configuration(error.to_string()))?;

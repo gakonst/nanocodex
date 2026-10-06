@@ -97,6 +97,91 @@ pub fn required_files(patch: &str) -> Result<Vec<PathBuf>, String> {
     Ok(required_files_from_hunks(&hunks))
 }
 
+/// Return every canonical source and destination named by a validated patch.
+/// Hosts use these paths to authorize one execution namespace before any IO.
+pub fn paths(patch: &str) -> Result<Vec<PathBuf>, String> {
+    let mut paths = Vec::new();
+    let mut seen = HashSet::new();
+    for hunk in parse(patch)? {
+        let (path, destination) = match hunk {
+            Hunk::AddFile { path, .. } | Hunk::DeleteFile { path } => (path, None),
+            Hunk::UpdateFile {
+                path, move_path, ..
+            } => (path, move_path),
+        };
+        for path in std::iter::once(path).chain(destination) {
+            if seen.insert(path.clone()) {
+                paths.push(path);
+            }
+        }
+    }
+    Ok(paths)
+}
+
+/// Re-encode parsed native hunks with host-authorized path substitutions.
+/// This transforms only routing metadata; canonical hunk semantics are retained.
+/// Every source and move destination requires an explicit substitution.
+pub fn rebase(patch: &str, mappings: &HashMap<PathBuf, PathBuf>) -> Result<String, String> {
+    let mapped = |path: &Path| -> Result<String, String> {
+        let target = mappings
+            .get(path)
+            .ok_or_else(|| format!("patch path has no authorized route: {}", path.display()))?;
+        let target = target.to_str().ok_or("patch route is not UTF-8")?;
+        if target.is_empty() || target.chars().any(|c| matches!(c, '\n' | '\r' | '\0')) {
+            return Err("invalid patch route".into());
+        }
+        Ok(target.to_owned())
+    };
+    let mut output = String::from("*** Begin Patch\n");
+    for hunk in parse(patch)? {
+        match hunk {
+            Hunk::AddFile { path, contents } => {
+                output.push_str(&format!("*** Add File: {}\n", mapped(&path)?));
+                for line in contents.split_terminator('\n') {
+                    output.push('+');
+                    output.push_str(line);
+                    output.push('\n');
+                }
+            }
+            Hunk::DeleteFile { path } => {
+                output.push_str(&format!("*** Delete File: {}\n", mapped(&path)?))
+            }
+            Hunk::UpdateFile {
+                path,
+                move_path,
+                chunks,
+            } => {
+                output.push_str(&format!("*** Update File: {}\n", mapped(&path)?));
+                if let Some(destination) = move_path {
+                    output.push_str(&format!("*** Move to: {}\n", mapped(&destination)?));
+                }
+                for chunk in chunks {
+                    match chunk.change_context {
+                        Some(context) => output.push_str(&format!("@@ {context}\n")),
+                        None => output.push_str("@@\n"),
+                    }
+                    for line in chunk.old_lines {
+                        output.push('-');
+                        output.push_str(&line);
+                        output.push('\n');
+                    }
+                    for line in chunk.new_lines {
+                        output.push('+');
+                        output.push_str(&line);
+                        output.push('\n');
+                    }
+                    if chunk.is_end_of_file {
+                        output.push_str("*** End of File\n");
+                    }
+                }
+            }
+        }
+    }
+    output.push_str("*** End Patch\n");
+    parse(&output)?;
+    Ok(output)
+}
+
 fn required_files_from_hunks(hunks: &[Hunk]) -> Vec<PathBuf> {
     let mut produced = HashSet::new();
     let mut required = Vec::new();

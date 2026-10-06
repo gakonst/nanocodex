@@ -628,6 +628,7 @@ async fn run_workspace_lifecycle(pinned: bool, automatic_computer: bool) {
         "private-host\n",
     );
     assert!(!decoy.path().join("hosted-proof.txt").exists());
+    assert!(!decoy.path().join("native.txt").exists());
     assert!(!config_home.path().join("host-id").exists());
     assert!(!config_home.path().join("attachment-id").exists());
     let catalogs = state.catalogs.lock().unwrap();
@@ -1714,6 +1715,7 @@ async fn serve_tool_host(mut socket: WebSocket, state: TestState, disconnect_aft
             "exec_command",
             "view_image",
             "write_stdin",
+            "workspace_tool",
             "mcp__mercator__create_job",
             "mcp__mercator__create_job_review",
             "mcp__mercator__describe_service",
@@ -1731,6 +1733,7 @@ async fn serve_tool_host(mut socket: WebSocket, state: TestState, disconnect_aft
         .into_iter()
         .collect(),
     );
+    let workspace = std::path::PathBuf::from(catalog["machines"][0]["workspace"].as_str().unwrap());
     state.catalogs.lock().unwrap().push(catalog);
     if state.delay_ready_until_submission {
         state.completed.notified().await;
@@ -1810,8 +1813,259 @@ async fn serve_tool_host(mut socket: WebSocket, state: TestState, disconnect_aft
         ))
         .await
         .unwrap();
+    native_workspace_journey(&mut socket, &workspace).await;
     state.tool_completed.notify_one();
     serve_until_drain(&mut socket).await;
+}
+
+// Exercise only the shipped executor through its real HostedTools transport.
+async fn hosted_call(
+    socket: &mut WebSocket,
+    id: &str,
+    name: &str,
+    input: serde_json::Value,
+) -> serde_json::Value {
+    let request = serde_json::json!({
+        "type":"call", "session_id":AGENT_ID, "call_id":id, "model":"gpt-6-astra",
+        "name":name, "input":input, "output_token_budget":8192,
+        "output_byte_budget":131072, "deadline_at":9_000_000_000_000_u64
+    });
+    eprintln!("HAND REQUEST {request}");
+    socket
+        .send(Message::Text(request.to_string().into()))
+        .await
+        .unwrap();
+    let result = tokio::time::timeout(PROCESS_TIMEOUT, async {
+        loop {
+            let Some(Ok(Message::Text(frame))) = socket.recv().await else {
+                panic!("executor disconnected during {id}")
+            };
+            let frame: serde_json::Value = serde_json::from_str(&frame).unwrap();
+            if frame["type"] == "diagnostic" {
+                continue;
+            }
+            if frame["type"] == "ping" {
+                socket
+                    .send(Message::Text(
+                        serde_json::json!({"type":"pong","nonce":frame["nonce"]})
+                            .to_string()
+                            .into(),
+                    ))
+                    .await
+                    .unwrap();
+                continue;
+            }
+            assert_eq!(frame["type"], "result", "{frame}");
+            assert_eq!(frame["call_id"], id, "{frame}");
+            break frame;
+        }
+    })
+    .await
+    .expect("HostedTools call timed out");
+    eprintln!("HAND RESULT {result}");
+    socket
+        .send(Message::Text(
+            serde_json::json!({"type":"ack","call_id":id})
+                .to_string()
+                .into(),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(result["outcome"]["status"], "completed", "{result}");
+    result["outcome"]["output"].clone()
+}
+
+async fn native_call(
+    socket: &mut WebSocket,
+    id: &str,
+    tool: &str,
+    input: serde_json::Value,
+    success: bool,
+) -> serde_json::Value {
+    let output = hosted_call(
+        socket,
+        id,
+        "workspace_tool",
+        serde_json::json!({"tool":tool,"input":input}),
+    )
+    .await;
+    assert_eq!(output["success"], success, "{output}");
+    let native = &output["structured_result"];
+    assert_eq!(native["is_error"], !success, "{output}");
+    assert!(native.get("content").is_some(), "{output}");
+    if native["content"].is_string() {
+        assert_eq!(
+            native["structured_result"], native["content"],
+            "native text receipt lost during transport: {output}"
+        );
+    }
+    native.clone()
+}
+
+async fn native_workspace_journey(socket: &mut WebSocket, root: &std::path::Path) {
+    use serde_json::json;
+    native_call(
+        socket,
+        "native-write",
+        "Write",
+        json!({"file_path":"native.txt","content":"alpha\nrepeat\nrepeat\n"}),
+        true,
+    )
+    .await;
+    assert_eq!(
+        std::fs::read_to_string(root.join("native.txt")).unwrap(),
+        "alpha\nrepeat\nrepeat\n"
+    );
+    let read = native_call(
+        socket,
+        "native-read",
+        "Read",
+        json!({"file_path":"native.txt"}),
+        true,
+    )
+    .await;
+    assert!(read["content"].as_str().unwrap().contains("alpha"));
+    native_call(
+        socket,
+        "native-edit",
+        "Edit",
+        json!({"file_path":"native.txt","old_string":"alpha","new_string":"beta"}),
+        true,
+    )
+    .await;
+    let before = std::fs::read(root.join("native.txt")).unwrap();
+    native_call(
+        socket,
+        "native-ambiguous",
+        "Edit",
+        json!({"file_path":"native.txt","old_string":"repeat","new_string":"oops"}),
+        false,
+    )
+    .await;
+    assert_eq!(std::fs::read(root.join("native.txt")).unwrap(), before);
+    let grep = native_call(
+        socket,
+        "native-grep",
+        "Grep",
+        json!({"pattern":"beta","path":".","output_mode":"content"}),
+        true,
+    )
+    .await;
+    assert!(grep["content"].as_str().unwrap().contains("beta"));
+    let glob = native_call(
+        socket,
+        "native-glob",
+        "Glob",
+        json!({"pattern":"native*.txt"}),
+        true,
+    )
+    .await;
+    assert!(glob["content"].as_str().unwrap().contains("native.txt"));
+    let outside = tempfile::tempdir().unwrap();
+    let sentinel = outside.path().join("sentinel.txt");
+    std::fs::write(&sentinel, "outside unchanged").unwrap();
+    let traversal = format!(
+        "../{}/sentinel.txt",
+        outside.path().file_name().unwrap().to_str().unwrap()
+    );
+    for (id, path) in [
+        ("native-traversal", traversal),
+        ("native-cross-root", sentinel.to_string_lossy().into_owned()),
+    ] {
+        native_call(
+            socket,
+            id,
+            "Write",
+            json!({"file_path":path,"content":"corrupted"}),
+            false,
+        )
+        .await;
+        assert_eq!(
+            std::fs::read_to_string(&sentinel).unwrap(),
+            "outside unchanged"
+        );
+    }
+    // An untrusted root override cannot move this published workspace.
+    let override_result = hosted_call(socket, "native-root-override", "workspace_tool", json!({"tool":"Write","input":{"file_path":"sentinel.txt","content":"corrupted"},"root":outside.path()})).await;
+    assert_eq!(override_result["success"], false, "{override_result}");
+    assert!(!root.join("sentinel.txt").exists());
+    assert_eq!(
+        std::fs::read_to_string(&sentinel).unwrap(),
+        "outside unchanged"
+    );
+    image::RgbImage::from_pixel(2, 2, image::Rgb([12, 34, 56]))
+        .save(root.join("native.png"))
+        .unwrap();
+    let media = native_call(
+        socket,
+        "native-image",
+        "Read",
+        json!({"file_path":"native.png"}),
+        true,
+    )
+    .await;
+    let blocks = media["content"]
+        .as_array()
+        .expect("native ordered media blocks");
+    assert_eq!(blocks.len(), 1);
+    assert_eq!(blocks[0]["type"], "image");
+    assert_eq!(blocks[0]["source"]["type"], "base64");
+    assert_eq!(blocks[0]["source"]["media_type"], "image/png");
+    use base64::Engine as _;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(blocks[0]["source"]["data"].as_str().unwrap())
+        .unwrap();
+    let decoded = image::load_from_memory(&bytes).unwrap().to_rgb8();
+    assert_eq!(decoded.dimensions(), (2, 2));
+    assert_eq!(decoded.get_pixel(0, 0), &image::Rgb([12, 34, 56]));
+    assert_eq!(media["metadata"]["kind"], "image");
+    assert!(media["structured_result"].is_null());
+    let notebook = json!({"nbformat":4,"nbformat_minor":5,"metadata":{"fixture":"preserved"},"cells":[{"id":"cell-a","cell_type":"code","metadata":{},"source":["print(1)\n"],"execution_count":null,"outputs":[]}]});
+    native_call(
+        socket,
+        "notebook-write",
+        "Write",
+        json!({"file_path":"native.ipynb","content":notebook.to_string()}),
+        true,
+    )
+    .await;
+    native_call(
+        socket,
+        "notebook-edit",
+        "NotebookEdit",
+        json!({"notebook_path":"native.ipynb","cell_id":"cell-a","new_source":"print(2)\n"}),
+        true,
+    )
+    .await;
+    let saved: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(root.join("native.ipynb")).unwrap()).unwrap();
+    assert_eq!(saved["metadata"], notebook["metadata"]);
+    assert!(saved["cells"][0]["source"].to_string().contains("print(2)"));
+    let patch = hosted_call(
+        socket,
+        "native-patch",
+        "apply_patch",
+        json!("*** Begin Patch\n*** Update File: native.txt\n@@\n-beta\n+patched\n*** End Patch"),
+    )
+    .await;
+    assert_eq!(patch["success"], true, "{patch}");
+    let read = native_call(
+        socket,
+        "native-read-after-patch",
+        "Read",
+        json!({"file_path":root.join("native.txt")}),
+        true,
+    )
+    .await;
+    assert!(read["content"].as_str().unwrap().contains("patched"));
+    assert_eq!(
+        std::fs::read_to_string(root.join("native.txt")).unwrap(),
+        "patched\nrepeat\nrepeat\n"
+    );
+    eprintln!(
+        "HAND JOURNEY PASS: published root={}; native operations, rejection without mutation, separate apply_patch, and recovery verified",
+        root.display()
+    );
 }
 
 async fn serve_until_drain(socket: &mut WebSocket) {
