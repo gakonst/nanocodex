@@ -159,16 +159,161 @@ provider and selected-identity enforcement. They never forward caller-supplied
 internal authorization headers or return the underlying Connect token.
 
 `mcpServer.mts` implements stateless JSON Streamable HTTP for MCP 2025-03-26,
-2025-06-18, and 2025-11-25. It advertises only implemented tools, accepts
-notifications without executing calls, and returns 405 for GET/DELETE. The
-newer 2026 transport and client-ID metadata documents are not advertised.
+2025-06-18, 2025-11-25, and the MCP2 draft revision 2026-07-28. Legacy clients
+continue to use `initialize`. MCP2 clients use `server/discover` and send these
+fields on every request:
 
-Run `node --experimental-strip-types --test test/mcpServerWorker.test.mjs` from
-this package under Node 24. The journey exercises the shipped Worker on an
-actual workerd HTTP listener, real Durable Object storage, and the official
-MCP JavaScript client. Only the external account/provider services use synthetic
-fixtures. The test emits a bounded HTTP transcript and authorization/dispatch
-assertions; keep per-run evidence in ignored `output/`.
+```http
+POST /mcp
+Authorization: Bearer <OAuth access token>
+Content-Type: application/json
+Accept: application/json, text/event-stream
+MCP-Protocol-Version: 2026-07-28
+Mcp-Method: events/list
+```
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "events/list",
+  "params": {
+    "_meta": {
+      "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+      "io.modelcontextprotocol/clientCapabilities": {}
+    }
+  }
+}
+```
+
+`tools/call` additionally requires `Mcp-Name` matching the tool name. MCP2
+responses include `resultType: "complete"` and server metadata in
+`_meta["io.modelcontextprotocol/serverInfo"]`. Header/body mismatches return
+HTTP 400 with JSON-RPC `-32020`; unsupported revisions return HTTP 400 with
+`-32022`; unknown MCP2 methods return HTTP 404 with `-32601`. Requests are
+stateless; notifications return 202 and GET/DELETE return 405.
+
+### MCP Events
+
+The event catalog and advertised capability reflect the current OAuth grant.
+`agent:run` with the approved model capability exposes `agent.turn.completed`;
+other grants receive an empty `events/list` catalog. Events observe only turns
+started through this MCP grant, on its approved agent. Completion includes
+`completed`, `failed`, and `cancelled` terminal states. A subscription starts
+future observation; it does not replay historical completions. `cursor` is
+currently null and `truncated` is false.
+
+Use `events/subscribe` with the metadata above and these additional parameters:
+
+```json
+{
+  "name": "agent.turn.completed",
+  "arguments": { "turn_id": "<optional exact turn ID>" },
+  "delivery": {
+    "mode": "webhook",
+    "url": "https://callbacks.example.com/nanocodex",
+    "secret": "whsec_<base64 encoding of 24–64 random bytes>"
+  },
+  "ttlMs": 3600000
+}
+```
+
+Omit `arguments.turn_id` to observe all MCP-started turns for this grant. The
+response contains `{ id, refreshBefore, cursor: null, truncated: false }`.
+Repeat the same event name, normalized URL and arguments to refresh the same
+subscription. OAuth access-token rotation retains its identity. Refresh before
+`refreshBefore`; the default lifetime is one hour, requested lifetimes are
+bounded to one second through 24 hours, and grant expiry remains an upper bound.
+A changed secret rotates the signing key with a five-minute overlap in which
+callbacks carry both signatures.
+
+Before accepting a new callback destination, the server POSTs a signed
+`{ "type": "verification", "challenge": "..." }` body. The receiver must return
+2xx with `{ "challenge": "<same value>" }` within ten seconds. Verification
+responses are limited to 4 KiB. Successful checks are cached briefly for the
+same grant and URL; failures return `CallbackEndpointError` (`-32015`) and do
+not create the subscription. Receivers should verify signatures on verification
+requests as well as events.
+
+Callbacks use Standard Webhooks headers `webhook-id`, `webhook-timestamp` and
+`webhook-signature`, plus `X-MCP-Subscription-Id`. Decode the secret after
+`whsec_` as base64. Compute HMAC-SHA256 over the exact bytes
+`<webhook-id>.<webhook-timestamp>.<raw request body>` and compare a base64
+signature from the space-separated `v1,<signature>` values in constant time.
+Validate timestamp freshness and deduplicate by `webhook-id`. Neither OAuth
+access/refresh tokens nor internal Connect credentials are sent to callbacks.
+
+A delivery has this shape:
+
+```json
+{
+  "eventId": "evt_<stable event ID>",
+  "name": "agent.turn.completed",
+  "timestamp": "2026-10-06T12:00:00.000Z",
+  "data": {
+    "agent_id": "<approved agent ID>",
+    "turn_id": "<MCP operation ID>",
+    "status": "completed",
+    "completed_at": "2026-10-06T12:00:00.000Z"
+  },
+  "cursor": null
+}
+```
+
+Read full output through `nanocodex_agent_status`. The callback is a completion
+notification; it grants no additional account authority.
+
+`events/unsubscribe` takes the same `name`, `arguments` and `delivery.url`
+(`delivery.mode` may be `webhook`), with no secret. It is idempotent and returns
+an empty result. Missing and already expired subscriptions can be removed safely.
+Subscription IDs and signing secrets never grant permission to another principal.
+
+`McpEvents` is a separate SQLite Durable Object bound as `MCP_EVENTS`. Real
+alarms poll retained turn status and process a durable outbox after the caller
+disconnects. A successful callback acknowledges an event. Transient errors use
+bounded retries with stable event IDs and payloads; HTTP 410 and 413 discard
+that event while preserving the subscription for subsequent events. Retries can duplicate a delivery, so receivers must deduplicate. Exhausted
+retry budgets can lose events; this event type does not support replay. Live
+OAuth-family and Connect-grant checks fence both polling and delivery after
+revocation. Expired subscriptions stop delivery automatically.
+
+The callback transport accepts public HTTPS DNS names only, without credentials,
+fragments, IP literals, or private host suffixes. It validates DNS answers,
+pins the TCP destination to a public address, retains TLS hostname validation,
+and never follows redirects. Cloudflare's TCP platform restrictions also apply;
+a destination served exclusively through Cloudflare's proxy cannot be reached
+through this socket transport. There is no fallback that bypasses these checks.
+Cloudflare also has an open [production SNI issue](https://github.com/cloudflare/workerd/issues/6903)
+with `startTls({ expectedServerHostname })`: local workerd success does not prove
+production-edge compatibility. Verify the intended receiver on the deployed
+edge before enabling the integration; SNI-dependent receivers may fail closed.
+
+Run from the repository root under Node 24 with workspace dependencies installed:
+
+```sh
+node --test js/connect-api/test/mcpServerWorker.test.mjs
+node --test js/connect-api/test/mcpEventsWorker.test.mjs
+```
+
+The event journey requires Linux with `unshare`, `mount`, `umount`, `ip` and
+`openssl` (the `util-linux`, `iproute2` and `openssl` packages on Ubuntu), and
+permission to create unprivileged user, network and mount namespaces. Its runner
+creates these namespaces automatically and fails explicitly if unavailable.
+The fixture binds synthetic public IPs and a private DNS hosts mapping only
+inside those namespaces; the host network and DNS configuration stay unchanged.
+The dedicated MCP CI workflow prepares these permissions on its disposable
+Ubuntu runner and publishes the journey log.
+
+Both journeys run the shipped Worker on an actual workerd listener and real
+SQLite Durable Object storage. The legacy journey also uses the official MCP
+JavaScript client. The event journey exercises public OAuth/MCP requests,
+signed verification and callbacks, actual turn polling alarms, token/key
+rotation, retry identity, exact-turn filtering across restart, recovery from
+invalid source timestamps, private DNS and wrong TLS hostname rejection,
+unsubscribe, expiry and revocation. Only external
+account, DNS and callback services are synthetic fixtures. Diagnostics provide
+HTTP, managed polling and callback evidence; capture generated evidence in
+ignored `output/` or CI artifacts.
 
 ## MACH wallet funding
 

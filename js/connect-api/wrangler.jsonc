@@ -13,7 +13,8 @@
   ],
   "durable_objects": {
     "bindings": [
-      { "name": "CONNECT_STATE", "class_name": "ConnectNonceStorage" }
+      { "name": "CONNECT_STATE", "class_name": "ConnectNonceStorage" },
+      { "name": "MCP_EVENTS", "class_name": "McpEvents" }
     ]
   },
   "migrations": [
@@ -23,7 +24,8 @@
       "renamed_classes": [
         { "from": "NonceStorage", "to": "ConnectNonceStorage" }
       ]
-    }
+    },
+    { "tag": "v3", "new_sqlite_classes": ["McpEvents"] }
   ],
   "observability": {
     "enabled": true,
@@ -48,7 +50,8 @@
       ],
       "durable_objects": {
         "bindings": [
-          { "name": "CONNECT_STATE", "class_name": "ConnectNonceStorage" }
+          { "name": "CONNECT_STATE", "class_name": "ConnectNonceStorage" },
+          { "name": "MCP_EVENTS", "class_name": "McpEvents" }
         ]
       },
       "vars": {

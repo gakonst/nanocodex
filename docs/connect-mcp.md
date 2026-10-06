@@ -85,12 +85,21 @@ redirect, requested scopes, and exact `/mcp` resource. Tokens are sent only in
 the `Authorization` header. Refresh tokens rotate; reuse invalidates the token
 family. Revocation and expiry are checked again before tool execution.
 
-The transport supports MCP revisions `2025-03-26`, `2025-06-18`, and `2025-11-25`:
-`initialize`, notifications, `ping`, `tools/list`, and `tools/call`, with JSON
-responses over Streamable HTTP. It is stateless and does not issue MCP session
-IDs or offer a standalone GET event stream. It does not advertise the different
-2026 protocol contract. Dynamic client registration is supported; client-ID
-metadata document registration is not advertised.
+The transport supports legacy MCP revisions `2025-03-26`, `2025-06-18`, and
+`2025-11-25`, plus the MCP2 draft revision `2026-07-28`, with JSON responses
+over Streamable HTTP. Legacy clients use `initialize`; MCP2 clients use
+`server/discover` and send matching protocol metadata and method headers on
+every request. It is stateless and does not issue MCP session IDs or offer a
+standalone GET event stream. Dynamic client registration is supported;
+client-ID metadata document registration is not advertised.
+
+MCP2 clients with approved `agent:run` authority can list and subscribe to
+`agent.turn.completed` events through signed HTTPS webhooks. Durable alarms
+observe MCP-started turns after the client disconnects. Subscriptions expire,
+can be refreshed with rotating signing keys, and stop when their OAuth family
+or Connect grant is revoked. Receivers must verify signatures and deduplicate
+stable event IDs. See the [MCP Events API and callback requirements](../js/connect-api/README.md#mcp-events)
+for request shapes, verification, delivery responses and transport restrictions.
 
 ## Operations
 
