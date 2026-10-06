@@ -69,14 +69,10 @@ private struct ConnectorContentView: View {
 
     var body: some View {
         List {
+            Section { NavigationLink("Vault") { NativeVaultView(model: model) } }
             if showsChatGpt || showsClaude {
                 Section {
-                    if showsChatGpt, let url = model.chatGptAccountsURL {
-                        Link(destination: url) {
-                            Label("ChatGPT accounts", systemImage: "person.crop.circle.badge.plus")
-                        }
-                        .accessibilityIdentifier("chatgpt-accounts")
-                    }
+                    if showsChatGpt { NavigationLink("ChatGPT accounts") { NativeVaultView(model: model, chatOnly: true) } }
                     if showsClaude {
                         NavigationLink {
                             Form {
@@ -92,10 +88,6 @@ private struct ConnectorContentView: View {
                     }
                 } header: {
                     Text("Model access")
-                } footer: {
-                    if showsChatGpt, model.chatGptAccountsURL != nil {
-                        Text("Add ChatGPT accounts and view account status on the web. Sign in with the same Nanocodex account you use here.")
-                    }
                 }
             }
             if center.loading, center.overview == nil {
@@ -698,5 +690,246 @@ private final class ConnectorCenter: NSObject, ObservableObject, ASWebAuthentica
             .compactMap { $0 as? UIWindowScene }
             .flatMap(\.windows)
             .first(where: \.isKeyWindow) ?? UIWindow()
+    }
+}
+
+private struct NativeVaultView: View {
+    @ObservedObject var model: InboxModel
+    @Environment(\.scenePhase) private var scenePhase
+    var chatOnly = false
+    @State private var refreshOperations: [String: UUID] = [:]
+    @State private var addingSSH = false
+    @State private var cloudflare: [ConnectorAccountConnection] = []
+    @State private var overview: VaultOverview?
+    @State private var adding = false
+    @State private var deleting: VaultItem?
+    @State private var deletingSSH: SSHVaultIdentity?
+    @State private var busy = false
+    @State private var message = ""
+    @State private var tokenID = ""
+    @State private var accountID = ""
+    @State private var captureID = ""
+    @State private var captureOperation = UUID()
+    @State private var addressID = ""
+    @State private var login: ChatGPTLoginReceipt?
+    @State private var openAI = false
+
+    var body: some View {
+        let account = model.vaultIntakeAccount
+        Form {
+            if !chatOnly {
+            Section("Vault") {
+                ForEach(overview?.items ?? []) { item in
+                    VStack(alignment: .leading) {
+                        Text(item.name).font(.headline)
+                        Text(item.kind + (item.detail.isEmpty ? "" : " · " + item.detail)).font(.caption).foregroundStyle(.secondary)
+                        HStack {
+                            Button("Delete", role: .destructive) { deleting = item }
+                            if item.kind == "card" {
+                                Button("Balance") { run { client in
+                                    let receipt = try await client.providerCard(operation: "balance", vaultID: item.id)
+                    guard !Task.isCancelled, model.vaultIntakeAccount == account else { return }
+                                    message = try ProviderCardReceipt(receipt).display
+                                } }
+                                Button("Refresh") {
+                                    if refreshOperations[item.id] == nil { refreshOperations[item.id] = UUID() }
+                                    run { client in
+                                    let receipt = try await client.providerCard(operation: "refresh", vaultID: item.id, operationID: refreshOperations[item.id])
+                    guard !Task.isCancelled, model.vaultIntakeAccount == account else { return }
+                                    let parsed = try ProviderCardReceipt(receipt)
+                                    message = parsed.display
+                                    if parsed.status != "outcome_unknown" { refreshOperations[item.id] = nil }
+                                } }
+                            }
+                        }
+                    }
+                }
+                Button("Add Vault item") { adding = true }
+                Button("Set OpenAI API key") { openAI = true }
+                Button("Remove OpenAI API key", role: .destructive) { run { client in
+                    _ = try await client.nativeCredentialOperation(path: "/v1/credentials/openai", method: "DELETE")
+                } }
+            }
+            Section("SSH identities") {
+                Button("Add SSH identity") { addingSSH = true }
+                ForEach(overview?.ssh ?? []) { identity in
+                    VStack(alignment: .leading) {
+                        Text(identity.id + " · " + identity.hostname)
+                        Text(identity.publicKey).font(.caption).textSelection(.enabled)
+                        Button("Delete", role: .destructive) { deletingSSH = identity }
+                    }
+                }
+            }
+            Section("Cloudflare") {
+                Text(cloudflare.isEmpty ? "No connected account" : "Connected")
+                ForEach(cloudflare) { connection in
+                    Text(connection.label)
+                    Button("Disconnect " + connection.label, role: .destructive) { run { try await $0.disconnectCloudflare(connectionID: connection.id) } }
+                }
+
+                Picker("API token", selection: $tokenID) {
+                    Text("Select token").tag("")
+                    ForEach((overview?.items ?? []).filter { $0.kind == "api_key" }) { Text($0.name).tag($0.id) }
+                }
+                TextField("Account ID (account token only)", text: $accountID).autocorrectionDisabled().textInputAutocapitalization(.never)
+                Button("Connect Cloudflare") { run { client in
+                    var body: [String: JSON] = ["vault_id": .string(tokenID)]
+                    if !accountID.isEmpty { body["account_id"] = .string(accountID) }
+                    _ = try await client.nativeCredentialOperation(path: "/v1/connectors/cloudflare", method: "POST", body: .object(body))
+                    guard !Task.isCancelled, model.vaultIntakeAccount == account else { return }
+                    message = "Cloudflare connection submitted."
+                } }.disabled(tokenID.isEmpty)
+            }
+            Section("Provider capture") {
+                TextField("Capture ID", text: $captureID).autocorrectionDisabled().textInputAutocapitalization(.never)
+                    .onChange(of: captureID) { _, _ in captureOperation = UUID() }
+                Picker("Billing address", selection: $addressID) {
+                    Text("None").tag("")
+                    ForEach((overview?.items ?? []).filter { $0.kind == "address" }) { Text($0.name).tag($0.id) }
+                }
+                .onChange(of: addressID) { _, _ in captureOperation = UUID() }
+                Button("Save capture") { run { client in
+                    let receipt = try await client.storeProviderCapture(captureID: captureID, operationID: captureOperation, addressVaultID: addressID.isEmpty ? nil : addressID)
+                    guard !Task.isCancelled, model.vaultIntakeAccount == account else { return }
+                    message = try ProviderCardReceipt(receipt).display
+                } }.disabled(captureID.isEmpty)
+            }
+            }
+            if chatOnly { Section("ChatGPT") {
+                Text(login?.state ?? "Check account status")
+                if let code = login?.userCode { Text(code).textSelection(.enabled) }
+                if let url = login?.verificationURL {
+                    Link("Authorize device", destination: url)
+                }
+                Button("Start device login") { chatGPT("POST") }
+                Button("Check login status") { chatGPT("GET") }
+                Button("Disconnect ChatGPT", role: .destructive) { run { client in
+                    _ = try await client.nativeCredentialOperation(path: "/v1/credentials/chatgpt", method: "DELETE")
+                    guard model.vaultIntakeAccount == account else { return }
+                    login = nil
+                    await model.refreshModelCatalog()
+                } }
+            }
+            }
+            if busy { ProgressView() }
+            if !message.isEmpty { Section { Text(message) } }
+        }
+        .navigationTitle(chatOnly ? "ChatGPT accounts" : "Vault")
+        .disabled(busy)
+        .task { reload() }
+        .refreshable { reload() }
+        .onChange(of: model.vaultIntakeAccount) { _, _ in
+            overview = nil; cloudflare = []; login = nil; message = ""
+            tokenID = ""; accountID = ""; captureID = ""; addressID = ""
+            refreshOperations = [:]; captureOperation = UUID()
+            adding = false; addingSSH = false; openAI = false
+            deleting = nil; deletingSSH = nil
+        }
+        .onChange(of: scenePhase) { _, phase in if phase != .active { login = nil } }
+        .onDisappear { login = nil }
+        .sheet(isPresented: $openAI, onDismiss: { reload() }) { NativeVaultAddView(model: model, kind: "openai") }
+        .sheet(isPresented: $addingSSH, onDismiss: { reload() }) { NativeVaultAddView(model: model, kind: "ssh") }
+        .sheet(isPresented: $adding, onDismiss: { reload() }) { NativeVaultAddView(model: model) }
+        .confirmationDialog("Delete this Vault item?", isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } })) {
+            Button("Delete", role: .destructive) { if let item = deleting { deleting = nil; run { try await $0.deleteVaultItem(item) } } }
+        }
+        .confirmationDialog("Delete this SSH identity?", isPresented: Binding(get: { deletingSSH != nil }, set: { if !$0 { deletingSSH = nil } })) {
+            Button("Delete", role: .destructive) { if let item = deletingSSH { deletingSSH = nil; run { try await $0.deleteSSHIdentity(reference: item.id) } } }
+        }
+    }
+    private func chatGPT(_ method: String) {
+        let account = model.vaultIntakeAccount
+        run { client in
+            let value = try await client.nativeCredentialOperation(path: "/v1/credentials/chatgpt/login", method: method)
+            guard model.vaultIntakeAccount == account else { return }
+            login = try ChatGPTLoginReceipt(value)
+            await model.refreshModelCatalog()
+        }
+    }
+    private func reload() { if chatOnly { chatGPT("GET") } else { run { _ in } } }
+    private func run(_ action: @escaping (ManagedClient) async throws -> Void) {
+        guard !busy else { return }
+        let account = model.vaultIntakeAccount
+        busy = true
+        Task { @MainActor in
+            defer { busy = false }
+            do {
+                let client = try model.vaultManagementClient()
+                try await action(client)
+                let loaded = try await client.vaultOverview()
+                let connections = try await model.connectorOverview().statuses["cloudflare"]?.connections ?? []
+                guard !Task.isCancelled, model.vaultIntakeAccount == account else { return }
+                overview = loaded
+                cloudflare = connections
+            } catch { guard model.vaultIntakeAccount == account else { return }; message = "The Vault request could not be completed. Check status before retrying a submission." }
+        }
+    }
+}
+
+private struct NativeVaultAddView: View {
+    @ObservedObject var model: InboxModel
+    @Environment(\.dismiss) private var dismiss
+    @State var kind = "login"
+    @State private var operationID = UUID()
+    @State private var values: [String: String] = [:]
+    @State private var busy = false
+    @State private var error = ""
+    private var fields: [String] {
+        switch kind {
+        case "openai": ["api_key"]
+        case "api_key": ["name", "api_key"]
+        case "card": ["name", "card_number", "expiry_month", "expiry_year", "cvv", "billing_zip"]
+        case "address": ["name", "address_line_1", "address_line_2", "city", "state", "zip", "country"]
+        case "phone": ["name", "phone_number"]
+        case "ssh": ["reference", "hostname", "port", "username", "host_key_sha256", "private_key"]
+        default: ["name", "username", "password", "browser_origin"]
+        }
+    }
+    var body: some View {
+        NavigationStack {
+            Form {
+                Picker("Kind", selection: $kind) {
+                    ForEach(["login", "api_key", "card", "address", "phone", "ssh", "openai"], id: \.self) { Text($0).tag($0) }
+                }.onChange(of: kind) { _, _ in values.removeAll() }
+                ForEach(fields, id: \.self) { key in
+                    let binding = Binding(get: { values[key] ?? "" }, set: { values[key] = $0 })
+                    if ["password", "api_key", "card_number", "cvv", "private_key"].contains(key) {
+                        SecureField(key.replacingOccurrences(of: "_", with: " "), text: binding)
+                    } else {
+                        TextField(key.replacingOccurrences(of: "_", with: " "), text: binding)
+                            .autocorrectionDisabled().textInputAutocapitalization(.never)
+                    }
+                }
+                if kind == "ssh" { Text("Leave private key empty to generate a new key. Install the resulting public key on the server.").font(.caption) }
+                if !error.isEmpty { Text(error) }
+            }
+            .navigationTitle(kind == "openai" ? "OpenAI API key" : "Add Vault item")
+            .onChange(of: model.vaultIntakeAccount) { _, _ in values.removeAll(); dismiss() }
+            .onChange(of: values) { _, _ in operationID = UUID() }
+            .onDisappear { values.removeAll() }
+            .disabled(busy)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { values.removeAll(); dismiss() } }
+                ToolbarItem(placement: .confirmationAction) { Button("Save") { save() } }
+            }
+        }
+    }
+    private func save() {
+        guard !busy else { return }; let account = model.vaultIntakeAccount; busy = true
+        Task { @MainActor in
+            defer { busy = false }
+            do {
+                let client = try model.vaultManagementClient()
+                if kind == "openai" {
+                    _ = try await client.nativeCredentialOperation(path: "/v1/credentials/openai", method: "PUT", body: .object(["api_key": .string(values["api_key"] ?? "")]))
+                } else if kind == "ssh" {
+                    try await client.saveSSHIdentity(reference: values["reference"] ?? "", hostname: values["hostname"] ?? "", port: Int(values["port"] ?? "22") ?? 22, username: values["username"] ?? "", hostKeySHA256: values["host_key_sha256"] ?? "", privateKey: (values["private_key"] ?? "").isEmpty ? nil : values["private_key"])
+                } else {
+                    _ = try await client.saveVaultItem(kind: kind, values: values.filter { !["cvv", "address_line_2", "browser_origin"].contains($0.key) || !$0.value.isEmpty }, operationID: operationID)
+                }
+                guard !Task.isCancelled, model.vaultIntakeAccount == account else { values.removeAll(); return }
+                values.removeAll(); dismiss()
+            } catch { guard model.vaultIntakeAccount == account else { values.removeAll(); return }; self.error = "Could not save. Check Vault before retrying." }
+        }
     }
 }

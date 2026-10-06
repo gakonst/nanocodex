@@ -359,3 +359,96 @@ async fn vault_cli_ssh_targets_public_projection_and_sanitized_errors() {
         server.abort();
     }
 }
+
+#[tokio::test]
+async fn native_vault_management_commands_preserve_safe_receipts_and_exact_operations() {
+    let calls = Arc::new(std::sync::Mutex::new(Vec::<Value>::new()));
+    let captured = calls.clone();
+    let app = Router::new().fallback(move |request: axum::extract::Request| {
+        let captured = captured.clone();
+        async move {
+            assert!(request.headers().contains_key("authorization"));
+            let path = request.uri().path().to_owned();
+            let method = request.method().clone();
+            let bytes = axum::body::to_bytes(request.into_body(), 1024 * 96).await.unwrap();
+            let body: Value = if bytes.is_empty() { Value::Null } else { serde_json::from_slice(&bytes).unwrap() };
+            captured.lock().unwrap().push(json!({"path":path,"method":method.as_str(),"body":body}));
+            let response = match path.as_str() {
+                "/v1/credentials" => json!({"vault":[{"id":ID,"kind":"api_key","name":"Synthetic service","api_key":PRIVATE}],"ssh":[],"openai":{"api_key":PRIVATE}}),
+                "/v1/vault/store" => { assert_eq!(body["capture_id"],ID); assert_eq!(body["operation_id"],"11111111-1111-4111-8111-111111111111"); json!({"status":"saved","capture_id":ID,"vault_id":ID,"kind":"card","card_number":PRIVATE}) },
+                "/v1/vault/card" => { assert_eq!(body["vault_id"],ID); json!({"status":"saved","vault_id":ID,"balance":4.25,"currency":"USD","freshness":"current","observed_at":1234,"password":PRIVATE}) },
+                _ if method == axum::http::Method::DELETE => return Response::builder().status(204).body(Body::empty()).unwrap(),
+                _ if path.starts_with("/v1/credentials/ssh/") => { assert_eq!(body["generate"],true); assert!(body.get("private_key").is_none()); return Response::builder().status(204).body(Body::empty()).unwrap(); },
+                _ => panic!("unexpected endpoint"),
+            };
+            Response::builder().status(200).header("content-type","application/json").body(Body::from(response.to_string())).unwrap()
+        }
+    });
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin = format!("http://{}", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let home = tempfile::tempdir().unwrap();
+    let journeys: Vec<Vec<&str>> = vec![
+        vec!["list"],
+        vec!["delete", "api_key", ID],
+        vec![
+            "store",
+            ID,
+            "--operation-id",
+            "11111111-1111-4111-8111-111111111111",
+        ],
+        vec!["card", "balance", ID],
+        vec![
+            "ssh-save",
+            "synthetic",
+            "--hostname",
+            "example.com",
+            "--username",
+            "synthetic",
+            "--host-key-sha256",
+            "SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        ],
+        vec!["ssh-remove", "synthetic"],
+    ];
+    let mut evidence = Vec::new();
+    for args in journeys {
+        let output = command(home.path(), &origin)
+            .args(&args)
+            .output()
+            .await
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{:?}: {}",
+            args,
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let public = String::from_utf8(output.stdout).unwrap();
+        assert!(!public.contains(PRIVATE));
+        assert!(!String::from_utf8_lossy(&output.stderr).contains(PRIVATE));
+        let value: Value = serde_json::from_str(&public).unwrap();
+        evidence.push(json!({"command":args,"receipt":value}));
+    }
+    let count = calls.lock().unwrap().len();
+    let missing_operation = command(home.path(), &origin)
+        .args(["card", "refresh", ID])
+        .output()
+        .await
+        .unwrap();
+    assert!(!missing_operation.status.success());
+    assert_eq!(
+        calls.lock().unwrap().len(),
+        count,
+        "invalid refresh does not dispatch"
+    );
+    let directory =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../output/native-account-api");
+    std::fs::create_dir_all(&directory).unwrap();
+    std::fs::write(
+        directory.join("rust-cli-management.json"),
+        serde_json::to_vec_pretty(&json!({"commands":evidence,"requests":*calls.lock().unwrap()}))
+            .unwrap(),
+    )
+    .unwrap();
+    server.abort();
+}

@@ -4179,17 +4179,67 @@ async fn apply_update(
                         });
                         scheduler.request_immediate(Instant::now());
                     }
+                    RootEffect::Connectors(text) => {
+                        let args: Vec<_> = text.split_whitespace().collect();
+                        let private = match args.as_slice() {
+                            [_, "whatsapp-pair", id] if uuid::Uuid::parse_str(id).is_ok() => Some(("whatsapp", (*id).to_owned())),
+                            [_, "chatgpt-start"] => Some(("chatgpt", "start".into())),
+                            [_, "chatgpt-status"] => Some(("chatgpt", "status".into())),
+                            _ => None,
+                        };
+                        if let Some((kind, name)) = private {
+                            let request = nanocodex_managed::PrivateInputRequest { request_id: uuid::Uuid::new_v4().to_string(), agent_id: runtime.agent_id.clone(), origin: String::new(), expires_at: Some(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis() as u64 + 600_000), kind: nanocodex_managed::PrivateInputKind::Connector(kind.into()), allowed_origins: Vec::new(), name };
+                            effects.push_back(AppEffect::Pane { pane, effect: RootEffect::SecureInput(Some(secure_input::Request::Private(request))) });
+                            continue;
+                        }
+                        let client = runtime.client.clone();
+                        let agent_id = runtime.agent_id.clone();
+                        let generation = runtime.connection_generation;
+                        runtime.vault_tasks.spawn(async move {
+                            let result = match crate::connectors::parse_local(&text) {
+                                Ok(command) => command.execute(&client).await.map(vault::Outcome::Saved).map_err(|e| e.to_string()),
+                                Err(error) => Err(error.to_string()),
+                            };
+                            (pane, agent_id, generation, result)
+                        });
+                    }
                     RootEffect::Vault(command) => {
                         match command {
                             vault::Command::Open => {
                                 let client = runtime.client.clone();
                                 let agent_id = runtime.agent_id.clone();
-                                let destination = client.vault_url();
-                                runtime.links.spawn(async move {
-                                    (pane, links::open(&client, &agent_id, &destination).await)
+                                let generation = runtime.connection_generation;
+                                runtime.vault_tasks.spawn(async move {
+                                    let result = client.vault_list().await.map(|v| vault::Outcome::Saved(format!("Vault items: {}\nUse /vault add login|api_key|card|address|phone to open private input.", v))).map_err(|_| "Vault metadata unavailable".to_owned());
+                                    (pane, agent_id, generation, result)
                                 });
                             }
-                            vault::Command::Latest | vault::Command::Help => absorb(app.update(AppEvent::NotifyError { pane, error: "No pending Vault request is loaded. Use /vault open to manage your Vault. Never enter passwords in chat.".into() }), &mut effects, scheduler),
+                            command @ (vault::Command::Add { .. } | vault::Command::SshAdd { .. }) => {
+                                let (kind, name) = match command { vault::Command::Add { kind } if kind == "openai" => (nanocodex_managed::PrivateInputKind::Credential(kind), String::new()), vault::Command::Add { kind } => (nanocodex_managed::PrivateInputKind::Vault(kind), String::new()), vault::Command::SshAdd { reference } => (nanocodex_managed::PrivateInputKind::Credential("ssh".into()), reference), _ => unreachable!() };
+                                let request = nanocodex_managed::PrivateInputRequest {
+                                    request_id: uuid::Uuid::new_v4().to_string(), agent_id: runtime.agent_id.clone(),
+                                    origin: String::new(), expires_at: None,
+                                    kind, allowed_origins: Vec::new(), name,
+                                };
+                                effects.push_back(AppEffect::Pane { pane, effect: RootEffect::SecureInput(Some(secure_input::Request::Private(request))) });
+                            }
+                            command @ (vault::Command::Delete { .. } | vault::Command::SshRemove { .. } | vault::Command::Card { .. } | vault::Command::Store { .. }) => {
+                                if !runtime.vault_tasks.is_empty() { continue; }
+                                let client = runtime.client.clone();
+                                let agent_id = runtime.agent_id.clone();
+                                let generation = runtime.connection_generation;
+                                runtime.vault_tasks.spawn(async move {
+                                    let result = match command {
+                                        vault::Command::Delete { kind, id } => client.vault_delete(&kind, &id).await,
+                                        vault::Command::SshRemove { reference } => client.vault_ssh_remove(&reference).await,
+                                        vault::Command::Card { operation, id, capture, operation_id } => client.vault_provider_card(&operation, &id, capture, operation_id.as_deref()).await,
+                                        vault::Command::Store { capture_id, operation_id } => client.vault_provider_store(&capture_id, &operation_id, None, None).await,
+                                        _ => unreachable!(),
+                                    }.map(|receipt| vault::Outcome::Saved(receipt.to_string())).map_err(|_| "Vault request failed. Check status before retrying; retain the same operation ID.".to_owned());
+                                    (pane, agent_id, generation, result)
+                                });
+                            }
+                            vault::Command::Latest | vault::Command::Help => absorb(app.update(AppEvent::NotifyError { pane, error: "Use /vault list; /vault add KIND; /vault delete KIND ID; /vault card status|balance ID; /vault card refresh ID OPERATION_UUID; /vault store CAPTURE_ID OPERATION_UUID. SSH setup: nanocodex2 vault ssh-save --help. Never enter secret values in chat.".into() }), &mut effects, scheduler),
                             vault::Command::Review { id, origin } => {
                                 if !runtime.vault_tasks.is_empty() { continue; }
                                 let client = runtime.client.clone();

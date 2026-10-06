@@ -9,6 +9,7 @@ mod auth;
 mod builder;
 mod claude;
 mod client;
+mod connectors;
 mod driver;
 mod error;
 mod model;
@@ -18,6 +19,7 @@ mod share;
 mod sse;
 mod types;
 mod vault;
+mod vault_management;
 #[cfg(feature = "voice")]
 mod voice;
 mod websocket;
@@ -34,6 +36,7 @@ pub use auth::ManagedApiKey;
 pub use builder::{Managed, ManagedBuilder, ManagedRequest, ManagedResponse, ManagedService};
 pub use claude::{ClaudeLogin, ClaudeLoginCode, ClaudeLoginStatus};
 pub use client::{ManagedClient, ManagedClientBuilder};
+pub use connectors::*;
 pub use driver::ManagedAgent;
 pub use error::ManagedError;
 pub use model::{

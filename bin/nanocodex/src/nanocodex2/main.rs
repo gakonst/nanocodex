@@ -10,6 +10,7 @@
 mod computer;
 #[allow(dead_code)]
 mod config;
+mod connectors;
 mod continue_auth;
 mod continue_sessions;
 mod control;
@@ -150,6 +151,8 @@ enum Command {
     Account(nanocodex_cli_auth::Account),
     /// Use saved Vault items through broker-owned HTTP requests.
     Vault(vault::Vault),
+    /// Manage connected accounts directly.
+    Connectors(connectors::Connectors),
     /// Attach this machine's workspace to an existing managed agent.
     Attach(Attach),
     /// Connect this computer as a Hand; optionally run a VM or Docker Hand.
@@ -806,6 +809,7 @@ async fn run(cli: Cli) -> Result<(), ManagedError> {
             unreachable!("handled before managed client setup")
         }
         Some(Command::Vault(command)) => command.run(&client).await,
+        Some(Command::Connectors(command)) => command.run(&client).await,
         Some(Command::Voice(command)) => voice::run(&client, command).await,
         Some(Command::Attach(command)) => {
             attach_tui(&client, command.agent.map(|agent| agent.agent_id)).await

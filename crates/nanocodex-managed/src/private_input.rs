@@ -13,6 +13,10 @@ pub enum PrivateInputKind {
     Password,
     Form,
     Vault(String),
+    /// Caller-created account credential form; never decoded from tool output.
+    Credential(String),
+    /// Caller-local provider sign-in panel, excluded from model decoding.
+    Connector(String),
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PrivateInputRequest {
@@ -32,6 +36,27 @@ impl PrivateInputRequest {
                 .expires_at
                 .is_none_or(|v| v > now() && v <= 9_007_199_254_740_991)
             && match &self.kind {
+                PrivateInputKind::Connector(kind) => {
+                    self.origin.is_empty()
+                        && self.expires_at.is_some()
+                        && ((kind == "whatsapp" && uuid::Uuid::parse_str(&self.name).is_ok())
+                            || (kind == "chatgpt"
+                                && ["start", "status"].contains(&self.name.as_str())))
+                }
+                PrivateInputKind::Credential(kind) => {
+                    self.origin.is_empty()
+                        && (kind == "openai"
+                            || (kind == "ssh"
+                                && !self.name.is_empty()
+                                && self.name.len() <= 64
+                                && self.name.as_bytes()[0].is_ascii_alphanumeric()
+                                && self
+                                    .name
+                                    .bytes()
+                                    .all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
+                                && !["__proto__", "constructor", "prototype"]
+                                    .contains(&self.name.as_str())))
+                }
                 PrivateInputKind::Vault(kind) => {
                     matches!(
                         kind.as_str(),
@@ -56,6 +81,13 @@ impl PrivateInputRequest {
     pub fn path(&self) -> String {
         match &self.kind {
             PrivateInputKind::Vault(kind) => format!("v1/credentials/vault/{kind}"),
+            PrivateInputKind::Credential(kind) => {
+                if kind == "ssh" {
+                    format!("v1/credentials/ssh/{}", self.name)
+                } else {
+                    "v1/credentials/openai".into()
+                }
+            }
             _ => format!(
                 "v1/agents/{}/{}",
                 self.agent_id,
@@ -325,12 +357,19 @@ impl ManagedClient {
         request: &PrivateInputRequest,
         body: PrivateInputBody,
     ) -> Result<Value, ManagedError> {
-        if !request.is_current() {
+        if !request.is_current() || matches!(request.kind, PrivateInputKind::Connector(_)) {
             return Err(invalid());
         }
         let mut builder = self
             .http
-            .post(self.url(&request.path())?)
+            .request(
+                if matches!(request.kind, PrivateInputKind::Credential(_)) {
+                    reqwest::Method::PUT
+                } else {
+                    reqwest::Method::POST
+                },
+                self.url(&request.path())?,
+            )
             .timeout(Duration::from_secs(60))
             .header("content-type", "application/json")
             .header("cache-control", "no-store")
@@ -351,9 +390,55 @@ impl ManagedClient {
         if !response.status().is_success() {
             return Err(invalid());
         }
+        if response.status() == reqwest::StatusCode::NO_CONTENT {
+            return Ok(Value::Null);
+        }
         let mut bytes = Zeroizing::new(Vec::new());
         while let Some(chunk) = response.chunk().await.map_err(|_| invalid())? {
             if bytes.len() + chunk.len() > 16 * 1024 * 1024 {
+                return Err(invalid());
+            }
+            bytes.extend_from_slice(&chunk);
+        }
+        serde_json::from_slice(&bytes).map_err(|_| invalid())
+    }
+    /// Private native display transport. Never serialize its response into agent events.
+    pub async fn private_connector_input(
+        &self,
+        request: &PrivateInputRequest,
+        start: bool,
+    ) -> Result<Value, ManagedError> {
+        if !request.is_current() {
+            return Err(invalid());
+        }
+        let (method, path) = match &request.kind {
+            PrivateInputKind::Connector(kind) if kind == "whatsapp" => (
+                reqwest::Method::GET,
+                format!(
+                    "v1/connectors/whatsapp/pairing?operation_id={}",
+                    request.name
+                ),
+            ),
+            PrivateInputKind::Connector(kind) if kind == "chatgpt" => (
+                if start && request.name == "start" {
+                    reqwest::Method::POST
+                } else {
+                    reqwest::Method::GET
+                },
+                "v1/credentials/chatgpt/login".into(),
+            ),
+            _ => return Err(invalid()),
+        };
+        let mut response = self
+            .request(method, &path, None, None)
+            .await
+            .map_err(|_| invalid())?;
+        if !response.status().is_success() {
+            return Err(invalid());
+        }
+        let mut bytes = Zeroizing::new(Vec::new());
+        while let Some(chunk) = response.chunk().await.map_err(|_| invalid())? {
+            if bytes.len() + chunk.len() > 16384 {
                 return Err(invalid());
             }
             bytes.extend_from_slice(&chunk);

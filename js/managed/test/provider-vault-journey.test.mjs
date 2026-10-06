@@ -85,16 +85,38 @@ test("private provider capture survives pending recovery through authenticated H
   const wire = [], trace = [], logs = [], provenance = [], mcp = [], downstream = [];
   const token = "SENTINEL_PROVIDER_TOKEN_DO_NOT_EXPOSE", pan = "4111111111111111";
   const refresh = "SENTINEL_REFRESH_TOKEN_DO_NOT_EXPOSE";
-  const privateValues = [token, pan, refresh];
+  const privateValues = [token, pan, refresh, "SENTINEL_GITHUB_TOKEN"];
   let reads = 0, socket;
   const modules = await bundle(source, root, provenance);
   const proxy = await bundle(`import {routeManaged} from '../account/worker/managedProxy.ts'; export default {async fetch(request,env){return await routeManaged(request,env,new URL(request.url)) ?? new Response(null,{status:404})}}`, root, provenance);
-  const egress = await bundle(`export { default, AgentSubjectDirectory, UserCredentialBroker } from './src/egress.ts';`, join(root, "../egress"), provenance,
+  const egress = await bundle(`export { default, AgentSubjectDirectory, UserCredentialBroker, UserConnectorBroker } from './src/egress.ts';`, join(root, "../egress"), provenance,
     { "@whiskeysockets/baileys": join(root, "../egress/src/whatsapp-generated/baileys.js") });
   const job = "99999999-9999-4999-8999-999999999999", cardJob = "88888888-8888-4888-8888-888888888888", unknownJob = "77777777-7777-4777-8777-777777777777";
   const outbound = async request => {
     const url = new URL(request.url);
+    if (url.href === "https://github.com/login/oauth/access_token") {
+      const form = new URLSearchParams(await request.text());
+      assert.equal(form.get("code"), "synthetic-native-code");
+      assert.ok(form.get("code_verifier")?.length >= 43);
+      downstream.push({method:request.method,path:url.pathname});
+      return Response.json({access_token:"SENTINEL_GITHUB_TOKEN", token_type:"bearer",scope:"repo,workflow"});
+    }
+    if (url.href === "https://api.github.com/applications/synthetic-client/token") {
+      assert.equal(request.method,"DELETE");
+      assert.equal((await request.json()).access_token,"SENTINEL_GITHUB_TOKEN");
+      return new Response(null,{status:204});
+    }
+    if (url.href === "https://api.github.com/user") {
+      assert.equal(request.headers.get("authorization"), "Bearer SENTINEL_GITHUB_TOKEN");
+      return Response.json({id:123456,login:"synthetic-native",name:"Synthetic native"});
+    }
     if (url.origin === "https://laso.finance") {
+      if (url.pathname === "/refresh-card-data") {
+        assert.equal(request.method, "POST");
+        assert.equal(request.headers.get("authorization"), `Bearer ${token}`);
+        downstream.push({ method: request.method, path: url.pathname });
+        return Response.json({ success: true });
+      }
       assert.equal(url.pathname, "/get-card-data"); assert.equal(request.method, "GET");
       assert.equal(request.headers.get("authorization"), `Bearer ${token}`);
       assert.equal(url.searchParams.get("card_id"), "synthetic-card");
@@ -135,24 +157,81 @@ test("private provider capture survives pending recovery through authenticated H
       if(new URL(request.url).hostname === 'broker.internal') return env.EGRESS.fetch(request);
       return env.MODEL.getByName('fixture-model').fetch(request);
     }};`, serviceBindings: { EGRESS: "egress" }, durableObjects: { MODEL: { className: "FixtureModel", scriptName: "managed", useSQLite: true } } },
-    { ...common, name: "egress", modules: egress, bindings: { ENVIRONMENT: "test" }, outboundService: outbound,
-      durableObjects: { USER_CREDENTIALS: { className: "UserCredentialBroker", useSQLite: true }, AGENT_SUBJECTS: { className: "AgentSubjectDirectory", useSQLite: true } },
+    { ...common, name: "egress", modules: egress, bindings: { ENVIRONMENT: "test", GITHUB_OAUTH_CLIENT_ID: "synthetic-client", GITHUB_OAUTH_CLIENT_SECRET: "synthetic-secret" }, outboundService: outbound,
+      durableObjects: { USER_CREDENTIALS: { className: "UserCredentialBroker", useSQLite: true }, AGENT_SUBJECTS: { className: "AgentSubjectDirectory", useSQLite: true }, USER_CONNECTORS: { className: "UserConnectorBroker", useSQLite: true } },
       serviceBindings: { MANAGED_AGENT_OWNERSHIP: { name: "managed", entrypoint: "ManagedAgentOwnership" } } },
   ] };
   let mf = new Miniflare(options);
   try {
     let base = await mf.ready, backend = await mf.getWorker("managed");
-    const owner = "11111111-1111-4111-8111-111111111111", capabilities = ["agents:read", "agents:write", "tools:use"];
+    const owner = "11111111-1111-4111-8111-111111111111", capabilities = ["agents:read", "agents:write", "tools:use", "api_keys:write"];
     const login = await (await backend.fetch("https://fixture.test/__fixture", { method: "POST", body: JSON.stringify({ user: owner, capabilities }) })).json();
     privateValues.push(login.token, login.cookie.split("=")[1]);
     const connectHeaders = { "x-nanocodex-connect-user": owner, "x-nanocodex-connect-grant-id": "0x"+"2".repeat(64),
-      "x-nanocodex-connect-capabilities": JSON.stringify(capabilities), "x-nanocodex-connect-connectors": JSON.stringify(["chatgpt"]), "x-nanocodex-connect-mcp-ids": "[]", "content-type": "application/json" };
+      "x-nanocodex-connect-capabilities": JSON.stringify(capabilities.filter(value => value !== "api_keys:write")), "x-nanocodex-connect-connectors": JSON.stringify(["chatgpt"]), "x-nanocodex-connect-mcp-ids": "[]", "content-type": "application/json" };
     // Public ingress never accepts a caller's private broker capture route.
     for (const headers of [{ authorization: `Bearer ${login.token}` }, connectHeaders]) {
       const denied = await backend.fetch(`https://nanocodex.internal/users/${owner}/credentials/provider-capture`, { method: "POST", headers, body: "{}" });
       assert.notEqual(denied.status, 200); assert.notEqual(denied.status, 201);
       trace.push({ case: "private_capture_route_unavailable_over_public_ingress", status: denied.status });
     }
+    // The exact account API used by native clients: secrets only enter the
+    // private POST body, and list/save/delete receipts never echo them.
+    async function native(path, input, method = "POST", auth = login) {
+      const response = await fetch(new URL(path, base), { method,
+        headers: { authorization: `Bearer ${auth.token}`, "content-type": "application/json" },
+        ...(input === undefined ? {} : { body: JSON.stringify(input) }) });
+      const body = response.status === 204 ? null : await response.json();
+      trace.push({ case: "native_account_api", path, method, status: response.status, body });
+      return { status: response.status, body };
+    }
+    const vaultEntries = [
+      ["login", { name: "Synthetic login", username: "person@example.test", password: "SENTINEL_NATIVE_PASSWORD", browser_origin: "https://example.com" }],
+      ["api_key", { name: "Synthetic API", api_key: "SENTINEL_NATIVE_API_KEY" }],
+      ["card", { name: "Synthetic card", card_number: pan, expiry_month: "09", expiry_year: "2031", billing_zip: "10001" }],
+      ["address", { name: "Synthetic address", address_line_1: "1 Example Street", city: "Example", state: "NY", zip: "10001", country: "US" }],
+      ["phone", { name: "Synthetic phone", phone_number: "+12025550123" }],
+    ];
+    privateValues.push("SENTINEL_NATIVE_PASSWORD", "SENTINEL_NATIVE_API_KEY");
+    for (const [kind, payload] of vaultEntries) {
+      const created = await native(`/v1/credentials/vault/${kind}`, payload);
+      assert.equal(created.status, 201, JSON.stringify(created));
+      const listed = await native("/v1/credentials", undefined, "GET");
+      assert.equal(listed.status, 200); assert.ok(listed.body.vault.some(entry => entry.id === created.body.id));
+      if (kind === "login") {
+        assert.equal((await native(`/v1/credentials/vault/login/${created.body.id}/origin`, {browser_origin:"https://example.org"}, "PUT")).status, 200);
+      }
+      assert.equal((await native(`/v1/credentials/vault/${kind}/${created.body.id}`, undefined, "DELETE")).status, 204);
+    }
+    const sshTarget = { generate: true, hostname: "example.com", port: 22, username: "synthetic", host_key_sha256: "SHA256:"+"A".repeat(43) };
+    assert.equal((await native("/v1/credentials/ssh/native-example", sshTarget, "PUT")).status, 204);
+    const ssh = await native("/v1/credentials", undefined, "GET");
+    assert.ok(ssh.body.ssh.some(target => target.reference === "native-example" && target.public_key));
+    assert.equal((await native("/v1/credentials/ssh/native-example", sshTarget, "PUT")).status, 409, "generation never silently rotates");
+    assert.equal((await native("/v1/credentials/ssh/native-example", undefined, "DELETE")).status, 204);
+    for (const provider of ["chatgpt", "claude"]) {
+      assert.equal((await native(`/v1/credentials/${provider}`, undefined, "DELETE")).status, provider === "chatgpt" ? 204 : 200);
+    }
+    assert.equal((await native("/v1/connectors/catalog", undefined, "GET")).status,200);
+    const started = await native("/v1/connectors/github", {return_to:"/connectors"});
+    assert.equal(started.status,200,JSON.stringify(started));
+    const authorizationURL = new URL(started.body.authorization_url);
+    assert.equal(authorizationURL.origin,"https://github.com");
+    assert.equal(authorizationURL.searchParams.get("code_challenge_method"),"S256");
+    const callbackPath = "/v1/connectors/github/callback?" + new URLSearchParams({state:authorizationURL.searchParams.get("state"),code:"synthetic-native-code"});
+    // Native clients complete with their account key; no browser session cookie.
+    const callback = await fetch(new URL(callbackPath,base),{headers:{authorization:`Bearer ${login.token}`}});
+    assert.equal(callback.status,200); assert.ok((await callback.text()).includes('"result":"success"'));
+    const overview = await native("/v1/connectors",undefined,"GET");
+    assert.equal(overview.status,200); assert.equal(overview.body.connectors.github.connected,true);
+    const connectionID = overview.body.connectors.github.connections[0].id;
+    const exchanges = downstream.length;
+    const replay = await fetch(new URL(callbackPath,base),{headers:{authorization:`Bearer ${login.token}`}});
+    assert.equal(replay.status,200); assert.ok((await replay.text()).includes('"result":"error"'));
+    assert.equal(downstream.length,exchanges,"one-use OAuth state prevents another exchange");
+    assert.equal((await native(`/v1/connectors/github/connections/${connectionID}`,undefined,"DELETE")).status,204);
+    assert.equal((await native("/v1/connectors",undefined,"GET")).body.connectors.github.connected,false);
+    trace.push({case:"native_connector_start_callback_list_exact_disconnect",connected:true,replay_rejected:true});
     const operation = crypto.randomUUID();
     const calls = [
       `for(let i=0;i<50;i++){const r=await tools.tool_search({query:"mercator",limit:20}); if(r.tools.some(t=>t.name==="mcp__mercator__create_job")){text(r);break;} await new Promise(resolve=>setTimeout(resolve,100));}`,
@@ -208,9 +287,32 @@ test("private provider capture survives pending recovery through authenticated H
     assert.ok(JSON.stringify(wire).includes("mercator_private_job_unavailable"),"unbound private result must be suppressed");
     assert.ok(JSON.stringify(wire).includes("resume_existing_job"),"explicit repeat issuance recovers the same job locally");
     assert.ok(!wire.some(f=>f.event?.type === "tool.result" && f.event.payload.status === "failed"),"all intended tool actions must succeed");
+    const savedByAPI = await native("/v1/vault/store", { capture_id: results[0].capture_id, operation_id: operation });
+    assert.equal(savedByAPI.status, 200); assert.equal(savedByAPI.body.vault_id, results[0].vault_id);
+    assert.deepEqual((await native("/v1/vault/store", {capture_id: results[0].capture_id, operation_id: operation})).body, savedByAPI.body);
+    const apiBalance = await native("/v1/vault/card", {operation:"balance",vault_id:results[0].vault_id});
+    assert.equal(apiBalance.status, 200); assert.equal(apiBalance.body.balance, 4.25);
+    const refreshID = crypto.randomUUID();
+    const refreshByAPI = await native("/v1/vault/card", {operation:"refresh",vault_id:results[0].vault_id,operation_id:refreshID});
+    assert.equal(refreshByAPI.status, 200); assert.equal(refreshByAPI.body.status, "balance_pending");
+    const count = downstream.length;
+    assert.equal((await native("/v1/vault/card", {operation:"refresh",vault_id:results[0].vault_id,operation_id:refreshID})).body.status,"balance_pending");
+    assert.equal(downstream.length, count, "replayed refresh does not dispatch twice");
+    assert.equal((await native("/v1/vault/card", {operation:"refresh",vault_id:results[0].vault_id})).status,400);
+    assert.equal((await native("/v1/vault/card", {operation:"balance",vault_id:results[0].vault_id,card_number:pan})).status,400);
+    const anonymous = await fetch(new URL("/v1/vault/card",base),{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({operation:"status",capture_id:results[0].capture_id})});
+    assert.equal(anonymous.status,401);
+    const csrf = await fetch(new URL("/v1/vault/card",base),{method:"POST",headers:{cookie:login.cookie,origin:"https://wrong.example","content-type":"application/json"},body:JSON.stringify({operation:"status",capture_id:results[0].capture_id})});
+    assert.equal(csrf.status,403);
+    const delegated = await backend.fetch("https://nanocodex.internal/v1/vault/card",{method:"POST",headers:connectHeaders,body:JSON.stringify({operation:"status",capture_id:results[0].capture_id})});
+    assert.ok([401,403].includes(delegated.status));
+    trace.push({case:"public_provider_auth_boundaries",anonymous:anonymous.status,csrf:csrf.status,connect:delegated.status});
     const otherOwner = "22222222-2222-4222-8222-222222222222";
     const other = await (await backend.fetch("https://fixture.test/__fixture", {method:"POST",body:JSON.stringify({user:otherOwner,capabilities})})).json();
     privateValues.push(other.token,other.cookie.split("=")[1]);
+    assert.equal((await native("/v1/vault/card", {operation:"balance",vault_id:results[0].vault_id}, "POST", other)).status,404);
+    assert.equal((await native("/v1/vault/store", {capture_id:results[0].capture_id,operation_id:crypto.randomUUID()}, "POST", other)).status,404);
+
     const isolationWireOffset = wire.length, isolationReads = downstream.length, isolationMcp = mcp.length;
     await runSession([
       `text(await tools.vault_store({capture_id:"${results[0].capture_id}",operation_id:"${crypto.randomUUID()}"}));`,

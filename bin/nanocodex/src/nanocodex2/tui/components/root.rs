@@ -306,6 +306,7 @@ pub(crate) enum SessionListKind {
 #[derive(Debug, Eq, PartialEq)]
 pub(crate) enum RootEffect {
     AutoRoute,
+    Connectors(String),
     Reload,
     SetDone(bool),
     Bug(String),
@@ -3238,6 +3239,11 @@ impl RootNode {
                 vec![RootEffect::Vault(command)]
             }
             Some(ComposerEffect::ShowAgentId) => vec![RootEffect::ShowAgentId],
+            Some(ComposerEffect::Submit(prompt))
+                if prompt.display_text().split_whitespace().next() == Some("/connectors") =>
+            {
+                vec![RootEffect::Connectors(prompt.display_text().to_owned())]
+            }
             // Goal controls are intercepted by the managed server and must not
             // wait behind active model work or an unacknowledged steer.
             Some(ComposerEffect::Submit(prompt))

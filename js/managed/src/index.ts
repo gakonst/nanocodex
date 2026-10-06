@@ -85,7 +85,7 @@ import { phoneTools } from "./phone-tool";
 import { emailTools, type EmailConfig } from "./email-tool";
 import { mercatorMcpPayment } from "./mercator-mcp-payment";
 import { mercatorPrivateResult, mercatorPrivateStore } from "./mercator-private-result";
-import { createProviderVaultTools } from "./provider-vault";
+import { createProviderVaultTools, routeProviderVaultRequest } from "./provider-vault";
 import { PhoneContainer } from "./phone-container";
 export { PhoneContainer };
 import { createVaultIntakeTool } from "./vault-intake-tool";
@@ -336,6 +336,7 @@ import {
   prepareAgentRegistration,
   publishAgentRegistration,
   authenticate,
+  authenticateVaultAccount,
   detachAgent,
   forwardPrincipalAssertions,
   isOrganizationCapabilities,
@@ -1881,6 +1882,10 @@ async function managedFetchRoute(
       const headers = new Headers(request.headers);
       forwardPrincipalAssertions(headers, principal);
       return routeRegionalToolHost(new Request(request, { headers }), principal.userId, env);
+    }
+    if (url.pathname === "/v1/vault/store" || url.pathname === "/v1/vault/card") {
+      const principal = await authenticateVaultAccount(request, env, url);
+      return routeProviderVaultRequest(request, env.NANOCODEX, principal);
     }
     if (url.pathname === "/v1/vault/request") {
       const principal = trustedAgentPrincipal ?? await authenticate(request, env, url);

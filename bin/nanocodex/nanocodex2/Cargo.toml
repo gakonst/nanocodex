@@ -147,3 +147,7 @@ path = "../tests/nanocodex2_continue.rs"
 [[test]]
 name = "nanocodex2_vault"
 path = "../tests/nanocodex2_vault.rs"
+
+[[test]]
+name = "nanocodex2_connectors"
+path = "../tests/nanocodex2_connectors.rs"

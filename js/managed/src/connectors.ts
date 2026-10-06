@@ -230,9 +230,7 @@ export async function routeConnectorRequest(
       || (operation === "callback" && request.method !== "GET")) {
       return json({ error: "method_not_allowed" }, 405);
     }
-    const principal = operation === "callback"
-      ? await authenticatePersistentAccount(request, env, url)
-      : await authenticateConnectorManagement(request, env, url);
+    const principal = await authenticateConnectorManagement(request, env, url);
     if (!principal) return json({ error: "unauthorized" }, 401);
     if (operation !== "callback") {
       const originFailure = requireSameOriginMutation(request, url, principal);
@@ -298,9 +296,9 @@ export async function routeConnectorRequest(
     return json({ error: "method_not_allowed" }, 405);
   }
 
-  const principal = callback
-    ? await authenticatePersistentAccount(request, env, url)
-    : await authenticateConnectorManagement(request, env, url);
+  // Native clients forward the provider callback with their owner device key.
+  // The broker still binds state, PKCE and the pending attempt to this user.
+  const principal = await authenticateConnectorManagement(request, env, url);
   if (!principal) return json({ error: "unauthorized" }, 401);
   if (!callback && request.method !== "GET") {
     const originFailure = requireSameOriginMutation(request, url, principal);
