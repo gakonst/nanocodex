@@ -35,8 +35,18 @@ use crate::subagents::{self, ChildAgents, DEFAULT_MAX_SUBAGENTS, SubagentToolSet
 use crate::vm::{ConfiguredVm, VmArgs};
 
 mod claude;
+pub(crate) use claude::frontend as claude_frontend;
+pub(crate) use claude::interaction::{
+    InteractionReceiver, PendingInteraction, serve_terminal as serve_claude_terminal,
+};
+pub(crate) use claude::scheduler::SessionScheduler;
+pub(crate) use claude::{prepare_rewind_branch, rewind_files};
+mod instructions;
+pub(crate) use instructions::{expand_session_user_skill, expand_user_skill};
 
 pub(crate) struct ConfiguredAgent {
+    pub(crate) claude_scheduler: Option<Arc<SessionScheduler>>,
+    pub(crate) claude_interactions: Option<InteractionReceiver>,
     pub(crate) handle: Nanocodex,
     pub(crate) events: AgentEvents,
     pub(crate) realtime: Option<OpenAi>,
@@ -58,7 +68,7 @@ struct SessionBuild {
 }
 
 /// Authentication flags shared by every direct-OpenAI CLI consumer.
-#[derive(Args)]
+#[derive(Args, Clone)]
 pub(crate) struct AuthArgs {
     /// Explicit `OpenAI` API key override.
     #[arg(long, value_parser = NonEmptyStringValueParser::new())]
@@ -139,6 +149,10 @@ pub(crate) struct EvalAgentArgs {
     reason = "independent CLI feature toggles are not one state machine"
 )]
 pub(crate) struct AgentArgs {
+    /// Internal native resume identity; never accepted from arbitrary CLI flags.
+    #[arg(skip)]
+    pub(crate) claude_resume: Option<crate::native_sessions::ResumeSession>,
+
     /// Voice microphone shortcut, or none to use /voice mute only.
     #[arg(long, env = "NANOCODEX_VOICE_MUTE_KEY", default_value = "ctrl+x", value_parser = crate::tui::voice::validate_key)]
     pub(crate) voice_mute_key: String,
@@ -180,6 +194,26 @@ pub(crate) struct AgentArgs {
     #[arg(long, global = true, env = "ANTHROPIC_MESSAGES_URL", value_parser = NonEmptyStringValueParser::new())]
     claude_messages_url: Option<String>,
 
+    /// Explicit JSON file enabling native Claude command hooks (Unix only).
+    #[arg(long, global = true, value_name = "PATH")]
+    claude_hooks: Option<PathBuf>,
+
+    /// Enable bounded native multi-agent workflows for this Claude root session.
+    #[arg(long, global = true)]
+    claude_workflows: bool,
+
+    /// Explicit private WebSocket origin allowed for native Monitor (repeatable).
+    #[arg(long, global = true, value_name = "ORIGIN", value_parser = NonEmptyStringValueParser::new())]
+    claude_monitor_ws_origin: Vec<String>,
+
+    /// Explicit JSON file with Claude permissions allow/ask/deny rules.
+    #[arg(long, global = true, value_name = "PATH")]
+    claude_permissions: Option<PathBuf>,
+
+    /// Native Claude admission mode (auto classifier mode is not implemented).
+    #[arg(long, global = true, value_parser = ["full-access", "bypassPermissions", "default", "manual", "acceptEdits", "plan", "dontAsk"])]
+    permission_mode: Option<String>,
+
     /// Optional namespace prepended to the model identifier on the wire.
     ///
     /// OpenAI routing gateways may use `openai`, producing identifiers such as
@@ -195,10 +229,9 @@ pub(crate) struct AgentArgs {
     #[arg(
         long,
         env = "NANOCODEX_FAST_MODE",
-        default_value_t = true,
         action = ArgAction::Set
     )]
-    fast_mode: bool,
+    fast_mode: Option<bool>,
 
     /// Replace the standard system/developer instructions.
     #[arg(long, value_parser = NonEmptyStringValueParser::new())]
@@ -208,10 +241,9 @@ pub(crate) struct AgentArgs {
     #[arg(
         long,
         env = "NANOCODEX_IMAGE_GENERATION",
-        default_value_t = true,
         action = ArgAction::Set
     )]
-    image_generation: bool,
+    image_generation: Option<bool>,
 
     /// Whether clean, reusable Tact-style subagents are exposed in Code Mode.
     #[arg(
@@ -287,6 +319,41 @@ pub(crate) struct AgentArgs {
 }
 
 impl AgentArgs {
+    pub(crate) fn resume_claude(
+        mut self,
+        session: crate::native_sessions::ResumeSession,
+    ) -> Result<Self> {
+        if !self.rollouts {
+            return Err(eyre!(
+                "Claude resume requires native persistence; remove --rollouts false"
+            ));
+        }
+        let workspace = session.workspace.as_ref().or(self.cwd.as_ref())
+            .ok_or_else(|| eyre!("legacy Claude session has no saved workspace; pass --cwd explicitly to resume it"))?
+            .canonicalize().wrap_err("failed to resolve the resumed Claude workspace")?;
+        if let Some(requested) = &self.cwd
+            && requested
+                .canonicalize()
+                .wrap_err("failed to resolve --cwd")?
+                != workspace
+        {
+            return Err(eyre!(
+                "resumed Claude workspace is {}; --cwd requested {}",
+                workspace.display(),
+                requested.display()
+            ));
+        }
+        // An environment default must never silently switch a resumed model.
+        // An explicit --model remains a deliberate, family-validated override.
+        if self.model.is_none() {
+            self.model = Some(session.model.ok_or_else(|| eyre!("legacy Claude session has no saved model; pass --model explicitly to resume it"))?.to_string());
+        }
+        self.requested_model(HarnessFamily::Claude)?;
+        self.cwd = Some(workspace);
+        self.claude_resume = Some(session);
+        Ok(self)
+    }
+
     pub(crate) fn harness_model(&self) -> Result<HarnessModel> {
         let family = self.selected_harness()?;
         self.model_policy.requested_thinking(family)?;
@@ -297,7 +364,9 @@ impl AgentArgs {
 
     pub(crate) fn selected_harness(&self) -> Result<HarnessFamily> {
         match (self.claude, self.harness.as_deref()) {
-            (true, Some("codex")) => Err(eyre!("--claude conflicts with --harness codex")),
+            (true, Some(family)) if family != "claude" => {
+                Err(eyre!("--claude conflicts with --harness {family}"))
+            }
             (true, _) | (false, Some("claude")) => Ok(HarnessFamily::Claude),
             _ => Ok(HarnessFamily::Codex),
         }
@@ -330,8 +399,10 @@ impl AgentArgs {
         self.browser.disable();
         self.mcp.disable();
         self.model_policy.web_search = Some(false);
-        self.image_generation = false;
+        self.image_generation = Some(false);
         self.subagents = false;
+        self.claude_workflows = false;
+        self.claude_monitor_ws_origin.clear();
         self.rollouts = false;
         self.instructions = Some(instructions.into());
     }
@@ -382,7 +453,7 @@ impl AgentArgs {
             .unwrap_or_else(|| {
                 self.harness_model()
                     .ok()
-                    .filter(|model| model.family() == HarnessFamily::Claude)
+                    .filter(|model| model.family() != HarnessFamily::Codex)
                     .map_or(Thinking::Xhigh, HarnessModel::default_thinking)
             })
     }
@@ -392,7 +463,7 @@ impl AgentArgs {
     }
 
     pub(crate) fn fast_mode(&self) -> bool {
-        self.fast_mode
+        self.fast_mode.unwrap_or(true)
             && self
                 .selected_harness()
                 .is_ok_and(|family| family == HarnessFamily::Codex)
@@ -435,6 +506,16 @@ impl AgentArgs {
         local_durability: Option<LocalDurability>,
     ) -> Result<ConfiguredAgent> {
         let harness = self.selected_harness()?;
+        if self.claude_workflows && (harness != HarnessFamily::Claude || !self.subagents) {
+            return Err(eyre!(
+                "--claude-workflows requires the Claude harness and enabled subagents"
+            ));
+        }
+        if !self.claude_monitor_ws_origin.is_empty() && harness != HarnessFamily::Claude {
+            return Err(eyre!(
+                "--claude-monitor-ws-origin requires the Claude harness"
+            ));
+        }
         let requested_model = self.requested_model(harness)?;
         if harness == HarnessFamily::Claude {
             return self
@@ -481,7 +562,9 @@ impl AgentArgs {
         };
         let model = match requested_model {
             Some(HarnessModel::Codex(model)) => model,
-            Some(HarnessModel::Claude(_)) => unreachable!("model family was validated"),
+            Some(HarnessModel::Claude(_)) => {
+                unreachable!("model family was validated")
+            }
             None => connected_account_default_model(auth.mode()),
         };
         let direct_websocket_url = direct_websocket_url(self.websocket_url, auth.mode());
@@ -527,7 +610,7 @@ impl AgentArgs {
             None => Tools::builder(),
         }
         .web_search(web_search)
-        .image_generation(self.image_generation);
+        .image_generation(self.image_generation.unwrap_or(true));
         let managed_mcp = if self.mcp.loads_managed() {
             let _timing = crate::startup_timing::Stage::new("managed_mcp_credentials");
             load_managed_mcp_credential(&codex_home).await?
@@ -547,21 +630,15 @@ impl AgentArgs {
             }
             tools = tools.remote_http_client(mpp_adapter.tool_http_client()?);
         }
-        let computer_config = if configured_vm.is_none() {
+        if configured_vm.is_none() {
             let _timing = crate::startup_timing::Stage::new("computer_discovery");
-            nanocodex_computer::ComputerConfig::discover_or_install()
+            if let Some(computer) = crate::computer::connect_for_startup()
                 .await
-                .map_err(|error| eyre!(error))?
-        } else {
-            None
-        };
-        if let Some(config) = computer_config {
-            let _timing = crate::startup_timing::Stage::new("computer_catalog");
-            let computer = nanocodex_computer::ComputerTools::connect(config)
-                .await
-                .map_err(|error| eyre!(error.to_string()))?;
-            for tool in computer.tools() {
-                tools = tools.add(tool);
+                .map_err(eyre::Report::msg)?
+            {
+                for tool in computer.tools() {
+                    tools = tools.add(tool);
+                }
             }
         }
         if let Some(managed_memory) = &managed_memory {
@@ -578,27 +655,22 @@ impl AgentArgs {
             .web_search(false)
             .image_generation(false)
             .build()?;
+        let workspaces = Arc::new(claude::WorkspaceRegistry::new(
+            session.workspace.clone(),
+            codex_home.clone(),
+        ));
+        let root_workspace = session.workspace.clone();
+        let codex_workspaces = Arc::clone(&workspaces);
+        let codex_workspace = session.workspace.clone();
         let codex_registry = subagent_runtime
             .as_ref()
             .map(|(registry, _, _)| Arc::clone(registry));
         let codex_tools = tools.clone();
         let mut codex_recipe = Nanocodex::builder(openai.clone())
             .reasoning_mode(self.reasoning_mode)
-            .fast_mode(self.fast_mode)
+            .fast_mode(self.fast_mode.unwrap_or(true))
             .workspace(session.workspace.clone())
-            .codex_home(codex_home.clone())
-            .tools_factory(move |parent| {
-                if let Some(registry) = &codex_registry {
-                    subagents::install_tools(
-                        codex_tools.clone(),
-                        parent,
-                        Arc::clone(registry),
-                        subagent_tools.unwrap_or(SubagentToolSet::Generic),
-                    )
-                } else {
-                    Ok(codex_tools.clone())
-                }
-            });
+            .codex_home(codex_home.clone());
         if let Some(instructions) = self.instructions.clone() {
             codex_recipe = codex_recipe.instructions(instructions);
         }
@@ -612,13 +684,58 @@ impl AgentArgs {
         let harness_builder =
             nanocodex::Harness::builder().register(HarnessFamily::Codex, move |request| {
                 let mut builder = codex_recipe.clone();
+                let tools = codex_tools.clone();
+                let registry = codex_registry.clone();
+                let workspace = codex_workspace.clone();
+                let workspaces = Arc::clone(&codex_workspaces);
                 async move {
                     let HarnessModel::Codex(model) = request.model else {
                         return Err(nanocodex::NanocodexError::InvalidRequest(
                             "Codex recipe received a Claude model".into(),
                         ));
                     };
+                    workspaces
+                        .authorize_cross_family(request.parent.as_ref())
+                        .map_err(nanocodex::NanocodexError::InvalidRequest)?;
+                    let session_id = match &request.snapshot {
+                        Some(nanocodex::agent::ChildSnapshot::Codex(snapshot)) => {
+                            snapshot.session_id.parse::<SessionId>().map_err(|error| {
+                                nanocodex::NanocodexError::InvalidRequest(error.to_string())
+                            })?
+                        }
+                        _ => SessionId::new(),
+                    };
+                    let session_key = session_id.to_string();
+                    if let Some(parent) = &request.parent {
+                        workspaces.initialize(parent.session_id(), &session_key)
+                    } else {
+                        workspaces.seed(&session_key, workspace)
+                    }
+                    .map_err(nanocodex::NanocodexError::InvalidRequest)?;
+                    let workspace = workspaces
+                        .current(&session_key)
+                        .map_err(nanocodex::NanocodexError::InvalidRequest)?;
+                    let tool_workspace = workspace.clone();
                     builder = builder
+                        .session_id(session_id)
+                        .workspace(workspace)
+                        .tools_factory(move |parent| {
+                            workspaces
+                                .seed(parent.session_id(), tool_workspace.clone())
+                                .map_err(
+                                    nanocodex::tools::runtime::ToolsBuildError::HostInitialization,
+                                )?;
+                            if let Some(registry) = &registry {
+                                subagents::install_tools(
+                                    tools.clone(),
+                                    parent,
+                                    Arc::clone(registry),
+                                    subagent_tools.unwrap_or(SubagentToolSet::Generic),
+                                )
+                            } else {
+                                Ok(tools.clone())
+                            }
+                        })
                         .model(model)
                         .thinking(request.thinking)
                         .host_context(request.host_context)
@@ -630,20 +747,33 @@ impl AgentArgs {
                 }
             });
         let harness = claude::register_claude_recipe(
-            harness_builder, claude::ClaudeConnection::new(
-                self.claude_auth, self.claude_api_key, self.claude_messages_url,
-            ),
-            session.workspace.clone(), self.instructions.clone().unwrap_or_else(||
-                "You are a coding agent. Use native Claude file tools and Bash for the workspace; use exec for shared MCP and subagent capabilities.".to_owned()),
+            harness_builder,
+            claude::ClaudeConnection::new(
+                self.claude_auth,
+                self.claude_api_key,
+                self.claude_messages_url,
+            )
+            .with_hooks(self.claude_hooks)
+            .with_permission_config(
+                self.claude_permissions.as_deref(),
+                self.permission_mode.as_deref(),
+            )?,
+            session.workspace.clone(),
+            self.instructions.clone(),
             claude_tools,
             web_search,
-            subagent_runtime.as_ref().map(|(registry, _, _)| Arc::clone(registry)),
-        ).build();
+            subagent_runtime
+                .as_ref()
+                .map(|(registry, _, _)| Arc::clone(registry)),
+            mcp_handle.clone(),
+            Arc::clone(&workspaces),
+        )
+        .build();
         let mut builder = Nanocodex::builder(openai)
             .model(model)
             .reasoning_mode(self.reasoning_mode)
             .thinking(thinking)
-            .fast_mode(self.fast_mode)
+            .fast_mode(self.fast_mode.unwrap_or(true))
             .spawn_factory(harness.spawn_factory())
             .workspace(session.workspace)
             .codex_home(codex_home);
@@ -656,22 +786,19 @@ impl AgentArgs {
         if let Some(rollout) = session.rollout {
             builder = builder.rollout(rollout);
         }
-        let builder = if let (Some((registry, _, _)), Some(subagent_tools)) =
-            (&subagent_runtime, subagent_tools)
-        {
-            let tools = tools;
-            let registry = Arc::clone(registry);
-            builder.tools_factory(move |agent| {
-                subagents::install_tools(
-                    tools.clone(),
-                    agent,
-                    Arc::clone(&registry),
-                    subagent_tools,
-                )
-            })
-        } else {
-            builder.tools(tools)
-        };
+        let root_registry = subagent_runtime
+            .as_ref()
+            .map(|(registry, _, _)| Arc::clone(registry));
+        let builder = builder.tools_factory(move |agent| {
+            workspaces
+                .seed(agent.session_id(), root_workspace.clone())
+                .map_err(nanocodex::tools::runtime::ToolsBuildError::HostInitialization)?;
+            if let (Some(registry), Some(subagent_tools)) = (&root_registry, subagent_tools) {
+                subagents::install_tools(tools.clone(), agent, Arc::clone(registry), subagent_tools)
+            } else {
+                Ok(tools.clone())
+            }
+        });
         let additional_instructions = session_instructions(
             self.instructions.as_deref(),
             generic_subagents,
@@ -725,6 +852,8 @@ impl AgentArgs {
                 )
             });
         Ok(ConfiguredAgent {
+            claude_interactions: None,
+            claude_scheduler: None,
             handle,
             events,
             realtime,

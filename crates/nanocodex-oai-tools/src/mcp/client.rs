@@ -124,6 +124,57 @@ impl ClientInner {
         tools
     }
 
+    pub(crate) async fn native_tools(&self) -> Result<Vec<Tool>, String> {
+        if !self
+            .service
+            .peer_info()
+            .is_some_and(|info| info.capabilities.tools.is_some())
+        {
+            return Ok(Vec::new());
+        }
+        self.refresh_oauth().await?;
+        self.list_all_tools(&Span::current()).await
+    }
+
+    pub(crate) fn supports_resources(&self) -> bool {
+        self.service
+            .peer_info()
+            .is_some_and(|info| info.capabilities.resources.is_some())
+    }
+
+    pub(crate) async fn list_resources(&self) -> Result<Value, String> {
+        self.refresh_oauth().await?;
+        let resources = collect_paginated("resources/list", |params| async move {
+            let result = self
+                .service
+                .list_resources(params)
+                .await
+                .map_err(|e| e.to_string())?;
+            Ok((result.resources, result.next_cursor))
+        })
+        .await?;
+        let templates = collect_paginated("resources/templates/list", |params| async move {
+            let result = self
+                .service
+                .list_resource_templates(params)
+                .await
+                .map_err(|e| e.to_string())?;
+            Ok((result.resource_templates, result.next_cursor))
+        })
+        .await?;
+        Ok(serde_json::json!({"resources": resources, "resourceTemplates": templates}))
+    }
+
+    pub(crate) async fn read_resource(&self, uri: &str) -> Result<Value, String> {
+        self.refresh_oauth().await?;
+        let result = self
+            .service
+            .read_resource(rmcp::model::ReadResourceRequestParams::new(uri))
+            .await
+            .map_err(|e| e.to_string())?;
+        serde_json::to_value(result).map_err(|e| e.to_string())
+    }
+
     pub(crate) async fn refresh_oauth(&self) -> Result<(), String> {
         if let Some(oauth) = &self.oauth {
             oauth.refresh_if_needed().await?;
@@ -516,7 +567,13 @@ async fn finish_startup(
         tool.count = tracing::field::Empty,
     );
     client.refresh_oauth().await?;
-    let tools =
+    let supports_tools = client
+        .service
+        .peer_info()
+        .is_some_and(|info| info.capabilities.tools.is_some());
+    let tools = if !supports_tools {
+        Ok(Vec::new())
+    } else {
         match tokio::time::timeout(server.startup_timeout, client.list_all_tools(&span)).await {
             Ok(Ok(tools)) => Ok(tools
                 .into_iter()
@@ -524,7 +581,8 @@ async fn finish_startup(
                 .collect::<Vec<_>>()),
             Ok(Err(error)) => Err(format!("MCP tools/list failed: {error}")),
             Err(_) => Err(startup_timeout(server, "tools/list")),
-        };
+        }
+    };
     span.record("status", if tools.is_ok() { "completed" } else { "failed" });
     span.record(
         "otel.status_code",

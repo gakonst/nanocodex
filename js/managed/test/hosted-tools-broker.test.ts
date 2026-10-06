@@ -41,6 +41,26 @@ type CallRow = NonNullable<ReturnType<HostedToolsBrokerPersistence["call"]>>;
 type CallState = CallRow["state"];
 
 describe("HostedToolsBroker socket-owned protocol", () => {
+  it("sends a hidden terminal hook only to the runtime used by that turn", async () => {
+    const fixture = createFixture();
+    const host = fixture.socket();
+    await fixture.broker.message(host.webSocket, JSON.stringify({
+      type: "catalog", capabilities: ["turn_metadata"], tools: [entry()], turn_lifecycle: true,
+    }));
+    const tool = fixture.broker.provider().resolve("fixture__lookup")!;
+    const pending = tool.handler({}, { sessionId: "session", callId: "cleanup-call", turnId: "actual-turn", model: "fixture" });
+    const frame = host.sent.find(frame => frame.type === "call")!;
+    await fixture.broker.message(host.webSocket, result(String(frame.call_id), "ok"));
+    await pending;
+    await fixture.broker.endTurn("session", "unused-turn", "Stop");
+    await fixture.broker.endTurn("session", "actual-turn", "Interrupt");
+    await fixture.broker.endTurn("session", "actual-turn", "Interrupt");
+    expect(host.sent.filter(frame => frame.type === "turn_ended")).toEqual([
+      { type: "turn_ended", session_id: "session", turn_id: "actual-turn", hook_event_name: "Interrupt" },
+    ]);
+    fixture.broker.close(host.webSocket, "test complete");
+  });
+
   it.each([undefined, 2])("admits beyond old fixed caps unless a resource limit is configured (%s)", async maxInFlight => {
     const fixture = createFixture(undefined, { maxInFlight });
     const host = fixture.socket();

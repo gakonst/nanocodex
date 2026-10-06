@@ -1,6 +1,14 @@
+import { accountNavigationLinks } from "nanocodex-connect-protocol";
+import { parseSshCredentialImport, sshCredentialImportDigest, sshImportFromResources, sshTargetResource } from "./sshCredentialImport.mts";
+import type { SshCredentialImport } from "./sshCredentialImport.mts";
+import { machOnramp, type MachOnrampEnv } from "./machOnramp";
 import { Handler, Kv } from "accounts/server";
 import { serviceRoute, serviceVaultRequest, scopedVaultMetadata } from "./serviceRoutes";
 import { approvedServices, isServiceCapabilities, type ServiceCapabilities } from "./servicePolicy.mts";
+import { oauthMcp, activeMcpGrant, type McpGrant, type McpOAuthHooks, oauthJson } from "./oauthMcp.mts";
+import { mcpServer } from "./mcpServer.mts";
+import { McpEventService, McpEventFailure, mcpEventsAllowed, type McpEventStorage } from "./mcpEvents.mts";
+import { mcpWebhookFetch } from "./mcpEventTransport.mts";
 import { appThreadStorage, type AppThread } from "./appThreads.mts";
 import { withManagedAccess } from "nanocodex/managed";
 import { custom } from "viem";
@@ -117,6 +125,24 @@ type AtomicNonceStorage = Kv.NonceStorage.State["storage"] & {
 export class ConnectNonceStorage extends Kv.NonceStorage {
   override async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
+    if (url.pathname === "/mcp-public-rate") {
+      const { key, kind } = await request.json() as { key: string; kind: string };
+      if (!/^[0-9a-f]{64}$/.test(key) || !["register", "authorize"].includes(kind)) return new Response(null, { status: 400 });
+      const allowed = await (this.state.storage as AtomicNonceStorage).transaction(async storage => {
+        const hour = Math.floor(Date.now() / 3_600_000);
+        const current = await storage.get<{ hour: number; count: number; actors: Record<string, number> }>(`mcp-rate:${kind}`);
+        // Two bounded rolling maps avoid permanent per-IP or per-client rows.
+        const state = current?.hour === hour ? current : { hour, count: 0, actors: {} };
+        const limit = kind === "register" ? 20 : 100, global = kind === "register" ? 200 : 1000;
+        const actorCount = state.actors[key] ?? 0;
+        if (state.count >= global || actorCount >= limit) return false;
+        state.count += 1;
+        state.actors[key] = actorCount + 1;
+        await storage.put(`mcp-rate:${kind}`, state);
+        return true;
+      });
+      return Response.json({ allowed });
+    }
     if (url.pathname === "/app-threads") {
       return appThreadStorage(request, this.state.storage as unknown as Parameters<typeof appThreadStorage>[1]);
     }
@@ -386,9 +412,10 @@ type ConnectLogContext = Readonly<{
   connector?: ConnectorCapability | OAuthConnectorProvider;
 }>;
 
-type Env = Readonly<{
+type Env = MachOnrampEnv & Readonly<{
   ACCOUNTS: Fetcher;
   CONNECT_STATE: Kv.durableObject.Namespace;
+  MCP_EVENTS: Kv.durableObject.Namespace;
   EGRESS: Fetcher;
   NANOCODEX: Fetcher;
   NANOCODEX_LOCAL_OAUTH_RELAY_HMAC_KEY?: string;
@@ -490,7 +517,26 @@ export default {
     };
     try {
       const url = new URL(request.url);
+      if (url.pathname === "/v1/account/links") {
+        const headers = { "cache-control": "no-store" };
+        if (request.method !== "GET") return cors(Response.json({ error: "method_not_allowed" }, { status: 405, headers: { ...headers, allow: "GET" } }), request);
+        const links = accountNavigationLinks(connectDialogOrigin(url), url.searchParams);
+        return cors(Response.json(links ?? { error: "invalid_request" }, { status: links ? 200 : 400, headers }), request);
+      }
       const store = Kv.durableObject(env.CONNECT_STATE);
+
+      const oauthHooks = mcpOAuthHooks(env, store, context);
+      const oauth = await oauthMcp(request, store, oauthHooks);
+      if (oauth) return cors(oauth, request);
+      if (url.pathname === "/mcp") {
+        return cors(await mcpServer(request, store, oauthHooks, {
+          call: (name, args, grant, source) => callMcpTool(env, store, name, args, grant, source),
+          events: {
+            capabilities: grant => mcpEventsAllowed(grant) ? { events: { listChanged: false } } : {},
+            call: (method, params, grant) => callMcpEvents(env, method, params, grant),
+          },
+        }), request);
+      }
 
       if ((request.method === "POST" && url.pathname === "/v1/host-principal/exchanges")
         || (request.method === "DELETE" && url.pathname === "/v1/host-principal/sessions")) {
@@ -587,13 +633,7 @@ export default {
         );
       }
       if (request.method === "GET" && url.pathname === "/v1/machine-usd/config") {
-        const upstream = await fetch(`${MERCATOR_ORIGIN}/v1/onramp/config`, {
-          headers: { accept: "application/json" },
-        });
-        return cors(new Response(upstream.body, {
-          status: upstream.status,
-          headers: { "content-type": upstream.headers.get("content-type") ?? "application/json" },
-        }), request);
+        return cors(await machOnramp(request, env, "/v1/config"), request);
       }
       if (/^\/git\/thread-[a-f0-9]{8}-[a-f0-9]{4}-[1-5][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}\/(?:info\/refs|git-upload-pack|git-receive-pack)$/.test(url.pathname)) {
         requirePlaygroundOrigin(request);
@@ -628,24 +668,12 @@ export default {
       }
       if (request.method === "POST" && url.pathname === "/v1/machine-usd/orders") {
         requireOnrampOrigin(request);
-        const upstream = await fetch(`${MERCATOR_ORIGIN}/v1/onramp/orders`, {
-          method: "POST",
-          headers: {
-            "content-type": "application/json",
-            "idempotency-key": requiredHeader(request, "idempotency-key"),
-          },
-          body: await request.text(),
-        });
-        return cors(proxy(upstream), request);
+        return cors(await machOnramp(request, env, "/v1/orders"), request);
       }
       const machineUsdOrder = url.pathname.match(/^\/v1\/machine-usd\/orders\/([^/]+)$/);
       if (request.method === "GET" && machineUsdOrder) {
         requireOnrampOrigin(request);
-        const upstream = await fetch(
-          `${MERCATOR_ORIGIN}/v1/onramp/orders/${encodeURIComponent(machineUsdOrder[1]!)}`,
-          { headers: { authorization: requiredHeader(request, "authorization") } },
-        );
-        return cors(proxy(upstream), request);
+        return cors(await machOnramp(request, env, `/v1/orders/${machineUsdOrder[1]!}`), request);
       }
 
       const connectorCallback = url.pathname.match(
@@ -1469,12 +1497,195 @@ function isMcpIntent(value: unknown): value is McpIntent {
     && Number.isSafeInteger(value.expiresAt);
 }
 
+/** OAuth adapters use server-validated intent + authentic account approval.
+ * No browser Origin is synthesized, and the underlying Connect token never
+ * leaves the issuer. MCP bearer tokens cannot enter ordinary Connect routes. */
+function mcpOAuthHooks(env: Env, store: Kv.Kv, context: WorkerContext): McpOAuthHooks {
+  return {
+    requireDialog: requireDialogOrigin,
+    consentOrigin: request => isLocalDeviceOrigin(new URL(request.url).origin) ? new URL(request.url).origin : DIALOG_ORIGIN,
+    registrationAllowed: request => mcpPublicRate(env, "register", request.headers.get("cf-connecting-ip") ?? "local"),
+    authorizationAllowed: (_request, clientId) => mcpPublicRate(env, "authorize", clientId),
+    approve: async (request, authorization, body) => {
+      const approvalResponse = await createHostedAuthorization(request, env, store, {
+        account_address: body.account_address, code: body.code, resources: authorization.resources,
+        app_id: authorization.app_id, app_origin: authorization.app_origin,
+      });
+      const approval = await approvalResponse.json() as { approval_id: string; account_address: string };
+      const requested = [...approvedConnectors(authorization.resources)];
+      const connection = await createConnection(request, env, store, context, {
+        app: validateCallerApp(authorization.app_id, authorization.app_origin),
+        body: { app_id: authorization.app_id, approval_id: approval.approval_id, account_address: approval.account_address,
+          permission: "agent.run", authorization_mode: "hosted", requested_connectors: requested },
+      });
+      const wire = await connection.json() as { grant_token: string; grant: { id: string; expires_at: number }; agent_id: string };
+      const stored = await store.get<GrantRecord>(`grant:${wire.grant.id}`);
+      if (!stored) throw new ApiFailure(503, "grant_state_unavailable", "The approved grant could not be resolved.");
+      return { id: stored.id, token: wire.grant_token, appId: stored.appId, appOrigin: stored.appOrigin,
+        expiresAt: stored.expiresAt, capabilities: stored.capabilities, agentId: stored.agentId };
+    },
+    active: async grant => !!await mcpGrantRecord(store, grant),
+    revoke: async grant => {
+      const current = await mcpGrantRecord(store, grant);
+      if (current) await withGrantMutationLock(store, current.id, () => revokeGrant(env, store, current, grant.token));
+    },
+  };
+}
+async function mcpPublicRate(env: Env, kind: "register" | "authorize", actor: string): Promise<boolean> {
+  const key = (await digestHex(actor)).slice(2);
+  const stub = env.CONNECT_STATE.get(env.CONNECT_STATE.idFromName("default"));
+  const response = await stub.fetch("https://do.invalid/mcp-public-rate", {
+    method: "POST", body: JSON.stringify({ key, kind }),
+  });
+  return response.ok && (await response.json() as { allowed: boolean }).allowed;
+}
+async function mcpGrantRecord(store: Kv.Kv, reference: McpGrant): Promise<GrantRecord | undefined> {
+  const [grant, principal] = await Promise.all([
+    store.get<GrantRecord>(`grant:${reference.id}`), store.get<GrantPrincipal>(`grant-token:${reference.token}`),
+  ]);
+  if (!isGrantRecord(grant) || !isGrantPrincipal(principal) || grant.id !== reference.id || principal.grantId !== grant.id
+    || grant.appId !== reference.appId || grant.appOrigin !== reference.appOrigin || principal.appId !== grant.appId
+    || principal.appOrigin !== grant.appOrigin || !grantPrincipalOwnerMatches(grant, principal)
+    || JSON.stringify(grant.capabilities) !== JSON.stringify(reference.capabilities)
+    || grant.status !== "active" || grant.expiresAt <= Math.floor(Date.now() / 1000) || grant.hostPrincipal !== undefined) return undefined;
+  return grant;
+}
+/** Separate per-grant objects own subscription secrets and alarm-driven delivery.
+ * No public HTTP route forwards to this private control surface. */
+export class McpEvents {
+  private events: McpEventService;
+  constructor(ctx: { storage: McpEventStorage; waitUntil(promise: Promise<unknown>): void }, env: Env) {
+    const store = Kv.durableObject(env.CONNECT_STATE);
+    const oauth = mcpOAuthHooks(env, store, ctx);
+    this.events = new McpEventService(ctx.storage, {
+      active: grant => activeMcpGrant(grant, store, oauth),
+      status: async (reference, turnId) => {
+        // Keep managed-agent assertions current; never pass stored bearer tokens upstream.
+        if (!await activeMcpGrant(reference, store, oauth)) return undefined;
+        const grant = await mcpGrantRecord(store, reference);
+        if (!grant) return undefined;
+        const path = `${grant.agentId}/turns/${encodeURIComponent(turnId)}`;
+        const response = await proxyManagedAgent(new Request(`https://nanocodex.internal/v1/agents/${path}`), env, grant, path);
+        if (response.status === 404) return undefined;
+        if (!response.ok) throw new Error("MCP event source unavailable");
+        const value = JSON.parse(await boundedResponseText(response, MAX_MANAGED_DATA_RESPONSE_BYTES)) as Record<string, unknown>;
+        if (typeof value.state !== "string" || typeof value.updated_at !== "number"
+          || !Number.isFinite(value.updated_at) || !Number.isFinite(new Date(value.updated_at).getTime())) {
+          throw new Error("Invalid MCP event source response");
+        }
+        return { state: value.state, completedAt: new Date(value.updated_at).toISOString() };
+      },
+      webhookFetch: mcpWebhookFetch,
+    });
+  }
+  async fetch(request: Request): Promise<Response> {
+    if (request.method !== "POST") return new Response(null, { status: 405 });
+    const body = await request.json() as { method: string; params: Record<string, unknown>; grant: McpGrant };
+    try {
+      let result: unknown;
+      switch (body.method) {
+        case "events/list": result = await this.events.list(body.grant, body.params); break;
+        case "events/subscribe": result = await this.events.subscribe(body.grant, body.params); break;
+        case "events/unsubscribe": result = await this.events.unsubscribe(body.grant, body.params); break;
+        case "track": await this.events.track(body.grant, String(body.params.turn_id)); result = {}; break;
+        case "forget": await this.events.forget(body.grant, String(body.params.turn_id)); result = {}; break;
+        default: throw new McpEventFailure(-32601, "Method not found.");
+      }
+      return oauthJson({ result });
+    } catch (error) {
+      if (error instanceof McpEventFailure) return oauthJson({ error: { code: error.code, message: error.message, data: error.data } });
+      throw error;
+    }
+  }
+  async alarm(): Promise<void> { await this.events.alarm(); }
+}
+async function callMcpEvents(env: Env, method: string, params: Record<string, unknown>, grant: McpGrant): Promise<unknown> {
+  const stub = env.MCP_EVENTS.get(env.MCP_EVENTS.idFromName(grant.id));
+  const response = await stub.fetch("https://mcp-events.internal/", { method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ method, params, grant }) });
+  if (!response.ok) throw new McpEventFailure(-32603, "Event service unavailable.");
+  const value = await response.json() as { result?: unknown; error?: { code: number; message: string; data?: Record<string, unknown> } };
+  if (value.error) throw new McpEventFailure(value.error.code, value.error.message, value.error.data);
+  return value.result;
+}
+async function callMcpTool(env: Env, store: Kv.Kv, name: string, args: Record<string, unknown>, reference: McpGrant, source: Request): Promise<Response> {
+  const grant = await mcpGrantRecord(store, reference);
+  if (!grant) throw new ApiFailure(401, "grant_inactive", "The Connect grant was revoked or expired.");
+  if (name === "nanocodex_connection") {
+    const connectors = CONNECTOR_IDS.filter(connector => connector !== "chatgpt" && grant.capabilities.includes(connector));
+    const status = connectors.length ? await brokerJson(env, `/users/${encodeURIComponent(grant.brokerUserId)}/connectors`) : undefined;
+    const projected = status ? projectGrantConnectorStatuses(connectorStatusProjection(status, {}), grant).connectors : {};
+    return oauthJson({ grant_id: grant.id, expires_at: grant.expiresAt, scope: reference.scope, agent_id: reference.scope?.split(" ").includes("agent:run") ? grant.agentId : undefined,
+      capabilities: grant.capabilities, connectors: Object.fromEntries(connectors.map(connector => [connector, projected[connector as keyof typeof projected]])) });
+  }
+  const connectorMatch = name.match(/^nanocodex_(.+)_request$/);
+  if (connectorMatch && isConnectorCapability(connectorMatch[1]) && connectorMatch[1] !== "chatgpt") {
+    const connector = connectorMatch[1];
+    const target = connectorTarget(connector, args.path);
+    const value = { ...args };
+    if (value.body !== undefined && typeof value.body !== "string") {
+      value.body = JSON.stringify(value.body);
+      const headers = new Headers(args.headers as Record<string, string> | undefined);
+      if (!headers.has("content-type")) headers.set("content-type", "application/json");
+      value.headers = Object.fromEntries(headers);
+    }
+    const response = await grantConnectorRequest(env, grant, connector, value, target, source.signal);
+    // Provider output is bounded and never interpreted as authority. Headers,
+    // cookies and credentials are not projected into MCP results.
+    const text = await boundedResponseText(response, 1024 * 1024);
+    if (!text && response.ok) return oauthJson({ status: response.status });
+    return new Response(text, { status: response.status,
+      headers: { "content-type": response.headers.get("content-type") ?? "text/plain" } });
+  }
+  if (name === "nanocodex_agent_start" || name === "nanocodex_agent_status") {
+    const start = name === "nanocodex_agent_start";
+    const suffix = start ? "/turns" : args.turn_id ? `/turns/${encodeURIComponent(String(args.turn_id))}` : "";
+    // Build an internal command from validated arguments, never caller headers.
+    const command = new Request(`https://nanocodex.internal/v1/agents/${grant.agentId}${suffix}`, {
+      method: start ? "POST" : "GET", headers: start ? { "content-type": "application/json", "idempotency-key": String(args.operation_id) } : {},
+      ...(start ? { body: JSON.stringify({ id: args.operation_id, input: args.prompt }) } : {}), signal: source.signal,
+    });
+    // Durable registration precedes upstream acceptance, closing the crash window
+    // between an accepted turn and its completion monitor. Unknown outcomes stay tracked.
+    if (start) await callMcpEvents(env, "track", { turn_id: args.operation_id }, reference);
+    const response = await proxyManagedAgent(command, env, grant, `${grant.agentId}${suffix}`);
+    if (start && response.status >= 400 && response.status < 500 && response.status !== 409) {
+      await callMcpEvents(env, "forget", { turn_id: args.operation_id }, reference);
+    }
+    return safeManagedJsonResponse(response);
+  }
+  let path: string;
+  const body = { ...args };
+  if (name === "nanocodex_data_read" || name === "nanocodex_data_write") {
+    const capability = managedUserDataCapability(args.operation);
+    if (!capability || !grant.capabilities.includes(capability) || name !== `nanocodex_data_${capability.split(":")[1]}`) throw new ApiFailure(403, "data_not_granted", "This data operation was not approved.");
+    path = "/v1/data";
+  } else if (name === "nanocodex_memory_read" || name === "nanocodex_memory_write") {
+    const write = args.operation === "write" || args.operation === "add_ad_hoc_note";
+    if (!grant.capabilities.includes(write ? "memory:write" : "memory:read")) throw new ApiFailure(403, "memory_not_granted", "This memory operation was not approved.");
+    path = `/v1/memories/${String(args.operation)}`;
+    delete body.operation;
+    if (args.operation === "write") body.operation = args.write_operation;
+    delete body.write_operation;
+  } else if (name === "nanocodex_history_search" || name === "nanocodex_history_read") {
+    if (!grant.capabilities.includes("history:read")) throw new ApiFailure(403, "history_not_granted", "History access was not approved.");
+    path = name === "nanocodex_history_search" ? "/v1/history/sessions/search" : `/v1/history/sessions/${encodeURIComponent(String(args.session_id))}/read`;
+    delete body.session_id;
+  } else throw new ApiFailure(400, "unknown_tool", "Unknown MCP tool.");
+  const headers = new Headers(managedGrantHeaders(managedGrantAssertion(grant)));
+  headers.set("content-type", "application/json");
+  return safeManagedJsonResponse(await env.ACCOUNTS.fetch(new Request(new URL(path, "https://nanocodex.internal"), {
+    method: "POST", headers, body: JSON.stringify(body), signal: source.signal, redirect: "manual",
+  })), MAX_MANAGED_DATA_RESPONSE_BYTES);
+}
+
 async function createHostedAuthorization(
   request: Request,
   env: Env,
   store: Kv.Kv,
+  trustedBody?: Record<string, unknown>,
 ): Promise<Response> {
-  const body = await boundedJson(request, 32 * 1024, "hosted authorization");
+  const body = trustedBody ?? await boundedJson(request, 32 * 1024, "hosted authorization");
   const encodedResources = stringResources(body.resources);
   let hostExchange: ReturnType<typeof hostPrincipalExchangeFromResources>;
   try {
@@ -1953,13 +2164,15 @@ async function createConnection(
   env: Env,
   store: Kv.Kv,
   context: WorkerContext,
+  trusted?: { app: CallerApp; body: Record<string, unknown> },
 ): Promise<Response> {
   const startedAt = performance.now();
   const timings: Array<readonly [string, number]> = [];
   const mark = (name: string) => timings.push([name, performance.now()]);
-  const body = await connectionRequestBody(request);
+  const body = trusted?.body ?? await connectionRequestBody(request);
   const appId = requiredString(body.app_id, "app_id");
-  const app = requireCallerApp(request, appId);
+  const app = trusted?.app ?? requireCallerApp(request, appId);
+  if (app.appId !== appId) throw new ApiFailure(403, "app_identity_mismatch", "The approved app does not match this request.");
   const approvalId = requiredString(body.approval_id, "approval_id");
   const permission = requiredString(body.permission, "permission");
   if (permission !== "agent.run" && permission !== "services.use") {
@@ -2025,6 +2238,8 @@ async function createConnection(
     app,
     requested,
   );
+
+  const sshImport = await approvedSshCredentialImport(body.ssh_credential_import, approval, app);
 
   const retainedIdentity = approval.profileLinked === true && isBrokerUserId(approval.brokerUserId)
     ? { linked: true, userId: approval.brokerUserId }
@@ -2096,6 +2311,9 @@ async function createConnection(
   if (JSON.stringify(consumedApproval) !== JSON.stringify(approval)) {
     throw new ApiFailure(403, "approval_unavailable", "The signed Connect approval changed before it was consumed.");
   }
+  // Consume the one-use approval before the SSH mutation. A timeout may mean
+  // the broker stored the key; never replay this PUT under the same approval.
+  if (sshImport) await importSshCredential(env, identity.userId, sshImport);
   const appScope = await scopedAppId(app);
   const grantId = await digestHex(`grant:${randomSubject()}`);
   const grantCapabilities = [
@@ -2243,6 +2461,7 @@ async function connectionRequestBody(request: Request): Promise<Record<string, u
     "approval_id",
     "authorization_mode",
     "chatgpt_credential_import",
+    "ssh_credential_import",
     "key_authorization",
     "permission",
     "principal",
@@ -2256,6 +2475,54 @@ async function connectionRequestBody(request: Request): Promise<Record<string, u
     throw new ApiFailure(400, "invalid_connection_request", "The connection request contains an unknown field.");
   }
   return body;
+}
+
+async function approvedSshCredentialImport(
+  value: unknown,
+  approval: ConnectApproval,
+  app: CallerApp,
+): Promise<SshCredentialImport | undefined> {
+  let approved;
+  try { approved = sshImportFromResources(approval.resources); }
+  catch { throw new ApiFailure(403, "invalid_ssh_import_resource", "The signed SSH import resources are invalid."); }
+  if ((value === undefined) !== (approved === undefined)) {
+    throw new ApiFailure(403, "ssh_import_mismatch", "The SSH credential and signed import resources must be provided together.");
+  }
+  if (value === undefined || !approved) return undefined;
+  if (approval.resources.filter(resource => resource.startsWith("urn:nanocodex:credential-import:")).length !== 1) {
+    throw new ApiFailure(403, "ssh_import_mismatch", "An SSH import requires exactly one credential import commitment.");
+  }
+  if (app.appId !== CLI_APP_ID || app.origin !== CLI_APP_ORIGIN
+    || approval.appId !== CLI_APP_ID || approval.appOrigin !== CLI_APP_ORIGIN
+    || approval.hostPrincipal !== undefined) {
+    throw new ApiFailure(403, "ssh_import_not_approved", "SSH credential import requires an exact Nanocodex CLI approval.");
+  }
+  let credential: SshCredentialImport;
+  try { credential = parseSshCredentialImport(value); }
+  catch { throw new ApiFailure(400, "invalid_ssh_credential", "The SSH credential import is invalid."); }
+  if (sshTargetResource(credential) !== sshTargetResource(approved.target)
+    || await sshCredentialImportDigest(credential) !== approved.digest) {
+    throw new ApiFailure(403, "ssh_import_mismatch", "The SSH credential does not match its signed target and commitment.");
+  }
+  return credential;
+}
+
+async function importSshCredential(env: Env, userId: string, credential: SshCredentialImport): Promise<void> {
+  const { reference, ...payload } = credential;
+  let response: Response;
+  try {
+    response = await env.EGRESS.fetch(new Request(
+      `https://nanocodex.internal/users/${encodeURIComponent(userId)}/credentials/ssh/${encodeURIComponent(reference)}`,
+      { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify(payload) },
+    ));
+  } catch {
+    throw new ApiFailure(502, "ssh_import_outcome_unknown", "The SSH import outcome is unknown. Check your saved SSH targets before starting a new import.");
+  }
+  // Broker response content can contain credentials or provider diagnostics.
+  // Keep only a fixed status receipt and never log or return that content.
+  await response.body?.cancel().catch(() => undefined);
+  if (response.status === 409) throw new ApiFailure(409, "ssh_reference_exists", "That SSH reference already exists; no credential was replaced.");
+  if (response.status !== 204) throw new ApiFailure(502, "ssh_import_failed", "The credential broker rejected the SSH import. Check your saved SSH targets before starting a new import.");
 }
 
 async function approvedChatGptCredentialImport(
@@ -6491,7 +6758,7 @@ function cors(response: Response, request: Request) {
     }
     response.headers.set(
       "access-control-allow-headers",
-      "accept-payment, authorization, content-type, git-protocol, idempotency-key, last-event-id, mcp-protocol-version, mcp-session-id, payment-session, payment-session-snapshot, payment-signature, x-nanocodex-app-id, x-nanocodex-connect-client, x-nanocodex-connector-connection",
+      "accept-payment, authorization, content-type, git-protocol, idempotency-key, last-event-id, mcp-protocol-version, mcp-method, mcp-name, mcp-session-id, payment-session, payment-session-snapshot, payment-signature, x-nanocodex-app-id, x-nanocodex-client-context, x-nanocodex-connect-client, x-nanocodex-connector-connection, x-nanocodex-voice-session-id",
     );
     response.headers.set("access-control-allow-methods", "GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS");
     response.headers.set("access-control-max-age", "86400");

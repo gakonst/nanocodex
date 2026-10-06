@@ -27,6 +27,37 @@ public struct RemoteHand: Decodable, Identifiable, Sendable {
     }
 }
 
+// Presentation labels never participate in discovery or persisted selection identity.
+extension RemoteHand {
+    var screenMachineName: String {
+        friendlyScreenMachineName(machineName, machineID: machineID, isVM: kind == .vm)
+    }
+
+    var screenSurfaceName: String {
+        let surface = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        if surface.isEmpty || surface == machineName {
+            return kind == .phone ? "Phone screen" : "Desktop"
+        }
+        return friendlyScreenMachineName(surface, machineID: machineID, isVM: kind == .vm)
+    }
+
+    var screenDisplayName: String {
+        screenMachineName == screenSurfaceName ? screenMachineName : screenMachineName + " · " + screenSurfaceName
+    }
+}
+
+private func friendlyScreenMachineName(_ name: String, machineID: String, isVM: Bool) -> String {
+    let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+    let uuidPattern = #"(?i)^(?:(?:vm|virtual machine|sandbox|cloudflare)[\s:_-]*)?([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$"#
+    let generated = trimmed.range(of: uuidPattern, options: .regularExpression) != nil
+    guard trimmed.isEmpty || generated || (isVM && trimmed == machineID) else { return trimmed }
+    let isVirtualMachine = isVM || trimmed.lowercased().hasPrefix("vm") || machineID.lowercased().hasPrefix("vm:")
+    let label = isVirtualMachine ? "Virtual machine" : "Computer"
+    // A short stable suffix distinguishes unnamed devices without exposing a full UUID.
+    let suffix = String((machineID.split(separator: ":").last ?? "").suffix(6))
+    return suffix.isEmpty ? label : label + " · " + suffix
+}
+
 /// A user-selected desktop for a conversation. Resolve the current publication
 /// generation from discovery each time; never persist a signaling lease.
 public struct RemoteScreenSelection: Codable, Equatable, Sendable {
@@ -37,6 +68,13 @@ public struct RemoteScreenSelection: Codable, Equatable, Sendable {
         machineID = hand.machineID; surfaceID = hand.id
         name = hand.machineName + " · " + hand.name
     }
+    var screenDisplayName: String {
+        let parts = name.components(separatedBy: " · ")
+        let machine = friendlyScreenMachineName(parts.first ?? name, machineID: machineID,
+                                               isVM: machineID.lowercased().hasPrefix("vm:"))
+        return ([machine] + Array(parts.dropFirst())).joined(separator: " · ")
+    }
+
     public func matches(_ hand: RemoteHand) -> Bool {
         machineID == hand.machineID && surfaceID == hand.id
     }

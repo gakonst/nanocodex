@@ -1,8 +1,9 @@
-//! Explicitly rooted, text-only workspace operations for a host-authorized Claude-style tool surface.
+//! Explicitly rooted, bounded workspace operations for a host-authorized Claude-style tool surface.
 //!
 //! Construct this module only after the host authorizes and isolates the workspace. The
 //! path checks are defense in depth, not a substitute for OS-level isolation or permissions.
 
+use crate::{ToolContent, ToolOutput, media::MediaReadOptions};
 use regex::RegexBuilder;
 use serde_json::{Value, json};
 use std::{
@@ -18,7 +19,7 @@ const MAX_VISITS: usize = 10_000;
 const MAX_SEARCH_BYTES: u64 = 128 * 1024 * 1024;
 static TEMP_ID: AtomicU64 = AtomicU64::new(0);
 
-/// A host-authorized directory used by text-only workspace tools.
+/// A host-authorized directory used by workspace tools.
 ///
 /// The host must explicitly authorize and OS-isolate this root. In particular, path
 /// validation cannot eliminate races with a hostile process concurrently swapping
@@ -27,6 +28,7 @@ static TEMP_ID: AtomicU64 = AtomicU64::new(0);
 pub struct ClaudeWorkspaceFiles {
     root: PathBuf,
     root_alias: PathBuf,
+    media: MediaReadOptions,
 }
 
 impl ClaudeWorkspaceFiles {
@@ -44,18 +46,30 @@ impl ClaudeWorkspaceFiles {
         if !root.is_dir() {
             return Err("workspace root is not a directory".into());
         }
-        Ok(Self { root, root_alias })
+        Ok(Self {
+            root,
+            root_alias,
+            media: MediaReadOptions::default(),
+        })
+    }
+
+    /// Configure trusted PDF helper executables. These paths are host configuration,
+    /// never tool-call arguments. The host must isolate helpers like other file tools.
+    #[must_use]
+    pub fn with_media_options(mut self, media: MediaReadOptions) -> Self {
+        self.media = media;
+        self
     }
 
     /// Standalone JSON metadata for the five tools; no model-vendor contract is required.
     #[must_use]
     pub fn definitions() -> Vec<Value> {
         vec![
-            json!({"name":"Read","description":"Read a UTF-8 workspace file with numbered lines.","input_schema":{"type":"object","properties":{"file_path":{"type":"string"},"offset":{"type":"integer","minimum":1},"limit":{"type":"integer","minimum":1}},"required":["file_path"],"additionalProperties":false}}),
+            json!({"name":"Read","description":"Read text with numbered lines, images, PDF pages, or notebook cells and outputs. PDF reads require Poppler pdfinfo/pdftoppm; pages selects at most 20 pages and is required for PDFs over 10 pages.","input_schema":{"type":"object","properties":{"file_path":{"type":"string"},"offset":{"type":"integer","minimum":1},"limit":{"type":"integer","minimum":1},"pages":{"type":"string","description":"PDF page or inclusive range, e.g. 3 or 1-5; maximum 20 pages."}},"required":["file_path"],"additionalProperties":false}}),
             json!({"name":"Edit","description":"Replace exact text in a workspace file, requiring one occurrence unless replace_all is true.","input_schema":{"type":"object","properties":{"file_path":{"type":"string"},"old_string":{"type":"string"},"new_string":{"type":"string"},"replace_all":{"type":"boolean"}},"required":["file_path","old_string","new_string"],"additionalProperties":false}}),
             json!({"name":"Write","description":"Atomically replace a UTF-8 workspace file, creating parent directories as needed.","input_schema":{"type":"object","properties":{"file_path":{"type":"string"},"content":{"type":"string"}},"required":["file_path","content"],"additionalProperties":false}}),
-            json!({"name":"Glob","description":"List matching workspace files using *, ? and ** wildcards.","input_schema":{"type":"object","properties":{"pattern":{"type":"string"},"path":{"type":"string"}},"required":["pattern"],"additionalProperties":false}}),
-            json!({"name":"Grep","description":"Search UTF-8 files with a bounded Rust regex. Default output is matching file paths; glob supports only *, ? and **. Unsupported type filters are rejected.","input_schema":{"type":"object","properties":{"pattern":{"type":"string"},"path":{"type":"string"},"glob":{"type":"string","description":"Simple file glob: *, ? and ** only (no braces or character classes)."},"output_mode":{"type":"string","enum":["content","files_with_matches","count"],"default":"files_with_matches"},"-B":{"type":"integer","minimum":0,"maximum":2000},"-A":{"type":"integer","minimum":0,"maximum":2000},"-C":{"type":"integer","minimum":0,"maximum":2000},"context":{"type":"integer","minimum":0,"maximum":2000},"-n":{"type":"boolean","default":true},"-i":{"type":"boolean"},"-o":{"type":"boolean"},"head_limit":{"type":"integer","minimum":0,"default":250},"offset":{"type":"integer","minimum":0,"default":0},"multiline":{"type":"boolean"}},"required":["pattern"],"additionalProperties":false}}),
+            json!({"name":"Glob","description":"List workspace files using glob wildcards, braces and character classes, newest first.","input_schema":{"type":"object","properties":{"pattern":{"type":"string"},"path":{"type":"string"}},"required":["pattern"],"additionalProperties":false}}),
+            json!({"name":"Grep","description":"Search text using a bounded Rust regex, ripgrep file types and glob syntax. Default output is matching file paths.","input_schema":{"type":"object","properties":{"pattern":{"type":"string"},"path":{"type":"string"},"glob":{"type":"string","description":"File glob, including braces and character classes. Prefix ! to exclude matches."},"type":{"type":"string","description":"Ripgrep file type, for example rust, py, js, ts or all."},"output_mode":{"type":"string","enum":["content","files_with_matches","count"],"default":"files_with_matches"},"-B":{"type":"integer","minimum":0,"maximum":2000},"-A":{"type":"integer","minimum":0,"maximum":2000},"-C":{"type":"integer","minimum":0,"maximum":2000},"context":{"type":"integer","minimum":0,"maximum":2000},"-n":{"type":"boolean","default":true},"-i":{"type":"boolean"},"-o":{"type":"boolean"},"head_limit":{"type":"integer","minimum":0,"default":250},"offset":{"type":"integer","minimum":0,"default":0},"multiline":{"type":"boolean"}},"required":["pattern"],"additionalProperties":false}}),
         ]
     }
 
@@ -65,13 +79,90 @@ impl ClaudeWorkspaceFiles {
         Self::definitions()
     }
 
-    /// Execute a named file operation, returning bounded text or a descriptive error.
+    /// Execute a text operation. Media requires [`Self::execute_output`]; it is never
+    /// silently converted to text or discarded by this compatibility interface.
     pub async fn execute(&self, name: &str, input: Value) -> Result<String, String> {
+        match self.execute_output(name, input).await?.content {
+            ToolContent::Text(text) => Ok(text),
+            ToolContent::Blocks(blocks) => {
+                let mut text = String::new();
+                for block in blocks {
+                    match block {
+                        crate::ToolResultBlock::Text { text: part } => text.push_str(&part),
+                        _ => return Err("Read returned media; use execute_output to preserve native Claude content blocks".into()),
+                    }
+                }
+                Ok(text)
+            }
+        }
+    }
+
+    /// Execute with native Claude text/image result blocks, preserving actual media.
+    pub async fn execute_output(&self, name: &str, input: Value) -> Result<ToolOutput, String> {
+        self.execute_output_with_context(name, input, true).await
+    }
+
+    /// Execute a file operation with optional project-guidance loading.
+    ///
+    /// Hosts enforcing read restrictions can disable augmentation to avoid
+    /// opening unrelated instructions, rules or imports. This flag does not
+    /// authorize the requested operation; the host must check that separately.
+    pub async fn execute_output_with_context(
+        &self,
+        name: &str,
+        input: Value,
+        include_project_context: bool,
+    ) -> Result<ToolOutput, String> {
         let this = self.clone();
         let name = name.to_owned();
-        tokio::task::spawn_blocking(move || this.execute_sync(&name, &input))
-            .await
-            .map_err(|e| format!("workspace task: {e}"))?
+        tokio::task::spawn_blocking(move || {
+            let mut media = None;
+            if name == "Read" {
+                let fields = input.as_object().ok_or("Read input must be an object")?;
+                if let Some(key) = fields
+                    .keys()
+                    .find(|k| !["file_path", "offset", "limit", "pages"].contains(&k.as_str()))
+                {
+                    return Err(format!("unsupported Read option: {key}"));
+                }
+                let (_, path) = this.file(Self::field(&input, "file_path")?)?;
+                media = crate::media::read(&path, &input, &this.media)?;
+            }
+            let mut output = match media {
+                Some(output) => output,
+                None => ToolOutput::text(this.execute_sync(&name, &input)?),
+            };
+            if !include_project_context {
+                return Ok(output);
+            }
+            // Load guidance for the requested path only. Searching a directory
+            // does not imply opening every descendant's instructions.
+            let requested = if matches!(name.as_str(), "Glob" | "Grep") {
+                input.get("path").and_then(Value::as_str).unwrap_or(".")
+            } else {
+                Self::field(&input, "file_path")?
+            };
+            let relative = this.relative(requested, true)?;
+            let relative = if relative == Path::new(".") { Path::new("") } else { &relative };
+            // Context diagnostics are data: a failed guidance read must never
+            // disguise a successful Write/Edit as a failed mutation.
+            if let Ok(loader) = crate::ClaudeProjectContext::new(&this.root) {
+                let context = loader.load_for_path(relative);
+                if !context.excerpts.is_empty() || !context.diagnostics.is_empty() {
+                    let context = json!(context);
+                    let text = format!("\nWorkspace context (guidance only; does not expand tool authority):\n{context}\n");
+                    match &mut output.content {
+                        ToolContent::Text(body) => body.push_str(&text),
+                        ToolContent::Blocks(blocks) => blocks.push(crate::ToolResultBlock::Text { text }),
+                    }
+                    let metadata = output.metadata.get_or_insert_with(|| json!({}));
+                    metadata["project_context"] = context;
+                }
+            }
+            Ok(output)
+        })
+        .await
+        .map_err(|e| format!("workspace task: {e}"))?
     }
 
     fn execute_sync(&self, name: &str, input: &Value) -> Result<String, String> {
@@ -166,7 +257,7 @@ impl ClaudeWorkspaceFiles {
 
     fn read(&self, input: &Value) -> Result<String, String> {
         if input.get("pages").is_some() {
-            return Err("Read pages is unsupported: PDF reading is not available".into());
+            return Err("pages is only applicable to PDF files".into());
         }
         let (_, path) = self.file(Self::field(input, "file_path")?)?;
         let content = Self::read_text(&path)?;
@@ -328,7 +419,7 @@ impl ClaudeWorkspaceFiles {
         // An explicit literal prefix denoting a symlink escape is an error, not an empty match.
         let literal_prefix = pattern
             .split('/')
-            .take_while(|part| !part.contains(['*', '?']))
+            .take_while(|part| !part.contains(['*', '?', '[', '{', '\\']))
             .collect::<Vec<_>>()
             .join("/");
         let (_, root) = self.search_root(input)?;
@@ -343,12 +434,19 @@ impl ClaudeWorkspaceFiles {
             }
         }
         let mut out = String::new();
-        for file in self.walk(&root)? {
+        let mut files = self.walk(&root)?;
+        files.sort_by_cached_key(|path| {
+            (
+                std::cmp::Reverse(fs::metadata(path).and_then(|m| m.modified()).ok()),
+                path.clone(),
+            )
+        });
+        for file in files {
             let rel = file
                 .strip_prefix(&root)
                 .map_err(|_| "search path changed")?
                 .to_string_lossy();
-            if matcher.is_match(&rel) {
+            if matcher.is_match(rel.as_ref()) {
                 let shown = file
                     .strip_prefix(&self.root)
                     .map_err(|_| "search escaped workspace")?
@@ -369,6 +467,7 @@ impl ClaudeWorkspaceFiles {
                 "pattern"
                     | "path"
                     | "glob"
+                    | "type"
                     | "output_mode"
                     | "-B"
                     | "-A"
@@ -427,16 +526,6 @@ impl ClaudeWorkspaceFiles {
         };
         let offset = grep_number(input, "offset", 0, u64::MAX)?;
         let head_limit = grep_number(input, "head_limit", 250, u64::MAX)?;
-        if mode != "content"
-            && (input.get("-B").is_some()
-                || input.get("-A").is_some()
-                || input.get("-C").is_some()
-                || input.get("context").is_some()
-                || input.get("-n").is_some()
-                || input.get("-o").is_some())
-        {
-            return Err("context, -n, and -o require output_mode content".into());
-        }
         if only_matching && (before > 0 || after > 0 || multiline) {
             return Err("-o cannot be combined with context or multiline".into());
         }
@@ -444,7 +533,21 @@ impl ClaudeWorkspaceFiles {
             Some(value) => Some(value.as_str().ok_or("invalid glob")?),
             None => None,
         };
+        let glob_exclude = glob.is_some_and(|g| g.starts_with('!'));
+        let glob = glob.map(|g| g.strip_prefix('!').unwrap_or(g));
         let glob_matcher = glob.map(glob_regex).transpose()?;
+        let mut types = ignore::types::TypesBuilder::new();
+        types.add_defaults();
+        if let Some(kind) = input.get("type") {
+            let kind = kind.as_str().ok_or("invalid type")?;
+            if kind.is_empty() || kind.len() > 64 {
+                return Err("invalid type".into());
+            }
+            types.select(kind);
+        }
+        let types = types
+            .build()
+            .map_err(|e| format!("invalid file type: {e}"))?;
         let re = RegexBuilder::new(pattern)
             .case_insensitive(!sensitive)
             .multi_line(multiline)
@@ -471,9 +574,12 @@ impl ClaudeWorkspaceFiles {
                 } else {
                     file.file_name().unwrap_or_default().to_string_lossy()
                 };
-                if !matcher.is_match(&target) {
+                if matcher.is_match(target.as_ref()) == glob_exclude {
                     continue;
                 }
+            }
+            if types.matched(&file, false).is_ignore() {
+                continue;
             }
             let size = fs::metadata(&file)
                 .map_err(|e| format!("search metadata: {e}"))?
@@ -485,6 +591,10 @@ impl ClaudeWorkspaceFiles {
             let Ok(contents) = Self::read_text(&file) else {
                 continue;
             };
+            // Like ripgrep, do not treat NUL-containing binary data as text.
+            if contents.contains('\0') {
+                continue;
+            }
             let lines: Vec<&str> = contents.lines().collect();
             let mut hits = vec![false; lines.len()];
             if multiline {
@@ -707,37 +817,15 @@ fn validate_pattern(pattern: &str) -> Result<(), String> {
     Ok(())
 }
 
-// Compile once per search. Regex Unicode semantics make ? one character, and
-// its bounded automaton avoids recursive matching proportional to path length.
-fn glob_regex(pattern: &str) -> Result<regex::Regex, String> {
+// The same glob engine used by ripgrep supports braces, classes, escapes and **.
+fn glob_regex(pattern: &str) -> Result<globset::GlobMatcher, String> {
     validate_pattern(pattern)?;
-    if pattern.contains(['[', ']', '{', '}', '\\']) {
-        return Err("unsupported glob syntax: only *, ? and ** are available".into());
-    }
-    let mut expression = String::from("\\A");
-    let mut chars = pattern.chars().peekable();
-    while let Some(ch) = chars.next() {
-        match ch {
-            '*' if chars.peek() == Some(&'*') => {
-                chars.next();
-                if chars.peek() == Some(&'/') {
-                    chars.next();
-                    expression.push_str("(?:.*/)?");
-                } else {
-                    expression.push_str(".*");
-                }
-            }
-            '*' => expression.push_str("[^/]*"),
-            '?' => expression.push_str("[^/]"),
-            literal => expression.push_str(&regex::escape(&literal.to_string())),
-        }
-    }
-    expression.push_str("\\z");
-    RegexBuilder::new(&expression)
-        .dot_matches_new_line(true)
-        .size_limit(4 * 1024 * 1024)
+    globset::GlobBuilder::new(pattern)
+        .literal_separator(true)
+        .backslash_escape(true)
         .build()
-        .map_err(|e| format!("invalid or oversized glob: {e}"))
+        .map(|glob| glob.compile_matcher())
+        .map_err(|e| format!("invalid glob: {e}"))
 }
 
 #[cfg(test)]
@@ -804,16 +892,10 @@ mod tests {
         );
         assert_eq!(
             files
-                .execute("Glob", json!({"path":"src","pattern":"**/?.rs"}))
+                .execute("Glob", json!({"path":"src","pattern":"**/é.rs"}))
                 .await
                 .unwrap(),
             "src/nested/é.rs\n"
-        );
-        assert!(
-            files
-                .execute("Glob", json!({"pattern":"**/*.{rs,txt}"}))
-                .await
-                .is_err()
         );
     }
 
@@ -973,10 +1055,7 @@ mod tests {
             "a.txt:1:start\na.txt:2:middle\na.txt:3:end\n"
         );
         for bad in [
-            json!({"pattern":"x", "type":"rust"}),
-            json!({"pattern":"x", "glob":"*.{rs,txt}"}),
             json!({"pattern":"x", "output_mode":"content", "-o":true,"multiline":true}),
-            json!({"pattern":"x", "output_mode":"count", "-n":false}),
             json!({"pattern":"x", "-A":-1}),
             json!({"pattern":"x", "head_limit":"10"}),
         ] {
@@ -990,7 +1069,7 @@ mod tests {
         );
         let schema = ClaudeWorkspaceFiles::definitions();
         let grep = schema.iter().find(|s| s["name"] == "Grep").unwrap();
-        assert!(grep["input_schema"]["properties"].get("type").is_none());
+        assert!(grep["input_schema"]["properties"].get("type").is_some());
         assert!(
             grep["input_schema"]["properties"]
                 .get("multiline")
@@ -999,7 +1078,7 @@ mod tests {
         assert!(
             schema.iter().find(|s| s["name"] == "Read").unwrap()["input_schema"]["properties"]
                 .get("pages")
-                .is_none()
+                .is_some()
         );
     }
 

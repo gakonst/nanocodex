@@ -14,7 +14,8 @@ import { connectComputerTools, ensureComputer } from "nanocodex-computer";
 import WebSocket from "ws";
 import { mergeAccountHands, restoredAccountHands } from "./account-hands.mjs";
 import { createVmTools, supportsLocalVms } from "./vm-tools.mjs";
-import { describeDeviceHand, connectDeviceHand } from "./device-hand.mjs";
+import { describeDeviceHand, connectDeviceHand, saveDeviceHandLogin } from "./device-hand.mjs";
+import { prepareHandService } from "./hand-service.mjs";
 import { runtimeDataDirectory } from "./data-directory.mjs";
 import { desktopFactoryRecipe, superviseVmFactory } from "./vm-factory.mjs";
 
@@ -203,6 +204,7 @@ export class DesktopRuntime extends EventEmitter {
   #dataDirectory;
   #folderPreparations = new Map();
   #defaultPreparation;
+  #handServicePreparation;
   #deviceIdentity;
   #helperPreparations = new Map();
   #refreshPending;
@@ -363,6 +365,8 @@ export class DesktopRuntime extends EventEmitter {
   }
 
   async #resetAccount() {
+    this.#defaultPreparation?.abort.abort();
+    await this.#cancelHandServicePreparation();
     ++this.#generation;
     this.#state.accountScope = randomUUID();
     for (const id of this.#threads.keys()) this.closeThread(id);
@@ -616,19 +620,61 @@ export class DesktopRuntime extends EventEmitter {
     await this.#save(); this.#emit(); return this.state();
   }
 
+  async prepareHandService() {
+    if (process.platform !== "darwin" || this.#closed || !this.#state.defaultHandEnabled || !this.#state.defaults.deviceBinary) return this.state();
+    if (this.#handServicePreparation) return this.#handServicePreparation.promise;
+    const pending = { generation: this.#generation, abort: new AbortController() };
+    this.#state.handServicePreparation = { status: "preparing" };
+    this.#emit();
+    pending.promise = prepareHandService(this.#state.defaults.deviceBinary, { signal: pending.abort.signal })
+      .then(() => {
+        if (pending.abort.signal.aborted || this.#closed || pending.generation !== this.#generation) return;
+        this.#state.handServicePreparation = { status: "prepared" };
+        this.#emit();
+      }).catch(error => {
+        if (pending.abort.signal.aborted || this.#closed || pending.generation !== this.#generation) return;
+        const message = this.#safeError(error);
+        this.#state.handServicePreparation = { status: "error", error: message };
+        // Existing native clients display state.error. Authentication remains
+        // available and may clear this warning; the separate receipt remains.
+        this.#state.error ??= message;
+        this.#emit();
+      }).finally(() => {
+        if (this.#handServicePreparation === pending) this.#handServicePreparation = undefined;
+      }).then(() => this.state());
+    this.#handServicePreparation = pending;
+    return pending.promise;
+  }
+
+  async #cancelHandServicePreparation() {
+    const pending = this.#handServicePreparation;
+    if (!pending) return;
+    pending.abort.abort();
+    await pending.promise;
+    if (this.#state.handServicePreparation?.status === "preparing") delete this.#state.handServicePreparation;
+  }
+
   async prepareDefaultHand() {
     this.#requireConnection();
     if (!this.#state.defaultHandEnabled) return null;
     const generation = this.#generation;
     if (this.#defaultPreparation?.generation === generation) return this.#defaultPreparation.promise;
-    const pending = { generation };
+    const pending = { generation, abort: new AbortController() };
     pending.promise = (async () => {
       let hand = this.#state.hands.find(candidate => candidate.kind === "local" && !candidate.agentId);
       if (this.#state.defaults.deviceBinary) {
         if (this.#deviceIdentity?.generation !== generation) {
           const config = await describeDeviceHand(this.#state.defaults.deviceBinary, this.#deviceEnvironment());
           this.#sameAccount(generation);
-          this.#deviceIdentity = { generation, config };
+          let accountFile;
+          if (process.platform === "darwin") {
+            // Device identity is stable across key rotation and scoped to the
+            // authenticated account. Never overwrite the global CLI login.
+            accountFile = join(this.#dataDirectory, "hand-accounts", `${config.id}.json`);
+            await saveDeviceHandLogin(this.#state.defaults.deviceBinary, this.#deviceEnvironment(), accountFile, { signal: pending.abort.signal });
+            this.#sameAccount(generation);
+          }
+          this.#deviceIdentity = { generation, config, accountFile };
         }
         const config = this.#deviceIdentity.config;
         this.#sameAccount(generation);
@@ -719,10 +765,11 @@ export class DesktopRuntime extends EventEmitter {
   async setDefaultHandEnabled(enabled) {
     if (typeof enabled !== "boolean") throw new Error("Choose whether this device Hand is enabled.");
     this.#state.defaultHandEnabled = enabled;
+    const preparation = !enabled ? this.#cancelHandServicePreparation() : Promise.resolve();
     // Stop synchronously before awaiting disk IO or a pending handshake.
     const hand = this.#state.hands.find(hand => this.#isDefaultHand(hand.id));
     const stopping = !enabled && hand ? this.#stopHand(hand.id) : Promise.resolve();
-    await Promise.all([this.#save(), stopping]);
+    await Promise.all([this.#save(), stopping, preparation]);
     this.#emit();
     return this.state();
   }
@@ -760,7 +807,9 @@ export class DesktopRuntime extends EventEmitter {
   }
   #deviceEnvironment() {
     return { ...process.env, NANOCODEX_API_KEY: this.#options.apiKey, NANOCODEX_MANAGED_URL: this.#options.baseUrl,
-      NANOCODEX_DESKTOP_DATA: this.#dataDirectory };
+      NANOCODEX_DESKTOP_DATA: this.#dataDirectory,
+      ...(this.#deviceIdentity?.generation === this.#generation && this.#deviceIdentity.accountFile
+        ? { NANOCODEX_ACCOUNT_FILE: this.#deviceIdentity.accountFile } : {}) };
   }
   async #startDevice(hand, resource) {
     const connection = connectDeviceHand({ binary: this.#state.defaults.deviceBinary, env: this.#deviceEnvironment(),
@@ -781,9 +830,12 @@ export class DesktopRuntime extends EventEmitter {
     this.#log(hand, "This computer is connected. CLI and app share this Hand.");
   }
   async #startLocal(hand, resource) {
-    const computerExecutable = await ensureComputer({ binary: this.#state.defaults.deviceBinary || this.#state.defaults.binary });
+    // The OS-owned device Hand provisions its own computer tools. Its shell
+    // connection must not wait for a second CUA installer in the app process.
     resource.abort.signal.throwIfAborted();
     if (this.#state.defaults.deviceBinary && this.#isDefaultHand(hand.id)) return this.#startDevice(hand, resource);
+    const computerExecutable = await ensureComputer({ binary: this.#state.defaults.deviceBinary || this.#state.defaults.binary });
+    resource.abort.signal.throwIfAborted();
     const processes = await createNodeProcessTools({ workspace: hand.workspace, onActivity: event => {
       if (event.type === "started") { hand.calls++; hand.activeCalls++; }
       else hand.activeCalls = Math.max(0, hand.activeCalls - 1);
@@ -796,7 +848,7 @@ export class DesktopRuntime extends EventEmitter {
     const vmTools = this.#localVmTools(hand, resource);
     const computer = computerExecutable ? await connectComputerTools({ executable: computerExecutable }) : undefined;
     if (computer) resource.add(computer.close);
-    const tools = await createTools({ tools: [...processes.tools, ...vmTools, ...(computer?.tools ?? [])], workspace, attachmentId: hand.id, machines: [{ id: hand.id, name: hand.name, workspace: hand.workspace, capabilities: ["native", "shell", "filesystem", "process", "pipes", ...(computer ? ["computer"] : []), ...(vmTools.length ? ["vm_host"] : [])] }] });
+    const tools = await createTools({ tools: [...processes.tools, ...vmTools, ...(computer?.tools ?? [])], workspace, attachmentId: hand.id, machines: [{ id: hand.id, name: hand.name, workspace: hand.workspace, resources: processes.resources, capabilities: ["native", "shell", "filesystem", "process", "pipes", ...(computer ? ["computer"] : []), ...(vmTools.length ? ["vm_host"] : [])] }] });
     resource.add(() => tools.close());
     resource.abort.signal.throwIfAborted();
     const endpoint = new URL(hand.agentId ? `/v1/agents/${encodeURIComponent(hand.agentId)}/tool-host` : "/v1/account/tool-host", this.#options.baseUrl);
@@ -1140,11 +1192,14 @@ export class DesktopRuntime extends EventEmitter {
   async close() {
     if (this.#closed) return this.#accountTransition;
     this.#closed = true;
+    this.#defaultPreparation?.abort.abort();
+    const preparation = this.#cancelHandServicePreparation();
     ++this.#connectionAttempt;
     ++this.#generation;
     for (const id of this.#threads.keys()) this.closeThread(id);
     await Promise.all(this.#state.hands.map(hand => this.#stopHand(hand.id)));
     await this.#accountTransition.catch(() => {});
+    await preparation;
   }
 }
 

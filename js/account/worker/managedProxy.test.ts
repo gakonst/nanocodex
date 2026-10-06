@@ -116,7 +116,7 @@ test("direct broker failure and stale generation never replay through the manage
 
 test("inference credentials cannot reach account, connector, agent or hand proxy paths", async () => {
   for (const path of ["/v1/todo", "/v1/todo/decisions/11111111-1111-4111-8111-111111111111/respond", "/v1/me", "/v1/agents", "/v1/api-keys", "/v1/connectors/github", "/v1/credentials",
-    "/v1/account/hands", "/v1/account/hands/screens", "/v1/account/hosted-tool-stats", "/v1/account/tool-host", "/v1/data", "/v1/history", "/v1/memories/list", "/v1/memories/write", "/v1/memories/status", "/v1/markdown-memory/get", "/v1/egress", "/v1/vault/request", "/v1/wallet"]) {
+    "/v1/account/hands", "/v1/account/hands/inventory", "/v1/account/hands/screens", "/v1/account/hosted-tool-stats", "/v1/account/tool-host", "/v1/data", "/v1/history", "/v1/memories/list", "/v1/memories/write", "/v1/memories/status", "/v1/markdown-memory/get", "/v1/egress", "/v1/vault/request", "/v1/wallet", "/v1/wallet/link", "/v1/wallet/link/poll", "/v1/wallet/link/cancel", "/v1/wallet/unlink"]) {
     const request = new Request("https://nanocodex.example" + path, {
       headers: { authorization: "Bearer nci_live_synthetic", cookie: "synthetic=account", upgrade: "websocket", "x-nanocodex-managed-access": "synthetic" },
     });
@@ -497,4 +497,26 @@ test("the exact user data route preserves account authorization and body", async
   for (const path of ["/v1/data/", "/v1/data/other", "/v1/database"]) {
     assert.equal(await routeManaged(new Request(`https://account.test${path}`), env, new URL(`https://account.test${path}`)), undefined);
   }
+});
+
+
+test("Connect session discovery skips guest provisioning only for credential-free requests", async () => {
+  let calls = 0;
+  const env = { NANOCODEX_BACKEND: { fetch: async () => { calls++; return Response.json({ user: { id: "synthetic", persistent: true } }); } } } as unknown as Parameters<typeof routeManaged>[1];
+  const empty = new Request("https://account.test/v1/me?connect=1");
+  const response = await routeManaged(empty, env, new URL(empty.url));
+  assert.equal(response?.status, 401);
+  assert.equal(response?.headers.get("cache-control"), "no-store");
+  assert.equal(response?.headers.get("set-cookie"), null);
+  assert.equal(calls, 0);
+  for (const [path, headers] of [
+    ["/v1/me", {}],
+    ["/v1/me?connect=1", { cookie: "nanocodex_account=synthetic-existing-session" }],
+    ["/v1/me?connect=1", { authorization: "Bearer synthetic-key" }],
+    ["/v1/me?connect=1", { cookie: "other=preserve-backend-policy" }],
+  ] as const) {
+    const request = new Request("https://account.test" + path, { headers });
+    assert.equal((await routeManaged(request, env, new URL(request.url)))?.status, 200);
+  }
+  assert.equal(calls, 4, "existing identity and ordinary /me requests retain backend validation");
 });

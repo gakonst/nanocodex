@@ -1,9 +1,10 @@
-import type { CloudflareAccountCatalogResult } from "nanocodex/cloudflare/egress";
+import type { CloudflareAccountCatalogResult, CloudflareAccountDiscoveryResult } from "nanocodex/cloudflare/egress";
 import { LINK_PATH, LINK_SCOPES, linkAuthRequest, decodeLinkDevice, decodeLinkToken, decodeLinkIdentity, linkRequestAllowed, linkBodyAllowed, redactLinkCredentials } from "./connectors/link";
 import { DurableObject } from "cloudflare:workers";
 import { credentialFilteringBody } from "./credential-stream";
 import { SpotifyRateLimit, spotifyFetch } from "./spotify-rate-limit";
 import { SpotifyReadCache } from "./spotify-read-cache";
+import { SourceCatalogSnapshots, validDiscoveryOptions } from "./metadata-cache";
 
 import {
   CredentialVault,
@@ -265,6 +266,7 @@ export class UserConnectorBroker extends DurableObject<ConnectorBrokerEnv> {
   #connectors: ConnectorState = { version: 2, connections: {}, pending: {} };
   #tail: Promise<void> = Promise.resolve();
   readonly #spotifyReads = new SpotifyReadCache();
+  readonly #discoverySnapshots = new SourceCatalogSnapshots();
 
   constructor(state: DurableObjectState, env: ConnectorBrokerEnv) {
     super(state, env);
@@ -294,6 +296,26 @@ export class UserConnectorBroker extends DurableObject<ConnectorBrokerEnv> {
         return { status: problem.status, catalog: null };
       }
     });
+  }
+
+  /** Opt-in metadata hints; live catalog and tool authorization never use these. */
+  readDiscoveryCatalog(options: unknown, deadline: unknown): Promise<CloudflareAccountDiscoveryResult> {
+    if (!validDiscoveryOptions(options) || !Number.isSafeInteger(deadline) || Number(deadline) < 0) {
+      return Promise.resolve({ schema: 1, status: 400, data: null, expiresAt: 0 });
+    }
+    return this.#discoverySnapshots.read(options, () => this.#exclusive(async () => {
+      await this.#ready;
+      try {
+        // Polling can swallow upstream failures. Keep every pending Link flow
+        // fresh, including its completion read, rather than caching degradation.
+        const cacheable = !this.#connectors.linkDevice;
+        return { status: 200, data: await this.#catalogMetadata(), cacheable };
+      } catch (error) {
+        const problem = connectorFailure(error);
+        await this.#restoreDurableState();
+        return { status: problem.status, data: null, cacheable: false };
+      }
+    }), Number(deadline));
   }
 
   async #catalogMetadata() {

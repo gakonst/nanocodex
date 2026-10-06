@@ -6,8 +6,34 @@ use serde_json::Value;
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum Command {
     Latest,
-    Review { id: String, origin: String },
+    Review {
+        id: String,
+        origin: String,
+    },
     Open,
+    Add {
+        kind: String,
+    },
+    Delete {
+        kind: String,
+        id: String,
+    },
+    SshAdd {
+        reference: String,
+    },
+    SshRemove {
+        reference: String,
+    },
+    Card {
+        operation: String,
+        id: String,
+        capture: bool,
+        operation_id: Option<String>,
+    },
+    Store {
+        capture_id: String,
+        operation_id: String,
+    },
     Help,
 }
 impl Command {
@@ -18,7 +44,67 @@ impl Command {
         }
         Some(match words.as_slice() {
             [_] | [_, "review"] => Self::Latest,
-            [_, "open"] => Self::Open,
+            [_, "open"] | [_, "list"] => Self::Open,
+            [_, "add", kind]
+                if ["login", "api_key", "card", "address", "phone", "openai"].contains(kind) =>
+            {
+                Self::Add {
+                    kind: (*kind).into(),
+                }
+            }
+            [_, "delete", kind, id]
+                if ["login", "api_key", "card", "address", "phone"].contains(kind)
+                    && valid_id(id) =>
+            {
+                Self::Delete {
+                    kind: (*kind).into(),
+                    id: (*id).into(),
+                }
+            }
+            [_, "ssh-add", reference] => Self::SshAdd {
+                reference: (*reference).into(),
+            },
+            [_, "ssh-remove", reference] => Self::SshRemove {
+                reference: (*reference).into(),
+            },
+            [_, "store", capture, operation]
+                if valid_id(capture) && uuid::Uuid::parse_str(operation).is_ok() =>
+            {
+                Self::Store {
+                    capture_id: (*capture).into(),
+                    operation_id: (*operation).into(),
+                }
+            }
+            [_, "card", operation, id]
+                if ["status", "balance"].contains(operation) && valid_id(id) =>
+            {
+                Self::Card {
+                    operation: (*operation).into(),
+                    id: (*id).into(),
+                    capture: false,
+                    operation_id: None,
+                }
+            }
+            [_, "capture", operation, id]
+                if ["status", "balance"].contains(operation) && valid_id(id) =>
+            {
+                Self::Card {
+                    operation: (*operation).into(),
+                    id: (*id).into(),
+                    capture: true,
+                    operation_id: None,
+                }
+            }
+            [_, "card", "refresh", id, operation_id]
+                if valid_id(id) && uuid::Uuid::parse_str(operation_id).is_ok() =>
+            {
+                Self::Card {
+                    operation: "refresh".into(),
+                    id: (*id).into(),
+                    capture: false,
+                    operation_id: Some((*operation_id).into()),
+                }
+            }
             [_, "review", id, origin] if valid_id(id) && valid_origin(origin) => Self::Review {
                 id: (*id).into(),
                 origin: (*origin).into(),
@@ -99,7 +185,7 @@ pub(crate) fn intake_summary(value: &Value) -> Option<String> {
             ))
         }
         "create" if intake.vault_id.is_none() => Some(format!(
-            "Add {} to Vault\nYour secure Vault opens automatically. Reopen with /vault open\nEnter credential values only in the Vault web form. After saving, return here and tell the agent to refresh Vault metadata.",
+            "Add {} to Vault\nPrivate input opens automatically. Reopen with /secure-input.\nEnter values only in the guarded private panel; a confirmed save sends a safe receipt to the agent.",
             intake.name.unwrap_or_else(|| intake.kind.replace('_', " "))
         )),
         _ => None,
@@ -119,12 +205,22 @@ pub(crate) fn receipt_summary(text: &str) -> Option<String> {
         return None;
     }
     let invalid = || Some("Vault receipt could not be verified.".to_owned());
-    let Some(name) = value
-        .get("name")
-        .and_then(Value::as_str)
-        .filter(|s| safe_name(s))
-    else {
-        return invalid();
+    let name = match value.get("name") {
+        Some(name) => match name.as_str().filter(|s| safe_name(s)) {
+            Some(name) => name,
+            None => return invalid(),
+        },
+        None if value.get("operation").and_then(Value::as_str) == Some("create") => {
+            match value.get("kind").and_then(Value::as_str) {
+                Some("login") => "login",
+                Some("api_key") => "API key",
+                Some("card") => "card",
+                Some("address") => "address",
+                Some("phone") => "phone number",
+                _ => return invalid(),
+            }
+        }
+        None => return invalid(),
     };
     if value.get("status").and_then(Value::as_str) != Some("saved")
         || !value

@@ -13,6 +13,7 @@ pub(super) struct WarmupExecution {
 }
 
 pub(super) struct WarmupOutcome {
+    pub(super) baseline_established: bool,
     pub(super) response_id: Option<String>,
     pub(super) server_reasoning_included: bool,
 }
@@ -133,6 +134,11 @@ where
                 active_context_tokens,
                 auto_compact_token_limit,
                 factory,
+                conversation.reasoning.request_effort(
+                    self.model,
+                    self.thinking,
+                    self.config.supports_reasoning_effort_updates(self.model),
+                ),
             )
             .await?;
         conversation.observe_server_reasoning(server_reasoning_included);
@@ -160,11 +166,13 @@ where
     pub(super) async fn perform_warmup(
         &mut self,
         factory: &ResponsesAttemptFactory,
+        request_effort: Thinking,
     ) -> Result<WarmupOutcome> {
         if matches!(self.config.responses_transport, ResponsesTransport::Https)
             || !self.config.websocket_warmup
         {
             return Ok(WarmupOutcome {
+                baseline_established: false,
                 response_id: None,
                 server_reasoning_included: false,
             });
@@ -188,23 +196,28 @@ where
             .is_none()
             .then(|| self.prompt_cache.shared().cloned())
             .flatten();
+        let mut shared_prefix_warmed = false;
         let outcome = if let Some(cache) = shared_prompt_cache {
             match cache.entry(self.model, factory.profile()).await {
                 Ok(entry) => {
                     let mut execution = None;
                     let initialized = entry
                         .get_or_try_init(|| async {
-                            let completed = self.execute_warmup(factory, &span).await?;
+                            let completed =
+                                self.execute_warmup(factory, &span, request_effort).await?;
                             execution = Some(completed);
                             Ok(())
                         })
                         .await;
-                    initialized.map(|()| execution.flatten())
+                    initialized.map(|()| {
+                        shared_prefix_warmed = execution.is_none();
+                        execution.flatten()
+                    })
                 }
                 Err(error) => Err(error),
             }
         } else {
-            self.execute_warmup(factory, &span).await
+            self.execute_warmup(factory, &span, request_effort).await
         };
         let execution = match outcome {
             Ok(outcome) => outcome,
@@ -216,6 +229,26 @@ where
             }
         };
         let duration_ns = elapsed_ns(started_at);
+        if execution.is_none() && !shared_prefix_warmed {
+            // Older durable receipts encode a failed warmup as None. Replaying
+            // that receipt must not establish a successful prewarm baseline.
+            span.record("status", "failed");
+            span.record("otel.status_code", "ERROR");
+            span.record("duration_ns", duration_ns);
+            self.stats.warmup_duration_ns += duration_ns;
+            self.events.emit(
+                AgentEventKind::ModelWarmupFailed,
+                WarmupFailed {
+                    duration_ns,
+                    error: "replayed a failed warmup",
+                },
+            )?;
+            return Ok(WarmupOutcome {
+                baseline_established: false,
+                response_id: None,
+                server_reasoning_included: false,
+            });
+        }
         let (response_id, source, attempt, connection_generation, usage, server_reasoning_included) =
             if let Some(execution) = execution {
                 if let Some(usage) = &execution.usage {
@@ -257,6 +290,7 @@ where
             },
         )?;
         Ok(WarmupOutcome {
+            baseline_established: true,
             response_id,
             server_reasoning_included,
         })
@@ -266,6 +300,7 @@ where
         &mut self,
         factory: &ResponsesAttemptFactory,
         span: &tracing::Span,
+        request_effort: Thinking,
     ) -> Result<Option<WarmupExecution>> {
         if let Some(steps) = &self.execution_steps
             && let crate::agent::ExecutionStep::Replay(output) = steps
@@ -276,7 +311,7 @@ where
         }
         let success = match self
             .client
-            .execute(factory.warmup(self.model, self.thinking, self.fast_mode))
+            .execute(factory.warmup(self.model, request_effort, self.fast_mode))
             .instrument(span.clone())
             .await
         {
@@ -342,10 +377,10 @@ where
         active_context_tokens: u64,
         auto_compact_token_limit: u64,
         factory: &ResponsesAttemptFactory,
+        request_effort: Thinking,
     ) -> Result<(ResponseItem, Option<Usage>, bool)> {
         let step_id = format!("compaction-{after_model_call_index}");
         let model = self.model;
-        let thinking = self.thinking;
         let fast_mode = self.fast_mode;
         let trigger = compaction::trigger();
         // This barrier is shared by explicit, pre-turn, and mid-turn compaction.
@@ -414,7 +449,7 @@ where
             &history,
             trigger,
             model,
-            thinking,
+            request_effort,
             fast_mode,
         );
         let (input_item_count, input_bytes, input_content) = trace_model_input(&request);

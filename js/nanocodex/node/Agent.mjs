@@ -69,6 +69,8 @@ export function create(options = {}) {
   } = resolveResponsesTransport(transport);
   const { tools: hostTools, subagents: subagentConfig } = resolveTools(tools);
   const events = createEventChannel();
+  // Host lifecycle observers need terminal events even without a public watcher.
+  events.subscribe(() => {});
   if (filesystem && workspace !== undefined && workspace !== filesystem.root) {
     throw new TypeError("workspace must match filesystem.root when both are provided");
   }

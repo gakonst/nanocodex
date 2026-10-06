@@ -63,7 +63,7 @@ export type BrowserWebSocketConnection = {
 export type BrowserSocketObservation = {
   event: "socket.connecting" | "socket.connect_waiting" | "socket.opened" | "socket.closed" | "socket.error"
     | "request.send_started" | "request.send_waiting" | "request.sent" | "request.waiting" | "request.first_message"
-    | "request.first_output" | "request.finished" | "provider.timing";
+    | "request.first_output" | "request.first_reasoning_delta" | "request.first_answer_delta" | "request.first_tool_delta" | "request.finished" | "provider.timing";
   socket_id: string;
   request_id: string;
   egress_request_id?: string;
@@ -77,6 +77,12 @@ export type BrowserSocketObservation = {
   send_wait_ms?: number;
   first_message_ms?: number;
   first_output_ms?: number;
+  first_reasoning_delta_ms?: number;
+  first_answer_delta_ms?: number;
+  first_tool_delta_ms?: number;
+  /** Fixed protocol name, or unclassified for oversized/unknown envelopes. */
+  provider_event_type?: string;
+  output_kind?: "item" | "reasoning" | "answer" | "tool";
   last_message_age_ms?: number;
   received_message_count?: number;
   queued_message_count?: number;
@@ -119,7 +125,7 @@ export function createBrowserHost(options?: {
   codeEvaluator?: CodeEvaluator;
   /** @internal Trusted durable effect receipts, not available inside guest code. */
   codeEffectJournal?: CodeEffectJournal;
-  toolMode?: "code" | "direct";
+  toolMode?: "code" | "code-only" | "direct";
   /** @internal Live host lifecycle for ephemeral Rust-owned subagents. */
   subagentRouting?: Pick<import('../runtime/subagent-routing.mjs').SubagentRouting, 'resolve' | 'bind'>;
   subagentSessions?: {

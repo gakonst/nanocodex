@@ -1,3 +1,4 @@
+import { validatePrivateVaultSave, validatePrivateVaultDetails } from "./browser-vault-save";
 import type { BrowserBinding } from "agents/browser";
 import type { ToolContext } from "nanocodex";
 
@@ -245,8 +246,9 @@ export const BROWSER_VAULT_FILL_FUNCTION = `function(origin, usernameSelector, p
   const challenge = () => [...document.querySelectorAll('iframe,[id],[class]')].slice(0,5000).some(el =>
     el.checkVisibility({checkOpacity:true,checkVisibilityCSS:true}) && /captcha|turnstile|challenge-platform/i.test([el.id, typeof el.className === 'string' ? el.className : '', el instanceof HTMLIFrameElement ? el.src : ''].join(' ')));
   const method = form && form.getAttribute('method');
+  const formAttributes = form && JSON.stringify([...form.attributes].map(a=>[a.name,a.value]));
   const valid = () => location.origin === origin && location.protocol === 'https:' && !challenge()
-    && (!form || safeLoginForm(form) && form.getAttribute('method') === method)
+    && (!form || safeLoginForm(form) && form.getAttribute('method') === method && JSON.stringify([...form.attributes].map(a=>[a.name,a.value])) === formAttributes)
     && (!user || (one(usernameSelector) === user && user.form === form && visible(user) && ['text','email'].includes(user.type)))
     && (!pass || (one(passwordSelector) === pass && pass.form === form && visible(pass) && pass.type === 'password'));
   if (dryRun) return valid();
@@ -261,6 +263,11 @@ export const BROWSER_VAULT_FILL_FUNCTION = `function(origin, usernameSelector, p
     input.dispatchEvent(new Event('change', {bubbles:true}));
     if (!valid()) return false;
   }
+  if (![[user,username],[pass,password]].every(([input,value])=>{
+    if (!input) return true;
+    const normalized=document.createElement('input');normalized.type=input.type;normalized.multiple=input.multiple;setter.call(normalized,value);
+    return input.value===normalized.value;
+  })) return false;
   if (submit) {
     // Formless SPAs need a separately authorized, snapshotted control action.
     if (!form) return 'unsupported';
@@ -869,15 +876,33 @@ export function parseSecureFormFields(value:unknown): SecureFormField[] {
 export function parsePrivateSecureInput(value:unknown): Record<string,unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Invalid secure input');
   const v = value as Record<string,unknown>;
-  if (Object.keys(v).length !== 2 || typeof v.request_id !== 'string' || !/^[0-9a-f-]{36}$/.test(v.request_id)) throw new Error('Invalid secure input');
+  if(typeof v.request_id !== 'string' || !/^[0-9a-f-]{36}$/i.test(v.request_id))throw new Error('Invalid secure input');
+  if(Object.hasOwn(v,'action')) {
+    if(Object.keys(v).length!==2 || !['cancel','describe','retry_vault_save'].includes(String(v.action)))throw new Error('Invalid secure input');
+    return v;
+  }
+  if(v.save_to_vault !== undefined)validatePrivateVaultSave(v.save_to_vault);
+  if(v.save_details !== undefined){validatePrivateVaultDetails(v.save_details);if(v.save_to_vault!==true)throw new Error('Invalid secure input');}
+  if(Object.keys(v).some(k=>!['request_id','value','values','save_to_vault','save_details'].includes(k)) || Object.hasOwn(v,'value')===Object.hasOwn(v,'values'))throw new Error('Invalid secure input');
   const secret = (s:unknown) => typeof s === 'string' && s.length > 0 && s.length <= 4096 && !/[\u0000-\u001f\u007f]/.test(s);
-  if (Object.hasOwn(v,'action') && ['cancel','describe'].includes(String(v.action))) return v;
   if (Object.hasOwn(v,'value') && secret(v.value)) return v;
-  if (Object.hasOwn(v,'values') && v.values && typeof v.values === 'object' && !Array.isArray(v.values)) {
+  if (v.values && typeof v.values === 'object' && !Array.isArray(v.values)) {
     const entries = Object.entries(v.values);
     if (entries.length > 0 && entries.length <= 8 && entries.every(([k,s]) => /^[A-Za-z][A-Za-z0-9_-]{0,63}$/.test(k) && secret(s))) return v;
   }
   throw new Error('Invalid secure input');
+}
+
+/** Read classification hints only, never DOM input values. Bound to the admitted document. */
+export async function secureVaultSaveForm(cdp:PrivateBrowserChannel,request:BrowserVaultIdentity,fields:SecureFormField[],loaderId:string):Promise<import('./browser-vault-takeover').BrowserVaultNativeForm> {
+  const world=await privateWorld(cdp,request);
+  if(!world || world.loaderId!==loaderId)throw new Error('Secure form changed');
+  const result=await cdp.send('Runtime.callFunctionOn',{executionContextId:world.executionContextId,returnByValue:true,silent:true,
+    functionDeclaration:`function(fields) { return fields.map(f=>{const nodes=document.querySelectorAll(f.selector);const el=nodes.length===1?nodes[0]:null;return el instanceof HTMLInputElement ? {type:el.type,label:(el.getAttribute('aria-label') || [...el.labels||[]].map(l=>l.textContent||'').join(' ')).slice(0,160),autocomplete:el.autocomplete.trim().toLowerCase().replace(/\\s+webauthn$/, '').split(/\\s+/).pop()} : null;}); }`,arguments:[{value:fields.map(({selector})=>({selector}))}]},world.sessionId);
+  const hints=result?.result?.value;
+  if(result?.exceptionDetails || !Array.isArray(hints) || hints.length!==fields.length)throw new Error('Secure form changed');
+  const allowed=['username','email','current-password','new-password','one-time-code','tel','cc-number','cc-exp','cc-exp-month','cc-exp-year','cc-csc','postal-code','address-line1','street-address','address-line2','address-level2','address-level1','country','country-name'];
+  return {document_id:loaderId,fields:fields.map((f,i)=>({ref:f.id,label:(hints[i]?.label || f.label || f.id),multiline:false,type:hints[i]?.type==='password'?'password':hints[i]?.type==='email'?'email':'text',...(f.kind==="card_cvc"?{autocomplete:"cc-csc" as const}:allowed.includes(hints[i]?.autocomplete)?{autocomplete:hints[i].autocomplete}:{})}))};
 }
 
 // Only native, visible, top-frame input elements in one same-origin POST form.
@@ -901,7 +926,11 @@ export const SECURE_FORM_FILL_FUNCTION = `function(origin, fields, values) {
       && (!autocomplete[kind] || el.autocomplete.trim().toLowerCase().split(/\\s+/).includes(autocomplete[kind]));
   const inputs = fields.map(f => { const nodes = document.querySelectorAll(f.selector); return nodes.length === 1 ? nodes[0] : null; });
   const form = inputs[0] && inputs[0].form;
+  const formAttributes = form && JSON.stringify([...form.attributes].map(a=>[a.name,a.value]));
+  const untouched = () => form && JSON.stringify([...form.elements].filter(el=>!inputs.includes(el)).map(el=>[el.outerHTML,el.value,el.checked]));
+  const untouchedState = untouched();
   const valid = () => {
+    if (JSON.stringify([...form?.attributes||[]].map(a=>[a.name,a.value])) !== formAttributes || untouched() !== untouchedState) return false;
     if (!(form instanceof HTMLFormElement) || form.method.toLowerCase() !== 'post' || (form.target && form.target !== '_self')) return false;
     const action = new URL(form.action, location.href);
     return location.origin === origin && action.origin === origin && !action.username && !action.password && new Set(inputs).size === inputs.length && inputs.every((el,i) => {
@@ -918,7 +947,7 @@ export const SECURE_FORM_FILL_FUNCTION = `function(origin, fields, values) {
     inputs[i].dispatchEvent(new Event('input',{bubbles:true}));
     inputs[i].dispatchEvent(new Event('change',{bubbles:true}));
   }
-  return true;
+  return valid() && inputs.every((el,i)=>el.value===values[fields[i].id]);
 }`;
 export async function secureBrowserForm(options:{cdp:PrivateBrowserChannel; request:BrowserVaultIdentity; fields:SecureFormField[]; signal?:AbortSignal; expectedLoaderId?:string; values?:Record<string,string>; quarantine?: (loaderId:string)=>Promise<void>}):Promise<{loaderId:string;status:'filled'|'ready'|'outcome_unknown'}> {
   try {

@@ -61,6 +61,7 @@ pub(crate) struct TranscriptModel {
     managed_answer_entries: HashMap<Arc<str>, HashSet<EntryId>>,
     reasoning: HashMap<ReasoningKey, EntryId>,
     tools: HashMap<String, EntryId>,
+    private_inputs: HashMap<EntryId, crate::tui::secure_input::Request>,
     settled_calls: HashSet<String>,
     shell_sessions: HashMap<ShellSessionKey, EntryId>,
     shell_followups: HashMap<String, EntryId>,
@@ -200,9 +201,18 @@ impl TranscriptModel {
                 _ => None,
             })
             .collect();
+        let private_inputs = entries
+            .iter()
+            .filter_map(|entry| {
+                self.private_inputs
+                    .get(&entry.id)
+                    .map(|request| (entry.id, request.clone()))
+            })
+            .collect();
         Self {
             entries,
             entry_indices,
+            private_inputs,
             next_entry_id: self.next_entry_id,
             message_threads,
             message_order,
@@ -210,8 +220,30 @@ impl TranscriptModel {
         }
     }
 
+    /// Adapted from clabby/tact's Transcript::assistant_response (Apache-2.0).
+    /// Use the same projection for live and restored history. Child activity is
+    /// displayed separately and must not replace this pane's assistant answer.
+    pub(crate) fn assistant_response(&self, index: usize) -> Option<&str> {
+        self.entries
+            .iter()
+            .rev()
+            .filter_map(|entry| match &entry.kind {
+                EntryKind::Assistant {
+                    text,
+                    complete: true,
+                    agent_id: None,
+                } if !entry.hidden && !text.trim().is_empty() => Some(text.as_str()),
+                _ => None,
+            })
+            .nth(index.checked_sub(1)?)
+    }
+
     pub(crate) fn entries(&self) -> &[TranscriptEntry] {
         &self.entries
+    }
+
+    pub(crate) fn private_input(&self, id: EntryId) -> Option<&crate::tui::secure_input::Request> {
+        self.private_inputs.get(&id)
     }
 
     pub(crate) fn entry(&self, id: EntryId) -> Option<&TranscriptEntry> {
@@ -1100,6 +1132,9 @@ impl TranscriptModel {
                 self.tools.insert(payload.call_id.clone(), id);
                 id
             });
+        if let Some(request) = crate::tui::secure_input::request(record) {
+            self.private_inputs.insert(id, request);
+        }
         let shell_session = shell_session_id.map(|session_id| {
             let arguments = self.entry(id).and_then(|entry| match &entry.kind {
                 EntryKind::Tool(tool) => Some(&tool.arguments),

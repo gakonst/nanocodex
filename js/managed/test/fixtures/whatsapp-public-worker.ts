@@ -1,12 +1,29 @@
 import { Kv } from "accounts/server";
 import { UserAccount, Organization, ApiKeyRecord, NonceStorage, ensureAccount, createApiKey, authenticate } from "../../src/account-auth";
 import { routeConnectorRequest } from "../../src/connectors";
+import { accountConnectorsTool } from "../../src/account-connectors-tool";
 import { connectorToolsProvider } from "../../src/connector-tools";
 import { handleManagedEgress, exactConnectorAccess } from "../../src/managed-egress";
 export { UserAccount, Organization, ApiKeyRecord, NonceStorage };
 // Synthetic identity enrollment only; shipped authentication and routing stay real.
 export default { async fetch(request: Request, env: any) {
   const url = new URL(request.url);
+  if (url.pathname === "/__fixture/account-connectors") {
+    const principal = await authenticate(request, env, url);
+    if (!principal) return Response.json({ error: "unauthorized" }, { status: 401 });
+    const input: any = await request.json();
+    const tool = accountConnectorsTool(() => ({
+      broker: env.NANOCODEX, userId: principal.userId, sessionId: "synthetic-session", publicOrigin: url.origin,
+      canManage: () => !principal.connectGrant && principal.capabilities.includes("organization:write"),
+      allowedConnectors: () => principal.connectGrant ? [] : undefined,
+    }));
+    try {
+      return Response.json(await tool.handler(input.request, {
+        signal: request.signal,
+        ...(input.subagent ? { subagent: { agentId: "synthetic-child" } } : {}),
+      } as any));
+    } catch (error) { return Response.json({ error: String(error) }, { status: 400 }); }
+  }
   if (url.pathname === "/__fixture/tool" || url.pathname === "/__fixture/egress") {
     const input: any = await request.json();
     const allowed = (_capability: string, selected?: string) => input.grant === false ? false : exactConnectorAccess(["c".repeat(43)], selected);

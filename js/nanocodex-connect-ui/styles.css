@@ -71,6 +71,8 @@
   .sms-otp-input-row input:focus-visible { outline: 2px solid color-mix(in srgb, var(--text) 35%, transparent); outline-offset: 2px; }
   .sms-otp-input-row input[aria-invalid="true"] { border-color: var(--negative); }
   .sms-otp-input-row input[autocomplete="one-time-code"] { height: 56px; text-align: center; font-size: 24px; font-variant-numeric: tabular-nums; letter-spacing: .32em; }
+  .sms-otp-recovery { display: flex; flex-wrap: wrap; gap: 8px 16px; justify-content: space-between; }
+  .sms-otp-recovery button { min-height: 44px; padding: 8px 0; border: 0; background: transparent; font-size: 13px; text-decoration: underline; text-underline-offset: 3px; }
   .sms-auth-actions button:last-child { height: 46px; border: 0; border-radius: var(--connect-radius, 10px); background: var(--connect-accent, var(--text)); color: var(--connect-on-accent, var(--surface)); font-weight: 500; }
   .sms-auth-actions button:last-child:hover:not(:disabled) { opacity: .88; }
   .sms-otp-form .auth-terms { font-size: 11px; text-align: center; margin-top: 8px; line-height: 1.55; }

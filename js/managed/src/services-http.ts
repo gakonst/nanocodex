@@ -1,3 +1,4 @@
+import { createHostedRequest } from "nanocodex/services";
 import type { Principal } from "./account-auth";
 import { accountVaultMetadata } from "./account-info";
 import { vaultRequest } from "./vault-request";
@@ -50,9 +51,24 @@ export async function routeServicesRequest(
   if (!required.every(capability => (principal.capabilities as readonly string[]).includes(capability))) {
     return json({ error: "forbidden" }, 403);
   }
+  if (path === "/links" && read) {
+    const options: Record<string, string> = {};
+    const keys: Record<string, string> = { service: "service", action: "action", kind: "kind", operation_id: "operationId", app_origin: "appOrigin", state: "state" };
+    for (const [key, value] of url.searchParams) {
+      if (!Object.hasOwn(keys, key) || !value || Object.hasOwn(options, keys[key]!)) return json({ error: "invalid_request" }, 400);
+      options[keys[key]!] = value;
+    }
+    if ((options.service === "phone" && (options.kind || options.action)) || (options.service !== "phone" && options.operationId)
+      || (!options.appOrigin && options.state)) return json({ error: "invalid_request" }, 400);
+    try {
+      // The destination is fixed by the service; request headers cannot redirect private input.
+      return json(createHostedRequest({ ...options, host: "https://nanocodex.gakonst.workers.dev" } as Parameters<typeof createHostedRequest>[0]));
+    } catch { return json({ error: "invalid_request" }, 400); }
+  }
   if (path === "" && read && !url.search) {
     return json({ services: [
-      { id: "vault", path: PREFIX + "/vault", operations: ["list", "get", "request"], secret_export: false },
+      { id: "vault", path: PREFIX + "/vault", operations: ["list", "get", "request"], links_path: PREFIX + "/links", secret_export: false },
+      { id: "connectors", path: "/v1/connectors", catalog_path: "/v1/connectors/catalog", links_path: "/v1/account/links", management: "account_only" },
       { id: "totp", path: PREFIX + "/vault", enrollment_path: "/vault?service=totp", secret_export: false },
       { id: "phone", path: PREFIX + "/phone", human_approval_required: true, sms_2fa_compatibility: "provider_and_destination_dependent" },
     ] });

@@ -10,6 +10,8 @@ const CONNECT_BROWSER_CLIENTS = new Set(["device", "onboarding"]);
 const CONNECT_BROWSER_ROUTE = /^(?:\/v1\/device(?:\/.*)?|\/v1\/connect\/auth(?:\/.*)?|\/v1\/hosted-authorizations|\/v1\/account-link|\/v1\/connections(?:\/.*)?|\/v1\/access-keys(?:\/.*)?|\/v1\/grants(?:\/.*)?)$/;
 const CONNECTOR_ROUTE = /^\/v1\/connectors(?:\/.*)?$/;
 const CONNECTOR_CALLBACK = /^\/v1\/connectors\/(?:github|google|gmail|gdrive|slack|x|spotify|soundcloud)\/callback$/;
+const CONNECT_OAUTH_ROUTE = /^\/oauth\/(?:register|authorize|token|revoke|requests\/[A-Za-z0-9_-]{43}(?:\/(?:approve|deny))?)$/;
+const CONNECT_MCP_DISCOVERY_ROUTE = /^\/\.well-known\/(?:oauth-authorization-server|oauth-protected-resource(?:\/mcp)?)$/;
 const MCP_CONNECTION_ROUTE = /^\/v1\/mcp-connections(?:\/.*)?$/;
 const MCP_CONNECTION_CALLBACK = /^\/v1\/mcp-connections\/[A-Za-z0-9_-]{43}\/callback$/;
 
@@ -67,7 +69,10 @@ export function isConnectApiBrowserRoutePath(
   pathname: string,
 ): boolean {
   return pathname === "/api/connect/health"
-    || CONNECT_BROWSER_ROUTE.test(pathname);
+    || CONNECT_BROWSER_ROUTE.test(pathname)
+    || pathname === "/mcp"
+    || CONNECT_OAUTH_ROUTE.test(pathname)
+    || CONNECT_MCP_DISCOVERY_ROUTE.test(pathname);
 }
 
 type Fetcher = Readonly<{ fetch(request: Request): Promise<Response> }>;

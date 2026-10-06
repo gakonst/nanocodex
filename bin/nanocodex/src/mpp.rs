@@ -485,9 +485,24 @@ mod tests {
     async fn vm_lease_contains_only_the_proxy_route_and_public_ca() {
         let egress = EgressProxy::builder().spawn().await.unwrap();
         let proxy_url = egress.route().proxy_url().to_owned();
+        let wallet_directory = tempfile::tempdir().unwrap();
+        let wallet_path = wallet_directory.path().join("wallet.json");
+        std::fs::write(
+            &wallet_path,
+            serde_json::to_vec(&serde_json::json!({
+                "activeAccount": 0,
+                "chainId": 4217,
+                "accounts": [{"address": Address::repeat_byte(0x11)}],
+                "accessKeys": []
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let provider = TempoAccountsProvider::from_store(&wallet_path).unwrap();
         let adapter = MppAdapter {
             api_base_url: DEFAULT_MPP_API_BASE_URL.to_owned(),
             mpp_api_key: None,
+            provider,
             egress: Some(egress),
         };
 

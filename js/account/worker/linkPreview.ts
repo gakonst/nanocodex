@@ -157,7 +157,8 @@ export function documentStatusForPath(pathname: string): 200 | 404 | null {
     || pathname === "/changelog" || pathname === "/code" || pathname === "/commits"
     || pathname === "/requests" || pathname === "/router" || pathname === "/connect"
     || pathname === "/connect/device" || pathname === "/connect/vault"
-    || pathname === "/vault" || pathname === "/services/phone") return 200;
+    || pathname === "/vault" || pathname === "/services/phone"
+    || pathname === "/connect/wallet" || pathname === "/connect/access") return 200;
   if (Object.hasOwn(docsPreview, pathname) || isEvalDocumentPath(pathname)) return 200;
   if (pathname.startsWith("/docs/") || pathname.startsWith("/evals/")) return 404;
   return null;
@@ -255,6 +256,9 @@ async function previewForUrl(url: URL, env: LinkPreviewEnv): Promise<Preview> {
   if (pathname === "/connect/device") return fixed(pathname, "Connect device", "Authorize a Nanocodex device with your passkey-backed account.", "NANOCODEX CONNECT");
   if (pathname === "/connect/vault" || pathname === "/vault") return fixed(pathname, "Vault", "Manage encrypted credentials and authenticator accounts.", "NANOCODEX SERVICES");
   if (pathname === "/services/phone") return fixed(pathname, "Phone services", "Manage dedicated numbers, SMS and purchase approvals.", "NANOCODEX SERVICES");
+  if (pathname === "/connect/wallet") return fixed(pathname, "Wallet", "Manage your MACH wallet and funding.", "NANOCODEX CONNECT");
+  if (pathname === "/connect/access") return fixed(pathname, "API access", "Manage Nanocodex API keys for your apps and devices.", "NANOCODEX CONNECT");
+  if (pathname === "/connect/vault") return fixed(pathname, "Vault", "Store encrypted SSH keys, logins, API keys, cards, addresses, and phone numbers.", "NANOCODEX CONNECT");
   if (pathname === "/code") {
     const sourcePath = boundedText(url.searchParams.get("path"), 240);
     const canonical = new URL("https://canonical.invalid/code");

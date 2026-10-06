@@ -11,7 +11,7 @@ fn catalog() -> Value {
         {"name":"js", "description":"Exact upstream documentation\nincluding whitespace.", "inputSchema":{"type":"object","additionalProperties":true}, "annotations":{"readOnlyHint":false}, "outputSchema":{"type":"object"}},
         {"name":"js_reset", "description":"Upstream reset", "inputSchema":{"type":"object"}},
         {"name":"future_tool", "description":"Provider decides argument meanings", "inputSchema":{"type":"object"}, "_meta":{"custom":[1,2]}},
-        {"name":"turn_ended", "inputSchema":{"type":"object"}, "_meta":{"ui":{"visibility":[]}}}
+        {"name":"turn_ended", "inputSchema":{"type":"object","required":["hook_event_name","session_id","turn_id"]}, "_meta":{"ui":{"visibility":[]}}}
     ])
 }
 
@@ -27,8 +27,10 @@ IFS= read -r list
 printf '%s\n' '{{"jsonrpc":"2.0","id":2,"result":{{"tools":{catalog}}}}}'
 next=3
 count=0
+last_cleanup=null
 while IFS= read -r call; do
     case "$call" in
+        *'"name":"turn_ended"'*) last_cleanup=$call; count=$((count + 1)) ;;
         *'"code":"wait"'*) IFS= read -r never; exit 0 ;;
         *'"code":"slow"'*) sleep 0.3; count=$((count + 1)) ;;
         *'"code":"fail-reset"'*)
@@ -38,7 +40,7 @@ while IFS= read -r call; do
         *'"name":"js_reset"'*) count=0 ;;
         *) count=$((count + 1)) ;;
     esac
-    printf '{{"jsonrpc":"2.0","id":%s,"result":{{"content":[],"structuredContent":{{"count":%s,"call":%s,"initialize":%s}}}}}}\n' "$next" "$count" "$call" "$initialize"
+    printf '{{"jsonrpc":"2.0","id":%s,"result":{{"content":[],"structuredContent":{{"count":%s,"call":%s,"initialize":%s,"last_cleanup":%s}}}}}}\n' "$next" "$count" "$call" "$initialize" "$last_cleanup"
     next=$((next + 1))
 done
 "#,
@@ -81,6 +83,10 @@ async fn external_catalog_arguments_and_metadata_cross_the_process_unchanged() {
         let wire = &result.structured_result()["structuredContent"]["call"];
         assert_eq!(wire["params"]["arguments"], arguments);
         assert_eq!(wire["params"]["name"], name);
+        assert_eq!(
+            wire["params"]["_meta"]["openai/confirmation_policies"],
+            json!({"browser_use":"No confirmation policy applies.","computer_use":"No confirmation policy applies."})
+        );
         assert_eq!(
             wire["params"]["_meta"]["x-codex-turn-metadata"],
             json!({"session_id":"one", "thread_id":"one", "call_id":"fixture-call", "model":"fixture-model"})
@@ -554,4 +560,109 @@ async fn conversation_startup_deadline_ignores_provider_budget_and_requires_rese
         .await
         .unwrap();
     assert_eq!(result.structured_result()["structuredContent"]["count"], 1);
+}
+
+#[tokio::test]
+async fn trusted_turn_cleanup_preserves_session_metadata_and_runs_once() {
+    let computer = ComputerTools::connect(config()).await.unwrap();
+    computer.end_turn("unused", "turn-a", "Stop").await.unwrap();
+    let first = computer
+        .js()
+        .execute(
+            input(json!({"provider_field":"untouched"})),
+            context("used").with_turn_id(Some("turn-a")),
+        )
+        .await
+        .unwrap();
+    assert_eq!(first.structured_result()["structuredContent"]["count"], 1);
+    computer
+        .end_turn("used", "other-turn", "Stop")
+        .await
+        .unwrap();
+    computer.end_turn("used", "turn-a", "Stop").await.unwrap();
+    // All exposed tools share one lifecycle owner, so repeated notifications
+    // through different tool handles cannot duplicate upstream cleanup.
+    computer
+        .js()
+        .end_turn("used", "turn-a", "Stop")
+        .await
+        .unwrap();
+    computer
+        .reset()
+        .end_turn("used", "turn-a", "Stop")
+        .await
+        .unwrap();
+    let next = computer
+        .js()
+        .execute(
+            input(json!({})),
+            context("used").with_turn_id(Some("turn-b")),
+        )
+        .await
+        .unwrap();
+    let content = &next.structured_result()["structuredContent"];
+    assert_eq!(content["count"], 3);
+    assert_eq!(content["last_cleanup"]["params"]["name"], "turn_ended");
+    assert_eq!(
+        content["last_cleanup"]["params"]["arguments"],
+        json!({"hook_event_name":"Stop","session_id":"used","turn_id":"turn-a"})
+    );
+    assert_eq!(
+        content["last_cleanup"]["params"]["_meta"]["x-codex-turn-metadata"],
+        json!({"session_id":"used","thread_id":"used","turn_id":"turn-a",
+            "call_id":"fixture-call","model":"fixture-model"})
+    );
+    eprintln!(
+        "trusted cleanup wire: {}; following call count: {}",
+        content["last_cleanup"], content["count"]
+    );
+    let unused = computer
+        .js()
+        .execute(input(json!({})), context("unused"))
+        .await
+        .unwrap();
+    assert_eq!(unused.structured_result()["structuredContent"]["count"], 1);
+}
+
+#[tokio::test]
+async fn cleanup_after_cancel_never_recovers_or_clears_interrupted_session() {
+    let computer = ComputerTools::connect(config()).await.unwrap();
+    let js = computer.js();
+    let task = tokio::spawn(async move {
+        js.execute(
+            input(json!({"code":"wait"})),
+            context("cancel-cleanup").with_turn_id(Some("cancelled-turn")),
+        )
+        .await
+    });
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    task.abort();
+    let _ = task.await;
+    let error = computer
+        .js()
+        .execute(input(json!({})), context("cancel-cleanup"))
+        .await
+        .err()
+        .unwrap()
+        .to_string();
+    assert!(error.contains("interrupted"), "{error}");
+    computer
+        .reset()
+        .execute(input(json!({})), context("cancel-cleanup"))
+        .await
+        .unwrap();
+    // A delayed completion for the discarded process must never target the new one.
+    computer
+        .end_turn("cancel-cleanup", "cancelled-turn", "Stop")
+        .await
+        .unwrap();
+    let next = computer
+        .js()
+        .execute(input(json!({})), context("cancel-cleanup"))
+        .await
+        .unwrap();
+    assert_eq!(
+        next.structured_result()["structuredContent"]["last_cleanup"],
+        Value::Null
+    );
 }

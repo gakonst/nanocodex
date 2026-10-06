@@ -90,7 +90,9 @@ export function checkpoint(agent) {
 
 /** Atomically steers an active Cloudflare Agent turn or starts a new turn. */
 export function route(agent, options) {
-  return routePrompt(agent, options);
+  // Prefer the agent's own routed-turn wrapper (Claude retains host routes
+  // until its terminal receipt); Codex agents expose the same internal seam.
+  return typeof agent?.turn?.route === "function" ? agent.turn.route(options) : routePrompt(agent, options);
 }
 
 /** Removes the package-owned durable history for one Cloudflare Agent. */
@@ -530,6 +532,8 @@ async function createOwned(module, resolved, options, hostAgent, lifecycle, prep
           subagentSessions: cloudflareSubagentSessions(reservation, internalRuntime?.subagentLifecycle),
           subagentRouting: internalRuntime?.subagentRouting,
           toolProviders: internalRuntime?.toolProviders,
+          codeEffectJournal: internalRuntime?.codeEffectJournal,
+          traceTool: internalRuntime?.traceTool,
         },
         harnesses,
         model: internalConfiguration.model, thinking: internalConfiguration.thinking,
@@ -544,7 +548,9 @@ async function createOwned(module, resolved, options, hostAgent, lifecycle, prep
       }
       const exposed = claude.extend(owned => ({
         events: { connect: request => eventSocket?.connect(request) ?? Response.json({ error: "event_persistence_caller_owned" }, { status: 409 }) },
-        turn: { ...owned.turn, route: () => { throw new Error("Claude voice steering is not supported"); } },
+        // Claude live routing (realtime voice delegation) steers the active
+        // turn or starts one through the Claude runtime's owned turn wrapper.
+        turn: { ...owned.turn },
       }));
       const active = {};
       lifecycle.active = active;

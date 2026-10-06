@@ -86,3 +86,17 @@ test("command journal recovery is explicit, bounded per frame, and directional",
   }
   assert.throws(() => parseHostedToolsHostFrame(JSON.stringify({ type: "status", call_id: "call:1", state: "completed" })));
 });
+
+test("trusted turn lifecycle is opt-in and never accepts provider arguments", () => {
+  const catalog = { type: "catalog", capabilities: ["turn_metadata"], tools: [], turn_lifecycle: true };
+  assert.deepEqual(parseHostedToolsHostFrame(JSON.stringify(catalog)), catalog);
+  for (const value of [false, null, "true", {}]) {
+    assert.throws(() => parseHostedToolsHostFrame(JSON.stringify({ ...catalog, turn_lifecycle: value })));
+  }
+  const ended = { type: "turn_ended", session_id: "session:one", turn_id: "turn:cancelled", hook_event_name: "Interrupt" };
+  assert.deepEqual(parseHostedToolsManagedFrame(JSON.stringify(ended)), ended);
+  assert.throws(() => parseHostedToolsHostFrame(JSON.stringify(ended)), /managed-to-host|host-to-managed/);
+  for (const extra of [{ hook_event_name: "invalid" }, { hook_event_name: null }, { input: {} }, { turn_id: "" }, { turn_id: null }, { session_id: "other/session" }]) {
+    assert.throws(() => parseHostedToolsManagedFrame(JSON.stringify({ ...ended, ...extra })));
+  }
+});

@@ -70,6 +70,7 @@ export function startWalletHost(actions: WalletHostActions) {
   if (started) return;
   started = true;
   const url = new URL(window.location.href);
+  if (url.searchParams.has("oauth_request")) return;
   const origin = parseOrigin(singleParameter(url, "origin"));
   const appId = parseAppId(singleParameter(url, "app_id"));
   if (!origin || !appId) return;

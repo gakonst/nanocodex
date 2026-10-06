@@ -28,6 +28,8 @@ pub struct AttachmentMachine {
     name: Box<str>,
     workspace: Box<str>,
     capabilities: Box<[Box<str>]>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    resources: Option<AttachmentResourceObservation>,
 }
 
 impl AttachmentMachine {
@@ -91,11 +93,19 @@ impl AttachmentMachine {
             id: id.into(),
             name: name.into(),
             workspace: workspace.into(),
+            resources: None,
             capabilities: capabilities
                 .into_iter()
                 .map(String::into_boxed_str)
                 .collect(),
         })
+    }
+
+    /// Adds a measured host resource sample without changing routing identity.
+    #[must_use]
+    pub const fn with_resources(mut self, resources: AttachmentResourceObservation) -> Self {
+        self.resources = Some(resources);
+        self
     }
 
     /// Stable process-owned machine identifier.
@@ -121,6 +131,28 @@ impl AttachmentMachine {
     pub const fn capabilities(&self) -> &[Box<str>] {
         &self.capabilities
     }
+}
+
+/// Timestamped host observations, never an allocation or capacity guarantee.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
+pub struct AttachmentResourceObservation {
+    /// Unix milliseconds at collection time; reconnect must not retimestamp it.
+    pub observed_at_ms: u64,
+    /// Logical processors available to the host process.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cpu_logical_count: Option<u32>,
+    /// Total host memory in bytes.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub memory_total_bytes: Option<u64>,
+    /// OS-reported available memory in bytes, including reclaimable memory where supported.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub memory_available_bytes: Option<u64>,
+    /// Total bytes on the workspace filesystem.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub disk_total_bytes: Option<u64>,
+    /// Bytes available to an unprivileged caller on the workspace filesystem.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub disk_available_bytes: Option<u64>,
 }
 
 /// Optional stable routing metadata published with every attachment catalog.

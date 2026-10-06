@@ -4,7 +4,7 @@
   "main": "./src/index.ts",
   "upload_source_maps": true,
   "compatibility_date": "2026-08-23",
-  "compatibility_flags": ["nodejs_compat"],
+  "compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
   "workers_dev": true,
   "services": [
     { "binding": "ACCOUNTS", "service": "nanocodex-durable-agent" },
@@ -13,7 +13,8 @@
   ],
   "durable_objects": {
     "bindings": [
-      { "name": "CONNECT_STATE", "class_name": "ConnectNonceStorage" }
+      { "name": "CONNECT_STATE", "class_name": "ConnectNonceStorage" },
+      { "name": "MCP_EVENTS", "class_name": "McpEvents" }
     ]
   },
   "migrations": [
@@ -23,7 +24,8 @@
       "renamed_classes": [
         { "from": "NonceStorage", "to": "ConnectNonceStorage" }
       ]
-    }
+    },
+    { "tag": "v3", "new_sqlite_classes": ["McpEvents"] }
   ],
   "observability": {
     "enabled": true,
@@ -41,6 +43,7 @@
     "development": {
       "name": "nanocodex-connect-api",
       "compatibility_date": "2026-08-18",
+      "compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
       "services": [
         { "binding": "ACCOUNTS", "service": "nanocodex-durable-agent", "remote": false },
         { "binding": "EGRESS", "service": "nanocodex-egress", "remote": false },
@@ -48,7 +51,8 @@
       ],
       "durable_objects": {
         "bindings": [
-          { "name": "CONNECT_STATE", "class_name": "ConnectNonceStorage" }
+          { "name": "CONNECT_STATE", "class_name": "ConnectNonceStorage" },
+          { "name": "MCP_EVENTS", "class_name": "McpEvents" }
         ]
       },
       "vars": {

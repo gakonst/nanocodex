@@ -1,0 +1,123 @@
+/* Account workspace only; embedded Connect consent keeps its own presentation. */
+.account-hub .account-inline {
+  width: 100%;
+  min-width: 0;
+  font: 13px/1.5 var(--font-sans);
+}
+.account-hub .account-inline .account-connection-groups { display: grid; gap: 28px; }
+.account-hub .account-inline .account-connection-group { min-width: 0; }
+.account-hub .account-inline h2 { margin: 0 0 12px; font-size: 14px; font-weight: 500; letter-spacing: -.01em; }
+.account-hub .account-inline .wizard-connectors { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; }
+.account-hub .account-inline .wizard-connector-card,
+.account-hub .account-inline .account-service-row { min-width: 0; border: 1px solid var(--workspace-line); border-radius: 12px; overflow: hidden; background: var(--surface); }
+.account-hub .account-inline .connection-card,
+.account-hub .account-inline .account-service-summary { display: flex; align-items: center; gap: 12px; width: 100%; min-width: 0; min-height: 66px; padding: 12px 14px; color: var(--text); background: transparent; border: 0; border-radius: 0; text-align: left; }
+.account-hub .account-inline .connection-card-copy,
+.account-hub .account-inline .account-service-copy { display: grid; flex: 1; min-width: 0; gap: 2px; }
+.account-hub .account-inline .connection-card-copy strong,
+.account-hub .account-inline .account-service-copy strong { font-size: 13px; font-weight: 500; }
+.account-hub .account-inline .connection-card-copy > span,
+.account-hub .account-inline .account-service-copy > span { color: var(--workspace-muted); font-size: 12px; overflow-wrap: anywhere; }
+.account-hub .account-inline .connector-logo { width: 24px; height: 24px; flex: 0 0 24px; }
+.account-hub .account-inline button,
+.account-hub .account-inline input { font: inherit; }
+.account-hub .account-inline button { cursor: pointer; }
+.account-hub .account-inline button:disabled { cursor: default; opacity: .5; }
+.account-hub .account-inline button:not(.connection-card),
+.account-hub .account-inline .connection-card-action { min-height: 34px; padding: 6px 10px; border: 1px solid var(--workspace-line); border-radius: 8px; color: var(--text); background: var(--surface); font-size: 12px; white-space: nowrap; }
+.account-hub .account-inline .connection-card-action { margin-left: auto; }
+.account-hub .account-inline button:hover:not(:disabled) { background: var(--workspace-soft); }
+.account-hub .account-inline button:focus-visible,
+.account-hub .account-inline input:focus-visible,
+.account-hub .account-inline summary:focus-visible { outline: 2px solid var(--text); outline-offset: 3px; }
+.account-hub .account-inline .is-highlighted { outline: 2px solid var(--workspace-muted); outline-offset: 3px; scroll-margin: 24px; }
+.account-hub .account-inline .account-service-identity { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 0; padding: 10px 14px 10px 50px; border-top: 1px solid var(--workspace-line); font-size: 12px; }
+.account-hub .account-inline .account-service-identity > div { display: grid; gap: 2px; min-width: 0; overflow-wrap: anywhere; }
+.account-hub .account-inline .account-service-identity strong { font-weight: 500; }
+.account-hub .account-inline .account-service-identity span { color: var(--workspace-muted); }
+.account-hub .account-inline .chatgpt-account-details { border-top: 1px solid var(--workspace-line); }
+.account-hub .account-inline .mcp-connector-row { border: 1px solid var(--workspace-line); border-radius: 12px; }
+.account-hub .account-inline .mcp-connection-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.account-hub .account-inline input { min-width: 0; padding: 8px 10px; background: var(--surface); color: var(--text); border: 1px solid var(--workspace-line); border-radius: 8px; }
+.account-hub .account-inline .wizard-section { border: 0; padding: 0; }
+.account-hub .account-inline .wizard-section-title { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+.account-hub .account-inline .wizard-section-title small { color: var(--workspace-muted); }
+.account-hub .account-inline .account-secondary-settings { margin-top: 24px; border-top: 1px solid var(--workspace-line); padding-top: 16px; }
+.account-hub .account-inline .account-secondary-settings > summary { cursor: pointer; color: var(--workspace-muted); }
+.account-hub .account-inline .account-secondary-settings[open] > summary { margin-bottom: 20px; }
+.account-hub .account-inline .mcp-connector-row .connection-card-copy > .sr-only { position: static; width: auto; height: auto; margin: 0; overflow: visible; clip: auto; white-space: normal; }
+@media (max-width: 540px) {
+  .account-hub .account-inline .connection-card,
+  .account-hub .account-inline .account-service-summary { gap: 10px; padding: 12px; }
+  .account-hub .account-inline button:not(.connection-card),
+  .account-hub .account-inline .connection-card-action { min-height: 40px; }
+  .account-hub .account-inline .account-service-identity { padding-left: 12px; }
+  .account-hub .account-inline .mcp-connection-actions input { width: 100%; }
+}
+
+.account-hub .account-inline .whatsapp-connection { border: 1px solid var(--workspace-line); border-radius: 12px; overflow: hidden; }
+.account-hub .account-inline .whatsapp-pairing,
+.account-hub .account-inline .chatgpt-account-details { padding: 14px; display: grid; gap: 12px; font-size: 12px; }
+.account-hub .account-inline .whatsapp-pairing form,
+.account-hub .account-inline .claude-private-field { display: grid; gap: 8px; }
+.account-hub .account-inline .connection-setup { margin-top: 12px; }
+.account-hub .account-inline .connection-setup a,
+.account-hub .account-inline .tempo-wallet-card a,
+.account-hub .account-inline .chatgpt-login a { text-decoration: underline; text-underline-offset: 3px; }
+.account-hub .account-inline .account-failure { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; padding: 12px; margin-bottom: 16px; border: 1px solid var(--workspace-line); border-radius: 10px; }
+.account-hub .account-inline .api-key-create { display: grid; gap: 8px; }
+.account-hub .account-inline .api-key-create > div { display: flex; gap: 8px; }
+.account-hub .account-inline .api-key-create input { flex: 1; width: 100%; }
+.account-hub .account-inline .api-key-list { list-style: none; margin: 20px 0 0; padding: 0; }
+.account-hub .account-inline .api-key-list li { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 0; border-top: 1px solid var(--workspace-line); }
+.account-hub .account-inline .api-key-list li > div { display: grid; min-width: 0; gap: 3px; }
+.account-hub .account-inline .api-key-list strong { font-weight: 500; overflow-wrap: anywhere; }
+.account-hub .account-inline .api-key-list :is(code, time),
+.account-hub .account-inline .api-key-empty { color: var(--workspace-muted); font-size: 12px; }
+.account-hub .account-inline .api-key-empty { margin-top: 16px; }
+.account-hub .account-inline .new-api-key { display: grid; gap: 10px; padding: 16px; margin-bottom: 20px; border: 1px solid var(--workspace-line); border-radius: 12px; background: var(--workspace-soft); }
+.account-hub .account-inline .new-api-key code { overflow-wrap: anywhere; user-select: all; }
+.account-hub .account-inline .new-api-key > div { display: flex; flex-wrap: wrap; gap: 8px; }
+.account-hub .account-inline .new-api-key button { display: inline-flex; align-items: center; gap: 6px; }
+.account-hub .account-inline .new-api-key svg { width: 14px; height: 14px; }
+.account-hub .account-inline .tempo-wallet-card { flex-wrap: wrap; align-items: flex-start; padding: 20px; gap: 16px; }
+.account-hub .account-inline .tempo-wallet-card .connection-card-copy { flex-basis: 180px; }
+.account-hub .account-inline .tempo-wallet-card-actions { display: grid; gap: 8px; }
+.account-hub .account-inline .tempo-wallet-address { flex: 0 0 100%; min-width: 0; display: grid; justify-items: start; gap: 10px; padding-top: 16px; border-top: 1px solid var(--workspace-line); }
+.account-hub .account-inline .tempo-wallet-address code { max-width: 100%; overflow-wrap: anywhere; user-select: all; font-size: 12px; }
+.account-hub .account-inline .tempo-wallet-address > span { color: var(--workspace-muted); font-size: 12px; }
+.account-hub .account-inline .tempo-wallet-address button { white-space: normal; text-align: left; }
+.account-hub .account-inline .mcp-connection-actions input { flex: 1; width: 0; }
+@media (max-width: 540px) {
+  .account-hub .account-inline input { font-size: 16px; }
+  .account-hub .account-inline .wizard-section-title { align-items: flex-start; flex-direction: column; gap: 0; margin-bottom: 16px; }
+  .account-hub .account-inline .mcp-connection-actions input { width: 100%; flex-basis: 100%; }
+  .account-hub .account-inline .tempo-wallet-card { padding: 14px; }
+}
+
+.account-hub .account-inline .connector-logo { display: inline-grid; place-items: center; color: var(--text); font-weight: 500; }
+.account-hub .account-inline .connector-logo svg { width: 24px; height: 24px; fill: currentColor; }
+.account-hub .account-inline .tempo-wallet-balance { font-size: 18px; color: var(--text); margin-top: 4px; font-variant-numeric: tabular-nums; }
+.account-hub .account-inline .connector-logo { border: 0; background: transparent; border-radius: 0; font-size: 18px; }
+.account-hub .account-inline .connection-card-action { align-self: center; display: inline-flex; align-items: center; text-transform: none; letter-spacing: 0; }
+.account-hub .account-inline .connection-card.is-connected .connection-card-action { color: var(--text); }
+.account-hub .account-inline .connection-card-copy > span { white-space: normal; text-overflow: clip; }
+.account-hub .account-inline .connection-card-copy > .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; }
+.account-hub #claude-connection > .connection-card { display: flex; min-height: 66px; border: 0; border-radius: 0; padding: 12px 14px; align-items: center; gap: 12px; }
+.account-hub #claude-connection .connection-card-copy { flex: 1; gap: 2px; }
+.account-hub #claude-connection .connection-card-copy strong { font-size: 13px; }
+.account-hub #claude-connection .connection-card-copy > span { font-size: 12px; color: var(--workspace-muted); }
+.account-hub #claude-connection .connection-card-action { align-self: center; color: var(--text); }
+.account-hub .account-inline .tempo-wallet-card { opacity: 1; }
+.account-hub #claude-connection .connector-logo svg { fill: none; }
+.account-hub #claude-connection .connection-card-action { text-transform: none; letter-spacing: 0; }
+.account-hub .account-inline .connection-card-copy > .tempo-wallet-balance { font-size: 18px; color: var(--text); }
+
+.cloudflare-connection-form { display: grid; gap: 12px; padding: 14px; border-top: 1px solid var(--workspace-line, var(--border)); }
+.cloudflare-connection-form label { display: grid; gap: 6px; min-width: 0; }
+.cloudflare-connection-form :is(input, select) { width: 100%; min-width: 0; padding: 8px 10px; background: var(--surface); color: var(--text); border: 1px solid var(--workspace-line, var(--border)); border-radius: 8px; font: inherit; }
+.cloudflare-connection-form p { margin: 0; color: var(--workspace-muted, var(--text-secondary)); font-size: 12px; }
+.cloudflare-connection-form > button { justify-self: start; }
+.cloudflare-connection-form a { color: inherit; text-decoration: underline; text-underline-offset: 3px; }
+.account-hub [data-provider="cloudflare"] .connector-logo svg { fill: none; }
+@media (max-width: 540px) { .cloudflare-connection-form :is(input, select) { font-size: 16px; } }

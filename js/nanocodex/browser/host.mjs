@@ -37,8 +37,8 @@ export function createBrowserHost(options = {}) {
   const socketObservations = createSocketObservations(options.onSocketEvent);
   const preservation = createBeforeCompaction(options.beforeCompaction);
   const toolMode = options.toolMode ?? "code";
-  if (toolMode !== "code" && toolMode !== "direct") {
-    throw new TypeError("toolMode must be code or direct");
+  if (toolMode !== "code" && toolMode !== "code-only" && toolMode !== "direct") {
+    throw new TypeError("toolMode must be code, code-only or direct");
   }
   const toolsRouter = options.tools?.[toolRouterBrand]
     ? options.tools[toolRouterRuntime]
@@ -50,7 +50,7 @@ export function createBrowserHost(options = {}) {
   if (toolsMcp && options.mcp) {
     throw new TypeError("MCP is already configured in Tools");
   }
-  if ((toolsMcp || options.mcp) && toolMode !== "code") {
+  if ((toolsMcp || options.mcp) && toolMode === "direct") {
     throw new TypeError("remote MCP requires Code Mode");
   }
   const toolsLifecycle = options.tools?.[toolRuntimeLifecycle];
@@ -653,10 +653,10 @@ export function createBrowserHost(options = {}) {
     close,
     sleep: (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
     executeCode: traceTool === undefined ? code.executeCodeObserved
-      : (source, sessionId = "default", callId = "exec", model = "unknown", turnId) =>
+      : (source, sessionId = "default", callId = "exec", model = "unknown", turnId, localDefinitions, executeLocalTool) =>
         traceToolInvocation(traceTool, "exec", {
           sessionId, callId, ...(turnId == null ? {} : { turnId }),
-        }, () => code.executeCodeObserved(source, sessionId, callId, model, turnId)),
+        }, () => code.executeCodeObserved(source, sessionId, callId, model, turnId, localDefinitions, executeLocalTool)),
     waitCode: traceTool === undefined ? code.waitCodeObserved
       : (input, sessionId = "default", callId = "wait") =>
         traceToolInvocation(traceTool, "wait", { sessionId, callId },
@@ -703,7 +703,7 @@ export function createBrowserHost(options = {}) {
     toolMode: () => toolMode,
     toolDefinitions: code.toolDefinitions,
     releaseSession: (sessionId) => { effectIdentity.release(sessionId); socketObservations?.release(sessionId); return code.releaseSession(sessionId); },
-    emitEvent: (event, ...args) => { effectIdentity.observe(event); socketObservations?.runtime(event); return onEvent(event, ...args); },
+    emitEvent: (event, ...args) => { code.observeEvent(event); effectIdentity.observe(event); socketObservations?.runtime(event); return onEvent(event, ...args); },
     reset: () => { effectIdentity.reset(); return code.reset(); },
     dispose,
   });

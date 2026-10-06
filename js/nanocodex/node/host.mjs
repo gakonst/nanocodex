@@ -29,8 +29,8 @@ const MPP_CLIENT_PROTOCOL_ERROR_CLOSE_CODE = 3008;
 export function createNodeHost(options = {}) {
   const preservation = createBeforeCompaction(options.beforeCompaction);
   const toolMode = options.toolMode ?? "code";
-  if (toolMode !== "code" && toolMode !== "direct") {
-    throw new TypeError("toolMode must be code or direct");
+  if (toolMode !== "code" && toolMode !== "code-only" && toolMode !== "direct") {
+    throw new TypeError("toolMode must be code, code-only or direct");
   }
   const toolsRouter = options.tools?.[toolRouterBrand]
     ? options.tools[toolRouterRuntime]
@@ -42,7 +42,7 @@ export function createNodeHost(options = {}) {
   if (toolsMcp && options.mcpServers) {
     throw new TypeError("MCP is already configured in Tools");
   }
-  if ((toolsMcp || options.mcpServers) && toolMode !== "code") {
+  if ((toolsMcp || options.mcpServers) && toolMode === "direct") {
     throw new TypeError("remote MCP requires Code Mode");
   }
   const toolsLifecycle = options.tools?.[toolRuntimeLifecycle];
@@ -351,7 +351,7 @@ export function createNodeHost(options = {}) {
     toolMode: () => toolMode,
     toolDefinitions: code.toolDefinitions,
     releaseSession: (sessionId) => { effectIdentity.release(sessionId); return code.releaseSession(sessionId); },
-    emitEvent: (event, ...args) => { effectIdentity.observe(event); return onEvent(event, ...args); },
+    emitEvent: (event, ...args) => { code.observeEvent(event); effectIdentity.observe(event); return onEvent(event, ...args); },
     reset: () => { effectIdentity.reset(); return code.reset(); },
     dispose,
   });

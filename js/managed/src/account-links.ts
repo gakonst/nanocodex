@@ -558,9 +558,10 @@ function hostedApp(resources: readonly string[]): Readonly<{ id: string; origin:
   const ids = resources.filter((resource) => resource.startsWith(APP_RESOURCE_PREFIX));
   const origins = resources.filter((resource) => resource.startsWith(APP_ORIGIN_RESOURCE_PREFIX));
   if (ids.length !== 1 || origins.length !== 1) return undefined;
-  const id = ids[0]!.slice(APP_RESOURCE_PREFIX.length);
+  let id: string;
   let origin: string;
   try {
+    id = decodeURIComponent(ids[0]!.slice(APP_RESOURCE_PREFIX.length));
     origin = decodeURIComponent(origins[0]!.slice(APP_ORIGIN_RESOURCE_PREFIX.length));
   } catch {
     return undefined;

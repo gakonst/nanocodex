@@ -330,3 +330,40 @@ test("actual WASM cancelOnAdmission never issues a queued successor Messages req
     assert.equal(requests.length, 2);
   } finally { await shutdown(agent); }
 });
+
+test("actual WASM Claude live route starts idle turns, steers active turns, and sends native media blocks", { timeout: 15_000 }, async t => {
+  const Claude = await sdk();
+  const started = Promise.withResolvers();
+  const release = Promise.withResolvers();
+  const { endpoint, requests } = await fixture(t, index => index === 1
+    ? sse([{ type: "tool_use", id: "held", name: "hold", input: {} }], "tool_use")
+    : sse(text(index === 2 ? "ROUTED_DONE" : "CONTENT_DONE")));
+  const agent = await Claude.create({ endpoint, model: "fixture-model", auth: { apiKey: "synthetic-only" },
+    tools: [{ name: "hold", description: "Held synthetic tool", handler: async () => { started.resolve(); await release.promise; return "held"; } }],
+  });
+  try {
+    // Realtime voice frontends deliver live text through route: idle starts a turn.
+    const turn = await agent.turn.route({ input: "book the flight" });
+    assert.ok(turn, "idle live input starts a turn");
+    const result = turn.result();
+    await started.promise;
+    // An active turn absorbs the next live input without a concurrent model call.
+    assert.equal(await agent.turn.route({ input: "and ask for a window seat" }), undefined);
+    release.resolve();
+    assert.equal((await result).finalMessage, "ROUTED_DONE");
+    assert.equal(requests.length, 2);
+    assert.match(JSON.stringify(requests[1].body.messages), /and ask for a window seat/);
+
+    const png = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
+    const pdf = `data:application/pdf;base64,${Buffer.from("%PDF-1.4\n%%EOF\n").toString("base64")}`;
+    const content = [{ type: "text", text: "describe both" }, { type: "image", image_url: png }, { type: "file", file_data: pdf, filename: "brief.pdf" }];
+    assert.equal((await run(agent, content)).finalMessage, "CONTENT_DONE");
+    const blocks = requests[2].body.messages.at(-1).content;
+    assert.deepEqual(blocks.map(block => block.type), ["text", "image", "document"]);
+    assert.deepEqual(blocks[1].source, { type: "base64", media_type: "image/png", data: png.split(",")[1] });
+    assert.deepEqual(blocks[2].source, { type: "base64", media_type: "application/pdf", data: pdf.split(",")[1] });
+    assert.equal(blocks[2].title, "brief.pdf");
+    assert.throws(() => agent.turn.prompt({ input: [] }), /non-empty/);
+    await assert.rejects(run(agent, [{ type: "file", file_data: "data:application/pdf;base64,bm90IGEgcGRm" }]), /document/i);
+  } finally { await shutdown(agent); }
+});

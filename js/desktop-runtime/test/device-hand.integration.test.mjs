@@ -87,7 +87,9 @@ test("real CLI and desktop leases share one authenticated host across account ke
   const secondId = await describeDeviceHand(binary, env("b"), { spawnProcess });
   assert.equal(firstId.id, secondId.id, "API key rotation must not create another computer");
   const missing = connectDeviceHand({ spawnProcess, binary, env: env("a"), signal: new AbortController().signal, onState() {} });
-  await assert.rejects(missing.ready, /computer Hand OS service did not accept a connection/);
+  // macOS may request automatic user-service enrollment, but these synthetic
+  // environment credentials are deliberately not saved and cannot enroll it.
+  await assert.rejects(missing.ready, /computer Hand OS service did not accept a connection|Automatic Hand setup requires this login to be saved/);
   await missing.close();
   assert.equal(catalogs, 0, "An observer must not start a publisher");
   step("starting the OS-owned publisher entry point");

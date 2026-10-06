@@ -207,3 +207,308 @@ The journey starts an actual local workerd HTTP listener and real Durable Object
 storage. Synthetic external identity and managed-agent providers exercise the
 Connect trust boundary without live accounts or model calls. HTTP status traces
 are emitted as test diagnostics; capture generated evidence under root `output/`.
+
+## Remote MCP with Connect OAuth
+
+The canonical account Worker forwards `/mcp`, `/.well-known/oauth-protected-resource/mcp`,
+`/.well-known/oauth-authorization-server`, and `/oauth/*` to this Worker. The public
+origin is preserved throughout discovery, consent, code redemption, and resource
+requests. See [client setup and supported tools](../../docs/connect-mcp.md).
+
+`oauthMcp.mts` owns public-client registration, exact redirect binding (with only
+RFC 8252's native loopback port exception), S256 PKCE, one-time authorization
+codes, resource-bound access tokens, rotating refresh tokens, and RFC 7009
+revocation. Registration metadata grants no account authority. The existing
+hosted account authorization service must exchange a user-approved code whose
+resources include this exact pending request. The user can select a nonempty
+subset of requested scopes; the signed resources and issued scope must match.
+
+MCP OAuth tokens are separate from internal Connect grant credentials. Every
+resource call resolves the token family and current grant; revocation, expiry,
+app/owner binding, and approved capabilities remain live checks. Refresh-token
+reuse fences the entire family before revoking its underlying grant. MCP tool
+adapters construct managed assertions internally and reuse the connector broker's
+provider and selected-identity enforcement. They never forward caller-supplied
+internal authorization headers or return the underlying Connect token.
+
+`mcpServer.mts` implements stateless JSON Streamable HTTP for MCP 2025-03-26,
+2025-06-18, 2025-11-25, and the MCP released revision 2026-07-28. Legacy clients
+continue to use `initialize`. MCP2 clients use `server/discover` and send these
+fields on every request:
+
+```http
+POST /mcp
+Authorization: Bearer <OAuth access token>
+Content-Type: application/json
+Accept: application/json, text/event-stream
+MCP-Protocol-Version: 2026-07-28
+Mcp-Method: events/list
+```
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "events/list",
+  "params": {
+    "_meta": {
+      "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+      "io.modelcontextprotocol/clientCapabilities": {}
+    }
+  }
+}
+```
+
+`tools/call` additionally requires `Mcp-Name` matching the tool name. MCP2
+responses include `resultType: "complete"` and server metadata in
+`_meta["io.modelcontextprotocol/serverInfo"]`. Header/body mismatches return
+HTTP 400 with JSON-RPC `-32020`; unsupported revisions return HTTP 400 with
+`-32022`; unknown MCP2 methods return HTTP 404 with `-32601`. Requests are
+stateless; notifications return 202 and GET/DELETE return 405.
+
+### MCP Events
+
+The event catalog and advertised capability reflect the current OAuth grant.
+`agent:run` with the approved model capability exposes `agent.turn.completed`;
+other grants receive an empty `events/list` catalog. Events observe only turns
+started through this MCP grant, on its approved agent. Completion includes
+`completed`, `failed`, and `cancelled` terminal states. A subscription starts
+future observation; it does not replay historical completions. `cursor` is
+currently null and `truncated` is false.
+
+Use `events/subscribe` with the metadata above and these additional parameters:
+
+```json
+{
+  "name": "agent.turn.completed",
+  "arguments": { "turn_id": "<optional exact turn ID>" },
+  "delivery": {
+    "mode": "webhook",
+    "url": "https://callbacks.example.com/nanocodex",
+    "secret": "whsec_<base64 encoding of 24–64 random bytes>"
+  },
+  "ttlMs": 3600000
+}
+```
+
+Omit `arguments.turn_id` to observe all MCP-started turns for this grant. The
+response contains `{ id, refreshBefore, cursor: null, truncated: false }`.
+Repeat the same event name, normalized URL and arguments to refresh the same
+subscription. OAuth access-token rotation retains its identity. Refresh before
+`refreshBefore`; the default lifetime is one hour, requested lifetimes are
+bounded to one second through 24 hours, and grant expiry remains an upper bound.
+A changed secret rotates the signing key with a five-minute overlap in which
+callbacks carry both signatures.
+
+Before accepting a new callback destination, the server POSTs a signed
+`{ "type": "verification", "challenge": "..." }` body. The receiver must return
+2xx with `{ "challenge": "<same value>" }` within ten seconds. Verification
+responses are limited to 4 KiB. Successful checks are cached briefly for the
+same grant and URL; failures return `CallbackEndpointError` (`-32015`) and do
+not create the subscription. Receivers should verify signatures on verification
+requests as well as events.
+
+Callbacks use Standard Webhooks headers `webhook-id`, `webhook-timestamp` and
+`webhook-signature`, plus `X-MCP-Subscription-Id`. Decode the secret after
+`whsec_` as base64. Compute HMAC-SHA256 over the exact bytes
+`<webhook-id>.<webhook-timestamp>.<raw request body>` and compare a base64
+signature from the space-separated `v1,<signature>` values in constant time.
+Validate timestamp freshness and deduplicate by `webhook-id`. Neither OAuth
+access/refresh tokens nor internal Connect credentials are sent to callbacks.
+
+A delivery has this shape:
+
+```json
+{
+  "eventId": "evt_<stable event ID>",
+  "name": "agent.turn.completed",
+  "timestamp": "2026-10-06T12:00:00.000Z",
+  "data": {
+    "agent_id": "<approved agent ID>",
+    "turn_id": "<MCP operation ID>",
+    "status": "completed",
+    "completed_at": "2026-10-06T12:00:00.000Z"
+  },
+  "cursor": null
+}
+```
+
+Read full output through `nanocodex_agent_status`. The callback is a completion
+notification; it grants no additional account authority.
+
+`events/unsubscribe` takes the same `name`, `arguments` and `delivery.url`
+(`delivery.mode` may be `webhook`), with no secret. It is idempotent and returns
+an empty result. Missing and already expired subscriptions can be removed safely.
+Subscription IDs and signing secrets never grant permission to another principal.
+
+`McpEvents` is a separate SQLite Durable Object bound as `MCP_EVENTS`. Real
+alarms poll retained turn status and process a durable outbox after the caller
+disconnects. A successful callback acknowledges an event. Transient errors use
+bounded retries with stable event IDs and payloads; HTTP 410 and 413 discard
+that event while preserving the subscription for subsequent events. Retries can duplicate a delivery, so receivers must deduplicate. Exhausted
+retry budgets can lose events; this event type does not support replay. Live
+OAuth-family and Connect-grant checks fence both polling and delivery after
+revocation. Expired subscriptions stop delivery automatically.
+
+The callback transport accepts public HTTPS DNS names only, without credentials,
+fragments, IP literals, or private host suffixes. It sends one POST using global
+`fetch()` with manual redirects, an allowlist of webhook headers, a 64 KiB request
+limit, a 4 KiB verification response limit, and a 10-second deadline. Delivery
+responses are acknowledged by status without buffering their bodies. TLS hostname
+verification and public DNS routing are enforced by the runtime.
+
+Both production and development explicitly enable
+[`global_fetch_strictly_public`](https://developers.cloudflare.com/workers/configuration/compatibility-flags/#global-fetch-strictly-public).
+This is a security requirement: requests to the Worker's own zone pass through
+Cloudflare's public front door, avoiding the legacy origin bypass described in
+Cloudflare's [bindings security explanation](https://blog.cloudflare.com/workers-environment-live-object-bindings/).
+Webhook delivery never uses an origin or service binding, nor caller-provided
+routing metadata. Cloudflare-proxied HTTPS receivers use the same public fetch
+path as other receivers. Standalone workerd deployments must retain a public-only
+`globalOutbound` network; its [runtime contract](https://github.com/cloudflare/workerd/blob/main/src/workerd/io/compatibility-date.capnp)
+rejects DNS destinations resolving to private addresses. The compatibility flag
+controls Cloudflare routing and does not change standalone workerd networking.
+
+Run from the repository root under Node 24 with workspace dependencies installed:
+
+```sh
+node --test js/connect-api/test/mcpServerWorker.test.mjs
+node --test js/connect-api/test/mcpEventsWorker.test.mjs
+```
+
+The event journey requires Linux with `unshare`, `mount`, `umount`, `ip` and
+`openssl` (the `util-linux`, `iproute2` and `openssl` packages on Ubuntu), and
+permission to create unprivileged user, network and mount namespaces. Its runner
+creates these namespaces automatically and fails explicitly if unavailable.
+The fixture binds synthetic public and private IPs and a DNS hosts mapping only
+inside those namespaces; the host network and DNS configuration stay unchanged.
+The dedicated MCP CI workflow prepares these permissions on its disposable
+Ubuntu runner and publishes the journey log.
+
+Both journeys run the shipped Worker on an actual workerd listener and real
+SQLite Durable Object storage. The legacy journey also uses the official MCP
+JavaScript client. The event journey exercises public OAuth/MCP requests,
+signed verification and callbacks, actual turn polling alarms, token/key
+rotation, retry identity, exact-turn filtering across restart, recovery from
+invalid source timestamps, loopback/RFC1918/metadata DNS and wrong TLS hostname
+rejection, redirect refusal, oversized and stalled verification response rejection,
+unsubscribe, expiry and revocation. Only external
+account, DNS and callback services are synthetic fixtures. Diagnostics provide
+HTTP, managed polling and callback evidence; capture generated evidence in
+ignored `output/` or CI artifacts.
+
+## MACH wallet funding
+
+The account site's `/v1/machine-usd/config` and `/v1/machine-usd/orders` routes
+use MACH's private `OnrampApi` contract: `GET /v1/config`, `POST /v1/orders`,
+and `GET /v1/orders/ord_<32 lowercase hex digits>`. Mercator's public
+`/v1/onramp` routes are not an onramp transport.
+
+Configure one transport on the Connect Worker, including each preview environment
+that should support funding:
+
+- In the MACH Worker's Cloudflare account, add an optional `MACH_ONRAMP` service
+  binding to the MACH Worker with `entrypoint: "OnrampApi"`.
+- Across Cloudflare accounts, use MACH's authenticated onramp relay. Configure
+  `MACH_ONRAMP_RELAY_URL` as its fixed HTTPS origin (no path, query, or userinfo)
+  and provision the same secret of at least 32 characters as
+  `MACH_ONRAMP_RELAY_TOKEN` on both Workers using secret management. The relay
+  binds to `OnrampApi` inside MACH's account. See
+  [MACH relay setup](https://github.com/tempoxyz/mach/blob/main/docs/nanocodex-onramp-relay.md).
+
+Production operators use the manual **Configure MACH onramp relay** workflow
+(`mach-onramp-config.yml`) on `master`. In the existing `cloudflare-production`
+environment, securely provision `MACH_ONRAMP_RELAY_TOKEN` with the same value as
+the issuer relay, and set the nonsecret variable `MACH_ONRAMP_RELAY_HOST` to the
+exact `workers.dev` hostname from the verified issuer deployment receipt. The
+workflow reuses `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID`; credentials
+must never be supplied as workflow inputs, command arguments or files.
+
+Dispatch with `action=configure` and `relay_origin=https://<verified-host>`
+(without a trailing slash). Before writing, the operator checks the account's
+`gakonst` subdomain, the existing `nanocodex-connect-api` Worker and its local
+`CONNECT_STATE` / `ConnectNonceStorage` binding, anonymous relay
+rejection, and authenticated canonical MACH configuration. It writes only
+`MACH_ONRAMP_RELAY_TOKEN` and `MACH_ONRAMP_RELAY_URL` as `secret_text` bindings,
+then checks the fixed public Connect config endpoint. Secret writes accept HTTP
+200 or 201 only with a successful response envelope and the matching binding
+name and `secret_text` type. The URL is intentionally
+stored as a secret binding so normal Wrangler deployments preserve it along
+with the token ([Cloudflare configuration](https://developers.cloudflare.com/workers/wrangler/configuration/#source-of-truth));
+do not duplicate either binding in Wrangler `vars` or a regular
+deployment's secret payload. Configuration shares the production deployment
+concurrency group and does not build or redeploy source.
+
+The workflow reports HTTP status and bounded result codes only. It never creates
+orders or payments. Writes are sequential, not atomic, and never automatically
+retried. After an interrupted or unconfirmed write, dispatch `action=verify`
+first: this checks relay and public configuration without writing. A failed
+verification does not prove a write failed; inspect Cloudflare deployment and
+secret-name metadata without reading values before explicitly repairing a
+partial configuration.
+
+For an applied token write with no origin binding, explicitly dispatch
+`action=configure-origin` with the same verified `relay_origin`. This recovery
+checks Worker settings metadata for an existing `MACH_ONRAMP_RELAY_TOKEN`
+`secret_text` binding and requires `MACH_ONRAMP_RELAY_URL` to be absent. It then
+checks anonymous rejection and authenticated canonical relay configuration,
+writes only the origin binding once, and verifies public config. It never reads
+secret values or rewrites the token. Metadata confirms the token binding's
+presence and type; successful public verification confirms the configured
+transport works. If any origin binding already exists, recovery refuses to
+write: use `verify`. Missing or incorrectly typed token bindings also stop
+before any write. An uncertain origin write must be reconciled through metadata
+and `verify`, never blindly repeated.
+
+A public config check can also fail during propagation;
+use `verify` again instead of repeating writes. Successful verification means
+authentication is required and public config enables canonical MACH on chain
+4217, token `0x20c000000000000000000000f37de3740adec032`, bounds 500–10000
+USD cents, and a `pk_live_` publishable key; it does not prove checkout or
+issuance works. The issuer omits `onramp_enabled`; the public SDK normalizes its
+absence to `onrampEnabled: true`. An explicit disabled or malformed flag fails
+verification.
+
+Run the synthetic HTTP operator journeys with
+`node --test scripts/cloudflare/configure-mach-onramp.test.mjs` from the repository
+root. No production credentials are needed.
+
+The private binding takes precedence. An absent or invalid transport returns
+`503 machine_usd_unavailable`; there is no public-endpoint fallback. Adding a
+binding name without provisioning its target does not enable funding. Relay
+credentials never reach the browser, and account cookies never reach MACH.
+Only the three config/order routes cross the relay; redirects are rejected.
+A transport failure can mean order creation succeeded. Retain the exact body,
+capability and idempotency key when retrying.
+
+The account proxy resolves the persistent account's Worker-owned wallet through
+`/v1/me`, overwrites client-supplied recipients, requires the same browser Origin
+for creates, and scopes idempotency keys to the wallet. Status requires both the
+account session and order capability. Responses must match the wallet, amount,
+order ID and canonical MACH amount. Completion requires fulfilled issuance and
+a transaction hash, not payment success alone.
+
+The UI retains its account-bound intent in session storage before dispatch,
+opens Stripe through an explicit link in a new tab, and polls on the original
+Nanocodex page. Reloading or a temporary failure can be recovered by selecting
+Add funds again: the existing order is checked and identical create inputs are
+replayed when necessary. Closing checkout does not complete or cancel an order.
+Polling stops after 15 minutes and retains the intent for recovery. A fulfilled
+order refreshes the wallet balance. Hosted checkout's return destination is
+controlled by MACH; arbitrary browser return URLs are not forwarded.
+
+Validation (Node 24, installed workspace dependencies):
+
+```sh
+node --experimental-strip-types --test js/connect-api/test/machFunding.test.mjs
+MACH_RELAY_SOURCE=/absolute/path/to/mach/src/onramp-relay.ts \
+  node --experimental-strip-types --test js/connect-api/test/machFunding.test.mjs
+WALLET_BROWSER_CHANNEL=chrome node js/account/scripts/wallet-smoke.mjs
+```
+
+The HTTP journey bundles the shipped Connect Worker and runs the account handler
+over local HTTP, with synthetic account authentication and an external MACH
+provider fixture. `MACH_RELAY_SOURCE` adds the actual companion relay to that
+journey. The browser journey exercises the production funding hook and card with
+synthetic HTTP responses on desktop and mobile. Neither journey charges a card
+or deploys a Worker. Logs and browser screenshots belong under ignored `output/`.

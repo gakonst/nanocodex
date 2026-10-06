@@ -1,0 +1,74 @@
+.vault-workspace { min-width: 0; }
+.vault-workspace-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 28px; min-height: 36px; }
+.vault-workspace-heading h1 { margin: 0; font-size: 25px; font-weight: 500; }
+.vault-primary-action { display: inline-flex; align-items: center; justify-content: center; gap: 7px; min-height: 36px; padding: 7px 12px; border: 1px solid var(--workspace-line); border-radius: 8px; background: var(--text); color: var(--surface); white-space: nowrap; }
+.vault-primary-action svg { width: 15px; height: 15px; }
+.vault-add-menu { z-index: 120; min-width: 190px; padding: 5px; border: 1px solid var(--border-soft); border-radius: 10px; background: var(--surface); color: var(--text); box-shadow: 0 8px 28px rgb(0 0 0 / 12%); font: 13px/1.5 var(--font-sans); }
+.vault-add-menu-item { display: flex; align-items: center; gap: 10px; min-height: 38px; padding: 8px 10px; border-radius: 6px; cursor: pointer; outline: none; }
+.vault-add-menu-item svg { width: 16px; height: 16px; }
+.vault-add-menu-item[data-highlighted] { background: var(--surface-subtle); }
+.vault-workspace-tools { display: grid; gap: 16px; }
+.vault-search { display: flex; align-items: center; gap: 9px; padding: 0 12px; min-height: 40px; border: 1px solid var(--workspace-line); border-radius: 8px; }
+.vault-search svg { flex-shrink: 0; width: 16px; height: 16px; color: var(--workspace-muted); }
+.vault-search input { width: 100%; min-width: 0; min-height: 40px; padding: 6px 0; border: 0; background: transparent; color: var(--text); }
+.vault-search input::placeholder { color: var(--workspace-muted); }
+.vault-filters { display: flex; flex-wrap: wrap; gap: 4px; }
+.vault-filters button { padding: 6px 10px; min-height: 34px; border: 0; border-radius: 7px; background: transparent; color: var(--workspace-muted); font-size: 12px; }
+.vault-filters button[aria-pressed="true"], .vault-filters button:hover { background: var(--workspace-soft); color: var(--text); }
+.vault-workspace .vault-item-count { margin: 22px 0 7px; color: var(--workspace-muted); font-size: 12px; }
+.vault-items { margin: 0; padding: 0; list-style: none; }
+.vault-items > li { display: flex; align-items: center; gap: 12px; min-height: 70px; padding: 12px 0; border-bottom: 1px solid var(--workspace-line); }
+.vault-kind-icon { display: grid; place-items: center; width: 36px; height: 36px; border-radius: 9px; background: var(--workspace-soft); flex-shrink: 0; color: var(--workspace-muted); }
+.vault-kind-icon svg { width: 17px; height: 17px; stroke-width: 1.6; }
+.vault-item-copy { display: grid; flex: 1; min-width: 0; gap: 3px; }
+.vault-item-copy strong { font-size: 13px; font-weight: 500; overflow-wrap: anywhere; }
+.vault-item-copy span { color: var(--workspace-muted); font-size: 12px; overflow-wrap: anywhere; }
+.vault-row-action, .vault-delete-confirm button, .vault-workspace-error button, .vault-back { display: inline-flex; align-items: center; justify-content: center; gap: 7px; min-height: 36px; padding: 8px; border: 0; border-radius: 7px; background: transparent; color: var(--workspace-muted); }
+.vault-row-action:hover, .vault-back:hover, .vault-delete-confirm button:hover { background: var(--workspace-soft); color: var(--text); }
+.vault-row-action svg, .vault-back svg { width: 16px; height: 16px; }
+.vault-delete-confirm { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 4px; font-size: 12px; }
+.vault-delete-confirm span { color: var(--workspace-muted); }
+.vault-workspace .vault-empty { display: grid; justify-items: start; gap: 8px; padding: 28px 0; }
+.vault-empty > svg { width: 22px; height: 22px; color: var(--workspace-muted); margin-bottom: 4px; }
+.vault-empty p, .vault-workspace-status { color: var(--workspace-muted); font-size: 13px; }
+.vault-workspace-error { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 18px 0; padding: 12px; border: 1px solid var(--workspace-line); border-radius: 8px; font-size: 13px; }
+.vault-back { margin: -10px 0 14px -8px; font-size: 13px; }
+.vault-inline-entry .vault-dialog { width: 100%; max-height: none; overflow: visible; border: 0; background: transparent; box-shadow: none; }
+.vault-inline-entry .vault-dialog > header { padding: 0 0 24px; }
+.vault-inline-entry .vault-dialog h2 { font-size: 17px; font-weight: 500; }
+.vault-inline-entry .vault-dialog form { max-height: none; }
+.vault-dialog-fields { min-width: 0; border: 0; margin: 0; }
+.vault-inline-entry .vault-dialog-fields { padding: 0 0 24px; overflow: visible; gap: 18px; }
+.vault-inline-entry .vault-field input { font-size: 14px; border-color: var(--workspace-line); border-radius: 8px; background: var(--surface); }
+.vault-inline-entry .vault-field > span { color: var(--workspace-muted); font-size: 13px; }
+.vault-inline-entry .vault-dialog footer { padding: 18px 0 0; background: transparent; border-color: var(--workspace-line); }
+.vault-inline-entry .vault-dialog footer button { border-radius: 8px; }
+.vault-inline-entry [role="alert"] { margin: 0 0 20px; font-size: 13px; }
+.vault-ssh-manager { border-top: 1px solid var(--workspace-line); margin-top: 24px; padding-top: 18px; }
+.vault-ssh-manager .ssh-add-key > summary { cursor: pointer; font-size: 13px; font-weight: 500; margin-bottom: 18px; }
+.vault-ssh-manager .ssh-identity-intro { font-size: 12px; color: var(--workspace-muted); margin-bottom: 18px; }
+.vault-ssh-manager .ssh-identity-form { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+.vault-ssh-manager .ssh-identity-form label { display: grid; gap: 6px; color: var(--workspace-muted); font-size: 12px; min-width: 0; }
+.vault-ssh-manager .ssh-identity-form input, .vault-ssh-manager .ssh-identity-form select { width: 100%; min-width: 0; min-height: 40px; padding: 8px 10px; border: 1px solid var(--workspace-line); border-radius: 8px; background: var(--surface); color: var(--text); font: inherit; }
+.vault-ssh-manager .ssh-fingerprint-field, .vault-ssh-manager .ssh-key-file-field { grid-column: 1 / -1; }
+.vault-ssh-manager button { min-height: 36px; padding: 8px 12px; border: 1px solid var(--workspace-line); border-radius: 8px; background: transparent; color: var(--text); font-size: 12px; }
+.vault-ssh-manager .ssh-identity-list { list-style: none; margin: 24px 0 0; padding: 0; }
+.vault-ssh-manager .ssh-identity-list li { display: flex; gap: 12px; padding: 18px 0; border-top: 1px solid var(--workspace-line); font-size: 12px; }
+.vault-ssh-manager .ssh-identity-list li > div { display: grid; min-width: 0; }
+.vault-ssh-manager .ssh-identity-list :is(strong, span, code) { overflow-wrap: anywhere; }
+.vault-ssh-manager .api-key-empty { margin-top: 18px; font-size: 12px; color: var(--workspace-muted); }
+@media (max-width: 720px) {
+  .vault-workspace-heading { margin-bottom: 22px; }
+  .vault-primary-action, .vault-row-action, .vault-back, .vault-filters button, .vault-add-menu-item { min-height: 44px; }
+  .vault-filters { gap: 2px; }
+  .vault-filters button { padding-inline: 8px; }
+  .vault-search input, .vault-inline-entry .vault-field input, .vault-ssh-manager .ssh-identity-form :is(input, select) { font-size: 16px; }
+  .vault-delete-confirm { max-width: 132px; }
+  .vault-delete-confirm button { min-height: 44px; }
+  .vault-ssh-manager .ssh-identity-form { grid-template-columns: minmax(0, 1fr); }
+  .vault-ssh-manager .ssh-identity-list li { flex-wrap: wrap; }
+}
+
+.vault-ssh-manager .ssh-add-key { margin-top: 18px; }
+.vault-ssh-manager .ssh-public-key-field textarea { border-radius: 8px; }
+.vault-ssh-manager .ssh-identity-intro { max-width: 60ch; }

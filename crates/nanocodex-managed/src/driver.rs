@@ -20,8 +20,8 @@ use tokio::sync::{mpsc, watch};
 use tower::{Service, ServiceExt};
 
 use crate::{
-    EventCursor, ManagedError, ManagedEvent, ManagedEventData, ManagedEvents, PromptContent,
-    PromptInput, TurnState,
+    EventCursor, ManagedError, ManagedEvent, ManagedEventData, ManagedEvents, ManagedModel,
+    PromptContent, PromptInput, TurnState,
     builder::{ManagedRequest, ManagedResponse, backend_error, unexpected_response},
 };
 
@@ -338,15 +338,23 @@ struct PendingTurn {
     completion: tokio::sync::oneshot::Sender<nanocodex_agent::Result<TurnResult>>,
 }
 
+pub(crate) struct InitialTurn {
+    pub(crate) request_id: String,
+    pub(crate) turn_id: String,
+    pub(crate) input: PromptInput,
+}
+
 pub(crate) struct ManagedDriver<S> {
     service: S,
     agent_id: String,
+    model: ManagedModel,
     stream: ManagedEvents,
     commands: mpsc::Receiver<Command>,
     events: AgentEventPublisher,
     shutdown: Shutdown,
     event_observer: Option<mpsc::UnboundedSender<ManagedEvent>>,
     pending: HashMap<String, PendingTurn>,
+    initial_turn: Option<InitialTurn>,
     turns_by_key: HashMap<BackendTurnKey, String>,
     next_event_seq: u64,
     controls: FuturesUnordered<BackendFuture<()>>,
@@ -371,22 +379,26 @@ where
     pub(crate) fn new(
         service: S,
         agent_id: String,
+        model: ManagedModel,
         stream: ManagedEvents,
         commands: mpsc::Receiver<Command>,
         events: AgentEventPublisher,
         shutdown: Shutdown,
         event_observer: Option<mpsc::UnboundedSender<ManagedEvent>>,
+        initial_turn: Option<InitialTurn>,
         #[cfg(feature = "tools")] attachment: Option<AttachmentSupervisor>,
     ) -> Self {
         Self {
             service,
             agent_id,
+            model,
             stream,
             commands,
             events,
             shutdown,
             event_observer,
             pending: HashMap::new(),
+            initial_turn,
             turns_by_key: HashMap::new(),
             next_event_seq: 1,
             controls: FuturesUnordered::new(),
@@ -432,7 +444,7 @@ where
                                 Ok(ManagedRequest::Steer {
                                     agent_id: self.agent_id.clone(),
                                     turn_id,
-                                    input: managed_prompt(prompt)?,
+                                    input: managed_prompt(prompt, self.model)?,
                                 })
                             });
                         self.dispatch_control(request, result).await;
@@ -448,7 +460,7 @@ where
                                     agent_id: self.agent_id.clone(),
                                     turn_id,
                                     message_id,
-                                    input: managed_prompt(prompt)?,
+                                    input: managed_prompt(prompt, self.model)?,
                                 })
                             });
                         self.dispatch_control(request, result).await;
@@ -499,7 +511,9 @@ where
     async fn next(&mut self) -> DriverInput {
         tokio::select! {
             command = self.commands.recv() => DriverInput::Command(command),
-            event = self.stream.next() => DriverInput::Event(event),
+            // Admission already happened remotely; register its local publisher
+            // before consuming even an immediately completed/replayed stream.
+            event = self.stream.next(), if self.initial_turn.is_none() => DriverInput::Event(event),
             _ = self.controls.next(), if !self.controls.is_empty() => DriverInput::ControlCompleted,
             () = complete_next_steer(&mut self.steers), if !self.steers.is_empty() => DriverInput::ControlCompleted,
         }
@@ -615,14 +629,26 @@ where
         completion: tokio::sync::oneshot::Sender<nanocodex_agent::Result<TurnResult>>,
     ) -> nanocodex_agent::Result<String> {
         let cancel_on_admission = prompt.cancel_on_admission;
-        let input = managed_prompt(prompt.prompt)?;
+        let input = managed_prompt(prompt.prompt, self.model)?;
         let request_id = prompt
             .request_id
             .unwrap_or_else(|| uuid::Uuid::now_v7().to_string());
         if cancel_on_admission {
             self.cancel_turn(request_id.clone()).await?;
         }
-        let expected_turn_id = crate::websocket::websocket_turn_id(&request_id);
+        let initial = self.initial_turn.take();
+        if initial
+            .as_ref()
+            .is_some_and(|initial| initial.request_id != request_id || initial.input != input)
+        {
+            return Err(NanocodexError::BackendContract {
+                detail: "combined first prompt differs from the admitted request",
+            });
+        }
+        let expected_turn_id = initial.as_ref().map_or_else(
+            || crate::websocket::websocket_turn_id(&request_id),
+            |initial| initial.turn_id.clone(),
+        );
         if self.pending.contains_key(&expected_turn_id) {
             return Err(NanocodexError::BackendContract {
                 detail: "managed service returned a duplicate active turn id",
@@ -639,9 +665,14 @@ where
                 completion,
             },
         );
-        let admitted = self
-            .finish_admission(&request_id, &expected_turn_id, input)
-            .await;
+        let admitted = if initial.is_some() {
+            // The POST receipt proves admission. Replay, including a retained
+            // terminal event, completes this exact local turn without another POST.
+            Ok(())
+        } else {
+            self.finish_admission(&request_id, &expected_turn_id, input)
+                .await
+        };
         if admitted.is_err() {
             self.pending.remove(&expected_turn_id);
             self.turns_by_key.remove(&prompt.key);
@@ -755,7 +786,10 @@ where
                     detail: "managed thinking update acknowledged incompatible settings",
                 })
             }
-            ManagedResponse::Settings(settings) if settings.thinking == thinking => Ok(()),
+            ManagedResponse::Settings(settings) if settings.thinking == thinking => {
+                self.model = settings.model;
+                Ok(())
+            }
             ManagedResponse::Settings(_) => Err(NanocodexError::BackendContract {
                 detail: "managed thinking update acknowledged a different setting",
             }),
@@ -776,7 +810,10 @@ where
                     detail: "managed model update acknowledged incompatible settings",
                 })
             }
-            ManagedResponse::Settings(settings) if settings.model == model => Ok(()),
+            ManagedResponse::Settings(settings) if settings.model == model => {
+                self.model = settings.model;
+                Ok(())
+            }
             ManagedResponse::Settings(_) => Err(NanocodexError::BackendContract {
                 detail: "managed model update acknowledged a different setting",
             }),
@@ -797,7 +834,10 @@ where
                     detail: "managed fast-mode update acknowledged incompatible settings",
                 })
             }
-            ManagedResponse::Settings(settings) if settings.fast_mode == enabled => Ok(()),
+            ManagedResponse::Settings(settings) if settings.fast_mode == enabled => {
+                self.model = settings.model;
+                Ok(())
+            }
             ManagedResponse::Settings(_) => Err(NanocodexError::BackendContract {
                 detail: "managed fast-mode update acknowledged a different setting",
             }),
@@ -970,7 +1010,10 @@ fn unsupported<T>(capability: &'static str) -> BackendFuture<nanocodex_agent::Re
     Box::pin(async move { Err(NanocodexError::UnsupportedCapability { capability }) })
 }
 
-fn managed_prompt(prompt: Prompt) -> nanocodex_agent::Result<PromptInput> {
+pub(crate) fn managed_prompt(
+    prompt: Prompt,
+    model: ManagedModel,
+) -> nanocodex_agent::Result<PromptInput> {
     if !prompt.transcript().is_empty() {
         return Err(NanocodexError::UnsupportedCapability {
             capability: "prompt_transcript",
@@ -996,6 +1039,16 @@ fn managed_prompt(prompt: Prompt) -> nanocodex_agent::Result<PromptInput> {
                         capability: "local_media",
                     })
                 }
+                UserInput::File {
+                    file_data,
+                    filename,
+                } if model.oai().is_none() => Ok(PromptContent::File {
+                    file_data,
+                    filename,
+                }),
+                UserInput::File { .. } => Err(NanocodexError::UnsupportedCapability {
+                    capability: "document_input",
+                }),
             })
             .collect::<nanocodex_agent::Result<Vec<_>>>()
             .map(PromptInput::Content),
@@ -1084,7 +1137,7 @@ mod image_file_driver_tests {
             file_id: "file-driver_123".into(),
             detail: Some(nanocodex_oai_api::ImageDetail::Original),
         }]);
-        let output = managed_prompt(prompt).unwrap();
+        let output = managed_prompt(prompt, Model::Luna.into()).unwrap();
         assert_eq!(
             serde_json::to_value(output).unwrap(),
             serde_json::json!([{"type":"image","file_id":"file-driver_123","detail":"original"}])

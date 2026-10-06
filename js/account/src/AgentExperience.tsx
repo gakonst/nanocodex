@@ -436,9 +436,10 @@ function HomepageTrialActions() {
   return <div className="homepage-trial-actions">
     <div>
       <strong>Your three free prompts are used.</strong>
-      <span>{funding.error ?? "Connect your own model account for durable agents, or add funds to your Wallet."}</span>
+      <span>{funding.error ?? funding.message ?? "Connect your own model account for durable agents, or add funds to your Wallet."}</span>
     </div>
     <nav aria-label="Continue after free prompts">
+      {funding.checkoutUrl ? <a href={funding.checkoutUrl} target="_blank" rel="noopener noreferrer">Open Stripe checkout</a> : null}
       <Link to="/connect">Connect</Link>
       <button
         disabled={funding.loading || !funding.available || funding.operation !== null}
@@ -448,7 +449,7 @@ function HomepageTrialActions() {
         {funding.operation === "prepare"
           ? "Preparing checkout…"
           : funding.operation === "payment"
-            ? "Opening Stripe…"
+            ? "Checking funding…"
             : funding.loading
               ? "Loading Wallet…"
               : `Fund Wallet · ${formatDollars(funding.amountCents)}`}

@@ -76,6 +76,10 @@ const AUTHORIZATION_QUERY_KEYS = new Set([
   "user_scope",
 ]);
 const BROKER_TIMEOUT_MS = 10_000;
+const WHATSAPP_ATTEMPT_TTL_MS = 5 * 60_000;
+const OPERATION_ID = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$/;
+const WHATSAPP_PHASES = ["requested", "ready", "unknown", "expired", "paired"] as const;
+type WhatsAppPhase = typeof WHATSAPP_PHASES[number];
 
 /** @deprecated Account connector controls now use provider IDs. */
 export type AccountConnectorId = ConnectorProviderId | "gmail" | "gdrive";
@@ -99,8 +103,8 @@ export function accountConnectorsTool(
     description: [
       "List, connect, reconnect, or disconnect account connectors without exposing credentials.",
       "Google Workspace is one authorization identity whose connections list the exact Gmail, Drive, Calendar, Tasks, Docs, Sheets, Slides, and Contacts capabilities granted. Google connections also expose granted OAuth scopes; Gmail being connected does not imply settings consent. Inspect scopes before requesting a reconnect.",
-      "Supports WhatsApp, Cloudflare, GitHub, Google Workspace, Slack, X, Spotify, SoundCloud and Stripe Link. WhatsApp pairs privately in Nanocodex on the user’s phone and runs on Workers; pairing codes never enter chat. It provides read access to available synced history. For Cloudflare, use secure Vault intake for a user or account API token, then connect with the explicitly authorized vault_id. Account-owned tokens also require the Cloudflare account_id. Never pass token values to tools. Disconnect removes the broker copy; revoke the token at Cloudflare separately. Use tool_search for each service’s API tools. Stripe Link requests user spend approvals. Spotify and SoundCloud connect open the native Nanocodex app; other providers return authorization URLs.",
-      "Connect returns a provider authorization URL. Give that exact URL to the user as a link; the provider may still require consent.",
+      "Supports WhatsApp, Cloudflare, GitHub, Google Workspace, Slack, X, Spotify, SoundCloud and Stripe Link. WhatsApp pairs privately in Nanocodex on the user’s phone and runs on Workers; pairing codes never enter chat. For WhatsApp connect, use the known E.164 phone and one required stable operation_id UUID to start linking. A compatible native app privately displays the code inside the tool result, without a separate sheet. A ready phase confirms server readiness only; it does not prove the phone displayed the code or linked successfully. If the user cannot see the code, check native client support before creating another attempt. Never read or request pairing codes through tools or chat. Reuse identical phone and operation_id after uncertainty; never start a new operation to retry. Without a known phone, ask for it first. Only the account root agent can initiate linking. It provides read access to available synced history. For Cloudflare, use secure Vault intake for a user or account API token, then connect with the explicitly authorized vault_id. Account-owned tokens also require the Cloudflare account_id. Never pass token values to tools. Disconnect removes the broker copy; revoke the token at Cloudflare separately. Use tool_search for each service’s API tools. Stripe Link requests user spend approvals. Spotify and SoundCloud connect open the native Nanocodex app; other providers return authorization URLs.",
+      "WhatsApp connect returns a native whatsapp_link input hint, without an authorization URL. When a provider authorization URL is returned, give that exact URL to the user as a link; the provider may still require consent.",
       "Disconnect revokes one exact listed connection_id and is allowed only when the user explicitly asks to remove or replace it.",
     ].join(" "),
     supportsParallelToolCalls: false,
@@ -126,6 +130,14 @@ export function accountConnectorsTool(
           type: "string", pattern: "^[a-f0-9]{32}$",
           description: "Cloudflare connect only: account ID required for an account-owned API token; omit for user tokens.",
         },
+        phone: {
+          type: "string", maxLength: 64,
+          description: "WhatsApp connect only: known E.164 phone number with country code. Spaces and dashes are normalized. Never a pairing code.",
+        },
+        operation_id: {
+          type: "string", pattern: OPERATION_ID.source,
+          description: "WhatsApp connect only: required stable UUID when phone is supplied. Reuse the same UUID and phone after an uncertain outcome; never retry with a new UUID.",
+        },
         account_hint: {
           type: "string",
           description: "Exact email address to select for Google Workspace.",
@@ -135,7 +147,14 @@ export function accountConnectorsTool(
       required: ["operation"],
       additionalProperties: false,
     },
-    handler: async (input, context) => manageAccountConnectors(options(context), input),
+    handler: async (input, context) => {
+      const current = options(context);
+      return manageAccountConnectors({
+        ...current,
+        canManage: () => current.canManage()
+          && !(context.subagent !== undefined && isRecord(input) && input.connector === "whatsapp"),
+      }, input);
+    },
   };
 }
 
@@ -178,7 +197,8 @@ export async function manageAccountConnectors(
       `${connectorBrokerUrl(options.userId, operation.provider)}/connections/${connectionId}`,
       { method: "DELETE" },
     );
-    if (!response.ok) return connectorFailure(response);
+    if (!response.ok) return operation.provider === "whatsapp"
+      ? whatsappFailure(response) : connectorFailure(response);
     await response.body?.cancel();
     return {
       ok: true,
@@ -205,11 +225,34 @@ export async function manageAccountConnectors(
   }
 
   if (operation.provider === "whatsapp") {
-    return {
-      ok: true, status: "authorization_required", connector: "whatsapp", name: "WhatsApp",
-      authorization_url: new URL("/connect?connect=whatsapp", options.publicOrigin).href,
-      message: "Open the private WhatsApp linking page and sign in to your Nanocodex account if needed. Enter your WhatsApp phone number in the private form, then approve the displayed code in WhatsApp > Settings > Linked Devices > Link a Device > Link with phone number instead. Pairing codes stay in that private view. Verify connected=true with list afterwards.",
+    if (!operation.phone) return {
+      ok: true, status: "input_required", connector: "whatsapp",
+      message: "Provide the WhatsApp phone number with its country code, then connect with phone and one stable operation_id UUID. Nanocodex will display the pairing code privately in the native app.",
     };
+    // Parsing requires a stable operation ID before any request can start.
+    const operationId = operation.operationId!;
+    const fallbackExpiry = Date.now() + WHATSAPP_ATTEMPT_TTL_MS;
+    try {
+      const response = await brokerFetch(options.broker,
+        `${connectorBrokerUrl(options.userId, "whatsapp")}/start`, {
+          method: "POST", headers: { "content-type": "application/json" },
+          body: JSON.stringify({ phone: operation.phone, operation_id: operationId }),
+        });
+      if (!response.ok && response.status >= 400 && response.status < 500 && response.status !== 408) return whatsappFailure(response);
+      const value: unknown = await response.json().catch(() => undefined);
+      // Never spread broker/provider data, including errors, into an agent result.
+      const attempt = isRecord(value) && isRecord(value.attempt) ? value.attempt : undefined;
+      if (response.ok && attempt?.operation_id === operationId
+        && typeof attempt.expires_at === "number" && Number.isSafeInteger(attempt.expires_at)
+        && attempt.expires_at > 0
+        && WHATSAPP_PHASES.some(phase => phase === attempt.state)) {
+        return whatsappLinkHint(options.sessionId, operationId, attempt.expires_at, attempt.state as WhatsAppPhase);
+      }
+    } catch {
+      // The broker may have reserved the attempt before the transport failed.
+      // Reconcile using this ID; neither expose the exception nor retry here.
+    }
+    return whatsappLinkHint(options.sessionId, operationId, fallbackExpiry, "unknown");
   }
 
   if (operation.provider === "spotify" || operation.provider === "soundcloud") {
@@ -262,6 +305,24 @@ export async function manageAccountConnectors(
     message: operation.provider === "link"
       ? "Open the Link authorization URL, approve the connection, then use list to finish connecting. Spend approvals remain in Link."
       : `Authorize ${CONNECTOR_NAMES[operation.provider]} to finish connecting it.`,
+  };
+}
+
+function whatsappLinkHint(agentId: string, operationId: string, expiresAt: number, phase: WhatsAppPhase) {
+  return {
+    ok: true, type: "whatsapp_link", status: "input_required", connector: "whatsapp",
+    agent_id: agentId, operation_id: operationId, expires_at: expiresAt, phase,
+    message: "A compatible Nanocodex app displays the linking code privately inside this tool result. A ready phase means the code is prepared, not that it appeared on the phone. Pairing codes stay out of the transcript. If the outcome is unknown, reconcile with the same operation_id and phone; do not start a new attempt. Verify connected=true with list afterwards.",
+  };
+}
+
+async function whatsappFailure(response: Response) {
+  await response.body?.cancel().catch(() => undefined);
+  return {
+    ok: false, status: response.status === 409 ? "conflict" : "unavailable", connector: "whatsapp",
+    message: response.status === 409
+      ? "WhatsApp linking conflicts with an existing attempt or connection. Reuse the original operation_id with its original phone, or check the private linking result and list before changing the connection."
+      : "WhatsApp linking could not be started. Check account access and the phone number before continuing.",
   };
 }
 
@@ -337,13 +398,32 @@ async function soleProviderConnectionId(
 
 function connectorOperation(input: unknown):
   | { operation: "list" }
-  | { operation: "connect"; provider: ConnectorProviderId; accountHint?: string; vaultId?: string; accountId?: string }
+  | { operation: "connect"; provider: ConnectorProviderId; accountHint?: string; vaultId?: string; accountId?: string; phone?: string; operationId?: string }
   | { operation: "disconnect"; provider: ConnectorProviderId; connectionId?: string } {
   if (!isRecord(input) || typeof input.operation !== "string") {
     throw new TypeError("operation must be list, connect, or disconnect");
   }
-  if (Object.keys(input).some(key => !["operation", "connector", "connection_id", "account_hint", "vault_id", "account_id"].includes(key))) {
+  if (Object.keys(input).some(key => !["operation", "connector", "connection_id", "account_hint", "vault_id", "account_id", "phone", "operation_id"].includes(key))) {
     throw new TypeError("Unknown connector control field; credential values are never accepted");
+  }
+  if ((input.phone !== undefined || input.operation_id !== undefined)
+    && (input.operation !== "connect" || input.connector !== "whatsapp")) {
+    throw new TypeError("phone and operation_id are supported only for WhatsApp connect");
+  }
+  let phone: string | undefined;
+  if (input.phone !== undefined) {
+    if (typeof input.phone !== "string" || input.phone.length > 64) {
+      throw new TypeError("phone must be an E.164 phone number with country code");
+    }
+    phone = input.phone.replace(/[\s-]/g, "");
+    if (!/^\+[1-9][0-9]{6,14}$/.test(phone)) {
+      throw new TypeError("phone must be an E.164 phone number with country code");
+    }
+    if (input.operation_id === undefined) throw new TypeError("WhatsApp connect with phone requires a stable operation_id UUID");
+  }
+  if (input.operation_id !== undefined
+    && (typeof input.operation_id !== "string" || !OPERATION_ID.test(input.operation_id))) {
+    throw new TypeError("operation_id must be a stable UUID");
   }
   if (input.account_id !== undefined && (input.operation !== "connect" || input.connector !== "cloudflare"
     || typeof input.account_id !== "string" || !/^[a-f0-9]{32}$/.test(input.account_id))) {
@@ -373,7 +453,7 @@ function connectorOperation(input: unknown):
     throw new TypeError("operation must be list, connect, or disconnect");
   }
   if (input.connection_id !== undefined) throw new TypeError("connect does not accept connection_id");
-  if (input.account_hint === undefined) return { operation: "connect", provider, ...(input.vault_id === undefined ? {} : { vaultId: input.vault_id as string }), ...(input.account_id === undefined ? {} : { accountId: input.account_id as string }) };
+  if (input.account_hint === undefined) return { operation: "connect", provider, ...(phone === undefined ? {} : { phone, operationId: input.operation_id as string }), ...(input.vault_id === undefined ? {} : { vaultId: input.vault_id as string }), ...(input.account_id === undefined ? {} : { accountId: input.account_id as string }) };
   if (provider !== "google" || typeof input.account_hint !== "string") {
     throw new TypeError("account_hint is supported only for Google Workspace");
   }

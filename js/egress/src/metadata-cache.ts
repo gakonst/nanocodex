@@ -1,8 +1,9 @@
 import type { CloudflareAccountDiscoveryOptions, CloudflareAccountDiscoveryResult, CloudflareAccountMetadataComponent } from "nanocodex/cloudflare/egress";
+import { GOOGLE_CAPABILITIES, GOOGLE_PROVIDER } from "./connectors/google";
 
 export const METADATA_CACHE_NAME = "nanocodex-account-discovery-v1";
 export const METADATA_TTL_MS = 15 * 60_000;
-const MAX_BYTES = 256 * 1024;
+export const MAX_METADATA_BYTES = 256 * 1024;
 const encoder = new TextEncoder();
 
 export function validDiscoveryOptions(value: unknown): value is CloudflareAccountDiscoveryOptions {
@@ -25,7 +26,7 @@ export async function cachedAccountMetadata(
   ownerId: string,
   component: CloudflareAccountMetadataComponent,
   options: CloudflareAccountDiscoveryOptions,
-  live: () => Promise<Readonly<{ status: number; data: unknown }>>,
+  live: (deadline: number) => Promise<Readonly<{ status: number; data: unknown; expiresAt?: number }>>,
   ctx: Pick<ExecutionContext, "waitUntil">,
 ): Promise<CloudflareAccountDiscoveryResult> {
   const observation = {
@@ -61,17 +62,21 @@ export async function cachedAccountMetadata(
       // Cache unavailability or corrupt entries must not break live reads.
     } finally { observation.cache_read_ms = boundedMilliseconds(Date.now() - readStarted); }
     const backendStarted = Date.now();
-    const expiresAt = backendStarted + METADATA_TTL_MS;
+    const deadline = backendStarted + METADATA_TTL_MS;
     let result: Awaited<ReturnType<typeof live>>;
-    try { result = await live(); } // Backend errors propagate; never retry or cache them.
+    try { result = await live(deadline); } // Backend errors propagate; never retry or cache them.
     finally { observation.backend_ms = boundedMilliseconds(Date.now() - backendStarted); }
+    // A source snapshot must never acquire a new lifetime at a colo miss.
+    const expiresAt = result.expiresAt === undefined ? deadline
+      : Number.isSafeInteger(result.expiresAt) && result.expiresAt >= 0
+        ? Math.min(deadline, result.expiresAt) : 0;
     if (result.status === 200) originalExpiresAt = expiresAt;
     const envelope: CloudflareAccountDiscoveryResult = { schema: 1, ...result, expiresAt };
     if (cache && key && result.status === 200 && safeMetadata(component, result.data)) {
       try {
         const body = JSON.stringify(envelope);
         const remainingSeconds = Math.floor((expiresAt - Date.now()) / 1000);
-        if (encoder.encode(body).byteLength <= MAX_BYTES && remainingSeconds > 0) {
+        if (encoder.encode(body).byteLength <= MAX_METADATA_BYTES && remainingSeconds > 0) {
           // A late write can win, but retains its original expiry in both layers.
           // Keep optional storage off the response path, including rejected puts.
           const write = cache.put(key, new Response(body, { headers: {
@@ -96,6 +101,60 @@ export async function cachedAccountMetadata(
   }
 }
 
+type SourceSnapshot = { expiresAt: number; result: Promise<CloudflareAccountDiscoveryResult> };
+
+/** Instantiate only on the owning DO. Bounded discovery hints, never execution authority. */
+export class SourceCatalogSnapshots {
+  readonly #entries = new Map<string, SourceSnapshot>();
+
+  read(options: CloudflareAccountDiscoveryOptions,
+    fresh: () => Promise<Readonly<{ status: number; data: unknown; cacheable: boolean }>>,
+    deadline = Date.now() + METADATA_TTL_MS,
+  ): Promise<CloudflareAccountDiscoveryResult> {
+    const now = Date.now();
+    for (const [key, entry] of this.#entries) {
+      if (entry.expiresAt <= now) this.#entries.delete(key);
+    }
+    const key = options.authorityKey;
+    const current = this.#entries.get(key);
+    if (current && !options.reload) {
+      this.#entries.delete(key);
+      this.#entries.set(key, current);
+      return observedSourceSnapshot(current.result, "hit");
+    }
+    const entry: SourceSnapshot = { expiresAt: Math.min(now + METADATA_TTL_MS, deadline), result: undefined! };
+    const evict = () => { if (this.#entries.get(key) === entry) this.#entries.delete(key); };
+    // Install before starting work; a reload replaces even a pending generation.
+    this.#entries.set(key, entry);
+    while (this.#entries.size > 16) this.#entries.delete(this.#entries.keys().next().value!);
+    entry.result = Promise.resolve().then(fresh).then(result => {
+      const envelope: CloudflareAccountDiscoveryResult = {
+        schema: 1, status: result.status, data: result.data, expiresAt: entry.expiresAt,
+      };
+      const cacheable = result.status === 200 && result.cacheable && safeMetadata("catalog", result.data)
+        && encoder.encode(JSON.stringify(envelope)).byteLength <= MAX_METADATA_BYTES;
+      if (!cacheable) {
+        evict();
+        return { ...envelope, expiresAt: 0 };
+      }
+      // An old completion never reinstalls itself after reload/expiry/eviction.
+      return structuredClone(envelope);
+    }).catch(error => { evict(); throw error; });
+    return observedSourceSnapshot(entry.result, options.reload ? "reload" : "miss");
+  }
+}
+
+/** Fixed cache diagnostics only; no owner, authority key, metadata or errors. */
+function observedSourceSnapshot(result: Promise<CloudflareAccountDiscoveryResult>, cacheState: "hit" | "miss" | "reload") {
+  const observe = (expiresAt: number) => {
+    try { console.log({ type: "egress.source_metadata_cache", component: "catalog", cache_state: cacheState,
+      remaining_ttl_ms: Math.min(METADATA_TTL_MS, boundedMilliseconds(expiresAt - Date.now())) }); }
+    catch { /* Optional diagnostics must not affect discovery. */ }
+  };
+  return result.then(value => { observe(value.expiresAt); return structuredClone(value); },
+    error => { observe(0); throw error; });
+}
+
 function boundedMilliseconds(value: number): number {
   return Number.isFinite(value) ? Math.min(Number.MAX_SAFE_INTEGER, Math.max(0, Math.round(value))) : 0;
 }
@@ -110,7 +169,7 @@ async function boundedText(response: Response): Promise<string> {
       const { value, done } = await reader.read();
       if (done) break;
       length += value.byteLength;
-      if (length > MAX_BYTES) throw new Error("oversized metadata cache entry");
+      if (length > MAX_METADATA_BYTES) throw new Error("oversized metadata cache entry");
       chunks.push(value);
     }
   } finally { await reader.cancel(); }
@@ -129,8 +188,13 @@ const shape = (fields: Record<string, Check>): Check => value => record(value) &
 const id: Check = value => typeof value === "string" && /^[A-Za-z0-9_-]{22,64}$/.test(value);
 const timestamp: Check = value => Number.isSafeInteger(value) && Number(value) >= 0;
 const capability = text(64);
-const connection = shape({ id, label: text(512), account_id: text(512), capabilities: list(32, capability) });
-const connector = shape({ connected: value => typeof value === "boolean", connections: list(100, connection) });
+const connectionFields = { id, label: text(512), account_id: text(512), capabilities: list(32, capability) };
+const connector = shape({ connected: value => typeof value === "boolean", connections: list(100, shape(connectionFields)) });
+// Match the broker's Google projection, including its allowlisted consent scopes.
+// Other providers keep their exact schema; new credential fields remain uncacheable.
+const googleConnector = shape({ connected: value => typeof value === "boolean", connections: list(100,
+  shape({ ...connectionFields, scopes: list(GOOGLE_PROVIDER.scopes.length,
+    value => typeof value === "string" && GOOGLE_PROVIDER.scopes.includes(value)) })) });
 const whatsappConnector = shape({ connected: value => typeof value === "boolean", connections: list(1,
   shape({ id, label: text(512), capabilities: value => Array.isArray(value) && value.length === 1 && value[0] === "whatsapp" })) });
 const mcp = shape({ id, name: text(512), status: text(64) });
@@ -140,7 +204,8 @@ export function safeMetadata(component: CloudflareAccountMetadataComponent, valu
   if (component === "catalog") {
     return record(value) && exact(value, ["connectors", "mcp_connections"])
       && record(value.connectors) && Object.keys(value.connectors).length <= 32
-      && Object.entries(value.connectors).every(([key, status]) => /^[a-z][a-z0-9_]{0,63}$/.test(key) && (key === "whatsapp" ? whatsappConnector(status) : connector(status)))
+      && Object.entries(value.connectors).every(([key, status]) => /^[a-z][a-z0-9_]{0,63}$/.test(key)
+        && (key === "whatsapp" ? whatsappConnector(status) : Object.hasOwn(GOOGLE_CAPABILITIES, key) ? googleConnector(status) : connector(status)))
       && list(256, mcp)(value.mcp_connections);
   }
   return list(100, vaultEntry)(value);

@@ -321,3 +321,24 @@ function subject(seed: string): string {
   const encoded = btoa(seed).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "");
   return `${encoded}${"S".repeat(43)}`.slice(0, 43);
 }
+
+describe('address and phone template egress',()=>{
+  it('substitutes numeric-suffixed fields and returns no reflected body or headers',async()=>{
+    const user='vault-personal-fields',owner=subject(user);await bindSubject(owner,user);
+    const items=[
+      {kind:'address',payload:{name:'Home',address_line_1:'1 Private Way',address_line_2:'Unit "B"',city:'Athens',state:'Attica',zip:'10558',country:'GR'},body:'{"line1":"{{NANOCODEX_VAULT_ADDRESS_LINE_1}}","line2":"{{NANOCODEX_VAULT_ADDRESS_LINE_2}}","city":"{{NANOCODEX_VAULT_CITY}}","state":"{{NANOCODEX_VAULT_STATE}}","zip":"{{NANOCODEX_VAULT_ZIP}}","country":"{{NANOCODEX_VAULT_COUNTRY}}"}',expected:{line1:'1 Private Way',line2:'Unit "B"',city:'Athens',state:'Attica',zip:'10558',country:'GR'}},
+      {kind:'phone',payload:{name:'Mobile',phone_number:'+306900000000'},body:'{"phone":"{{NANOCODEX_VAULT_PHONE_NUMBER}}"}',expected:{phone:'+306900000000'}},
+    ];
+    for(const item of items){
+      const create=await SELF.fetch(`https://broker.internal/users/${user}/credentials/vault/${item.kind}`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(item.payload)});
+      expect(create.status).toBe(201);const {id}=await create.json<{id:string}>();
+      let captured:unknown;
+      const response=await handleEgress(vaultRequest(owner,{vault_id:id,url:'https://merchant.example.com/profile',method:'POST',headers:{'content-type':'application/json'},body:item.body,body_encoding:'json'}),workerEnv,undefined,(async(req:Request)=>{
+        captured=await req.json();return Response.json(captured,{headers:{'x-secret-echo':JSON.stringify(captured)}});
+      }) as typeof fetch);
+      expect(captured).toEqual(item.expected);
+      expect(await response.json()).toEqual({status:200,ok:true});
+      expect(response.headers.get('x-secret-echo')).toBeNull();
+    }
+  });
+});

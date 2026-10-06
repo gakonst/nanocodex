@@ -41,7 +41,7 @@ async function readSession(
   fetcher: typeof fetch,
   recoverInvalidSession: boolean,
 ): Promise<BrowserAccountSession | null> {
-  const response = await fetcher("/v1/me", {
+  const response = await fetcher("/v1/me?connect=1", {
     cache: "no-store",
     credentials: "same-origin",
     headers: { accept: "application/json" },

@@ -2,32 +2,16 @@ use super::*;
 
 #[tokio::test]
 async fn model_prompt_selection_preserves_explicit_and_additional_instructions() -> Result<()> {
-    let astra = include_str!("../../../../nanocodex-oai-api/prompts/astra.md");
-    let sol = include_str!("../../../../nanocodex-oai-api/prompts/sol.md");
-    let luna = include_str!("../../../../nanocodex-oai-api/prompts/luna.md");
-    for (initial, selected, replacement, additional, expected) in [
-        (Model::Astra, Model::Astra, None, None, astra.to_owned()),
-        (
-            Model::Sol,
-            Model::Astra,
-            None,
-            Some("host instructions"),
-            format!("{astra}\n\nhost instructions"),
-        ),
-        (
-            Model::Astra,
-            Model::Sol,
-            None,
-            Some("host instructions"),
-            format!("{sol}\n\nhost instructions"),
-        ),
-        (Model::Luna, Model::Luna, None, None, luna.to_owned()),
+    for (initial, selected, replacement, additional) in [
+        (Model::Astra, Model::Astra, None, None),
+        (Model::Sol, Model::Astra, None, Some("host instructions")),
+        (Model::Astra, Model::Sol, None, Some("host instructions")),
+        (Model::Luna, Model::Luna, None, None),
         (
             Model::Sol,
             Model::Astra,
             Some("caller replacement"),
             Some("host instructions"),
-            "caller replacement\n\nhost instructions".to_owned(),
         ),
     ] {
         let listener = TcpListener::bind("127.0.0.1:0").await?;
@@ -38,7 +22,10 @@ async fn model_prompt_selection_preserves_explicit_and_additional_instructions()
             let generation = next_json(&mut socket).await?;
             assert_eq!(generation["model"], selected.as_str());
             assert_eq!(generation["input"][1]["role"], "developer");
-            assert_eq!(generation["input"][1]["content"][0]["text"], expected);
+            let instructions = assert_runtime_model_identity(&generation);
+            for sentinel in [replacement, additional].into_iter().flatten() {
+                assert!(instructions.contains(sentinel), "missing {sentinel}");
+            }
             send_final(&mut socket, "resp-prompt").await
         });
         let openai = OpenAi::builder("test-key")
@@ -75,10 +62,6 @@ async fn model_prompt_selection_preserves_explicit_and_additional_instructions()
 async fn astra_prompt_is_restored_from_the_retained_model() -> Result<()> {
     let listener = TcpListener::bind("127.0.0.1:0").await?;
     let endpoint = format!("ws://{}", listener.local_addr()?);
-    let expected = format!(
-        "{}\n\nhost instructions",
-        include_str!("../../../../nanocodex-oai-api/prompts/astra.md")
-    );
     let server = tokio::spawn(async move {
         let mut prefix = None;
         for response_id in ["resp-first", "resp-resumed"] {
@@ -87,7 +70,7 @@ async fn astra_prompt_is_restored_from_the_retained_model() -> Result<()> {
             let generation = next_json(&mut socket).await?;
             assert_eq!(generation["model"], "gpt-6-astra");
             let instructions = &generation["input"][1];
-            assert_eq!(instructions["content"][0]["text"], expected);
+            assert!(assert_runtime_model_identity(&generation).contains("host instructions"));
             if let Some(prefix) = &prefix {
                 assert_eq!(instructions, prefix);
                 assert!(generation["input"].to_string().contains("first turn"));
@@ -127,6 +110,138 @@ async fn astra_prompt_is_restored_from_the_retained_model() -> Result<()> {
     );
     resumed.shutdown().await?;
     drop((resumed, events));
+    timeout(std::time::Duration::from_secs(5), server).await???;
+    Ok(())
+}
+
+// Observe the actual serialized provider request, independently of prompt prose.
+fn assert_runtime_model_identity(request: &Value) -> &str {
+    let instructions = request["input"]
+        .as_array()
+        .expect("request input")
+        .iter()
+        .filter(|item| item["role"] == "developer")
+        .filter_map(|item| item["content"].as_array())
+        .flatten()
+        .filter_map(|part| part["text"].as_str())
+        .find(|text| text.contains("<runtime_model_identity>"))
+        .expect("provider request must include runtime model identity");
+    assert_eq!(instructions.matches("<runtime_model_identity>").count(), 1);
+    let identity = instructions
+        .split_once("<runtime_model_identity>")
+        .unwrap()
+        .1
+        .split_once("</runtime_model_identity>")
+        .expect("identity block must close")
+        .0;
+    let model_ids = identity
+        .lines()
+        .filter_map(|line| line.strip_prefix("model_id: "))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        model_ids,
+        vec![request["model"].as_str().expect("wire model")]
+    );
+    instructions
+}
+
+#[tokio::test]
+async fn overridden_identity_follows_gateway_model_child_switch_and_resume() -> Result<()> {
+    const CALLER: &str = "Use the synthetic caller's preferred concise style.";
+    const HOST: &str = "Use the synthetic host's authorized workspace.";
+    let listener = TcpListener::bind("127.0.0.1:0").await?;
+    let endpoint = format!("http://{}", listener.local_addr()?);
+    let server = tokio::spawn(async move {
+        for (index, model) in [Model::Mimo, Model::Kimi, Model::Mimo, Model::Mimo]
+            .into_iter()
+            .enumerate()
+        {
+            let request = next_http_json(&listener).await?;
+            assert_eq!(request.body["model"], model.as_str());
+            let instructions = assert_runtime_model_identity(&request.body);
+            assert!(instructions.contains(CALLER));
+            assert!(instructions.contains(HOST));
+            let transcript = request.body["input"].to_string();
+            if index == 1 {
+                assert!(
+                    !transcript.contains("original root turn"),
+                    "clean child inherited history"
+                );
+            } else if index > 1 {
+                assert!(
+                    transcript.contains("original root turn"),
+                    "root lost its history"
+                );
+            }
+            if index == 3 {
+                assert!(
+                    transcript.contains("parent after child"),
+                    "resume lost completed turn"
+                );
+            }
+            send_http_final(request.stream, &format!("resp-identity-{index}")).await?;
+        }
+        Result::<()>::Ok(())
+    });
+    let openai = OpenAi::builder("synthetic-identity-key")
+        .model(Model::Glm53)
+        .transport(ResponsesTransport::Https)
+        .store(false)
+        .api_base_url(endpoint)
+        .build()?;
+    let (root, root_events) = Nanocodex::builder(openai.clone())
+        .thinking(Thinking::Low)
+        .instructions(CALLER)
+        .additional_instructions(HOST)
+        .build()?;
+    // Model selection can change only before the first accepted history.
+    root.set_model(Model::Mimo).await?;
+    assert_eq!(
+        root.prompt("original root turn")
+            .await?
+            .result()
+            .await?
+            .final_message(),
+        "done"
+    );
+    let (child, child_events) = root
+        .spawn_with(SpawnOptions::new().model(Model::Kimi))
+        .await?;
+    assert_eq!(
+        child
+            .prompt("clean child turn")
+            .await?
+            .result()
+            .await?
+            .final_message(),
+        "done"
+    );
+    child.shutdown().await?;
+    drop((child, child_events));
+    let completed = root.prompt("parent after child").await?.result().await?;
+    assert_eq!(completed.final_message(), "done");
+    let snapshot: SessionSnapshot =
+        serde_json::from_value(serde_json::to_value(completed.snapshot().unwrap())?)?;
+    root.shutdown().await?;
+    drop((root, root_events, completed));
+    // The retained MiMo model must win over this builder's original GLM model.
+    let (resumed, resumed_events) = Nanocodex::builder(openai)
+        .thinking(Thinking::Low)
+        .instructions(CALLER)
+        .additional_instructions(HOST)
+        .resume(snapshot)
+        .build()?;
+    assert_eq!(
+        resumed
+            .prompt("resumed root turn")
+            .await?
+            .result()
+            .await?
+            .final_message(),
+        "done"
+    );
+    resumed.shutdown().await?;
+    drop((resumed, resumed_events));
     timeout(std::time::Duration::from_secs(5), server).await???;
     Ok(())
 }

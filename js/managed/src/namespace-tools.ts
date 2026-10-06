@@ -1,3 +1,4 @@
+import { BACKGROUND_BROWSER_INSTRUCTIONS } from "./execution-preferences";
 import type { ToolMap } from "nanocodex";
 import { observeHandCall } from "./hand-call-observation";
 import { CUA_JS_NAME, CUA_RESET_NAME } from "nanocodex-computer/contract";
@@ -53,6 +54,7 @@ type MountedHand = Readonly<{
   preview?: RoutedTool;
   cua?: RoutedTool;
   cuaReset?: RoutedTool;
+  cuaBackend?: "upstream" | "native_screen";
   screen?: RoutedTool;
 }>;
 
@@ -218,7 +220,8 @@ export function createNamespaceExecutionRuntime(
     const hand = binding.hands.get(route.mount.mountId);
     if (!hand?.cua || !hand.cuaReset) {
       observeHandCall("namespace.invoke", name, routeStarted, "unavailable", context.callId, correlation(context));
-      throw new Error(`namespace mount ${route.mount.root} has no CUA runtime or controllable native screen. Use environment to find a CUA-capable Hand.`);
+      if (route.mount.root === DEFAULT_CWD) throw new Error("/brain has no desktop. Use an explicit Hand workdir for CUA.");
+      throw new Error(`CUA is unavailable for ${route.mount.root} in this cell's captured routes. No action was dispatched. A screen publisher may be disconnected or reconnecting; discover this same workdir in a new Code Mode cell before sending input. Use environment to inspect current Hand availability.`);
     }
     const providerInput = without(value, "workdir");
     // JS with only a workdir discovers the actual provider API without executing
@@ -234,9 +237,10 @@ export function createNamespaceExecutionRuntime(
         return { ...definition, name: toolName };
       });
       return { workdir: hand.root, machine_id: hand.machineId,
-        tools: [CUA_JS_NAME, CUA_RESET_NAME], definitions,
+        backend: hand.cuaBackend, tools: [CUA_JS_NAME, CUA_RESET_NAME], definitions,
+        browser_interaction: BACKGROUND_BROWSER_INSTRUCTIONS,
         browser_selection: "For providers exposing cua.createBrowserTab, browser display names are not necessarily accepted identifiers. OpenAI's provider accepts lowercase family aliases (for example 'brave', not 'Brave Browser') or exact discovered browser IDs. Reuse an ID from current provider state; when browser/profile selection is ambiguous, inspect the provider's browser inventory first and match the requested instance. Do not guess IDs or silently retry a browser action with a different target.",
-        native_app_recovery: "For native macOS providers exposing cua.getApp, app selection may launch only in the background. If its initial observation stalls, follow any required js_reset, then use supported CUA and an observed app launcher (for example its item in Finder) to open the intended app normally before selecting it again. After a transient menu or window closes, cgWindowNotFound can mean the bound window is gone; select the same app again and inspect fresh state. Do not replay input actions, modify permissions, or switch automation backends to recover.",
+        native_app_recovery: "For native macOS providers exposing cua.getApp, app selection may launch only in the background. If its initial observation stalls, follow any required js_reset, then use supported CUA and an observed app launcher only when foreground interaction with that app is authorized. Do not use this recovery to take over the user's browser when background tab APIs are unavailable. After a transient menu or window closes, cgWindowNotFound can mean the bound window is gone; select the same app again and inspect fresh state. Do not replay input actions, modify permissions, or switch automation backends to recover.",
         routing: "Add the Hand workdir to each provider call. Nanocodex consumes workdir for routing and forwards all other arguments unchanged. Calls dispatch immediately; use the provider’s contract and errors to handle concurrent JS and reset calls." };
     }
     const tool = name === CUA_JS_NAME ? hand.cua : hand.cuaReset;
@@ -262,7 +266,7 @@ export function createNamespaceExecutionRuntime(
 
   const tools: ToolMap = {
     [CUA_JS_NAME]: {
-      description: "Use a Hand's CUA provider. Set workdir on every call, just like exec_command. First call with only {workdir} to read that Hand's exact descriptions and schemas without executing an action; then add those provider arguments alongside workdir. OpenAI CUA is preferred when attached; VM, Cloudflare, and native Hands can fall back to their controllable screen action contract. Nanocodex strips only workdir before forwarding. Calls dispatch immediately; follow the provider’s contract for concurrent calls. /brain has no desktop.",
+      description: "Use a Hand's CUA provider. Set workdir on every call, just like exec_command. First call with only {workdir} to read that Hand's exact descriptions and schemas without executing an action; then add those provider arguments alongside workdir. OpenAI Sky/CUA is preferred when attached. For browser work use its browser API and agent-owned background tabs/tab groups; preserve the user’s foreground focus. Use native browser-window input only when the browser API cannot handle the task. VM, Cloudflare, and native Hands can fall back to their controllable screen action contract. Nanocodex strips only workdir before forwarding. Calls dispatch immediately; follow the provider’s contract for concurrent calls. /brain has no desktop.",
       parameters: computerParameters,
       supportsParallelToolCalls: true,
       handler: (input, context) => computerCall(CUA_JS_NAME, input, context),
@@ -486,6 +490,7 @@ function createCellBinding(
       preview: resolveMachineTool(machine.id, "preview", context),
       cua: upstream ? withNativeRecording(upstream.cua, screen) : fallback?.cua,
       cuaReset: upstream?.cuaReset ?? fallback?.cuaReset,
+      cuaBackend: upstream ? "upstream" : fallback ? "native_screen" : undefined,
       screen,
     }));
   }

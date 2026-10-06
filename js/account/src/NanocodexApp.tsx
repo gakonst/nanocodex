@@ -1429,7 +1429,7 @@ function NanocodexShell({ preparedRoute }: Required<NanocodexAppProps>) {
           >
           <Suspense fallback={<p role="status">Loading {surface}…</p>}>
           {surface === "connect" ? (
-            <DeviceConnect />
+            <DeviceConnect theme={theme} onThemeChange={setTheme} />
           ) : surface === "chief-of-staff" ? (
             <ChiefOfStaffDemo />
           ) : surface === "tools" ? (

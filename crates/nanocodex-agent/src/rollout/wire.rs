@@ -72,6 +72,11 @@ impl UserMessage {
                             message.push_str(&path.display().to_string());
                             message.push(']');
                         }
+                        UserInput::File { filename, .. } => {
+                            message.push_str("[Document: ");
+                            message.push_str(filename.as_deref().unwrap_or("attachment"));
+                            message.push(']');
+                        }
                     }
                 }
             }
@@ -190,6 +195,7 @@ pub(super) struct WorldStateItem<'a> {
 
 #[derive(Serialize)]
 pub(super) struct PersistedContextState<'a> {
+    pub(super) nanocodex_reasoning: &'a crate::reasoning::ReasoningState,
     pub(super) nanocodex_context: &'a ContextBaseline,
     pub(super) nanocodex_client_authored: &'a std::collections::BTreeSet<String>,
 }

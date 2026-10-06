@@ -316,7 +316,7 @@ test("session lookup keeps request identity visible without a standalone Cancel 
   const pending = new Promise<void>(resolve => { release = resolve; });
   const writes: string[] = [];
   page.on("request", request => { if (request.method() === "POST") writes.push(request.url()); });
-  await page.route("**/v1/me", async route => { await pending; await route.continue(); });
+  await page.route("**/v1/me*", async route => { await pending; await route.continue(); });
   try {
     await page.goto("/");
     await expect(page.locator(".request-identity")).toBeVisible();
@@ -336,3 +336,54 @@ test("session lookup keeps request identity visible without a standalone Cancel 
   await page.getByRole("button", { name: "Cancel", exact: true }).click();
   await expect(page.getByRole("status")).toHaveText("Request cancelled");
 });
+
+for (const viewport of [{ width: 1280, height: 900 }, { width: 320, height: 360 }]) {
+  test(`SMS resend and number correction ${viewport.width}`, async ({ page }, info) => {
+    await page.setViewportSize(viewport);
+    const starts: unknown[] = [];
+    const verifies: unknown[] = [];
+    page.on("request", request => {
+      if (new URL(request.url()).pathname === "/v1/auth/sms/start") starts.push(request.postDataJSON());
+      if (new URL(request.url()).pathname === "/v1/auth/sms/verify") verifies.push(request.postDataJSON());
+    });
+    await page.goto("/");
+    const phone = page.getByRole("textbox", { name: "Mobile number" });
+    await phone.fill("+12025550100");
+    await page.getByRole("button", { name: "Text me a code" }).click();
+    const code = page.getByRole("textbox", { name: "6-digit code" });
+    await code.fill("123456");
+    // A failed resend must leave the currently entered code available to retry.
+    await page.route("**/v1/auth/sms/start", route => route.fulfill({
+      status: 503, json: { error: "sms_delivery_failed" },
+    }), { times: 1 });
+    await page.getByRole("button", { name: "Resend code", exact: true }).click();
+    await expect(page.getByRole("alert")).toContainText("could not be delivered");
+    await expect(code).toHaveValue("123456");
+    await expect(page.getByRole("button", { name: "Continue", exact: true })).toBeEnabled();
+    // Change number keeps the typed number editable and clears the prior code.
+    await page.getByRole("button", { name: "Change number", exact: true }).click();
+    await expect(phone).toBeFocused();
+    await expect(phone).toHaveValue("+12025550100");
+    await phone.fill("+12025550161");
+    await phone.press("Enter");
+    await expect(code).toHaveValue("");
+    await code.fill("111111");
+    await page.getByRole("button", { name: "Resend code", exact: true }).click();
+    await expect(page.getByRole("status")).toContainText("Another code was sent");
+    await expect(code).toHaveValue("");
+    await contained(page);
+    await mobileActions(page, "Continue");
+    await screenshot(page, info, "resent-code");
+    await code.fill("123456");
+    await code.press("Enter");
+    await expect(page.getByRole("button", { name: "Allow access", exact: true })).toBeEnabled();
+    await page.getByRole("button", { name: "Allow access", exact: true }).click();
+    await expect(page.getByRole("status")).toHaveText("Request approved");
+    expect(starts).toEqual([
+      { phone: "+12025550100" }, { phone: "+12025550100" },
+      { phone: "+12025550161" }, { phone: "+12025550161" },
+    ]);
+    expect(verifies).toEqual([{ phone: "+12025550161", challenge_id: "synthetic-sms-challenge", code: "123456" }]);
+    await writeFile(resolve(evidence, `sms-recovery-${viewport.width}.json`), JSON.stringify({ viewport, starts, verifies, outcome: "Request approved" }, null, 2));
+  });
+}

@@ -18,13 +18,15 @@ export function SshIdentityManager({
   presentation,
   refreshSession,
   title = "SSH identities",
+  emptyMessage = "No hosted SSH identities.",
 }: Readonly<{
   disabled: boolean;
   identities: readonly SshIdentityMetadata[] | null;
   onChanged(): Promise<void>;
-  presentation: "profile" | "wizard";
+  presentation: "profile" | "wizard" | "workspace";
   refreshSession(): Promise<void>;
   title?: string;
+  emptyMessage?: string;
 }>) {
   const id = useId().replaceAll(":", "");
   const [error, setError] = useState<string | null>(null);
@@ -152,14 +154,8 @@ export function SshIdentityManager({
     } catch { setError("Select and copy the public key above."); }
   };
 
-  const content = (
-    <div className={`ssh-identity-manager${disabled ? " is-locked" : ""}`}>
-      <p className="ssh-identity-intro">
-        Create a key in your vault, then add its public key to this server’s authorized_keys file. You can also upload an existing PEM key.
-      </p>
-      {error ? <div className="account-failure" role="alert"><p>{error}</p></div> : null}
-      {copied ? <p role="status">Public key for {copied} copied.</p> : null}
-      <form className="ssh-identity-form" onSubmit={(event) => void provision(event)}>
+  const provisionForm = (
+    <form className="ssh-identity-form" onSubmit={(event) => void provision(event)}>
         <label htmlFor={`ssh-reference-${id}`}>
           Reference
           <input
@@ -251,6 +247,16 @@ export function SshIdentityManager({
         : null}
         <button disabled={disabled || operation !== null} type="submit">{keyMode === "generate" ? "Create server key" : "Host identity"}</button>
       </form>
+  );
+
+  const content = (
+    <div className={`ssh-identity-manager${disabled ? " is-locked" : ""}`}>
+      <p className="ssh-identity-intro">
+        Create a key in your vault, then add its public key to this server’s authorized_keys file. You can also upload an existing PEM key.
+      </p>
+      {error ? <div className="account-failure" role="alert"><p>{error}</p></div> : null}
+      {copied ? <p role="status">Public key for {copied} copied.</p> : null}
+      {presentation === "workspace" ? <details className="ssh-add-key"><summary>Add SSH key</summary>{provisionForm}</details> : provisionForm}
       {identities.length ? (
         <ul className="ssh-identity-list">
           {identities.map((identity) => (
@@ -278,9 +284,13 @@ export function SshIdentityManager({
             </li>
           ))}
         </ul>
-      ) : <p className="api-key-empty">No hosted SSH identities.</p>}
+      ) : <p className="api-key-empty">{emptyMessage}</p>}
     </div>
   );
+
+  if (presentation === "workspace") {
+    return <section aria-label={title}>{content}</section>;
+  }
 
   if (presentation === "wizard") {
     return (

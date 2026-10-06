@@ -119,3 +119,27 @@ describe("metadata forwarding ownership", () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 });
+
+
+it("detaches the discovery DO result and forwards the original source deadline", async () => {
+  const dispose = vi.fn();
+  const result = { schema: 1 as const, status: 200, data: { connectors: {}, mcp_connections: [] as unknown[] }, expiresAt: 0,
+    [Symbol.dispose]() { result.data.mcp_connections.push({ id: "disposed" }); dispose(); } };
+  const readDiscoveryCatalog = vi.fn(async () => result);
+  const entry = new Egress(createExecutionContext(), {
+    USER_CONNECTORS: {
+      idFromName: () => ({ toString: () => "discovery-dispose-owner" }),
+      getByName: () => ({ readDiscoveryCatalog }),
+    },
+  } as unknown as EgressEnv);
+  const options = { authorityKey: "exact-authority", reload: true };
+  const received = await entry.readAccountDiscovery("rpc-owner", "catalog", options);
+  expect(received).toEqual({ schema: 1, status: 200, data: { connectors: {}, mcp_connections: [] }, expiresAt: 0 });
+  expect(dispose).toHaveBeenCalledOnce();
+  expect(readDiscoveryCatalog).toHaveBeenCalledWith(options, expect.any(Number));
+  expect(Object.getOwnPropertySymbols(received)).toEqual([]);
+  for (const [options, deadline] of [[{}, Date.now()], [{ authorityKey: "x" }, NaN], [{ authorityKey: "x" }, -1]]) {
+    expect(await runtime.USER_CONNECTORS.getByName("invalid-source-options").readDiscoveryCatalog(options, deadline))
+      .toEqual({ schema: 1, status: 400, data: null, expiresAt: 0 });
+  }
+});

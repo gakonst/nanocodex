@@ -115,6 +115,7 @@ export function surfaceFromUrl(url: Pick<URL, "pathname" | "searchParams">): Sur
   if (pathname === "/agent" && url.searchParams.get("demo") === "attached-tools") return "tools";
   if (pathname === "/connect/device") return "connect";
   if (["/connect/vault", "/vault", "/services/phone"].includes(pathname)) return "connect";
+  if (pathname === "/connect/vault" || pathname === "/connect/wallet" || pathname === "/connect/access") return "connect";
 
   const pathMatch = (Object.entries(surfacePaths) as Array<[Surface, string]>).find(
     ([, path]) => path === pathname,

@@ -173,6 +173,30 @@ impl EmbeddedToolRuntime {
             crate::code_mode_order::sort_definitions(&mut definitions);
             return (definitions, Vec::new());
         }
+        if mode == EmbeddedToolMode::CodeOnly {
+            definitions = definitions
+                .into_iter()
+                .map(|definition| match definition {
+                    ToolDefinition::ToolSearch {
+                        description,
+                        parameters,
+                        ..
+                    } => ToolDefinition::function(
+                        "tool_search",
+                        format!("{description} Invoke tools.tool_search inside exec; discovered tools become callable in the next exec cell."),
+                        parameters,
+                    ),
+                    definition => definition,
+                })
+                .collect();
+            definitions.extend(
+                self.local
+                    .iter()
+                    .filter(|tool| tool.model_visible)
+                    .map(|tool| tool.handler.definition()),
+            );
+            crate::code_mode_order::sort_definitions(&mut definitions);
+        }
         let has_deferred_tools = definitions.iter().any(|definition| {
             matches!(
                 definition,
@@ -189,8 +213,9 @@ impl EmbeddedToolRuntime {
         });
         let (mut direct_definitions, code_mode_definitions): (Vec<_>, Vec<_>) =
             definitions.into_iter().partition(|definition| {
-                matches!(definition, ToolDefinition::ToolSearch { .. })
-                    || is_standard_workspace_tool(definition.name())
+                mode != EmbeddedToolMode::CodeOnly
+                    && (matches!(definition, ToolDefinition::ToolSearch { .. })
+                        || is_standard_workspace_tool(definition.name()))
             });
         direct_definitions = direct_definitions
             .into_iter()
@@ -200,7 +225,7 @@ impl EmbeddedToolRuntime {
         direct_definitions.extend(
             self.local
                 .iter()
-                .filter(|tool| tool.model_visible)
+                .filter(|tool| tool.model_visible && mode != EmbeddedToolMode::CodeOnly)
                 .map(|tool| tool.handler.definition()),
         );
         crate::code_mode_order::sort_direct_definitions(&mut direct_definitions);
@@ -237,6 +262,11 @@ impl EmbeddedToolRuntime {
                 true,
             );
             if let ToolDefinition::Custom { description, .. } = &mut exec {
+                if mode == EmbeddedToolMode::CodeOnly {
+                    *description = description
+                        .replace("Use `tool_search`", "Use `tools.tool_search`")
+                        .into_boxed_str();
+                }
                 *description = description
                     .replace("Runs raw JavaScript -- no Node, no file system, no network access, no console.", "Runs JavaScript inside the evaluator supplied by the embedding application.").into_boxed_str();
             }
@@ -269,6 +299,9 @@ impl EmbeddedToolRuntime {
             description.push_str("\n\n");
             description.push_str(DEFERRED_TOOLS_DESCRIPTION);
         }
+        if mode == EmbeddedToolMode::CodeOnly {
+            description = description.replace("Use `tool_search`", "Use `tools.tool_search`");
+        }
         let mut model_definitions = vec![ToolDefinition::custom(
             "exec",
             description,
@@ -284,6 +317,14 @@ impl EmbeddedToolRuntime {
     #[must_use]
     pub const fn supports_parallel_tool_calls(&self, _name: &str) -> bool {
         false
+    }
+
+    /// Returns whether all application and local tools require nested Code Mode calls.
+    #[must_use]
+    pub fn is_code_only(&self) -> bool {
+        self.host
+            .as_ref()
+            .is_some_and(|host| host.tool_mode() == EmbeddedToolMode::CodeOnly)
     }
 
     /// Returns whether the embedding host registered a callable definition.
@@ -334,6 +375,15 @@ impl EmbeddedToolRuntime {
         input: ToolInput,
         context: ToolContext<'_>,
     ) -> Result<ToolOutput, CodeModeHostError> {
+        if self
+            .host
+            .as_ref()
+            .is_some_and(|host| host.tool_mode() == EmbeddedToolMode::CodeOnly)
+        {
+            return Ok(ToolOutput::error(format!(
+                "tool `{name}` requires Code Mode; no direct handler was invoked in this attempt. If this call was recovered, a previous attempt may have run with an unknown outcome; reconcile its effects before repeating through tools inside exec"
+            )));
+        }
         if let Some(tool) = self.local.iter().find(|tool| tool.name.as_ref() == name) {
             return Ok(tool
                 .handler
@@ -365,6 +415,20 @@ impl EmbeddedToolRuntime {
                 "no embedded Code Mode adapter is configured",
             ));
         };
+        if host.tool_mode() == EmbeddedToolMode::CodeOnly {
+            return host
+                .execute_with_local_tools(
+                    source,
+                    context,
+                    self.local
+                        .iter()
+                        .filter(|tool| tool.model_visible)
+                        .map(|tool| Arc::clone(&tool.handler))
+                        .collect(),
+                    None,
+                )
+                .await;
+        }
         host.execute(source, context).await
     }
 
@@ -390,6 +454,20 @@ impl EmbeddedToolRuntime {
                 "no embedded Code Mode adapter is configured",
             ));
         };
+        if host.tool_mode() == EmbeddedToolMode::CodeOnly {
+            return host
+                .execute_with_local_tools(
+                    source,
+                    context.as_context(),
+                    self.local
+                        .iter()
+                        .filter(|tool| tool.model_visible)
+                        .map(|tool| Arc::clone(&tool.handler))
+                        .collect(),
+                    Some(observer),
+                )
+                .await;
+        }
         host.execute_with_updates(source, context.as_context(), observer)
             .await
     }

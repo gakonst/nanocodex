@@ -11,6 +11,7 @@ import * as mpp from "./actions/mpp.mjs";
 export function connectActions() {
   return (client) => ({
     account: {
+      links: (options) => account.links(client, options),
       logout: () => account.logout(client),
     },
     agent: {

@@ -33,7 +33,29 @@ enum HandCommand {
         /// Directory containing a development Linux nanocodex2 binary.
         #[arg(long, value_name = "DIRECTORY", hide = true)]
         artifacts: Option<PathBuf>,
+        /// First-launch enrollment only; never replace or restart an owner.
+        #[arg(long, hide = true, conflicts_with_all = ["target", "port", "account_file", "artifacts"])]
+        if_missing: bool,
+        /// Prepare a dormant macOS Hand service before account sign-in.
+        #[arg(long, conflicts_with_all = ["target", "port", "account_file", "artifacts", "if_missing"])]
+        prepare: bool,
     },
+    /// Connect the macOS Hand using the exact login saved by account sign-in.
+    Connect {
+        /// Absolute path to the saved account credential file.
+        #[arg(long)]
+        account_file: Option<PathBuf>,
+        /// Managed account origin used for this login.
+        #[arg(long)]
+        managed_url: Option<String>,
+        /// Restart this owner after its saved credentials were replaced.
+        #[arg(long)]
+        credentials_changed: bool,
+    },
+    /// Install, repair, or reopen the standalone macOS Hand menu bar.
+    MenuBar,
+    /// Read-only menu snapshot: local service, verified login and connected Hands.
+    MenuStatus,
     /// Show local Hand service status as JSON.
     Status,
     /// Start the local Hand service.
@@ -58,6 +80,81 @@ pub(crate) fn ssh_target(value: &str) -> std::result::Result<String, String> {
     Ok(value.into())
 }
 
+/// Automatic first launch is limited to the unprivileged macOS LaunchAgent.
+/// Hold the same lock as updates, then recheck ownership before any mutation.
+/// Existing or concurrently installed publishers always retain their identity.
+async fn install_missing_user_service(executable: Option<PathBuf>) -> Result<()> {
+    if !cfg!(target_os = "macos") {
+        bail!(
+            "Automatic Hand installation is unavailable on this platform. Run nanocodex setup to connect this computer."
+        );
+    }
+    let _lock = service_lock().await?;
+    let state = crate::hand_service::status().await?;
+    if (state.installed || state.loaded) && !crate::hand_service::is_pending().await? {
+        crate::hand_menu_bar::ensure_with_warning(false).await;
+        return Ok(());
+    }
+    let account_file = nanocodex_cli_auth::saved_enrollment_account_file()?;
+    crate::hand_service::prepare(executable).await?;
+    crate::hand_service::connect_saved_login(
+        account_file,
+        nanocodex_cli_auth::managed_url_from_environment(None)?,
+        false,
+    )
+    .await?;
+    crate::hand_menu_bar::ensure_with_warning(false).await;
+    Ok(())
+}
+
+/// Serialize preparation, sign-in activation, repairs, and coordinated updates.
+async fn service_lock() -> Result<fs::File> {
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(60);
+    loop {
+        match crate::update::lock_service_operation() {
+            Ok(lock) => return Ok(lock),
+            Err(error)
+                if error
+                    .downcast_ref::<std::io::Error>()
+                    .is_some_and(|error| error.kind() == std::io::ErrorKind::WouldBlock)
+                    && tokio::time::Instant::now() < deadline =>
+            {
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
+
+/// Prepare a validated macOS LaunchAgent without authentication or startup.
+pub(crate) async fn prepare_default(executable: Option<PathBuf>) -> Result<()> {
+    if !cfg!(target_os = "macos") {
+        bail!("Preparing a Hand before sign-in is only available on macOS");
+    }
+    let _lock = service_lock().await?;
+    crate::hand_service::prepare(executable).await?;
+    crate::hand_menu_bar::ensure_with_warning(false).await;
+    eprintln!("Hand service is installed; sign in to connect this computer.");
+    Ok(())
+}
+
+/// Activate only the owner selected by this successful saved account login.
+pub(crate) async fn connect_saved_login(
+    account_file: PathBuf,
+    managed_url: String,
+    credentials_changed: bool,
+) -> Result<()> {
+    if !cfg!(target_os = "macos") {
+        bail!("Saved-login Hand activation is only available on macOS");
+    }
+    let _lock = service_lock().await?;
+    crate::hand_service::connect_saved_login(account_file, managed_url, credentials_changed)
+        .await?;
+    crate::hand_menu_bar::ensure_with_warning(false).await;
+    eprintln!("Hand service is installed and connected.");
+    Ok(())
+}
+
 /// One idempotent install entry point for guided setup and direct commands.
 pub(crate) async fn install_default(
     target: Option<String>,
@@ -79,8 +176,12 @@ async fn install_with(
         if artifacts.is_some() {
             bail!("--artifacts is only for a Linux Hand");
         }
-        let _lock = crate::update::lock_service_operation()?;
-        return crate::hand_service::ensure(executable, account_file).await;
+        let _lock = service_lock().await?;
+        eprintln!("Installing or repairing the local Hand service…");
+        crate::hand_service::ensure(executable, account_file).await?;
+        crate::hand_menu_bar::ensure_with_warning(true).await;
+        eprintln!("Hand service is installed and connected.");
+        return Ok(());
     }
     if target.is_none() && cfg!(target_os = "windows") {
         if artifacts.is_some() {
@@ -281,10 +382,18 @@ async fn linux_service_action(action: &str) -> Result<()> {
 }
 
 impl Hand {
+    pub(crate) fn is_observation(&self) -> bool {
+        matches!(self.command, HandCommand::MenuStatus | HandCommand::Status)
+    }
+
     pub(crate) async fn run(self) -> Result<()> {
         let _service_lock = if matches!(
             &self.command,
-            HandCommand::Install { .. } | HandCommand::Status
+            HandCommand::Install { .. }
+                | HandCommand::Connect { .. }
+                | HandCommand::Status
+                | HandCommand::MenuStatus
+                | HandCommand::MenuBar
         ) {
             None
         } else {
@@ -297,7 +406,34 @@ impl Hand {
                 executable,
                 account_file,
                 artifacts,
-            } => install_with(target, port, executable, account_file, artifacts).await,
+                if_missing,
+                prepare,
+            } => {
+                if prepare {
+                    prepare_default(executable).await
+                } else if if_missing {
+                    install_missing_user_service(executable).await
+                } else {
+                    install_with(target, port, executable, account_file, artifacts).await
+                }
+            }
+            HandCommand::Connect {
+                account_file,
+                managed_url,
+                credentials_changed,
+            } => {
+                let account_file = match account_file {
+                    Some(path) => path,
+                    None => nanocodex_cli_auth::saved_enrollment_account_file()?,
+                };
+                let managed_url = match managed_url {
+                    Some(origin) => origin,
+                    None => nanocodex_cli_auth::managed_url_from_environment(None)?,
+                };
+                connect_saved_login(account_file, managed_url, credentials_changed).await
+            }
+            HandCommand::MenuBar => crate::hand_menu_bar::show().await,
+            HandCommand::MenuStatus => crate::hand_menu_status::run().await,
             HandCommand::Status => {
                 #[cfg(target_os = "linux")]
                 {

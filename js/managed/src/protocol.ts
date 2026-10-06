@@ -76,6 +76,9 @@ export function parseCommand(encoded: string): ClientCommand {
   return { type, id: command.id, input: command.input as PromptInput };
 }
 
+/** Inline documents decode to at most 10 MiB (the Claude document bound). */
+const MAX_FILE_DATA_LENGTH = "data:application/pdf;base64,".length + Math.ceil((10 * 1024 * 1024) / 3) * 4;
+
 export function validatePromptInput(input: unknown): asserts input is PromptInput {
   if (typeof input === "string") {
     if (!input.trim()) throw new ProtocolError("empty_prompt", "prompt input must not be empty");
@@ -117,7 +120,22 @@ export function validatePromptInput(input: unknown): asserts input is PromptInpu
       }
       continue;
     }
-    throw new ProtocolError("invalid_prompt", "prompt content supports text, image, and audio entries");
+    if (value.type === "file") {
+      exactKeys(value, ["type", "file_data", "filename"]);
+      if (typeof value.file_data === "string" && value.file_data.length > MAX_FILE_DATA_LENGTH) {
+        throw new ProtocolError("invalid_prompt", "file prompt entries must decode to at most 10 MiB");
+      }
+      if (typeof value.file_data !== "string"
+        || !/^data:(application\/pdf|text\/plain);base64,[A-Za-z0-9+/]+={0,2}$/.test(value.file_data)) {
+        throw new ProtocolError("invalid_prompt", "file prompt entries require a base64 application/pdf or text/plain file_data URL");
+      }
+      if (value.filename !== undefined && (typeof value.filename !== "string" || !value.filename.trim()
+        || new TextEncoder().encode(value.filename).length > 255 || /[\u0000-\u001f\u007f/\\]/.test(value.filename))) {
+        throw new ProtocolError("invalid_prompt", "file prompt filename must be 1-255 bytes without paths or control characters");
+      }
+      continue;
+    }
+    throw new ProtocolError("invalid_prompt", "prompt content supports text, image, audio, and file entries");
   }
 }
 

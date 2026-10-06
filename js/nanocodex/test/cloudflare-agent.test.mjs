@@ -1695,10 +1695,10 @@ test("manual GPT children preserve native defaults, max/xhigh/none, fast mode, a
   } finally { await agent.session.shutdown(); }
 });
 
-test("manual root HTTP fallback follows live thinking changes", { timeout: 30_000 }, async () => {
+test("manual root HTTP fallback appends thinking updates with a stable request prefix", { timeout: 30_000 }, async () => {
   const module = await readFile(new URL("../pkg-web/nanocodex_bg.wasm", import.meta.url));
   const storage = new MemoryStorage();
-  const efforts = [];
+  const requests = [];
   let sockets = 0;
   const egress = { async fetch(_url, init) {
     if (init.method === "GET") {
@@ -1706,9 +1706,9 @@ test("manual root HTTP fallback follows live thinking changes", { timeout: 30_00
       return { status: 426, headers: new Headers() };
     }
     const body = JSON.parse(init.body);
-    efforts.push(body.reasoning.effort);
+    requests.push(body);
     assert.equal(body.model, "gpt-6-astra");
-    const response = { type: "response.completed", response: { id: `http-${efforts.length}`, status: "completed",
+    const response = { type: "response.completed", response: { id: `http-${requests.length}`, status: "completed",
       output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: "HTTP_OK" }] }],
       usage: { input_tokens: 10, output_tokens: 1, total_tokens: 11 } } };
     return new Response(`data: ${JSON.stringify(response)}\n\ndata: [DONE]\n\n`, { headers: { "content-type": "text/event-stream" } });
@@ -1729,7 +1729,14 @@ test("manual root HTTP fallback follows live thinking changes", { timeout: 30_00
     assert.equal((await agent.turn.prompt({ input: "First HTTP turn." }).result()).finalMessage, "HTTP_OK");
     await agent.session.setThinking("max");
     assert.equal((await agent.turn.prompt({ input: "Second HTTP turn." }).result()).finalMessage, "HTTP_OK");
-    assert.deepEqual(efforts, ["xhigh", "max"]);
+    assert.deepEqual(requests.map(body => body.reasoning.effort), ["xhigh", "xhigh"]);
+    assert.equal(requests[1].prompt_cache_key, requests[0].prompt_cache_key);
+    assert.deepEqual(requests[1].input.slice(0, requests[0].input.length), requests[0].input);
+    assert.deepEqual(requests[1].input.at(-1), {
+      type: "configuration_update", reasoning: { effort: "max" },
+    });
+    assert.equal(requests[1].input.at(-2).role, "user");
+    assert.equal(Object.hasOwn(requests[1], "service_tier"), false);
     assert.ok(sockets > 0, "real WASM starts on WebSocket and falls back to HTTP");
   } finally { await agent.session.shutdown(); }
 });

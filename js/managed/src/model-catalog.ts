@@ -2,18 +2,43 @@ import { gatewayAvailability, type GatewaySecrets } from "./gateway-runtime";
 import { fetchResponseWithDeadline } from "./deadline";
 import { DEFAULT_AGENT_SETTINGS, type ManagedAgentSettings } from "./agent-settings";
 
-/** Catalog admission comes from the account broker, never a client label. */
-export async function availableManagedModels(broker: Fetcher, userId: string, runtime: GatewaySecrets & { NANOCODEX_THREAD_ROUTING?: string } = {}) {
-  const status = await fetchResponseWithDeadline(broker,
+type ModelRuntime = GatewaySecrets & { NANOCODEX_THREAD_ROUTING?: string };
+const openAIModels = [["gpt-6-astra", "GPT-6 Astra"], ["gpt-6.1-sol", "GPT-6.1 Sol"], ["gpt-6-luna", "GPT-6 Luna"]] as const;
+const connected = (value: unknown) => !!value && typeof value === "object" && (value as { connected?: unknown }).connected === true;
+
+async function credentialStatus(broker: Fetcher, userId: string) {
+  return fetchResponseWithDeadline(broker,
     `https://broker.internal/users/${encodeURIComponent(userId)}/credentials`, {}, 10_000,
     "model availability", async response => {
       if (!response.ok) throw new Error("model availability broker is unavailable");
       return response.json<Record<string, unknown>>();
     });
-  const connected = (value: unknown) => !!value && typeof value === "object" && (value as { connected?: unknown }).connected === true;
+}
+
+/** Choose the preferred default without enumerating an unrelated provider.
+ * Status is always live; fallback reuses it only within this request. */
+export async function selectDefaultManagedModel(broker: Fetcher, userId: string, runtime: ModelRuntime = {}): Promise<{
+  default_model: ManagedAgentSettings["model"] | null;
+  catalog?: Awaited<ReturnType<typeof availableManagedModels>>;
+}> {
+  const status = await credentialStatus(broker, userId);
+  if ((connected(status.chatgpt) || connected(status.openai))
+    && openAIModels.some(([id]) => id === DEFAULT_AGENT_SETTINGS.model)) {
+    return { default_model: DEFAULT_AGENT_SETTINGS.model };
+  }
+  const catalog = await modelsFromStatus(broker, userId, runtime, status);
+  return { default_model: catalog.default_model, catalog };
+}
+
+/** Catalog admission comes from the account broker, never a client label. */
+export async function availableManagedModels(broker: Fetcher, userId: string, runtime: ModelRuntime = {}) {
+  return modelsFromStatus(broker, userId, runtime, await credentialStatus(broker, userId));
+}
+
+async function modelsFromStatus(broker: Fetcher, userId: string, runtime: ModelRuntime, status: Record<string, unknown>) {
   const data: Array<{ id: ManagedAgentSettings["model"]; name: string; provider: string; thinking: string[]; fast_mode: boolean; reasoning_modes: string[] }> = [];
   if (connected(status.chatgpt) || connected(status.openai)) {
-    for (const [id, name] of [["gpt-6-astra", "GPT-6 Astra"], ["gpt-6.1-sol", "GPT-6.1 Sol"], ["gpt-6-luna", "GPT-6 Luna"]] as const)
+    for (const [id, name] of openAIModels)
       data.push({ id, name, provider: "openai", thinking: [...(id === "gpt-6-luna" ? ["none"] : []), "low", "medium", "high", "xhigh", "max"], fast_mode: true, reasoning_modes: id === "gpt-6-astra" ? ["standard"] : ["standard", "pro"] });
   }
   // Provider access is independent from credentials being connected. The public

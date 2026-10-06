@@ -114,7 +114,9 @@ export function createManagedCodeEffectJournal(storage: DurableObjectStorage): C
     effect_key TEXT PRIMARY KEY, session_id TEXT NOT NULL, turn_id TEXT,
     parent_call_id TEXT NOT NULL, call_id TEXT NOT NULL, name TEXT NOT NULL,
     input_hash TEXT NOT NULL, generation TEXT NOT NULL, state TEXT NOT NULL,
-    receipt_chunks INTEGER, created_at INTEGER NOT NULL, completed_at INTEGER
+    receipt_chunks INTEGER, created_at INTEGER NOT NULL, completed_at INTEGER,
+    operation_id TEXT NOT NULL DEFAULT '', model_call_index INTEGER NOT NULL DEFAULT 0,
+    scope_version INTEGER NOT NULL DEFAULT 1
   );
   CREATE TABLE IF NOT EXISTS managed_code_effect_receipt_chunks (
     effect_key TEXT NOT NULL, chunk_index INTEGER NOT NULL, receipt_json TEXT NOT NULL,
@@ -393,7 +395,7 @@ export function createManagedCodeEffectJournal(storage: DurableObjectStorage): C
 function snapshotLegacyCodeParents(storage: DurableObjectStorage): void {
   storage.sql.exec(`CREATE TABLE IF NOT EXISTS managed_code_effect_legacy_parents (
     session_id TEXT NOT NULL, parent_call_id TEXT NOT NULL,
-    state_id TEXT NOT NULL, step_key TEXT NOT NULL,
+    state_id TEXT NOT NULL, step_key TEXT NOT NULL, scope_version INTEGER NOT NULL DEFAULT 1,
     PRIMARY KEY (session_id, parent_call_id)
   );
   CREATE TABLE IF NOT EXISTS managed_code_effect_legacy_sessions (
@@ -439,66 +441,71 @@ function snapshotLegacyCodeParents(storage: DurableObjectStorage): void {
         || (rootState !== undefined && rootSession === undefined)) {
         throw new Error("unreadable root durability identity");
       }
-      const store = createCloudflareDurabilityStore(storage);
-      // Control metadata only: never hydrate arbitrarily large legacy heads or
-      // checkpoint chunks on chat-only cold construction. This one-time bounded
-      // migration fails closed rather than introducing another memory loop.
-      const budget = storage.sql.exec<{ count: number; bytes: number }>(
-        "SELECT COUNT(*) AS count, COALESCE(SUM(length(CAST(payload AS BLOB))), 0) AS bytes FROM nanocodex_durable_states",
-      ).one();
-      if (budget.count > 128 || budget.bytes > 1024 * 1024) throw new Error("legacy head snapshot exceeds bounded migration budget");
-      const states = storage.sql.exec<{ state_id: string }>(
-        "SELECT state_id FROM nanocodex_durable_states",
-      ).toArray();
-      const rootStateId = rootState ?? (rootSession === undefined ? undefined : `cloudflare:${rootSession}`);
-      for (const { state_id: stateId } of states) {
-        const loaded = store.load(stateId);
-        // The public SQLite adapter is synchronous. Fail closed if a future
-        // adapter changes this rather than admitting before the snapshot.
-        if (loaded instanceof Promise || "then" in loaded) throw new Error("asynchronous durability head");
-        if (loaded.payload === null) continue; // Validated revision-zero head.
-        const envelope: unknown = JSON.parse(loaded.payload);
-        if (!isObject(envelope) || Object.keys(envelope).length !== 1 || !isObject(envelope.nanocodex_durable_state)) throw new Error("unreadable durability head");
-        const head = envelope.nanocodex_durable_state;
-        if (head.format !== 4 || Object.keys(head).length !== 3 || !isObject(head.operations)
-          || !(head.latest_checkpoint === null || typeof head.latest_checkpoint === "string")) {
-          throw new Error("unsupported durability head");
-        }
-        for (const [operationId, operation] of Object.entries(head.operations)) {
-          if (!operationId || !isObject(operation) || !isObject(operation.steps)
-            || typeof operation.input !== "string" || !operation.input
-            || !Number.isSafeInteger(operation.accepted_order) || Number(operation.accepted_order) < 1
-            || !Number.isSafeInteger(operation.retired_steers) || Number(operation.retired_steers) < 0
-            || (operation.retired_model_calls !== undefined && (!Number.isSafeInteger(operation.retired_model_calls)
-              || Number(operation.retired_model_calls) < 0))
-            || (operation.continuation !== undefined && operation.continuation !== null && typeof operation.continuation !== "string")
-            || !(operation.status === "pending" || (isObject(operation.status)
-              && Object.keys(operation.status).length === 1
-              && ["completed", "failed", "cancelled"].some(key => isObject(operation.status) && isObject(operation.status[key]))))) {
-            throw new Error("unreadable durable operation");
+      // A pristine Session has no SDK head to migrate. Avoid initializing the
+      // SDK durability tables merely to prove they contain no prior effects.
+      // The independent child/checkpoint lineage checks still run below.
+      if (tables.has("nanocodex_durable_states")) {
+        const store = createCloudflareDurabilityStore(storage);
+        // Control metadata only: never hydrate arbitrarily large legacy heads or
+        // checkpoint chunks on chat-only cold construction. This one-time bounded
+        // migration fails closed rather than introducing another memory loop.
+        const budget = storage.sql.exec<{ count: number; bytes: number }>(
+          "SELECT COUNT(*) AS count, COALESCE(SUM(length(CAST(payload AS BLOB))), 0) AS bytes FROM nanocodex_durable_states",
+        ).one();
+        if (budget.count > 128 || budget.bytes > 1024 * 1024) throw new Error("legacy head snapshot exceeds bounded migration budget");
+        const states = storage.sql.exec<{ state_id: string }>(
+          "SELECT state_id FROM nanocodex_durable_states",
+        ).toArray();
+        const rootStateId = rootState ?? (rootSession === undefined ? undefined : `cloudflare:${rootSession}`);
+        for (const { state_id: stateId } of states) {
+          const loaded = store.load(stateId);
+          // The public SQLite adapter is synchronous. Fail closed if a future
+          // adapter changes this rather than admitting before the snapshot.
+          if (loaded instanceof Promise || "then" in loaded) throw new Error("asynchronous durability head");
+          if (loaded.payload === null) continue; // Validated revision-zero head.
+          const envelope: unknown = JSON.parse(loaded.payload);
+          if (!isObject(envelope) || Object.keys(envelope).length !== 1 || !isObject(envelope.nanocodex_durable_state)) throw new Error("unreadable durability head");
+          const head = envelope.nanocodex_durable_state;
+          if (head.format !== 4 || Object.keys(head).length !== 3 || !isObject(head.operations)
+            || !(head.latest_checkpoint === null || typeof head.latest_checkpoint === "string")) {
+            throw new Error("unsupported durability head");
           }
-          for (const [stepKey, step] of Object.entries(operation.steps)) {
-            if (!stepKey || !isObject(step) || typeof step.kind !== "string" || !step.kind || typeof step.input !== "string" || !step.input
-              || !Number.isSafeInteger(step.attempts) || Number(step.attempts) < 1
-              || !(step.status === "effect_pending"
-                || (isObject(step.status) && Object.keys(step.status).length === 1 && typeof step.status.completed === "string"))) {
-              throw new Error("unreadable durable step");
+          for (const [operationId, operation] of Object.entries(head.operations)) {
+            if (!operationId || !isObject(operation) || !isObject(operation.steps)
+              || typeof operation.input !== "string" || !operation.input
+              || !Number.isSafeInteger(operation.accepted_order) || Number(operation.accepted_order) < 1
+              || !Number.isSafeInteger(operation.retired_steers) || Number(operation.retired_steers) < 0
+              || (operation.retired_model_calls !== undefined && (!Number.isSafeInteger(operation.retired_model_calls)
+                || Number(operation.retired_model_calls) < 0))
+              || (operation.continuation !== undefined && operation.continuation !== null && typeof operation.continuation !== "string")
+              || !(operation.status === "pending" || (isObject(operation.status)
+                && Object.keys(operation.status).length === 1
+                && ["completed", "failed", "cancelled"].some(key => isObject(operation.status) && isObject(operation.status[key]))))) {
+              throw new Error("unreadable durable operation");
             }
-            if (step.kind !== "tool_call" || step.status !== "effect_pending") continue;
-            const match = /^tool-([1-9][0-9]*)-(.+)$/s.exec(stepKey);
-            if (!match) throw new Error("unreadable pending tool identity");
-            const session = stateId === rootStateId ? rootSession ?? "" : "";
-            const modelCallIndex = Number(match[1]);
-            if (!Number.isSafeInteger(modelCallIndex)) throw new Error("unreadable pending model ordinal");
-            const parent = match[2]!;
-            const parentScope = JSON.stringify([operationId, modelCallIndex, parent]);
-            // Only a proved exact session/parent may be excluded. An orphan
-            // head cannot borrow a different session's journal as authority.
-            if (session && storage.sql.exec(`SELECT 1 FROM managed_code_effects
-              WHERE session_id = ? AND operation_id = ? AND model_call_index = ?
-                AND parent_call_id = ? AND scope_version = 2 LIMIT 1`, session, operationId, modelCallIndex, parent).toArray().length) continue;
-            storage.sql.exec(`INSERT OR IGNORE INTO managed_code_effect_legacy_parents
-              (session_id, parent_call_id, state_id, step_key, scope_version) VALUES (?, ?, ?, ?, 2)`, session, parentScope, stateId, stepKey);
+            for (const [stepKey, step] of Object.entries(operation.steps)) {
+              if (!stepKey || !isObject(step) || typeof step.kind !== "string" || !step.kind || typeof step.input !== "string" || !step.input
+                || !Number.isSafeInteger(step.attempts) || Number(step.attempts) < 1
+                || !(step.status === "effect_pending"
+                  || (isObject(step.status) && Object.keys(step.status).length === 1 && typeof step.status.completed === "string"))) {
+                throw new Error("unreadable durable step");
+              }
+              if (step.kind !== "tool_call" || step.status !== "effect_pending") continue;
+              const match = /^tool-([1-9][0-9]*)-(.+)$/s.exec(stepKey);
+              if (!match) throw new Error("unreadable pending tool identity");
+              const session = stateId === rootStateId ? rootSession ?? "" : "";
+              const modelCallIndex = Number(match[1]);
+              if (!Number.isSafeInteger(modelCallIndex)) throw new Error("unreadable pending model ordinal");
+              const parent = match[2]!;
+              const parentScope = JSON.stringify([operationId, modelCallIndex, parent]);
+              // Only a proved exact session/parent may be excluded. An orphan
+              // head cannot borrow a different session's journal as authority.
+              if (session && storage.sql.exec(`SELECT 1 FROM managed_code_effects
+                WHERE session_id = ? AND operation_id = ? AND model_call_index = ?
+                  AND parent_call_id = ? AND scope_version = 2 LIMIT 1`, session, operationId, modelCallIndex, parent).toArray().length) continue;
+              storage.sql.exec(`INSERT OR IGNORE INTO managed_code_effect_legacy_parents
+                (session_id, parent_call_id, state_id, step_key, scope_version) VALUES (?, ?, ?, ?, 2)`, session, parentScope, stateId, stepKey);
+            }
           }
         }
       }

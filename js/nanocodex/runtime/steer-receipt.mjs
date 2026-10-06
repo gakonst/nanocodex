@@ -11,6 +11,7 @@ export async function steerInputKey(input) {
         return { type: "image", ...(item.file_id === undefined ? { image_url: item.image_url } : { file_id: item.file_id }), ...(item.detail == null ? {} : { detail: item.detail }) };
       }
       case "audio": return { type: "audio", audio_url: item.audio_url };
+      case "file": return { type: "file", file_data: item.file_data, ...(item.filename == null ? {} : { filename: item.filename }) };
       default: throw new TypeError("unsupported browser steering content");
     }
   });

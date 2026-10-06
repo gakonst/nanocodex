@@ -2,9 +2,9 @@ name: Apple apps
 on:
   push:
     branches: [master]
-    paths: ['Cargo.toml', 'Cargo.lock', 'bin/nanocodex/src/nanocodex2/**', 'bin/nanocodex/nanocodex2/**', 'crates/experimental/nanocodex-computer/**', 'js/nanocodex-computer/**', 'crates/nanocodex-voice-protocol/**', 'crates/nanocodex-voice-ffi/**', 'apple/**', 'macos/**', 'hands/remote/**', 'js/desktop-runtime/**', 'js/nanocodex/**', 'js/nanocodex-tools/**', 'js/nanocodex-vite/**', 'pnpm-lock.yaml', 'pnpm-workspace.yaml', 'turbo.json', '.github/workflows/apple-inbox.yml', 'scripts/ci/apple-package-tests.sh', 'scripts/ci/select-apple-jobs.mjs', 'scripts/ci/select-jobs.mjs']
+    paths: ['Cargo.toml', 'Cargo.lock', 'bin/nanocodex/**', 'crates/experimental/nanocodex-computer/**', 'js/nanocodex-computer/**', 'crates/nanocodex-voice-protocol/**', 'crates/nanocodex-voice-ffi/**', 'apple/**', 'macos/**', 'hands/remote/**', 'js/desktop-runtime/**', 'js/nanocodex/**', 'js/nanocodex-tools/**', 'js/nanocodex-vite/**', 'pnpm-lock.yaml', 'pnpm-workspace.yaml', 'turbo.json', '.github/workflows/apple-inbox.yml', 'scripts/ci/apple-package-tests.sh', 'scripts/ci/select-apple-jobs.mjs', 'scripts/ci/select-jobs.mjs']
   pull_request:
-    paths: ['Cargo.toml', 'Cargo.lock', 'bin/nanocodex/src/nanocodex2/**', 'bin/nanocodex/nanocodex2/**', 'crates/experimental/nanocodex-computer/**', 'js/nanocodex-computer/**', 'crates/nanocodex-voice-protocol/**', 'crates/nanocodex-voice-ffi/**', 'apple/**', 'macos/**', 'hands/remote/**', 'js/desktop-runtime/**', 'js/nanocodex/**', 'js/nanocodex-tools/**', 'js/nanocodex-vite/**', 'pnpm-lock.yaml', 'pnpm-workspace.yaml', 'turbo.json', '.github/workflows/apple-inbox.yml', 'scripts/ci/apple-package-tests.sh', 'scripts/ci/select-apple-jobs.mjs', 'scripts/ci/select-jobs.mjs']
+    paths: ['Cargo.toml', 'Cargo.lock', 'bin/nanocodex/**', 'crates/experimental/nanocodex-computer/**', 'js/nanocodex-computer/**', 'crates/nanocodex-voice-protocol/**', 'crates/nanocodex-voice-ffi/**', 'apple/**', 'macos/**', 'hands/remote/**', 'js/desktop-runtime/**', 'js/nanocodex/**', 'js/nanocodex-tools/**', 'js/nanocodex-vite/**', 'pnpm-lock.yaml', 'pnpm-workspace.yaml', 'turbo.json', '.github/workflows/apple-inbox.yml', 'scripts/ci/apple-package-tests.sh', 'scripts/ci/select-apple-jobs.mjs', 'scripts/ci/select-jobs.mjs']
 permissions:
   contents: read
 # Explicit bash enables GitHub Actions' -e -o pipefail invocation, including
@@ -77,8 +77,8 @@ jobs:
         run: swift test --package-path apple/NanocodexRemote
       - name: Build shared desktop runtime and dependencies
         run: pnpm exec turbo run build --filter=@nanocodex/desktop-runtime
-      - name: Build shared computer Hand helper
-        run: cargo build --release --locked -p nanocodex2-bin --bin nanocodex2
+      - name: Build computer Hand and matching service installer
+        run: cargo build --release --locked -p nanocodex-bin --bin nanocodex -p nanocodex2-bin --bin nanocodex2
       - name: Prepare bundled Mac runtime
         run: |
           curl --fail --location https://nodejs.org/dist/v24.19.0/node-v24.19.0-darwin-arm64.tar.gz --output "$RUNNER_TEMP/nanocodex-node.tar.gz"
@@ -102,9 +102,13 @@ jobs:
           -only-testing:NanocodexTests/ProtocolTests/testRestoredTiledSelectionIgnoresInboxFiltering
           -only-testing:NanocodexTests/ProtocolTests/testNativeTiledInboxKeepsEditorsActionsAndReviewIndependent
           test
-      - name: Verify bundled VM host entitlement
+      - name: Verify bundled installer and VM host entitlement
         run: |
           helper=macos/build/Build/Products/Debug/Nanocodex.app/Contents/Resources/runtime/nanocodex2
+          installer="$(dirname "$helper")/nanocodex"
+          test -x "$installer"
+          codesign --verify --strict "$installer"
+          "$installer" hand install --help | grep -- --prepare
           codesign --verify --strict "$helper"
           codesign --display --entitlements - --xml "$helper" > "$RUNNER_TEMP/vm-host-entitlements.plist"
           python3 - "$RUNNER_TEMP/vm-host-entitlements.plist" <<'PY'
@@ -112,6 +116,11 @@ jobs:
           with open(sys.argv[1], "rb") as source:
               assert plistlib.load(source).get("com.apple.security.hypervisor") is True
           PY
+      - name: Mac first launch and saved-login Hand journey
+        run: |
+          runtime="$PWD/macos/build/Build/Products/Debug/Nanocodex.app/Contents/Resources/runtime"
+          NANOCODEX_HAND_INSTALL_E2E=1 NANOCODEX_TEST_CLI="$runtime/nanocodex" NANOCODEX_TEST_HAND="$runtime/nanocodex2" \
+            node --test js/desktop-runtime/test/hand-install-login.integration.test.mjs
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:
@@ -119,6 +128,7 @@ jobs:
           path: |
             macos/build/background-hands.xcresult
             macos/build/evidence
+            output/hand-install-login
           if-no-files-found: ignore
   native:
     needs: changes

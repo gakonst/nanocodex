@@ -1,5 +1,5 @@
 // Real browser-level WebSockets and fresh target attachments; fake local pages only.
-// node --experimental-strip-types js/managed/test/browser-vault-ref-sessions.chrome.mjs
+// node --experimental-transform-types js/managed/test/browser-vault-ref-sessions.chrome.mjs
 import assert from 'node:assert/strict';
 import https from 'node:https';
 import { readFileSync, mkdtempSync, rmSync, readdirSync } from 'node:fs';
@@ -7,7 +7,12 @@ import { execFileSync, spawn } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import WebSocket from 'ws';
-import { PrivateBrowserCdp, snapshotBrowserVault, actBrowserVault } from '../src/browser-vault.ts';
+import { registerHooks } from 'node:module';
+// Match the extensionless browser-module imports used by the Worker build.
+registerHooks({resolve(specifier, context, nextResolve) {
+  return nextResolve(specifier.startsWith('./browser-') && !specifier.endsWith('.ts') ? specifier + '.ts' : specifier, context);
+}});
+const { PrivateBrowserCdp, snapshotBrowserVault, actBrowserVault } = await import('../src/browser-vault.ts');
 const temp = mkdtempSync(join(tmpdir(), 'vault-ref-sessions-'));
 let chrome, server;
 const connections = [];

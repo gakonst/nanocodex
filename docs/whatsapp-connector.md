@@ -4,14 +4,30 @@ Nanocodex links a personal WhatsApp account as a companion device. The connector
 runs in Cloudflare Workers and an account-owned Durable Object; it does not need
 an MCP server, local browser, phone message database, or Linux service.
 
-Open `/connect?connect=whatsapp` on the Nanocodex account website and sign in. Enter the
-WhatsApp phone number including its country code. The private form displays the
-linking code. In WhatsApp on the same phone, open **Settings → Linked devices →
-Link a device → Link with phone number instead**, enter that code, and return to
-the form. Only a confirmed account status establishes successful linking.
-The form can recover an existing attempt; repeated requests use the same
-operation ID and do not issue another code. A code cannot be recovered after
-the pairing socket is lost; wait for expiry before starting another attempt.
+Ask the agent to connect WhatsApp and provide the phone number including its
+country code. The agent calls `account_connectors` with `operation: "connect"`,
+`connector: "whatsapp"`, the supplied `phone`, and a stable UUID `operation_id`.
+The Workers connector starts that attempt, and a compatible native Nanocodex app
+displays the private code inline in the tool result. No separate sheet opens.
+Copy the code, switch to WhatsApp on the same phone, and open **Settings → Linked devices → Link a device → Link with
+phone number instead**. Enter the code, then return to Nanocodex.
+
+The agent receives only attempt metadata. The native app fetches the code
+directly through the authenticated private endpoint; the code never enters the
+serialized tool result, transcript, or agent context. The visible tool card is a
+native view with a separate private fetch; its code is not part of stored chat.
+The app confirms connected status before reporting completion. Account changes and backgrounding clear the visible
+code, and returning to the app recovers the same unexpired attempt. An updated
+native client with inline WhatsApp pairing support is required for this presentation.
+The tool’s `ready` phase confirms that the server prepared a code; it does not
+confirm that the installed client displayed it. Check client support when the
+code is missing rather than starting repeated pairing attempts.
+
+Repeated tool requests must use the same operation ID and phone number. They do
+not request another code. A code cannot be recovered after its pairing socket is
+lost; wait for expiry before explicitly starting another attempt. The existing
+account website at `/connect?connect=whatsapp` remains available for users who
+choose it, but is not required by the native flow.
 
 ## Account boundary
 
@@ -28,7 +44,7 @@ The account UI uses authenticated `/v1/connectors/whatsapp` routes:
 - `POST /v1/connectors/whatsapp/start` accepts `{phone, operation_id}`. The phone
   uses E.164 format, and `operation_id` is a UUID retained for retries.
 - `GET /v1/connectors/whatsapp/pairing?operation_id=...` returns the unexpired code
-  to the private form. Responses are not cached.
+  to the private native view. Responses are not cached.
 - `DELETE /v1/connectors/whatsapp/connections/:connection_id` removes local
   authorization, keys and indexed content, and attempts remote unlinking.
   If remote logout is unavailable or uncertain, remove the device from WhatsApp's
@@ -42,7 +58,7 @@ WhatsApp identity.
 
 ## Agent reads
 
-`account_connectors` lists the connection and returns the private linking page
+`account_connectors` lists the connection and starts the native pairing request
 for `connect`. After linking, discovery exposes `whatsapp_request` using the
 fixed internal origin `https://whatsapp.internal`:
 

@@ -70,3 +70,41 @@ describe("private browser Vault boundary", () => {
     expect((await resolve()).status).toBe(403);
   });
 });
+
+const allKinds = [
+  {kind:'login',payload:{name:'Private login',username:'private@example.test',password:'synthetic-password'},fields:['username','password']},
+  {kind:'api_key',payload:{name:'Private API',api_key:'synthetic-api-key'},fields:['api_key']},
+  {kind:'card',payload:{name:'Private card',card_number:'4111111111111111',expiry_month:'09',expiry_year:'2031',billing_zip:'10001'},fields:['card_number','card_expiry']},
+  {kind:'address',payload:{name:'Private address',address_line_1:'1 Private Way',city:'Athens',state:'Attica',zip:'10558',country:'GR'},fields:['address_line_1','address_line_2','city','state','zip','country']},
+  {kind:'phone',payload:{name:'Private phone',phone_number:'+306900000000'},fields:['phone_number']},
+] as const;
+
+describe('all-kind private browser materialization',()=>{
+  it('saves once durably, materializes owned fields, and rejects conflicts, deletion, and wrong ownership',async()=>{
+    const subject='E'.repeat(43),other='F'.repeat(43),owner='all-kind-vault-owner';
+    for(const [id,user] of [[subject,owner],[other,'all-kind-other']]) expect((await SELF.fetch(`https://broker.internal/subjects/${id}`,{method:'PUT',headers:{'content-type':'application/json'},body:JSON.stringify({user_id:user})})).status).toBe(200);
+    const call=(path:string,body:unknown,who=subject)=>SELF.fetch(`https://browser-vault.internal/v1/${path}`,{method:'POST',headers:{'content-type':'application/json','x-nanocodex-subject':who},body:JSON.stringify(body)});
+    for(const item of allKinds){
+      const operation_id=crypto.randomUUID();
+      const save={kind:item.kind,payload:item.payload,operation_id};
+      const results=await Promise.all([call('save',save),call('save',save)]);
+      expect(results.map(r=>r.status)).toEqual([201,201]);
+      const metadata=await results[0]!.json<{id:string}>();
+      expect(await results[1]!.json()).toEqual(metadata);
+      const request={vault_id:metadata.id,expected_origin:ORIGIN,fields:item.fields};
+      const resolved=await call('fields',request);
+      expect(resolved.status).toBe(200);expect(resolved.headers.get('cache-control')).toBe('no-store');
+      const material=await resolved.json<{kind:string;values:Record<string,string>}>();
+      expect(material.kind).toBe(item.kind);
+      for(const field of item.fields) expect(material.values[field]).toBe(field==='card_expiry'?'09/2031':field==='address_line_2'?'':(item.payload as Record<string,string>)[field]);
+      for(const body of [{...request,fields:[]},{...request,fields:['bogus']},{...request,expected_origin:'http://invalid.test'}])expect((await call('fields',body)).status).toBe(400);
+      expect((await call('fields',request,other)).status).toBe(403);
+      expect((await call('fields',{...request,fields:[item.kind==='login'?'api_key':'password']})).status).toBe(403);
+      if(item.kind==='card')expect((await call('fields',{...request,fields:['cvv']})).status).toBe(403);
+      expect((await call('save',{...save,payload:{...item.payload,name:'Changed'}})).status).toBe(409);
+      expect((await SELF.fetch(`https://broker.internal/users/${owner}/credentials/vault/${item.kind}/${metadata.id}`,{method:'DELETE'})).status).toBe(204);
+      expect((await call('fields',request)).status).toBe(403);
+      expect((await call('save',save)).status).toBe(410);
+    }
+  });
+});

@@ -12,11 +12,19 @@ export function createQuickJsEvaluator(quickJs, options = {}) {
   if (!quickJs || typeof quickJs.newContext !== "function") {
     throw new TypeError("quickJs must be an asyncified QuickJS WASM module");
   }
-  let queue = Promise.resolve();
-
+  // One agent's waiting cell must not prevent its child from running. Keep
+  // cell ordering within each session while giving other sessions a context.
+  const queues = new Map();
+  const anonymousSession = Symbol("anonymous evaluator session");
   return (source, environment) => {
-    const evaluation = queue.then(() => evaluate(quickJs, source, environment, options));
-    queue = evaluation.catch(() => {});
+    const session = environment.sessionId ?? anonymousSession;
+    const evaluation = (queues.get(session) ?? Promise.resolve())
+      .then(() => evaluate(quickJs, source, environment, options));
+    const settled = evaluation.catch(() => {});
+    queues.set(session, settled);
+    void settled.then(() => {
+      if (queues.get(session) === settled) queues.delete(session);
+    });
     return evaluation;
   };
 }

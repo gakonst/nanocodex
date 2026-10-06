@@ -1,3 +1,4 @@
+import "./AccountConnections.css";
 import { AdminPanel } from "./AdminPanel";
 import { AccountCommunication } from "./AccountCommunication";
 import { ClaudeConnection } from "./ClaudeConnection";
@@ -16,7 +17,6 @@ import { AccountChooser } from "nanocodex-connect-ui/AccountChooser";
 import {
   AccountConnectionCard,
   AccountConnectionSection,
-  AccountConnectionSurface,
 } from "nanocodex-connect-ui/AccountConnectionSurface";
 import { isRecord, responseFailure, useAccountSession } from "./AccountSession";
 import { clientFailureMessage } from "./clientFailure";
@@ -24,12 +24,7 @@ import { ConnectionLogo } from "nanocodex-connect-ui/ConnectionLogo";
 import { deploymentHealth } from "./deploymentHealth";
 import { localDevelopmentCredential } from "./localDevelopmentCredential";
 import { ProfileConnectors } from "./ProfileConnectors";
-import {
-  decodeWalletBalance,
-  formatWalletBalance,
-} from "./walletFunding";
-import { TempoWalletConnectionCard } from "./TempoWalletConnectionCard";
-import { useWalletFunding } from "./useWalletFunding";
+import { ActiveTempoWalletConnectionCard } from "./TempoWalletConnectionCard";
 
 type ApiKeyMetadata = Readonly<{
   id: string;
@@ -45,18 +40,19 @@ type NewApiKey = Readonly<{
 
 const API_KEY_ID = /^[A-Za-z0-9_-]{12}$/;
 
-export function AccountMenu({ inline = false }: Readonly<{ inline?: boolean }>) {
+type AccountSection = "connections" | "wallet" | "access";
+
+export function AccountMenu({ inline = false, section = "connections" }: Readonly<{ inline?: boolean; section?: AccountSection }>) {
   const accountId = useAccountSession().account?.id;
-  return <AccountMenuContent key={accountId ?? "signed-out"} inline={inline} />;
+  return <AccountMenuContent key={`${accountId ?? "signed-out"}:${inline ? section : "menu"}`} inline={inline} section={section} />;
 }
 
-function AccountMenuContent({ inline }: { inline: boolean }) {
+function AccountMenuContent({ inline, section }: { inline: boolean; section: AccountSection }) {
   const session = useAccountSession();
   const refreshSession = session.refresh;
   const accountId = session.account?.id;
   const accountPersistent = session.account?.persistent === true;
   const [open, setOpen] = useState(() => inline || new URL(window.location.href).searchParams.has("connector_result") || new URL(window.location.href).searchParams.get("connect") === "whatsapp");
-  const walletFunding = useWalletFunding(inline || open);
   const [keyOperationError, setKeyError] = useState<string | null>(null);
   const [keyOperation, setKeyOperation] = useState<string | null>(null);
   const [newKey, setNewKey] = useState<NewApiKey | null>(null);
@@ -69,16 +65,11 @@ function AccountMenuContent({ inline }: { inline: boolean }) {
   const [openAiExpanded, setOpenAiExpanded] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
   const enabled = inline || open;
-  const { query: keysQuery, refresh: loadKeys } = useAccountQuery(accountId, "/v1/api-keys", decodeApiKeys, { enabled });
-  const { query: credentialsQuery, refresh: refreshCredentials } = useAccountQuery(accountId, "/v1/credentials", decodeCredentialStatus, { enabled });
-  const address = session.account?.address;
-  const selectBalance = useCallback((value: unknown) => decodeWalletBalance(value, address!), [address]);
-  const { query: balanceQuery } = useAccountQuery(accountId, "/v1/wallet/balance", selectBalance, {
-    enabled: enabled && Boolean(address), staleTime: 30_000, refetchInterval: enabled ? 5 * 60_000 : false,
-  });
+  const loginGeneration = useRef(0);
+  useEffect(() => () => { loginGeneration.current += 1; }, []);
+  const { query: keysQuery, refresh: loadKeys } = useAccountQuery(accountId, "/v1/api-keys", decodeApiKeys, { enabled: enabled && (!inline || section === "access") });
+  const { query: credentialsQuery, refresh: refreshCredentials } = useAccountQuery(accountId, "/v1/credentials", decodeCredentialStatus, { enabled: enabled && (!inline || section === "connections") });
   const keys = keysQuery.data ?? null;
-  const walletBalance = balanceQuery.data ?? null;
-  const walletBalanceError = balanceQuery.error ? failureMessage(balanceQuery.error, "Couldn’t load the Wallet balance.") : null;
   const keyError = keyOperationError ?? (keysQuery.error ? failureMessage(keysQuery.error, "Couldn’t load API keys.") : null);
   const credentialError = credentialOperationError ?? (credentialsQuery.error ? failureMessage(credentialsQuery.error, "Couldn’t load model connections.") : null);
   const credentials = credentialsQuery.data ? {
@@ -92,24 +83,32 @@ function AccountMenuContent({ inline }: { inline: boolean }) {
   }, [refreshCredentials]);
 
   const close = useCallback(() => {
+    loginGeneration.current += 1;
+    setChatGptLogin(undefined);
+    setOpenAiKey("");
+    setOpenAiExpanded(false);
     setOpen(false);
     setNewKey(null);
     setCopied(false);
   }, []);
 
   const pollChatGpt = useCallback(async () => {
+    const generation = loginGeneration.current;
     try {
       const response = await apiRequest("/v1/credentials/chatgpt/login");
       if (!response.ok) throw await responseFailure(response, "Couldn’t check ChatGPT sign-in.");
       const value: unknown = await response.json();
+      if (generation !== loginGeneration.current) return;
       if (isRecord(value) && value.state === "pending") {
         const login = decodeChatGptLogin(value);
         setChatGptLogin(login);
         return;
       }
+      setChatGptLogin(undefined);
       await loadCredentials();
       notifyModelCredentialChanged();
     } catch (cause) {
+      if (generation !== loginGeneration.current) return;
       setCredentialError(failureMessage(cause, "Couldn’t check ChatGPT sign-in."));
     }
   }, [loadCredentials]);
@@ -255,6 +254,7 @@ function AccountMenuContent({ inline }: { inline: boolean }) {
       }
       return;
     }
+    const generation = loginGeneration.current;
     const popup = window.open("about:blank", "nanocodex-chatgpt-login");
     if (popup) popup.opener = null;
     setProviderOperation("chatgpt");
@@ -263,6 +263,7 @@ function AccountMenuContent({ inline }: { inline: boolean }) {
       const response = await apiRequest("/v1/credentials/chatgpt/login", { method: "POST" });
       if (!response.ok) throw await responseFailure(response, "Couldn’t start ChatGPT sign-in.");
       const login = decodeChatGptLogin(await response.json());
+      if (generation !== loginGeneration.current) { popup?.close(); return; }
       setChatGptLogin(login);
       if (popup) popup.location.href = login.verificationUrl;
       else window.open(login.verificationUrl, "_blank", "noopener,noreferrer");
@@ -310,28 +311,9 @@ function AccountMenuContent({ inline }: { inline: boolean }) {
 
   if (inline && session.status !== "checking" && accountPersistent && session.account) {
     return (
-      <div className="account-inline">
-        <AccountConnectionSurface
-          description={<>Manage the hosted connections your Nanocodex agents can use.</>}
-          footer={<div className="account-wallet-session">
-            <span>Account {shortIdentity(session.account.id)}</span>
-            <button
-              className="wizard-sign-out"
-              disabled={session.operation !== null}
-              onClick={() => void session.signOut()}
-              type="button"
-            >
-              Sign out
-            </button>
-          </div>}
-          title="Connect"
-        >
-          <AccountConnectionSection
-            eyebrow="Service"
-            meta="Available to your agents"
-            title="Connections"
-            titleId="connections-heading"
-          >
+      <div className="account-inline account-connections-content">
+        {section === "wallet" ? <div role="list"><ActiveTempoWalletConnectionCard enabled={enabled} /></div> : null}
+        {section === "connections" ? <>
             {session.error ? (
               <div className="account-failure" role="alert">
                 <p>{session.error}</p>
@@ -347,14 +329,6 @@ function AccountMenuContent({ inline }: { inline: boolean }) {
             <ProfileConnectors
               accountId={session.account.id}
               after={<>
-                {credentials?.chatgpt.login ? (
-                  <div className="new-api-key" role="status">
-                    <strong>Finish ChatGPT sign-in</strong>
-                    <p>Sign in to the ChatGPT account you want to add, enter this code, then return here. If the wrong account appears, switch accounts on the sign-in page.</p>
-                    <code>{credentials.chatgpt.login.userCode}</code>
-                    <a href={credentials.chatgpt.login.verificationUrl} target="_blank" rel="noreferrer">Open sign-in page</a>
-                  </div>
-                ) : null}
                 {credentials && !credentials.openai.connected && openAiExpanded ? (
                   <form className="connection-setup api-key-create" onSubmit={(event) => void connectOpenAi(event)}>
                     <label htmlFor="openai-key">OpenAI API key</label>
@@ -376,19 +350,7 @@ function AccountMenuContent({ inline }: { inline: boolean }) {
               presentation="wizard"
               refreshSession={refreshSession}
             >
-              <TempoWalletConnectionCard
-                address={session.account.address}
-                balance={walletBalanceError
-                  ? walletBalance ? `${formatWalletBalance(walletBalance)} · refresh failed` : "Balance unavailable"
-                  : walletBalance ? formatWalletBalance(walletBalance) : "Loading balance…"}
-                fundingAmountCents={walletFunding.amountCents}
-                fundingAvailable={walletFunding.available}
-                fundingError={walletFunding.error}
-                fundingErrorSource={walletFunding.errorSource}
-                fundingOperation={walletFunding.operation}
-                fundingLoading={walletFunding.loading}
-                onFund={walletFunding.fund}
-              />
+              {!credentials && !credentialError ? <p role="status">Loading model connections…</p> : null}
               {credentials ? (
                 <>
                   <ClaudeConnection status={credentials.claude} disabled={!accountPersistent || providerOperation !== null}
@@ -399,7 +361,7 @@ function AccountMenuContent({ inline }: { inline: boolean }) {
                     onAdd={() => void startChatGpt()}
                     onDisconnect={() => void disconnectProvider("chatgpt")}
                   />
-                  <AccountConnectionCard
+                  <div id="openai-connection"><AccountConnectionCard
                     action={credentials.openai.connected ? "Disconnect" : openAiExpanded ? "Close" : "Add key"}
                     connected={credentials.openai.connected}
                     detail={credentials.openai.connected
@@ -411,12 +373,13 @@ function AccountMenuContent({ inline }: { inline: boolean }) {
                       ? disconnectProvider("openai")
                       : setOpenAiExpanded((current) => !current))}
                     title="OpenAI API key"
-                  />
+                  /></div>
                 </>
               ) : null}
             </ProfileConnectors>
-          </AccountConnectionSection>
+        </> : null}
 
+        {section === "access" ? <>
           <AccountConnectionSection
             eyebrow="Access"
             meta="CLI, CI, and other clients"
@@ -429,6 +392,7 @@ function AccountMenuContent({ inline }: { inline: boolean }) {
                 <button type="button" onClick={() => void loadKeys()}>Retry</button>
               </div>
             ) : null}
+            {!keys && !keyError ? <p role="status">Loading API keys…</p> : null}
             {keys && newKey ? (
               <div className="new-api-key" role="status">
                 <strong>Copy this key now</strong>
@@ -481,7 +445,12 @@ function AccountMenuContent({ inline }: { inline: boolean }) {
               </ul>
             ) : keys ? <p className="api-key-empty">No API keys.</p> : null}
           </AccountConnectionSection>
-        </AccountConnectionSurface>
+          <details className="account-secondary-settings">
+            <summary>Communication &amp; administration</summary>
+            <AccountCommunication inline />
+            <AdminPanel inline />
+          </details>
+        </> : null}
       </div>
     );
   }
@@ -604,14 +573,6 @@ function AccountMenuContent({ inline }: { inline: boolean }) {
                         onAdd={() => void startChatGpt()}
                         onDisconnect={() => void disconnectProvider("chatgpt")}
                       />
-                      {credentials.chatgpt.login ? (
-                        <div className="new-api-key" role="status">
-                          <strong>Finish ChatGPT sign-in</strong>
-                          <p>Sign in to the ChatGPT account you want to add, enter this code, then return here. If the wrong account appears, switch accounts on the sign-in page.</p>
-                          <code>{credentials.chatgpt.login.userCode}</code>
-                          <a href={credentials.chatgpt.login.verificationUrl} target="_blank" rel="noreferrer">Open sign-in page</a>
-                        </div>
-                      ) : null}
                       {inline ? <AccountConnectionCard
                         action={credentials.openai.connected ? "Disconnect" : openAiExpanded ? "Close" : "Add key"}
                         connected={credentials.openai.connected}

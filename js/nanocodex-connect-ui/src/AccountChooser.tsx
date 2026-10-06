@@ -62,9 +62,10 @@ export function AccountChooser({
   const [challenge, setChallenge] = useState<OtpChallenge>();
   const [operation, setOperation] = useState<"send" | "verify">();
   const [localFailure, setLocalFailure] = useState<string>();
+  const [notice, setNotice] = useState<string>();
 
   async function sendCode() {
-    if (operation) return;
+    if (disabled || operation) return;
     const normalized = normalizeSmsPhone(phone);
     if (!normalized) {
       setLocalFailure(/^\d{6}$/.test(phone.trim())
@@ -75,6 +76,7 @@ export function AccountChooser({
     setPhone(normalized);
     setOperation("send");
     setLocalFailure(undefined);
+    setNotice(undefined);
     try {
       const response = await fetch(`${authOrigin}/v1/auth/sms/start`, {
         method: "POST",
@@ -96,6 +98,7 @@ export function AccountChooser({
         phone: normalized,
       });
       setCode("");
+      if (challenge) setNotice("Another code was sent. Check your messages.");
     } catch (cause) {
       setLocalFailure(errorMessage(cause));
     } finally {
@@ -104,7 +107,7 @@ export function AccountChooser({
   }
 
   async function verifyCode() {
-    if (!challenge || operation) return;
+    if (!challenge || disabled || operation) return;
     if (!/^\d{6}$/.test(code)) {
       setLocalFailure("Enter the six-digit code from the message.");
       return;
@@ -198,7 +201,7 @@ export function AccountChooser({
           </div>
         </form>
       ) : (
-        <form id={formId} key="code" className="sms-otp-form" aria-busy={operation === "verify"} noValidate onSubmit={(event) => {
+        <form id={formId} key="code" className="sms-otp-form" aria-busy={operation !== undefined} noValidate onSubmit={(event) => {
           event.preventDefault();
           void verifyCode();
         }}>
@@ -224,13 +227,25 @@ export function AccountChooser({
               value={code}
             />
           </div>
+          <div className="sms-otp-recovery">
+            <button disabled={unavailable} onClick={() => { void sendCode(); }} type="button">
+              {operation === "send" ? "Sending…" : "Resend code"}
+            </button>
+            <button disabled={unavailable} onClick={() => {
+              setChallenge(undefined);
+              setCode("");
+              setLocalFailure(undefined);
+              setNotice(undefined);
+            }} type="button">Change number</button>
+          </div>
+          <p role="status">{notice}</p>
         </form>
       )}
         </div>
         <div className="sms-auth-actions">
           {onCancel ? <button disabled={unavailable} onClick={onCancel} type="button">Cancel</button> : null}
           <button disabled={unavailable} form={formId} type="submit">
-            {operation === "send" ? "Sending…" : operation === "verify" ? "Checking…" : challenge ? "Continue" : "Text me a code"}
+            {operation === "verify" ? "Checking…" : challenge ? "Continue" : operation === "send" ? "Sending…" : "Text me a code"}
           </button>
         </div>
       </section>

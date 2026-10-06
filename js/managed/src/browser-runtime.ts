@@ -1,4 +1,6 @@
 import { fillSavedBrowserVaultTotp, type BrowserVaultTotpResolver } from "./browser-vault-totp";
+import { injectNativeVaultFields, parseNativeVaultInjection, injectBrowserVaultFields, parseVaultFieldMappings, vaultFieldMappingProperties, vaultFieldInjectionDescription, type BrowserVaultFieldsResolver } from './browser-vault-injection';
+import { PrivateVaultSaves, type PrivateVaultSave, type PrivateVaultDetails } from "./browser-vault-save";
 import { createBrowserLoginRuntime } from "./browser-login-runtime";
 import { asSchema, type Tool as AiSdkTool, type ToolSet as AiSdkToolSet } from "ai";
 import {
@@ -21,7 +23,7 @@ import { privateWaitlist } from "./browser-private-waitlist";
 import { privateVaultTakeover, releasePrivateVaultTakeover, validateBrowserVaultTakeoverAction, rememberPrivateBrowserValues, type BrowserVaultTakeoverAction, type BrowserVaultTouchState } from "./browser-vault-takeover";
 
 import {
-  parseSecureFormFields, parsePrivateSecureInput, secureBrowserForm, type SecureFormField,
+  parseSecureFormFields, parsePrivateSecureInput, secureVaultSaveForm, secureBrowserForm, type SecureFormField,
   fillBrowserVault, inspectBrowserVault, parseBrowserVaultRequest, PrivateBrowserCdp, PrivateBrowserContinuationSession,
   snapshotBrowserVault, actBrowserVault, selectBrowserVaultInput, parseBrowserVaultInputSelection, browserVaultInputSelectionProperties, BrowserVaultActionRejected, captureBrowserVaultBinding, captureBrowserVaultDocumentBinding, captureBrowserPasswordBinding, fillBrowserVaultOtp,
   type BrowserVaultIdentity, type BrowserVaultAction,
@@ -387,6 +389,8 @@ export async function createManagedBrowserRuntime(
     privateOnly?: boolean;
     resolveVaultLogin?: BrowserVaultResolver;
     resolveVaultTotp?: BrowserVaultTotpResolver;
+    resolveVaultFields?: BrowserVaultFieldsResolver;
+    savePrivateVault?: PrivateVaultSave;
     authorizeVaultAccess?: (context: ToolContext) => void;
   }>,
 ): Promise<ManagedBrowserRuntime> {
@@ -464,7 +468,7 @@ export async function createManagedBrowserRuntime(
     // authenticated continuation share a separate retained Chromium session.
     const login = provider === "chromium" && options.authorizeVaultAccess
       ? createBrowserLoginRuntime({storage:options.ctx.storage,browser:options.env.BROWSER!,agentId:options.sessionId,
-        publicOrigin:options.publicOrigin,authorize:options.authorizeVaultAccess}) : undefined;
+        publicOrigin:options.publicOrigin,authorize:options.authorizeVaultAccess,savePrivateVault:options.savePrivateVault,resolveVaultFields:options.resolveVaultFields}) : undefined;
     if (login) tools.push(...login.tools);
     const companion = provider === "chromium" && options.resolveVaultLogin && options.authorizeVaultAccess
       ? await createManagedBrowserRuntime({...options, privateOnly:true,
@@ -669,9 +673,11 @@ export async function createManagedBrowserRuntime(
     }),
   });
   type PendingSecureInput = { id: string; expiresAt: number; sessionId: string; loaderId: string; fields?: SecureFormField[]; vaultIdentity?: BrowserVaultIdentity; request: ReturnType<typeof parseBrowserVaultRequest> };
+  const vaultSaves = new PrivateVaultSaves(options.savePrivateVault);
   const pendingInputIds = new Set<string>();
   let oneTime: {pending: PendingSecureInput; password: string[]} | undefined;
   const clearOneTime = async (sessionId: string) => {
+    vaultSaves.clear();
     privateContinuation.close();
     const info = await privateSessionInfo();
     if (info?.sessionId === sessionId) await closeRetainedSession();
@@ -722,7 +728,7 @@ export async function createManagedBrowserRuntime(
   });
   if (options.authorizeVaultAccess) tools.push({
     name: "request_secure_input",
-    description: "Ask for one-time private browser inputs without Vault storage. Use fields with id, kind (password/card_number/card_expiry/card_cvc/sensitive_text), selector and optional label, and submit=false. Supported controls are visible native inputs in one top-frame same-origin HTTPS POST form; iframe and custom controls are unsupported. Each value allows up to 4096 characters within a 32768-byte total private JSON body limit. Typed fields only fill and never submit. Legacy password_selector with submit remains supported. The authenticated client sends it directly to the private browser, outside chat. The request expires in five minutes and is consumed once. Use secure_input_snapshot and secure_input_action to continue privately with the request_id. Ordinary browser observations remain blocked until browser_vault_close discards the session. This does not support shell or sudo input. Never ask the user to type a password in chat.",
+    description: "Ask for private browser inputs with optional user-selected Vault saving. Use fields with id, kind (password/card_number/card_expiry/card_cvc/sensitive_text), selector and optional label, and submit=false. Supported controls are visible native inputs in one top-frame same-origin HTTPS POST form; iframe and custom controls are unsupported. Each value allows up to 4096 characters within a 32768-byte total private JSON body limit. Typed fields only fill and never submit. Legacy password_selector with submit remains supported. The authenticated client sends it directly to the private browser, outside chat. The request expires in five minutes and is consumed once. Use secure_input_snapshot and secure_input_action to continue privately with the request_id. Ordinary browser observations remain blocked until browser_vault_close discards the session. This does not support shell or sudo input. Never ask the user to type a password in chat.",
     supportsParallelToolCalls: false,
     parameters: { type: "object", additionalProperties: false, properties: {
       target_id: {type:"string"}, expected_origin: {type:"string"}, password_selector: {type:"string"}, fields:{type:"array",minItems:1,maxItems:8,items:{type:"object",additionalProperties:false,properties:{id:{type:"string"},kind:{type:"string",enum:["password","card_number","card_expiry","card_cvc","sensitive_text"]},selector:{type:"string"},label:{type:"string"}},required:["id","kind","selector"]}}, submit: {type:"boolean"}
@@ -766,8 +772,10 @@ export async function createManagedBrowserRuntime(
   const submitSecureInput = (input: unknown, signal: AbortSignal): Promise<unknown> => exclusive(async () => {
     const value = parsePrivateSecureInput(input);
     signal.throwIfAborted();
+    if(value.action === "retry_vault_save")return {type:"secure_input_receipt",request_id:value.request_id,status:"finished",vault_save:await vaultSaves.retry(value.request_id as string)};
     const pending = await options.ctx.storage.get<PendingSecureInput>(secureInputKey);
     if (value.action === "cancel") {
+      vaultSaves.cancel(value.request_id as string);
       const quarantine = await options.ctx.storage.get<BrowserVaultQuarantine>(quarantineKey);
       if (quarantine?.mode === "one_time" && quarantine.vaultId === value.request_id) await clearOneTime(quarantine.sessionId);
       else if (pending?.id === value.request_id) await options.ctx.storage.delete(secureInputKey);
@@ -791,6 +799,8 @@ export async function createManagedBrowserRuntime(
       const info = await privateSessionInfo();
       if (!info || info.sessionId !== pending.sessionId) throw new Error();
       cdp = await PrivateBrowserCdp.connect(privateBrowser, info.sessionId, signal);
+      if(value.save_to_vault===false)vaultSaves.cancelScope(info.sessionId+":"+pending.request.target_id,pending.request.expected_origin);
+      const saveForm=value.save_to_vault===true ? await secureVaultSaveForm(cdp,pending.request,pending.fields??[{id:"password",kind:"password",selector:pending.request.password_selector!}],pending.loaderId) : undefined;
       const privateValues = values ? Object.values(values).flatMap(v=>[v,v.replace(/[\s-]/g,"")]) : [value.value as string];
       const quarantineInput = async (quarantine:BrowserVaultQuarantine) => { await options.ctx.storage.put(quarantineKey,{...quarantine,mode:"one_time"}); isolated = true; oneTime = {pending,password:privateValues}; };
       const result = pending.fields ? await secureBrowserForm({cdp,request:pending.request,fields:pending.fields,values,signal,expectedLoaderId:pending.loaderId,
@@ -799,7 +809,12 @@ export async function createManagedBrowserRuntime(
         resolve: async () => ({username:"",password:value.value as string}),
         quarantine: quarantineInput,
       });
-      return {type:"secure_input_receipt",request_id:pending.id,status:"submission" in result && result.submission === "action_required" ? "action_required" : result.status};
+      let vault_save;
+      if(value.save_to_vault===true && saveForm && result.status!=="outcome_unknown") {
+        vaultSaves.stage(pending.id,pending.request.expected_origin,saveForm,Object.entries(values??{password:value.value as string}).map(([ref,value])=>({ref,value})),true,info.sessionId+":"+pending.request.target_id,value.save_details as PrivateVaultDetails|undefined);
+        vault_save=await vaultSaves.finish(pending.id);
+      } else if(value.save_to_vault===true) vault_save={status:"not_saved",reason:"input_outcome_unknown"};
+      return {type:"secure_input_receipt",request_id:pending.id,status:"submission" in result && result.submission === "action_required" ? "action_required" : result.status,...(vault_save?{vault_save}:{})};
     } catch { throw new Error("Secure input could not be confirmed; inspect the private destination before any further attempt"); }
     finally { signal.removeEventListener("abort",abort); cdp?.close(); }
   });
@@ -933,6 +948,23 @@ export async function createManagedBrowserRuntime(
         }), login) });
     }),
   });
+  if (options.resolveVaultFields && options.resolveVaultLogin) tools.push({
+    name: 'browser_vault_inject_fields', description: vaultFieldInjectionDescription,
+    supportsParallelToolCalls:false,
+    parameters:{type:'object',additionalProperties:false,properties:{...identityProperties,...vaultFieldMappingProperties},required:[...identityRequired,'snapshot_id','operation_id','fields']},
+    handler:(input,context)=>exclusive(async()=>{
+      options.authorizeVaultAccess?.(context);
+      const identity=parseIdentity(input,['snapshot_id','operation_id','fields']);
+      const v=input as Record<string,unknown>,mappings=parseVaultFieldMappings(v.fields);
+      if(typeof v.snapshot_id !== 'string')throw new Error('Invalid private snapshot');
+      await checkQuarantine({...identity,submit:false});
+      const login=await options.resolveVaultLogin!({...identity,submit:false},context);
+      return privateBrowserOperation({storage:options.ctx.storage,scope:privateScope,operationId:v.operation_id,
+        input:{kind:'vault_fields',...identity,snapshot_id:v.snapshot_id,mappings},
+        run:()=>withPrivate(identity,context,cdp=>injectBrowserVaultFields({cdp,identity,snapshotId:v.snapshot_id as string,mappings,
+          resolve:options.resolveVaultFields!,remember:values=>{if(!rememberPrivateBrowserValues(secrets,values))throw new Error('Private input limit reached');},context}),login)});
+    }),
+  });
   type PendingChallenge = { id: string; expiresAt: number; sessionId: string; identity: BrowserVaultIdentity;
     loaderId: string; selector: string };
   if (options.resolveVaultLogin) {
@@ -1059,17 +1091,25 @@ export async function createManagedBrowserRuntime(
     if (!input || typeof input !== "object" || Array.isArray(input)) throw new Error("Invalid private control request");
     const value = input as Record<string, unknown>;
     if (typeof value.challenge_id !== "string" || !/^[0-9a-f-]{36}$/.test(value.challenge_id)
-      || !["observe", "click", "type", "edit", "fill_fields", "touch", "key", "scroll", "finish"].includes(String(value.action))) throw new Error("Invalid private control request");
+      || !["observe", "click", "type", "edit", "fill_fields", "fill_vault_fields", "touch", "key", "scroll", "finish", "cancel", "describe", "retry_vault_save"].includes(String(value.action))) throw new Error("Invalid private control request");
     signal.throwIfAborted();
+    if(value.action === "retry_vault_save" && Object.keys(value).length===2)return {vault_save:await vaultSaves.retry(value.challenge_id as string)};
     if (value.action === "finish") {
       if (Object.keys(value).some(key => !["challenge_id", "action"].includes(key))) throw new Error("Invalid private control request");
       // A lost Finish response must be retryable without touching a later lease.
       const finished = await options.ctx.storage.get<FinishedTakeover[]>(takeoverFinishedKey) ?? [];
-      if (finished.some(r=>r.id===value.challenge_id && r.expiresAt>Date.now())) return {status:"finished"};
+      if (finished.some(r=>r.id===value.challenge_id && r.expiresAt>Date.now())) {const vault_save=await vaultSaves.finish(value.challenge_id as string);return {status:"finished",...(vault_save?{vault_save}:{})};}
     }
     const lease = await options.ctx.storage.get<HumanLease>(takeoverKey);
     if (!lease || value.challenge_id !== lease.id) throw new Error("Private control is unavailable");
-    if (value.action === "finish") {
+    if(value.action === "describe") {
+      if(Object.keys(value).length!==2)throw new Error("Invalid private control request");
+      return {type:"browser_vault_takeover",status:"input_required",challenge_id:lease.id,agent_id:options.sessionId,origin:lease.identity.expected_origin,expires_at:lease.expiresAt,approved:true};
+    }
+    if (value.action === "finish" || value.action === "cancel") {
+      if(Object.keys(value).length!==2)throw new Error("Invalid private control request");
+      if(value.action === "cancel" || lease.expiresAt<=Date.now())vaultSaves.clear();
+      const vault_save=value.action === "finish" && lease.expiresAt>Date.now() ? await vaultSaves.finish(lease.id) : undefined;
       try {
         await privateTakeover.run(lease.sessionId, lease.identity, signal, cdp => releasePrivateVaultTakeover(cdp, lease.identity.target_id));
       } catch { /* No screenshot or retry is needed to relinquish the lease. */ }
@@ -1081,7 +1121,7 @@ export async function createManagedBrowserRuntime(
         if ((await tx.get<HumanLease>(takeoverKey))?.id===lease.id) await tx.delete(takeoverKey);
       });
       takeoverTouch = undefined; takeoverTyping = undefined;
-      return { status: "finished" };
+      return { status: value.action === "cancel" ? "cancelled" : "finished",...(vault_save?{vault_save}:{}) };
     }
     if (lease.expiresAt <= Date.now()) throw new Error("Private control expired; finish the panel or request a new one");
     const quarantine = await options.ctx.storage.get<BrowserVaultQuarantine>(quarantineKey);
@@ -1094,11 +1134,20 @@ export async function createManagedBrowserRuntime(
       takeoverTouch = {leaseId:lease.id,state:lease.selectionId ? {nativeSelection:lease.selectionId} : {}}; takeoverTyping = undefined;
     }
     try {
+      if(action.action === 'fill_vault_fields') {
+        if(!options.resolveVaultFields)throw new Error('Vault reuse unavailable');
+        const selected=parseNativeVaultInjection(action);
+        return await privateTakeover.run(info.sessionId,lease.identity,signal,cdp=>injectNativeVaultFields({
+          cdp,identity:lease.identity,touch:takeoverTouch!.state,...selected,resolve:options.resolveVaultFields!,signal,
+          remember:values=>{if(!rememberPrivateBrowserValues(secrets,values))throw new Error('Private input limit reached');},
+        }));
+      }
       validateBrowserVaultTakeoverAction(action as BrowserVaultTakeoverAction);
       rememberPrivateTyping(action);
       return await privateTakeover.run(info.sessionId, lease.identity, signal,
-        cdp => privateVaultTakeover(cdp, lease.identity, action as BrowserVaultTakeoverAction, takeoverTouch!.state));
+        cdp => privateVaultTakeover(cdp, lease.identity, action as BrowserVaultTakeoverAction, takeoverTouch!.state,false,undefined,(origin,form,values,enabled,details)=>vaultSaves.stage(lease.id,origin,form,values,enabled,lease.sessionId+":"+lease.identity.target_id,details)));
     } catch {
+      vaultSaves.cancelScope(lease.sessionId+":"+lease.identity.target_id,lease.identity.expected_origin);
       takeoverTouch.state.uncertain = true;
       throw new Error("Private control could not be confirmed; refresh the view before trying another action");
     }
@@ -1141,6 +1190,7 @@ export async function createManagedBrowserRuntime(
       options.authorizeVaultAccess!(context);
       if (!input || typeof input !== "object" || Array.isArray(input) || Object.keys(input).length) throw new Error("Invalid close request");
       try {
+        vaultSaves.clear();
         privateContinuation.close();
         privateTakeover.close();
         await closeRetainedSession();
@@ -1166,11 +1216,13 @@ export async function createManagedBrowserRuntime(
     submitVaultTakeover,
     async expireAndSweep() {
       if(privateClosing)return;
+      vaultSaves.expire();
       await runtime.runtime.expirePaused();
       await exclusive(async()=>{
         if(options.privateOnly){
           const saved=await store.get(reuseKey);
           if(saved && Date.now()-saved.updatedAt>=keepAliveMs){
+            vaultSaves.clear();
             privateContinuation.close(); privateTakeover.close();
             await closeRetainedSession();
           }
@@ -1181,6 +1233,7 @@ export async function createManagedBrowserRuntime(
       if(!privateClosePromise){
         privateClosing=true;
         privateClosePromise=queue.then(async()=>{
+          vaultSaves.clear();
           privateContinuation.close();
           privateTakeover.close();
           await closeRetainedSession();

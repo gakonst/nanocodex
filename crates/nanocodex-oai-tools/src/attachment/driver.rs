@@ -61,6 +61,9 @@ pub(crate) async fn run(
     // Transport generations may change while the same runtime owns processes.
     // A new driver gets a new identity so local numeric IDs cannot be retargeted.
     let runtime_id = uuid::Uuid::new_v4().to_string();
+    // Snapshot the staged opt-in for this live runtime, including reconnects.
+    let regional_hand_relays =
+        std::env::var("NANOCODEX_REGIONAL_HAND_RELAYS").as_deref() == Ok("1");
     let mut active = Vec::<InFlight>::new();
     let mut journal = HashMap::<Box<str>, RetainedCall>::new();
     let (completed_tx, mut completed_rx) = mpsc::unbounded_channel::<Completion>();
@@ -75,7 +78,7 @@ pub(crate) async fn run(
             attempt, reconnect_delay_ms = previous_delay.as_millis() as u64);
         let _ = status.send(AttachmentStatus::Connecting);
         connection_span.in_scope(|| emit(&events, AttachmentEvent::Connecting));
-        let request = match request(&config, &connection_id) {
+        let request = match request(&config, &connection_id, &runtime_id, regional_hand_relays) {
             Ok(request) => request,
             Err(error) => break Err(error),
         };
@@ -228,7 +231,12 @@ pub(crate) async fn run(
     let _ = closed.send(Some(terminal));
 }
 
-fn request(config: &Config, connection_id: &str) -> Result<http::Request<()>, AttachmentError> {
+fn request(
+    config: &Config,
+    connection_id: &str,
+    runtime_id: &str,
+    regional_hand_relays: bool,
+) -> Result<http::Request<()>, AttachmentError> {
     let mut request = config
         .endpoint
         .as_str()
@@ -245,6 +253,27 @@ fn request(config: &Config, connection_id: &str) -> Result<http::Request<()>, At
         http::HeaderValue::from_str(connection_id)
             .map_err(|_| AttachmentError::Transport("invalid connection identity".into()))?,
     );
+    // Only account machine publishers support regional pre-upgrade routing.
+    // Named/scoped attachments retain the legacy owner route. Metadata::machine
+    // guarantees one machine whose exact ID is also the catalog attachment_id.
+    if regional_hand_relays
+        && config.endpoint.path() == "/v1/account/tool-host"
+        && let Some(machine) = config
+            .metadata
+            .as_ref()
+            .and_then(AttachmentMetadata::attached_machine)
+    {
+        request.headers_mut().insert(
+            "x-nanocodex-hand-machine-id",
+            http::HeaderValue::from_str(machine.id())
+                .map_err(|_| AttachmentError::Transport("invalid machine identity".into()))?,
+        );
+        request.headers_mut().insert(
+            "x-nanocodex-hand-runtime-id",
+            http::HeaderValue::from_str(runtime_id)
+                .map_err(|_| AttachmentError::Transport("invalid runtime identity".into()))?,
+        );
+    }
     Ok(request)
 }
 
@@ -708,6 +737,7 @@ where
             capabilities: ["turn_metadata"],
             runtime_id,
             command_recovery: true,
+            turn_lifecycle: true,
             diagnostics: Some(true),
             connection_id: Some(connection_id),
             tools: &config.tools,
@@ -897,6 +927,15 @@ where
                         }
                         let task = start_call(runtime, active, identity.clone(), Arc::clone(&timing), tool_timeout, call_events, completed_tx.clone(), events);
                         journal.insert(call_id.into(), RetainedCall { identity, task: Some(task), timing, receipt: None });
+                    }
+                    RemoteFrame::TurnEnded { session_id, turn_id, hook_event_name } => {
+                        // The trusted broker sends this only after the turn has
+                        // settled. Keep cleanup ordered before another turn can
+                        // use this same retained provider session.
+                        if tokio::time::timeout(Duration::from_secs(5), runtime.end_turn(&session_id, &turn_id, &hook_event_name)).await.is_err() {
+                            tracing::warn!(target: "nanocodex_oai_tools::attachment",
+                                "turn cleanup timed out; not retried");
+                        }
                     }
                     RemoteFrame::Cancel { call_id } => {
                         tracing::info!(target: "nanocodex_oai_tools::attachment", stage = "attachment.call.cancel_received", transport_call_id = call_id.as_str(), pending_calls = journal.values().filter(|call| call.task.is_some()).count(), pending_receipts = journal.values().filter(|call| call.receipt.is_some()).count(), reason_code = "cancel_received", "attachment cancellation received");

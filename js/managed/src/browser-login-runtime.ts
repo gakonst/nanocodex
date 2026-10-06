@@ -1,3 +1,5 @@
+import { injectNativeVaultFields, parseNativeVaultInjection, injectBrowserVaultFields, parseVaultFieldMappings, vaultFieldMappingProperties, vaultFieldInjectionDescription, type BrowserVaultFieldsResolver } from './browser-vault-injection';
+import { PrivateVaultSaves, type PrivateVaultSave } from "./browser-vault-save";
 import { createBrowserSession, deleteBrowserSession, type BrowserBinding } from "agents/browser";
 import type { NamedTool, ToolContext } from "nanocodex";
 import { parseBrowserLoginRequest, browserLoginIdentity } from "./browser-login";
@@ -11,8 +13,9 @@ const TTL = 10 * 60_000;
 /** A separate credential browser. No CDP transport or provider URL is exposed to the model.
  * Only metadata is durable; loss of private redaction memory requires a fresh login. */
 export function createBrowserLoginRuntime(options: { storage: DurableObjectStorage; browser: BrowserBinding;
-  agentId: string; publicOrigin?: string; authorize(context: ToolContext): void }) {
+  agentId: string; publicOrigin?: string; resolveVaultFields?:BrowserVaultFieldsResolver; savePrivateVault?:PrivateVaultSave; authorize(context: ToolContext): void }) {
   const key = `browser-login:${options.agentId}`, terminalKey = (id:unknown)=>`${key}:terminal:${String(id)}`, owner = crypto.randomUUID();
+  const saves = new PrivateVaultSaves(options.savePrivateVault);
   const transport = new PrivateBrowserContinuationSession(options.browser);
   let chain = Promise.resolve(), secrets: string[] = [], segment: {index:number;text:string} | undefined;
   let complete = true, touch: BrowserVaultTouchState = {};
@@ -32,7 +35,7 @@ export function createBrowserLoginRuntime(options: { storage: DurableObjectStora
   const close = async () => {
     transport.close(); const login = await options.storage.get<Login>(key);
     // Discard admission before cleanup. A failed provider close cannot restore model access.
-    await options.storage.delete(key); secrets=[];segment=undefined;complete=true;touch={};
+    await options.storage.delete(key); saves.clear(); secrets=[];segment=undefined;complete=true;touch={};
     if(login)try{await deleteBrowserSession(options.browser,login.sessionId);}catch{/* provider expiry remains the backstop */}
   };
   const current = async (id:unknown, phase?:Login["phase"]) => {
@@ -65,7 +68,7 @@ export function createBrowserLoginRuntime(options: { storage: DurableObjectStora
     return v;
   };
   const tools: NamedTool[] = [{name:"request_browser_login",supportsParallelToolCalls:false,
-    description:"Open a retained private browser and ask the user to sign in on their phone, without saving a Vault login. Supply one stable operation_id UUID, a public HTTPS URL, and the exact allowed_origins required for authentication redirects/frames. The user reviews the sites before typing. Prefer defer_input=true to inspect the page before asking for input: this returns page_ready without opening a sheet. Read browser_login_snapshot and choose native_input fields with request_browser_login_input, or omit selection for a browser fallback. The native app presents the secure input sheet when requested. Use login_url only when the client cannot render native intake or the user explicitly asks for the browser fallback. Passwords, codes and private screenshots never enter chat or model tools. Wait for browser_login_receipt; finished is not proof of account access. Continue with browser_login_snapshot/action using request_id. Browser authentication does not authenticate a CLI or export cookies. Reuse the same operation ID after uncertainty; never silently retry login.",
+    description:"Open a retained private browser and ask the user to sign in in the native app or trusted local TUI. The TUI defaults to Save to Vault with a visible opt-out for reusable values; codes stay transient. Only vault_save confirms saving; retry a failed save separately without repeating input. Supply one stable operation_id UUID, a public HTTPS URL, and the exact allowed_origins required for authentication redirects/frames. The user reviews the sites before typing. Prefer defer_input=true to inspect the page before asking for input: this returns page_ready without opening a sheet. Read browser_login_snapshot and choose native_input fields with request_browser_login_input, or omit selection for a browser fallback. The native app or trusted local TUI presents the private input form when requested. Use login_url only when the client cannot render native intake or the user explicitly asks for the browser fallback. Passwords, codes and private screenshots never enter chat or model tools. Wait for browser_login_receipt; finished is not proof of account access. Continue with browser_login_snapshot/action using request_id. Browser authentication does not authenticate a CLI or export cookies. Reuse the same operation ID after uncertainty; never silently retry login.",
     parameters:{type:"object",additionalProperties:false,properties:{operation_id:{type:"string"},url:{type:"string"},allowed_origins:{type:"array",items:{type:"string"},minItems:1,maxItems:8},defer_input:{type:"boolean"}},required:["operation_id","url"]},
     handler:(input,ctx)=>exclusive(async()=>{
       options.authorize(ctx);ctx.signal.throwIfAborted();const request=parseBrowserLoginRequest(input);
@@ -121,7 +124,7 @@ export function createBrowserLoginRuntime(options: { storage: DurableObjectStora
           return snapshotBrowserVault(cdp,bound,secrets);
         });})},
     {name:"browser_login_action",supportsParallelToolCalls:false,
-      description:"Continue a prepared page before requesting input, or a one-time private browser after user handback, using request_id and a stable operation_id. Use refs from browser_login_snapshot. Only perform actions authorized by the user. Passwords and verification codes must be entered through the private phone panel, never text arguments. Navigation remains on the current approved origin. Inspect a new snapshot after every action; action_requested is not confirmation. No CLI credential export.",
+      description:"Continue a prepared page before requesting input, or a one-time private browser after user handback, using request_id and a stable operation_id. Use refs from browser_login_snapshot. Only perform actions authorized by the user. Passwords and verification codes must be entered through the private native app or trusted TUI form, never text arguments. Navigation remains on the current approved origin. Inspect a new snapshot after every action; action_requested is not confirmation. No CLI credential export.",
       parameters:{type:"object",additionalProperties:false,properties:{request_id:{type:"string"},operation_id:{type:"string"},action:{type:"string",enum:["navigate","click","fill","select","check"]},url:{type:"string"},snapshot_id:{type:"string"},ref:{type:"string"},text:{type:"string"},option_index:{type:"integer"},checked:{type:"boolean"}},required:["request_id","operation_id","action"]},
       handler:(input,ctx)=>exclusive(async()=>{options.authorize(ctx);const v=requestId(input,["operation_id","action","url","snapshot_id","ref","text","option_index","checked"]);
         const login=await current(v.request_id),action=parsePrivateBrowserAction(v) as BrowserVaultAction;
@@ -129,12 +132,30 @@ export function createBrowserLoginRuntime(options: { storage: DurableObjectStora
         return privateBrowserOperation({storage:options.storage,scope:key,operationId:v.operation_id,input:{request_id:v.request_id,action},run:()=>transport.run(login.sessionId,identity(login),ctx.signal,async cdp=>{
           const bound=await browserLoginIdentity(cdp,identity(login),login.allowedOrigins);return actBrowserVault(cdp,bound,action);
         })});})},
+    ...(options.resolveVaultFields ? [{name:'browser_login_inject_fields',supportsParallelToolCalls:false,
+      description:vaultFieldInjectionDescription,
+      parameters:{type:'object',additionalProperties:false,properties:{request_id:{type:'string'},...vaultFieldMappingProperties},required:['request_id','snapshot_id','operation_id','fields']},
+      handler:(input:unknown,ctx:ToolContext)=>exclusive(async()=>{
+        options.authorize(ctx);const v=requestId(input,['operation_id','snapshot_id','fields']),login=await current(v.request_id);
+        if(!['prepared','finished'].includes(login.phase))throw new Error('Private login is under user control');
+        const mappings=parseVaultFieldMappings(v.fields);
+        if(typeof v.snapshot_id !== 'string')throw new Error('Invalid private snapshot');
+        return privateBrowserOperation({storage:options.storage,scope:key,operationId:v.operation_id,
+          input:{kind:'vault_fields',request_id:v.request_id,snapshot_id:v.snapshot_id,mappings},
+          run:()=>transport.run(login.sessionId,identity(login),ctx.signal,async cdp=>{
+            const bound=await browserLoginIdentity(cdp,identity(login),login.allowedOrigins);
+            return injectBrowserVaultFields({cdp,identity:bound,snapshotId:v.snapshot_id as string,mappings,resolve:options.resolveVaultFields!,
+              remember:values=>{if(!rememberPrivateBrowserValues(secrets,values)){complete=false;throw new Error('Private input limit reached');}},context:ctx});
+          })});
+      })}] : []),
     {name:"browser_login_close",supportsParallelToolCalls:false,description:"Discard a one-time private login session and its credentials. Closes even after expiry or recovery; does not repeat login or account actions.",
       parameters:{type:"object",additionalProperties:false,properties:{},required:[]},handler:(input,ctx)=>exclusive(async()=>{options.authorize(ctx);if(!input || typeof input!=="object" || Object.keys(input).length)throw new Error("Invalid close");await close();return {status:"closed"};})}
   ];
   const submit = (input:unknown,signal:AbortSignal) => exclusive(async()=>{
     if(!input || typeof input!=="object" || Array.isArray(input))throw new Error("Invalid private login control");
-    const v=input as Record<string,unknown>,stored=await options.storage.get<Login>(key);
+    const v=input as Record<string,unknown>;
+    if(v.action==="retry_vault_save" && Object.keys(v).length===2 && typeof v.challenge_id==="string")return {vault_save:await saves.retry(v.challenge_id)};
+    const stored=await options.storage.get<Login>(key);
     if(!stored || stored.id!==v.challenge_id){
       if(["cancel","finish"].includes(String(v.action)) && Object.keys(v).length===2){
         const prior=await options.storage.get<{status:string}>(terminalKey(v.challenge_id));
@@ -146,7 +167,7 @@ export function createBrowserLoginRuntime(options: { storage: DurableObjectStora
     if(["cancel","describe","approve","finish"].includes(String(action.action))){
       if(Object.keys(action).length!==1)throw new Error("Invalid private login control");
       if(action.action==="cancel"){const receipt={type:"browser_login_receipt",status:"cancelled",request_id:stored.id};await options.storage.put(terminalKey(stored.id),receipt);await close();return receipt;}
-      if(action.action==="finish" && stored.phase==="finished")return {type:"browser_login_receipt",status:"finished",request_id:stored.id};
+      if(action.action==="finish" && stored.phase==="finished"){const vault_save=await saves.finish(stored.id);return {type:"browser_login_receipt",status:"finished",request_id:stored.id,...(vault_save?{vault_save}:{})};}
       const login=await current(v.challenge_id);
       if(action.action==="describe")return metadata(login);
       if(action.action==="approve"){
@@ -156,21 +177,32 @@ export function createBrowserLoginRuntime(options: { storage: DurableObjectStora
       if(login.phase!=="human")throw new Error("Private login is not active");
       // Finish relinquishes user control; account access still requires a model snapshot check.
       await transport.run(login.sessionId,identity(login),signal,cdp=>releasePrivateVaultTakeover(cdp,login.targetId));
-      const receipt={type:"browser_login_receipt",status:"finished",request_id:login.id};
+      const vault_save=await saves.finish(login.id);
+      const receipt={type:"browser_login_receipt",status:"finished",request_id:login.id,...(vault_save?{vault_save}:{})};
       await options.storage.transaction(async tx=>{
         await tx.put(key,{...login,phase:"finished",expiresAt:Date.now()+TTL});
         await tx.put(terminalKey(login.id),receipt);
       });touch={};segment=undefined;
       return receipt;
     }
-    const login=await current(v.challenge_id,"human");validateBrowserVaultTakeoverAction(action as BrowserVaultTakeoverAction);remember(action);
+    const login=await current(v.challenge_id,"human");
+    if(action.action === 'fill_vault_fields') {
+      if(!options.resolveVaultFields)throw new Error('Vault reuse unavailable');
+      const selected=parseNativeVaultInjection(action);
+      try { return await transport.run(login.sessionId,identity(login),signal,async cdp=>{
+        const bound=await browserLoginIdentity(cdp,identity(login),login.allowedOrigins);
+        return injectNativeVaultFields({cdp,identity:bound,touch,...selected,resolve:options.resolveVaultFields!,signal,
+          remember:values=>{segment=undefined;if(!rememberPrivateBrowserValues(secrets,values)){complete=false;throw new Error('Private input limit reached');}}});
+      }); } catch { throw new Error('Private Vault input could not be confirmed; refresh before continuing'); }
+    }
+    validateBrowserVaultTakeoverAction(action as BrowserVaultTakeoverAction);remember(action);
     try{return await transport.run(login.sessionId,identity(login),signal,async cdp=>{
       const bound=await browserLoginIdentity(cdp,identity(login),login.allowedOrigins);
-      const frame=await privateVaultTakeover(cdp,bound,action as BrowserVaultTakeoverAction,touch,false,login.allowedOrigins);
+      const frame=await privateVaultTakeover(cdp,bound,action as BrowserVaultTakeoverAction,touch,false,login.allowedOrigins,(origin,form,values,enabled,details)=>saves.stage(login.id,origin,form,values,enabled,login.sessionId+":"+login.targetId,details));
       const observed = await browserLoginIdentity(cdp,identity(login),login.allowedOrigins);
       return {...frame,origin:observed.expected_origin};
-    });}catch{touch.uncertain=true;throw new Error("Private browser action could not be confirmed; refresh before continuing");}
+    });}catch{saves.cancelScope(login.sessionId+":"+login.targetId,login.origin);touch.uncertain=true;throw new Error("Private browser action could not be confirmed; refresh before continuing");}
   });
   return {tools,submit,owns:async(id:unknown)=>{const l=await options.storage.get<Login>(key);return (!!l&&l.id===id)||!!await options.storage.get(terminalKey(id));},
-    close:()=>exclusive(close),expire:()=>exclusive(async()=>{const l=await options.storage.get<Login>(key);if(l && l.expiresAt<=Date.now())await close();})};
+    close:()=>exclusive(close),expire:()=>exclusive(async()=>{saves.expire();const l=await options.storage.get<Login>(key);if(l && l.expiresAt<=Date.now())await close();})};
 }

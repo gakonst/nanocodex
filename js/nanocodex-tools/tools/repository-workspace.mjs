@@ -1,5 +1,3 @@
-import git from "isomorphic-git";
-
 const DEFAULT_DIRECTORY = "repository";
 const MARKER_NAME = "nanocodex-repository.json";
 const MARKER_VERSION = 1;
@@ -13,6 +11,7 @@ const SHA1 = /^[a-f0-9]{40}$/;
  */
 export async function materializeRepositoryWorkspace(options) {
   const input = repositoryOptions(options);
+  const { default: git } = await import("isomorphic-git");
   const fs = workspaceFs(input.workspace);
   const directory = `${input.workspace.root}/${input.directory}`;
   const markerPath = `${directory}/.git/${MARKER_NAME}`;
@@ -173,6 +172,7 @@ function sameMarker(left, right) {
 
 async function resolveHead(fs, directory) {
   try {
+    const { default: git } = await import("isomorphic-git");
     return await git.resolveRef({ fs, dir: directory, ref: "HEAD" });
   } catch (error) {
     throw new Error("repository workspace has no valid local HEAD", { cause: error });

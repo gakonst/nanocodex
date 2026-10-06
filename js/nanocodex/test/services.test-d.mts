@@ -43,3 +43,23 @@ if (selected.service === 'vault' && selected.action === 'select') {
 }
 // @ts-expect-error Selection applies only to Vault
 createHostedRequest({ service: 'phone', operationId: crypto.randomUUID(), action: 'select', appOrigin: 'https://example.com' });
+
+const links = await direct.links({connect: 'cloudflare', add: 'totp'});
+const linkUrl: string = links.connections;
+const enrollmentLink = await direct.hosted({service: 'vault', kind: 'login'});
+const hostedUrl: string = enrollmentLink.url;
+await direct.account.connectors.start('google', {return_to: '/connect'});
+await direct.account.connectors.cloudflare({vault_id: 'selected-vault-id'});
+await direct.account.connectors.mcp.create({target: 'https://mcp.example/mcp'});
+await direct.account.vault.create('login', {name: 'Example', username: 'example', password: 'synthetic-private-form-value'});
+await direct.account.vault.store({capture_id: 'captured-item', operation_id: crypto.randomUUID()});
+await direct.account.vault.card({vault_id: 'saved-card', operation: 'refresh', operation_id: crypto.randomUUID()});
+// @ts-expect-error full permission keys must use the dedicated Cloudflare path
+await direct.account.connectors.start('cloudflare', {});
+// @ts-expect-error no secret material goes into a captured-provider save
+await direct.account.vault.store({card_number: 'synthetic', operation_id: crypto.randomUUID()});
+// @ts-expect-error a refresh requires a stable operation ID
+await direct.account.vault.card({vault_id: 'saved-card', operation: 'refresh'});
+// @ts-expect-error login enrollment requires private password input
+await direct.account.vault.create('login', {name: 'Example', username: 'example'});
+void linkUrl; void hostedUrl;

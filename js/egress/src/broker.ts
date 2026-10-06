@@ -1,4 +1,5 @@
 import { validateTotpEnrollment, validateTotpMetadata, type TotpMaterial, type TotpMetadata } from "./vault-totp";
+import { providerVaultRoute } from "./provider-result-vault";
 import { ClaudeSubscription } from "nanocodex/worker";
 import claudeModule from "nanocodex/wasm";
 import { createMercatorMcpCredential, MercatorPaymentInputError } from "./mercator-payment";
@@ -6,9 +7,11 @@ import type { CloudflareAccountVaultResult } from "nanocodex/cloudflare/egress";
 import { createSshKeyPair, sshPublicKey } from "nanocodex/tools/ssh";
 import { DurableObject } from "cloudflare:workers";
 import { Provider, ProviderRequest, secp256k1, Storage } from "accounts";
-import { http } from "viem";
+import { createClient, http } from "viem";
 import { Account as TempoAccount, Actions } from "viem/tempo";
 import { tempo } from "viem/tempo/chains";
+import { linkedWalletProvider, newWalletLink, pairWallet, publicLinkedWallet, publicWalletLink,
+  verifiedAuthorization, WALLET_OPERATION, type LinkedWallet, type WalletLink } from "./linked-wallet";
 
 import {
   CredentialVault,
@@ -147,7 +150,7 @@ export type VaultEntryPayload =
       card_number: string;
       expiry_month: string;
       expiry_year: string;
-      cvv: string;
+      cvv?: string;
       billing_zip: string;
     }>
   | Readonly<{
@@ -190,6 +193,10 @@ type CredentialState = {
   ssh?: Record<string, BrokeredSshIdentity>;
   vault?: Record<string, VaultEntryMetadata>;
   wallet?: RootWallet;
+  linkedWallet?: LinkedWallet;
+  walletLinks?: Record<string, WalletLink>;
+  walletUnlinks?: Record<string, { address: string }>;
+
   browserCookieJars?: Record<string, BrowserCookieJarMetadata>;
 };
 type StoredRow = { envelope: EncryptedEnvelope };
@@ -347,6 +354,7 @@ export class UserCredentialBroker extends DurableObject<BrokerEnv> {
   #claude: Promise<ClaudeSubscription.Subscription> | undefined;
   #claudeCredential: ClaudeCredential | undefined;
   #tail: Promise<void> = Promise.resolve();
+  #liveWalletLink: { operationId: string; controller: AbortController } | undefined;
 
   constructor(state: DurableObjectState, env: BrokerEnv) {
     super(state, env);
@@ -374,6 +382,11 @@ export class UserCredentialBroker extends DurableObject<BrokerEnv> {
   }
 
   fetch(request: Request): Promise<Response> {
+    const url = new URL(request.url);
+    if (request.method === "GET" && url.pathname === "/v1/wallet"
+      && request.headers.get("accept") === "application/vnd.nanocodex.wallet-snapshot+json") return this.#walletSnapshot(request);
+    if (url.pathname === "/v1/wallet/link") return this.#startWalletLink(request);
+    if (url.pathname === "/v1/wallet/connect") return this.#walletConnect(request);
     const queuedAt = Date.now();
     const measureCredential = request.method === "POST"
       && new URL(request.url).pathname === "/v1/credential";
@@ -429,6 +442,80 @@ export class UserCredentialBroker extends DurableObject<BrokerEnv> {
       activation_ms: this.#activationMs,
       activation_age_ms: Date.now() - this.#activatedAt,
     };
+  }
+
+  /** Connect authentication reads this broker's credential status after verifying
+   * the wallet signature. Keep those callbacks outside the credential queue. */
+  async #walletConnect(request: Request): Promise<Response> {
+    const prepared = await this.#exclusive(async () => {
+      await this.#ready;
+      try {
+        if (request.method !== "POST") return jsonError(405, "method_not_allowed");
+        if (!isJsonContentType(request.headers.get("content-type"))) {
+          return jsonError(415, "invalid_content_type");
+        }
+        const requestBody = validateWalletConnectRequest(
+          await readJson(request, MAX_VAULT_BODY_BYTES),
+          this.#env,
+        );
+        if (!requestBody) return jsonError(400, "invalid_wallet_connect_request");
+        const wallet = Object.freeze({ ...await this.#ensureRootWallet() });
+        return { wallet, requestBody };
+      } catch (error) {
+        const problem = await this.#recoverFailedOperation(error);
+        return jsonError(problem.status, problem.code);
+      }
+    }, { operation: "http" });
+    if (prepared instanceof Response) return prepared;
+    try {
+      return json(await rootWalletProvider(prepared.wallet).request(prepared.requestBody as never), 200);
+    } catch (error) {
+      // Recovery mutates the retained credential snapshot, so it still joins the
+      // queue even though the failed authentication callback ran outside it.
+      return this.#exclusive(async () => {
+        const problem = await this.#recoverFailedOperation(error);
+        return jsonError(problem.status, problem.code);
+      }, { operation: "http" });
+    }
+  }
+
+  /** One live startup read. Network balance I/O must not hold credential rotation
+   * or model resolution behind an unrelated read-only RPC. */
+  async #walletSnapshot(request: Request): Promise<Response> {
+    const wallet = await this.#exclusive(async () => {
+      await this.#ready;
+      return this.#publicWallet();
+    }, { operation: "http" });
+    if (!wallet) return jsonError(404, "wallet_not_configured");
+    const controller = new AbortController();
+    const abort = () => controller.abort(request.signal.reason);
+    request.signal.addEventListener("abort", abort, { once: true });
+    if (request.signal.aborted) abort();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      // Leave transport time within Managed's existing 1.5s startup deadline.
+      // Timeout retains the public identity and explicitly unavailable balance.
+      const deadline = new Promise<null>((resolve) => {
+        timer = setTimeout(() => { controller.abort(); resolve(null); }, 1_000);
+      });
+      const client = createClient({ chain: tempo, transport: http(TEMPO_RPC, {
+        retryCount: 0, timeout: 1_000, fetchOptions: { signal: controller.signal },
+      }) });
+      const balance = await Promise.race([
+        Actions.token.getBalance(client, { account: wallet.address as `0x${string}`, decimals: 6, token: MACHINE_USD })
+          .then((value) => ({ account: wallet.address, balance: value.amount.toString(),
+            decimals: 6, symbol: "MACH", token: MACHINE_USD }))
+          .catch(() => null),
+        deadline,
+      ]);
+      const response = json({ ...wallet, balance }, 200);
+      response.headers.set("content-type", "application/vnd.nanocodex.wallet-snapshot+json");
+      response.headers.set("vary", "Accept");
+      return response;
+    } finally {
+      clearTimeout(timer);
+      request.signal.removeEventListener("abort", abort);
+    }
   }
 
   /** Private service-binding RPC only: never expose this credential to account clients. */
@@ -635,9 +722,11 @@ export class UserCredentialBroker extends DurableObject<BrokerEnv> {
       advance("alarm_ms");
       // An existing alarm survives eviction. Rewriting it on every activation
       // adds a storage write and can postpone an alarm that woke this object.
-      if (await this.#state.storage.getAlarm() === null) {
-        const alarm = this.#nextAlarm();
-        if (alarm !== undefined) await this.#state.storage.setAlarm(alarm);
+      const alarm = this.#nextAlarm();
+      // OpenAI-only and vault-only accounts have no refresh work. They do not
+      // need an alarm read on the cold model/metadata path.
+      if (alarm !== undefined && await this.#state.storage.getAlarm() === null) {
+        await this.#state.storage.setAlarm(alarm);
       }
     } finally {
       this.#activationPhases[this.#activationPhase] = Date.now() - phaseStartedAt;
@@ -646,6 +735,9 @@ export class UserCredentialBroker extends DurableObject<BrokerEnv> {
 
   async #dispatch(request: Request): Promise<Response> {
     const url = new URL(request.url);
+    if (["/v1/provider-capture", "/v1/provider-store", "/v1/provider-card", "/v1/provider-bindings"].includes(url.pathname)) {
+      return providerVaultRoute(request, { storage: this.#state.storage, vault: this.#vault, validEntry: (value, kind) => Boolean(validateVaultEntryPayload(value, kind)), dispatch: request => this.#dispatch(request) });
+    }
     try {
       if (request.method === "GET" && url.pathname === "/v1/health") {
         return json({ ready: true }, 200);
@@ -775,11 +867,17 @@ export class UserCredentialBroker extends DurableObject<BrokerEnv> {
         }
         return this.#setSponsoredPromptLifecycle(promptId, attempt, action);
       }
+      if (url.pathname === "/v1/wallet/identity") {
+        if (request.method !== "GET") return jsonError(405, "method_not_allowed");
+        return this.#credentials.wallet ? json(publicRootWallet(this.#credentials.wallet), 200) : jsonError(404, "wallet_not_configured");
+      }
+      if (["/v1/wallet/link/poll", "/v1/wallet/link/cancel", "/v1/wallet/unlink"].includes(url.pathname)) {
+        return this.#walletLinkAction(request, url.pathname);
+      }
       if (url.pathname === "/v1/wallet") {
         if (request.method === "GET") {
-          return this.#credentials.wallet
-            ? json(publicRootWallet(this.#credentials.wallet), 200)
-            : jsonError(404, "wallet_not_configured");
+          const wallet = this.#publicWallet();
+          return wallet ? json(wallet, 200) : jsonError(404, "wallet_not_configured");
         }
         if (request.method === "PUT") {
           if (await hasRequestPayload(request)) return jsonError(400, "invalid_request");
@@ -789,11 +887,11 @@ export class UserCredentialBroker extends DurableObject<BrokerEnv> {
       }
       if (url.pathname === "/v1/wallet/balance") {
         if (request.method !== "GET") return jsonError(405, "method_not_allowed");
-        const wallet = this.#credentials.wallet;
+        const wallet = this.#publicWallet();
         if (!wallet) return jsonError(404, "wallet_not_configured");
-        const provider = rootWalletProvider(wallet);
-        const balance = await Actions.token.getBalance(provider.getClient({ chainId: tempo.id }), {
-          account: wallet.address,
+        const client = createClient({ chain: tempo, transport: http(TEMPO_RPC, { retryCount: 0, timeout: 5_000 }) });
+        const balance = await Actions.token.getBalance(client, {
+          account: wallet.address as `0x${string}`,
           decimals: 6,
           token: MACHINE_USD,
         });
@@ -808,33 +906,19 @@ export class UserCredentialBroker extends DurableObject<BrokerEnv> {
       if (url.pathname === "/v1/wallet/mercator/credential") {
         if (request.method !== "POST") return jsonError(405, "method_not_allowed");
         if (!isJsonContentType(request.headers.get("content-type"))) return jsonError(415, "invalid_content_type");
-        const wallet = this.#credentials.wallet;
-        if (!wallet) return jsonError(404, "wallet_not_configured");
+        if (!this.#credentials.wallet) return jsonError(404, "wallet_not_configured");
         let paymentRequest: unknown;
         try { paymentRequest = await readJson(request, 64 * 1024); }
         catch { return jsonError(400, "invalid_mercator_payment_request"); }
         try {
           return json({ credential: await createMercatorMcpCredential(paymentRequest, {
-            store: this.#state.storage, wallet: rootWalletProvider(wallet), signal: request.signal,
+            store: this.#state.storage, wallet: await this.#spendingWalletProvider(), signal: request.signal,
           }) }, 200);
         } catch (error) {
           return error instanceof MercatorPaymentInputError
             ? jsonError(error.status, error.code)
             : jsonError(503, "mercator_outcome_unknown");
         }
-      }
-      if (url.pathname === "/v1/wallet/connect") {
-        if (request.method !== "POST") return jsonError(405, "method_not_allowed");
-        if (!isJsonContentType(request.headers.get("content-type"))) {
-          return jsonError(415, "invalid_content_type");
-        }
-        const requestBody = validateWalletConnectRequest(
-          await readJson(request, MAX_VAULT_BODY_BYTES),
-          this.#env,
-        );
-        if (!requestBody) return jsonError(400, "invalid_wallet_connect_request");
-        const wallet = await this.#ensureRootWallet();
-        return json(await rootWalletProvider(wallet).request(requestBody as never), 200);
       }
       if (url.pathname === "/v1/wallet/revoke-access-key") {
         if (request.method !== "POST") return jsonError(405, "method_not_allowed");
@@ -1003,6 +1087,20 @@ export class UserCredentialBroker extends DurableObject<BrokerEnv> {
             kind,
           );
           if (!payload) return jsonError(400, "invalid_vault_entry");
+          const operation = request.headers.get("x-nanocodex-operation-id");
+          if (operation !== null && !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(operation)) return jsonError(400, "invalid_operation_id");
+          const operationKey = operation ? `vault-create-operation:${operation.toLowerCase()}` : undefined;
+          const priorId = operationKey ? await this.#state.storage.get<string>(operationKey) : undefined;
+          if (priorId) {
+            const prior = await this.#state.storage.get<StoredRow>(vaultEntryStorageKey(priorId));
+            if (!prior) return jsonError(410, "vault_entry_deleted");
+            const opened = await this.#entryVault(priorId).open<VaultEntry>(prior.envelope);
+            const retained = validateStoredVaultEntry(priorId, opened.value);
+            if (!retained) return jsonError(409, "vault_operation_unavailable");
+            const { id: _id, createdAt: _created, ...previous } = retained;
+            if (JSON.stringify(previous) !== JSON.stringify(payload)) return jsonError(409, "vault_operation_conflict");
+            return json(publicVaultEntry(retained), 201);
+          }
           if (Object.keys(this.#credentials.vault ?? {}).length >= MAX_VAULT_ENTRIES) {
             return jsonError(409, "vault_entry_limit_reached");
           }
@@ -1021,6 +1119,7 @@ export class UserCredentialBroker extends DurableObject<BrokerEnv> {
           ]);
           await this.#state.storage.transaction(async (transaction) => {
             await transaction.put(STATE_KEY, { envelope: stateEnvelope } satisfies StoredRow);
+            if (operationKey) await transaction.put(operationKey, generatedId);
             await transaction.put(vaultEntryStorageKey(generatedId), {
               envelope: entryEnvelope,
             } satisfies StoredRow);
@@ -1114,6 +1213,18 @@ export class UserCredentialBroker extends DurableObject<BrokerEnv> {
           } else {
             const parsed = validateSshIdentity(body);
             if (!parsed) return jsonError(400, "invalid_ssh_identity");
+            const retained = this.#credentials.ssh?.[sshIdentity];
+            if (retained) {
+              // HTTP dispatch holds #exclusive across validation and persistence.
+              // Reconciliation of the exact import is a no-op; a reference can
+              // never rotate to a different key or target through PUT.
+              if (retained.privateKey === parsed.privateKey
+                && retained.hostname === parsed.hostname && retained.port === parsed.port
+                && retained.username === parsed.username && retained.hostKeySha256 === parsed.hostKeySha256) {
+                return new Response(null, { status: 204, headers: noStoreHeaders() });
+              }
+              return jsonError(409, "ssh_identity_already_exists");
+            }
             try { identity = { ...parsed, publicKey: await sshPublicKey(parsed.privateKey) }; }
             catch { return jsonError(400, "invalid_ssh_identity"); }
           }
@@ -1551,6 +1662,131 @@ export class UserCredentialBroker extends DurableObject<BrokerEnv> {
     } satisfies SponsoredConnectionState);
   }
 
+  #publicWallet() {
+    const root = this.#credentials.wallet;
+    if (!root) return undefined;
+    if (this.#credentials.linkedWallet) return publicLinkedWallet(this.#credentials.linkedWallet, root.address);
+    return { ...publicRootWallet(root), mode: "internal" as const, original_address: root.address };
+  }
+
+  async #spendingWalletProvider() {
+    if (this.#credentials.linkedWallet) return linkedWalletProvider(this.#credentials.linkedWallet);
+    if (!this.#credentials.wallet) throw new BrokerFailure(404, "wallet_not_configured");
+    return rootWalletProvider(this.#credentials.wallet);
+  }
+
+  async #startWalletLink(request: Request): Promise<Response> {
+    let started: WalletLink | undefined;
+    const initial = await this.#exclusive(async () => {
+      await this.#ready;
+      try {
+        if (request.method !== "POST") return jsonError(405, "method_not_allowed");
+        if (!isJsonContentType(request.headers.get("content-type"))) return jsonError(415, "invalid_content_type");
+        const body = await readJson(request, 1_024);
+        if (!isRecord(body) || !hasExactKeys(body, ["operation_id"]) || typeof body.operation_id !== "string"
+          || !WALLET_OPERATION.test(body.operation_id)) return jsonError(400, "invalid_wallet_link_request");
+        const id = body.operation_id;
+        const old = this.#credentials.walletLinks?.[id];
+        if (old) return json(publicWalletLink(old), 200);
+        if (this.#credentials.walletUnlinks?.[id]) return jsonError(409, "wallet_operation_conflict");
+        if (this.#credentials.linkedWallet) return jsonError(409, "wallet_already_linked");
+        if (Object.values(this.#credentials.walletLinks ?? {}).some(link => link.status === "pending")) {
+          return jsonError(409, "wallet_link_pending");
+        }
+        if (Object.keys(this.#credentials.walletLinks ?? {}).length >= 100) return jsonError(409, "wallet_link_operation_limit");
+        await this.#ensureRootWallet();
+        started = newWalletLink(id);
+        this.#credentials.walletLinks = { ...this.#credentials.walletLinks, [id]: started };
+        await this.#persist();
+        return undefined;
+      } catch (error) {
+        const problem = await this.#recoverFailedOperation(error);
+        return jsonError(problem.status, problem.code);
+      }
+    }, { operation: "http" });
+    if (initial) return initial;
+    const link = started!;
+    const controller = new AbortController();
+    this.#liveWalletLink = { operationId: link.operationId, controller };
+    let surfaced!: () => void;
+    const prompt = new Promise<void>(resolve => { surfaced = resolve; });
+    const work = pairWallet(link, controller.signal, async value => {
+      await this.#exclusive(async () => {
+        const current = this.#credentials.walletLinks?.[link.operationId];
+        if (current?.status !== "pending" || controller.signal.aborted) throw new Error("wallet_link_cancelled");
+        Object.assign(current, value);
+        await this.#persist();
+      }, { operation: "http" });
+      surfaced();
+    }).then(wallet => this.#exclusive(async () => {
+      const current = this.#credentials.walletLinks?.[link.operationId];
+      if (current?.status !== "pending" || controller.signal.aborted) return;
+      if (current.expiresAt <= Date.now()) current.status = "expired";
+      else {
+        verifiedAuthorization(wallet);
+        this.#credentials.linkedWallet = wallet;
+        current.status = "linked";
+      }
+      delete current.privateKey;
+      try { await this.#persist(); }
+      catch (error) { await this.#recoverFailedOperation(error); throw error; }
+    }, { operation: "http" })).catch(() => this.#exclusive(async () => {
+      const current = this.#credentials.walletLinks?.[link.operationId];
+      if (current?.status !== "pending") return;
+      current.status = current.expiresAt <= Date.now() ? "expired" : "rejected";
+      delete current.privateKey;
+      try { await this.#persist(); }
+      catch (error) { await this.#recoverFailedOperation(error); }
+    }, { operation: "http" })).finally(() => {
+      if (this.#liveWalletLink?.operationId === link.operationId) this.#liveWalletLink = undefined;
+      surfaced();
+    });
+    this.#state.waitUntil(work);
+    await prompt;
+    return this.#exclusive(async () => json(publicWalletLink(this.#credentials.walletLinks![link.operationId]!), 200), { operation: "http" });
+  }
+
+  async #walletLinkAction(request: Request, path: string): Promise<Response> {
+    if (request.method !== "POST") return jsonError(405, "method_not_allowed");
+    if (!isJsonContentType(request.headers.get("content-type"))) return jsonError(415, "invalid_content_type");
+    const body = await readJson(request, 1_024);
+    const unlink = path === "/v1/wallet/unlink";
+    if (!isRecord(body) || !hasExactKeys(body, unlink ? ["operation_id", "expected_address"] : ["operation_id"])
+      || typeof body.operation_id !== "string" || !WALLET_OPERATION.test(body.operation_id)) return jsonError(400, "invalid_wallet_link_request");
+    const id = body.operation_id;
+    if (unlink) {
+      if (typeof body.expected_address !== "string" || !ROOT_WALLET_ADDRESS.test(body.expected_address)) return jsonError(400, "invalid_wallet_link_request");
+      const address = body.expected_address.toLowerCase();
+      const old = this.#credentials.walletUnlinks?.[id];
+      if (old && old.address !== address) return jsonError(409, "wallet_operation_conflict");
+      if (this.#credentials.walletLinks?.[id]) return jsonError(409, "wallet_operation_conflict");
+      if (!old) {
+        if (this.#credentials.linkedWallet?.address.toLowerCase() !== address) return jsonError(409, "wallet_address_mismatch");
+        if (Object.keys(this.#credentials.walletUnlinks ?? {}).length >= 100) return jsonError(409, "wallet_link_operation_limit");
+        this.#credentials.walletUnlinks = { ...this.#credentials.walletUnlinks, [id]: { address } };
+        delete this.#credentials.linkedWallet;
+        await this.#persist();
+      }
+      return json({ operation_id: id, status: "unlinked", address, onchain_revoked: false, wallet: this.#publicWallet() }, 200);
+    }
+    let current = this.#credentials.walletLinks?.[id];
+    if (!current && path.endsWith("/cancel")) {
+      if (this.#credentials.walletUnlinks?.[id]) return jsonError(409, "wallet_operation_conflict");
+      if (Object.keys(this.#credentials.walletLinks ?? {}).length >= 100) return jsonError(409, "wallet_link_operation_limit");
+      current = { operationId: id, status: "cancelled", expiresAt: Date.now() };
+      this.#credentials.walletLinks = { ...this.#credentials.walletLinks, [id]: current };
+      await this.#persist();
+    }
+    if (!current) return jsonError(404, "wallet_link_not_found");
+    if (current.status === "pending" && (path.endsWith("/cancel") || current.expiresAt <= Date.now())) {
+      current.status = path.endsWith("/cancel") ? "cancelled" : "expired";
+      delete current.privateKey;
+      await this.#persist();
+      if (this.#liveWalletLink?.operationId === id) this.#liveWalletLink.controller.abort();
+    }
+    return json(publicWalletLink(current), 200);
+  }
+
   async #ensureRootWallet(): Promise<RootWallet> {
     const current = this.#credentials.wallet;
     if (current) return current;
@@ -1975,6 +2211,13 @@ export class UserCredentialBroker extends DurableObject<BrokerEnv> {
   }> {
     let changed = false;
     const legacy: VaultEntry[] = [];
+    for (const link of Object.values(restored.walletLinks ?? {})) {
+      if (link.status === "pending") {
+        link.status = link.expiresAt <= Date.now() ? "expired" : "interrupted";
+        delete link.privateKey;
+        changed = true;
+      }
+    }
     if (restored.wallet !== undefined && !validStoredRootWallet(restored.wallet)) {
       delete restored.wallet;
       changed = true;
@@ -2442,7 +2685,7 @@ export function validateVaultEntryPayload(
     const material = validateTotpEnrollment(value);
     return name && material ? { kind, name, ...material } : undefined;
   }
-  const expected = vaultPayloadKeys(kind, Object.prototype.hasOwnProperty.call(value, "address_line_2"), Object.prototype.hasOwnProperty.call(value, "browser_origin"));
+  const expected = vaultPayloadKeys(kind, Object.prototype.hasOwnProperty.call(value, "address_line_2"), Object.prototype.hasOwnProperty.call(value, "browser_origin"), Object.prototype.hasOwnProperty.call(value, "cvv"));
   const keys = Object.keys(value);
   if (keys.length !== expected.length || keys.some((key) => !expected.includes(key))) {
     return undefined;
@@ -2469,14 +2712,14 @@ export function validateVaultEntryPayload(
     const cvv = typeof value.cvv === "string" && /^[0-9]{3,4}$/.test(value.cvv)
       ? value.cvv : undefined;
     const billingZip = vaultText(value.billing_zip, 32);
-    return cardNumber && expiryMonth && expiryYear && cvv && billingZip
+    return cardNumber && expiryMonth && expiryYear && (value.cvv === undefined || cvv) && billingZip
       ? {
           kind,
           name,
           card_number: cardNumber,
           expiry_month: expiryMonth,
           expiry_year: expiryYear,
-          cvv,
+          ...(cvv ? {cvv} : {}),
           billing_zip: billingZip,
         }
       : undefined;
@@ -2506,13 +2749,13 @@ export function validateVaultEntryPayload(
   return phoneNumber ? { kind, name, phone_number: phoneNumber } : undefined;
 }
 
-function vaultPayloadKeys(kind: VaultKind, hasAddressLine2 = false, hasBrowserOrigin = false): readonly string[] {
+function vaultPayloadKeys(kind: VaultKind, hasAddressLine2 = false, hasBrowserOrigin = false, hasCvv = true): readonly string[] {
   switch (kind) {
     case "totp": return ["name", "seed", "issuer", "account", "origin", "algorithm", "digits", "period"];
     case "api_key": return ["name", "api_key"];
     case "login": return ["name", "username", "password", ...(hasBrowserOrigin ? ["browser_origin"] : [])];
     case "card": return [
-      "name", "card_number", "expiry_month", "expiry_year", "cvv", "billing_zip",
+      "name", "card_number", "expiry_month", "expiry_year", ...(hasCvv ? ["cvv"] : []), "billing_zip",
     ];
     case "address": return [
       "name", "address_line_1",
@@ -2532,6 +2775,7 @@ function validateStoredVaultEntry(id: string, value: unknown): VaultEntry | unde
     kind,
     Object.prototype.hasOwnProperty.call(value, "address_line_2"),
     Object.prototype.hasOwnProperty.call(value, "browser_origin"),
+    Object.prototype.hasOwnProperty.call(value, "cvv"),
   );
   const payload = Object.fromEntries(
     payloadKeys.map((key) => [key, value[key]]),

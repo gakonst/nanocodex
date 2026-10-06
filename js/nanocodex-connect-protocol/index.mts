@@ -124,3 +124,23 @@ function validCallbackText(value: unknown): value is string {
 function isRecord(value: unknown): value is UnknownRecord {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
+
+/** Public navigation destinations. These links never authenticate or authorize their visitor. */
+export function accountNavigationLinks(origin: string, query: Iterable<readonly [string, string]>) {
+  const values = new Map<string, string>();
+  const providers = ["cloudflare", "github", "google", "slack", "x", "spotify", "soundcloud", "link", "whatsapp", "claude", "chatgpt", "openai", "mcp"];
+  const kinds = ["login", "api_key", "card", "address", "phone", "totp"];
+  for (const [key, value] of query) {
+    if (values.has(key) || (key !== "connect" && key !== "add")) return undefined;
+    values.set(key, value);
+  }
+  const connect = values.get("connect");
+  const add = values.get("add");
+  if ((connect !== undefined && !providers.includes(connect)) || (add !== undefined && !kinds.includes(add))) return undefined;
+  return {
+    connections: `${origin}/connect${connect === undefined ? "" : `?connect=${connect}`}`,
+    vault: `${origin}/connect/vault${add === undefined ? "" : `?add=${add}`}`,
+    wallet: `${origin}/connect/wallet`,
+    access: `${origin}/connect/access`,
+  };
+}

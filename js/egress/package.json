@@ -8,7 +8,7 @@
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "test": "npm run prepare:whatsapp && vitest run && node --experimental-strip-types --test test/mercator-payment.node.test.mjs test/chatgpt-failover-journey.test.mjs && npm run test:whatsapp && npm run test:vault-requests && npm run test:phone-service",
+    "test": "npm run prepare:whatsapp && vitest run && node --experimental-strip-types --test test/wallet-link-journey.node.test.mjs test/mercator-payment.node.test.mjs test/chatgpt-failover-journey.test.mjs test/session-model-journey.test.mjs && npm run test:whatsapp && npm run test:vault-requests && npm run test:phone-service",
     "dry-run:agent": "wrangler deploy --dry-run --config wrangler.agent.jsonc",
     "deploy:agent": "wrangler deploy --config wrangler.agent.jsonc",
     "dry-run:broker": "wrangler deploy --dry-run --config wrangler.broker.jsonc",
@@ -18,24 +18,27 @@
     "test:whatsapp": "node --test test/whatsapp-account.node.test.mjs test/whatsapp-broker.node.test.mjs && npm run test:whatsapp-runtime",
     "test:vault-browser": "node test/vault-browser-journey.mjs",
     "test:vault-requests": "node --test test/vault-signing-journey.node.test.mjs test/vault-totp-journey.node.test.mjs",
+    "test:wallet-link": "npm run prepare:whatsapp && node --test test/wallet-link-journey.node.test.mjs",
     "test:phone-service": "node --test test/phone-service-journey.node.test.mjs"
   },
   "dependencies": {
-    "accounts": "0.17.0",
+    "@noble/hashes": "2.4.0",
+    "@whiskeysockets/baileys": "7.0.0-rc14",
+    "accounts": "https://pkg.pr.new/tempoxyz/accounts@232cc59cb4f8b4c8daf2113d0881b161e76a69d3",
     "mppx": "0.11.0",
     "nanocodex": "workspace:*",
-    "viem": "^2.54.0",
-    "@whiskeysockets/baileys": "7.0.0-rc14",
+    "ox": "0.14.45",
+    "viem": "2.57.2",
     "whatsapp-rust-bridge": "0.5.4"
   },
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "^0.22.0",
     "@cloudflare/workers-types": "^5.20260730.1",
+    "esbuild": "0.28.2",
+    "miniflare": "5.20260828.0-alpha",
     "typescript": "5.9.3",
     "vitest": "^4.0.18",
     "wrangler": "4.127.1",
-    "esbuild": "0.28.2",
-    "miniflare": "5.20260828.0-alpha",
     "ws": "8.21.0"
   }
 }

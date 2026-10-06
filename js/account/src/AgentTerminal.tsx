@@ -260,7 +260,6 @@ export const ManagedAgentTerminal = memo(function ManagedAgentTerminal({
     reasoningMode: wireSettings.reasoning_mode, fastMode: wireSettings.fast_mode,
   } : terminalDefaultSettings(source);
   const settingsReady = stateQuery.isSuccess && Boolean(wireSettings);
-  const textOnly = settingsReady && settings.model.startsWith("claude-");
   const [locallyStarted, setLocallyStarted] = useState(false);
   const conversationStarted = locallyStarted || stateQuery.data?.accepted_turns !== 0;
   const settingsMutation = useMutation({
@@ -349,7 +348,7 @@ export const ManagedAgentTerminal = memo(function ManagedAgentTerminal({
       onStateChange={onStateChange}
       retryAgent={retryAgent}
       renderTool={(tool, { submit }) => <><SecureInputCard key={`secure:${tool.callId}`} tool={tool} agentId={agentId} onReceipt={submit} /><VaultIntakeCard key={tool.callId} tool={tool} onReceipt={submit} /></>}
-      voice={voiceEnabled && settingsReady && !textOnly}
+      voice={voiceEnabled && settingsReady}
       welcome={settingsReady && !conversationStarted ? "# What should we work on?" : undefined}
       composerPlaceholder="Ask Nanocodex"
       controls={({ agentReady }) => (
@@ -362,7 +361,6 @@ export const ManagedAgentTerminal = memo(function ManagedAgentTerminal({
             onModel={(model, normalized) => updateManagedSettings({ model, ...normalized })}
             onThinking={(thinking) => updateManagedSettings({ thinking })}
           />
-          {textOnly ? <span role="status" className="managed-input-capability">Claude: text only · no attachments or voice</span> : null}
           <ManagedAgentSchedules agent={managed} />
           <RemoteScreens key={managed.id} />
         </>

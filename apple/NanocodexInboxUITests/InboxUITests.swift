@@ -520,6 +520,195 @@ final class InboxUITests: XCTestCase {
         XCTAssertFalse(app.secureTextFields["secure-input-field:card"].exists)
     }
 
+    // Production account decoding and navigation with synthetic remote responses.
+    // Every page fails once, so retries must preserve existing folders/text and
+    // repeat the failed cursor/line offset rather than skipping or duplicating it.
+    func testMemoriesExpandReadAndRecoverFailedPages() {
+        let app = launchMemoryJourney(retry: true)
+        let rootRetry = app.buttons["memory-retry-list-"]
+        XCTAssertTrue(rootRetry.waitForExistence(timeout: 10))
+        rootRetry.tap()
+        let memory = app.buttons["memory-folder-memory"]
+        XCTAssertTrue(memory.waitForExistence(timeout: 10))
+        XCTAssertFalse(app.buttons["memory-folder-memory/projects"].exists)
+        memory.tap()
+        let folderRetry = app.buttons["memory-retry-list-memory"]
+        XCTAssertTrue(folderRetry.waitForExistence(timeout: 5))
+        folderRetry.tap()
+        let projects = app.buttons["memory-folder-memory/projects"]
+        XCTAssertTrue(projects.waitForExistence(timeout: 5))
+        memory.tap()
+        XCTAssertFalse(projects.exists, "Collapsing a folder removes its descendants")
+        memory.tap()
+        XCTAssertTrue(projects.waitForExistence(timeout: 5))
+        projects.tap()
+        let nestedRetry = app.buttons["memory-retry-list-memory/projects"]
+        XCTAssertTrue(nestedRetry.waitForExistence(timeout: 5))
+        nestedRetry.tap()
+        let file = app.buttons["memory-file-memory/projects/garden.md"]
+        XCTAssertTrue(file.waitForExistence(timeout: 5))
+        capture(app, "memories-expanded-nested-tree")
+        file.tap()
+        let retryRead = app.buttons["memory-retry-read"]
+        XCTAssertTrue(retryRead.waitForExistence(timeout: 5))
+        retryRead.tap()
+        expectMemoryContent(app, containing: "First page: plant native flowers.")
+        let more = app.buttons["memory-read-more"]
+        XCTAssertTrue(more.waitForExistence(timeout: 5))
+        more.tap()
+        XCTAssertTrue(retryRead.waitForExistence(timeout: 5))
+        expectMemoryContent(app, containing: "First page: plant native flowers.")
+        capture(app, "memories-reader-continuation-error-keeps-text")
+        retryRead.tap()
+        expectMemoryContent(app, containing: "Final page: water on Tuesday.")
+        let text = app.staticTexts["memory-content"].label
+        XCTAssertTrue(text.contains("First page: plant native flowers."))
+        XCTAssertEqual(text.components(separatedBy: "First page:").count - 1, 1)
+        XCTAssertEqual(text.components(separatedBy: "Final page:").count - 1, 1)
+        XCTAssertFalse(more.exists, "The completed file must not offer another page")
+        capture(app, "memories-reader-complete-after-retry")
+        app.navigationBars.buttons.element(boundBy: 0).tap()
+        XCTAssertTrue(file.waitForExistence(timeout: 5))
+        let nextFolderPage = app.buttons["memory-load-more-memory"]
+        revealMemoryControl(nextFolderPage, in: app)
+        XCTAssertTrue(nextFolderPage.waitForExistence(timeout: 5))
+        nextFolderPage.tap()
+        XCTAssertTrue(folderRetry.waitForExistence(timeout: 5))
+        XCTAssertTrue(projects.exists, "A failed next page must preserve loaded entries")
+        folderRetry.tap()
+        let daily = app.buttons["memory-file-memory/2026-10-06.md"]
+        revealMemoryControl(daily, in: app)
+        XCTAssertTrue(daily.waitForExistence(timeout: 5))
+        XCTAssertEqual(app.buttons.matching(identifier: "memory-folder-memory/projects").count, 1)
+        XCTAssertFalse(nextFolderPage.exists)
+        capture(app, "memories-folder-page-recovered")
+    }
+
+    func testMemoriesRootPaginationSharedFilesAndEmptyFolder() {
+        let app = launchMemoryJourney(retry: true)
+        let rootRetry = app.buttons["memory-retry-list-"]
+        XCTAssertTrue(rootRetry.waitForExistence(timeout: 10))
+        rootRetry.tap()
+        let empty = app.buttons["memory-folder-empty"]
+        XCTAssertTrue(empty.waitForExistence(timeout: 5))
+        empty.tap()
+        let emptyRetry = app.buttons["memory-retry-list-empty"]
+        XCTAssertTrue(emptyRetry.waitForExistence(timeout: 5))
+        emptyRetry.tap()
+        XCTAssertTrue(app.staticTexts["This folder is empty."].waitForExistence(timeout: 5))
+        empty.tap()
+        let more = app.buttons["memory-load-more-"]
+        XCTAssertTrue(more.waitForExistence(timeout: 5))
+        XCTAssertFalse(app.buttons["memory-folder-team"].exists)
+        more.tap()
+        XCTAssertTrue(rootRetry.waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["memory-file-MEMORY.md"].exists)
+        rootRetry.tap()
+        let team = app.buttons["memory-folder-team"]
+        XCTAssertTrue(team.waitForExistence(timeout: 5))
+        XCTAssertFalse(more.exists)
+        XCTAssertEqual(app.buttons.matching(identifier: "memory-file-MEMORY.md").count, 1)
+        team.tap()
+        let teamRetry = app.buttons["memory-retry-list-team"]
+        XCTAssertTrue(teamRetry.waitForExistence(timeout: 5))
+        teamRetry.tap()
+        let shared = app.buttons["memory-file-team/MEMORY.md"]
+        XCTAssertTrue(shared.waitForExistence(timeout: 5))
+        shared.tap()
+        let retryRead = app.buttons["memory-retry-read"]
+        XCTAssertTrue(retryRead.waitForExistence(timeout: 5))
+        retryRead.tap()
+        expectMemoryContent(app, containing: "Shared memory: the garden opens on Friday.")
+        XCTAssertFalse(app.staticTexts["memory-content"].label.contains("Personal memory:"))
+        XCTAssertFalse(app.buttons["memory-read-more"].exists)
+        capture(app, "memories-shared-file-reader")
+        app.navigationBars.buttons.element(boundBy: 0).tap()
+        let personal = app.buttons["memory-file-MEMORY.md"]
+        XCTAssertTrue(personal.waitForExistence(timeout: 5))
+        personal.tap()
+        XCTAssertTrue(retryRead.waitForExistence(timeout: 5))
+        retryRead.tap()
+        expectMemoryContent(app, containing: "Personal memory: prefers morning walks.")
+        XCTAssertFalse(app.staticTexts["memory-content"].label.contains("Shared memory:"))
+        app.buttons["main-tab-chat"].tap()
+        XCTAssertTrue(app.buttons["conversation-drawer-open"].waitForExistence(timeout: 15))
+        app.buttons["main-tab-memories"].tap()
+        XCTAssertTrue(app.buttons["memory-folder-memory"].waitForExistence(timeout: 10),
+                      "Switching back to Memories must leave the pushed reader")
+        capture(app, "memories-return-to-tree")
+    }
+
+    func testMemoriesEmptyLibraryAndEmptyFile() {
+        let app = launchMemoryJourney(retry: false, environment: ["NANOCODEX_MEMORY_EMPTY_ROOT": "1"])
+        XCTAssertTrue(app.staticTexts["No memories yet"].waitForExistence(timeout: 10))
+        XCTAssertFalse(app.buttons["memory-load-more-"].exists)
+        XCTAssertFalse(app.buttons["memory-retry-list-"].exists)
+        capture(app, "memories-empty-library")
+        app.terminate()
+        app.launchEnvironment["NANOCODEX_STARTUP_PROFILE"] = UUID().uuidString
+        app.launchEnvironment["NANOCODEX_MEMORY_EMPTY_ROOT"] = "0"
+        app.launchEnvironment["NANOCODEX_MEMORY_EMPTY_FILE"] = "1"
+        app.launch()
+        XCTAssertTrue(app.buttons["main-tab-memories"].waitForExistence(timeout: 25))
+        app.buttons["main-tab-memories"].tap()
+        let file = app.buttons["memory-file-MEMORY.md"]
+        XCTAssertTrue(file.waitForExistence(timeout: 10))
+        file.tap()
+        XCTAssertTrue(app.staticTexts["This file is empty."].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.buttons["memory-read-more"].exists)
+        XCTAssertFalse(app.buttons["memory-retry-read"].exists)
+        capture(app, "memories-empty-file")
+    }
+
+    func testMemoriesByteLimitedReadUsesSmallerWindowBeforeContinuing() {
+        let app = launchMemoryJourney(retry: false,
+                                      environment: ["NANOCODEX_MEMORY_BYTE_LIMIT_FIXTURE": "1"])
+        let file = app.buttons["memory-file-MEMORY.md"]
+        XCTAssertTrue(file.waitForExistence(timeout: 10))
+        file.tap()
+        expectMemoryContent(app, containing: "Smaller window: all lines remain in order.")
+        XCTAssertFalse(app.staticTexts["memory-content"].label.contains("omitted-window-tail"),
+                       "A byte-truncated head/tail response must not become the displayed file")
+        let more = app.buttons["memory-read-more"]
+        XCTAssertTrue(more.waitForExistence(timeout: 5))
+        more.tap()
+        expectMemoryContent(app, containing: "After the smaller window: no skipped lines.")
+        let text = app.staticTexts["memory-content"].label
+        XCTAssertEqual(text.components(separatedBy: "Smaller window:").count - 1, 1)
+        XCTAssertFalse(more.exists)
+        capture(app, "memories-byte-limited-window-recovered")
+    }
+
+    private func revealMemoryControl(_ control: XCUIElement, in app: XCUIApplication) {
+        let tree = app.descendants(matching: .any)["memories-tree"].firstMatch
+        for _ in 0..<5 {
+            if control.exists && control.isHittable { return }
+            tree.swipeUp()
+        }
+        XCTAssertTrue(control.isHittable, "The directory control must remain reachable")
+    }
+
+    private func launchMemoryJourney(retry: Bool, environment: [String: String] = [:]) -> XCUIApplication {
+        let app = XCUIApplication()
+        app.launchEnvironment = ["NANOCODEX_STARTUP_FIXTURE": "1",
+                                 "NANOCODEX_STARTUP_PROFILE": UUID().uuidString,
+                                 "NANOCODEX_MEMORY_FIXTURE": "1",
+                                 "NANOCODEX_MEMORY_RETRY_FIXTURE": retry ? "1" : "0"]
+        app.launchEnvironment.merge(environment) { _, supplied in supplied }
+        app.launch()
+        let tab = app.buttons["main-tab-memories"]
+        XCTAssertTrue(tab.waitForExistence(timeout: 25))
+        tab.tap()
+        return app
+    }
+
+    private func expectMemoryContent(_ app: XCUIApplication, containing value: String) {
+        let content = app.staticTexts["memory-content"]
+        let expected = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "exists == true AND label CONTAINS %@", value), object: content)
+        XCTAssertEqual(XCTWaiter.wait(for: [expected], timeout: 5), .completed, app.debugDescription)
+    }
+
     // CRM failure scenarios: failed fetch must be retryable; filters must not retain
     // old rows; profile facts/notes must render; relationships must open their target.
     func testCRMBrowseAndRelationshipNavigation() {
@@ -1433,6 +1622,72 @@ final class InboxUITests: XCTestCase {
         }
     }
 
+    func testThreadScreenDockContainsRowsAcrossAppearanceAndSelection() throws {
+        guard ProcessInfo.processInfo.environment["NANOCODEX_SCREEN_FIXTURE"] == "1" else {
+            throw XCTSkip("Run fixtures/remote-screen.mjs on loopback port 18965")
+        }
+        let originalAppearance = XCUIDevice.shared.appearance
+        addTeardownBlock { XCUIDevice.shared.appearance = originalAppearance }
+        for appearance in ["light", "dark"] {
+            XCUIDevice.shared.appearance = appearance == "dark" ? .dark : .light
+            let app = launch(["NANOCODEX_DEMO_SCREENS": "1", "NANOCODEX_DEMO_APPEARANCE": appearance],
+                             arguments: ["-UIPreferredContentSizeCategoryName", "UICTContentSizeCategoryXXXL"])
+            selectInbox(app)
+            let draft = "Keep my draft while choosing a desktop"
+            composer(app).tap(); composer(app).typeText(draft)
+            navigationAction(app, "conversation-remote-screens").tap()
+            let panel = app.descendants(matching: .any)["thread-screen-panel"].firstMatch
+            XCTAssertTrue(panel.waitForExistence(timeout: 5))
+            let desktop = app.buttons["thread-screen:cf:fixture:desktop"]
+            XCTAssertTrue(desktop.waitForExistence(timeout: 10))
+
+            func requireContainedRow(_ id: String) {
+                let row = app.buttons["thread-screen:cf:fixture:" + id]
+                let list = app.scrollViews["thread-screen-devices"]
+                XCTAssertTrue(list.exists)
+                for _ in 0..<4 {
+                    if row.exists && row.isHittable && panel.frame.contains(row.frame) { break }
+                    list.swipeUp()
+                }
+                XCTAssertTrue(row.isHittable, "The entire screen row must be reachable")
+                XCTAssertFalse(row.frame.isEmpty)
+                XCTAssertTrue(panel.frame.contains(row.frame), "Rows must stay inside the dock")
+                XCTAssertGreaterThanOrEqual(row.frame.height, 44)
+                XCTAssertTrue(row.label.contains("Synthetic research workspace with a long desktop name that must stay inside its screen row"),
+                              "The complete device name must remain available to VoiceOver when the visible line truncates")
+                XCTAssertTrue(app.frame.contains(panel.frame), "The dock must fit on screen at large text sizes")
+                XCTAssertTrue(composer(app).isHittable, "The dock must leave the draft usable")
+                capture(app, "screen-dock-contained-" + appearance + "-" + id)
+            }
+
+            requireContainedRow("desktop")
+            desktop.tap()
+            XCTAssertTrue(app.staticTexts["Watching"].waitForExistence(timeout: 15))
+            let canvas = app.descendants(matching: .any)["thread-screen-canvas"].firstMatch
+            XCTAssertTrue(canvas.exists)
+            XCTAssertTrue(panel.frame.contains(canvas.frame))
+            XCTAssertTrue(app.staticTexts["View only"].exists)
+            XCTAssertEqual(composer(app).value as? String, draft)
+            capture(app, "screen-dock-selected-" + appearance)
+
+            app.buttons["thread-screen-options"].tap()
+            app.buttons["Change desktop"].tap()
+            requireContainedRow("gamepad")
+            app.buttons["thread-screen:cf:fixture:gamepad"].tap()
+            XCTAssertTrue(app.staticTexts["Watching"].waitForExistence(timeout: 15))
+            app.buttons["thread-screen-close"].tap()
+            gone(panel)
+            XCTAssertEqual(composer(app).value as? String, draft)
+            navigationAction(app, "conversation-remote-screens").tap()
+            XCTAssertTrue(panel.waitForExistence(timeout: 5))
+            XCTAssertTrue(app.staticTexts["Watching"].waitForExistence(timeout: 15), "Reopening must recover the selected screen")
+            XCTAssertEqual(composer(app).value as? String, draft)
+            capture(app, "screen-dock-reopened-" + appearance)
+            app.buttons["thread-screen-close"].tap()
+            app.terminate()
+        }
+    }
+
     func testThreadScreenDockPreservesDraftAndThreadNavigation() {
         let app = launch(["NANOCODEX_DEMO_PROFILE": UUID().uuidString,
                           "NANOCODEX_DEMO_SCREENS": "1"])
@@ -1442,7 +1697,7 @@ final class InboxUITests: XCTestCase {
         let panel = app.descendants(matching: .any)["thread-screen-panel"].firstMatch
         XCTAssertTrue(panel.waitForExistence(timeout: 5))
         if ProcessInfo.processInfo.environment["NANOCODEX_SCREEN_FIXTURE"] == "1" {
-            let desktop = app.buttons["thread-screen:fixture:desktop"]
+            let desktop = app.buttons["thread-screen:cf:fixture:desktop"]
             XCTAssertTrue(desktop.waitForExistence(timeout: 10))
             desktop.tap()
             XCTAssertTrue(app.staticTexts["Watching"].waitForExistence(timeout: 15))
@@ -1481,7 +1736,7 @@ final class InboxUITests: XCTestCase {
         let panel = app.descendants(matching: .any)["thread-screen-panel"].firstMatch
         XCTAssertTrue(panel.waitForExistence(timeout: 5))
         XCTAssertFalse(latest.exists)
-        let desktop = app.buttons["thread-screen:fixture:desktop"]
+        let desktop = app.buttons["thread-screen:cf:fixture:desktop"]
         XCTAssertTrue(desktop.waitForExistence(timeout: 5))
         desktop.tap()
         // frames-v1 reports Watching only after decoding its first JPEG frame.
@@ -1560,6 +1815,132 @@ final class InboxUITests: XCTestCase {
         XCTAssertEqual(composer(app).value as? String, "Keep my edge swipe draft")
     }
 
+    func testAttachmentLibrarySheetPreservesDraft() {
+        let originalAppearance = XCUIDevice.shared.appearance
+        addTeardownBlock { XCUIDevice.shared.appearance = originalAppearance }
+        for appearance in ["light", "dark"] {
+            XCUIDevice.shared.appearance = appearance == "dark" ? .dark : .light
+            let app = launch(["NANOCODEX_DEMO_APPEARANCE": appearance,
+                              "NANOCODEX_DEMO_COMPOSER_PHOTOS": "1"])
+            selectInbox(app)
+            let draft = "Keep this draft when the attachment library is dismissed"
+            composer(app).tap(); composer(app).typeText(draft)
+            let removals = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "remove-attachment-"))
+            XCTAssertTrue(removals.firstMatch.waitForExistence(timeout: 5))
+            let attachmentIDs = removals.allElementsBoundByIndex.map(\.identifier)
+            let sheet = app.descendants(matching: .any)["attachment-library-sheet"].firstMatch
+            for cycle in 1...2 {
+                app.buttons["add-attachments"].tap()
+                XCTAssertTrue(sheet.waitForExistence(timeout: 5))
+                XCTAssertTrue(app.staticTexts["Library"].exists)
+                XCTAssertTrue(app.scrollViews["recent-photos"].exists)
+                for identifier in ["choose-camera", "choose-photos", "choose-files", "choose-videos"] {
+                    let action = app.buttons[identifier]
+                    XCTAssertTrue(action.isHittable, "Library action must be reachable without scrolling: " + identifier)
+                    XCTAssertTrue(app.frame.contains(action.frame), "Library action must fit on screen: " + identifier)
+                }
+                capture(app, "attachment-library-" + appearance + "-" + String(cycle))
+                dismissAttachmentLibrary(app)
+                XCTAssertEqual(composer(app).value as? String, draft)
+                XCTAssertEqual(removals.allElementsBoundByIndex.map(\.identifier), attachmentIDs,
+                               "Opening and dismissing the library must preserve existing photo attachments")
+            }
+            capture(app, "attachment-library-preserved-draft-" + appearance)
+            app.terminate()
+        }
+    }
+
+    func testAttachmentLibraryRecentPhotosMultiSelection() throws {
+        #if targetEnvironment(simulator)
+        guard ProcessInfo.processInfo.environment["NANOCODEX_SEEDED_RECENT_PHOTOS"] == "1" else {
+            throw XCTSkip("Requires an isolated Simulator seeded with two synthetic photos via simctl addmedia and Photos access granted to xyz.paradigm.centaur.")
+        }
+        continueAfterFailure = false
+        let app = launch(["NANOCODEX_DEMO_COMPOSER_PHOTOS": "1"])
+        defer { app.terminate() }
+        selectInbox(app)
+        let draft = "Keep my draft while selecting recent photos"
+        composer(app).tap(); composer(app).typeText(draft)
+        let removals = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "remove-attachment-"))
+        XCTAssertTrue(removals.firstMatch.waitForExistence(timeout: 5))
+        let attachmentIDs = removals.allElementsBoundByIndex.map(\.identifier)
+        let sheet = app.descendants(matching: .any)["attachment-library-sheet"].firstMatch
+        let addSelected = app.buttons["add-selected-attachments"]
+        app.buttons["add-attachments"].tap()
+        XCTAssertTrue(sheet.waitForExistence(timeout: 5))
+        let recents = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "recent-photo-"))
+        XCTAssertTrue(recents.element(boundBy: 1).waitForExistence(timeout: 10),
+                      "Seed two synthetic images and grant Photos access before running this journey.")
+        let first = app.buttons[recents.element(boundBy: 0).identifier]
+        let second = app.buttons[recents.element(boundBy: 1).identifier]
+
+        func assertSelection(_ firstSelected: Bool, _ secondSelected: Bool, _ evidence: String) {
+            XCTAssertTrue(sheet.exists, "Toggling a recent photo must keep the library open")
+            XCTAssertEqual(first.value as? String, firstSelected ? "Selected" : "Not selected")
+            XCTAssertEqual(second.value as? String, secondSelected ? "Selected" : "Not selected")
+            XCTAssertEqual(first.isSelected, firstSelected)
+            XCTAssertEqual(second.isSelected, secondSelected)
+            let count = (firstSelected ? 1 : 0) + (secondSelected ? 1 : 0)
+            if count == 0 {
+                XCTAssertFalse(addSelected.exists, "No confirmation action without a selection")
+            } else {
+                XCTAssertTrue(addSelected.isHittable)
+                XCTAssertTrue(addSelected.isEnabled)
+                XCTAssertEqual(addSelected.label, count == 1 ? "Add 1 Attachment" : "Add 2 Attachments")
+            }
+            capture(app, "attachment-multiselect-" + evidence)
+        }
+
+        func assertDraftPreserved() {
+            XCTAssertEqual(composer(app).value as? String, draft)
+            XCTAssertEqual(removals.allElementsBoundByIndex.map(\.identifier), attachmentIDs,
+                           "The existing draft attachments must remain intact")
+        }
+
+        assertSelection(false, false, "00-initial")
+        first.tap(); assertSelection(true, false, "01-one-selected")
+        second.tap(); assertSelection(true, true, "02-two-selected")
+        first.tap(); assertSelection(false, true, "03-one-remaining")
+        second.tap(); assertSelection(false, false, "04-none-selected")
+
+        first.tap(); second.tap()
+        assertSelection(true, true, "05-before-cancel")
+        dismissAttachmentLibrary(app)
+        assertDraftPreserved()
+        app.buttons["add-attachments"].tap()
+        XCTAssertTrue(sheet.waitForExistence(timeout: 5))
+        XCTAssertTrue(first.waitForExistence(timeout: 5))
+        assertSelection(false, false, "06-reopened-after-cancel")
+
+        first.tap(); second.tap()
+        assertSelection(true, true, "07-before-confirm")
+        addSelected.tap()
+        gone(sheet)
+        // Demo deliberately skips provider imports. This verifies confirmation
+        // dismissal and preservation only; it does not claim an import/upload.
+        assertDraftPreserved()
+        capture(app, "attachment-multiselect-08-confirmed-draft")
+        app.buttons["add-attachments"].tap()
+        XCTAssertTrue(sheet.waitForExistence(timeout: 5))
+        XCTAssertTrue(first.waitForExistence(timeout: 5))
+        assertSelection(false, false, "09-reopened-after-confirm")
+        dismissAttachmentLibrary(app)
+        assertDraftPreserved()
+        #else
+        throw XCTSkip("Seeded recent-photo journey runs only on an isolated Simulator.")
+        #endif
+    }
+
+    private func dismissAttachmentLibrary(_ app: XCUIApplication) {
+        let sheet = app.descendants(matching: .any)["attachment-library-sheet"].firstMatch
+        XCTAssertTrue(sheet.waitForExistence(timeout: 5))
+        let grabber = app.buttons["Sheet Grabber"]
+        XCTAssertTrue(grabber.waitForExistence(timeout: 5))
+        grabber.swipeDown()
+        gone(sheet)
+        XCTAssertTrue(app.buttons["add-attachments"].isHittable)
+    }
+
     func testConversationDrawerAndSheetsPreserveIndependentDrafts() {
         let app = launch(["NANOCODEX_DEMO_PROFILE": UUID().uuidString])
         selectInbox(app)
@@ -1578,9 +1959,9 @@ final class InboxUITests: XCTestCase {
         XCTAssertEqual(composer(app).value as? String, "Keep this draft through navigation")
         app.buttons["add-attachments"].tap()
         XCTAssertTrue(app.buttons["choose-photos"].waitForExistence(timeout: 5))
-        XCTAssertTrue(app.buttons["choose-context"].exists)
+        XCTAssertFalse(app.buttons["choose-context"].exists)
         capture(app, "muse-attachment-sheet")
-        app.buttons["Done"].tap()
+        dismissAttachmentLibrary(app)
         XCTAssertEqual(composer(app).value as? String, "Keep this draft through navigation")
         navigationAction(app, "Account settings").tap()
         XCTAssertTrue(app.navigationBars["Settings"].waitForExistence(timeout: 5))
@@ -2766,14 +3147,23 @@ final class InboxUITests: XCTestCase {
         XCTAssertEqual(XCTWaiter.wait(for: [seeded], timeout: 90), .completed)
         print("Live attachment UI conversation title: \(title)")
 
-        app.buttons["add-attachments"].tap()
-        app.buttons["choose-photos"].tap()
-        let cancelPhotos = app.buttons["Cancel"].firstMatch
-        XCTAssertTrue(cancelPhotos.waitForExistence(timeout: 10), "Open the native Photos picker.")
-        capture(app, "live-attachment-01-photos-picker")
-        cancelPhotos.tap()
-        gone(cancelPhotos)
-        XCTAssertFalse(app.scrollViews["composer-attachments"].exists)
+        let cancelledDraft = "Keep my draft while choosing an attachment"
+        composer(app).tap(); composer(app).typeText(cancelledDraft)
+        for identifier in ["choose-photos", "choose-files", "choose-videos"] {
+            app.buttons["add-attachments"].tap()
+            XCTAssertTrue(app.buttons[identifier].waitForExistence(timeout: 5))
+            app.buttons[identifier].tap()
+            let cancel = app.buttons["Cancel"].firstMatch
+            XCTAssertTrue(cancel.waitForExistence(timeout: 10), "Open the native picker: " + identifier)
+            capture(app, "live-attachment-01-picker-" + identifier)
+            cancel.tap()
+            gone(cancel)
+            XCTAssertEqual(composer(app).value as? String, cancelledDraft)
+            XCTAssertFalse(app.scrollViews["composer-attachments"].exists)
+            XCTAssertFalse(app.staticTexts["attachment-error"].exists, "Cancelling must not report an import failure")
+        }
+        composer(app).tap()
+        composer(app).typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: cancelledDraft.count))
 
         let removals = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "remove-attachment-"))
         func waitForAttachment() {

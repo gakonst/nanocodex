@@ -395,6 +395,12 @@ fn prepare_user_content_for_host(input: Vec<UserInput>, embedded: bool) -> Vec<C
                     content.push(input_text("Codex does not support local audio input yet."));
                 }
             }
+            UserInput::File { filename, .. } => {
+                content.push(input_text(format!(
+                    "Codex does not support inline document input yet; document {} was not sent to the model.",
+                    filename.as_deref().unwrap_or("attachment")
+                )));
+            }
         }
     }
     content

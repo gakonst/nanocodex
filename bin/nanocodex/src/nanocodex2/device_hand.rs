@@ -116,9 +116,10 @@ impl BackgroundHand {
             })
             .map_err(|()| error("invalid origin"))?;
         origin.set_path("");
+        // Resolve the authenticated account before enrolling a missing service.
+        let directory = directory(origin.as_str(), target.bearer()).await?;
         #[cfg(any(target_os = "macos", target_os = "linux"))]
         ensure_service().await?;
-        let directory = directory(origin.as_str(), target.bearer()).await?;
         Self::observe(&directory)
             .await
             .map_err(|e| error(e.to_string().replace(target.bearer(), "[redacted]")))
@@ -190,6 +191,9 @@ async fn ensure_service() -> Result<(), ManagedError> {
         Path::new("/Library/LaunchDaemons/com.nanocodex.hand.plist").is_file(),
         gui.as_ref().map(|(_, path)| path.is_file()),
         |action| async move {
+            if action == service_start::Action::MacInstall {
+                return install_user_service().await;
+            }
             let (program, args) = action.command(gui_context);
             // Service managers need no account credentials or interactive input.
             let output = tokio::time::timeout(
@@ -213,6 +217,39 @@ async fn ensure_service() -> Result<(), ManagedError> {
     )
     .await
     .map_err(error)
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+async fn install_user_service() -> Result<service_start::Reply, String> {
+    // Use the companion of this exact release, never a PATH-selected installer.
+    // The installer locks/rechecks ownership and requires a matching saved login.
+    let account =
+        nanocodex_cli_auth::saved_enrollment_account_file().map_err(|error| error.to_string())?;
+    let binary = std::env::current_exe().map_err(|error| error.to_string())?;
+    let installer = binary.with_file_name("nanocodex");
+    let status = Command::new(&installer)
+        .args(["hand", "install", "--if-missing", "--executable"])
+        .arg(&binary)
+        .env("NANOCODEX_ACCOUNT_FILE", account)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        // Cancellation of a client must not interrupt the installer's service
+        // transaction. It owns its lock and rollback until it exits.
+        .kill_on_drop(false)
+        .status()
+        .await
+        .map_err(|_| {
+            "Cannot start the companion installer. Run nanocodex setup to connect this computer."
+                .to_owned()
+        })?;
+    if !status.success() {
+        return Err("Automatic Hand installation did not complete. Run nanocodex setup to sign in and connect this computer.".into());
+    }
+    Ok(service_start::Reply {
+        success: true,
+        stdout: String::new(),
+    })
 }
 
 fn error(value: impl std::fmt::Display) -> ManagedError {
@@ -606,6 +643,10 @@ fn unix_socket_path(base: PathBuf, directory: &Path) -> Result<PathBuf, ManagedE
 
 async fn connect(directory: &Path, cancel: &CancellationToken) -> Result<(), ManagedError> {
     let socket = socket_path(directory)?;
+    #[cfg(target_os = "macos")]
+    if transport::connect(&socket).await.is_err() {
+        ensure_service().await?;
+    }
     // A successful service-manager start can precede account lookup and IPC bind.
     let mut stream = tokio::time::timeout(Duration::from_secs(15), async {
         loop {

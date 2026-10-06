@@ -161,7 +161,135 @@ impl Fixture {
 }
 
 #[tokio::test]
+async fn combined_first_prompt_journey() {
+    tokio::time::timeout(TEST_TIMEOUT, async {
+        let api_key = format!("ncx_live_{}_{}", "a".repeat(12), "b".repeat(43));
+        let fixture = Fixture::new(&api_key);
+        // Only the combined endpoint is available: separate creation, state,
+        // event-stream or prompt requests would fail this journey.
+        let app = Router::new().route("/v1/agent-runs", post(combined_run));
+        let app = app.with_state(fixture.clone());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let client = ManagedClient::new(format!("http://{address}"), ManagedApiKey::parse(api_key).unwrap())
+            .unwrap().with_request_origin("nanocodex2", Some("user:synthetic-host"), Some("/synthetic-host")).unwrap();
+        let (observer, mut observed) = mpsc::unbounded_channel();
+        let builder = Nanocodex::builder(Managed::create(client).with_settings(AgentSettings::default()))
+            .event_observer(observer)
+            .chatgpt_account("synthetic-chatgpt-account");
+        let (agent, _, turn) = builder.build_with_prompt("combined immediate", "combined-operation").await.unwrap();
+        assert_eq!(agent.agent_id(), AGENT_ID);
+        assert_eq!(turn.request_id(), Some("combined-operation"));
+        let result = turn.result().await.unwrap();
+        assert_eq!(result.request_id(), Some("combined-operation"));
+        assert_eq!(result.final_message(), "combined answer");
+        let mut completions = 0;
+        while let Ok(event) = observed.try_recv() {
+            if matches!(event.data, ManagedEventData::TurnCompleted { .. }) { completions += 1; }
+        }
+        assert_eq!(completions, 1, "the local first turn completes exactly once");
+        agent.disconnect().await.unwrap();
+        assert_eq!(lock(&fixture.inner.create_bodies).len(), 1);
+        println!("JOURNEY combined immediate: POST agent-runs=1, separate create/state/events/turn routes absent, final_message=combined answer, request_id=combined-operation, terminal completions=1");
+        server.abort();
+    }).await.expect("combined first prompt should finish within the public journey deadline");
+}
+
+#[cfg(feature = "tools")]
+#[tokio::test]
+async fn combined_first_prompt_with_local_tools_uses_sequential_creation() {
+    tokio::time::timeout(TEST_TIMEOUT, async {
+        let api_key = format!("ncx_live_{}_{}", "a".repeat(12), "b".repeat(43));
+        let fixture = Fixture::new(&api_key);
+        // A combined POST is intentionally unavailable when tools must attach.
+        let app = Router::new()
+            .route("/v1/agents", post(|state: State<Fixture>, headers: HeaderMap, Json(mut body): Json<Value>| async move {
+                assert_eq!(body["configuration"]["chatgpt_account_id"], "synthetic-chatgpt-account");
+                body.as_object_mut().unwrap().remove("configuration");
+                create_agent(state, headers, Bytes::from(serde_json::to_vec(&body).unwrap())).await
+            }))
+            .route("/v1/agents/{agent_id}", get(agent_state))
+            .route("/v1/agents/{agent_id}/events", get(events))
+            .route("/v1/agents/{agent_id}/turns", post(submit_turn))
+            .route("/v1/agents/{agent_id}/tool-host", get(tool_host))
+            .with_state(fixture.clone());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let client = ManagedClient::new(format!("http://{address}"), ManagedApiKey::parse(api_key).unwrap()).unwrap();
+        let (agent, _, turn) = Nanocodex::builder(Managed::create(client).with_settings(AgentSettings::default()))
+            .chatgpt_account("synthetic-chatgpt-account")
+            .tools(Tools::builder().without_defaults().build().unwrap())
+            .build_with_prompt("live prompt", ACTIVE_REQUEST_ID).await.unwrap();
+        fixture.wait_for_catalog().await;
+        fixture.send_event(nested_event(42, ROOT_SOURCE_REQUEST_ID, None, "run.completed", json!({"status":"completed"}))).await;
+        fixture.send_event(completed_event(43, ACTIVE_REQUEST_ID, "attached answer")).await;
+        assert_eq!(turn.result().await.unwrap().final_message(), "attached answer");
+        assert_eq!(*lock(&fixture.inner.operations), ["create", "submit"]);
+        assert_eq!(lock(&fixture.inner.create_bodies).len(), 1);
+        assert_eq!(lock(&fixture.inner.submissions).len(), 1);
+        agent.disconnect().await.unwrap();
+        println!("JOURNEY local tools: sequential create=1, prompt POST=1, account pin preserved, attachment catalog received, final_message=attached answer; no combined route");
+        server.abort();
+    }).await.expect("attached first prompt should finish within the public journey deadline");
+}
+
+async fn combined_run(
+    State(fixture): State<Fixture>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response<Body> {
+    authorize(&fixture, &headers);
+    assert_eq!(headers["idempotency-key"], "combined-operation");
+    assert_eq!(headers["accept"], "text/event-stream");
+    assert_eq!(
+        serde_json::from_str::<Value>(headers["x-nanocodex-client-context"].to_str().unwrap())
+            .unwrap()["client"],
+        "nanocodex2"
+    );
+    let value: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(value["input"], "combined immediate");
+    assert_eq!(
+        value["settings"],
+        serde_json::to_value(AgentSettings::default()).unwrap()
+    );
+    assert_eq!(
+        value["configuration"]["chatgpt_account_id"],
+        "synthetic-chatgpt-account"
+    );
+    lock(&fixture.inner.create_bodies).push(value);
+    let mut receipt = turn_view(
+        ACTIVE_REQUEST_ID,
+        "accepted",
+        "combined immediate",
+        "41",
+        None,
+        None,
+    );
+    receipt["agent_id"] = AGENT_ID.into();
+    receipt["session_id"] = SESSION_ID.into();
+    receipt["turn_idempotency_key"] = "agent-run:synthetic-stable-key".into();
+    let mut bytes = format!("event: run\ndata: {receipt}\n\n").into_bytes();
+    bytes.extend_from_slice(&accepted_event(41, ACTIVE_REQUEST_ID, "combined immediate"));
+    bytes.extend_from_slice(&nested_event(
+        42,
+        ROOT_SOURCE_REQUEST_ID,
+        None,
+        "run.completed",
+        json!({"status":"completed"}),
+    ));
+    bytes.extend_from_slice(&completed_event(43, ACTIVE_REQUEST_ID, "combined answer"));
+    Response::builder()
+        .status(StatusCode::CREATED)
+        .header("content-type", "text/event-stream")
+        .body(Body::from(bytes))
+        .unwrap()
+}
+
+#[tokio::test]
 async fn claude_native_create_route_prompt_and_retained_reopen_journey() {
+    use nanocodex_agent::input::{Prompt, UserInput};
     use nanocodex_managed::{ManagedModel, RouteProvider};
     tokio::time::timeout(TEST_TIMEOUT, async {
         let api_key = format!("ncx_live_{}_{}", "a".repeat(12), "b".repeat(43));
@@ -183,6 +311,7 @@ async fn claude_native_create_route_prompt_and_retained_reopen_journey() {
             .route("/v1/agents/{agent_id}/settings", patch(update_settings))
             .route("/v1/agents/{agent_id}/events", get(events))
             .route("/v1/agents/{agent_id}/turns", post(submit_turn))
+            .route("/v1/agents/{agent_id}/turns/{turn_id}/steer", post(steer_turn))
             .with_state(fixture.clone());
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
@@ -216,10 +345,35 @@ async fn claude_native_create_route_prompt_and_retained_reopen_journey() {
         assert_eq!(route.model, ManagedModel::ClaudeSonnet46);
         // Preserve the existing native Responses setter API; generic HTTP setter
         // can subsequently select a Claude model without coercing the identity.
+        let document = || Prompt::content([
+            UserInput::Text { text: "Read the attached document".into() },
+            UserInput::File { file_data: "data:application/pdf;base64,JVBERi0xLjQ=".into(), filename: Some("fixture.pdf".into()) },
+            UserInput::File { file_data: "data:text/plain;base64,aGVsbG8=".into(), filename: None },
+        ]);
+        let document_wire = json!([
+            {"type":"text","text":"Read the attached document"},
+            {"type":"file","file_data":"data:application/pdf;base64,JVBERi0xLjQ=","filename":"fixture.pdf"},
+            {"type":"file","file_data":"data:text/plain;base64,aGVsbG8="},
+        ]);
+        // Both native File fields survive the managed serde contract; no URL/path translation.
+        let decoded: PromptInput = serde_json::from_value(document_wire.clone()).unwrap();
+        assert_eq!(serde_json::to_value(decoded).unwrap(), document_wire);
         agent.set_model(Model::Luna).await.unwrap();
+        let rejected = agent.prompt(document()).await;
+        assert!(matches!(rejected, Err(NanocodexError::UnsupportedCapability { capability: "document_input" })));
+        assert!(lock(&fixture.inner.submissions).is_empty(), "GPT document rejection must happen before transport");
         assert_eq!(client.set_model(AGENT_ID, ManagedModel::ClaudeSonnet46).await.unwrap().model, ManagedModel::ClaudeSonnet46);
         agent.set_thinking(Thinking::High).await.unwrap();
-        let turn = agent.prompt(PromptRequest::new("live prompt").request_id(ACTIVE_REQUEST_ID)).await.unwrap();
+        let turn = agent.prompt(PromptRequest::new(document()).request_id(ACTIVE_REQUEST_ID)).await.unwrap();
+        assert_eq!(lock(&fixture.inner.submissions).last().unwrap().body["input"], document_wire);
+        turn.steer(document()).await.unwrap();
+        turn.steer_with_id("document-correction".into(), document()).await.unwrap();
+        {
+            let actions = lock(&fixture.inner.actions);
+            assert_eq!(actions.len(), 2);
+            assert_eq!(actions[0].body, Some(json!({"input":document_wire})));
+            assert_eq!(actions[1].body, Some(json!({"input":document_wire,"message_id":"document-correction"})));
+        }
         fixture.send_event(accepted_event(45, ACTIVE_REQUEST_ID, "live prompt")).await;
         fixture.send_event(nested_event(46, ROOT_SOURCE_REQUEST_ID, None, "assistant.message", json!({"text":"Native Claude completed"}))).await;
         fixture.send_event(nested_event(47, ROOT_SOURCE_REQUEST_ID, None, "run.completed", json!({"status":"completed"}))).await;
@@ -231,8 +385,12 @@ async fn claude_native_create_route_prompt_and_retained_reopen_journey() {
         agent.disconnect().await.unwrap();
         let (reopened, _events) = Nanocodex::builder(Managed::open(client.clone(), AGENT_ID)).build().await.unwrap();
         assert_eq!(client.state(AGENT_ID).await.unwrap().settings.model, ManagedModel::ClaudeSonnet46);
+        let retained = reopened.prompt(PromptRequest::new(document()).request_id(RETAINED_REQUEST_ID)).await.unwrap();
+        assert_eq!(retained.result().await.unwrap().final_message(), "retained answer");
+        assert_eq!(lock(&fixture.inner.submissions).last().unwrap().body["input"], document_wire,
+            "opening retained Claude state must hydrate the document capability without a local settings write");
         reopened.disconnect().await.unwrap();
-        println!("JOURNEY Native Rust zero-config generic builder selects authoritative Claude-only default; 4 explicit Claude identities create/read; unsupported max/pro/fast blocked pretransport; Claude route hydrated; legacy OAI setter preserved; Claude selected via generic setter; prompt completed over HTTP+SSE; compact completed through common native handle with empty authenticated POST; retained agent reopened without an OAI fallback.");
+        println!("JOURNEY Native Rust zero-config generic builder selects authoritative Claude-only default; 4 explicit Claude identities create/read; unsupported max/pro/fast blocked pretransport; Claude route hydrated; legacy OAI setter preserved; Claude selected via generic setter; GPT File rejected pretransport after model change; inline PDF/named and plain-text/unnamed File round-trip and submit/steer/steer_with_id bodies verified; prompt completed over HTTP+SSE; compact completed through common native handle with empty authenticated POST; retained agent reopened without an OAI fallback.");
         server.abort();
     }).await.expect("native Claude lifecycle should remain bounded");
 }
@@ -520,11 +678,23 @@ async fn public_managed_lifecycle_threads_attachment_metadata() {
         let runtime_uuid =
             uuid::Uuid::parse_str(runtime_id).expect("runtime identity must be a UUID");
         assert_eq!(runtime_uuid.hyphenated().to_string(), runtime_id);
+        let connection_id = catalog["connection_id"]
+            .as_str()
+            .expect("catalog must identify this attachment connection");
+        let connection_uuid = uuid::Uuid::parse_str(connection_id)
+            .expect("attachment connection identity must be a UUID");
+        assert_eq!(connection_uuid.hyphenated().to_string(), connection_id);
+        assert_eq!(connection_uuid.get_version_num(), 4);
+        assert_eq!(connection_uuid.get_variant(), uuid::Variant::RFC4122);
+        assert_ne!(connection_id, runtime_id);
         assert_eq!(
             catalog,
             json!({
                 "type": "catalog",
                 "runtime_id": runtime_id,
+                "connection_id": connection_id,
+                "command_recovery": true,
+                "diagnostics": true,
                 "tools": [],
                 "attachment_id": "machine-public-1",
                 "capabilities": ["turn_metadata"],
@@ -636,6 +806,32 @@ async fn public_managed_lifecycle_preserves_durable_identity_control_and_replay(
             .expect("live prompt should be accepted");
         assert_eq!(turn.request_id(), Some(ACTIVE_REQUEST_ID));
         let control: TurnControl = turn.control();
+        let gpt_document = || {
+            nanocodex_agent::input::Prompt::content([nanocodex_agent::input::UserInput::File {
+                file_data: "data:application/pdf;base64,JVBERi0xLjQ=".into(),
+                filename: Some("fixture.pdf".into()),
+            }])
+        };
+        assert!(matches!(
+            control.steer(gpt_document()).await,
+            Err(NanocodexError::UnsupportedCapability {
+                capability: "document_input"
+            })
+        ));
+        assert!(matches!(
+            control
+                .steer_with_id("gpt-document-denied".into(), gpt_document())
+                .await,
+            Err(NanocodexError::UnsupportedCapability {
+                capability: "document_input"
+            })
+        ));
+        assert!(
+            lock(&fixture.inner.actions)
+                .iter()
+                .all(|action| action.kind != "steer"),
+            "GPT File steering must be rejected before transport"
+        );
         let steer_release = Arc::new(Notify::new());
         *lock(&fixture.inner.steer_release) = Some(steer_release.clone());
         let steering_control = control.clone();

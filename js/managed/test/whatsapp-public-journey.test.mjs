@@ -137,3 +137,148 @@ test("WhatsApp public HTTP authorization and bounded requests", {timeout:90000},
     await mkdir(output,{recursive:true}); await writeFile(new URL("trace.json",output),JSON.stringify(trace,null,2));
   }
 });
+
+test("agent starts native WhatsApp linking over HTTP with private code isolation", {timeout:90000}, async () => {
+  const root = fileURLToPath(new URL("../../egress/", import.meta.url));
+  const [managed, broker] = await Promise.all([
+    build({entryPoints:[fileURLToPath(new URL("fixtures/whatsapp-public-worker.ts", import.meta.url))],
+      bundle:true, write:false, format:"esm", target:"es2022", platform:"browser", external:["cloudflare:workers","node:*"],
+      alias:{"node-rsa":"./node_modules/nanocodex/tools/browser/unsupportedNodeRsa.mjs"}}),
+    build({entryPoints:[root+"test/whatsapp/broker.worker.ts"], bundle:true, write:false, format:"esm", platform:"node",
+      external:["cloudflare:*","node:*"], alias:{"node-rsa":root+"../nanocodex/tools/browser/unsupportedNodeRsa.mjs"},
+      plugins:[{name:"upstream-only", setup(b) {
+        b.onResolve({filter:/^nanocodex\/wasm$/},()=>({path:"./nanocodex.wasm",external:true}));
+        b.onResolve({filter:/^\.\/whatsapp-runtime$/},()=>({path:root+"test/whatsapp/runtime.fixture.ts"}));
+      }}]}),
+  ]);
+  const { readFile } = await import("node:fs/promises");
+  const trace = [], brokerRequests = [];
+  let fault;
+  const mf = new Miniflare({workers:[
+    {name:"edge", modules:true, compatibilityDate:"2026-07-29", serviceBindings:{MANAGED:"managed"}, script:`export default {fetch(r,e) { const u=new URL(r.url); if(u.pathname.startsWith("/__connect/")){u.protocol="https:"; u.host="nanocodex.internal"; u.port=""; u.pathname=u.pathname.slice(10); return e.MANAGED.fetch(new Request(u,r));} return e.MANAGED.fetch(r); }}`},
+    {name:"managed", script:managed.outputFiles[0].text, modules:true, compatibilityDate:"2026-07-29", compatibilityFlags:["nodejs_compat"],
+      durableObjects:Object.fromEntries([["NANOCODEX_AUTH","NonceStorage"],["NANOCODEX_USERS","UserAccount"],
+        ["NANOCODEX_ORGANIZATIONS","Organization"],["NANOCODEX_API_KEYS","ApiKeyRecord"]].map(([key,className])=>[key,{className,useSQLite:true}])),
+      serviceBindings:{NANOCODEX:async request => {
+        brokerRequests.push({path:new URL(request.url).pathname, method:request.method,
+          ...(request.method === "POST" ? {body:await request.clone().json()} : {})});
+        // Observe the actual shipped broker request before simulating a lost or contaminated response.
+        const response = await (await mf.getWorker("broker")).fetch(request);
+        if (new URL(request.url).pathname.endsWith("/pairing")) return response;
+        if (fault === "lost") throw new Error("TEST-1234 provider exception");
+        if (fault === "malformed") return new Response("TEST-1234", {status:202});
+        if (fault === "timeout") return Response.json({error:"TEST-1234"},{status:408});
+        if (fault === "unavailable") return Response.json({error:"TEST-1234",pairing_code:"TEST-1234"},{status:503});
+        if (fault === "conflict") return Response.json({error:"TEST-1234",pairing_code:"TEST-1234"},{status:409});
+        const value = await response.json();
+        if (fault === "wrong-operation") value.attempt.operation_id = "ffffffff-ffff-4fff-8fff-ffffffffffff";
+        if (fault === "unsafe-phase") value.attempt.state = "TEST-1234";
+        if (fault === "unsafe-expiry") value.attempt.expires_at = "TEST-1234";
+        if (value.connectors?.whatsapp) Object.assign(value.connectors.whatsapp, {pairing_code:"TEST-1234",attempt:{code:"TEST-1234"}});
+        // Extra broker fields, even on errors/list, must never reach the model.
+        return Response.json({...value, code:"TEST-1234", pairing_code:"TEST-1234", error:"TEST-1234"}, {status:response.status});
+      }}},
+    {name:"broker", modulesRoot:root+"output", modules:[{type:"ESModule",path:root+"output/native-link-broker.js",contents:broker.outputFiles[0].text},
+      {type:"CompiledWasm",path:root+"output/nanocodex.wasm",contents:await readFile(root+"../nanocodex/pkg-web/nanocodex_bg.wasm")}],
+      compatibilityDate:"2026-07-29", compatibilityFlags:["nodejs_compat"], bindings:{ENVIRONMENT:"test",ALLOW_LOCAL_CREDENTIAL_CLAIM:"true"},
+      durableObjects:Object.fromEntries(Object.entries({USER_CONNECTORS:"UserConnectorBroker",WHATSAPP_ACCOUNTS:"WhatsAppAccount",
+        AGENT_SUBJECTS:"AgentSubjectDirectory",USER_CREDENTIALS:"UserCredentialBroker",MCP_CONNECTIONS:"McpConnectionDirectory",
+        SPOTIFY_RATE_LIMITS:"SpotifyRateLimit",GMAIL_PUSH_MAILBOXES:"GmailPushMailbox"}).map(([key,className])=>[key,{className,useSQLite:true}])),
+      outboundService:()=>new Response("unexpected upstream network",{status:599})},
+  ]});
+  try {
+    const base = await mf.ready;
+    const user = "11111111-1111-4111-8111-111111111111", other = "44444444-4444-4444-8444-444444444444";
+    const op = "33333333-3333-4333-8333-333333333333";
+    const op2 = "AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA";
+    const phone = "+15550000001";
+    async function issue(user,capabilities) {
+      const r = await fetch(new URL("/__fixture",base),{method:"POST",body:JSON.stringify({user,capabilities})});
+      assert.equal(r.status,200); return r.json();
+    }
+    const owner = await issue(user), foreign = await issue(other), scoped = await issue(user,["tools:use"]);
+    const connect = {operation:"connect",connector:"whatsapp",phone,operation_id:op};
+    async function tool(name,request,{token=owner.token,subagent=false,headers={},delegated=false,http=200}={}) {
+      const response = await fetch(new URL((delegated?"/__connect":"")+"/__fixture/account-connectors",base),{
+        method:"POST",headers:{authorization:`Bearer ${token}`,"content-type":"application/json",...headers},
+        body:JSON.stringify({request,subagent}),
+      });
+      const text=await response.text(); assert.ok(!text.includes("TEST-1234"),"pairing material leaked in "+name);
+      const result=JSON.parse(text); trace.push({name,expectedHTTP:http,observedHTTP:response.status,result});
+      assert.equal(response.status,http,text); return result;
+    }
+    function hint(value,phase= "ready",operation_id=op) {
+      assert.deepEqual(Object.keys(value).sort(),["ok","type","status","connector","agent_id","operation_id","expires_at","phase","message"].sort());
+      assert.equal(value.ok,true); assert.equal(value.type,"whatsapp_link"); assert.equal(value.status,"input_required");
+      assert.equal(value.connector,"whatsapp"); assert.equal(value.agent_id,"synthetic-session"); assert.equal(value.operation_id,operation_id); assert.equal(value.phase,phase);
+      assert.ok(Number.isSafeInteger(value.expires_at) && value.expires_at > 0);
+      assert.equal(typeof value.message,"string");
+    }
+    const missing = await tool("missing phone creates no attempt",{operation:"connect",connector:"whatsapp"});
+    assert.equal(missing.status,"input_required"); assert.equal(missing.type,undefined); assert.equal(brokerRequests.length,0);
+    for (const request of [
+      {...connect,operation_id:undefined}, {...connect,operation_id:"invalid"}, {...connect,phone:"555"},
+      {...connect,phone:"+1555extension00001"}, {...connect,phone:"+15550000001;TEST-1234"},
+      {...connect,phone:"+"+"1".repeat(65)}, {...connect,phone:15550000001},
+      {...connect,connector:"google"}, {operation:"list",operation_id:op},
+      {operation:"disconnect",connector:"whatsapp",phone}, {...connect,user_id:other}, {...connect,code:"TEST-1234"},
+    ]) await tool("strict phone/operation/control validation",request,{http:400});
+    assert.equal(brokerRequests.length,0);
+    assert.equal((await tool("scoped key cannot initiate",connect,{token:scoped.token})).status,"forbidden");
+    assert.equal((await tool("child agent cannot initiate",connect,{subagent:true})).status,"forbidden");
+    const connectHeaders = {authorization:"","x-nanocodex-connect-user":user,"x-nanocodex-connect-grant-id":"0x"+"a".repeat(64),
+      "x-nanocodex-connect-capabilities":JSON.stringify(["tools:use"]),
+      "x-nanocodex-connect-connectors":"[]","x-nanocodex-connect-mcp-ids":"[]"};
+    assert.equal((await tool("Connect grant cannot initiate",connect,{headers:connectHeaders,delegated:true})).status,"forbidden");
+    await tool("anonymous cannot initiate",connect,{token:"",http:401});
+    assert.equal(brokerRequests.length,0);
+
+    const started=await tool("known phone starts the broker and returns native hint",{...connect,phone:" +1 555-000-0001 "});
+    hint(started);
+    assert.deepEqual(brokerRequests[0],{path:`/users/${user}/connectors/whatsapp/start`,method:"POST",body:{phone,operation_id:op}});
+    const replay=await tool("same operation reconciles",connect); hint(replay); assert.equal(replay.expires_at,started.expires_at);
+    const accounts=await mf.getDurableObjectNamespace("WHATSAPP_ACCOUNTS","broker");
+    const brokers=await mf.getDurableObjectNamespace("USER_CONNECTORS","broker");
+    const fixture=accounts.get(accounts.idFromName(brokers.idFromName(user).toString()));
+    async function upstream(path,body) {
+      const r=await fixture.fetch("https://fixture/fixture/"+path,{method:body===undefined?"GET":"POST",...(body===undefined?{}:{body:JSON.stringify(body)})});
+      assert.equal(r.status,200); return r.json();
+    }
+    assert.equal((await upstream("stats")).pairingRequests,1);
+    assert.equal((await tool("same ID different phone conflicts",{...connect,phone:"+15550000002"})).status,"conflict");
+    assert.equal((await tool("new ID cannot replace active attempt",{...connect,operation_id:op2})).status,"conflict");
+    for (const mode of ["lost","timeout","malformed","unavailable","wrong-operation","unsafe-phase","unsafe-expiry"]) {
+      const before=brokerRequests.length;
+      fault=mode; hint(await tool(mode+" preserves unknown operation",connect),"unknown"); fault=undefined;
+      assert.equal(brokerRequests.length,before+1);
+      assert.deepEqual(brokerRequests.at(-1).body,{phone,operation_id:op});
+      hint(await tool(mode+" reconciles with original operation",connect));
+    }
+    fault="conflict"; assert.equal((await tool("untrusted conflict is fixed and private",connect)).status,"conflict"); fault=undefined;
+    assert.equal((await upstream("stats")).pairingRequests,1);
+    const inventory=await tool("read-only status never carries code",{operation:"list"});
+    assert.equal(inventory.connectors.whatsapp.connected,false);
+    assert.equal(brokerRequests.some(r=>r.path.includes("pairing")),false);
+    trace.push({name:"tool broker trace excludes private pairing endpoint",requests:brokerRequests.slice()});
+
+    const privateURL=new URL(`/v1/connectors/whatsapp/pairing?operation_id=${op}`,base);
+    const own=await fetch(privateURL,{headers:{authorization:`Bearer ${owner.token}`}});
+    assert.equal(own.status,200); assert.equal((await own.json()).code,"TEST-1234");
+    const denied=await fetch(privateURL,{headers:{authorization:`Bearer ${foreign.token}`}});
+    assert.equal(denied.status,404); assert.ok(!(await denied.text()).includes("TEST-1234"));
+    trace.push({name:"only owning native API retrieves fixture code",ownerHTTP:200,otherOwnerHTTP:404,code:"[private fixture verified]"});
+    const foreignInventory=await tool("other owner list isolated",{operation:"list"},{token:foreign.token});
+    assert.equal(foreignInventory.connectors.whatsapp.connected,false);
+    await upstream("expire",{});
+    hint(await tool("expired receipt remains same operation",connect),"expired");
+    hint(await tool("explicit new attempt after expiry",{...connect,operation_id:op2}),"ready",op2);
+    await upstream("register",{});
+    hint(await tool("paired receipt remains same operation",{...connect,operation_id:op2}),"paired",op2);
+    assert.equal((await tool("list verifies completed linking",{operation:"list"})).connectors.whatsapp.connected,true);
+    assert.equal((await tool("other owner never sees linked account",{operation:"list"},{token:foreign.token})).connectors.whatsapp.connected,false);
+  } finally {
+    await mf.dispose();
+    const output=new URL("../../../output/whatsapp-public/",import.meta.url);
+    await mkdir(output,{recursive:true}); await writeFile(new URL("native-link-trace.json",output),JSON.stringify(trace,null,2));
+  }
+});

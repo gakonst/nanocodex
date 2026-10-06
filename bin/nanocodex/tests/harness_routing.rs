@@ -44,6 +44,8 @@ enum Journey {
     MissingChildAuth,
     Subscription,
     SubscriptionRecovery,
+    ProjectContext,
+    ContextRouting,
 }
 
 struct Provider {
@@ -68,9 +70,28 @@ impl Provider {
         .unwrap();
     }
     fn respond(&mut self, family: &str, label: &str, request: Value) -> Reply {
-        let stage = *self.counts.entry(label.into()).or_default();
-        *self.counts.get_mut(label).unwrap() += 1;
-        let reply = self.script(label, stage);
+        let key = if self.journey == Journey::ContextRouting {
+            format!("{family}:{label}")
+        } else {
+            label.into()
+        };
+        let stage = *self.counts.entry(key.clone()).or_default();
+        *self.counts.get_mut(&key).unwrap() += 1;
+        let reply = if family == "claude" {
+            for tool in request["tools"].as_array().unwrap() {
+                let name = tool["name"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .trim_start_matches('_');
+                assert!(
+                    !["exec", "wait", "tool_search"].contains(&name),
+                    "Claude leaked {name}"
+                );
+            }
+            self.native_script(label, stage, &request)
+        } else {
+            self.script(label, stage)
+        };
         if matches!(reply, Reply::Pause) {
             self.pauses += 1;
         }
@@ -86,7 +107,220 @@ impl Provider {
         reply
     }
 
+    // Claude fixtures speak the shipped native catalog. Other providers retain
+    // their Code Mode journeys, including the mixed registry lifecycle checks.
+    fn native_script(&self, label: &str, stage: usize, request: &Value) -> Reply {
+        let call = |name, input| Reply::Native { name, input };
+        let submit = |answer| call("SubmitResult", json!({"output":{"answer":answer}}));
+        let spawn = |family: Option<&str>, task: &str, background: bool| {
+            let mut input = json!({"description":task,"prompt":task,"output_contract":contract(),"run_in_background":background});
+            if let Some(family) = family {
+                input["harness"] = json!(family);
+                input["model"] = json!(model(family));
+            }
+            call("Agent", input)
+        };
+        let receipt = native_receipt(request);
+        let answer = |expected| {
+            assert_eq!(
+                receipt["report"]["agents"][0]["status"]["output"]["answer"], expected,
+                "native child receipt: {receipt}"
+            )
+        };
+        let error = || {
+            assert!(
+                native_error(request),
+                "expected native tool error: {receipt}"
+            )
+        };
+        if self.journey == Journey::ContextRouting {
+            return match (label, stage) {
+                ("root", 0..=1) => {
+                    if stage > 0 {
+                        answer("context-child-answer");
+                    }
+                    spawn(Some(["claude", "codex"][stage]), "MIXED_CHILD", false)
+                }
+                ("root", _) => {
+                    answer("context-child-answer");
+                    Reply::Text("context-routing-answer".into())
+                }
+                ("child", 0) => submit("context-child-answer"),
+                _ => Reply::Text("context child finished".into()),
+            };
+        }
+
+        if matches!(
+            self.journey,
+            Journey::Subscription | Journey::SubscriptionRecovery
+        ) {
+            return if label == "child" && stage == 1 {
+                submit("subscription-child-answer")
+            } else {
+                self.script(label, stage)
+            };
+        }
+        if self.journey == Journey::MissingChildAuth {
+            return match stage {
+                0 => spawn(Some("codex"), "AUTH_CHILD", false),
+                1 => {
+                    error();
+                    call("ListAgents", json!({"include_completed":true}))
+                }
+                _ => {
+                    assert_eq!(receipt["agents"].as_array().unwrap().len(), 0);
+                    Reply::Text("auth-denied-answer".into())
+                }
+            };
+        }
+        if self.journey != Journey::Mixed {
+            return self.script(label, stage);
+        }
+        match (label, stage) {
+            ("root", 0) => call(
+                "Agent",
+                json!({"description":"invalid","prompt":"INVALID_CHILD","harness":"bogus"}),
+            ),
+            ("root", 1) => {
+                error();
+                call(
+                    "Agent",
+                    json!({"description":"invalid","prompt":"INVALID_CHILD","harness":"claude","model":"sol"}),
+                )
+            }
+            ("root", 2) => {
+                error();
+                call(
+                    "Agent",
+                    json!({"description":"invalid","prompt":"INVALID_CHILD","harness":"codex","model":"claude-sonnet-4-6"}),
+                )
+            }
+            ("root", 3) => {
+                error();
+                call("ListAgents", json!({"include_completed":true}))
+            }
+            ("root", 4) => {
+                assert_eq!(receipt["agents"].as_array().unwrap().len(), 0);
+                spawn(Some("codex"), "MIXED_CHILD", false)
+            }
+            ("root", 5) => {
+                answer("nested-answer");
+                spawn(None, "INHERITED_CHILD", false)
+            }
+            ("root", 6) => {
+                answer("inherited-answer");
+                call(
+                    "SendMessage",
+                    json!({"recipient":"agent-1","content":"FOLLOWUP_CHILD"}),
+                )
+            }
+            ("root", 7) => {
+                assert!(!native_error(request));
+                call("TaskOutput", json!({"task_id":"agent-1","timeout":20000}))
+            }
+            ("root", 8) => {
+                answer("followup-answer");
+                call("CloseAgent", json!({"task_id":"agent-1"}))
+            }
+            ("root", 9) => {
+                let agents = receipt["agents"].as_array().unwrap();
+                assert_eq!(agents.len(), 2);
+                assert!(agents.iter().all(|a| a["status"]["state"] == "closed"));
+                call(
+                    "SendMessage",
+                    json!({"recipient":"agent-1","content":"cannot revive"}),
+                )
+            }
+            ("root", 10) => {
+                error();
+                call("ListAgents", json!({"include_completed":true}))
+            }
+            ("root", 11) => spawn(Some("codex"), "PAUSED_CHILD", true),
+            ("root", 12) => {
+                assert_eq!(receipt["task_id"], "agent-4");
+                call("TaskOutput", json!({"task_id":"agent-4","timeout":1000}))
+            }
+            ("root", 13) => {
+                assert_eq!(receipt["report"]["timed_out"], true);
+                assert_eq!(receipt["report"]["agents"][0]["status"]["state"], "running");
+                call("TaskStop", json!({"task_id":"agent-4"}))
+            }
+            ("root", 14) => {
+                let agents = receipt["agents"].as_array().unwrap();
+                assert_eq!(agents.len(), 2);
+                assert!(agents.iter().all(|a| a["status"]["state"] == "interrupted"));
+                call("CloseAgent", json!({"task_id":"agent-4"}))
+            }
+            ("root", _) => {
+                let agents = receipt["agents"].as_array().unwrap();
+                assert_eq!(agents.len(), 2);
+                assert!(agents.iter().all(|a| a["status"]["state"] == "closed"));
+                Reply::Text("mixed-routing-answer".into())
+            }
+            ("child", 0) => spawn(Some("codex"), "MIXED_GRANDCHILD", false),
+            ("child", 1) => {
+                answer("grandchild-answer");
+                call("SubmitResult", json!({"output":{"answer":42}}))
+            }
+            ("child", 2) => {
+                error();
+                submit("nested-answer")
+            }
+            ("child", _) => {
+                assert_eq!(receipt["accepted"], true);
+                Reply::Text("child finished".into())
+            }
+            ("followup", 0) => submit("followup-answer"),
+            ("followup", _) => Reply::Text("followup finished".into()),
+            ("grandchild", 0) => Reply::Write {
+                path: "grandchild.txt",
+                content: "grandchild-effect",
+            },
+            ("grandchild", 1) => submit("grandchild-answer"),
+            ("grandchild", _) => Reply::Text("grandchild finished".into()),
+            ("inherited", 0) => submit("inherited-answer"),
+            ("inherited", _) => Reply::Text("inherited finished".into()),
+            ("paused-child", 0) => spawn(Some("codex"), "PAUSED_GRANDCHILD", false),
+            ("paused-grandchild", _) => Reply::Pause,
+            _ => Reply::Text("unexpected native fixture request".into()),
+        }
+    }
+
     fn script(&self, label: &str, stage: usize) -> Reply {
+        if self.journey == Journey::ProjectContext {
+            return match stage {
+                0 => Reply::Read {
+                    path: ".agents/skills/fixture/SKILL.md",
+                },
+                1 => Reply::Write {
+                    path: "context-effect.txt",
+                    content: "context-effect",
+                },
+                _ => Reply::Text("project-context-answer".into()),
+            };
+        }
+        if self.journey == Journey::ContextRouting {
+            return match (label, stage) {
+                ("root", 0) => Reply::Code(format!(
+                    r#"
+for (const family of ['claude', 'codex']) {{
+  const child = await tools.spawn_agent({{harness:family,model:null,role:'MIXED_CHILD',task:'MIXED_CHILD',thinking:null,output_contract:{}}});
+  const done = await tools.wait_agent({{agent_ids:[child.agent_id],timeout_ms:20000}});text(done);
+  if(done.timed_out || done.agents[0].status.output.answer !== 'context-child-answer') throw Error('context child failed');
+}}
+text('context-routing-ok');
+"#,
+                    contract()
+                )),
+                ("child", 0) => Reply::Code(
+                    "text(await tools.submit_result({output:{answer:'context-child-answer'}}));"
+                        .into(),
+                ),
+                ("root", _) => Reply::Text("context-routing-answer".into()),
+                _ => Reply::Text("context child finished".into()),
+            };
+        }
+
         if self.journey == Journey::SubscriptionRecovery && label == "root" {
             return match stage {
                 0 => Reply::Code(format!(
@@ -247,6 +481,13 @@ text(await tools.submit_result({output:{answer:'grandchild-answer'}}));
 }
 
 enum Reply {
+    Native {
+        name: &'static str,
+        input: Value,
+    },
+    Read {
+        path: &'static str,
+    },
     Code(String),
     Text(String),
     Write {
@@ -258,6 +499,8 @@ enum Reply {
 impl Reply {
     fn value(&self) -> Value {
         match self {
+            Self::Native { name, input } => json!({"tool":name,"input":input}),
+            Self::Read { path } => json!({"tool":"Read","file_path":path}),
             Self::Code(code) => json!({"code":code}),
             Self::Text(text) => json!({"text":text}),
             Self::Write { path, content } => {
@@ -274,7 +517,9 @@ impl Reply {
             Self::Text(text) => {
                 json!({"type":"message","role":"assistant","content":[{"type":"output_text","text":text}]})
             }
-            Self::Write { .. } => unreachable!("native Claude Write cannot route to Responses"),
+            Self::Native { .. } | Self::Read { .. } | Self::Write { .. } => {
+                unreachable!("native file tools cannot route to Codex Responses")
+            }
             Self::Pause => unreachable!("paused generation has no terminal response"),
         };
         json!({"type":"response.completed","response":{"id":id,"status":"completed","output":[output],
@@ -292,6 +537,16 @@ impl Reply {
             }
         };
         let (block, delta, stop) = match self {
+            Self::Native { name, input } => (
+                json!({"type":"tool_use","id":id,"name":tool_name(name),"input":{}}),
+                json!({"type":"input_json_delta","partial_json":input.to_string()}),
+                "tool_use",
+            ),
+            Self::Read { path } => (
+                json!({"type":"tool_use","id":id,"name":tool_name("Read"),"input":{}}),
+                json!({"type":"input_json_delta","partial_json":json!({"file_path":path}).to_string()}),
+                "tool_use",
+            ),
             Self::Code(code) => (
                 json!({"type":"tool_use","id":id,"name":tool_name("exec"),"input":{}}),
                 json!({"type":"input_json_delta","partial_json":json!({"code":code}).to_string()}),
@@ -387,6 +642,33 @@ fn last_tool_result(request: &Value) -> Value {
         })
         .map(|item| item["output"].clone())
         .unwrap_or(Value::Null)
+}
+
+fn native_receipt(request: &Value) -> Value {
+    let value = last_tool_result(request);
+    let text = if let Some(text) = value.as_str() {
+        text.to_owned()
+    } else {
+        value
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|b| b["text"].as_str())
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    serde_json::from_str(&text).unwrap_or(json!(text))
+}
+fn native_error(request: &Value) -> bool {
+    request["messages"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .rev()
+        .filter_map(|m| m["content"].as_array())
+        .flat_map(|b| b.iter().rev())
+        .find(|b| b["type"] == "tool_result")
+        .is_some_and(|b| b["is_error"] == true)
 }
 
 struct Servers {
@@ -1008,6 +1290,8 @@ async fn journey(family: &'static str, kind: Journey) -> Result<()> {
         Journey::MissingChildAuth => "auth-denied-answer",
         Journey::Subscription => "subscription-native-answer",
         Journey::SubscriptionRecovery => "subscription-recovery-answer",
+        Journey::ProjectContext => "project-context-answer",
+        Journey::ContextRouting => "context-routing-answer",
     };
     if kind == Journey::Smoke {
         run_tui(command, &artifact, answer).await?;
@@ -1038,7 +1322,7 @@ async fn journey(family: &'static str, kind: Journey) -> Result<()> {
     } else if kind == Journey::MissingChildAuth {
         assert_eq!(
             provider.log.len(),
-            2,
+            if family == "claude" { 3 } else { 2 },
             "unauthorized child contacted a model provider"
         );
         assert!(
@@ -1048,11 +1332,13 @@ async fn journey(family: &'static str, kind: Journey) -> Result<()> {
                 .all(|connection| connection["family"] == family),
             "unauthorized child opened a provider connection"
         );
-        assert!(
-            provider.log[1]["tool_result"]
-                .to_string()
-                .contains("auth-denied-ok")
-        );
+        if family != "claude" {
+            assert!(
+                provider.log[1]["tool_result"]
+                    .to_string()
+                    .contains("auth-denied-ok")
+            );
+        }
     } else {
         for (label, expected_family) in [
             ("root", family),
@@ -1087,6 +1373,10 @@ async fn journey(family: &'static str, kind: Journey) -> Result<()> {
             ("child", 1, "grandchild-ok"),
             ("child", 2, "contract-recovered-ok"),
         ] {
+            // Claude receipts are asserted at each native call in native_script.
+            if (label == "root" && family == "claude") || (label == "child" && family == "codex") {
+                continue;
+            }
             let call = provider
                 .log
                 .iter()
@@ -1819,8 +2109,8 @@ async fn claude_subscription_login_refresh_restart_and_logout() -> Result<()> {
             }
             let tools = request["tools"].as_array().unwrap();
             assert!(
-                tools.iter().any(|tool| tool["name"] == "_exec"),
-                "custom Code Mode tool lacks subscription wire prefix"
+                tools.iter().any(|tool| tool["name"] == "_Agent"),
+                "native agent tool lacks subscription wire prefix"
             );
         }
         assert_ne!(
@@ -2013,5 +2303,353 @@ async fn claude_durable_terminal_replays_in_a_second_process_without_a_provider_
     );
     std::fs::write(second.join("provider.json"), "[]\n")?;
     std::fs::write(second.join("connections.json"), "[]\n")?;
+    Ok(())
+}
+
+fn wire_instructions(request: &Value) -> String {
+    if let Some(system) = request.get("system") {
+        return match system {
+            Value::String(text) => text.clone(),
+            Value::Array(blocks) => blocks
+                .iter()
+                .filter_map(|b| b["text"].as_str())
+                .collect::<Vec<_>>()
+                .join("\n"),
+            _ => String::new(),
+        };
+    }
+    if let Some(text) = request["instructions"].as_str() {
+        return text.into();
+    }
+    // Codex carries its primary instruction in the first developer message.
+    // Later developer messages retain independent host permissions/project data.
+    if let Some(message) = request["input"].as_array().and_then(|items| {
+        items
+            .iter()
+            .find(|item| item["role"] == "developer" && item["type"] == "message")
+    }) {
+        return message["content"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|block| block["text"].as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+    }
+    request["input"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|item| item["role"] == "system")
+        .map(|item| item["content"].as_str().unwrap_or_default())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn context_files(workspace: &Path) -> Result<()> {
+    std::fs::create_dir_all(workspace.join(".claude/skills/claude-fixture"))?;
+    std::fs::create_dir_all(workspace.join(".agents/skills/fixture"))?;
+    std::fs::write(workspace.join("AGENTS.md"), "fixture-agents-context\n")?;
+    std::fs::write(workspace.join("CLAUDE.md"), "fixture-claude-context\n")?;
+    std::fs::write(
+        workspace.join(".claude/CLAUDE.md"),
+        "fixture-dotclaude-context\n",
+    )?;
+    std::fs::write(
+        workspace.join(".agents/skills/fixture/SKILL.md"),
+        "---\nname: fixture\ndescription: Lazy skill fixture\n---\nfixture-lazy-skill-body\n",
+    )?;
+    std::fs::write(
+        workspace.join(".claude/skills/claude-fixture/SKILL.md"),
+        "---\nname: claude-fixture\ndescription: Claude skill fixture\n---\nfixture-claude-skill-body\n",
+    )?;
+    // These files must never enter native automatic workspace context.
+    std::fs::write(
+        workspace.parent().unwrap().join("AGENTS.md"),
+        "fixture-ancestor-denied",
+    )?;
+    std::fs::write(workspace.join("home/CLAUDE.md"), "fixture-home-denied")?;
+    std::fs::create_dir_all(workspace.join("nested"))?;
+    std::fs::write(workspace.join("nested/CLAUDE.md"), "fixture-nested-denied")?;
+    Ok(())
+}
+
+fn context_command(workspace: &Path, servers: &Servers, family: &str) -> Command {
+    command(workspace, servers, family, true, true, false)
+}
+
+#[tokio::test]
+async fn native_cli_project_context_is_bounded_lazy_and_explicitly_replaceable() -> Result<()> {
+    {
+        let family = "claude";
+        let artifact = artifact(&format!("{family}-project-context"))?;
+        let workspace = artifact.join("workspace");
+        context_files(&workspace)?;
+        let provider = Arc::new(Mutex::new(Provider {
+            root: family,
+            journey: Journey::ProjectContext,
+            counts: HashMap::new(),
+            log: vec![],
+            artifact: artifact.clone(),
+            pauses: 0,
+            cancellations: 0,
+            connections: vec![],
+        }));
+        let servers = servers(Arc::clone(&provider)).await?;
+        let mut invocation = context_command(&workspace, &servers, family);
+        invocation.arg("PROJECT_CONTEXT_ROOT");
+        let output = run(invocation, &artifact, "workspace context transmitted; skill body loaded only by native Read/read_file; native Write/write creates context-effect.txt").await?;
+        success(&output, &artifact, "project-context-answer")?;
+        assert_eq!(
+            std::fs::read_to_string(workspace.join("context-effect.txt"))?,
+            "context-effect"
+        );
+        {
+            let provider = provider.lock().unwrap();
+            let initial = &provider.log[0]["request"];
+            let system = wire_instructions(initial);
+            assert!(system.contains("fixture-agents-context"));
+            assert_eq!(
+                system.contains("fixture-claude-context"),
+                family == "claude"
+            );
+            assert_eq!(
+                system.contains("fixture-dotclaude-context"),
+                family == "claude"
+            );
+            assert!(system.contains(".agents/skills/fixture/SKILL.md"));
+            assert_eq!(
+                system.contains(".claude/skills/claude-fixture/SKILL.md"),
+                family == "claude"
+            );
+            for excluded in [
+                "fixture-lazy-skill-body",
+                "fixture-claude-skill-body",
+                "fixture-ancestor-denied",
+                "fixture-home-denied",
+                "fixture-nested-denied",
+            ] {
+                assert!(
+                    !system.contains(excluded),
+                    "automatic context leaked {excluded}"
+                );
+            }
+            assert!(
+                provider.log[1]["tool_result"]
+                    .to_string()
+                    .contains("fixture-lazy-skill-body")
+            );
+            let names = initial["tools"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter_map(|tool| tool["name"].as_str())
+                .collect::<Vec<_>>();
+            assert!(names.contains(&if family == "claude" {
+                "Read"
+            } else {
+                "read_file"
+            }));
+            assert!(!initial["tools"].as_array().unwrap().iter().any(|tool| {
+                tool["type"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .starts_with("web_search")
+            }));
+        }
+        // New process with an exact caller replacement, including enabled subagents.
+        let override_path = artifact.join("override");
+        std::fs::create_dir_all(&override_path)?;
+        let mut invocation = context_command(&workspace, &servers, family);
+        invocation.args([
+            "--instructions",
+            "fixture-explicit-instructions",
+            "OVERRIDE_ROOT",
+        ]);
+        let output = run(invocation, &override_path, "explicit instructions replace all default prompt modules and automatic context; tool catalog remains usable").await?;
+        success(&output, &override_path, "project-context-answer")?;
+        assert_eq!(
+            wire_instructions(&provider.lock().unwrap().log.last().unwrap()["request"]),
+            "fixture-explicit-instructions"
+        );
+
+        // Truncation is visible on the wire, and large skill bodies stay lazy.
+        let bounded_path = artifact.join("bounded");
+        std::fs::create_dir_all(&bounded_path)?;
+        std::fs::write(
+            workspace.join("AGENTS.md"),
+            format!(
+                "fixture-bounded-start{}fixture-bounded-end",
+                "a".repeat(64_000)
+            ),
+        )?;
+        for n in 0..80 {
+            let skill = workspace.join(format!(".agents/skills/bounded-{n:02}"));
+            std::fs::create_dir_all(&skill)?;
+            std::fs::write(
+                skill.join("SKILL.md"),
+                format!(
+                    "---\nname: bounded-{n:02}\ndescription: Bounded skill fixture\n---\nfixture-unloaded-skill-body"
+                ),
+            )?;
+        }
+        let mut invocation = context_command(&workspace, &servers, family);
+        invocation.arg("BOUNDED_ROOT");
+        let output = run(invocation, &bounded_path, "family-bounded project excerpts and skill catalog, visible truncation, no skill bodies").await?;
+        success(&output, &bounded_path, "project-context-answer")?;
+        let system = wire_instructions(&provider.lock().unwrap().log.last().unwrap()["request"]);
+        assert!(system.contains("fixture-bounded-start"));
+        assert!(!system.contains("fixture-bounded-end"));
+        assert!(system.contains("\"truncated\":true"));
+        assert_eq!(
+            system.matches("/SKILL.md").count(),
+            if family == "claude" { 64 } else { 32 }
+        );
+        assert!(!system.contains("fixture-unloaded-skill-body"));
+        assert!(system.len() < if family == "claude" { 80_000 } else { 40_000 });
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn native_cli_project_context_rejects_symlinks_and_special_files() -> Result<()> {
+    use std::os::unix::fs::symlink;
+    let artifact = artifact("native-project-context-symlinks")?;
+    let workspace = artifact.join("workspace");
+    let outside = artifact.join("outside");
+    std::fs::create_dir_all(outside.join("skills/escaped"))?;
+    std::fs::write(outside.join("AGENTS.md"), "fixture-symlink-secret")?;
+    std::fs::write(outside.join("CLAUDE.md"), "fixture-symlink-secret")?;
+    std::fs::write(
+        outside.join("skills/escaped/SKILL.md"),
+        "fixture-symlink-skill-secret",
+    )?;
+    symlink(outside.join("AGENTS.md"), workspace.join("AGENTS.md"))?;
+    symlink(&outside, workspace.join(".claude"))?;
+    std::fs::create_dir_all(workspace.join(".agents/skills"))?;
+    symlink(
+        outside.join("skills/escaped"),
+        workspace.join(".agents/skills/escaped"),
+    )?;
+    nix::unistd::mkfifo(&workspace.join("CLAUDE.md"), nix::sys::stat::Mode::S_IRUSR)?;
+    let provider = Arc::new(Mutex::new(Provider {
+        root: "claude",
+        journey: Journey::Smoke,
+        counts: HashMap::new(),
+        log: vec![],
+        artifact: artifact.clone(),
+        pauses: 0,
+        cancellations: 0,
+        connections: vec![],
+    }));
+    let servers = servers(Arc::clone(&provider)).await?;
+    {
+        let family = "claude";
+        let path = artifact.join(family);
+        std::fs::create_dir_all(&path)?;
+        let mut invocation = context_command(&workspace, &servers, family);
+        invocation.arg("SYMLINK_ROOT");
+        let output = run(invocation, &path, "symlinked file/directory/skill and FIFO excluded; CLI reaches provider and completes without blocking").await?;
+        success(&output, &path, "claude-only-answer")?;
+        let system = wire_instructions(&provider.lock().unwrap().log.last().unwrap()["request"]);
+        assert!(!system.contains("fixture-symlink"));
+        assert!(!system.contains("escaped/SKILL.md"));
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn native_cli_cross_family_children_resolve_defaults_and_preserve_explicit_override()
+-> Result<()> {
+    let mut defaults = HashMap::<String, String>::new();
+    for family in ["claude", "codex"] {
+        for custom in [false, true] {
+            let artifact = artifact(&format!("{family}-context-routing-{custom}"))?;
+            let workspace = artifact.join("workspace");
+            context_files(&workspace)?;
+            let provider = Arc::new(Mutex::new(Provider {
+                root: family,
+                journey: Journey::ContextRouting,
+                counts: HashMap::new(),
+                log: vec![],
+                artifact: artifact.clone(),
+                pauses: 0,
+                cancellations: 0,
+                connections: vec![],
+            }));
+            let servers = servers(Arc::clone(&provider)).await?;
+            let mut invocation = context_command(&workspace, &servers, family);
+            if custom {
+                invocation.args(["--instructions", "fixture-cross-family-override"]);
+            }
+            invocation.arg("CONTEXT_ROUTING_ROOT");
+            let output = run(invocation, &artifact, "root spawns Claude and Codex children; family defaults independent of parent, explicit replacement inherited without context").await?;
+            success(&output, &artifact, "context-routing-answer")?;
+            let provider = provider.lock().unwrap();
+            if family != "claude" {
+                assert!(
+                    provider.log.last().unwrap()["tool_result"]
+                        .to_string()
+                        .contains("context-routing-ok")
+                );
+            }
+            for target in ["claude", "codex"] {
+                let call = provider
+                    .log
+                    .iter()
+                    .find(|call| call["family"] == target && call["label"] == "child")
+                    .expect("missing child dispatch");
+                let system = wire_instructions(&call["request"]);
+                if custom {
+                    if family == "codex" && target == "codex" {
+                        // Codex retains its host-authored delegation guidance with an
+                        // explicit primary instruction; same-family children inherit
+                        // that exact effective instruction observed on the wire.
+                        let root = provider
+                            .log
+                            .iter()
+                            .find(|call| call["label"] == "root")
+                            .expect("missing root dispatch");
+                        let inherited = wire_instructions(&root["request"]);
+                        assert!(inherited.starts_with("fixture-cross-family-override"));
+                        assert!(!inherited.contains("fixture-agents-context"));
+                        assert!(!inherited.contains("fixture-claude-context"));
+                        assert_eq!(system, inherited);
+                    } else {
+                        assert_eq!(system, "fixture-cross-family-override");
+                    }
+                } else if target != "codex" {
+                    assert!(system.contains("fixture-agents-context"));
+                    assert_eq!(
+                        system.contains("fixture-claude-context"),
+                        target == "claude"
+                    );
+                    if let Some(previous) = defaults.insert(target.into(), system.clone()) {
+                        assert_eq!(
+                            system, previous,
+                            "child defaults changed with parent family"
+                        );
+                    }
+                    if target == family {
+                        assert_eq!(
+                            system,
+                            wire_instructions(&provider.log[0]["request"]),
+                            "same-family child lost root defaults"
+                        );
+                    }
+                } else {
+                    assert!(!system.contains("fixture-claude-context"));
+                    if family != "codex" {
+                        assert_ne!(
+                            system,
+                            wire_instructions(&provider.log[0]["request"]),
+                            "Codex inherited native root defaults"
+                        );
+                    }
+                }
+            }
+        }
+    }
     Ok(())
 }

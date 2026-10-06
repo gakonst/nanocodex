@@ -222,7 +222,7 @@ async fn caller_native_mcp_preserves_transport_results_and_live_catalog_failures
         json!({"model":"claude","session":"session-a","turn":"turn-a","call":"mcp-call","output_budget":4096})
     );
     let artifact = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../outputs/provider-managed-20261001/crates/mcp-native");
+        .join("../../output/provider-managed-20261001/crates/mcp-native");
     std::fs::create_dir_all(&artifact).unwrap();
     std::fs::write(
         artifact.join("requests.json"),

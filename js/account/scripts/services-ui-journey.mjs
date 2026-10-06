@@ -72,9 +72,9 @@ await mf.ready;
 await build({stdin:{contents:`
 import './src/index.css';import React from 'react';import {createRoot} from 'react-dom/client';
 import {QueryClient,QueryClientProvider} from '@tanstack/react-query';
-import {AccountSessionProvider} from './src/AccountSession';
+import {AccountSessionProvider} from './src/AccountSession';import {BrowserRouter} from 'react-router';
 import {Vault} from './src/Vault';import {PhoneService} from './src/PhoneService';
-createRoot(document.getElementById('root')).render(<QueryClientProvider client={new QueryClient()}><AccountSessionProvider>{location.pathname==='/services/phone'?<PhoneService/>:<Vault/>}</AccountSessionProvider></QueryClientProvider>);
+createRoot(document.getElementById('root')).render(<QueryClientProvider client={new QueryClient()}><AccountSessionProvider><BrowserRouter>{location.pathname==='/services/phone'?<PhoneService/>:<Vault/>}</BrowserRouter></AccountSessionProvider></QueryClientProvider>);
 `,resolveDir:path.join(root,'js/account'),sourcefile:'services-journey.tsx',loader:'tsx'},bundle:true,format:'esm',jsx:'automatic',external:['/paradigm-mark.svg'],outfile:path.join(output,'journey.js')});
 // Serve the shipped asset policy through the production document response router.
 const assetHeaders=new Headers({'content-type':'text/html'});
@@ -109,14 +109,15 @@ const server=http.createServer(async(req,res)=>{
   }catch(error){console.error(error);res.statusCode=500;res.end('fixture transport error');}
 });
 await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));origin=`http://127.0.0.1:${server.address().port}`;
-const parent=http.createServer((req,res)=>{res.setHeader('content-type','text/html');res.end('<!doctype html><button id="open">Enroll authenticator</button><script>window.receipts=[];addEventListener("message",e=>receipts.push({origin:e.origin,value:e.data}));document.getElementById("open").onclick=()=>window.open('+JSON.stringify(origin)+'+(new URLSearchParams(location.search).get("service")=="phone"?"/services/phone?operation_id="+new URLSearchParams(location.search).get("operation_id")+"&":"/vault?")+(new URLSearchParams(location.search).get("service")==="general"?"":"service="+(new URLSearchParams(location.search).get("service")||"totp")+"&")+"enrollment_origin="+encodeURIComponent(location.origin)+"&state=synthetic_enrollment_state_123","enrollment");</script>');});
+const parent=http.createServer((req,res)=>{res.setHeader('content-type','text/html');res.end('<!doctype html><button id="open">Enroll authenticator</button><script>window.receipts=[];addEventListener("message",e=>receipts.push({origin:e.origin,value:e.data}));document.getElementById("open").onclick=()=>window.open('+JSON.stringify(origin)+'+(new URLSearchParams(location.search).get("service")=="phone"?"/services/phone?operation_id="+new URLSearchParams(location.search).get("operation_id")+"&":"/vault?")+(new URLSearchParams(location.search).get("service")==="general"?"":"service="+(new URLSearchParams(location.search).get("service")||"totp")+"&"+(new URLSearchParams(location.search).has("kind")?"kind="+new URLSearchParams(location.search).get("kind")+"&":""))+"enrollment_origin="+encodeURIComponent(location.origin)+"&state=synthetic_enrollment_state_123","enrollment");</script>');});
 await new Promise(resolve=>parent.listen(0,'127.0.0.1',resolve));
 const browser=await chromium.launch({executablePath:process.env.CHROME_PATH||chromium.executablePath(),headless:true,args:['--no-sandbox']});
 const context=await browser.newContext({viewport:{width:390,height:844}}), page=await context.newPage();
 const errors=[];context.on('page',p=>p.on('pageerror',error=>errors.push(error.message)));page.on('pageerror',error=>errors.push(error.message));
 async function see(text,p=page){await p.getByText(text,{exact:true}).waitFor();}
 async function click(name,p=page){await p.getByRole('button',{name,exact:true}).click();}
-async function seedForm(p=page){await click('Add authenticator',p);await p.getByLabel('Enrollment format').selectOption('seed');await p.getByLabel('Name',{exact:true}).fill('Synthetic authenticator');await p.getByLabel('Website origin').fill('https://login.example.test');await p.getByLabel('Setup key',{exact:true}).fill(seed);await p.getByLabel('Issuer',{exact:true}).fill('Example');await p.getByLabel('Account label').fill('synthetic@example.test');}
+async function addItem(label,p=page){await click('Add item',p);await p.getByRole('menuitem',{name:label,exact:true}).click();}
+async function seedForm(p=page){if(!new URL(p.url()).searchParams.has('add'))await addItem('Add authenticator',p);await p.getByLabel('Enrollment format').selectOption('seed');await p.getByLabel('Name',{exact:true}).fill('Synthetic authenticator');await p.getByLabel('Website origin').fill('https://login.example.test');await p.getByLabel('Setup key',{exact:true}).fill(seed);await p.getByLabel('Issuer',{exact:true}).fill('Example');await p.getByLabel('Account label').fill('synthetic@example.test');}
 async function approveQuote(){assert.equal(await page.getByRole('button',{name:'Approve purchase',exact:true}).isEnabled(),false);await page.getByRole('checkbox').check();await click('Approve purchase');}
 try {
   await page.goto(origin+'/vault?service=totp');await page.getByRole('textbox',{name:'Mobile number'}).waitFor();
@@ -126,13 +127,13 @@ try {
   await page.getByLabel('Website origin').fill('https://login.example.test/path');const before=trace.filter(r=>r.method==='POST').length;await click('Save');await page.getByRole('alert').filter({hasText:'Enter an exact HTTPS origin'}).waitFor();assert.equal(trace.filter(r=>r.method==='POST').length,before);
   await page.getByLabel('Website origin').fill('https://login.example.test');await click('Save');await see('Authenticator saved to Vault.');await see('Synthetic authenticator');assert.equal(await page.getByRole('dialog').count(),0);
   assert.equal((await page.locator('body').textContent()).includes(seed),false);
-  await click('Add authenticator');await page.getByLabel('Name',{exact:true}).fill('URI authenticator');await page.getByLabel('Website origin').fill('https://login.example.test');await page.getByLabel('Authenticator URI',{exact:true}).fill('otpauth://totp/Example:test?secret=BAD');await click('Save');await page.getByRole('dialog').getByRole('alert').waitFor();assert.equal(await page.getByLabel('Authenticator URI',{exact:true}).inputValue(),'');
+  await addItem('Add authenticator');await page.getByLabel('Name',{exact:true}).fill('URI authenticator');await page.getByLabel('Website origin').fill('https://login.example.test');await page.getByLabel('Authenticator URI',{exact:true}).fill('otpauth://totp/Example:test?secret=BAD');await click('Save');await page.getByRole('alert').filter({hasText:'Couldn’t save the item'}).waitFor();assert.equal(await page.getByLabel('Authenticator URI',{exact:true}).inputValue(),'');
   await page.getByLabel('Authenticator URI',{exact:true}).fill(`otpauth://totp/Example:test?secret=${seed}&issuer=Example`);await click('Save');await see('URI authenticator');
   await page.screenshot({path:path.join(output,'vault-saved.png'),fullPage:true});
   const parentPage=await context.newPage();
   const parentOrigin=`http://127.0.0.1:${parent.address().port}`;
-  async function openVault(service,operationId='') {
-    await parentPage.goto(parentOrigin+'?service='+service+'&operation_id='+operationId);
+  async function openVault(service,operationId='',kind='') {
+    await parentPage.goto(parentOrigin+'?service='+service+'&operation_id='+operationId+(kind?'&kind='+kind:''));
     const opened=parentPage.waitForEvent('popup');await click('Enroll authenticator',parentPage);
     const popup=await opened;await popup.waitForLoadState();
     assert.equal(await popup.evaluate(()=>window.opener!==null),true);
@@ -145,6 +146,67 @@ try {
   await popup.screenshot({path:path.join(output,'vault-recipient-consent.png'),fullPage:true});
   await click('Save',popup);await parentPage.waitForFunction(()=>window.receipts.length===1,undefined,{timeout:5000});
   const callback=await parentPage.evaluate(()=>window.receipts[0]);assert.equal(callback.origin,origin);assert.deepEqual(Object.keys(callback.value).sort(),['type','service','state','vault_id','kind','name','origin'].sort());assert.equal(callback.value.origin,'https://login.example.test');assert.equal(callback.value.state,'synthetic_enrollment_state_123');assert.equal(JSON.stringify(callback).includes(seed),false);trace.push({verified:'explicit recipient consent metadata-only enrollment callback',callback});await popup.close();
+  const privateInputs = [seed,'synthetic-login-password-981','synthetic-enrollment-key-982','4242424242424242','731','219 Synthetic Private Lane','+14155550987','synthetic-picker-private-key'];
+  async function assertNoPrivateSurface(p) {
+    const surface = await p.locator('body').evaluate(body => body.innerText + body.outerHTML + [...body.querySelectorAll('input,textarea')].map(input => input.value).join(' '));
+    const receipts = JSON.stringify(await parentPage.evaluate(()=>window.receipts));
+    for (const secret of [privateInputs[0], privateInputs[1], privateInputs[2], privateInputs[3], privateInputs[7]]) {
+      assert.equal(surface.includes(secret),false,'secret retained in completed/cancelled DOM');
+      assert.equal(receipts.includes(secret),false,'secret disclosed in callback');
+      assert.equal(JSON.stringify(trace).includes(secret),false,'secret disclosed in trace');
+      assert.equal(logs.join('\n').includes(secret),false,'secret disclosed in worker log');
+    }
+  }
+  const enrollmentCases = [
+    {kind:'login',label:'Add login',fields:{'Website (optional)':'https://login.example.test','Username':'synthetic-user','Password':privateInputs[1]},origin:'https://login.example.test'},
+    {kind:'api_key',label:'Add API key',fields:{'API key':privateInputs[2]}},
+    {kind:'card',label:'Add card',fields:{'Card number':privateInputs[3],'Expiry month':'12','Expiry year':'2035','CVV':privateInputs[4],'Billing ZIP':'94105'}},
+    {kind:'address',label:'Add address',fields:{'Address line 1':privateInputs[5],'City':'San Francisco','State':'CA','ZIP':'94105','Country':'US'}},
+    {kind:'phone',label:'Add phone',fields:{'Phone number':privateInputs[6]}},
+    {kind:'totp',label:'Add authenticator',fields:{}}
+  ];
+  const writeCount=()=>trace.filter(r=>['POST','PUT','PATCH','DELETE'].includes(r.method)).length;
+  for (const specimen of enrollmentCases) {
+    const beforeOpen=writeCount();
+    popup=await openVault('enroll','',specimen.kind);
+    await popup.getByRole('heading',{name:'Vault',exact:true}).waitFor();
+    if(specimen.kind==='totp') await seedForm(popup);
+    else {
+      if(!new URL(popup.url()).searchParams.has('add'))await addItem(specimen.label,popup);
+      await popup.getByLabel('Name',{exact:true}).fill('Hosted '+specimen.kind);
+      for(const [label,value] of Object.entries(specimen.fields))await popup.getByLabel(label,{exact:true}).fill(value);
+    }
+    assert.equal(writeCount(),beforeOpen,'opening/filling never writes');
+    assert.deepEqual(await parentPage.evaluate(()=>window.receipts),[]);
+    assert.equal(await popup.getByRole('button',{name:'Save',exact:true}).isEnabled(),false);
+    await click('Cancel',popup);
+    await popup.getByRole('button',{name:'Add item',exact:true}).waitFor();
+    assert.equal(writeCount(),beforeOpen,'cancel never writes');
+    assert.deepEqual(await parentPage.evaluate(()=>window.receipts),[]);
+    await assertNoPrivateSurface(popup);
+    if(specimen.kind==='totp')await seedForm(popup);
+    else {
+      await addItem(specimen.label,popup);
+      for(const [label,value] of Object.entries(specimen.fields))await popup.getByLabel(label,{exact:true}).fill(value);
+    }
+    await popup.getByLabel('Name',{exact:true}).fill('Hosted '+specimen.kind);
+    await popup.getByRole('checkbox',{name:'Share completion with '+parentOrigin+'. This includes the saved name, kind, and Vault ID.',exact:true}).check();
+    await click('Save',popup);
+    await parentPage.waitForFunction(()=>window.receipts.length===1,undefined,{timeout:5000});
+    await popup.getByRole('button',{name:'Add item',exact:true}).waitFor();
+    const receipt=await parentPage.evaluate(()=>window.receipts[0]);
+    const expectedOrigin=specimen.kind==='totp'?'https://login.example.test':specimen.origin;
+    assert.equal(receipt.origin,origin);
+    assert.deepEqual(Object.keys(receipt.value).sort(),['type','service','state','vault_id','kind','name',...(expectedOrigin?['origin']:[])].sort());
+    assert.equal(receipt.value.type,'nanocodex:service-enrollment');assert.equal(receipt.value.service,'vault');
+    assert.equal(receipt.value.state,'synthetic_enrollment_state_123');assert.equal(receipt.value.kind,specimen.kind);
+    assert.equal(receipt.value.name,'Hosted '+specimen.kind);assert.ok(receipt.value.vault_id);
+    assert.equal(receipt.value.origin,expectedOrigin);assert.equal(writeCount(),beforeOpen+1);
+    await assertNoPrivateSurface(popup);
+    trace.push({verified:'hosted '+specimen.kind+' explicit recipient consent; cancel/open no write; metadata only; private inputs cleared',callback:receipt});
+    await popup.close();
+  }
+  console.log('PASS all six hosted Vault kinds: explicit recipient consent, cancellation without writes, metadata-only callback, secrets cleared');
   // Regression: a general Vault link carrying callback parameters must never publish new item metadata.
   popup=await openVault('general');await seedForm(popup);await popup.getByLabel('Name',{exact:true}).fill('General Vault private item');
   assert.equal(await popup.getByRole('checkbox',{name:/Share completion/}).count(),0);
@@ -153,7 +215,7 @@ try {
   // A browser round-trip synchronizes after the completed response and reloaded metadata.
   await parentPage.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
   assert.deepEqual(await parentPage.evaluate(()=>window.receipts),[]);
-  await click('Add API key',popup);await popup.getByLabel('Name',{exact:true}).fill('Existing API credential');await popup.getByLabel('API key',{exact:true}).fill('synthetic-picker-private-key');await click('Save',popup);await see('Existing API credential',popup);
+  await addItem('Add API key',popup);await popup.getByLabel('Name',{exact:true}).fill('Existing API credential');await popup.getByLabel('API key',{exact:true}).fill('synthetic-picker-private-key');await click('Save',popup);await see('Existing API credential',popup);
   assert.deepEqual(await parentPage.evaluate(()=>window.receipts),[]);await popup.close();
   const postCount=trace.filter(r=>r.method==='POST').length;
   popup=await openVault('select');await see('Choose a Vault item',popup);

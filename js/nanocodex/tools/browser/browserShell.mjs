@@ -1,6 +1,4 @@
 import "./browserBuffer.mjs";
-import git from "isomorphic-git";
-import http from "isomorphic-git/http/web";
 import { artifact } from "../artifact.mjs";
 import { createJustBashRuntime } from "../bash.mjs";
 import { createBrowserEgressFetch } from "./browserEgress.mjs";
@@ -124,7 +122,6 @@ export async function loadBrowserProjectInstructions(rawFs) {
 }
 /** Builds the browser shell over an already-open OPFS Git adapter. */
 export async function createBrowserBash(rawFs, thread, options = {}) {
-    const { createTwoFilesPatch } = await import("diff");
     const filesystem = new OpfsShellFileSystem(rawFs);
     await filesystem.refreshPaths();
     const executionTimeoutMs = options.executionTimeoutMs;
@@ -166,7 +163,7 @@ export async function createBrowserBash(rawFs, thread, options = {}) {
         fetch: shellFetch,
         networkMode: "connector-http-gateway",
         customCommands: ({ defineCommand }) => [
-          gitCommand(rawFs, thread, filesystem, defineCommand, createTwoFilesPatch),
+          gitCommand(rawFs, thread, filesystem, defineCommand),
           createGhCompatibilityCommand(rawFs, thread, defineCommand, {
               fetch: shellFetch,
           }),
@@ -266,7 +263,7 @@ push origin nanocodex. Use the standard Rust apply_patch tool for focused edits.
 custom React interfaces with the render_artifact tool. Its source defines function App({ sendPrompt });
 React and the html tagged template helper are already in scope.`;
 }
-function gitCommand(fs, thread, shellFs, defineCommand, createTwoFilesPatch) {
+function gitCommand(fs, thread, shellFs, defineCommand) {
     return defineCommand("git", async (args, context) => {
         try {
             const command = args[0];
@@ -297,15 +294,17 @@ function gitCommand(fs, thread, shellFs, defineCommand, createTwoFilesPatch) {
                 case "log":
                     return ok(await gitLog(fs, args.slice(1)));
                 case "diff":
-                    return ok(await gitDiff(fs, args.slice(1), createTwoFilesPatch));
+                    return ok(await gitDiff(fs, args.slice(1)));
                 case "branch":
                     return ok(gitBranch(thread, args.slice(1)));
                 case "rev-parse":
                     return ok(await gitRevParse(fs, thread, args.slice(1)));
                 case "remote":
                     return ok(gitRemote(thread, args.slice(1)));
-                case "ls-files":
+                case "ls-files": {
+                    const { default: git } = await import("isomorphic-git");
                     return ok(`${(await git.listFiles({ fs, dir: THREAD_GIT_DIRECTORY })).join("\n")}\n`);
+                }
                 default:
                     return fail(`git: '${command}' is not implemented by browser git\n${gitHelp()}`, 1);
             }
@@ -517,6 +516,7 @@ function numberField(value, field) {
     return current;
 }
 async function gitStatus(fs, thread, args) {
+    const { default: git } = await import("isomorphic-git");
     const matrix = await git.statusMatrix({ fs, dir: THREAD_GIT_DIRECTORY });
     const changed = matrix.filter(([, head, workdir, stage]) => head !== workdir || head !== stage);
     if (args.includes("--short") || args.includes("-s") || args.includes("--porcelain")) {
@@ -538,6 +538,7 @@ async function gitStatus(fs, thread, args) {
     ].join("\n");
 }
 async function gitAdd(fs, args, cwd, onStaged) {
+    const { default: git } = await import("isomorphic-git");
     const requested = args.filter((arg) => !arg.startsWith("-"));
     if (!requested.length && !args.includes("-A") && !args.includes("--all")) {
         throw new Error("nothing specified, nothing added");
@@ -565,6 +566,7 @@ async function gitAdd(fs, args, cwd, onStaged) {
     return "";
 }
 async function gitCommit(fs, args) {
+    const { default: git } = await import("isomorphic-git");
     const messageIndex = args.findIndex((arg) => arg === "-m" || arg === "--message");
     const message = messageIndex >= 0 ? args[messageIndex + 1] : undefined;
     if (!message?.trim())
@@ -581,6 +583,8 @@ async function gitCommit(fs, args) {
     return `[nanocodex ${oid.slice(0, 7)}] ${message}\n`;
 }
 async function gitPush(fs, thread, args) {
+    const { default: http } = await import("isomorphic-git/http/web");
+    const { default: git } = await import("isomorphic-git");
     assertRemoteAndBranch(args, thread);
     const head = await resolveHead(fs);
     if (!head)
@@ -596,6 +600,8 @@ async function gitPush(fs, thread, args) {
     return `To ${thread.remoteUrl}\n   ${head.slice(0, 7)}  ${thread.branch} -> ${thread.branch}\n`;
 }
 async function gitPull(fs, thread, args) {
+    const { default: http } = await import("isomorphic-git/http/web");
+    const { default: git } = await import("isomorphic-git");
     assertRemoteAndBranch(args, thread);
     await git.pull({
         fs,
@@ -608,6 +614,7 @@ async function gitPull(fs, thread, args) {
     return `Pulled origin/${thread.branch}.\n`;
 }
 async function gitLog(fs, args) {
+    const { default: git } = await import("isomorphic-git");
     const countArgument = args.find((arg) => /^-\d+$/.test(arg));
     const depth = countArgument ? Number(countArgument.slice(1)) : 20;
     if (!Number.isSafeInteger(depth) || depth < 1) {
@@ -626,7 +633,9 @@ async function gitLog(fs, args) {
         "",
     ].join("\n")).join("\n");
 }
-async function gitDiff(fs, args, createTwoFilesPatch) {
+async function gitDiff(fs, args) {
+    const { default: git } = await import("isomorphic-git");
+    const { createTwoFilesPatch } = await import("diff");
     if (args.includes("--cached") || args.includes("--staged")) {
         throw new Error("--cached is not implemented by browser git yet");
     }
@@ -727,6 +736,7 @@ function assertRemoteAndBranch(args, thread) {
     }
 }
 async function resolveHead(fs) {
+    const { default: git } = await import("isomorphic-git");
     return git.resolveRef({ fs, dir: THREAD_GIT_DIRECTORY, ref: "HEAD" }).catch(() => undefined);
 }
 function indexCode(head, stage) {

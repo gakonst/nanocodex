@@ -1,3 +1,4 @@
+import { Sparkles } from "lucide-react";
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { decodeClaudeLogin, type CredentialStatus } from "./modelCredentials";
 import "./ClaudeConnection.css";
@@ -78,6 +79,7 @@ export function ClaudeConnection({ status, disabled, onChanged }: Readonly<{
   return <div className="wizard-connector-card chatgpt-accounts" id="claude-connection" role="listitem" ref={card}>
     <button className={`connection-card${status.connected ? " is-connected" : ""}`}
       type="button" disabled={disabled || pending} onClick={() => void (status.connected ? disconnect() : start())}>
+      <span className="connector-logo" aria-hidden="true"><Sparkles fill="none" /></span>
       <span className="connection-card-copy">
         <strong>Claude</strong>
         <span>{status.connected ? "Subscription connected · Check the model picker for available models"

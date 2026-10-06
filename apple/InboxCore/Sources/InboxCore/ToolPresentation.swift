@@ -28,6 +28,8 @@ public struct ToolPresentation: Codable, Equatable, Sendable {
     var nativeSecureInputEligible: Bool?
     public var permissionRequest: PermissionRequest?
     var permissionRequestEligible: Bool?
+    public var whatsAppLink: WhatsAppLink?
+    var whatsAppLinkEligible: Bool?
     public var vaultIntake: VaultIntake?
     var vaultIntakeEligible: Bool?
     var terminalCommand: Bool?
@@ -54,6 +56,7 @@ public struct ToolPresentation: Codable, Equatable, Sendable {
         if family.hasPrefix("mcp__") { family = family.components(separatedBy: "__").dropFirst(2).joined(separator: "_") }
         if family.hasPrefix("functions.") { family = String(family.dropFirst(10)) }
         generatedIsComputerScreen = Self.isComputerCapture(name: attributedName, family: family, arguments: Self.decoded(arguments))
+        whatsAppLinkEligible = attributedName == "account_connectors" || attributedName == "functions.account_connectors"
         permissionRequestEligible = family == "request_permissions"
         secureInputEligible = family == "request_secure_input"
         nativeSecureInputEligible = family == "request_native_secure_input"
@@ -99,6 +102,7 @@ public struct ToolPresentation: Codable, Equatable, Sendable {
         status = state == "cancelled" ? "Stopped" : isFailure ? "Failed" : processRunning ? "Running" : "Completed"
         if !metadata["tool_name"].string.isEmpty || !metadata["toolName"].string.isEmpty {
             let presentation = ToolPresentation(name: "", arguments: .null, metadata: metadata)
+            whatsAppLinkEligible = presentation.whatsAppLinkEligible
             secureInputEligible = presentation.secureInputEligible
             nativeSecureInputEligible = presentation.nativeSecureInputEligible
             vaultIntakeEligible = presentation.vaultIntakeEligible
@@ -107,6 +111,7 @@ public struct ToolPresentation: Codable, Equatable, Sendable {
             title = presentation.title; generatedIncludesText = presentation.generatedIncludesText
             generatedIsInspection = generatedIsInspection == true || presentation.generatedIsInspection == true
         }
+        whatsAppLink = whatsAppLinkEligible == true && status == "Completed" ? (WhatsAppLink.parse(value) ?? WhatsAppLink.parse(rawResult)) : nil
         secureInput = nil
         if status == "Completed", let request = SecureInputRequest.parse(value) ?? SecureInputRequest.parse(rawResult),
            request.isNative ? nativeSecureInputEligible == true : secureInputEligible == true {
@@ -131,6 +136,8 @@ public struct ToolPresentation: Codable, Equatable, Sendable {
     mutating func applyCompletion(_ result: Self, metadata: JSON) {
         generatedIsComputerScreen = generatedIsComputerScreen == true || result.generatedIsComputerScreen == true
         status = result.status; output = result.output; generatedResults = result.generatedResults
+        whatsAppLink = result.whatsAppLink
+        whatsAppLinkEligible = result.whatsAppLinkEligible
         permissionRequest = result.permissionRequest
         permissionRequestEligible = result.permissionRequestEligible
         vaultIntake = result.vaultIntake

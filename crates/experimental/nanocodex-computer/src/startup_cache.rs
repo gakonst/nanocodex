@@ -105,8 +105,9 @@ fn hex(digest: Sha256) -> String {
 }
 
 /// The whole tree participates, including directories, nested resources and
-/// symlinks. ctime catches edits with a restored mtime; inode/device catch
-/// replacement. Symlinks outside the tree and unusual filesystem entries are
+/// symlinks and regular-file contents. Content hashes catch same-size edits even
+/// when restored mtime and filesystem ctime granularity hide the mutation;
+/// inode/device catch replacement. Symlinks outside the tree and unusual filesystem entries are
 /// deliberately uncacheable. No content digest or signature check is skipped
 /// after any observed mutation. The scan is bounded even for a damaged bundle.
 #[cfg(any(target_os = "macos", test))]
@@ -114,7 +115,9 @@ pub(crate) fn fingerprint(root: &Path) -> Option<String> {
     let root = root.canonicalize().ok()?;
     let mut pending = vec![(root.clone(), 0)];
     let mut count = 0;
+    let mut remaining_bytes = 2 * 1024 * 1024 * 1024u64;
     let mut digest = Sha256::new();
+    part(&mut digest, b"nanocodex-bundle-content-v2");
     part(&mut digest, root.as_os_str().as_bytes());
     while let Some((path, depth)) = pending.pop() {
         count += 1;
@@ -177,7 +180,46 @@ pub(crate) fn fingerprint(root: &Path) -> Option<String> {
                 return None;
             }
             pending.extend(children.into_iter().rev().map(|path| (path, depth + 1)));
-        } else if !metadata.is_file() {
+        } else if metadata.is_file() {
+            remaining_bytes = remaining_bytes.checked_sub(metadata.len())?;
+            let mut file = OpenOptions::new()
+                .read(true)
+                .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+                .open(&path)
+                .ok()?;
+            let identity = |m: &fs::Metadata| {
+                (
+                    m.dev(),
+                    m.ino(),
+                    m.mode(),
+                    m.len(),
+                    m.mtime(),
+                    m.mtime_nsec(),
+                    m.ctime(),
+                    m.ctime_nsec(),
+                )
+            };
+            if identity(&file.metadata().ok()?) != identity(&metadata) {
+                return None;
+            }
+            let mut remaining = metadata.len();
+            let mut buffer = [0u8; 64 * 1024];
+            while remaining > 0 {
+                let length = remaining.min(buffer.len() as u64) as usize;
+                let read = file.read(&mut buffer[..length]).ok()?;
+                if read == 0 {
+                    return None;
+                }
+                digest.update(&buffer[..read]);
+                remaining -= read as u64;
+            }
+            if file.read(&mut buffer[..1]).ok()? != 0
+                || identity(&file.metadata().ok()?) != identity(&metadata)
+                || identity(&fs::symlink_metadata(&path).ok()?) != identity(&metadata)
+            {
+                return None;
+            }
+        } else {
             return None;
         }
     }

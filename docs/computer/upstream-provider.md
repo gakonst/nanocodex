@@ -7,15 +7,12 @@ automatic installation/launch path is disabled before side effects. They expose
 its actual MCP catalog, including descriptions, schemas, metadata, and visibility.
 Production Code Mode remains QuickJS; the provider uses its own bundled Node.
 
-The lean managed **macOS** launcher enables only the upstream `computer`
-surface. Browser windows remain controllable through native UI, but dedicated
-browser inventory/Tab/DOM APIs and the official Chrome native-messaging bridge
-are not enabled. The shipped bridge contains an app-server proxy. The extension browser data-plane
-is separable, but a replacement relay needs verified peer authentication and
-browser policy/session integration before it can be supported without Codex. Hosted browser CDP
-and other Hands' screen providers are separate paths and are not changed here.
-Mac setup regenerates Nanocodex host assets independently of the cached signed
-bundle; a launcher update does not require `--refresh`.
+The managed **macOS** launcher enables upstream `browser,computer` surfaces and
+TinySky. Its own native-message relay replaces the official Chrome app-server
+proxy. The signed CUA and Sky components remain unchanged; no official Codex CLI
+or app server runs. Hosted browser CDP and other Hands' screen providers remain
+separate paths. Setup regenerates immutable Nanocodex host assets independently
+of the cached signed bundle; a launcher update does not require `--refresh`.
 
 ```sh
 nanocodex2 computer setup           # provision once or verify/reuse the cache
@@ -23,9 +20,13 @@ nanocodex2 computer setup --refresh # check OpenAI's feed and update changed com
 # Both commands are also available as nanocodex computer setup.
 ```
 
-`nanocodex setup` is the guided, resumable path: it signs in to the shared account,
-installs CUA, and ensures Hand is connected. On macOS it does not install or offer
-the official browser extension, whose native bridge still depends on app-server.
+`nanocodex setup` is the guided, resumable path. On macOS it installs the dormant
+Hand first, starts CUA preparation in the background, then signs in and connects
+the Hand. CLI account sign-in also connects the installed Hand automatically;
+CUA download completion is not a prerequisite. `setup --skip-account` prepares
+an unsigned-in Mac for later login. On macOS setup registers the Nanocodex native-message bridge for supported
+installed browsers. It does not install extensions, open browsers or modify
+profiles; extension-backed APIs require a compatible enabled extension.
 CUA uses the direct MCP host without the official Codex binary or desktop GUI.
 The trusted host owns app-access consent; protected-target and OS permission
 checks remain native. See [direct MCP host](direct-mcp-host.md).
@@ -72,12 +73,45 @@ never automatically replay that input.
 
 ## Browser selection
 
-The lean managed macOS runtime does not expose the dedicated browser surface.
-Use `cua.getApp` and the upstream native UI APIs for browser windows. Do not use
-`cua.getTab`, `cua.createBrowserTab`, or DOM APIs on that launcher. A custom,
-explicit browser-enabled provider may have different dependencies and semantics;
-read its actual discovered contract. Enabling it does not establish that it is
-free of Codex/app-server.
+Read the provider's actual discovered browser declarations before selecting a
+browser or tab. Setup prepares the Nanocodex bridge and registers manifests for
+installed Chrome, Chrome Beta/Dev/Canary, Chromium, Brave, Edge and Arc apps.
+Only the two supported OpenAI extension origins may connect. The relay enforces
+agent request headers on session commands and reports that effective state only
+when the extension advertises boolean support. The launcher disables ambient
+browser telemetry/identity network requests with
+`BROWSER_USE_DISABLE_AMBIENT_NETWORK=1`; no Codex credentials are fabricated.
+See [browser request marking](direct-mcp-host.md#browser-request-marking). Existing official
+Codex or other non-Nanocodex native-message registrations are preserved and
+reported as conflicts; resolve ownership explicitly before rerunning setup.
+Setup never installs an extension, opens or restarts a browser, or modifies a
+profile. See [the bridge setup contract](direct-mcp-host.md#browser-and-computer-surfaces).
+
+If a running provider reports Browser APIs disabled, its native app controls do
+not provide background tab isolation. Use a supported background browser or an
+isolated desktop; do not activate the user's browser as a fallback.
+
+## Capability boundaries
+
+Browser background tabs and native background apps are separate capabilities.
+The extension owns browser tab groups, leases, handoff marks and tab cleanup;
+the direct relay preserves the upstream protocol. Availability depends on the
+installed extension's advertised capabilities. A successful catalog or synthetic
+relay test does not verify live background screenshots, input, or handoff.
+The extension supports `markHandoff` to retain a tab between turns; the pinned
+API lists `requestManualHandoff` as a cloud-browser feature unavailable by default
+on extension backends. A retained tab does not provide a private credential form.
+
+The pinned macOS Sky API targets native apps by name, path or bundle ID. It does
+not expose the old custom runtime's exact-window selection, independent input
+lanes or per-window agent cursors. Background app launch and an app-scoped action
+do not establish simultaneous human/agent input isolation. Linux and Windows
+window APIs have different contracts; discover the selected provider's API.
+
+Audio capture is not supported by the direct host: it does not forward the
+upstream audio opt-in and declines recording consent. Locked-computer access,
+persistent per-app approval and full managed-policy import are also unavailable.
+These require explicit host integrations, not enabling a browser surface.
 
 ## Native app recovery
 
@@ -137,10 +171,12 @@ claim to install OpenAI's JavaScript provider.
 
 The cache lives under `${NANOCODEX_DIR:-$HOME/.nanocodex}/runtimes/openai-cua`
 (`USERPROFILE` is the Windows fallback). Version directories are immutable after
-installation. Only a complete verified runtime is selected; a failed download or
+installation. Only a complete verified runtime with prepared bridge assets and successful
+manifest registration is selected; a failed download or
 copy preserves the previous selection. Old versions remain available to running
-processes. New managed receipts carry `dependency_contract` equal to
-`nanocodex-native-no-codex-v1`. Automatic discovery rejects unmarked legacy
+processes. New managed macOS receipts carry `dependency_contract` equal to
+`nanocodex-direct-cua-v2`; Linux retains its separate computer-only
+`nanocodex-native-no-codex-v1` contract. Automatic discovery rejects unmarked legacy
 receipts or receipts exporting `CODEX_CLI_PATH`; installation regenerates the
 Mac selection rather than running the old host. Windows automatic discovery
 never reads its old receipt. Explicit external-provider commands remain trusted
@@ -245,8 +281,8 @@ can have partial effects before cancellation; cancellation is never a rollback.
 The installed Linux Sky target controls X11/Xwayland windows. This transport does
 not make native Wayland windows visible to that target. Application-level input
 filters still apply (for example, xterm rejects synthetic SendEvent input by
-default). Dedicated browser Tab/DOM control remains unsupported until the separate
-no-Codex browser integration is verified; native browser-window input is separate.
+default). The Linux host remains computer-only; the managed macOS browser bridge is a
+separate implementation and does not add Linux browser support.
 
 Transport tests: `node --test crates/experimental/nanocodex-computer/tests/linux-sky/host.test.mjs`.
 The new no-Codex wrapper was verified with real upstream MCP catalog/metadata,

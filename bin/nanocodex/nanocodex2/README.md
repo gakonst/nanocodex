@@ -263,6 +263,28 @@ turns continue in the cloud; local shell work is stopped when switching. If
 launching or attaching fails, the source thread stays open and the error includes
 the new agent ID when available. Use `/attach` to return to the source thread.
 
+Press Ctrl+R to search recent prompts across sessions opened on this computer.
+Matches rank by relevance, with recency breaking ties. Ctrl+F switches between
+all cached sessions and the current session; Page Up/Down scrolls the full
+preview. Enter or Tab puts the selected prompt in the composer for editing.
+Esc closes the picker or cancels a pending lookup, preserving your draft.
+
+On macOS and Linux, recent prompts survive restarts and `/reload`. The private
+cache keeps at most
+100 distinct prompts, with a 64 KiB per-prompt and 2 MiB file limit, beside the
+selected account file under `prompt-history/`. Each service and login credential
+has its own cache; switching credentials starts a separate history. Concurrent
+terminals merge their entries. Saved prompts include submitted input and history
+loaded into a terminal; sessions never opened locally are not downloaded for
+this search. If the cache cannot be read, current-session prompts remain usable
+and the terminal reports the error.
+
+Use `/copy` to copy the latest completed assistant message as raw Markdown, or
+`/copy N` for the Nth latest message. **Copy response** is also in the Actions
+menu. Copying uses the focused pane, includes loaded history, and works during
+a response. Empty messages, reasoning, tool output, and unfinished streamed
+messages are excluded. Remote terminals use the terminal clipboard protocol.
+
 Scrolling back through older history keeps typing and live updates responsive.
 `nanocodex2 attach` and the in-TUI `/attach` command show recent threads first,
 ordered by last activity, with titles above session IDs. Type to fuzzy search
@@ -626,6 +648,12 @@ login. It does not require Python or a shell service wrapper. It refuses to
 compete with an existing system LaunchDaemon. Use `--executable PATH` with
 `hand install` for an explicitly selected Hand binary. Starting before user
 login is not supported by these user-service commands.
+
+Installation waits for the Hand to connect to the account. If screen sharing is
+still starting or unavailable, installation succeeds with a warning and the
+service keeps retrying; shell and filesystem access remain available. Check
+Screen Recording permission and `~/.nanocodex/service/daemon.log` for screen
+problems. Repeating `hand install` leaves a connected service running.
 
 `nanocodex update --nightly --restart-hand` stages a complete verified release, switches the
 installed Hand service, waits for that exact executable to publish a connected

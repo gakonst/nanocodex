@@ -4,7 +4,8 @@ export const catalog = [
   { name: "js", description: "Synthetic MCP transport fixture", inputSchema: { type: "object", additionalProperties: true } },
   { name: "js_reset", description: "Synthetic provider reset", inputSchema: { type: "object", additionalProperties: true } },
 ];
-export function provider({ blockMethod, requestLog, callLog, startupWait = 0 } = {}) {
+export function provider({ blockMethod, requestLog, callLog, startupWait = 0, lifecycle = false } = {}) {
+  const tools = lifecycle ? [...catalog, { name: "turn_ended", inputSchema: { type: "object", properties: { hook_event_name: { type: "string" }, session_id: { type: "string" }, turn_id: { type: "string" } }, required: ["hook_event_name", "session_id", "turn_id"] }, _meta: { ui: { visibility: [] } } }] : catalog;
   const script = `
     let marker;
     const send = value => process.stdout.write(JSON.stringify({jsonrpc:'2.0',...value})+'\\n');
@@ -15,7 +16,7 @@ export function provider({ blockMethod, requestLog, callLog, startupWait = 0 } =
       if (request.method === 'initialize') await new Promise(resolve => setTimeout(resolve, ${JSON.stringify(startupWait)}));
       let result;
       if (request.method === 'initialize') result = {protocolVersion:'2025-06-18',capabilities:{tools:{}}};
-      else if (request.method === 'tools/list') result = {tools:${JSON.stringify(catalog)}};
+      else if (request.method === 'tools/list') result = {tools:${JSON.stringify(tools)}};
       else if (request.method === 'tools/call') {
         const args = request.params.arguments;
         if (${JSON.stringify(callLog)} !== undefined) require("node:fs").appendFileSync(${JSON.stringify(callLog)}, JSON.stringify(request.params) + "\\n");

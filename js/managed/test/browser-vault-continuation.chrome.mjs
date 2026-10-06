@@ -1,12 +1,17 @@
 // Real Chromium integration with fake credentials only; no provider/Vault access.
-// node --experimental-strip-types js/managed/test/browser-vault-continuation.chrome.mjs
+// node --experimental-transform-types js/managed/test/browser-vault-continuation.chrome.mjs
 import assert from 'node:assert/strict';
 import https from 'node:https';
 import { readFileSync, mkdtempSync, rmSync, readdirSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { fillBrowserVault, inspectBrowserVault, snapshotBrowserVault, actBrowserVault, fillBrowserVaultOtp, captureBrowserVaultBinding, sanitizeBrowserVaultText } from '../src/browser-vault.ts';
+import { registerHooks } from 'node:module';
+// Match the extensionless browser-module imports used by the Worker build.
+registerHooks({resolve(specifier, context, nextResolve) {
+  return nextResolve(specifier.startsWith('./browser-') && !specifier.endsWith('.ts') ? specifier + '.ts' : specifier, context);
+}});
+const { fillBrowserVault, inspectBrowserVault, snapshotBrowserVault, actBrowserVault, fillBrowserVaultOtp, captureBrowserVaultBinding, sanitizeBrowserVaultText } = await import('../src/browser-vault.ts');
 const packages = new URL('../../../node_modules/.pnpm/', import.meta.url);
 const entry = readdirSync(packages).find(name => /^playwright-core@/.test(name));
 const { chromium } = await import(new URL(`${entry}/node_modules/playwright-core/index.mjs`, packages));

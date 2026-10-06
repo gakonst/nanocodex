@@ -29,13 +29,22 @@ All shell calls in an affected thread, including successful fallback commands:
 type = "managed.just_bash" AND thread_id = "THREAD_ID"
 ```
 
-Replace `THREAD_ID` with the observed opaque ID. Add `turn_id` or
-`parent_tool_call_id` to narrow a retry sequence, and sort by timestamp.
+Replace `THREAD_ID` with the observed opaque ID. Add `managed_turn_id` or
+`parent_call_id` to narrow a retry sequence, and sort by timestamp.
 Compare `tool_call_id`, `command`, `exit_code`, and `category` to find an `rg`
 or `sed` failure followed by a `grep` call. A started event without a matching
 finished event can indicate interrupted execution or incomplete retained logs;
 it is not proof that a command never ran. For Managed2, substitute
-`managed2.just_bash` for the event type.
+`managed2.just_bash` for the event type and filter on `runtime_session_id`.
+
+Managed shell events inherit canonical `thread_id` and `managed_turn_id` from
+the surrounding tool invocation. `runtime_session_id` and `host_turn_id` retain
+the separate interpreter context identities; `tool_call_id` and `parent_call_id`
+join nested calls. Without an enclosing managed invocation, canonical IDs are
+omitted rather than guessed. Managed2 currently emits runtime identities only.
+Older shell events used `thread_id`/`turn_id` for runtime identities and
+`parent_tool_call_id` for the parent: join historical records by `tool_call_id`
+to `managed.tool.invocation` to recover their canonical thread/turn.
 
 `exit_code` is the interpreter's actual result code, including nonzero normal
 returns; it is null when the handler throws before producing a shell result.
@@ -55,7 +64,10 @@ whose identity is unavailable remain `exception` or `command_exit`.
 `command` is an allowlisted first literal executable token; `command_scope` is
 always `first_literal`. Dynamic commands, quoted executables, assignments,
 control flow and unknown executables use `other`. It does not enumerate pipeline
-members or commands inside shell scripts. The first 128 source characters are
+members or commands inside shell scripts. For a search-admission failure,
+`admission_command` may identify the refused `rg`/`grep`/`sed`/`awk` from its
+bounded diagnostic, even when `command` names an earlier pipeline member. This
+is best-effort attribution, not a general command execution trace. The first 128 source characters are
 inspected without parsing the source again. Only fixed labels leave this check.
 
 No raw source, arguments, environment, paths, URLs, stdout/stderr, error messages,

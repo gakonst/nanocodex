@@ -287,6 +287,45 @@ impl ProviderState {
         })
     }
 
+    pub(crate) fn native_entries(&self) -> Vec<Arc<ToolEntry>> {
+        self.catalog()
+            .entries
+            .values()
+            .filter(|entry| entry.tool_exposure.is_deferred())
+            .cloned()
+            .collect()
+    }
+
+    /// A refresh supersedes earlier refreshes, but never races a reconnect.
+    pub(crate) fn native_refresh_generation(&self, server: &str, client: &Client) -> Option<u64> {
+        let mut catalog = self.catalog();
+        if catalog.pending_servers.contains(server)
+            || !catalog
+                .clients
+                .get(server)
+                .is_some_and(|current| Arc::ptr_eq(current, client))
+        {
+            return None;
+        }
+        let generation = catalog.generations.get_mut(server)?;
+        *generation = generation.saturating_add(1);
+        Some(*generation)
+    }
+
+    pub(crate) fn native_clients(&self) -> BTreeMap<String, Client> {
+        self.catalog().clients.clone()
+    }
+
+    pub(crate) fn native_status(&self) -> Value {
+        let catalog = self.catalog();
+        serde_json::json!({
+            "pending_servers": catalog.pending_servers,
+            "failed_servers": catalog.failures,
+            "ready_servers": catalog.clients.keys().collect::<Vec<_>>(),
+            "complete": catalog.pending_servers.is_empty(),
+        })
+    }
+
     pub(crate) fn available_definitions(&self) -> Vec<ToolDefinition> {
         let catalog = self.catalog();
         catalog
@@ -350,7 +389,7 @@ impl ProviderState {
             .collect())
     }
 
-    async fn wait_for_startup(&self) {
+    pub(crate) async fn wait_for_startup(&self) {
         if self.catalog().search_index.is_some() {
             return;
         }

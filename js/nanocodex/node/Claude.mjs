@@ -6,7 +6,7 @@ import { createBrowserHost } from '../browser/host.mjs';
 function createCodexHost(options) {
   // Function-backed Web API transports retain their own callbacks and evaluator.
   if (options.hostAuth || options.createResponse || options.createWebSocket || options.WebSocketImpl) {
-    if (options.toolMode === 'code' && typeof globalThis.Worker !== 'function' && options.codeEvaluator === undefined) throw new TypeError('host-managed Codex Code Mode requires an explicit codeEvaluator');
+    if ((options.toolMode === 'code' || options.toolMode === 'code-only') && typeof globalThis.Worker !== 'function' && options.codeEvaluator === undefined) throw new TypeError('host-managed Codex Code Mode requires an explicit codeEvaluator');
     return createBrowserHost(options);
   }
   return createNodeHost(options);

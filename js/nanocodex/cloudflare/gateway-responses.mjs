@@ -9,7 +9,7 @@ const ENDPOINTS = Object.freeze({
 const MODELS = ["@cf/zai-org/glm-5.3", "gpt-6-astra", "gpt-6.1-sol", "gpt-6-luna", "kimi-k3", "mimo-v2.6-pro"];
 const fail = message => { throw new Error(`Gateway Responses: ${message}`); };
 
-/** Server-side, full-history transport; no WebSocket or opaque compaction. */
+/** Server-side, full-history transport with portable summary compaction; no WebSocket. */
 export function createGatewayResponses(options) {
   const { provider, model, reasoningEffort, apiKey, fetch: fetchImpl = globalThis.fetch } = options;
   if (provider !== "cloudflare" && !Object.hasOwn(ENDPOINTS, provider)) fail("unsupported provider");
@@ -172,7 +172,7 @@ export function createGatewayResponses(options) {
         }
         if (provider !== "cloudflare" || !supportsMode) reasoningMode = undefined;
         const response = await adapter(request.signal, attempt, reasoningMode).createResponse(endpoint, sessionId, request);
-        attempt.outcome = "success";
+        attempt.outcome = response.ok ? "success" : "http_error";
         deferred = attempt.streaming === true;
         return response;
       }

@@ -27,9 +27,9 @@ import { ConnectHome } from "./ConnectHome";
 import "nanocodex-connect-ui/styles.css";
 import "./DeviceConnect.css";
 
-export function DeviceConnect() {
+export function DeviceConnect({ theme, onThemeChange }: { theme?: "light" | "dark"; onThemeChange?: (theme: "light" | "dark") => void }) {
   const deviceRequest = new URL(window.location.href).searchParams.has("user_code");
-  if (!deviceRequest) return <ConnectHome />;
+  if (!deviceRequest) return <ConnectHome theme={theme} onThemeChange={onThemeChange} />;
   return <DeviceAuthorization />;
 }
 

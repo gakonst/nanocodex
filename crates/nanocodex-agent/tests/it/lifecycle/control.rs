@@ -235,11 +235,15 @@ async fn adapter_developer_context_is_visible_at_safe_model_boundaries() {
         ))
     )));
     assert!(matches!(
-        first_items.last(),
-        Some(ResponseItem::Message {
-            role: MessageRole::User,
-            ..
-        })
+        first_items.as_slice(),
+        [
+            ..,
+            ResponseItem::Message {
+                role: MessageRole::User,
+                ..
+            },
+            ResponseItem::ConfigurationUpdate { .. }
+        ]
     ));
 
     let completed = agent

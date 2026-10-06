@@ -4,6 +4,12 @@ import { recordDiagnostic } from "./diagnostic-journal";
 
 type ToolTraceContext = Readonly<{ sessionId?: string; callId?: string; parentCallId?: string; turnId?: string }>;
 const toolSpan = new AsyncLocalStorage<TraceSpan>();
+const toolCorrelation = new AsyncLocalStorage<Readonly<Record<string, string>>>();
+
+/** Trusted invocation IDs shared by nested operational diagnostics. */
+export function currentToolCorrelation(): Readonly<Record<string, string>> {
+  return toolCorrelation.getStore() ?? {};
+}
 
 /** Keep the actual entered span on pinned runtimes without getActiveSpan.
  * Separate WebSocket invocations can annotate only their own native context. */
@@ -41,7 +47,7 @@ export function traceToolInvocation<T>(
     log("started");
     // Code Mode registers its update queue synchronously before Rust's next
     // host callback. Enter the operation now, even though its result is async.
-    try { original = Promise.resolve(run()); }
+    try { original = Promise.resolve(toolCorrelation.run(Object.freeze(ids), run)); }
     catch (error) { original = Promise.reject(error); }
     original = original.then(result => { log("finished", "completed"); return result; },
       error => { log("finished", "failed"); throw error; });

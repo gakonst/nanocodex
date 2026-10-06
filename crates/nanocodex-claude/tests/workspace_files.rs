@@ -234,3 +234,109 @@ async fn opt_in_tasks_notebook_and_sandbox_bash_route_without_host_shell() {
     );
     server.abort();
 }
+
+#[tokio::test]
+async fn native_workspace_read_media_and_scoped_context_reach_messages_transport() {
+    use base64::Engine as _;
+    const PNG: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGMQ0QgAAADgAI3uVJhMAAAAAElFTkSuQmCC";
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir(dir.path().join("src")).unwrap();
+    std::fs::write(
+        dir.path().join("src/CLAUDE.md"),
+        "Use the scoped chart conventions.\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("src/chart.png"),
+        base64::engine::general_purpose::STANDARD
+            .decode(PNG)
+            .unwrap(),
+    )
+    .unwrap();
+    std::fs::write(dir.path().join("src/bad.png"), "broken image").unwrap();
+    std::fs::write(dir.path().join("src/demo.ipynb"), serde_json::to_vec(&json!({"nbformat":4,"cells":[
+        {"id":"plot","cell_type":"code","metadata":{},"source":["plot()"],"execution_count":1,"outputs":[{"output_type":"display_data","metadata":{},"data":{"image/png":PNG,"text/plain":"One chart"}}]}
+    ]})).unwrap()).unwrap();
+    let requests = Arc::new(Mutex::new(Vec::<Value>::new()));
+    let log = requests.clone();
+    let app = Router::new().route("/v1/messages", post(move |Json(body): Json<Value>| {
+        let log = log.clone();
+        async move {
+            let index = { let mut log = log.lock().unwrap(); log.push(body); log.len() };
+            let (block, stop) = match index {
+                1 => (json!({"type":"tool_use","id":"image","name":"Read","input":{"file_path":"src/chart.png"}}), "tool_use"),
+                2 => (json!({"type":"tool_use","id":"notebook","name":"Read","input":{"file_path":"src/demo.ipynb"}}), "tool_use"),
+                3 => (json!({"type":"tool_use","id":"broken","name":"Read","input":{"file_path":"src/bad.png"}}), "tool_use"),
+                _ => (json!({"type":"text","text":"Native media received; malformed input reported."}), "end_turn"),
+            };
+            ([("content-type", "text/event-stream")], sse(block, stop))
+        }
+    }));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let client = ClaudeClient::new(
+        reqwest::Client::new(),
+        format!("http://{address}/v1/messages"),
+        "synthetic",
+    );
+    let (agent, _) = Nanocodex::builder(Claude::new(client, "test"))
+        .workspace_files(Arc::new(ClaudeWorkspaceFiles::new(dir.path()).unwrap()))
+        .build()
+        .unwrap();
+    assert_eq!(
+        agent
+            .prompt("Read a chart and its notebook, then inspect malformed media.")
+            .await
+            .unwrap()
+            .result()
+            .await
+            .unwrap()
+            .final_message(),
+        "Native media received; malformed input reported."
+    );
+    let requests = requests.lock().unwrap();
+    assert_eq!(requests.len(), 4);
+    let image = &requests[1]["messages"][2]["content"][0];
+    assert_eq!(image["tool_use_id"], "image");
+    assert_eq!(
+        image["content"][0],
+        json!({"type":"image","source":{"type":"base64","media_type":"image/png","data":PNG}})
+    );
+    assert!(
+        image["content"][1]["text"]
+            .as_str()
+            .unwrap()
+            .contains("scoped chart conventions")
+    );
+    let notebook = &requests[2]["messages"][4]["content"][0];
+    assert_eq!(notebook["tool_use_id"], "notebook");
+    assert!(
+        notebook["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("Cell plot")
+    );
+    assert_eq!(notebook["content"][1], image["content"][0]);
+    let broken = &requests[3]["messages"][6]["content"][0];
+    assert_eq!(broken["is_error"], true);
+    assert!(
+        broken["content"]
+            .as_str()
+            .unwrap()
+            .contains("invalid image")
+    );
+    let artifact =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../output/claude-parity-files");
+    std::fs::create_dir_all(&artifact).unwrap();
+    std::fs::write(
+        artifact.join("native-media-messages.json"),
+        serde_json::to_vec_pretty(&*requests).unwrap(),
+    )
+    .unwrap();
+    println!(
+        "Observed actual Messages HTTP requests: exact image and notebook PNG bytes, scoped workspace guidance, malformed image is_error=true; trace output/claude-parity-files/native-media-messages.json"
+    );
+    server.abort();
+}

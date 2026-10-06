@@ -18,11 +18,14 @@ function path(input: Record<string, unknown>): string {
 /** Explicit native Claude tools backed by existing managed capabilities. No Codex catalog. */
 export async function createManagedClaudeTools(options: {
   filesystem: Workspace;
+  prepareFilesystem?: () => Promise<void>;
   bash: NamedTool;
   poll?: NamedTool;
   allowedNames?: readonly string[];
   tools: readonly NamedTool[];
   mcp: McpServers;
+  loadServers?: () => Promise<McpServers>;
+  catalogProvider?: (serverName: string) => string | undefined;
   providers?: readonly { definitions(): readonly { name?: string; description?: string; parameters?: unknown }[]; resolve(name: string): { handler(input: unknown, context: ToolContext): unknown } | undefined }[];
   authorize(context: ToolContext): void;
 }) {
@@ -57,10 +60,54 @@ export async function createManagedClaudeTools(options: {
   }
   // web__run is a credential-bearing Codex search service, not a Claude/public
   // search capability. Do not rename it or borrow OpenAI credentials here.
-  const mcp = Object.keys(options.mcp).length ? await createMcpRuntime(options.mcp) : undefined;
-  if (mcp) {
-    tools.push({ name: "MCPToolSearch", description: "Discover authorized MCP tools and their input schemas; use MCPExecute with an exact returned name.", inputSchema: object({ query: string, limit: { type: "integer", minimum: 1, maximum: 32 } }, ["query"]), handler: async (raw, context) => { options.authorize(context); await mcp.settled(); return mcp.search(value(raw)); } });
-    tools.push({ name: "MCPExecute", description: "Call an exact discovered MCP tool with its schema arguments. Availability and account authority are checked at execution.", inputSchema: object({ name: string, arguments: { type: "object", additionalProperties: true } }, ["name", "arguments"]), handler: async (raw, context) => { options.authorize(context); const input = value(raw); if (typeof input.name !== "string" || input.name === "tool_search") throw new Error("invalid MCP name"); const tool = mcp.resolve(input.name); if (!tool) throw new Error("MCP tool unavailable"); return tool.handler(input.arguments, context); } });
+  // Alternate Claude capabilities are prepared even for GPT-only turns. Keep
+  // their fixed schemas available without opening a second set of MCP clients.
+  let mcp: ReturnType<typeof createMcpRuntime> | undefined;
+  let closed = false;
+  let closing: Promise<void> | undefined;
+  const assertMcpOpen = (context: ToolContext) => {
+    options.authorize(context);
+    context.signal.throwIfAborted();
+    if (closed) throw new Error("Claude MCP tools are closed");
+  };
+  const getMcp = async (context: ToolContext) => {
+    assertMcpOpen(context);
+    const runtime = await (mcp ??= createMcpRuntime(options.mcp, { loadServers: options.loadServers, catalogProvider: options.catalogProvider }));
+    assertMcpOpen(context);
+    return runtime;
+  };
+  const close = () => {
+    closed = true;
+    // Join only factory creation, not discovery: close aborts pending server
+    // initialization. Retain the same promise so repeated shutdowns coalesce.
+    return closing ??= (async () => {
+      const runtime = await mcp?.catch(() => undefined);
+      await runtime?.close();
+    })();
+  };
+  if ((Object.keys(options.mcp).length || options.loadServers !== undefined) && (options.allowedNames === undefined
+    || options.allowedNames.some(name => name === "MCPToolSearch" || name === "MCPExecute"))) {
+    tools.push({ name: "MCPToolSearch", description: "Discover authorized MCP tools and their input schemas; use MCPExecute with an exact returned name.", inputSchema: object({ query: string, limit: { type: "integer", minimum: 1, maximum: 32 } }, ["query"]), handler: async (raw, context) => {
+      const input = value(raw);
+      const runtime = await getMcp(context);
+      await runtime.settled();
+      assertMcpOpen(context);
+      return runtime.search(input);
+    } });
+    tools.push({ name: "MCPExecute", description: "Call an exact discovered MCP tool with its schema arguments. Availability and account authority are checked at execution.", inputSchema: object({ name: string, arguments: { type: "object", additionalProperties: true } }, ["name", "arguments"]), handler: async (raw, context) => {
+      const input = value(raw);
+      if (typeof input.name !== "string" || input.name === "tool_search") throw new Error("invalid MCP name");
+      const runtime = await getMcp(context);
+      let tool = runtime.resolve(input.name);
+      if (!tool) {
+        await runtime.settled();
+        assertMcpOpen(context);
+        tool = runtime.resolve(input.name);
+      }
+      assertMcpOpen(context);
+      if (!tool) throw new Error("MCP tool unavailable");
+      return tool.handler(input.arguments, context);
+    } });
   }
   if (options.providers?.length) {
     // Snapshot schemas and resolvers together. Reject even normalized-name
@@ -95,5 +142,14 @@ export async function createManagedClaudeTools(options: {
     } });
   }
   // Every tool is an explicit host capability and rechecks the current authority.
-  return { tools: tools.filter(tool => options.allowedNames === undefined || options.allowedNames.includes(tool.name)).map(tool => ({ ...tool, handler: (input: unknown, context: ToolContext) => { options.authorize(context); context.signal.throwIfAborted(); return tool.handler(input, context); } })), close: async () => { await mcp?.close(); } };
+  return { tools: tools.filter(tool => options.allowedNames === undefined || options.allowedNames.includes(tool.name)).map(tool => ({ ...tool, handler: async (input: unknown, context: ToolContext) => {
+    options.authorize(context);
+    context.signal.throwIfAborted();
+    if (["Read", "Write", "Edit"].includes(tool.name)) {
+      await options.prepareFilesystem?.();
+      options.authorize(context);
+      context.signal.throwIfAborted();
+    }
+    return tool.handler(input, context);
+  } })), close };
 }

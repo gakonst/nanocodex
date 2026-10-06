@@ -137,7 +137,10 @@ Managed Sessions may use the private `SessionModelEgress` entrypoint for the
 fixed Responses WebSocket route after validating their own retained ownership.
 This avoids calling back into the originating Session. Only that dedicated
 service binding accepts the Session owner assertion; the general broker rejects
-it. Model credentials are still resolved live. Tool, connector, voice, and legacy
+it. Model credentials are still resolved live. For Session Responses POSTs, the
+bounded request-body read overlaps the live credential lookup; provider dispatch
+waits for both, and credential denial cancels an unfinished body read. The same
+buffer supplies the single explicit-401 recovery attempt. Tool, connector, voice, and legacy
 directory traffic keep their existing ownership checks. Deploy egress before
 enabling the managed binding.
 
@@ -157,7 +160,8 @@ object can be distinguished from a slow call to an already-active object.
 `egress.credential.rpc` log and Cloudflare invocation wall/CPU timings. Internal
 zero-duration timers alone do not establish zero elapsed work. Restoring a
 credential broker preserves its persisted alarm, repairing it only when missing;
-activation does not rewrite an already scheduled refresh alarm.
+activation does not rewrite an already scheduled refresh alarm. Accounts without
+refresh work skip the alarm lookup entirely.
 Credential RPC calls the credential operation directly, without constructing or
 parsing local HTTP bodies. It shares the HTTP path's serialized mutation queue
 and durable-state recovery after failures.

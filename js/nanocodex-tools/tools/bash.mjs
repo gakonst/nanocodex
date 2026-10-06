@@ -234,11 +234,11 @@ export async function createJustBashRuntime(options) {
       const execute = async () => {
         const startedAt = now();
         emit({ phase: "started", queue_ms: Math.max(0, startedAt - admittedAt) });
-        let category = "input_validation";
+        let category = "input_validation", admissionCommand;
         try {
           const result = await executeCommand({
             initialize,
-            onCategory: (value) => { category = value; },
+            onCategory: (value, command) => { category = value; admissionCommand = command; },
             startedAt,
             input,
             root: cwd,
@@ -255,12 +255,13 @@ export async function createJustBashRuntime(options) {
             retainNoticeWithinLimit: options.retainNoticeWithinLimit,
           });
           emit({ phase: "finished", status: result.exit_code === 0 ? "success" : "error",
-            exit_code: result.exit_code, category, duration_ms: Math.max(0, now() - startedAt),
+            exit_code: result.exit_code, category, ...(admissionCommand ? { admission_command: admissionCommand } : {}), duration_ms: Math.max(0, now() - startedAt),
             output_truncated: result.original_token_count !== undefined });
           return result;
         } catch (error) {
           emit({ phase: "finished", status: "error", exit_code: null,
             category: context?.signal?.aborted ? "cancelled" : category,
+            ...(admissionCommand ? { admission_command: admissionCommand } : {}),
             duration_ms: Math.max(0, now() - startedAt), output_truncated: false });
           throw error;
         }
@@ -339,7 +340,7 @@ async function executeCommand({
   } catch (error) {
     if (!deadline.signal.aborted) {
       onCategory(error?.fatalSearchAdmission ? "search_admission"
-        : error?.shellLimit ? "resource_limit" : "exception");
+        : error?.shellLimit ? "resource_limit" : "exception", error?.fatalSearchAdmission ? admissionCommandLabel(error.message) : undefined);
       throw error;
     }
     result = { stdout: "", stderr: "bash: execution aborted\n", exitCode: 124 };
@@ -347,9 +348,10 @@ async function executeCommand({
     clearTimeout(timeout);
     signal?.removeEventListener("abort", abort);
   }
-  onCategory(deadline.signal.aborted
+  const category = deadline.signal.aborted
     ? signal?.aborted ? "cancelled" : "timeout"
-    : resultCategory(result));
+    : resultCategory(result);
+  onCategory(category, category === "search_admission" ? admissionCommandLabel(result.stderr) : undefined);
   const combined = `${result.stdout}${result.stderr}`;
   const maxCharacters = outputTokens * 4;
   const truncated = combined.length > maxCharacters;
@@ -375,6 +377,15 @@ function commandFamily(input) {
   if (typeof input?.cmd !== "string") return "other";
   const match = /^\s{0,64}([a-z][a-z0-9-]{0,31})(?=\s|[;|&<>]|$)/.exec(input.cmd.slice(0, 128));
   return match && TELEMETRY_COMMANDS.has(match[1]) ? match[1] : "other";
+}
+
+// Diagnostics may identify a refused search later in a pipeline. Only this
+// fixed label leaves the bounded inspection; it is best-effort attribution.
+function admissionCommandLabel(diagnostic) {
+  if (typeof diagnostic !== "string") return;
+  for (const match of diagnostic.slice(0, 4096).matchAll(/^(?:bash: )?(rg|grep|fgrep|egrep|sed|awk): ([^\r\n]*)/gm)) {
+    if (/search_admission|synchronous regex.*admission|uncertain dynamic regex admission/.test(match[2])) return match[1];
+  }
 }
 
 function resultCategory(result) {

@@ -423,6 +423,10 @@ pub struct ToolsBuilder {
 /// Invalid declarative tool selection.
 #[derive(Debug, thiserror::Error)]
 pub enum ToolsBuildError {
+    /// A host capability could not be bound to its owning session.
+    #[error("host tool initialization failed: {0}")]
+    HostInitialization(String),
+
     /// A custom definition has an empty registry name.
     #[error("tool name must not be empty")]
     EmptyName,

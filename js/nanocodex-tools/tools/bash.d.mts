@@ -11,6 +11,8 @@ export type JustBashExecutionEvent = Readonly<{
   status?: "success" | "error";
   exit_code?: number | null;
   category?: "none" | "search_admission" | "resource_limit" | "timeout" | "cancelled" | "syntax" | "command_not_found" | "command_exit" | "input_validation" | "exception";
+  /** Best-effort allowlisted command from a search admission diagnostic. */
+  admission_command?: "rg" | "grep" | "fgrep" | "egrep" | "sed" | "awk";
   output_truncated?: boolean;
 }>;
 export type JustBashExecutionObserver = (event: JustBashExecutionEvent, context?: ToolContext) => void;

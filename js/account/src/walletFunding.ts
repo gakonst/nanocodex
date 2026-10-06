@@ -79,11 +79,17 @@ export function defaultFundingAmountCents(config: MachineUsdConfig): number {
 export function decodeFundingAttempt(
   value: unknown,
   orderToken: string,
+  expectedAccount: string,
+  expectedCents: number,
 ): FundingAttempt {
   const record = object(value, "wallet funding order");
   const order = object(record.order, "wallet funding order");
   const payment = object(record.payment, "wallet funding payment");
-  if (typeof order.id !== "string" || !order.id || typeof payment.checkout_url !== "string") {
+  if (typeof order.id !== "string" || !/^ord_[0-9a-f]{32}$/.test(order.id)
+    || typeof order.wallet_address !== "string" || order.wallet_address.toLowerCase() !== expectedAccount.toLowerCase()
+    || order.usd_amount_cents !== expectedCents || order.mach_amount_atomics !== expectedCents * 10_000
+    || payment.provider !== "stripe" || payment.mode !== "hosted_checkout"
+    || typeof payment.checkout_url !== "string") {
     throw new Error("The Wallet funding order response is invalid.");
   }
   let checkout: URL;
@@ -101,6 +107,7 @@ export function decodeFundingAttempt(
 export function classifyFundingOrder(value: unknown): "complete" | "failed" | "pending" {
   const record = object(value, "wallet funding order");
   if (record.status === "complete"
+    && record.issuance_status === "fulfilled"
     && typeof record.issuance_transaction_hash === "string"
     && TRANSACTION_HASH.test(record.issuance_transaction_hash)) {
     return "complete";

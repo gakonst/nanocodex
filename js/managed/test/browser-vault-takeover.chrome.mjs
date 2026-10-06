@@ -323,8 +323,12 @@ try {
     const response=await requestPrivate('/v1/agents/fixture-agent/browser-vault/takeover',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({challenge_id:activeId,...action})});
     assert.equal(response.status,200);return response.json();
   };
+  // Detach the observer before runtime target creation, as for the initial
+  // login and Namecheap journey; Playwright auto-attachment can pause navigation.
+  await loginBrowser.close();loginBrowser=undefined;
   const prepared=await tool('request_browser_login',{operation_id:crypto.randomUUID(),url:origin+'/profile-start',allowed_origins:[origin],defer_input:true});
   assert.equal(prepared.status,'page_ready');activeId=prepared.request_id;
+  loginBrowser=await chromium.connectOverCDP(`http://127.0.0.1:${runtimePort}`);
   assert.equal(decodeVaultIntake({name:'request_browser_login',status:'completed',output:JSON.stringify(prepared)}),undefined,'preparation does not present a premature sheet');
   loginPage=loginBrowser.contexts().flatMap(c=>c.pages()).find(p=>p.url()===origin+'/profile-start');
   for(let i=0;!loginPage&&i<100;i++){await new Promise(r=>setTimeout(r,30));loginPage=loginBrowser.contexts().flatMap(c=>c.pages()).find(p=>p.url()===origin+'/profile-start');}

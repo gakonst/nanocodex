@@ -244,23 +244,41 @@ pub(super) enum ScrollCommand {
 }
 
 impl Transcript {
+    pub(super) fn assistant_response(&self, index: usize) -> Option<&str> {
+        self.model.assistant_response(index)
+    }
+
     pub(crate) fn secure_input_request(
         &self,
         command: &crate::tui::secure_input::Command,
-    ) -> Option<nanocodex_managed::NativeSecureInputRequest> {
+    ) -> Option<crate::tui::secure_input::Request> {
         self.model.entries().iter().rev().find_map(|entry| {
             let EntryKind::Tool(tool) = &entry.kind else {
                 return None;
             };
             if !matches!(
                 tool.family(),
-                "request_native_secure_input" | "exec" | "wait"
+                "request_native_secure_input"
+                    | "request_browser_login"
+                    | "request_browser_login_input"
+                    | "browser_vault_request_takeover"
+                    | "browser_vault_request_challenge"
+                    | "request_secure_input"
+                    | "request_vault_intake"
+                    | "exec"
+                    | "wait"
             ) {
                 return None;
             }
-            let request =
-                nanocodex_managed::NativeSecureInputRequest::parse(tool.result.as_ref()?)?;
-            (command.matches(&request) && request.is_current()).then_some(request)
+            let r = self.model.private_input(entry.id)?.clone();
+            let matches = match command {
+                crate::tui::secure_input::Command::Latest => true,
+                crate::tui::secure_input::Command::Help => false,
+                crate::tui::secure_input::Command::Select { agent, request } => {
+                    r.agent() == agent && r.id() == request
+                }
+            };
+            (matches && r.is_current()).then_some(r)
         })
     }
     pub(crate) fn latest_vault_command(&self) -> Option<crate::tui::vault::Command> {

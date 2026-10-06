@@ -102,6 +102,8 @@ describe("private browser direct takeover endpoint", () => {
       { action: "observe", native_fields: true, native_field_hints: true, native_field_controls: true },
       { action: "fill_fields", document_id: crypto.randomUUID(), fields: [{ref:crypto.randomUUID(), value:"synthetic🙂"}] },
       { action: "fill_fields", document_id: crypto.randomUUID(), fields: Array.from({length:8}, () => ({ref:crypto.randomUUID(), value:"\u0001".repeat(4096)})) },
+      { action: "fill_vault_fields", document_id: crypto.randomUUID(), fields: Array.from({length:32}, () => ({ref:crypto.randomUUID(), vault_id:"v".repeat(22),field:"phone_number"})) },
+      { action: "fill_fields", document_id: crypto.randomUUID(), fields: [{ref:crypto.randomUUID(), value:"synthetic"}], save_to_vault:true, save_details:{username:"synthetic-user"} },
       { action: "touch", phase: "start", x: 0.5, y: 0.5 },
       { action: "touch", phase: "move", x: 0.5, y: 0.2 },
       { action: "touch", phase: "end" },
@@ -122,6 +124,7 @@ describe("private browser direct takeover endpoint", () => {
   it("rejects arbitrary or oversized action input before invoking runtime", async () => {
     const { principal, call } = await fixture("takeover");
     for (const action of [
+      { action: "fill_vault_fields", document_id:crypto.randomUUID(), fields:[{ref:crypto.randomUUID(),vault_id:"v".repeat(22),field:"password",value:"private-text"}] },
       { action: "evaluate", code: "private-text" },
       { action: "observe", native_fields: "true" },
       { action: "observe", native_fields: true, native_field_controls: "true" },
@@ -166,6 +169,22 @@ describe("private browser route network restrictions", () => {
 
 
 describe("standalone secure input endpoint", () => {
+  it("applies production owner and CSRF gates to autosave and save-only retries", async () => {
+    const {principal,call,stub}=await fixture("secure-input");
+    for(const payload of [
+      {request_id:crypto.randomUUID(),value:"synthetic-private-password",save_to_vault:true,save_details:{username:"synthetic-user"}},
+      {request_id:crypto.randomUUID(),action:"retry_vault_save"},
+    ]) {
+      const init={body:JSON.stringify(payload)};
+      expect((await call({...principal,capabilities:[]},init)).status).toBe(403);
+      expect((await call({...principal,kind:"account_session"},init)).status).toBe(403);
+      expect((await call({...principal,userId:crypto.randomUUID()},init)).status).toBe(404);
+      expect((await stub.fetch("https://session.internal/secure-input",{method:"POST",headers:{"content-type":"application/json"},...init})).status).toBe(403);
+      const response=await call(principal,init);
+      expect(response.status).toBe(409);
+      expect(await response.text()).not.toContain("synthetic-private-password");
+    }
+  });
   it("enforces owner, capabilities, CSRF, bounded input and fixed failures", async () => {
     const {principal, call, stub} = await fixture("secure-input");
     const payload = {request_id:crypto.randomUUID(),value:"synthetic-private-password"};

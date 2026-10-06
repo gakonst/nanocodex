@@ -9,6 +9,10 @@ pub(super) struct Snapshot {
     pub(super) conversation: Conversation,
     pub(super) discovered: HashSet<String>,
     pub(super) tasks: Option<Value>,
+    #[serde(default)]
+    pub(super) model: Option<String>,
+    #[serde(default)]
+    pub(super) workspace: Option<String>,
 }
 impl Default for Snapshot {
     fn default() -> Self {
@@ -18,6 +22,8 @@ impl Default for Snapshot {
             conversation: Conversation::default(),
             discovered: HashSet::new(),
             tasks: None,
+            model: None,
+            workspace: None,
         }
     }
 }
@@ -36,9 +42,17 @@ impl Snapshot {
 #[serde(deny_unknown_fields)]
 pub(super) struct Cursor {
     #[serde(default)]
+    pub(super) lifecycle_turn_id: String,
+    #[serde(default)]
+    pub(super) stop_hook_active: bool,
+    #[serde(default)]
     pub(super) instruction_revision: Option<u64>,
     pub(super) snapshot: Snapshot,
     pub(super) template: MessagesRequest,
+    /// Only these host-owned definitions may change between requests. Static
+    /// definitions remain frozen throughout the admitted durable operation.
+    #[serde(default)]
+    pub(super) dynamic_tool_names: HashSet<String>,
     #[serde(default)]
     pub(super) wire_profile: Option<crate::FrozenWireProfile>,
     pub(super) threshold: u64,
@@ -46,6 +60,10 @@ pub(super) struct Cursor {
     pub(super) tool_search: bool,
     pub(super) operation: Option<String>,
     pub(super) prepared: bool,
+    // Advancing the cursor retires settled effect receipts. Retain admitted
+    // media here before retiring prompt-media so recovery never reopens a path.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) frozen_prompt: Option<Prompt>,
     pub(super) pending: Vec<Message>,
     pub(super) usage: Usage,
     pub(super) index: u32,
@@ -70,6 +88,14 @@ pub(super) struct Effect<'a> {
     step: String,
 }
 impl Effect<'_> {
+    pub(super) fn scoped(&self, scope: &str) -> Effect<'_> {
+        Effect {
+            policy: self.policy,
+            operation: self.operation,
+            step: format!("{scope}-{}", self.step),
+        }
+    }
+
     pub(super) async fn begin(&self, kind: &str, input: Value) -> Result<Step> {
         self.policy
             .begin_step(
@@ -86,7 +112,51 @@ impl Effect<'_> {
             .await
     }
 }
+/// An interrupted old request is retired explicitly, never represented as a
+/// successful model response. The replacement has an independent effect ID.
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct CodeOnlyUpgrade {
+    pub(super) code_only_tools: Vec<ClaudeToolSpec>,
+    pub(super) notice: String,
+}
+impl CodeOnlyUpgrade {
+    pub(super) fn new(code_only_tools: Vec<ClaudeToolSpec>, tools_disabled: bool) -> Self {
+        Self {
+            code_only_tools,
+            notice: if tools_disabled {
+                "Harness recovery notice: the interrupted summary request was reissued with the current tool catalog. Produce the requested text-only summary."
+            } else {
+                "Harness recovery notice: this operation was upgraded to Code Mode. The preceding direct-tool model request was retired with outcome unknown; provider-side effects may already have occurred. Do not automatically repeat them. Reconcile effects before continuing through exec and wait."
+            }.into(),
+        }
+    }
+}
+pub(super) fn is_code_only_catalog(tools: &[ClaudeToolSpec]) -> bool {
+    tools.len() == 2
+        && ["exec", "wait"].iter().all(|name| {
+            tools
+                .iter()
+                .any(|tool| matches!(tool, ClaudeToolSpec::Client(tool) if tool.name == *name))
+        })
+}
 impl State {
+    pub(super) fn code_only_tools(&self) -> Vec<ClaudeToolSpec> {
+        self.available_tools().into_iter().filter(|tool| {
+            matches!(tool, ClaudeToolSpec::Client(tool) if tool.name == "exec" || tool.name == "wait")
+        }).collect()
+    }
+    pub(super) fn classify_code_only_tools(&self, cursor: &mut Cursor) {
+        cursor.dynamic_tool_names = self
+            .dynamic_catalog()
+            .into_iter()
+            .filter_map(|(definition, _)| {
+                cursor.template.tools.iter().any(|tool| {
+                    matches!(tool, ClaudeToolSpec::Client(admitted) if admitted == &definition)
+                }).then_some(definition.name)
+            })
+            .collect();
+    }
     #[cfg_attr(
         not(all(feature = "tools", not(target_family = "wasm"))),
         allow(clippy::missing_const_for_fn)
@@ -127,6 +197,8 @@ impl State {
             conversation: conversation.clone(),
             discovered: self.discovered.lock().await.clone(),
             tasks: self.task_snapshot()?,
+            model: Some(self.model()),
+            workspace: Some(self.workspace()),
             ..Snapshot::default()
         })
     }
@@ -145,6 +217,7 @@ impl State {
         conversation: &mut Conversation,
         operation: Option<&str>,
         speed: Option<crate::Speed>,
+        prompt: Option<&Prompt>,
     ) -> Result<Cursor> {
         if let (Some(policy), Some(operation)) = (&self.policy, operation)
             && let Some(value) = policy.continuation(operation.to_owned()).await?
@@ -161,16 +234,43 @@ impl State {
                 .map_err(recovery_error)?;
             return Ok(cursor);
         }
+        let template = self.request_template(speed);
+        let static_names = self
+            .tools
+            .iter()
+            .map(|tool| tool.name.as_str())
+            .collect::<HashSet<_>>();
+        let dynamic_tool_names = template
+            .tools
+            .iter()
+            .filter_map(|tool| match tool {
+                ClaudeToolSpec::Client(tool) if !static_names.contains(tool.name.as_str()) => {
+                    Some(tool.name.clone())
+                }
+                _ => None,
+            })
+            .collect();
         let mut cursor = Cursor {
+            lifecycle_turn_id: candidate_id("lifecycle"),
+            stop_hook_active: false,
             instruction_revision: None,
             snapshot: self.snapshot(conversation).await?,
-            template: self.request_template(speed),
+            template,
+            dynamic_tool_names,
             wire_profile: Some(self.client.freeze_wire_profile()),
             threshold: self.compaction_threshold(),
             parallel: self.parallel_tools,
             tool_search: self.client_tool_search,
             operation: operation.map(str::to_owned),
             prepared: false,
+            frozen_prompt: prompt
+                .filter(|prompt| {
+                    matches!(
+                        prompt.instruction,
+                        nanocodex_agent::input::PromptInput::Content(_)
+                    )
+                })
+                .cloned(),
             pending: Vec::new(),
             usage: Usage::default(),
             index: 0,
@@ -190,6 +290,14 @@ impl State {
         cursor: &mut Cursor,
         conversation: &Conversation,
     ) -> Result<()> {
+        // Only settled boundaries may replace an admitted catalog. Pending
+        // model requests are reconciled by response(), and tool receipts by
+        // durable_tool(), before the journal permits this advance.
+        if self.code_only && !is_code_only_catalog(&cursor.template.tools) {
+            cursor.template.tools = self.code_only_tools();
+            self.classify_code_only_tools(cursor);
+            cursor.tool_search = false;
+        }
         cursor.snapshot = self.snapshot(conversation).await?;
         if let (Some(policy), Some(operation)) = (&self.policy, &cursor.operation) {
             policy
@@ -288,9 +396,17 @@ impl State {
         } else if let Some(handler) = handler {
             tokio::select! {
                 biased;
-                result = self.call_tool(id, name, input, handler, events, cursor) => result,
+                result = self.call_tool(id, name, input, handler, events, cursor) => result?,
                 () = cancel.cancelled() => unknown(),
             }
+        } else if self.code_only && name != "exec" && name != "wait" {
+            ContentBlock::tool_result_content(
+                id,
+                ToolResultContent::Text(format!(
+                    "Direct tool {name} was retired during Code Mode recovery. Its prior outcome is unknown; no handler was invoked in this attempt. Reconcile effects before repeating through exec."
+                )),
+                true,
+            )
         } else {
             ContentBlock::tool_result_content(
                 id,
@@ -331,4 +447,50 @@ pub(super) fn recovery_error(error: impl std::fmt::Display) -> NanocodexError {
         nanocodex_agent::ExecutionPolicyDisposition::Reopen,
         provider_error(error),
     )
+}
+
+/// Prepares a settled historical checkpoint for a new conversation branch.
+///
+/// The host selects the checkpoint immediately before a user turn through its
+/// owned durable journal. This function never truncates current messages or
+/// replays historical tools. Effect identity and recovery warnings survive the
+/// branch even when later transcript content is forgotten. Provider containers
+/// are not reused because their filesystem may contain later effects.
+pub fn rewind_checkpoint(previous: Option<Value>, latest: Value) -> Result<Value> {
+    let latest = Snapshot::decode(latest)?;
+    if latest.conversation.pending_continuation {
+        return Err(unsupported(
+            "conversation rewind refuses a pending tool/provider continuation",
+        ));
+    }
+    let mut selected = match previous {
+        Some(value) => Snapshot::decode(value)?,
+        None => Snapshot {
+            model: latest.model.clone(),
+            workspace: latest.workspace.clone(),
+            ..Snapshot::default()
+        },
+    };
+    if selected.conversation.pending_continuation {
+        return Err(unsupported(
+            "selected checkpoint has a pending tool/provider continuation",
+        ));
+    }
+    selected
+        .conversation
+        .admitted_tool_ids
+        .extend(latest.conversation.admitted_tool_ids);
+    for notice in latest.conversation.recovery_notices {
+        if !selected.conversation.recovery_notices.contains(&notice) {
+            selected.conversation.recovery_notices.push(notice);
+        }
+    }
+    let notice = "This conversation was explicitly rewound into a new session. External effects from discarded turns may still exist; reconcile their current state before repeating any action. Historical tool calls must not be replayed.".to_owned();
+    if !selected.conversation.recovery_notices.contains(&notice) {
+        selected.conversation.recovery_notices.push(notice);
+    }
+    selected.conversation.lifecycle_started = false;
+    selected.conversation.container = None;
+    selected.conversation.previous_message_id = None;
+    serde_json::to_value(selected).map_err(provider_error)
 }

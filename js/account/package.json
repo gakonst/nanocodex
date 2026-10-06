@@ -14,7 +14,7 @@
     "publish:repository": "node scripts/publish-repository.mjs",
     "test": "npm run test:web && npm run test:claude-connection && npm run test:permissions",
     "test:permissions": "node scripts/permission-request-journey.mjs",
-    "test:wallet": "node scripts/wallet-smoke.mjs",
+    "test:wallet": "node scripts/wallet-smoke.mjs && node scripts/wallet-link-journey.mjs",
     "test:web": "node --experimental-strip-types --test src/*.test.ts worker/*.test.ts container/*.test.mjs",
     "typecheck": "tsc --noEmit",
     "check:docs": "node scripts/check-docs.mjs",
@@ -25,6 +25,7 @@
     "test:claude-connection": "node scripts/claude-connection-smoke.mjs",
     "test:whatsapp": "node scripts/whatsapp-ui-journey.mjs",
     "test:vault": "node scripts/vault-ui-journey.mjs",
+    "test:account-workspace": "node scripts/account-workspace-journey.mjs",
     "test:services": "node scripts/services-ui-journey.mjs"
   },
   "portless": {
@@ -46,7 +47,7 @@
     "@shikijs/types": "^4.3.1",
     "@tanstack/react-query": "^5.101.4",
     "@tanstack/react-virtual": "^3.14.6",
-    "accounts": "0.17.0",
+    "accounts": "https://pkg.pr.new/tempoxyz/accounts@232cc59cb4f8b4c8daf2113d0881b161e76a69d3",
     "diff": "^9.0.0",
     "htm": "3.1.1",
     "isomorphic-git": "^1.41.5",
@@ -59,7 +60,7 @@
     "react-router": "^7.18.2",
     "recharts": "^3.10.1",
     "shiki": "^4.3.1",
-    "viem": "^2.54.0"
+    "viem": "2.57.2"
   },
   "devDependencies": {
     "@cloudflare/vite-plugin": "1.54.2",

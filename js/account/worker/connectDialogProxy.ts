@@ -78,7 +78,12 @@ function projectResponse(
   headers.delete("set-cookie2");
   headers.set("x-content-type-options", "nosniff");
   if (headers.get("content-type")?.startsWith("text/html")) {
-    headers.set("content-security-policy", `frame-ancestors ${CONNECT_DIALOG_FRAME_ANCESTORS}`);
+    const oauthConsent = publicUrl.searchParams.has("oauth_request");
+    headers.set("content-security-policy", `frame-ancestors ${oauthConsent ? "'none'" : CONNECT_DIALOG_FRAME_ANCESTORS}`);
+    if (oauthConsent) {
+      headers.set("referrer-policy", "no-referrer");
+      headers.set("cache-control", "no-store");
+    }
   }
 
   const location = headers.get("location");

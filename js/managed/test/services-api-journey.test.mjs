@@ -96,6 +96,20 @@ test("standalone account services use real authentication, no agent, and private
       return value;
     }
     const catalog = await call("/v1/services"); assert.ok(catalog.services.some(s => s.id === "totp"));
+    const beforeLinks = dispatches.length;
+    for (const kind of ["login", "api_key", "card", "address", "phone", "totp"]) {
+      const link = await call('/v1/services/links?service=vault&action=enroll&kind=' + kind);
+      assert.equal(new URL(link.url).origin, 'https://nanocodex.gakonst.workers.dev');
+      assert.equal(new URL(link.url).searchParams.get('add'), kind);
+      assert.equal(new URL(link.url).searchParams.has('enrollment_origin'), false);
+    }
+    const picker = await call('/v1/services/links?service=vault&action=select&app_origin=https%3A%2F%2Fclient.example&state=synthetic-callback-state');
+    assert.equal(new URL(picker.url).searchParams.get('service'), 'select');
+    assert.equal(picker.appOrigin, 'https://client.example');
+    await call('/v1/services/links?service=phone&operation_id=11111111-1111-4111-8111-111111111111');
+    for (const query of ['kind=password', 'host=https://attacker.example', 'kind=card&kind=login', 'app_origin=javascript:alert(1)', 'state=orphan-state-value']) await call('/v1/services/links?' + query, { expected: 400 });
+    await call('/v1/services/links', { token: null, expected: 401 });
+    assert.equal(dispatches.length, beforeLinks, 'Navigation must not mutate provider or Vault state');
     assert.equal((await call("/v1/services/vault")).vault[0].id, vaultId);
     await call("/v1/services/vault", { token: null, expected: 401 });
     const envelope = { vault_id: vaultId, url: "https://service.example/login", method: "POST", body: "{{NANOCODEX_VAULT_TOTP}}" };

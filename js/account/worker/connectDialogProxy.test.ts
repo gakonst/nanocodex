@@ -126,3 +126,44 @@ test("rejects mutations and returns hardened unavailable responses", async () =>
     console.error = originalError;
   }
 });
+
+test("OAuth consent is never framed, cached, or included in referrers", async () => {
+  const request = new Request(`https://nanocodex.test/connect-dialog?oauth_request=${"a".repeat(43)}`);
+  const response = await routeConnectDialog(request, {
+    NANOCODEX_CONNECT_DIALOG: { fetch: async () => new Response("consent", { headers: { "content-type": "text/html" } }) } as never,
+  }, new URL(request.url));
+  assert.equal(response?.headers.get("content-security-policy"), "frame-ancestors 'none'");
+  assert.equal(response?.headers.get("referrer-policy"), "no-referrer");
+  assert.equal(response?.headers.get("cache-control"), "no-store");
+});
+
+test("canonical OAuth and MCP requests reach Connect with the browser's original origin and body", async () => {
+  for (const [method, path] of [
+    ["GET", "/.well-known/oauth-authorization-server"],
+    ["GET", "/.well-known/oauth-protected-resource/mcp"],
+    ["POST", "/oauth/register"], ["GET", "/oauth/authorize?client_id=synthetic"],
+    ["POST", "/oauth/token"], ["POST", "/oauth/revoke"],
+    ["GET", `/oauth/requests/${"a".repeat(43)}`],
+    ["POST", `/oauth/requests/${"a".repeat(43)}/approve`],
+    ["POST", `/oauth/requests/${"a".repeat(43)}/deny`], ["POST", "/mcp"],
+  ]) {
+    const request = new Request(`https://nanocodex.test${path}`, {
+      method, headers: { origin: "https://nanocodex.test", "content-type": "application/json" },
+      ...(method === "POST" ? { body: JSON.stringify({ synthetic: true }) } : {}),
+    });
+    let forwarded = 0;
+    const response = await worker.fetch(request, {
+      ENVIRONMENT: "production",
+      NANOCODEX_CONNECT_API: { async fetch(candidate: Request) {
+        forwarded++;
+        assert.equal(candidate.url, request.url);
+        assert.equal(candidate.headers.get("origin"), "https://nanocodex.test");
+        if (method === "POST") assert.deepEqual(await candidate.json(), { synthetic: true });
+        return Response.json({ routed: true });
+      } },
+    } as never);
+    assert.equal(response.status, 200, `${method} ${path}`);
+    assert.equal(forwarded, 1);
+    assert.deepEqual(await response.json(), { routed: true });
+  }
+});

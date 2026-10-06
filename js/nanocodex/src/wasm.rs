@@ -28,11 +28,11 @@ use nanocodex::{
     oai::responses::ResponseItem,
     oai::transport::{ResponsesHistory, ResponsesTransport},
     tools::{
-        ToolContext, ToolDefinition, ToolInput, ToolOutput,
+        Tool, ToolContext, ToolDefinition, ToolInput, ToolOutput,
         contract::ToolOutputWire,
         embedded::{
             CodeModeExecution, CodeModeHost, CodeModeHostError, CodeModeObserver, CodeModeUpdate,
-            EmbeddedToolMode, HostFuture, NestedToolCall, bind_host,
+            EmbeddedToolMode, HostFuture, NestedToolCall, OwnedToolContext, bind_host,
         },
         standard::StandardTool,
     },
@@ -135,6 +135,8 @@ extern "C" {
         call_id: &str,
         model: &str,
         turn_id: Option<&str>,
+        local_definitions: &str,
+        execute_local_tool: &JsValue,
     ) -> Result<Promise, JsValue>;
 
     #[wasm_bindgen(catch, js_namespace = ["globalThis", "nanocodexHost"], js_name = waitCode)]
@@ -745,10 +747,10 @@ impl JavaScriptCodeModeHost {
     fn new(definition_host_id: u32) -> Self {
         Self {
             definition_host_id,
-            mode: if host_tool_mode(definition_host_id, "") == "direct" {
-                EmbeddedToolMode::Direct
-            } else {
-                EmbeddedToolMode::Code
+            mode: match host_tool_mode(definition_host_id, "").as_str() {
+                "direct" => EmbeddedToolMode::Direct,
+                "code-only" => EmbeddedToolMode::CodeOnly,
+                _ => EmbeddedToolMode::Code,
             },
         }
     }
@@ -805,7 +807,7 @@ impl CodeModeHost for JavaScriptCodeModeHost {
         source: &'a str,
         context: ToolContext<'a>,
     ) -> HostFuture<'a, Result<CodeModeExecution, CodeModeHostError>> {
-        Box::pin(execute_javascript_code(source, context, None))
+        Box::pin(execute_javascript_code(source, context, None, Vec::new()))
     }
 
     fn execute_with_updates<'a>(
@@ -814,7 +816,22 @@ impl CodeModeHost for JavaScriptCodeModeHost {
         context: ToolContext<'a>,
         observer: &'a mut dyn CodeModeObserver,
     ) -> HostFuture<'a, Result<CodeModeExecution, CodeModeHostError>> {
-        Box::pin(execute_javascript_code(source, context, Some(observer)))
+        Box::pin(execute_javascript_code(
+            source,
+            context,
+            Some(observer),
+            Vec::new(),
+        ))
+    }
+
+    fn execute_with_local_tools<'a>(
+        &'a self,
+        source: &'a str,
+        context: ToolContext<'a>,
+        tools: Vec<Arc<dyn Tool>>,
+        observer: Option<&'a mut dyn CodeModeObserver>,
+    ) -> HostFuture<'a, Result<CodeModeExecution, CodeModeHostError>> {
+        Box::pin(execute_javascript_code(source, context, observer, tools))
     }
 
     fn execute_tool<'a>(
@@ -895,13 +912,80 @@ async fn execute_javascript_code(
     source: &str,
     context: ToolContext<'_>,
     observer: Option<&mut dyn CodeModeObserver>,
+    local_tools: Vec<Arc<dyn Tool>>,
 ) -> Result<CodeModeExecution, CodeModeHostError> {
+    let definitions = serde_json::to_string(
+        &local_tools
+            .iter()
+            .map(|tool| tool.definition())
+            .collect::<Vec<_>>(),
+    )
+    .map_err(|error| CodeModeHostError::new(error.to_string()))?;
+    // The callback retains its original revision and host context across yields.
+    let owned = Rc::new(OwnedToolContext::from_context(context));
+    let callback = Closure::wrap(
+        Box::new(move |name: String, input: String, call_id: String| {
+            let tool = local_tools
+                .iter()
+                .find(|tool| tool.definition().name() == name)
+                .cloned();
+            let owned = Rc::clone(&owned);
+            let (abort, registration) = futures_util::future::AbortHandle::new_pair();
+            let future = futures_util::future::Abortable::new(
+                async move {
+                    let tool =
+                        tool.ok_or_else(|| js_error("local Code Mode tool is unavailable"))?;
+                    let original = owned.as_context();
+                    let context = ToolContext::new(
+                        original.model(),
+                        original.session_id(),
+                        &call_id,
+                        original.history(),
+                        original.output_token_budget(),
+                    )
+                    .with_instruction_revision(original.instruction_revision())
+                    .with_host_context(original.host_context())
+                    .with_turn_id(original.turn_id());
+                    let input = if matches!(tool.definition(), ToolDefinition::Custom { .. }) {
+                        ToolInput::Freeform(
+                            serde_json::from_str::<String>(&input).map_err(js_error)?,
+                        )
+                    } else {
+                        ToolInput::Function(
+                            serde_json::value::RawValue::from_string(input).map_err(js_error)?,
+                        )
+                    };
+                    let output = tool
+                        .execute(input, context)
+                        .await
+                        .unwrap_or_else(|error| ToolOutput::error(error.to_string()));
+                    Ok(JsValue::from_str(
+                        &serde_json::to_string(&output.into_wire().map_err(js_error)?)
+                            .map_err(js_error)?,
+                    ))
+                },
+                registration,
+            );
+            let promise = wasm_bindgen_futures::future_to_promise(async move {
+                future
+                    .await
+                    .map_err(|_| js_error("local Code Mode tool execution cancelled"))?
+            });
+            let cancel =
+                Closure::wrap(Box::new(move || abort.abort()) as Box<dyn FnMut()>).into_js_value();
+            let _ = js_sys::Reflect::set(promise.as_ref(), &JsValue::from_str("cancel"), &cancel);
+            promise
+        }) as Box<dyn FnMut(String, String, String) -> Promise>,
+    )
+    .into_js_value();
     let execution = host_execute_code(
         source,
         context.session_id(),
         context.call_id(),
         context.model(),
         context.turn_id(),
+        &definitions,
+        &callback,
     )
     .map_err(|error| CodeModeHostError::new(host_error_message(&error)))?;
     observe_javascript_code(execution, context, observer).await
@@ -2882,7 +2966,7 @@ impl WasmTurn {
             Some(id) => control.steer_with_id(id, Prompt::new(instruction)).await,
             None => control.steer(Prompt::new(instruction)).await,
         }
-        .map_err(js_error)
+        .map_err(|error| js_turn_error(turn_failure(&error)))
     }
 
     /// Injects browser-safe multimodal input at the active turn's next boundary.
@@ -2902,7 +2986,7 @@ impl WasmTurn {
             Some(id) => control.steer_with_id(id, prompt).await,
             None => control.steer(prompt).await,
         }
-        .map_err(js_error)
+        .map_err(|error| js_turn_error(turn_failure(&error)))
     }
 
     /// Removes the latest identified steer while it is still pending.
@@ -2914,7 +2998,10 @@ impl WasmTurn {
     #[wasm_bindgen(js_name = withdrawSteer)]
     pub async fn withdraw_steer(&self, message_id: String) -> Result<bool, JsValue> {
         match self.control().await {
-            Ok(control) => control.withdraw_steer(message_id).await.map_err(js_error),
+            Ok(control) => control
+                .withdraw_steer(message_id)
+                .await
+                .map_err(|error| js_turn_error(turn_failure(&error))),
             Err(_)
                 if self
                     .state

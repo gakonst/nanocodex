@@ -147,9 +147,15 @@ impl Fixture {
         if option_env!("CARGO_BIN_EXE_nanocodex2").is_none() {
             command.arg("account");
         }
+        command.args(args);
+        // Account fixtures must never enroll or reconfigure the GUI user's Hand.
+        if args.first() == Some(&"login") {
+            command.arg("--no-hand");
+        }
         command
-            .args(args)
             .current_dir(self.dir.path())
+            .env("HOME", self.dir.path())
+            .env("NANOCODEX_DIR", self.dir.path().join("install"))
             .env_remove("NANOCODEX_API_KEY")
             .env_remove("NC_API_KEY")
             .env("CODEX_HOME", self.dir.path())
@@ -468,4 +474,205 @@ async fn ctrl_c_during_mint_waits_for_the_result_and_revokes_without_saving() {
             "POST /v1/auth/logout"
         ]
     );
+}
+
+// The standalone menu consumes the shipped full CLI, not a test-only status API.
+#[tokio::test]
+async fn hand_menu_status_observes_real_http_without_mutations_or_secret_output() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let Some(binary) = option_env!("CARGO_BIN_EXE_nanocodex") else {
+        return;
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("account.json");
+    // A project-scoped credential must not turn a signed-out menu into another
+    // account. The real command runs from this directory for every observation.
+    std::fs::write(
+        dir.path().join(".env"),
+        format!("NANOCODEX_API_KEY={}\n", key()),
+    )
+    .unwrap();
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let mode = Arc::new(AtomicUsize::new(0));
+    let requests = seen.clone();
+    let selected_mode = mode.clone();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin = format!("http://{}", listener.local_addr().unwrap());
+    let app = Router::new().fallback(move |method: Method, uri: Uri, headers: HeaderMap| {
+        let requests = requests.clone();
+        let mode = selected_mode.load(Ordering::SeqCst);
+        async move {
+            assert_eq!(method, Method::GET, "Status must not mutate any remote resource");
+            assert_eq!(headers["authorization"], format!("Bearer {}", key()));
+            assert!(!headers.contains_key("cookie"));
+            requests.lock().unwrap().push(uri.path().to_owned());
+            if uri.path() == "/v1/me" {
+                if mode == 1 { return (StatusCode::UNAUTHORIZED, key()).into_response(); }
+                if mode == 4 { return (StatusCode::OK, key()).into_response(); }
+                if mode == 5 {
+                    return Response::builder().status(302).header("location", "/redirected").body(axum::body::Body::empty()).unwrap();
+                }
+                return axum::Json(json!({"authentication": "api_key", "user": {"id": "synthetic-user"},
+                    "organization": {"id": "synthetic-org"}, "team": {"id": "synthetic-team"}, "role": "owner"})).into_response();
+            }
+            if uri.path() == "/v1/account/hands/inventory" {
+                if mode == 2 { return (StatusCode::FORBIDDEN, key()).into_response(); }
+                if mode == 3 { return StatusCode::SERVICE_UNAVAILABLE.into_response(); }
+                if mode == 6 { tokio::time::sleep(std::time::Duration::from_secs(30)).await; }
+                let mut data = vec![
+                    json!({"id": "synthetic-mac", "name": "Synthetic Mac", "kind": "hand", "online": true, "health": "connected",
+                        "workspace": "/private/path-that-must-not-leak", "route_token": key()}),
+                    json!({"id": "offline-laptop", "name": "Sleeping laptop", "kind": "hand", "online": false, "health": "offline"}),
+                    json!({"id": "workspace", "name": "Project workspace", "kind": "workspace", "online": true, "health": "connected"}),
+                    json!({"id": "vm:build", "name": "Build VM", "kind": "vm", "online": true, "health": "connected"}),
+                ];
+                if mode == 7 { data[0]["name"] = key().into(); }
+                if mode == 8 { data[2]["online"] = Value::Null; data[2]["health"] = "unknown".into(); }
+                if mode == 9 { data[1]["online"] = true.into(); }
+                return axum::Json(json!({"data": data, "coverage": "known_account_and_workspace", "complete": mode != 8})).into_response();
+            }
+            assert_eq!(uri.path(), "/v1/account/hands/screens");
+            axum::Json(json!({"surfaces": [{"machine_id": "synthetic-screen", "machine_name": "Synthetic screen",
+                "id": "display", "generation": key(), "transport": "frames-v1", "controllable": true},
+                {"machine_id": "offline-laptop", "machine_name": "Sleeping laptop", "transport": "frames-v1"}]})).into_response()
+        }
+    });
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    let command = || {
+        let mut command = Command::new(binary);
+        command
+            .args(["hand", "menu-status"])
+            .current_dir(dir.path())
+            .env_remove("NANOCODEX_API_KEY")
+            .env_remove("NC_API_KEY")
+            .env("HOME", dir.path())
+            .env("CODEX_HOME", dir.path())
+            .env("NANOCODEX_DIR", dir.path().join("install"))
+            .env("NANOCODEX_ACCOUNT_FILE", &path)
+            .env("NANOCODEX_MANAGED_URL", &origin)
+            .kill_on_drop(true);
+        command
+    };
+    let run = |mut command: Command| async move {
+        let output = tokio::time::timeout(std::time::Duration::from_secs(15), command.output())
+            .await
+            .unwrap()
+            .unwrap();
+        success(&output);
+        assert!(
+            output.stderr.is_empty(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let text = String::from_utf8_lossy(&output.stdout);
+        assert!(!text.contains("path-that-must-not-leak"));
+        let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(value["schema_version"], 1);
+        value
+    };
+    let signed_out = run(command()).await;
+    assert_eq!(signed_out["account"]["state"], "signed_out");
+    assert_eq!(signed_out["inventory"]["state"], "signed_out");
+    assert!(seen.lock().unwrap().is_empty());
+    assert_eq!(
+        std::fs::read_dir(dir.path()).unwrap().count(),
+        1,
+        "Polling created local state"
+    );
+    let credential = serde_json::to_vec(
+        &json!({"version": 1, "accounts": {origin.clone(): {"api_key": key()}}}),
+    )
+    .unwrap();
+    std::fs::write(&path, &credential).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    }
+    for (scenario, expected_account, expected_inventory) in [
+        (0, "verified", "ready"),
+        (1, "expired", "expired"),
+        (2, "verified", "permission_denied"),
+        (3, "verified", "network_error"),
+        (4, "unknown", "unknown"),
+        (5, "unknown", "unknown"),
+        (6, "verified", "network_error"),
+        (7, "verified", "unknown"),
+        (8, "verified", "partial"),
+        (9, "verified", "unknown"),
+        (0, "verified", "ready"), // Recovery reads current state; no sticky cache.
+    ] {
+        mode.store(scenario, Ordering::SeqCst);
+        seen.lock().unwrap().clear();
+        let value = run(command()).await;
+        assert_eq!(
+            value["account"]["state"], expected_account,
+            "scenario {scenario}: {value}"
+        );
+        assert_eq!(
+            value["inventory"]["state"], expected_inventory,
+            "scenario {scenario}: {value}"
+        );
+        let observed = seen.lock().unwrap().clone();
+        assert_eq!(observed[0], "/v1/me");
+        assert!(!observed.iter().any(|path| path == "/redirected"));
+        if expected_account != "verified" {
+            assert_eq!(observed.len(), 1);
+        }
+        if scenario == 0 {
+            let hands = value["inventory"]["hands"].as_array().unwrap();
+            assert_eq!(hands.len(), 5);
+            let offline = hands
+                .iter()
+                .find(|hand| hand["id"] == "offline-laptop")
+                .unwrap();
+            assert_eq!(offline["health"], "offline");
+            assert_eq!(offline["online"], false);
+            assert_eq!(offline["detail"], "Screen also advertised");
+            assert_eq!(
+                hands.iter().find(|hand| hand["id"] == "workspace").unwrap()["kind"],
+                "workspace"
+            );
+            assert_eq!(
+                hands
+                    .iter()
+                    .find(|hand| hand["id"] == "synthetic-mac")
+                    .unwrap()["health"],
+                "connected"
+            );
+            let screen = hands
+                .iter()
+                .find(|hand| hand["kind"] == "screen_only")
+                .unwrap();
+            assert_eq!(screen["online"], Value::Null);
+            assert_eq!(screen["health"], "screen_advertised");
+            assert_eq!(screen["transport"], "screen_frames");
+        }
+        if scenario == 8 {
+            let workspace = value["inventory"]["hands"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|hand| hand["id"] == "workspace")
+                .unwrap();
+            assert_eq!(workspace["online"], Value::Null);
+            assert_eq!(workspace["health"], "unknown");
+        }
+        assert_eq!(std::fs::read(&path).unwrap(), credential);
+        assert_eq!(
+            std::fs::read_dir(dir.path()).unwrap().count(),
+            2,
+            "Polling created updater or service state"
+        );
+        eprintln!(
+            "scenario={scenario} account={expected_account} inventory={expected_inventory} requests={observed:?}"
+        );
+    }
+    server.abort();
+    let disconnected = run(command()).await;
+    assert_eq!(disconnected["account"]["state"], "network_error");
+    std::fs::remove_file(&path).unwrap();
+    assert_eq!(run(command()).await["account"]["state"], "signed_out");
 }

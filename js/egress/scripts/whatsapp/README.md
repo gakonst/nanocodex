@@ -6,12 +6,14 @@ custom build command, and alias `@whiskeysockets/baileys` to
 `./src/whatsapp-generated/baileys.js` in the broker configuration. Keep the
 `CompiledWasm` rule and `nodejs_compat` flag enabled.
 
-Dependencies pin Baileys 7.0.0-rc14 and whatsapp-rust-bridge 0.5.4. Preparation
+Dependencies pin Baileys 7.0.0-rc14, whatsapp-rust-bridge 0.5.4 and
+@noble/hashes 2.4.0. Preparation
 verifies both the bridge source and its scalar WASM hashes before replacing
 runtime WASM compilation with a Workers module import. No cryptographic
 algorithm is reimplemented. A guarded Baileys compatibility patch propagates
 libsignal's false signature-verification result instead of accepting it.
-Upgrading either package requires reviewing these checks and repeating the
+The Baileys crypto module is also hash-checked before its narrow adaptations.
+Upgrading these packages requires reviewing the checks and repeating the
 real workerd crypto and WebSocket journey.
 
 The WebSocket adapter uses Workers fetch upgrades. Protocol logging is silent.
@@ -30,6 +32,18 @@ workerd's Node-compatible GCM implementation otherwise fails authentication
 on the empty-AAD transport used after Noise initialization. Omitting that call
 has identical AEAD semantics; encryption and authenticated decryption still use
 native `node:crypto`. Both empty/nonempty AAD and tamper rejection are verified.
+
+Pairing-key derivation uses `@noble/hashes`' asynchronous PBKDF2-HMAC-SHA256
+implementation with the protocol's exact 131,072 iterations and 32-byte output.
+Production Workers caps both WebCrypto and Node-native PBKDF2 at 100,000
+iterations; standalone workerd does not enforce that limit. The guarded crypto
+module transform replaces only `derivePairingCodeKey`; it does not alter global
+crypto APIs or weaken the protocol's work factor. Synthetic ASCII and UTF-8
+vectors (including a salt view with an offset) compare every output byte against
+independent Node `pbkdf2Sync` results through the shipped bundle. These checks do
+not request a pairing code or contact an account. Repeat the synthetic KDF proof
+in remote Workers when upgrading: an anonymous Noise handshake alone never
+exercises this pairing-only step.
 
 Reproduce the protocol journey from the repository with Node 24:
 

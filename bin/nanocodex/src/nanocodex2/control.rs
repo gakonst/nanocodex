@@ -26,7 +26,7 @@ pub(crate) struct InitialSettings {
     /// Initial reasoning mode (standard or pro).
     #[arg(long)]
     reasoning_mode: Option<ReasoningMode>,
-    /// Request fast processing (default follows the selected model catalog).
+    /// Request fast processing (default follows the selected model).
     #[arg(long, num_args = 0..=1, default_missing_value = "true", action = clap::ArgAction::Set)]
     fast_mode: Option<bool>,
     /// Pin the new session to this connected ChatGPT account (disables failover).
@@ -58,12 +58,31 @@ impl InitialSettings {
         }
     }
 
-    /// Resolves only a new conversation against the account's authoritative catalog.
+    /// Validates explicit models locally; default selection uses the live catalog.
+    /// Provider availability is checked when the provider is used.
     /// Reopening an existing conversation must preserve its retained settings.
     pub(crate) async fn resolve_for_account(
         mut self,
         client: &ManagedClient,
     ) -> Result<AgentSettings, ManagedError> {
+        if let Some(model) = self.model {
+            if self.chatgpt_account.is_some() && model.oai().is_none() {
+                return Err(ManagedError::Configuration(
+                    "The requested model cannot be pinned to a ChatGPT account".to_owned(),
+                ));
+            }
+            let settings = self.resolve();
+            if !model.supports_thinking(settings.thinking)
+                || !model.supports_reasoning_mode(settings.reasoning_mode)
+                || (settings.fast_mode && !model.supports_fast_mode())
+            {
+                return Err(ManagedError::Configuration(
+                    "The requested effort, reasoning mode, or fast mode is not offered for this model"
+                        .to_owned(),
+                ));
+            }
+            return Ok(settings);
+        }
         let catalog = client.models().await?;
         let model = match self.model {
             Some(model) => model,

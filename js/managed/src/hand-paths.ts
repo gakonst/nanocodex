@@ -14,17 +14,21 @@ export class HandPaths {
     return this.storage.sql.exec<{ root: string }>("SELECT root FROM managed_hand_paths").toArray().map(row => row.root);
   }
 
-  assign(machines: readonly Machine[], reserved: readonly string[] = []): ReadonlyMap<string, string> {
+  assign(machines: readonly Machine[], reserved: readonly string[] = [], preferred?: ReadonlyMap<string, string>): ReadonlyMap<string, string> {
     const rows = this.storage.sql.exec<{ machine_id: string; root: string }>("SELECT machine_id, root FROM managed_hand_paths").toArray();
     const paths = new Map(rows.map(row => [row.machine_id, row.root]));
     const used = new Set([...reserved, ...paths.values(), "/brain"]);
+    const preferredRoots = new Map([...preferred ?? []].filter(([, root]) => root.startsWith("/") && namespaceMountRoot(root.slice(1)) === root && root !== "/brain"));
+    const preferredOwners = new Map([...preferredRoots].map(([id, root]) => [root, id]));
     const legacy = new Map(machines.map(machine => [namespaceMountRoot(machine.id), machine.id]));
     for (const machine of [...machines].sort((a, b) => a.id.localeCompare(b.id))) {
       if (paths.has(machine.id)) continue;
-      const stem = readableHandRoot(machine.name);
+      const canonical = preferredRoots.get(machine.id);
+      const stem = canonical && !used.has(canonical) ? canonical : readableHandRoot(machine.name);
       let root = stem;
       let suffix = 2;
-      while (used.has(root) || (legacy.has(root) && legacy.get(root) !== machine.id)) {
+      while (used.has(root) || (legacy.has(root) && legacy.get(root) !== machine.id)
+        || (preferredOwners.has(root) && preferredOwners.get(root) !== machine.id)) {
         const tail = `-${suffix++}`;
         root = `${stem.slice(0, 64 - tail.length).replace(/[._-]+$/, "")}${tail}`;
       }

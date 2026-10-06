@@ -1,3 +1,5 @@
+import { normalizeHandResources } from "nanocodex-tools/internal/hosted-machine";
+
 /** Present an already-authorized, sanitized account projection to the model.
  * Authorization and secret filtering remain the responsibility of the host. */
 export function projectEnvironment(info, { runtime, default_cwd }) {
@@ -8,6 +10,7 @@ export function projectEnvironment(info, { runtime, default_cwd }) {
   return {
     runtime, default_cwd, status: info.status,
     hands: Object.fromEntries((info.machines ?? []).map((hand) => [hand.id, {
+      resources: projectHandResources(hand.resources, hand.online),
       name: hand.name, path: hand.mount, capabilities: [...hand.capabilities],
       ...(hand.kind === undefined ? {} : { kind: hand.kind }),
       ...(hand.online === undefined ? {} : { online: hand.online }),
@@ -83,4 +86,11 @@ function projectWallet(wallet) {
   } : { status: "unavailable" };
   return { status: "ready", address: wallet.address, created_at: wallet.created_at,
     chain: wallet.chain, chain_id: wallet.chain_id, balance };
+}
+
+/** Freshness is evaluated on every read, never reset by discovery caching or reconnect. */
+export function projectHandResources(value, online, now = Date.now()) {
+  const sample = normalizeHandResources(value);
+  if (!sample || !Number.isFinite(now) || sample.observed_at_ms > now + 30_000) return { status: "unknown" };
+  return { ...sample, status: online === false || now - sample.observed_at_ms > 300_000 ? "stale" : "fresh" };
 }

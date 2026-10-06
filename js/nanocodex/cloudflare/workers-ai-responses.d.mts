@@ -18,7 +18,8 @@ export type WorkersAiResponsesTransport = Readonly<{
 }>;
 /**
  * Incremental (stream:true) or buffered, stateless Responses SSE over the GLM-5.3 Workers AI binding.
- * Requires full text history; opaque compaction and unsupported modalities fail explicitly.
+ * Requires complete history; terminal compaction_trigger requests produce portable text summaries.
+ * Summaries survive transport recreation; foreign opaque compaction and unsupported modalities fail explicitly.
  * x-nanocodex-inference-buffering reports streaming or buffered (including binding fallback).
  * Text/reasoning stream incrementally; tool events follow terminal tool validation.
  * Structured output formats and malformed or truncated tool calls fail explicitly.

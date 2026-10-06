@@ -166,6 +166,9 @@ class MemoryPersistence {
     return [...this.calls.values()].filter(row => row.lease_id === leaseId && row.generation === generation
       && (row.state === "admitted" || row.state === "dispatched")).length;
   }
+  generationCalls(leaseId, generation) {
+    return [...this.calls.values()].filter(row => row.lease_id === leaseId && row.generation === generation).map(clone);
+  }
   generationCallCount(leaseId, generation) {
     return [...this.calls.values()].filter(row => row.lease_id === leaseId && row.generation === generation).length;
   }

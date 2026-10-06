@@ -1,4 +1,4 @@
-// Run with: node --experimental-strip-types js/managed/test/browser-vault.chrome.mjs
+// Run with: node --experimental-transform-types js/managed/test/browser-vault.chrome.mjs
 // Uses only fake credentials and a temporary HTTPS server / isolated Chrome profile.
 import assert from 'node:assert/strict';
 import https from 'node:https';
@@ -6,7 +6,12 @@ import { readFileSync, mkdtempSync, rmSync, readdirSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { BROWSER_VAULT_FILL_FUNCTION } from '../src/browser-vault.ts';
+import { registerHooks } from 'node:module';
+// Match the extensionless browser-module imports used by the Worker build.
+registerHooks({resolve(specifier, context, nextResolve) {
+  return nextResolve(specifier.startsWith('./browser-') && !specifier.endsWith('.ts') ? specifier + '.ts' : specifier, context);
+}});
+const { BROWSER_VAULT_FILL_FUNCTION } = await import('../src/browser-vault.ts');
 const packages = new URL('../../../node_modules/.pnpm/', import.meta.url);
 // This repo already installs Playwright transitively; do not change package manifests.
 const entry = readdirSync(packages).find(name => /^playwright-core@/.test(name));

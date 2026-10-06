@@ -526,3 +526,151 @@ async fn streamed_client_tool_preserves_opaque_caller_metadata() {
     assert_eq!(replay[0]["input"], json!({"city":"Paris"}));
     assert_eq!(replay[0]["caller"]["tool_id"], "srvtoolu_parent");
 }
+
+fn complete_text_stream() -> String {
+    [
+        json!({"type":"message_start","message":{"id":"framing","role":"assistant","model":"x","content":[],"usage":{}}}),
+        json!({"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}),
+        json!({"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"日本語 😀"}}),
+        json!({"type":"content_block_stop","index":0}),
+        json!({"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":3}}),
+        json!({"type":"message_stop"}),
+    ].iter().map(|event| format!("event: {}\ndata: {event}\n\n", event["type"].as_str().unwrap())).collect()
+}
+
+#[tokio::test]
+async fn accepts_all_sse_line_endings_and_one_leading_bom() {
+    // A CR-only, fully terminated message_stop used to produce IncompleteStream
+    // even though the provider sent the complete terminal event.
+    for ending in ["\r", "\n", "\r\n"] {
+        for bom in ["", "\u{feff}"] {
+            let payload = format!("{bom}{}", complete_text_stream().replace('\n', ending));
+            let endpoint = server(move |_| {
+                (
+                    StatusCode::OK,
+                    "text/event-stream; charset=utf-8",
+                    payload.clone(),
+                )
+            })
+            .await;
+            let client = ClaudeClient::new(http_client(), endpoint, "synthetic-key");
+            let mut events = client.stream(&request()).await.unwrap();
+            let first = events.next().await.unwrap().unwrap();
+            let result = collect_stream(first, events).await.unwrap();
+            assert_eq!(result.content, vec![ContentBlock::text("日本語 😀")]);
+            assert_eq!(result.stop_reason, Some(StopReason::EndTurn));
+        }
+    }
+}
+
+#[tokio::test]
+async fn never_promotes_unterminated_or_missing_terminal_to_success() {
+    let complete = complete_text_stream();
+    let terminal = complete.rfind("event: message_stop").unwrap();
+    for payload in [
+        complete[..terminal].to_owned(),
+        complete.trim_end_matches('\n').to_owned(),
+        complete[..complete.len() - 1].to_owned(),
+        format!(
+            "{}event: message_stop\ndata: {{\"type\":\"message_st",
+            &complete[..terminal]
+        ),
+    ] {
+        let endpoint =
+            server(move |_| (StatusCode::OK, "text/event-stream", payload.clone())).await;
+        let client = ClaudeClient::new(http_client(), endpoint, "synthetic-key");
+        let mut events = client.stream(&request()).await.unwrap();
+        let first = events.next().await.unwrap().unwrap();
+        assert!(matches!(
+            collect_stream(first, events).await,
+            Err(ClaudeError::IncompleteStream)
+        ));
+    }
+}
+
+#[tokio::test]
+async fn rejects_successful_non_sse_response_without_exposing_body() {
+    let endpoint = server(|_| {
+        (
+            StatusCode::OK,
+            "application/json",
+            "private upstream diagnostic".into(),
+        )
+    })
+    .await;
+    let client = ClaudeClient::new(http_client(), endpoint, "synthetic-key");
+    let error = match client.stream(&request()).await {
+        Ok(_) => panic!("non-SSE body must be rejected"),
+        Err(error) => error,
+    };
+    assert!(
+        matches!(&error, ClaudeError::Protocol(message) if message == "expected text/event-stream response")
+    );
+    assert!(!error.to_string().contains("private upstream diagnostic"));
+}
+
+#[tokio::test]
+async fn event_name_whitespace_is_not_silently_normalized() {
+    let payload = complete_text_stream().replace("event: message_stop", "event:  message_stop");
+    let endpoint = server(move |_| (StatusCode::OK, "text/event-stream", payload.clone())).await;
+    let client = ClaudeClient::new(http_client(), endpoint, "synthetic-key");
+    let mut events = client.stream(&request()).await.unwrap();
+    let first = events.next().await.unwrap().unwrap();
+    assert!(matches!(
+        collect_stream(first, events).await,
+        Err(ClaudeError::Protocol(_))
+    ));
+}
+
+#[tokio::test]
+async fn observed_terminal_with_open_block_is_protocol_error_not_missing_terminal() {
+    let payload = complete_text_stream().replace(
+        "event: content_block_stop\ndata: {\"index\":0,\"type\":\"content_block_stop\"}\n\n",
+        "",
+    );
+    assert!(
+        !payload.contains("content_block_stop"),
+        "fixture must leave the text block open"
+    );
+    let endpoint = server(move |_| (StatusCode::OK, "text/event-stream", payload.clone())).await;
+    let client = ClaudeClient::new(http_client(), endpoint, "synthetic-key");
+    let mut events = client.stream(&request()).await.unwrap();
+    let first = events.next().await.unwrap().unwrap();
+    assert!(matches!(collect_stream(first, events).await,
+        Err(ClaudeError::Protocol(message)) if message == "message_stop before content_block_stop"));
+}
+
+#[tokio::test]
+async fn complete_cr_terminal_settles_without_waiting_for_transport_eof() {
+    use axum::body::Body;
+    use std::convert::Infallible;
+    let app = Router::new().route(
+        "/v1/messages",
+        post(|| async {
+            let payload = complete_text_stream().replace('\n', "\r");
+            let chunks = futures_util::stream::once(async move { Ok::<_, Infallible>(payload) })
+                .chain(futures_util::stream::pending());
+            (
+                [("content-type", "text/event-stream")],
+                Body::from_stream(chunks),
+            )
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let client = ClaudeClient::new(
+        http_client(),
+        format!("http://{address}/v1/messages"),
+        "synthetic-key",
+    );
+    let result = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        let mut events = client.stream(&request()).await.unwrap();
+        let first = events.next().await.unwrap().unwrap();
+        collect_stream(first, events).await.unwrap()
+    })
+    .await
+    .expect("a fully framed terminal must settle while the connection remains open");
+    assert_eq!(result.content, vec![ContentBlock::text("日本語 😀")]);
+    server.abort();
+}

@@ -11,15 +11,16 @@
     "deploy": "wrangler deploy --env=\"\" --config wrangler.jsonc"
   },
   "dependencies": {
-    "accounts": "0.17.0",
+    "accounts": "https://pkg.pr.new/tempoxyz/accounts@232cc59cb4f8b4c8daf2113d0881b161e76a69d3",
     "nanocodex-connect-protocol": "workspace:*",
     "nanocodex-vite": "workspace:*",
     "ox": "0.14.36",
-    "viem": "2.55.19",
+    "viem": "2.57.2",
     "nanocodex": "workspace:*"
   },
   "devDependencies": {
     "typescript": "5.9.3",
-    "wrangler": "4.127.1"
+    "wrangler": "4.127.1",
+    "miniflare": "4.20260730.0"
   }
 }

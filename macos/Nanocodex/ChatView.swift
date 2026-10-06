@@ -628,7 +628,7 @@ private struct ComposerResponseControls: View, Equatable {
         HStack(spacing: 8) {
             NanocodexVoiceControl(session: model.voice) { try await model.voiceConfiguration(tabID: tabID) }
                 .disabled(!connected || !voiceSupported)
-                .help(voiceSupported ? "Start voice" : "Claude chats support text only; voice is unavailable.")
+                .help(voiceSupported ? "Start voice" : "Voice is unavailable for this conversation.")
             if canStop {
                 Button { Task { await model.cancel(tabID: tabID) } } label: {
                     Image(systemName: "stop.fill").font(.system(size: 12)).frame(width: 16, height: 16)

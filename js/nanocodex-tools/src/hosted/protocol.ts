@@ -92,6 +92,8 @@ export type HostedToolsHostFrame =
       runtime_id?: string;
       /** Retained command journal in this living executor runtime. */
       command_recovery?: true;
+      /** Trusted turn completion notifications, never exposed in the tool catalog. */
+      turn_lifecycle?: true;
       /** Opt-in is rejected by older strict brokers before any call executes. */
       diagnostics?: true;
       /** Opaque client-generated identity for this connection attempt. */
@@ -131,6 +133,7 @@ export type HostedToolsManagedFrame =
       type: "ack";
       call_id: string;
     }
+  | { type: "turn_ended"; session_id: string; turn_id: string; hook_event_name: "Stop" | "Interrupt" | "SubagentStop" }
   | { type: "recover"; call_ids: string[] }
   | { type: "pong"; nonce: string }
   | { type: "draining" };
@@ -138,7 +141,7 @@ export type HostedToolsManagedFrame =
 export type HostedToolsFrame = HostedToolsHostFrame | HostedToolsManagedFrame;
 
 const HOST_FRAME_TYPES = new Set(["catalog", "result", "status", "ping", "drain", "diagnostic"]);
-const MANAGED_FRAME_TYPES = new Set(["ready", "call", "cancel", "ack", "recover", "pong", "draining"]);
+const MANAGED_FRAME_TYPES = new Set(["ready", "call", "cancel", "ack", "recover", "pong", "draining", "turn_ended"]);
 
 export function parseHostedToolsHostFrame(encoded: string): HostedToolsHostFrame {
   const frame = parseHostedToolsFrame(encoded);
@@ -191,6 +194,12 @@ export function parseHostedToolsFrame(encoded: string): HostedToolsFrame {
       return { type: "ready" };
     case "call":
       return parseCall(frame);
+    case "turn_ended":
+      exactKeys(frame, ["type", "session_id", "turn_id", "hook_event_name"]);
+      if (typeof frame.hook_event_name !== "string" || !["Stop", "Interrupt", "SubagentStop"].includes(frame.hook_event_name)) throw new HostedToolsProtocolError("invalid_frame", "invalid lifecycle event");
+      return { type: "turn_ended", session_id: sourceIdentifier(frame.session_id, "session_id"),
+        turn_id: boundedText(frame.turn_id, 1, 256, "turn_id"),
+        hook_event_name: frame.hook_event_name as "Stop" | "Interrupt" | "SubagentStop" };
     case "cancel":
       return parseCancel(frame);
     case "ack":
@@ -208,7 +217,10 @@ export function parseHostedToolsFrame(encoded: string): HostedToolsFrame {
 function parseCatalog(
   frame: Record<string, unknown>,
 ): Extract<HostedToolsHostFrame, { type: "catalog" }> {
-  exactKeys(frame, ["type", "tools", "machines", "attachment_id", "capabilities", "runtime_id", "diagnostics", "connection_id", "command_recovery"]);
+  exactKeys(frame, ["type", "tools", "machines", "attachment_id", "capabilities", "runtime_id", "diagnostics", "connection_id", "command_recovery", "turn_lifecycle"]);
+  if (Object.hasOwn(frame, "turn_lifecycle") && frame.turn_lifecycle !== true) {
+    throw new HostedToolsProtocolError("invalid_catalog", "turn_lifecycle must be true when advertised");
+  }
   if (Object.hasOwn(frame, "diagnostics") && frame.diagnostics !== true) {
     throw new HostedToolsProtocolError("invalid_catalog", "diagnostics must be true when advertised");
   }
@@ -268,6 +280,7 @@ function parseCatalog(
     ...(attachmentId === undefined ? {} : { attachment_id: attachmentId }),
     ...(runtimeId === undefined ? {} : { runtime_id: runtimeId }),
     ...(frame.command_recovery === true ? { command_recovery: true as const } : {}),
+    ...(frame.turn_lifecycle === true ? { turn_lifecycle: true as const } : {}),
     ...(frame.diagnostics === true ? { diagnostics: true as const } : {}),
     ...(typeof frame.connection_id === "string" ? { connection_id: frame.connection_id } : {}),
   };

@@ -1,3 +1,5 @@
+#![recursion_limit = "256"]
+
 mod auth;
 mod benchmark;
 mod browser;
@@ -17,6 +19,9 @@ mod eval;
 )))]
 #[path = "eval_unsupported.rs"]
 mod eval;
+mod hand_login;
+mod hand_menu_bar;
+mod hand_menu_status;
 mod hand_service;
 mod hand_setup;
 mod install;
@@ -29,7 +34,9 @@ mod managed_server;
 mod mcp;
 #[cfg_attr(not(feature = "tempo"), path = "mpp_disabled.rs")]
 mod mpp;
+mod native_sessions;
 mod observability;
+mod rewind;
 mod run;
 mod setup;
 mod startup_timing;
@@ -104,7 +111,7 @@ struct Cli {
 enum Command {
     /// Install the verified release bundle and start guided setup.
     Install(install::Install),
-    /// Sign in and set up Computer Use, Hand, and the browser extension.
+    /// Sign in and set up Computer Use, Hand, and the browser bridge.
     Setup(setup::Setup),
     /// Discover and control a running interactive terminal.
     Tui(nanocodex_tui_control::Cli),
@@ -138,8 +145,10 @@ enum Command {
     Run(Box<RunCommand>),
     /// Run a loopback-only managed-agent durability test server.
     ManagedServer(managed_server::ManagedServer),
-    /// Resume a Codex or Nanocodex thread in the interactive TUI.
+    /// Resume a saved session in the selected harness in the interactive TUI.
     Resume(Box<ResumeCommand>),
+    /// Preview or restore native Claude file checkpoints.
+    Rewind(RewindCommand),
     /// Install, cache, or switch CLI builds.
     Update(update::Update),
 }
@@ -160,8 +169,23 @@ struct RunCommand {
 }
 
 #[derive(Args)]
+struct RewindCommand {
+    #[arg(value_parser = NonEmptyStringValueParser::new())]
+    session: String,
+    /// Turn ID from the checkpoint preview.
+    #[arg(long, value_parser = NonEmptyStringValueParser::new())]
+    checkpoint: Option<String>,
+    /// Restore the selected checkpoint and later native file edits.
+    #[arg(long)]
+    restore: bool,
+    /// Restore files, branch the conversation, or do both.
+    #[arg(long, default_value = "files", value_parser = ["files", "conversation", "files-and-conversation"])]
+    mode: String,
+}
+
+#[derive(Args)]
 struct ResumeCommand {
-    /// Codex thread UUID to resume. Omit it to select from discovered sessions.
+    /// Session ID to resume. Omit it to select from the selected harness’s sessions.
     #[arg(value_parser = NonEmptyStringValueParser::new())]
     thread_id: Option<String>,
 
@@ -194,9 +218,21 @@ fn try_main() -> Result<()> {
     launcher::initialize_install_root();
     launcher::dispatch_update()?;
     nanocodex::oai::transport::install_default_rustls_crypto_provider();
-    // Keep direct `cargo run` behavior consistent with the Justfile without
-    // requiring shell-specific syntax to load the repository's `.env` file.
-    let _ = dotenvy::dotenv();
+    // A menu observation must not select credentials from whichever project
+    // directory happened to launch it. Other CLI commands retain their normal
+    // development dotenv behavior.
+    let mut arguments = std::env::args_os().skip(1);
+    let hand_observation = arguments.next().as_deref() == Some(std::ffi::OsStr::new("hand"))
+        && matches!(
+            arguments
+                .next()
+                .as_deref()
+                .and_then(std::ffi::OsStr::to_str),
+            Some("menu-status" | "status")
+        );
+    if !hand_observation {
+        let _ = dotenvy::dotenv();
+    }
 
     let cli = parse_cli();
     if let Some(Command::VmRunConfig(command)) = &cli.command {
@@ -260,7 +296,8 @@ fn process_exit_code(error: &eyre::Report) -> u8 {
 
 async fn run(cli: Cli) -> Result<()> {
     // Interactive startup owns maintenance after its first editable frame.
-    if !matches!(&cli.command, None | Some(Command::Resume(_))) {
+    let observation = matches!(&cli.command, Some(Command::Hand(hand)) if hand.is_observation());
+    if !observation && !matches!(&cli.command, None | Some(Command::Resume(_))) {
         if let Err(error) = update::prepare_legacy_nightly_bootstrap() {
             eprintln!("warning: failed to prepare the Nanocodex updater bootstrap: {error:#}");
         }
@@ -276,7 +313,12 @@ async fn run(cli: Cli) -> Result<()> {
         Some(Command::Tui(command)) => command.run().await.map_err(Into::into),
         Some(Command::Computer(command)) => command.run().await.map_err(|error| eyre!(error)),
         Some(Command::Hand(command)) => command.run().await,
-        Some(Command::Account(command)) => command.run().await.map_err(Into::into),
+        Some(Command::Account(command)) => {
+            if let Some(receipt) = command.run_with_receipt().await? {
+                hand_login::connect_after_login(&receipt).await;
+            }
+            Ok(())
+        }
         Some(Command::Auth(command)) => {
             command
                 .run(cli.agent.selected_harness()?, cli.agent.claude_auth)
@@ -296,8 +338,44 @@ async fn run(cli: Cli) -> Result<()> {
             command.run.run(command.agent, command.vm).await
         }
         Some(Command::ManagedServer(command)) => command.run().await,
+        Some(Command::Rewind(command)) => {
+            rewind::run(
+                &command.session,
+                command.checkpoint.as_deref(),
+                command.restore,
+                &command.mode,
+            )
+            .await
+        }
         Some(Command::Resume(command)) => {
             let codex_home = config::default_codex_home()?;
+            if command.agent.selected_harness()? == nanocodex::HarnessFamily::Claude {
+                let id = match command.thread_id {
+                    Some(id) => id,
+                    None => {
+                        let sessions = native_sessions::discover(&codex_home)?;
+                        if sessions.is_empty() {
+                            return Err(eyre!(
+                                "no resumable Claude sessions found under {}",
+                                codex_home.display()
+                            ));
+                        }
+                        let Some(id) = native_sessions::select(&sessions)? else {
+                            return Ok(());
+                        };
+                        id
+                    }
+                };
+                let session = native_sessions::load(&codex_home, &id)?;
+                return tui::run_observed(
+                    command.agent.resume_claude(session)?,
+                    command.vm,
+                    command.prompt.map(tui::InitialPrompt::plain),
+                    None,
+                    Some(command.observability),
+                )
+                .await;
+            }
             let rollouts = RolloutConfig::new(&codex_home);
             let thread_id = match command.thread_id {
                 Some(thread_id) => thread_id,

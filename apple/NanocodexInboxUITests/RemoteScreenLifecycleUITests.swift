@@ -53,7 +53,7 @@ final class RemoteScreenLifecycleUITests: XCTestCase {
         let draft = "Keep my draft while I view a screen"
         composer.tap(); composer.typeText(draft)
         try openScreenControls(app)
-        let desktop = app.buttons["remote-screen:fixture:desktop"]
+        let desktop = app.buttons["remote-screen:cf:fixture:desktop"]
         XCTAssertTrue(desktop.waitForExistence(timeout: 10))
         XCTAssertFalse(app.descendants(matching: .any)["screen-pane-divider"].exists)
         desktop.tap()
@@ -160,7 +160,7 @@ final class RemoteScreenLifecycleUITests: XCTestCase {
         app.launch()
         defer { XCUIDevice.shared.orientation = .portrait }
         try openScreenControls(app)
-        let controller = app.buttons["remote-screen:fixture:controller"]
+        let controller = app.buttons["remote-screen:cf:fixture:controller"]
         try requireUI(controller.waitForExistence(timeout: 10), "Synthetic controller surface must exist", app: app); controller.tap()
         XCUIDevice.shared.orientation = .landscapeLeft
         let landscape = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
@@ -258,7 +258,7 @@ final class RemoteScreenLifecycleUITests: XCTestCase {
         app.launch()
         defer { XCUIDevice.shared.orientation = .portrait }
         try openScreenControls(app)
-        let surface = app.buttons["remote-screen:fixture:gamepad"]
+        let surface = app.buttons["remote-screen:cf:fixture:gamepad"]
         try requireUI(surface.waitForExistence(timeout: 10), "Native gamepad fixture must exist", app: app)
         surface.tap()
         XCUIDevice.shared.orientation = .landscapeLeft

@@ -1,6 +1,7 @@
 import { handlePhoneService, type PhoneServiceEnv } from "./phone-service";
 export { PhoneServiceAccount } from "./phone-service";
 import { generateTotp } from "./vault-totp";
+import { validVaultFields, materializeVaultFields } from "./vault-fields";
 import { signVaultRequest, transformVaultBody, validateVaultSigning, type VaultSigning } from "./vault-signing";
 import { handleGmailPush, gmailMailboxName, type GmailPushIngressEnv } from "./gmail-push-ingress";
 export { GmailPushMailbox } from "./gmail-push";
@@ -94,7 +95,7 @@ const REDIRECT_STATUS = new Set([301, 302, 303, 307, 308]);
 const CONNECTOR_METHODS = new Set(["DELETE", "GET", "HEAD", "OPTIONS", "PATCH", "POST", "PUT"]);
 const VAULT_EGRESS_METHODS = new Set(["DELETE", "GET", "HEAD", "OPTIONS", "PATCH", "POST", "PUT"]);
 const VAULT_ENTRY_ID = /^[A-Za-z0-9_-]{22,64}$/;
-const VAULT_PLACEHOLDER = /\{\{NANOCODEX_VAULT_([A-Z_]+)\}\}/g;
+const VAULT_PLACEHOLDER = /\{\{NANOCODEX_VAULT_([A-Z_0-9]+)\}\}/g;
 const VAULT_PLACEHOLDER_MARKER = "NANOCODEX_VAULT_";
 const VAULT_PRIVATE_HEADER = /(?:^|[-_])(?:auth(?:orization)?|cookie|credential|password|proxy|secret|token|api[-_]?key)(?:$|[-_]|\d)/i;
 const VAULT_FORBIDDEN_HEADERS = new Set([
@@ -128,7 +129,7 @@ type ConnectorOperation = Readonly<{
 }>;
 
 type VaultPlaceholder = "TOTP" | "API_KEY" | "USERNAME" | "PASSWORD" | "BASIC" | "CARD_NUMBER"
-  | "EXPIRY_MONTH" | "EXPIRY_YEAR" | "CVV" | "BILLING_ZIP" | "SIGNATURE" | "JWT";
+  | "EXPIRY_MONTH" | "EXPIRY_YEAR" | "CVV" | "BILLING_ZIP" | "SIGNATURE" | "JWT" | "ADDRESS_LINE_1" | "ADDRESS_LINE_2" | "CITY" | "STATE" | "ZIP" | "COUNTRY" | "PHONE_NUMBER";
 
 type VaultEgressEnvelope = Readonly<{
   vaultId: string;
@@ -450,10 +451,9 @@ export default class Egress extends WorkerEntrypoint<EgressEnv> {
       return { schema: 1, status: 400, data: null, expiresAt: 0 };
     }
     const namespace = component === "catalog" ? this.env.USER_CONNECTORS : this.env.USER_CREDENTIALS;
-    return cachedAccountMetadata(namespace.idFromName(userId).toString(), component, options, async () => {
+    return cachedAccountMetadata(namespace.idFromName(userId).toString(), component, options, async deadline => {
       if (component === "catalog") {
-        const result = await this.readAccountCatalog(userId);
-        return { status: result.status, data: result.catalog };
+        return consumeRpcData(await connectorBroker(this.env, userId).readDiscoveryCatalog(options, deadline));
       }
       const result = await this.readAccountVault(userId);
       return { status: result.status, data: result.vault };
@@ -526,6 +526,18 @@ async function handleMeasuredEgressWithOwner(
     return handlePublicEgress(request, env, upstreamFetch);
   }
 
+  // Human private-input saving uses the trusted binding, never model HTTP.
+  if (url.origin === "https://browser-vault.internal" && url.pathname === "/v1/save" && !url.search) {
+    const subject = request.headers.get(SUBJECT_HEADER);
+    if (request.method !== "POST" || !subject || !SUBJECT.test(subject) || !isJsonContentType(request.headers.get("content-type"))) return jsonError(403, "vault_browser_denied");
+    try {
+      const body = JSON.parse(await readBoundedText(request, MAX_VAULT_BODY_BYTES));
+      if (!isRecord(body) || Object.keys(body).length !== 3 || !["login","api_key","card","address","phone"].includes(String(body.kind)) || typeof body.operation_id !== "string") return jsonError(400, "invalid_request");
+      const owner = await resolveSubject(env, subject);
+      return userBroker(env, owner).fetch(`https://credentials.internal/v1/vault/${body.kind}`, {method:"POST", headers:{"content-type":"application/json","x-nanocodex-operation-id":body.operation_id}, body:JSON.stringify(body.payload)});
+    } catch { return jsonError(503, "vault_save_unavailable"); }
+  }
+
   // Service-binding only. The model HTTP gateway never routes this origin.
   if (url.origin === "https://browser-vault.internal" && url.pathname === "/v1/login" && !url.search) {
     if (request.method !== "POST") return jsonError(405, "method_not_allowed");
@@ -566,6 +578,22 @@ async function handleMeasuredEgressWithOwner(
       const entry = await resolveVaultEntry(env, owner, body.vault_id);
       if (entry.kind !== "totp" || entry.origin !== body.expected_origin) return jsonError(403, "vault_browser_denied");
       return Response.json({ code: await generateTotp(entry) }, { headers: { "cache-control": "no-store" } });
+    } catch { return jsonError(403, "vault_browser_denied"); }
+  }
+
+  // Private service binding only, like /v1/login. Selected fields stay inside the
+  // owning host's browser transport; the model gateway denies this entire origin.
+  if (url.origin === "https://browser-vault.internal" && url.pathname === "/v1/fields" && !url.search) {
+    if (request.method !== "POST") return jsonError(405, "method_not_allowed");
+    const subject = request.headers.get(SUBJECT_HEADER);
+    if (!subject || !SUBJECT.test(subject) || !isJsonContentType(request.headers.get("content-type"))) return jsonError(403, "vault_browser_denied");
+    try {
+      const body: unknown = JSON.parse(await readBoundedText(request, 4096));
+      if (!isRecord(body) || Object.keys(body).length !== 3
+        || typeof body.vault_id !== "string" || !VAULT_ENTRY_ID.test(body.vault_id)
+        || !validBrowserOrigin(body.expected_origin) || !validVaultFields(body.fields)) return jsonError(400, "invalid_request");
+      const entry = await resolveVaultEntry(env, await resolveSubject(env, subject), body.vault_id);
+      return Response.json({ kind: entry.kind, values: materializeVaultFields(entry, body.fields) }, { headers: { "cache-control": "no-store" } });
     } catch { return jsonError(403, "vault_browser_denied"); }
   }
 
@@ -670,8 +698,24 @@ async function handleMeasuredEgressWithOwner(
     }
     const sponsoredDemo = !accountId && EPHEMERAL_BROWSER_MODEL_SUBJECT.test(subject)
       && operation.id === "responses";
-    let credential = await resolveCredential(env, userId, false, undefined, sponsoredDemo, accountId);
-    const credentialResolvedAt = Date.now();
+    // A retained Session's bounded upload and its live credential lookup are
+    // independent. Start both before waiting; provider dispatch still requires
+    // both to succeed. Other routes retain sponsored admission before body reads.
+    const bodyAbort = sessionModelAuthority && !operation.websocket ? new AbortController() : undefined;
+    let credentialResolvedAt = Date.now();
+    const [initialCredential, preparedBody] = await Promise.all([
+      resolveCredential(env, userId, false, undefined, sponsoredDemo, accountId).then((value) => {
+        credentialResolvedAt = Date.now();
+        return value;
+      }),
+      bodyAbort ? replayableBody(request, operation, bodyAbort.signal) : undefined,
+    ]).catch((error) => {
+      // A denied credential must not leave an unfinished upload draining in the
+      // background. The paired promises already observe either failure.
+      bodyAbort?.abort(error);
+      throw error;
+    });
+    let credential = initialCredential;
     const credentialBrokerMs = credential.broker_ms;
     const credentialBrokerActivationMs = credential.broker_activation_ms;
     const credentialBrokerAgeMs = credential.broker_age_ms;
@@ -692,7 +736,7 @@ async function handleMeasuredEgressWithOwner(
       ? await acquireSponsoredConnection(env, userId)
       : undefined;
     try {
-      const body = await replayableBody(request, operation);
+      const body = preparedBody === undefined ? await replayableBody(request, operation) : preparedBody;
       const upstreamStartedAt = Date.now();
       let upstream = await fetchUpstream(
         env,
@@ -1081,6 +1125,7 @@ function vaultTemplatePlaceholders(template: string): Set<VaultPlaceholder> {
   const supported = new Set<VaultPlaceholder>([
     "API_KEY", "USERNAME", "PASSWORD", "BASIC", "CARD_NUMBER", "EXPIRY_MONTH", "EXPIRY_YEAR",
     "CVV", "BILLING_ZIP", "SIGNATURE", "JWT", "TOTP",
+    "ADDRESS_LINE_1", "ADDRESS_LINE_2", "CITY", "STATE", "ZIP", "COUNTRY", "PHONE_NUMBER",
   ]);
   for (const match of template.matchAll(VAULT_PLACEHOLDER)) {
     if (!supported.has(match[1] as VaultPlaceholder)) {
@@ -1232,9 +1277,17 @@ async function vaultReplacements(
       ["CARD_NUMBER", entry.card_number],
       ["EXPIRY_MONTH", entry.expiry_month],
       ["EXPIRY_YEAR", entry.expiry_year],
-      ["CVV", entry.cvv],
+      ...(entry.cvv ? [["CVV", entry.cvv] as [VaultPlaceholder, string]] : []),
       ["BILLING_ZIP", entry.billing_zip],
     ]);
+
+  } else if (entry.kind === "address") {
+    replacements = new Map([
+      ["ADDRESS_LINE_1", entry.address_line_1], ["ADDRESS_LINE_2", entry.address_line_2 ?? ""],
+      ["CITY", entry.city], ["STATE", entry.state], ["ZIP", entry.zip], ["COUNTRY", entry.country],
+    ]);
+  } else if (entry.kind === "phone") {
+    replacements = new Map([["PHONE_NUMBER", entry.phone_number]]);
   } else {
     throw new EgressFailure(403, "vault_entry_kind_mismatch");
   }
@@ -1421,14 +1474,15 @@ function connectorOperation(url: URL): ConnectorOperation | undefined {
 }
 
 function sanitizeUpstreamResponse(upstream: Response): Response {
-  // An upgraded socket must be returned intact. Its peer is the explicitly
-  // trusted provider/relay selected by the fixed rule, never caller input.
-  if (upstream.webSocket) return upstream;
+  // Network response headers are immutable, including upgrades. Own the header
+  // projection before adding private correlation while preserving the exact
+  // provider socket; wrapping a Response does not require a frame proxy.
   const headers = sanitizedUpstreamHeaders(upstream.headers);
-  return new Response(upstream.body, {
+  return new Response(upstream.webSocket ? null : upstream.body, {
     status: upstream.status,
     statusText: upstream.statusText,
     headers,
+    ...(upstream.webSocket ? { webSocket: upstream.webSocket } : {}),
   });
 }
 
@@ -2158,7 +2212,7 @@ async function handleControl(request: Request, url: URL, env: EgressEnv): Promis
   }
 
   const walletMatch = url.pathname.match(
-    /^\/users\/([A-Za-z0-9][A-Za-z0-9._:-]{0,127})\/wallet(?:\/(balance|connect|revoke-access-key|mercator\/credential))?$/,
+    /^\/users\/([A-Za-z0-9][A-Za-z0-9._:-]{0,127})\/wallet(?:\/(balance|identity|link|link\/poll|link\/cancel|unlink|connect|revoke-access-key|mercator\/credential))?$/,
   );
   if (walletMatch) {
     const userId = walletMatch[1]!;
@@ -2167,13 +2221,15 @@ async function handleControl(request: Request, url: URL, env: EgressEnv): Promis
       ? `https://credentials.internal/v1/wallet/${operation}`
       : "https://credentials.internal/v1/wallet";
     if (!operation && request.method === "GET") {
-      return userBroker(env, userId).fetch(target, { method: "GET" });
+      const headers = request.headers.get("accept") === "application/vnd.nanocodex.wallet-snapshot+json"
+        ? { accept: "application/vnd.nanocodex.wallet-snapshot+json" } : undefined;
+      return userBroker(env, userId).fetch(target, { method: "GET", ...(headers ? { headers } : {}), signal: request.signal });
     }
     if (!operation && request.method === "PUT") {
       if (await hasRequestPayload(request)) return jsonError(400, "invalid_request");
       return userBroker(env, userId).fetch(target, { method: "PUT" });
     }
-    if (operation === "balance" && request.method === "GET") {
+    if ((operation === "balance" || operation === "identity") && request.method === "GET") {
       return userBroker(env, userId).fetch(target, { method: "GET" });
     }
     if (operation && request.method === "POST") {
@@ -2377,6 +2433,14 @@ async function handleControl(request: Request, url: URL, env: EgressEnv): Promis
     });
   }
 
+  const providerCapture = url.pathname.match(/^\/users\/([A-Za-z0-9][A-Za-z0-9._:-]{0,127})\/credentials\/(provider-capture|provider-store|provider-card|provider-bindings)$/);
+  if (providerCapture) {
+    if (request.method !== "POST") return jsonError(405, "method_not_allowed");
+    return userBroker(env, providerCapture[1]!).fetch(`https://credentials.internal/v1/${providerCapture[2]}`, {
+      method: "POST", headers: { "content-type": "application/json", "x-nanocodex-provider-owner": providerCapture[1]! }, body: request.body,
+    });
+  }
+
   const vaultOwner = url.pathname.match(/^\/users\/([A-Za-z0-9][A-Za-z0-9._:-]{0,127})\/credentials\/vault$/)?.[1];
   if (vaultOwner) {
     if (request.method !== "GET") return jsonError(405, "method_not_allowed");
@@ -2421,7 +2485,7 @@ async function handleControl(request: Request, url: URL, env: EgressEnv): Promis
     );
     return userBroker(env, userId).fetch(target, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: { "content-type": "application/json", ...(request.headers.has("x-nanocodex-operation-id") ? {"x-nanocodex-operation-id":request.headers.get("x-nanocodex-operation-id")!} : {}) },
       body: JSON.stringify(forwarded),
     });
   }
@@ -3252,7 +3316,7 @@ async function resolveSshIdentity(
   return identity;
 }
 
-async function replayableBody(request: Request, operation: ModelOperation): Promise<Uint8Array | null> {
+async function replayableBody(request: Request, operation: ModelOperation, cancel?: AbortSignal): Promise<Uint8Array | null> {
   if (operation.websocket) return null;
   const declared = request.headers.get("content-length");
   if (declared !== null) {
@@ -3264,11 +3328,15 @@ async function replayableBody(request: Request, operation: ModelOperation): Prom
   }
   if (!request.body) return new Uint8Array();
   const reader = request.body.getReader();
+  const cancelRead = () => { void reader.cancel().catch(() => {}); };
+  cancel?.addEventListener("abort", cancelRead, { once: true });
   const chunks: Uint8Array[] = [];
   let total = 0;
   try {
     while (true) {
+      cancel?.throwIfAborted();
       const { done, value } = await reader.read();
+      cancel?.throwIfAborted();
       if (done) break;
       total += value.byteLength;
       if (total > MAX_MODEL_BODY_BYTES) {
@@ -3277,7 +3345,10 @@ async function replayableBody(request: Request, operation: ModelOperation): Prom
       }
       chunks.push(value);
     }
-  } finally { reader.releaseLock(); }
+  } finally {
+    cancel?.removeEventListener("abort", cancelRead);
+    reader.releaseLock();
+  }
   const body = new Uint8Array(total);
   let offset = 0;
   for (const chunk of chunks) { body.set(chunk, offset); offset += chunk.byteLength; }

@@ -1,0 +1,95 @@
+name: Mac Hand install from nightly
+run-name: "Mac Hand install from ${{ inputs.release_tag }}"
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Published immutable nightly tag (nightly- followed by the full commit SHA)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  macos:
+    name: Fresh Mac saved-login Hand journey
+    runs-on: macos-26
+    timeout-minutes: 15
+    env:
+      RELEASE_TAG: ${{ inputs.release_tag }}
+    steps:
+      # Use the dispatched ref's test fix, independently of the binary release.
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+      - name: Validate immutable release input and record provenance
+        run: |
+          [[ "$RELEASE_TAG" =~ ^nightly-[0-9a-f]{40}$ ]] || { echo 'Expected nightly-<40 lowercase hex characters>' >&2; exit 1; }
+          test "$(uname -m)" = arm64
+          mkdir -p output/hand-install-nightly
+          {
+            printf 'release_tag=%s\nexpected_binary_sha=%s\n' "$RELEASE_TAG" "${RELEASE_TAG#nightly-}"
+            printf 'test_sha=%s\n' "$(git rev-parse HEAD)"
+            sw_vers
+          } | tee output/hand-install-nightly/provenance.txt
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - name: Download and verify published CLI and Hand
+        timeout-minutes: 5
+        run: |
+          evidence="$PWD/output/hand-install-nightly"
+          artifacts="$RUNNER_TEMP/hand-install-nightly"
+          mkdir -p "$artifacts/bin"
+          cd "$artifacts"
+          base="https://github.com/gakonst/nanocodex/releases/download/$RELEASE_TAG"
+          curl --fail --location --retry 3 --max-time 120 "$base/SHA256SUMS" -o "$evidence/SHA256SUMS"
+          for binary in nanocodex nanocodex2; do
+            asset="$binary-aarch64-apple-darwin.gz"
+            curl --fail --location --retry 3 --max-time 120 "$base/$asset" -o "$asset"
+            awk -v asset="$asset" '$2 == asset { print; count++ } END { if (count != 1) exit 1 }' \
+              "$evidence/SHA256SUMS" > "$binary.sha256"
+            shasum -a 256 --check "$binary.sha256" | tee -a "$evidence/checksums.txt"
+            gzip -dc "$asset" > "bin/$binary"
+            chmod 755 "bin/$binary"
+            "bin/$binary" --version | tee "$evidence/$binary-version.txt"
+            grep -Fx "Commit SHA: ${RELEASE_TAG#nightly-}" "$evidence/$binary-version.txt"
+            grep -F -- '-nightly' "$evidence/$binary-version.txt"
+            grep -Fx 'Build Profile: nightly' "$evidence/$binary-version.txt"
+          done
+      - name: Run real installed-Hand login journey
+        run: |
+          NANOCODEX_HAND_INSTALL_E2E=1 \
+            NANOCODEX_TEST_CLI="$RUNNER_TEMP/hand-install-nightly/bin/nanocodex" \
+            NANOCODEX_TEST_HAND="$RUNNER_TEMP/hand-install-nightly/bin/nanocodex2" \
+            node --test js/desktop-runtime/test/hand-install-login.integration.test.mjs \
+            2>&1 | tee output/hand-install-nightly/test.log
+          # A skipped opt-in test must not count as verification on this runner.
+          node --input-type=module <<'JS'
+          import assert from 'node:assert/strict';
+          import { readdir, readFile } from 'node:fs/promises';
+          const root = 'output/hand-install-login';
+          const runs = await readdir(root);
+          assert.equal(runs.length, 1, 'Expected one completed real journey');
+          const evidence = JSON.parse(await readFile(`${root}/${runs[0]}/transcript.json`, 'utf8'));
+          assert.equal(evidence.result, 'passed');
+          assert.equal(evidence.cleanupComplete, true);
+          JS
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: mac-hand-install-nightly-evidence
+          path: |
+            output/hand-install-nightly
+            output/hand-install-login
+          if-no-files-found: warn

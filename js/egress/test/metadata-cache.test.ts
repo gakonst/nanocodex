@@ -3,7 +3,7 @@ import { createExecutionContext, SELF, waitOnExecutionContext } from "cloudflare
 import { describe, expect, it, vi } from "vitest";
 import Egress from "../src/egress";
 import type { EgressEnv } from "../src/egress";
-import { cachedAccountMetadata as readMetadata, metadataCacheKey, METADATA_CACHE_NAME, METADATA_TTL_MS, safeMetadata } from "../src/metadata-cache";
+import { cachedAccountMetadata as readMetadata, metadataCacheKey, METADATA_CACHE_NAME, METADATA_TTL_MS, safeMetadata, SourceCatalogSnapshots } from "../src/metadata-cache";
 
 const catalog = { connectors: { github: { connected: false, connections: [] } }, mcp_connections: [] };
 const service = (exports as unknown as { default: Egress }).default;
@@ -175,10 +175,13 @@ describe("discovery service RPC with real owning DOs", () => {
     const open = vi.spyOn(caches, "open").mockResolvedValue({
       match: async () => undefined, put, delete: real.delete.bind(real),
     } as Cache);
-    const backend = vi.spyOn(rpc, "readAccountCatalog").mockImplementation(async () => {
+    const backend = vi.fn(async () => {
       now += 2000;
-      return { status: 200, catalog };
+      return { schema: 1 as const, status: 200, data: catalog, expiresAt: originalExpiry };
     });
+    const owner = vi.spyOn(runtime.USER_CONNECTORS, "getByName").mockReturnValue({
+      readDiscoveryCatalog: backend,
+    } as unknown as ReturnType<typeof runtime.USER_CONNECTORS.getByName>);
     const log = vi.spyOn(console, "log").mockImplementation(() => {});
     let timeout: ReturnType<typeof setTimeout> | undefined;
     const response = rpc.readAccountDiscovery("pending-put-owner", "catalog", options);
@@ -214,7 +217,7 @@ describe("discovery service RPC with real owning DOs", () => {
       finish();
       await response;
       await waitOnExecutionContext(ctx);
-      log.mockRestore(); backend.mockRestore(); open.mockRestore(); clock.mockRestore(); schedule.mockRestore();
+      log.mockRestore(); owner.mockRestore(); open.mockRestore(); clock.mockRestore(); schedule.mockRestore();
     }
   });
 
@@ -231,6 +234,56 @@ describe("discovery service RPC with real owning DOs", () => {
     expect(result.data).toMatchObject({ connectors: { github: { connected: true, connections: [{ capabilities: ["github"] }] } } });
     await expectStoredMetadata(user, "catalog", result);
     expect(JSON.stringify(result)).not.toMatch(/access_token|refresh_token|github-connector-access/);
+  });
+
+  it("caches actual Google OAuth scopes while disconnected credentials stay unusable", async () => {
+    const user = "discovery-google-owner", subject = "G".repeat(43);
+    const control = (path: string, method = "GET", body?: unknown) => SELF.fetch(`https://broker.internal${path}`, {
+      method, ...(body === undefined ? {} : { headers: { "content-type": "application/json" }, body: JSON.stringify(body) }),
+    });
+    const started = await control(`/users/${user}/connectors/google`, "POST", {
+      redirect_uri: "https://nanocodex.test/v1/connectors/callback", return_to: "/agent",
+    });
+    expect(started.status).toBe(200);
+    const state = new URL((await started.json<{ authorization_url: string }>()).authorization_url).searchParams.get("state");
+    const callback = await control(`/users/${user}/connectors/google/callback`, "POST", { code: "google-alpha-code", state });
+    expect(callback.status).toBe(200);
+    const { connection_id: connection } = await callback.json<{ connection_id: string }>();
+    const first = await service.readAccountDiscovery(user, "catalog", options);
+    const expectedConnection = { id: connection, label: "alpha@example.test", account_id: "google-alpha-account",
+      capabilities: ["gmail", "gdrive"], scopes: ["openid", "email", "https://mail.google.com/", "https://www.googleapis.com/auth/drive"] };
+    expect(first.data).toMatchObject({ connectors: {
+      gmail: { connected: true, connections: [expectedConnection] },
+      gdrive: { connected: true, connections: [expectedConnection] },
+    } });
+    await expectStoredMetadata(user, "catalog", first);
+    expect(JSON.stringify(first)).not.toMatch(/access_token|refresh_token|google-alpha-access|google-alpha-refresh/);
+    expect((await control(`/subjects/${subject}`, "PUT", { user_id: user })).status).toBe(200);
+    const headers = { authorization: "Bearer NANOCODEX_PROVIDER_CREDENTIAL", "x-nanocodex-subject": subject,
+      "x-nanocodex-connector-connection": connection };
+    expect((await SELF.fetch("https://gmail.googleapis.com/gmail/v1/users/me/messages", { headers })).status).toBe(200);
+    expect((await control(`/users/${user}/connectors/google/connections/${connection}`, "DELETE")).status).toBe(204);
+    // Delete the exact colo entry: the real service->DO RPC must now use the
+    // source snapshot, not fresh credentials or a renewed 15-minute deadline.
+    const cache = await caches.open(METADATA_CACHE_NAME);
+    const key = await metadataCacheKey(runtime.USER_CONNECTORS.idFromName(user).toString(), "catalog", options.authorityKey);
+    expect(await cache.delete(key)).toBe(true);
+    expect(await cache.match(key)).toBeUndefined();
+    expect(await service.readAccountDiscovery(user, "catalog", options)).toEqual(first);
+    await expectStoredMetadata(user, "catalog", first);
+    expect((await service.readAccountCatalog(user)).catalog).toMatchObject({ connectors: { gmail: { connected: false } } });
+    expect(await (await control(`/users/${user}/catalog`)).json()).toMatchObject({ connectors: { gmail: { connected: false } } });
+    expect((await service.readAccountDiscovery(user, "catalog", { authorityKey: "different-epoch" })).data)
+      .toMatchObject({ connectors: { gmail: { connected: false } } });
+    expect((await service.readAccountDiscovery("discovery-other-google-owner", "catalog", options)).data)
+      .toMatchObject({ connectors: { gmail: { connected: false } } });
+    const denied = await SELF.fetch("https://gmail.googleapis.com/gmail/v1/users/me/messages", { headers });
+    expect(denied.status).toBe(404);
+    expect(await denied.json()).toEqual({ error: "connector_connection_not_found" });
+    const refreshed = await service.readAccountDiscovery(user, "catalog", { ...options, reload: true });
+    expect(refreshed.data).toMatchObject({ connectors: { gmail: { connected: false, connections: [] }, gdrive: { connected: false, connections: [] } } });
+    console.log("GOOGLE_DISCOVERY_JOURNEY_EVIDENCE", JSON.stringify({ oauthConnected: true, publicScopesCached: true,
+      forcedL2MissSourceHitOriginalExpiry: true, liveCatalogDisconnected: true, ownerAndAuthorityIsolated: true, liveInvocationDenied: true, explicitReloadDisconnected: true }));
   });
 
   it("opts in explicitly, reloads backend changes, and leaves the default RPC and HTTP live", async () => {
@@ -260,4 +313,149 @@ describe("discovery service RPC with real owning DOs", () => {
     expect(await service.readAccountDiscovery(user, "vault", options)).toEqual(first);
     expect(Object.getOwnPropertySymbols(first.data as object)).toEqual([]);
   });
+});
+
+// The public journeys above exercise both RPC legs. These narrow checks cover
+// pending completion order and admission boundaries that have no HTTP control.
+describe("source snapshot boundaries", () => {
+  it.each(["resolve", "reject"] as const)("coalesces pending reads and preserves reload after an older %s", async completion => {
+    const snapshots = new SourceCatalogSnapshots();
+    let finish!: (value: { status: number; data: unknown; cacheable: boolean }) => void;
+    let fail!: (reason: Error) => void;
+    const pending = new Promise<{ status: number; data: unknown; cacheable: boolean }>((resolve, reject) => { finish = resolve; fail = reject; });
+    const fresh = vi.fn(() => pending);
+    const old = snapshots.read(options, fresh);
+    const coalesced = snapshots.read(options, fresh);
+    const oldOutcome = Promise.allSettled([old, coalesced]);
+    const newer = { connectors: {}, mcp_connections: [{ id: "N".repeat(43), name: "New generation", status: "connected" }] };
+    const refreshed = await snapshots.read({ ...options, reload: true }, async () => ({ status: 200, data: newer, cacheable: true }));
+    expect(fresh).toHaveBeenCalledOnce();
+    if (completion === "resolve") finish({ status: 200, data: catalog, cacheable: true });
+    else fail(new Error("old failure"));
+    const outcomes = await oldOutcome;
+    expect(outcomes.map(value => value.status)).toEqual([completion === "resolve" ? "fulfilled" : "rejected", completion === "resolve" ? "fulfilled" : "rejected"]);
+    const unexpected = vi.fn(async () => { throw new Error("replaced reload"); });
+    expect(await snapshots.read(options, unexpected)).toEqual(refreshed);
+    expect(unexpected).not.toHaveBeenCalled();
+    (refreshed.data as typeof newer).mcp_connections[0].name = "mutated caller";
+    expect((await snapshots.read(options, unexpected)).data).toEqual(newer);
+  });
+
+  it("bounds authority slots, retains original expiry, and retries unsafe/degraded/error results", async () => {
+    const snapshots = new SourceCatalogSnapshots();
+    let now = Date.now();
+    const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
+    const fresh = vi.fn(async () => ({ status: 200, data: catalog, cacheable: true }));
+    try {
+      const first = await snapshots.read(options, fresh);
+      now += 1000;
+      expect(await snapshots.read(options, fresh)).toEqual(first);
+      expect(fresh).toHaveBeenCalledOnce();
+      now = first.expiresAt;
+      expect((await snapshots.read(options, fresh)).expiresAt).toBe(now + METADATA_TTL_MS);
+      expect(fresh).toHaveBeenCalledTimes(2);
+      for (let i = 0; i < 16; i++) await snapshots.read({ authorityKey: `slot-${i}` }, fresh);
+      await snapshots.read(options, fresh);
+      expect(fresh).toHaveBeenCalledTimes(19);
+      // 256 individually safe MCP rows can still exceed the envelope byte limit.
+      const oversized = { connectors: {}, mcp_connections: Array.from({ length: 256 }, () => ({
+        id: "O".repeat(43), name: "\\".repeat(512), status: "connected",
+      })) };
+      expect(safeMetadata("catalog", oversized)).toBe(true);
+      for (const result of [
+        { status: 503, data: null, cacheable: true },
+        { status: 200, data: catalog, cacheable: false },
+        { status: 200, data: { ...catalog, access_token: "synthetic-secret" }, cacheable: true },
+        { status: 200, data: oversized, cacheable: true },
+      ]) {
+        const read = vi.fn(async () => result);
+        expect((await snapshots.read({ authorityKey: "unsafe" }, read)).expiresAt).toBe(0);
+        expect((await snapshots.read({ authorityKey: "unsafe" }, read)).expiresAt).toBe(0);
+        expect(read).toHaveBeenCalledTimes(2);
+      }
+      const failed = vi.fn(async () => { throw new Error("source unavailable"); });
+      await expect(snapshots.read({ authorityKey: "failed" }, failed)).rejects.toThrow("source unavailable");
+      expect((await snapshots.read({ authorityKey: "failed" }, fresh)).status).toBe(200);
+    } finally { clock.mockRestore(); }
+  });
+
+  it.each([0, -1, NaN, Infinity, 1.5])("never grants fresh L2 lifetime to source expiry %s", async expiresAt => {
+    const result = await cachedAccountMetadata(`source-expiry-${expiresAt}`, "catalog", options,
+      async () => ({ status: 200, data: catalog, expiresAt }));
+    expect(result.expiresAt).toBe(0);
+    const cache = await caches.open(METADATA_CACHE_NAME);
+    expect(await cache.match(await metadataCacheKey(`source-expiry-${expiresAt}`, "catalog", options.authorityKey))).toBeUndefined();
+  });
+});
+
+it("expires the actual source DO snapshot across forced colo misses", async () => {
+  const user = "source-expiry-rpc-owner", id = "E".repeat(43);
+  let now = Date.now();
+  const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
+  try {
+    const first = await service.readAccountDiscovery(user, "catalog", options);
+    expect(first.expiresAt).toBe(now + METADATA_TTL_MS);
+    await expectStoredMetadata(user, "catalog", first);
+    expect((await SELF.fetch(`https://broker.internal/users/${user}/mcp-connections/${id}`, {
+      method: "PUT", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ endpoint: "https://mcp.linear.app/mcp", name: "After original snapshot" }),
+    })).status).toBe(200);
+    const cache = await caches.open(METADATA_CACHE_NAME);
+    const key = await metadataCacheKey(runtime.USER_CONNECTORS.idFromName(user).toString(), "catalog", options.authorityKey);
+    now += 60_000;
+    expect(await cache.delete(key)).toBe(true);
+    expect(await service.readAccountDiscovery(user, "catalog", options)).toEqual(first);
+    await expectStoredMetadata(user, "catalog", first);
+    const stored = await cache.match(key);
+    expect(stored!.headers.get("cache-control")).toBe("max-age=840");
+    now = first.expiresAt + 1;
+    expect(await cache.delete(key)).toBe(true);
+    const expired = await service.readAccountDiscovery(user, "catalog", options);
+    expect(expired.expiresAt).toBe(now + METADATA_TTL_MS);
+    expect(expired.data).toMatchObject({ mcp_connections: [{ id, name: "After original snapshot" }] });
+    console.log("SOURCE_DISCOVERY_EXPIRY_EVIDENCE", JSON.stringify({ forcedColoMissOriginalExpiry: true, remainingSeconds: 840, realDOExpiryRefresh: true }));
+  } finally { clock.mockRestore(); }
+});
+
+it("keeps pending and degraded Link catalogs uncached through real service and DO RPC", async () => {
+  const user = "source-degraded-link-owner";
+  let now = Date.now(), polls = 0;
+  const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
+  // Only the external Link API is synthetic; Egress and both DOs run in workerd.
+  const upstream = vi.spyOn(globalThis, "fetch").mockImplementation(async input => {
+    const url = new URL(new Request(input).url);
+    if (url.href === "https://login.link.com/device/code") return Response.json({
+      device_code: "synthetic-device", user_code: "synthetic-code",
+      verification_uri_complete: "https://app.link.com/verify?code=synthetic", expires_in: 600, interval: 5,
+    });
+    if (url.href === "https://login.link.com/device/token") {
+      polls++;
+      if (polls === 1) throw new Error("synthetic Link outage");
+      return Response.json({ access_token: "synthetic-link-access", refresh_token: "synthetic-link-refresh", token_type: "Bearer", expires_in: 3600 });
+    }
+    if (url.href === "https://api.link.com/userinfo") return Response.json({ email: "synthetic@example.test" });
+    throw new Error(`unexpected fixture request ${url.origin}`);
+  });
+  try {
+    expect((await SELF.fetch(`https://broker.internal/users/${user}/connectors/link`, { method: "POST" })).status).toBe(200);
+    const pending = await service.readAccountDiscovery(user, "catalog", options);
+    expect(pending.expiresAt).toBe(0);
+    expect(polls).toBe(0);
+    now += 5001;
+    const degraded = await service.readAccountDiscovery(user, "catalog", options);
+    expect(degraded).toMatchObject({ status: 200, expiresAt: 0, data: { connectors: { link: { connected: false } } } });
+    expect(polls).toBe(1);
+    const cache = await caches.open(METADATA_CACHE_NAME);
+    const key = await metadataCacheKey(runtime.USER_CONNECTORS.idFromName(user).toString(), "catalog", options.authorityKey);
+    expect(await cache.match(key)).toBeUndefined();
+    now += 5001;
+    const recovered = await service.readAccountDiscovery(user, "catalog", options);
+    expect(recovered).toMatchObject({ status: 200, expiresAt: 0, data: { connectors: { link: { connected: true } } } });
+    expect(polls).toBe(2);
+    const stable = await service.readAccountDiscovery(user, "catalog", options);
+    expect(stable.expiresAt).toBe(now + METADATA_TTL_MS);
+    await expectStoredMetadata(user, "catalog", stable);
+    expect(JSON.stringify(stable)).not.toMatch(/synthetic-link-access|synthetic-link-refresh|synthetic-device/);
+    console.log("SOURCE_DISCOVERY_LINK_EVIDENCE", JSON.stringify({ pendingExpiryZero: true, upstreamFailureExpiryZero: true, nextDueReadRecovers: true, stableReadCached: true }));
+  } finally { upstream.mockRestore(); clock.mockRestore(); }
 });

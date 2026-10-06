@@ -20,6 +20,7 @@ mod history;
 #[path = "../installation.rs"]
 mod installation;
 mod pane;
+mod private_input;
 mod prompt;
 mod screen;
 #[path = "../screen_ice.rs"]
@@ -30,6 +31,7 @@ mod share;
 #[path = "../skill.rs"]
 mod skill;
 mod spinner;
+mod sudo_input;
 mod theme;
 #[path = "transcript/mod.rs"]
 mod transcript;
@@ -42,8 +44,8 @@ mod voice_state;
 // Keep production components on their normal module paths in this private target.
 mod tui {
     pub(crate) use crate::{
-        context, format, pane, prompt, screen, secure_input, session, share, spinner, theme,
-        transcript, vault,
+        context, format, pane, private_input, prompt, screen, secure_input, session, share,
+        spinner, sudo_input, theme, transcript, vault,
     };
 }
 

@@ -311,8 +311,10 @@ final class AppModel: ObservableObject {
     func isBusy(_ id: String? = nil) -> Bool { pendingMessages(id).contains { busyMessages.contains($0.id) } }
     /// Managed Claude chats currently accept text only. Check the requested pane,
     /// including retained conversations, before admitting any voice session.
+    /// GPT Realtime voice fronts every managed backend, including Claude
+    /// threads, which receive voice delegations through the managed route.
     func supportsVoice(_ id: String? = nil) -> Bool {
-        !settingsForTab(id ?? activeTabID).model.hasPrefix("claude-")
+        tab(id ?? activeTabID) != nil
     }
     func modelSettingsLocked(_ id: String? = nil) -> Bool {
         guard let threadID = tab(id)?.threadId else { return false }
@@ -881,9 +883,6 @@ final class AppModel: ObservableObject {
     }
 
     func voiceConfiguration(tabID: String) async throws -> VoiceConfiguration {
-        guard supportsVoice(tabID) else {
-            throw RuntimeFailure(message: "Voice is unavailable for Claude chats. Send a text message instead.")
-        }
         guard current(generation), let credential = currentCredential, let requested = tab(tabID),
               let url = URL(string: credential.baseUrl) else {
             throw RuntimeFailure(message: "Connect your account to start voice.")

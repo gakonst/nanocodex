@@ -13,7 +13,7 @@ const heavyFamilies = ["hands", "windows", "vm", "voice", "python", "rust_extra"
 // Workspace packages whose build a job exercises. A change to any package in
 // their dependency closure (normal, build, or dev) selects the job.
 const jobRoots = {
-  hands: ["nanocodex2-bin"],
+  hands: ["nanocodex-bin", "nanocodex2-bin"],
   windows: ["nanocodex-bin", "nanocodex2-bin"],
   vm: ["nanocodex-vm"],
   voice: ["nanocodex-voice-native"],
@@ -108,6 +108,10 @@ export function selectJobs(paths, graph) {
       || /^(package(?:-lock)?\.json|npm-shrinkwrap\.json|pnpm-lock\.yaml|pnpm-workspace\.yaml|yarn\.lock|bun\.lockb?|\.npmrc|\.pnpmfile\.cjs|turbo\.json)$/.test(name)
       || ciDefinitions.test(path) || path.startsWith("scripts/ci/")) return full();
     if (!binaryAsset.test(path)) jobs.policy = true; // Retain spelling checks for source and prose.
+    // The terminal private-input journey crosses these browser and Vault boundaries.
+    if (/^js\/(?:managed\/(?:src\/(?:browser-|vault-|credentials\.|index\.)|test\/private-input-)|egress\/src\/(?:broker\.|egress\.|vault-|credential-vault\.)|account\/worker\/managedProxy\.)/.test(path)) {
+      jobs.hands = true;
+    }
     const packages = owners(path, graph);
     for (const pkg of packages) changed.add(pkg);
     if (packages.size && !/^(?:js|py|examples)\//.test(path)) continue;

@@ -44,6 +44,7 @@ type Subscriber = {
   running: boolean;
   authorize?: () => boolean;
   project?: (event: DurableEvent<{ type: string }>) => DurableEvent<{ type: string }> | null;
+  stopAfter?: (event: DurableEvent<{ type: string }>) => boolean;
   tag?: string;
   removeAbortListener?: () => void;
   page: (after: string, limit: number) => Promise<DurableEvent<{ type: string }>[]>;
@@ -299,6 +300,8 @@ export class DurableEventLog<Message extends { type: string }> {
       authorize?: () => boolean;
       project?: (event: DurableEvent<Message>) => DurableEvent<{ type: string }> | null;
       tag?: string;
+      /** Close only after this durable event has been delivered to the reader. */
+      stopAfter?: (event: DurableEvent<Message>) => boolean;
     },
   ): Response {
     const cursor = parseCursor(after);
@@ -340,6 +343,7 @@ export class DurableEventLog<Message extends { type: string }> {
       authorize: options?.authorize,
       project: options?.project as Subscriber["project"],
       tag: options?.tag,
+      stopAfter: options?.stopAfter as Subscriber["stopAfter"],
       tail: Promise.resolve(),
       writer: body.writable.getWriter(),
     };
@@ -421,6 +425,7 @@ export class DurableEventLog<Message extends { type: string }> {
         const projected = subscriber.project ? subscriber.project(event) : event;
         if (projected) await subscriber.writer.write(encodeEvent(projected));
         subscriber.after = event.cursor;
+        if (subscriber.stopAfter?.(event)) return this.#close(subscriber);
         if (subscriber.closed) return;
       }
       // Byte limits and archive boundaries can produce short nonterminal

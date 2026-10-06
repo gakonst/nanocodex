@@ -66,7 +66,7 @@ export function createSocketObservations(observe) {
           record(event, { elapsed_ms: now - started,
             ...(active ? { received_message_count: active.messages,
               ...(active.firstMessage === undefined ? {} : { first_message_ms: active.firstMessage - active.started }),
-              ...(active.firstOutput === undefined ? {} : { first_output_ms: active.firstOutput - active.started }),
+              ...milestones(active),
               last_message_age_ms: now - (active.lastMessage ?? active.started), ...measure() } : {}) });
           after = Math.min(after * 2, 5_000);
           timer = setTimeout(waiting, after);
@@ -82,7 +82,7 @@ export function createSocketObservations(observe) {
         if (!active) return;
         clearTimeout(timer);
         record("request.finished", { outcome, elapsed_ms: performance.now() - active.started,
-          received_message_count: active.messages, ...measure() });
+          received_message_count: active.messages, ...milestones(active), ...measure() });
         last = active;
         active = undefined;
       };
@@ -110,26 +110,40 @@ export function createSocketObservations(observe) {
         sendFailed() { finish("send_failed"); },
         message(text) {
           const now = performance.now();
-          if (active) {
-            active.messages++;
-            active.lastMessage = now;
-            // A new frame ends the current silence interval. Streaming calls
-            // produce no waiting records while frames keep arriving.
-            if (active.sentAt !== undefined) watch("request.waiting", active.started);
-            if (active.firstMessage === undefined) {
-              active.firstMessage = now;
-              record("request.first_message", { elapsed_ms: now - active.started, ...measure() });
-            }
+          if (!active) return;
+          active.messages++;
+          active.lastMessage = now;
+          // Only parse bounded envelopes while a relevant milestone is missing.
+          // A large/unrecognized envelope remains unclassified, never copied to logs.
+          const candidates = typeof text === "string" && text.length <= 16_384
+            && (active.firstMessage === undefined || active.firstOutput === undefined
+              || DELTA_STAGES.some(([field, , types]) => active[field] === undefined
+                && types.some(type => text.includes(`"${type}"`))));
+          let frame;
+          if (candidates) {
+            try { frame = JSON.parse(text); } catch { /* Invalid frames remain the runtime's responsibility. */ }
           }
-          // Parse only small protocol envelopes before the first output. Never
-          // retain their contents, and never parse large output or tool bodies.
-          if (active && active.firstOutput === undefined && typeof text === "string" && text.length <= 16_384) {
-            let frame;
-            try { frame = JSON.parse(text); } catch { return; }
-            responseLink(active, frame?.response?.id);
-            if (OUTPUT_EVENTS.has(frame?.type)) {
-              active.firstOutput = now;
-              record("request.first_output", { elapsed_ms: now - active.started, ...measure() });
+          const type = EVENT_TYPES.has(frame?.type) ? frame.type : "unclassified";
+          const classification = { provider_event_type: type };
+          if (type !== "unclassified") responseLink(active, frame?.response?.id);
+          // A new frame ends the current silence interval. Streaming calls
+          // produce no waiting records while frames keep arriving.
+          if (active.sentAt !== undefined) watch("request.waiting", active.started);
+          if (active.firstMessage === undefined) {
+            active.firstMessage = now;
+            record("request.first_message", { elapsed_ms: now - active.started, ...classification, ...measure() });
+          }
+          // Keep the historical output-item milestone, but identify what caused
+          // it. Empty item announcements are not evidence of generated text.
+          if (active.firstOutput === undefined && OUTPUT_EVENTS.has(type)) {
+            active.firstOutput = now;
+            record("request.first_output", { elapsed_ms: now - active.started, ...classification,
+              output_kind: OUTPUT_KINDS.get(type) ?? "item", ...measure() });
+          }
+          for (const [field, stage, types] of DELTA_STAGES) {
+            if (active[field] === undefined && types.includes(type) && typeof frame.delta === "string" && frame.delta.length > 0) {
+              active[field] = now;
+              record(stage, { elapsed_ms: now - active.started, ...classification, ...measure() });
             }
           }
         },
@@ -170,3 +184,20 @@ function uuid(value) { return typeof value === "string" && /^[0-9a-f]{8}(?:-[0-9
 function identifier(value, prefix) { return typeof value === "string" && value.startsWith(prefix) && /^[A-Za-z0-9_-]{1,160}$/.test(value); }
 const OUTPUT_EVENTS = new Set(["response.output_text.delta", "response.reasoning_summary_text.delta",
   "response.reasoning_summary.delta", "response.reasoning_content.delta", "response.output_item.added", "response.output_item.done"]);
+
+// These names are a fixed protocol allowlist, never provider-supplied log text.
+const DELTA_STAGES = [
+  ["firstReasoning", "request.first_reasoning_delta", ["response.reasoning_text.delta", "response.reasoning_summary_text.delta",
+    "response.reasoning_summary.delta", "response.reasoning_content.delta"]],
+  ["firstAnswer", "request.first_answer_delta", ["response.output_text.delta"]],
+  ["firstTool", "request.first_tool_delta", ["response.function_call_arguments.delta", "response.custom_tool_call_input.delta"]],
+];
+const OUTPUT_KINDS = new Map(DELTA_STAGES.flatMap(([, stage, types]) => types.map(type => [type,
+  stage === "request.first_reasoning_delta" ? "reasoning" : stage === "request.first_answer_delta" ? "answer" : "tool"])));
+const EVENT_TYPES = new Set([...OUTPUT_EVENTS, ...OUTPUT_KINDS.keys(), "response.created", "response.in_progress", "response.queued",
+  "response.completed", "response.failed", "response.incomplete", "error", "responsesapi.websocket_timing"]);
+function milestones(request) {
+  return Object.fromEntries([["firstOutput", "first_output_ms"], ["firstReasoning", "first_reasoning_delta_ms"],
+    ["firstAnswer", "first_answer_delta_ms"], ["firstTool", "first_tool_delta_ms"]]
+    .filter(([field]) => request[field] !== undefined).map(([field, key]) => [key, request[field] - request.started]));
+}

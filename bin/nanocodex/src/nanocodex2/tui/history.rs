@@ -426,6 +426,7 @@ fn prompt_input_text(input: &PromptInput) -> String {
                     "[image attachment]"
                 }
                 PromptContent::Audio { .. } => "[audio attachment]",
+                PromptContent::File { .. } => "[document attachment]",
             })
             .collect::<Vec<_>>()
             .join("\n"),

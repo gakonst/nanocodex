@@ -9,8 +9,17 @@ import { toolResult } from "nanocodex-tools/runtime/code-runtime";
 
 const runSetup = promisify(execFile);
 const preparations = new Map();
+// Match the native attachment's supported upstream per-call policy setting.
+// This affects provider guidance, not OS permissions or action authorization.
+function confirmationPolicy(options) {
+  if (options.confirmationPolicies === null) return undefined;
+  if (typeof options.confirmationPolicies === "string" && options.confirmationPolicies.trim()) return options.confirmationPolicies;
+  const configured = process.env.NANOCODEX_COMPUTER_CONFIRMATION_POLICIES;
+  if (["off", "none", "0"].includes(configured?.trim().toLowerCase())) return undefined;
+  return configured?.trim() ? configured : "No confirmation policy applies.";
+}
 const interruptedGuidance = "Upstream/native input may still be running and effects are uncertain; do not replay uncertain input. Call cua_repl.js_reset, then inspect the surface before continuing. Reset does not prove earlier input stopped.";
-// Windows is fail-closed until its native no-Codex contract is verified.
+// Automatic installation follows the native helper's supported platforms.
 const supportsManagedComputer = () => process.platform === "darwin";
 const managedRoot = () => join(process.env.NANOCODEX_DIR || join(process.env.HOME || process.env.USERPROFILE || homedir(), ".nanocodex"), "runtimes", "openai-cua");
 function managedProvider() {
@@ -20,8 +29,8 @@ function managedProvider() {
   catch (error) { if (error.code === "ENOENT") return undefined; throw error; }
   if (source.length > 65536) throw new Error("Invalid managed CUA receipt; run nanocodex2 computer setup");
   const value = JSON.parse(source);
-  if (value?.dependency_contract !== "nanocodex-native-no-codex-v1" || value?.environment?.CODEX_CLI_PATH !== undefined) {
-    throw new Error("Invalid managed CUA receipt: legacy Codex-dependent generation is not supported; run nanocodex2 computer setup");
+  if (value?.dependency_contract !== "nanocodex-direct-cua-v2" || value?.environment?.CODEX_CLI_PATH !== undefined) {
+    throw new Error("Invalid managed CUA receipt: this generation does not provide the complete direct browser and computer integration without Codex; run nanocodex2 computer setup");
   }
   if (value?.status !== "installed" || value.transport !== "mcp" || typeof value.executable !== "string" || !isAbsolute(value.executable)
     || !Array.isArray(value.args) || !value.args.every(arg => typeof arg === "string")
@@ -101,6 +110,7 @@ export function createComputerTools(options) {
   if (!executable) throw new TypeError("A trusted CUA executable is required");
   if (definitions === undefined) throw new TypeError("MCP providers require connectComputerTools discovery or a trusted catalog");
   const catalog = validateCatalog(definitions);
+  const policy = confirmationPolicy(options);
   const sessions = new Map();
   let disposed = false;
   const releaseSession = id => {
@@ -117,7 +127,7 @@ export function createComputerTools(options) {
     if (!sessions.has(id)) {
       sessions.set(id, {
         lifetime: new AbortController(), process: undefined, interrupted: false,
-        tail: Promise.resolve(),
+        tail: Promise.resolve(), turns: new Map(),
       });
     }
     const session = sessions.get(id);
@@ -146,9 +156,10 @@ export function createComputerTools(options) {
         }
         signal.throwIfAborted();
         dispatched = true;
+        if (name !== "turn_ended" && typeof context.turnId === "string" && context.turnId.trim()) session.turns.set(context.turnId, { callId: context.callId, model: context.model });
         const result = await session.process.rpc("tools/call", {
           name, arguments: input,
-          _meta: { "x-codex-turn-metadata": {
+          _meta: { ...(policy === undefined ? {} : { "openai/confirmation_policies": { browser_use: policy, computer_use: policy } }), "x-codex-turn-metadata": {
             session_id: id,
             ...(context.turnId == null ? {} : { turn_id: context.turnId }),
             thread_id: id, call_id: context.callId, model: context.model,
@@ -159,7 +170,7 @@ export function createComputerTools(options) {
         if (name === "js_reset" && result.isError !== true) session.interrupted = false;
         return toolResult(content, result, { value: result, success: result.isError !== true, metadata: result._meta });
       } catch (error) {
-        session.process?.close(); session.process = undefined;
+        session.process?.close(); session.process = undefined; session.turns.clear();
         if (dispatched) {
           session.interrupted = true;
           throw new Error(`CUA call interrupted after dispatch. ${interruptedGuidance}`, { cause: error });
@@ -177,15 +188,44 @@ export function createComputerTools(options) {
     // still checks the signal and session identity before touching its process.
     return interruptible(result, signal, cancellationReason);
   };
+  // Trusted lifecycle only: finish a retained turn without starting a provider.
+  const endTurn = (sessionId, turnId, hookEventName = "Stop") => {
+    const session = sessions.get(sessionId);
+    if (!session || disposed) return Promise.resolve();
+    const run = async () => {
+      const previous = session.turns.get(turnId);
+      session.turns.delete(turnId); // An uncertain cleanup is never replayed.
+      if (!previous || !session.process || session.interrupted || sessions.get(sessionId) !== session) return;
+      const hook = catalog.find(tool => tool.name === "turn_ended");
+      if (!hook) return;
+      if (!["Stop", "Interrupt", "SubagentStop"].includes(hookEventName)) throw new Error("Unsupported CUA turn lifecycle event");
+      const arguments_ = { hook_event_name: hookEventName, session_id: sessionId, turn_id: turnId };
+      if (hook.inputSchema.required?.some(key => !Object.hasOwn(arguments_, key))) throw new Error("CUA turn_ended requires unsupported provider arguments");
+      try {
+        const result = await session.process.rpc("tools/call", {
+          name: "turn_ended", arguments: arguments_,
+          _meta: { ...(policy === undefined ? {} : { "openai/confirmation_policies": { browser_use: policy, computer_use: policy } }),
+            "x-codex-turn-metadata": { session_id: sessionId, thread_id: sessionId, turn_id: turnId, call_id: previous.callId, model: previous.model } },
+        });
+        if (result.isError === true) throw new Error("CUA turn cleanup failed; no retry was attempted");
+      } catch (error) {
+        session.process?.close(); session.process = undefined; session.turns.clear(); session.interrupted = true;
+        throw error;
+      }
+    };
+    const result = session.tail.then(run);
+    session.tail = result.catch(() => {});
+    return result;
+  };
   const allTools = catalog.map(tool => namedTool(`mcp__cua_repl__${tool.name}`, {
       description: tool.description ?? "", parameters: tool.inputSchema,
       ...(tool.outputSchema === undefined ? {} : { outputSchema: tool.outputSchema }),
       providerDefinition: tool,
       supportsParallelToolCalls: true,
-      handler: (input, context) => invoke(tool.name, input, context), releaseSession, dispose: close,
+      handler: (input, context) => invoke(tool.name, input, context), releaseSession, endTurn, dispose: close,
     }));
   return Object.freeze({
-    close,
+    close, endTurn,
     definitions: catalog,
     tools: allTools.filter((_, index) => modelVisible(catalog[index])),
     tool: name => allTools.find(tool => tool.name === name || tool.name === `mcp__cua_repl__${name}`),

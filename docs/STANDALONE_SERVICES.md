@@ -59,3 +59,138 @@ For the first release, deploy the managed Worker containing the named provider e
 Number provisioning is **disabled by default**. Enabling it requires an explicit operator decision and positive USD caps for monthly rental and inbound SMS prices. Configure the canonical webhook URL, per-owner number limit and retention. Existing provider account billing and fraud controls remain necessary: webhook rate limits cannot prevent carrier charges incurred before a message reaches Nanocodex. End-user subscription billing and number portability are not implemented by this service. Do not enable unrestricted resale based only on a passing synthetic provider test.
 
 Validation includes real workerd HTTP journeys, actual account authentication, encrypted durable storage, RFC6238 vectors, Connect grant isolation/revocation, lost-response recovery, signed callbacks, SDK HTTP/type contracts, rendered consent/enrollment/approval flows, native client HTTP tests and an iOS Simulator build. Provider fixtures are synthetic and make no live purchases. Carrier compatibility and live production provisioning require separate authorized tests with explicit costs.
+
+## Account management and browser links
+
+`GET /v1/account/links` returns ordinary Connections, Vault, Wallet, and API access URLs. It is public and grants no access. `connect=cloudflare` focuses Cloudflare enrollment; `add=totp` opens an authenticator form after sign-in. See [account navigation](account-navigation.md).
+
+Authenticated account callers can request a specific hosted form with `GET /v1/services/links`. Query parameters are `service=vault`, `action=enroll|select`, and `kind=login|api_key|card|address|phone|totp`; defaults are Vault enrollment and TOTP. For a phone approval use `service=phone&operation_id=UUID`. The response contains a clickable `url` and its flow metadata. Obtaining a URL performs no enrollment, connection, grant, or provider mutation.
+
+For popup integration, supply the exact `app_origin` and a unique URL-safe `state` (16–128 characters). The page names that recipient and shares only a fixed metadata receipt after an explicit user action. Ordinary links omit callback parameters and work from terminals, mobile apps, and browser tabs. Caller-supplied destination hosts, duplicate parameters, unsupported kinds, and orphan callback state are rejected.
+
+Account keys retain the existing management permissions: connector management uses `api_keys:write` and `tools:use`; credential management uses `agents:write` and `tools:use`. The latter permission name does not allocate an agent or require a conversation. These owner-only methods remain unavailable to a scoped Connect grant. Scoped Vault requests and metadata continue to use the narrower service permissions above.
+
+| Capability | REST contract | Human interface |
+| --- | --- | --- |
+| Provider catalog, connection status, OAuth start/reconnect/exact disconnect | `/v1/connectors/catalog`, `/v1/connectors`, `/v1/connectors/{provider}` and connection ID routes | `links.connections`, optionally focused on a provider; start returns provider consent URL |
+| Cloudflare enrollment | `POST /v1/connectors/cloudflare` with saved `vault_id` | Cloudflare form selects a saved token |
+| Custom MCP connections | `/v1/connectors/mcp-connections` and ID start/callback/delete routes | MCP section and provider consent |
+| WhatsApp pairing | `/v1/connectors/whatsapp/start` and private pairing/status routes | Private native panel or account connector flow |
+| Model sign-in and API access | `/v1/credentials`, model-specific login and mutation routes | ChatGPT, Claude, and OpenAI forms |
+| Vault creation, exact deletion, login origin update | `/v1/credentials/vault/{kind}` and exact ID routes | Hosted enrollment for all six kinds; Vault workspace |
+| SSH identity generation/import/removal | `/v1/credentials/ssh/{reference}` | Vault SSH form or native private form |
+| Brokered requests, signing, and TOTP | `POST /v1/services/vault/request` | Private input only when enrolling a new credential |
+| Trusted captured-card save and observed balance/refresh | `POST /v1/vault/store`, `POST /v1/vault/card` | Native Vault management; safe status receipts |
+
+Model sign-in codes and secret request bodies belong only in trusted private client controls. General agent output and diagnostic logging must not serialize them. Connector callbacks retain state, owner and PKCE checks; receipt delivery alone does not prove that a connection completed. Read the resulting account or connection status.
+
+### Rust account client
+
+The `nanocodex-managed` client exposes these REST operations without creating an
+agent. Load the API key through your application's private configuration; never
+include it in diagnostic output.
+
+```rust,no_run
+use nanocodex_managed::{AccountLinkOptions, ManagedClient, ServiceLinkOptions};
+
+async fn account_setup(client: &ManagedClient) -> Result<(), nanocodex_managed::ManagedError> {
+    let links = client.account_links(AccountLinkOptions {
+        connect: Some("cloudflare"), add: Some("totp"),
+    }).await?;
+    println!("Connections: {}", links.connections);
+    let enrollment = client.services_link(ServiceLinkOptions {
+        service: Some("vault"), action: Some("enroll"), kind: Some("totp"),
+        ..Default::default()
+    }).await?;
+    println!("Enroll authenticator: {}", enrollment.url);
+    let credentials = client.credentials_overview().await?;
+    println!("ChatGPT connected: {}", credentials.chatgpt.connected);
+    let _catalog = client.connector_catalog().await?;
+    let _connections = client.connector_list().await?;
+    let _vault_metadata = client.services_vault_list().await?;
+    Ok(())
+}
+```
+
+Use `services_vault_get` for one item and `services_vault_request(&VaultRequest)`
+for a brokered request returning only its status and success flag. Connector
+methods include `connector_start`, exact `connector_disconnect`,
+`connector_cloudflare` with a saved Vault reference, MCP connection management,
+and `whatsapp_start` with a stable operation UUID. Display returned authorization
+URLs and re-read status after consent.
+
+`credentials_overview` omits private pending login codes. Trusted private clients
+use the existing `private_connector_input` for ChatGPT start/status and
+`claude_login_start`, `claude_login_status`, and `claude_login_complete` for Claude.
+Save an OpenAI key with `private_input_post`, a caller-created `PrivateInputRequest`
+whose kind is `PrivateInputKind::Credential("openai".into())`, and a
+`PrivateInputBody` containing the private form's `api_key` JSON field. That body
+has no `Debug` implementation and erases its encoded bytes on drop. Never log
+private form values or responses. `openai_disconnect`, `chatgpt_disconnect`, and
+`claude_disconnect` remove the respective credentials; reconcile an uncertain
+write by reading status before retrying. Vault enrollment, deletion, SSH identity
+management, and captured-card operations retain the existing `vault_*` methods.
+
+The Rust `ManagedClient` also provides `services_phone_available`,
+`services_phone_list`, `services_phone_provision`, `services_phone_get`,
+`services_phone_release`, `services_phone_messages`, and
+`services_phone_request_get`. Persist a canonical operation UUID before submitting
+an intent; after an uncertain write, poll that same UUID. Each method dispatches
+once without automatic retries. Use `services_link(ServiceLinkOptions {
+service: Some("phone"), operation_id: Some(operation_id), ..Default::default()
+})` to obtain the human approval URL, then poll the request after the user acts.
+There is no client approval operation. Typed receipts preserve request and number
+statuses, decimal price strings, message expiration and opaque `next_cursor`
+values. Pass the cursor unchanged through `PhoneMessagesQuery` for the next page.
+SMS bodies are private untrusted content; these types have no `Debug`
+implementation and must not be serialized into logs or agent diagnostics.
+
+### REST and JavaScript handoff
+
+For a normal link, no browser, callback URL, agent, or model is required:
+
+```sh
+curl --fail 'https://nanocodex.gakonst.workers.dev/v1/account/links?connect=cloudflare&add=totp'
+```
+
+Use the returned `connections` or `vault` URL. The person signs in and explicitly
+connects or saves the item. Account links convey no account credentials or consent.
+For a specific enrollment, authenticated `GET /v1/services/links?service=vault&kind=card`
+returns a `url`. Supply the account key in the Authorization header, never in a URL.
+
+```js
+import { createServicesClient } from 'nanocodex/services'
+
+// Server or trusted native client: read apiKey from private configuration.
+const services = createServicesClient({ apiKey })
+const links = await services.links({ connect: 'google', add: 'login' })
+const form = await services.hosted({ service: 'vault', kind: 'card' })
+console.log(links.connections, form.url)
+
+const catalog = await services.account.connectors.catalog()
+const connections = await services.account.connectors.list()
+const metadata = await services.vault.list()
+
+// A trusted provider capture is stored without moving card details through the caller.
+const saved = await services.account.vault.store({ capture_id, operation_id })
+if (saved.status === 'saved' && saved.vault_id) {
+  const observed = await services.account.vault.card({
+    operation: 'balance', vault_id: saved.vault_id,
+  })
+  // Inspect status, freshness, and observed_at before interpreting the balance.
+}
+```
+
+`services.account` also exposes OAuth start/exact disconnect, Cloudflare token
+selection, Link status, WhatsApp start/status, MCP create/start/delete, model
+sign-in/status/disconnect, OpenAI key save/delete, six-kind Vault creation/deletion,
+login origin updates, and SSH generation/import/removal. These owner methods
+reject Connect transports before dispatch. OAuth callbacks run in the consent
+browser; clients re-read connection status afterwards. Private native input and
+the clickable hosted forms use the same authenticated REST contracts.
+
+The standalone entry point includes TypeScript declarations and runs with fetch
+in Node, Workers, and trusted native bridges. It does not load the agent runtime.
+Reads have bounded response bodies; account writes are never automatically
+retried or redirected. Keep an uncertain operation's identifiers, inspect its
+status, and reconcile it before submitting another mutation.

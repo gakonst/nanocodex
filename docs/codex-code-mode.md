@@ -25,6 +25,18 @@ actual helper code as the differential oracle, while retaining portable runtime
 adapters. The full upstream tree is not vendored. Pin changes should regenerate
 and review the oracle rather than silently updating expected outputs.
 
+## Backend tool exposure
+
+The managed backend selects `toolMode: "code-only"` unconditionally. Only `exec`
+and `wait` are model-visible; `tools.tool_search` discovers deferred capabilities
+inside a cell, and workspace and subagent tools use the same nested-call path.
+A direct action call is rejected before its handler runs. Restored sessions use
+the strict catalog too. Completed receipts survive upgrades, while unresolved
+old direct effects retain an explicit warning to reconcile their outcome before
+retrying. Shared evaluators schedule each agent session independently so a
+parent can wait for a child running its own cell. SDK embedders may still select
+the existing `code` (mixed exposure) or `direct` modes.
+
 ## Shared contract
 
 - Tool calls are asynchronous and preserve the registered tool's result or

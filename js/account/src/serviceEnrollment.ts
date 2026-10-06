@@ -13,10 +13,22 @@ export function enrollmentTarget(search = window.location.search): { origin: str
   } catch { return undefined; }
 }
 
-export function completeVaultEnrollment(entry: { id: string; kind: string; name: string }, origin: string) {
+export function vaultEnrollmentKind(search = window.location.search): string | undefined {
+  const query = new URLSearchParams(search);
+  const service = query.get("service");
+  const kind = service === "totp" ? "totp" : service === "enroll" ? query.get("kind") ?? "totp" : undefined;
+  return kind && ["login", "api_key", "card", "address", "phone", "totp"].includes(kind) ? kind : undefined;
+}
+
+/** Called after an explicit Save with recipient consent. */
+export function completeVaultEnrollment(entry: { id: string; kind: string; name: string }, origin?: string) {
   const target = enrollmentTarget();
-  if (!target || entry.kind !== "totp" || new URLSearchParams(window.location.search).get("service") !== "totp") return;
-  post(target, { service: "vault", vault_id: entry.id, kind: "totp", name: entry.name, origin });
+  if (!target || entry.kind !== vaultEnrollmentKind()) return;
+  if (entry.kind === "totp" || origin !== undefined) {
+    try { const url = new URL(origin ?? ""); if (url.protocol !== "https:" || url.origin !== origin) return; }
+    catch { return; }
+  }
+  post(target, { service: "vault", vault_id: entry.id, kind: entry.kind, name: entry.name, ...(origin === undefined ? {} : { origin }) });
 }
 
 /** Called only by the picker's explicit recipient-labelled share action. */

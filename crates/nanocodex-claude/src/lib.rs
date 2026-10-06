@@ -11,6 +11,12 @@ use serde_json::Value;
 use thiserror::Error;
 
 mod auth;
+mod hooks;
+mod prompt;
+pub use hooks::{
+    ClaudeHookFuture, ClaudeLifecycleDecision, ClaudeLifecycleEvent, ClaudeLifecycleInvocation,
+    ClaudeLifecycleOutcome, ClaudeToolDecision, ClaudeToolHooks,
+};
 mod subscription_wire;
 pub use subscription_wire::SubscriptionIdentity;
 pub mod subscription;
@@ -52,6 +58,16 @@ pub enum Role {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ContentBlock {
+    Image {
+        source: Value,
+        #[serde(flatten)]
+        extra: BTreeMap<String, Value>,
+    },
+    Document {
+        source: Value,
+        #[serde(flatten)]
+        extra: BTreeMap<String, Value>,
+    },
     Text {
         text: String,
         #[serde(flatten)]
@@ -519,7 +535,9 @@ impl MessagesRequest {
                     | ContentBlock::RedactedThinking { extra, .. } => {
                         (extra.get("cache_control"), false)
                     }
-                    ContentBlock::ToolResult { extra, .. } => (extra.get("cache_control"), true),
+                    ContentBlock::Image { extra, .. }
+                    | ContentBlock::Document { extra, .. }
+                    | ContentBlock::ToolResult { extra, .. } => (extra.get("cache_control"), true),
                     ContentBlock::ToolUse { extra, .. }
                     | ContentBlock::ServerToolUse { extra, .. }
                     | ContentBlock::WebSearchToolResult { extra, .. }
@@ -1159,6 +1177,19 @@ impl ClaudeClient {
 
     pub async fn stream(&self, request: &MessagesRequest) -> Result<ClaudeStream, ClaudeError> {
         let (response, credentials) = self.post(request, true).await?;
+        // A successful non-SSE response (for example an upstream JSON gateway
+        // response) must not masquerade as a truncated Messages stream.
+        let is_sse = response
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.split(';').next())
+            .is_some_and(|value| value.trim().eq_ignore_ascii_case("text/event-stream"));
+        if !is_sse {
+            return Err(ClaudeError::Protocol(
+                "expected text/event-stream response".into(),
+            ));
+        }
         let decode_subscription = self.subscription_compatibility;
         Ok(Box::pin(stream::unfold(
             SseState::new(response, credentials),
@@ -1175,14 +1206,6 @@ impl ClaudeClient {
                         }
                     };
                     if let Some(line) = line {
-                        state.frame_bytes += line.len() + 1;
-                        if state.frame_bytes > MAX_SSE_FRAME_BYTES {
-                            state.done = true;
-                            return Some((
-                                Err(ClaudeError::Protocol("SSE frame exceeds 32 MiB".into())),
-                                state,
-                            ));
-                        }
                         if line.is_empty() {
                             state.frame_bytes = 0;
                             let event_name = state.event_name.take();
@@ -1247,25 +1270,25 @@ impl ClaudeClient {
                                     }
                                 }
                             }
-                        } else if let Some(name) = line.strip_prefix("event:") {
-                            state.event_name = Some(name.trim_start().to_owned());
-                        } else if let Some(data) = line.strip_prefix("data:") {
-                            state
-                                .data
-                                .push(data.strip_prefix(' ').unwrap_or(data).to_owned());
+                        } else {
+                            // SSE removes exactly one ASCII space after the colon,
+                            // not arbitrary whitespace. A field without a colon has
+                            // an empty value; comments and unknown fields are ignored.
+                            let (field, value) = line.split_once(':').unwrap_or((&line, ""));
+                            let value = value.strip_prefix(' ').unwrap_or(value);
+                            match field {
+                                "event" => {
+                                    state.event_name = (!value.is_empty()).then(|| value.to_owned())
+                                }
+                                "data" => state.data.push(value.to_owned()),
+                                _ => {}
+                            }
                         }
                         continue;
                     }
                     match state.response.next().await {
                         Some(Ok(chunk)) => {
                             state.bytes.extend_from_slice(&chunk);
-                            if state.bytes.len() + state.frame_bytes > MAX_SSE_FRAME_BYTES {
-                                state.done = true;
-                                return Some((
-                                    Err(ClaudeError::Protocol("SSE frame exceeds 32 MiB".into())),
-                                    state,
-                                ));
-                            }
                         }
                         None => {
                             state.done = true;
@@ -1342,6 +1365,9 @@ struct SseState {
     done: bool,
     frame_bytes: usize,
     event_name: Option<String>,
+    first_line: bool,
+    skip_lf: bool,
+    scan_start: usize,
 }
 
 impl SseState {
@@ -1358,22 +1384,54 @@ impl SseState {
             done: false,
             frame_bytes: 0,
             event_name: None,
+            first_line: true,
+            skip_lf: false,
+            scan_start: 0,
         }
     }
 
     fn pop_line(&mut self) -> Result<Option<String>, ClaudeError> {
-        let Some(index) = self.bytes.iter().position(|byte| *byte == b'\n') else {
+        // SSE permits LF, CRLF and bare CR. Consume a CR immediately and skip
+        // only its optional following LF, even when those bytes arrive in
+        // different HTTP chunks. Waiting for LF loses a valid CR-only terminal.
+        if self.skip_lf {
+            if self.bytes.is_empty() {
+                return Ok(None);
+            }
+            if self.bytes[0] == b'\n' {
+                self.bytes.remove(0);
+            }
+            self.skip_lf = false;
+        }
+        let delimiter = self.bytes[self.scan_start..]
+            .iter()
+            .position(|byte| matches!(byte, b'\n' | b'\r'))
+            .map(|offset| self.scan_start + offset);
+        let pending = delimiter.map_or(self.bytes.len(), |index| index + 1);
+        if pending + self.frame_bytes > MAX_SSE_FRAME_BYTES {
+            return Err(ClaudeError::Protocol("SSE frame exceeds 32 MiB".into()));
+        }
+        let Some(index) = delimiter else {
+            // Do not repeatedly scan the entire unfinished line for each chunk.
+            self.scan_start = self.bytes.len();
             return Ok(None);
         };
+        self.frame_bytes += index + 1;
+        self.skip_lf = self.bytes[index] == b'\r';
+        self.scan_start = 0;
         let mut line = self.bytes.drain(..=index).collect::<Vec<_>>();
         line.pop();
-        if line.last() == Some(&b'\r') {
-            line.pop();
+        // SSE is UTF-8; malformed lines must not be silently altered. Only one
+        // leading BOM is optional, at the start of the stream, not every frame.
+        let mut line = String::from_utf8(line)
+            .map_err(|_| ClaudeError::Protocol("invalid UTF-8 SSE line".into()))?;
+        if self.first_line {
+            self.first_line = false;
+            if line.starts_with('\u{feff}') {
+                line.drain(..'\u{feff}'.len_utf8());
+            }
         }
-        // SSE is UTF-8; malformed lines must not be silently altered.
-        String::from_utf8(line)
-            .map(Some)
-            .map_err(|_| ClaudeError::Protocol("invalid UTF-8 SSE line".into()))
+        Ok(Some(line))
     }
 
     fn take_data(&mut self) -> Option<String> {
@@ -1666,7 +1724,9 @@ where
                     return Err(ClaudeError::Protocol("missing final stop_reason".into()));
                 }
                 if !active.is_empty() {
-                    return Err(ClaudeError::IncompleteStream);
+                    return Err(ClaudeError::Protocol(
+                        "message_stop before content_block_stop".into(),
+                    ));
                 }
                 let count = completed.len();
                 if completed.keys().copied().ne(0..count) {
@@ -1742,7 +1802,80 @@ fn is_user_turn_start(message: &Message) -> bool {
 }
 
 mod agent;
-pub use agent::{Claude, ClaudeBuilder, ClaudeToolInvocation, ClaudeToolReply, ClaudeTools};
+pub use agent::{
+    Claude, ClaudeBuilder, ClaudeToolInvocation, ClaudeToolReply, ClaudeTools, rewind_checkpoint,
+};
 
 /// Portable durability integration with provider-native state.
 pub mod execution;
+
+#[cfg(test)]
+mod sse_framing_tests {
+    use super::*;
+
+    fn state() -> SseState {
+        SseState {
+            credentials: Vec::new(),
+            response: Box::pin(stream::empty()),
+            bytes: Vec::new(),
+            data: Vec::new(),
+            done: false,
+            frame_bytes: 0,
+            event_name: None,
+            first_line: true,
+            skip_lf: false,
+            scan_start: 0,
+        }
+    }
+
+    #[test]
+    fn every_byte_boundary_preserves_crlf_bom_and_unicode() {
+        for ending in ["\n", "\r\n", "\r"] {
+            let input =
+                format!("\u{feff}data: 日本語 😀{ending}{ending}data: done{ending}{ending}");
+            let mut state = state();
+            let mut lines = Vec::new();
+            for byte in input.bytes() {
+                state.bytes.push(byte);
+                while let Some(line) = state.pop_line().unwrap() {
+                    if line.is_empty() {
+                        state.frame_bytes = 0;
+                    }
+                    lines.push(line);
+                }
+            }
+            assert_eq!(lines, ["data: 日本語 😀", "", "data: done", ""]);
+            assert!(state.bytes.is_empty());
+        }
+    }
+
+    #[test]
+    fn coalesced_small_frames_are_not_one_oversize_frame() {
+        let mut state = state();
+        // This whole HTTP chunk is larger than a single allowed SSE frame.
+        let frame = format!(": {}\n\n", "x".repeat(1024 * 1024));
+        state.bytes = frame.repeat(33).into_bytes();
+        let mut frames = 0;
+        while let Some(line) = state.pop_line().unwrap() {
+            if line.is_empty() {
+                state.frame_bytes = 0;
+                frames += 1;
+            }
+        }
+        assert_eq!(frames, 33);
+    }
+
+    #[test]
+    fn unfinished_line_still_has_a_byte_bound() {
+        let mut state = state();
+        state.bytes = vec![b'x'; MAX_SSE_FRAME_BYTES + 1];
+        assert!(matches!(state.pop_line(), Err(ClaudeError::Protocol(_))));
+    }
+
+    #[test]
+    fn invalid_utf8_is_not_replaced_or_accepted() {
+        let mut state = state();
+        state.bytes = vec![b'd', b'a', b't', b'a', b':', 0xff, b'\n'];
+        assert!(matches!(state.pop_line(), Err(ClaudeError::Protocol(_))));
+    }
+}

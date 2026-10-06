@@ -1,7 +1,7 @@
 import { restoreAuthBuffers } from '../../src/whatsapp-adapters/auth-buffers.ts';
 import { inflate, deflateSync } from 'node:zlib';
 import { promisify } from 'node:util';
-import makeWASocket, { Browsers, DEFAULT_CONNECTION_CONFIG, generateSignalPubKey, Curve, aesEncryptGCM, aesDecryptGCM, aesEncryptCTR, aesDecryptCTR, aesEncrypt, aesDecrypt, hkdf, md5, initAuthCreds, proto } from '../../src/whatsapp-generated/baileys.js';
+import makeWASocket, { Browsers, DEFAULT_CONNECTION_CONFIG, generateSignalPubKey, Curve, aesEncryptGCM, aesDecryptGCM, aesEncryptCTR, aesDecryptCTR, aesEncrypt, aesDecrypt, hkdf, md5, initAuthCreds, proto, derivePairingCodeKey } from '../../src/whatsapp-generated/baileys.js';
 import WorkersWebSocket from '../../src/whatsapp-adapters/workers-ws.js';
 import { Buffer } from 'node:buffer';
 const logger = { level:'silent', child(){return this}, trace(){},debug(){},info(){},warn(){},error(){},fatal(){} };
@@ -96,6 +96,20 @@ export default {
       const emptyAadCiphertext=aesEncryptGCM(msg,key,new Uint8Array(12),Buffer.alloc(0)); emptyAadCiphertext[0]^=1; let emptyAadRejected=false;
       try {aesDecryptGCM(emptyAadCiphertext,key,new Uint8Array(12),Buffer.alloc(0));} catch {emptyAadRejected=true;}
       assert(emptyAadRejected,'empty-AAD tamper rejection'); checks.push('aes-gcm-empty-aad-tamper-rejected');
+      // Full expected keys computed independently with Node's native pbkdf2Sync
+      // (SHA-256, 131072 iterations, 32 bytes). Inputs are public synthetic data.
+      // Exercise the exported shipped bundle, including the guarded source adapter.
+      const pairingVectors = [
+        { label: 'ascii', code: 'SYNTHETIC', salt: Uint8Array.from({ length: 32 }, (_, i) => i),
+          expected: '9b1d1bb1f361c01c7f8ae5b9c8ce73b039d646a1b2c2a10ad3bfc8e92bd8ecf7' },
+        { label: 'utf8-offset-salt', code: 'tést🔑', salt: Uint8Array.from({ length: 34 }, (_, i) => 255 - i).subarray(1, 33),
+          expected: '5e2e9fdd0dfcbd1444d1756ec728292bbf40edd5bad66c4e39520aba8843c80d' },
+      ];
+      for (const vector of pairingVectors) {
+        const derived = await derivePairingCodeKey(vector.code, vector.salt);
+        assert(Buffer.isBuffer(derived) && derived.toString('hex') === vector.expected, 'pairing PBKDF2 exact key: ' + vector.label);
+        checks.push('pairing-pbkdf2-131072-' + vector.label);
+      }
       const creds=initAuthCreds(); assert(creds.noiseKey.private.length===32 && !creds.registered,'creds'); checks.push('auth-creds-in-memory-only');
       const encoded=proto.Message.encode({conversation:'local-test'}).finish();
       assert(proto.Message.decode(encoded).conversation==='local-test','protobuf'); checks.push('protobuf-roundtrip');

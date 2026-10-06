@@ -2,7 +2,7 @@
 // reference mppx or viem. Both are optional peer dependencies of this subpath
 // and are loaded lazily, only when a paid path is actually used.
 import { DEFAULT_MERCATOR_MCP_URL } from "../runtime/mercator.mjs";
-import { mcpPaymentWrap } from "../runtime/mcp-payment.mjs";
+import { mcpPaymentFactory, mcpPaymentWrap } from "../runtime/mcp-payment.mjs";
 
 export { DEFAULT_MERCATOR_MCP_URL };
 
@@ -19,6 +19,18 @@ const defaultMercator = (payment) => ({
  * servers only through this wrapper, which loads `mppx/mcp/client` on demand.
  */
 export function mcpPayment(payment) {
+  if (payment && typeof payment[mcpPaymentFactory] === "function") return payment;
+  if (typeof payment === "function") {
+    return Object.freeze({
+      async [mcpPaymentFactory]() {
+        const resolved = await payment();
+        if (!resolved || !Array.isArray(resolved.methods) || !resolved.methods.length) {
+          throw new TypeError("MCP payment factory must return at least one MPPx method");
+        }
+        return mcpPayment(resolved);
+      },
+    });
+  }
   if (!payment || !Array.isArray(payment.methods) || !payment.methods.length) {
     throw new TypeError("MCP payment requires at least one MPPx method");
   }

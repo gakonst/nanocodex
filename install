@@ -5,6 +5,15 @@ set -eu
 
 repository=gakonst/nanocodex
 
+# A headless process can see /dev/tty without owning a controlling terminal.
+# Probe opening it, and pass the fallback through to older tagged installers.
+setup_tty=${NANOCODEX_INSTALL_TTY:-/dev/tty}
+if ! ( : < "$setup_tty" ) 2>/dev/null; then
+  setup_tty=/dev/null
+fi
+NANOCODEX_INSTALL_TTY=$setup_tty
+export NANOCODEX_INSTALL_TTY
+
 temporary_dir="$(mktemp -d "${TMPDIR:-/tmp}/nanocodex-bootstrap.XXXXXX")" || {
   echo "nanocodex: failed to create a temporary directory" >&2
   exit 1

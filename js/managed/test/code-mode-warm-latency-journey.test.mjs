@@ -62,7 +62,7 @@ export class FixtureModel extends DurableObject {
       const body=JSON.parse(event.data),call=++index;
       console.info({type:'fixture.model',index:call,input:body.input,tools:body.tools});
       const outputs=(body.input??[]).filter(item=>item.type==='custom_tool_call_output'||item.type==='function_call_output'); collected.push(...outputs);
-      const output=call===1?[{type:'function_call',name:'tool_search',call_id:'call_warm_discovery',arguments:JSON.stringify({query:'exec_command',limit:8})}]
+      const output=call===1?[{type:'custom_tool_call',name:'exec',call_id:'call_warm_discovery',input:'text(await tools.tool_search({query:"exec_command",limit:8}));'}]
         :call===2||call===3?[{type:'custom_tool_call',name:'exec',call_id:'call_warm_cell_'+(call-2),input:${JSON.stringify(scripts)}[call-2]}]
         :[{type:'message',role:'assistant',content:[{type:'output_text',text:'WARM_THREAD_OK '+JSON.stringify(collected)}]}];
       server.send(JSON.stringify({type:'response.completed',response:{id:'resp_warm_'+call,status:'completed',end_turn:call>3,output,usage:{input_tokens:1,output_tokens:1,total_tokens:2}}}));
@@ -154,7 +154,7 @@ test("one running managed thread measures sequential warm Code Mode calls after 
     // Stream writes can lag the public completion receipt by a tick.
     for(let i=0;i<100&&records.filter(row=>row.type==="managed.agent.tool"&&row.tool==="exec_command"&&row.message_type==="tool.result").length<count;i++) await delay(10);
     const nested=records.filter(row=>row.type==="managed.agent.tool"&&row.tool==="exec_command"&&row.message_type==="tool.result");
-    const outer=records.filter(row=>row.type==="managed.agent.tool"&&row.tool==="exec"&&row.message_type==="tool.result");
+    const outer=records.filter(row=>row.type==="managed.agent.tool"&&row.tool==="exec"&&row.tool_call_id?.startsWith("call_warm_cell_")&&row.message_type==="tool.result");
     assert.equal(nested.length,count);assert.equal(outer.length,2);
     assert.equal(new Set(nested.map(row=>row.runtime_session_id)).size,1,"all calls stay in one running agent runtime");
     assert.ok(nested.every(row=>row.thread_id===thread&&row.turn_id===accepted.value.turn_id));

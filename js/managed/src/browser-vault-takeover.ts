@@ -1,3 +1,4 @@
+import { validatePrivateVaultSave, validatePrivateVaultDetails, type PrivateVaultDetails } from "./browser-vault-save";
 import { browserLoginIdentity } from "./browser-login";
 import { NATIVE_FORM_STATE, PrivateBrowserNoActiveTouch, isBrowserVaultOrigin, type BrowserVaultIdentity, type PrivateBrowserCdp } from "./browser-vault";
 
@@ -5,14 +6,14 @@ export type BrowserVaultTakeoverAction =
   | { action: "observe"; native_fields?: boolean; native_field_hints?: boolean; native_field_controls?: boolean; viewport?: { width: number; height: number; mobile: boolean } }
   | { action: "click"; x: number; y: number }
   | { action: "type"; text: string }
-  | { action: "fill_fields"; document_id: string; fields: { ref: string; value: string }[] }
+  | { action: "fill_fields"; document_id: string; fields: { ref: string; value: string }[]; save_to_vault?: boolean; save_details?: PrivateVaultDetails }
   | { action: "edit"; delete_backward: number; text: string }
   | { action: "touch"; phase: "start" | "move" | "end" | "cancel"; x?: number; y?: number }
   | { action: "key"; key: "Enter" | "Tab" | "Backspace" | "Escape" }
   | { action: "scroll"; delta_y: number };
-export type BrowserVaultTouchState = { active?: boolean; uncertain?: boolean; nativeFields?: boolean; nativeFieldHints?: boolean; nativeFieldControls?: boolean; nativeSelection?: string; nativeForm?: { documentId: string; contextId: number; frameId: string; loaderId: string; origin: string } };
+export type BrowserVaultTouchState = { active?: boolean; uncertain?: boolean; nativeFields?: boolean; nativeFieldHints?: boolean; nativeFieldControls?: boolean; nativeSelection?: string; nativeForm?: { documentId: string; contextId: number; frameId: string; loaderId: string; origin: string; form: BrowserVaultNativeForm } };
 export type BrowserVaultKeyboard = { type: "text" | "email" | "url" | "tel" | "number" | "password"; multiline: boolean };
-const NATIVE_AUTOCOMPLETE = ["username", "current-password", "new-password", "one-time-code", "email", "tel", "cc-number", "cc-exp", "cc-exp-month", "cc-exp-year", "cc-csc", "name", "given-name", "family-name", "street-address", "postal-code"] as const;
+const NATIVE_AUTOCOMPLETE = ["username", "current-password", "new-password", "one-time-code", "email", "tel", "cc-number", "cc-exp", "cc-exp-month", "cc-exp-year", "cc-csc", "name", "given-name", "family-name", "street-address", "postal-code", "address-line1", "address-line2", "address-level1", "address-level2", "country", "country-name"] as const;
 const NATIVE_INPUTMODES = ["text", "email", "url", "tel", "numeric", "decimal", "search"] as const;
 export type BrowserVaultNativeForm = { document_id: string; reason?: string; fields: {type: BrowserVaultKeyboard["type"] | "select" | "checkbox"; multiline: boolean; ref: string; label: string; options?: {index:number;label:string}[]; checked?: boolean; autocomplete?: typeof NATIVE_AUTOCOMPLETE[number]; inputmode?: typeof NATIVE_INPUTMODES[number] }[] };
 export type BrowserVaultTakeoverResult = { native_form?: BrowserVaultNativeForm; native_form_status?: "stale"; status: "active"; image: string; width: number; height: number; keyboard?: BrowserVaultKeyboard; inputs?: (BrowserVaultKeyboard & { x: number; y: number; width: number; height: number })[] };
@@ -63,7 +64,9 @@ export function validateBrowserVaultTakeoverAction(value: BrowserVaultTakeoverAc
         refs.add(field.ref); size += new TextEncoder().encode(field.value).length;
       }
       if (size > 32768) throw new Error();
-      allowed = ["action", "document_id", "fields"]; break;
+      if(value.save_to_vault !== undefined)validatePrivateVaultSave(value.save_to_vault);
+      if(value.save_details !== undefined){if(value.save_to_vault !== true)throw new Error();validatePrivateVaultDetails(value.save_details);}
+      allowed = ["action", "document_id", "fields", "save_to_vault", "save_details"]; break;
     }
     case "type":
       if (typeof value.text !== "string" || !value.text.length || value.text.length > 512) throw new Error();
@@ -101,6 +104,7 @@ export async function privateVaultTakeover(
   touch: BrowserVaultTouchState = {},
   restoreViewport = false,
   allowedOrigins?: readonly string[],
+  onFilled?: (origin:string, form:BrowserVaultNativeForm, values:{ref:string;value:string}[], enabled:boolean, details?:PrivateVaultDetails)=>void,
 ): Promise<BrowserVaultTakeoverResult> {
   let sid: string | undefined;
   try {
@@ -185,11 +189,13 @@ export async function privateVaultTakeover(
       const filled = await cdp.send("Runtime.callFunctionOn", {
         executionContextId: binding.contextId, returnByValue: true, silent: true,
         functionDeclaration: NATIVE_FORM_FILL,
-        arguments: [binding.documentId, binding.origin, action.fields].map(value => ({value})),
+        arguments: [binding.documentId, binding.origin, action.fields, action.save_to_vault === true].map(value => ({value})),
       }, sid);
       await check();
-      if (filled?.exceptionDetails || filled?.result?.value !== true) throw new Error();
+      const result = filled?.result?.value;
+      if (filled?.exceptionDetails || (action.save_to_vault === true ? result?.filled !== true || !Array.isArray(result.fields) : result !== true)) throw new Error();
       touch.uncertain = false;
+      if(action.save_to_vault !== undefined)onFilled?.(currentOrigin,binding.form,action.save_to_vault ? result.fields : action.fields,action.save_to_vault,action.save_details);
     } else if (action.action === "touch") {
       // Mark uncertain before sending: a disconnected response must never replay input.
       touch.uncertain = true;
@@ -279,7 +285,7 @@ export async function privateVaultTakeover(
         const result = await cdp.send("Runtime.callFunctionOn", {
           executionContextId: world.executionContextId, returnByValue: true, silent: true,
           functionDeclaration: NATIVE_FORM_DISCOVER,
-          arguments: [documentId, currentOrigin, refs, touch.nativeFieldHints === true, touch.nativeFieldControls === true, touch.nativeSelection ?? null].map(value => ({value})),
+          arguments: [documentId, currentOrigin, refs, true, touch.nativeFieldControls === true, touch.nativeSelection ?? null].map(value => ({value})),
         }, sid);
         const discovered = result?.result?.value;
         const fields = discovered?.fields;
@@ -295,7 +301,7 @@ export async function privateVaultTakeover(
             ...(touch.nativeFieldHints && f.autocomplete ? {autocomplete:f.autocomplete} : {}),
             ...(touch.nativeFieldHints && f.inputmode ? {inputmode:f.inputmode} : {}),
             ...(f.type === "select" ? {options:f.options} : {}), ...(f.type === "checkbox" ? {checked:f.checked} : {})})) };
-          touch.nativeForm = {documentId,contextId:world.executionContextId,frameId,loaderId,origin:currentOrigin};
+          touch.nativeForm = {documentId,contextId:world.executionContextId,frameId,loaderId,origin:currentOrigin,form:{...nativeForm,fields:result.result.value.fields}};
         }
       }
     } catch { /* Never forward provider errors. */ }
@@ -398,7 +404,7 @@ const NATIVE_FORM_DISCOVER = `function(documentId, origin, refs, hints, controls
   globalThis.__nanocodexNativeForm = {documentId,document,origin,href:location.href,entries,controls,selectionId};
   return {fields,...(selection?.reason ? {reason:selection.reason} : {})};
 }`;
-const NATIVE_FORM_FILL = `function(documentId, origin, fields) {
+const NATIVE_FORM_FILL = `function(documentId, origin, fields, saveValues) {
   const bound = globalThis.__nanocodexNativeForm;
   delete globalThis.__nanocodexNativeForm;
   if (!bound || bound.documentId !== documentId || bound.document !== document || bound.href !== location.href
@@ -409,7 +415,8 @@ const NATIVE_FORM_FILL = `function(documentId, origin, fields) {
   const formState = ${NATIVE_FORM_STATE}, fieldLabel = ${NATIVE_FIELD_LABEL};
   const valid = b => b && visible(b.element) && b.element.type === b.type
     && b.element.form === b.form && b.element.name === b.name && JSON.stringify(fieldLabel(b.element)) === b.labelState
-    && b.element.autocomplete === b.autocomplete && b.element.inputMode === b.inputmode && location.origin === origin;
+    && b.element.autocomplete === b.autocomplete && b.element.inputMode === b.inputmode && location.origin === origin
+    && (!b.form || JSON.stringify(JSON.parse(formState(b.form))[0]) === JSON.stringify(JSON.parse(b.formState)[0]));
   const selected = fields.map(f => ({field:f,binding:bound.entries.find(b => b.ref === f.ref)}));
   const validValue = (e, value) => {
     if (e instanceof HTMLSelectElement) {
@@ -446,6 +453,18 @@ const NATIVE_FORM_FILL = `function(documentId, origin, fields) {
     if (!valid(binding)) return false;
     e.dispatchEvent(new Event('change', {bubbles:true}));
   }
+  // Event handlers may clear an earlier field or change the destination. Never
+  // acknowledge or save a batch unless every submitted value remains filled.
+  if (!selected.every(({field,binding}) => valid(binding) && (binding.element instanceof HTMLSelectElement
+    ? binding.element.selectedIndex === Number(field.value)
+    : binding.element.type === 'checkbox' ? binding.element.checked === (field.value === 'true')
+    : binding.element.value === (() => {
+      if (binding.element instanceof HTMLTextAreaElement) return field.value.replace(/\\r\\n?/g, '\\n');
+      const value = field.value.replace(/[\\r\\n]/g, '');
+      const trim = s => s.replace(/^[\\t\\n\\f\\r ]+|[\\t\\n\\f\\r ]+$/g, '');
+      return binding.element.type === 'email' && binding.element.multiple ? value.split(',').map(trim).join(',')
+        : ['email','url'].includes(binding.element.type) ? trim(value) : value;
+    })()))) return false;
   if (selection) {
     for (const b of selection.entries) {
       const previous = JSON.parse(b.state), current = fieldState(b.el);
@@ -460,6 +479,13 @@ const NATIVE_FORM_FILL = `function(documentId, origin, fields) {
       }
       if (JSON.stringify(expected.state) === formState(b.form)) b.formState = formState(b.form);
     }
+  }
+  // Select indices are human transport values. Only trusted autosave receives
+  // the selected option value; it must never become a model/tool result.
+  if (saveValues) {
+    const saved = selected.map(({field,binding}) => ({ref:field.ref,value:binding.element.type === 'checkbox' ? field.value : binding.element.value}));
+    if (saved.some(f => f.value.length > 4096)) return false;
+    return {filled:true,fields:saved};
   }
   return true;
 }`;

@@ -78,6 +78,14 @@ const explicitClient: Client.Client = Client.create({
   dialog: Dialog.memory(),
   transport: mock(),
 });
+const navigation = await explicitClient.account.links({ connect: "github", add: "login" });
+navigation.vault satisfies string;
+navigation.connections satisfies string;
+Actions.account.links(explicitClient, { add: "card" });
+// @ts-expect-error Navigation never accepts credentials.
+explicitClient.account.links({ token: "private" });
+// @ts-expect-error Only supported forms have a navigation link.
+explicitClient.account.links({ add: "unknown" });
 const explicitClientConnection = await explicitClient.connection.connect({});
 explicitClientConnection.accountAddress satisfies `0x${string}`;
 

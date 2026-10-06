@@ -6,6 +6,7 @@ import { spawn } from 'node:child_process';
 import { createServer } from 'node:net';
 import { mkdtemp, mkdir, rm, realpath, chmod, writeFile, readFile, readdir } from 'node:fs/promises';
 import path from 'node:path';
+import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { readLines, checkManagedPolicy, policyReply, appConsent, configuration, runHost } from '../../crates/experimental/nanocodex-computer/src/direct-cua-host.mjs';
 
@@ -20,9 +21,9 @@ class Child extends EventEmitter {
   exit() { this.exitCode = 0; this.emit('exit', 0, null); }
 }
 async function root(t) {
-  // Native Mac Hands do not expose /brain; use the real short temp root
-  // (not its /tmp symlink) so the Unix socket stays within sockaddr_un.
-  const base = process.platform === 'darwin' ? '/private/tmp' : '/brain/tmp';
+  // Native Hands need not mount /brain. Resolve the OS temp directory's
+  // symlinks before the host checks its private socket's ancestors.
+  const base = await realpath(tmpdir());
   await mkdir(base, { recursive: true });
   const directory = await realpath(await mkdtemp(path.join(base, 'dcua-')));
   t.after(() => rm(directory, { recursive: true, force: true }));
@@ -53,6 +54,7 @@ test('policy shim identifies its own host and exposes no auth/model/thread APIs'
   assert.equal(policyReply(rpc(1, 'initialize'), true).result.userAgent, 'nanocodex-cua-policy-host/1');
   for (const method of ['account/read', 'thread/start', 'model/list']) assert.equal(policyReply(rpc(1, method), true).error.code, -32601);
   assert.equal(policyReply(rpc(1, 'config/read'), false).result.config.computer_use.default_app_access, 'deny');
+  assert.deepEqual(policyReply(rpc(1, 'getAuthStatus', {includeToken:true}), true).result, {authMethod:null,authToken:null,requiresOpenaiAuth:false});
   assert.equal(policyReply(rpc(1, 'configRequirements/read'), true).result.requirements.computerUse.allowLockedComputerUse, false);
 });
 test('blanket app consent excludes audio, data forms, unknown connectors and no active JS', () => {
@@ -102,8 +104,9 @@ test('upstream initialization/results/errors/notifications preserved and provide
   assert.deepEqual(returned, [result, notification]);
   assert.equal(f.invocations[0].settings.env.CODEX_TOKEN, undefined);
   assert.equal(f.invocations[0].settings.env.NODE_OPTIONS, undefined);
-  assert.equal(f.invocations[0].settings.env.CODEX_CLI_PATH, undefined);
-  assert.equal(f.invocations[0].settings.env.CODEX_HOME, undefined);
+  assert.equal(f.invocations[0].settings.env.CODEX_CLI_PATH, '/synthetic/policy');
+  assert.equal(path.dirname(f.invocations[0].settings.env.SKY_CUA_SERVICE_NATIVE_PIPE_PATH), f.invocations[0].settings.env.CODEX_HOME);
+  assert.ok(f.invocations[0].settings.env.CODEX_HOME.startsWith(f.state + path.sep));
 });
 test('EOF reports uncertainty and removes private session state without replay', async t => {
   const f = await fixture(t), replies = [];
@@ -144,7 +147,7 @@ test('host SIGKILL reaps detached provider even if provider ignores stdin EOF', 
   // Parallel native builds can delay synthetic Node startup beyond one second.
   // Bound the fixture wait independently of the owned-process cleanup assertion.
   const startupDeadline = Date.now() + 5000;
-  while (Date.now() < startupDeadline) { try { providerPid = Number(await readFile(pidFile, 'utf8')); break; } catch {} await pause(10); }
+  while (Date.now() < startupDeadline) { try { providerPid = Number(await readFile(pidFile, 'utf8')); if (Number.isSafeInteger(providerPid) && providerPid > 1) break; } catch {} await pause(10); }
   assert.ok(providerPid, 'synthetic provider did not start');
   harness.kill('SIGKILL'); await once(harness, 'exit'); await pause(300);
   let alive = true; try { process.kill(providerPid, 0); } catch { alive = false; }
@@ -172,7 +175,7 @@ test('native owner watchdog reaps TERM-ignoring helper descendants after leader 
   let leader, grandchild;
   t.after(() => { worker.kill('SIGKILL'); if (leader) { try { process.kill(-leader, 'SIGKILL'); } catch {} } if (grandchild) { try { process.kill(grandchild, 'SIGKILL'); } catch {} } });
   for (let n = 0; n < 500; n++) {
-    try { leader = Number(await readFile(path.join(directory, 'leader'), 'utf8')); grandchild = Number(await readFile(path.join(directory, 'grandchild'), 'utf8')); break; } catch {} await pause(10);
+    try { leader = Number(await readFile(path.join(directory, 'leader'), 'utf8')); grandchild = Number(await readFile(path.join(directory, 'grandchild'), 'utf8')); if (leader > 1 && grandchild > 1) break; } catch {} await pause(10);
   }
   assert.ok(leader && grandchild, 'synthetic helper descendants did not start');
   worker.stdin.end(); await once(worker, 'exit'); await pause(1700);
@@ -202,7 +205,7 @@ test('SIGKILL of native worker owner closes lease and reaps synthetic native hel
   const owner = spawn(process.execPath, ['-e', ownerCode], { stdio: ['ignore', 'ignore', 'ignore'] });
   let helperPid;
   t.after(() => { owner.kill('SIGKILL'); if (helperPid) { try { process.kill(-helperPid, 'SIGKILL'); } catch {} } });
-  for (let n = 0; n < 500; n++) { try { helperPid = Number(await readFile(path.join(directory, 'helper'), 'utf8')); break; } catch {} await pause(10); }
+  for (let n = 0; n < 500; n++) { try { helperPid = Number(await readFile(path.join(directory, 'helper'), 'utf8')); if (Number.isSafeInteger(helperPid) && helperPid > 1) break; } catch {} await pause(10); }
   assert.ok(helperPid, 'synthetic native helper did not start');
   owner.kill('SIGKILL'); await once(owner, 'exit'); await pause(1800);
   let alive = true; try { process.kill(helperPid, 0); } catch { alive = false; }

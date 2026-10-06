@@ -73,7 +73,7 @@
     "test:typecheck": "tsc -p test/tsconfig.json"
   },
   "dependencies": {
-    "accounts": "0.17.0",
+    "accounts": "https://pkg.pr.new/tempoxyz/accounts@232cc59cb4f8b4c8daf2113d0881b161e76a69d3",
     "nanocodex-connect-protocol": "workspace:*"
   },
   "peerDependencies": {

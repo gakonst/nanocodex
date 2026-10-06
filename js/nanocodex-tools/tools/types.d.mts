@@ -23,6 +23,7 @@ export type Tool = Readonly<{
   parameters?: Record<string, unknown> | undefined;
   outputSchema?: Record<string, unknown> | undefined;
   handler(input: unknown, context: ToolContext): unknown | Promise<unknown>;
+  endTurn?(sessionId: string, turnId: string, hookEventName: "Stop" | "Interrupt" | "SubagentStop"): Promise<void>;
   releaseSession?(sessionId: string): void;
   dispose?(): void | Promise<void>;
 }>;

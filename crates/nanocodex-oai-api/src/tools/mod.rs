@@ -584,6 +584,17 @@ pub trait Tool: Send + Sync + 'static {
         false
     }
 
+    /// Trusted runtime notification after a turn settles, including cancellation.
+    /// This is not a model-callable tool and must not start a new resource session.
+    async fn end_turn(
+        &self,
+        _session_id: &str,
+        _turn_id: &str,
+        _hook_event_name: &str,
+    ) -> Result<(), ToolError> {
+        Ok(())
+    }
+
     /// Executes one invocation.
     async fn execute(&self, input: ToolInput, context: ToolContext<'_>) -> ToolResult;
 }

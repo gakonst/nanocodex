@@ -37,6 +37,9 @@ export async function desktopDefaults(environment = process.env) {
       try { const info = await stat(path); if (name === "firmware" ? info.isDirectory() : info.isFile()) { defaults[name] = path; break; } } catch { /* Unavailable defaults stay unset. */ }
     }
   }));
+  // Preserve an explicit choice, including a missing path, so startup reports
+  // an actionable error instead of silently selecting an unrelated provider.
+  if (environment.NANOCODEX_DEVICE_BINARY) defaults.deviceBinary = environment.NANOCODEX_DEVICE_BINARY;
   const factoryName = environment.NANOCODEX_VM_FACTORY_NAME ?? recipe.factoryName;
   if (typeof factoryName === "string") defaults.factoryName = factoryName;
   return defaults;

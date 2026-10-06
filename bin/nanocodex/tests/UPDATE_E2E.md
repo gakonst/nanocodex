@@ -15,6 +15,25 @@ paths to each runner. Linux distributable source builds also need the pinned
 screen-helper build prerequisites described by `scripts/build-linux-screen-helpers.sh`.
 Do not substitute mock Cargo or a mock updater for these commands.
 
+## Installer download journey
+
+```sh
+python3 bin/nanocodex/tests/install_network_e2e.py target/debug/nanocodex target/debug/nanocodex2 output/install-network
+```
+
+This invokes the real CLI with `install --no-setup --no-modify-path` against a
+loopback HTTPS GitHub transport fixture. It uses an isolated HOME, credential
+file and installation store, with automatic scheduling disabled. A test CA is
+trusted only by the child process; no system trust settings change. The Hand
+payload is a real executable; the voice archive is structural fixture data.
+
+The journey verifies checksum-gated reuse of the running bootstrap, overlapping
+Hand/voice transfers, CLI download fallback, missing checksums, and corrupted
+payload rejection without changing the selected or pending release. Any
+existing native Hand remains running and unchanged. Transcript, request trace,
+and structured results are written to the output directory. This does not
+exercise voice execution or first installation of an OS service.
+
 ## Local-pair runner
 
 The runner copies the **real CLI and Hand binaries** into a disposable directory,
@@ -95,6 +114,15 @@ Nanocodex account-file or GitHub/provider token override.
 
 ## Separate native-service acceptance
 
+For an already connected macOS service, run
+`node bin/nanocodex/tests/hand_install_e2e.mjs CLI [OUTPUT_DIR]` to check repeated
+`hand install` and invalid executable errors against the real launchd owner.
+It uses an invalid synthetic account override, checks that the exact PID and
+plist survive installer exit, and records screen warnings when capture is
+unavailable. Use a CLI containing this idempotency behavior; an older installer
+may restart a connected service whose screen is unavailable. This journey does
+not cover first installation or version handover.
+
 The runners above do **not** establish these contracts. Run each on a disposable
 native desktop user/VM with a real installed service and a synthetic account API
 fixture reachable over the actual Hand transport. Do not run these destructive
@@ -115,12 +143,15 @@ journeys on a shared user's Hand:
    selected and pending state names the new pair after updater exit.
 4. `update --apply` must keep the staged pair deferred while an owner is installed;
    `update --apply --restart-hand` explicitly hands over to the exact new worker,
-   proves fresh Hand/screen readiness, commits the CLI, clears pending and removes
+   proves a fresh Hand connection, commits the CLI, clears pending and removes
    rollback evidence. Also verify explicit `hand restart`, and `hand start` when
    the owner is stopped, use the same staged-pair transaction. Close the updater
    and CLI sessions, then recheck persistence. On Linux capture the separate
    factory PID/executable hash, unit definition and guest inventory before/after:
-   they must remain unchanged.
+   they must remain unchanged. On macOS, repeat with screen capture unavailable:
+   the exact Hand owner must still connect and commit, with an explicit screen
+   availability warning. Screen capture readiness must not roll back a connected
+   service. Check committed `hand recover` finalization under the same condition.
 5. Supply an actual new Hand that starts but cannot reconnect to the synthetic
    account. Explicit restart must fail, restoring the old CLI, old worker bytes,
    original configuration and prior loaded/stopped state. Assert account readiness

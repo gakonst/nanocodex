@@ -1,3 +1,5 @@
+import type { AccountServices } from "./account.mjs";
+export type { AccountServices, AccountReceipt, AccountInput, ConnectorProvider } from "./account.mjs";
 /** Exact account-owned resources authorized by a signed Connect grant. */
 export type ServiceCapabilities = Readonly<{
   vault?: Readonly<{ ids: readonly string[]; origins: readonly string[]; request: boolean }>;
@@ -45,12 +47,12 @@ export class ServiceError extends Error {
   readonly code: string | undefined;
   readonly outcomeUnknown: boolean;
 }
-export type HostedRequest = Readonly<{ url: string; origin: string; appOrigin: string; state: string }> & (Readonly<{ service: 'vault'; action: 'enroll' | 'select' }> | Readonly<{ service: 'phone'; operationId: string }>);
+export type HostedRequest = Readonly<{ url: string; origin: string; appOrigin?: string; state: string }> & (Readonly<{ service: 'vault'; action: 'enroll' | 'select'; kind: VaultMetadata['kind'] }> | Readonly<{ service: 'phone'; operationId: string }>);
 export type VaultSelectionResult = Readonly<{ type: 'nanocodex:service-enrollment'; service: 'vault'; action: 'select'; state: string; vault_id: string; kind: VaultMetadata['kind']; name: string }>;
-export type VaultHostedResult = Readonly<{ type: 'nanocodex:service-enrollment'; service: 'vault'; action?: 'enroll'; state: string; vault_id: string; kind: 'totp'; name: string; origin: string }>;
+export type VaultHostedResult = Readonly<{ type: 'nanocodex:service-enrollment'; service: 'vault'; action?: 'enroll'; state: string; vault_id: string; kind: VaultMetadata['kind']; name: string; origin?: string }>;
 export type PhoneHostedResult = Readonly<{ type: 'nanocodex:service-enrollment'; service: 'phone'; state: string; operation_id: string; status: 'complete' | 'denied' | 'expired' | 'failed' }>;
 export type HostedResult = VaultHostedResult | VaultSelectionResult | PhoneHostedResult;
-export function createHostedRequest(options: Readonly<{ host?: string; appOrigin?: string; state?: string }> & (Readonly<{ service?: 'vault'; action?: 'enroll' | 'select' }> | Readonly<{ service: 'phone'; operationId: string }>)): HostedRequest;
+export function createHostedRequest(options: Readonly<{ host?: string; appOrigin?: string; state?: string }> & (Readonly<{ service?: 'vault'; action?: 'enroll' | 'select'; kind?: VaultMetadata['kind'] }> | Readonly<{ service: 'phone'; operationId: string }>)): HostedRequest;
 export function readHostedResult(event: MessageEvent, request: HostedRequest, source: MessageEventSource | null): HostedResult | undefined;
 export function openHostedPopup(request: HostedRequest, options?: RequestOptions & Readonly<{ window?: Window }>): Promise<HostedResult>;
 export type PhoneNumber = Readonly<{ id: string; phone_number: string; country: 'US'; status: 'active' | 'release_pending' | 'released'; created_at: string }>;
@@ -68,7 +70,11 @@ export type PhoneMessage = Readonly<{ id: string; from: string; to: string; body
 export type PhoneProvision = Readonly<{ operation_id: string; phone_number: string; country: 'US' }>;
 export type PhoneRelease = Readonly<{ operation_id: string }>;
 export type PhoneMessagesQuery = Readonly<{ cursor?: string; limit?: number }>;
+export type HostedLinkQuery = Readonly<{service?:'vault'|'phone';action?:'enroll'|'select';kind?:VaultMetadata['kind'];operation_id?:string;app_origin?:string;state?:string}>;
 export type ServicesClient = Readonly<{
+  account: AccountServices;
+  links: AccountServices['links'];
+  hosted(query?: HostedLinkQuery, options?: RequestOptions): Promise<HostedRequest>;
   catalog(options?: RequestOptions): Promise<Readonly<{ services: readonly Readonly<{ id: string; path?: string; [key: string]: unknown }>[] }>>;
   vault: Readonly<{
     list(options?: RequestOptions): Promise<Readonly<{ vault: readonly VaultMetadata[] }>>;

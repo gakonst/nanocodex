@@ -1,6 +1,5 @@
 import {
   authenticate,
-  authenticatePersistentAccount,
   authenticateVaultAccount,
   requireSameOriginMutation,
   type AccountAuthEnv,
@@ -46,17 +45,15 @@ export async function routeCredentialRequest(
   if (!methods.has(request.method)) return json({ error: "method_not_allowed" }, 405);
   if (url.search) return json({ error: "invalid_request" }, 400);
 
-  // Metadata reads are safe for an ephemeral browser identity, but mutations
-  // must be tied to a passkey-backed account so a user-supplied provider secret
-  // cannot outlive the anonymous session that submitted it.
-  const vaultRoute = Boolean(vaultKind || originId || url.pathname === "/v1/credentials");
-  const claudeRoute = url.pathname.startsWith("/v1/credentials/claude");
-  const principal = claudeRoute ? await authenticateVaultAccount(request, env, url)
-    : request.method === "GET" ? await authenticate(request, env, url)
-    : vaultRoute ? await authenticateVaultAccount(request, env, url)
-    : await authenticatePersistentAccount(request, env, url);
-  if (!principal || principal.connectGrant || (principal.kind !== "account_session" && !((vaultRoute || claudeRoute) && principal.kind === "api_key"
-    && principal.capabilities.includes("agents:write") && principal.capabilities.includes("tools:use")))) {
+  // Native account clients manage the same encrypted credentials as account
+  // settings. Read-only ephemeral browser sessions can inspect metadata; all
+  // writes and subscription login polling require a persistent account.
+  const metadataRead = url.pathname === "/v1/credentials" && request.method === "GET";
+  const principal = metadataRead ? await authenticate(request, env, url)
+    : await authenticateVaultAccount(request, env, url);
+  if (!principal || principal.connectGrant
+    || (principal.kind !== "account_session" && !(principal.kind === "api_key"
+      && principal.capabilities.includes("agents:write") && principal.capabilities.includes("tools:use")))) {
     return json({ error: "unauthorized" }, 401);
   }
   if (request.method === "PUT" && (url.pathname === "/v1/credentials/openai" || sshIdentity)
@@ -109,7 +106,7 @@ export async function routeCredentialRequest(
   const response = await env.NANOCODEX.fetch(target, {
     method: polling ? "POST" : request.method,
     ...(vaultBody !== undefined ? {
-      headers: { "content-type": "application/json" },
+      headers: { "content-type": "application/json", ...(request.headers.has("x-nanocodex-operation-id") ? {"x-nanocodex-operation-id":request.headers.get("x-nanocodex-operation-id")!} : {}) },
       body: vaultBody,
     } : request.body === null ? {} : {
       headers: { "content-type": request.headers.get("content-type") ?? "" },
@@ -249,7 +246,7 @@ function validateVaultPayload(
       account: value.account as string, algorithm, digits, period: period as number };
   }
   const hasAddressLine2 = Object.prototype.hasOwnProperty.call(value, "address_line_2");
-  const expected = vaultKeys(kind, hasAddressLine2, Object.prototype.hasOwnProperty.call(value, "browser_origin"));
+  const expected = vaultKeys(kind, hasAddressLine2, Object.prototype.hasOwnProperty.call(value, "browser_origin"), Object.prototype.hasOwnProperty.call(value, "cvv"));
   const keys = Object.keys(value);
   if (keys.length !== expected.length || keys.some((key) => !expected.includes(key))) {
     return undefined;
@@ -276,13 +273,13 @@ function validateVaultPayload(
     const cvv = typeof value.cvv === "string" && /^[0-9]{3,4}$/.test(value.cvv)
       ? value.cvv : undefined;
     const billingZip = boundedText(value.billing_zip, 32);
-    return cardNumber && expiryMonth && expiryYear && cvv && billingZip
+    return cardNumber && expiryMonth && expiryYear && (value.cvv === undefined || cvv) && billingZip
       ? {
           name,
           card_number: cardNumber,
           expiry_month: expiryMonth,
           expiry_year: expiryYear,
-          cvv,
+          ...(cvv ? {cvv} : {}),
           billing_zip: billingZip,
         }
       : undefined;
@@ -311,13 +308,13 @@ function validateVaultPayload(
   return phoneNumber ? { name, phone_number: phoneNumber } : undefined;
 }
 
-function vaultKeys(kind: VaultKind, hasAddressLine2: boolean, hasBrowserOrigin = false): readonly string[] {
+function vaultKeys(kind: VaultKind, hasAddressLine2: boolean, hasBrowserOrigin = false, hasCvv = true): readonly string[] {
   switch (kind) {
     case "totp": return ["name", "origin", "seed", "issuer", "account", "algorithm", "digits", "period"];
     case "api_key": return ["name", "api_key"];
     case "login": return ["name", "username", "password", ...(hasBrowserOrigin ? ["browser_origin"] : [])];
     case "card": return [
-      "name", "card_number", "expiry_month", "expiry_year", "cvv", "billing_zip",
+      "name", "card_number", "expiry_month", "expiry_year", ...(hasCvv ? ["cvv"] : []), "billing_zip",
     ];
     case "address": return [
       "name", "address_line_1",

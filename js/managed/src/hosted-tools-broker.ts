@@ -45,6 +45,7 @@ export class HostedToolsBroker extends HostedToolsBrokerCore {
     appToolCatalogDigest?: `0x${string}`,
     connectGrantId?: string,
     leasedAttachment?: HostedToolsLeasedAttachmentPolicy,
+    publisherIdentity?: { machineId: string; runtimeId: string },
   ): Response {
     const pair = new WebSocketPair();
     const [client, server] = Object.values(pair);
@@ -55,6 +56,7 @@ export class HostedToolsBroker extends HostedToolsBrokerCore {
       appToolCatalogDigest,
       connectGrantId,
       leasedAttachment,
+      publisherIdentity,
     );
     return new Response(null, { status: 101, webSocket: client });
   }

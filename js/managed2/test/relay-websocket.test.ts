@@ -2,7 +2,7 @@ import { SELF } from "cloudflare:test";
 import { expect, it, vi } from "vitest";
 import { fixtureKeys } from "./fixtures/auth";
 
-it("times a persistent subscription socket beyond 32 turns through both Workers", async () => {
+it("keeps Code Mode-only exposure and tool timing on a persistent subscription socket beyond 32 turns", async () => {
   const authorization = `Bearer ${fixtureKeys["subscription-owner"]}`;
   const stored = await SELF.fetch("https://api.test/v1/credentials/chatgpt", {
     method: "PUT", headers: { authorization, "content-type": "application/json" },
@@ -65,5 +65,26 @@ it("times a persistent subscription socket beyond 32 turns through both Workers"
     const later = (await laterStatus.json<{ timing: { model_send_ms: number; first_provider_event_ms: number } }>()).timing;
     expect(later.model_send_ms).toEqual(expect.any(Number));
     expect(later.first_provider_event_ms).toBeGreaterThanOrEqual(later.model_send_ms);
+    const toolTurn = await SELF.fetch(`https://api.test/v1/agents/${agent_id}/turns`, {
+      method: "POST", headers: { authorization },
+      body: JSON.stringify({ input: "Use current_time exactly once and report the UTC timestamp it returns." }),
+    });
+    expect(toolTurn.status).toBe(202);
+    const toolId = (await toolTurn.json<{ turn_id: string }>()).turn_id;
+    let toolStatus: { state: string; message: string; timing: Record<string, number>;
+      tool_timing: { tool: string; status: string; phases: Record<string, { count: number }> }[] } | undefined;
+    await expect.poll(async () => {
+      toolStatus = await (await SELF.fetch(`https://api.test/v1/agents/${agent_id}/turns/${toolId}`, {
+        headers: { authorization },
+      })).json<typeof toolStatus>();
+      return toolStatus?.state;
+    }, { timeout: 15_000 }).toBe("completed");
+    expect(toolStatus!.message).toMatch(/^Current UTC: \d{4}-\d\d-\d\dT/);
+    expect(toolStatus!.tool_timing.map(tool => tool.tool).sort()).toEqual(["current_time", "exec"]);
+    expect(toolStatus!.tool_timing.every(tool => tool.status === "completed")).toBe(true);
+    expect(toolStatus!.tool_timing.find(tool => tool.tool === "current_time")?.phases.handler.count).toBe(1);
+    expect(toolStatus!.timing.tool_calls).toBe(2);
+    expect(toolStatus!.timing.post_tool_model_send_ms).toBeGreaterThanOrEqual(toolStatus!.timing.first_tool_result_ms);
+    expect(toolStatus!.timing.result_ms).toBeGreaterThanOrEqual(toolStatus!.timing.post_tool_model_send_ms);
   } finally { info.mockRestore(); }
 }, 30_000);

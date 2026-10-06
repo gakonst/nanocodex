@@ -10,10 +10,13 @@
 mod computer;
 #[allow(dead_code)]
 mod config;
+mod connectors;
 mod continue_auth;
 mod continue_sessions;
 mod control;
 mod device_hand;
+#[path = "../hand_login.rs"]
+mod hand_login;
 mod hand_observability;
 mod hand_recording;
 mod hand_recording_control;
@@ -148,6 +151,8 @@ enum Command {
     Account(nanocodex_cli_auth::Account),
     /// Use saved Vault items through broker-owned HTTP requests.
     Vault(vault::Vault),
+    /// Manage connected accounts directly.
+    Connectors(connectors::Connectors),
     /// Attach this machine's workspace to an existing managed agent.
     Attach(Attach),
     /// Connect this computer as a Hand; optionally run a VM or Docker Hand.
@@ -710,7 +715,11 @@ async fn run(cli: Cli) -> Result<(), ManagedError> {
         Some(Command::Computer(command)) => {
             return command.run().await.map_err(ManagedError::Configuration);
         }
-        Some(Command::Login(command)) => return command.run().await.map_err(auth_error),
+        Some(Command::Login(command)) => {
+            let receipt = command.run_with_receipt().await.map_err(auth_error)?;
+            hand_login::connect_after_login(&receipt).await;
+            return Ok(());
+        }
         Some(Command::Status(command)) => {
             return nanocodex_cli_auth::AccountCommand::Status(command)
                 .run()
@@ -723,7 +732,12 @@ async fn run(cli: Cli) -> Result<(), ManagedError> {
                 .await
                 .map_err(auth_error);
         }
-        Some(Command::Account(command)) => return command.run().await.map_err(auth_error),
+        Some(Command::Account(command)) => {
+            if let Some(receipt) = command.run_with_receipt().await.map_err(auth_error)? {
+                hand_login::connect_after_login(&receipt).await;
+            }
+            return Ok(());
+        }
         Some(Command::VmRunConfig(command)) => return vm_hand::run_config(&command.config),
         Some(Command::VmCloneImage {
             source,
@@ -795,6 +809,7 @@ async fn run(cli: Cli) -> Result<(), ManagedError> {
             unreachable!("handled before managed client setup")
         }
         Some(Command::Vault(command)) => command.run(&client).await,
+        Some(Command::Connectors(command)) => command.run(&client).await,
         Some(Command::Voice(command)) => voice::run(&client, command).await,
         Some(Command::Attach(command)) => {
             attach_tui(&client, command.agent.map(|agent| agent.agent_id)).await
@@ -1215,19 +1230,11 @@ async fn open_workspace_agent_with_settings(
     let mut tools = Tools::builder()
         .without_defaults()
         .add(WorkspaceTools::new(&workspace));
-    let computer_config = {
+    let computer = {
         let _timing = startup_timing::Stage::new("computer_discovery");
-        nanocodex_computer::ComputerConfig::discover_or_install()
-            .await
-            .map_err(ManagedError::Configuration)?
+        native_hand::computer_tools().await?
     };
-    if let Some(config) = computer_config {
-        let computer = {
-            let _timing = startup_timing::Stage::new("computer_catalog");
-            nanocodex_computer::ComputerTools::connect(config)
-                .await
-                .map_err(|error| ManagedError::Configuration(error.to_string()))?
-        };
+    if let Some(computer) = computer {
         for tool in computer.tools() {
             tools = tools.add(tool);
         }

@@ -1,3 +1,4 @@
+import { normalizeHandResources } from "nanocodex-tools/internal/hosted-machine";
 import { accountWalletMetadata, type AccountWallet } from "./account-wallet";
 import { discoveryMetadata, type DiscoveryRead } from "./account-discovery";
 import { consumeRpcData } from "nanocodex/cloudflare/rpc";
@@ -91,7 +92,7 @@ export type AccountMachine = Readonly<HostedMachine & {
 )>;
 
 export type AccountInfo = Readonly<{
-  status: "disabled" | "ready" | "unavailable";
+  status: "disabled" | "ready" | "unavailable" | "pending";
   /** Native public APIs available independently of account connectors. */
   apis: readonly (typeof X_API)[];
   /** Legacy capability-level summary retained for existing agents. */
@@ -106,7 +107,8 @@ export type AccountInfo = Readonly<{
   connectorTools: ReturnType<typeof connectorToolMetadata>;
   /** Known hands, including retained user hands whose attachment is offline. */
   machines: readonly AccountMachine[];
-  wallet: AccountWallet;
+  /** Omitted from startup; an explicit environment refresh reads it live. */
+  wallet?: AccountWallet;
   identity: Readonly<{ tempoAddress?: string }>;
   stablecoins: readonly Readonly<{ token: string; symbol: string; balance: string; decimals: number }>[];
   authorizations: readonly [];
@@ -121,6 +123,8 @@ export type AccountInfoOptions = Readonly<{
   allowedConnectors?: readonly ConnectorCapabilityId[];
   allowedConnections?: ConnectorConnectionSelection;
   enabled: boolean;
+  /** Startup must not start or await wallet metadata or balance I/O. */
+  includeWallet?: boolean;
   apis?: readonly (typeof X_API)[];
   machines?: readonly AccountMachine[];
   signal?: AbortSignal;
@@ -133,6 +137,7 @@ export async function accountInfo(
     allowedConnectors,
     allowedConnections,
     enabled,
+    includeWallet = true,
     apis = [],
     machines = [],
     signal,
@@ -143,9 +148,11 @@ export async function accountInfo(
   machines = projectHandProviders(machines);
   if (!enabled) return emptyInfo("disabled", machines, apis);
   signal?.throwIfAborted();
-  const walletPromise = allowedConnectors === undefined
-    ? accountWalletMetadata(binding, userId, signal)
-    : Promise.resolve<AccountWallet>({ status: "disabled" });
+  const walletPromise = !includeWallet
+    ? Promise.resolve(undefined)
+    : allowedConnectors === undefined
+      ? accountWalletMetadata(binding, userId, signal)
+      : Promise.resolve<AccountWallet>({ status: "disabled" });
   // Attach immediately so cancellation cannot leave an unhandled rejection.
   const walletResult = walletPromise.catch(() => ({ status: "unavailable" as const }));
   try {
@@ -212,7 +219,9 @@ export async function accountInfo(
  * from the current machine catalog, and never promote a retained offline row. */
 export function projectHandProviders(machines: readonly AccountMachine[]): readonly AccountMachine[] {
   return machines.map(machine => {
-    const { vm_provider: _, ...base } = machine;
+    const { vm_provider: _, resources: rawResources, ...rest } = machine;
+    const resources = normalizeHandResources(rawResources);
+    const base = { ...rest, ...(resources === undefined ? {} : { resources }) };
     const providers = machine.capabilities.filter(value => value.startsWith("vm_factory:"))
       .map(value => value.slice("vm_factory:".length)).filter(isVmFactoryName);
     return machine.online === true && providers.length === 1
@@ -229,7 +238,7 @@ export function projectAccountInfo(
   if (allowedConnectors === undefined) {
     return {
       ...info,
-      ...walletProjection(info.wallet ?? { status: "unavailable" }),
+      ...walletProjection(info.wallet),
       apis: info.apis ?? [],
       connectorAccounts: info.connectorAccounts ?? {},
       connectorTools: connectorToolMetadata(info.authenticated),
@@ -278,11 +287,11 @@ export function projectAccountInfo(
 }
 
 /** Compatibility fields share the same validated wallet and authority boundary. */
-function walletProjection(wallet: AccountWallet): Pick<AccountInfo, "wallet" | "identity" | "stablecoins"> {
+function walletProjection(wallet: AccountWallet | undefined): Pick<AccountInfo, "wallet" | "identity" | "stablecoins"> {
   return {
     wallet,
-    identity: wallet.status === "ready" ? { tempoAddress: wallet.address } : {},
-    stablecoins: wallet.status === "ready" && wallet.balance.status === "ready" ? [{
+    identity: wallet?.status === "ready" ? { tempoAddress: wallet.address } : {},
+    stablecoins: wallet?.status === "ready" && wallet.balance.status === "ready" ? [{
       token: wallet.balance.token, symbol: wallet.balance.symbol,
       balance: wallet.balance.amount, decimals: wallet.balance.decimals,
     }] : [],

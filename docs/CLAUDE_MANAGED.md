@@ -81,8 +81,18 @@ tools rather than instructing Claude to call Codex Code Mode.
 Native Messages history, opaque content and completed receipts survive normal
 Durable Object reopen in the shared durability store. Events retain streaming
 assistant text and tool cards. This does **not** make OpenAI snapshots portable
-to Claude. Managed Claude currently accepts text input only. Voice steering,
-snapshot forks and portable import/export are explicitly unsupported, rather than silently converting or discarding state.
+to Claude. Managed Claude accepts ordered text, HTTPS/base64 images and inline
+PDF or text documents. Uploaded native-client image descriptors are resolved to
+bounded JPEG previews before dispatch. OpenAI image file IDs and raw audio input
+remain unsupported; documents remain unsupported on GPT sessions.
+
+GPT Realtime can provide the voice frontend for a Claude thread. Completed voice
+transcripts and start/stop markers become bounded, once-consumed session context,
+not Messages audio or Responses history. Delegations start an idle Claude turn or
+steer an accepted active turn. Identified steering (`message_id`) and withdrawal
+remain unsupported by the native Claude backend and return a typed HTTP 400;
+they are never silently downgraded to non-idempotent steering. Snapshot forks and portable import/export remain
+explicitly unsupported, rather than silently converting or discarding state.
 See the [Claude runtime](CLAUDE_RUNTIME.md),
 [JavaScript SDK](CLAUDE_JAVASCRIPT.md) and
 [tool matrix](CLAUDE_TOOL_MATRIX.md) for the distinct library boundaries.

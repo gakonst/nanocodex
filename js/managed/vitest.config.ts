@@ -13,7 +13,13 @@ export default defineConfig(async () => ({
   test: {
     include: ["test/**/*.test.ts"],
     exclude: ["test/user-data-*.test.ts", "test/prompt-apps.test.ts", "test/jev-reliability.test.ts", "test/router-telemetry.test.ts", "test/provider-probe-schedule.test.ts", "test/provider-probe-slots.test.ts", "test/provider-telemetry-routing.test.ts", "test/thread-model-routing.test.ts", "test/account-hosted-tools.test.ts", "test/hosted-tools-broker.test.ts", "test/hosted-tools-protocol.test.ts"],
-    // Bundle cron-parser's CommonJS/Luxon boundary as Wrangler does in production.
-    deps: { optimizer: { ssr: { enabled: true, include: ["cron-parser"] } } },
+    // Bundle payment dependencies as Wrangler does; lazy loading otherwise pays
+    // thousands of Vite/Workers module transforms inside the first tool call.
+    deps: { optimizer: { ssr: {
+      enabled: true,
+      include: ["cron-parser", "mppx", "mppx/client", "mppx/mcp/client"],
+      // Ox's optional native pool dynamically imports this on Node only.
+      rolldownOptions: { external: [/^node:/] },
+    } } },
   },
 }));

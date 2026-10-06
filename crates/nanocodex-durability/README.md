@@ -83,6 +83,16 @@ Claude snapshots use the store's chunked immutable payloads; they do not yet
 use the OpenAI adapter's per-message context pages. Snapshot serialization and
 restoration therefore process the full retained Claude context.
 
+`CheckpointBranch` supports explicit host-requested history branches. Opening it
+acquires the source through `StateStore` and refuses pending operations. Select a
+retained operation with `before`, validate the provider checkpoint (Claude hosts
+use `nanocodex_claude::rewind_checkpoint`). Use the reserved `branch_id` to
+prepare required host permission, planning and workspace state before `publish`
+makes the fresh UUID journal resumable. Publication checks the source owner and revision, preserves the original journal,
+and copies no queued work or effect receipts. Missing retained boundaries fail
+closed. File restoration and other external effects remain the host's separate
+responsibility; they are not transactional with publishing a conversation branch.
+
 Durability belongs to each explicitly configured agent. The core spawn/fork
 lifecycle does not inherit a durable owner or journal. An embedding that hosts
 Claude's Agent tool can construct each child with its own `DurableSession` and

@@ -1,3 +1,4 @@
+import { CloudflareConnection } from "./CloudflareConnection";
 import { WhatsAppConnection } from "./WhatsAppConnection";
 import { useAccountQuery } from "./useAccountQuery";
 import { Fragment, useCallback, useEffect, useRef, useState, type ReactNode } from "react";
@@ -122,6 +123,26 @@ export function ProfileConnectors({
   requiresLogin?: boolean;
   refreshSession(): Promise<void>;
 }) {
+  const groupsRef = useRef<HTMLDivElement>(null);
+  const focusApplied = useRef(false);
+  const [focusedProvider] = useState(() => {
+    const value = new URL(window.location.href).searchParams.get("connect");
+    return value === "gmail" || value === "gdrive" ? "google" : value;
+  });
+  // A deep link only reveals the requested provider. Authorization always needs a click.
+  useEffect(() => {
+    if (focusApplied.current || !focusedProvider || !groupsRef.current) return;
+    const modelIds: Record<string, string> = { chatgpt: "chatgpt-accounts", claude: "claude-connection", openai: "openai-connection", whatsapp: "whatsapp-connection" };
+    const modelId = Object.hasOwn(modelIds, focusedProvider) ? modelIds[focusedProvider] : undefined;
+    const target = modelId
+      ? groupsRef.current.querySelector<HTMLElement>(`#${modelId}`)
+      : Array.from(groupsRef.current.querySelectorAll<HTMLElement>("[data-provider]")).find((node) => node.dataset.provider === focusedProvider);
+    if (!target) return;
+    focusApplied.current = true;
+    target.classList.add("is-highlighted");
+    target.scrollIntoView({ block: "center" });
+    target.querySelector<HTMLElement>("button:not(:disabled), input:not(:disabled), select:not(:disabled)")?.focus({ preventScroll: true });
+  });
   const [mcpOperationError, setMcpError] = useState<string | null>(null);
   const [mcpConnectionError, setMcpConnectionError] = useState<Readonly<{
     id: string;
@@ -608,36 +629,47 @@ export function ProfileConnectors({
 
   if (presentation === "wizard") {
     return (
-      <>
-        <AccountConnectionGrid>
-          {children}
+      <div className="account-connection-groups" ref={groupsRef}>
+        <section className="account-connection-group" aria-labelledby="models-heading">
+          <h2 id="models-heading">Models</h2>
+          <AccountConnectionGrid>{children}</AccountConnectionGrid>
+          {after}
+        </section>
+        <section className="account-connection-group" aria-labelledby="services-heading">
+          <h2 id="services-heading">Services</h2>
+          <AccountConnectionGrid>
           <WhatsAppConnection key={accountId} accountId={accountId} />
+      <CloudflareConnection key={`cloudflare:${accountId}`} accountId={accountId} requiresLogin={requiresLogin} />
           {connectors ? connectorDefinitions.map((definition) => {
             const view = connectorProviderView(connectors, definition);
-            return <Fragment key={definition.provider}>
-              <AccountConnectionCard
-                action={view.unavailable ? "Unavailable" : providerConnectAction(definition.provider, view)}
-                connected={view.connected}
-                detail={view.detail}
-                disabled={operation !== null || view.unavailable !== undefined}
-                logo={<ConnectionLogo id={definition.provider} />}
-                onClick={() => void (view.legacy
-                  ? disconnect(definition.provider)
-                  : connect(definition.provider, definition.capabilities))}
-                title={definition.label}
-              />
-              {view.connections.map((connection) => <AccountConnectionCard
-                action="Revoke"
-                connected
-                detail={connectorConnectionDetail(definition.provider, connection)}
-                disabled={operation !== null}
-                key={`${definition.provider}:${connection.id}`}
-                logo={<ConnectionLogo id={definition.provider} />}
-                onClick={() => void disconnect(definition.provider, connection)}
-                title={connection.label}
-              />)}
-            </Fragment>;
-          }) : null}
+            return <div className={`account-service-row${focusedProvider === definition.provider ? " is-highlighted" : ""}`} key={definition.provider} role="listitem" data-provider={definition.provider}>
+              <div className="account-service-summary">
+                <ConnectionLogo id={definition.provider} />
+                <div className="account-service-copy">
+                  <strong>{definition.label}</strong>
+                  <span>{view.unavailable ?? (view.connected ? "Connected" : definition.description)}</span>
+                </div>
+                <button type="button"
+                  aria-label={`${view.unavailable ? "Unavailable" : providerConnectAction(definition.provider, view)} ${definition.label}`}
+                  disabled={operation !== null || view.unavailable !== undefined}
+                  onClick={() => void (view.legacy ? disconnect(definition.provider) : connect(definition.provider, definition.capabilities))}>
+                  {operation === definition.provider ? "Connecting…" : view.unavailable ? "Unavailable" : providerConnectAction(definition.provider, view)}
+                </button>
+              </div>
+              {view.legacy ? <p className="account-service-identity">{view.detail}</p> : null}
+              {view.connections.map((connection) => <div className="account-service-identity" key={connection.id}>
+                <div><strong>{connection.label}</strong><span>{connectorConnectionDetail(definition.provider, connection)}</span></div>
+                <button type="button" aria-label={`Revoke ${connection.label}`} disabled={operation !== null}
+                  onClick={() => void disconnect(definition.provider, connection)}>Revoke</button>
+              </div>)}
+            </div>;
+          }) : <p role="status">Loading services…</p>}
+          </AccountConnectionGrid>
+          {connectorsQuery.error ? <div className="account-failure" role="alert"><p>Couldn’t load services.</p><button type="button" onClick={() => void load()}>Retry</button></div> : null}
+        </section>
+        <section className="account-connection-group" aria-labelledby="mcp-heading" data-provider="mcp">
+          <h2 id="mcp-heading">Custom MCP</h2>
+          <AccountConnectionGrid>
           {mcpError && !mcpConnections ? <AccountConnectionCard
             action="Retry"
             detail={mcpError}
@@ -664,8 +696,9 @@ export function ProfileConnectors({
               presentation="account"
             />;
           })}
-        </AccountConnectionGrid>
-        {after}
+          </AccountConnectionGrid>
+          {!mcpConnections && !mcpError ? <p role="status">Loading MCP connections…</p> : null}
+        </section>
         {result ? (
           <p className={`connector-result connector-result--${result.result}`} role="status">
             {connectorResultMessage(result)}
@@ -677,7 +710,7 @@ export function ProfileConnectors({
             {!connectors ? <button type="button" onClick={() => void load()}>Retry</button> : null}
           </div>
         ) : null}
-      </>
+      </div>
     );
   }
 
@@ -685,6 +718,7 @@ export function ProfileConnectors({
     <div className="profile-connectors connection-grid">
       {children}
       <WhatsAppConnection key={accountId} accountId={accountId} />
+      <CloudflareConnection key={`cloudflare:${accountId}`} accountId={accountId} requiresLogin={requiresLogin} />
       {result ? (
         <p className={`connector-result connector-result--${result.result}`} role="status">
           {connectorResultMessage(result)}

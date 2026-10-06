@@ -1073,10 +1073,12 @@ final class ProtocolTests: XCTestCase {
         try await runMixedProviderOutageJourney(configuration: configuration)
     }
 
-    /// Native admission boundary: no microphone, provider call, or thread creation.
+    /// GPT Realtime voice fronts Claude threads too: Claude panes report voice
+    /// support and fail only on ordinary admission (here: no credential), with
+    /// no Claude-specific rejection, runtime call, or thread creation.
     @MainActor
-    func testClaudeVoiceRejectedBeforeAdmissionForRequestedPane() async throws {
-        let model = AppModel(runtimeDirectory: "/tmp/native-claude-text-only-" + UUID().uuidString)
+    func testClaudeVoiceAdmittedLikeOtherPanes() async throws {
+        let model = AppModel(runtimeDirectory: "/tmp/native-claude-voice-" + UUID().uuidString)
         defer { model.shutdown() }
         model.tabs = [
             WorkspaceTab(id: "claude-draft", draft: "Keep this text", draftSettings: AgentSettings(model: "claude-sonnet-4-6")),
@@ -1087,23 +1089,23 @@ final class ProtocolTests: XCTestCase {
         model.activeTabID = "openai-draft"
         var runtimeCalls: [String] = []
         model.runtime.requestOverride = { method, _ in runtimeCalls.append(method); return .null }
-        for id in ["claude-draft", "claude-retained"] {
-            XCTAssertFalse(model.supportsVoice(id))
+        for id in ["claude-draft", "claude-retained", "openai-draft"] {
+            XCTAssertTrue(model.supportsVoice(id), "Voice is available for \(id)")
             do {
                 _ = try await model.voiceConfiguration(tabID: id)
-                XCTFail("Claude voice must be rejected before admission")
+                XCTFail("Voice without a credential must not be admitted")
             } catch {
                 let reason = error.localizedDescription.lowercased()
-                XCTAssertTrue(reason.contains("claude") && reason.contains("voice"), "Surface the unsupported capability, not credential/provider diagnostics")
+                XCTAssertFalse(reason.contains("claude"), "Claude panes must not be rejected as text-only")
+                XCTAssertTrue(reason.contains("connect"), "Surface the ordinary credential requirement")
             }
         }
-        XCTAssertTrue(model.supportsVoice("openai-draft"), "Voice gating must follow the requested pane, not the active pane")
-        XCTAssertTrue(runtimeCalls.isEmpty, "Unsupported voice must not create a thread or call the runtime")
+        XCTAssertTrue(runtimeCalls.isEmpty, "Voice without a credential must not create a thread or call the runtime")
         XCTAssertFalse(model.voice.isEngaged)
         XCTAssertEqual(model.tab("claude-draft")?.draft, "Keep this text")
         XCTAssertNil(model.tab("claude-draft")?.threadId)
         XCTAssertEqual(model.tab("claude-retained")?.threadId, "claude-thread")
-        try writeModelEvidence("claude-input-capabilities.txt", "Native voiceConfiguration rejected Claude draft and retained requested panes before credential/runtime/thread admission; no runtime calls; voice disengaged; text draft and retained thread preserved. Non-Claude pane remains voice-capable. Composer is plain text; plus menu offers folder/Hands/connections only, no file/photo upload input. Existing transcript media display/download is read-only and retained. Interactive control appearance and live text/voice provider E2E are not covered by this preflight check.\n")
+        try writeModelEvidence("claude-input-capabilities.txt", "Native voiceConfiguration admits Claude draft and retained panes exactly like GPT panes (GPT Realtime fronts the Claude thread); without a credential every pane fails with the ordinary connect requirement before runtime/thread admission; no runtime calls; voice disengaged; text draft and retained thread preserved. Live voice provider E2E is not covered by this preflight check.\n")
     }
 
     /// Real AppModel client/catalog admission and layout boundary; only the

@@ -84,6 +84,12 @@ test("app threads HTTP journey: consent, isolation, reconnect, history and delet
           agents.get(id).push({ type: "turn_accepted", input: body.input, turn_id: body.id });
           return Response.json({ turn_id: agents.get(id).at(-1).turn_id }, { status: 202 });
         }
+        if (suffix === "/realtime/calls" && request.method === "POST") {
+          assert.equal(request.headers.get("x-nanocodex-voice-session-id"), voiceSessionId);
+          return new Response("synthetic SDP answer", { status: 201, headers: {
+            "content-type": "application/sdp", "x-nanocodex-realtime-location": "/realtime/calls/synthetic",
+          } });
+        }
         if (suffix === "/events") {
           let timer;
           const body = new ReadableStream({
@@ -111,6 +117,7 @@ test("app threads HTTP journey: consent, isolation, reconnect, history and delet
   }));
   t.after(() => { for (const close of externalStreams) close(); return mf.dispose(); });
   const origin = (await mf.ready).origin;
+  const voiceSessionId = randomUUID();
   async function call(route, { method = "GET", body, headers = {}, identity = app, connection } = {}) {
     const response = await fetch(`${origin}${route}`, { method, headers: {
       origin: identity.origin, "x-nanocodex-app-id": identity.appId,
@@ -169,7 +176,66 @@ test("app threads HTTP journey: consent, isolation, reconnect, history and delet
   assert.equal(created.connection.grant.id, connection.grant.id);
   assert.equal(created.connection.grant.conversation_id, created.thread.id);
   const agentPath = `/agents/${created.connection.agent_id}`;
-  await expect(await request(`${agentPath}/turns`, { method: "POST", body: { id: randomUUID(), input: "synthetic history canary" } }), 202, "send on selected agent");
+  const clientContext = JSON.stringify({ client: "web", timezone: "UTC" });
+  await t.test("managed browser preflights allow SDK metadata without granting authority", async () => {
+    // Node fetch does not enforce CORS. Check the actual workerd HTTP preflight
+    // before issuing the same cross-origin SDK request headers below.
+    const common = ["authorization", "x-nanocodex-app-id", "x-nanocodex-client-context"];
+    const beforePreflight = upstream.length;
+    for (const [suffix, method, headers] of [
+      ["/agents", "GET", common],
+      [agentPath, "GET", common],
+      [`${agentPath}/turns`, "POST", [...common, "content-type", "idempotency-key"]],
+      [`${agentPath}/events`, "GET", [...common, "last-event-id"]],
+      [`${agentPath}/realtime/calls`, "POST", [...common, "content-type", "x-nanocodex-voice-session-id"]],
+    ]) {
+      const response = await fetch(`${origin}${base}${suffix}`, { method: "OPTIONS", headers: {
+        origin: app.origin, "access-control-request-method": method,
+        "access-control-request-headers": headers.join(", "),
+      } });
+      assert.equal(response.status, 204);
+      assert.equal(response.headers.get("access-control-allow-origin"), app.origin);
+      assert.equal(response.headers.get("access-control-allow-credentials"), "true");
+      assert.ok(response.headers.get("access-control-allow-methods").split(/,\s*/).includes(method));
+      const allowed = response.headers.get("access-control-allow-headers").toLowerCase().split(/,\s*/);
+      for (const header of headers) assert.ok(allowed.includes(header), `${method} ${suffix}: CORS must allow ${header}`);
+      assert.ok(!allowed.includes("*"), "credentialed requests require explicit headers");
+      t.diagnostic(`OPTIONS ${suffix}: HTTP 204 permits ${method} with ${headers.join(", ")}`);
+    }
+    const forged = await fetch(`${origin}${base}${agentPath}`, { method: "OPTIONS", headers: {
+      origin: app.origin, "access-control-request-method": "GET",
+      "access-control-request-headers": "x-nanocodex-connect-user, x-unrecognized-header",
+    } });
+    const allowed = forged.headers.get("access-control-allow-headers").toLowerCase().split(/,\s*/);
+    assert.ok(!allowed.includes("x-nanocodex-connect-user"));
+    assert.ok(!allowed.includes("x-unrecognized-header"), "requested headers are not reflected");
+    for (const deniedOrigin of ["null", "http://untrusted.example"]) {
+      const response = await fetch(`${origin}${base}${agentPath}`, { method: "OPTIONS", headers: {
+        origin: deniedOrigin, "access-control-request-method": "GET",
+        "access-control-request-headers": common.join(", "),
+      } });
+      assert.equal(response.headers.get("access-control-allow-origin"), null);
+    }
+    assert.equal(upstream.length, beforePreflight, "preflights do not dispatch authenticated work");
+    const stateResponse = await request(agentPath, { headers: { "x-nanocodex-client-context": clientContext } });
+    assert.equal(stateResponse.headers.get("access-control-allow-origin"), app.origin);
+    assert.equal((await expect(stateResponse, 200, "managed state with SDK client context")).agent_id, created.connection.agent_id);
+    const voiceResponse = await request(`${agentPath}/realtime/calls`, { method: "POST", body: { sdp: "synthetic SDP offer" },
+      headers: { "x-nanocodex-voice-session-id": voiceSessionId } });
+    assert.equal(voiceResponse.status, 201);
+    assert.equal(voiceResponse.headers.get("access-control-allow-origin"), app.origin);
+    assert.ok(voiceResponse.headers.get("access-control-expose-headers").split(/,\s*/).includes("x-nanocodex-realtime-location"));
+    assert.equal(voiceResponse.headers.get("x-nanocodex-realtime-location"), "/realtime/calls/synthetic");
+    assert.equal(await voiceResponse.text(), "synthetic SDP answer");
+    const denied = await request(agentPath, { headers: {
+      "x-nanocodex-client-context": clientContext, authorization: `Bearer ${"z".repeat(43)}`,
+    } });
+    assert.equal(denied.headers.get("access-control-allow-origin"), app.origin, "auth failures remain browser-readable");
+    await expect(denied, 401, "SDK headers do not bypass grant authentication");
+    t.diagnostic("voice HTTP 201 preserves session header and exposes realtime location; unknown headers/origins remain disallowed");
+  });
+  await expect(await request(`${agentPath}/turns`, { method: "POST", body: { id: randomUUID(), input: "synthetic history canary" },
+    headers: { "x-nanocodex-client-context": clientContext, "idempotency-key": randomUUID() } }), 202, "send on selected agent");
   const history = await expect(await request(`${agentPath}/events/history`), 200, "history on selected agent");
   assert.equal(history.data[0].input, "synthetic history canary");
   const ticket = await expect(await request(`${agentPath}/tool-host/ticket`, { method: "POST", body: {} }), 200, "selected agent tool-host ticket");

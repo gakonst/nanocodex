@@ -230,6 +230,23 @@ impl PreparedToolRuntime {
         })
     }
 
+    pub(crate) async fn end_turn(&self, session_id: &str, turn_id: &str, hook_event_name: &str) {
+        for entry in &self.entries {
+            match &entry.handler {
+                PreparedToolHandler::Fixed(tool) => {
+                    if let Err(error) = tool.end_turn(session_id, turn_id, hook_event_name).await {
+                        tracing::warn!(target: "nanocodex_oai_tools::attachment",
+                            %error, "attached tool turn cleanup failed; not retried");
+                    }
+                }
+                #[cfg(feature = "mcp")]
+                PreparedToolHandler::Mcp(_) => {}
+                #[cfg(feature = "workspace-runtime")]
+                PreparedToolHandler::Workspace(_) => {}
+            }
+        }
+    }
+
     pub(crate) fn timeout_ms(&self, name: &str) -> Option<u64> {
         self.entries
             .iter()

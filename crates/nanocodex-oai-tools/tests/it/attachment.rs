@@ -13,14 +13,15 @@ use eyre::{Result, WrapErr, ensure};
 use futures_util::{SinkExt, StreamExt};
 use nanocodex_oai_tools::{
     Tool, ToolContext, ToolDefinition, ToolInput, ToolResult, Tools, WorkspaceTools,
-    attachment::AttachmentTarget, contract::async_trait,
+    attachment::{AttachmentMachine, AttachmentMetadata, AttachmentStatus, AttachmentTarget},
+    contract::async_trait,
 };
 use serde_json::{Value, json};
 use tokio::{
     net::{TcpListener, TcpStream},
     sync::Notify,
 };
-use tokio_tungstenite::{WebSocketStream, accept_async, tungstenite::Message};
+use tokio_tungstenite::{WebSocketStream, accept_hdr_async, tungstenite::Message};
 
 // Only the external CUA provider is substituted. Workspace commands, process
 // retention and attachment transport run their shipped code.
@@ -91,6 +92,7 @@ struct Wire {
     connection: &'static str,
     pending: HashSet<String>,
     catalog: Value,
+    upgrade: Value,
 }
 
 impl Wire {
@@ -100,12 +102,35 @@ impl Wire {
         connection: &'static str,
     ) -> Result<Self> {
         let (stream, _) = listener.accept().await?;
+        let mut upgrade = json!({});
+        let socket = accept_hdr_async(
+            stream,
+            |request: &http::Request<()>, response: http::Response<()>| {
+                for name in [
+                    "x-nanocodex-request-id",
+                    "x-nanocodex-hand-machine-id",
+                    "x-nanocodex-hand-runtime-id",
+                    "x-nanocodex-hand-region",
+                ] {
+                    upgrade[name] = request
+                        .headers()
+                        .get(name)
+                        .and_then(|value| value.to_str().ok())
+                        .into();
+                }
+                upgrade["path"] = request.uri().path().into();
+                Ok(response)
+            },
+        )
+        .await?;
+        evidence.record(connection, "upgrade", &upgrade);
         let mut wire = Self {
-            socket: accept_async(stream).await?,
+            socket,
             evidence,
             connection,
             pending: HashSet::new(),
             catalog: Value::Null,
+            upgrade,
         };
         wire.catalog = wire.recv(Duration::from_secs(5)).await?;
         ensure!(wire.catalog["type"] == "catalog", "missing catalog");
@@ -973,4 +998,178 @@ fn portable_pty_on_time_only_runtime_retains_output_status_and_session() -> Resu
         );
         Ok(())
     })
+}
+
+// Each case gets an isolated process environment, avoiding global environment
+// mutation while the integration harness runs other native journeys concurrently.
+#[test]
+fn regional_hand_upgrade_identity_journey() -> Result<()> {
+    const CASE: &str = "NANOCODEX_TEST_REGIONAL_HAND_CASE";
+    if let Ok(case) = std::env::var(CASE) {
+        return tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?
+            .block_on(regional_hand_upgrade_case(&case));
+    }
+    for (case, flag) in [
+        ("default", None),
+        ("disabled", Some("true")),
+        ("regional", Some("1")),
+        ("scoped", Some("1")),
+        ("named", Some("1")),
+    ] {
+        let mut command = std::process::Command::new(std::env::current_exe()?);
+        command
+            .args([
+                "--exact",
+                "attachment::regional_hand_upgrade_identity_journey",
+                "--nocapture",
+            ])
+            .env(CASE, case)
+            .env_remove("NANOCODEX_REGIONAL_HAND_RELAYS");
+        if let Some(flag) = flag {
+            command.env("NANOCODEX_REGIONAL_HAND_RELAYS", flag);
+        }
+        let output = command.output()?;
+        eprintln!(
+            "case={case}\n{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        ensure!(
+            output.status.success(),
+            "regional Hand journey failed: {case}"
+        );
+    }
+    Ok(())
+}
+
+async fn regional_hand_upgrade_case(case: &str) -> Result<()> {
+    let output =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../output/regional-hand-upgrade");
+    std::fs::create_dir_all(&output)?;
+    let path = output.join(format!("{case}-{}.jsonl", now_ms()));
+    let evidence = Evidence {
+        file: Arc::new(Mutex::new(File::create(&path)?)),
+        started: Instant::now(),
+    };
+    eprintln!("Regional Hand upgrade wire evidence: {}", path.display());
+    tokio::time::timeout(Duration::from_secs(10), async {
+        let workspace = tempfile::tempdir()?;
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let endpoint = if case == "scoped" {
+            "/v1/agents/synthetic-agent/tool-host"
+        } else {
+            "/v1/account/tool-host"
+        };
+        let metadata = if case == "named" {
+            AttachmentMetadata::named("synthetic-machine")?
+        } else {
+            AttachmentMetadata::machine(AttachmentMachine::new(
+                "synthetic-machine",
+                "Synthetic Hand",
+                workspace.path().display().to_string(),
+                ["shell"],
+            )?)
+        };
+        let (attachment, _events) = Tools::builder()
+            .without_defaults()
+            .add(WorkspaceTools::new(workspace.path()))
+            .build()?
+            .attach(AttachmentTarget::new(
+                format!("ws://{}{endpoint}", listener.local_addr()?),
+                "synthetic-bearer",
+            )?)
+            .metadata(metadata)
+            .start()?;
+        let mut first = Wire::ready(&listener, evidence.clone(), "initial").await?;
+        first.socket.close(None).await?;
+        drop(first.socket);
+        let mut second = Wire::ready(&listener, evidence.clone(), "reconnect").await?;
+        while attachment.status() != AttachmentStatus::Ready {
+            tokio::task::yield_now().await;
+        }
+        for (catalog, upgrade) in [
+            (&first.catalog, &first.upgrade),
+            (&second.catalog, &second.upgrade),
+        ] {
+            ensure!(
+                upgrade["path"] == endpoint,
+                "wrong upgrade endpoint: {upgrade}"
+            );
+            ensure!(
+                upgrade["x-nanocodex-hand-region"].is_null(),
+                "caller supplied region"
+            );
+            ensure!(
+                upgrade["x-nanocodex-request-id"] == catalog["connection_id"],
+                "connection identity mismatch"
+            );
+            ensure!(
+                catalog["attachment_id"] == "synthetic-machine",
+                "wrong attachment identity"
+            );
+            if case == "regional" {
+                ensure!(
+                    catalog["machines"].as_array().map(Vec::len) == Some(1),
+                    "expected one machine"
+                );
+                ensure!(
+                    upgrade["x-nanocodex-hand-machine-id"] == catalog["machines"][0]["id"],
+                    "upgrade machine differs from catalog"
+                );
+                ensure!(
+                    upgrade["x-nanocodex-hand-machine-id"] == catalog["attachment_id"],
+                    "upgrade machine differs from attachment"
+                );
+                ensure!(
+                    upgrade["x-nanocodex-hand-runtime-id"] == catalog["runtime_id"],
+                    "upgrade runtime differs from catalog"
+                );
+                ensure!(
+                    catalog["runtime_id"]
+                        .as_str()
+                        .is_some_and(|id| !id.is_empty()),
+                    "missing runtime"
+                );
+            } else {
+                ensure!(
+                    upgrade["x-nanocodex-hand-machine-id"].is_null(),
+                    "unexpected machine header: {case}"
+                );
+                ensure!(
+                    upgrade["x-nanocodex-hand-runtime-id"].is_null(),
+                    "unexpected runtime header: {case}"
+                );
+            }
+        }
+        ensure!(
+            first.catalog["runtime_id"] == second.catalog["runtime_id"],
+            "runtime changed on reconnect"
+        );
+        ensure!(
+            first.upgrade["x-nanocodex-hand-machine-id"]
+                == second.upgrade["x-nanocodex-hand-machine-id"],
+            "machine header changed on reconnect"
+        );
+        ensure!(
+            first.upgrade["x-nanocodex-hand-runtime-id"]
+                == second.upgrade["x-nanocodex-hand-runtime-id"],
+            "runtime header changed on reconnect"
+        );
+        ensure!(
+            first.catalog["connection_id"] != second.catalog["connection_id"],
+            "transport identity did not change"
+        );
+        let (drain, detached) = tokio::join!(second.drain(), attachment.detach());
+        drain?;
+        detached?;
+        evidence.record(
+            "reconnect",
+            "observation",
+            &json!({"case":case, "journey":"passed"}),
+        );
+        Ok(())
+    })
+    .await?
 }

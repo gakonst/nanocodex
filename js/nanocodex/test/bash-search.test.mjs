@@ -24,6 +24,7 @@ if (childCase) {
   for (const [name, description] of [
     ["semantics", "literal and bounded-dot searches preserve actual Just Bash semantics"],
     ["fallback", "unsupported flags and regexes preserve upstream errors and output"],
+    ["searchOperands", "fallback admission distinguishes search sources from data operands"],
     ["smartCase", "lowercase rg literals scan cooperatively and preserve Unicode smart-case"],
     ["oneMiB", "1 MiB bounded searches yield to timers and preserve results"],
     ["thirteenMiB", "13 MiB bounded searches yield to timers and recover with echo"],
@@ -177,7 +178,7 @@ async function smartCase() {
     "report{5000}.txt": "alpha\n",
   });
   for (const pattern of ["foo", "Foo", "i", "k", "s", "σ", "é", "É", "ß", "𐐨"]) {
-    for (const flags of ["-on", "-Fon", "-n", "-vn", "-l", "-q"]) {
+    for (const flags of ["-on", "-Fon", "-n", "-vn", "-l", "-q", "-ion", "-iFon", "-ivn", "-il", "--ignore-case -q"]) {
       await compare(shells, `rg ${flags} ${quote(pattern)} case.txt unicode-case.txt`);
     }
   }
@@ -189,7 +190,7 @@ async function smartCase() {
   await shells.runtime.filesystem.writeFile("large-case.txt", text);
   await shells.baseline.fs.writeFile("/workspace/large-case.txt", text);
   trace({ fixture: "large-case.txt", bytes: text.length, generation: "x^65534 + fOo + x^1048576 + FOO + newline" });
-  for (const cmd of ["rg -on foo large-case.txt", "rg -Fon foo large-case.txt", "rg -on '.{0,2}foo.{0,2}' large-case.txt", "rg -on Foo large-case.txt", "rg -o missing large-case.txt"]) {
+  for (const cmd of ["rg -on foo large-case.txt", "rg -Fon foo large-case.txt", "rg -on '.{0,2}foo.{0,2}' large-case.txt", "rg -on Foo large-case.txt", "rg -o missing large-case.txt", "rg -ion FOO large-case.txt", "rg --ignore-case -oF Foo large-case.txt", "rg -ion '.{0,2}FOO.{0,2}' large-case.txt"]) {
     let ticks = 0;
     const timer = setInterval(() => ticks++, 0);
     try { await compare(shells, cmd); } finally { clearInterval(timer); }
@@ -200,16 +201,16 @@ async function smartCase() {
   // Unicode still uses the upstream matcher and its conservative admission.
   // Do not silently relax that budget merely to accelerate ASCII literals.
   await shells.runtime.filesystem.writeFile("large-unicode.txt", text + "İ\n");
-  const refused = publicResult(await shells.runtime.tool.handler({ cmd: "rg -o foo large-unicode.txt" }, context()));
-  trace({ cmd: "rg -o foo large-unicode.txt", observed: refused, expected: "Unicode fallback retains admission" });
+  const refused = publicResult(await shells.runtime.tool.handler({ cmd: "rg -io FOO large-unicode.txt" }, context()));
+  trace({ cmd: "rg -io FOO large-unicode.txt", observed: refused, expected: "Unicode fallback retains admission" });
   assert.equal(refused.exit_code, 126);
   assert.match(refused.output, /admission/);
   const cancellation = new AbortController();
-  const running = shells.runtime.tool.handler({ cmd: "rg -o foo large-case.txt" }, context(cancellation.signal));
+  const running = shells.runtime.tool.handler({ cmd: "rg -io FOO large-case.txt" }, context(cancellation.signal));
   const timer = setTimeout(() => cancellation.abort(new Error("cancel ASCII scan")), 1);
   const cancelled = await running;
   clearTimeout(timer);
-  trace({ cmd: "rg -o foo large-case.txt", cancelled });
+  trace({ cmd: "rg -io FOO large-case.txt", cancelled });
   assert.equal(cancelled.exit_code, 124);
   await recovery(shells.runtime);
 }
@@ -239,6 +240,87 @@ async function fallback() {
   }
   await compare(shells, "echo fallback-recovered");
   assert.deepEqual(shells.mismatches, [], "upstream fallback mismatches");
+}
+
+async function searchOperands() {
+  const shells = await pair({
+    "report{5000}.txt": "foo\nFOO\nbar\n",
+    "plain.txt": "foo\nFOO\nbar\n",
+    "patterns{5000}.txt": "foo\n",
+    "other-patterns.txt": "bar\n",
+    "-report{5000}.txt": "foo\n",
+  });
+  for (const command of ["grep", "fgrep", "egrep", "rg"]) {
+    for (const args of [
+      "-i foo", "-in foo", "--ignore-case foo", "-A 1 foo", "-B1 foo", "-C 1 -e foo",
+      "-m1 -i foo", "--max-count=1 -i foo", "-e foo -i", "-e bar -e foo -i",
+      "-i -f 'patterns{5000}.txt'", "-if 'patterns{5000}.txt'",
+      "--file=patterns{5000}.txt -i", "-if 'patterns{5000}.txt' -f other-patterns.txt",
+    ]) {
+      await compare(shells, command + " " + args + " 'report{5000}.txt'");
+    }
+    await compare(shells, command + " -i foo plain.txt");
+    if (command !== "rg") await compare(shells, command + " 'report{5000}.txt' -i -e foo");
+    await compare(shells, command + " --not-a-search-option foo plain.txt");
+    if (command !== "rg") {
+      await compare(shells, command + " -ifpatterns{5000}.txt 'report{5000}.txt'");
+      await compare(shells, command + " -i -- foo '-report{5000}.txt'");
+      await compare(shells, command + " -i -e foo -- '-report{5000}.txt'");
+    }
+  }
+  for (const args of [
+    "-ie foo", "-efoo -i", "--regexp=foo -i", "--regexp foo -i",
+    "-ife 'patterns{5000}.txt' bar", "-ifn 'patterns{5000}.txt'",
+    "-ffoo", // Attached -f means a missing pattern file named foo.
+    "-i --replace='{5000}' foo", "-ir '{5000}' foo",
+    "-i --context-separator='{5000}' -A 1 foo",
+  ]) await compare(shells, "rg " + args + " 'report{5000}.txt'");
+  await compare(shells, "printf 'foo\\n' | rg -if - 'report{5000}.txt'");
+  assert.deepEqual(shells.mismatches, [], "search source extraction must preserve upstream results");
+
+  const { runtime, reads } = await tracedShell({ executionTimeoutMs: 100 });
+  const hostile = "(a{65535}){65535}";
+  await runtime.filesystem.writeFile("hostile", hostile);
+  await runtime.filesystem.writeFile("safe", "foo");
+  await runtime.filesystem.writeFile("input.txt", "foo\n");
+  await runtime.filesystem.writeFile("costly", "a{1000}Z");
+  await runtime.filesystem.writeFile("budget.txt", "a".repeat(400));
+  const commands = [
+    "rg -i " + quote(hostile) + " input.txt",
+    "rg -e" + quote(hostile) + " input.txt",
+    "rg --regexp=" + quote(hostile) + " input.txt",
+    "rg -ie " + quote(hostile) + " input.txt",
+    "rg -ife safe " + quote(hostile) + " input.txt",
+    "rg foo -ie " + quote(hostile) + " input.txt",
+    "rg -ifn hostile input.txt", "rg -fhostile input.txt",
+    "rg -ief foo hostile input.txt", "rg --file=hostile input.txt",
+    "printf '%s' " + quote(hostile) + " | rg -if - input.txt",
+    "grep -E -ifhostile input.txt", "egrep -if hostile input.txt",
+    "grep -E -e " + quote(hostile) + " input.txt",
+    "grep -E -- " + quote(hostile) + " input.txt",
+    // Unknown forms retain the previous whole-argv conservative refusal.
+    "rg --unknown foo 'report{5000}.txt'",
+    "rg --constructor foo 'report{5000}.txt'",
+    "rg 'report{5000}.txt' -i -e foo",
+    "rg --glob '*.txt' " + quote(hostile) + " input.txt",
+    // Known -f clusters and inline sources still charge aggregate data bytes.
+    "rg -ifn costly budget.txt", "rg -ie 'a{1000}Z' budget.txt",
+    "grep -E -ifcostly budget.txt",
+  ];
+  for (const command of commands) {
+    reads.length = 0;
+    const cmd = command + " | head -c 1; echo forbidden > forbidden.txt";
+    const started = performance.now();
+    const observed = publicResult(await runtime.tool.handler({ cmd }, context()));
+    const elapsedMs = Math.round(performance.now() - started);
+    trace({ cmd, expected: "fatal admission before data read; no subsequent write", observed, reads: [...reads], elapsedMs });
+    assert.equal(observed.exit_code, 126, cmd);
+    assert.match(observed.output, /admission.*native Hand/);
+    assert.ok(!reads.includes("/workspace/input.txt") && !reads.includes("/workspace/budget.txt"), "admission precedes data read");
+    await assert.rejects(runtime.filesystem.readFile("forbidden.txt"));
+    assert.ok(elapsedMs < 1000, cmd);
+    await recovery(runtime);
+  }
 }
 
 async function largeScan(size) {
@@ -284,7 +366,9 @@ async function sourceBudget() {
   await runtime.filesystem.writeFile("p", "a{4000}Z");
   await runtime.filesystem.writeFile("stdin.txt", "a".repeat(100000));
   await runtime.filesystem.writeFile("p-small", "a{1000}Z");
-  await runtime.filesystem.writeFile("repeat-p", "aZ");
+  // Repeated cached data reads must exceed the actual source-work budget,
+  // without relying on filenames inflating regex cost.
+  await runtime.filesystem.writeFile("repeat-p", "a{100}Z");
   await runtime.filesystem.writeFile("tiny-stdin.txt", "a".repeat(100));
   await runtime.filesystem.writeFile("tiny-file.txt", "a".repeat(150));
   for (const cmd of ["cat stdin.txt | grep -E -f p", "cat tiny-stdin.txt | grep -E -f p-small tiny-file.txt -", "grep -E -f repeat-p " + Array(800).fill("repeat-p").join(" ")]) {
@@ -616,6 +700,6 @@ function memoryWorkspace() {
 
 // Hoisted via a function rather than a const so direct child execution works.
 function getJourneys() {
-  return { semantics, fallback, smartCase, oneMiB: () => largeScan(1024 * 1024),
+  return { semantics, fallback, searchOperands, smartCase, oneMiB: () => largeScan(1024 * 1024),
     thirteenMiB: () => largeScan(13 * 1024 * 1024), cancellation, admission, hostBoundary, publicFixture, sourceBudget, fatalAdmission, streamRegex, streamSemantics, sedAdmission };
 }

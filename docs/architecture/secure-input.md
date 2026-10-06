@@ -1,5 +1,10 @@
 # One-time private secure input
 
+The managed terminal also supports [private input and Vault saving](tui-private-input.md).
+The transient protocol below remains the default for clients that omit the private
+Vault-save option. The TUI presents a visible save choice, enabled for reusable
+fields, and reports its storage outcome separately from browser input.
+
 `request_secure_input({target_id, expected_origin, password_selector, submit})`
 creates a five-minute request for a visible password field on a same-origin HTTPS
 POST form in the managed browser. It does not read or create a Vault item. The

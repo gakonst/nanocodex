@@ -13,6 +13,8 @@ struct CurrentExecution {
     client_authored: std::collections::BTreeSet<String>,
     context_baseline: ContextBaseline,
     #[serde(default)]
+    reasoning: crate::reasoning::ReasoningState,
+    #[serde(default)]
     context_usage: Option<Usage>,
     #[serde(default)]
     server_reasoning_included: bool,
@@ -68,8 +70,31 @@ where
                 "invalid execution continuation".into(),
             ));
         }
+        saved.reasoning.validate(&history)?;
         let mut session = self.empty_session(Some(&saved.workspace))?;
         session.validate_workspace(requested_workspace)?;
+        #[cfg(target_family = "wasm")]
+        let (history, prefix) = if session.tools.is_code_only() {
+            let mut history = history;
+            clear_code_only_schemas(&mut history);
+            // Keep admitted instructions, but the embedding's strict capability
+            // boundary applies to an active continuation as well as a new turn.
+            let mut prefix = prefix;
+            prefix.retain(|item| !matches!(item, ResponseItem::AdditionalTools { .. }));
+            clear_code_only_schemas(&mut prefix);
+            prefix.extend(
+                session
+                    .factory
+                    .profile()
+                    .prefix()
+                    .iter()
+                    .filter(|item| matches!(item, ResponseItem::AdditionalTools { .. }))
+                    .cloned(),
+            );
+            (history, prefix)
+        } else {
+            (history, prefix)
+        };
         self.model = saved
             .model
             .parse::<crate::Model>()
@@ -113,6 +138,10 @@ where
             saved.server_reasoning_included,
             saved.context_usage_is_estimate,
         );
+        session.conversation.reasoning = saved.reasoning;
+        session
+            .conversation
+            .prepare_request_policy(self.continuation_policy());
         // Provider response IDs are connection-local; only the conversation is durable.
         session.conversation.reset_for_full_request();
         session.context = ContextState::new(
@@ -198,6 +227,7 @@ where
             canonical_context: (*session.conversation.canonical_context).clone(),
             client_authored: session.conversation.managed.client_authored().clone(),
             context_baseline: session.context.baseline(),
+            reasoning: session.conversation.reasoning.clone(),
             context_usage: session.conversation.managed.context_usage().0.cloned(),
             server_reasoning_included: session.conversation.managed.context_usage().1,
             context_usage_is_estimate: session.conversation.managed.context_usage_is_estimate(),
@@ -245,6 +275,7 @@ mod tests {
             ),
             client_authored: Default::default(),
             context_baseline: ContextBaseline::Missing,
+            reasoning: Default::default(),
             context_usage: Some(Usage {
                 total_tokens: 150007,
                 ..Usage::default()

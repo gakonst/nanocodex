@@ -13,6 +13,7 @@ const root = fileURLToPath(new URL("..", import.meta.url));
 // handler; this intentionally does not stand in for a whole model/session test.
 const source = `
 import { createManagedComputerRuntime } from './src/computer-runtime.ts';
+import { traceToolInvocation } from './src/tool-tracing.ts';
 const info = console.info.bind(console);
 console.info = value => info(JSON.stringify(value));
 export default { async fetch(request) {
@@ -30,10 +31,17 @@ export default { async fetch(request) {
   });
   try {
     const input = await request.json();
-    return Response.json(await runtime.tool.handler(input, {
+    const context = {
       callId: request.headers.get('x-call-id'), parentCallId: 'synthetic-parent',
-      turnId: 'synthetic-turn', sessionId: 'synthetic-thread', model: 'synthetic', signal: request.signal,
-    }));
+      turnId: 'synthetic-host-turn', sessionId: 'synthetic-runtime', model: 'synthetic', signal: request.signal,
+    };
+    if (input.parallel) return Response.json(await Promise.all(['a', 'b'].map(label => {
+      const scoped = { ...context, callId: 'synthetic-queued-' + label, turnId: 'synthetic-host-' + label };
+      return traceToolInvocation('nanocodex.tool', 'synthetic-thread-' + label, 'exec_command', scoped,
+        () => runtime.tool.handler({cmd: label === 'a' ? 'sleep 0.01; echo a' : 'echo b'}, scoped), 'synthetic-turn-' + label);
+    })));
+    return Response.json(await traceToolInvocation('nanocodex.tool', 'synthetic-thread', 'exec_command', context,
+      () => runtime.tool.handler(input, context), 'synthetic-turn'));
   } catch { return Response.json({error:'tool_failed'}, {status:400}); }
   finally { runtime.dispose(); }
 }};
@@ -66,7 +74,7 @@ test("managed workerd shell emits private-safe correlated results across search 
       ["rg", {cmd:"rg -F absent private-file"}, 1, "command_exit"],
       ["sed", {cmd:"sed -n '1p' private-file"}, 0, "none"],
       ["grep", {cmd:"grep -F synthetic-private-sentinel private-file"}, 0, "none"],
-      ["admission", {cmd:"rg '" + "x".repeat(9000) + "' private-file"}, 126, "search_admission"],
+      ["admission", {cmd:"cat private-file | rg '" + "x".repeat(9000) + "' private-file"}, 126, "search_admission"],
       ["invalid", {cmd:"echo synthetic-private-sentinel", tty:true}, null, "input_validation"],
       ["recovered", {cmd:"echo recovered"}, 0, "none"],
     ]) {
@@ -79,19 +87,34 @@ test("managed workerd shell emits private-safe correlated results across search 
       if (exit !== null) assert.equal(result.exit_code, exit, JSON.stringify(result));
       transcript.push({call_id:`synthetic-${id}`, http_status:response.status, exit_code:exit, category});
     }
+    const parallel = await mf.dispatchFetch("https://fixture.internal/exec", {
+      method: "POST", headers: {"content-type":"application/json"}, body: JSON.stringify({parallel:true}),
+    });
+    assert.equal(parallel.status, 200);
+    const queuedResults = await parallel.json();
+    assert.deepEqual(queuedResults.map(r => [r.exit_code, r.output]), [[0, "a\n"], [0, "b\n"]]);
+    for (const label of ["a", "b"]) transcript.push({call_id:`synthetic-queued-${label}`,
+      exit_code:0, category:"none", thread_id:`synthetic-thread-${label}`,
+      managed_turn_id:`synthetic-turn-${label}`, host_turn_id:`synthetic-host-${label}`});
     // workerd's log stream is asynchronous relative to HTTP completion.
-    for (let n = 0; records.length < 18 && n < 100; n++) await new Promise(r => setTimeout(r, 10));
-    assert.equal(records.length, 18, raw.join("\n"));
+    for (let n = 0; records.length < 24 && n < 100; n++) await new Promise(r => setTimeout(r, 10));
+    assert.equal(records.length, 24, raw.join("\n"));
     for (const expected of transcript) {
       const events = records.filter(e => e.tool_call_id === expected.call_id);
       assert.deepEqual(events.map(e => e.phase), ["queued", "started", "finished"]);
       const event = events.at(-1);
       assert.equal(event.exit_code, expected.exit_code);
       assert.equal(event.category, expected.category);
+      if (expected.category === "search_admission") {
+        assert.equal(event.command, "cat");
+        assert.equal(event.admission_command, "rg");
+      }
       assert.equal(event.status, expected.exit_code === 0 ? "success" : "error");
-      assert.equal(event.thread_id, "synthetic-thread");
-      assert.equal(event.turn_id, "synthetic-turn");
-      assert.equal(event.parent_tool_call_id, "synthetic-parent");
+      assert.equal(event.thread_id, expected.thread_id ?? "synthetic-thread");
+      assert.equal(event.managed_turn_id, expected.managed_turn_id ?? "synthetic-turn");
+      assert.equal(event.runtime_session_id, "synthetic-runtime");
+      assert.equal(event.host_turn_id, expected.host_turn_id ?? "synthetic-host-turn");
+      assert.equal(event.parent_call_id, "synthetic-parent");
     }
     assert.deepEqual(records.filter(e => e.phase === "finished").slice(0, 3).map(e => e.command), ["rg", "sed", "grep"]);
     for (const forbidden of ["synthetic-private-sentinel", "private-file", "/brain", "https://", "xxxxxxxxxx"])

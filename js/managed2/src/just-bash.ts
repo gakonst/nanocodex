@@ -142,9 +142,9 @@ export function createJustBashTool(storage: DurableObjectStorage, onPhase?: Bash
     onExecution: (event, context) => console.info({
       type: "managed2.just_bash", ...event,
       tool_call_id: context?.callId,
-      parent_tool_call_id: context?.parentCallId,
-      turn_id: context?.turnId,
-      thread_id: context?.sessionId,
+      parent_call_id: context?.parentCallId,
+      host_turn_id: context?.turnId,
+      runtime_session_id: context?.sessionId,
     }),
     loadInterpreter: () => import("./just-bash-lazy.mjs"),
   });

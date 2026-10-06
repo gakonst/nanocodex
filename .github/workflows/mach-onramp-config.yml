@@ -1,0 +1,61 @@
+name: Configure MACH onramp relay
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/mach-onramp-config.yml
+      - scripts/cloudflare/configure-mach-onramp*
+  workflow_dispatch:
+    inputs:
+      action:
+        description: Configure once, recover origin after token-only write, or verify without writing
+        required: true
+        type: choice
+        options: [verify, configure, configure-origin]
+        default: verify
+      relay_origin:
+        description: Exact HTTPS origin from the verified issuer deployment receipt (no trailing slash)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  transport-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+      - run: node --test scripts/cloudflare/configure-mach-onramp.test.mjs
+
+  configure:
+    needs: transport-test
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: cloudflare-production
+    concurrency:
+      group: cloudflare-production
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+      - name: Configure or verify the existing production Connect Worker
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          MACH_ONRAMP_RELAY_TOKEN: ${{ secrets.MACH_ONRAMP_RELAY_TOKEN }}
+          MACH_ONRAMP_RELAY_HOST: ${{ vars.MACH_ONRAMP_RELAY_HOST }}
+          MACH_ONRAMP_RELAY_URL: ${{ inputs.relay_origin }}
+          MACH_ONRAMP_ACTION: ${{ inputs.action }}
+        run: node scripts/cloudflare/configure-mach-onramp.mjs

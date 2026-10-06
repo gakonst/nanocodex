@@ -38,6 +38,7 @@ function workspace(t) {
   crate("crates/vm", "nanocodex-vm", { "nanocodex-oai-api": "../oai-api", "nanocodex-oai-tools": "../nanocodex-oai-tools" });
   crate("crates/phone", "nanocodex-phone");
   crate("bin/nanocodex2", "nanocodex2-bin", { "nanocodex-vm": "../../crates/vm" });
+  crate("bin/nanocodex", "nanocodex-bin");
   write("README.md");
   execFileSync("cargo", ["generate-lockfile", "--offline"], { cwd, stdio: ["ignore", "pipe", "pipe"] });
   git("init", "-q");
@@ -80,7 +81,32 @@ test("changed crates select only the jobs in their reverse-dependency closure", 
   // Documentation needs no compilation; JS app sources need the WASM artifact.
   assert.deepEqual(push("docs/guide.md").jobs, only("policy"));
   assert.deepEqual(push("js/account/src/page.tsx").jobs, only("apps", "wasm", "policy"));
+  // Backend-only private-input changes must exercise the shipped terminal too.
+  for (const path of ["js/managed/src/browser-vault-save.ts", "js/managed/test/private-input-tui.chrome.mjs", "js/egress/src/vault-fields.ts"]) {
+    assert.deepEqual(push(path).jobs, only("hands", "bindings", "wasm", "policy"), path);
+  }
+  assert.deepEqual(push("js/account/worker/managedProxy.ts").jobs, only("hands", "apps", "wasm", "policy"));
   assert.equal(shared.raw.tests, "false", "tests stay paused unless the owner switch is on");
+});
+
+test("legacy SSH CLI and journey-only changes select shared Hands while drafts stay fast", t => {
+  const w = workspace(t);
+  for (const path of ["bin/nanocodex/src/login.rs", "bin/nanocodex/tests/ssh_import_cli_e2e.mjs"]) {
+    const base = w.git("rev-parse", "HEAD");
+    w.write(path, "// SSH import change\n");
+    const head = w.commit();
+    const expected = only("hands", "windows", "rust", "rust_extra", "policy");
+    const push = w.select("push", { before: base, after: head });
+    assert.deepEqual(push.jobs, expected, `${path}: push`);
+    assert.equal(push.raw.packages, "nanocodex-bin", path);
+    const pr = draft => ({ pull_request: { draft, base: { sha: base }, head: { sha: head } } });
+    const ready = w.select("pull_request", pr(false));
+    assert.deepEqual(ready.jobs, expected, `${path}: ready PR`);
+    assert.equal(ready.raw.tests, "false", "CLI journeys remain selected while broader tests are paused");
+    const draft = w.select("pull_request", pr(true));
+    assert.deepEqual(draft.jobs, only("rust", "policy"), `${path}: draft PR`);
+    assert.equal(draft.raw.heavy, "false", path);
+  }
 });
 
 test("provider split retains Rust ownership of the unchanged npm Code Mode asset", t => {

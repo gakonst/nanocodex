@@ -62,7 +62,9 @@ impl Install {
         if no_setup {
             return Ok(());
         }
-        if !std::io::stdin().is_terminal() {
+        let unattended =
+            !std::io::stdin().is_terminal() && !nanocodex_cli_auth::has_default_login();
+        if unattended && !cfg!(target_os = "macos") {
             println!(
                 "No interactive terminal detected. Finish setup with: {} setup",
                 executable.display()
@@ -72,11 +74,16 @@ impl Install {
 
         let mut command = tokio::process::Command::new(&executable);
         command
-            .args(["setup", "--refresh"])
+            .arg("setup")
             .env("NANOCODEX_DIR", &root)
             .stdin(Stdio::inherit())
             .stdout(Stdio::inherit())
             .stderr(Stdio::inherit());
+        if unattended {
+            // Installing the macOS service needs no account or interactive
+            // terminal. CLI sign-in will connect this prepared Hand later.
+            command.arg("--skip-account");
+        }
         if std::env::var_os("NANOCODEX_COMPUTER").is_some_and(|value| !value.is_empty()) {
             command.arg("--skip-computer");
         }

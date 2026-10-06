@@ -1,4 +1,4 @@
-import type { logout } from "./actions/account.mjs";
+import type { links, logout } from "./actions/account.mjs";
 import type { create as createAgent } from "./actions/agent.mjs";
 import type { request as connectorRequest } from "./actions/connector.mjs";
 import type { connect, disconnect, reconnect } from "./actions/connection.mjs";
@@ -10,7 +10,7 @@ import type { Client } from "./Client.mjs";
 import type { Connection, HostConnection } from "./types.mjs";
 
 export type ConnectActions<connection extends Connection | HostConnection = Connection> = {
-  account: { logout(): logout.ReturnType };
+  account: { links(options?: links.Options): links.ReturnType; logout(): logout.ReturnType };
   agent: { create(options: createAgent.Options): Promise<createAgent.ReturnType> };
   connector: { request(options: connectorRequest.Options): connectorRequest.ReturnType };
   connectors: {

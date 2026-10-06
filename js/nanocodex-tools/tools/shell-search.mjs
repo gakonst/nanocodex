@@ -22,14 +22,15 @@ export function createSearchCommands({ Bash }) {
           if (path === "-") continue;
           try { if ((await ctx.fs.stat(ctx.fs.resolvePath(ctx.cwd, path))).isDirectory) directoryInput = true; } catch {}
         }
-        const fallback = () => boundedCommand(command, name, args, ctx, { paths: patternFilePaths(args, ctx) });
-        // Upstream smart-case checks ASCII capitals in the original pattern.
+        const fallback = () => boundedCommand(command, name, args, ctx, searchArguments(name, args));
+        // Explicit -i and upstream smart-case share cooperative ASCII folding.
+        // Smart-case checks ASCII capitals in the original pattern.
         // Fold ASCII literals cooperatively, but leave Unicode case folding and
         // upstream's Unicode prefilter semantics with the original command.
-        const smartCase = name === "rg" && template && !/[A-Z]/.test(parsed.pattern);
+        const smartCase = name === "rg" && template && (parsed.ignoreCase || !/[A-Z]/.test(parsed.pattern));
         const asciiCase = smartCase && /^[\x00-\x7f]*$/.test(template.literal);
         if (template && (!smartCase || asciiCase) && !directoryInput && (parsed.files.length > 0 || ctx.stdin.length > 0 || name !== "rg")) {
-          return await search(name, parsed, template, ctx, asciiCase ? fallback : undefined);
+          return await search(name, parsed, asciiCase ? { ...template, literal: template.literal.toLowerCase() } : template, ctx, asciiCase ? fallback : undefined);
         }
         return await fallback();
       } catch (error) {
@@ -71,10 +72,10 @@ async function boundedCommand(command, name, args, ctx, plan) {
   if (sourceBytes > 8192) return refusal(ctx, name, "synchronous regex/script compilation admission; use a native Hand");
   const policy = name === "sed" || name === "awk" ? programPolicy(name, programs, plan) : {};
   if (policy.uncertain) return refusal(ctx, name, "uncertain dynamic regex admission; use a native Hand");
-  // Stream programs are already isolated from operands and options above.
+  // Recognized search and stream sources are isolated from data operands.
   // A filename such as report{5000}.txt is not regex source.
   const cost = policy.safe ? 1 : name === "sed" || name === "awk"
-    ? Math.max(sourceBytes, fallbackCost(policy.costSources ?? programs)) : Math.max(fallbackCost(args), fallbackCost(programs));
+    ? Math.max(sourceBytes, fallbackCost(policy.costSources ?? programs)) : Math.max(fallbackCost(plan.costSources ?? []), fallbackCost(programs));
   if (cost >= FALLBACK_WORK) return refusal(ctx, name, "synchronous regex compilation/work admission; simplify the pattern or use a native Hand");
   const cap = Math.min(ctx.limits.maxInputBytes, Math.max(1, Math.floor((policy.safe ? ctx.limits.maxInputBytes : FALLBACK_WORK) / cost)));
   const reason = () => `synchronous regex input/work admission (${cap} bytes); use a native Hand`;
@@ -124,7 +125,7 @@ async function boundedCommand(command, name, args, ctx, plan) {
 }
 
 function parseArgs(name, args) {
-  const value = { mode: name === "fgrep" ? "fixed" : name === "egrep" || name === "rg" ? "extended" : "basic", files: [], pattern: undefined, only: false, number: false, count: false, filesWith: false, filesWithout: false, quiet: false, invert: false, filename: undefined, max: 0 };
+  const value = { mode: name === "fgrep" ? "fixed" : name === "egrep" || name === "rg" ? "extended" : "basic", files: [], pattern: undefined, ignoreCase: false, only: false, number: false, count: false, filesWith: false, filesWithout: false, quiet: false, invert: false, filename: undefined, max: 0 };
   let options = true;
   for (let index = 0; index < args.length; index++) {
     const arg = args[index];
@@ -134,11 +135,12 @@ function parseArgs(name, args) {
       if (arg === "-m" || arg === "--max-count") { if (!/^\d+$/.test(args[index + 1] ?? "")) return; value.max = Number(args[++index]); continue; }
       const max = arg.match(/^(?:-m|--max-count=)(\d+)$/);
       if (max) { value.max = Number(max[1]); continue; }
-      const long = { "--only-matching": "o", "--line-number": "n", "--count": "c", "--files-with-matches": "l", "--files-without-match": "L", "--quiet": "q", "--silent": "q", "--no-filename": "h", "--with-filename": "H", "--invert-match": "v", "--fixed-strings": "F", "--extended-regexp": "E" };
+      const long = { "--ignore-case": "i", "--only-matching": "o", "--line-number": "n", "--count": "c", "--files-with-matches": "l", "--files-without-match": "L", "--quiet": "q", "--silent": "q", "--no-filename": "h", "--with-filename": "H", "--invert-match": "v", "--fixed-strings": "F", "--extended-regexp": "E" };
       const flags = arg.startsWith("--") ? long[arg] : arg.slice(1);
       if (!flags) return;
       for (const flag of flags) {
-        if (flag === "o") value.only = true;
+        if (flag === "i") { if (name !== "rg") return; value.ignoreCase = true; }
+        else if (flag === "o") value.only = true;
         else if (flag === "n") value.number = true;
         else if (flag === "c") value.count = true;
         else if (flag === "l") value.filesWith = true;
@@ -359,7 +361,75 @@ function limit(ctx, name, reason) {
   throw Object.assign(new Error(`${name}: ${reason}`), { shellLimit: true });
 }
 
-function patternFilePaths(args, ctx) {
+// Admission grammar for the installed upstream search parsers, not a second
+// command parser. Unknown forms retain whole-argv costing and the old source
+// file scan. In particular, rg does not recognize -- as an option terminator.
+function searchArguments(name, args) {
+  const legacy = () => ({ paths: patternFilePaths(args), costSources: args });
+  const rg = name === "rg", paths = [], sources = [], operands = [];
+  const flags = rg ? "isSFwxvUcloqnNHI0bLzau" : "invclLrRwxEPFohq";
+  const longFlags = new Set((rg
+    ? "ignore-case case-sensitive smart-case fixed-strings word-regexp line-regexp invert-match multiline multiline-dotall count count-matches files files-with-matches files-without-match stats only-matching quiet no-line-number line-number with-filename no-filename null byte-offset column no-column vimgrep json hidden no-ignore no-ignore-dot no-ignore-vcs follow search-zip text heading passthru include-zero glob-case-insensitive unrestricted"
+    : "ignore-case line-number invert-match count files-with-matches files-without-match recursive word-regexp line-regexp extended-regexp perl-regexp fixed-strings only-matching no-filename quiet silent").split(" "));
+  // Glob/type/preprocessor options can introduce other regex sources. Leave
+  // those and unrecognized value options on the conservative legacy path.
+  const rgValues = { regexp: "e", file: "f", "max-count": "m", replace: "r", "max-depth": "d", "max-filesize": "size", "context-separator": "separator", threads: "j" };
+  const add = (flag, value) => {
+    if (flag === "f") paths.push(value);
+    else if (flag === "e") {
+      if (!rg) sources.length = 0; // grep keeps only its last standalone -e.
+      sources.push(value);
+    }
+  };
+  let options = true, positional;
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (!rg && options && arg === "--") { options = false; continue; }
+    if (!options || !arg.startsWith("-") || arg === "-") {
+      if (rg) {
+        if (positional === undefined && sources.length === 0 && paths.length === 0) positional = arg;
+      } else operands.push(arg);
+      continue;
+    }
+    if (arg.startsWith("--")) {
+      if (longFlags.has(arg.slice(2))) continue;
+      const equal = arg.indexOf("="), key = arg.slice(2, equal < 0 ? undefined : equal);
+      const flag = rg ? (Object.hasOwn(rgValues, key) ? rgValues[key] : undefined) : key === "file" ? "f" : key === "max-count" && equal >= 0 ? "m" : undefined;
+      if (!flag) return legacy();
+      const value = equal < 0 ? args[++i] : arg.slice(equal + 1);
+      if (value === undefined) return legacy();
+      add(flag, value); continue;
+    }
+    // Both parsers handle context counts before expanding short clusters.
+    if (/^-[ABC]\d+$/.test(arg) || /^-m\d+$/.test(arg)) continue;
+    if (["-A", "-B", "-C", "-m", "-e"].includes(arg)) {
+      if (args[i + 1] === undefined) return legacy();
+      add(arg[1], args[++i]); continue;
+    }
+    // rg first recognizes attached value options at the start of an argument.
+    if (rg && "efmrdj".includes(arg[1]) && arg.length > 2) { add(arg[1], arg.slice(2)); continue; }
+    for (let j = 1; j < arg.length; j++) {
+      const flag = arg[j];
+      if (flag === "f" && !rg) {
+        const value = arg.slice(j + 1) || args[++i];
+        if (value === undefined) return legacy();
+        add(flag, value); break;
+      }
+      // Unlike grep's attached -f, each rg value flag within a cluster
+      // consumes the next argv entry, then parsing resumes in that cluster.
+      if (rg && "efmrdj".includes(flag)) {
+        if (args[i + 1] === undefined) return legacy();
+        add(flag, args[++i]); continue;
+      }
+      if (!flags.includes(flag)) return legacy();
+    }
+  }
+  if (rg) { if (positional !== undefined) sources.push(positional); }
+  else if (sources.length === 0 && paths.length === 0 && operands.length) sources.push(operands[0]);
+  return { paths, sources };
+}
+
+function patternFilePaths(args) {
   const paths = [];
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];

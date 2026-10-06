@@ -3,6 +3,8 @@
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
 mod agent;
+mod branch;
+pub use branch::{BranchTurn, CheckpointBranch};
 #[cfg(feature = "claude")]
 mod claude;
 mod context;

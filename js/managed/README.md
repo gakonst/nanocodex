@@ -4,6 +4,15 @@ This Worker is Nanocodex's account-owned hosted-agent surface on Cloudflare. It
 authenticates public requests, projects the caller's authority, and routes work
 to durable, account-scoped services.
 
+Managed sessions always use `toolMode: "code-only"`. The model sees `exec` and
+`wait`; shell, planning, discovery, account tools and subagent actions run through
+`tools.*` inside Code Mode. Tool allowlists and sessions without attached providers
+retain this policy. Recreated sessions select the same policy from backend code.
+The public SDK keeps its existing `code` and `direct` modes for other embedders.
+
+Run `pnpm --filter nanocodex-managed-service test:code-mode-only` for the real
+Worker/WASM/QuickJS journey, including blocked direct calls and durable recovery.
+
 Managed agents have a native `browseX` tool for public X posts, profiles, search,
 followers, and following. `environment().apis` advertises the tool independently
 of connector authentication. It calls the private [X Worker](../x-api/README.md)
@@ -211,6 +220,15 @@ Hosted WebSocket diagnostics are always enabled in Workers Logs. The
 `transport.socket.opened`, `transport.request.sent`,
 `transport.request.first_message`, `transport.request.first_output`, and
 `transport.request.finished` describe each socket/request lifecycle.
+`first_message` and `first_output` include an allowlisted `provider_event_type`;
+`first_output` also identifies its `output_kind`. This historical output marker
+includes empty item announcements, so it is not a first-token measurement.
+`transport.request.first_reasoning_delta`, `first_answer_delta`, and
+`first_tool_delta` separately mark the first nonempty string delta of each kind.
+Waiting and finished records include the corresponding elapsed `*_delta_ms` values.
+These are frame-arrival times at the host, before runtime consumption or UI rendering.
+Classification inspects envelopes up to 16,384 UTF-16 code units; larger/unknown initial frames are
+`unclassified`, and an absent delta marker does not prove the provider emitted none.
 `transport.socket.connect_waiting`, `transport.request.send_waiting`, and
 `transport.request.waiting` first emit after one second of silence, then at
 2/4/5-second intervals. Each incoming frame resets the silence interval.
@@ -598,19 +616,118 @@ are retained. Invalid location is omitted without losing other context; freshnes
 is checked again at startup projection. Location is unverified client-reported
 data and is never inferred from an attached Hand. The SDK exposes `requestOrigin`; the native CLI sets
 its own context automatically. The authenticated edge overwrites the principal
-assertion. HTTP, WebSocket, and voice admission pin caller context on the first
-turn; reconnects and retries cannot replace it. The snapshot is appended once,
-without rewriting baseline instructions, cache keys, or the conversation prefix.
+assertion. HTTP, WebSocket, and voice admission pin caller context independently
+for each accepted request; retries cannot replace that request's origin. A new
+turn from another device receives its own `request_origin`, while the initial
+startup snapshot remains historical. The request context travels with its durable
+dispatch input, including queued and recovered turns. `environment()` refreshes
+the authorized Hand catalog and returns the current tool turn's origin. Missing
+or legacy attribution remains unknown instead of inheriting another device.
+A successfully routed voice steer updates the effective origin for subsequent
+work, while retaining the original admission/retry provenance and existing
+command bindings. Replaying an older voice receipt cannot change that origin.
+
+Native execution and interactive browser work prefer an explicit task target or
+existing workspace/session, then a suitable submitting Hand, then another capable
+online user Hand. `execution_preferences` exposes separate advisory candidate
+lists for native execution and CUA, with explicit logical `workdir` values. It
+excludes offline user Hands, favors user Hands over sandboxes, accounts for
+reported low disk/memory, and compares observed hardware size plus fresh free-capacity measurements. Task
+requirements still determine the appropriate OS, workspace, and capacity; the
+recommendation does not route tools or reserve resources. `/brain` remains the
+shell default, and submitted commands, process sessions, and captured Code Mode
+connections never migrate after a disconnect.
+
+Hand publishers may include bounded `resources` observations: timestamp, logical
+CPUs, memory totals/availability, load, and workspace filesystem totals/availability.
+The environment marks samples `fresh`, `stale`, or `unknown`. Missing values are
+not zero capacity. Older publishers remain compatible and show unknown resources;
+new metadata requires an updated publisher. Deploy the managed service (including
+its Hand catalog normalizer) before updating/restarting CLI or desktop publishers:
+older brokers reject unknown catalog fields. Existing old publishers work with
+the updated service. Refresh or inspect a Hand when a
+capacity decision depends on current free memory/disk.
+
+Interactive website workflows prefer a headed browser through the selected
+Hand's supported background tabs and agent-owned tab groups. Headed browsing
+does not imply bringing a window to the foreground. The prompt and CUA discovery
+guidance prohibit taking over the user's browser as a fallback when dedicated
+browser APIs are disabled; a native window is not background tab isolation.
+Use another supported background surface or isolated desktop, or report the
+limitation. Hosted browsers remain available for unavailable non-disruptive CUA
+and supported private credential workflows. Playwright/Puppeteer and headless
+browsers are not the default for interactive user tasks; repository browser test
+suites may retain their automation. Vault and secure-input boundaries continue to
+apply to credentials. Before provisioning a sandbox, inspect configured SSH
+recovery targets and attempt the exact task-authorized server when available.
+Do not infer a hostname from an offline Hand label or assume SSH provides CUA.
+Account SSH identities are generated/stored by the credential broker, and only
+the public key is installed on the target.
 
 ## Public journeys and protocol boundaries
+
+Create an agent, durably admit its first turn, and stream its output in one request:
+
+```sh
+curl --no-buffer --fail-with-body "$NANOCODEX_ORIGIN/v1/agent-runs" \
+  -H "Authorization: Bearer $NANOCODEX_API_KEY" \
+  -H 'Content-Type: application/json' \
+  -H 'Accept: text/event-stream' \
+  -H 'Idempotency-Key: example-run-001' \
+  --data '{"input":"Reply with a short greeting.","settings":{"model":"gpt-6.1-sol","thinking":"low","reasoning_mode":"standard","fast_mode":false}}'
+```
+
+Reuse that key with the same body after an uncertain response. Choose a new key
+for a new run; the command exits after the requested turn's terminal event.
+Explicit GPT settings avoid the automatic model-selection catalog read. Omit
+settings to select from the account's available models. Credential authorization
+still occurs at dispatch.
+
+Run `node js/managed/benchmark/curl-ttft.mjs --mode=stream --family=codex` from
+the repository root to measure the normal account proxy, Managed API, Session
+and Egress path with curl against local workerd and a synthetic external provider.
+Use `--mode=combined` for the existing JSON-then-events path, `--mode=legacy`
+for separate create/submit/events, and `--root=/path/to/checkout` for a baseline.
+The harness records first assistant text, durable completion, source hashes and
+raw traces under ignored `output/managed-api-ttft/`; it does not measure live
+inference, network geography or production cold activation.
 
 - SMS OTP/account and API-key routes establish the account identity that owns
   agents, organizations, connectors, memory, and history.
 - `/v1/agents` lists or creates agents. `/v1/agent-runs` creates an agent and
   admits its first turn under one required stable key and one client request.
+  The default response remains JSON. Send `Accept: text/event-stream` to receive
+  the admission receipt and live output in that same POST; streaming additionally
+  requires `agents:read`. Both agent creation and turn acceptance are durable
+  before the response starts. The first `event: run` contains the JSON receipt
+  (`agent_id`, `session_id`, `turn_id`, `turn_idempotency_key`, `accepted_cursor`
+  and turn state); it has no event ID. Subsequent frames are the ordinary managed
+  durable events, starting with the accepted turn, with their original cursors.
+  The response is `201` for first acceptance and `200` for an idempotent replay;
+  validation/authorization failures remain JSON. `Location` points to the agent's
+  event endpoint and `x-nanocodex-agent-id` / `x-nanocodex-turn-id` identify the run.
+  A disconnect leaves the accepted turn running. Retry the same POST and key to
+  recover its receipt, or reconnect to `GET /v1/agents/:id/events`; both accept a
+  numeric `Last-Event-ID` and resume after that cursor. Without a cursor, a repeated
+  streaming POST replays from the first turn's acceptance. The POST stream closes
+  after delivering that turn's durable `turn_completed`, `turn_failed` or
+  `turn_cancelled` event, so curl exits normally. Resuming at/after a retained
+  terminal cursor returns the receipt then closes. The existing GET event stream
+  stays open. A changed input under the same key remains an idempotency conflict.
   Agent routes create later turns, read state,
   cancel or steer work, delete an agent, and support explicit durability import
   and export. Stable `Idempotency-Key` values make create and turn retries safe.
+- `POST /v1/agents/:id/turns` also accepts `Accept: text/event-stream` to
+  admit a later turn and receive its output in one request. The default stays
+  JSON; both formats return `202` for new acceptance and `200` for replay. Supply
+  a stable body `id`, an `Idempotency-Key`, or both. Streaming requires
+  `agents:read`, `agents:write` and `tools:use` before admission. Its initial
+  `event: run` identifies the actual retained turn; `turn_idempotency_key` is
+  omitted when no key was supplied. The retained event cursor, terminal close,
+  and disconnect/reconnect behavior match `/v1/agent-runs` above. Malformed
+  `Last-Event-ID` is rejected before admission. A valid but ahead cursor or
+  subscriber limit can fail after durable acceptance: recover with the **same
+  input and id/key**, or use GET events, rather than submitting a new identity.
 - `POST /v1/agents/:id/forks` accepts an empty body and a required stable
   `Idempotency-Key`. Full account `agents:read`, `agents:write` and `tools:use`
   authority is required; Connect grants and configured/routed sessions are not

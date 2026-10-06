@@ -359,13 +359,7 @@ pub(super) async fn run_observed(
     if super::native_secure_input::NativeSecureInput::installed() {
         tools = tools.add(super::native_secure_input::NativeSecureInput);
     }
-    if let Some(config) = nanocodex_computer::ComputerConfig::discover_or_install()
-        .await
-        .map_err(ManagedError::Configuration)?
-    {
-        let computer = nanocodex_computer::ComputerTools::connect(config)
-            .await
-            .map_err(|error| ManagedError::Configuration(error.to_string()))?;
+    if let Some(computer) = computer_tools().await? {
         for tool in computer.tools() {
             tools = tools.add(tool);
         }
@@ -373,7 +367,9 @@ pub(super) async fn run_observed(
     let tools = tools.build().map_err(configuration)?;
     let (attachment, mut events) = tools
         .attach(target)
-        .metadata(AttachmentMetadata::machine(state.machine.clone()))
+        .metadata(AttachmentMetadata::machine(observe_resources(
+            state.machine.clone(),
+        )))
         .start()
         .map_err(configuration)?;
     let closed = attachment.clone();
@@ -417,8 +413,51 @@ pub(super) async fn run_observed(
     }
 }
 
+/// Downloads are independent of attachment readiness. Native screen controls
+/// remain available while the optional upstream provider is being prepared.
+pub(super) async fn computer_tools()
+-> Result<Option<nanocodex_computer::ComputerTools>, ManagedError> {
+    super::computer::connect_for_startup()
+        .await
+        .map_err(configuration)
+}
+
 fn configuration(error: impl std::fmt::Display) -> ManagedError {
     ManagedError::Configuration(error.to_string())
+}
+
+// Sample once for this attachment. A long-lived publisher retains its original
+// timestamp so consumers cannot mistake startup capacity for a live reservation.
+fn observe_resources(machine: AttachmentMachine) -> AttachmentMachine {
+    use nanocodex_oai_tools::attachment::AttachmentResourceObservation;
+    let Ok(elapsed) = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) else {
+        return machine;
+    };
+    let mut system = sysinfo::System::new();
+    system.refresh_memory();
+    let total = system.total_memory();
+    #[cfg(unix)]
+    let disk = nix::sys::statvfs::statvfs(machine.workspace()).ok();
+    #[cfg(unix)]
+    let (disk_total_bytes, disk_available_bytes) = disk.map_or((None, None), |disk| {
+        (
+            u64::try_from(u128::from(disk.blocks()) * u128::from(disk.fragment_size())).ok(),
+            u64::try_from(u128::from(disk.blocks_available()) * u128::from(disk.fragment_size()))
+                .ok(),
+        )
+    });
+    #[cfg(not(unix))]
+    let (disk_total_bytes, disk_available_bytes) = (None, None);
+    machine.with_resources(AttachmentResourceObservation {
+        observed_at_ms: u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX),
+        cpu_logical_count: std::thread::available_parallelism()
+            .ok()
+            .and_then(|count| u32::try_from(count.get()).ok()),
+        memory_total_bytes: (total > 0).then_some(total),
+        memory_available_bytes: (total > 0).then(|| system.available_memory()),
+        disk_total_bytes,
+        disk_available_bytes,
+    })
 }
 
 #[cfg(test)]

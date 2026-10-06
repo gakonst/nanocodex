@@ -56,8 +56,8 @@ const PROVIDER_ENVIRONMENT: &[&str] = &[
     "CODEX_HOME",
 ];
 
-/// Upstream `_meta` key whose text replaces the provider's built-in
-/// computer-use and browser-use confirmation policy documentation.
+/// Upstream `_meta` object with `computer_use` and `browser_use` text
+/// replacing the provider's built-in confirmation policy documentation.
 const CONFIRMATION_POLICIES_META_KEY: &str = "openai/confirmation_policies";
 
 /// Trusted embedding-host environment variable that overrides the default
@@ -204,13 +204,23 @@ impl ComputerConfig {
         if platform == "windows" {
             return None;
         }
-        provision::managed_provider_path().map(Self::mcp)
+        provision::managed_provider_config()
     }
 }
 
 /// An upstream execution capability bound by the host to one actual computer.
 #[async_trait]
 pub trait ComputerExecutor: Send + Sync + 'static {
+    /// Finish a previously used turn without creating or recovering a session.
+    async fn end_turn(
+        &self,
+        _session_id: &str,
+        _turn_id: &str,
+        _hook_event_name: &str,
+    ) -> Result<(), ToolError> {
+        Ok(())
+    }
+
     async fn invoke_tool(
         &self,
         name: &str,
@@ -317,6 +327,17 @@ impl ComputerTools {
                 definition,
             })
     }
+    /// Notify the retained upstream process once for a turn that used it.
+    pub async fn end_turn(
+        &self,
+        session_id: &str,
+        turn_id: &str,
+        hook_event_name: &str,
+    ) -> Result<(), ToolError> {
+        self.executor
+            .end_turn(session_id, turn_id, hook_event_name)
+            .await
+    }
     pub fn js(&self) -> ComputerTool {
         self.tool("js").expect("CUA provider does not publish js")
     }
@@ -340,6 +361,17 @@ impl ComputerTool {
 
 #[async_trait]
 impl Tool for ComputerTool {
+    async fn end_turn(
+        &self,
+        session_id: &str,
+        turn_id: &str,
+        hook_event_name: &str,
+    ) -> Result<(), ToolError> {
+        self.executor
+            .end_turn(session_id, turn_id, hook_event_name)
+            .await
+    }
+
     fn supports_parallel_tool_calls(&self) -> bool {
         true
     }
@@ -370,6 +402,7 @@ struct LocalComputer {
 }
 
 struct SessionRequest {
+    lifecycle: bool,
     session: String,
     turn_id: Option<String>,
     call_id: String,
@@ -381,6 +414,35 @@ struct SessionRequest {
 
 #[async_trait]
 impl ComputerExecutor for LocalComputer {
+    async fn end_turn(
+        &self,
+        session_id: &str,
+        turn_id: &str,
+        hook_event_name: &str,
+    ) -> Result<(), ToolError> {
+        if !matches!(hook_event_name, "Stop" | "Interrupt" | "SubagentStop") {
+            return Err("Invalid CUA turn lifecycle event".into());
+        }
+        let (response, result) = oneshot::channel();
+        self.dispatch
+            .send(SessionRequest {
+                lifecycle: true,
+                session: session_id.into(),
+                turn_id: Some(turn_id.into()),
+                call_id: String::new(),
+                model: String::new(),
+                name: "turn_ended".into(),
+                arguments: json!({"hook_event_name":hook_event_name,"session_id":session_id,"turn_id":turn_id}),
+                response,
+            })
+            .map_err(|_| "CUA attachment is closed")?;
+        let output = result.await.map_err(|_| "CUA attachment is closed")??;
+        if !output.success {
+            return Err("CUA turn_ended failed; cleanup was not retried".into());
+        }
+        Ok(())
+    }
+
     async fn invoke_tool(
         &self,
         name: &str,
@@ -395,6 +457,7 @@ impl ComputerExecutor for LocalComputer {
         let (response, result) = oneshot::channel();
         self.dispatch
             .send(SessionRequest {
+                lifecycle: false,
                 session,
                 turn_id: context.turn_id().map(str::to_owned),
                 call_id: context.call_id().to_owned(),
@@ -418,6 +481,10 @@ async fn route_sessions(
     let mut sessions = BTreeMap::<String, mpsc::UnboundedSender<SessionRequest>>::new();
     while let Some(request) = requests.recv().await {
         let session = request.session.clone();
+        if request.lifecycle && !sessions.contains_key(&session) {
+            let _ = request.response.send(Ok(ToolOutput::text("")));
+            continue;
+        }
         let owner = sessions
             .entry(session.clone())
             .or_insert_with(|| {
@@ -429,6 +496,11 @@ async fn route_sessions(
         if let Err(error) = owner.send(request) {
             // A panicked owner must not permanently poison the route. Replace
             // the dead mailbox and let the request observe a fresh owner.
+            if error.0.lifecycle {
+                let _ = error.0.response.send(Ok(ToolOutput::text("")));
+                sessions.remove(&session);
+                continue;
+            }
             let (sender, receiver) = mpsc::unbounded_channel();
             tokio::spawn(run_session(config.clone(), session.clone(), receiver));
             let _ = sender.send(error.0);
@@ -449,7 +521,8 @@ fn call_meta(
 ) -> Value {
     let mut metadata = json!({"x-codex-turn-metadata": turn_metadata(session, turn, call, model)});
     if let Some(text) = confirmation_policies {
-        metadata[CONFIRMATION_POLICIES_META_KEY] = json!(text);
+        metadata[CONFIRMATION_POLICIES_META_KEY] =
+            json!({"browser_use": text, "computer_use": text});
     }
     metadata
 }
@@ -471,11 +544,13 @@ async fn run_session(
 ) {
     let mut process = None;
     let mut interrupted = false;
+    let mut turns = BTreeMap::<String, (String, String)>::new();
     while let Some(request) = requests.recv().await {
         let SessionRequest {
+            lifecycle,
             turn_id,
-            call_id,
-            model,
+            mut call_id,
+            mut model,
             name,
             arguments,
             mut response,
@@ -485,6 +560,24 @@ async fn run_session(
         if response.is_closed() {
             continue;
         }
+        if lifecycle {
+            // Remove before dispatch: an uncertain cleanup must never be replayed.
+            let retained = turn_id.as_ref().and_then(|turn| turns.remove(turn));
+            let Some((previous_call, previous_model)) = retained else {
+                let _ = response.send(Ok(ToolOutput::text("")));
+                continue;
+            };
+            let hook = config
+                .provider_catalog
+                .as_ref()
+                .and_then(|catalog| catalog.iter().find(|tool| tool.name == "turn_ended"));
+            if process.is_none() || interrupted || hook.is_none() {
+                let _ = response.send(Ok(ToolOutput::text("")));
+                continue;
+            }
+            call_id = previous_call;
+            model = previous_model;
+        }
         if interrupted && name != "js_reset" {
             let _ = response.send(Err("CUA session interrupted by caller cancellation or transport failure. Upstream/native input may still be running and effects are uncertain; do not replay uncertain input. Call cua_repl.js_reset, then inspect the surface before continuing. Reset does not prove earlier input stopped.".into()));
             continue;
@@ -493,6 +586,9 @@ async fn run_session(
         // Upstream/native work may outlive it. The interrupted flag requires
         // explicit recovery instead of continuation in a silently fresh scope.
         let previous = process.take();
+        if !lifecycle && let Some(turn) = &turn_id {
+            turns.insert(turn.clone(), (call_id.clone(), model.clone()));
+        }
         let execution = async {
             let mut process = match previous {
                 Some(process) => process,
@@ -506,6 +602,7 @@ async fn run_session(
         let outcome = tokio::select! {
             biased;
             () = response.closed() => {
+                turns.clear();
                 interrupted = true;
                 continue;
             }
@@ -522,10 +619,12 @@ async fn run_session(
                     // state transition is ambiguous, so discard the process
                     // instead of silently retaining a mutated realm.
                     process = None;
+                    turns.clear();
                     interrupted = true;
                 }
             }
             Err(error) => {
+                turns.clear();
                 interrupted = true;
                 let _ = response.send(Err(error));
             }
@@ -780,7 +879,7 @@ mod confirmation_policy_tests {
             );
             assert_eq!(
                 metadata["openai/confirmation_policies"],
-                json!("No confirmation policy applies."),
+                json!({"browser_use": NO_CONFIRMATION_POLICIES, "computer_use": NO_CONFIRMATION_POLICIES}),
                 "{metadata}"
             );
             assert_eq!(

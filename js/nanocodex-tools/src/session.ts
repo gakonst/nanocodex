@@ -2,6 +2,7 @@ export type SessionPromptInput = string | readonly (
   | Readonly<{ type: "text"; text: string }>
   | Readonly<{ type: "image"; imageUrl?: string }>
   | Readonly<{ type: "audio"; audioUrl?: string }>
+  | Readonly<{ type: "file"; filename?: string | undefined }>
 )[];
 
 const DEFAULT_LIMIT = 8;
@@ -257,6 +258,7 @@ export function promptInputText(input: SessionPromptInput): string {
     if (item.type === "text") return [item.text];
     if (item.type === "image") return ["[image]"];
     if (item.type === "audio") return ["[audio]"];
+    if (item.type === "file") return [item.filename ? `[document: ${item.filename}]` : "[document]"];
     return [];
   }).join("\n");
 }
