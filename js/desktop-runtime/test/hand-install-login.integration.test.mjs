@@ -255,10 +255,10 @@ test("installed dormant macOS Hand connects automatically to the exact saved CLI
         model: "gpt-6-astra", name: "exec_command", input: { cmd: `printf ${marker}` },
         output_token_budget: 1024, output_byte_budget: 131072, deadline_at: Date.now() + 10_000 }));
       const result = await until(() => results.get(name), `real exec_command result ${name}`);
+      record(`real exec_command ${name}`, result);
       assert.equal(result.outcome?.status, "completed", redact(JSON.stringify(result)));
-      assert.equal(result.outcome.output.exit_code, 0);
-      assert.match(result.outcome.output.output, new RegExp(marker));
-      record(`real exec_command ${name}`, result.outcome);
+      assert.equal(result.outcome.output.structured_result.exit_code, 0);
+      assert.match(result.outcome.output.structured_result.output, new RegExp(marker));
     };
 
     await ok(cli, ["hand", "install", "--prepare"]);
