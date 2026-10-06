@@ -218,9 +218,21 @@ fn try_main() -> Result<()> {
     launcher::initialize_install_root();
     launcher::dispatch_update()?;
     nanocodex::oai::transport::install_default_rustls_crypto_provider();
-    // Keep direct `cargo run` behavior consistent with the Justfile without
-    // requiring shell-specific syntax to load the repository's `.env` file.
-    let _ = dotenvy::dotenv();
+    // A menu observation must not select credentials from whichever project
+    // directory happened to launch it. Other CLI commands retain their normal
+    // development dotenv behavior.
+    let mut arguments = std::env::args_os().skip(1);
+    let hand_observation = arguments.next().as_deref() == Some(std::ffi::OsStr::new("hand"))
+        && matches!(
+            arguments
+                .next()
+                .as_deref()
+                .and_then(std::ffi::OsStr::to_str),
+            Some("menu-status" | "status")
+        );
+    if !hand_observation {
+        let _ = dotenvy::dotenv();
+    }
 
     let cli = parse_cli();
     if let Some(Command::VmRunConfig(command)) = &cli.command {

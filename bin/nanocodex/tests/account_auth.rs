@@ -485,6 +485,13 @@ async fn hand_menu_status_observes_real_http_without_mutations_or_secret_output(
     };
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("account.json");
+    // A project-scoped credential must not turn a signed-out menu into another
+    // account. The real command runs from this directory for every observation.
+    std::fs::write(
+        dir.path().join(".env"),
+        format!("NANOCODEX_API_KEY={}\n", key()),
+    )
+    .unwrap();
     let seen = Arc::new(Mutex::new(Vec::new()));
     let mode = Arc::new(AtomicUsize::new(0));
     let requests = seen.clone();
@@ -562,7 +569,7 @@ async fn hand_menu_status_observes_real_http_without_mutations_or_secret_output(
     assert!(seen.lock().unwrap().is_empty());
     assert_eq!(
         std::fs::read_dir(dir.path()).unwrap().count(),
-        0,
+        1,
         "Polling created local state"
     );
     let credential = serde_json::to_vec(
@@ -624,7 +631,7 @@ async fn hand_menu_status_observes_real_http_without_mutations_or_secret_output(
         assert_eq!(std::fs::read(&path).unwrap(), credential);
         assert_eq!(
             std::fs::read_dir(dir.path()).unwrap().count(),
-            1,
+            2,
             "Polling created updater or service state"
         );
         eprintln!(

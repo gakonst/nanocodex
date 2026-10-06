@@ -46,8 +46,8 @@ func walk(_ element: AXUIElement, _ depth: Int) {
 walk(app, 0)
 if CommandLine.arguments.count > 2 {
     let title = CommandLine.arguments[2]
-    guard title == "Refresh Status" else { exit(64) }
-    guard let target = elements.first(where: { $0.0 == kAXMenuItemRole && $0.1 == title }) else { exit(3) }
+    guard title == "Refresh Status" || title == "Open Menu" else { exit(64) }
+    guard let target = elements.first(where: { title == "Open Menu" ? $0.0 == kAXMenuBarItemRole : ($0.0 == kAXMenuItemRole && $0.1 == title) }) else { exit(3) }
     var result = AXUIElementPerformAction(target.2, kAXPressAction as CFString)
     if result != .success, let bar = elements.first(where: { $0.0 == kAXMenuBarItemRole }) {
         _ = AXUIElementPerformAction(bar.2, kAXPressAction as CFString)
@@ -118,7 +118,9 @@ def main():
     process = None
     bundle_id = "com.nanocodex.hand-menu-journey." + uuid.uuid4().hex
     try:
-        with tempfile.TemporaryDirectory(prefix="native-menu-", dir=evidence) as temporary:
+        # Keep the child's cwd outside the checkout so dotenv cannot find a
+        # developer's repository credentials in an ancestor directory.
+        with tempfile.TemporaryDirectory(prefix="native-menu-") as temporary:
             root = Path(temporary)
             contents = root / "Menu Journey.app/Contents"
             executable = contents / "MacOS/MenuJourney"
@@ -142,8 +144,17 @@ def main():
                     result = subprocess.run([str(reader), str(process.pid)], capture_output=True, check=True, timeout=10)
                     return json.loads(result.stdout)
 
+                def open_menu():
+                    deadline = time.monotonic() + 10
+                    while not any(row["role"] == "AXMenuBarItem" for row in snapshot()):
+                        if time.monotonic() >= deadline:
+                            raise RuntimeError("Menu bar item did not appear")
+                        time.sleep(0.2)
+                    subprocess.run([str(reader), str(process.pid), "Open Menu"], capture_output=True, check=True, timeout=10)
+
                 def refresh():
                     subprocess.run([str(reader), str(process.pid), "Refresh Status"], capture_output=True, check=True, timeout=10)
+                    open_menu()
 
                 def expect(name, required, absent=(), sign_in=None):
                     deadline = time.monotonic() + 25
@@ -160,6 +171,7 @@ def main():
                         time.sleep(0.2)
                     raise AssertionError(f"{name}: unexpected native menu: {titles}")
 
+                open_menu()
                 expect("signed-out", ["Menu companion: Running", "Account: Signed out", "Sign in to view"], sign_in=True)
                 assert not requests, "Signed-out menu made account requests"
                 credential.write_text(json.dumps({"version": 1, "accounts": {origin: {"api_key": synthetic_key}}}))

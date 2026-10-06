@@ -298,6 +298,17 @@ fn project_screens(value: &Value, hands: &mut Vec<Value>) -> std::result::Result
             .as_str()
             .and_then(safe_text)
             .ok_or(UNKNOWN)?;
+        let name = if name == id && id.starts_with("vm:") {
+            format!(
+                "VM {}",
+                id.trim_start_matches("vm:")
+                    .chars()
+                    .take(8)
+                    .collect::<String>()
+            )
+        } else {
+            name.to_owned()
+        };
         let transport = match screen["transport"].as_str() {
             Some("frames-v1") => "screen_frames",
             None => "screen_webrtc",
