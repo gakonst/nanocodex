@@ -154,12 +154,15 @@ jobs:
         if: needs.changes.outputs.tests == 'true'
         # The ci profile serializes and retries these host IPC tests.
         run: cargo nextest run --locked --profile ci -p nanocodex2-bin --bin nanocodex2 -E 'test(hand)'
-      - run: cargo build --locked -p nanocodex2-bin --bin nanocodex2
+      - name: Build both public CLI journey executables
+        run: cargo build --locked -p nanocodex2-bin -p nanocodex-bin --bins
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 24
       - name: Exercise Managed2 CLI through HTTP and WebSocket
         run: node bin/nanocodex/tests/managed2_cli_e2e.mjs
+      - name: Exercise local SSH key import through signed Connect consent
+        run: node bin/nanocodex/tests/ssh_import_cli_e2e.mjs
       - name: Exercise private TUI input and encrypted Vault reuse
         if: runner.os == 'Linux'
         timeout-minutes: 10

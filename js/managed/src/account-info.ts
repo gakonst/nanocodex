@@ -1,3 +1,4 @@
+import { normalizeHandResources } from "nanocodex-tools/internal/hosted-machine";
 import { accountWalletMetadata, type AccountWallet } from "./account-wallet";
 import { discoveryMetadata, type DiscoveryRead } from "./account-discovery";
 import { consumeRpcData } from "nanocodex/cloudflare/rpc";
@@ -206,7 +207,9 @@ export async function accountInfo(
  * from the current machine catalog, and never promote a retained offline row. */
 export function projectHandProviders(machines: readonly AccountMachine[]): readonly AccountMachine[] {
   return machines.map(machine => {
-    const { vm_provider: _, ...base } = machine;
+    const { vm_provider: _, resources: rawResources, ...rest } = machine;
+    const resources = normalizeHandResources(rawResources);
+    const base = { ...rest, ...(resources === undefined ? {} : { resources }) };
     const providers = machine.capabilities.filter(value => value.startsWith("vm_factory:"))
       .map(value => value.slice("vm_factory:".length)).filter(isVmFactoryName);
     return machine.online === true && providers.length === 1

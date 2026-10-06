@@ -44,6 +44,15 @@ continue to work. Native third-party commands do not automatically inherit the
 hosted HTTP proxy. Use the explicit Vault request API or CLI on a Hand. This
 change does not turn native process environment variables into secret values.
 
+## Public SSH targets
+
+`nanocodex2 vault ssh-targets` uses the CLI's existing account authentication to
+read `GET /v1/credentials`. It prints a JSON array containing only `reference`,
+`hostname`, `port`, `username`, `host_key_sha256`, and optional `public_key`.
+A legacy target whose public key is unavailable omits that field. The command
+is read-only; it returns no private keys or other Vault entries. HTTP and decode
+errors discard arbitrary response bodies.
+
 ## Substitution and signing
 
 Login items support `USERNAME`, `PASSWORD` and `BASIC`; API-key items support

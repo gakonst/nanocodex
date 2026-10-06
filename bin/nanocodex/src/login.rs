@@ -116,7 +116,7 @@ pub(crate) struct Login {
 
 #[derive(Args, Clone)]
 pub(crate) struct Connect {
-    /// Services: chatgpt, github, gmail, gdrive, gcalendar, gtasks, gdocs, gsheets,
+    /// Services: ssh, chatgpt, github, gmail, gdrive, gcalendar, gtasks, gdocs, gsheets,
     /// gslides, gcontacts, slack, x, spotify, soundcloud, link; or a public remote MCP host
     /// (mcp.example.com).
     #[arg(required = true, num_args = 1.., value_name = "SERVICE")]
@@ -124,6 +124,24 @@ pub(crate) struct Connect {
     /// Override the Codex `auth.json` imported by an explicit ChatGPT connection.
     #[arg(long, env = "NANOCODEX_AUTH_FILE")]
     auth_file: Option<PathBuf>,
+    /// Import an unencrypted RSA, EC, or PKCS8 PEM private key for `connect ssh`.
+    #[arg(long, value_name = "PATH")]
+    key_file: Option<PathBuf>,
+    /// Stable name for the saved SSH identity.
+    #[arg(long)]
+    reference: Option<String>,
+    /// SSH destination hostname or IP address.
+    #[arg(long)]
+    hostname: Option<String>,
+    /// SSH destination port (defaults to 22).
+    #[arg(long)]
+    port: Option<u16>,
+    /// SSH username.
+    #[arg(long)]
+    username: Option<String>,
+    /// Pinned SSH host key fingerprint, SHA256: followed by base64.
+    #[arg(long)]
+    host_key_sha256: Option<String>,
     /// Use a trusted local Nanocodex Connect endpoint for development.
     #[arg(
         long,
@@ -157,6 +175,7 @@ enum Connector {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum ConnectTarget {
+    Ssh,
     Connector(Connector),
     RemoteMcp(String),
 }
@@ -165,6 +184,9 @@ impl FromStr for ConnectTarget {
     type Err = String;
 
     fn from_str(value: &str) -> std::result::Result<Self, Self::Err> {
+        if value == "ssh" {
+            return Ok(Self::Ssh);
+        }
         let connector = match value {
             "chatgpt" => Some(Connector::Chatgpt),
             "github" => Some(Connector::Github),
@@ -304,7 +326,19 @@ impl Login {
 
 impl Connect {
     pub(crate) async fn run(self) -> Result<()> {
+        let ssh_credential_import = self.load_ssh_credential_import()?;
         let chatgpt_credential_import = self.load_chatgpt_credential_import()?;
+        let imports_ssh = ssh_credential_import.is_some();
+        self.run_with_imports(chatgpt_credential_import, ssh_credential_import).await.map_err(|error| {
+            if imports_ssh { eyre!("SSH connection approval or import failed; verify its status before starting another import") } else { error }
+        })
+    }
+
+    async fn run_with_imports(
+        self,
+        chatgpt_credential_import: Option<ChatgptCredentialImport>,
+        ssh_credential_import: Option<SshCredentialImport>,
+    ) -> Result<()> {
         let paths = LoginPaths::default()?;
         let device_base = validated_device_base(self.device_base_url.as_deref())?;
         let expected_origin = normalized_origin(api_origin(&device_base)?)?;
@@ -328,8 +362,68 @@ impl Connect {
             });
         LoginFlow::new(device_base, paths, !self.no_open)?
             .with_chatgpt_credential_import(chatgpt_credential_import)
+            .with_ssh_credential_import(ssh_credential_import)
             .complete(request, retirement)
             .await
+    }
+
+    fn load_ssh_credential_import(&self) -> Result<Option<SshCredentialImport>> {
+        let count = self
+            .services
+            .iter()
+            .filter(|target| matches!(target, ConnectTarget::Ssh))
+            .count();
+        ensure!(count <= 1, "only one SSH import may be requested");
+        ensure!(
+            count == 0
+                || !self
+                    .services
+                    .contains(&ConnectTarget::Connector(Connector::Chatgpt)),
+            "SSH and ChatGPT credential imports require separate connect requests"
+        );
+        let has_flags = self.key_file.is_some()
+            || self.reference.is_some()
+            || self.hostname.is_some()
+            || self.port.is_some()
+            || self.username.is_some()
+            || self.host_key_sha256.is_some();
+        ensure!(
+            count == 1 || !has_flags,
+            "SSH flags require `nanocodex connect ssh`"
+        );
+        if count == 0 {
+            return Ok(None);
+        }
+        let path = self
+            .key_file
+            .as_deref()
+            .ok_or_else(|| eyre!("connect ssh requires --key-file"))?;
+        let reference = self
+            .reference
+            .as_deref()
+            .ok_or_else(|| eyre!("connect ssh requires --reference"))?;
+        let hostname = self
+            .hostname
+            .as_deref()
+            .ok_or_else(|| eyre!("connect ssh requires --hostname"))?;
+        let username = self
+            .username
+            .as_deref()
+            .ok_or_else(|| eyre!("connect ssh requires --username"))?;
+        let pin = self
+            .host_key_sha256
+            .as_deref()
+            .ok_or_else(|| eyre!("connect ssh requires --host-key-sha256"))?;
+        let port = self.port.unwrap_or(22);
+        validate_ssh_target(reference, hostname, port, username, pin)?;
+        Ok(Some(SshCredentialImport {
+            reference: reference.to_owned(),
+            hostname: hostname.to_owned(),
+            port,
+            username: username.to_owned(),
+            host_key_sha256: pin.to_owned(),
+            private_key: load_ssh_private_key(path)?,
+        }))
     }
 
     fn load_chatgpt_credential_import(&self) -> Result<Option<ChatgptCredentialImport>> {
@@ -421,6 +515,7 @@ struct RequestedCapabilities {
     browser_cookie_origin: Option<String>,
     focus_connector: Option<&'static str>,
     focus_mcp: bool,
+    ssh_resources: Vec<String>,
 }
 
 impl RequestedCapabilities {
@@ -433,6 +528,7 @@ impl RequestedCapabilities {
             browser_cookie_origin: browser_cookie_origin.map(str::to_owned),
             focus_connector: None,
             focus_mcp: false,
+            ssh_resources: Vec::new(),
         }
     }
 
@@ -450,10 +546,11 @@ impl RequestedCapabilities {
                 ConnectTarget::RemoteMcp(target) if !mcp_targets.contains(target) => {
                     mcp_targets.push(target.clone());
                 }
-                ConnectTarget::RemoteMcp(_) => {}
+                ConnectTarget::RemoteMcp(_) | ConnectTarget::Ssh => {}
             }
         }
-        let sole_target = connector_targets.len() + mcp_targets.len() == 1;
+        let sole_target = connector_targets.len() + mcp_targets.len() == 1
+            && !services.contains(&ConnectTarget::Ssh);
         Self {
             connectors: requested_connectors(&connector_targets),
             mcp_targets,
@@ -464,6 +561,7 @@ impl RequestedCapabilities {
                 .then(|| connector_targets.first().copied())
                 .flatten(),
             focus_mcp: sole_target && connector_targets.is_empty(),
+            ssh_resources: Vec::new(),
         }
     }
 
@@ -532,6 +630,7 @@ impl RequestedCapabilities {
         if let Some(resource) = chatgpt_import_resource {
             resources.push(resource.to_owned());
         }
+        resources.extend(self.ssh_resources.iter().cloned());
         resources.extend(
             self.mcp_connections
                 .iter()
@@ -595,6 +694,437 @@ pub(crate) fn canonical_browser_cookie_origin(value: &str) -> std::result::Resul
         );
     }
     Ok(url.origin().ascii_serialization())
+}
+
+const SSH_IMPORT_RESOURCE_PREFIX: &str = "urn:nanocodex:credential-import:ssh:pem-v1:sha256:";
+const SSH_KEY_LIMIT: u64 = 64 * 1024;
+
+#[derive(Serialize)]
+struct SshCredentialImport {
+    reference: String,
+    hostname: String,
+    port: u16,
+    username: String,
+    host_key_sha256: String,
+    private_key: String,
+}
+
+impl fmt::Debug for SshCredentialImport {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("SshCredentialImport([REDACTED])")
+    }
+}
+
+impl SshCredentialImport {
+    fn resource(&self) -> String {
+        let mut commitment = Sha256::new();
+        commitment.update(b"nanocodex/ssh-credential-import/v1\0");
+        for field in [
+            &self.reference,
+            &self.hostname,
+            &self.username,
+            &self.host_key_sha256,
+            &self.private_key,
+        ] {
+            update_length_prefixed(&mut commitment, field.as_bytes());
+        }
+        commitment.update(u32::from(self.port).to_be_bytes());
+        format!(
+            "{SSH_IMPORT_RESOURCE_PREFIX}{}",
+            URL_SAFE_NO_PAD.encode(commitment.finalize())
+        )
+    }
+
+    fn target_resource(&self) -> String {
+        format!(
+            "urn:nanocodex:ssh-target:{}:{}:{}:{}:{}",
+            encode_uri_component(&self.reference),
+            encode_uri_component(&self.hostname),
+            self.port,
+            encode_uri_component(&self.username),
+            encode_uri_component(&self.host_key_sha256)
+        )
+    }
+}
+
+// Match JavaScript encodeURIComponent, including its unescaped !'()* characters.
+fn encode_uri_component(value: &str) -> String {
+    let mut encoded = String::new();
+    for byte in value.bytes() {
+        if byte.is_ascii_alphanumeric() || b"-_.!~*'()".contains(&byte) {
+            encoded.push(char::from(byte));
+        } else {
+            use std::fmt::Write as _;
+            let _ = write!(encoded, "%{byte:02X}");
+        }
+    }
+    encoded
+}
+
+fn validate_ssh_target(
+    reference: &str,
+    hostname: &str,
+    port: u16,
+    username: &str,
+    pin: &str,
+) -> Result<()> {
+    let identifier = |value: &str| {
+        !value.is_empty()
+            && value.len() <= 128
+            && value
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || b"._-".contains(&byte))
+    };
+    ensure!(
+        identifier(reference)
+            && reference.len() <= 64
+            && reference.as_bytes()[0].is_ascii_alphanumeric()
+            && !["__proto__", "constructor", "prototype"].contains(&reference),
+        "SSH reference must start with a letter or digit, contain at most 64 letters, digits, dots, underscores or hyphens, and not be a reserved name"
+    );
+    ensure!(
+        identifier(username),
+        "SSH username must contain 1–128 letters, digits, dots, underscores or hyphens"
+    );
+    ensure!(port != 0, "SSH port must be between 1 and 65535");
+    ensure!(
+        valid_ssh_hostname(hostname),
+        "SSH hostname must be a canonical public lowercase DNS hostname or IPv4 address"
+    );
+    let encoded = pin.strip_prefix("SHA256:").unwrap_or("");
+    let decoded = base64::engine::general_purpose::STANDARD_NO_PAD
+        .decode(encoded)
+        .unwrap_or_default();
+    ensure!(
+        decoded.len() == 32
+            && base64::engine::general_purpose::STANDARD_NO_PAD.encode(&decoded) == encoded,
+        "SSH host key pin must be SHA256: followed by the unpadded base64 SHA-256 fingerprint"
+    );
+    let target_length = "urn:nanocodex:ssh-target:".len()
+        + 4
+        + port.to_string().len()
+        + [reference, hostname, username, pin]
+            .iter()
+            .map(|field| encode_uri_component(field).len())
+            .sum::<usize>();
+    ensure!(
+        target_length <= 512,
+        "SSH target exceeds the 512-byte signed resource limit"
+    );
+    Ok(())
+}
+
+fn valid_ssh_hostname(host: &str) -> bool {
+    if host.len() > 253
+        || !host.contains('.')
+        || !host.split('.').all(|label| {
+            !label.is_empty()
+                && label.len() <= 63
+                && !label.starts_with('-')
+                && !label.ends_with('-')
+                && label
+                    .bytes()
+                    .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+        })
+        || [
+            ".localhost",
+            ".internal",
+            ".invalid",
+            ".local",
+            ".test",
+            ".home.arpa",
+        ]
+        .iter()
+        .any(|suffix| host.ends_with(suffix))
+    {
+        return false;
+    }
+    // URL normalization also rejects alternate IPv4 forms such as 127.1 or 0x7f.0.0.1.
+    if Url::parse(&format!("https://{host}"))
+        .ok()
+        .and_then(|url| url.host_str().map(str::to_owned))
+        .as_deref()
+        != Some(host)
+    {
+        return false;
+    }
+    if host
+        .bytes()
+        .all(|byte| byte.is_ascii_digit() || byte == b'.')
+    {
+        let Ok(ip) = host.parse::<std::net::Ipv4Addr>() else {
+            return false;
+        };
+        let [a, b, _, _] = ip.octets();
+        if a == 0
+            || a == 10
+            || a == 127
+            || a >= 224
+            || (a == 100 && (64..=127).contains(&b))
+            || (a == 169 && b == 254)
+            || (a == 172 && (16..=31).contains(&b))
+            || (a == 192 && (b == 0 || b == 168))
+            || (a == 198 && (b == 18 || b == 19))
+        {
+            return false;
+        }
+    }
+    true
+}
+
+fn load_ssh_private_key(path: &Path) -> Result<String> {
+    #[cfg(not(any(unix, windows)))]
+    bail!("SSH key import requires a platform with secure no-follow file support");
+    // Reject links before opening, and O_NOFOLLOW closes the final-component race on Unix.
+    let metadata =
+        fs::symlink_metadata(path).map_err(|_| eyre!("could not inspect SSH key file"))?;
+    ensure!(
+        metadata.file_type().is_file(),
+        "SSH key file must be a regular non-symlink file"
+    );
+    #[cfg(unix)]
+    let mut file = {
+        use nix::{
+            fcntl::{OFlag, open},
+            sys::stat::Mode,
+        };
+        let fd = open(
+            path,
+            OFlag::O_RDONLY | OFlag::O_CLOEXEC | OFlag::O_NOFOLLOW | OFlag::O_NONBLOCK,
+            Mode::empty(),
+        )
+        .map_err(|_| eyre!("could not securely open SSH key file"))?;
+        fs::File::from(fd)
+    };
+    #[cfg(not(unix))]
+    let mut file = {
+        let mut options = fs::OpenOptions::new();
+        options.read(true);
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::OpenOptionsExt;
+            options.custom_flags(0x00200000); // FILE_FLAG_OPEN_REPARSE_POINT
+        }
+        options
+            .open(path)
+            .map_err(|_| eyre!("could not securely open SSH key file"))?
+    };
+    let metadata = file
+        .metadata()
+        .map_err(|_| eyre!("could not inspect opened SSH key file"))?;
+    ensure!(
+        metadata.file_type().is_file(),
+        "SSH key file must be a regular non-symlink file"
+    );
+    ensure!(
+        metadata.len() <= SSH_KEY_LIMIT,
+        "SSH key file exceeds 64 KiB"
+    );
+    let mut bytes = Vec::with_capacity(metadata.len() as usize);
+    (&mut file)
+        .take(SSH_KEY_LIMIT + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| eyre!("could not read SSH key file"))?;
+    ensure!(
+        bytes.len() as u64 <= SSH_KEY_LIMIT,
+        "SSH key file exceeds 64 KiB"
+    );
+    let private_key =
+        String::from_utf8(bytes).map_err(|_| eyre!("SSH key file must contain UTF-8 PEM"))?;
+    ensure!(
+        valid_ssh_pem(&private_key),
+        "SSH key must be a valid unencrypted RSA, EC or PKCS8 PEM private key; OpenSSH, encrypted and other formats are unsupported"
+    );
+    Ok(private_key)
+}
+
+// A strict bounded DER reader. Parse the supported private-key structures locally;
+// never send arbitrary file contents to discover whether they are a key.
+fn der_value<'a>(input: &mut &'a [u8], tag: u8) -> Option<&'a [u8]> {
+    if input.first().copied()? != tag {
+        return None;
+    }
+    let first = *input.get(1)?;
+    let (length, header) = if first < 128 {
+        (usize::from(first), 2)
+    } else {
+        let count = usize::from(first & 0x7f);
+        if count == 0 || count > 3 || *input.get(2)? == 0 {
+            return None;
+        }
+        let mut length = 0usize;
+        for byte in input.get(2..2 + count)? {
+            length = length.checked_mul(256)?.checked_add(usize::from(*byte))?;
+        }
+        if length < 128 {
+            return None;
+        }
+        (length, 2 + count)
+    };
+    let value = input.get(header..header + length)?;
+    *input = input.get(header + length..)?;
+    Some(value)
+}
+
+fn der_sequence(bytes: &[u8]) -> Option<&[u8]> {
+    let mut remaining = bytes;
+    let content = der_value(&mut remaining, 0x30)?;
+    remaining.is_empty().then_some(content)
+}
+
+fn der_positive_integer(input: &mut &[u8]) -> Option<usize> {
+    let value = der_value(input, 2)?;
+    if value.is_empty()
+        || value[0] & 0x80 != 0
+        || (value.len() > 1 && value[0] == 0 && value[1] & 0x80 == 0)
+        || value.iter().all(|byte| *byte == 0)
+    {
+        return None;
+    }
+    Some(value.len() - usize::from(value[0] == 0))
+}
+
+fn valid_rsa_der(bytes: &[u8]) -> Option<()> {
+    let mut fields = der_sequence(bytes)?;
+    if der_value(&mut fields, 2)? != [0] {
+        return None;
+    }
+    let modulus = der_positive_integer(&mut fields)?;
+    if !(128..=2048).contains(&modulus) {
+        return None;
+    }
+    for _ in 0..7 {
+        der_positive_integer(&mut fields)?;
+    }
+    fields.is_empty().then_some(())
+}
+
+fn ec_curve_size(oid: &[u8]) -> Option<usize> {
+    match oid {
+        [0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07] => Some(32), // P-256
+        [0x2b, 0x81, 0x04, 0x00, 0x22] => Some(48),                   // P-384
+        [0x2b, 0x81, 0x04, 0x00, 0x23] => Some(66),                   // P-521
+        _ => None,
+    }
+}
+
+fn valid_ec_der(bytes: &[u8], outer_curve: Option<usize>) -> Option<()> {
+    let mut fields = der_sequence(bytes)?;
+    if der_value(&mut fields, 2)? != [1] {
+        return None;
+    }
+    let scalar = der_value(&mut fields, 4)?;
+    let mut curve = outer_curve;
+    if fields.first() == Some(&0xa0) {
+        let mut parameters = der_value(&mut fields, 0xa0)?;
+        let size = ec_curve_size(der_value(&mut parameters, 6)?)?;
+        if !parameters.is_empty() || curve.is_some_and(|existing| existing != size) {
+            return None;
+        }
+        curve = Some(size);
+    }
+    let size = curve?;
+    if scalar.len() != size || scalar.iter().all(|byte| *byte == 0) {
+        return None;
+    }
+    if fields.first() == Some(&0xa1) {
+        let mut public = der_value(&mut fields, 0xa1)?;
+        let bits = der_value(&mut public, 3)?;
+        if !public.is_empty() || bits.first() != Some(&0) {
+            return None;
+        }
+        match bits.get(1) {
+            Some(4) if bits.len() == 2 + size * 2 => {}
+            Some(2 | 3) if bits.len() == 2 + size => {}
+            _ => return None,
+        }
+    }
+    fields.is_empty().then_some(())
+}
+
+fn valid_pkcs8_der(bytes: &[u8]) -> Option<()> {
+    let mut fields = der_sequence(bytes)?;
+    if der_value(&mut fields, 2)? != [0] {
+        return None;
+    }
+    let mut algorithm = der_value(&mut fields, 0x30)?;
+    let oid = der_value(&mut algorithm, 6)?;
+    let private = der_value(&mut fields, 4)?;
+    if !fields.is_empty() {
+        return None;
+    }
+    match oid {
+        [0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 1, 1, 1] => {
+            if !algorithm.is_empty() && !der_value(&mut algorithm, 5)?.is_empty() {
+                return None;
+            }
+            if !algorithm.is_empty() {
+                return None;
+            }
+            valid_rsa_der(private)
+        }
+        [0x2a, 0x86, 0x48, 0xce, 0x3d, 2, 1] => {
+            let curve = ec_curve_size(der_value(&mut algorithm, 6)?)?;
+            if !algorithm.is_empty() {
+                return None;
+            }
+            valid_ec_der(private, Some(curve))
+        }
+        _ => None,
+    }
+}
+
+fn valid_ssh_pem(pem: &str) -> bool {
+    let content = pem
+        .strip_suffix("\r\n")
+        .or_else(|| pem.strip_suffix('\n'))
+        .unwrap_or(pem);
+    if content.ends_with(['\r', '\n']) {
+        return false;
+    }
+    let mut lines = content.lines();
+    let Some(header) = lines.next() else {
+        return false;
+    };
+    let label = match header {
+        "-----BEGIN RSA PRIVATE KEY-----" => "RSA PRIVATE KEY",
+        "-----BEGIN EC PRIVATE KEY-----" => "EC PRIVATE KEY",
+        "-----BEGIN PRIVATE KEY-----" => "PRIVATE KEY",
+        _ => return false,
+    };
+    let footer = format!("-----END {label}-----");
+    let mut encoded = String::new();
+    let mut ended = false;
+    for line in lines {
+        if line == footer {
+            if ended {
+                return false;
+            }
+            ended = true;
+            continue;
+        }
+        if ended
+            || line.is_empty()
+            || !line
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || b"+/=".contains(&byte))
+        {
+            return false;
+        }
+        encoded.push_str(line);
+    }
+    if !ended {
+        return false;
+    }
+    let Ok(der) = base64::engine::general_purpose::STANDARD.decode(&encoded) else {
+        return false;
+    };
+    match label {
+        "RSA PRIVATE KEY" => valid_rsa_der(&der),
+        "EC PRIVATE KEY" => valid_ec_der(&der, None),
+        _ => valid_pkcs8_der(&der),
+    }
+    .is_some()
 }
 
 #[derive(Serialize)]
@@ -884,6 +1414,7 @@ struct LoginFlow {
     poll_second: Duration,
     open_browser: bool,
     chatgpt_credential_import: Option<ChatgptCredentialImport>,
+    ssh_credential_import: Option<SshCredentialImport>,
     #[cfg(test)]
     fail_login_persistence: bool,
 }
@@ -899,6 +1430,7 @@ impl LoginFlow {
             poll_second: Duration::from_secs(1),
             open_browser,
             chatgpt_credential_import: None,
+            ssh_credential_import: None,
             #[cfg(test)]
             fail_login_persistence: false,
         })
@@ -912,7 +1444,29 @@ impl LoginFlow {
         self
     }
 
+    fn with_ssh_credential_import(
+        mut self,
+        credential_import: Option<SshCredentialImport>,
+    ) -> Self {
+        self.ssh_credential_import = credential_import;
+        self
+    }
+
     async fn complete(
+        self,
+        request: RequestedCapabilities,
+        retirement: Option<PendingRetirement>,
+    ) -> Result<()> {
+        let imports_ssh = self.ssh_credential_import.is_some();
+        self.complete_inner(request, retirement).await.map_err(|error| {
+            if imports_ssh {
+                // Remote failures can echo request data. Never expose them for key imports.
+                eyre!("SSH connection approval or import failed; verify its status before starting another import")
+            } else { error }
+        })
+    }
+
+    async fn complete_inner(
         self,
         mut request: RequestedCapabilities,
         retirement: Option<PendingRetirement>,
@@ -922,6 +1476,9 @@ impl LoginFlow {
                 || request.connectors.contains(&Connector::Chatgpt.id()),
             "ChatGPT credential import requires an explicit ChatGPT connection request"
         );
+        if let Some(import) = &self.ssh_credential_import {
+            request.ssh_resources = vec![import.resource(), import.target_resource()];
+        }
         let created_mcp_connections = self.create_mcp_intents(&request.mcp_targets).await?;
         for connection in created_mcp_connections {
             if !request
@@ -1023,6 +1580,12 @@ impl LoginFlow {
             .await
             .wrap_err("replacement login is active, but prior login cleanup is still pending")?;
         print_summary(&stored);
+        if let Some(import) = &self.ssh_credential_import {
+            println!(
+                "SSH identity  {} ({}@{}:{})",
+                import.reference, import.username, import.hostname, import.port
+            );
+        }
         Ok(())
     }
 
@@ -1221,6 +1784,15 @@ impl LoginFlow {
                             .wrap_err("failed to encode ChatGPT credential import")?,
                     );
             }
+            if let Some(credential_import) = &self.ssh_credential_import {
+                body.as_object_mut()
+                    .ok_or_else(|| eyre!("invalid Connect grant request"))?
+                    .insert(
+                        "ssh_credential_import".to_owned(),
+                        serde_json::to_value(credential_import)
+                            .map_err(|_| eyre!("failed to encode SSH credential import"))?,
+                    );
+            }
             let response = self
                 .http
                 .post(url.clone())
@@ -1241,11 +1813,16 @@ impl LoginFlow {
             let connector_pending = status == StatusCode::FORBIDDEN
                 && body.pointer("/error/code").and_then(Value::as_str)
                     == Some("connector_not_connected");
-            if connector_pending && tokio::time::Instant::now() < deadline {
+            if connector_pending
+                && self.ssh_credential_import.is_none()
+                && tokio::time::Instant::now() < deadline
+            {
                 tokio::time::sleep(self.poll_second).await;
                 continue;
             }
-            let detail = if self.chatgpt_credential_import.is_some() {
+            let detail = if self.chatgpt_credential_import.is_some()
+                || self.ssh_credential_import.is_some()
+            {
                 String::new()
             } else {
                 body.pointer("/error/message")
@@ -2883,6 +3460,7 @@ fn require_verification_origin(url: &Url, device_base: &Url) -> Result<()> {
 
 fn http_client() -> Result<Client> {
     Client::builder()
+        .retry(reqwest::retry::never())
         .redirect(Policy::none())
         .timeout(REQUEST_TIMEOUT)
         .user_agent(concat!("nanocodex-cli/", env!("CARGO_PKG_VERSION")))
@@ -3066,6 +3644,249 @@ mod tests {
     };
 
     use super::*;
+
+    // Generated solely for these tests; never a real account or server credential.
+    const SSH_TEST_PEM: &str = include_str!("../tests/fixtures/ssh-import-test-key.pem");
+    const SSH_TEST_PIN: &str = "SHA256:AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE";
+
+    fn synthetic_ssh_import() -> SshCredentialImport {
+        SshCredentialImport {
+            reference: "synthetic-server".to_owned(),
+            hostname: "host.example".to_owned(),
+            port: 22,
+            username: "deploy".to_owned(),
+            host_key_sha256: SSH_TEST_PIN.to_owned(),
+            private_key: SSH_TEST_PEM.to_owned(),
+        }
+    }
+
+    #[test]
+    fn ssh_commitment_matches_independent_node_vector_and_target_is_exact() {
+        let import = synthetic_ssh_import();
+        assert_eq!(
+            import.resource(),
+            "urn:nanocodex:credential-import:ssh:pem-v1:sha256:4DK4G69oynrEm_tbE6lOsNmjPNvdqroyTcNR1HkPXfc"
+        );
+        assert_eq!(
+            import.target_resource(),
+            "urn:nanocodex:ssh-target:synthetic-server:host.example:22:deploy:SHA256%3AAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE"
+        );
+        assert!(!format!("{import:?}").contains(SSH_TEST_PEM));
+        assert_eq!(encode_uri_component("a:b/é!'()*"), "a%3Ab%2F%C3%A9!'()*");
+    }
+
+    #[test]
+    fn ssh_flags_require_target_and_all_metadata_before_file_access() {
+        #[derive(clap::Parser)]
+        struct Cli {
+            #[command(flatten)]
+            connect: Connect,
+        }
+        for flag in [
+            "--key-file",
+            "--reference",
+            "--hostname",
+            "--port",
+            "--username",
+            "--host-key-sha256",
+        ] {
+            let value = if flag == "--port" { "22" } else { "unused" };
+            let cli = Cli::try_parse_from(["nanocodex", "github", flag, value]).unwrap();
+            assert!(
+                cli.connect
+                    .load_ssh_credential_import()
+                    .unwrap_err()
+                    .to_string()
+                    .contains("require `nanocodex connect ssh`")
+            );
+        }
+        let cli = Cli::try_parse_from(["nanocodex", "ssh", "ssh"]).unwrap();
+        assert!(
+            cli.connect
+                .load_ssh_credential_import()
+                .unwrap_err()
+                .to_string()
+                .contains("only one")
+        );
+        let cli = Cli::try_parse_from(["nanocodex", "ssh"]).unwrap();
+        assert!(
+            cli.connect
+                .load_ssh_credential_import()
+                .unwrap_err()
+                .to_string()
+                .contains("--key-file")
+        );
+        assert_eq!(ConnectTarget::from_str("ssh").unwrap(), ConnectTarget::Ssh);
+        let request = RequestedCapabilities::connect(&[ConnectTarget::Ssh]);
+        assert!(request.connectors.is_empty());
+        assert!(!request.focus_mcp);
+        for host in [
+            "localhost",
+            "host.local",
+            "host.internal",
+            "Host.Example",
+            "127.0.0.1",
+            "192.168.1.1",
+            "100.64.0.1",
+            "::1",
+            "0x7f.0.0.1",
+            "host..example",
+        ] {
+            assert!(!valid_ssh_hostname(host));
+        }
+        for reference in ["constructor", "prototype", "__proto__", "-name", ".name"] {
+            assert!(
+                validate_ssh_target(reference, "host.example", 22, "user", SSH_TEST_PIN).is_err()
+            );
+        }
+        let long_host = format!(
+            "{}.{}.{}.{}",
+            "a".repeat(63),
+            "b".repeat(63),
+            "c".repeat(63),
+            "d".repeat(61)
+        );
+        assert!(
+            validate_ssh_target(
+                &"r".repeat(64),
+                &long_host,
+                65535,
+                &"u".repeat(128),
+                SSH_TEST_PIN
+            )
+            .unwrap_err()
+            .to_string()
+            .contains("512-byte")
+        );
+        let cli = Cli::try_parse_from(["nanocodex", "ssh", "chatgpt"]).unwrap();
+        assert!(
+            cli.connect
+                .load_ssh_credential_import()
+                .unwrap_err()
+                .to_string()
+                .contains("separate connect requests")
+        );
+        assert!(validate_ssh_target("ref", "host.example", 0, "user", SSH_TEST_PIN).is_err());
+        assert!(
+            validate_ssh_target("ref", "https://host.example", 22, "user", SSH_TEST_PIN).is_err()
+        );
+        assert!(validate_ssh_target("ref", "host.example", 22, "user", "SHA256:bad").is_err());
+    }
+
+    #[test]
+    fn ssh_supported_rsa_ec_and_pkcs8_pem_structures() {
+        for pem in [
+            SSH_TEST_PEM,
+            include_str!("../tests/fixtures/ssh-import-test-rsa.pem"),
+            include_str!("../tests/fixtures/ssh-import-test-rsa-pkcs8.pem"),
+            include_str!("../tests/fixtures/ssh-import-test-ec-pkcs8.pem"),
+        ] {
+            assert!(valid_ssh_pem(pem));
+            assert!(valid_ssh_pem(&pem.replace('\n', "\r\n")));
+            assert!(valid_ssh_pem(pem.trim_end()));
+            assert!(!valid_ssh_pem(&pem.replace("M", "!")));
+        }
+    }
+
+    #[test]
+    fn ssh_file_is_bounded_regular_pem_and_never_echoed_in_errors() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("synthetic.pem");
+        fs::write(&path, SSH_TEST_PEM).unwrap();
+        assert_eq!(load_ssh_private_key(&path).unwrap(), SSH_TEST_PEM);
+        assert!(!valid_ssh_pem(&format!(" {SSH_TEST_PEM}")));
+        assert!(!valid_ssh_pem(&format!("{SSH_TEST_PEM}\n")));
+        assert!(!valid_ssh_pem(&format!("{SSH_TEST_PEM} ")));
+
+        assert!(load_ssh_private_key(directory.path()).is_err());
+        #[cfg(unix)]
+        {
+            let link = directory.path().join("link.pem");
+            std::os::unix::fs::symlink(&path, &link).unwrap();
+            assert!(load_ssh_private_key(&link).is_err());
+        }
+        for invalid in [
+            "PRIVATE-SENTINEL-invalid",
+            "-----BEGIN OPENSSH PRIVATE KEY-----\nPRIVATE-SENTINEL\n-----END OPENSSH PRIVATE KEY-----",
+            "-----BEGIN ENCRYPTED PRIVATE KEY-----\nPRIVATE-SENTINEL\n-----END ENCRYPTED PRIVATE KEY-----",
+            "-----BEGIN RSA PRIVATE KEY-----\nAQIDBA==\n-----END RSA PRIVATE KEY-----",
+        ] {
+            fs::write(&path, invalid).unwrap();
+            let error = load_ssh_private_key(&path).unwrap_err().to_string();
+            assert!(error.contains("unencrypted"));
+            assert!(!error.contains("PRIVATE-SENTINEL"));
+        }
+        fs::write(&path, vec![b'x'; SSH_KEY_LIMIT as usize + 1]).unwrap();
+        assert!(
+            load_ssh_private_key(&path)
+                .unwrap_err()
+                .to_string()
+                .contains("64 KiB")
+        );
+    }
+
+    #[tokio::test]
+    async fn ssh_http_flow_commits_target_and_posts_key_only_after_approval() {
+        nanocodex::oai::transport::install_default_rustls_crypto_provider();
+        let directory = tempfile::tempdir().unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let captured = Arc::new(Mutex::new(Vec::<Value>::new()));
+        let server = tokio::spawn(mock_hosted_login_server(listener, Arc::clone(&captured)));
+        let paths = LoginPaths {
+            login: directory.path().join("connect.json"),
+            accounts: directory.path().join("accounts.json"),
+        };
+        let import = synthetic_ssh_import();
+        let expected_body = serde_json::to_value(&import).unwrap();
+        let expected_resource = import.resource();
+        let expected_target = import.target_resource();
+        let flow = LoginFlow::new(
+            Url::parse(&format!("http://{address}/v1/device/")).unwrap(),
+            paths.clone(),
+            false,
+        )
+        .unwrap()
+        .with_ssh_credential_import(Some(import));
+        // A simultaneous existing connector grant remains in the requested set.
+        flow.complete(
+            RequestedCapabilities::connect(&[
+                ConnectTarget::Ssh,
+                ConnectTarget::Connector(Connector::Github),
+            ]),
+            None,
+        )
+        .await
+        .unwrap();
+        server.await.unwrap();
+        let requests = captured.lock().await;
+        let registration = &requests[0]["body"];
+        let resources = registration["message"]["payload"][0]["params"][0]["capabilities"]["auth"]
+            ["resources"]
+            .as_array()
+            .unwrap();
+        assert!(resources.contains(&json!(expected_resource)));
+        assert!(resources.contains(&json!(expected_target)));
+        assert!(resources.contains(&json!("urn:nanocodex:connectors:github")));
+        assert!(!registration.to_string().contains("PRIVATE KEY"));
+        assert!(!requests[1]["body"].to_string().contains("PRIVATE KEY"));
+        assert_eq!(requests[2]["body"]["ssh_credential_import"], expected_body);
+        assert_eq!(
+            requests[2]["body"]["ssh_credential_import"]
+                .as_object()
+                .unwrap()
+                .len(),
+            6
+        );
+        assert_eq!(
+            requests[2]["body"]["requested_connectors"],
+            json!(["github"])
+        );
+        let stored = fs::read_to_string(&paths.login).unwrap();
+        assert!(!stored.contains("PRIVATE KEY"));
+        assert!(!stored.contains("ssh_credential_import"));
+        assert!(!paths.accounts.exists());
+    }
 
     const ACCESS_SENTINEL: &str = "access-token-sentinel-never-log";
     const REFRESH_SENTINEL: &str = "opaque-refresh-token-sentinel-never-log_A1b2C3d4E5f6G7h8I9j0";
@@ -3456,6 +4277,7 @@ mod tests {
             browser_cookie_origin: None,
             focus_connector: None,
             focus_mcp: false,
+            ssh_resources: Vec::new(),
         };
         let request =
             wallet_connect_request(&origin, &defaults, &signer, 4_000_000_000, None).unwrap();
@@ -3505,6 +4327,7 @@ mod tests {
             browser_cookie_origin: None,
             focus_connector: Some("github"),
             focus_mcp: false,
+            ssh_resources: Vec::new(),
         };
         let request =
             wallet_connect_request(&origin, &optional, &signer, 4_000_000_000, None).unwrap();
@@ -3537,6 +4360,7 @@ mod tests {
             browser_cookie_origin: None,
             focus_connector: None,
             focus_mcp: false,
+            ssh_resources: Vec::new(),
         };
         let request =
             wallet_connect_request(&origin, &multiple, &signer, 4_000_000_000, None).unwrap();
@@ -4337,6 +5161,7 @@ mod tests {
                     browser_cookie_origin: None,
                     focus_connector: Some("github"),
                     focus_mcp: false,
+                    ssh_resources: Vec::new(),
                 },
                 Some(PendingRetirement::from_login(&prior, true)),
             )
@@ -4389,6 +5214,7 @@ mod tests {
                     browser_cookie_origin: None,
                     focus_connector: None,
                     focus_mcp: false,
+                    ssh_resources: Vec::new(),
                 },
                 Some(PendingRetirement::from_login(&prior, true)),
             )
@@ -4445,6 +5271,7 @@ mod tests {
                 browser_cookie_origin: None,
                 focus_connector: None,
                 focus_mcp: false,
+                ssh_resources: Vec::new(),
             },
             Some(PendingRetirement::from_login(&prior, true)),
         )

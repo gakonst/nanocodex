@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
-import { realpath, stat } from "node:fs/promises";
-import { homedir } from "node:os";
+import { realpath, stat, statfs } from "node:fs/promises";
+import { homedir, availableParallelism, totalmem, loadavg } from "node:os";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import {
@@ -307,7 +307,8 @@ export async function createNodeProcessTools({
       }
     },
   });
-  return Object.freeze({ tools: [exec, stdin], close: exec.dispose });
+  return Object.freeze({ tools: [exec, stdin], close: exec.dispose,
+    resources: await observeResources(root) });
 }
 
 function integer(value, fallback, minimum, maximum) {
@@ -317,4 +318,20 @@ function integer(value, fallback, minimum, maximum) {
       `Expected an integer between ${minimum} and ${maximum}.`,
     );
   return value;
+}
+
+/** Collection failures leave individual facts absent. Never run commands or expose host paths. */
+async function observeResources(workspace) {
+  const resources = { observed_at_ms: Date.now() };
+  try { resources.cpu_logical_count = availableParallelism(); } catch {}
+  try { resources.memory_total_bytes = totalmem(); } catch {}
+  // Node freemem is free memory, not the OS's reclaimable available memory.
+  // Keep its distinct meaning rather than pretending it is available capacity.
+  try { if (process.platform !== "win32") resources.load_average_1m = loadavg()[0]; } catch {}
+  try {
+    const disk = await statfs(workspace);
+    resources.disk_total_bytes = disk.blocks * disk.bsize;
+    resources.disk_available_bytes = disk.bavail * disk.bsize;
+  } catch {}
+  return Object.freeze(resources);
 }

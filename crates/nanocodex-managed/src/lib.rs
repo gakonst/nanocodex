@@ -57,7 +57,7 @@ pub use types::*;
 pub use vault::{
     VAULT_REQUEST_MAX_BYTES, VaultBodyEncoding, VaultJwt, VaultKeyEncoding, VaultLogin,
     VaultRequest, VaultRequestMethod, VaultRequestReceipt, VaultSignatureEncoding, VaultSigning,
-    VaultSigningAlgorithm,
+    VaultSigningAlgorithm, VaultSshTarget,
 };
 
 #[cfg(feature = "tools")]
