@@ -1237,6 +1237,7 @@ private struct AgentComposerView: View {
     @State private var showFiles = false
     @State private var showAttachmentMenu = false
     @State private var attachmentAction: AttachmentAction?
+    @State private var attachmentMenuTarget: InboxModel.AttachmentTarget?
     @State private var selectedPhotos: [PhotosPickerItem] = []
     @State private var photosFilter: PHPickerFilter = .any(of: [.images, .videos])
     @State private var photoTarget: InboxModel.AttachmentTarget?
@@ -1388,7 +1389,11 @@ private struct AgentComposerView: View {
                 composerText.frame(minHeight: 52, alignment: .topLeading).padding(.horizontal, 12)
             }
             HStack(alignment: .bottom, spacing: 2) {
-                Button { focused = false; showAttachmentMenu = true } label: {
+                Button {
+                    focused = false
+                    attachmentMenuTarget = model.captureAttachmentTarget()
+                    showAttachmentMenu = true
+                } label: {
                     Image(systemName: "plus").frame(width: 44, height: 44).contentShape(Rectangle())
                 }.accessibilityLabel("Add attachments").accessibilityIdentifier("add-attachments")
                     .disabled(!model.focusedSupportsRichInput)
@@ -1532,30 +1537,32 @@ private struct AgentComposerView: View {
     }
 
     private func openSelectedAttachmentAction() {
+        let target = attachmentMenuTarget
+        attachmentMenuTarget = nil
         guard let action = attachmentAction else { return }
         attachmentAction = nil
         switch action {
         case .camera:
-            Task { await openCamera() }
+            guard let target else { return }
+            Task { await openCamera(target: target) }
         case .photos, .videos:
             photosFilter = if case .videos = action { .videos } else { .any(of: [.images, .videos]) }
-            guard let target = model.captureAttachmentTarget() else { return }
+            guard let target else { return }
             photoTarget = target; selectedPhotos = []; pickerError = nil; showPhotos = true
         case .files:
-            guard let target = model.captureAttachmentTarget() else { return }
+            guard let target else { return }
             fileTarget = target; pickerError = nil; showFiles = true
         case .context:
             model.showContext = true
         case .recentPhoto(let provider):
-            guard let target = model.captureAttachmentTarget() else { return }
+            guard let target else { return }
             pickerError = nil
             model.importAttachmentProviders([provider], target: target)
         }
     }
 
     #if os(iOS)
-    @MainActor private func openCamera() async {
-        guard let target = model.captureAttachmentTarget() else { return }
+    @MainActor private func openCamera(target: InboxModel.AttachmentTarget) async {
         pickerError = nil
         guard UIImagePickerController.isSourceTypeAvailable(.camera) else {
             pickerError = "Camera is unavailable on this device. Choose Photos or Files instead."
