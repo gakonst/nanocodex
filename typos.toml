@@ -54,6 +54,9 @@ extend-ignore-re = ['\bwaymote-streamd\b', '\bgrantUniveralAccess\b', '\bitms-be
 mappin = "mappin"
 
 [default.extend-words]
+# Laso is the provider name used by the card integration.
+Laso = "Laso"
+laso = "laso"
 # PDF's FlateDecode compression filter is a protocol identifier.
 Flate = "Flate"
 # Mesa's OpenGL-over-Vulkan driver.
