@@ -263,6 +263,28 @@ turns continue in the cloud; local shell work is stopped when switching. If
 launching or attaching fails, the source thread stays open and the error includes
 the new agent ID when available. Use `/attach` to return to the source thread.
 
+Press Ctrl+R to search recent prompts across sessions opened on this computer.
+Matches rank by relevance, with recency breaking ties. Ctrl+F switches between
+all cached sessions and the current session; Page Up/Down scrolls the full
+preview. Enter or Tab puts the selected prompt in the composer for editing.
+Esc closes the picker or cancels a pending lookup, preserving your draft.
+
+On macOS and Linux, recent prompts survive restarts and `/reload`. The private
+cache keeps at most
+100 distinct prompts, with a 64 KiB per-prompt and 2 MiB file limit, beside the
+selected account file under `prompt-history/`. Each service and login credential
+has its own cache; switching credentials starts a separate history. Concurrent
+terminals merge their entries. Saved prompts include submitted input and history
+loaded into a terminal; sessions never opened locally are not downloaded for
+this search. If the cache cannot be read, current-session prompts remain usable
+and the terminal reports the error.
+
+Use `/copy` to copy the latest completed assistant message as raw Markdown, or
+`/copy N` for the Nth latest message. **Copy response** is also in the Actions
+menu. Copying uses the focused pane, includes loaded history, and works during
+a response. Empty messages, reasoning, tool output, and unfinished streamed
+messages are excluded. Remote terminals use the terminal clipboard protocol.
+
 Scrolling back through older history keeps typing and live updates responsive.
 `nanocodex2 attach` and the in-TUI `/attach` command show recent threads first,
 ordered by last activity, with titles above session IDs. Type to fuzzy search

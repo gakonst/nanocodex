@@ -21,7 +21,7 @@ describe("per-user root wallets", () => {
 
     const metadata = await SELF.fetch("https://broker.internal/users/wallet-provision-a/wallet");
     expect(metadata.status).toBe(200);
-    expect(await metadata.json()).toEqual(first);
+    expect(await metadata.json()).toEqual({ ...first, mode: "internal", original_address: first.address });
 
     const stub = workerEnv.USER_CREDENTIALS.getByName("wallet-provision-a");
     await runInDurableObject(stub, async (_instance: UserCredentialBroker, state) => {
@@ -100,12 +100,12 @@ describe("per-user root wallets", () => {
     const wallet = await provision(user);
     const snapshot = await SELF.fetch(`https://broker.internal/users/${user}/wallet`, { headers: { accept: "application/vnd.nanocodex.wallet-snapshot+json" } });
     expect(snapshot.status).toBe(200);
-    await expect(snapshot.json()).resolves.toEqual({ ...wallet, balance: {
+    await expect(snapshot.json()).resolves.toEqual({ ...wallet, mode: "internal", original_address: wallet.address, balance: {
       account: wallet.address, balance: "12345678", decimals: 6, symbol: "MACH",
       token: "0x20c000000000000000000000f37de3740adec032",
     } });
     const metadata = await SELF.fetch(`https://broker.internal/users/${user}/wallet`);
-    await expect(metadata.json()).resolves.toEqual(wallet);
+    await expect(metadata.json()).resolves.toEqual({ ...wallet, mode: "internal", original_address: wallet.address });
   });
 
   it("keeps a stalled balance out of the credential queue and refreshes the next snapshot live", async () => {
@@ -136,13 +136,13 @@ describe("per-user root wallets", () => {
       const status = await SELF.fetch(`https://broker.internal/users/${user}/credentials`);
       await expect(status.json()).resolves.toMatchObject({ ready: false, openai: { connected: false } });
       const metadata = await SELF.fetch(`https://broker.internal/users/${user}/wallet`);
-      await expect(metadata.json()).resolves.toEqual(wallet);
+      await expect(metadata.json()).resolves.toEqual({ ...wallet, mode: "internal", original_address: wallet.address });
       const unavailable = await snapshot;
       expect(unavailable.status).toBe(200);
-      await expect(unavailable.json()).resolves.toEqual({ ...wallet, balance: null });
+      await expect(unavailable.json()).resolves.toEqual({ ...wallet, mode: "internal", original_address: wallet.address, balance: null });
       await control("release", "0x" + "0".repeat(62) + "2a");
       const recovered = await SELF.fetch(`https://broker.internal/users/${user}/wallet`, { headers: { accept: "application/vnd.nanocodex.wallet-snapshot+json" } });
-      await expect(recovered.json()).resolves.toEqual({ ...wallet, balance: {
+      await expect(recovered.json()).resolves.toEqual({ ...wallet, mode: "internal", original_address: wallet.address, balance: {
         account: wallet.address, balance: "42", decimals: 6, symbol: "MACH",
         token: "0x20c000000000000000000000f37de3740adec032",
       } });
@@ -223,7 +223,9 @@ describe("per-user root wallets", () => {
 async function provision(user: string): Promise<{ address: string; created_at: number }> {
   const response = await SELF.fetch(`https://broker.internal/users/${user}/wallet`, { method: "PUT" });
   expect(response.status).toBe(200);
-  return response.json<{ address: string; created_at: number }>();
+  const value = await response.json<{ address: string; created_at: number }>();
+  expect(Object.keys(value).sort()).toEqual(["address", "created_at"]);
+  return value;
 }
 
 function walletConnect(user: string, body: unknown): Promise<Response> {

@@ -640,6 +640,18 @@ export async function routeAccountRequest(
     if (!principal) return unauthorized();
     return proxyAccountWalletRequest(env, principal.userId, "/balance");
   }
+  if (["/v1/wallet/link", "/v1/wallet/link/poll", "/v1/wallet/link/cancel", "/v1/wallet/unlink"].includes(url.pathname)) {
+    if (request.method !== "POST") return methodNotAllowed();
+    const principal = await authenticatePersistentAccount(request, env, url);
+    if (!principal) return unauthorized();
+    const originFailure = requireSameOriginMutation(request, url, principal);
+    if (originFailure) return originFailure;
+    const body = await readJson(request, MAX_WALLET_MUTATION_BODY_BYTES);
+    if (body instanceof Response) return body;
+    if (containsBrowserPrivateKey(body)) return json({ error: "invalid_wallet_request" }, { status: 400 });
+    const suffix = url.pathname.slice("/v1/wallet".length) as "/link" | "/link/poll" | "/link/cancel" | "/unlink";
+    return proxyAccountWalletRequest(env, principal.userId, suffix, body);
+  }
   if (url.pathname === "/v1/wallet/connect" || url.pathname === "/v1/wallet/revoke-access-key") {
     if (request.method !== "POST") return methodNotAllowed();
     const principal = await authenticatePersistentAccount(request, env, url);
@@ -1640,7 +1652,7 @@ async function readAccountWallet(
   let response: Response;
   try {
     response = await env.NANOCODEX.fetch(
-      `https://broker.internal/users/${encodeURIComponent(userId)}/wallet`,
+      `https://broker.internal/users/${encodeURIComponent(userId)}/wallet/identity`,
     );
   } catch {
     throw new Error("wallet unavailable");
@@ -1656,7 +1668,7 @@ async function readAccountWallet(
 async function proxyAccountWalletRequest(
   env: AccountAuthEnv,
   userId: string,
-  suffix: "" | "/balance" | "/connect" | "/revoke-access-key",
+  suffix: "" | "/balance" | "/connect" | "/revoke-access-key" | "/link" | "/link/poll" | "/link/cancel" | "/unlink",
   body?: Record<string, unknown>,
 ): Promise<Response> {
   if (!env.NANOCODEX) return json({ error: "wallet_unavailable" }, { status: 503 });

@@ -914,6 +914,20 @@ jobs:
             output/claude-connection/inline-*.png
             output/claude-connection/popover-*.png
           if-no-files-found: warn
+      - name: Test linked Tempo wallet and funding journeys
+        # Wallet custody journeys run even while the broader test matrix is paused.
+        run: |
+          pnpm --filter nanocodex-egress-service run test:wallet-link
+          WALLET_BROWSER_CHANNEL=chromium pnpm --filter nanocodex-web run test:wallet
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: linked-wallet-journeys
+          path: |
+            js/egress/output/wallet-link-journey.json
+            output/wallet-link-ui/*
+            output/wallet-ui/*
+          if-no-files-found: warn
       - name: Test Astra MPP example
         if: needs.changes.outputs.tests == 'true'
         run: npm test --prefix examples/astra-mpp-trial

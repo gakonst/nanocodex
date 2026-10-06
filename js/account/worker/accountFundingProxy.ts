@@ -10,7 +10,7 @@ const ORDER_STATUS_PATH = /^\/v1\/machine-usd\/orders\/[A-Za-z0-9_-]+$/;
 
 /**
  * Projects the public onramp while binding order creation to the persistent
- * account's Worker-owned wallet. Account cookies never reach Connect API.
+ * account's active payment wallet. Account cookies never reach Connect API.
  */
 export async function routeAccountFunding(
   request: Request,
@@ -43,6 +43,10 @@ export async function routeAccountFunding(
       || (body.usd_amount_cents as number) < 500 || (body.usd_amount_cents as number) > 10_000
       || typeof body.order_token !== "string" || !body.order_token || body.order_token.length > 255
       || body.payment_mode !== "hosted_checkout") return json({ error: "invalid_request" }, 400);
+    // A wallet switch must never redirect a checkout the user prepared for another address.
+    if (typeof body.wallet_address !== "string" || body.wallet_address.toLowerCase() !== account!.address) {
+      return json({ error: "wallet_changed" }, 409);
+    }
     const key = request.headers.get("idempotency-key");
     if (!key || key.length > 180) return json({ error: "invalid_request" }, 400);
     expectedCents = body.usd_amount_cents as number;
@@ -130,7 +134,16 @@ async function persistentAccount(
     || body.user.persistent !== true
     || typeof body.user.address !== "string"
     || !ADDRESS.test(body.user.address) || /^0x0{40}$/i.test(body.user.address)) return undefined;
-  return { address: body.user.address.toLowerCase() };
+  // The sign-in address remains the original account identity after linking.
+  // Resolve the selected payment wallet with the same owner session.
+  try {
+    const walletResponse = await env.NANOCODEX_BACKEND.fetch(new Request(new URL("/v1/wallet", url), { method: "GET", headers }));
+    if (!walletResponse.ok) { await walletResponse.body?.cancel(); return undefined; }
+    const wallet: unknown = await walletResponse.json();
+    if (!isRecord(wallet) || typeof wallet.address !== "string" || !ADDRESS.test(wallet.address)
+      || /^0x0{40}$/i.test(wallet.address)) return undefined;
+    return { address: wallet.address.toLowerCase() };
+  } catch { return undefined; }
 }
 
 function upstreamHeaders(request: Request, env: AccountFundingProxyEnv, url: URL): Headers {

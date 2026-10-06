@@ -147,6 +147,9 @@ test("SMS sign-in, real broker signing, Connect grant and durable app threads", 
     base = await mf.ready;
     connectWorker = await mf.getWorker("connect");
     await call("unsigned wallet bridge denied", "/v1/wallet/connect", { body: {}, expected: 401 });
+    for (const path of ["/v1/wallet/link", "/v1/wallet/link/poll", "/v1/wallet/link/cancel", "/v1/wallet/unlink"]) {
+      await call("anonymous wallet linking denied", path, { body: { operation_id: "cfd6e856-f945-4bc6-9cc6-2514a9a931e0" }, expected: 401 });
+    }
     const challenge = (await call("SMS challenge issued", "/v1/auth/sms/start", { body: { phone }, expected: 202 })).value;
     const login = await call("SMS verification provisions real broker wallet", "/v1/auth/sms/verify", {
       body: { phone, code, challenge_id: challenge.challenge_id },
@@ -190,6 +193,10 @@ test("SMS sign-in, real broker signing, Connect grant and durable app threads", 
     await thread(other, `/agents/${agent}`, { identity: otherApp, expected: 404, label: "other app cannot read first app session" });
     await thread(connection, "/threads", { token: "z".repeat(43), expected: 401, label: "invalid grant token denied" });
     await call("foreign origin cannot invoke signing", "/v1/wallet/connect", { body: {}, origin: "https://foreign.example", expected: 403 });
+    for (const path of ["/v1/wallet/link", "/v1/wallet/link/poll", "/v1/wallet/link/cancel", "/v1/wallet/unlink"]) {
+      await call("foreign origin cannot change payment wallet", path, { body: { operation_id: "cfd6e856-f945-4bc6-9cc6-2514a9a931e0" }, origin: "https://foreign.example", expected: 403 });
+      await call("wallet link rejects browser secret import", path, { body: { privateKey: "synthetic-rejected-secret" }, expected: 400 });
+    }
     assert.equal(sends, 1); assert.equal(checks, 1);
     passed = true;
     t.diagnostic(`${trace.length} HTTP/service observations; real broker signing, Handler verification, account linking, grants and durable session isolation passed`);

@@ -101,6 +101,26 @@ impl fmt::Debug for ManagedClient {
 }
 
 impl ManagedClient {
+    /// Opaque namespace for local caches scoped to this service and login.
+    /// Credential rotation intentionally selects a new namespace. This digest
+    /// is an identifier only and must never be accepted as authorization.
+    pub fn local_cache_namespace(&self) -> String {
+        use sha2::{Digest as _, Sha256};
+
+        let mut hash = Sha256::new();
+        hash.update(b"nanocodex.local-cache-namespace.v1\0");
+        for value in [self.base_url.as_str().as_bytes(), self.bearer.as_bytes()] {
+            hash.update((value.len() as u64).to_be_bytes());
+            hash.update(value);
+        }
+        use std::fmt::Write as _;
+        let mut namespace = String::with_capacity(64);
+        for byte in hash.finalize() {
+            let _ = write!(namespace, "{byte:02x}");
+        }
+        namespace
+    }
+
     /// Starts configuring a native managed client.
     ///
     /// # Errors

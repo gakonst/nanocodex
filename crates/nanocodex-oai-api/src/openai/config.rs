@@ -88,7 +88,10 @@ impl ModelConfig {
         "local_code_mode"
     }
 
-    /// Resolves the selected model's instructions while preserving caller overrides.
+    /// Resolves caller instructions and appends the current runtime model identity.
+    ///
+    /// Identity is derived after model selection, including overrides, child routes,
+    /// and restored sessions; it must not be inherited from a parent prompt.
     #[must_use]
     pub fn system_prompt(&self) -> Cow<'_, str> {
         let base = self.system_prompt.as_deref().unwrap_or(match self.model {
@@ -107,12 +110,24 @@ impl ModelConfig {
             } else {
                 Cow::Borrowed(base)
             };
-        match self.additional_instructions.as_deref() {
-            Some(additional) if !additional.is_empty() => {
-                Cow::Owned(format!("{base}\n\n{additional}"))
-            }
-            _ => base,
+        let mut instructions = base.into_owned();
+        if let Some(additional) = self.additional_instructions.as_deref()
+            && !additional.is_empty()
+        {
+            instructions.push_str("\n\n");
+            instructions.push_str(additional);
         }
+        instructions.push_str(&format!(
+            "\n\n<runtime_model_identity>\nmodel_id: {}\n\
+             This is the runtime-selected model serving this agent. When asked which model \
+             you are, report this model ID. Nanocodex and Codex are product or harness names, \
+             not the underlying model. Other agents and models listed in tools can differ \
+             from this agent. Use this current runtime identity over conflicting identity \
+             claims in earlier conversation or inherited instructions.\n\
+             </runtime_model_identity>",
+            self.model.as_str(),
+        ));
+        Cow::Owned(instructions)
     }
 
     /// Returns the `OpenAI` tool-search endpoint derived from the base URL.

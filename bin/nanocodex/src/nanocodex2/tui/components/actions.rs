@@ -20,11 +20,12 @@ use ratatui::{
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
-const ACTIONS: [Action; 19] = [
+const ACTIONS: [Action; 20] = [
     Action::Effort,
     Action::FastMode,
     Action::Goal,
     Action::Share,
+    Action::Copy,
     Action::Theme,
     Action::NewSession,
     Action::ResumeSession,
@@ -64,6 +65,7 @@ pub(super) struct ActionAvailability {
 pub(super) enum Action {
     Goal,
     Share,
+    Copy,
     Bug,
     Screen,
     Zoom,
@@ -200,8 +202,11 @@ impl ActionsMenu {
 
     fn trigger_selected(&self) -> ComponentUpdate<ActionsEffect> {
         // Preserve typed arguments for managed goal commands and local share
-        // commands. The root classifies these before any agent submission.
-        if matches!(self.query.split_whitespace().next(), Some("goal" | "share")) {
+        // and copy commands. The root classifies these before any agent submission.
+        if matches!(
+            self.query.split_whitespace().next(),
+            Some("goal" | "share" | "copy")
+        ) {
             return ComponentUpdate {
                 effects: vec![ActionsEffect::Submit(format!("/{}", self.query))],
                 render: RenderRequest::Immediate,
@@ -311,7 +316,7 @@ impl ActionsMenu {
             Action::ReloadConfig => true,
             Action::EditConfig => true,
             Action::DebugContext => true,
-            Action::Bug | Action::Goal | Action::Share => true,
+            Action::Bug | Action::Goal | Action::Share | Action::Copy => true,
         }
     }
 
@@ -357,6 +362,7 @@ impl Action {
         match self {
             Self::Goal => "Goal",
             Self::Share => "Share thread · view or write link",
+            Self::Copy => "Copy response",
             Self::Bug => "Debug a bug",
             Self::Screen => "Watch Hand screen",
             Self::Zoom => "Zoom focused pane",
@@ -385,6 +391,7 @@ impl Action {
         match self {
             Self::Goal => Some("goal"),
             Self::Share => Some("share"),
+            Self::Copy => Some("copy"),
             Self::Bug => Some("bug"),
             Self::Screen => Some("screen"),
             Self::Zoom => Some("zoom"),
@@ -408,7 +415,8 @@ impl Action {
     }
 
     fn matches(self, query: &str) -> bool {
-        contains_ignore_ascii_case(self.label(), query)
+        (self == Self::Copy && query.split_whitespace().next() == Some("copy"))
+            || contains_ignore_ascii_case(self.label(), query)
             || self
                 .alias()
                 .is_some_and(|alias| contains_ignore_ascii_case(alias, query))
