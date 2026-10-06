@@ -68,7 +68,7 @@
     "@cloudflare/computer": "0.2.1",
     "@cloudflare/sandbox": "0.12.4",
     "@jitl/quickjs-wasmfile-release-asyncify": "0.32.0",
-    "accounts": "https://pkg.pr.new/tempoxyz/accounts@ceaf876",
+    "accounts": "https://pkg.pr.new/tempoxyz/accounts@56efdd1",
     "agents": "0.22.0",
     "ai": "7.0.90",
     "cron-parser": "5.6.0",

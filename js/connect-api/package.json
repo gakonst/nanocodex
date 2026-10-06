@@ -11,7 +11,7 @@
     "deploy": "wrangler deploy --env=\"\" --config wrangler.jsonc"
   },
   "dependencies": {
-    "accounts": "https://pkg.pr.new/tempoxyz/accounts@ceaf876",
+    "accounts": "https://pkg.pr.new/tempoxyz/accounts@56efdd1",
     "nanocodex-connect-protocol": "workspace:*",
     "nanocodex-vite": "workspace:*",
     "ox": "0.14.36",

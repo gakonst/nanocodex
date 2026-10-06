@@ -20,7 +20,7 @@
     "test:vault-requests": "node --test test/vault-signing-journey.node.test.mjs"
   },
   "dependencies": {
-    "accounts": "https://pkg.pr.new/tempoxyz/accounts@ceaf876",
+    "accounts": "https://pkg.pr.new/tempoxyz/accounts@56efdd1",
     "mppx": "0.11.0",
     "nanocodex": "workspace:*",
     "viem": "2.57.2",
