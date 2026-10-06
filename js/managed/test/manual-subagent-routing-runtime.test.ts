@@ -19,16 +19,26 @@ const contract = { kind: "object", fields: [
   { name: "turn", schema: { kind: "integer" }, required: true },
 ] };
 const completion = (message: unknown, tool = false) => ({ choices: [{ finish_reason: tool ? "tool_calls" : "stop", message }] });
+// Keep provider fixtures on the same Code Mode boundary as managed models.
+function receiptContent(content: string | { text?: string }[]) {
+  const text = typeof content === "string" ? content : content.map(block => block.text ?? "").join("\n");
+  const receipt = text.match(/NESTED_RECEIPT:(.+)/);
+  if (!receipt) return text; // Admission failures remain error receipts.
+  const value = JSON.parse(receipt[1]);
+  return typeof value === "string" ? value : JSON.stringify(value);
+}
+function normalizeResults(input: any) {
+  return { ...input, messages: input.messages.map((message: any) => message.role === "tool"
+    ? { ...message, content: receiptContent(message.content) } : message) };
+}
 function toolCall(input: any, name: string, args: unknown, id: string) {
-  const declaration = input.tools.find((tool: any) => tool.function.description.startsWith(`${name}\n`));
-  expect(declaration, `${name} must come from the actual Rust/WASM tool catalog`).toBeDefined();
-  if (name === "spawn_agent") {
-    expect(declaration.function.strict).toBe(true);
-    expect(declaration.function.parameters.properties.output_contract).toBeDefined();
-    expect(declaration.function.parameters.properties.output_schema).toBeUndefined();
-  }
+  const toolName = (tool: any) => tool.function.description?.split("\n")[0] ?? tool.function.name;
+  expect(input.tools.map(toolName).sort()).toEqual(["exec", "wait"]);
+  const declaration = input.tools.find((tool: any) => toolName(tool) === "exec");
+  expect(declaration, "exec must come from the actual Rust/WASM tool catalog").toBeDefined();
+  const code = `text("NESTED_RECEIPT:"+JSON.stringify(await tools.${name}(${JSON.stringify(args)})));`;
   return completion({ content: null, tool_calls: [{ id, type: "function", function: {
-    name: declaration.function.name, arguments: JSON.stringify(args),
+    name: declaration.function.name, arguments: JSON.stringify({ input: code }),
   } }] }, true);
 }
 
@@ -44,7 +54,7 @@ function providerSse(value: any, native: boolean) {
 function toNative(chat: any) {
   const message = chat.choices[0].message;
   return { object: "response", status: "completed", output: message.tool_calls?.map((call: any) => ({
-    type: "function_call", call_id: call.id, name: call.function.name, arguments: call.function.arguments,
+    type: "custom_tool_call", call_id: call.id, name: "exec", input: JSON.parse(call.function.arguments).input,
   })) ?? [{ type: "message", role: "assistant", content: [{ type: "output_text", text: message.content }] }] };
 }
 
@@ -60,12 +70,14 @@ it.each([
     const sockets: WebSocket[] = [];
     const tool = (body: any, name: string, args: unknown) => toolCall(body, name, args, crypto.randomUUID());
     const childResponse = (body: any) => {
+      body = normalizeResults(body);
       childCalls++;
       expect(childCalls).toBeLessThanOrEqual(2);
       if (body.messages.at(-1)?.role === "tool") return completion({ content: "MANUAL_CHILD_DONE" });
       return tool(body, "submit_result", { output: JSON.stringify({ value: marker, turn: 1 }) });
     };
     const rootResponse = (body: any) => {
+      body = normalizeResults(body);
       expect(rootStep).toBeLessThan(10);
       if (rootStep++ === 0) return tool(body, "spawn_agent", {
         role: "manual fixture", task: "Return the requested schema.", model: model ?? null, thinking: thinking ?? null,
@@ -114,7 +126,7 @@ it.each([
           const normalized = { tools: declarations.map((declaration: any) => ({ function: {
             ...declaration, description: `${declaration.name}\n${declaration.description ?? ""}`,
           } })),
-            messages: request.input.map((item: any) => item.type === "function_call_output" ? { role: "tool", content: item.output } : item) };
+            messages: request.input.map((item: any) => (item.type === "function_call_output" || item.type === "custom_tool_call_output") ? { role: "tool", content: item.output } : item) };
           const response = request.generate === false ? { output: [] }
             : toNative(isRoot ? rootResponse(normalized) : childResponse(normalized));
           server.send(JSON.stringify({ type: "response.completed", response: { ...response, id: crypto.randomUUID(),

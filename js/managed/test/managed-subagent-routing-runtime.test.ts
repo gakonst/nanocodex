@@ -20,16 +20,26 @@ const contract = { kind: "object", fields: [
   { name: "turn", schema: { kind: "integer" }, required: true },
 ] };
 const completion = (message: unknown, tool = false) => ({ choices: [{ finish_reason: tool ? "tool_calls" : "stop", message }] });
+// Keep provider fixtures on the same Code Mode boundary as managed models.
+function receiptContent(content: string | { text?: string }[]) {
+  const text = typeof content === "string" ? content : content.map(block => block.text ?? "").join("\n");
+  const receipt = text.match(/NESTED_RECEIPT:(.+)/);
+  if (!receipt) return text; // Admission failures remain error receipts.
+  const value = JSON.parse(receipt[1]);
+  return typeof value === "string" ? value : JSON.stringify(value);
+}
+function normalizeResults(input: any) {
+  return { ...input, messages: input.messages.map((message: any) => message.role === "tool"
+    ? { ...message, content: receiptContent(message.content) } : message) };
+}
 function toolCall(input: any, name: string, args: unknown, id: string) {
-  const declaration = input.tools.find((tool: any) => tool.function.description.startsWith(`${name}\n`));
-  expect(declaration, `${name} must come from the actual Rust/WASM tool catalog`).toBeDefined();
-  if (name === "spawn_agent") {
-    expect(declaration.function.strict).toBe(true);
-    expect(declaration.function.parameters.properties.output_contract).toBeDefined();
-    expect(declaration.function.parameters.properties.output_schema).toBeUndefined();
-  }
+  const toolName = (tool: any) => tool.function.description?.split("\n")[0] ?? tool.function.name;
+  expect(input.tools.map(toolName).sort()).toEqual(["exec", "wait"]);
+  const declaration = input.tools.find((tool: any) => toolName(tool) === "exec");
+  expect(declaration, "exec must come from the actual Rust/WASM tool catalog").toBeDefined();
+  const code = `text("NESTED_RECEIPT:"+JSON.stringify(await tools.${name}(${JSON.stringify(args)})));`;
   return completion({ content: null, tool_calls: [{ id, type: "function", function: {
-    name: declaration.function.name, arguments: JSON.stringify(args),
+    name: declaration.function.name, arguments: JSON.stringify({ input: code }),
   } }] }, true);
 }
 
@@ -39,7 +49,7 @@ function fromNative(input: any) {
   expect(input).toMatchObject({ stream: true, store: false });
   expect(input).not.toHaveProperty("messages");
   return { tools: input.tools.map((tool: any) => ({ type: "function", function: tool })),
-    messages: input.input.map((item: any) => item.type === "function_call_output"
+    messages: input.input.map((item: any) => (item.type === "function_call_output" || item.type === "custom_tool_call_output")
       ? { role: "tool", content: item.output } : item) };
 }
 function providerSse(value: any, native: boolean) {
@@ -107,6 +117,7 @@ it.each([
           expect(input.reasoning).toEqual({ effort: "high" });
           input = fromNative(input);
         }
+        input = normalizeResults(input);
         const handleChild = async () => {
           childCalls++;
           if (childCalls === 1) await childInference.promise;
@@ -161,6 +172,7 @@ it.each([
       } },
     } });
     const rootResponse = async (body: any) => {
+      body = normalizeResults(body);
       rootCalls++;
       expect(rootCalls).toBeLessThanOrEqual(20);
       if (provider !== "cloudflare") {
