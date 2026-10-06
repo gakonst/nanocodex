@@ -172,7 +172,7 @@ export function createGatewayResponses(options) {
         }
         if (provider !== "cloudflare" || !supportsMode) reasoningMode = undefined;
         const response = await adapter(request.signal, attempt, reasoningMode).createResponse(endpoint, sessionId, request);
-        attempt.outcome = "success";
+        attempt.outcome = response.ok ? "success" : "http_error";
         deferred = attempt.streaming === true;
         return response;
       }

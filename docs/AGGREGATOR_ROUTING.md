@@ -14,6 +14,15 @@ OpenRouter single-call mode omits `parallel_tool_calls: false` from provider mat
 
 Both gateway routes reuse the existing Rust/WASM loop through a full-history HTTP adapter with streaming and buffered response support. Model and effort remain canonical in agent state; only the gateway wire identifier differs. Custom tools and namespace aliases use the same translation as the Cloudflare route. Stateless HTTP is explicitly configured for gateway GPT models rather than relying on the GLM-specific default. Gateway costs must be interpreted using gateway metadata or invoice records; core canonical-model estimates are not verified gateway charges.
 
+GLM is text-only. Screenshot and other image tool results remain in the session,
+but the GLM provider request replaces each image with a notice that it cannot
+see the image and should delegate visual inspection to an available
+vision-capable subagent returning text. Text from the same tool result is
+preserved. Direct image inputs receive a terminal HTTP 400
+`unsupported_content` response; choose a vision-capable model to continue.
+This also applies to GLM routes through OpenRouter and Vercel. The adapter does
+not change the pinned model or replay the screenshot tool.
+
 ## Cost evidence
 
 On 2026-09-20 the public model catalogs listed GLM input/output USD per million tokens as $0.91/$2.86 at OpenRouter and $1.40/$4.40 at Vercel. These are dated base-rate hints. Context tiers, cache hits, selected upstreams, discounts, currency, and time-dependent pricing can alter effective costs. Catalog token prices are not predicted total task spend. Provider-specific local measurements remain the stronger evidence for completion/cost/duration selection.
