@@ -791,6 +791,22 @@ the relay preserves MPP challenges, credentials, and receipts but never signs.
 Passing a generic `MppSession`, an OpenAI key, or ChatGPT host auth does not
 initialize Mercator. Pass `mcp: false` to opt out explicitly.
 
+Trusted hosts can set a server's `privateResult` policy to intercept raw MCP
+results before model output, Code Mode values, and tool-result tracing.
+`beforeCall({ name, arguments }, context)` runs after payment context validation
+and before remote dispatch. It may reject the call or return `{ privateContext }`. An own
+`result` property instead supplies an already-safe receipt and bypasses both
+remote dispatch and `transformResult`, allowing durable policies to replay a
+receipt without repeating an effect.
+`transformResult({ name, arguments, result, privateContext }, context)` receives
+that invocation's `privateContext` and must return only safe MCP content. State stays local
+to each call, including concurrent calls; it is `undefined` without `beforeCall`.
+Both hooks run within the tool deadline. Failed private requests return a fixed
+failure receipt without the original error or cause. Discovery failures also use
+a fixed message. Callbacks and caller-owned clients remain trusted: they must
+not independently log private payloads or return private state. No notification
+consumer is configured by this policy.
+
 Remote Streamable HTTP MCP servers are configured directly on the agent. The
 JavaScript binding uses the official MCP SDK transport, keeps remote tools
 deferred, and mirrors native Nanocodex exposure: the initial Responses request

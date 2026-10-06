@@ -11,6 +11,8 @@ const spotifyRateTestCalls = new Map<string, number>();
 // Controls only the external Tempo RPC fixture; production broker code is unchanged.
 const walletBalanceFixtures = new Map<string, { started: boolean; result: string; gate?: Promise<void>; release?: () => void }>();
 
+const providerCardReads = new Map<string, number>();
+const providerAuthRefreshes = new Set<string>();
 const TEST_KEY = "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY";
 const REGIONAL_RELAY_CLASSES = ["ChatGptEgressWnam","ChatGptEgressEnam","ChatGptEgressWeur","ChatGptEgressEeur","ChatGptEgressApac","ChatGptEgressSam","ChatGptEgressOc"];
 
@@ -850,6 +852,28 @@ export default defineConfig({
               id: body.id,
               result: String(call.to).toLowerCase() === "0x20c000000000000000000000f37de3740adec032" ? "0x0000000000000000000000000000000000000000000000000000000000bc614e" : "0x" + "0".repeat(64),
             });
+          }
+          if (url.hostname === "laso.finance") {
+            if (url.pathname === "/auth") {
+              const body = await request.json() as Record<string,string>;
+              if (request.method !== "POST" || body.grant_type !== "refresh_token" || !body.refresh_token || providerAuthRefreshes.has(body.refresh_token)) return new Response("token-secret",{status:401});
+              providerAuthRefreshes.add(body.refresh_token);
+              return Response.json({user_id:"synthetic-owner",id_token:"rotated-secret",refresh_token:"rotated-refresh-secret",expires_in:"3600"});
+            }
+            if (url.pathname === "/refresh-card-data") {
+              const body = await request.json() as Record<string,string>;
+              if (request.method !== "POST" || !request.headers.get("Idempotency-Key") || body.card_type !== "Non-Reloadable U.S.") return new Response(null,{status:599});
+              return body.card_id === "refresh-failure" ? new Response("token-secret",{status:500}) : Response.json({message:"token-secret"});
+            }
+            if (url.pathname !== "/get-card-data" || request.method !== "GET" || !request.headers.get("authorization")) return new Response(null,{status:599});
+            const id = url.searchParams.get("card_id");
+            if (!id || [...url.searchParams.keys()].length !== 1) return new Response(null,{status:599});
+            const reads = (providerCardReads.get(id) ?? 0)+1; providerCardReads.set(id,reads);
+            if (id === "one-read" && reads > 1) return new Response("token-secret",{status:503});
+            if (id === "rotated" && request.headers.get("authorization") !== "Bearer rotated-secret") return new Response(null,{status:401});
+            if (id === "redirect") return Response.redirect("https://attacker.invalid/secret");
+            if (id === "pending" || (id === "pending-ready" && reads === 1)) return Response.json({card_id:id,status:"pending"});
+            return Response.json({card_id:id === "mismatch" ? "another-card" : id,status:"ready",usd_amount:999,last_updated_timestamp: id === "stale" ? 1 : Math.floor(Date.now()/1000),card_details:{card_number:"4111111111111111",exp_month:"09",exp_year:"2031",cvv:id === "invalid-ready" && reads === 1 ? "invalid" : "123",available_balance:4.25,billing_address:id === "no-zip" ? null : {zip:"10001"}}});
           }
           if (url.hostname === "api.openai.com" || url.hostname === "chatgpt.com") {
             const authorization = request.headers.get("authorization");

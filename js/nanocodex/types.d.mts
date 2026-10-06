@@ -630,10 +630,14 @@ export type McpTool = {
 
 /** Trusted host interception; callbacks must never log or throw private values. */
 export type McpPrivateResultPolicy = {
-  /** Runs before remote execution and payment context; throw to reject a call. */
-  beforeCall?: ((name: string, input: Record<string, unknown>, context: ToolContext | undefined) => void | Promise<void>) | undefined;
-  /** Receives the raw result and returns ONLY model-safe MCP content. */
-  transformResult: (name: string, input: Record<string, unknown>, result: unknown, context: ToolContext | undefined) => unknown | Promise<unknown>;
+  /** Runs after payment context validation and before remote execution; throw to reject a call.
+   * privateContext is trusted state scoped to this invocation. An own result
+   * property replays an already-safe receipt, bypassing dispatch and transform. */
+  beforeCall?: ((call: { name: string; arguments: Record<string, unknown> }, context: ToolContext | undefined) => void | { privateContext?: unknown; result?: unknown } | Promise<void | { privateContext?: unknown; result?: unknown }>) | undefined;
+  /** Receives the raw result and this invocation's preflight state (undefined when
+   * beforeCall is absent). Returns ONLY model-safe MCP content. Private state is
+   * never included in tool results or tracing unless this callback returns it. */
+  transformResult: (call: { name: string; arguments: Record<string, unknown>; result: unknown; privateContext: unknown }, context: ToolContext | undefined) => unknown | Promise<unknown>;
 };
 
 export type McpServer = {

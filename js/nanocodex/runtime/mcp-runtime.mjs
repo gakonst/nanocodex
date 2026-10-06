@@ -258,12 +258,6 @@ async function connectServer(server, options, signal) {
   }, {
     jsonSchemaValidator: options.jsonSchemaValidator,
   });
-  if (server.privateResult && !server.client) {
-    // Remote notifications and asynchronous protocol errors have no private
-    // result transform. Never forward their payloads to host observers.
-    client.onerror = () => {};
-    client.fallbackNotificationHandler = () => {};
-  }
   if (server.payment) {
     const { context: _context, [mcpPaymentWrap]: wrap, ...payment } = server.payment;
     await wrap(client, payment);
@@ -408,8 +402,7 @@ async function callRemoteTool(entry, input, context) {
   let result;
   try {
     result = await withMcpRequest(entry.server, context?.signal, async (requestOptions) => {
-      await policy?.beforeCall?.(entry.remoteName, input ?? {}, context);
-      requestOptions.signal.throwIfAborted();
+      const call = { name: entry.remoteName, arguments: input ?? {} };
       if (!isServerAvailable(entry.server)) {
         throw new Error(`MCP server ${entry.server.name} is unavailable`);
       }
@@ -417,6 +410,13 @@ async function callRemoteTool(entry, input, context) {
       const paymentContext = typeof configuredContext === "function"
         ? await configuredContext({ name: entry.remoteName, arguments: input ?? {} }, context, entry.client)
         : configuredContext;
+      // Free quote validation must finish before a private policy records its
+      // durable dispatch fence. A failed quote has not attempted the paid call.
+      requestOptions.signal.throwIfAborted();
+      const preflight = await policy?.beforeCall?.(call, context);
+      // A trusted policy may replay a safe receipt without repeating an effect.
+      if (preflight && Object.hasOwn(preflight, "result")) return preflight.result;
+      const privateContext = preflight?.privateContext;
       const options = {
         ...requestOptions,
         ...(paymentContext !== undefined ? { context: paymentContext } : {}),
@@ -442,7 +442,7 @@ async function callRemoteTool(entry, input, context) {
       );
       // Transform inside the deadline, before either model or Code Mode projection.
       return policy
-        ? await policy.transformResult(entry.remoteName, input ?? {}, rawResult, context)
+        ? await policy.transformResult({ ...call, result: rawResult, privateContext }, context)
         : rawResult;
     });
   } catch (error) {

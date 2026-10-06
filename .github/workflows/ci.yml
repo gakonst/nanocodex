@@ -914,6 +914,19 @@ jobs:
             output/claude-connection/inline-*.png
             output/claude-connection/popover-*.png
           if-no-files-found: warn
+      - name: Test private provider capture and Vault recovery
+        # Exercise custody even while the broader test matrix is paused.
+        run: |
+          node --test js/nanocodex/test/mcp-private-result.test.mjs
+          pnpm --filter nanocodex-egress-service run prepare:whatsapp
+          pnpm --filter nanocodex-egress-service exec vitest run test/provider-vault.test.ts
+          pnpm --filter nanocodex-managed-service run test:provider-vault
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: provider-vault-journeys
+          path: output/provider-vault-journey/
+          if-no-files-found: warn
       - name: Test linked Tempo wallet and funding journeys
         # Wallet custody journeys run even while the broader test matrix is paused.
         run: |

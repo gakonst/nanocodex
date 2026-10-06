@@ -1,3 +1,4 @@
+import { providerVaultRoute } from "./provider-result-vault";
 import { ClaudeSubscription } from "nanocodex/worker";
 import claudeModule from "nanocodex/wasm";
 import { createMercatorMcpCredential, MercatorPaymentInputError } from "./mercator-payment";
@@ -731,6 +732,9 @@ export class UserCredentialBroker extends DurableObject<BrokerEnv> {
 
   async #dispatch(request: Request): Promise<Response> {
     const url = new URL(request.url);
+    if (["/v1/provider-capture", "/v1/provider-store", "/v1/provider-card", "/v1/provider-bindings"].includes(url.pathname)) {
+      return providerVaultRoute(request, { storage: this.#state.storage, vault: this.#vault, validEntry: (value, kind) => Boolean(validateVaultEntryPayload(value, kind)), dispatch: request => this.#dispatch(request) });
+    }
     try {
       if (request.method === "GET" && url.pathname === "/v1/health") {
         return json({ ready: true }, 200);

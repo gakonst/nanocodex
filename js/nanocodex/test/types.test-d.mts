@@ -737,14 +737,17 @@ metadataBinding.readAccountDiscovery?.("owner", "machines", { authorityKey: "epo
 const privateMcpServer = {
   url: 'https://synthetic.example/mcp',
   privateResult: {
-    async beforeCall(name, input, context) {
+    async beforeCall({ name, arguments: input }, context) {
       const remoteName: string = name;
       const args: Record<string, unknown> = input;
       if (!remoteName || !args || !context) throw new Error('Call unavailable');
+      if (input.replay === true) return { result: { content: [{ type: "text", text: "Saved securely" }] } };
+      return { privateContext: { operationId: context.callId } };
     },
-    async transformResult(name, input, result, context) {
+    async transformResult({ name, arguments: input, result, privateContext }, context) {
       const raw: unknown = result;
-      void [name, input, raw, context];
+      const trustedState: unknown = privateContext;
+      void [name, input, raw, context, trustedState];
       return { content: [{ type: 'text', text: 'Saved securely' }] };
     },
   },
