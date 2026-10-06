@@ -239,12 +239,8 @@ impl ManagedClient {
         &self,
         request: &VaultRequest,
     ) -> Result<VaultRequestReceipt, ManagedError> {
-        self.connector_request(
-            Method::POST,
-            "v1/services/vault/request",
-            Some(serde_json::to_value(request).map_err(|_| invalid())?),
-        )
-        .await
+        self.vault_request_at("v1/services/vault/request", request)
+            .await
     }
 }
 
@@ -253,12 +249,16 @@ mod tests {
     use super::*;
     use axum::{
         Json, Router,
-        routing::{delete, get},
+        routing::{delete, get, post},
     };
     use serde_json::json;
     #[tokio::test]
     async fn account_services_http_projection_and_query() {
         let app = Router::new()
+            .route("/v1/services/vault/request", post(|Json(body): Json<serde_json::Value>| async move {
+                assert_eq!(body["vault_id"], "abcdefghijklmnopqrstuv");
+                Json(if body["url"] == "https://example.com/invalid" { json!({"status":0,"ok":true}) } else { json!({"status":204,"ok":true}) })
+            }))
             .route("/v1/credentials", get(|headers: axum::http::HeaderMap| async move {
                 assert!(headers.contains_key("authorization"));
                 Json(json!({"ready":true,"active":"chatgpt","openai":{"connected":false},
@@ -286,6 +286,20 @@ mod tests {
             crate::ManagedApiKey::parse(format!("ncx_live_{}_{}", "a".repeat(12), "b".repeat(43)))
                 .unwrap();
         let client = ManagedClient::new(format!("http://{address}"), key).unwrap();
+        let mut request: VaultRequest = serde_json::from_value(
+            json!({"vault_id":"abcdefghijklmnopqrstuv", "url":"https://example.com/valid"}),
+        )
+        .unwrap();
+        assert_eq!(
+            client
+                .services_vault_request(&request)
+                .await
+                .unwrap()
+                .status,
+            204
+        );
+        request.url = "https://example.com/invalid".into();
+        assert!(client.services_vault_request(&request).await.is_err());
         let overview = client.credentials_overview().await.unwrap();
         assert!(overview.chatgpt.connected);
         assert!(
