@@ -2,7 +2,7 @@ import { DurableObject } from "cloudflare:workers";
 import { CredentialVault, type CredentialVaultEnv, type EncryptedEnvelope } from "./credential-vault";
 import type { WhatsAppAuthStore, WhatsAppEvent, WhatsAppMessage, WhatsAppStatus, WhatsAppTransport, WhatsAppTransportFactory } from "./whatsapp-transport";
 
-type Meta = { authorized: boolean; id: string; state: WhatsAppStatus["state"]; attempt: WhatsAppStatus["attempt"]; retries: number; retry_at: number | null; oldest: number | null; received: number | null; history_complete: boolean };
+type Meta = { authorized: boolean; id: string; state: WhatsAppStatus["state"]; attempt: WhatsAppStatus["attempt"]; retries: number; retry_at: number | null; oldest: number | null; received: number | null; history_complete: boolean; diagnostics?: string[] };
 type Receipt = { phone_hash: string; attempt: NonNullable<WhatsAppStatus["attempt"]> };
 type Row = { id: string; chat_id: string; timestamp: number; expires_at: number | null; revision: number; tombstone: number; data: string };
 const TTL = 5 * 60_000;
@@ -72,6 +72,7 @@ export class WhatsAppAccount extends DurableObject<CredentialVaultEnv> {
   private status(): WhatsAppStatus {
     return { id: this.meta.id, connection_id: this.meta.id, label: "WhatsApp", connected: this.meta.authorized,
       socket_connected: this.socketConnected, state: this.meta.state, attempt: this.meta.attempt, retry_at: this.meta.retry_at,
+      diagnostics: this.meta.diagnostics ?? [],
       coverage: { source: "linked_device", complete: false, history_complete: this.meta.history_complete,
         oldest_timestamp: this.meta.oldest, last_received_at: this.meta.received,
         note: "Only messages delivered to this linked device are available. Older history may be incomplete; view-once and expired content are excluded." } };
@@ -124,6 +125,7 @@ export class WhatsAppAccount extends DurableObject<CredentialVaultEnv> {
       await this.clearAuth();
       this.meta.id = base64(crypto.getRandomValues(new Uint8Array(32)));
       this.meta.attempt = attempt;
+      this.meta.diagnostics = [];
       this.meta.state = "connecting";
       this.meta.retries = 0;
       this.meta.retry_at = null;
@@ -236,6 +238,11 @@ export class WhatsAppAccount extends DurableObject<CredentialVaultEnv> {
           }
         }
       }),
+      onDiagnostic: label => {
+        const entry = `${new Date().toISOString().slice(11, 19)} ${label}`.slice(0, 160);
+        this.meta.diagnostics = [...(this.meta.diagnostics ?? []), entry].slice(-40);
+        this.ctx.waitUntil(this.saveMeta().catch(() => undefined));
+      },
       onEvents: events => this.serial(async () => {
         await this.expire();
         if (epoch === this.generation && this.meta.authorized) await this.ingest(events);

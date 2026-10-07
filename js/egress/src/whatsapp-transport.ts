@@ -22,6 +22,8 @@ export interface WhatsAppTransportCallbacks {
   auth: WhatsAppAuthStore;
   onConnection(update: { state: "connecting" | "open" | "close"; loggedOut?: boolean; retryable?: boolean; restartRequired?: boolean }): Promise<void>;
   onEvents(events: WhatsAppEvent[]): Promise<void>;
+  /** Bounded protocol stage labels only; never secrets, codes or keys. */
+  onDiagnostic?(label: string): void;
 }
 export interface WhatsAppTransport {
   requestPairingCode(phone: string): Promise<string>;
@@ -39,4 +41,5 @@ export type WhatsAppStatus = {
   attempt: { operation_id: string; state: "requested" | "ready" | "expired" | "unknown" | "paired"; expires_at: number } | null;
   coverage: { source: "linked_device"; complete: boolean; history_complete: boolean; oldest_timestamp: number | null; last_received_at: number | null; note: string };
   retry_at: number | null;
+  diagnostics?: string[];
 };
