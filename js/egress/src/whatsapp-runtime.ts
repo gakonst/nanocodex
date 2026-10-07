@@ -22,7 +22,7 @@ export const whatsappTransportFactory: WhatsAppTransportFactory = {
     void pairingReady.catch(() => {});
     // WhatsApp rejects phone-number linking ("Couldn't link device") from stale
     // client versions and unrecognized companion platforms. Use the current
-    // published web version when reachable and the documented macOS desktop profile.
+    // published web version when reachable with the Ubuntu desktop profile (macOS desktop makes WhatsApp close with 428 before issuing a code).
     const version = await currentWhatsAppVersion();
     const socket = makeWASocket({
       ...(version ? { version } : {}),
@@ -38,7 +38,7 @@ export const whatsappTransportFactory: WhatsAppTransportFactory = {
       } },
       logger: silent as any,
       markOnlineOnConnect: false,
-      browser: Browsers.macOS('Desktop'),
+      browser: Browsers.ubuntu('Desktop'),
       syncFullHistory: true,
       getMessage: async () => undefined,
     });

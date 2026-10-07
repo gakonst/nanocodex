@@ -67,7 +67,7 @@ upstream comparison. Diagnostics are bounded to known protocol labels, frame
 lengths and close status. Evidence is written to ignored
 `output/whatsapp-runtime/`; no external lab checkout is required.
 
-The runtime requests full history using `Browsers.macOS('Desktop')` and the
+The runtime requests full history using `Browsers.ubuntu('Desktop')` and the
 currently published WhatsApp Web version (bundled fallback); stale versions
 make phones reject phone-number linking. This is an
 upstream-documented desktop profile. Full-history coverage is reported
