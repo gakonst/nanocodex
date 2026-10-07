@@ -55,15 +55,15 @@ impl Default for Hunk {
     }
 }
 
-struct DiffLine {
-    kind: DiffLineKind,
-    text: String,
-    old_line: Option<u64>,
-    new_line: Option<u64>,
+pub(super) struct DiffLine {
+    pub(super) kind: DiffLineKind,
+    pub(super) text: String,
+    pub(super) old_line: Option<u64>,
+    pub(super) new_line: Option<u64>,
 }
 
 #[derive(Clone, Copy)]
-enum DiffLineKind {
+pub(super) enum DiffLineKind {
     Context,
     Addition,
     Deletion,
@@ -418,7 +418,7 @@ fn change_counts<'a>(lines: impl Iterator<Item = &'a DiffLine>) -> (usize, usize
     })
 }
 
-fn component_header(label: &str, width: u16, theme: &Theme) -> Line<'static> {
+pub(super) fn component_header(label: &str, width: u16, theme: &Theme) -> Line<'static> {
     let label = truncate(label, width.saturating_sub(5));
     let label_width = u16::try_from(UnicodeWidthStr::width(label.as_str())).unwrap_or(u16::MAX);
     let fill = width.saturating_sub(label_width.saturating_add(5));
@@ -437,7 +437,7 @@ fn component_header(label: &str, width: u16, theme: &Theme) -> Line<'static> {
     ])
 }
 
-fn hunk_divider(label: &str, width: u16, theme: &Theme) -> Line<'static> {
+pub(super) fn hunk_divider(label: &str, width: u16, theme: &Theme) -> Line<'static> {
     let label = truncate(label, width.saturating_sub(5));
     let label_width = u16::try_from(UnicodeWidthStr::width(label.as_str())).unwrap_or(u16::MAX);
     let fill = width.saturating_sub(label_width.saturating_add(5));
@@ -451,7 +451,7 @@ fn hunk_divider(label: &str, width: u16, theme: &Theme) -> Line<'static> {
     ])
 }
 
-fn component_body(
+pub(super) fn component_body(
     line: &DiffLine,
     code: Vec<Span<'static>>,
     wrap_index: usize,
@@ -518,7 +518,7 @@ fn marker_style(kind: DiffLineKind, theme: &Theme) -> Style {
     Style::default().fg(color).add_modifier(Modifier::BOLD)
 }
 
-fn highlighted_diff_line(
+pub(super) fn highlighted_diff_line(
     line: &DiffLine,
     old: &mut HighlightLines<'_>,
     new: &mut HighlightLines<'_>,

@@ -92,6 +92,23 @@ agent instruction, not a separate filesystem sandbox. Results stream into the
 conversation and normal turn cancellation and reconnect behavior apply. Finish
 or interrupt active work before starting another review.
 
+The transcript labels each review with its selected scope.
+Review findings appear beside a captured unified diff, with old/new line numbers,
+syntax highlighting, and the comment directly below its cited lines. Deleted-line
+findings attach to the old side. Only the hunk containing the finding is displayed in its card.
+The surrounding code travels with the answer,
+so reopening a session preserves the reviewed snapshot even after the workspace
+changes. If a finding has no usable matching diff, its comment remains visible
+with a context-unavailable notice.
+
+The review prompt requests one fenced `review` JSON object per finding, containing
+`file`, `side` (`new` or `old`), inclusive `line_start` / `line_end`, `title`, `body`,
+and the captured `diff`. The reviewer obtains the diff through its authorized
+workspace tools. This presentation validates file/hunk positions; it does not
+independently verify the reviewer's evidence. Ordinary prose remains readable,
+and `/copy` retains the original Markdown. Other clients may display the fenced
+payload as text until they support this presentation.
+
 The scope choices follow [Codex review targets](https://github.com/openai/codex/blob/rust-v0.107.0/codex-rs/core/src/review_prompts.rs).
 Nanocodex uses its existing managed turn transport rather than Codex's dedicated
 review-task protocol. The separate Managed2 text-only preview does not support

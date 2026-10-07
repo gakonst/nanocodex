@@ -112,7 +112,38 @@ pub(super) fn render_cached(
             event => renderer.event(event),
         }
     }
+    let has_review = renderer.has_review;
     let (mut layout, selection_exclusions, image_selection_modes) = renderer.finish();
+    if has_review {
+        // Cards reorder and decode their JSON payload. Source offsets into that
+        // payload cannot represent visible selection; copy the visible snapshot.
+        let mut source = String::new();
+        let mut selections = Vec::new();
+        for line in &layout.lines {
+            let text = line.to_string();
+            let offset = source.len();
+            let mut column = 0_u16;
+            let spans = text
+                .grapheme_indices(true)
+                .map(|(byte, grapheme)| {
+                    let start = column;
+                    column = column.saturating_add(
+                        u16::try_from(UnicodeWidthStr::width(grapheme)).unwrap_or(u16::MAX),
+                    );
+                    SourceSpan {
+                        columns: start..column,
+                        source: offset + byte..offset + byte + grapheme.len(),
+                    }
+                })
+                .collect();
+            selections.push(spans);
+            source.push_str(&text);
+            source.push('\n');
+        }
+        layout.selections = selections;
+        layout.selection_source = Some(source);
+        return layout;
+    }
     let (selections, envelopes) = markdown_selection_spans(
         markdown,
         &layout.lines,
@@ -178,6 +209,7 @@ pub(super) fn sanitize(text: &str) -> String {
 }
 
 struct Renderer<'a> {
+    has_review: bool,
     width: u16,
     theme: &'a Theme,
     lines: Vec<Line<'static>>,
@@ -225,6 +257,7 @@ impl<'a> Renderer<'a> {
         images_cache: &'a mut super::image::Cache,
     ) -> Self {
         Self {
+            has_review: false,
             width,
             theme,
             lines: Vec::new(),
@@ -534,6 +567,22 @@ impl<'a> Renderer<'a> {
                 Event::SoftBreak | Event::HardBreak => code.push('\n'),
                 _ => {}
             }
+        }
+        if language
+            .as_deref()
+            .is_some_and(|language| language.trim().eq_ignore_ascii_case("review"))
+        {
+            self.has_review = true;
+            if let Some(lines) = super::review::render(&code, self.width, self.theme) {
+                self.lines.extend(lines);
+                self.blank();
+                return;
+            }
+            self.lines.extend(wrap_plain(
+                "Review context unavailable: invalid or oversized finding; original follows.",
+                self.width,
+                Style::default().fg(self.theme.muted()),
+            ));
         }
         let is_diff = language.as_deref().is_some_and(is_diff_language);
         if is_diff {

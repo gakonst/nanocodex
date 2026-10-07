@@ -9,6 +9,7 @@ mod highlight;
 pub(crate) mod image;
 mod markdown;
 mod message;
+mod review;
 mod tool;
 
 use super::{
@@ -2127,6 +2128,8 @@ fn layout_without_links(lines: Vec<Line<'static>>) -> markdown::Layout {
 }
 
 fn render_user(text: &str, width: u16, theme: &Theme) -> markdown::Layout {
+    let summary = crate::tui::review::display_prompt(text);
+    let text = summary.as_deref().unwrap_or(text);
     let readable = crate::tui::vault::receipt_summary(text);
     let text = normalize_line_endings(readable.as_deref().unwrap_or(text)).into_owned();
     let text: std::borrow::Cow<'_, str> = std::borrow::Cow::Owned(text);
