@@ -34,6 +34,7 @@ private struct NativeCellContent: View {
 }
 private final class NativeTranscriptCell: UICollectionViewCell {
     let visibility = NativeCellVisibility()
+    var rowID: String?
     // ChatLayout proposes an estimated height. Measure the hosting content at
     // its final full width instead of accepting that estimate as a constraint.
     override func preferredLayoutAttributesFitting(_ attributes: UICollectionViewLayoutAttributes) -> UICollectionViewLayoutAttributes {
@@ -54,6 +55,7 @@ private final class NativeTranscriptCell: UICollectionViewCell {
     }
     override func prepareForReuse() {
         super.prepareForReuse()
+        rowID = nil
         visibility.visible = false
         setUnobscured(false)
     }
@@ -162,6 +164,11 @@ struct NativeConversationTranscript: UIViewRepresentable {
         private var applying = false
         private var userScrollRevision: UInt64 = 0
         private var queuedUpdate: NativeConversationTranscript?
+        // Last measured height per row at a given width. Rows that are re-realized
+        // after a snapshot or reuse start at their real height instead of the
+        // generic estimate, so scrolling back through tall answers (artifacts,
+        // tables, tool output) does not shift the content under the finger.
+        private var measuredHeights: [String: (width: CGFloat, height: CGFloat)] = [:]
         #if DEBUG
         private let configuredCells = NSHashTable<UICollectionViewCell>.weakObjects()
         private let mountedCounter = UILabel()
@@ -174,6 +181,7 @@ struct NativeConversationTranscript: UIViewRepresentable {
             self.view = view
             let registration = UICollectionView.CellRegistration<NativeTranscriptCell, String> { [weak self] cell, _, id in
                 guard let hosted = self?.hostedRows[id] else { return }
+                cell.rowID = id
                 cell.contentConfiguration = UIHostingConfiguration {
                     NativeCellContent(visibility: cell.visibility, hosted: hosted).id(id).frame(maxWidth: 740, alignment: .leading)
                         .frame(maxWidth: .infinity, alignment: .center)
@@ -255,6 +263,7 @@ struct NativeConversationTranscript: UIViewRepresentable {
                 if structural {
                     let survivors = Set(newIDs)
                     hostedRows = hostedRows.filter { survivors.contains($0.key) }
+                    measuredHeights = measuredHeights.filter { survivors.contains($0.key) }
                     ids = newIDs
                     transcriptRowCount = newIDs.filter { $0 != "latest" && $0 != "transcript-header" }.count
                 }
@@ -499,8 +508,19 @@ struct NativeConversationTranscript: UIViewRepresentable {
             cell.visibility.visible = true
             cell.setUnobscured(isUnobscured(cell.frame, in: collectionView))
         }
+        func sizeForItem(_ chatLayout: CollectionViewChatLayout, at indexPath: IndexPath) -> ItemSize {
+            guard let id = dataSource.itemIdentifier(for: indexPath), let measured = measuredHeights[id],
+                  let width = view?.bounds.width, abs(measured.width - width) < 0.5 else { return .auto }
+            return .estimated(CGSize(width: width, height: measured.height))
+        }
+
         func collectionView(_ collectionView: UICollectionView, didEndDisplaying cell: UICollectionViewCell, forItemAt indexPath: IndexPath) {
             guard let cell = cell as? NativeTranscriptCell else { return }
+            // The index path can already describe a newer snapshot; the cell's
+            // own identity is the measurement owner.
+            if let id = cell.rowID, cell.bounds.height > 1 {
+                measuredHeights[id] = (collectionView.bounds.width, cell.bounds.height)
+            }
             cell.visibility.visible = false
             cell.setUnobscured(false)
         }

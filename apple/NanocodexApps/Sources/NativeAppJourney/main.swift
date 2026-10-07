@@ -308,8 +308,58 @@ struct BoundedJourney: View {
 }
 """#
 
+private let chartArtifactSource = """
+struct Revenue: View {
+    let quarters = [["label": "Q1", "value": 12, "series": "2025"], ["label": "Q2", "value": 18, "series": "2025"], ["label": "Q1", "value": 9, "series": "2024"]]
+    @State var scale = 1
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Revenue").font(.headline)
+            BarChart(quarters, title: "By quarter")
+            LineChart([3, 5, 4, 8].map { $0 * scale })
+            AreaChart(quarters)
+            PointChart([1, 4, 2])
+            PieChart([["label": "Search", "value": 60], ["label": "Direct", "value": 40]], title: "Traffic")
+            Stepper("Scale \\(scale)", value: $scale, in: 1...5, step: 1)
+        }
+    }
+}
+"""
+
+@MainActor
+private func artifactSelfTest() async throws {
+    let reply = "Here you go:\n\n```swift-artifact\n\(chartArtifactSource)\n```\n\nDone. ```swift\nlet x = 1\n```"
+    let segments = ChatArtifactSegment.split(reply)
+    try expect(segments.count == 3, "artifact reply splits into prose, artifact, prose: \(segments.count)")
+    guard case .artifact(let source, true) = segments[1] else { throw JourneyFailure(message: "Expected completed artifact segment.") }
+    if case .markdown(let tail) = segments[2] { try expect(tail.contains("```swift"), "ordinary code fences stay Markdown") }
+    let streaming = ChatArtifactSegment.split("Plot:\n```swift-artifact\nstruct A: View {")
+    try expect(streaming.last == .artifact(source: "struct A: View {", complete: false), "open artifact fence is pending while streaming")
+    let nested = ChatArtifactSegment.split("````markdown\n```swift-artifact\nx\n```\n````")
+    try expect(nested.count == 1, "artifact examples nested in another fence stay Markdown")
+    try expect(ChatArtifactSegment.split("plain") == [.markdown("plain")], "plain text is one Markdown segment")
+    let host = NativeAppHost(loadState: { [:] }, saveState: { _ in }, runAgent: { _ in throw AppDiagnostic("disabled") }, agentRequestsHaveExternalEffects: false)
+    let session = try NativeAppSession(source: source, host: host, limits: AppLimits(agentCalls: 0))
+    try await session.start()
+    try healthy(session)
+    func charts(_ nodes: [AppNode]) -> [AppNode] { nodes.flatMap { ($0.kind.hasSuffix("Chart") ? [$0] : []) + charts($0.children) } }
+    let found = charts(session.nodes)
+    try expect(found.map(\.kind) == ["BarChart", "LineChart", "AreaChart", "PointChart", "PieChart"], "all chart kinds render: \(found.map(\.kind))")
+    let bar = ChartEntry.entries(found[0].properties["values"] ?? .null) ?? []
+    try expect(bar.count == 3 && bar[0].label == "Q1" && bar[0].value == 12 && bar[2].series == "2024", "record chart data maps label/value/series")
+    try expect(found[0].properties["title"] == .string("By quarter"), "chart title is retained")
+    try await set("scale", .number(2), in: session)
+    try healthy(session)
+    let line = ChartEntry.entries(charts(session.nodes)[1].properties["values"] ?? .null) ?? []
+    try expect(line.map(\.value) == [6, 10, 8, 16], "chart data re-evaluates from state: \(line.map(\.value))")
+    do { _ = try NativeAppSession(source: "struct A: View { var body: some View { LineChart([1], color: 2) } }", host: host); throw JourneyFailure(message: "unexpected chart label accepted") }
+    catch is AppDiagnostic { }
+    print("PASS inline artifacts and charts")
+}
+
 @MainActor
 private func selfTest(screenshotPath: String?) async throws {
+    try await artifactSelfTest()
     let directory = FileManager.default.temporaryDirectory.appendingPathComponent("native-app-journey-" + UUID().uuidString)
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
     print("EVIDENCE \(directory.path)")

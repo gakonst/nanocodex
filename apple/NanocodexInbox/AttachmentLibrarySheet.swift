@@ -59,7 +59,7 @@ struct AttachmentLibrarySheet: View {
                                         }
                                     }
                             }
-                            .accessibilityLabel(asset.creationDate.map { "Photo from \($0.formatted(date: .abbreviated, time: .shortened))" } ?? "Recent photo")
+                            .accessibilityLabel(photoAccessibilityLabel(asset.creationDate))
                             .accessibilityAddTraits(selectedPhotoIDs.contains(asset.localIdentifier) ? [.isSelected] : [])
                             .accessibilityValue(selectedPhotoIDs.contains(asset.localIdentifier) ? "Selected" : "Not selected")
                             .accessibilityHint("Double tap to toggle selection")
@@ -320,4 +320,10 @@ private struct AttachmentLimitedLibraryPresenter: UIViewControllerRepresentable 
             }
         }
     }
+}
+
+/// Kept out of the grid's modifier chain so the type checker stays bounded.
+private func photoAccessibilityLabel(_ date: Date?) -> String {
+    guard let date else { return "Recent photo" }
+    return "Photo from " + date.formatted(date: .abbreviated, time: .shortened)
 }

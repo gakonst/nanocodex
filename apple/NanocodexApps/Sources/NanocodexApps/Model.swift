@@ -103,3 +103,95 @@ public struct AppLimits: Sendable {
         self.steps = steps; self.depth = depth; self.nodes = nodes; self.collectionCount = collectionCount; self.agentCalls = agentCalls
     }
 }
+
+/// One plotted datum. Charts accept `[numbers]` or records/dictionaries with
+/// `label`/`x`, `value`/`y` and an optional `series` (or `group`) field.
+public struct ChartEntry: Identifiable, Equatable, Sendable {
+    public var id: Int { index }
+    public var index: Int
+    public var label: String
+    public var value: Double
+    public var series: String
+
+    public init(index: Int, label: String, value: Double, series: String) {
+        self.index = index; self.label = label; self.value = value; self.series = series
+    }
+
+    /// Returns nil when the value is not an array (children supply the data instead).
+    public static func entries(_ data: AppValue) -> [ChartEntry]? {
+        guard case .array(let values) = data else { return nil }
+        return values.enumerated().map { index, value in
+            if case .object(let record) = value {
+                let label = (record["label"] ?? record["x"] ?? record["title"] ?? record["name"])?.text ?? String(index + 1)
+                let raw = (record["value"] ?? record["y"] ?? record["count"])?.number ?? 0
+                let series = (record["series"] ?? record["group"])?.text ?? ""
+                return ChartEntry(index: index, label: label, value: raw.isFinite ? raw : 0, series: series)
+            }
+            let raw = value.number
+            return ChartEntry(index: index, label: String(index + 1), value: raw.isFinite ? raw : 0, series: "")
+        }
+    }
+}
+
+/// A Markdown segment of an assistant response: prose, or a fenced
+/// ```swift-artifact block rendered inline with the swift-v1 interpreter.
+public enum ChatArtifactSegment: Equatable, Sendable {
+    case markdown(String)
+    /// `complete` is false while the closing fence has not streamed yet.
+    case artifact(source: String, complete: Bool)
+
+    public static let languages: Set<String> = ["swift-artifact", "artifact", "nanocodex-artifact", "swiftui-artifact"]
+
+    /// Splits only top-level fences whose info string is an artifact language.
+    /// Other fenced code (including nested artifact examples) stays Markdown.
+    public static func split(_ text: String) -> [ChatArtifactSegment] {
+        guard languages.contains(where: { text.contains("```" + $0) || text.contains("~~~" + $0) }) else {
+            return text.isEmpty ? [] : [.markdown(text)]
+        }
+        var result: [ChatArtifactSegment] = []
+        var prose: [Substring] = []
+        var artifact: [Substring] = []
+        var openFence: (marker: Character, count: Int, isArtifact: Bool)?
+        func flushProse() {
+            let joined = prose.joined(separator: "\n")
+            if !joined.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { result.append(.markdown(joined)) }
+            prose = []
+        }
+        for line in text.split(separator: "\n", omittingEmptySubsequences: false) {
+            let trimmed = line.drop(while: { $0 == " " })
+            let indent = line.count - trimmed.count
+            if let fence = openFence {
+                let run = trimmed.prefix(while: { $0 == fence.marker }).count
+                let closes = indent < 4 && run >= fence.count && trimmed.dropFirst(run).allSatisfy(\.isWhitespace)
+                if fence.isArtifact {
+                    if closes {
+                        result.append(.artifact(source: artifact.joined(separator: "\n"), complete: true))
+                        artifact = []; openFence = nil
+                    } else { artifact.append(line) }
+                } else {
+                    prose.append(line)
+                    if closes { openFence = nil }
+                }
+                continue
+            }
+            if indent < 4, let marker = trimmed.first, marker == "`" || marker == "~" {
+                let run = trimmed.prefix(while: { $0 == marker }).count
+                if run >= 3 {
+                    let info = trimmed.dropFirst(run).trimmingCharacters(in: .whitespaces).lowercased()
+                    let language = info.split(separator: " ").first.map(String.init) ?? ""
+                    if languages.contains(language) {
+                        flushProse()
+                        openFence = (marker, run, true)
+                        continue
+                    }
+                    openFence = (marker, run, false)
+                }
+            }
+            prose.append(line)
+        }
+        if let fence = openFence, fence.isArtifact {
+            result.append(.artifact(source: artifact.joined(separator: "\n"), complete: false))
+        } else { flushProse() }
+        return result
+    }
+}

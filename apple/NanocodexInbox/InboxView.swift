@@ -2094,7 +2094,7 @@ private struct ConversationMessageContent: View, Equatable {
                                 }
                             }.font(.caption).foregroundStyle(Ink.muted)
                         } else if row.role == "Agent", !row.text.isEmpty {
-                            ChatMarkdown(text: row.text, compact: true)
+                            ChatResponseBody(text: row.text, running: row.running)
                                 .environment(\.openURL, OpenURLAction { url in
                                     guard let link = PublishedOutputLink(url: url) else { return .systemAction }
                                     openOutput(link)

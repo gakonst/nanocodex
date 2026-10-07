@@ -272,7 +272,7 @@ public struct NativeAppView: View {
             } currentValueLabel: {
                 Text(current(node).text).monospacedDigit()
             })
-        case "BarChart":
+        case "BarChart", "LineChart", "AreaChart", "PointChart", "PieChart":
             return chart(node)
         default:
             return AnyView(ContentUnavailableView(
@@ -318,37 +318,68 @@ public struct NativeAppView: View {
     }
 
     private func chart(_ node: AppNode) -> AnyView {
-        var entries: [(label: String, value: Double)] = []
-        if case .array(let values) = node.properties["data"] ?? node.properties["values"] ?? .null {
-            entries = values.enumerated().map { index, value in
-                if case .object(let record) = value {
-                    return (record["label"]?.text ?? record["title"]?.text ?? String(index + 1), finite(record["value"]?.number ?? 0, fallback: 0))
-                }
-                return (String(index + 1), finite(value.number, fallback: 0))
-            }
-        } else {
-            entries = node.children.map { (label($0), finite(current($0).number, fallback: 0)) }
-        }
+        let entries = ChartEntry.entries(node.properties["data"] ?? node.properties["values"] ?? .null)
+            ?? node.children.enumerated().map { ChartEntry(index: $0.offset, label: label($0.element), value: finite(current($0.element).number, fallback: 0), series: "") }
+        let title = label(node)
+        let multiSeries = Set(entries.map(\.series)).count > 1
         let lower = min(entries.map(\.value).min() ?? 0, 0)
-        let upper = max(entries.map(\.value).max() ?? 0, 1)
-        return AnyView(Group {
+        let upper = max(entries.map(\.value).max() ?? 0, lower + 1)
+        return AnyView(VStack(alignment: .leading, spacing: 8) {
+            if !title.isEmpty { Text(title).font(.headline) }
             if entries.isEmpty {
                 Text("No data yet").font(.callout).foregroundStyle(.secondary)
+            } else if node.kind == "PieChart" {
+                Chart(entries) { item in
+                    SectorMark(angle: .value("Value", max(0, item.value)), innerRadius: .ratio(0.55), angularInset: 1.5)
+                        .foregroundStyle(by: .value("Category", item.label))
+                        .cornerRadius(4)
+                        .accessibilityLabel(item.label)
+                        .accessibilityValue(AppValue.number(item.value).text)
+                }
+                .chartLegend(position: .bottom, alignment: .leading)
+                .frame(minHeight: 200, idealHeight: 220)
             } else {
-                Chart(Array(entries.enumerated()), id: \.offset) { item in
-                    BarMark(x: .value("Period", item.element.label),
-                            y: .value("Count", item.element.value))
-                        .foregroundStyle(.tint)
-                        .cornerRadius(3)
-                        .accessibilityLabel(item.element.label)
-                        .accessibilityValue(AppValue.number(item.element.value).text)
+                Chart(entries) { item in
+                    mark(node.kind, item, multiSeries: multiSeries)
                 }
                 .chartYScale(domain: lower...upper)
-                .chartLegend(.hidden)
-                .frame(idealHeight: 180)
-                .accessibilityLabel(label(node).isEmpty ? "History" : label(node))
+                .chartLegend(multiSeries ? .visible : .hidden)
+                .frame(minHeight: 160, idealHeight: 200)
             }
-        })
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(title.isEmpty ? "Chart" : title))
+    }
+
+    @ChartContentBuilder
+    private func mark(_ kind: String, _ item: ChartEntry, multiSeries: Bool) -> some ChartContent {
+        let x = PlottableValue.value("Label", item.label)
+        let y = PlottableValue.value("Value", item.value)
+        let series = PlottableValue.value("Series", item.series)
+        switch kind {
+        case "LineChart":
+            LineMark(x: x, y: y, series: series)
+                .foregroundStyle(by: series)
+                .interpolationMethod(.catmullRom)
+                .symbol(by: series)
+                .accessibilityLabel(item.label).accessibilityValue(AppValue.number(item.value).text)
+        case "AreaChart":
+            AreaMark(x: x, y: y, stacking: multiSeries ? .standard : .unstacked)
+                .foregroundStyle(by: series)
+                .interpolationMethod(.catmullRom)
+                .opacity(multiSeries ? 0.85 : 0.6)
+                .accessibilityLabel(item.label).accessibilityValue(AppValue.number(item.value).text)
+        case "PointChart":
+            PointMark(x: x, y: y)
+                .foregroundStyle(by: series)
+                .accessibilityLabel(item.label).accessibilityValue(AppValue.number(item.value).text)
+        default:
+            BarMark(x: x, y: y)
+                .foregroundStyle(by: series)
+                .position(by: series)
+                .cornerRadius(3)
+                .accessibilityLabel(item.label).accessibilityValue(AppValue.number(item.value).text)
+        }
     }
 
     private func current(_ node: AppNode) -> AppValue {

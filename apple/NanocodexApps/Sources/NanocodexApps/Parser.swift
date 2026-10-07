@@ -49,7 +49,8 @@ private final class Lowerer {
     var readOnlyCalls: [(String, Syntax)] = []
 
     // Keep this vocabulary aligned with the runtime and native renderer.
-    static let views: Set<String> = ["VStack", "HStack", "ZStack", "Form", "Section", "ScrollView", "List", "Group", "ForEach", "Text", "Label", "Image", "Button", "TextField", "SecureField", "TextEditor", "Toggle", "Stepper", "Slider", "Picker", "Divider", "Spacer", "ProgressView", "Gauge", "BarChart", "NavigationStack"]
+    static let charts: Set<String> = ["BarChart", "LineChart", "AreaChart", "PointChart", "PieChart"]
+    static let views: Set<String> = ["VStack", "HStack", "ZStack", "Form", "Section", "ScrollView", "List", "Group", "ForEach", "Text", "Label", "Image", "Button", "TextField", "SecureField", "TextEditor", "Toggle", "Stepper", "Slider", "Picker", "Divider", "Spacer", "ProgressView", "Gauge", "BarChart", "LineChart", "AreaChart", "PointChart", "PieChart", "NavigationStack"]
     static let functions: Set<String> = ["String", "Int", "Double", "Bool", "Array", "min", "max", "abs", "round", "Task", "Date", "UUID"]
     static let namespaces: Set<String> = ["Color", "Font", "Alignment", "HorizontalAlignment", "VerticalAlignment", "Agent", "Clock"]
     static let modifiers: Set<String> = ["padding", "font", "fontWeight", "foregroundStyle", "foregroundColor", "tint", "background", "frame", "cornerRadius", "opacity", "disabled", "navigationTitle", "buttonStyle", "listStyle", "textFieldStyle", "lineLimit", "multilineTextAlignment", "tag"]
@@ -487,7 +488,7 @@ private final class Lowerer {
             "Text": [], "Label": ["systemImage"], "Image": ["systemName"], "Button": ["role"],
             "TextField": ["text", "value", "format"], "SecureField": ["text"], "TextEditor": ["text"], "Toggle": ["isOn"],
             "Stepper": ["value", "in", "step"], "Slider": ["value", "in", "step"], "Picker": ["selection"],
-            "Divider": [], "Spacer": ["minLength"], "ProgressView": ["value", "total"], "Gauge": ["value", "in"], "BarChart": [], "NavigationStack": [],
+            "Divider": [], "Spacer": ["minLength"], "ProgressView": ["value", "total"], "Gauge": ["value", "in"], "BarChart": ["title"], "LineChart": ["title"], "AreaChart": ["title"], "PointChart": ["title"], "PieChart": ["title"], "NavigationStack": [],
             "padding": [], "font": [], "fontWeight": [], "foregroundStyle": [], "foregroundColor": [], "tint": [], "background": [],
             "frame": ["width", "height", "minWidth", "idealWidth", "maxWidth", "minHeight", "idealHeight", "maxHeight", "alignment"],
             "cornerRadius": [], "opacity": [], "disabled": [], "navigationTitle": [], "buttonStyle": [], "listStyle": [], "textFieldStyle": [],
@@ -509,7 +510,7 @@ private final class Lowerer {
         } else if call.trailingClosure != nil { throw fail("\(name) does not support a trailing closure", call) }
         let noArguments: Set<String> = ["Task", "Divider", "Form", "List", "Group", "NavigationStack", "removeLast", "removeAll", "reversed", "sorted", "lowercased", "uppercased", "rounded", "UUID", "formatted", "today", "map", "filter"]
         if noArguments.contains(name), !call.arguments.isEmpty { throw fail("\(name) does not accept arguments", call) }
-        let exactlyOne: Set<String> = ["String", "Int", "Double", "Bool", "Array", "abs", "round", "append", "contains", "trimmingCharacters", "run", "Text", "Image", "TextEditor", "BarChart", "dayKey", "reduce", "prefix", "suffix", "dropFirst"]
+        let exactlyOne: Set<String> = ["String", "Int", "Double", "Bool", "Array", "abs", "round", "append", "contains", "trimmingCharacters", "run", "Text", "Image", "TextEditor", "dayKey", "reduce", "prefix", "suffix", "dropFirst"]
         if exactlyOne.contains(name), call.arguments.count != 1 { throw fail("\(name) requires one argument", call) }
         if ["min", "max"].contains(name), call.arguments.count < 2 { throw fail("\(name) requires at least two arguments", call) }
         if Self.modifiers.contains(name), !["padding", "frame"].contains(name), call.arguments.count != 1 { throw fail("\(name) requires one argument", call) }
@@ -520,10 +521,11 @@ private final class Lowerer {
         let argumentLabels = call.arguments.map { $0.label?.text }
         let labeledOnly: Set<String> = ["VStack", "HStack", "ZStack", "Image", "TextEditor", "Slider", "Gauge", "Spacer", "frame"]
         if labeledOnly.contains(name), argumentLabels.contains(nil) { throw fail("\(name) requires labeled arguments", call) }
-        let oneTitle: Set<String> = ["Text", "BarChart", "Button", "Label", "TextField", "SecureField", "Toggle", "Stepper", "Picker", "ForEach"]
+        let oneTitle: Set<String> = ["Text", "BarChart", "LineChart", "AreaChart", "PointChart", "PieChart", "Button", "Label", "TextField", "SecureField", "Toggle", "Stepper", "Picker", "ForEach"]
         if oneTitle.contains(name), argumentLabels.first != .some(nil) { throw fail("\(name) requires an unlabeled first argument", call) }
         let titleAllowed = oneTitle.union(["Section", "ProgressView", "ScrollView"])
         if titleAllowed.contains(name), argumentLabels.dropFirst().contains(nil) { throw fail("Unexpected positional argument for \(name)", call) }
+        if Self.charts.contains(name), !(1...2).contains(call.arguments.count) || (call.arguments.count == 2 && argumentLabels.last != "title") { throw fail("\(name) requires data and an optional title:", call) }
         if name == "Section", call.arguments.count > 1 { throw fail("Section accepts only a title", call) }
         if name == "ScrollView", call.arguments.count > 2 { throw fail("ScrollView accepts axes and showsIndicators", call) }
         if name == "Label", argumentLabels != [nil, "systemImage"] { throw fail("Label requires a title and systemImage:", call) }

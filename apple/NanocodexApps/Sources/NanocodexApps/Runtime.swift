@@ -469,7 +469,7 @@ public final class NativeAppSession: ObservableObject {
         }
         return result
     }
-    private static let viewNames: Set<String> = ["VStack", "HStack", "ZStack", "Form", "Section", "ScrollView", "List", "Group", "ForEach", "Text", "Label", "Image", "Button", "TextField", "SecureField", "TextEditor", "Toggle", "Stepper", "Slider", "Picker", "Divider", "Spacer", "ProgressView", "Gauge", "BarChart", "NavigationStack"]
+    private static let viewNames: Set<String> = ["VStack", "HStack", "ZStack", "Form", "Section", "ScrollView", "List", "Group", "ForEach", "Text", "Label", "Image", "Button", "TextField", "SecureField", "TextEditor", "Toggle", "Stepper", "Slider", "Picker", "Divider", "Spacer", "ProgressView", "Gauge", "BarChart", "LineChart", "AreaChart", "PointChart", "PieChart", "NavigationStack"]
     private func renderExpression(_ expression: Expr, locals: inout [String: AppValue], path: String) async throws -> [AppNode] {
         try await enter(); defer { depth -= 1 }
         guard case .call(let callee, let arguments, let closure) = expression else { throw AppDiagnostic("Expected a SwiftUI view expression.") }
@@ -541,7 +541,7 @@ public final class NativeAppSession: ObservableObject {
         }
         node.text = positional.first?.text ?? node.properties["title"]?.text ?? ""
         if let range = node.properties["in"], case .array(let values) = range { node.properties["min"] = values.first; node.properties["max"] = values.last }
-        if kind == "BarChart", let first = positional.first { node.properties["values"] = first; node.text = "" }
+        if kind.hasSuffix("Chart"), let first = positional.first { node.properties["values"] = first; node.text = "" }
         if kind == "ScrollView", let first = positional.first { node.properties["axis"] = first }
         if kind == "Image" { node.text = node.properties["systemName"]?.text ?? node.text }
         if let closure {
