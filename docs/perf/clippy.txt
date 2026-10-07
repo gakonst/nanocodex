@@ -1,0 +1,39 @@
+    Checking nanocodex-agent v0.6.7 (/Users/georgios/github/gakonst/nanocodex-worktrees/tokio-perf-20261007/crates/nanocodex-agent)
+warning: this could be a `const fn`
+   --> crates/nanocodex-agent/src/agent/turn.rs:520:5
+    |
+520 | /     pub fn has_conversation(&self) -> bool {
+521 | |         match self {
+522 | |             Self::Codex(snapshot) => snapshot.conversation.is_some(),
+523 | |             Self::Native {
+...   |
+527 | |     }
+    | |_____^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#missing_const_for_fn
+    = note: requested on the command line with `-W clippy::missing-const-for-fn`
+help: make the function `const`
+    |
+520 |     pub const fn has_conversation(&self) -> bool {
+    |         +++++
+
+warning: this could be a `const fn`
+   --> crates/nanocodex-agent/src/agent/turn.rs:529:5
+    |
+529 | /     pub fn model(&self) -> crate::HarnessModel {
+530 | |         match self {
+531 | |             Self::Codex(snapshot) => crate::HarnessModel::Codex(snapshot.model),
+532 | |             Self::Native { model, .. } => *model,
+533 | |         }
+534 | |     }
+    | |_____^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#missing_const_for_fn
+help: make the function `const`
+    |
+529 |     pub const fn model(&self) -> crate::HarnessModel {
+    |         +++++
+
+warning: `nanocodex-agent` (lib) generated 2 warnings (run `cargo clippy --fix --lib -p nanocodex-agent -- ` to apply 2 suggestions)
+warning: `nanocodex-agent` (lib test) generated 2 warnings (2 duplicates)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 3.76s

@@ -1,0 +1,61 @@
+   Compiling nanocodex-agent v0.6.7 (/Users/georgios/github/gakonst/nanocodex-worktrees/tokio-perf-20261007/crates/nanocodex-agent)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3.49s
+     Running unittests src/lib.rs (target/debug/deps/nanocodex_agent-3795aa24559a58d1)
+
+running 53 tests
+test agent::context_source::agents_md::tests::missing_global_files_return_no_instructions ... ok
+test agent::builder::tests::execution_environment_requires_complete_model_visible_context ... ok
+test agent::context_source::agents_md::tests::global_instructions_decode_invalid_utf8_lossily ... ok
+test agent::context_source::agents_md::tests::global_directory_falls_back_to_default ... ok
+test agent::context_source::agents_md::tests::global_override_precedes_default ... ok
+test agent::context_source::agents_md::tests::empty_global_override_falls_back_to_default ... ok
+test agent::context_source::agents_md::tests::unreadable_global_override_falls_back_to_default ... ok
+test agent::context_source::platform::tests::remote_workspace_is_not_resolved_through_the_native_host ... ok
+test agent::context_source::platform::tests::explicit_project_snapshot_replaces_native_workspace_discovery ... ok
+test agent::context_source::agents_md::tests::project_read_errors_preserve_global_instructions ... ok
+test agent::context_source::agents_md::tests::global_instructions_precede_project_hierarchy ... ok
+test agent::context_source::agents_md::tests::empty_project_docs_do_not_consume_the_shared_budget ... ok
+test agent::driver::control::tests::stopped_error_distinguishes_ordinary_and_policy_owned_agents ... ok
+test model::context::tests::unrelated_legacy_history_does_not_fabricate_a_known_baseline ... ok
+test agent::execution::preservation::tests::never_promotes_partial_messages_or_merges_text_parts ... ok
+test agent::execution::preservation::tests::source_excludes_tool_output_instructions_and_harness_messages ... ok
+test agent::execution::preservation::tests::source_message_and_utf8_byte_limits_are_exact ... ok
+test model::input::tests::responses_lite_tool_output_omits_image_details_without_request_copy ... ok
+test model::input::tests::task_input_preserves_consecutive_synthetic_user_messages ... ok
+test model::input::tests::task_input_preserves_synthetic_message_roles ... ok
+test model::input::tests::tool_file_image_conversion_preserves_identity_and_omits_lite_details ... ok
+test model::context::tests::missing_baseline_requires_full_reinjection ... ok
+test agent::execution::preservation::tests::context_is_bounded_and_preserves_source_roles_only ... ok
+test model::run::responses::response_id_tests::provider_response_ids_must_contain_non_whitespace_text ... ok
+test model::run::lifecycle::compaction_receipt_tests::failure_receipt_preserves_session_stop_and_defaults_old_receipts ... ok
+test model::run::lifecycle::compaction_receipt_tests::image_failure_receipt_preserves_repair_and_policy_stop_wins ... ok
+test model::run::lifecycle::compaction_receipt_tests::legacy_success_receipt_keeps_its_wire_shape ... ok
+test agent::driver::tests::misalignment_failure_stops_the_agent_session ... ok
+test model::telemetry::usage_tests::turn_cost_preserves_per_request_long_context_thresholds ... ok
+test model::run::continuation::tests::execution_accounting_basis_roundtrips_and_defaults_for_legacy_records ... ok
+test model::run::state::image_replay_tests::checkpoint_image_preparation_replaces_history_once ... ok
+test agent::builder::tests::resumed_model_reaches_the_service_factory ... ok
+test model::run::context_accounting_snapshot_tests::snapshot_preserves_context_accounting_and_accepts_legacy_snapshots ... ok
+test rollout::tests::batched_writer_preserves_ack_boundary_and_shutdown_admission ... ok
+test rollout::tests::failed_append_remains_pending_and_retries_without_duplicates ... ok
+test rollout::tests::prompt_previews_are_single_line_and_bounded ... ok
+test rollout::tests::reconstructs_custom_function_and_mcp_tool_activity ... ok
+test rollout::tests::missing_compacted_history_still_reports_line_specific_error ... ok
+test rollout::tests::fork_metadata_retains_parent_identity ... ok
+test rollout::tests::appends_only_the_new_committed_delta ... ok
+test rollout::tests::rejects_rollout_continuation_for_obsolete_model_ids ... ok
+test rollout::tests::rollout_perf ... ignored, manual latency benchmark; performs filesystem I/O
+test rollout::tests::moved_rollout_payload_preserves_tool_transcript_and_compacted_history ... ok
+test rollout::wire::image_file_rollout_tests::file_images_are_retained_separately_from_inline_urls ... ok
+test rollout::tests::legacy_resume_roots_new_children_at_the_resumed_session ... ok
+test rollout::tests::loads_the_latest_supported_model_from_codex_turn_context ... ok
+test rollout::tests::rejects_rollouts_with_paginated_history ... ok
+test rollout::tests::discovery_prefers_an_active_copy_of_a_duplicate_thread ... ok
+test rollout::tests::discovers_active_and_archived_rollouts_newest_first ... ok
+test rollout::tests::records_compaction_as_a_replacement_history_boundary ... ok
+test rollout::tests::loads_codex_rollout_without_a_nanocodex_sidecar ... ok
+test rollout::tests::writes_codex_rollout_envelope_and_committed_items ... ok
+test rollout::tests::resumed_writer_repairs_a_rollout_behind_the_durable_boundary ... ok
+
+test result: ok. 52 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.15s
+
