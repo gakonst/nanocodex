@@ -286,7 +286,7 @@ impl Status {
 
 impl Run {
     pub(super) async fn run(self) -> Result<()> {
-        let _observability = self.observability.install(false, Path::new("."))?;
+        let _observability = self.observability.install(false)?;
         let requested_thinking = self.agent.thinking();
         let selector = self.task.as_ref().map(|task| {
             EvaluationSelector::new(task)

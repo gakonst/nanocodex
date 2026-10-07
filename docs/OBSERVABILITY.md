@@ -32,8 +32,21 @@ The detailed mode is intentionally opt-in because a long response can produce
 thousands of trace records.
 
 `just` loads `OPENAI_API_KEY` from the repository `.env`. Interactive local
-logs are written to `.nanocodex/logs/tui.log`; exported traces appear in
-Jaeger at <http://localhost:16686> under the `nanocodex` service.
+logs are written to `$XDG_STATE_HOME/nanocodex/logs/`, falling back to
+`$HOME/.local/state/nanocodex/logs/` when `XDG_STATE_HOME` is unset, empty,
+or relative. Each TUI launch creates `tui-<pid>-<uuidv7>.log`, so concurrent
+processes and repeated resumes of a conversation get separate files. The
+filename's UUID identifies the launch; startup records include the PID,
+workspace, and conversation `session.id` once initialization succeeds. These
+records use the normal info-level logging filter.
+This location is independent of the launch directory, `--cwd`, and resumed
+workspace.
+Set `--log-file PATH` or `NANOCODEX_LOG_FILE` to override it (the flag takes
+precedence); relative overrides are relative to the process's launch directory.
+Explicit paths keep append behavior, including when shared by several launches.
+Headless `nanocodex run` still logs to stderr unless a log file is specified.
+Exported traces appear in Jaeger at <http://localhost:16686> under the
+`nanocodex` service.
 
 Run one live turn that makes a model call, executes the built-in `exec` tool,
 and makes a follow-up model call:

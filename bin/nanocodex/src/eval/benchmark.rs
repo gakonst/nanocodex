@@ -104,10 +104,10 @@ impl Benchmark {
         validate_prepared_eval_host().wrap_err("evaluation host preflight failed")?;
         agent.restrict_to_host_control(CONTROLLER_INSTRUCTIONS);
         let workflow = if headless {
-            let _observability = observability.install(false, agent.cwd())?;
+            let _observability = observability.install(false)?;
             run::run_prompt(prompt, agent, vm).await
         } else {
-            let _observability = observability.install(true, agent.cwd())?;
+            let _observability = observability.install(true)?;
             let display = format!("/benchmark {profile}");
             tui::run(
                 agent,

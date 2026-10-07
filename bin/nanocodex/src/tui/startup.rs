@@ -153,9 +153,12 @@ impl Backend {
                 .as_ref()
                 .map(|session| PathBuf::from(session.workspace()))
                 .map_or_else(|| resolve_cwd(&config), Ok)?;
-            let observability = observability
-                .map(|args| args.install(true, &cwd))
-                .transpose()?;
+            let observability = observability.map(|args| args.install(true)).transpose()?;
+            tracing::info!(
+                pid = std::process::id(),
+                workspace = %cwd.display(),
+                "TUI workspace selected"
+            );
             let updater = crate::startup_timing::Stage::new("updater_setup");
             if let Err(error) = crate::update::prepare_legacy_nightly_bootstrap() {
                 tracing::warn!(%error, "failed to prepare the Nanocodex updater bootstrap");
@@ -174,6 +177,12 @@ impl Backend {
             } else {
                 config.build_tui(vm).await?
             };
+            tracing::info!(
+                pid = std::process::id(),
+                session.id = %configured.handle.session_id(),
+                workspace = %cwd.display(),
+                "TUI session initialized"
+            );
             Ok(Self {
                 configured,
                 observability,

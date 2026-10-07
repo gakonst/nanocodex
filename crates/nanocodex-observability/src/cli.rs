@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use clap::{Args, ValueEnum, builder::NonEmptyStringValueParser};
 
@@ -34,6 +34,12 @@ pub struct ObservabilityOutputArgs {
 }
 
 impl ObservabilityOutputArgs {
+    /// Explicit local log destination, if provided through the CLI or environment.
+    #[must_use]
+    pub fn log_file(&self) -> Option<&Path> {
+        self.log_file.as_deref()
+    }
+
     /// Installs the shared subscriber with application-owned filters and output defaults.
     ///
     /// # Errors

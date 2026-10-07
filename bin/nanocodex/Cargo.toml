@@ -221,3 +221,7 @@ path = "tests/claude_workflow.rs"
 [[test]]
 name = "codex_resume_picker"
 path = "tests/codex_resume_picker.rs"
+
+[[test]]
+name = "tui_log_location"
+path = "tests/tui_log_location.rs"

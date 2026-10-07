@@ -334,7 +334,7 @@ async fn run(cli: Cli) -> Result<()> {
         Some(Command::Eval(command)) => command.run().await,
         Some(Command::VmRunConfig(_)) => unreachable!("VMM commands run before Tokio starts"),
         Some(Command::Run(command)) => {
-            let _observability = command.observability.install(false, command.agent.cwd())?;
+            let _observability = command.observability.install(false)?;
             command.run.run(command.agent, command.vm).await
         }
         Some(Command::ManagedServer(command)) => command.run().await,
