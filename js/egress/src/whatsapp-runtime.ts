@@ -63,6 +63,15 @@ export const whatsappTransportFactory: WhatsAppTransportFactory = {
         await callbacks.onEvents(events.slice(offset, offset + 1000));
       }
     };
+    // Protocol node tags only (no attributes beyond type/code), to see whether the
+    // phone's link_code_companion_reg / pair-success ever reach this socket.
+    for (const tag of ['CB:notification', 'CB:success', 'CB:failure', 'CB:stream:error', 'CB:iq,,pair-success', 'CB:iq,,pair-device', 'CB:ib']) {
+      (socket.ws as any).on?.(tag, (node: any) => {
+        const kind = String(node?.attrs?.type ?? node?.attrs?.code ?? node?.attrs?.reason ?? '').replace(/[^a-z0-9_:-]/gi, '').slice(0, 40);
+        const child = Array.isArray(node?.content) ? String(node.content[0]?.tag ?? '').replace(/[^a-z0-9_:-]/gi, '').slice(0, 40) : '';
+        diag(`node:${tag.replace('CB:', '')}${kind ? `:${kind}` : ''}${child ? `/${child}` : ''}`);
+      });
+    }
     socket.ev.on('creds.update', update => { if ((update as any).me) diag('creds:me'); if ((update as any).registered) diag('creds:registered'); });
     socket.ev.on('creds.update', update => enqueue(() => callbacks.auth.saveCredentials(update as Record<string, unknown>)));
     socket.ev.on('connection.update', update => {
@@ -122,7 +131,7 @@ export const whatsappTransportFactory: WhatsAppTransportFactory = {
           })]);
         } finally { if (timer !== undefined) clearTimeout(timer); }
         const code = await socket.requestPairingCode(phone);
-        diag('code_issued');
+        diag(`code_issued:+${phone.slice(0, 2)}…${phone.slice(-2)}`);
         await pending;
         if (persistenceFailed) throw new Error('WhatsApp persistence failed');
         return code;
