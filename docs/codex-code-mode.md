@@ -27,7 +27,9 @@ and review the oracle rather than silently updating expected outputs.
 
 ## Backend tool exposure
 
-The managed backend selects `toolMode: "code-only"` unconditionally. Only `exec`
+The managed backend selects `toolMode: "code-only"` for every Responses (GPT,
+Codex and gateway) session. Native Claude sessions use direct Messages tool calls
+instead; see `js/managed/README.md`. In Code Mode sessions only `exec`
 and `wait` are model-visible; `tools.tool_search` discovers deferred capabilities
 inside a cell, and workspace and subagent tools use the same nested-call path.
 A direct action call is rejected before its handler runs. Restored sessions use

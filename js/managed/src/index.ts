@@ -10789,7 +10789,7 @@ export class DurableAgentSession extends DurableComputerObject {
         if (configuredNames.some(name => !nativeNames.has(name))) throw new Error("configuration names an unavailable Claude capability");
       }
       const claudeInstructions = [
-            "You are the durable Nanocodex assistant running the native Claude Messages backend on Cloudflare Workers. Run every tool action inside Code Mode exec with tools.*; use wait to observe yielded cells.",
+            "You are the durable Nanocodex assistant running the native Claude Messages backend on Cloudflare Workers. Call the declared tools directly as native tool calls.",
             "Use only the capabilities actually declared for this session. Bash(command, workdir) executes a shell command. Read(file_path), Write(file_path, content), and Edit(file_path, old_string, new_string) operate on /brain files. BashOutput polls an exact retained native shell session, if available. No process sandbox starts attached.",
             computer.instructions.replaceAll("exec_command", "Bash").replaceAll("write_stdin", "BashOutput"),
             "Use durable /brain for file work first. Native commands, package installation, builds, tests and servers require a suitable Hand: follow the placement and recovery order below before mounting cf_sandbox. A Hand's logical root already maps to its workspace: never append the host absolute workspace to workdir. Polls remain pinned to the original Hand. Never claim a build, installation, booking or payment succeeded merely because it started.",
@@ -10808,7 +10808,9 @@ export class DurableAgentSession extends DurableComputerObject {
             ...(configuration.environment?.skills.map(skill => `Available skill: ${skill.name}. Read /brain/skills/${skill.name}/SKILL.md before applying it.`) ?? []),
           ].join("\n\n");
       const claudeCapability: ClaudeOptions | undefined = claudeTools === undefined ? undefined : { model: isClaude ? this.#settings().model : "claude-sonnet-4-6", thinking: "low", instructions: claudeInstructions,
-            toolMode: "code-only", codeEvaluator: managedCodeEvaluator(),
+            // Claude uses native Messages tool calls. Code Mode remains the policy for
+            // Responses/Codex sessions, including Codex children of a Claude root.
+            toolMode: "direct",
             ...(configuredNames === undefined && configuration.multi_agent?.enabled !== false
               ? { subagents: { maxConcurrency: configuration.multi_agent?.enabled ? configuration.multi_agent.max_concurrent_subagents ?? 6 : 6 } } : {}),
             tools: [...claudeTools!.tools, ...(claudeTasks?.tools.filter(tool => configuredNames === undefined || configuredNames.includes(tool.name)) ?? [])],

@@ -4,10 +4,18 @@ This Worker is Nanocodex's account-owned hosted-agent surface on Cloudflare. It
 authenticates public requests, projects the caller's authority, and routes work
 to durable, account-scoped services.
 
-Managed sessions always use `toolMode: "code-only"`. The model sees `exec` and
-`wait`; shell, planning, discovery, account tools and subagent actions run through
-`tools.*` inside Code Mode. Tool allowlists and sessions without attached providers
-retain this policy. Recreated sessions select the same policy from backend code.
+Managed Responses (GPT/Codex and gateway) sessions always use
+`toolMode: "code-only"`. The model sees `exec` and `wait`; shell, planning,
+discovery, account tools and subagent actions run through `tools.*` inside Code
+Mode. Tool allowlists and sessions without attached providers retain this policy.
+Recreated sessions select the same policy from backend code.
+
+Managed Claude sessions use `toolMode: "direct"`: Claude receives its native
+tool definitions (`Bash`, `Read`, `Write`, `Edit`, discovery, account and subagent
+tools) and calls them as ordinary Messages `tool_use` blocks, never through Code
+Mode. Codex children of a Claude root still use Code Mode. Each new operation
+builds its catalog from the current policy, so threads created under the earlier
+Claude Code Mode policy return to native tools on their next turn.
 The public SDK keeps its existing `code` and `direct` modes for other embedders.
 
 Run `pnpm --filter nanocodex-managed-service test:code-mode-only` for the real
