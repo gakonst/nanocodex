@@ -481,6 +481,12 @@ enum RecoveryPhase {
     Disconnected,
 }
 
+struct ReviewBranchesCompletion {
+    pane: PaneId,
+    request_id: uuid::Uuid,
+    result: Result<Vec<review::Branch>, String>,
+}
+
 struct SessionSearchCompletion {
     pane: PaneId,
     picker_id: u64,
@@ -652,6 +658,7 @@ struct DriverRuntime {
     recent_prompt_loads: HashMap<PaneId, u64>,
     connection: JoinSet<ConnectionResult>,
     session_list_cancellations: HashMap<(PaneId, u64), CancellationToken>,
+    review_branch_loads: JoinSet<ReviewBranchesCompletion>,
     session_searches: JoinSet<SessionSearchCompletion>,
     session_search_tasks: HashMap<PaneId, tokio::task::AbortHandle>,
     retry_target: Option<RetryTarget>,
@@ -2214,6 +2221,7 @@ async fn run_inner(
         recent_prompt_loads: HashMap::new(),
         connection: JoinSet::new(),
         session_list_cancellations: HashMap::new(),
+        review_branch_loads: JoinSet::new(),
         session_searches: JoinSet::new(),
         session_search_tasks: HashMap::new(),
         retry_target: None,
@@ -2956,6 +2964,13 @@ async fn run_inner(
                     btw::Event::Failed { pane, error, opening: false } => app.update(AppEvent::NotifyError { pane, error }),
                 };
                 stopping = apply_update(update, &mut app, &mut runtime, &mut terminal, &mut scheduler).await?;
+            }
+            Some(result) = runtime.review_branch_loads.join_next(), if !runtime.review_branch_loads.is_empty() => {
+                if let Ok(loaded) = result {
+                    request_render(app.update(AppEvent::ReviewBranchesLoaded {
+                        pane: loaded.pane, request_id: loaded.request_id, result: loaded.result,
+                    }), &mut scheduler);
+                }
             }
             Some(result) = runtime.session_searches.join_next(), if !runtime.session_searches.is_empty() => {
                 if let Ok(search) = result {
@@ -4037,6 +4052,20 @@ async fn apply_update(
                     runtime.load_prompt_cache(pane, drafts);
                     continue;
                 }
+                if let RootEffect::LoadReviewBranches {
+                    request_id,
+                    workspace,
+                } = effect
+                {
+                    runtime.review_branch_loads.spawn(async move {
+                        ReviewBranchesCompletion {
+                            pane,
+                            request_id,
+                            result: review::branches(&workspace).await,
+                        }
+                    });
+                    continue;
+                }
                 if pane != PaneId::Main {
                     match effect {
                         RootEffect::Submit(prompt) | RootEffect::ContinueSubagent(prompt) => {
@@ -4707,6 +4736,7 @@ async fn apply_update(
                     }
                     RootEffect::CopyResponse(_) => unreachable!("handled before pane routing"),
                     RootEffect::SetTheme(_) => {}
+                    RootEffect::LoadReviewBranches { .. } => unreachable!("handled before pane routing"),
                     RootEffect::SearchSessions {
                         picker_id,
                         request_id,
@@ -5847,6 +5877,7 @@ mod tests {
             recent_prompt_loads: HashMap::new(),
             connection: JoinSet::new(),
             session_list_cancellations: HashMap::new(),
+            review_branch_loads: JoinSet::new(),
             session_searches: JoinSet::new(),
             session_search_tasks: HashMap::new(),
             retry_target: None,

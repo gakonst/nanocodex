@@ -67,8 +67,11 @@ workspace effects are not isolated. The Managed2 text-only preview does not supp
 
 `/review` opens a scope picker in the managed terminal: compare against a base
 branch, review uncommitted changes, review a commit, or enter custom instructions.
-Use the arrow keys and Enter to choose. Enter a branch/ref, commit/ref, or custom
-scope when requested; Esc goes back or closes the picker without submitting.
+Use the arrow keys and Enter to choose. Base branch opens a searchable list of
+local and fetched remote branches in the terminal workspace; type to filter, then
+press Enter to review the selected branch. The current branch is marked. Branch
+lookup does not fetch or switch branches. Commit and custom scopes accept text.
+Esc goes back or closes the picker without submitting.
 Inline shortcuts skip the picker:
 
 ```text

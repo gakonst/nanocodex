@@ -5870,6 +5870,51 @@ fn review_journey_snapshot(fixture: &Fixture, step: &str) {
     );
 }
 
+// Use actual refs in the terminal's cwd; Git discovery is part of the journey.
+fn review_journey_git(fixture: &Fixture, args: &[&str]) {
+    let output = std::process::Command::new("git")
+        .args(args)
+        .current_dir(fixture.terminal._workspace.path())
+        .env_clear()
+        .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+        .env("HOME", fixture.terminal._workspace.path())
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .output()
+        .expect("Git must be available for the branch picker journey");
+    assert!(
+        output.status.success(),
+        "git {args:?} failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+fn review_journey_commit(fixture: &Fixture) {
+    review_journey_git(
+        fixture,
+        &[
+            "-c",
+            "user.name=Review Fixture",
+            "-c",
+            "user.email=review-fixture@example.test",
+            "-c",
+            "commit.gpgSign=false",
+            "-c",
+            "core.hooksPath=/dev/null",
+            "commit",
+            "--allow-empty",
+            "-m",
+            "Branch picker fixture",
+        ],
+    );
+}
+
+async fn review_journey_branches(fixture: &mut Fixture) {
+    review_journey_menu(fixture).await;
+    fixture.terminal.input("\r");
+    fixture.terminal.wait_text("Search branches").await;
+}
+
 async fn review_journey_menu(fixture: &mut Fixture) {
     // Exercise the typed slash-action path as well as the pasted inline commands
     // below. Enter must open the native picker rather than send literal /review.
@@ -5975,6 +6020,9 @@ async fn terminal_review_picker_cancels_and_submits_each_scope() {
         "Reproduce: cargo test --locked -p nanocodex2-bin --test nanocodex2_tui_lifecycle terminal_review_ -- --nocapture"
     );
     let mut fixture = Fixture::start().await;
+    review_journey_git(&fixture, &["init", "--initial-branch=main"]);
+    review_journey_commit(&fixture);
+    review_journey_git(&fixture, &["branch", "review-target/release-42"]);
     review_journey_menu(&mut fixture).await;
     fixture.terminal.input("\x1b");
     fixture.terminal.wait_no_text("Base branch").await;
@@ -5982,9 +6030,10 @@ async fn terminal_review_picker_cancels_and_submits_each_scope() {
 
     review_journey_menu(&mut fixture).await;
     fixture.terminal.input("\r");
+    fixture.terminal.wait_text("Search branches").await;
     fixture.terminal.input("CANCELLED_REVIEW_BASE");
     fixture.terminal.wait_text("CANCELLED_REVIEW_BASE").await;
-    review_journey_snapshot(&fixture, "base input typed; Esc must return to choices");
+    review_journey_snapshot(&fixture, "branch search typed; Esc must return to choices");
     fixture.terminal.input("\x1b");
     fixture.terminal.wait_text("Uncommitted").await;
     fixture.terminal.wait_text("Custom").await;
@@ -6017,8 +6066,15 @@ async fn terminal_review_picker_cancels_and_submits_each_scope() {
         fixture.terminal.input(&"\x1b[B".repeat(index));
         fixture.terminal.input("\r");
         if let Some(target) = target {
+            if index == 0 {
+                fixture.terminal.wait_text("Search branches").await;
+                fixture.terminal.wait_text("review-target/release-42").await;
+            }
             fixture.terminal.input(target);
             fixture.terminal.wait_text(target).await;
+            if index == 0 {
+                fixture.terminal.wait_no_text("(current)").await;
+            }
             review_journey_snapshot(
                 &fixture,
                 &format!("choice={index}, typed target={target:?}; Enter submits"),
@@ -6028,6 +6084,176 @@ async fn terminal_review_picker_cancels_and_submits_each_scope() {
         review_journey_reply(&mut fixture, &[required], reply).await;
     }
     review_journey_normal_turn(&mut fixture, "AFTER_ALL_REVIEW_SCOPES").await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn terminal_review_branch_picker_navigates_filters_and_refreshes() {
+    let mut fixture = Fixture::start().await;
+    review_journey_git(&fixture, &["init", "--initial-branch=main"]);
+    review_journey_commit(&fixture);
+    for branch in ["alpha", "café", "zeta"] {
+        review_journey_git(&fixture, &["branch", branch]);
+    }
+    review_journey_git(
+        &fixture,
+        &["update-ref", "refs/remotes/origin/main", "HEAD"],
+    );
+    review_journey_git(
+        &fixture,
+        &[
+            "symbolic-ref",
+            "refs/remotes/origin/HEAD",
+            "refs/remotes/origin/main",
+        ],
+    );
+
+    // Default selection is main, ahead of alphabetically earlier local refs.
+    // Subsequent requests prove that navigation changes the submitted ref.
+    for (keys, target, reply) in [
+        ("", "main", "REVIEW_BRANCH_DEFAULT_RESULT"),
+        (
+            "\x1b[F\x1b[H\x1b[B\x1b[A\x1b[B",
+            "origin/main",
+            "REVIEW_BRANCH_NAVIGATION_RESULT",
+        ),
+        ("\x1b[F", "zeta", "REVIEW_BRANCH_END_RESULT"),
+    ] {
+        review_journey_branches(&mut fixture).await;
+        fixture.terminal.wait_text("origin/main").await;
+        fixture.terminal.wait_text("(current)").await;
+        fixture.terminal.wait_no_text("origin/HEAD").await;
+        fixture.terminal.input(keys);
+        review_journey_snapshot(
+            &fixture,
+            &format!("navigation keys={keys:?}; expected ref={target}"),
+        );
+        fixture.terminal.input("\r");
+        let selected_scope = format!("\"base_ref\":{}", json!(target));
+        review_journey_reply(&mut fixture, &[&selected_scope], reply).await;
+    }
+
+    // A same-named tag must not silently change the selected branch target.
+    review_journey_git(&fixture, &["tag", "alpha"]);
+    review_journey_branches(&mut fixture).await;
+    fixture.terminal.wait_text("heads/alpha").await;
+    fixture.terminal.input("ALPHA");
+    fixture.terminal.wait_text("ALPHA").await;
+    fixture.terminal.wait_no_text("(current)").await;
+    review_journey_snapshot(
+        &fixture,
+        "alpha tag collision displays and submits heads/alpha",
+    );
+    fixture.terminal.input("\r");
+    review_journey_reply(
+        &mut fixture,
+        &["\"base_ref\":\"heads/alpha\""],
+        "REVIEW_BRANCH_DISAMBIGUATED_RESULT",
+    )
+    .await;
+
+    review_journey_branches(&mut fixture).await;
+    fixture.terminal.wait_text("origin/main").await;
+    fixture.terminal.input("NO_SUCH_BRANCH_937");
+    fixture.terminal.wait_text("No matching branches.").await;
+    fixture.terminal.input("\r");
+    fixture.terminal.wait_text("Search branches").await;
+    review_journey_snapshot(&fixture, "Enter on no matches leaves picker open");
+    fixture.terminal.input("\x1b");
+    fixture.terminal.wait_text("Uncommitted").await;
+    fixture.terminal.input("\x1b");
+    fixture.terminal.wait_no_text("Search branches").await;
+    review_journey_normal_turn(&mut fixture, "AFTER_BRANCH_NO_MATCH_ENTER").await;
+
+    review_journey_branches(&mut fixture).await;
+    fixture.terminal.wait_text("origin/main").await;
+    // A pasted uppercase, noncontiguous query must match the Unicode ref.
+    fixture.terminal.prompt("CFÉ", "");
+    fixture.terminal.wait_text("CFÉ").await;
+    fixture.terminal.wait_text("café").await;
+    fixture.terminal.wait_no_text("(current)").await;
+    review_journey_snapshot(&fixture, "pasted CFÉ fuzzy-matches café");
+    fixture.terminal.input("\r");
+    review_journey_reply(&mut fixture, &["café"], "REVIEW_BRANCH_UNICODE_RESULT").await;
+
+    review_journey_branches(&mut fixture).await;
+    fixture.terminal.wait_text("origin/main").await;
+    fixture.terminal.input("no-match-before-clear");
+    fixture.terminal.wait_text("No matching branches.").await;
+    fixture.terminal.input("\x15");
+    fixture.terminal.wait_text("origin/main").await;
+    fixture.terminal.wait_no_text("No matching branches.").await;
+    fixture.terminal.input("OGMN");
+    fixture.terminal.wait_text("OGMN").await;
+    fixture.terminal.wait_no_text("(current)").await;
+    fixture.terminal.wait_text("origin/main").await;
+    review_journey_snapshot(
+        &fixture,
+        "Ctrl-U clears search; typed OGMN matches origin/main",
+    );
+    fixture.terminal.input("\r");
+    review_journey_reply(&mut fixture, &["origin/main"], "REVIEW_BRANCH_FUZZY_RESULT").await;
+
+    // Populate once, close it, mutate actual refs, and reopen to catch stale caches.
+    review_journey_branches(&mut fixture).await;
+    fixture.terminal.wait_text("origin/main").await;
+    fixture.terminal.input("\x1b");
+    fixture.terminal.wait_text("Uncommitted").await;
+    fixture.terminal.input("\x1b");
+    fixture.terminal.wait_no_text("Base branch").await;
+    review_journey_normal_turn(&mut fixture, "AFTER_BRANCH_ESCAPE_CANCEL").await;
+    review_journey_git(&fixture, &["branch", "fresh-after-reopen"]);
+    review_journey_branches(&mut fixture).await;
+    fixture.terminal.wait_text("fresh-after-reopen").await;
+    fixture.terminal.input("FRESH");
+    fixture.terminal.wait_text("FRESH").await;
+    fixture.terminal.wait_no_text("(current)").await;
+    fixture.terminal.input("\r");
+    review_journey_reply(
+        &mut fixture,
+        &["fresh-after-reopen"],
+        "REVIEW_BRANCH_REFRESH_RESULT",
+    )
+    .await;
+    review_journey_normal_turn(&mut fixture, "AFTER_BRANCH_PICKER_JOURNEY").await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn terminal_review_branch_picker_empty_and_nonrepo_recover_without_submitting() {
+    let mut fixture = Fixture::start().await;
+    review_journey_branches(&mut fixture).await;
+    fixture.terminal.wait_text("Could not load branches.").await;
+    fixture.terminal.input("\r");
+    fixture.terminal.wait_text("Search branches").await;
+    review_journey_snapshot(&fixture, "non-repository Enter does not submit");
+    fixture.terminal.input("\x1b");
+    fixture.terminal.wait_text("Uncommitted").await;
+    fixture.terminal.input("\x1b");
+    fixture.terminal.wait_no_text("Base branch").await;
+    review_journey_normal_turn(&mut fixture, "AFTER_BRANCH_LOAD_ERROR").await;
+
+    review_journey_git(&fixture, &["init", "--initial-branch=main"]);
+    review_journey_branches(&mut fixture).await;
+    fixture.terminal.wait_text("No branches found.").await;
+    fixture.terminal.input("\r");
+    fixture.terminal.wait_text("Search branches").await;
+    review_journey_snapshot(&fixture, "unborn repository Enter does not submit");
+    fixture.terminal.input("\x1b");
+    fixture.terminal.wait_text("Uncommitted").await;
+    fixture.terminal.input("\x1b");
+    fixture.terminal.wait_no_text("Search branches").await;
+    review_journey_normal_turn(&mut fixture, "AFTER_BRANCH_EMPTY_REPO").await;
+
+    review_journey_commit(&fixture);
+    review_journey_branches(&mut fixture).await;
+    fixture.terminal.wait_text("(current)").await;
+    fixture.terminal.input("\r");
+    review_journey_reply(
+        &mut fixture,
+        &["\"base_ref\":\"main\""],
+        "REVIEW_BRANCH_RECOVERED_RESULT",
+    )
+    .await;
+    review_journey_normal_turn(&mut fixture, "AFTER_BRANCH_REPOSITORY_RECOVERY").await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

@@ -79,3 +79,77 @@ impl Target {
         )
     }
 }
+
+/// A branch available in the local workspace, including fetched remote refs.
+#[derive(Debug, Eq, PartialEq)]
+pub(crate) struct Branch {
+    pub(crate) name: String,
+    pub(crate) reference: String,
+    pub(crate) current: bool,
+}
+
+/// Read refs without fetching, checking out, or blocking terminal input.
+pub(crate) async fn branches(workspace: &std::path::Path) -> Result<Vec<Branch>, String> {
+    let output = tokio::time::timeout(
+        std::time::Duration::from_secs(3),
+        tokio::process::Command::new("git")
+            .current_dir(workspace)
+            .args([
+                "-c",
+                "core.warnAmbiguousRefs=true",
+                "for-each-ref",
+                "--sort=refname",
+                "--format=%(refname:short)%00%(refname)%00%(symref)%00%(HEAD)",
+                "refs/heads/",
+                "refs/remotes/",
+            ])
+            .stdin(std::process::Stdio::null())
+            .kill_on_drop(true)
+            .output(),
+    )
+    .await
+    .map_err(|_| "Git branch lookup timed out.".to_owned())?
+    .map_err(|error| format!("Could not run Git: {error}"))?;
+    if !output.status.success() {
+        return Err("Open a Git workspace and try again.".to_owned());
+    }
+    let mut branches = Vec::new();
+    for line in output.stdout.split(|byte| *byte == b'\n') {
+        // Skip non-UTF-8 refs rather than submit a different, lossy name.
+        let Ok(line) = std::str::from_utf8(line) else {
+            continue;
+        };
+        let fields: Vec<_> = line.split('\0').collect();
+        let [reference, full, symref, head] = fields.as_slice() else {
+            continue;
+        };
+        if !symref.is_empty() {
+            continue;
+        }
+        let Some(name) = full
+            .strip_prefix("refs/heads/")
+            .or_else(|| full.strip_prefix("refs/remotes/"))
+        else {
+            continue;
+        };
+        if name.chars().any(char::is_control) {
+            continue;
+        }
+        branches.push(Branch {
+            // Git qualifies collisions (e.g. heads/main versus a tag main).
+            name: (*reference).to_owned(),
+            reference: (*reference).to_owned(),
+            current: *head == "*",
+        });
+    }
+    // Common integration branches are useful defaults; keep every other branch
+    // in Git's stable local-then-remote order.
+    branches.sort_by_key(|branch| match branch.name.as_str() {
+        "main" => 0,
+        "master" => 1,
+        "origin/main" => 2,
+        "origin/master" => 3,
+        _ => 4,
+    });
+    Ok(branches)
+}

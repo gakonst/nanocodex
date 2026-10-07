@@ -184,6 +184,10 @@ pub(crate) enum RootEvent {
     TurnsCancelled,
     ForkReady,
     NewSessionFailed(String),
+    ReviewBranchesLoaded {
+        request_id: uuid::Uuid,
+        result: Result<Vec<crate::tui::review::Branch>, String>,
+    },
     SessionSearchResults {
         picker_id: u64,
         request_id: u64,
@@ -330,6 +334,10 @@ pub(crate) enum RootEffect {
     OpenLink(String),
     ReloadConfig,
     NewSession(Model),
+    LoadReviewBranches {
+        request_id: uuid::Uuid,
+        workspace: PathBuf,
+    },
     SearchSessions {
         picker_id: u64,
         request_id: u64,
@@ -3545,6 +3553,13 @@ impl RootNode {
                 self.overlay = None;
                 self.apply_code_review(crate::tui::review::Command::Run(target))
             }
+            Some(CodeReviewEffect::LoadBranches(request_id)) => ComponentUpdate {
+                effects: vec![RootEffect::LoadReviewBranches {
+                    request_id,
+                    workspace: self.workspace.clone(),
+                }],
+                render: RenderRequest::Immediate,
+            },
             Some(CodeReviewEffect::Dismiss) => {
                 self.overlay = None;
                 ComponentUpdate::render(RenderRequest::Immediate)
@@ -4457,6 +4472,14 @@ impl Component for RootNode {
             RootEvent::TurnsCancelled => self.turns_cancelled(),
             RootEvent::ForkReady => self.fork_ready(),
             RootEvent::NewSessionFailed(message) => self.new_session_failed(message),
+            RootEvent::ReviewBranchesLoaded { request_id, result } => {
+                if let Some(Overlay::CodeReview(selector)) = &mut self.overlay {
+                    let update = selector.component_mut().branches_loaded(request_id, result);
+                    ComponentUpdate::render(update.render)
+                } else {
+                    ComponentUpdate::none()
+                }
+            }
             RootEvent::SessionSearchResults {
                 picker_id,
                 request_id,

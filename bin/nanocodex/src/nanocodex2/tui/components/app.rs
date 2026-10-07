@@ -155,6 +155,11 @@ pub(crate) enum AppEvent {
         pane: PaneId,
         error: String,
     },
+    ReviewBranchesLoaded {
+        pane: PaneId,
+        request_id: uuid::Uuid,
+        result: Result<Vec<crate::tui::review::Branch>, String>,
+    },
     SessionSearchResults {
         pane: PaneId,
         picker_id: u64,
@@ -509,6 +514,11 @@ impl AppNode {
             AppEvent::NewSessionFailed { pane, error } => {
                 self.update_root(pane, RootEvent::NewSessionFailed(error))
             }
+            AppEvent::ReviewBranchesLoaded {
+                pane,
+                request_id,
+                result,
+            } => self.update_root(pane, RootEvent::ReviewBranchesLoaded { request_id, result }),
             AppEvent::SessionSearchResults {
                 pane,
                 picker_id,

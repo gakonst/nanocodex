@@ -1,10 +1,14 @@
-//! Local review scope selection. Repository resolution belongs to the agent.
+//! Review scope selection and searchable workspace branches.
 
 use super::{
+    file_finder::fuzzy_score,
     floating::Floating,
     node::{Component, ComponentUpdate, RenderRequest},
 };
-use crate::tui::{review::Target, theme::Theme};
+use crate::tui::{
+    review::{Branch, Target},
+    theme::Theme,
+};
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::{
     Frame,
@@ -23,11 +27,18 @@ const CHOICES: [(&str, &str); 4] = [
     ("Custom", "Choose a review scope or focus"),
 ];
 const SCOPE_KEYS: [(&str, &str); 3] = [("↑↓", "select"), ("enter", "continue"), ("esc", "cancel")];
+const BRANCH_KEYS: [(&str, &str); 4] = [
+    ("type", "filter"),
+    ("↑↓", "select"),
+    ("enter", "review"),
+    ("esc", "back"),
+];
 const INPUT_KEYS: [(&str, &str); 2] = [("enter", "review"), ("esc", "back")];
 
 #[derive(Debug, Eq, PartialEq)]
 pub(super) enum CodeReviewEffect {
     Run(Target),
+    LoadBranches(uuid::Uuid),
     Dismiss,
 }
 
@@ -38,6 +49,10 @@ pub(super) struct CodeReviewSelector {
     // A byte offset that always lies on an extended grapheme boundary.
     cursor: usize,
     error: Option<&'static str>,
+    branch_request: Option<uuid::Uuid>,
+    branches: Option<Result<Vec<Branch>, String>>,
+    matches: Vec<usize>,
+    branch_selected: usize,
 }
 
 impl CodeReviewSelector {
@@ -48,6 +63,10 @@ impl CodeReviewSelector {
             input: String::new(),
             cursor: 0,
             error: None,
+            branch_request: None,
+            branches: None,
+            matches: Vec::new(),
+            branch_selected: 0,
         }
     }
 
@@ -74,6 +93,9 @@ impl CodeReviewSelector {
             return Self::effect(CodeReviewEffect::Dismiss);
         }
         if self.entering {
+            if self.selected == 0 {
+                return self.update_branches(key);
+            }
             return self.update_input(key);
         }
         match key.code {
@@ -91,9 +113,78 @@ impl CodeReviewSelector {
                 self.input.clear();
                 self.cursor = 0;
                 self.error = None;
+                if self.selected == 0 {
+                    let request_id = uuid::Uuid::new_v4();
+                    self.branch_request = Some(request_id);
+                    self.branches = None;
+                    self.matches.clear();
+                    self.branch_selected = 0;
+                    return Self::effect(CodeReviewEffect::LoadBranches(request_id));
+                }
             }
             KeyCode::Backspace => return Self::effect(CodeReviewEffect::Dismiss),
             _ => return ComponentUpdate::none(),
+        }
+        ComponentUpdate::render(RenderRequest::Immediate)
+    }
+
+    pub(super) fn branches_loaded(
+        &mut self,
+        request_id: uuid::Uuid,
+        result: Result<Vec<Branch>, String>,
+    ) -> ComponentUpdate<CodeReviewEffect> {
+        if self.branch_request != Some(request_id) || !self.entering || self.selected != 0 {
+            return ComponentUpdate::none();
+        }
+        self.branches = Some(result);
+        self.refresh_branches();
+        ComponentUpdate::render(RenderRequest::Immediate)
+    }
+
+    fn refresh_branches(&mut self) {
+        self.matches.clear();
+        if let Some(Ok(branches)) = &self.branches {
+            let query = self.input.to_lowercase();
+            let mut matches: Vec<_> = branches
+                .iter()
+                .enumerate()
+                .filter_map(|(index, branch)| {
+                    fuzzy_score(&branch.name.to_lowercase(), &query).map(|score| (index, score))
+                })
+                .collect();
+            matches.sort_by_key(|(_, score)| std::cmp::Reverse(*score));
+            self.matches = matches.into_iter().map(|(index, _)| index).collect();
+        }
+        self.branch_selected = 0;
+    }
+
+    fn update_branches(&mut self, key: KeyEvent) -> ComponentUpdate<CodeReviewEffect> {
+        match key.code {
+            KeyCode::Enter => {
+                if let Some(Ok(branches)) = &self.branches
+                    && let Some(index) = self.matches.get(self.branch_selected)
+                {
+                    return Self::effect(CodeReviewEffect::Run(Target::Base(
+                        branches[*index].reference.clone(),
+                    )));
+                }
+                return ComponentUpdate::none();
+            }
+            KeyCode::Up => self.branch_selected = self.branch_selected.saturating_sub(1),
+            KeyCode::Down => {
+                self.branch_selected =
+                    (self.branch_selected + 1).min(self.matches.len().saturating_sub(1))
+            }
+            KeyCode::Home => self.branch_selected = 0,
+            KeyCode::End => self.branch_selected = self.matches.len().saturating_sub(1),
+            _ => {
+                let before = self.input.clone();
+                let update = self.update_input(key);
+                if self.input != before {
+                    self.refresh_branches();
+                }
+                return update;
+            }
         }
         ComponentUpdate::render(RenderRequest::Immediate)
     }
@@ -192,7 +283,6 @@ impl CodeReviewSelector {
         let value = self.input.trim();
         if value.is_empty() {
             self.error = Some(match self.selected {
-                0 => "Enter a base branch or ref.",
                 2 => "Enter a commit ref.",
                 _ => "Enter a review scope or focus.",
             });
@@ -202,7 +292,6 @@ impl CodeReviewSelector {
             self.error = Some("Enter one ref without whitespace or a leading '-'.");
         } else {
             let target = match self.selected {
-                0 => Target::Base(value.to_owned()),
                 2 => Target::Commit(value.to_owned()),
                 _ => Target::Custom(value.to_owned()),
             };
@@ -211,15 +300,78 @@ impl CodeReviewSelector {
         ComponentUpdate::render(RenderRequest::Immediate)
     }
 
+    fn render_branches(&self, frame: &mut Frame<'_>, body: Rect, theme: &Theme) {
+        // Reuse the grapheme-aware single-line editor above the results.
+        self.render_input(
+            frame,
+            Rect {
+                height: body.height.min(2),
+                ..body
+            },
+            theme,
+        );
+        let list_area = Rect {
+            y: body.y + body.height.min(3),
+            height: body.height.saturating_sub(3),
+            ..body
+        };
+        if list_area.is_empty() {
+            return;
+        }
+        let message = match &self.branches {
+            None => Some("Loading branches…".to_owned()),
+            Some(Err(error)) => Some(format!(
+                "Could not load branches. {error} You can also use /review --base <ref>."
+            )),
+            Some(Ok(branches)) if branches.is_empty() => Some(
+                "No branches found. Create or fetch a branch, then reopen this picker.".to_owned(),
+            ),
+            Some(Ok(_)) if self.matches.is_empty() => Some("No matching branches.".to_owned()),
+            Some(Ok(_)) => None,
+        };
+        if let Some(message) = message {
+            frame.render_widget(
+                Paragraph::new(message)
+                    .style(Style::default().fg(theme.muted()))
+                    .wrap(Wrap { trim: false }),
+                list_area,
+            );
+            return;
+        }
+        let Some(Ok(branches)) = &self.branches else {
+            return;
+        };
+        let items = self.matches.iter().map(|index| {
+            let branch = &branches[*index];
+            ListItem::new(Line::from(vec![
+                Span::raw(&branch.name),
+                Span::styled(
+                    if branch.current { " (current)" } else { "" },
+                    Style::default().fg(theme.muted()),
+                ),
+            ]))
+        });
+        let list = List::new(items)
+            .style(Style::default().fg(theme.text()))
+            .highlight_symbol("› ")
+            .highlight_style(
+                Style::default()
+                    .fg(theme.accent())
+                    .add_modifier(Modifier::BOLD),
+            );
+        frame.render_stateful_widget(
+            list,
+            list_area,
+            &mut ListState::default().with_selected(Some(self.branch_selected)),
+        );
+    }
+
     fn render_input(&self, frame: &mut Frame<'_>, body: Rect, theme: &Theme) {
         if body.is_empty() {
             return;
         }
         let (label, hint) = match self.selected {
-            0 => (
-                "Base branch or ref",
-                "Enter a ref such as main or origin/main.",
-            ),
+            0 => ("Search branches", "Type to filter branches."),
             2 => ("Commit ref", "Enter a commit SHA or ref such as HEAD."),
             _ => (
                 "Review scope or focus",
@@ -288,6 +440,9 @@ impl Component for CodeReviewSelector {
             Event::Key(key) => self.update_key(key),
             Event::Paste(text) if self.entering => {
                 self.insert(&text);
+                if self.selected == 0 {
+                    self.refresh_branches();
+                }
                 ComponentUpdate::render(RenderRequest::Immediate)
             }
             _ => ComponentUpdate::none(),
@@ -303,12 +458,20 @@ impl Component for CodeReviewSelector {
         } else {
             "Review"
         };
-        let keys = if self.entering {
+        let choosing_branch = self.entering && self.selected == 0;
+        let keys = if choosing_branch {
+            &BRANCH_KEYS[..]
+        } else if self.entering {
             &INPUT_KEYS[..]
         } else {
             &SCOPE_KEYS[..]
         };
-        let layout = Floating::new(title, 68, 10, keys).render(frame, area, theme);
+        let layout = Floating::new(title, 68, if choosing_branch { 17 } else { 10 }, keys)
+            .render(frame, area, theme);
+        if choosing_branch {
+            self.render_branches(frame, layout.body, theme);
+            return;
+        }
         if self.entering {
             self.render_input(frame, layout.body, theme);
             return;
