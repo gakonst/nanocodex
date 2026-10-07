@@ -20,7 +20,7 @@ export type WhatsAppEvent =
   | { type: "history"; complete: boolean; oldest_timestamp?: number };
 export interface WhatsAppTransportCallbacks {
   auth: WhatsAppAuthStore;
-  onConnection(update: { state: "connecting" | "open" | "close"; loggedOut?: boolean; retryable?: boolean }): Promise<void>;
+  onConnection(update: { state: "connecting" | "open" | "close"; loggedOut?: boolean; retryable?: boolean; restartRequired?: boolean }): Promise<void>;
   onEvents(events: WhatsAppEvent[]): Promise<void>;
 }
 export interface WhatsAppTransport {

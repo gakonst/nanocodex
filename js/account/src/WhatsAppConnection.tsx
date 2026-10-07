@@ -139,7 +139,7 @@ function WhatsAppConnectionContent({ requiresLogin = false, accountId = "" }: Wh
   const start = async () => {
     const abort = lifetime.current;
     const normalized = phone.replace(/[\s()-]/g, "");
-    if (!abort || pending.current || active || !status) return;
+    if (!abort || pending.current || !status) return;
     if (!/^\+[1-9][0-9]{7,14}$/.test(normalized)) {
       setError("Enter your WhatsApp phone number with its country code, for example +14155550123.");
       return;
@@ -149,7 +149,9 @@ function WhatsAppConnectionContent({ requiresLogin = false, accountId = "" }: Wh
     setError(null);
     setPairing(null);
     setCopied(false);
-    const operationId = operation.current ?? crypto.randomUUID();
+    // An active attempt is replaced by a fresh one; an uncertain start reuses its id.
+    const operationId = (!active && operation.current) || crypto.randomUUID();
+    expiredOperation.current = undefined;
     try { sessionStorage.setItem(storageKey, operationId); } catch {
       pending.current = false; setBusy(false);
       setError("Allow session storage to safely recover a linking request."); return;
@@ -220,10 +222,10 @@ function WhatsAppConnectionContent({ requiresLogin = false, accountId = "" }: Wh
         {(status?.state === "expired" || status?.attempt?.state === "expired") && <p role="status">This code expired. Start a new link when you’re ready.</p>}
         {status?.state === "failed" && <p role="status">WhatsApp couldn’t complete this link. You can start a new attempt.</p>}
         {uncertain && <p role="status">The link request may still be processing. Check the connection, or reenter the same phone number to retry this attempt.</p>}
-        {!active && <form onSubmit={event => { event.preventDefault(); void start(); }}>
+        {<form onSubmit={event => { event.preventDefault(); void start(); }}>
           <label htmlFor="whatsapp-phone">WhatsApp phone number</label>
           <input id="whatsapp-phone" type="tel" inputMode="tel" autoComplete="tel" placeholder="+14155550123" value={phone} onChange={event => setPhone(event.target.value)} disabled={busy} required />
-          <button type="submit" className="whatsapp-primary" disabled={busy || !status || !!error && !phone}>{uncertain ? "Retry same linking attempt" : "Start linking"}</button>
+          <button type="submit" className="whatsapp-primary" disabled={busy || !status || !!error && !phone}>{active ? "Get a new code" : uncertain ? "Retry same linking attempt" : "Start linking"}</button>
         </form>}
         {active && !pairing && !error && <p role="status">{status?.attempt?.state === "unknown" ? "WhatsApp has not confirmed this attempt. Keep checking until it connects or expires." : "Waiting for your linking code…"}</p>}
         {pairing && <div className="whatsapp-code-card">

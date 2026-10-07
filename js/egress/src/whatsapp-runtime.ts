@@ -67,7 +67,7 @@ export const whatsappTransportFactory: WhatsAppTransportFactory = {
         || status === DisconnectReason.connectionReplaced || status === DisconnectReason.multideviceMismatch
         || status === DisconnectReason.forbidden;
       enqueue(() => callbacks.onConnection({ state: update.connection!, loggedOut: status === DisconnectReason.loggedOut,
-        retryable: !stopped && !terminal }));
+        retryable: !stopped && !terminal, restartRequired: status === DisconnectReason.restartRequired }));
     });
     socket.ev.on('messages.upsert', ({ messages }) => enqueue(() => deliver(messages.flatMap(projectMessage))));
     socket.ev.on('messages.update', updates => enqueue(async () => {

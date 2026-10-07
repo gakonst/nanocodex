@@ -117,7 +117,8 @@ export class WhatsAppAccount extends DurableObject<CredentialVaultEnv> {
       await this.expire();
       const previous = await this.store.get<Receipt>(`attempt:${op}`);
       if (previous) return { existing: true, mismatch: previous.phone_hash !== phoneHash, attempt: previous.attempt };
-      if (this.meta.authorized || (this.meta.attempt && ["requested", "ready", "unknown"].includes(this.meta.attempt.state) && this.meta.attempt.expires_at > Date.now())) return { conflict: true };
+      // A new operation replaces any unpaired attempt so users can always get a fresh code.
+      if (this.meta.authorized) return { conflict: true };
       const attempt: NonNullable<WhatsAppStatus["attempt"]> = { operation_id: op, state: "requested", expires_at: Date.now() + TTL };
       this.detach();
       await this.clearAuth();
@@ -215,7 +216,20 @@ export class WhatsAppAccount extends DurableObject<CredentialVaultEnv> {
           this.detach();
           if (update.loggedOut || update.retryable === false) await this.revoke();
           else if (this.meta.authorized) await this.schedule();
-          else {
+          else if (update.restartRequired && this.meta.attempt && this.meta.attempt.expires_at > Date.now()
+            && ["requested", "ready", "unknown"].includes(this.meta.attempt.state)) {
+            // After pair-success WhatsApp closes with 515 and requires an immediate
+            // reconnect using the freshly saved credentials. Without it the phone
+            // times out and shows "Couldn't link device".
+            this.meta.state = "connecting"; await this.saveMeta();
+            const next = this.generation;
+            this.ctx.waitUntil(this.openTransport(next).catch(() => this.serial(async () => {
+              if (next === this.generation && !this.meta.authorized && this.meta.attempt) {
+                this.meta.state = "disconnected"; this.meta.attempt.state = "unknown";
+                await this.store.delete("secret:pairing"); await this.saveAttempt();
+              }
+            })));
+          } else {
             this.meta.state = "disconnected";
             if (this.meta.attempt && ["requested", "ready"].includes(this.meta.attempt.state)) this.meta.attempt.state = "unknown";
             await this.store.delete("secret:pairing"); await this.saveAttempt();
