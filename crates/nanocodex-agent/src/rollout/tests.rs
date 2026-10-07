@@ -889,3 +889,37 @@ async fn failed_append_remains_pending_and_retries_without_duplicates() {
         .expect("read retried rollout");
     assert_eq!(lines.len(), 7);
 }
+
+// Reproduction and interpretation live in docs/perf/tokio-audit.md.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "manual latency benchmark; performs filesystem I/O"]
+async fn rollout_perf() {
+    fn report(name: &str, mut samples: Vec<std::time::Duration>) {
+        samples.sort();
+        println!("{name}: n={} median_us={} p99_us={}", samples.len(), samples[samples.len()/2].as_micros(), samples[(samples.len()*99).div_ceil(100)-1].as_micros());
+    }
+    let home = tempdir().unwrap();
+    for n in 0..1000 {
+        let id = uuid::Uuid::from_u128(n + 1).to_string();
+        write_discoverable_rollout(home.path(), "sessions/2026/08/04", &id);
+    }
+    let config = RolloutConfig::new(home.path());
+    let mut listing = Vec::new();
+    for n in 0..106 {
+        let start = std::time::Instant::now();
+        assert_eq!(std::hint::black_box(config.list_sessions().unwrap()).len(), 1000);
+        if n >= 5 { listing.push(start.elapsed()); }
+    }
+    report("list_1000", listing);
+    let history = ResponseHistory::new((0..1000).map(|_| message("benchmark message")).collect());
+    let mut append = Vec::new();
+    for n in 0..106 {
+        let file = File::create(home.path().join(format!("append-{n}.jsonl"))).unwrap();
+        let mut writer = RolloutWriter::new(tokio::fs::File::from_std(file), "window".into(), home.path().into());
+        writer.pending = Some(RolloutCommit::from_history(history.clone(), 0, completed_turn("benchmark", "done")));
+        let start = std::time::Instant::now();
+        writer.persist_pending().await.unwrap();
+        if n >= 5 { append.push(start.elapsed()); }
+    }
+    report("append_1000", append);
+}

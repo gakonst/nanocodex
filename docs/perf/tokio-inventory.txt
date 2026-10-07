@@ -1,0 +1,1185 @@
+crates/nanocodex-agent/src/service_tier_serde.rs:57:            while let Some(field) = map.next_key()? {
+crates/nanocodex-agent/src/rollout/store/writer.rs:5:    file: tokio::fs::File,
+crates/nanocodex-agent/src/rollout/store/writer.rs:23:        file: tokio::fs::File,
+crates/nanocodex-agent/src/rollout/store/writer.rs:45:    pub(super) fn resumed(file: tokio::fs::File, state: ResumeWriterState) -> Self {
+crates/nanocodex-agent/src/rollout/store/writer.rs:68:        while let Some(command) = commands.recv().await {
+crates/nanocodex-agent/src/rollout/store/writer.rs:604:async fn write_async_line(output: &mut tokio::fs::File, line: &impl Serialize) -> io::Result<()> {
+crates/nanocodex-agent/src/rollout/store/mod.rs:322:            tokio::fs::File::from_std(file),
+crates/nanocodex-agent/src/rollout/store/mod.rs:343:        let writer = RolloutWriter::resumed(tokio::fs::File::from_std(file), state);
+crates/nanocodex-agent/src/rollout/tests.rs:870:        tokio::fs::File::from_std(file),
+crates/nanocodex-agent/src/rollout/tests.rs:918:        let mut writer = RolloutWriter::new(tokio::fs::File::from_std(file), "window".into(), home.path().into());
+crates/nanocodex-agent/src/rollout/load.rs:172:        while let Some(directory) = directories.pop() {
+crates/nanocodex-agent/src/rollout/load.rs:375:        while let Some(directory) = directories.pop() {
+crates/nanocodex-agent/src/model/run/mod.rs:112:    pub(crate) model_call_index: Arc<tokio::sync::Mutex<u32>>,
+crates/nanocodex-agent/src/model/run/tool_calls.rs:307:        while let Some(active) = executions.next().await {
+crates/nanocodex-agent/src/agent/execution/mod.rs:923:    pub(crate) delivery: Arc<tokio::sync::Mutex<SteerDelivery>>,
+crates/nanocodex-agent/src/agent/execution/mod.rs:932:    pub(crate) delivery: Arc<tokio::sync::Mutex<SteerDelivery>>,
+crates/nanocodex-agent/src/agent/execution/mod.rs:935:pub(crate) type SteerQueue = Arc<tokio::sync::Mutex<VecDeque<QueuedSteer>>>;
+crates/nanocodex-agent/src/agent/execution/mod.rs:936:pub(crate) type SteerSender = std::sync::Weak<tokio::sync::Mutex<VecDeque<QueuedSteer>>>;
+crates/nanocodex-agent/src/agent/execution/mod.rs:1086:                    delivery: Arc::new(tokio::sync::Mutex::new(SteerDelivery::Pending)),
+crates/nanocodex-agent/src/agent/execution/mod.rs:1152:            delivery: Arc::new(tokio::sync::Mutex::new(SteerDelivery::Pending)),
+crates/nanocodex-agent/tests/it/lifecycle/shutdown.rs:114:            tokio::task::yield_now().await;
+crates/nanocodex-agent/tests/it/lifecycle/shutdown.rs:146:    while let Some(timed) = events.try_recv_timed() {
+crates/nanocodex-agent/tests/it/lifecycle/shutdown.rs:228:        while let Some(event) = events.recv().await {
+crates/nanocodex-agent/tests/it/lifecycle/control.rs:123:    loop {
+crates/nanocodex-agent/tests/it/lifecycle/control.rs:168:    loop {
+crates/nanocodex-agent/tests/it/lifecycle/control.rs:288:            tokio::task::yield_now().await;
+crates/nanocodex-agent/tests/it/lifecycle/control.rs:299:            tokio::task::yield_now().await;
+crates/nanocodex-agent/tests/it/model/instructions.rs:19:        let server = tokio::spawn(async move {
+crates/nanocodex-agent/tests/it/model/instructions.rs:65:    let server = tokio::spawn(async move {
+crates/nanocodex-agent/tests/it/model/instructions.rs:154:    let server = tokio::spawn(async move {
+crates/nanocodex-agent/tests/it/model/instructions.rs:310:    let server = tokio::spawn(async move {
+crates/nanocodex-agent/tests/tracing.rs:547:                let task_a = tokio::spawn(
+crates/nanocodex-agent/tests/tracing.rs:558:                let task_b = tokio::spawn(
+crates/nanocodex-agent/tests/it/model/mod.rs:316:    let header_end = loop {
+crates/nanocodex-agent/tests/it/model/mod.rs:379:    loop {
+crates/nanocodex-agent/tests/it/model/context.rs:7:    let server = tokio::spawn(async move {
+crates/nanocodex-agent/tests/it/model/context.rs:55:    let server = tokio::spawn(async move {
+crates/nanocodex-agent/tests/it/model/context.rs:120:    let server = tokio::spawn(async move {
+crates/nanocodex-agent/tests/it/model/context.rs:213:    let server = tokio::spawn(async move {
+crates/nanocodex-agent/tests/it/model/context.rs:274:    let server = tokio::spawn(async move {
+crates/nanocodex-agent/tests/it/model/persistence.rs:67:    let server = tokio::spawn(async move {
+crates/nanocodex-agent/tests/it/model/persistence.rs:132:    while let Some(event) = fork_events.recv().await {
+crates/nanocodex-agent/tests/it/model/persistence.rs:153:    let server = tokio::spawn(async move {
+crates/nanocodex-agent/tests/it/model/persistence.rs:218:    while let Some(event) = events.try_recv_timed() {
+crates/nanocodex-agent/tests/it/model/persistence.rs:463:    let server = tokio::spawn(async move {
+crates/nanocodex-agent/tests/it/model/persistence.rs:552:    let server = tokio::spawn(async move {
+crates/nanocodex-agent/tests/it/model/control/instant_tool_steering.rs:36:    let server = tokio::spawn(async move {
+crates/nanocodex-agent/tests/it/model/control/instant_tool_steering.rs:131:            tokio::task::yield_now().await;
+crates/nanocodex-agent/tests/it/model/control/instant_tool_steering.rs:145:        while let Some(event) = events.recv().await {
+crates/nanocodex-agent/src/agent/driver/mod.rs:104:        loop {
+crates/nanocodex-agent/src/agent/driver/mod.rs:105:            let command = loop {
+crates/nanocodex-agent/src/agent/driver/mod.rs:265:                    while let Some((text, message_result)) = developer_messages.next() {
+crates/nanocodex-agent/src/agent/driver/mod.rs:628:                    let completed = loop {
+crates/nanocodex-agent/src/agent/driver/mod.rs:1152:            let steer_rx: SteerQueue = Arc::new(tokio::sync::Mutex::new(VecDeque::new()));
+crates/nanocodex-agent/src/agent/driver/mod.rs:1168:            let model_call_index = Arc::new(tokio::sync::Mutex::new(1_u32));
+crates/nanocodex-agent/src/agent/driver/mod.rs:1200:            let completed = loop {
+crates/nanocodex-agent/src/agent/driver/mod.rs:1814:    model_call_index: &tokio::sync::Mutex<u32>,
+crates/nanocodex-agent/src/model/run/turn.rs:824:        loop {
+crates/nanocodex-agent/src/model/run/turn.rs:918:                while let Some(steer) = pending_steers.pop_front() {
+crates/nanocodex-agent/src/model/run/turn.rs:970:                loop {
+crates/nanocodex-agent/tests/it/model/recovery/failures.rs:7:    let server = tokio::spawn(async move {
+crates/nanocodex-agent/tests/it/model/recovery/failures.rs:41:        loop {
+crates/nanocodex-agent/tests/it/model/recovery/failures.rs:72:    let server = tokio::spawn(async move {
+crates/nanocodex-agent/tests/it/model/recovery/failures.rs:125:    let server = tokio::spawn(async move {
+crates/nanocodex-agent/tests/it/model/recovery/failures.rs:193:    let server = tokio::spawn(async move {
+crates/nanocodex-agent/tests/it/model/recovery/failures.rs:250:    let server = tokio::spawn(async move {
+crates/nanocodex-agent/tests/it/model/recovery/failures.rs:346:    let server = tokio::spawn(async move {
+crates/nanocodex-agent/tests/it/model/recovery/failures.rs:389:    let server = tokio::spawn(async move {
+crates/nanocodex-agent/tests/it/model/recovery/failures.rs:439:    let server = tokio::spawn(async move {
+crates/nanocodex-agent/tests/it/model/recovery/failures.rs:479:    let server = tokio::spawn(async move {
+crates/nanocodex-agent/tests/it/model/recovery/failures.rs:545:    let server = tokio::spawn(async move {
+crates/nanocodex-agent/tests/it/model/recovery/failures.rs:586:    let server = tokio::spawn(async move {
+crates/nanocodex-agent/tests/it/model/recovery/images.rs:7:    let server = tokio::spawn(async move {
+crates/nanocodex-agent/tests/it/model/recovery/images.rs:167:    let server = tokio::spawn(async move {
+crates/nanocodex-agent/tests/it/model/transport/websocket.rs:7:    let server = tokio::spawn(async move {
+crates/nanocodex-agent/tests/it/model/transport/websocket.rs:78:    let server = tokio::spawn(async move {
+crates/nanocodex-agent/tests/it/model/transport/websocket.rs:167:    let server = tokio::spawn(async move {
+crates/nanocodex-agent/tests/it/model/transport/websocket.rs:401:    while let Some(event) = events.recv().await {
+crates/nanocodex-agent/tests/it/model/transport/websocket.rs:436:    let server = tokio::spawn(async move {
+crates/nanocodex-agent/tests/it/model/transport/websocket.rs:593:        let server = tokio::spawn(async move {
+crates/nanocodex-agent/tests/it/model/tools/environment.rs:8:    let server = tokio::spawn(async move {
+crates/nanocodex-agent/tests/it/model/recovery/before_compaction.rs:210:            tokio::spawn(async move { turn.result().await.map(|_| ()) })
+crates/nanocodex-agent/tests/it/model/recovery/before_compaction.rs:218:            tokio::spawn(async move {
+crates/nanocodex-agent/tests/it/model/recovery/before_compaction.rs:320:    let first = tokio::spawn(async move { handle.compact().await });
+crates/nanocodex-agent/tests/it/model/recovery/before_compaction.rs:324:    let second = tokio::spawn(async move { handle.compact().await });
+crates/nanocodex-agent/tests/it/model/tools/yielded_results.rs:146:            while let Some(event) = events.recv().await {
+crates/nanocodex-agent/src/agent/driver/control.rs:21:    state: Arc<std::sync::Mutex<ShutdownState>>,
+crates/nanocodex-agent/src/agent/driver/control.rs:250:    while let Some(command) = commands.recv().await {
+crates/nanocodex-agent/tests/it/model/tools/parallel.rs:99:    loop {
+crates/nanocodex-agent/tests/it/model/tools/parallel.rs:111:    loop {
+crates/nanocodex-agent/tests/it/model/tools/parallel.rs:126:    let server = tokio::spawn(async move {
+crates/nanocodex-agent/tests/it/model/tools/parallel.rs:223:    let server = tokio::spawn(async move {
+crates/nanocodex-agent/tests/it/model/tools/parallel.rs:320:    while let Some(event) = events.recv().await {
+crates/nanocodex-agent/tests/it/model/tools/parallel.rs:384:    let server = tokio::spawn(async move {
+crates/nanocodex-agent/tests/it/model/recovery/reconnect.rs:7:    let server = tokio::spawn(async move {
+crates/nanocodex-agent/tests/it/model/recovery/reconnect.rs:62:    let server = tokio::spawn(async move {
+crates/nanocodex-agent/tests/it/model/recovery/reconnect.rs:133:    let server = tokio::spawn(async move {
+crates/nanocodex-agent/tests/it/model/recovery/reconnect.rs:225:    let server = tokio::spawn(async move {
+crates/nanocodex-agent/tests/it/model/recovery/reconnect.rs:349:    let server = tokio::spawn(async move {
+crates/nanocodex-agent/tests/it/model/tools/mod.rs:42:    let server = tokio::spawn(async move {
+crates/nanocodex-agent/tests/it/model/tools/mod.rs:304:    let server = tokio::spawn(async move {
+crates/nanocodex-agent/tests/it/model/tools/mod.rs:435:    let server = tokio::spawn(async move {
+crates/nanocodex-agent/tests/it/model/tools/mod.rs:584:    let server = tokio::spawn(async move {
+crates/nanocodex-agent/tests/it/model/tools/mod.rs:675:    let server = tokio::spawn(async move {
+crates/nanocodex-agent/tests/it/model/tools/mod.rs:749:    let server = tokio::spawn(async move {
+crates/nanocodex-agent/tests/it/model/tools/mod.rs:802:    let server = tokio::spawn(async move {
+crates/nanocodex-agent/tests/it/model/tools/mod.rs:889:    let server = tokio::spawn(async move {
+crates/nanocodex-agent/tests/it/model/transport/session.rs:7:    let server = tokio::spawn(async move {
+crates/nanocodex-agent/tests/it/model/transport/session.rs:30:    while let Some(event) = turn.next().await {
+crates/nanocodex-agent/tests/it/model/transport/session.rs:50:    while let Some(event) = session_events.recv().await {
+crates/nanocodex-agent/tests/it/model/transport/session.rs:106:    let server = tokio::spawn(async move {
+crates/nanocodex-agent/tests/it/model/transport/session.rs:202:    let server = tokio::spawn(async move {
+crates/nanocodex-agent/tests/it/model/transport/session.rs:365:    let server = tokio::spawn(async move {
+crates/nanocodex-agent/tests/it/model/transport/session.rs:411:    let server = tokio::spawn(async move {
+crates/nanocodex-agent/tests/it/model/transport/session.rs:455:    let server = tokio::spawn(async move {
+crates/nanocodex-agent/tests/it/model/transport/session.rs:502:    let server = tokio::spawn(async move {
+crates/nanocodex-agent/tests/it/model/transport/session.rs:533:    while let Some(event) = events.recv().await {
+crates/nanocodex-agent/tests/it/model/transport/session.rs:598:    let server = tokio::spawn(async move {
+crates/nanocodex-agent/tests/it/model/recovery/tool_schema.rs:74:        tokio::spawn(async move {
+crates/nanocodex-agent/tests/it/model/recovery/compaction_images.rs:16:    let server = tokio::spawn(async move {
+crates/nanocodex-agent/tests/it/model/control/cancellation_telemetry.rs:255:    while let Some(event) = events.recv().await {
+crates/nanocodex-agent/tests/it/model/recovery/durable_provider.rs:517:            loop {
+crates/nanocodex-agent/tests/it/model/recovery/durable_provider.rs:527:                tokio::task::yield_now().await;
+crates/nanocodex-agent/tests/it/model/control/cancellation.rs:24:    let server = tokio::spawn(async move {
+crates/nanocodex-agent/tests/it/model/control/cancellation.rs:105:    while let Some(event) = events.recv().await {
+crates/nanocodex-agent/tests/it/model/control/cancellation.rs:354:    let server = tokio::spawn(async move {
+crates/nanocodex-agent/tests/it/model/control/cancellation.rs:489:    let server = tokio::spawn(async move {
+crates/nanocodex-agent/tests/it/model/control/cancellation.rs:542:    loop {
+crates/nanocodex-agent/tests/it/model/control/cancellation.rs:553:            tokio::task::yield_now().await;
+crates/nanocodex-agent/tests/it/model/control/cancellation.rs:576:    while let Some(event) = events.recv().await {
+crates/nanocodex-agent/tests/it/model/branching/forks.rs:7:    let server = tokio::spawn(async move {
+crates/nanocodex-agent/tests/it/model/branching/forks.rs:63:    let server = tokio::spawn(async move {
+crates/nanocodex-agent/tests/it/model/branching/forks.rs:139:    let server = tokio::spawn(async move {
+crates/nanocodex-agent/tests/it/model/branching/forks.rs:243:            tokio::task::yield_now().await;
+crates/nanocodex-agent/tests/it/model/branching/forks.rs:284:    let server = tokio::spawn(async move {
+crates/nanocodex-agent/tests/it/model/branching/forks.rs:406:    let server = tokio::spawn(async move {
+crates/nanocodex-agent/tests/it/model/branching/forks.rs:428:        let root_task = tokio::spawn(async move {
+crates/nanocodex-agent/tests/it/model/control/steering.rs:7:    let server = tokio::spawn(async move {
+crates/nanocodex-agent/tests/it/model/control/steering.rs:68:    while let Some(event) = events.recv().await {
+crates/nanocodex-agent/tests/it/model/control/steering.rs:134:    let server = tokio::spawn(async move {
+crates/nanocodex-agent/tests/it/model/control/steering.rs:190:    while let Some(event) = events.recv().await {
+crates/nanocodex-agent/tests/it/model/control/steering.rs:222:    let server = tokio::spawn(async move {
+crates/nanocodex-agent/tests/it/model/control/steering.rs:272:            tokio::task::yield_now().await;
+crates/nanocodex-agent/tests/it/model/control/steering.rs:288:    while let Some(event) = events.recv().await {
+crates/nanocodex-agent/tests/it/model/control/steering.rs:305:    let server = tokio::spawn(async move {
+crates/nanocodex-agent/tests/it/model/control/steering.rs:381:            tokio::task::yield_now().await;
+crates/nanocodex-agent/tests/it/model/control/steering.rs:407:    let server = tokio::spawn(async move {
+crates/nanocodex-agent/tests/it/model/control/steering.rs:471:    while let Some(event) = events.recv().await {
+crates/nanocodex-agent/tests/it/model/control/steering.rs:512:    let server = tokio::spawn(async move {
+crates/nanocodex/tests/it/claude.rs:38:    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+crates/nanocodex/tests/it/harness.rs:220:    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+crates/nanocodex/tests/it/harness.rs:499:            tokio::task::yield_now().await;
+crates/nanocodex-claude/src/lib.rs:1035:        loop {
+crates/nanocodex-claude/src/lib.rs:1251:                loop {
+crates/nanocodex-claude/src/lib.rs:1650:    while let Some(event) = events.next().await {
+crates/nanocodex-claude/src/lib.rs:1942:                while let Some(line) = state.pop_line().unwrap() {
+crates/nanocodex-claude/src/lib.rs:1961:        while let Some(line) = state.pop_line().unwrap() {
+crates/nanocodex-claude/tests/mcp_native.rs:134:    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+crates/nanocodex-claude/tests/messages.rs:39:    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+crates/nanocodex-claude/tests/messages.rs:247:    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+crates/nanocodex-claude/tests/messages.rs:269:    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+crates/nanocodex-claude/tests/messages.rs:481:    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+crates/nanocodex-claude/tests/messages.rs:679:    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+crates/nanocodex-agent/tests/it/model/tools/panic.rs:197:    while let Some(event) = events.recv().await {
+crates/nanocodex-claude/tests/client_tools.rs:58:    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+crates/nanocodex-claude/tests/client_tools.rs:178:    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+crates/nanocodex-claude/tests/client_tools.rs:235:    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+crates/nanocodex-claude/tests/client_tools.rs:320:    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+crates/nanocodex-claude/tests/client_tools.rs:411:    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+crates/nanocodex-claude/tests/client_tools.rs:478:    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+crates/nanocodex-claude/tests/client_tools.rs:550:    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+crates/nanocodex-claude/tests/client_tools.rs:659:    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+crates/nanocodex-claude/tests/client_tools.rs:751:    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+crates/nanocodex-claude/tests/host_tools.rs:130:    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+crates/nanocodex-claude/tests/host_tools.rs:184:    loop {
+crates/nanocodex-claude/tests/host_tools.rs:319:    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+crates/nanocodex-claude/tests/server_recovery.rs:136:    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+crates/nanocodex-claude/tests/server_recovery.rs:218:            loop {
+crates/nanocodex-claude/tests/transient_retries.rs:75:        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+crates/nanocodex-claude/tests/transient_retries.rs:167:    loop {
+crates/nanocodex-claude/tests/transient_retries.rs:220:    loop {
+crates/nanocodex-claude/tests/transient_retries.rs:374:    let retry = loop {
+crates/nanocodex-claude/tests/tools_checkpoint.rs:136:    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+crates/nanocodex-claude/tests/tools_checkpoint.rs:285:    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+crates/nanocodex-claude/tests/context_compaction.rs:104:    let task = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+crates/nanocodex-claude/tests/catalog_recovery.rs:65:    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+crates/nanocodex-claude/tests/native_fork.rs:83:    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+crates/nanocodex-claude/tests/prompt_caching.rs:52:    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+crates/nanocodex-claude/tests/prompt_caching.rs:189:    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+crates/nanocodex-claude/tests/tool_lifecycle.rs:50:    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+crates/nanocodex-agent/tests/it/model/recovery/compaction.rs:47:    let server = tokio::spawn(async move {
+crates/nanocodex-agent/tests/it/model/recovery/compaction.rs:183:    let server = tokio::spawn(async move {
+crates/nanocodex-agent/tests/it/model/recovery/compaction.rs:272:    let server = tokio::spawn(async move {
+crates/nanocodex-agent/tests/it/model/recovery/compaction.rs:442:    let first = tokio::spawn(async move { first_agent.compact().await });
+crates/nanocodex-agent/tests/it/model/recovery/compaction.rs:447:    let second = tokio::spawn(async move { second_agent.compact().await });
+crates/nanocodex-agent/tests/it/model/recovery/compaction.rs:611:    let compact = tokio::spawn(async move { compact_agent.compact().await });
+crates/nanocodex-agent/tests/it/model/recovery/compaction.rs:882:    let server = tokio::spawn(async move {
+crates/nanocodex-agent/tests/it/model/recovery/compaction.rs:1061:        let server = tokio::spawn(async move {
+crates/nanocodex-claude/tests/output_continuation.rs:65:    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+crates/nanocodex-claude/tests/server_tools.rs:46:    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+crates/nanocodex-claude/tests/server_tools.rs:67:    let citation_event = loop {
+crates/nanocodex-claude/tests/server_tools.rs:118:    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+crates/nanocodex-claude/tests/server_tools.rs:190:    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+crates/nanocodex-claude/tests/server_tools.rs:283:    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+crates/nanocodex-claude/tests/server_tools.rs:358:    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+crates/nanocodex-claude/tests/lifecycle_hooks.rs:96:    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+crates/nanocodex-claude/src/auth.rs:7:use tokio::sync::Mutex;
+crates/nanocodex-claude/tests/agent_loop.rs:94:    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+crates/nanocodex-claude/tests/agent_loop.rs:190:    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+crates/nanocodex-claude/tests/agent_loop.rs:244:    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+crates/nanocodex-claude/tests/agent_loop.rs:442:    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+crates/nanocodex-claude/tests/agent_loop.rs:525:    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+crates/nanocodex-claude/tests/agent_loop.rs:602:    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+crates/nanocodex-claude/tests/agent_loop.rs:649:    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+crates/nanocodex-claude/tests/agent_loop.rs:683:    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+crates/nanocodex-claude/tests/agent_loop.rs:763:    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+crates/nanocodex-claude/tests/agent_loop.rs:810:    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+crates/nanocodex-claude/tests/agent_loop.rs:890:    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+crates/nanocodex-claude/tests/agent_loop.rs:982:    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+crates/nanocodex-claude/tests/agent_loop.rs:1102:        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+crates/nanocodex-claude/tests/agent_loop.rs:1149:    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+crates/nanocodex-claude/tests/agent_loop.rs:1253:    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+crates/nanocodex-claude/tests/agent_loop.rs:1313:    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+crates/nanocodex-claude/tests/agent_loop.rs:1427:        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+crates/nanocodex-claude/tests/agent_loop.rs:1542:    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+crates/nanocodex-claude/tests/agent_loop.rs:1559:        tokio::task::yield_now().await;
+crates/nanocodex-claude/tests/agent_loop.rs:1625:    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+crates/nanocodex-claude/tests/agent_loop.rs:1660:        loop {
+crates/nanocodex-claude/tests/agent_loop.rs:1787:        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+crates/nanocodex-claude/tests/agent_loop.rs:1824:        while let Some(event) = events.try_recv_timed() {
+crates/nanocodex-claude/tests/agent_loop.rs:1837:        loop {
+crates/nanocodex-claude/tests/agent_loop.rs:1920:    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+crates/nanocodex-claude/tests/agent_loop.rs:1960:    loop {
+crates/nanocodex-claude/tests/agent_loop.rs:2069:    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+crates/nanocodex-claude/tests/agent_loop.rs:2171:    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+crates/nanocodex-claude/tests/agent_loop.rs:2309:    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+crates/nanocodex-claude/tests/agent_loop.rs:2350:    loop {
+crates/nanocodex-claude/src/agent.rs:858:            state: std::sync::Mutex::new(Weak::new()),
+crates/nanocodex-claude/src/agent.rs:1076:            model: std::sync::RwLock::new(self.claude.model),
+crates/nanocodex-claude/src/agent.rs:1078:            effort: std::sync::RwLock::new(self.effort),
+crates/nanocodex-claude/src/agent.rs:1105:            dispatch_fork: std::sync::RwLock::new(None),
+crates/nanocodex-claude/src/agent.rs:1732:    state: std::sync::Mutex<Weak<State>>,
+crates/nanocodex-claude/src/agent.rs:1889:struct DispatchForkBoundary<'a>(&'a std::sync::RwLock<Option<Snapshot>>);
+crates/nanocodex-claude/src/agent.rs:1921:    model: std::sync::RwLock<String>,
+crates/nanocodex-claude/src/agent.rs:1923:    effort: std::sync::RwLock<Option<crate::Effort>>,
+crates/nanocodex-claude/src/agent.rs:1950:    dispatch_fork: std::sync::RwLock<Option<Snapshot>>,
+crates/nanocodex-claude/src/agent.rs:2358:        loop {
+crates/nanocodex-claude/src/agent.rs:2386:                    loop {
+crates/nanocodex-claude/src/agent.rs:3648:                    while let Some((position, result)) = calls.next().await {
+crates/nanocodex-claude/src/agent.rs:4294:                    tokio::spawn(task);
+crates/nanocodex-claude/src/agent.rs:4308:            tokio::spawn(task);
+crates/nanocodex-claude/src/agent.rs:4389:                loop {
+crates/nanocodex-claude/src/agent.rs:4560:            tokio::spawn(task);
+crates/nanocodex-claude/src/agent.rs:4637:            loop {
+crates/nanocodex-voice-native/src/message_reader.rs:30:        loop {
+crates/nanocodex-claude/src/subscription.rs:10:use tokio::sync::Mutex;
+crates/nanocodex-claude/tests/workspace_files.rs:49:    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+crates/nanocodex-claude/tests/workspace_files.rs:111:    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+crates/nanocodex-claude/tests/workspace_files.rs:186:    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+crates/nanocodex-claude/tests/workspace_files.rs:278:    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+crates/nanocodex-agent/tests/it/model/branching/spawn.rs:7:    let server = tokio::spawn(async move {
+crates/nanocodex-agent/tests/it/model/branching/spawn.rs:103:    let server = tokio::spawn(async move {
+crates/nanocodex-agent/tests/it/model/branching/spawn.rs:200:    let observed = Arc::new(std::sync::Mutex::new(Vec::new()));
+crates/nanocodex-agent/tests/it/model/branching/spawn.rs:238:    let server = tokio::spawn(async move {
+crates/nanocodex-agent/tests/it/model/branching/spawn.rs:306:    let server = tokio::spawn(async move {
+crates/nanocodex-agent/tests/it/model/branching/spawn.rs:346:    while let Some(event) = first_events.recv().await {
+crates/nanocodex-agent/tests/it/model/branching/spawn.rs:357:    while let Some(event) = second_events.recv().await {
+crates/nanocodex-subagents/src/task_tree.rs:125:        while let Some(id) = parent {
+crates/nanocodex-subagents/tests/message_threading.rs:263:        while let Ok(update) = self.updates.try_recv() {
+crates/nanocodex-subagents/tests/instruction_revision.rs:268:        while let Ok(update) = updates.try_recv() {
+crates/nanocodex-claude/tests/auth_lifecycle.rs:37:            tokio::task::yield_now().await;
+crates/nanocodex-claude/tests/auth_lifecycle.rs:88:    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+crates/nanocodex-voice-native/src/session_tests.rs:210:    let write = tokio::spawn(async move { writing.write_pcm(7, vec![1; 480]).await });
+crates/nanocodex-voice-native/src/session_tests.rs:218:    let cancel = tokio::spawn(async move { cancelling.cancel_pcm(7).await });
+crates/nanocodex-voice-native/src/session_tests.rs:219:    loop {
+crates/nanocodex-subagents/src/platform.rs:106:    drop(tokio::spawn(future));
+crates/nanocodex-egress/benches/proxy_round_trip.rs:45:        let task = tokio::spawn(async move {
+crates/nanocodex-subagents/src/runtime.rs:93:    session_handles: std::sync::RwLock<HashMap<String, AgentHandle>>,
+crates/nanocodex-subagents/src/runtime.rs:94:    spawn_router: std::sync::RwLock<Option<Arc<dyn crate::SpawnRouter>>>,
+crates/nanocodex-subagents/src/runtime.rs:96:    state: tokio::sync::Mutex<RegistryState>,
+crates/nanocodex-subagents/src/runtime.rs:101:    residency_lock: tokio::sync::Mutex<()>,
+crates/nanocodex-subagents/src/runtime.rs:102:    message_lock: tokio::sync::Mutex<()>,
+crates/nanocodex-subagents/src/runtime.rs:915:            spawn_router: std::sync::RwLock::new(None),
+crates/nanocodex-subagents/src/runtime.rs:916:            state: tokio::sync::Mutex::new(RegistryState::default()),
+crates/nanocodex-subagents/src/runtime.rs:920:            session_handles: std::sync::RwLock::new(HashMap::new()),
+crates/nanocodex-subagents/src/runtime.rs:922:            residency_lock: tokio::sync::Mutex::new(()),
+crates/nanocodex-subagents/src/runtime.rs:923:            message_lock: tokio::sync::Mutex::new(()),
+crates/nanocodex-subagents/src/runtime.rs:1232:        loop {
+crates/nanocodex-subagents/src/runtime.rs:1397:            loop {
+crates/nanocodex-subagents/src/runtime.rs:1435:        while let Some((id, parent_session, snapshot, host_context, schema, task)) = missing.pop() {
+crates/nanocodex-subagents/src/runtime.rs:1656:        loop {
+crates/nanocodex-subagents/src/runtime.rs:1915:        loop {
+crates/nanocodex-subagents/src/runtime.rs:2067:        while let Some(event) = events.recv().await {
+crates/nanocodex-subagents/src/runtime.rs:2531:            loop {
+crates/nanocodex-subagents/src/runtime.rs:2604:            loop {
+crates/nanocodex-subagents/src/runtime.rs:4002:        let registrations = Arc::new(std::sync::Mutex::new(HashMap::<String, usize>::new()));
+crates/nanocodex-egress/src/secret.rs:960:    while let Some(index) = remaining
+crates/nanocodex-egress/src/lib.rs:723:        let task = tokio::spawn(proxy.start());
+crates/nanocodex-egress/src/lib.rs:2051:        tokio::spawn(async move {
+crates/nanocodex-egress/src/lib.rs:2283:                tokio::spawn(async move { client.get(url).send().await.unwrap().status() })
+crates/nanocodex-egress/src/lib.rs:2331:        let second = tokio::spawn(async move {
+crates/nanocodex-egress/src/lib.rs:2559:        let output = tokio::task::spawn_blocking(move || {
+crates/nanocodex-observability/src/lib.rs:342:            loop {
+crates/nanocodex-oai-api/src/tls.rs:18:use tokio::sync::Mutex;
+crates/nanocodex-oai-api/src/tls.rs:63:    let config = tokio::task::spawn_blocking(load)
+crates/nanocodex-voice-native/src/session.rs:6:use std::sync::Mutex;
+crates/nanocodex-voice-native/src/session.rs:221:        loop {
+crates/nanocodex-voice-native/src/session.rs:354:    loop {
+crates/nanocodex-browser/examples/mobile_audit.rs:26:    tokio::fs::create_dir_all(&output_dir)
+crates/nanocodex-browser/examples/mobile_audit.rs:118:    tokio::fs::copy(path, &destination)
+crates/nanocodex-oai-api/src/session/compaction.rs:117:    while let Some(source) = items.next() {
+crates/nanocodex-oai-api/src/session/compaction_images.rs:38:    while let Some(last) = content.len().checked_sub(1) {
+crates/nanocodex-oai-api/src/session/response.rs:265:        loop {
+crates/nanocodex-oai-api/src/session/response.rs:485:    loop {
+crates/nanocodex-browser/src/tests.rs:150:    let server = tokio::spawn(async move {
+crates/nanocodex-browser/src/tests.rs:234:    let server = tokio::spawn(async move {
+crates/nanocodex-browser/src/tests.rs:284:    let server = tokio::spawn(async move {
+crates/nanocodex-browser/src/tests.rs:328:    let server = tokio::spawn(async move {
+crates/nanocodex-browser/src/tests.rs:471:    let server = tokio::spawn(serve_persistent_profile_fixture(listener));
+crates/nanocodex-browser/src/tests.rs:566:    let server = tokio::spawn(serve_passkey_fixture(listener));
+crates/nanocodex-browser/src/tests.rs:695:    let server = tokio::spawn(serve_passkey_fixture(listener));
+crates/nanocodex-browser/src/tests.rs:751:    let server = tokio::spawn(serve_passkey_fixture(listener));
+crates/nanocodex-browser/src/tests.rs:824:    let server = tokio::spawn(serve_appium_fixture(listener));
+crates/nanocodex-browser/src/tests.rs:1564:    let server = tokio::spawn(serve_action_fixture(listener));
+crates/nanocodex-browser/src/tests.rs:2790:    let server = tokio::spawn(serve_worker_fixture(listener));
+crates/nanocodex-browser/src/tests.rs:2878:    let server = tokio::spawn(serve_action_fixture(listener));
+crates/nanocodex-browser/src/tests.rs:3155:    let server = tokio::spawn(serve_action_fixture(listener));
+crates/nanocodex-browser/src/tests.rs:3191:    loop {
+crates/nanocodex-browser/src/tests.rs:3193:        tokio::spawn(async move {
+crates/nanocodex-browser/src/tests.rs:3229:    loop {
+crates/nanocodex-browser/src/tests.rs:3231:        tokio::spawn(async move {
+crates/nanocodex-browser/src/tests.rs:3270:    loop {
+crates/nanocodex-browser/src/tests.rs:3272:        tokio::spawn(async move {
+crates/nanocodex-browser/src/tests.rs:3374:    loop {
+crates/nanocodex-browser/src/tests.rs:3429:        loop {
+crates/nanocodex-browser/examples/mobile_terminal_smoke.rs:114:    tokio::fs::copy(path, &screenshot)
+crates/nanocodex-browser/src/native/devtools.rs:74:    let styles = tokio::spawn(async move {
+crates/nanocodex-browser/src/native/devtools.rs:75:        while let Some(event) = style_events.next().await {
+crates/nanocodex-browser/src/native/devtools.rs:96:    let pauses = tokio::spawn(async move {
+crates/nanocodex-browser/src/native/devtools.rs:97:        while let Some(event) = pause_events.next().await {
+crates/nanocodex-browser/src/native/devtools.rs:119:    let documents = tokio::spawn(async move {
+crates/nanocodex-browser/src/native/devtools.rs:120:        while let Some(event) = document_events.next().await {
+crates/nanocodex-browser/src/vm.rs:579:        loop {
+crates/nanocodex-browser/src/native/network_control.rs:215:    Ok(tokio::spawn(async move {
+crates/nanocodex-browser/src/native/network_control.rs:216:        while let Some(event) = requests.next().await {
+crates/nanocodex-browser/src/native/cdp_code.rs:126:    loop {
+crates/nanocodex-browser/src/native/network_observer.rs:316:    let task = tokio::spawn(run(
+crates/nanocodex-browser/src/native/network_observer.rs:365:    loop {
+crates/nanocodex-browser/src/native/network_observer.rs:520:    while let Ok(command) = commands.try_recv() {
+crates/nanocodex-browser/src/lib.rs:2689:        let encoded = tokio::fs::read_to_string(&self.events_path).await?;
+crates/nanocodex-browser/src/lib.rs:2715:        tokio::fs::create_dir(destination).await?;
+crates/nanocodex-browser/src/lib.rs:2724:        let mut events = tokio::fs::OpenOptions::new()
+crates/nanocodex-browser/src/lib.rs:2737:        tokio::fs::copy(&self.network_path, &network_path).await?;
+crates/nanocodex-browser/src/lib.rs:2738:        tokio::fs::copy(&self.diagnostics_path, &diagnostics_path).await?;
+crates/nanocodex-browser/src/lib.rs:2766:    tokio::fs::copy(source, &retained).await?;
+crates/nanocodex-browser/src/lib.rs:4283:            let bytes = tokio::fs::metadata(path).await?.len();
+crates/nanocodex-browser/src/lib.rs:4291:            let bytes = tokio::fs::read(path).await?;
+crates/nanocodex-browser/src/native/artifacts.rs:91:    tokio::fs::write(&path, &bytes).await?;
+crates/nanocodex-browser/src/native/artifacts.rs:177:    let task = tokio::spawn(async move {
+crates/nanocodex-browser/src/native/artifacts.rs:197:            if let Err(error) = tokio::fs::write(&path, bytes).await {
+crates/nanocodex-browser/src/native/session_trace.rs:38:        tokio::fs::create_dir_all(&directory).await?;
+crates/nanocodex-browser/src/native/session_trace.rs:40:        tokio::fs::write(&events_path, []).await?;
+crates/nanocodex-browser/src/native/session_trace.rs:94:                        Ok(encoded) => match tokio::fs::write(&path, encoded).await {
+crates/nanocodex-browser/src/native/session_trace.rs:167:        tokio::fs::write(&network_path, serde_json::to_vec(&requests)?).await?;
+crates/nanocodex-browser/src/native/session_trace.rs:168:        tokio::fs::write(
+crates/nanocodex-browser/src/native/session_trace.rs:204:        let mut file = tokio::fs::OpenOptions::new()
+crates/nanocodex-browser/src/native/har.rs:47:    tokio::fs::write(&path, serde_json::to_vec(&artifact)?).await?;
+crates/nanocodex-browser/src/native/profiling.rs:55:    tokio::fs::write(&path, serde_json::to_vec(profile)?).await?;
+crates/nanocodex-browser/src/native/profiling.rs:81:    tokio::fs::write(
+crates/nanocodex-browser/src/native/profiling.rs:126:    let analysis = tokio::task::spawn_blocking(move || analyze_heap(&parse_path))
+crates/nanocodex-browser/src/native/profiling.rs:141:    tokio::task::spawn_blocking(move || {
+crates/nanocodex-browser/src/native/profiling.rs:162:    tokio::task::spawn_blocking(move || {
+crates/nanocodex-browser/src/native/profiling.rs:268:    tokio::spawn(async move {
+crates/nanocodex-browser/src/native/profiling.rs:269:        let mut file = tokio::fs::File::create(path).await?;
+crates/nanocodex-browser/src/native/profiling.rs:271:        loop {
+crates/nanocodex-browser/src/native/profiling.rs:298:            while let Ok(Some(chunk)) = timeout(Duration::from_millis(50), chunks.next()).await {
+crates/nanocodex-browser/src/native/video.rs:151:    let task = tokio::spawn(async move {
+crates/nanocodex-browser/src/native/video.rs:160:        loop {
+crates/nanocodex-browser/src/native/video.rs:456:    loop {
+crates/nanocodex-browser/src/native/video.rs:492:    loop {
+crates/nanocodex-browser/src/native/audits.rs:61:    tokio::fs::write(&path, &bytes).await?;
+crates/nanocodex-browser/src/native/audits.rs:189:    let stderr = tokio::fs::File::create(&stderr_path)
+crates/nanocodex-browser/src/native/audits.rs:223:    let report_bytes = tokio::fs::metadata(&path).await?.len();
+crates/nanocodex-browser/src/native/audits.rs:231:    let encoded = tokio::task::spawn_blocking(move || {
+crates/nanocodex-browser/src/native/audits.rs:341:    while let Some(chunk) = stream.next().await {
+crates/nanocodex-browser/src/native/source_maps.rs:222:    let task = tokio::spawn(async move {
+crates/nanocodex-browser/src/native/source_maps.rs:223:        while let Some(event) = events.next().await {
+crates/nanocodex-browser/src/native/source_maps.rs:410:    loop {
+crates/nanocodex-browser/src/native/interaction.rs:147:    loop {
+crates/nanocodex-browser/src/native/interaction.rs:485:    loop {
+crates/nanocodex-browser/src/native/interaction.rs:539:    loop {
+crates/nanocodex-browser/src/native/interaction.rs:556:    loop {
+crates/nanocodex-browser/src/native/interaction.rs:574:    loop {
+crates/nanocodex-browser/src/native/interaction.rs:595:    loop {
+crates/nanocodex-browser/src/native/interaction.rs:654:    loop {
+crates/nanocodex-browser/src/session.rs:423:        tokio::fs::create_dir_all(&target_profile).await?;
+crates/nanocodex-browser/src/session.rs:424:        tokio::fs::copy(source_local_state, target_user_data_dir.join("Local State")).await?;
+crates/nanocodex-browser/src/session.rs:433:        let cookie_count = tokio::task::spawn_blocking(move || {
+crates/nanocodex-browser/src/session.rs:440:            tokio::task::spawn_blocking(move || {
+crates/nanocodex-browser/src/native/webmcp.rs:195:    let task = tokio::spawn(run(
+crates/nanocodex-browser/src/native/webmcp.rs:793:    loop {
+crates/nanocodex-browser/src/native/webmcp.rs:1823:    while let Ok(command) = commands.try_recv() {
+crates/nanocodex-voice-native/src/process.rs:63:    tokio::spawn(async move {
+crates/nanocodex-voice-native/src/process.rs:64:        let writer = tokio::spawn(async move {
+crates/nanocodex-voice-native/src/process.rs:65:            while let Some(frame) = writes.recv().await {
+crates/nanocodex-voice-native/src/process.rs:71:        let mut reader = tokio::spawn(async move {
+crates/nanocodex-voice-native/src/process.rs:73:            loop {
+crates/nanocodex-voice-native/src/process.rs:84:        let drain = tokio::spawn(async move {
+crates/nanocodex-oai-api/src/audio.rs:10:use std::sync::Mutex;
+crates/nanocodex-agent/tests/it/model/recovery/transport.rs:17:    let websocket_server = tokio::spawn(async move {
+crates/nanocodex-agent/tests/it/model/recovery/transport.rs:37:    let http_server = tokio::spawn(async move {
+crates/nanocodex-agent/tests/it/model/recovery/transport.rs:88:    let websocket_server = tokio::spawn(async move {
+crates/nanocodex-agent/tests/it/model/recovery/transport.rs:111:    let http_server = tokio::spawn(async move {
+crates/nanocodex-agent/tests/it/model/recovery/transport.rs:185:    let header_end = loop {
+crates/nanocodex-agent/tests/it/model/recovery/transport.rs:253:    let websocket_server = tokio::spawn(async move {
+crates/nanocodex-agent/tests/it/model/recovery/transport.rs:273:    let http_server = tokio::spawn(async move {
+crates/nanocodex-oai-api/src/events/stream.rs:241:        while let Some(event) = self.recv().await {
+crates/nanocodex-oai-api/src/events/stream.rs:255:        while let Some(event) = self.recv().await {
+crates/nanocodex-oai-api/src/events/stream.rs:498:        loop {
+crates/nanocodex-oai-api/src/events/stream.rs:529:        loop {
+crates/nanocodex-oai-api/src/events/stream.rs:555:                std::thread::yield_now();
+crates/nanocodex-oai-api/src/events/stream.rs:639:            std::thread::yield_now();
+crates/nanocodex-oai-api/src/events/stream.rs:1222:            std::thread::yield_now();
+crates/nanocodex-oai-api/src/realtime/webrtc.rs:178:            loop {
+crates/nanocodex-oai-api/src/realtime/webrtc.rs:514:    tokio::spawn(async move {
+crates/nanocodex-oai-api/src/realtime/webrtc.rs:556:            loop {
+crates/nanocodex-oai-api/src/realtime/webrtc.rs:565:                while let Some(sample) = samples.pop() {
+crates/nanocodex-oai-api/src/realtime/webrtc.rs:728:    tokio::spawn(async move {
+crates/nanocodex-oai-api/src/realtime/webrtc.rs:732:        while let Some(audio) = input.recv().await {
+crates/nanocodex-oai-api/src/realtime/webrtc.rs:989:    while let Some(chunk) = response
+crates/nanocodex-oai-api/src/realtime/webrtc.rs:1332:        let server = tokio::spawn(async move {
+crates/nanocodex-oai-api/src/realtime/webrtc.rs:1336:            loop {
+crates/nanocodex-oai-api/src/realtime/webrtc.rs:1442:        let server = tokio::spawn(async move {
+crates/nanocodex-oai-api/src/realtime/webrtc.rs:1446:            loop {
+crates/nanocodex-oai-api/src/responses/request.rs:264:        while let Some(segment) = current.take() {
+crates/nanocodex-oai-api/src/responses/request.rs:330:            while let Some(segment) = current {
+crates/nanocodex-oai-api/src/responses/request.rs:355:        while let Some(segment) = self.segments.get(self.segment_index) {
+crates/nanocodex-oai-api/src/responses/request.rs:403:        loop {
+crates/nanocodex-oai-api/src/auth/chatgpt/tests.rs:87:    loop {
+crates/nanocodex-oai-api/src/auth/chatgpt/tests.rs:236:    let server = tokio::spawn(async move {
+crates/nanocodex-oai-api/src/auth/chatgpt/tests.rs:342:    let server = tokio::spawn(async move {
+crates/nanocodex-oai-api/src/auth/chatgpt/tests.rs:343:        loop {
+crates/nanocodex-oai-api/src/auth/chatgpt/tests.rs:395:    let server = tokio::spawn(async move {
+crates/nanocodex-oai-api/src/auth/chatgpt/tests.rs:435:    let server = tokio::spawn(async move {
+crates/nanocodex-oai-api/src/auth/chatgpt/tests.rs:471:    let server = tokio::spawn(async move {
+crates/nanocodex-oai-api/src/realtime.rs:1391:    tokio::spawn(async move {
+crates/nanocodex-oai-api/src/realtime.rs:1427:    tokio::spawn(async move {
+crates/nanocodex-oai-api/src/realtime.rs:2024:        loop {
+crates/nanocodex-oai-api/src/realtime.rs:2109:    'session: loop {
+crates/nanocodex-oai-api/src/realtime.rs:2111:        let transport_error = loop {
+crates/nanocodex-oai-api/src/realtime.rs:2302:    loop {
+crates/nanocodex-oai-api/src/realtime.rs:2948:    loop {
+crates/nanocodex-oai-api/src/realtime.rs:2968:        loop {
+crates/nanocodex-oai-api/src/realtime.rs:4268:        let server = tokio::spawn(async move {
+crates/nanocodex-oai-api/src/realtime.rs:4306:        let socket_task = tokio::spawn(run_socket(
+crates/nanocodex-oai-api/src/realtime.rs:4351:        let server = tokio::spawn(async move {
+crates/nanocodex-oai-api/src/realtime.rs:4455:        let server = tokio::spawn(async move {
+crates/nanocodex-oai-api/src/realtime.rs:4533:        let server = tokio::spawn(async move {
+crates/nanocodex-oai-api/src/realtime.rs:4553:        let connect = tokio::spawn(async move {
+crates/nanocodex-oai-api/src/realtime.rs:4580:        let server = tokio::spawn(async move {
+crates/nanocodex-oai-api/src/realtime.rs:4629:        let server = tokio::spawn(async move {
+crates/nanocodex-oai-api/src/realtime.rs:4731:        let server = tokio::spawn(async move {
+crates/nanocodex-oai-api/src/realtime.rs:4789:        let server = tokio::spawn(async move {
+crates/nanocodex-oai-api/src/realtime.rs:4823:        let task = tokio::spawn(super::run_socket_with_pending(
+crates/nanocodex-oai-api/src/realtime.rs:4847:        let call_server = tokio::spawn(async move {
+crates/nanocodex-oai-api/src/realtime.rs:4851:            loop {
+crates/nanocodex-oai-api/src/realtime.rs:4917:        let server = tokio::spawn(async move {
+crates/nanocodex-oai-api/src/realtime.rs:4945:        let server = tokio::spawn(async move {
+crates/nanocodex-oai-api/src/realtime.rs:5022:        let server = tokio::spawn(async move {
+crates/nanocodex-claude/tests/subscription.rs:300:            let task = tokio::spawn(async move { first.complete_login(&code).await });
+crates/nanocodex-claude/tests/subscription.rs:336:    let task = tokio::spawn(async move { first.headers().await });
+crates/nanocodex-claude/tests/subscription.rs:695:    let task = tokio::spawn(async move { first.headers().await });
+crates/nanocodex-claude/tests/subscription.rs:757:    let refresh = tokio::spawn(async move { refreshing.headers().await });
+crates/nanocodex-claude/tests/subscription.rs:761:    let late = tokio::spawn(async move {
+crates/nanocodex-claude/tests/subscription.rs:766:    tokio::task::yield_now().await;
+crates/nanocodex-oai-api/src/session/image_dimensions.rs:13:    loop {
+crates/nanocodex-oai-api/src/session/image_dimensions.rs:64:    loop {
+crates/nanocodex-oai-api/src/session/image_dimensions.rs:110:    loop {
+crates/nanocodex-browser/src/ios.rs:374:                tokio::fs::write(&output, &bytes).await?;
+crates/nanocodex-oai-api/src/auth/subscription.rs:9:use tokio::sync::Mutex;
+crates/nanocodex-oai-api/src/transport/connector.rs:211:    while let Some(byte) = bytes.next() {
+crates/nanocodex-oai-api/src/transport/connector.rs:303:    loop {
+crates/nanocodex-oai-api/src/transport/connector.rs:448:    loop {
+crates/nanocodex-oai-api/src/transport/http.rs:117:        loop {
+crates/nanocodex-oai-api/src/transport/http.rs:174:        loop {
+crates/nanocodex-oai-api/src/transport/socket.rs:194:        loop {
+crates/nanocodex-oai-api/src/transport/socket.rs:245:        let task = tokio::spawn(async move {
+crates/nanocodex-oai-api/src/transport/socket.rs:246:            loop {
+crates/nanocodex-oai-api/src/transport/socket.rs:556:        loop {
+crates/nanocodex-oai-api/src/transport/socket.rs:639:        let server = tokio::spawn(async move {
+crates/nanocodex-oai-api/src/transport/socket.rs:755:        let server = tokio::spawn(async move {
+crates/nanocodex-oai-api/src/transport/socket.rs:785:                tokio::task::yield_now().await;
+crates/nanocodex-oai-api/src/transport/socket.rs:791:            tokio::task::yield_now().await;
+crates/nanocodex-oai-api/src/transport/api_error.rs:72:    while let Some(suffix) = rest.strip_prefix(".tools[") {
+crates/nanocodex-oai-api/src/tower/service.rs:14:use tokio::sync::Mutex;
+crates/nanocodex-oai-api/src/tower/service.rs:837:    loop {
+crates/nanocodex-oai-api/src/tower/stream.rs:251:    loop {
+crates/nanocodex-oai-api/src/tower/stream.rs:484:    loop {
+crates/nanocodex-oai-api/tests/realtime_live.rs:36:    let sending = tokio::spawn(async move {
+crates/nanocodex-oai-api/tests/realtime_live.rs:50:        while let Some(event) = events.recv().await {
+crates/nanocodex-oai-api/tests/it/oauth.rs:34:    let server = tokio::spawn(async move {
+crates/nanocodex-oai-api/tests/it/oauth.rs:97:    let server = tokio::spawn(async move {
+crates/nanocodex-oai-api/tests/it/oauth.rs:260:    loop {
+crates/nanocodex-oai-api/tests/it/oauth.rs:319:    loop {
+crates/nanocodex-oai-api/tests/it/oauth.rs:375:        let server = tokio::spawn(async move {
+crates/nanocodex-oai-api/tests/it/fallback.rs:30:    let websocket_server = tokio::spawn(async move {
+crates/nanocodex-oai-api/tests/it/fallback.rs:64:    let http_server = tokio::spawn(async move {
+crates/nanocodex-oai-api/tests/it/fallback.rs:142:    let http_server = tokio::spawn(async move {
+crates/nanocodex-oai-api/tests/it/fallback.rs:184:    let websocket_server = tokio::spawn(async move {
+crates/nanocodex-oai-api/tests/it/fallback.rs:204:    let http_server = tokio::spawn(async move {
+crates/nanocodex-oai-api/tests/it/fallback.rs:248:    let websocket_server = tokio::spawn(async move {
+crates/nanocodex-oai-api/tests/it/fallback.rs:273:    let http_server = tokio::spawn(async move {
+crates/nanocodex-oai-api/tests/it/fallback.rs:319:    loop {
+crates/nanocodex-oai-api/tests/it/fallback.rs:347:    let header_end = loop {
+crates/nanocodex-oai-api/tests/it/fallback.rs:436:    let websocket_server = tokio::spawn(async move {
+crates/nanocodex-oai-api/tests/it/fallback.rs:458:    let http_server = tokio::spawn(async move {
+crates/nanocodex-oai-api/tests/it/fallback.rs:530:    let websocket_server = tokio::spawn(async move {
+crates/nanocodex-oai-api/tests/it/fallback.rs:555:    let http_server = tokio::spawn(async move {
+crates/nanocodex-oai-api/tests/it/fallback.rs:637:                let server = tokio::spawn(async move {
+crates/nanocodex-oai-api/tests/it/fallback.rs:737:    let server = tokio::spawn(async move {
+crates/nanocodex-oai-api/tests/it/fallback.rs:809:    let server = tokio::spawn(async move {
+crates/nanocodex-oai-api/tests/it/fallback.rs:866:    let server = tokio::spawn(async move {
+crates/nanocodex-oai-api/tests/it/websocket.rs:21:    let server = tokio::spawn(async move {
+crates/nanocodex-oai-api/tests/it/websocket.rs:114:    let server = tokio::spawn(async move {
+crates/nanocodex-oai-api/tests/it/websocket.rs:175:    let server = tokio::spawn(async move {
+crates/nanocodex-oai-api/tests/it/websocket.rs:238:    let server = tokio::spawn(async move {
+crates/nanocodex-oai-api/tests/it/websocket.rs:350:    loop {
+crates/nanocodex-oai-api/tests/it/silent.rs:29:        let server = tokio::spawn(async move {
+crates/nanocodex-oai-api/tests/it/silent.rs:33:                loop {
+crates/nanocodex-oai-api/tests/it/session.rs:180:                while let Some(event) = response.try_next().await.unwrap() {
+crates/nanocodex-oai-api/tests/it/https.rs:48:        let server = tokio::spawn(async move {
+crates/nanocodex-oai-api/tests/it/https.rs:146:    let server = tokio::spawn(async move {
+crates/nanocodex-oai-api/tests/it/https.rs:204:    let server = tokio::spawn(async move {
+crates/nanocodex-oai-api/tests/it/https.rs:349:    let header_end = loop {
+crates/nanocodex-browser/src/native.rs:1047:        tokio::fs::create_dir_all(&profile).await?;
+crates/nanocodex-browser/src/native.rs:1048:        tokio::fs::create_dir_all(&output_dir).await?;
+crates/nanocodex-browser/src/native.rs:1049:        tokio::fs::create_dir_all(&download_dir).await?;
+crates/nanocodex-browser/src/native.rs:1101:        let handler = tokio::spawn(async move {
+crates/nanocodex-browser/src/native.rs:1102:            while let Some(event) = handler.next().await {
+crates/nanocodex-browser/src/native.rs:1544:        loop {
+crates/nanocodex-browser/src/native.rs:1678:            let candidate = tokio::fs::canonicalize(root.join(&path)).await?;
+crates/nanocodex-browser/src/native.rs:1682:            let metadata = tokio::fs::metadata(&candidate).await?;
+crates/nanocodex-browser/src/native.rs:2284:        let handler = tokio::spawn(async move {
+crates/nanocodex-browser/src/native.rs:2285:            while let Some(event) = events.next().await {
+crates/nanocodex-browser/src/native.rs:2564:    let handler = tokio::spawn(async move {
+crates/nanocodex-browser/src/native.rs:2565:        while let Some(event) = events.next().await {
+crates/nanocodex-browser/src/native.rs:2582:            loop {
+crates/nanocodex-browser/src/native.rs:2628:        loop {
+crates/nanocodex-browser/src/native.rs:2629:            if let Ok(contents) = tokio::fs::read_to_string(&active_port).await {
+crates/nanocodex-browser/src/native.rs:2662:    let handler = tokio::spawn(async move {
+crates/nanocodex-browser/src/native.rs:2663:        while let Some(event) = events.next().await {
+crates/nanocodex-browser/src/native.rs:2675:        loop {
+crates/nanocodex-browser/src/native.rs:2746:        loop {
+crates/nanocodex-browser/src/native.rs:2747:            if let Ok(contents) = tokio::fs::read_to_string(&active_port).await {
+crates/nanocodex-browser/src/native.rs:6365:    loop {
+crates/nanocodex-browser/src/native.rs:6408:        loop {
+crates/nanocodex-browser/src/native.rs:6465:    loop {
+crates/nanocodex-browser/src/native.rs:6504:    let console = tokio::spawn(async move {
+crates/nanocodex-browser/src/native.rs:6505:        while let Some(event) = console_events.next().await {
+crates/nanocodex-browser/src/native.rs:6526:    let errors = tokio::spawn(async move {
+crates/nanocodex-browser/src/native.rs:6527:        while let Some(event) = error_events.next().await {
+crates/nanocodex-browser/src/native.rs:6550:    let requests = tokio::spawn(async move {
+crates/nanocodex-browser/src/native.rs:6551:        while let Some(event) = request_events.next().await {
+crates/nanocodex-browser/src/native.rs:6605:    let responses = tokio::spawn(async move {
+crates/nanocodex-browser/src/native.rs:6606:        while let Some(event) = response_events.next().await {
+crates/nanocodex-browser/src/native.rs:6617:    let finished = tokio::spawn(async move {
+crates/nanocodex-browser/src/native.rs:6618:        while let Some(event) = finished_events.next().await {
+crates/nanocodex-browser/src/native.rs:6633:    let failures = tokio::spawn(async move {
+crates/nanocodex-browser/src/native.rs:6634:        while let Some(event) = failed_events.next().await {
+crates/nanocodex-browser/src/native.rs:6650:    let web_socket_created = tokio::spawn(async move {
+crates/nanocodex-browser/src/native.rs:6651:        while let Some(event) = web_socket_created_events.next().await {
+crates/nanocodex-browser/src/native.rs:6700:    let web_socket_requests = tokio::spawn(async move {
+crates/nanocodex-browser/src/native.rs:6701:        while let Some(event) = web_socket_request_events.next().await {
+crates/nanocodex-browser/src/native.rs:6755:    let web_socket_responses = tokio::spawn(async move {
+crates/nanocodex-browser/src/native.rs:6756:        while let Some(event) = web_socket_response_events.next().await {
+crates/nanocodex-browser/src/native.rs:6771:    let web_socket_sent = tokio::spawn(async move {
+crates/nanocodex-browser/src/native.rs:6772:        while let Some(event) = web_socket_sent_events.next().await {
+crates/nanocodex-browser/src/native.rs:6788:    let web_socket_received = tokio::spawn(async move {
+crates/nanocodex-browser/src/native.rs:6789:        while let Some(event) = web_socket_received_events.next().await {
+crates/nanocodex-browser/src/native.rs:6804:    let web_socket_errors = tokio::spawn(async move {
+crates/nanocodex-browser/src/native.rs:6805:        while let Some(event) = web_socket_error_events.next().await {
+crates/nanocodex-browser/src/native.rs:6818:    let web_socket_closed = tokio::spawn(async move {
+crates/nanocodex-browser/src/native.rs:6819:        while let Some(event) = web_socket_closed_events.next().await {
+crates/nanocodex-browser/src/native.rs:6832:    let dialogs = tokio::spawn(async move {
+crates/nanocodex-browser/src/native.rs:6833:        while let Some(event) = dialog_events.next().await {
+crates/nanocodex-browser/src/native.rs:6890:    let started = tokio::spawn(async move {
+crates/nanocodex-browser/src/native.rs:6891:        while let Some(event) = started_events.next().await {
+crates/nanocodex-browser/src/native.rs:6908:    let progress = tokio::spawn(async move {
+crates/nanocodex-browser/src/native.rs:6909:        while let Some(event) = progress_events.next().await {
+crates/nanocodex-browser/src/native.rs:7093:    while let Some(current) = trace {
+crates/nanocodex-browser/src/native.rs:7188:    loop {
+crates/nanocodex-browser/src/native.rs:7787:    let candidate = tokio::fs::canonicalize(root.join(&path)).await?;
+crates/nanocodex-browser/src/native.rs:7791:    if !tokio::fs::metadata(&candidate).await?.is_dir() {
+crates/nanocodex-browser/src/native.rs:9117:            let fixture_task = tokio::spawn(serve_extension_cleanup_fixture(fixture));
+crates/nanocodex-browser/src/native.rs:9745:        loop {
+crates/nanocodex-browser/src/native.rs:9750:            tokio::spawn(async move {
+crates/nanocodex-browser/src/native.rs:10259:            tokio::task::yield_now().await;
+crates/nanocodex-browser/src/native.rs:10302:            tokio::task::yield_now().await;
+crates/nanocodex-browser/src/native.rs:10342:                loop {
+crates/nanocodex-browser/src/native.rs:10354:                    tokio::task::yield_now().await;
+crates/nanocodex-browser/src/native.rs:10394:        let cancelled = tokio::spawn(async move {
+crates/nanocodex-browser/src/native.rs:10408:            loop {
+crates/nanocodex-browser/src/native.rs:10415:                tokio::task::yield_now().await;
+crates/nanocodex-browser/src/native.rs:10478:                    tokio::spawn(async move { while destination_events.next().await.is_some() {} });
+crates/nanocodex-browser/src/native.rs:10524:        let handler = tokio::spawn(async move { while events.next().await.is_some() {} });
+crates/nanocodex-remote/src/capture.rs:122:        let owner = Task(tokio::spawn(async move {
+crates/nanocodex-remote/src/capture.rs:156:            Task(tokio::spawn(async move {
+crates/nanocodex-remote/src/capture.rs:240:        let owner = Task(tokio::spawn(async move {
+crates/nanocodex-remote/src/audio_duplex.rs:84:                let reader = Task(tokio::spawn(async move {
+crates/nanocodex-remote/src/audio_duplex.rs:86:                    loop {
+crates/nanocodex-remote/src/audio_duplex.rs:111:                    .push(Task(tokio::spawn(async move {
+crates/nanocodex-remote/src/audio_duplex.rs:192:    loop {
+crates/nanocodex-remote/src/audio_duplex.rs:217:    loop {
+crates/nanocodex-remote/src/tls.rs:15:use tokio::sync::Mutex;
+crates/nanocodex-remote/src/tls.rs:51:    let config = tokio::task::spawn_blocking(load)
+crates/nanocodex-remote/src/frames.rs:22:    loop {
+crates/nanocodex-remote/src/frames.rs:123:        let metadata_task = tokio::spawn(async move {
+crates/nanocodex-remote/src/frames.rs:129:        let video_task = tokio::spawn(async move {
+crates/nanocodex-remote/src/peer_recovery.rs:57:        let task = Task(tokio::spawn(async move {
+crates/nanocodex-remote/src/peer_recovery.rs:58:            loop {
+crates/nanocodex-remote/src/playout_tests.rs:151:    let rtcp = tokio::spawn(async move { while rtcp_sender.read_rtcp().await.is_ok() {} });
+crates/nanocodex-remote/src/playout_tests.rs:173:        loop {
+crates/nanocodex-remote/src/playout_tests.rs:309:    let rtcp = tokio::spawn(async move { while rtcp_sender.read_rtcp().await.is_ok() {} });
+crates/nanocodex-remote/src/playout_tests.rs:316:            while let Ok((packet, _)) = track.read_rtp().await {
+crates/nanocodex-remote/src/playout_tests.rs:353:            loop {
+crates/nanocodex-remote/src/playout_tests.rs:403:                loop {
+crates/nanocodex-remote/src/audio.rs:45:        let task = Task(tokio::spawn(async move {
+crates/nanocodex-remote/src/audio.rs:52:                loop {
+crates/nanocodex-remote/src/audio.rs:109:                    Task(tokio::spawn(async move {
+crates/nanocodex-remote/src/audio.rs:123:                tokio::task::yield_now().await;
+crates/nanocodex-remote/src/audio_sink.rs:48:        loop {
+crates/nanocodex-remote/src/audio_sink.rs:92:        let modules = tokio::task::spawn_blocking(move || create_modules(&name)).await??;
+crates/nanocodex-remote/src/audio_sink.rs:321:        let writing = tokio::spawn(async move {
+crates/nanocodex-remote/src/audio_sink.rs:337:            loop {
+crates/nanocodex-remote/src/audio_sink.rs:383:            loop {
+crates/nanocodex-remote/src/runtime_ice_tests.rs:101:        loop {
+crates/nanocodex-remote/src/runtime_ice_tests.rs:134:            tokio::task::yield_now().await;
+crates/nanocodex-remote/src/peer_recovery_tests.rs:219:    let proxy_task = Task(tokio::spawn(async move {
+crates/nanocodex-remote/src/peer_recovery_tests.rs:221:        loop {
+crates/nanocodex-remote/src/audio_duplex_tests.rs:64:        let receiver = tokio::spawn(receive_report(
+crates/nanocodex-remote/src/audio_duplex_tests.rs:275:    let task = tokio::spawn(async move {
+crates/nanocodex-remote/src/audio_duplex_tests.rs:291:    tokio::task::yield_now().await;
+crates/nanocodex-remote/src/video.rs:161:                loop {
+crates/nanocodex-remote/src/video.rs:194:        tokio::spawn(async move {
+crates/nanocodex-remote/src/video.rs:224:    latest: std::sync::Mutex<HashMap<String, Event>>,
+crates/nanocodex-remote/src/video.rs:264:        let task = Task(tokio::spawn(async move {
+crates/nanocodex-remote/src/video.rs:271:                loop {
+crates/nanocodex-remote/src/video.rs:320:        loop {
+crates/nanocodex-remote/src/video.rs:333:                            peer.relay = Some(Task(tokio::spawn(async move {
+crates/nanocodex-remote/src/video.rs:334:                                while let Some(mut event) = incoming.recv().await {
+crates/nanocodex-remote/src/video.rs:609:        let rtcp = Task(tokio::spawn(async move {
+crates/nanocodex-remote/src/video.rs:628:            rtcp.push(Task(tokio::spawn(async move {
+crates/nanocodex-remote/src/video.rs:776:        let signaling = Task(tokio::spawn(async move {
+crates/nanocodex-remote/src/video.rs:778:            while let Some(signal) = incoming.recv().await {
+crates/nanocodex-remote/src/video.rs:814:        let media = Task(tokio::spawn(forward_frames(
+crates/nanocodex-remote/src/video.rs:877:    loop {
+crates/nanocodex-remote/src/video.rs:1018:        let slow = Task(tokio::spawn(forward_frames(
+crates/nanocodex-remote/src/video.rs:1037:        let fast = Task(tokio::spawn(forward_frames(
+crates/nanocodex-remote/src/video.rs:1076:        let task = Task(tokio::spawn(forward_frames(
+crates/nanocodex-remote/src/video.rs:1088:        tokio::task::yield_now().await;
+crates/nanocodex-remote/src/video.rs:1091:        tokio::task::yield_now().await;
+crates/nanocodex-remote/src/video.rs:1094:        tokio::task::yield_now().await;
+crates/nanocodex-remote/src/video.rs:1106:        let task = Task(tokio::spawn(forward_frames(
+crates/nanocodex-remote/src/diagnostics.rs:172:            let server = tokio::spawn(async move {
+crates/nanocodex-remote/src/ice_cache_tests.rs:37:        let task = tokio::spawn(async move {
+crates/nanocodex-remote/src/ice_cache_tests.rs:38:            loop {
+crates/nanocodex-oai-tools/src/apply_patch/mod.rs:43:            match tokio::task::spawn_blocking(move || apply(&input, &workspace)).await {
+crates/nanocodex-oai-tools/src/plan.rs:4:use tokio::sync::Mutex;
+crates/nanocodex-remote/src/runtime.rs:163:        let task = tokio::spawn(async move {
+crates/nanocodex-remote/src/runtime.rs:166:            loop {
+crates/nanocodex-remote/src/runtime.rs:376:        loop {
+crates/nanocodex-remote/src/runtime.rs:649:    let broadcast = tokio::sync::Mutex::new(broadcast);
+crates/nanocodex-remote/src/runtime.rs:651:    loop {
+crates/nanocodex-remote/src/runtime.rs:895:                            job = Some(OwnedJob(tokio::spawn(async move {
+crates/nanocodex-remote/src/runtime.rs:923:                        job=Some(OwnedJob(tokio::spawn(async move{
+crates/nanocodex-remote/src/runtime.rs:1172:        let peer = tokio::spawn(async move {
+crates/nanocodex-remote/src/runtime.rs:1210:        let task = tokio::spawn(async move {
+crates/nanocodex-remote/src/runtime.rs:1247:        let calls = Arc::new(std::sync::Mutex::new(Vec::new()));
+crates/nanocodex-remote/src/runtime.rs:1383:        struct Status(Arc<std::sync::Mutex<Vec<String>>>);
+crates/nanocodex-remote/src/runtime.rs:1401:        let calls = Arc::new(std::sync::Mutex::new(Vec::new()));
+crates/nanocodex-remote/src/runtime.rs:1426:        let peer = tokio::spawn(async move {
+crates/nanocodex-remote/src/runtime.rs:1442:            let http = tokio::spawn(async move {
+crates/nanocodex-remote/src/runtime.rs:1581:            loop {
+crates/nanocodex-remote/src/runtime.rs:1606:            let calls = Arc::new(std::sync::Mutex::new(Vec::new()));
+crates/nanocodex-remote/src/runtime.rs:1689:        let events = Arc::new(std::sync::Mutex::new(Vec::new()));
+crates/nanocodex-remote/src/runtime.rs:1691:        struct InputGuard(Arc<std::sync::Mutex<Vec<&'static str>>>);
+crates/nanocodex-remote/src/runtime.rs:1855:        let peer = tokio::spawn(async move {
+crates/nanocodex-remote/src/runtime.rs:1912:                tokio::task::yield_now().await;
+crates/nanocodex-remote/src/runtime.rs:2029:        let failure = Arc::new(std::sync::Mutex::new(Some(failed)));
+crates/nanocodex-remote/src/runtime.rs:2068:        let peer = tokio::spawn(async move {
+crates/nanocodex-oai-api/src/auth/chatgpt.rs:680:    fn state(&self) -> Result<std::sync::RwLockReadGuard<'_, ManagedState>, OpenAiAuthError> {
+crates/nanocodex-oai-api/src/auth/chatgpt.rs:1157:    loop {
+crates/nanocodex-oai-tools/src/image/mod.rs:198:    match tokio::task::spawn_blocking(move || prepare_content(content)).await {
+crates/nanocodex-oai-tools/src/image/mod.rs:285:    match tokio::task::spawn_blocking(move || prepare_user_content(input)).await {
+crates/nanocodex-oai-tools/src/image/mod.rs:494:        match tokio::task::spawn_blocking(move || prepare(images)).await {
+crates/nanocodex-oai-tools/src/code_mode/embedded.rs:163:            let _ = tokio::task::spawn_blocking(move || worker.join()).await;
+crates/nanocodex-oai-tools/src/code_mode/embedded.rs:209:    loop {
+crates/nanocodex-oai-tools/src/code_mode/embedded.rs:303:        loop {
+crates/nanocodex-oai-tools/src/mcp/stdio.rs:100:        loop {
+crates/nanocodex-oai-tools/src/code_mode/mod.rs:810:        let task = tokio::spawn(
+crates/nanocodex-oai-tools/src/code_mode/mod.rs:945:    loop {
+crates/nanocodex-oai-tools/src/code_mode/mod.rs:978:                    Some((signal, turn)) => loop {
+crates/nanocodex-oai-tools/src/code_mode/mod.rs:1242:        loop {
+crates/nanocodex-oai-tools/src/mcp/oauth.rs:239:                std::sync::Mutex<HashMap<String, Weak<tokio::sync::Mutex<()>>>>,
+crates/nanocodex-oai-tools/src/mcp/oauth.rs:249:                let lock = Arc::new(tokio::sync::Mutex::new(()));
+crates/nanocodex-oai-tools/src/mcp/oauth.rs:618:    let completion = tokio::spawn(
+crates/nanocodex-oai-tools/src/mcp/oauth.rs:757:    loop {
+crates/nanocodex-oai-tools/src/mcp/oauth.rs:877:        let target_task = tokio::spawn(async move {
+crates/nanocodex-oai-tools/src/mcp/oauth.rs:892:        let redirect_task = tokio::spawn(async move {
+crates/nanocodex-oai-tools/src/mcp/oauth.rs:926:        let responder = tokio::spawn(async move {
+crates/nanocodex-oai-tools/src/mcp/oauth.rs:927:            loop {
+crates/nanocodex-oai-tools/src/mcp/client.rs:505:    drop(tokio::spawn(async move {
+crates/nanocodex-oai-tools/src/mcp/client.rs:509:        loop {
+crates/nanocodex-oai-tools/src/mcp/client.rs:601:    while let Some(error) = source {
+crates/nanocodex-oai-tools/src/mcp/client.rs:700:                tokio::task::yield_now().await;
+crates/nanocodex-oai-tools/src/mcp/mod.rs:469:        let completion = tokio::spawn(
+crates/nanocodex-oai-tools/src/mcp/catalog.rs:449:        while let Some(character) = characters.next() {
+crates/nanocodex-oai-tools/src/mcp/catalog.rs:711:    loop {
+crates/nanocodex-oai-tools/src/code_mode/tests.rs:111:    let execution = tokio::spawn(async move {
+crates/nanocodex-oai-tools/src/code_mode/tests.rs:128:            tokio::task::yield_now().await;
+crates/nanocodex-oai-tools/src/code_mode/tests.rs:169:    let execution = tokio::spawn(async move {
+crates/nanocodex-oai-tools/src/code_mode/tests.rs:185:            tokio::task::yield_now().await;
+crates/nanocodex-oai-tools/src/code_mode/tests.rs:1733:        tokio::spawn(async move {
+crates/nanocodex-oai-tools/src/code_mode/tests.rs:1743:            tokio::task::yield_now().await;
+crates/nanocodex-oai-tools/src/code_mode/tests.rs:1803:        tokio::spawn(async move {
+crates/nanocodex-oai-tools/src/code_mode/tests.rs:1813:            tokio::task::yield_now().await;
+crates/nanocodex-oai-tools/src/code_mode/tests.rs:1859:        tokio::spawn(async move { control.cancel().await })
+crates/nanocodex-oai-tools/src/code_mode/tests.rs:1865:        tokio::spawn(async move {
+crates/nanocodex-oai-tools/src/code_mode/tests.rs:1917:        tokio::spawn(async move { control.cancel_turn().await })
+crates/nanocodex-oai-tools/src/code_mode/tests.rs:1923:        tokio::spawn(async move {
+crates/nanocodex-oai-tools/src/code_mode/tests.rs:1967:    let execution = tokio::spawn(async move {
+crates/nanocodex-oai-tools/src/code_mode/tests.rs:1982:            tokio::task::yield_now().await;
+crates/nanocodex-oai-tools/src/code_mode/tests.rs:2047:    let waiting = tokio::spawn(async move {
+crates/nanocodex-oai-tools/src/code_mode/tests.rs:2062:            tokio::task::yield_now().await;
+crates/nanocodex-oai-tools/src/code_mode/tests.rs:2386:    let task = tokio::spawn(async move {
+crates/nanocodex-oai-tools/src/code_mode/tests.rs:2395:    let observer_task = tokio::spawn(async move {
+crates/nanocodex-oai-tools/src/code_mode/tests.rs:2467:    let task = tokio::spawn(async move {
+crates/nanocodex-oai-tools/src/code_mode/tests.rs:2522:    let task = tokio::spawn(async move {
+crates/nanocodex-oai-tools/src/code_mode/tests.rs:2607:        observation: Arc::new(tokio::sync::Mutex::new(CellObservationState {
+crates/nanocodex-oai-tools/src/code_mode/tests.rs:2612:        terminate: std::sync::Mutex::new(Some(terminate)),
+crates/nanocodex-oai-tools/src/code_mode/tests.rs:2613:        task: tokio::sync::Mutex::new(Some(task)),
+crates/nanocodex-oai-tools/src/code_mode/tests.rs:2848:    revisions: Arc<std::sync::Mutex<Vec<Option<u64>>>>,
+crates/nanocodex-oai-tools/src/code_mode/tests.rs:2876:    let revisions = Arc::new(std::sync::Mutex::new(Vec::new()));
+crates/nanocodex-oai-tools/src/image_generation/tests.rs:73:    assert_eq!(tokio::fs::read(saved_path).await?, TINY_PNG);
+crates/nanocodex-oai-tools/src/image_generation/tests.rs:101:    tokio::fs::write(&local_path, TINY_PNG).await?;
+crates/nanocodex-oai-tools/src/image_generation/tests.rs:204:    let server = tokio::spawn(async move {
+crates/nanocodex-oai-tools/src/image_generation/tests.rs:231:    let header_end = loop {
+crates/nanocodex-oai-tools/src/image_generation/mod.rs:451:    let bytes = tokio::fs::read(&path).await.map_err(|error| {
+crates/nanocodex-oai-tools/src/image_generation/mod.rs:458:    tokio::task::spawn_blocking(move || {
+crates/nanocodex-oai-tools/src/image_generation/mod.rs:546:    tokio::fs::create_dir_all(parent)
+crates/nanocodex-oai-tools/src/image_generation/mod.rs:549:    tokio::fs::write(&path, bytes)
+crates/nanocodex-oai-tools/src/mcp/oauth/refresh_tests.rs:125:    let task = tokio::spawn(async move {
+crates/nanocodex-oai-tools/src/mcp/oauth/refresh_tests.rs:127:        loop {
+crates/nanocodex-oai-tools/src/mcp/oauth/refresh_tests.rs:189:    let task = tokio::spawn(async move {
+crates/nanocodex-oai-tools/src/mcp/oauth/refresh_tests.rs:190:        loop {
+crates/nanocodex-oai-tools/src/mcp/oauth/refresh_tests.rs:343:    let server = tokio::spawn(async move {
+crates/nanocodex-oai-tools/src/mcp/oauth/refresh_tests.rs:346:        loop {
+crates/nanocodex-oai-tools/src/mcp/oauth/refresh_tests.rs:394:    let caller = tokio::spawn({
+crates/nanocodex-oai-tools/src/mcp/oauth/refresh_tests.rs:403:        loop {
+crates/nanocodex-oai-tools/src/mcp/oauth/refresh_tests.rs:411:            tokio::task::yield_now().await;
+crates/nanocodex-oai-tools/src/mcp/oauth/refresh_tests.rs:451:    let server = tokio::spawn(async move {
+crates/nanocodex-oai-tools/src/shell/output.rs:31:    loop {
+crates/nanocodex-oai-tools/src/shell/output.rs:51:    tokio::task::spawn_blocking(move || {
+crates/nanocodex-oai-tools/src/shell/output.rs:53:        loop {
+crates/nanocodex-oai-tools/src/shell/process.rs:73:        let wait = tokio::spawn(async move {
+crates/nanocodex-oai-tools/src/shell/process.rs:93:            loop {
+crates/nanocodex-oai-tools/src/shell/process.rs:196:                tokio::task::spawn_blocking(move || {
+crates/nanocodex-browser/src/native/performance_trace.rs:76:    let task = tokio::spawn(async move {
+crates/nanocodex-browser/src/native/performance_trace.rs:77:        let data_loss = loop {
+crates/nanocodex-browser/src/native/performance_trace.rs:98:                    while let Ok(Some(event)) =
+crates/nanocodex-browser/src/native/performance_trace.rs:413:    tokio::fs::write(&path, encoded).await?;
+crates/nanocodex-browser/src/native/performance_trace.rs:657:        while let Some(parent) = parent_id {
+crates/nanocodex-oai-tools/src/mcp/oauth/refresh.rs:60:        let task = tokio::spawn(async move {
+crates/nanocodex-oai-tools/src/attachment/driver.rs:73:    let terminal = loop {
+crates/nanocodex-oai-tools/src/attachment/driver.rs:574:    let task = tokio::spawn(
+crates/nanocodex-oai-tools/src/attachment/driver.rs:788:    while let Ok(completion) = completed_rx.try_recv() {
+crates/nanocodex-oai-tools/src/attachment/driver.rs:818:    let end = loop {
+crates/nanocodex-oai-tools/src/attachment/driver.rs:832:                while let Ok(completion) = completed_rx.try_recv() {
+crates/nanocodex-oai-tools/src/attachment/driver.rs:1105:    loop {
+crates/nanocodex-oai-tools/src/attachment/mod.rs:340:        tokio::spawn(initialize_and_run(
+crates/nanocodex-oai-tools/src/attachment/mod.rs:504:        loop {
+crates/nanocodex-oai-tools/src/attachment/mod.rs:519:        loop {
+crates/nanocodex-oai-tools/src/shell/mod.rs:285:                tokio::spawn(output::drain(
+crates/nanocodex-oai-tools/src/shell/mod.rs:290:                tokio::spawn(output::drain(
+crates/nanocodex-oai-tools/src/shell/mod.rs:920:            tokio::spawn(async move {
+crates/nanocodex-oai-tools/src/shell/mod.rs:938:            loop {
+crates/nanocodex-oai-tools/src/shell/mod.rs:942:                tokio::task::yield_now().await;
+crates/nanocodex-oai-tools/src/shell/mod.rs:988:            tokio::spawn(async move { sessions.terminate_all().await })
+crates/nanocodex-oai-tools/src/shell/mod.rs:992:                tokio::task::yield_now().await;
+crates/nanocodex-oai-tools/src/shell/mod.rs:1000:            tokio::spawn(async move { sessions.terminate_all().await })
+crates/nanocodex-oai-tools/src/shell/mod.rs:1083:            std::sync::Mutex::new(writer),
+crates/nanocodex-oai-tools/src/shell/mod.rs:1088:            tokio::spawn(async move {
+crates/nanocodex-oai-tools/src/shell/mod.rs:1094:        tokio::task::yield_now().await;
+crates/nanocodex-oai-tools/src/shell/mod.rs:1095:        tokio::task::spawn_blocking(move || entered_rx.recv_timeout(Duration::from_secs(2)))
+crates/nanocodex-oai-tools/src/shell/mod.rs:1100:            tokio::spawn(async move { sessions.terminate_all().await })
+crates/nanocodex-oai-tools/src/shell/mod.rs:1233:                tokio::task::yield_now().await;
+crates/nanocodex-oai-tools/src/view_image.rs:57:        let mut file = match tokio::fs::File::open(&path).await {
+crates/nanocodex-oai-tools/tests/it/main.rs:14:pub(crate) static TOOL_RUNTIME_TEST_LOCK: tokio::sync::Mutex<()> =
+crates/nanocodex-oai-tools/tests/it/main.rs:15:    tokio::sync::Mutex::const_new(());
+crates/nanocodex-oai-tools/tests/it/preempt.rs:28:                while !workspace.path().join("started").exists() { tokio::task::yield_now().await; }
+crates/nanocodex-oai-tools/tests/it/native_mcp.rs:119:    let server = tokio::spawn(async move {
+crates/nanocodex-oai-tools/tests/it/native_mcp.rs:120:        loop {
+crates/nanocodex-oai-tools/tests/it/native_mcp.rs:125:            tokio::spawn(async move {
+crates/nanocodex-oai-tools/tests/it/oauth/web_search.rs:118:    let server = tokio::spawn(async move {
+crates/nanocodex-oai-tools/tests/it/oauth/image_generation.rs:29:    tokio::fs::write(&source_image, TINY_PNG).await?;
+crates/nanocodex-oai-tools/tests/it/oauth/image_generation.rs:104:    let server = tokio::spawn(async move {
+crates/nanocodex-oai-tools/tests/it/oauth/image_generation.rs:174:    let server = tokio::spawn(async move {
+crates/nanocodex-oai-tools/tests/it/support/http.rs:15:    let header_end = loop {
+crates/nanocodex-subagents/src/harness.rs:225:        loop {
+crates/nanocodex-subagents/src/harness.rs:472:        while let Ok(command) = self.urgent.try_recv() {
+crates/nanocodex-subagents/src/harness.rs:475:        while let Ok(command) = self.deferred.try_recv() {
+crates/nanocodex-oai-tools/src/web_search/mod.rs:241:    while let Some(chunk) = response.chunk().await.map_err(|error| RequestFailure {
+crates/nanocodex-oai-tools/src/web_search/mod.rs:296:        let server = tokio::spawn(async move {
+crates/nanocodex-oai-tools/src/web_search/mod.rs:340:        let server = tokio::spawn(async move {
+crates/nanocodex-hand/src/macos_audio.rs:105:    latest: Arc<std::sync::Mutex<Option<Vec<u8>>>>,
+crates/nanocodex-hand/src/macos_audio.rs:220:        let shared_latest = Arc::new(std::sync::Mutex::new(None));
+crates/nanocodex-hand/src/recording_observer/linux.rs:22:    deadline: std::sync::Mutex<Instant>,
+crates/nanocodex-hand/src/recording_observer/linux.rs:123:                    deadline: std::sync::Mutex::new(Instant::now() + Duration::from_millis(500)),
+crates/nanocodex-hand/src/recording_observer/linux.rs:626:    loop {
+crates/nanocodex-claude-tools/src/profiles.rs:44:        while let Some(directory) = pending.pop() {
+crates/nanocodex-claude-tools/src/media.rs:292:        loop {
+crates/nanocodex-claude-tools/src/workspace_files.rs:118:        tokio::task::spawn_blocking(move || {
+crates/nanocodex-claude-tools/src/workspace_files.rs:382:        while let Some(next) = stack.pop() {
+crates/nanocodex-claude-tools/src/skills.rs:164:            tokio::task::spawn_blocking(move || this.invoke(&skill, &args, SkillInvocation::Model))
+crates/nanocodex-claude-tools/src/web.rs:296:    use std::sync::Mutex;
+crates/nanocodex-claude-tools/src/bash.rs:197:    use std::sync::Mutex;
+crates/nanocodex-durability/src/context.rs:140:    while let Some(reference) = next {
+crates/nanocodex-managed/src/attachment.rs:30:            Self::Deferred(future) => Self::Preparing(PreparingTools(tokio::spawn(future))),
+crates/nanocodex-managed/src/attachment.rs:71:                let task = tokio::spawn(async move {
+crates/nanocodex-oai-tools/src/attachment/tests.rs:76:    let server = tokio::spawn(async move {
+crates/nanocodex-oai-tools/src/attachment/tests.rs:126:    let server = tokio::spawn(async move {
+crates/nanocodex-oai-tools/src/attachment/tests.rs:168:            tokio::task::yield_now().await;
+crates/nanocodex-oai-tools/src/attachment/tests.rs:218:    let server = tokio::spawn(async move {
+crates/nanocodex-oai-tools/src/attachment/tests.rs:352:    let server = tokio::spawn(async move {
+crates/nanocodex-oai-tools/src/attachment/tests.rs:420:    let server = tokio::spawn(async move {
+crates/nanocodex-oai-tools/src/attachment/tests.rs:472:    let server = tokio::spawn(async move {
+crates/nanocodex-oai-tools/src/attachment/tests.rs:519:    let server = tokio::spawn(async move {
+crates/nanocodex-oai-tools/src/attachment/tests.rs:541:        while let Some(event) = events.recv().await {
+crates/nanocodex-oai-tools/src/attachment/tests.rs:566:    let server = tokio::spawn(async move {
+crates/nanocodex-oai-tools/src/attachment/tests.rs:603:    let server = tokio::spawn(async move {
+crates/nanocodex-oai-tools/src/attachment/tests.rs:631:    let server = tokio::spawn(async move {
+crates/nanocodex-oai-tools/src/attachment/tests.rs:721:    loop {
+crates/nanocodex-oai-tools/src/attachment/tests.rs:744:    loop {
+crates/nanocodex-oai-tools/src/attachment/tests.rs:770:    loop {
+crates/nanocodex-oai-tools/src/attachment/tests.rs:868:    let server = tokio::spawn(async move {
+crates/nanocodex-oai-tools/src/attachment/tests.rs:1009:            let detach = tokio::spawn(async move { attachment.detach().await });
+crates/nanocodex-oai-tools/src/attachment/tests.rs:1060:        let detach = tokio::spawn(async move { attachment.detach().await });
+crates/nanocodex-oai-tools/src/attachment/tests.rs:1109:            tokio::task::yield_now().await;
+crates/nanocodex-oai-tools/src/attachment/tests.rs:1114:    let detach = tokio::spawn(async move { attachment.detach().await });
+crates/nanocodex-oai-tools/src/attachment/tests.rs:1159:    let close = loop {
+crates/nanocodex-oai-tools/src/attachment/tests.rs:1207:        let detach = tokio::spawn(async move { attachment.detach().await });
+crates/nanocodex-oai-tools/src/attachment/tests.rs:1244:            tokio::task::yield_now().await;
+crates/nanocodex-oai-tools/src/attachment/tests.rs:1249:    let detach = tokio::spawn(async move { attachment.detach().await });
+crates/nanocodex-oai-tools/src/attachment/tests.rs:1256:struct TurnLifecycleTool(std::sync::Arc<std::sync::Mutex<Vec<(String, String, String)>>>);
+crates/nanocodex-oai-tools/src/attachment/tests.rs:1287:    let ended = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+crates/nanocodex-oai-tools/src/attachment/tests.rs:1331:    let detach = tokio::spawn(async move { attachment.detach().await });
+crates/nanocodex-oai-tools/src/attachment/tests.rs:1345:    let server = tokio::spawn(async move {
+crates/nanocodex-managed/src/voice.rs:43:        loop {
+crates/nanocodex-managed/src/voice.rs:164:        while let Some(chunk) = response.chunk().await.map_err(ManagedError::Transport)? {
+crates/nanocodex-voice-protocol/src/browser.rs:840:    loop {
+crates/nanocodex-managed/src/share.rs:209:        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+crates/nanocodex-managed/src/builder.rs:226:    socket: Arc<tokio::sync::Mutex<Option<ManagedLiveSocket>>>,
+crates/nanocodex-managed/src/builder.rs:247:            socket: Arc::new(tokio::sync::Mutex::new(None)),
+crates/nanocodex-managed/src/builder.rs:485:    socket: Arc<tokio::sync::Mutex<Option<ManagedLiveSocket>>>,
+crates/nanocodex-managed/src/builder.rs:1048:        tokio::spawn(driver.run());
+crates/nanocodex-oai-tools/tests/it/attachment.rs:173:            loop {
+crates/nanocodex-oai-tools/tests/it/attachment.rs:423:            tokio::task::yield_now().await;
+crates/nanocodex-oai-tools/tests/it/attachment.rs:476:            tokio::task::yield_now().await;
+crates/nanocodex-oai-tools/tests/it/attachment.rs:1090:            tokio::task::yield_now().await;
+crates/nanocodex-managed/src/native_secure_input.rs:597:        while let Some(chunk) = response.chunk().await.map_err(|_| invalid())? {
+crates/nanocodex-managed/src/native_secure_input.rs:754:        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+crates/nanocodex-managed/src/native_secure_input.rs:1121:        let server = tokio::spawn(async move {
+crates/nanocodex-managed/src/native_secure_input.rs:1122:            loop {
+crates/nanocodex-managed/src/native_secure_input.rs:1127:                let body_start = loop {
+crates/nanocodex-managed/src/vm_host.rs:529:        loop {
+crates/nanocodex-managed/src/vm_host.rs:906:    loop {
+crates/nanocodex-managed/src/vm_host.rs:1394:        let server = tokio::spawn(async move {
+crates/nanocodex-managed/src/private_input.rs:318:        while let Some(chunk) = response.chunk().await.map_err(|_| invalid())? {
+crates/nanocodex-managed/src/private_input.rs:397:        while let Some(chunk) = response.chunk().await.map_err(|_| invalid())? {
+crates/nanocodex-managed/src/private_input.rs:440:        while let Some(chunk) = response.chunk().await.map_err(|_| invalid())? {
+crates/nanocodex-managed/src/private_input.rs:527:        let task = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+crates/nanocodex-claude-tools/src/context.rs:86:        let context = tokio::task::spawn_blocking(move || this.load_for_path(path))
+crates/nanocodex-claude-tools/src/context.rs:287:        while let Some(c) = chars.next() {
+crates/nanocodex-claude-tools/src/context.rs:389:        while let Some(part) = parts.next() {
+crates/nanocodex-managed/src/driver.rs:107:        loop {
+crates/nanocodex-managed/src/driver.rs:431:        loop {
+crates/nanocodex-managed/src/driver.rs:694:        loop {
+crates/nanocodex-managed/src/connectors.rs:260:        while let Some(chunk) = response.chunk().await.map_err(|_| invalid())? {
+crates/nanocodex-managed/src/vault_management.rs:257:        while let Some(chunk) = response.chunk().await.map_err(|_| invalid())? {
+crates/nanocodex-managed/src/phone_services.rs:371:        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+crates/nanocodex-managed/src/sse.rs:195:        loop {
+crates/nanocodex-managed/src/sse.rs:257:        loop {
+crates/nanocodex-managed/src/sse.rs:337:        loop {
+crates/nanocodex-managed/src/sse.rs:587:        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+crates/nanocodex-managed/src/sse.rs:624:        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+crates/nanocodex-managed/src/sse.rs:665:        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+crates/nanocodex-managed/src/sse.rs:698:        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+crates/nanocodex-durability/src/memory.rs:50:            while let Some(command) = receiver.recv().await {
+crates/nanocodex-durability/src/shared_store.rs:54:            while let Some(command) = receiver.recv().await {
+crates/nanocodex-managed/src/client.rs:1246:        loop {
+crates/nanocodex-managed/src/client.rs:1520:        tokio::spawn(async move {
+crates/nanocodex-managed/src/client.rs:1568:        let mut file = tokio::fs::OpenOptions::new()
+crates/nanocodex-managed/src/client.rs:1572:        while let Some(chunk) = response.chunk().await.map_err(ManagedError::Transport)? {
+crates/nanocodex-managed/src/client.rs:1878:        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+crates/nanocodex-managed/src/client.rs:1915:        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+crates/nanocodex-managed/src/client.rs:1946:        let server = tokio::spawn(async move {
+crates/nanocodex-managed/src/client.rs:2000:        let server = tokio::spawn(async move {
+crates/nanocodex-managed/src/client.rs:2059:        let server = tokio::spawn(async move {
+crates/nanocodex-managed/src/client.rs:2120:            let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+crates/nanocodex-managed/src/client.rs:2152:        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+crates/nanocodex-managed/src/client.rs:2277:            let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+crates/nanocodex-managed/src/client.rs:2339:            let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+crates/nanocodex-managed/src/client.rs:2469:        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+crates/nanocodex-managed/src/client.rs:2502:        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+crates/nanocodex-managed/src/client.rs:2523:        let server = tokio::spawn(async move {
+crates/nanocodex-managed/src/client.rs:2528:                let (header_end, content_length) = loop {
+crates/nanocodex-claude-tools/src/notebook.rs:76:        tokio::task::spawn_blocking(move || this.edit(&input))
+crates/nanocodex-claude-tools/src/notebook.rs:237:                let new_cell_id = loop {
+crates/nanocodex-claude-tools/src/host_tests.rs:86:                tokio::spawn(async move {
+crates/nanocodex-claude-tools/src/host_tests.rs:113:                loop {
+crates/nanocodex-claude-tools/src/host_tests.rs:117:                    tokio::task::yield_now().await;
+crates/nanocodex-vm/tests/image_live_build.rs:232:    loop {
+crates/nanocodex-durability/src/session.rs:335:        loop {
+crates/nanocodex-durability/src/session.rs:2754:            tokio::task::yield_now().await;
+crates/nanocodex-vm/tests/docker_live.rs:361:    let task = tokio::spawn(async move {
+crates/nanocodex-vm/tests/docker_live.rs:447:        loop {
+crates/nanocodex-durability/tests/claude_stream_redaction.rs:20:    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+crates/nanocodex-durability/tests/claude_stream_redaction.rs:107:    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+crates/nanocodex-managed/tests/it/voice.rs:25:    let task = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+crates/nanocodex-managed/tests/it/voice.rs:58:    let task = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+crates/nanocodex-managed/tests/it/voice.rs:165:    let task = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+crates/nanocodex-managed/tests/it/forks.rs:50:    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+crates/nanocodex-managed/tests/it/forks.rs:107:    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+crates/nanocodex-vm/src/desktop.rs:95:        tokio::task::spawn_blocking(move || serve_blocking(&workspace, &runtime, stop));
+crates/nanocodex-vm/src/desktop.rs:109:/// This is a synchronous local IPC call; async callers can use `spawn_blocking`.
+crates/nanocodex-vm/src/desktop.rs:140:    loop {
+crates/nanocodex-vm/src/desktop.rs:299:        while let Some(pid) = pending.pop() {
+crates/nanocodex-vm/src/desktop.rs:458:    let stream = loop {
+crates/nanocodex-vm/src/desktop.rs:569:        loop {
+crates/nanocodex-vm/src/desktop.rs:732:        loop {
+crates/nanocodex-vm/src/desktop.rs:936:            loop {
+crates/nanocodex-vm/src/desktop.rs:1161:        loop {
+crates/nanocodex-vm/src/desktop.rs:1681:        loop {
+crates/nanocodex-vm/src/desktop.rs:1750:        loop {
+crates/nanocodex-durability/tests/claude.rs:104:    let task = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+crates/nanocodex-durability/tests/claude.rs:1193:    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+crates/nanocodex-durability/tests/claude.rs:1277:            loop {
+crates/nanocodex-durability/tests/claude.rs:1646:    let submitted = tokio::spawn(async move {
+crates/nanocodex-durability/tests/claude.rs:1671:        loop {
+crates/nanocodex-durability/tests/claude.rs:1775:    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+crates/nanocodex-durability/tests/claude.rs:1788:        tokio::spawn(async move { turn.result().await.map(|_| ()) })
+crates/nanocodex-durability/tests/claude.rs:1792:        tokio::spawn(async move { compacting.compact().await.map(|_| ()) })
+crates/nanocodex-durability/tests/claude.rs:2021:        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+crates/nanocodex-durability/tests/claude.rs:2047:                loop {
+crates/nanocodex-durability/tests/claude.rs:2511:    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+crates/nanocodex-durability/tests/claude.rs:2605:    while let Ok(Some(event)) =
+crates/nanocodex-durability/tests/claude.rs:2627:    while let Ok(Some(_)) = tokio::time::timeout(Duration::from_millis(10), events.next()).await {}
+crates/nanocodex-durability/tests/claude.rs:2702:    while let Ok(Some(event)) = tokio::time::timeout(Duration::from_millis(50), events.next()).await
+crates/nanocodex-durability/tests/claude.rs:2780:    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+crates/nanocodex-durability/tests/claude.rs:2903:    while let Ok(Some(event)) = tokio::time::timeout(Duration::from_millis(50), events.next()).await
+crates/nanocodex-managed/tests/it/auto_routing.rs:45:    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+crates/nanocodex-managed/tests/it/auto_routing.rs:90:    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+crates/nanocodex-managed/tests/it/auto_routing.rs:153:    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+crates/nanocodex-managed/tests/it/session_done.rs:57:    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+crates/nanocodex-managed/tests/it/claude.rs:174:    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+crates/nanocodex-managed/tests/it/claude.rs:348:    let server = tokio::spawn(async move {
+crates/nanocodex-managed/tests/it/claude.rs:352:        loop {
+crates/nanocodex-managed/tests/it/claude.rs:409:    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+crates/nanocodex-vm/src/bin/nanocodex-vm-guest.rs:198:    let connection = tokio::spawn(connection);
+crates/nanocodex-vm/src/bin/nanocodex-vm-guest.rs:212:    while let Some(route) = routes.try_next().await? {
+crates/nanocodex-managed/tests/it/public_lifecycle.rs:114:        loop {
+crates/nanocodex-managed/tests/it/public_lifecycle.rs:130:        loop {
+crates/nanocodex-managed/tests/it/public_lifecycle.rs:151:        loop {
+crates/nanocodex-managed/tests/it/public_lifecycle.rs:174:        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+crates/nanocodex-managed/tests/it/public_lifecycle.rs:188:        while let Ok(event) = observed.try_recv() {
+crates/nanocodex-managed/tests/it/public_lifecycle.rs:217:        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+crates/nanocodex-managed/tests/it/public_lifecycle.rs:269:            let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+crates/nanocodex-managed/tests/it/public_lifecycle.rs:285:            let building = tokio::spawn(builder.build_with_prompt("combined immediate", "combined-operation"));
+crates/nanocodex-managed/tests/it/public_lifecycle.rs:356:            let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+crates/nanocodex-managed/tests/it/public_lifecycle.rs:460:        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+crates/nanocodex-managed/tests/it/public_lifecycle.rs:563:        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+crates/nanocodex-managed/tests/it/public_lifecycle.rs:667:            while let Some(Ok(Message::Text(frame))) = socket.recv().await {
+crates/nanocodex-managed/tests/it/public_lifecycle.rs:752:        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+crates/nanocodex-managed/tests/it/public_lifecycle.rs:764:        let prompting = tokio::spawn(async move {
+crates/nanocodex-managed/tests/it/public_lifecycle.rs:794:        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+crates/nanocodex-managed/tests/it/public_lifecycle.rs:889:        let server = tokio::spawn(async move {
+crates/nanocodex-managed/tests/it/public_lifecycle.rs:981:        let steering = tokio::spawn(async move {
+crates/nanocodex-managed/tests/it/public_lifecycle.rs:988:        let withdrawal = tokio::spawn(async move {
+crates/nanocodex-managed/tests/it/public_lifecycle.rs:1450:        while let Some(Ok(Message::Text(frame))) = socket.recv().await {
+crates/nanocodex-managed/src/vault.rs:420:        while let Some(chunk) = response
+crates/nanocodex-managed/src/vault.rs:512:        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+crates/nanocodex-durability/tests/claude_subscription.rs:125:            while let Some(chunk) = stream.next().await {
+crates/nanocodex-durability/tests/claude_subscription.rs:308:    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+crates/nanocodex-durability/tests/claude_subscription.rs:496:        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+crates/nanocodex-vm/src/image/mod.rs:920:    tokio::task::spawn_blocking(move || {
+crates/nanocodex-vm/src/image/mod.rs:1296:    tokio::task::spawn_blocking(move || {
+crates/nanocodex-vm/src/image/mod.rs:1334:    tokio::task::spawn_blocking(move || {
+crates/nanocodex-vm/src/image/mod.rs:1364:    let (context_image, context_digest) = tokio::task::spawn_blocking(move || {
+crates/nanocodex-vm/src/image/mod.rs:1475:    loop {
+crates/nanocodex-vm/src/image/mod.rs:2303:                    let mut output = tokio::fs::File::create(&temporary).await?;
+crates/nanocodex-vm/src/image/mod.rs:2389:    let actual = tokio::task::spawn_blocking(move || sha256_file(&path_for_hash)).await??;
+crates/nanocodex-vm/src/image/mod.rs:2606:    let digest = tokio::task::spawn_blocking(move || sha256_file(&hash_path)).await??;
+crates/nanocodex-vm/src/image/mod.rs:2626:    loop {
+crates/nanocodex-vm/src/image/mod.rs:3277:        let cache = Arc::new(tokio::sync::Mutex::new(None));
+crates/nanocodex-vm/src/tools/guest_computer.rs:16:    desktop: tokio::sync::Mutex<Option<DesktopTask>>,
+crates/nanocodex-vm/src/tools/guest_computer.rs:99:            *owned = Some(DesktopTask(tokio::spawn(async move {
+crates/nanocodex-vm/src/tools/guest_computer.rs:104:        loop {
+crates/nanocodex-vm/src/tools/guest_computer.rs:126:            let stopped = tokio::task::spawn_blocking(|| {
+crates/nanocodex-durability/tests/claude_prompt_media.rs:69:    let task = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+crates/nanocodex-durability/tests/claude_hooks.rs:126:    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+crates/nanocodex-durability/tests/claude_catalog_fencing.rs:68:        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+crates/nanocodex-vm/src/tools/guest.rs:60:            tokio::fs::read_to_string("/proc/meminfo"),
+crates/nanocodex-vm/src/tools/guest.rs:61:            tokio::fs::read_to_string("/proc/vmstat"),
+crates/nanocodex-vm/src/tools/guest.rs:86:        loop {
+crates/nanocodex-vm/src/tools/guest.rs:189:    tokio::fs::create_dir_all(workspace).await?;
+crates/nanocodex-vm/src/tools/guest.rs:237:    let memory_task = tokio::spawn(Arc::clone(&memory).run());
+crates/nanocodex-vm/src/tools/guest.rs:256:                            while let Ok(chunk) = output_chunks.try_recv() {
+crates/nanocodex-vm/src/tools/guest.rs:552:    loop {
+crates/nanocodex-vm/src/tools/guest.rs:629:    tokio::fs::create_dir_all(parent).await?;
+crates/nanocodex-vm/src/tools/guest.rs:632:        let mut file = tokio::fs::OpenOptions::new()
+crates/nanocodex-vm/src/tools/guest.rs:646:        tokio::fs::rename(&temporary, &path).await?;
+crates/nanocodex-vm/src/tools/guest.rs:651:        let _ = tokio::fs::remove_file(&temporary).await;
+crates/nanocodex-vm/src/tools/guest.rs:671:    tokio::fs::create_dir_all(&path).await?;
+crates/nanocodex-vm/src/tools/guest.rs:675:        tokio::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode)).await?;
+crates/nanocodex-vm/src/tools/guest.rs:692:        let file = tokio::fs::File::open(&request.path).await?;
+crates/nanocodex-vm/src/tools/guest.rs:881:    let mut stdout = tokio::spawn(read_bounded(
+crates/nanocodex-vm/src/tools/guest.rs:889:    let mut stderr = tokio::spawn(read_bounded(
+crates/nanocodex-vm/src/tools/guest.rs:979:    loop {
+crates/nanocodex-vm/src/tools/guest.rs:1190:        let execution = tokio::spawn(execute_command(ExecuteRequest {
+crates/nanocodex-vm/src/tools/guest.rs:1207:            loop {
+crates/nanocodex-vm/src/tools/guest.rs:1254:        let task = tokio::spawn(async move { serve_test_io(&path, guest_read, guest_write).await });
+crates/nanocodex-vm/src/tools/guest.rs:1283:            loop {
+crates/nanocodex-vm/src/tools/guest.rs:1344:        let guest_task = tokio::spawn({
+crates/nanocodex-vm/src/tools/guest.rs:1417:        let guest_task = tokio::spawn({
+crates/nanocodex-vm/src/tools/guest.rs:1463:        let guest_task = tokio::spawn({
+crates/nanocodex-vm/src/tools/guest.rs:1547:        let guest_task = tokio::spawn({
+crates/nanocodex-vm/src/tools/guest.rs:1665:        let guest_task = tokio::spawn({
+crates/nanocodex-vm/src/tools/guest.rs:1722:            loop {
+crates/nanocodex-vm/src/tools/guest.rs:1783:        let guest_task = tokio::spawn({
+crates/nanocodex-vm/src/tools/guest.rs:1872:        let guest_task = tokio::spawn({
+crates/experimental/nanocodex-eval/src/job.rs:67:    loop {
+crates/nanocodex-vm/src/tools/session.rs:1460:            tokio::spawn(async move {
+crates/nanocodex-vm/src/tools/session.rs:1579:    loop {
+crates/nanocodex-vm/src/tools/session.rs:1640:    let stderr_error = loop {
+crates/nanocodex-vm/src/tools/session.rs:1664:    loop {
+crates/nanocodex-vm/src/tools/session.rs:1668:        match tokio::fs::read_to_string(format!("/proc/{process_id}/status")).await {
+crates/nanocodex-vm/src/tools/session.rs:1735:    loop {
+crates/nanocodex-vm/src/tools/session.rs:1807:        loop {
+crates/nanocodex-vm/src/tools/session.rs:1844:    loop {
+crates/nanocodex-vm/src/tools/session.rs:2503:                    tokio::task::yield_now().await;
+crates/experimental/nanocodex-eval/src/result.rs:630:    while let Some(error) = source {
+crates/experimental/nanocodex-eval-adapters/src/gpqa_diamond.rs:286:        loop {
+crates/experimental/nanocodex-eval/src/import/mod.rs:547:                loop {
+crates/experimental/nanocodex-eval-adapters/src/lib.rs:818:            jobs.spawn_blocking(move || {
+crates/experimental/nanocodex-eval-adapters/src/lib.rs:826:        while let Some(result) = jobs.join_next().await {
+crates/experimental/nanocodex-eval-adapters/src/lib.rs:994:    loop {
+crates/experimental/nanocodex-eval/src/judge.rs:122:        let task = tokio::spawn(async move {
+crates/experimental/nanocodex-eval/src/judge.rs:203:        let worker = tokio::spawn(async move {
+crates/experimental/nanocodex-eval/src/judge.rs:517:            task: tokio::spawn(std::future::pending()),
+crates/experimental/nanocodex-eval/src/capture_proxy.rs:295:        let task = tokio::spawn(async move {
+crates/experimental/nanocodex-eval/src/capture_proxy.rs:384:    loop {
+crates/experimental/nanocodex-eval/src/capture_proxy.rs:760:        let upstream = tokio::spawn(async move {
+crates/experimental/nanocodex-eval/src/capture_proxy.rs:831:        let upstream = tokio::spawn(async move {
+crates/experimental/nanocodex-eval/src/harness_exec.rs:610:            stdout: Some(tokio::spawn(capture_stdout(stdout, events_path))),
+crates/experimental/nanocodex-eval/src/harness_exec.rs:611:            stderr: Some(tokio::spawn(capture_stderr(stderr, stderr_path))),
+crates/experimental/nanocodex-eval/src/harness_exec.rs:1013:    loop {
+crates/experimental/nanocodex-eval/src/harness_exec.rs:1312:    loop {
+crates/experimental/nanocodex-eval/src/harness_exec.rs:1356:    loop {
+crates/experimental/nanocodex-eval/src/vm/tests.rs:268:    let values = loop {
+crates/experimental/nanocodex-eval/src/workset.rs:1371:                while let BeginTask::Run(claim) = workset
+crates/experimental/nanocodex-eval/src/harness.rs:361:        tokio::task::spawn_blocking(move || {
+crates/experimental/nanocodex-eval/src/digest.rs:290:    loop {
+crates/experimental/nanocodex-eval/src/digest.rs:311:    loop {
+crates/experimental/nanocodex-eval/src/evaluator.rs:1437:    loop {
+crates/experimental/nanocodex-eval/src/evaluator.rs:1463:    let grace_elapsed = loop {
+crates/experimental/nanocodex-eval/src/evaluator.rs:2198:    while let Some(directory) = pending.pop() {
+crates/experimental/nanocodex-eval/src/evaluator.rs:2274:    while let Some(error) = source {
+crates/experimental/nanocodex-eval/src/execution.rs:240:        let recorder = tokio::spawn(async move { record_events(stream, &event_log).await });
+crates/experimental/nanocodex-eval/src/execution.rs:574:    let mut output = tokio::fs::File::create(path)
+crates/experimental/nanocodex-eval/src/execution.rs:582:    while let Some(event) = stream
+crates/experimental/nanocodex-eval/src/execution.rs:636:    tokio::fs::create_dir_all(parent)
+crates/experimental/nanocodex-eval/src/execution.rs:645:    let mut output = tokio::fs::File::create(&path)
+crates/experimental/nanocodex-eval/src/profile.rs:643:    loop {
+crates/nanocodex-durability/tests/it/session.rs:294:    let beginning = tokio::spawn({
+crates/nanocodex-durability/tests/it/session.rs:368:    let beginning = tokio::spawn({
+crates/nanocodex-durability/tests/it/session.rs:411:    let completing = tokio::spawn({
+crates/nanocodex-durability/tests/it/session.rs:949:        tokio::spawn(async move {
+crates/nanocodex-durability/tests/it/session.rs:954:                tokio::task::yield_now().await;
+crates/nanocodex-durability/tests/it/session.rs:1003:        tokio::task::yield_now().await;
+crates/nanocodex-vm/src/docker.rs:74:    shutdown: tokio::sync::Mutex<()>,
+crates/nanocodex-vm/src/docker.rs:395:        tokio::spawn(async move {
+crates/nanocodex-vm/src/docker.rs:439:            shutdown: tokio::sync::Mutex::new(()),
+crates/nanocodex-managed/src/account_services.rs:284:        let task = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+crates/nanocodex-managed/src/websocket.rs:157:        tokio::spawn(run(
+crates/nanocodex-managed/src/websocket.rs:235:    loop {
+crates/nanocodex-managed/src/websocket.rs:299:    loop {
+crates/nanocodex-managed/src/websocket.rs:662:        let server = tokio::spawn(async move {
+crates/experimental/nanocodex-eval/src/coordinator.rs:153:    host: Arc<std::sync::Mutex<HostSampler>>,
+crates/experimental/nanocodex-eval/src/coordinator.rs:266:                host: Arc::new(std::sync::Mutex::new(HostSampler::new())),
+crates/experimental/nanocodex-eval/src/coordinator.rs:416:        tokio::fs::create_dir_all(parent).await?;
+crates/experimental/nanocodex-eval/src/coordinator.rs:419:        let mut file = tokio::fs::File::create(&archive).await?;
+crates/experimental/nanocodex-eval/src/coordinator.rs:422:        while let Some(chunk) = stream.next().await {
+crates/experimental/nanocodex-eval/src/coordinator.rs:429:                let _ = tokio::fs::remove_file(&archive).await;
+crates/experimental/nanocodex-eval/src/coordinator.rs:439:        let extraction = tokio::task::spawn_blocking(move || {
+crates/experimental/nanocodex-eval/src/coordinator.rs:443:        let _ = tokio::fs::remove_file(&archive).await;
+crates/experimental/nanocodex-eval/src/coordinator.rs:445:            let _ = tokio::fs::remove_dir_all(&staging).await;
+crates/experimental/nanocodex-eval/src/coordinator.rs:677:        let archive = tokio::task::spawn_blocking(move || {
+crates/experimental/nanocodex-eval/src/coordinator.rs:728:    let status = tokio::task::spawn_blocking(move || evaluation.status())
+crates/experimental/nanocodex-eval/src/coordinator.rs:739:    let overview = tokio::task::spawn_blocking(move || api.overview())
+crates/experimental/nanocodex-eval/src/coordinator.rs:749:    let snapshot = tokio::task::spawn_blocking(move || {
+crates/experimental/nanocodex-eval/src/coordinator.rs:765:    let workset = tokio::task::spawn_blocking(move || api.workset(&digest))
+crates/experimental/nanocodex-eval/src/coordinator.rs:779:    let analytics = tokio::task::spawn_blocking(move || api.workset_analytics(&digest))
+crates/experimental/nanocodex-eval/src/coordinator.rs:793:    let results = tokio::task::spawn_blocking(move || api.task_results(&digest, &task_id))
+crates/experimental/nanocodex-eval/src/coordinator.rs:807:    let evidence = tokio::task::spawn_blocking(move || api.case(&id))
+crates/experimental/nanocodex-eval/src/coordinator.rs:821:    let task = tokio::task::spawn_blocking(move || api.task(&digest, &task_id))
+crates/experimental/nanocodex-eval/src/coordinator.rs:843:        tokio::task::spawn_blocking(move || api.task_outcomes(&digest, &task_id, cursor, limit))
+crates/experimental/nanocodex-eval/src/coordinator.rs:882:    let claim = tokio::task::spawn_blocking(move || match selector {
+crates/experimental/nanocodex-eval/src/coordinator.rs:932:    let worker_is_live = tokio::task::spawn_blocking(move || {
+crates/experimental/nanocodex-eval/src/coordinator.rs:958:    tokio::task::spawn_blocking(move || {
+crates/experimental/nanocodex-eval/src/coordinator.rs:998:    tokio::task::spawn_blocking(move || finish_claim(active, request, &eval_api))
+crates/experimental/nanocodex-eval/src/coordinator.rs:1070:    tokio::fs::create_dir_all(parent)
+crates/experimental/nanocodex-eval/src/coordinator.rs:1076:    let mut file = tokio::fs::File::create(&upload)
+crates/experimental/nanocodex-eval/src/coordinator.rs:1081:    while let Some(chunk) = stream.next().await {
+crates/experimental/nanocodex-eval/src/coordinator.rs:1088:            let _ = tokio::fs::remove_file(&upload).await;
+crates/experimental/nanocodex-eval/src/coordinator.rs:1098:    let extraction = tokio::task::spawn_blocking(move || {
+crates/experimental/nanocodex-eval/src/coordinator.rs:1103:    let _ = tokio::fs::remove_file(&upload).await;
+crates/experimental/nanocodex-eval/src/coordinator.rs:1105:        let _ = tokio::fs::remove_dir_all(&staging).await;
+crates/experimental/nanocodex-eval/src/coordinator.rs:1112:    let mut entries = tokio::fs::read_dir(parent)
+crates/experimental/nanocodex-eval/src/coordinator.rs:1115:    while let Some(entry) = entries.next_entry().await.map_err(ApiError::internal)? {
+crates/experimental/nanocodex-eval/src/coordinator.rs:1123:            tokio::fs::remove_file(path)
+crates/experimental/nanocodex-eval/src/coordinator.rs:1127:            tokio::fs::remove_dir_all(path)
+crates/experimental/nanocodex-eval/src/coordinator.rs:1499:        let server = tokio::spawn(async move {
+crates/experimental/nanocodex-eval/src/coordinator.rs:1937:        let server = tokio::spawn(async move {
+crates/nanocodex-durability/tests/it/agent.rs:259:    acquisitions: Arc<std::sync::Mutex<Vec<String>>>,
+crates/nanocodex-durability/tests/it/agent.rs:561:    requests: Arc<std::sync::Mutex<Vec<serde_json::Value>>>,
+crates/nanocodex-durability/tests/it/agent.rs:1772:        tokio::task::yield_now().await;
+crates/nanocodex-durability/tests/it/agent.rs:1776:    let append = tokio::spawn(async move {
+crates/nanocodex-durability/tests/it/agent.rs:1781:    tokio::task::yield_now().await;
+crates/nanocodex-durability/tests/it/agent.rs:1840:            tokio::spawn(async move {
+crates/nanocodex-durability/tests/it/agent.rs:1846:        tokio::task::yield_now().await;
+crates/nanocodex-durability/tests/it/agent.rs:1918:        tokio::spawn(async move {
+crates/nanocodex-durability/tests/it/agent.rs:1924:    tokio::task::yield_now().await;
+crates/nanocodex-durability/tests/it/agent.rs:2152:        tokio::task::yield_now().await;
+crates/nanocodex-durability/tests/it/agent.rs:2213:        tokio::task::yield_now().await;
+crates/nanocodex-durability/tests/it/agent.rs:2274:        tokio::task::yield_now().await;
+crates/nanocodex-durability/tests/it/agent.rs:2562:    let compacting = tokio::spawn({
+crates/nanocodex-durability/tests/it/agent.rs:2656:        let first = tokio::spawn({
+crates/nanocodex-durability/tests/it/agent.rs:3404:        tokio::spawn(async move {
+crates/nanocodex-durability/tests/it/agent.rs:3418:    while let Some(event) = events.try_recv_timed() {
+crates/nanocodex-durability/tests/it/agent.rs:3474:        tokio::spawn(async move { agent.route_prompt("retained routed terminal").await })
+crates/nanocodex-durability/tests/it/agent.rs:3482:    while let Some(event) = events.try_recv_timed() {
+crates/nanocodex-durability/tests/it/agent.rs:3903:        let requests = Arc::new(std::sync::Mutex::new(Vec::new()));
+crates/nanocodex-durability/tests/it/agent.rs:4025:    let acquisitions = Arc::new(std::sync::Mutex::new(Vec::new()));
+crates/nanocodex-durability/tests/it/agent.rs:4136:    calls: Arc<std::sync::Mutex<Vec<u32>>>,
+crates/nanocodex-durability/tests/it/agent.rs:4220:            let calls = Arc::new(std::sync::Mutex::new(Vec::new()));
+crates/nanocodex-durability/tests/it/agent.rs:4469:    let acquisitions = Arc::new(std::sync::Mutex::new(Vec::new()));
+crates/nanocodex-voice/src/lib.rs:165:        loop {
+crates/nanocodex-voice/src/lib.rs:1040:    let result: Result<(), VoiceFailure> = async { loop {
+crates/nanocodex-voice/src/lib.rs:1342:                    drop(tokio::spawn(async move {
+crates/nanocodex-voice/src/lib.rs:1349:                        loop {
+crates/experimental/nanocodex-computer/tests/it/session.rs:133:    let task = tokio::spawn(async move {
+crates/experimental/nanocodex-computer/tests/it/session.rs:467:        loop {
+crates/experimental/nanocodex-computer/tests/it/session.rs:479:            tokio::task::yield_now().await;
+crates/experimental/nanocodex-computer/tests/it/session.rs:495:    let task = tokio::spawn(async move { ComputerTools::connect(config).await });
+crates/experimental/nanocodex-computer/tests/it/session.rs:521:    let task = tokio::spawn(async move {
+crates/experimental/nanocodex-computer/tests/it/session.rs:631:    let task = tokio::spawn(async move {
+crates/nanocodex-voice/src/media.rs:103:                tokio::task::spawn_blocking(move || RealtimeWebrtcSession::start(registration))
+crates/nanocodex-voice/src/media.rs:112:            let result = tokio::task::spawn_blocking(move || peer.apply_answer_sdp(sdp))
+crates/experimental/nanocodex-eval/src/vm.rs:366:        while let Some((task, environment)) = futures_util::StreamExt::next(&mut preparations).await
+crates/experimental/nanocodex-eval/src/vm.rs:781:    loop {
+crates/experimental/nanocodex-eval/src/vm.rs:975:    loop {
+crates/experimental/nanocodex-computer/src/startup_cache.rs:122:    while let Some((path, depth)) = pending.pop() {
+crates/experimental/nanocodex-computer/src/lib.rs:292:        tokio::spawn(route_sessions(config, requests));
+crates/experimental/nanocodex-computer/src/lib.rs:482:    while let Some(request) = requests.recv().await {
+crates/experimental/nanocodex-computer/src/lib.rs:492:                tokio::spawn(run_session(config.clone(), session.clone(), receiver));
+crates/experimental/nanocodex-computer/src/lib.rs:505:            tokio::spawn(run_session(config.clone(), session.clone(), receiver));
+crates/experimental/nanocodex-computer/src/lib.rs:548:    while let Some(request) = requests.recv().await {
+crates/experimental/nanocodex-computer/src/lib.rs:708:        loop {
+crates/experimental/nanocodex-computer/src/lib.rs:758:        loop {
+crates/experimental/nanocodex-computer/src/provision_tests.rs:445:    let task = tokio::spawn(async move {
+crates/experimental/nanocodex-computer/src/provision_tests.rs:448:        tokio::task::spawn_blocking(move || {
+crates/experimental/nanocodex-computer/src/provision_tests.rs:465:        loop {
+crates/experimental/nanocodex-computer/src/provision_tests.rs:502:    loop {
+crates/experimental/nanocodex-computer/src/provision.rs:97:        tokio::task::spawn_blocking(move || {
+crates/experimental/nanocodex-computer/src/provision.rs:350:            let status = loop {
