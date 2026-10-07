@@ -8,4 +8,11 @@
 .whatsapp-pairing input { width: 100%; box-sizing: border-box; font-size: 16px; }
 .whatsapp-pairing button { cursor: pointer; }
 .whatsapp-pairing button:disabled { opacity: .5; cursor: default; }
-.whatsapp-pairing output { font-family: monospace; font-size: 28px; letter-spacing: .12em; user-select: all; text-align: center; }
+.whatsapp-primary { display: flex; align-items: center; justify-content: center; min-height: 48px; border-radius: 12px; border: 0 !important; background: #25d366 !important; color: #06240f !important; font-weight: 600; text-decoration: none; -webkit-tap-highlight-color: transparent; touch-action: manipulation; }
+.whatsapp-primary:active { transform: scale(.98); }
+.whatsapp-code-card { display: grid; gap: 12px; }
+.whatsapp-code { display: grid; gap: 4px; justify-items: center; padding: 16px 12px !important; border-radius: 14px !important; background: var(--surface-raised, rgba(127,127,127,.08)) !important; -webkit-tap-highlight-color: transparent; touch-action: manipulation; }
+.whatsapp-code output { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: clamp(28px, 9vw, 40px); font-weight: 600; letter-spacing: .14em; font-variant-numeric: tabular-nums; user-select: all; -webkit-user-select: all; }
+.whatsapp-code small { color: var(--text-muted); font-size: 12px; }
+.whatsapp-code-card time { font-variant-numeric: tabular-nums; color: var(--text); }
+@media (prefers-reduced-motion: reduce) { .whatsapp-primary:active { transform: none; } }

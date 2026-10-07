@@ -25,6 +25,7 @@ export const connectorProviderIds = Object.freeze(["cloudflare", "github", "goog
 export const connectorConnectionHeader = "X-Nanocodex-Connector-Connection";
 
 const capabilityIds = new Set(connectorCapabilityIds);
+const separatelyManagedCapabilityIds = new Set(["whatsapp"]);
 const providerIds = new Set(connectorProviderIds);
 const connectionId = /^[A-Za-z0-9_-]{43}$/;
 const maxConnections = 64;
@@ -59,6 +60,9 @@ export function connectorStatusesFromWire(value) {
   if (!isRecord(value)) throw new Error("Nanocodex received invalid connector statuses.");
   const statuses = {};
   for (const [capability, candidate] of Object.entries(value)) {
+    // WhatsApp is a broker-listed connector with its own pairing surface and
+    // status endpoint. It must never make the OAuth connector list unusable.
+    if (separatelyManagedCapabilityIds.has(capability)) continue;
     if (!capabilityIds.has(capability)) {
       throw new Error("Nanocodex received invalid connector statuses.");
     }

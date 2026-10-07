@@ -120,6 +120,15 @@ test("legacy singleton labels remain displayable without inventing opaque IDs", 
   });
 });
 
+test("separately managed WhatsApp status never hides OAuth connectors", () => {
+  const statuses = connectorStatusesFromWire({
+    github: { connected: false, connections: [] },
+    whatsapp: { connected: false, connections: [], unavailable: true },
+  });
+  assert.deepEqual(Object.keys(statuses), ["github"]);
+  assert.equal(statuses.github.connected, false);
+});
+
 test("status projection rejects secrets, malformed identities, duplicates, and unknown capabilities", () => {
   for (const value of [
     { google: { connected: true, connections: [] } },

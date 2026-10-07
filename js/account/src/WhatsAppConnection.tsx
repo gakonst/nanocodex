@@ -174,6 +174,17 @@ function WhatsAppConnectionContent({ requiresLogin = false, accountId = "" }: Wh
     }
   };
 
+  const copyCode = async () => {
+    const abort = lifetime.current;
+    if (!pairing || Date.now() >= pairing.expiresAt) { setPairing(null); return; }
+    try {
+      await navigator.clipboard.writeText(pairing.code);
+      if (!abort?.signal.aborted) { setCopied(true); navigator.vibrate?.(10); }
+    } catch {
+      if (!abort?.signal.aborted) setError("Select the code and copy it manually.");
+    }
+  };
+
   const unlink = async () => {
     const abort = lifetime.current;
     if (!abort || pending.current || !status?.connection_id) return;
@@ -212,23 +223,32 @@ function WhatsAppConnectionContent({ requiresLogin = false, accountId = "" }: Wh
         {!active && <form onSubmit={event => { event.preventDefault(); void start(); }}>
           <label htmlFor="whatsapp-phone">WhatsApp phone number</label>
           <input id="whatsapp-phone" type="tel" inputMode="tel" autoComplete="tel" placeholder="+14155550123" value={phone} onChange={event => setPhone(event.target.value)} disabled={busy} required />
-          <button type="submit" disabled={busy || !status || !!error && !phone}>{uncertain ? "Retry same linking attempt" : "Start linking"}</button>
+          <button type="submit" className="whatsapp-primary" disabled={busy || !status || !!error && !phone}>{uncertain ? "Retry same linking attempt" : "Start linking"}</button>
         </form>}
         {active && !pairing && !error && <p role="status">{status?.attempt?.state === "unknown" ? "WhatsApp has not confirmed this attempt. Keep checking until it connects or expires." : "Waiting for your linking code…"}</p>}
-        {pairing && <>
+        {pairing && <div className="whatsapp-code-card">
           <label htmlFor="whatsapp-private-code">Your private linking code</label>
-          <output id="whatsapp-private-code" aria-label="Your private linking code">{pairing.code.slice(0, 4)}-{pairing.code.slice(4)}</output>
-          <button type="button" onClick={() => {
-            const abort = lifetime.current;
-            if (Date.now() >= pairing.expiresAt) { setPairing(null); return; }
-            void navigator.clipboard.writeText(pairing.code).then(() => { if (!abort?.signal.aborted) setCopied(true); }).catch(() => { if (!abort?.signal.aborted) setError("Select the code and copy it manually."); });
-          }}>{copied ? "Copied" : "Copy code"}</button>
-          <ol><li>Copy this code and switch to WhatsApp on this phone.</li><li>Open Settings → Linked devices → Link a device → Link with phone number instead.</li><li>Enter the code, then return here and check the connection.</li></ol>
-          <p>The code expires at {new Date(pairing.expiresAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}. Keep it in this private screen.</p>
-        </>}
+          <button type="button" className="whatsapp-code" id="whatsapp-private-code" aria-label={`Linking code ${pairing.code.split("").join(" ")}. Tap to copy.`} onClick={() => void copyCode()}>
+            <output>{pairing.code.slice(0, 4)}<span aria-hidden="true">-</span>{pairing.code.slice(4)}</output>
+            <small>{copied ? "Copied" : "Tap to copy"}</small>
+          </button>
+          <a className="whatsapp-primary" href="whatsapp://" onClick={() => { void copyCode(); }}>Copy &amp; open WhatsApp</a>
+          <ol><li>In WhatsApp, open Settings → Linked devices → Link a device.</li><li>Choose “Link with phone number instead”.</li><li>Paste the code. This page updates automatically when linking finishes.</li></ol>
+          <p>Expires in <Countdown until={pairing.expiresAt} />. Keep this code private.</p>
+        </div>}
       </>}
       {error && <p role="alert">{error}</p>}
       <button type="button" disabled={busy} onClick={() => void check()}>{busy ? "Checking…" : "Check connection"}</button>
     </div>}
   </section>;
+}
+
+function Countdown({ until }: { until: number }) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 1_000);
+    return () => window.clearInterval(timer);
+  }, []);
+  const seconds = Math.max(0, Math.round((until - now) / 1_000));
+  return <time dateTime={new Date(until).toISOString()}>{Math.floor(seconds / 60)}:{String(seconds % 60).padStart(2, "0")}</time>;
 }
