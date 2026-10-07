@@ -65,7 +65,7 @@ pub(crate) struct RolloutCreate<'a> {
     pub(crate) resume_history_len: Option<usize>,
 }
 
-enum RolloutCommand {
+pub(super) enum RolloutCommand {
     Input {
         input: nanocodex_oai_api::events::AcceptedInput,
         result: oneshot::Sender<io::Result<()>>,
@@ -318,11 +318,7 @@ impl RolloutRecorder {
         file.flush()?;
         file.sync_all()?;
 
-        let writer = RolloutWriter::new(
-            tokio::fs::File::from_std(file),
-            initial_window_id,
-            cwd.to_path_buf(),
-        );
+        let writer = RolloutWriter::new(file, initial_window_id, cwd.to_path_buf());
         Ok(Self::spawn(runtime, thread_id, path, writer))
     }
 
@@ -340,7 +336,7 @@ impl RolloutRecorder {
             ));
         }
         let file = File::options().read(true).append(true).open(path)?;
-        let writer = RolloutWriter::resumed(tokio::fs::File::from_std(file), state);
+        let writer = RolloutWriter::resumed(file, state);
         Ok(Self::spawn(runtime, thread_id, path.to_path_buf(), writer))
     }
 

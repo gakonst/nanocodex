@@ -867,7 +867,7 @@ async fn failed_append_remains_pending_and_retries_without_duplicates() {
     let path = home.path().join("rollout.jsonl");
     let file = File::create(&path).expect("create temporary rollout");
     let mut writer = RolloutWriter::new(
-        tokio::fs::File::from_std(file),
+        file,
         uuid::Uuid::now_v7().to_string(),
         PathBuf::from("/worktree"),
     );
@@ -878,9 +878,9 @@ async fn failed_append_remains_pending_and_retries_without_duplicates() {
     ));
     writer.inject_write_failures(2);
 
-    assert!(writer.persist_pending().await.is_err());
+    assert!(writer.persist_pending().is_err());
     assert!(writer.pending.is_some());
-    writer.flush().await.expect("retry pending append");
+    writer.flush().expect("retry pending append");
     drop(writer);
 
     let lines = BufReader::new(File::open(path).expect("open retried rollout"))
@@ -896,7 +896,12 @@ async fn failed_append_remains_pending_and_retries_without_duplicates() {
 async fn rollout_perf() {
     fn report(name: &str, mut samples: Vec<std::time::Duration>) {
         samples.sort();
-        println!("{name}: n={} median_us={} p99_us={}", samples.len(), samples[samples.len()/2].as_micros(), samples[(samples.len()*99).div_ceil(100)-1].as_micros());
+        println!(
+            "{name}: n={} median_us={} p99_us={}",
+            samples.len(),
+            samples[samples.len() / 2].as_micros(),
+            samples[(samples.len() * 99).div_ceil(100) - 1].as_micros()
+        );
     }
     let home = tempdir().unwrap();
     for n in 0..1000 {
@@ -907,19 +912,85 @@ async fn rollout_perf() {
     let mut listing = Vec::new();
     for n in 0..106 {
         let start = std::time::Instant::now();
-        assert_eq!(std::hint::black_box(config.list_sessions().unwrap()).len(), 1000);
-        if n >= 5 { listing.push(start.elapsed()); }
+        assert_eq!(
+            std::hint::black_box(config.list_sessions().unwrap()).len(),
+            1000
+        );
+        if n >= 5 {
+            listing.push(start.elapsed());
+        }
     }
     report("list_1000", listing);
     let history = ResponseHistory::new((0..1000).map(|_| message("benchmark message")).collect());
     let mut append = Vec::new();
     for n in 0..106 {
         let file = File::create(home.path().join(format!("append-{n}.jsonl"))).unwrap();
-        let mut writer = RolloutWriter::new(tokio::fs::File::from_std(file), "window".into(), home.path().into());
-        writer.pending = Some(RolloutCommit::from_history(history.clone(), 0, completed_turn("benchmark", "done")));
+        let mut writer = RolloutWriter::new(file, "window".into(), home.path().into());
+        writer.pending = Some(RolloutCommit::from_history(
+            history.clone(),
+            0,
+            completed_turn("benchmark", "done"),
+        ));
         let start = std::time::Instant::now();
-        writer.persist_pending().await.unwrap();
-        if n >= 5 { append.push(start.elapsed()); }
+        tokio::task::spawn_blocking(move || writer.persist_pending())
+            .await
+            .unwrap()
+            .unwrap();
+        if n >= 5 {
+            append.push(start.elapsed());
+        }
     }
     report("append_1000", append);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn batched_writer_preserves_ack_boundary_and_shutdown_admission() {
+    let home = tempdir().unwrap();
+    let path = home.path().join("batch.jsonl");
+    let writer = RolloutWriter::new(
+        File::create(&path).unwrap(),
+        "window".into(),
+        home.path().into(),
+    );
+    let boundary = writer.committed_bytes.clone();
+    let (commands, receiver) = mpsc::channel(COMMAND_CAPACITY);
+    let (first, first_receipt) = oneshot::channel();
+    let commit = || {
+        Box::new(RolloutCommit::from_history(
+            ResponseHistory::new(vec![message("one transaction")]),
+            0,
+            completed_turn("one transaction", "done"),
+        ))
+    };
+    commands
+        .send(store::RolloutCommand::Commit {
+            commit: commit(),
+            result: first,
+        })
+        .await
+        .unwrap();
+    let (shutdown, shutdown_receipt) = oneshot::channel();
+    commands
+        .send(store::RolloutCommand::Shutdown { result: shutdown })
+        .await
+        .unwrap();
+    let (late, late_receipt) = oneshot::channel();
+    commands
+        .send(store::RolloutCommand::Commit {
+            commit: commit(),
+            result: late,
+        })
+        .await
+        .unwrap();
+    let (outcome, ack) = writer.run(receiver).await;
+    first_receipt.await.unwrap().unwrap();
+    assert_eq!(
+        boundary.load(std::sync::atomic::Ordering::Acquire),
+        std::fs::metadata(&path).unwrap().len()
+    );
+    assert!(boundary.load(std::sync::atomic::Ordering::Acquire) > 0);
+    assert!(commands.is_closed());
+    assert!(late_receipt.await.is_err());
+    ack.unwrap().send(outcome).unwrap();
+    shutdown_receipt.await.unwrap().unwrap();
 }

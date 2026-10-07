@@ -11,7 +11,7 @@ pub(crate) use store::{RolloutCreate, RolloutOrigin, RolloutRecorder, RolloutTur
 
 use std::{
     fs::File,
-    io::{self, BufRead, BufReader, Write},
+    io::{self, BufRead, BufReader, Seek, Write},
     path::{Path, PathBuf},
     time::Instant,
 };
@@ -23,7 +23,6 @@ use nanocodex_oai_api::{
 };
 use serde::Serialize;
 use tokio::{
-    io::{AsyncSeekExt, AsyncWriteExt},
     runtime::Handle,
     sync::{mpsc, oneshot},
 };
