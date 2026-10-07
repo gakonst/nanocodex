@@ -151,3 +151,9 @@ runtime-model-identity suffix, causing mock server panics/HTTP fallback errors:
 
 These unrelated assertions are not changed or hidden. Doc tests were not reached
 in the failing full run. No secrets or credentials were used by these fixtures.
+
+A separate `cargo test --locked -p nanocodex-agent --doc` subsequently passed all
+four doc tests (`doc-tests.txt`). The baseline validation worktree was removed
+with `git worktree remove` after capturing its results; the main checkout was
+never edited. The three unrelated Apple plist deletions in this task worktree
+were restored before changes, and are not part of these commits.
