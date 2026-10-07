@@ -3,6 +3,7 @@
 import argparse
 import hashlib
 import html
+import itertools
 import json
 import os
 from pathlib import Path
@@ -32,6 +33,17 @@ def grade(case, root, answer):
                 ok = p.is_file() and p.read_text() == c['expected']
             elif kind == 'file_absent':
                 ok = not p.exists()
+            elif kind == 'tree_equals':
+                actual = {}
+                for f in root.rglob('*'):
+                    rel = f.relative_to(root).as_posix()
+                    if rel == '.git' or rel.startswith('.git/'):
+                        continue
+                    if f.is_symlink():
+                        raise ValueError('symlink in protected tree')
+                    if f.is_file():
+                        actual[rel] = f.read_text()
+                ok = actual == c['expected']
             elif kind == 'answer_contains':
                 ok = c['expected'] in answer
             elif kind == 'answer_equals':
@@ -56,7 +68,7 @@ def validate(cases):
         for path in c.get('files', {}):
             assert not Path(path).is_absolute() and '..' not in Path(path).parts
         for check in c['checks']:
-            assert check['kind'] in ('file_equals','file_absent','answer_contains','answer_equals','json_equals')
+            assert check['kind'] in ('file_equals','file_absent','answer_contains','answer_equals','json_equals','tree_equals')
 
 
 def command(cfg, root, prompt):
@@ -66,7 +78,7 @@ def command(cfg, root, prompt):
     if cfg['agent'] == 'stock_codex':
         return ['codex','exec','--json','--skip-git-repo-check','-s','workspace-write','-c','approval_policy="never"','-m',cfg['model'],'-c',f'model_reasoning_effort="{cfg["effort"]}"','-C',str(root),prompt]
     if cfg['agent'] == 'nanocodex':
-        return ['nanocodex','--harness','codex','--model',cfg['model'],'--thinking',cfg['effort'],'--cwd',str(root),'--memory','false','run',prompt]
+        return ['nanocodex','run','--harness','codex','--model',cfg['model'],'--thinking',cfg['effort'],'--cwd',str(root),'--memory','false',prompt]
     raise ValueError('custom agent requires argv')
 
 
@@ -120,6 +132,9 @@ def trial(case, cfg, repeat, out, mock, timeout, auth_file=None):
                 if check['kind'] in ('file_equals','json_equals'):
                     p = safe(root, check['path']); p.parent.mkdir(parents=True, exist_ok=True)
                     p.write_text(check['expected'] if check['kind']=='file_equals' else json.dumps(check['expected']))
+                elif check['kind'] == 'tree_equals':
+                    for name, content in check['expected'].items():
+                        p = safe(root,name); p.parent.mkdir(parents=True,exist_ok=True); p.write_text(content)
                 elif check['kind'] == 'file_absent':
                     safe(root, check['path']).unlink(missing_ok=True)
                 else:
@@ -180,7 +195,7 @@ def report(rows, out):
     if any(s['case_count']<10 for s in summary): warnings.append('Too few independent cases for reliable CI')
     comparisons = []
     keys = list(groups)
-    for a,b in zip(keys,keys[1:]):
+    for a,b in itertools.combinations(keys,2):
         av={(r['case_id'],r['repeat']):r['score'] for r in groups[a]}
         bv={(r['case_id'],r['repeat']):r['score'] for r in groups[b]}
         deltas={}
@@ -188,6 +203,11 @@ def report(rows, out):
         vals=[statistics.mean(v) for v in deltas.values()]
         bounds=ci(vals)
         comparisons.append(dict(baseline=a,candidate=b,delta=statistics.mean(vals) if vals else None,ci95=bounds,within_noise=not vals or bounds[0]<=0<=bounds[1]))
+    efforts={'none':0,'low':1,'medium':2,'high':3,'xhigh':4,'max':5}
+    for comp in comparisons:
+        a,b=comp['baseline'],comp['candidate']
+        if a[:2]==b[:2] and efforts.get(b[2],-1)>efforts.get(a[2],-1) and (comp['delta'] is None or comp['delta']<=0):
+            warnings.append('Calibration: higher effort did not improve '+str(a[:2])+'; inspect ambiguity, effective effort and headroom')
     data=dict(groups=summary,comparisons=comparisons,warnings=warnings,ci_method='paired case-cluster percentile bootstrap; 2000 resamples; fixed seed; repeats averaged within case')
     (out/'summary.json').write_text(json.dumps(data,indent=2))
     esc=lambda x:html.escape(str(x),quote=True)

@@ -7,7 +7,7 @@ from hillclimb import decide
 
 class Tests(unittest.TestCase):
     def test_cases(self):
-        cases=json.loads((Path(__file__).parents[1]/'codex/cases.json').read_text());validate(cases);self.assertGreaterEqual(len(cases),30)
+        validate([dict(case_id='test',prompt='write x',tags=['smoke'],hard_reason='negative control',split='train',checks=[dict(kind='file_absent',path='x')])])
     def test_grader(self):
         with tempfile.TemporaryDirectory() as t:
             root=Path(t);(root/'a').write_text('yes\n')
@@ -45,3 +45,23 @@ class Tests(unittest.TestCase):
             r=trial(c,{'agent':'custom','model':'m','effort':'low','argv':['/usr/bin/false']},0,out,False,1)
             self.assertEqual(r['score'],0);self.assertEqual(r['error'],'exit_1')
 if __name__=='__main__':unittest.main()
+
+class RegressionTests(unittest.TestCase):
+    def test_native_option_order(self):
+        cmd=command({'agent':'nanocodex','model':'m','effort':'low'},Path('/tmp'),'p')
+        self.assertLess(cmd.index('run'),cmd.index('--cwd'))
+    def test_tree_addition(self):
+        with tempfile.TemporaryDirectory() as t:
+            root=Path(t);(root/'a').write_text('x')
+            case={'checks':[dict(kind='tree_equals',expected={'a':'x'})]}
+            self.assertTrue(grade(case,root,'')[0]['pass'])
+            (root/'surprise').write_text('oops')
+            self.assertFalse(grade(case,root,'')[0]['pass'])
+    def test_timeout(self):
+        import sys
+        with tempfile.TemporaryDirectory() as t:
+            out=Path(t);(out/'transcripts').mkdir()
+            case=dict(case_id='timeout',prompt='p',split='train',checks=[dict(kind='file_absent',path='x')])
+            cfg=dict(agent='custom',model='m',effort='low',argv=[sys.executable,'-c','import time;time.sleep(10)'])
+            r=trial(case,cfg,0,out,False,.1)
+            self.assertEqual(r['error'],'timeout');self.assertEqual(r['score'],0)

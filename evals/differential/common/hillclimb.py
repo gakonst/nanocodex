@@ -41,7 +41,12 @@ def main():
     changed=[k for k in old.keys()|new.keys() if old.get(k)!=new.get(k)]
     if len(changed)!=1 or changed[0] not in ('model','effort'): p.error('Exactly one model OR effort change allowed; no failure-derived prompt edits')
     read=lambda p:[json.loads(l) for l in Path(p).read_text().splitlines()]
-    result=decide(read(a.baseline),read(a.candidate));result['changed_field']=changed[0]
+    before,after=read(a.baseline),read(a.candidate)
+    for rows,cfg in ((before,old),(after,new)):
+        if any(any(r[k]!=cfg[k] for k in ('agent','model','effort')) for r in rows): p.error('results/config identity mismatch')
+    manifests=[json.loads(Path(f).with_name('manifest.json').read_text()) for f in (a.baseline,a.candidate)]
+    if manifests[0]['cases_sha256']!=manifests[1]['cases_sha256']: p.error('case suite changed')
+    result=decide(before,after);result['changed_field']=changed[0]
     for path in (a.kept_config,a.decision):
         if Path(path).exists(): p.error('Output exists; never overwrite earlier round evidence')
     Path(a.decision).write_text(json.dumps(result,indent=2));Path(a.kept_config).write_text(json.dumps(new if result['keep'] else old,indent=2));print(json.dumps(result,indent=2))
