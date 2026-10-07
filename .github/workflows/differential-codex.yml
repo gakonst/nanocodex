@@ -1,0 +1,22 @@
+name: Differential eval plumbing
+on:
+  pull_request:
+    paths: ['evals/differential/**', '.github/workflows/differential-codex.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  plumbing:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python3 -m unittest discover -s evals/differential/common -v
+      - run: python3 evals/differential/codex/build_cases.py && git diff --exit-code -- evals/differential/codex/cases.json
+      - run: python3 evals/differential/common/run.py --cases evals/differential/codex/cases.json --config evals/differential/codex/config.json --out results --mock --repeats 2
+      - uses: actions/upload-artifact@v4
+        with:
+          name: differential-mock-plumbing-not-capability
+          path: results/
