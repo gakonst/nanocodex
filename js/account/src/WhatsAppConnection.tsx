@@ -45,15 +45,17 @@ function WhatsAppConnectionContent({ requiresLogin = false, accountId = "" }: Wh
   const [busy, setBusy] = useState(false);
   const [uncertain, setUncertain] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [replacing, setReplacing] = useState(false);
   const lifetime = useRef<AbortController | null>(null);
   const pending = useRef(false);
   const expiredOperation = useRef<string | undefined>(undefined);
 
-  const check = useCallback(async () => {
+  const check = useCallback(async (manual = false) => {
     const abort = lifetime.current;
     if (!abort || abort.signal.aborted || pending.current) return;
     pending.current = true;
-    setBusy(true);
+    // Background polling must never disable inputs or flash "Checking…".
+    if (manual) setBusy(true);
     try {
       const body = await request(endpoint, abort.signal);
       if (typeof body.connected !== "boolean" || typeof body.state !== "string") throw new Error();
@@ -102,7 +104,7 @@ function WhatsAppConnectionContent({ requiresLogin = false, accountId = "" }: Wh
       }
     } finally {
       pending.current = false;
-      if (!abort.signal.aborted) setBusy(false);
+      if (manual && !abort.signal.aborted) setBusy(false);
     }
   }, [storageKey]);
 
@@ -165,6 +167,7 @@ function WhatsAppConnectionContent({ requiresLogin = false, accountId = "" }: Wh
       });
       if (abort.signal.aborted) return;
       setPhone("");
+      setReplacing(false);
       setStatus({ connected: false, state: "linking", attempt: { operation_id: operationId, state: "requested" } });
       pending.current = false;
       await check();
@@ -222,7 +225,7 @@ function WhatsAppConnectionContent({ requiresLogin = false, accountId = "" }: Wh
         {(status?.state === "expired" || status?.attempt?.state === "expired") && <p role="status">This code expired. Start a new link when you’re ready.</p>}
         {status?.state === "failed" && <p role="status">WhatsApp couldn’t complete this link. You can start a new attempt.</p>}
         {uncertain && <p role="status">The link request may still be processing. Check the connection, or reenter the same phone number to retry this attempt.</p>}
-        {<form onSubmit={event => { event.preventDefault(); void start(); }}>
+        {(!active || replacing) && <form onSubmit={event => { event.preventDefault(); void start(); }}>
           <label htmlFor="whatsapp-phone">WhatsApp phone number</label>
           <input id="whatsapp-phone" type="tel" inputMode="tel" autoComplete="tel" placeholder="+14155550123" value={phone} onChange={event => setPhone(event.target.value)} disabled={busy} required />
           <button type="submit" className="whatsapp-primary" disabled={busy || !status || !!error && !phone}>{active ? "Get a new code" : uncertain ? "Retry same linking attempt" : "Start linking"}</button>
@@ -237,10 +240,11 @@ function WhatsAppConnectionContent({ requiresLogin = false, accountId = "" }: Wh
           <a className="whatsapp-primary" href="whatsapp://" onClick={() => { void copyCode(); }}>Copy &amp; open WhatsApp</a>
           <ol><li>In WhatsApp, open Settings → Linked devices → Link a device.</li><li>Choose “Link with phone number instead”.</li><li>Paste the code. This page updates automatically when linking finishes.</li></ol>
           <p>Expires in <Countdown until={pairing.expiresAt} />. Keep this code private.</p>
+          {!replacing && <button type="button" onClick={() => setReplacing(true)}>Wrong number or need a new code?</button>}
         </div>}
       </>}
       {error && <p role="alert">{error}</p>}
-      <button type="button" disabled={busy} onClick={() => void check()}>{busy ? "Checking…" : "Check connection"}</button>
+      <button type="button" disabled={busy} onClick={() => void check(true)}>{busy ? "Checking…" : "Check connection"}</button>
     </div>}
   </section>;
 }
