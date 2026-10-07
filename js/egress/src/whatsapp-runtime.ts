@@ -1,5 +1,5 @@
 import { restoreAuthBuffers } from './whatsapp-adapters/auth-buffers';
-import makeWASocket, { Browsers, DisconnectReason, initAuthCreds, proto } from '@whiskeysockets/baileys';
+import makeWASocket, { Browsers, DisconnectReason, fetchLatestBaileysVersion, initAuthCreds, proto } from '@whiskeysockets/baileys';
 import type { WhatsAppEvent, WhatsAppMessage, WhatsAppTransportFactory } from './whatsapp-transport';
 
 // Auth is persisted exclusively through the account's encrypted external store.
@@ -20,7 +20,12 @@ export const whatsappTransportFactory: WhatsAppTransportFactory = {
     const pairingReady = new Promise<void>((resolve, reject) => { pairingReadyResolve = resolve; pairingReadyReject = reject; });
     // A restored socket may close without ever requesting a pairing code.
     void pairingReady.catch(() => {});
+    // WhatsApp rejects phone-number linking ("Couldn't link device") from stale
+    // client versions and unrecognized companion platforms. Use the current
+    // published web version when reachable and the documented macOS desktop profile.
+    const version = await currentWhatsAppVersion();
     const socket = makeWASocket({
+      ...(version ? { version } : {}),
       auth: { creds: creds as ReturnType<typeof initAuthCreds>, keys: {
         async get(type, ids) {
           const values = restoreAuthBuffers(await callbacks.auth.getKeys(type, ids));
@@ -33,7 +38,7 @@ export const whatsappTransportFactory: WhatsAppTransportFactory = {
       } },
       logger: silent as any,
       markOnlineOnConnect: false,
-      browser: Browsers.ubuntu('Desktop'),
+      browser: Browsers.macOS('Desktop'),
       syncFullHistory: true,
       getMessage: async () => undefined,
     });
@@ -118,6 +123,18 @@ export const whatsappTransportFactory: WhatsAppTransportFactory = {
     };
   },
 };
+
+async function currentWhatsAppVersion(): Promise<[number, number, number] | undefined> {
+  try {
+    const latest = await Promise.race([
+      fetchLatestBaileysVersion(),
+      new Promise<undefined>(resolve => setTimeout(() => resolve(undefined), 5000)),
+    ]);
+    const version = latest?.version;
+    return Array.isArray(version) && version.length === 3 && version.every(part => Number.isInteger(part) && part >= 0)
+      ? version as [number, number, number] : undefined;
+  } catch { return undefined; }
+}
 
 function projectMessage(value: proto.IWebMessageInfo): WhatsAppEvent[] {
   const key = value.key;
