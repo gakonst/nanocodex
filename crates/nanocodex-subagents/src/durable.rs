@@ -37,25 +37,14 @@ pub type SubagentStoreFuture<'a, T> = Pin<Box<dyn Future<Output = T> + 'a>>;
 ///
 /// Values are Rust-owned JSON. Hosts store and return them verbatim; a save
 /// must atomically replace the previous value for the same root.
-#[cfg(not(target_family = "wasm"))]
+/// On WebAssembly hosts the registry is still shared through `Send + Sync`
+/// tool objects, so JavaScript-backed stores wrap their single-threaded handles.
 pub trait SubagentStore: Send + Sync {
     /// Loads the latest journal for a root session.
-    fn load<'a>(&'a self, root_session_id: &'a str)
-    -> SubagentStoreFuture<'a, std::io::Result<Option<String>>>;
-    /// Atomically replaces the journal for a root session.
-    fn save<'a>(
+    fn load<'a>(
         &'a self,
         root_session_id: &'a str,
-        payload: String,
-    ) -> SubagentStoreFuture<'a, std::io::Result<()>>;
-}
-
-/// Host persistence for one opaque subagent journal value per root session.
-#[cfg(target_family = "wasm")]
-pub trait SubagentStore {
-    /// Loads the latest journal for a root session.
-    fn load<'a>(&'a self, root_session_id: &'a str)
-    -> SubagentStoreFuture<'a, std::io::Result<Option<String>>>;
+    ) -> SubagentStoreFuture<'a, std::io::Result<Option<String>>>;
     /// Atomically replaces the journal for a root session.
     fn save<'a>(
         &'a self,
@@ -186,7 +175,7 @@ pub(super) fn restored_session(
             || matches!(agent.status, AgentStatus::Running | AgentStatus::Pending));
     let status = if terminal {
         AgentStatus::Closed
-    } else if !recoverable {
+    } else if in_flight && !recoverable {
         AgentStatus::Failed {
             error: "subagent could not be restored after a runtime restart: no portable \
                     checkpoint was available"
