@@ -3063,3 +3063,329 @@ async fn legacy_model_zero_steer_reaches_first_new_boundary_without_repeating_wr
     let _ = agent.shutdown().await;
     server.abort();
 }
+
+// Public native Claude construction + installed tool dispatch against reopened
+// SQLite. Journal fixtures deliberately distinguish absence, parse failure,
+// incompatible version, and lifecycle loss from successful adoption.
+#[tokio::test]
+async fn native_claude_journal_adoption_directory_evidence() {
+    use nanocodex_claude::ClaudeTools;
+    use nanocodex_durability::{OwnerId, StateStore};
+    use nanocodex_subagents::{channel, install_claude_tools};
+    let child = |checkpoint: bool| {
+        let mut entry = json!({
+            "descriptor":{"id":1,"session_id":"fixture-child","role":"worker","task":"retained task","parent":null},
+            "status":{"state": if checkpoint {"interrupted"} else {"running"}},
+            "turn_in_flight":false,"output_schema":{"type":"string"}
+        });
+        if checkpoint {
+            entry["native_checkpoint"] = json!({"model":"claude-haiku-4-5",
+                "session_id":"fixture-child","thinking":"none",
+                "payload":"{\"messages\":[]}","has_conversation":true});
+        }
+        entry
+    };
+    for (case, payload, expected_default, expected_all) in [
+        ("absent", None, 0, 0),
+        (
+            "journal-not-attached",
+            Some(json!({"version":1,"agents":[child(true)]}).to_string()),
+            0,
+            0,
+        ),
+        (
+            "different-durable-id",
+            Some(json!({"version":1,"agents":[child(true)]}).to_string()),
+            0,
+            0,
+        ),
+        (
+            "recoverable",
+            Some(json!({"version":1,"agents":[child(true)]}).to_string()),
+            1,
+            1,
+        ),
+        (
+            "missing-checkpoint",
+            Some(json!({"version":1,"agents":[child(false)]}).to_string()),
+            0,
+            1,
+        ),
+        ("invalid-json", Some("{broken".into()), 0, 0),
+        (
+            "unsupported-version",
+            Some(json!({"version":999,"agents":[child(true)]}).to_string()),
+            0,
+            0,
+        ),
+    ] {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("state.sqlite");
+        let original_payload = payload.clone();
+        if let Some(payload) = payload {
+            let mut store = SqliteStore::open(&path).unwrap();
+            let key = "claude-synthetic:subagents";
+            let owned = store.acquire(key, OwnerId::new()).await.unwrap();
+            store
+                .replace(key, &owned.owner, owned.state.revision, &payload, &[])
+                .await
+                .unwrap();
+        }
+        let restore_failed = matches!(case, "invalid-json" | "unsupported-version");
+        let (client, requests, server) = server(move |index, _| match index {
+            1 => sse(
+                vec![
+                    json!({"type":"tool_use","id":"default","name":"list_agents",
+                "input":{"include_completed":false}}),
+                ],
+                "tool_use",
+                12,
+            ),
+            2 => sse(
+                vec![json!({"type":"tool_use","id":"all","name":"list_agents",
+                "input":{"include_completed":true}})],
+                "tool_use",
+                12,
+            ),
+            3 if restore_failed => sse(vec![json!({
+                "type":"tool_use", "id":"mutation", "name":"spawn_agent",
+                "input":{"role":"worker", "task":"new task", "output_contract":{"kind":"string"},
+                         "harness":null, "model":null, "thinking":null}
+            })], "tool_use", 12),
+            _ => sse(text("inspected"), "end_turn", 12),
+        })
+        .await;
+        let (registry, control, _updates) = channel(6);
+        let install = registry.clone();
+        let durable = case != "journal-not-attached";
+        let root = if case == "different-durable-id" {
+            "other-root"
+        } else {
+            "claude-synthetic"
+        };
+        let mut builder = Nanocodex::builder(Claude::new(client.clone(), "test"))
+            .max_tokens(4096)
+            .session_id(root);
+        if durable {
+            builder = builder
+                .durability(
+                    DurableSession::open(SqliteStore::open(&path).unwrap(), root)
+                        .await
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+        }
+        let (agent, events) = builder
+            .tools_factory(move |handle| {
+                assert_eq!(handle.session_id(), root);
+                assert_eq!(
+                    handle.child_journal().is_some(),
+                    durable,
+                    "journal attachment"
+                );
+                install_claude_tools(ClaudeTools::new(), handle, install.clone())
+            })
+            .build()
+            .unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            agent
+                .prompt("inspect directory")
+                .await
+                .unwrap()
+                .result()
+                .await
+                .unwrap()
+        })
+        .await
+        .unwrap();
+        let captured = requests.lock().unwrap();
+        let result = |id: &str| -> Value {
+            for message in captured.last().unwrap()["messages"].as_array().unwrap() {
+                for block in message["content"].as_array().unwrap() {
+                    if block["type"] == "tool_result" && block["tool_use_id"] == id {
+                        let content = &block["content"];
+                        let value = content.as_str().map(str::to_owned).unwrap_or_else(|| {
+                            content
+                                .as_array()
+                                .unwrap()
+                                .iter()
+                                .filter_map(|b| b["text"].as_str())
+                                .collect::<Vec<_>>()
+                                .join("")
+                        });
+                        if block["is_error"] == true {
+                            return json!({"is_error":true,"error":value});
+                        }
+                        return serde_json::from_str(&value).unwrap();
+                    }
+                }
+            }
+            panic!("missing tool result {id}");
+        };
+        let default = result("default");
+        let all = result("all");
+        eprintln!(
+            "ADOPTION_EVIDENCE {}",
+            json!({"case":case,"root":root,"journal_attached":durable,"default":default,"all":all})
+        );
+        if restore_failed {
+            let expected = if case == "invalid-json" {
+                "invalid subagent journal"
+            } else {
+                "unsupported subagent journal version 999"
+            };
+            let mutation = result("mutation");
+            for response in [&default, &all, &mutation] {
+                assert_eq!(response["is_error"], true, "{case}: {response}");
+                assert!(
+                    response["error"].as_str().unwrap().contains(expected),
+                    "{response}"
+                );
+            }
+            assert_eq!(default["error"], all["error"]);
+            assert_eq!(default["error"], mutation["error"]);
+            let direct = registry
+                .directory(root, true, false)
+                .await
+                .err()
+                .expect("restoration must fail");
+            assert!(direct.to_string().contains(expected));
+            let close = registry
+                .close(root, "1".parse().unwrap())
+                .await
+                .err()
+                .expect("restoration must fail");
+            assert_eq!(direct.to_string(), close.to_string());
+            let close_all = control
+                .close_all(root)
+                .await
+                .err()
+                .expect("restoration must fail");
+            assert_eq!(direct.to_string(), close_all.to_string());
+            control.cancel_all(root).await;
+            eprintln!(
+                "RESTORE_FAILURE_EVIDENCE {}",
+                json!({"case":case,"mutation":mutation,"direct":direct.to_string(),"close":close.to_string(),"close_all":close_all.to_string()})
+            );
+        } else {
+            assert_eq!(
+                default["agents"].as_array().unwrap().len(),
+                expected_default,
+                "{case}"
+            );
+            assert_eq!(
+                all["agents"].as_array().unwrap().len(),
+                expected_all,
+                "{case}"
+            );
+            if case == "missing-checkpoint" {
+                assert_eq!(all["agents"][0]["status"]["state"], "failed");
+            }
+            if case == "recoverable" {
+                assert_eq!(default["agents"][0]["status"]["state"], "interrupted");
+            }
+        }
+        drop(captured);
+        if matches!(
+            case,
+            "invalid-json"
+                | "unsupported-version"
+                | "journal-not-attached"
+                | "different-durable-id"
+        ) {
+            // Read without acquiring ownership: a test must not fence a bad writer.
+            let db = rusqlite::Connection::open(&path).unwrap();
+            let retained: String = db
+                .query_row(
+                    "SELECT payload FROM nanocodex_durable_states WHERE state_id = ?1",
+                    ["claude-synthetic:subagents"],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(
+                Some(retained),
+                original_payload,
+                "untouched retained journal: {case}"
+            );
+        }
+        if case == "recoverable" {
+            // Public lifecycle mutation must reach SQLite before a fresh native
+            // root can adopt it. Read without acquiring/fencing the active writer.
+            registry.close(root, "1".parse().unwrap()).await.unwrap();
+            tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                loop {
+                    let db = rusqlite::Connection::open(&path).unwrap();
+                    let payload: String = db
+                        .query_row(
+                            "SELECT payload FROM nanocodex_durable_states WHERE state_id = ?1",
+                            ["claude-synthetic:subagents"],
+                            |row| row.get(0),
+                        )
+                        .unwrap();
+                    let saved: Value = serde_json::from_str(&payload).unwrap();
+                    if saved["agents"][0]["status"]["state"] == "closed" {
+                        eprintln!(
+                            "PERSISTENCE_EVIDENCE {}",
+                            json!({
+                                "case":"native-close-saved", "journal":saved
+                            })
+                        );
+                        break;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .unwrap();
+        }
+        drop(events);
+        drop(agent);
+        drop(registry);
+        if case == "recoverable" {
+            let (restored, _control, _updates) = channel(6);
+            let install = restored.clone();
+            let (reopened, reopened_events) = Nanocodex::builder(Claude::new(client, "test"))
+                .max_tokens(4096)
+                .durability(
+                    DurableSession::open(SqliteStore::open(&path).unwrap(), root)
+                        .await
+                        .unwrap(),
+                )
+                .await
+                .unwrap()
+                .tools_factory(move |handle| {
+                    install_claude_tools(ClaudeTools::new(), handle, install.clone())
+                })
+                .build()
+                .unwrap();
+            let directory = tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                restored.directory(root, true, false),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+            let directory = serde_json::to_value(directory).unwrap();
+            eprintln!(
+                "PERSISTENCE_EVIDENCE {}",
+                json!({
+                    "case":"fresh-native-root-after-close", "all":directory
+                })
+            );
+            assert_eq!(directory.as_array().unwrap().len(), 1);
+            assert_eq!(directory[0]["agent_id"], 1);
+            assert_eq!(directory[0]["status"]["state"], "closed");
+            assert!(
+                restored
+                    .directory(root, false, false)
+                    .await
+                    .unwrap()
+                    .is_empty()
+            );
+            drop(reopened_events);
+            drop(reopened);
+        }
+        server.abort();
+    }
+}

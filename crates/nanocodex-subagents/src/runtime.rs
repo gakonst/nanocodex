@@ -104,8 +104,9 @@ pub struct Registry {
     store: std::sync::RwLock<Option<Arc<dyn SubagentStore>>>,
     /// Per-root journals adopted from durable root handles.
     journals: std::sync::RwLock<HashMap<String, Arc<dyn SubagentStore>>>,
-    /// Restoration gates of adopted roots; true once the tree is restored.
-    restored: std::sync::Mutex<HashMap<String, tokio::sync::watch::Receiver<bool>>>,
+    /// Per-root restoration outcome. Pending and failed roots must never be saved.
+    restored:
+        std::sync::Mutex<HashMap<String, tokio::sync::watch::Receiver<Option<Result<(), String>>>>>,
     journal_writer: std::sync::atomic::AtomicBool,
     checkpoints: std::sync::Mutex<HashMap<(String, AgentId), ChildSnapshot>>,
     pending_resume: std::sync::Mutex<HashMap<String, Vec<AgentId>>>,
@@ -1018,7 +1019,7 @@ impl Registry {
             return;
         };
         let root = handle.session_id().to_owned();
-        let (ready, gate) = tokio::sync::watch::channel(false);
+        let (ready, gate) = tokio::sync::watch::channel(None);
         {
             let mut restored = self
                 .restored
@@ -1050,9 +1051,14 @@ impl Registry {
                 Ok(_) => {}
                 Err(error) => {
                     tracing::warn!(%error, %root, "could not restore durable subagent task tree");
+                    let _ = ready.send(Some(Err(format!(
+                        "could not restore subagent journal for {root}: {error}"
+                    ))));
+                    return;
                 }
             }
-            let _ = ready.send(true);
+            let _ = ready.send(Some(Ok(())));
+            registry.changed();
             for (id, result) in registry.resume_interrupted(&root).await {
                 if let Err(error) = result {
                     tracing::warn!(%id, %error, "could not resume restored subagent");
@@ -1062,7 +1068,7 @@ impl Registry {
     }
 
     /// Waits until an adopted root's journaled tree is restored.
-    pub(crate) async fn await_restored(&self, session_id: &str) {
+    pub(crate) async fn await_restored(&self, session_id: &str) -> std::io::Result<()> {
         let root = self
             .state
             .lock()
@@ -1076,8 +1082,17 @@ impl Registry {
             .get(&root)
             .cloned();
         if let Some(mut gate) = gate {
-            drop(gate.wait_for(|ready| *ready).await);
+            let outcome = gate
+                .wait_for(|outcome| outcome.is_some())
+                .await
+                .map_err(|_| {
+                    std::io::Error::other("subagent journal restoration ended without an outcome")
+                })?
+                .clone()
+                .expect("restoration outcome is available");
+            outcome.map_err(std::io::Error::other)?;
         }
+        Ok(())
     }
 
     /// Makes every root task tree in this registry durable.
@@ -1142,7 +1157,19 @@ impl Registry {
             .checkpoints
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        state.journal(&checkpoints)
+        let restored = self
+            .restored
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state
+            .journal(&checkpoints)
+            .into_iter()
+            .filter(|(root, _)| {
+                restored
+                    .get(root)
+                    .is_none_or(|gate| matches!(&*gate.borrow(), Some(Ok(()))))
+            })
+            .collect()
     }
 
     fn record_checkpoint(&self, root_session_id: &str, id: AgentId, snapshot: ChildSnapshot) {
@@ -1352,6 +1379,7 @@ impl Registry {
         instruction_revision: Option<u64>,
         output: Value,
     ) -> std::io::Result<SubmissionOutcome> {
+        self.await_restored(session_id).await?;
         self.state
             .lock()
             .await
@@ -1703,12 +1731,13 @@ impl Registry {
         session_id: &str,
         include_completed: bool,
         include_self: bool,
-    ) -> Vec<AgentDirectoryEntry> {
-        self.await_restored(session_id).await;
-        self.state
+    ) -> std::io::Result<Vec<AgentDirectoryEntry>> {
+        self.await_restored(session_id).await?;
+        Ok(self
+            .state
             .lock()
             .await
-            .directory(session_id, include_completed, include_self)
+            .directory(session_id, include_completed, include_self))
     }
 
     /// Keep weak factory capabilities, never a second owner of a child driver.
@@ -1842,7 +1871,7 @@ impl Registry {
         in_reply_to: Option<MessageId>,
         body: String,
     ) -> std::io::Result<MessageReceipt> {
-        self.await_restored(session_id).await;
+        self.await_restored(session_id).await?;
         let _residency_guard = self.residency_lock.lock().await;
         let _message_guard = self.message_lock.lock().await;
         self.rehydrate(session_id, to, purpose).await?;
@@ -1998,7 +2027,7 @@ impl Registry {
         ids: &[AgentId],
         duration: Duration,
     ) -> std::io::Result<(Vec<AgentSummary>, bool)> {
-        self.await_restored(session_id).await;
+        self.await_restored(session_id).await?;
         if ids.is_empty() {
             return Err(std::io::Error::other("agent_ids must not be empty"));
         }
@@ -2024,7 +2053,7 @@ impl Registry {
         session_id: &str,
         id: AgentId,
     ) -> std::io::Result<Vec<AgentSummary>> {
-        self.await_restored(session_id).await;
+        self.await_restored(session_id).await?;
         let _message_guard = self.message_lock.lock().await;
         let (root_session_id, ids, harnesses) = {
             let mut state = self.state.lock().await;
@@ -2041,7 +2070,7 @@ impl Registry {
     }
 
     pub async fn close(&self, session_id: &str, id: AgentId) -> std::io::Result<Vec<AgentSummary>> {
-        self.await_restored(session_id).await;
+        self.await_restored(session_id).await?;
         let _message_guard = self.message_lock.lock().await;
         let CloseRequest {
             root_session_id,
@@ -2066,6 +2095,7 @@ impl Registry {
     }
 
     async fn close_all(&self, session_id: &str) -> std::io::Result<Vec<AgentSummary>> {
+        self.await_restored(session_id).await?;
         let _message_guard = self.message_lock.lock().await;
         let CloseRequest {
             root_session_id,
@@ -2164,6 +2194,9 @@ impl Registry {
     }
 
     async fn cancel_all(&self, session_id: &str) {
+        if self.await_restored(session_id).await.is_err() {
+            return;
+        }
         let _message_guard = self.message_lock.lock().await;
         let (root_session_id, ids, harnesses) = {
             let mut state = self.state.lock().await;
@@ -2682,6 +2715,7 @@ mod tests {
                 registry
                     .directory(parent.session_id(), true, false)
                     .await
+                    .unwrap()
                     .is_empty()
             );
             assert!(receiver.try_recv().is_err());
@@ -2757,7 +2791,10 @@ mod tests {
         mark_reusable(&original, "root", descendant).await;
         original.set_max_resident(1);
         original.enforce_resident_limit("root").await;
-        assert_eq!(original.directory("root", true, false).await.len(), 2);
+        assert_eq!(
+            original.directory("root", true, false).await.unwrap().len(),
+            2
+        );
         assert!(
             original.state.lock().await.scopes["root"]
                 .sessions
@@ -2768,7 +2805,13 @@ mod tests {
         drop((original, control, updates));
 
         let (registry, _control, mut updates) = super::channel(2);
-        assert!(registry.directory("root", true, false).await.is_empty());
+        assert!(
+            registry
+                .directory("root", true, false)
+                .await
+                .unwrap()
+                .is_empty()
+        );
         assert!(
             registry
                 .host_context_for_session(&prior_session)
@@ -2855,7 +2898,7 @@ mod tests {
             registry.close("root", child).await.unwrap()[0].status,
             AgentStatus::Closed
         );
-        assert!(!registry.directory("root", true, false).await[0].can_message);
+        assert!(!registry.directory("root", true, false).await.unwrap()[0].can_message);
     }
 
     #[tokio::test]
@@ -3659,6 +3702,7 @@ mod tests {
         let entry = registry
             .directory("main", true, false)
             .await
+            .unwrap()
             .into_iter()
             .find(|entry| entry.agent_id == interrupted)
             .expect("evicted agent should remain in the directory");
@@ -3846,7 +3890,10 @@ mod tests {
                 (&parent.id, &AgentStatus::Closed),
             ]
         );
-        assert_eq!(registry.directory("main", true, false).await.len(), 3);
+        assert_eq!(
+            registry.directory("main", true, false).await.unwrap().len(),
+            3
+        );
 
         let all_closed = registry.close_all("main").await.unwrap();
         assert_eq!(all_closed.len(), 3);

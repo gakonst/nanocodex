@@ -596,7 +596,11 @@ async fn restored_children_remain_discoverable_before_and_after_failed_resume() 
         assert_eq!(&all["agents"].as_array().unwrap()[..6], entries.as_slice());
 
         // Public directory permissions remain relative to the caller's tree.
-        let child_view = journey.registry.directory("restored-1", false, false).await;
+        let child_view = journey
+            .registry
+            .directory("restored-1", false, false)
+            .await
+            .unwrap();
         assert_eq!(child_view.len(), 5);
         assert!(
             child_view
@@ -612,13 +616,18 @@ async fn restored_children_remain_discoverable_before_and_after_failed_resume() 
                 .unwrap()
                 .can_manage
         );
-        let self_view = journey.registry.directory("restored-1", false, true).await;
+        let self_view = journey
+            .registry
+            .directory("restored-1", false, true)
+            .await
+            .unwrap();
         assert!(!self_view[0].can_message && !self_view[0].can_manage);
         assert!(
             journey
                 .registry
                 .directory("unrelated-root", true, true)
                 .await
+                .unwrap()
                 .is_empty()
         );
         let sibling: AgentId = "3".parse().unwrap();
@@ -638,7 +647,10 @@ async fn restored_children_remain_discoverable_before_and_after_failed_resume() 
             let error = result.unwrap_err();
             println!("RESUME {id} failed: {error}");
         }
-        let after = recovered.directory("unavailable-root", false, false).await;
+        let after = recovered
+            .directory("unavailable-root", false, false)
+            .await
+            .unwrap();
         assert_eq!(after.len(), 6);
         assert!(after.iter().all(|e| e.status == AgentStatus::Interrupted));
         println!(

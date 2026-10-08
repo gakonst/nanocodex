@@ -6034,6 +6034,7 @@ dependencies = [
  "nanocodex-claude-tools",
  "nanocodex-oai-api",
  "nanocodex-oai-tools",
+ "nanocodex-subagents",
  "reqwest",
  "rusqlite",
  "rustls",

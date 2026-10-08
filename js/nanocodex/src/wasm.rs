@@ -3716,7 +3716,8 @@ impl WasmSubagents {
         let agents = subagents
             .registry
             .directory(session_id, task.include_completed, task.include_self)
-            .await;
+            .await
+            .map_err(js_error)?;
         serde_json::to_string(&WasmSubagentDirectoryReport { agents }).map_err(js_error)
     }
     pub async fn send_subagent_message(
