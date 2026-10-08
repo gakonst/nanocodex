@@ -1,6 +1,6 @@
 import {
   ACCOUNT_ADOPTED_ALARM_KEY, ACCOUNT_PLACEMENT_KEY, ACCOUNT_WIPE_PENDING_KEY, ACCOUNT_EXPORT_PAGE_ROWS,
-  accountHomeName, accountObjectStub, accountSourceName, exportManifest, exportRows, importAccountStorage, parseAccountName,
+  accountHomeName, accountObjectStub, accountSourceName, exportManifest, exportRows, beginImport, importPage, finishImport, parseAccountName, ACCOUNT_IMPORT_PROGRESS_KEY,
   type AccountManifest, type AccountRows, type HomesEnv,
 } from "./account-placement";
 import type { AccountHostedTools } from "./account-hosted-tools";
@@ -35,20 +35,41 @@ export async function adoptAccount(ctx: DurableObjectState, env: PlacementEnv): 
     releaseRows(owner: string, target: string, table: string, offset: number): Promise<AccountRows>;
   };
   const manifest = await stub.releaseManifest(parsed.owner, name);
-  const rows = new Map<string, AccountRows>();
-  for (const table of manifest.tables) {
-    const values: unknown[][] = [];
-    while (values.length < table.rows) {
-      const page = await stub.releaseRows(parsed.owner, name, table.name, values.length);
+  // Streamed with bounded memory: one page at a time, each page committed with
+  // its resume point. An interrupted activation resumes; the retired source
+  // never changes, so the manifest and pages are identical on every attempt.
+  type Progress = { table: number; offset: number; tables: number; rows: number };
+  const total = manifest.tables.reduce((sum, table) => sum + table.rows, 0);
+  let progress = ctx.storage.kv.get<Progress>(ACCOUNT_IMPORT_PROGRESS_KEY);
+  if (!progress || progress.tables !== manifest.tables.length || progress.rows !== total) {
+    ctx.storage.transactionSync(() => {
+      beginImport(ctx.storage, manifest);
+      progress = { table: 0, offset: 0, tables: manifest.tables.length, rows: total };
+      ctx.storage.kv.put(ACCOUNT_IMPORT_PROGRESS_KEY, progress);
+    });
+  }
+  console.info({ type: "account.placement.importing", source, target: name, tables: manifest.tables.length, rows: total,
+    resume: progress!.table > 0 || progress!.offset > 0 ? progress : undefined });
+  let pages = 0;
+  for (let index = progress!.table; index < manifest.tables.length; index += 1) {
+    const table = manifest.tables[index]!;
+    let offset = index === progress!.table ? progress!.offset : 0;
+    while (offset < table.rows) {
+      const page = await stub.releaseRows(parsed.owner, name, table.name, offset);
       if (!page.length) throw new Error("incomplete account export");
-      values.push(...page.map(row => [...row]));
+      offset += page.length;
+      const next = offset >= table.rows ? { ...progress!, table: index + 1, offset: 0 } : { ...progress!, table: index, offset };
+      ctx.storage.transactionSync(() => { importPage(ctx.storage, table, page); ctx.storage.kv.put(ACCOUNT_IMPORT_PROGRESS_KEY, next); });
+      progress = next;
+      if (++pages % 8 === 0) await ctx.storage.sync();
     }
-    rows.set(table.name, values);
+    if (table.rows === 0) { progress = { ...progress!, table: index + 1, offset: 0 }; ctx.storage.kv.put(ACCOUNT_IMPORT_PROGRESS_KEY, progress); }
   }
   ctx.storage.transactionSync(() => {
-    importAccountStorage(ctx.storage, manifest, rows);
+    finishImport(ctx.storage, manifest);
     if (typeof manifest.alarm === "number") ctx.storage.kv.put(ACCOUNT_ADOPTED_ALARM_KEY, manifest.alarm);
     ctx.storage.kv.put(ACCOUNT_WIPE_PENDING_KEY, source);
+    ctx.storage.kv.delete(ACCOUNT_IMPORT_PROGRESS_KEY);
     ctx.storage.kv.put(ACCOUNT_PLACEMENT_KEY, { state: "active", name, source, adopted_at: Date.now() } satisfies Active);
   });
   // The source is wiped only after this import is durable.
@@ -59,7 +80,7 @@ export async function adoptAccount(ctx: DurableObjectState, env: PlacementEnv): 
   }
   ctx.storage.kv.delete(ACCOUNT_ADOPTED_ALARM_KEY);
   console.info({ type: "account.placement.adopted", source, target: name, tables: manifest.tables.length,
-    rows: manifest.tables.reduce((sum, table) => sum + table.rows, 0), duration_ms: Date.now() - started });
+    rows: total, pages, duration_ms: Date.now() - started });
   await wipeSource(ctx, env);
 }
 

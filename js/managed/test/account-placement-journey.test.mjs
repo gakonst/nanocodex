@@ -30,13 +30,26 @@ export class AccountHostedTools extends Base {
   #hit(kind) { if (this.fixtureName === '${owner}') console.info(JSON.stringify({ type: 'fixture.previous_hit', kind })); }
   async fetch(request) { this.#hit('fetch:' + new URL(request.url).pathname); return super.fetch(request); }
   async releaseManifest(...args) { this.#hit('releaseManifest'); return super.releaseManifest(...args); }
-  async releaseRows(...args) { this.#hit('releaseRows'); if (failRows) throw new Error('fixture_export_unreachable'); return super.releaseRows(...args); }
+  async releaseRows(...args) {
+    this.#hit('releaseRows');
+    // 'once-after-first': interrupt a streamed import after it committed a page.
+    if (failRows === true || (failRows === 'once-after-first' && args[3] > 0)) { if (failRows !== true) failRows = false; throw new Error('fixture_export_unreachable'); }
+    return super.releaseRows(...args);
+  }
+  async fetch2(request) { return this.fetch(request); }
+  async fixtureFill(bytes) {
+    this.ctx.storage.sql.exec('CREATE TABLE IF NOT EXISTS fixture_filler (id INTEGER PRIMARY KEY, body TEXT)');
+    const chunk = 'x'.repeat(64 * 1024);
+    for (let i = 0; i < Math.ceil(bytes / chunk.length); i += 1) this.ctx.storage.sql.exec('INSERT INTO fixture_filler (body) VALUES (?)', chunk);
+    return this.ctx.storage.sql.exec('SELECT COUNT(*) AS n FROM fixture_filler').one().n;
+  }
   async wipeRetiredAccount(...args) { this.#hit('wipe'); return super.wipeRetiredAccount(...args); }
 }
 export default { async fetch(request, env) {
   if (request.headers.get('authorization') !== '${credential}') return new Response(null, {status:401});
   const url = new URL(request.url);
   if (url.pathname === '/__fixture/fail-rows') { failRows = (await request.json()).fail; return Response.json({ ok: true }); }
+  if (url.pathname === '/__fixture/fill') return Response.json({ rows: await env.NANOCODEX_ACCOUNT_TOOLS.getByName('${owner}').fixtureFill((await request.json()).bytes) });
   if (url.pathname === '/__fixture/previous') {
     // Direct inspection of the previous object, bypassing routing.
     const stub = accountObjectStub(env.NANOCODEX_ACCOUNT_TOOLS, '${owner}');
@@ -109,6 +122,9 @@ test("a pinned account adopts eagerly, wipes its previous object and never addre
     const oldRoute = route(initial);
     assert.ok(oldRoute?.route_token);
     assert.match(JSON.stringify(await invoke("call-before", oldRoute.route_token, "printf A >> effects.log; printf BEFORE_OK")), /BEFORE_OK/);
+    // ~10 MB of extra rows: the import streams several bounded pages.
+    const filled = (await api("/__fixture/fill", { bytes: 10 * 1024 * 1024 })).rows;
+    assert.ok(filled >= 160);
 
     // Phase 2 ("deploy"): the pin is set and the export path is unreachable.
     // The home fails closed: no request is served by, or forwarded to, the old object.
@@ -121,12 +137,17 @@ test("a pinned account adopts eagerly, wipes its previous object and never addre
     assert.ok(!runtime.join("").slice(phase2).includes('"kind":"fetch:'), "no request was routed to the old object");
     observed.failed_adoption_fails_closed = { status: refused.status };
 
-    // Export reachable again: the next activation adopts eagerly before any event.
+    // An import interrupted after committed pages resumes from its durable point.
+    await api("/__fixture/fail-rows", { fail: "once-after-first" });
+    await request("/snapshot", { owner_id: owner });
+    // Export reachable again: the next activation finishes adoption before any event.
     await api("/__fixture/fail-rows", { fail: false });
     const after = await waitFor(online, "Hand reconnects straight to the adopted home");
     assert.equal(route(after).route_token, oldRoute.route_token, "route identity copied");
     assert.deepEqual(after.mount_roots, initial.mount_roots);
     assert.ok(runtime.join("").includes("account.placement.adopted") && runtime.join("").includes("account.placement.wiped"));
+    assert.match(runtime.join(""), /resume: \{ table: \d+, offset: [1-9]/, "an interrupted import resumed mid-table");
+    observed.streamed_resume = true;
     assert.match(JSON.stringify(await invoke("call-before", oldRoute.route_token, "printf A >> effects.log; printf BEFORE_OK")), /BEFORE_OK/);
     observed.adopted_and_wiped = true;
 

@@ -36,7 +36,7 @@ import type { RegionalHandRelay } from "./regional-hand-relay";
 import { RegionalScreenAuthority, SCREEN_DIRECTORY_HEADER, regionalScreenPrefix, regionalScreenRegion, screenAuthorized,
   type RegionalScreenEnv, type ScreenFenceReason } from "./regional-screen-routing";
 import { recordScreenPlaybackHostResult, type ScreenPlaybackEnv } from "./screen-playback";
-import { accountRole, accountTools, type AccountManifest, type AccountRows, type AccountToolsNamespace } from "./account-placement";
+import { accountRole, accountSize, accountTools, type AccountManifest, type AccountRows, type AccountToolsNamespace } from "./account-placement";
 import { adoptAccount, homeNeedsAdoption, retiredManifest, retiredRows, wipeRetired, wipeSource } from "./account-placement-controller";
 
 type RetirementPublication = Pick<HandPublication, "route_id" | "publication_id" | "runtime_id" | "region"> & { machine: Pick<HostedMachine, "id"> };
@@ -97,6 +97,8 @@ type AccountHostedToolsEnv = RemoteICEEnv & RegionalHandEnv & RegionalScreenEnv 
   NANOCODEX_ACCOUNT_TOOLS?: DurableObjectNamespace<AccountHostedTools>;
   /** Canonical account homes: comma-separated owner:region[<previousRegion] pins. */
   NANOCODEX_ACCOUNT_HOMES?: string;
+  /** Comma-separated account object names that log their storage size on activation. */
+  NANOCODEX_ACCOUNT_SIZE_PROBE?: string;
   NANOCODEX_SESSIONS?: DurableObjectNamespace<import("./index").DurableAgentSession>;
 };
 
@@ -172,6 +174,10 @@ export class AccountHostedTools extends DurableObject<AccountHostedToolsEnv> {
     }
     this.#construct(ctx, regional);
     if (role === "home") ctx.waitUntil(wipeSource(ctx, env));
+    // Read-only size report for placement planning (operator-listed owners only).
+    if (!regional && ctx.id.name && (env.NANOCODEX_ACCOUNT_SIZE_PROBE ?? "").split(",").includes(ctx.id.name)) {
+      try { console.info({ type: "account.placement.size", object: ctx.id.name, ...accountSize(ctx.storage) }); } catch { /* diagnostics only */ }
+    }
   }
 
   #construct(ctx: DurableObjectState, regional: boolean): void {

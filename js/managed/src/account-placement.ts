@@ -14,7 +14,9 @@ export const ACCOUNT_PLACEMENT_KEY = "account_placement_v1";
 export const ACCOUNT_ADOPTED_ALARM_KEY = "account_placement_alarm_v1";
 /** Home row: source whose wipe is not yet confirmed. */
 export const ACCOUNT_WIPE_PENDING_KEY = "account_placement_wipe_pending_v1";
-const PLACEMENT_KEYS = new Set([ACCOUNT_PLACEMENT_KEY, ACCOUNT_ADOPTED_ALARM_KEY, ACCOUNT_WIPE_PENDING_KEY]);
+/** Home row: durable resume point of an in-progress streamed import. */
+export const ACCOUNT_IMPORT_PROGRESS_KEY = "account_placement_import_v1";
+const PLACEMENT_KEYS = new Set([ACCOUNT_PLACEMENT_KEY, ACCOUNT_ADOPTED_ALARM_KEY, ACCOUNT_WIPE_PENDING_KEY, ACCOUNT_IMPORT_PROGRESS_KEY]);
 export const ACCOUNT_PLACEMENT_REGIONS: ReadonlySet<string> = new Set(["wnam", "enam", "sam", "weur", "eeur", "apac", "oc", "afr", "me"]);
 /** "~" and "/" are outside the owner-id alphabet, so names never collide. */
 export const HOME_ACCOUNT_PREFIX = "~home/v1/";
@@ -104,7 +106,7 @@ export type AccountManifest = Readonly<{
 }>;
 export type AccountRows = readonly unknown[][];
 export const ACCOUNT_EXPORT_PAGE_ROWS = 10_000;
-export const ACCOUNT_EXPORT_PAGE_BYTES = 8 * 1024 * 1024;
+export const ACCOUNT_EXPORT_PAGE_BYTES = 2 * 1024 * 1024;
 
 const EXCLUDED_TABLE = /^(sqlite_|_cf_|diagnostic_)/;
 const quote = (name: string) => `"${name.replaceAll('"', '""')}"`;
@@ -142,8 +144,8 @@ export function exportRows(storage: DurableObjectStorage, table: string, offset:
   return page;
 }
 
-/** Replaces this object's owner state. Must run inside transactionSync. */
-export function importAccountStorage(storage: DurableObjectStorage, manifest: AccountManifest, rows: ReadonlyMap<string, AccountRows>): void {
+/** Start a streamed import: drop owner state and create the exported tables. Inside transactionSync. */
+export function beginImport(storage: DurableObjectStorage, manifest: AccountManifest): void {
   for (const entry of storage.sql.exec<{ name: string }>("SELECT name FROM sqlite_master WHERE type='table'").toArray()) {
     if (!EXCLUDED_TABLE.test(entry.name)) storage.sql.exec(`DROP TABLE IF EXISTS ${quote(entry.name)}`);
   }
@@ -151,14 +153,33 @@ export function importAccountStorage(storage: DurableObjectStorage, manifest: Ac
   for (const table of manifest.tables) {
     if (EXCLUDED_TABLE.test(table.name) || !/^CREATE TABLE/i.test(table.sql)) throw new Error("invalid account export");
     storage.sql.exec(table.sql);
-    const values = rows.get(table.name) ?? [];
-    if (values.length !== table.rows) throw new Error("incomplete account export");
-    if (!values.length) continue;
-    const statement = `INSERT INTO ${quote(table.name)} (${table.columns.map(quote).join(",")}) VALUES (${table.columns.map(() => "?").join(",")})`;
-    for (const row of values) storage.sql.exec(statement, ...row.map(decodeValue));
+  }
+}
+
+/** Append one exported page. Inside transactionSync with its progress update. */
+export function importPage(storage: DurableObjectStorage, table: AccountManifest["tables"][number], rows: AccountRows): void {
+  if (!rows.length) return;
+  const statement = `INSERT INTO ${quote(table.name)} (${table.columns.map(quote).join(",")}) VALUES (${table.columns.map(() => "?").join(",")})`;
+  for (const row of rows) storage.sql.exec(statement, ...row.map(decodeValue));
+}
+
+/** Finish a streamed import: verify counts, indexes, KV. Inside transactionSync. */
+export function finishImport(storage: DurableObjectStorage, manifest: AccountManifest): void {
+  for (const table of manifest.tables) {
+    const rows = storage.sql.exec<{ n: number }>(`SELECT COUNT(*) AS n FROM ${quote(table.name)}`).one().n;
+    if (rows !== table.rows) throw new Error("incomplete account export");
   }
   for (const sql of manifest.indexes) if (/^CREATE (UNIQUE )?INDEX/i.test(sql)) {
     storage.sql.exec(sql.replace(/^CREATE (UNIQUE )?INDEX (IF NOT EXISTS )?/i, (_, unique) => `CREATE ${unique ?? ""}INDEX IF NOT EXISTS `));
   }
   for (const [key, value] of manifest.kv) if (!PLACEMENT_KEYS.has(key)) storage.kv.put(key, value);
+}
+
+/** Read-only size report (bytes and per-table rows) for placement decisions. */
+export function accountSize(storage: DurableObjectStorage): { database_bytes: number; tables: { name: string; rows: number }[] } {
+  const tables = storage.sql.exec<{ name: string }>("SELECT name FROM sqlite_master WHERE type='table'").toArray()
+    .filter(entry => !/^(sqlite_|_cf_)/.test(entry.name))
+    .map(entry => ({ name: entry.name, rows: storage.sql.exec<{ n: number }>(`SELECT COUNT(*) AS n FROM ${quote(entry.name)}`).one().n }))
+    .sort((a, b) => b.rows - a.rows);
+  return { database_bytes: storage.sql.databaseSize, tables };
 }
