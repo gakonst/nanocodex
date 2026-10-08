@@ -109,6 +109,8 @@ pub(super) struct PersistedScope {
 #[derive(Serialize, Deserialize)]
 pub(super) struct PersistedAgent {
     pub(super) descriptor: AgentDescriptor,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) binding_task: Option<String>,
     pub(super) status: AgentStatus,
     pub(super) output_schema: Value,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -222,6 +224,7 @@ pub(super) fn persist_agent(
     });
     PersistedAgent {
         descriptor: session.descriptor.clone(),
+        binding_task: Some(session.binding_task.clone()),
         status: session.status.clone(),
         output_schema: session.output_schema.clone(),
         host_context: session.host_context.as_deref().map(str::to_owned),
@@ -269,7 +272,8 @@ pub(super) fn restored_session(
     } else {
         agent.status
     };
-    let session = ChildSession::restored(
+    let binding_task = agent.binding_task;
+    let mut session = ChildSession::restored(
         agent.descriptor,
         agent.host_context.map(Arc::from),
         status,
@@ -279,5 +283,8 @@ pub(super) fn restored_session(
         agent.next_instruction_revision,
         agent.last_output,
     );
+    if let Some(task) = binding_task {
+        session.binding_task = task;
+    }
     Ok((session, in_flight && recoverable, !recoverable && !terminal))
 }

@@ -38,6 +38,8 @@ use web_time::Instant;
 
 pub(super) struct ChildSession {
     pub(super) descriptor: AgentDescriptor,
+    /// Immutable task used by the host authorization binding.
+    pub(super) binding_task: String,
     pub(super) host_context: Option<Arc<str>>,
     pub(super) event_task: Option<Task<()>>,
     pub(super) harness: Option<HarnessHandle>,
@@ -1440,6 +1442,7 @@ impl Registry {
             descriptor.id,
             descriptor.session_id.clone(),
             ChildSession {
+                binding_task: descriptor.task.clone(),
                 descriptor,
                 host_context,
                 event_task: Some(event_task),
@@ -1861,8 +1864,11 @@ impl Registry {
             session.evicted = false;
             // Publish the host binding before releasing the child's event stream.
             // In-memory eviction keeps its existing binding; journal restoration does not.
-            let announce =
-                std::mem::take(&mut session.announce).then(|| session.descriptor.clone());
+            let announce = std::mem::take(&mut session.announce).then(|| {
+                let mut descriptor = session.descriptor.clone();
+                descriptor.task = session.binding_task.clone();
+                descriptor
+            });
             drop(state);
             if let Some(descriptor) = announce {
                 self.send(&root, AgentUpdate::Added(descriptor));
@@ -2414,6 +2420,7 @@ impl ChildSession {
         last_output: Option<Value>,
     ) -> Self {
         Self {
+            binding_task: descriptor.task.clone(),
             descriptor,
             host_context,
             event_task: None,
@@ -3079,6 +3086,7 @@ mod tests {
             parent,
         };
         ChildSession {
+            binding_task: descriptor.task.clone(),
             descriptor,
             host_context: None,
             event_task: Some(platform::spawn(async {})),
@@ -3328,6 +3336,72 @@ mod tests {
         }
         registry.close_all(root_id).await.unwrap();
         source.close_all(root_id).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn journal_retains_spawning_task_after_delegation() {
+        let mut session = test_session(AgentId::new(1), "child", None);
+        let original = session.descriptor.task.clone();
+        session.descriptor.task = "delegated replacement".to_owned();
+        let encoded =
+            serde_json::to_string(&crate::durable::persist_agent(&session, None)).unwrap();
+        let decoded = serde_json::from_str(&encoded).unwrap();
+        let (restored, _, _) = crate::durable::restored_session(decoded).unwrap();
+        assert_eq!(restored.descriptor.task, "delegated replacement");
+        assert_eq!(restored.binding_task, original);
+        let mut legacy: serde_json::Value = serde_json::from_str(&encoded).unwrap();
+        legacy.as_object_mut().unwrap().remove("binding_task");
+        let (legacy, _, _) =
+            crate::durable::restored_session(serde_json::from_value(legacy).unwrap()).unwrap();
+        assert_eq!(legacy.binding_task, legacy.descriptor.task);
+    }
+
+    #[tokio::test]
+    async fn repeated_delegation_checkpoints_keep_original_binding_task() {
+        let (registry, _control, _updates) = super::channel(32);
+        let called = Arc::new(Notify::new());
+        let (child, _) =
+            insert_pending_runtime_session(&registry, "main", None, Arc::clone(&called)).await;
+        let original = registry.state.lock().await.scopes["main"].sessions[&child]
+            .descriptor
+            .task
+            .clone();
+        mark_reusable(&registry, "main", child).await;
+        for task in ["First delegated assignment", "Second delegated assignment"] {
+            registry
+                .send_message(
+                    "main",
+                    child,
+                    MessagePriority::Deferred,
+                    MessagePurpose::Delegate,
+                    None,
+                    task.to_owned(),
+                )
+                .await
+                .unwrap();
+            timeout(Duration::from_secs(5), called.notified())
+                .await
+                .unwrap();
+            let encoded = {
+                let state = registry.state.lock().await;
+                serde_json::to_string(&crate::durable::persist_agent(
+                    &state.scopes["main"].sessions[&child],
+                    None,
+                ))
+                .unwrap()
+            };
+            let (restored, _, _) =
+                crate::durable::restored_session(serde_json::from_str(&encoded).unwrap()).unwrap();
+            assert_eq!(restored.descriptor.task, task);
+            assert_eq!(restored.binding_task, original);
+            // A second checkpoint after restoration must retain both identities.
+            let next = crate::durable::persist_agent(&restored, None);
+            let (again, _, _) = crate::durable::restored_session(next).unwrap();
+            assert_eq!(again.descriptor.task, task);
+            assert_eq!(again.binding_task, original);
+            registry.interrupt("main", child).await.unwrap();
+        }
+        registry.close_all("main").await.unwrap();
     }
 
     #[tokio::test]
