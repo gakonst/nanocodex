@@ -2606,6 +2606,7 @@ async fn tool_only_policies_preserve_default_wire_and_durable_write_count() {
     );
     let artifact = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../output/lifecycle-default-journal.json");
+    std::fs::create_dir_all(artifact.parent().unwrap()).unwrap();
     std::fs::write(&artifact, serde_json::to_vec_pretty(&json!({"observations":observations,"provider_requests":*requests,"observed":"identical wire and revision count; four before policies still executed"})).unwrap()).unwrap();
     eprintln!("default lifecycle journal evidence: {}", artifact.display());
     server.abort();

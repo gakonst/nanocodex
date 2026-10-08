@@ -119,6 +119,7 @@ async fn ordered_media_survives_changed_then_deleted_local_file_and_sqlite_reope
             .await
             .unwrap();
         let (agent, events) = Nanocodex::builder(Claude::new(client.clone(), "test"))
+            .max_tokens(4096)
             .durability(session)
             .await
             .unwrap()
@@ -204,6 +205,7 @@ async fn accepted_queued_local_image_is_frozen_before_file_deletion() {
     std::fs::write(&file, png_bytes()).unwrap();
     let (client, requests, started, release, task) = server(true).await;
     let (agent, events) = Nanocodex::builder(Claude::new(client, "test"))
+        .max_tokens(4096)
         .build()
         .unwrap();
     let first = agent.prompt("block first turn").await.unwrap();
@@ -243,6 +245,7 @@ async fn invalid_or_provider_specific_media_fails_before_http() {
         .unwrap();
     let (client, requests, _, _, task) = server(false).await;
     let (agent, events) = Nanocodex::builder(Claude::new(client, "test"))
+        .max_tokens(4096)
         .build()
         .unwrap();
     let mut invalid = vec![

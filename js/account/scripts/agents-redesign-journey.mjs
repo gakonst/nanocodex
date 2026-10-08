@@ -77,10 +77,31 @@ const isReddish = color => { const [r, g, b] = color.match(/[\d.]+/g).map(Number
 const frames = page => page.evaluate(() => new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r))));
 
 const scenarios = [['desktop-dark', { width: 1280, height: 860 }, false, 'dark'], ['desktop-light', { width: 1280, height: 860 }, false, 'light'],
-  ['mobile-dark', { width: 390, height: 844 }, true, 'dark'], ['mobile-light', { width: 390, height: 844 }, true, 'light']];
+  ['mobile-dark', { width: 390, height: 844 }, true, 'dark'], ['mobile-light', { width: 390, height: 844 }, true, 'light'],
+  ['android-dark', { width: 360, height: 780 }, true, 'dark']];
+const MOBILE_UA = { 'mobile-dark': 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1',
+  'android-dark': 'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Mobile Safari/537.36' };
+// Phone ergonomics: inputs never trigger iOS focus zoom, every visible control is a 44px target,
+// and nothing overflows the viewport except inside its own horizontal scroller.
+const mobileAudit = () => {
+  const vw = innerWidth; const out = { smallText: [], smallTargets: [], overflow: [] };
+  const shown = el => { const r = el.getBoundingClientRect(); const s = getComputedStyle(el); return r.width > 0 && r.height > 0 && s.visibility !== 'hidden' && s.display !== 'none' && !el.closest('[inert]'); };
+  for (const el of document.querySelectorAll('input:not([type=file]), textarea, select')) if (shown(el) && parseFloat(getComputedStyle(el).fontSize) < 16) out.smallText.push(`${el.tagName}.${el.className} ${getComputedStyle(el).fontSize}`);
+  for (const el of document.querySelectorAll('button, a[href], summary, [role=button]')) {
+    if (!shown(el) || (el.tagName === 'A' && el.closest('p, li, td'))) continue;
+    const r = el.getBoundingClientRect(); if (r.width < 43.5 || r.height < 43.5) out.smallTargets.push(`${el.getAttribute('aria-label') || el.innerText.trim().slice(0, 30)} ${Math.round(r.width)}x${Math.round(r.height)}`);
+  }
+  for (const el of document.querySelectorAll('body *')) {
+    if (!shown(el) || el.getBoundingClientRect().right <= vw + 1) continue;
+    let p = el.parentElement, contained = false;
+    while (p) { if (/auto|scroll|hidden|clip/.test(getComputedStyle(p).overflowX)) { contained = p.getBoundingClientRect().right <= vw + 1; break; } p = p.parentElement; }
+    if (!contained) out.overflow.push(`${el.tagName}.${el.className}`);
+  }
+  return out;
+};
 try {
   for (const [name, viewport, mobile, theme] of scenarios) {
-    const context = await browser.newContext({ viewport, isMobile: mobile, hasTouch: mobile, reducedMotion: 'reduce' });
+    const context = await browser.newContext({ viewport, isMobile: mobile, hasTouch: mobile, reducedMotion: 'reduce', ...(MOBILE_UA[name] ? { userAgent: MOBILE_UA[name], deviceScaleFactor: 3 } : {}) });
     await context.tracing.start({ screenshots: true, snapshots: true });
     const page = await context.newPage(); const errors = [];
     page.on('pageerror', error => errors.push(error.message)); page.on('console', m => m.type() === 'error' && errors.push(m.text()));
@@ -95,7 +116,7 @@ try {
 
     // Layout: persistent sidebar on desktop, drawer on mobile; centered column; composer pinned at the bottom.
     const sidebar = await page.locator('.agent-navigation').boundingBox();
-    if (mobile) assert.equal(sidebar, null, 'Mobile sidebar is a closed drawer');
+    if (mobile) assert.ok(sidebar === null || sidebar.x + sidebar.width <= 0 || await page.locator('.agent-navigation').evaluate(el => getComputedStyle(el).visibility === 'hidden'), 'Mobile sidebar is a closed drawer');
     else assert.ok(sidebar.width >= 240 && sidebar.width <= 264, `Sidebar width ${sidebar.width}`);
     const main = await page.locator('.conversation-main').boundingBox();
     const form = await page.locator('form.agent-composer').boundingBox();
@@ -243,12 +264,17 @@ try {
     assert.ok(isReddish(await css(failedRow.locator('.agent-tool-status-icon.is-failed'), 'color')), 'Failed marker is red');
     assert.ok(!isReddish(await css(rows.first().locator('.agent-tool-status-icon'), 'color')), 'Success marker is monochrome');
     const sizes = await details.locator('.agent-tool-row > details > summary').evaluateAll(list => list.map(el => ({ h: el.getBoundingClientRect().height, o: el.scrollWidth - el.clientWidth, t: el.innerText.replace(/\s+/g, ' ') })));
-    for (const row of sizes) assert.ok(row.h <= (mobile ? 36 : 30) && row.o <= 1, `Compact single-line row ${JSON.stringify(row)}`);
+    for (const row of sizes) assert.ok((mobile ? row.h >= 44 && row.h <= 46 : row.h <= 30) && row.o <= 1, `Compact single-line row (44px touch target on phones) ${JSON.stringify(row)}`);
     assert.equal(new Set(sizes.map(row => row.h)).size, 1, 'Every tool row has the same height, whatever its status or duration');
     await failedRow.locator(':scope > details > summary').click();
     assert.match(await failedRow.locator('.agent-tool-terminal').innerText(), /\$ pnpm test release\.test\.ts[\s\S]*FAIL release\.test\.ts[\s\S]*Exit code 1/);
     await shot('expanded');
     log(`${name}:activity`, { summary: summary.replace(/\s+/g, ' '), rows: sizes });
+    if (mobile) {
+      const audit = await page.evaluate(mobileAudit);
+      assert.deepEqual(audit, { smallText: [], smallTargets: [], overflow: [] }, `Phone ergonomics ${JSON.stringify(audit)}`);
+      log(`${name}:ergonomics`, audit);
+    }
 
     // Attachments: drop on the composer, drop on the transcript, paste, and the picker.
     const chips = page.locator('.agent-composer-chip:not(.is-preparing)');
@@ -302,6 +328,19 @@ try {
 
     // Stop: cancels the running turn.
     await send('Run it again'); await fixture('play', 10); await frames(page);
+    // Stick to bottom only while the reader is there: streaming follows the tail, scrolling up stops it.
+    const log_ = page.locator('.agent-dom-transcript');
+    const gap = () => log_.evaluate(el => Math.round(el.scrollHeight - el.scrollTop - el.clientHeight));
+    assert.ok(await gap() < 48, `Streaming follows the tail (${await gap()})`);
+    if (await log_.evaluate(el => el.scrollHeight > el.clientHeight + 200)) {
+      await log_.hover(); await page.mouse.wheel(0, -400); await page.waitForTimeout(150);
+      const before = await log_.evaluate(el => el.scrollTop);
+      await fixture('play', 3); await frames(page); await page.waitForTimeout(100);
+      assert.equal(await log_.evaluate(el => el.scrollTop), before, 'Scrolled-up reader is not pulled down by new output');
+      await page.getByRole('button', { name: 'Jump to latest response' }).click(); await page.waitForTimeout(150);
+      assert.ok(await gap() < 48, 'Jump to latest returns to the tail');
+      log(`${name}:follow-tail`, { heldAt: before });
+    }
     await page.getByRole('button', { name: 'Stop response' }).click();
     await page.waitForFunction(() => window.fixture.cancels.length === 1);
     await page.locator('.agent-live-status').waitFor({ state: 'detached' });

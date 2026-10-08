@@ -206,7 +206,7 @@ async fn long_tool_loop_journal_grows_with_new_content_not_transcript_squared() 
         inner: SqliteStore::open(&path).unwrap(),
         metrics: metrics.clone(),
     };
-    let mut builder = Nanocodex::builder(Claude::new(client, "test"));
+    let mut builder = Nanocodex::builder(Claude::new(client, "test")).max_tokens(4096);
     for index in 0..10 {
         builder = builder.tool(tool(index), |input: Value| async move {
             let command = input["command"].as_str().unwrap_or_default().to_owned();

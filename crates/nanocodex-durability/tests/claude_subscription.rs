@@ -192,6 +192,7 @@ async fn build_agent(
     )
     .subscription_compatibility();
     Nanocodex::builder(Claude::new(client, "synthetic"))
+        .max_tokens(4096)
         .system("Use the synthetic effect; keep its result.")
         .cache_one_hour()
         .keep_thinking()
@@ -534,6 +535,7 @@ async fn frozen_subscription_request_survives_sqlite_reopen_with_changed_client_
         let caller = json!({"type":"text", "text":"Original caller policy", "cache_control":{"type":"ephemeral","ttl":"1h"}});
         let (agent, events) =
             Nanocodex::builder(Claude::new(client(originally_enabled), "original-model"))
+                .max_tokens(4096)
                 .system_blocks(vec![caller.clone()])
                 .durability(state)
                 .await
@@ -558,6 +560,7 @@ async fn frozen_subscription_request_survives_sqlite_reopen_with_changed_client_
             .unwrap();
         let (agent, events) =
             Nanocodex::builder(Claude::new(client(!originally_enabled), "changed-model"))
+                .max_tokens(4096)
                 .system("Changed caller policy")
                 .durability(state)
                 .await

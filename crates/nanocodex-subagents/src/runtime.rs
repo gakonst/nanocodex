@@ -21,7 +21,7 @@ use futures_util::future::join_all;
 use jsonschema::Validator;
 use nanocodex_agent::{
     AgentEvents, AgentHandle, ChildSnapshot, Nanocodex, NanocodexError, Result as AgentResult,
-    TurnResult,
+    TurnResult, events::AgentEventKind,
 };
 use serde::Serialize;
 use serde_json::Value;
@@ -113,6 +113,8 @@ pub struct Registry {
         std::sync::Mutex<HashMap<String, tokio::sync::watch::Receiver<Option<Result<(), String>>>>>,
     journal_writer: std::sync::atomic::AtomicBool,
     checkpoints: std::sync::Mutex<HashMap<(String, AgentId), ChildSnapshot>>,
+    /// In-flight mid-turn checkpoint captures; `true` requests one more pass.
+    progress_captures: std::sync::Mutex<HashMap<(String, AgentId), bool>>,
     pending_resume: std::sync::Mutex<HashMap<String, Vec<AgentId>>>,
 }
 
@@ -997,6 +999,7 @@ impl Registry {
             restored: std::sync::Mutex::new(HashMap::new()),
             journal_writer: std::sync::atomic::AtomicBool::new(false),
             checkpoints: std::sync::Mutex::new(HashMap::new()),
+            progress_captures: std::sync::Mutex::new(HashMap::new()),
             pending_resume: std::sync::Mutex::new(HashMap::new()),
         }
     }
@@ -1200,6 +1203,64 @@ impl Registry {
                 registry.changed();
             }
         }));
+    }
+
+    /// Journals a running child's latest committed step.
+    ///
+    /// Turn-boundary checkpoints alone would make a restart replay every step
+    /// of a long delegated turn. Captures coalesce per child, and a capture
+    /// that lands after the turn settled never replaces its final boundary.
+    pub(super) fn capture_progress(self: &Arc<Self>, root_session_id: &str, id: AgentId) {
+        if self.store_for(root_session_id).is_none() {
+            return;
+        }
+        let key = (root_session_id.to_owned(), id);
+        {
+            let mut captures = self
+                .progress_captures
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if let Some(again) = captures.get_mut(&key) {
+                *again = true;
+                return;
+            }
+            captures.insert(key.clone(), false);
+        }
+        let registry = Arc::clone(self);
+        drop(platform::spawn(async move {
+            loop {
+                let harness = registry.running_harness(&key.0, key.1).await;
+                if let Some(harness) = harness
+                    && let Ok(snapshot) = harness.snapshot().await
+                    && registry.running_harness(&key.0, key.1).await.is_some()
+                {
+                    registry.record_checkpoint(&key.0, key.1, snapshot);
+                    registry.changed();
+                }
+                let mut captures = registry
+                    .progress_captures
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                match captures.get_mut(&key) {
+                    Some(again) if *again => *again = false,
+                    _ => {
+                        captures.remove(&key);
+                        break;
+                    }
+                }
+            }
+        }));
+    }
+
+    async fn running_harness(&self, root_session_id: &str, id: AgentId) -> Option<HarnessHandle> {
+        self.state
+            .lock()
+            .await
+            .scopes
+            .get(root_session_id)
+            .and_then(|scope| scope.sessions.get(&id))
+            .filter(|session| session.active || matches!(session.status, AgentStatus::Running))
+            .and_then(|session| session.harness.clone())
     }
 
     /// Restores a root's journaled task tree after a runtime restart.
@@ -2515,8 +2576,17 @@ pub(super) fn forward_events(
             return;
         }
         while let Some(event) = events.recv().await {
+            // Each provider call starts from a committed step (prompt plus all
+            // finished tool results), and each tool batch begins at one.
+            let progress = matches!(
+                event.kind,
+                AgentEventKind::ModelCallStarted | AgentEventKind::ToolCall
+            );
             if !send_update(&updates, &root_session_id, AgentUpdate::Event { id, event }) {
                 return;
+            }
+            if progress && let Some(registry) = registry.upgrade() {
+                registry.capture_progress(&root_session_id, id);
             }
         }
         if let Some(registry) = registry.upgrade() {

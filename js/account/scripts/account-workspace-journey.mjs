@@ -73,7 +73,8 @@ res.setHeader('content-type','text/html');res.end('<!doctype html><html><head><m
 await new Promise(r=>server.listen(0,'127.0.0.1',r));const origin=`http://127.0.0.1:${server.address().port}`;
 const browser=await chromium.launch({executablePath:process.env.CHROME_PATH||chromium.executablePath(),headless:true});
 const contextFor=async(viewport,theme='light')=>{
- const context=await browser.newContext({viewport,colorScheme:theme});
+ const phone=viewport.width<500;
+ const context=await browser.newContext({viewport,colorScheme:theme,...(phone?{isMobile:true,hasTouch:true,deviceScaleFactor:3}:{})});
  await context.route('**/*',route=>route.request().url().startsWith(origin)?route.continue():route.abort());
  await context.addInitScript(t=>{document.addEventListener('DOMContentLoaded',()=>{document.documentElement.dataset.theme=t;});localStorage.setItem('nanocodex-theme',t);},theme);
  return context;
@@ -81,6 +82,15 @@ const contextFor=async(viewport,theme='light')=>{
 const screenshot=async(page,name)=>{
  assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true,`${name}: horizontal overflow`);
  await page.screenshot({path:`${out}/${name}.png`,fullPage:true});shots.push(name);
+};
+// Phone ergonomics: no input below 16px (iOS focus zoom), every visible control a 44px target.
+const ergonomics=[];
+const phoneAudit=()=>{
+ const shown=el=>{const r=el.getBoundingClientRect();const s=getComputedStyle(el);return r.width>0&&r.height>0&&s.visibility!=='hidden'&&s.display!=='none'&&!el.closest('[inert]');};
+ const smallText=[],smallTargets=[];
+ for(const el of document.querySelectorAll('input:not([type=file]):not([type=checkbox]):not([type=radio]),textarea,select'))if(shown(el)&&parseFloat(getComputedStyle(el).fontSize)<16)smallText.push(`${el.tagName}.${el.className} ${getComputedStyle(el).fontSize}`);
+ for(const el of document.querySelectorAll('button,a[href],summary,[role=button],select,input[type=checkbox]')){if(!shown(el)||(el.tagName==='A'&&el.closest('p,li,td')))continue;const r=el.getBoundingClientRect();if(r.width<43.5||r.height<43.5)smallTargets.push(`${el.getAttribute('aria-label')||el.innerText.trim().slice(0,30)||el.className} ${Math.round(r.width)}x${Math.round(r.height)}`);}
+ return {smallText,smallTargets};
 };
 const writes=()=>requests.filter(r=>r.method==='POST'&&r.path.startsWith('/v1/credentials/vault/')).length;
 try{
@@ -93,6 +103,7 @@ try{
    if(section==='vault')await page.getByText('Example account',{exact:true}).waitFor();
    if(section==='wallet')await page.getByText('Balance: $5.00',{exact:true}).waitFor();
    await screenshot(page,`${device}-${theme}-${section}`);
+   if(device==='mobile'){const audit=await page.evaluate(phoneAudit);assert.deepEqual(audit,{smallText:[],smallTargets:[]},`${section} phone ergonomics ${JSON.stringify(audit)}`);ergonomics.push({section,theme});}
   }
   await page.goto(origin+'/account/vault?add=login');await page.getByLabel('Password',{exact:true}).waitFor();await screenshot(page,`${device}-${theme}-add-login`);
   await context.close();
@@ -135,6 +146,7 @@ try{
  await page.goto(origin+'/account/vault?add=login');await page.getByLabel('Password',{exact:true}).fill('discard-on-expiry');signedOut=true;await page.getByLabel('Name',{exact:true}).fill('Expired');await page.getByLabel('Username',{exact:true}).fill('fixture');await page.getByRole('button',{name:'Save',exact:true}).click();await page.locator('input[type="tel"]').waitFor();assert.equal(await page.locator('input[type="password"]').count(),0);
  assert.deepEqual(errors,[]);await context.close();
  await writeFile(`${out}/requests.json`,JSON.stringify({requests,errors,shots},null,2));await checkpoint(`PASS: desktop/mobile light/dark; all routes; sign-in deep link; single save; cancel; search/filter; delete confirmation; callback error; pending login reload; retry; expired session clears secret. ${shots.length} screenshots. No page errors.`);
+ console.log('phone ergonomics checked: '+ergonomics.length+' views');
  console.log('PASS account workspace browser journey ('+shots.length+' screenshots)');
  }catch(error){
  const page=browser.contexts().flatMap(context=>context.pages()).at(-1);

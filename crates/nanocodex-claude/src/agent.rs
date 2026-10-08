@@ -1162,6 +1162,7 @@ impl ClaudeBuilder {
             parallel_safe_tools: self.parallel_safe_tools,
             conversation: Mutex::new(restored.conversation),
             dispatch_fork: std::sync::RwLock::new(None),
+            round_boundary: std::sync::RwLock::new(None),
             policy: self.policy,
             admission: Mutex::new(()),
             idle: Notify::new(),
@@ -2083,6 +2084,10 @@ struct State {
     conversation: Mutex<Conversation>,
     // Native context before the active tool batch; callbacks must not lock conversation.
     dispatch_fork: std::sync::RwLock<Option<Snapshot>>,
+    // Latest committed boundary of the running turn: its start, then each tool
+    // batch. Residency/durability checkpoints read it while the turn holds
+    // `conversation`, so a child can resume without replaying finished rounds.
+    round_boundary: std::sync::RwLock<Option<Snapshot>>,
     policy: Option<Arc<dyn ClaudeExecutionPolicy>>,
     admission: Mutex<()>,
     idle: Notify,
@@ -2699,9 +2704,18 @@ impl State {
         let events = &request.events;
         let (reasoning_mode, effort) = self.emit_run_started(&request);
         let notices_before = conversation.recovery_notices.len();
+        // Publish the pre-turn boundary before mutating; a checkpoint taken
+        // during this turn must never wait for the turn to release its lock.
+        if let Ok(boundary) = self.snapshot(&conversation).await {
+            *self.round_boundary.write().expect("round boundary lock") = Some(boundary);
+        }
         let mut result = self
             .run_locked(&mut conversation, &request, speed, &cancel)
             .await;
+        self.round_boundary
+            .write()
+            .expect("round boundary lock")
+            .take();
         if result
             .as_ref()
             .err()
@@ -3829,6 +3843,8 @@ impl State {
             // cancelled. Keep *every* assistant tool_use paired with a result:
             // completed results are retained, while interrupted handlers get an
             // explicit unknown-outcome error. Never silently replay their calls.
+            *self.round_boundary.write().expect("round boundary lock") =
+                Some(fork_snapshot.clone());
             *self.dispatch_fork.write().expect("fork boundary lock") = Some(fork_snapshot);
             let fork_boundary = DispatchForkBoundary(&self.dispatch_fork);
             let mut results = vec![None; tool_calls.len()];
@@ -3968,6 +3984,11 @@ impl State {
                             .map(|text| estimate_text_tokens(&text))
                             .unwrap_or(0),
                     );
+                // This round is now committed history: expose it to checkpoints
+                // taken while the next provider call holds the conversation.
+                if let Ok(boundary) = self.snapshot(conversation).await {
+                    *self.round_boundary.write().expect("round boundary lock") = Some(boundary);
+                }
                 if interrupted {
                     return Err(NanocodexError::TurnCancelled);
                 }
@@ -4309,19 +4330,62 @@ impl LifecycleBackend for Driver {
     fn runtime_snapshot(&self) -> BackendFuture<Result<ChildSnapshot>> {
         let state = self.state.clone();
         Box::pin(async move {
-            let conversation = state.conversation.lock().await;
-            if state.stopped.load(Ordering::SeqCst) {
-                return Err(NanocodexError::AgentStopped);
-            }
-            let snapshot = state.snapshot(&conversation).await?;
+            // An idle child exposes its complete conversation. A running turn
+            // holds the conversation lock until it settles, so expose its
+            // latest committed round instead of blocking the caller (and the
+            // child's harness loop) for the remainder of the turn.
+            let (snapshot, has_conversation) = match state.conversation.try_lock() {
+                Ok(conversation) => {
+                    if state.stopped.load(Ordering::SeqCst) {
+                        return Err(NanocodexError::AgentStopped);
+                    }
+                    let has_conversation =
+                        !conversation.messages.is_empty() || !conversation.summary.is_empty();
+                    (state.snapshot(&conversation).await?, has_conversation)
+                }
+                Err(_) => {
+                    let boundary = state
+                        .dispatch_fork
+                        .read()
+                        .map_err(|_| unsupported("Claude fork boundary lock poisoned"))?
+                        .clone()
+                        .or_else(|| {
+                            state
+                                .round_boundary
+                                .read()
+                                .ok()
+                                .and_then(|boundary| boundary.clone())
+                        });
+                    if let Some(mut snapshot) = boundary {
+                        if state.stopped.load(Ordering::SeqCst) {
+                            return Err(NanocodexError::AgentStopped);
+                        }
+                        // The boundary ends at completed history; the restored
+                        // child receives a fresh prompt, never a dangling
+                        // continuation of a server-side request.
+                        snapshot.conversation.pending_continuation = false;
+                        snapshot.conversation.previous_message_id = None;
+                        snapshot.conversation.container = None;
+                        let has_conversation = !snapshot.conversation.messages.is_empty()
+                            || !snapshot.conversation.summary.is_empty();
+                        (snapshot, has_conversation)
+                    } else {
+                        let conversation = state.conversation.lock().await;
+                        if state.stopped.load(Ordering::SeqCst) {
+                            return Err(NanocodexError::AgentStopped);
+                        }
+                        let has_conversation = !conversation.messages.is_empty()
+                            || !conversation.summary.is_empty();
+                        (state.snapshot(&conversation).await?, has_conversation)
+                    }
+                }
+            };
             let model = state.model().parse().map_err(unsupported)?;
             let thinking = if state.effort().is_none() {
                 HarnessModel::default_thinking(model)
             } else {
                 state.thinking()
             };
-            let has_conversation =
-                !conversation.messages.is_empty() || !conversation.summary.is_empty();
             Ok(ChildSnapshot::Native {
                 model,
                 session_id: state.session_id.clone(),

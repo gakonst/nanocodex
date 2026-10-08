@@ -25,6 +25,7 @@ async fn reflected_credential_in_accepted_sse_error_is_not_persisted() {
         .unwrap();
     let client = ClaudeClient::new(reqwest::Client::new(), endpoint, secret);
     let (agent, events) = Nanocodex::builder(Claude::new(client, "test"))
+        .max_tokens(4096)
         .durability(state.clone())
         .await
         .unwrap()
@@ -116,6 +117,7 @@ async fn accepted_sse_error_scrubs_both_rejected_and_current_auth_generations() 
     ));
     let client = ClaudeClient::with_auth_provider(reqwest::Client::new(), endpoint, auth);
     let (agent, events) = Nanocodex::builder(Claude::new(client, "test"))
+        .max_tokens(4096)
         .durability(state.clone())
         .await
         .unwrap()

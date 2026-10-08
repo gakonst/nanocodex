@@ -190,6 +190,8 @@ export function TerminalTranscriptSurface({
         role="log"
         aria-live="off"
         onWheel={(event) => {
+          // Scrolling up releases the tail at once, before a streamed resize can pull the reader back.
+          if (event.deltaY < 0 && event.currentTarget.scrollTop > 0) followTail.current = false;
           if (event.deltaY < 0) loadOlderNearTop(event.currentTarget, true);
           else if (event.deltaY > 0) rearmShortHistory(event.currentTarget);
         }}
@@ -197,6 +199,7 @@ export function TerminalTranscriptSurface({
         onTouchMove={(event) => {
           const y = event.touches[0]?.clientY;
           if (y !== undefined && touchY.current !== undefined && y > touchY.current) {
+            if (event.currentTarget.scrollTop > 0) followTail.current = false;
             loadOlderNearTop(event.currentTarget, true);
           } else if (y !== undefined && touchY.current !== undefined && y < touchY.current) {
             rearmShortHistory(event.currentTarget);

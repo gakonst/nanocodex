@@ -95,3 +95,25 @@
   .account-hub-layout { width: 100%; margin-top: 4px; }
   .account-hub-cli { display: none; }
 }
+
+/* Phones: 44px touch targets and >=16px fields (no iOS focus zoom) across the account workspace.
+   These are platform minimums, so they win over the compact desktop sizing of individual panels. */
+@media (max-width: 760px), (pointer: coarse) {
+  .account-hub :is(button, select, [role="button"]):not(.account-skip) { min-width: 44px !important; min-height: 44px !important; }
+  .account-hub :is(input:not([type="checkbox"], [type="radio"], [type="range"], [type="file"]), select, textarea) { min-height: 44px !important; font-size: max(16px, 1em) !important; }
+  .account-hub .account-hub-brand,
+  .account-hub .account-hub-navigation a { display: inline-flex; min-width: 44px; min-height: 44px; align-items: center; justify-content: center; }
+  .account-hub .account-secondary-settings > summary { display: flex; min-height: 44px; align-items: center; }
+}
+/* viewport-fit=cover: keep the header and content clear of the notch, rounded corners and home bar. */
+.account-hub-topbar {
+  box-sizing: content-box;
+  padding-top: env(safe-area-inset-top);
+  padding-left: max(clamp(24px, 4vw, 56px), env(safe-area-inset-left));
+  padding-right: max(clamp(24px, 4vw, 56px), env(safe-area-inset-right));
+}
+.account-hub { padding-bottom: env(safe-area-inset-bottom); }
+@media (max-width: 720px) {
+  .account-hub-topbar { padding-left: max(20px, env(safe-area-inset-left)); padding-right: max(20px, env(safe-area-inset-right)); }
+  .account-hub-body { padding-left: max(20px, env(safe-area-inset-left)); padding-right: max(20px, env(safe-area-inset-right)); }
+}

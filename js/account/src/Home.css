@@ -661,3 +661,41 @@ html[data-theme="light"] .chat-workspace {
   .chat-workspace .agent-voice-feedback { left: max(10px, env(safe-area-inset-left)); right: max(10px, env(safe-area-inset-right)); bottom: calc(100% + 6px); width: auto; max-width: none; }
   .chat-workspace :is(.agent-voice-status, .agent-voice-error) { font-size: 13px; box-shadow: 0 8px 24px rgb(0 0 0 / 0.2); }
 }
+
+/* Phones: 44px touch targets, a sliding drawer, and no scroll chaining behind the chat. */
+@media (max-width: 760px), (pointer: coarse) {
+  .chat-workspace .agent-touch-actions { height: 44px; }
+  .chat-workspace .agent-touch-actions button { width: 44px; min-width: 44px; height: 44px; min-height: 44px; }
+  .chat-workspace .agent-touch-actions .agent-model-trigger { width: auto; height: 44px; min-height: 44px; }
+  .chat-workspace .agent-voice-control { height: 44px; }
+  .chat-workspace .agent-voice-control .agent-voice-preferences > button { width: 44px; min-width: 44px; margin-left: -8px; }
+  .chat-workspace .agent-touch-actions .agent-voice-mute-button { width: auto; }
+  .chat-workspace .agent-work-group > summary,
+  .chat-workspace .agent-tool-row > details > summary { height: 44px; }
+  .chat-workspace .agent-response-actions button { width: 44px; height: 44px; }
+  .chat-workspace .agent-jump-latest { width: 44px; height: 44px; }
+  .chat-workspace .agent-rich-table-toolbar button,
+  .chat-workspace .agent-rich-markdown [data-streamdown="code-block-header"] button,
+  .chat-workspace .agent-rich-markdown [data-streamdown="code-block-header"] + div button { min-width: 44px; min-height: 44px; }
+  .chat-workspace :is(.agent-tool-protocol, .agent-error-notice-details) > summary { display: flex; min-height: 44px; align-items: center; }
+  .chat-running-agents { min-width: 44px; justify-content: center; }
+  .agent-navigation-brand > a { min-height: 44px; }
+  .agent-navigation-filter button { min-height: 44px; font-size: 13px; }
+  .chat-workspace input:not([type="checkbox"], [type="radio"], [type="range"]), .chat-workspace select, .chat-workspace textarea { font-size: max(16px, 1em); }
+  .chat-workspace .agent-touch-composer textarea { font-size: 16px; }
+  .chat-workspace .agent-dom-transcript, .agent-navigation-list { overscroll-behavior: contain; }
+}
+@media (max-width: 760px) {
+  .agent-navigation {
+    display: flex; visibility: hidden; transform: translateX(-104%);
+    transition: transform .24s cubic-bezier(.2, .8, .2, 1), visibility 0s linear .24s;
+  }
+  .chat-workspace .agent-navigation.is-open { transform: none; transition-delay: 0s; }
+  .agent-navigation-backdrop { animation: agent-navigation-backdrop-in .2s ease-out; }
+}
+@keyframes agent-navigation-backdrop-in { from { opacity: 0; } }
+/* Landscape phones keep the persistent sidebar: hold it and the header clear of the notch. */
+@media (pointer: coarse) and (min-width: 761px) {
+  .chat-workspace .agent-navigation { padding-left: max(6px, env(safe-area-inset-left)); }
+  .chat-workspace .agent-chat-header { padding-right: max(12px, env(safe-area-inset-right)); }
+}

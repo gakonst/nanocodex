@@ -137,6 +137,7 @@ async fn tool_hooks_deny_rewrite_retain_receipts_and_do_not_rerun_after_reopen()
             .unwrap();
         let target = effects.clone();
         let (agent, events) = Nanocodex::builder(Claude::new(client.clone(), "test"))
+            .max_tokens(4096)
             .tool_hooks(Arc::new(Policy { log: hooks.clone() }))
             .tool_hooks(Arc::new(InnerAudit { log: inner.clone() }))
             .tool_with_context(ToolDefinition { name:"WriteReceipt".into(),description:"Write one authorized receipt".into(),input_schema:json!({"type":"object","properties":{"content":{"type":"string"}},"required":["content"]}), strict:None,defer_loading:false }, move |input, invocation| {

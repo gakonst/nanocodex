@@ -76,6 +76,7 @@ async fn reopened_pending_turn_cannot_dispatch_a_tool_outside_its_frozen_catalog
             || PromptRequest::new("only the admitted capabilities").request_id("frozen-turn");
         // The first owner has no tools. Its admitted request stays in-flight.
         let (old, old_events) = Nanocodex::builder(Claude::new(client.clone(), "test"))
+            .max_tokens(4096)
             .durability(state().await)
             .await
             .unwrap()
@@ -89,6 +90,7 @@ async fn reopened_pending_turn_cannot_dispatch_a_tool_outside_its_frozen_catalog
         let counter = effects.clone();
         // A host upgrade adds a tool. The old operation must retain its zero-tool catalog.
         let (recovered, recovered_events) = Nanocodex::builder(Claude::new(client, "new-model"))
+            .max_tokens(4096)
             .client_tool_search()
             .tool(
                 ToolDefinition {

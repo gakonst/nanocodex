@@ -423,6 +423,9 @@ const TURN_ORIGIN_LOOKUP_BUDGET_MS = 1_500;
 // How long admission joins an in-flight full inventory before hedging with a selected lookup.
 const TURN_ORIGIN_INVENTORY_JOIN_MS = 500;
 const MAX_RETRY_DELAY_MS = 60_000;
+// Set while the resident runtime owns unfinished subagents. A restarted
+// isolate has no runtime to ask, so its alarm uses this to rebuild one.
+const SUBAGENTS_ACTIVE_KEY = "managed.subagents_active";
 const MAX_IMPORT_BATCHES_PER_CREATE = 4;
 const UUID =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -6062,6 +6065,20 @@ export class DurableAgentSession extends DurableComputerObject {
       // Recovery remains the sole owner of a retained retry_at and installs
       // the next alarm from the same ordered pass that evaluates that row.
       this.#scheduleRecovery();
+      return;
+    }
+    if (!this.#agent && !this.#agentPromise && this.#session() !== undefined
+      && this.ctx.storage.kv.get(SUBAGENTS_ACTIVE_KEY) === true) {
+      // Eviction or a deploy dropped a runtime that still owned children.
+      // Rebuilding it lets the durable registry restore the task tree and
+      // resume interrupted children without waiting for the next prompt.
+      try {
+        await this.#ensureAgent();
+        console.info({ type: "managed.subagents_recovered" });
+      } catch (error) {
+        console.warn({ type: "managed.subagent_recovery_failed", error_kind: errorKind(error) });
+      }
+      await this.#scheduleNextAlarm();
       return;
     }
     const session = this.#session();
@@ -14101,7 +14118,10 @@ export class DurableAgentSession extends DurableComputerObject {
       && this.#managedRealtimeSession() === undefined) {
       const session = this.#session();
       const lastActive = session?.last_active ?? now;
-      targets.push(await this.#hasActiveSubagents()
+      const subagentsActive = await this.#hasActiveSubagents();
+      if (subagentsActive) this.ctx.storage.kv.put(SUBAGENTS_ACTIVE_KEY, true);
+      else if (this.#agent) this.ctx.storage.kv.delete(SUBAGENTS_ACTIVE_KEY);
+      targets.push(subagentsActive
         ? now + MAX_RETRY_DELAY_MS
         : Math.max(now + 1, lastActive + this.#idleTimeoutMs(), this.#preparationExpiresAt));
     }
