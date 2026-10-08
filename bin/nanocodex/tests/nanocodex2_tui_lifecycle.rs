@@ -4496,6 +4496,22 @@ async fn terminal_retains_a_long_older_response_across_history_page_boundaries()
 }
 
 #[tokio::test]
+async fn terminal_tool_activity_keeps_wrapper_failures_visible() {
+    let mut fixture = Fixture::start_with_active(true).await;
+    fixture.nested(REMOTE_TURN, "tool.call", json!({"call_id": "wrapper", "tool": "exec", "arguments": "await check(); throw new Error('WRAPPER_FAILURE')"}));
+    fixture.nested(REMOTE_TURN, "tool.call", json!({"call_id": "wrapper/code-0", "tool": "exec_command", "arguments": {"cmd": "CHILD_COMMAND"}}));
+    fixture.nested(REMOTE_TURN, "tool.result", json!({"call_id": "wrapper/code-0", "tool": "exec_command", "status": "completed", "duration_ns": 1, "result": {"output": "child succeeded", "exit_code": 0}}));
+    fixture.nested(REMOTE_TURN, "tool.result", json!({"call_id": "wrapper", "tool": "exec", "status": "failed", "duration_ns": 2, "result": {"error": "WRAPPER_FAILURE"}}));
+    fixture.complete(REMOTE_TURN);
+    fixture.terminal.wait_text("execution failed").await;
+    fixture.terminal.wait_no_text("CHILD_COMMAND").await;
+    eprintln!(
+        "WRAPPER FAILURE\n{}",
+        fixture.terminal.screen.lock().unwrap().screen().contents()
+    );
+}
+
+#[tokio::test]
 async fn terminal_tool_activity_is_compact_live_and_expandable() {
     let mut fixture = Fixture::start_with_active(true).await;
     for (id, command) in [

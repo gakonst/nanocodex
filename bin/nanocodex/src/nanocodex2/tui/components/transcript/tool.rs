@@ -363,7 +363,12 @@ fn summary_lines(
     expanded: bool,
 ) -> Vec<Line<'static>> {
     if tool.name == "__tool_activity" {
-        let counts = tool.arguments.as_array().map(Vec::as_slice).unwrap_or(&[]);
+        let counts = tool
+            .arguments
+            .get("counts")
+            .and_then(Value::as_array)
+            .map(Vec::as_slice)
+            .unwrap_or(&[]);
         let total = counts
             .iter()
             .filter_map(Value::as_u64)
@@ -380,6 +385,15 @@ fn summary_lines(
             let count = count.as_u64().unwrap_or(0);
             if count > 0 {
                 text.push_str(&format!(" · {count} {label}"));
+            }
+        }
+        for (key, label) in [
+            ("running", "still running"),
+            ("failed", "execution failed"),
+            ("waiting", "waiting for execution"),
+        ] {
+            if tool.arguments.get(key).and_then(Value::as_bool) == Some(true) {
+                text.push_str(&format!(" · {label}"));
             }
         }
         if let Some(duration) = tool.duration_ns {
