@@ -237,9 +237,10 @@ enum Command {
 
 #[derive(Args)]
 struct Attach {
-    /// Account-owned agent URL or ID. Choose from a list when omitted.
-    #[arg(value_name = "AGENT_URL_OR_ID", value_parser = parse_agent_reference)]
-    agent: Option<AgentReference>,
+    /// Agent ID, owner URL, or full shared-thread URL. Choose from a list when omitted.
+    // Validate after Clap so errors never echo a bearer URL.
+    #[arg(value_name = "AGENT_URL_OR_ID")]
+    agent: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -690,8 +691,8 @@ async fn run(cli: Cli) -> Result<(), ManagedError> {
     if cli.managed2 {
         return match cli.command {
             None => tui::run_managed2(None).await,
-            Some(Command::Attach(Attach { agent: Some(agent) })) if agent.managed_origin.is_none() => {
-                tui::run_managed2(Some(agent.agent_id)).await
+            Some(Command::Attach(Attach { agent: Some(agent) })) if valid_managed_agent_id(&agent) => {
+                tui::run_managed2(Some(agent)).await
             }
             Some(Command::Run(command)) if !command.settings.is_explicit() => {
                 managed2::run(command.agent, Some(command.prompt), command.idempotency_key).await
@@ -701,6 +702,18 @@ async fn run(cli: Cli) -> Result<(), ManagedError> {
             )),
         };
     }
+    // Shared links carry their own narrowly scoped authority. Never load an
+    // account credential or start a local Hand for a guest attachment.
+    let attach_reference = match &cli.command {
+        Some(Command::Attach(Attach { agent: Some(value) })) => {
+            if value.contains("/share/") || value.contains("#token=") {
+                let shared = nanocodex_managed::SharedThreadClient::from_url(value)?;
+                return tui::run_shared(shared).await;
+            }
+            Some(parse_agent_reference(value).map_err(ManagedError::Configuration)?)
+        }
+        _ => None,
+    };
     let command = match cli.command {
         Some(Command::Tui(command)) => {
             return command
@@ -794,10 +807,9 @@ async fn run(cli: Cli) -> Result<(), ManagedError> {
         }
         command => command,
     };
-    let managed_origin = match &command {
-        Some(Command::Attach(Attach { agent: Some(agent) })) => agent.managed_origin.as_deref(),
-        _ => None,
-    };
+    let managed_origin = attach_reference
+        .as_ref()
+        .and_then(|agent| agent.managed_origin.as_deref());
     let client = {
         let _timing = startup_timing::Stage::new("managed_client");
         client_from_environment(managed_origin)?
@@ -822,8 +834,8 @@ async fn run(cli: Cli) -> Result<(), ManagedError> {
         Some(Command::Vault(command)) => command.run(&client).await,
         Some(Command::Connectors(command)) => command.run(&client).await,
         Some(Command::Voice(command)) => voice::run(&client, command).await,
-        Some(Command::Attach(command)) => {
-            attach_tui(&client, command.agent.map(|agent| agent.agent_id)).await
+        Some(Command::Attach(_)) => {
+            attach_tui(&client, attach_reference.map(|agent| agent.agent_id)).await
         }
         Some(Command::ContinueAttach(_)) => unreachable!("handled before managed client setup"),
         Some(Command::Computer(_)) => unreachable!("handled before managed client setup"),
@@ -1496,7 +1508,11 @@ mod tests {
             panic!("attach command parsed into the wrong variant");
         };
         assert_eq!(
-            agent,
+            agent
+                .as_deref()
+                .map(parse_agent_reference)
+                .transpose()
+                .unwrap(),
             Some(AgentReference {
                 agent_id: "77777777-7777-4777-8777-777777777777".to_owned(),
                 managed_origin: Some(

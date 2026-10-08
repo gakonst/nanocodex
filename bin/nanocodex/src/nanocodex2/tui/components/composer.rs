@@ -244,6 +244,7 @@ pub(crate) struct Composer {
     fast_mode: bool,
     input_mode: Option<String>,
     backend_label: Option<String>,
+    shared_access: Option<bool>,
     live_controls: bool,
     submission_paused: bool,
     activity_active: bool,
@@ -385,6 +386,15 @@ impl Composer {
         self.backend_label = Some(label.to_owned());
     }
 
+    pub(crate) fn set_shared_access(&mut self, writable: bool) {
+        self.shared_access = Some(writable);
+        self.set_backend_label(if writable {
+            "Shared thread · write access"
+        } else {
+            "Shared thread · read only"
+        });
+    }
+
     pub(crate) fn control_snapshot(&self) -> serde_json::Value {
         serde_json::json!({"text":self.draft,"cursor":self.cursor,"input_mode":self.input_mode,
             "attachments":self.images.iter().enumerate().map(|(id,image)| serde_json::json!({"id":id,"range":{"start":image.range.start,"end":image.range.end}})).collect::<Vec<_>>()})
@@ -411,6 +421,7 @@ impl Composer {
             fast_mode: false,
             input_mode: None,
             backend_label: None,
+            shared_access: None,
             live_controls: false,
             submission_paused: false,
             activity_active: false,
@@ -1643,7 +1654,7 @@ impl Composer {
         self.effort_hit_area = None;
         self.model_hit_area = None;
         self.subagent_hit_area = None;
-        let shell_mode = self.draft.starts_with('!');
+        let shell_mode = self.shared_access.is_none() && self.draft.starts_with('!');
         let border = self.border_style(theme);
         let top = area.y;
         let bottom = area.bottom() - 1;
@@ -1696,20 +1707,28 @@ impl Composer {
         } else {
             format!("{usage_before_subagents}{} ", subagent_segment.trim_start())
         };
-        let model = format!(" {} ", self.model_label());
+        let model = if self.shared_access.is_some() {
+            String::new()
+        } else {
+            format!(" {} ", self.model_label())
+        };
         let timer = self
             .turn_timers
             .front()
             .map(|timer| format!(" {} ", timer.label()))
             .unwrap_or_default();
-        let effort = if self.auto_routing && self.routed_effort.is_none() {
-            String::new()
-        } else {
-            format!(" {} ", self.effort().as_str())
-        };
-        let fast_mode = (!self.auto_routing && self.fast_mode).then_some("⚡ ");
-        let pro_mode =
-            (!self.auto_routing && self.reasoning_mode == ReasoningMode::Pro).then_some("pro ");
+        let effort =
+            if self.shared_access.is_some() || self.auto_routing && self.routed_effort.is_none() {
+                String::new()
+            } else {
+                format!(" {} ", self.effort().as_str())
+            };
+        let fast_mode =
+            (self.shared_access.is_none() && !self.auto_routing && self.fast_mode).then_some("⚡ ");
+        let pro_mode = (self.shared_access.is_none()
+            && !self.auto_routing
+            && self.reasoning_mode == ReasoningMode::Pro)
+            .then_some("pro ");
         let right_width = timer.width()
             + model.width()
             + effort.width()
@@ -1860,7 +1879,11 @@ impl Composer {
                     .add_modifier(Modifier::BOLD),
             );
         }
-        let directory = format!(" {} ", self.workspace);
+        let directory = if self.shared_access.is_some() {
+            String::new()
+        } else {
+            format!(" {} ", self.workspace)
+        };
         let directory_width = directory.width().min(content_width);
         let directory_start =
             content_end.saturating_sub(u16::try_from(directory_width).unwrap_or(u16::MAX));
@@ -1875,15 +1898,26 @@ impl Composer {
         let development_start =
             directory_start.saturating_sub(u16::try_from(development_width).unwrap_or(u16::MAX));
         let hint_space = usize::from(development_start.saturating_sub(content_start));
-        let entry_hint = entry_hint(
-            theme,
-            self.draft.is_empty(),
-            self.activity_active,
-            self.live_controls,
-            self.submission_paused,
-            self.input_mode.is_some(),
-            hint_space,
-        );
+        let entry_hint = if let Some(writable) = self.shared_access {
+            Line::styled(
+                if writable {
+                    " Enter send · /id · /exit · Ctrl+C exit "
+                } else {
+                    " Scroll history · /id · /exit · Ctrl+C exit "
+                },
+                Style::default().fg(theme.muted()),
+            )
+        } else {
+            entry_hint(
+                theme,
+                self.draft.is_empty(),
+                self.activity_active,
+                self.live_controls,
+                self.submission_paused,
+                self.input_mode.is_some(),
+                hint_space,
+            )
+        };
         if entry_hint.width() <= hint_space {
             buffer.set_line(
                 content_start,

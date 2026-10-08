@@ -180,6 +180,7 @@ pub(crate) enum RootEvent {
     },
     ManagedTurnFinished,
     ManagedActiveTurns(usize),
+    SharedAccess(bool),
     ShellFinished,
     TurnsCancelled,
     ForkReady,
@@ -503,6 +504,7 @@ pub(crate) struct RootNode {
     next_session_list: u64,
     reflection_input: bool,
     managed2_preview: bool,
+    shared_thread: Option<bool>,
 }
 
 impl RootNode {
@@ -595,6 +597,7 @@ impl RootNode {
             next_session_list: 0,
             reflection_input: false,
             managed2_preview: false,
+            shared_thread: None,
         }
     }
 
@@ -606,6 +609,91 @@ impl RootNode {
         self.composer
             .component_mut()
             .set_backend_label("Managed2 · text only");
+    }
+
+    pub(crate) fn set_shared_thread(&mut self, writable: bool) {
+        self.shared_thread = Some(writable);
+        self.fork_available = false;
+        self.composer.component_mut().set_shared_access(writable);
+    }
+
+    fn shared_terminal(&mut self, event: Event, writable: bool) -> ComponentUpdate<RootEffect> {
+        if matches!(event, Event::Resize(_, _)) {
+            return ComponentUpdate::render(RenderRequest::Immediate);
+        }
+        if is_control_c(&event) {
+            return ComponentUpdate {
+                effects: vec![RootEffect::Shutdown],
+                render: RenderRequest::None,
+            };
+        }
+        if self.overlay.is_some() {
+            if is_escape(&event) || is_submit_enter(&event) {
+                self.overlay = None;
+                return ComponentUpdate::render(RenderRequest::Immediate);
+            }
+            return ComponentUpdate::none();
+        }
+        if is_control_key(&event, 'o') {
+            return self.update_transcript(TranscriptEvent::ToggleExpandAll);
+        }
+        if self.transcript.component().updates_banner_clicked(&event) {
+            return self.update_transcript(TranscriptEvent::FollowTail);
+        }
+        if let Some(command) = self.transcript.component().scroll_command(&event) {
+            let load_older = self.transcript.component().should_load_older_after(command);
+            let transcript = self.transcript.update(TranscriptEvent::Scroll(command));
+            return ComponentUpdate {
+                effects: load_older
+                    .then_some(RootEffect::LoadOlderHistory)
+                    .into_iter()
+                    .collect(),
+                render: transcript.render,
+            };
+        }
+        if let Event::Key(key) = &event {
+            if !matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) {
+                return ComponentUpdate::none();
+            }
+            if matches!(key.code, KeyCode::Enter | KeyCode::Tab) && key.modifiers.is_empty() {
+                let draft = self.composer.component().draft().trim();
+                if matches!(draft, "/exit" | "/quit") {
+                    return ComponentUpdate {
+                        effects: vec![RootEffect::Shutdown],
+                        render: RenderRequest::None,
+                    };
+                }
+                if draft == "/id" {
+                    return ComponentUpdate {
+                        effects: vec![RootEffect::ShowAgentId],
+                        render: RenderRequest::Immediate,
+                    };
+                }
+                let message = if !writable {
+                    Some("This shared thread is read only.")
+                } else if draft.starts_with('/') || draft.starts_with('!') {
+                    Some("Shared threads accept text, /id, and /exit only.")
+                } else if self.has_active_turns() {
+                    Some("Wait for the active turn before sending another message.")
+                } else {
+                    None
+                };
+                if let Some(message) = message {
+                    self.notification =
+                        Some(Notification::plain(message.to_owned(), Color::Yellow));
+                    return ComponentUpdate::render(RenderRequest::Immediate);
+                }
+                // Tab must not create a queued mutation that could send later.
+                if key.code == KeyCode::Tab {
+                    return ComponentUpdate::none();
+                }
+            }
+        }
+        if matches!(&event, Event::Key(_) | Event::Paste(_)) {
+            self.edit_composer(ComposerEvent::Terminal(event))
+        } else {
+            ComponentUpdate::none()
+        }
     }
 
     fn managed2_terminal(&mut self, event: Event) -> ComponentUpdate<RootEffect> {
@@ -1273,6 +1361,9 @@ impl RootNode {
     }
 
     fn update_terminal(&mut self, event: Event) -> ComponentUpdate<RootEffect> {
+        if let Some(writable) = self.shared_thread {
+            return self.shared_terminal(event, writable);
+        }
         if self.managed2_preview {
             return self.managed2_terminal(event);
         }
@@ -4290,7 +4381,8 @@ impl Component for RootNode {
         match event {
             RootEvent::Terminal(event) => self.update_terminal(event),
             RootEvent::PasteImage(data_url) => {
-                if self.blocking_task.is_some()
+                if self.shared_thread.is_some()
+                    || self.blocking_task.is_some()
                     || self.overlay.is_some()
                     || (self.queue.component().focused() && self.queue_edit.is_none())
                 {
@@ -4465,6 +4557,10 @@ impl Component for RootNode {
             }
             RootEvent::ManagedTurnFinished => self.agent_turn_finished(),
             RootEvent::ManagedActiveTurns(count) => self.managed_active_turns(count),
+            RootEvent::SharedAccess(writable) => {
+                self.set_shared_thread(writable);
+                ComponentUpdate::render(RenderRequest::Immediate)
+            }
             RootEvent::ShellFinished => {
                 self.in_flight_shells = self.in_flight_shells.saturating_sub(1);
                 ComponentUpdate::none()

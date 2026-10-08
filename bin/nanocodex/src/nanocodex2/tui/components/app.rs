@@ -108,6 +108,9 @@ pub(crate) enum AppEvent {
         terminal_expected: bool,
     },
     ManagedTurnFinished(PaneId),
+    SharedAccess {
+        writable: bool,
+    },
     ManagedActiveTurns {
         pane: PaneId,
         count: usize,
@@ -428,6 +431,9 @@ impl AppNode {
             } => self.update_root(pane, RootEvent::WorkerTurnFinished { terminal_expected }),
             AppEvent::ManagedTurnFinished(pane) => {
                 self.update_root(pane, RootEvent::ManagedTurnFinished)
+            }
+            AppEvent::SharedAccess { writable } => {
+                self.update_root(PaneId::Main, RootEvent::SharedAccess(writable))
             }
             AppEvent::ManagedActiveTurns { pane, count } => {
                 self.update_root(pane, RootEvent::ManagedActiveTurns(count))

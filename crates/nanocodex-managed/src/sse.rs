@@ -384,15 +384,15 @@ impl ManagedEventSource for ManagedEventStream {
     }
 }
 
-struct ParsedSseFrame {
-    id: Option<String>,
-    event: Option<String>,
-    retry: Option<Duration>,
-    control_cursor: Option<String>,
-    data: Option<String>,
+pub(crate) struct ParsedSseFrame {
+    pub(crate) id: Option<String>,
+    pub(crate) event: Option<String>,
+    pub(crate) retry: Option<Duration>,
+    pub(crate) control_cursor: Option<String>,
+    pub(crate) data: Option<String>,
 }
 
-fn take_sse_frame(buffer: &mut Vec<u8>, search_from: &mut usize) -> Option<Vec<u8>> {
+pub(crate) fn take_sse_frame(buffer: &mut Vec<u8>, search_from: &mut usize) -> Option<Vec<u8>> {
     let Some((index, delimiter)) = find_sse_boundary(&buffer[*search_from..]) else {
         // Preserve only the delimiter overlap for the next network chunk.
         *search_from = buffer.len().saturating_sub(3);
@@ -419,7 +419,7 @@ fn find_sse_boundary(buffer: &[u8]) -> Option<(usize, usize)> {
     None
 }
 
-fn parse_sse_frame(frame: &[u8]) -> Result<ParsedSseFrame, ManagedError> {
+pub(crate) fn parse_sse_frame(frame: &[u8]) -> Result<ParsedSseFrame, ManagedError> {
     let frame = std::str::from_utf8(frame)
         .map_err(|_| ManagedError::InvalidEvent("SSE frame is not UTF-8".to_owned()))?;
     let normalized = frame.replace("\r\n", "\n").replace('\r', "\n");
