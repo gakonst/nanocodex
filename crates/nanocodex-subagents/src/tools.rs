@@ -586,7 +586,7 @@ impl Tool for SpawnAgent {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition::function(
             SPAWN_AGENT_TOOL,
-            "Starts an ephemeral, reusable clean-room subagent without inherited conversation history and immediately returns its ID. Children and in-memory idle snapshots are dropped when the parent runtime restarts; historical IDs do not identify recovered agents.",
+            "Starts a reusable clean-room subagent without inherited conversation history and immediately returns its ID. When the root agent is durable, the task tree survives runtime restarts with the same IDs and interrupted children resume from their latest committed checkpoint; otherwise children are dropped when the parent runtime restarts.",
             spawn_agent_parameters(),
         )
         .with_strict_parameters()

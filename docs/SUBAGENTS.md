@@ -83,11 +83,12 @@ bounded during cleanup. Subagents share the root’s provider, workspace, base
 tools, and process authority; clean conversation context is not a security
 sandbox.
 
-Children and their descendants are ephemeral: they do not inherit the root's
-durability store, checkpoints, or operation journal. Idle children may be
-rehydrated from memory while the parent runtime lives. Restarting the parent
-drops the tree, mailboxes, route pins, and child history; historical IDs cannot
-resume those children. See [durability ownership](DURABILITY.md#agent-identity-and-ephemeral-children).
+Subagent task trees are durable whenever their root is. A host that attaches
+durability to the root also installs a `SubagentStore` on the registry; the CLI
+`--local-durability` mode and the Cloudflare/WebAssembly durable host do this
+automatically. See [durable subagents](DURABILITY.md#durable-subagent-task-trees).
+Without a store, children remain in-memory only: restarting the parent drops
+the tree, and historical IDs cannot resume those children.
 
 Tact’s subagent tree TUI is presentation owned by Tact and is not copied into
 Nanocodex’s existing Ratatui application. Nanocodex drains the same typed

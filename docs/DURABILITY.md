@@ -102,22 +102,49 @@ and running attempts in memory under its fenced owner capability. Losing the
 driver loses those claims; it does not require a state mutation to release
 them.
 
-## Agent identity and ephemeral children
+## Durable subagent task trees
 
-Durability attaches only to the agent explicitly configured with it. Spawned
-children and their descendants do not inherit execution policies, storage owners,
-operation journals, checkpoints, or resumable rollout files.
+Durability attaches to the agent explicitly configured with it. Spawned
+children do not share the root's execution policy, storage owner or operation
+journal. Instead, a durable host installs a `nanocodex_subagents::SubagentStore`
+on the subagent registry, which journals each root's task tree as one
+versioned value under a separate fenced state ID
+(`{root_state_id}:subagents:{root_session_id}`) in the same host store.
 
-Subagent topology, routing pins, mailboxes, and conversation history live only in
-the running parent runtime. Idle child resources may be unloaded and rehydrated
-from memory within that runtime; this does not write persistent state. Closing or
-reconstructing the parent drops its children. Historical child identifiers are
-not restored as active agents; new work requires a fresh spawn. Parent history
-can retain task descriptions and results without retaining child execution state.
+The registry rewrites the journal after every lifecycle change. It holds the
+topology and stable agent IDs, roles, tasks, output schemas, statuses,
+accepted outputs, instruction revisions, whether a turn was in flight, and each
+child's latest committed conversation checkpoint. Checkpoints are captured at
+spawn, after every turn and on residency eviction.
 
-Root admission, effect recovery, and checkpoint behavior are unchanged. Durable
-replay of a root tool receipt does not recreate a subagent that belonged to a
-previous runtime.
+After process loss, a deployment or Durable Object eviction, the host rebuilds
+the root, then calls `Registry::restore` followed by
+`Registry::resume_interrupted`:
+
+- Completed, failed, interrupted and closed agents keep their status, outputs
+  and IDs. They are non-resident until they are messaged, waited on or managed;
+  new spawns continue the restored ID sequence.
+- Children whose turn was in flight are marked interrupted, rehydrated from
+  their latest checkpoint and automatically sent a continuation message.
+  `wait_agent` then observes the resumed turn.
+- A child that never reached a committed boundary keeps its original
+  assignment, which is replayed on resumption.
+
+Graceful shutdown still closes descendants, and the journal records them as
+closed. Only process loss leaves in-flight children to resume.
+
+Limits, compared with the root:
+
+- Child recovery restarts from the latest committed checkpoint. Children have
+  no per-step effect receipts, so tool calls made after that checkpoint may
+  run again. The continuation message tells the child to inspect workspace
+  state and not repeat side effects.
+- Mailbox messages that were queued but not yet delivered are not journaled.
+- Claude-native children have no portable checkpoint. Their status and
+  outputs are restored, but they cannot run again, and an in-flight
+  Claude-native child is restored as failed.
+
+Root admission, effect recovery, and checkpoint behavior are unchanged.
 
 ## Store contract
 

@@ -538,6 +538,52 @@ struct JavaScriptDurabilityStore {
     route_id: String,
 }
 
+/// Journals a durable root's subagent tree through the same host durability
+/// store, under a distinct fenced state ID beside the root's execution state.
+struct JavaScriptSubagentJournal {
+    store: tokio::sync::Mutex<JavaScriptDurabilityStore>,
+    prefix: String,
+}
+
+impl nanocodex_subagents::SubagentStore for JavaScriptSubagentJournal {
+    fn load<'a>(
+        &'a self,
+        root_session_id: &'a str,
+    ) -> nanocodex_subagents::SubagentStoreFuture<'a, std::io::Result<Option<String>>> {
+        Box::pin(async move {
+            let state_id = format!("{}{root_session_id}", self.prefix);
+            let owned = self
+                .store
+                .lock()
+                .await
+                .acquire(&state_id, OwnerId::new())
+                .await
+                .map_err(std::io::Error::other)?;
+            Ok(owned.state.payload)
+        })
+    }
+
+    fn save<'a>(
+        &'a self,
+        root_session_id: &'a str,
+        payload: String,
+    ) -> nanocodex_subagents::SubagentStoreFuture<'a, std::io::Result<()>> {
+        Box::pin(async move {
+            let state_id = format!("{}{root_session_id}", self.prefix);
+            let mut store = self.store.lock().await;
+            let owned = store
+                .acquire(&state_id, OwnerId::new())
+                .await
+                .map_err(std::io::Error::other)?;
+            store
+                .replace(&state_id, &owned.owner, owned.state.revision, &payload, &[])
+                .await
+                .map_err(std::io::Error::other)?;
+            Ok(())
+        })
+    }
+}
+
 #[derive(Deserialize)]
 struct JavaScriptOwnedState {
     owner_id: String,
@@ -1747,9 +1793,21 @@ impl WasmNanocodex {
         config: WasmConfig,
         auth: nanocodex::oai::auth::OpenAiAuth,
     ) -> Result<Self, JsValue> {
+        let mut subagent_journal = None;
         let (factory, subagents) = if let Some(settings) = &config.subagents {
             let (registry, control, updates) =
                 nanocodex_subagents::channel(settings.max_concurrency);
+            if let (Some(route_id), Some(state_id)) =
+                (&config.durability_host_id, &config.durability_id)
+            {
+                registry.set_store(Arc::new(JavaScriptSubagentJournal {
+                    store: tokio::sync::Mutex::new(JavaScriptDurabilityStore {
+                        route_id: route_id.clone(),
+                    }),
+                    prefix: format!("{state_id}:subagents:"),
+                }));
+                subagent_journal = Some(Arc::clone(&registry));
+            }
             if config.subagent_routing {
                 registry.set_spawn_router(Arc::new(JavaScriptSpawnRouter {
                     host_definition_id: config.host_definition_id,
@@ -1779,6 +1837,12 @@ impl WasmNanocodex {
             (None, None)
         };
         let (inner, events) = build_codex(config, auth, factory, None, None).await?;
+        if let Some(registry) = subagent_journal {
+            let root_session_id = inner.session_id().to_string();
+            registry.restore(&root_session_id).await.map_err(js_error)?;
+            // Delivery failures are published as subagent message updates.
+            drop(registry.resume_interrupted(&root_session_id).await);
+        }
         Ok(Self::from_parts(inner, events, subagents))
     }
 
