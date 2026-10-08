@@ -10222,6 +10222,13 @@ export class DurableAgentSession extends DurableComputerObject {
     this.#refreshAgentAccount();
     const session = this.#session();
     if (!session) throw new Error("session is not initialized");
+    // Account inventory, catalog and Vault discovery started above (or by the
+    // creation request in this same tick) are only dispatched once this
+    // isolate yields and initialization writes clear the output gate. Release
+    // them before CPU-bound construction (WASM compile, tool catalogs) so
+    // their round trips overlap it instead of starting after it.
+    await this.ctx.storage.sync();
+    signal.throwIfAborted();
     const configuration = this.#configuration();
     const complete = async (create?: (options: NonNullable<Parameters<typeof CloudflareAgent.create>[1]>) => Promise<CloudflareAgent.Agent>) => {
       signal.throwIfAborted();
