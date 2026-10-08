@@ -3,18 +3,29 @@
 // The service is a fixture, not production authorization; run js/managed/test/thread-share-links.test.ts
 // separately for the real Worker/DO authorization and storage boundary.
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { createServer } from 'node:http';
 import { mkdirSync, writeFileSync, mkdtempSync, rmSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { resolve } from 'node:path';
-const require = createRequire(new URL('../../../package.json', import.meta.url));
+// The default command validates both public attachment forms against the real CLI.
+const form = process.argv[2];
+if (!form) {
+  for (const mode of ['id', 'url']) {
+    const result = spawnSync(process.execPath, [fileURLToPath(import.meta.url), mode], { stdio: 'inherit' });
+    if (result.status !== 0) process.exit(result.status ?? 1);
+  }
+  process.exit(0);
+}
+assert.ok(form === 'id' || form === 'url', 'reference form must be id or url');
+const require = createRequire(new URL('../../../js/managed/package.json', import.meta.url));
 const { WebSocketServer } = require('ws');
 const agent = '019fc927-b280-79a7-8445-1b9996ad2fb0';
 const linkId = '00000000-0000-4000-8000-000000000001';
 const key = `ncx_live_${'a'.repeat(12)}_${'b'.repeat(43)}`;
 const token = `nsl_${'c'.repeat(43)}`;
-const outputDir = resolve('output/thread-share-tui'); mkdirSync(outputDir, { recursive: true });
+const outputDir = resolve('output/thread-share-tui', form); mkdirSync(outputDir, { recursive: true });
 const workspace = mkdtempSync(resolve(outputDir, 'run-'));
 const route = `/v1/agents/${agent}`;
 const requests = [];
@@ -66,7 +77,9 @@ await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
 const origin = `http://127.0.0.1:${server.address().port}`;
 const ownerFetch = (path, options = {}) => fetch(origin + path, { ...options, headers: { authorization: `Bearer ${key}`, ...(options.body ? { 'content-type': 'application/json' } : {}) } });
 const guestFetch = suffix => fetch(`${origin}/v1/shared/${agent}${suffix}`, { headers: { authorization: `Bearer ${token}` } });
-const trace = { command: 'cargo build -p nanocodex2-bin --bin nanocodex2 && node bin/nanocodex/tests/thread-share-tui-e2e.mjs',
+const reference = form === 'id' ? agent : `https://nanocodex.gakonst.workers.dev/agent/${agent}`;
+// NANOCODEX_MANAGED_URL below directs owner traffic to the local fixture in both cases.
+const trace = { reference, form, command: 'cargo build -p nanocodex2-bin --bin nanocodex2 && node bin/nanocodex/tests/thread-share-tui-e2e.mjs',
   expected: 'owner API key creates, guest reads, TUI /share list and /share revoke, guest reads denied', stages: [] };
 let terminal;
 try {
@@ -79,7 +92,7 @@ try {
   const history = await guestFetch('/events/history'); assert.equal(history.status, 200);
   assert.equal((await history.json()).data.at(-1).final_message, 'Synthetic answer');
   trace.stages.push({ action: 'guest metadata/history', statuses: [meta.status, history.status] });
-  terminal = spawn('python3', [new URL('./share-pty-bridge.py', import.meta.url).pathname, resolve('target/debug/nanocodex2'), 'attach', agent], {
+  terminal = spawn('python3', [new URL('./share-pty-bridge.py', import.meta.url).pathname, resolve('target/debug/nanocodex2'), 'attach', reference], {
     cwd: workspace, env: { ...process.env, HOME: workspace, NC_API_KEY: '', CODEX_HOME: resolve(workspace, '.codex'), NANOCODEX_RELOAD_DIR: resolve(workspace, '.reload'),
       NANOCODEX_DISABLE_HAND: '1', NANOCODEX_COMPUTER: 'off', NANOCODEX_MANAGED_URL: origin,
       NANOCODEX_API_KEY: key, TERM: 'xterm-256color', SSH_TTY: '/dev/synthetic-pty', TMUX: '', TMUX_PANE: '' },
@@ -111,7 +124,7 @@ try {
   assert.ok(requests.filter(r => r.path.includes('/share-links')).every(r => r.auth === `Bearer ${key}`));
   assert.ok(requests.filter(r => r.path.includes('/v1/shared/')).every(r => r.auth === `Bearer ${token}`));
   trace.stages.push({ action: 'guest denied, owner list empty', statuses: [404, 404, 200] });
-  console.log('Native PTY share revoke journey passed.');
+  console.log(`Native PTY ${form} attachment and share revoke journey passed.`);
 } finally {
   // Preserve a reproducible redacted artifact; the synthetic bearer need not appear in output.
   trace.requests = requests.map(({ auth, ...request }) => ({ ...request, auth: auth === `Bearer ${key}` ? 'owner' : auth === `Bearer ${token}` ? 'guest' : 'none' }));

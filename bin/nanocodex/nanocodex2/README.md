@@ -5,8 +5,15 @@ scheduled prompts as the web and native apps. Run `nanocodex2 login` to sign in
 with an SMS code. `NANOCODEX_MANAGED_URL` selects another cluster.
 Running `nanocodex2` opens a new interactive session;
 `nanocodex2 attach AGENT_URL_OR_ID` resumes an existing one with local workspace
-tools.
-To open a shared thread, pass its complete URL in quotes:
+tools. Both a bare ID and an account thread URL are accepted:
+
+```bash
+nanocodex2 attach THREAD_ID
+nanocodex2 attach 'https://nanocodex.gakonst.workers.dev/agent/THREAD_ID'
+```
+
+These two forms use your account access. To open a shared thread, pass its
+complete URL in quotes:
 
 ```bash
 nanocodex2 attach 'https://nanocodex.gakonst.workers.dev/share/THREAD_ID#token=SHARE_TOKEN'
