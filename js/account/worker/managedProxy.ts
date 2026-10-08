@@ -2,31 +2,23 @@ import { forwardManagedPreview, previewBridgeEnabled, type PreviewBridgeEnv } fr
 import { consumeRpcData } from "nanocodex/cloudflare/rpc";
 import { apiKeyDigest, apiKeyPrincipal } from "nanocodex/cloudflare/managed-auth";
 import { nativeLiveRequest, liveAgentSettings, liveAgentFailure, liveAgentRequest, newManagedAgentId, nativeRunRequest, nativeRunBody, runAgentRequest } from "nanocodex/cloudflare/managed-live";
-import { durablePlacementOptions, ingressColo, placementRegion, regionalApiKeyAuthorityName, regionalApiKeyAuthorityRegion } from "nanocodex/cloudflare/durable-placement";
+import { ingressColo } from "nanocodex/cloudflare/managed-live";
 
 import { MANAGED_ACCESS_HEADER, MANAGED_ACCESS_TTL_MS, isHandViewerUpgrade, readManagedAccess, handRequestFailure, handBrokerRequest } from "nanocodex/cloudflare/managed-access";
 
 export type ManagedProxyEnv = PreviewBridgeEnv & {
   NANOCODEX_BACKEND?: Fetcher;
-  /** Private credential-only preparation; never sends a provider prompt. */
-  NANOCODEX_SESSION_CREDENTIAL_PREWARM?: {
-    prewarm(input: { owner: string; region: string }): Promise<unknown>;
-  };
   NANOCODEX_ACCESS_SECRET?: string;
   NANOCODEX_HAND_BROKER?: DurableObjectNamespace;
   /** Regional screen relays (managed RegionalHandRelay); viewers of rs.<region>. generations admit there directly. */
   NANOCODEX_HAND_RELAYS?: { getByName(name: string, options?: { locationHint?: string }): { fetch(request: Request): Promise<Response> } };
   NANOCODEX_LIVE_API_KEYS?: {
-    getByName(name: string, options?: ReturnType<typeof durablePlacementOptions>): {
+    getByName(name: string): {
       id?: { toString(): string };
       resolveAuthorizedKey?: () => Promise<unknown>;
-      resolveRegionalAuthorizedKey?: (primaryObjectId: string, region: string) => Promise<unknown>;
     };
-    idFromName?(name: string): { toString(): string };
   };
-  /** "true" lets new ingress-regional lease replicas answer live API-key auth. */
-  NANOCODEX_REGIONAL_API_KEY_AUTHORITY?: string;
-  NANOCODEX_LIVE_SESSIONS?: { getByName(name: string, options?: ReturnType<typeof durablePlacementOptions>): {
+  NANOCODEX_LIVE_SESSIONS?: { getByName(name: string): {
     fetch(request: Request): Promise<Response>;
   } };
 
@@ -181,57 +173,13 @@ function regionalViewerRequest(brokered: Request, owner: string, region: string)
 
 const INELIGIBLE = Symbol("ineligible");
 
-/**
- * Live key authority. With regional authority enabled, ask the ingress
- * region's lease replica; it holds a lease only after the key's primary object
- * checked key, account and grant, and the primary revokes leases before
- * acknowledging a key deletion. A null answer or replica transport failure
- * falls back to the authoritative primary; a replica denial is final.
- */
-async function liveKeyPrincipal(env: ManagedProxyEnv, digest: string, colo: string | null): Promise<ReturnType<typeof apiKeyPrincipal> | typeof INELIGIBLE> {
+/** Live key authority: the key's single ApiKeyRecord object. */
+async function liveKeyPrincipal(env: ManagedProxyEnv, digest: string): Promise<ReturnType<typeof apiKeyPrincipal> | typeof INELIGIBLE> {
   const keys = env.NANOCODEX_LIVE_API_KEYS!;
-  const region = regionalApiKeyAuthorityRegion(colo, env.NANOCODEX_REGIONAL_API_KEY_AUTHORITY);
-  const primaryId = region && typeof keys.idFromName === "function" ? keys.idFromName(digest).toString() : undefined;
-  if (region && primaryId && /^[0-9a-f]{64}$/.test(primaryId)) {
-    const replica = keys.getByName(regionalApiKeyAuthorityName(primaryId, region), { locationHint: region });
-    const resolve = replica.resolveRegionalAuthorizedKey;
-    if (typeof resolve === "function") {
-      let value: { record?: unknown; apiKeyObjectId?: unknown } | undefined | null | typeof INELIGIBLE;
-      // Null means "ask the primary", exactly like a replica transport failure.
-      try { value = consumeRpcData(await Reflect.apply(resolve, replica, [primaryId, region])) as typeof value | null; }
-      catch { value = INELIGIBLE; }
-      if (value === null) value = INELIGIBLE;
-      if (value !== INELIGIBLE) {
-        return value && value.apiKeyObjectId === primaryId ? apiKeyPrincipal(value.record, digest, primaryId) : undefined;
-      }
-    }
-  }
-  const key = keys.getByName(digest, durablePlacementOptions(colo));
+  const key = keys.getByName(digest);
   const resolve = key.resolveAuthorizedKey;
   if (typeof resolve !== "function") return INELIGIBLE;
   return apiKeyPrincipal(consumeRpcData(await Reflect.apply(resolve, key, [])), digest, key.id?.toString());
-}
-
-/** Authenticated optimization only. Failure never changes admission or retries it. */
-function prewarmCredentials(env: ManagedProxyEnv, context: Pick<ExecutionContext, "waitUntil"> | undefined,
-  owner: string, colo: string | null): void {
-  const region = placementRegion(colo), binding = env.NANOCODEX_SESSION_CREDENTIAL_PREWARM;
-  if (!region || !binding || !context) return;
-  const started = performance.now();
-  const observe = (value: unknown): void => {
-    // Fixed outcome vocabulary only: no credential, owner or error contents.
-    const outcome = value && typeof value === "object" && "outcome" in value
-      && typeof value.outcome === "string"
-      && ["warm", "filled", "unavailable", "invalid", "unsupported"].includes(value.outcome)
-      ? value.outcome : "unavailable";
-    try {
-      console.info({ type: "managed.credential.prewarm", region, outcome,
-        duration_ms: Math.round((performance.now() - started) * 100) / 100 });
-    } catch { /* Observability must not change admission. */ }
-  };
-  try {
-    context.waitUntil(binding.prewarm({ owner, region }).then(observe, () => observe(null)));
-  } catch { observe(null); }
 }
 
 /** API-key-only entrypoint; authority still comes from the existing live key DO. */
@@ -245,7 +193,7 @@ async function directLiveAgent(request: Request, env: ManagedProxyEnv, context?:
   const digest = await apiKeyDigest(request);
   if (!digest) return;
   const colo = ingressColo(request.cf?.colo);
-  const resolved = await liveKeyPrincipal(env, digest, colo);
+  const resolved = await liveKeyPrincipal(env, digest);
   // Older/unconfigured bindings keep the full managed route, before any create.
   if (resolved === INELIGIBLE) return;
   const principal = resolved;
@@ -255,12 +203,11 @@ async function directLiveAgent(request: Request, env: ManagedProxyEnv, context?:
   let response: Response;
   if (failure) response = failure;
   else {
-    prewarmCredentials(env, context, principal!.userId, colo);
     const agentId = newManagedAgentId();
     const internal = liveAgentRequest(request, principal!, settings, agentId, colo);
     let status: number | undefined;
     try {
-      response = await env.NANOCODEX_LIVE_SESSIONS.getByName(agentId, durablePlacementOptions(colo)).fetch(internal);
+      response = await env.NANOCODEX_LIVE_SESSIONS.getByName(agentId).fetch(internal);
       status = response.status;
     } finally {
       try {
@@ -292,16 +239,15 @@ async function directAgentRun(request: Request, env: ManagedProxyEnv, context?: 
   const digest = await apiKeyDigest(request);
   if (!digest) return;
   const colo = ingressColo(request.cf?.colo);
-  const resolved = await liveKeyPrincipal(env, digest, colo);
+  const resolved = await liveKeyPrincipal(env, digest);
   if (resolved === INELIGIBLE) return;
   const principal = resolved;
   const authFinishedAt = Date.now();
   const failure = liveAgentFailure(request, principal);
   if (failure) return failure;
-  prewarmCredentials(env, context, principal!.userId, colo);
   const internal = await runAgentRequest(request, principal!, run, colo);
   const dispatchAt = Date.now();
-  const response = await env.NANOCODEX_LIVE_SESSIONS.getByName(internal.agentId, durablePlacementOptions(colo)).fetch(internal.request);
+  const response = await env.NANOCODEX_LIVE_SESSIONS.getByName(internal.agentId).fetch(internal.request);
   if (response.ok && (!response.headers.get("content-type")?.startsWith("text/event-stream")
     || response.headers.get("x-nanocodex-agent-id") !== internal.agentId
     || response.headers.get("x-nanocodex-turn-id") !== internal.turnId)) {

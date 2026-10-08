@@ -1,4 +1,3 @@
-import { durablePlacementOptions, placementRegion } from "nanocodex/cloudflare/durable-placement";
 import {
   authenticate,
   forwardPrincipalAssertions,
@@ -81,7 +80,7 @@ export async function routeManagedRealtimeTransport(
   forwardPrincipalAssertions(ownershipHeaders, principal);
   let owned: Awaited<ReturnType<typeof readSessionCredentialSubject>>;
   try {
-    const stub = env.NANOCODEX_SESSIONS.get(durableId, durablePlacementOptions(env.trustedClientIngressColo));
+    const stub = env.NANOCODEX_SESSIONS.get(durableId);
     owned = typeof stub.resolveCredentialSubject === "function"
       ? await withHardDeadline("managed Realtime ownership assertion", ownershipTimeoutMs,
         async () => validateSessionCredentialSubject(
@@ -117,7 +116,7 @@ export async function routeManagedRealtimeTransport(
   }
 
   if (resource === "calls") {
-    const response = await realtimeCall(callBody!, env, agentId, voiceSessionId, subject, voiceRelayRegion(request, env.trustedClientIngressColo), principal.userId, owned.accountId);
+    const response = await realtimeCall(callBody!, env, agentId, voiceSessionId, subject, principal.userId, owned.accountId);
     response.headers.append("server-timing", [
       `voice_auth;dur=${(authenticated - began).toFixed(1)}`,
       `voice_validate;dur=${(validatedAt - authenticated).toFixed(1)}`,
@@ -155,13 +154,11 @@ async function realtimeCall(
   agentId: string,
   voiceSessionId: string,
   subject: string,
-  region: string | undefined,
   verifiedOwner: string | undefined,
   accountId?: string,
 ): Promise<Response> {
   const headers = internalHeaders(agentId, voiceSessionId, subject, false);
   if (accountId) headers.set("x-nanocodex-chatgpt-account-id", accountId);
-  if (region) headers.set("x-nanocodex-voice-region", region);
   const binding = verifiedOwner && env.NANOCODEX_REALTIME ? env.NANOCODEX_REALTIME : env.NANOCODEX;
   if (binding === env.NANOCODEX_REALTIME) headers.set("x-nanocodex-realtime-owner", verifiedOwner!);
   const privateBinding = env.NANOCODEX_REALTIME;
@@ -307,21 +304,3 @@ function json(body: unknown, status: number): Response {
   });
 }
 
-/** Derive placement only from Cloudflare metadata, never caller headers. */
-export function voiceRelayRegion(request: Request, trustedClientIngressColo?: string | null): string | undefined {
-  // The frontdoor may cross a service binding before reaching this Worker.
-  // Prefer its authenticated ingress assertion to this hop's request metadata.
-  // Unknown ingress must not silently select this Worker's different region.
-  if (trustedClientIngressColo != null) return placementRegion(trustedClientIngressColo);
-  const cf = request.cf;
-  const longitude = typeof cf?.longitude === "string" && cf.longitude.trim()
-    ? Number(cf.longitude) : NaN;
-  switch (cf?.continent) {
-    case "NA": return Number.isFinite(longitude) ? (longitude < -100 ? "wnam" : "enam") : undefined;
-    case "SA": return "sam";
-    case "EU": return Number.isFinite(longitude) ? (longitude < 20 ? "weur" : "eeur") : undefined;
-    case "AS": return "apac";
-    case "OC": return "oc";
-    default: return undefined;
-  }
-}

@@ -1,7 +1,6 @@
 import { initializeTodoDispositions, todoDispositionSnapshot, writeTodoDisposition, type TodoDispositionContext } from "./todo-dispositions";
 import { enqueueTodoPreparation, initializeTodoPreparation, preparationView, scheduleTodoPreparation } from "./todo-preparation";
 import { initializeGmailDecisionTraces, readGmailDecisionTraces, recentGmailTodoTraces } from "./gmail-firehose-traces";
-import { durablePlacementOptions } from "nanocodex/cloudflare/durable-placement";
 import type { AccountAuthEnv, Principal } from "./account-auth";
 
 const noStore = { "cache-control": "no-store" };
@@ -225,7 +224,7 @@ export async function handleTodoInbox(request: Request, storage: DurableObjectSt
 }
 
 /** Exposed only at the authenticated managed account route, never at a public DO path. */
-export async function routeTodoRequest(request: Request, env: Pick<AccountAuthEnv, "NANOCODEX_USERS" | "trustedClientIngressColo">,
+export async function routeTodoRequest(request: Request, env: Pick<AccountAuthEnv, "NANOCODEX_USERS">,
   url: URL, principal: Principal | null | undefined): Promise<Response | null> {
   if (!url.pathname.startsWith("/v1/todo")) return null;
   if (!principal) return reply({ error: "unauthorized" }, 401);
@@ -242,7 +241,7 @@ export async function routeTodoRequest(request: Request, env: Pick<AccountAuthEn
   if (!sourceHealth && !mailOrSchedule && (!/^\/v1\/todo(?:$|\/snooze$|\/traces$|\/items\/[0-9a-f-]{36}(?:\/prepare)?$|\/decisions\/[0-9a-f-]{36}(?:\/(?:respond|prepare))?$)/i.test(url.pathname)
     || url.search && url.pathname !== "/v1/todo/traces")) return reply({ error: "not_found" }, 404);
   const path = url.pathname.slice(3);
-  return env.NANOCODEX_USERS.getByName(principal.userId, durablePlacementOptions(env.trustedClientIngressColo)).fetch(
+  return env.NANOCODEX_USERS.getByName(principal.userId).fetch(
     `https://user.internal${path}${url.search}`, new Request(request, { headers: request.headers.has("content-type") ? { "content-type": request.headers.get("content-type")! } : {} }),
   );
 }

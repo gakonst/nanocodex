@@ -60,7 +60,7 @@ export default {fetch(){return Response.json({calls,attempts:Object.fromEntries(
 let mf;
 await mkdir(output,{recursive:true});
 try {
-  const aliases = Object.fromEntries(['rpc','managed-auth','managed-live','durable-placement','managed-access'].map(n=>['nanocodex/cloudflare/'+n,fileURLToPath(new URL('../../nanocodex/cloudflare/'+n+'.mjs',import.meta.url))]));
+  const aliases = Object.fromEntries(['rpc','managed-auth','managed-live','managed-access'].map(n=>['nanocodex/cloudflare/'+n,fileURLToPath(new URL('../../nanocodex/cloudflare/'+n+'.mjs',import.meta.url))]));
   const bundled = await build({stdin:{contents:source,resolveDir:managed},bundle:true,write:false,format:'esm',target:'es2022',platform:'browser',external:['cloudflare:workers','node:*'],alias:{...aliases,'node-rsa':join(managed,'node_modules/nanocodex/tools/browser/unsupportedNodeRsa.mjs')}});
   const script=bundled.outputFiles[0].text;
   bundleDigest=createHash('sha256').update(script).digest('hex');

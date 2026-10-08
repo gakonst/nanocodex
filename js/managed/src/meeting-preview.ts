@@ -1,5 +1,4 @@
 import { DurableObject } from "cloudflare:workers";
-import { durablePlacementOptions } from "nanocodex/cloudflare/durable-placement";
 import { authenticateVaultAccount, requireSameOriginMutation, type AccountAuthEnv, type Principal } from "./account-auth";
 import { executeStatelessInferenceResponse, type InferenceSessionEnv } from "./inference-session";
 import { OSS_MODEL } from "./thread-model-routing";
@@ -97,7 +96,7 @@ export async function routeMeetingPreview(request: Request, env: MeetingPreviewE
     "x-meeting-organization": principal.organizationId, "x-meeting-team": principal.teamId,
     "x-meeting-epoch": String(principal.authorizationEpoch), "content-type": "application/json" });
   // The user-scoped object owns both capture state and a shared daily/minute inference budget.
-  return env.NANOCODEX_MEETING_PREVIEWS.getByName(principal.userId, durablePlacementOptions(request.cf?.colo)).fetch(
+  return env.NANOCODEX_MEETING_PREVIEWS.getByName(principal.userId).fetch(
     new Request(`https://meeting.internal/${match[1]!.toLowerCase()}/preview`, {
       method: request.method, headers, ...(request.method === "POST" ? { body: request.body } : {}), signal: request.signal,
     }));

@@ -10,7 +10,7 @@ const managed = fileURLToPath(new URL('..', import.meta.url));
 const output = fileURLToPath(new URL('../../../output/mobile-decision-inbox/e2e', import.meta.url));
 await mkdir(output, { recursive: true });
 const temporary = join(managed, 'scripts', '.decision-inbox-existing-journey-' + crypto.randomUUID() + '.mjs');
-const aliases = Object.fromEntries(['rpc', 'managed-auth', 'managed-live', 'durable-placement', 'managed-access'].map(name => [
+const aliases = Object.fromEntries(['rpc', 'managed-auth', 'managed-live', 'managed-access'].map(name => [
   'nanocodex/cloudflare/' + name, fileURLToPath(new URL('../../nanocodex/cloudflare/' + name + '.mjs', import.meta.url)),
 ]));
 let test = await readFile(new URL('../test/todo-mail-journey.test.mjs', import.meta.url), 'utf8');

@@ -46,7 +46,7 @@
     "test:images": "npm run test:images:node && vitest run --config vitest.images.config.ts",
     "test:recovery": "node --test test/managed-crash-recovery-journey.test.mjs && npm run test:code-observations && npm run test:code-observations:workerd",
     "test:code-observations": "node --experimental-transform-types --import ./test-fixtures/node-types-loader.mjs --test test/code-observation-recovery-node.test.mjs",
-    "test:startup": "node --test test/prepared-model-upgrade-journey.test.mjs test/startup-overlap-journey.test.mjs test/pristine-restoration-journey.test.mjs",
+    "test:startup": "node --test test/startup-overlap-journey.test.mjs test/pristine-restoration-journey.test.mjs",
     "test:model-pause": "node --test test/model-pause-journey.test.mjs",
     "test:tool-timing": "node --test test/thread-tool-timing-journey.test.mjs test/just-bash-telemetry-journey.test.mjs",
     "test:hand-conflict-diagnostics": "node --test test/hand-conflict-diagnostics-journey.test.mjs",

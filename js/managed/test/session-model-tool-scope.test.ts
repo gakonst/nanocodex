@@ -35,7 +35,7 @@ describe("managed web search and image tools use the private Session model path"
     const b = bindings();
     const owner = vi.fn(() => sessionCredentialOwner(state()));
     const egress = scopedManagedModelEgress(b.generalBinding, storageId, subject,
-      { binding: b.modelBinding, owner, clientIngressColo: () => "LAX" }, "acct-pinned");
+      { binding: b.modelBinding, owner }, "acct-pinned");
     const web = managedWebFetch(egress, storageId);
     const image = managedImageFetch(egress, storageId);
     for (let i = 0; i < 6; i++) {
@@ -82,18 +82,17 @@ describe("managed web search and image tools use the private Session model path"
     expect(b.general).toHaveLength(0); // never the callback-prone general broker for the Session's own subject
   });
 
-  it("replaces injected owner, placement, and account headers and rejects a caller-chosen subject", async () => {
+  it("replaces injected owner and account headers and rejects a caller-chosen subject", async () => {
     const b = bindings();
     for (const pin of [undefined, "acct-pinned"]) {
       const egress = scopedManagedModelEgress(b.generalBinding, storageId, subject,
-        { binding: b.modelBinding, owner: () => ownerId, clientIngressColo: () => "LAX" }, pin);
+        { binding: b.modelBinding, owner: () => ownerId }, pin);
       await egress.fetch("https://nanocodex.internal/v1/images/generations", { method: "POST", headers: {
-        "x-nanocodex-subject": storageId, [ownerHeader]: otherOwner, "x-nanocodex-model-region": "weur",
+        "x-nanocodex-subject": storageId, [ownerHeader]: otherOwner,
         "x-nanocodex-chatgpt-account-id": "spoofed", "content-type": "application/json",
       }, body: "{}" });
       const forwarded = b.model.at(-1)!;
       expect(forwarded.headers.get(ownerHeader)).toBe(ownerId);
-      expect(forwarded.headers.has("x-nanocodex-model-region")).toBe(false);
       expect(forwarded.headers.get("x-nanocodex-chatgpt-account-id")).toBe(pin ?? null);
       expect(forwarded.headers.get("x-nanocodex-subject")).toBe(subject);
       // Only the storage identity is accepted; the wrapper selects the credential subject.

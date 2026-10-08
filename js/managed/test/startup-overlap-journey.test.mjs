@@ -271,7 +271,7 @@ test(originOnly ? "cold authorized Hand origin and admission replay through acco
   const common={modules,compatibilityDate:"2026-07-30",compatibilityFlags:["nodejs_compat","enable_request_signal"]};
   const mf=new Miniflare({port:0,handleRuntimeStdio(stdout,stderr){createInterface({input:stdout}).on("line",capture);createInterface({input:stderr}).on("line",capture);},
     durableObjectsPersist:join(output,"sqlite"),r2Persist:join(output,"r2"),workers:[
-      {...common,name:"edge",bindings:{EDGE:true},serviceBindings:{NANOCODEX_BACKEND:"managed",NANOCODEX_SESSION_CREDENTIAL_PREWARM:{name:"managed",entrypoint:"FixturePrewarm"}},
+      {...common,name:"edge",bindings:{EDGE:true},serviceBindings:{NANOCODEX_BACKEND:"managed"},
         durableObjects:{NANOCODEX_LIVE_API_KEYS:{className:"ApiKeyRecord",scriptName:"managed",useSQLite:true},
           NANOCODEX_LIVE_SESSIONS:{className:"OriginAgentSession",scriptName:"managed",useSQLite:true}}},
       {...common,name:"managed",bindings:{NANOCODEX_PERFORMANCE_TRACE:"true",MANAGED_AGENT_DIRECT_CREDENTIALS:"true",AGENT_IDLE_TIMEOUT_MS:"60000"},
@@ -411,9 +411,7 @@ test(originOnly ? "cold authorized Hand origin and admission replay through acco
     assert.equal(admitted.session_id,ready.session_id,'winner retains the public session identity');
     await call(`/v1/agents/${ready.session_id}`,"GET",undefined,404,other);
     const warming=await (await backend.fetch('https://fixture.internal/__trace')).json();
-    assert.ok(warming.some(row=>row.event==='credential.prewarm' && row.region==='wnam'),'live admission starts prewarm while its reply is withheld');
     assert.equal(warming.filter(row=>row.event==='provider.request').length,3,'auth-only live preparation sends no provider frames');
-    await backend.fetch('https://fixture.internal/__release-prewarm');
     live.send(JSON.stringify({type:'prompt',id:liveTurn,input:'Reply STARTUP_OK'}));
     await waitMessage(message=>message.type==='turn_accepted' && message.id===liveTurn);
     // A fresh owner's discovery is withheld at the real service boundary.
@@ -750,11 +748,8 @@ test(originOnly ? "cold authorized Hand origin and admission replay through acco
     const revokedKey=await backend.fetch("https://fixture.internal/__revoke-key",{method:"POST",body:JSON.stringify({user:directOwner.user,id:directOwner.metadata.id})});
     assert.equal(await revokedKey.json(),true,"fixture revokes the real stored key through the account lifecycle");
     const prewarmTrace=async()=>await (await backend.fetch('https://fixture.internal/__trace')).json();
-    const beforeRevoked=(await prewarmTrace()).filter(row=>row.event==='credential.prewarm');
-    assert.ok(beforeRevoked.some(row=>row.owner===directOwner.user && row.region==='wnam'),'HTTP run prewarms the authenticated owner in the trusted ingress region');
     const revoked=await directFetch();
     assert.equal(revoked.status,401,await revoked.text(),"direct admission checks live revocation on replay");
-    assert.equal((await prewarmTrace()).filter(row=>row.event==='credential.prewarm').length,beforeRevoked.length,'revoked admission never prewarms');
     const upgradesBeforeRejected=(await prewarmTrace()).filter(row=>row.event==='provider.connect').length;
     await new Promise((resolve,reject)=>{
       const denied=new WebSocket(liveUrl,{headers:{authorization:'Bearer '+directOwner.token,'x-nanocodex-prepare':'active-conversation'}});
@@ -763,7 +758,6 @@ test(originOnly ? "cold authorized Hand origin and admission replay through acco
       denied.on('error',reject);
     });
     assert.equal((await prewarmTrace()).filter(row=>row.event==='provider.connect').length,upgradesBeforeRejected,'rejected live authorization starts no speculative provider handshake');
-    evidence.credential_prewarm=beforeRevoked;
     const afterDirect=await(await backend.fetch("https://fixture.internal/__trace")).json();
     assert.equal(afterDirect.filter(row=>row.event==="provider.request").length,directCount,"replay, conflict, invalid input and revocation start no new inference");
     evidence={...evidence,direct_run_without_managed_hop:true,direct_run_replay:true,direct_run_cross_route_identity:true,direct_run_live_revocation:true};

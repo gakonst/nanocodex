@@ -63,7 +63,6 @@
     ]
   },
   "services": [
-    { "binding": "NANOCODEX_SESSION_CREDENTIAL_PREWARM", "service": "nanocodex-egress", "entrypoint": "SessionCredentialPrewarm" },
     { "binding": "PHONE_SERVICE_EGRESS", "service": "nanocodex-egress" },
     { "binding": "GMAIL_PUSH_EGRESS", "service": "nanocodex-egress" },
     { "binding": "NANOCODEX_X", "service": "nanocodex-x" },
@@ -222,14 +221,12 @@
     }
   ],
   "vars": {
-    "ENVIRONMENT": "production",
-    "NANOCODEX_REGIONAL_API_KEY_AUTHORITY": "true"
+    "ENVIRONMENT": "production"
   },
   "env": {
     "development": {
       "name": "nanocodex",
       "services": [
-        { "binding": "NANOCODEX_SESSION_CREDENTIAL_PREWARM", "service": "nanocodex-egress", "entrypoint": "SessionCredentialPrewarm", "remote": false },
         { "binding": "GMAIL_PUSH_EGRESS", "service": "nanocodex-egress", "remote": false },
         { "binding": "PHONE_SERVICE_EGRESS", "service": "nanocodex-egress", "remote": false },
         { "binding": "NANOCODEX_X", "service": "nanocodex-x", "remote": false },
@@ -290,8 +287,7 @@
         }
       ],
       "vars": {
-        "ENVIRONMENT": "development",
-        "NANOCODEX_REGIONAL_API_KEY_AUTHORITY": "true"
+        "ENVIRONMENT": "development"
       }
     }
   }

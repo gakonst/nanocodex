@@ -55,10 +55,8 @@ describe("Session-owned credential authority", () => {
         const scoped = scopedManagedModelEgress(binding, storageId, subject, undefined, pin);
         await scoped.fetch("https://nanocodex.internal/v1/responses", { headers: {
           "x-nanocodex-subject": storageId, "x-nanocodex-chatgpt-account-id": "spoofed",
-          "x-nanocodex-placement-colo": "NRT",
         } });
         expect(received[0]!.headers.get("x-nanocodex-chatgpt-account-id")).toBe(pin ?? null);
-        expect(received[0]!.headers.has("x-nanocodex-placement-colo")).toBe(false);
         expect(received[0]!.headers.get("x-nanocodex-subject")).toBe(subject);
       }
     }

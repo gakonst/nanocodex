@@ -11,3 +11,4 @@ export type NativeRunBody = { key: string; settings: ManagedAgentSettings; input
 export function nativeRunBody(request: Request): Promise<NativeRunBody | undefined>;
 export function idempotentAgentId(userId: string, requestKey: string): Promise<string>;
 export function runAgentRequest(request: Request, principal: AdmissionPrincipal, run: NativeRunBody, clientIngressColo: string | null): Promise<{ request: Request; agentId: string; turnId: string }>;
+export function ingressColo(value: unknown): string | null;

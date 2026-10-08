@@ -1,6 +1,10 @@
 import { parseAgentSettingsQuery, agentSettingsQuery, parseCompleteAgentSettings, validateAgentAdmissionSettings } from "./agent-settings.mjs";
 import { API_KEY, forwardPrincipalAssertions } from "./managed-auth.mjs";
-import { ingressColo } from "./durable-placement.mjs";
+
+/** A Cloudflare colo code (diagnostics only), or null. */
+export function ingressColo(value) {
+  return typeof value === "string" && /^[A-Z]{3}$/.test(value) ? value : null;
+}
 
 /** Narrow profile only; cookies and Connect retain the full authenticator's precedence. */
 export function nativeLiveRequest(request) {

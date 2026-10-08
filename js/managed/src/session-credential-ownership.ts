@@ -1,4 +1,3 @@
-import { TRUSTED_INGRESS_HEADER, placementRegion as sessionModelRelayRegion } from "nanocodex/cloudflare/durable-placement";
 const MANAGED_SESSION_SUBJECT_PREFIX = "managed-session-v1_";
 
 export function managedCredentialSubject(storageId: string): string {
@@ -74,8 +73,6 @@ export function sessionCredentialOwner(input: Readonly<{
   return binding.owner_id;
 }
 
-export { placementRegion as sessionModelRelayRegion } from "nanocodex/cloudflare/durable-placement";
-
 export const SESSION_TOOL_OWNER_HEADER = "x-nanocodex-session-tool-owner";
 const SESSION_MODEL_OWNER_HEADER = "x-nanocodex-session-model-owner";
 
@@ -130,7 +127,6 @@ export function scopedManagedModelEgress(
   sessionModel?: Readonly<{
     binding: Fetcher;
     owner(): string | undefined;
-    clientIngressColo?(): string | null;
   }>,
   chatGptAccountId?: string,
 ): Pick<Fetcher, "fetch"> {
@@ -142,9 +138,6 @@ export function scopedManagedModelEgress(
         throw new TypeError("managed model subject mismatch");
       }
       request.headers.set("x-nanocodex-subject", subject);
-      // Runtime headers never establish placement, including generic fallback.
-      request.headers.delete("x-nanocodex-model-region");
-      request.headers.delete(TRUSTED_INGRESS_HEADER);
       // The retained session configuration owns selection, never a runtime header.
       request.headers.delete("x-nanocodex-chatgpt-account-id");
       if (chatGptAccountId !== undefined) request.headers.set("x-nanocodex-chatgpt-account-id", chatGptAccountId);
@@ -160,9 +153,6 @@ export function scopedManagedModelEgress(
         const owner = sessionModel.owner();
         if (!owner) throw new Error("managed model ownership is unavailable");
         request.headers.set("x-nanocodex-session-model-owner", owner);
-        // Placement applies to the model transport only, never to tool calls.
-        const region = transport ? sessionModelRelayRegion(sessionModel.clientIngressColo?.()) : undefined;
-        if (region) request.headers.set("x-nanocodex-model-region", region);
         return sessionModel.binding.fetch(request);
       }
       return binding.fetch(request);

@@ -8,8 +8,6 @@ import { initializeTodoMail, handleTodoMail } from "./todo-mail";
 import { consumeRpcData } from "nanocodex/cloudflare/rpc";
 import { API_KEY, apiKeyDigest, apiKeyPrincipal, isOrganizationCapabilities, isApiKeyBase, isStoredApiKey, forwardPrincipalAssertions } from "nanocodex/cloudflare/managed-auth";
 export { isOrganizationCapabilities, forwardPrincipalAssertions };
-import { durablePlacementOptions, placementHeaders, TRUSTED_INGRESS_HEADER, type IngressPlacement, type PlacementRegion } from "nanocodex/cloudflare/durable-placement";
-import { apiKeyAuthorityUserScope, isRegionalApiKeyAuthorityRegion, regionalApiKeyAuthorityName, registerApiKeyAuthorityLease, revokeApiKeyAuthorityLeases, REGIONAL_API_KEY_AUTHORITY_LEASE_MS, type RegionalApiKeyAuthorization } from "./regional-api-key-authority";
 import { LAST_USER_PROMPT_LIMIT, type AgentPresentation } from "./agent-presentation";
 import { retireAccountProjects } from "./retired-projects";
 import { initializeTodoInbox, handleTodoInbox, proposeTodoDecision, type TodoDecisionProposal } from "./todo-inbox";
@@ -189,7 +187,7 @@ export class NonceStorage extends DurableObject<unknown> {
   }
 }
 
-export interface AccountAuthEnv extends IngressPlacement {
+export interface AccountAuthEnv {
   NANOCODEX_PERFORMANCE_TRACE?: string;
   NANOCODEX_ACCESS_SECRET?: string;
   ENVIRONMENT?: string;
@@ -462,12 +460,12 @@ async function permissionKey(env: AccountAuthEnv, identity: PermissionRequestIde
   if (!isUserId(identity.userId) || !isUuid(identity.organizationId) || !isUuid(identity.teamId)
     || !Number.isSafeInteger(identity.authorizationEpoch) || identity.authorizationEpoch < 1
     || !/^[A-Za-z0-9_-]{12}$/.test(identity.keyId)) return undefined;
-  const found = await env.NANOCODEX_USERS.getByName(identity.userId, durablePlacementOptions(env.trustedClientIngressColo))
+  const found = await env.NANOCODEX_USERS.getByName(identity.userId)
     .fetch(`https://user.internal/api-keys/${identity.keyId}`);
   if (!found.ok) { await found.body?.cancel(); return undefined; }
   const key = await found.json<ApiKeyMetadata & { digest: string }>();
   return key.id === identity.keyId && /^[A-Za-z0-9_-]{43}$/.test(key.digest)
-    ? env.NANOCODEX_API_KEYS.getByName(key.digest, durablePlacementOptions(env.trustedClientIngressColo))
+    ? env.NANOCODEX_API_KEYS.getByName(key.digest)
     : undefined;
 }
 
@@ -492,19 +490,9 @@ export async function resolvePermissionKey(
   env: AccountAuthEnv,
   identity: PermissionRequestIdentity,
   apiKeyObjectId?: string,
-  region?: PlacementRegion,
 ): Promise<{ capabilities: readonly OrganizationCapability[] } | undefined> {
   let key: DurableObjectStub<ApiKeyRecord> | undefined;
   let record: StoredApiKey | undefined | null = null;
-  if (apiKeyObjectId !== undefined && /^[0-9a-f]{64}$/.test(apiKeyObjectId) && isRegionalApiKeyAuthorityRegion(region)) {
-    // A leased replica in the Session's ingress region; denial is final, while
-    // null or a replica transport failure falls back to the authoritative primary.
-    try {
-      const replica = env.NANOCODEX_API_KEYS.getByName(regionalApiKeyAuthorityName(apiKeyObjectId, region), { locationHint: region });
-      const value = consumeRpcData(await replica.resolveRegionalAuthorizedKey(apiKeyObjectId, region));
-      record = value === null ? null : value && value.apiKeyObjectId === apiKeyObjectId ? value.record : undefined;
-    } catch { record = null; }
-  }
   if (record === null) {
     if (apiKeyObjectId === undefined) {
       // Retained sockets and older ingress versions have only the public key ID.
@@ -775,7 +763,7 @@ export async function routeAccountRequest(
     if (principal.kind !== "account_session") {
       return json({ error: "forbidden" }, { status: 403 });
     }
-    const organization = env.NANOCODEX_ORGANIZATIONS.getByName(principal.organizationId, durablePlacementOptions(env.trustedClientIngressColo));
+    const organization = env.NANOCODEX_ORGANIZATIONS.getByName(principal.organizationId);
     if (request.method === "GET") {
       if (!principal.capabilities.includes("organization:read")) {
         return json({ error: "forbidden" }, { status: 403 });
@@ -1066,7 +1054,7 @@ async function authenticateLive(request: Request, env: AccountAuthEnv, url: URL)
   }
   const digest = await apiKeyDigest(request);
   if (!digest) return undefined;
-  const stub = env.NANOCODEX_API_KEYS.getByName(digest, durablePlacementOptions(env.trustedClientIngressColo));
+  const stub = env.NANOCODEX_API_KEYS.getByName(digest);
   // RPC returns the small record in one reply. A fetch Response transports its
   // headers and JSON stream separately across Durable Object locations.
   let record: (StoredApiKey & { account?: UserRecord }) | undefined;
@@ -1124,7 +1112,7 @@ async function resolveUserPrincipal(
   userId: string,
   credentialId: string,
 ): Promise<Principal | undefined> {
-  const stub = env.NANOCODEX_USERS.getByName(userId, durablePlacementOptions(env.trustedClientIngressColo));
+  const stub = env.NANOCODEX_USERS.getByName(userId);
   // Return the small live authorization snapshot in one RPC reply instead of
   // transporting Response headers and its JSON stream across DO locations.
   let value: { userId?: unknown; grant?: unknown; account?: unknown } | undefined;
@@ -1256,7 +1244,7 @@ export async function authenticatePersistentPasskeyAccount(
 
 
 export async function listAgents(env: AccountAuthEnv, userId: string): Promise<AgentSummary[]> {
-  const response = await env.NANOCODEX_USERS.getByName(userId, durablePlacementOptions(env.trustedClientIngressColo)).fetch("https://user.internal/agents");
+  const response = await env.NANOCODEX_USERS.getByName(userId).fetch("https://user.internal/agents");
   if (!response.ok) throw new Error("agent listing failed");
   return response.json<AgentSummary[]>();
 }
@@ -1317,7 +1305,7 @@ export async function attachAgent(
   hasCronTriggers?: boolean,
 ): Promise<void> {
   await fetchResponseWithDeadline(
-    env.NANOCODEX_USERS.getByName(userId, durablePlacementOptions(env.trustedClientIngressColo)),
+    env.NANOCODEX_USERS.getByName(userId),
     "https://user.internal/agents",
     {
       method: "POST",
@@ -1342,7 +1330,7 @@ export async function prepareAgentRegistration(
   timeoutMs = DEFAULT_OWNERSHIP_IO_TIMEOUT_MS,
 ): Promise<void> {
   await fetchResponseWithDeadline(
-    env.NANOCODEX_USERS.getByName(userId, durablePlacementOptions(env.trustedClientIngressColo)),
+    env.NANOCODEX_USERS.getByName(userId),
     `https://user.internal/agents/${agentId}/prepare`,
     { method: "POST" }, timeoutMs, "agent registration preparation",
     (response) => { if (!response.ok) throw new Error(`agent registration preparation failed: ${response.status}`); },
@@ -1355,7 +1343,7 @@ export async function publishAgentRegistration(
   timeoutMs = DEFAULT_OWNERSHIP_IO_TIMEOUT_MS, hasCronTriggers?: boolean,
 ): Promise<void> {
   const result = await fetchResponseWithDeadline(
-    env.NANOCODEX_USERS.getByName(userId, durablePlacementOptions(env.trustedClientIngressColo)),
+    env.NANOCODEX_USERS.getByName(userId),
     `https://user.internal/agents/${agentId}/publish`,
     { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ hasCronTriggers }) },
     timeoutMs, "agent registration publication",
@@ -1379,7 +1367,7 @@ export async function recordAgentCronPresence(
   present: boolean,
 ): Promise<void> {
   await fetchResponseWithDeadline(
-    env.NANOCODEX_USERS.getByName(userId, durablePlacementOptions(env.trustedClientIngressColo)),
+    env.NANOCODEX_USERS.getByName(userId),
     `https://user.internal/agents/${agentId}/cron-presence`,
     { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ present }) },
     DEFAULT_OWNERSHIP_IO_TIMEOUT_MS,
@@ -1399,7 +1387,7 @@ export async function recordAgentActivity(
   let failure: unknown;
   for (let attempt = 0; attempt < 3; attempt += 1) {
     try {
-      const response = await env.NANOCODEX_USERS.getByName(userId, durablePlacementOptions(env.trustedClientIngressColo)).fetch(
+      const response = await env.NANOCODEX_USERS.getByName(userId).fetch(
         `https://user.internal/agents/${agentId}/activity`,
         {
           method: "POST",
@@ -1425,7 +1413,7 @@ export async function detachAgent(
   timeoutMs = DEFAULT_OWNERSHIP_IO_TIMEOUT_MS,
 ): Promise<void> {
   await fetchResponseWithDeadline(
-    env.NANOCODEX_USERS.getByName(userId, durablePlacementOptions(env.trustedClientIngressColo)),
+    env.NANOCODEX_USERS.getByName(userId),
     `https://user.internal/agents/${agentId}`,
     { method: "DELETE" },
     timeoutMs,
@@ -1766,13 +1754,13 @@ export async function ensureAccount(
   if (!isUserId(userId)) {
     throw new Error("invalid account identity");
   }
-  const accountStub = env.NANOCODEX_USERS.getByName(userId, durablePlacementOptions(env.trustedClientIngressColo));
+  const accountStub = env.NANOCODEX_USERS.getByName(userId);
   const status = await fetchResponseWithDeadline(
     accountStub,
     "https://user.internal/account",
     {
       method: "PUT",
-      headers: placementHeaders({ "content-type": "application/json" }, env.trustedClientIngressColo),
+      headers: { "content-type": "application/json" },
       body: JSON.stringify({ id: userId, persistent }),
     },
     timeoutMs,
@@ -1871,7 +1859,7 @@ async function proxyAccountWalletRequest(
 }
 
 async function readAccount(env: AccountAuthEnv, userId: string): Promise<UserRecord | undefined> {
-  const stub = env.NANOCODEX_USERS.getByName(userId, durablePlacementOptions(env.trustedClientIngressColo));
+  const stub = env.NANOCODEX_USERS.getByName(userId);
   let record: UserRecord | undefined;
   const rpc = stub.readAccount;
   if (typeof rpc === "function") {
@@ -1895,7 +1883,7 @@ async function resolveOrganizationGrant(
   env: AccountAuthEnv,
   account: Pick<UserRecord, "id" | "organizationId">,
 ): Promise<OrganizationGrant | undefined> {
-  const stub = env.NANOCODEX_ORGANIZATIONS.getByName(account.organizationId, durablePlacementOptions(env.trustedClientIngressColo));
+  const stub = env.NANOCODEX_ORGANIZATIONS.getByName(account.organizationId);
   let grant: OrganizationGrant | undefined;
   const rpc = stub.resolveOrganizationGrant;
   if (typeof rpc === "function") {
@@ -2065,7 +2053,7 @@ function requireBrowserOrigin(request: Request, url: URL): Response | undefined 
 }
 
 async function listApiKeys(env: AccountAuthEnv, userId: string): Promise<ApiKeyMetadata[]> {
-  const response = await env.NANOCODEX_USERS.getByName(userId, durablePlacementOptions(env.trustedClientIngressColo)).fetch("https://user.internal/api-keys");
+  const response = await env.NANOCODEX_USERS.getByName(userId).fetch("https://user.internal/api-keys");
   if (!response.ok) throw new Error("API key listing failed");
   return response.json<ApiKeyMetadata[]>();
 }
@@ -2092,7 +2080,7 @@ export async function createApiKey(
     prefix: `ncx_live_${id}`,
     createdAt,
   };
-  const key = env.NANOCODEX_API_KEYS.getByName(digest, durablePlacementOptions(env.trustedClientIngressColo));
+  const key = env.NANOCODEX_API_KEYS.getByName(digest);
   const record = {
     ...metadata,
     digest,
@@ -2121,7 +2109,7 @@ export async function createApiKey(
   } else {
     await initialized.body?.cancel();
   }
-  const attached = await env.NANOCODEX_USERS.getByName(principal.userId, durablePlacementOptions(env.trustedClientIngressColo)).fetch(
+  const attached = await env.NANOCODEX_USERS.getByName(principal.userId).fetch(
     "https://user.internal/api-keys",
     {
       method: "POST",
@@ -2143,7 +2131,7 @@ export async function revokeApiKey(
   id: string,
   token?: string,
 ): Promise<boolean> {
-  const account = env.NANOCODEX_USERS.getByName(userId, durablePlacementOptions(env.trustedClientIngressColo));
+  const account = env.NANOCODEX_USERS.getByName(userId);
   let digest: string;
   if (token !== undefined) {
     if (token.match(API_KEY)?.[1] !== id) throw new Error("invalid API key material");
@@ -2156,7 +2144,7 @@ export async function revokeApiKey(
     }
     digest = (await found.json<ApiKeyMetadata & { digest: string }>()).digest;
   }
-  const deleted = await env.NANOCODEX_API_KEYS.getByName(digest, durablePlacementOptions(env.trustedClientIngressColo)).fetch(
+  const deleted = await env.NANOCODEX_API_KEYS.getByName(digest).fetch(
     "https://api-key.internal/record",
     { method: "DELETE" },
   );
@@ -2248,24 +2236,6 @@ export class UserAccount extends DurableObject<AccountAuthEnv> {
     return this.ctx.storage.get<UserRecord>("account");
   }
 
-  /**
-   * Register a regional API-key replica, then read the account, with no other
-   * I/O between: an account mutation either is read here or revokes it.
-   */
-  async registerApiKeyAuthorityLease(replica: string): Promise<UserRecord | undefined> {
-    if (!await registerApiKeyAuthorityLease(this.ctx.storage, "", replica)) return undefined;
-    return this.ctx.storage.get<UserRecord>("account");
-  }
-
-  /**
-   * Required after committing any authority-reducing account mutation and
-   * before acknowledging it (including operator edits). False means some
-   * replica did not acknowledge: report failure and retry.
-   */
-  async revokeApiKeyAuthorityLeases(): Promise<boolean> {
-    return revokeApiKeyAuthorityLeases(this.ctx.storage, this.env.NANOCODEX_API_KEYS);
-  }
-
   async resolveAuthorization(): Promise<{ userId: string; grant: OrganizationGrant; account: UserRecord } | undefined> {
     const account = await this.ctx.storage.get<UserRecord>("account");
     if (!isUserRecord(account)) return undefined;
@@ -2345,7 +2315,7 @@ export class UserAccount extends DurableObject<AccountAuthEnv> {
         };
         await this.ctx.storage.put("account", record);
         const rootTeamId = crypto.randomUUID();
-        const initialized = await this.env.NANOCODEX_ORGANIZATIONS.getByName(record.organizationId, durablePlacementOptions(request.headers.get(TRUSTED_INGRESS_HEADER))).fetch(
+        const initialized = await this.env.NANOCODEX_ORGANIZATIONS.getByName(record.organizationId).fetch(
           "https://organization.internal/initialize",
           {
             method: "PUT",
@@ -2606,28 +2576,6 @@ export class Organization extends DurableObject<AccountAuthEnv> {
   async resolveCompanyMembership(userId: string) {
     return readCompanyMembership(this.ctx.storage, userId);
   }
-  /**
-   * Register a regional API-key replica for userId, then read that user's
-   * grant, with no other I/O between: a mutation either is read here or
-   * revokes it.
-   */
-  async registerApiKeyAuthorityLease(userId: string, replica: string): Promise<OrganizationGrant | undefined> {
-    if (!isUserId(userId) || !await registerApiKeyAuthorityLease(this.ctx.storage, apiKeyAuthorityUserScope(userId), replica)) return undefined;
-    return this.resolveOrganizationGrant(userId);
-  }
-
-  /**
-   * Required after committing any authority-reducing organization, team or
-   * membership mutation and before acknowledging it (including operator
-   * edits). Pass the member's userId for a membership change; omit it for
-   * organization- or team-wide changes. False means retry.
-   */
-  async revokeApiKeyAuthorityLeases(userId?: string): Promise<boolean> {
-    if (userId !== undefined && !isUserId(userId)) return false;
-    return revokeApiKeyAuthorityLeases(this.ctx.storage, this.env.NANOCODEX_API_KEYS,
-      userId === undefined ? "" : apiKeyAuthorityUserScope(userId));
-  }
-
   async resolveOrganizationGrant(userId: string): Promise<OrganizationGrant | undefined> {
     if (!isUserId(userId)) return undefined;
     // Read all authority from storage on every RPC, just as the HTTP route does.
@@ -2836,8 +2784,6 @@ export class ApiKeyRecord extends DurableObject<AccountAuthEnv> {
         return true;
       });
       if (!committed) return json({ error: "stale_authorization" }, { status: 409 });
-      // Expansion only: a missed replica under-grants until its lease expires.
-      await this.#revokeRegionalLeases().catch(() => false);
       return view();
     }
     await this.ctx.storage.put(permissionRequestStorageKey(requestId), current);
@@ -2852,105 +2798,6 @@ export class ApiKeyRecord extends DurableObject<AccountAuthEnv> {
     if ((await this.ctx.storage.list({ limit: 1 })).size) throw new Error("activation probe refused: object has state");
     await this.ctx.storage.deleteAll();
     return enteredAt;
-  }
-
-  // Replica-only volatile lease. Eviction or restart drops it and forces a
-  // fresh primary check; it is never persisted or shared with the primary.
-  // Deadlines use the isolate's monotonic clock and never wall-clock time.
-  #regionalLease?: { record: StoredApiKey; primaryId: string; deadline: number };
-  // Bumped by every revocation; a grant requested under an older generation
-  // is discarded, whatever order its reply and the revocation arrive in.
-  #regionalGeneration = 0;
-  #regionalClock = 0;
-  #regionalRenewal?: Promise<RegionalApiKeyAuthorization<StoredApiKey> | undefined | null>;
-
-  #regionalNow(): number {
-    const now = performance.now();
-    // A backwards step would lengthen a lease: drop it, void in-flight grants
-    // and restart the timeline from the new reading.
-    if (now < this.#regionalClock) { this.#regionalLease = undefined; this.#regionalGeneration++; }
-    this.#regionalClock = now;
-    return now;
-  }
-
-  /**
-   * Replica: answer from an unexpired, unrevoked lease or renew at the primary.
-   * Undefined is a final denial; null (or a transport error) means "ask the
-   * primary". Null is returned rather than thrown to keep RPC logs clean.
-   */
-  async resolveRegionalAuthorizedKey(primaryObjectId: string, region: string): Promise<RegionalApiKeyAuthorization<StoredApiKey> | undefined | null> {
-    if (!/^[0-9a-f]{64}$/.test(primaryObjectId) || !isRegionalApiKeyAuthorityRegion(region)) return undefined;
-    // Object names are not authority: bind this replica to exactly one primary and region.
-    const namespace = this.env.NANOCODEX_API_KEYS;
-    if (!namespace.idFromName(regionalApiKeyAuthorityName(primaryObjectId, region)).equals(this.ctx.id)) return undefined;
-    const now = this.#regionalNow();
-    const lease = this.#regionalLease;
-    if (lease && lease.primaryId === primaryObjectId && now < lease.deadline) {
-      return { record: lease.record, apiKeyObjectId: lease.primaryId };
-    }
-    this.#regionalLease = undefined;
-    this.#regionalRenewal ??= this.#renewRegionalLease(primaryObjectId, region)
-      .finally(() => { this.#regionalRenewal = undefined; });
-    return await this.#regionalRenewal;
-  }
-
-  async #renewRegionalLease(primaryObjectId: string, region: PlacementRegion): Promise<RegionalApiKeyAuthorization<StoredApiKey> | undefined | null> {
-    const namespace = this.env.NANOCODEX_API_KEYS;
-    const primary = namespace.get(namespace.idFromString(primaryObjectId));
-    // Capture both before dispatch: the deadline must end before anything the
-    // primary read, and a revocation after dispatch must void this grant.
-    const generation = this.#regionalGeneration;
-    const deadline = this.#regionalNow() + REGIONAL_API_KEY_AUTHORITY_LEASE_MS;
-    const grant = consumeRpcData(await primary.grantRegionalLease(region));
-    const now = this.#regionalNow();
-    // Revoked, too slow or indeterminate: never cache it; the caller asks the primary itself.
-    if (generation !== this.#regionalGeneration || now >= deadline || grant === null) return null;
-    if (!grant || !isStoredApiKey(grant.record)) return undefined;
-    this.#regionalLease = { record: grant.record, primaryId: primaryObjectId, deadline };
-    return { record: grant.record, apiKeyObjectId: primaryObjectId };
-  }
-
-  /** Replica: drop the lease and void every in-flight grant before acknowledging. */
-  async revokeRegionalLease(): Promise<true> {
-    this.#regionalGeneration++;
-    this.#regionalLease = undefined;
-    return true;
-  }
-
-  /**
-   * Primary: grant only after registering the replica with the key, account
-   * and organization, each registration preceding that object's live read.
-   */
-  async grantRegionalLease(region: string): Promise<{ record: StoredApiKey } | undefined | null> {
-    if (!isRegionalApiKeyAuthorityRegion(region)) return undefined;
-    // A deleted or never-created key registers nothing.
-    if (!isStoredApiKey(await this.ctx.storage.get<StoredApiKey>("record"))) return undefined;
-    const replica = regionalApiKeyAuthorityName(this.ctx.id.toString(), region);
-    // Register, then read again: a deletion either sees this registration or is read here.
-    await registerApiKeyAuthorityLease(this.ctx.storage, "", replica);
-    const record = await this.ctx.storage.get<StoredApiKey>("record");
-    if (!isStoredApiKey(record)) return undefined;
-    const placement = durablePlacementOptions(this.env.trustedClientIngressColo);
-    const [account, grant] = await Promise.all([
-      this.env.NANOCODEX_USERS.getByName(record.userId, placement).registerApiKeyAuthorityLease(replica).then(consumeRpcData),
-      this.env.NANOCODEX_ORGANIZATIONS.getByName(record.organizationId, placement).registerApiKeyAuthorityLease(record.userId, replica).then(consumeRpcData),
-    ]);
-    if (!isUserRecord(account) || account.id !== record.userId || account.organizationId !== record.organizationId
-      || !isOrganizationGrant(grant) || grant.organizationId !== record.organizationId
-      || grant.teamId !== record.teamId
-      || grant.authorizationEpoch !== record.authorizationEpoch
-      || organizationRoleRank(record.role) > organizationRoleRank(grant.role)
-      || record.capabilities.some((capability) => !grant.capabilities.includes(capability))) return undefined;
-    // A key mutation during the remote reads already revoked this registered
-    // replica. Null rather than deny: the caller then asks the primary
-    // directly, so an approval racing a renewal is never a spurious denial.
-    if (!sameStoredApiKey(await this.ctx.storage.get("record"), record)) return null;
-    return { record };
-  }
-
-  /** Primary: revoke every registered replica, however old; true only if all acknowledged. */
-  #revokeRegionalLeases(): Promise<boolean> {
-    return revokeApiKeyAuthorityLeases(this.ctx.storage, this.env.NANOCODEX_API_KEYS);
   }
 
   async resolveAuthorizedKey(observeCreate = false, includeAccount = false): Promise<(StoredApiKey & { account?: UserRecord }) | undefined> {
@@ -3006,14 +2853,6 @@ export class ApiKeyRecord extends DurableObject<AccountAuthEnv> {
       return new Response(null, { status: 201 });
     }
     if (url.pathname === "/record" && request.method === "DELETE") {
-      // Fence first: no grant can succeed once the record is gone, so every
-      // registration that could still answer is already enumerable below.
-      await this.ctx.storage.delete("record");
-      if (!await this.#revokeRegionalLeases()) {
-        // Not acknowledged until every registered replica acknowledged; no
-        // wall-clock expiry substitutes. The identical retry resumes.
-        return json({ error: "revocation_pending" }, { status: 503 });
-      }
       await this.ctx.storage.deleteAll();
       return new Response(null, { status: 204 });
     }

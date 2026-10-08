@@ -51,7 +51,6 @@
     "nanocodex-tools/hosted": "../nanocodex-tools/src/hosted/index.ts",
     "nanocodex/cloudflare/rpc": "../nanocodex/cloudflare/rpc.mjs",
     "nanocodex/cloudflare/managed-auth": "../nanocodex/cloudflare/managed-auth.mjs",
-    "nanocodex/cloudflare/durable-placement": "../nanocodex/cloudflare/durable-placement.mjs",
     "nanocodex/cloudflare/managed-access": "../nanocodex/cloudflare/managed-access.mjs"
   }
 }

@@ -1,4 +1,3 @@
-import { durablePlacementOptions } from "nanocodex/cloudflare/durable-placement";
 import { createHash } from "node:crypto";
 import type { NamedTool, ToolContext } from "nanocodex";
 import type { PersonalizationSnapshot } from "./personalization";
@@ -45,7 +44,7 @@ export async function markdownMemoryRequest(options: ManagedExtensionOptions, op
   if (operation === "write" && context.subagent !== undefined) throw new HistorySearchError(403, "memory_root_only", "memory writes are available only to the root agent");
   if (operation === "write" && scope === "team" && !options.automaticTeamContribution && user_requested !== true) throw new HistorySearchError(403, "sharing_requires_request", "shared memory writes require the user's request and user_requested=true");
   const target = memoryTarget(options.organizationId, options.teamId, options.ownerId, scope as MemoryVisibility);
-  const response = await options.memories.getByName(target.name, durablePlacementOptions(options.clientIngressColo)).fetch(`https://memory.internal/markdown-memory/${operation}`, {
+  const response = await options.memories.getByName(target.name).fetch(`https://memory.internal/markdown-memory/${operation}`, {
     method: "POST", signal: context.signal,
     headers: {
       "content-type": "application/json", "x-nanocodex-organization-id": options.organizationId,

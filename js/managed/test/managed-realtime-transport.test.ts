@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { validRealtimeSession, voiceRelayRegion, routeManagedRealtimeTransport } from "../src/managed-realtime-transport";
+import { validRealtimeSession, routeManagedRealtimeTransport } from "../src/managed-realtime-transport";
 
 const session = () => ({
   model: "gpt-live-1-codex", instructions: "Use the user's ChatGPT subscription.",
@@ -34,30 +34,8 @@ describe("ChatGPT subscription voice call boundary", () => {
 });
 
 
-describe("voice relay geography", () => {
-  it("prefers the trusted frontdoor ingress over service-hop geography", () => {
-    const request = { cf: { continent: "EU", longitude: "2.3" } } as Request;
-    expect(voiceRelayRegion(request, "SJC")).toBe("wnam");
-    expect(voiceRelayRegion(request, "NRT")).toBe("apac");
-    expect(voiceRelayRegion(request, "ZZZ")).toBeUndefined();
-  });
-  it.each([
-    ["NA", "-122.4", "wnam"], ["NA", "-74", "enam"],
-    ["EU", "2.3", "weur"], ["EU", "23.7", "eeur"],
-    ["AS", "139", "apac"], ["SA", "-46", "sam"], ["OC", "151", "oc"],
-    ["AF", "30", undefined], ["NA", "", undefined], ["EU", "bad", undefined],
-  ])("uses trusted %s/%s metadata", (continent, longitude, expected) => {
-    expect(voiceRelayRegion({ cf: { continent, longitude } } as Request)).toBe(expected);
-  });
-  it("does not accept a caller's placement header without Cloudflare metadata", () => {
-    expect(voiceRelayRegion(new Request("https://test.example", {
-      headers: { "x-nanocodex-voice-region": "wnam", "cf-ipcontinent": "NA" },
-    }))).toBeUndefined();
-  });
-});
-
 describe("private voice egress admission", () => {
-  async function fixture(owned: boolean, privateBinding = true, direct = true, sideband = false, rpc = false, callRpc = false, accountId?: string, trustedClientIngressColo?: string) {
+  async function fixture(owned: boolean, privateBinding = true, direct = true, sideband = false, rpc = false, callRpc = false, accountId?: string) {
     const owner = "11111111-1111-4111-8111-111111111111";
     const id = "a".repeat(64);
     const token = `ncx_live_${"k".repeat(12)}_${"s".repeat(43)}`;
@@ -79,7 +57,6 @@ describe("private voice egress admission", () => {
     });
     const getSession = vi.fn((_id: DurableObjectId, _options?: DurableObjectNamespaceGetDurableObjectOptions) => ({ fetch: ownership, ...(rpc ? { resolveCredentialSubject } : {}) }));
     const env = {
-      trustedClientIngressColo,
       NANOCODEX_API_KEYS: { getByName: () => ({ fetch: async () => Response.json({
         id: "k".repeat(12), prefix: `ncx_live_${"k".repeat(12)}`, label: "voice", digest,
         createdAt: 1, userId: owner, organizationId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
@@ -106,25 +83,12 @@ describe("private voice egress admission", () => {
     const response = await routeManagedRealtimeTransport(request, env, url, 1000);
     return { response, relay, generic, ownership, owner, resolveCredentialSubject, createCall, getSession, request, env, url };
   }
-  it.each([false, true])("hints Session first touch using trusted ingress for calls and sideband (sideband=%s)", async (sideband) => {
-    const f = await fixture(true, true, true, sideband, true, false, undefined, "SJC");
+  it.each([false, true])("addresses the Session by name only and sends no placement (sideband=%s)", async (sideband) => {
+    const f = await fixture(true, true, true, sideband, true);
     expect(f.response?.status).toBe(201);
-    expect(f.getSession.mock.calls[0]).toHaveLength(2);
-    expect(f.getSession.mock.calls[0]?.[1]).toEqual({ locationHint: "wnam" });
-    expect(f.resolveCredentialSubject).toHaveBeenCalledTimes(1);
-    if (sideband) {
-      expect(f.generic).not.toHaveBeenCalled();
-      const request = f.relay.mock.calls[0]![0];
-      expect(request.headers.get("x-nanocodex-realtime-call-id")).toBe("rtc_fixture");
-      expect(request.headers.has("x-nanocodex-voice-region")).toBe(false);
-    } else {
-      expect(f.relay.mock.calls[0]![0].headers.get("x-nanocodex-voice-region")).toBe("wnam");
-    }
-  });
-  it("does not invent a region for an unmapped trusted ingress", async () => {
-    const f = await fixture(true, true, true, false, false, false, undefined, "ZZZ");
-    expect(f.getSession.mock.calls[0]?.[1]).toBeUndefined();
-    expect(f.relay.mock.calls[0]![0].headers.has("x-nanocodex-voice-region")).toBe(false);
+    expect(f.getSession.mock.calls[0]).toHaveLength(1);
+    const request = f.relay.mock.calls[0]![0];
+    expect(request.headers.has("x-nanocodex-voice-region")).toBe(false);
   });
   it("transports SDP with headers through private RPC and still sanitizes the reply", async () => {
     const f = await fixture(true, true, true, false, true, true);
