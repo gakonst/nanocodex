@@ -3494,7 +3494,10 @@ fn forward_subagent_updates(
                     }
                 }
                 SubagentUpdate::Status { id, status } => {
-                    let session_id = sessions.borrow().get(&(root_session_id.clone(), id)).cloned();
+                    let session_id = sessions
+                        .borrow()
+                        .get(&(root_session_id.clone(), id))
+                        .cloned();
                     if let Some(session_id) = session_id
                         && let Ok(encoded) = serde_json::to_string(&status)
                         && let Err(error) = host_subagent_status(&session_id, &encoded)

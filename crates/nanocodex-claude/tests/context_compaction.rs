@@ -312,7 +312,11 @@ async fn advancing_rounds_allow_new_compaction_with_bounded_rapid_refill() {
             break;
         }
     }
-    assert_eq!(compactions, [1, 2, 5], "one event per summary (requests 2, 4 and 8)");
+    assert_eq!(
+        compactions,
+        [1, 2, 5],
+        "one event per summary (requests 2, 4 and 8)"
+    );
     assert_eq!(result.final_message(), "done");
     assert_eq!(result.usage().unwrap().input_tokens(), 630_000);
     let log = requests.lock().unwrap();

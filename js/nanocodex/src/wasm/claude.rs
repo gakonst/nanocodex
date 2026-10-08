@@ -294,7 +294,7 @@ async fn execute_tool(
                     let reply = tools
                         .execute(&name, input, invocation)
                         .await
-                        .map_err(|error| js_error(error))?;
+                        .map_err(js_error)?;
                     let output = match reply.content {
                         ToolResultContent::Text(text) => text,
                         ToolResultContent::Blocks(blocks) => {
