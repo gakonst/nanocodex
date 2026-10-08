@@ -511,3 +511,147 @@ async fn siblings_continue_a_question_with_findings_but_reply_and_authority_chec
         ]).await;
     }).await.expect("sibling journey must finish without hanging");
 }
+
+// Use a persisted journal as the recovery input, then exercise the installed
+// list_agents tool through real model/tool dispatch. Holding resume until after
+// listing deterministically models the ready-before-resume window, without sleeps.
+#[tokio::test]
+async fn restored_children_remain_discoverable_before_and_after_failed_resume() {
+    use nanocodex_subagents::{MemorySubagentStore, SubagentStore};
+    tokio::time::timeout(Duration::from_secs(20), async {
+        let mut journey = Journey::new();
+        let mut agents: Vec<Value> = (1..=6)
+            .map(|id| {
+                json!({
+                    "descriptor": {"id": id, "session_id": format!("restored-{id}"),
+                        "role": format!("worker-{id}"), "task": "retained task",
+                        "parent": if id == 2 { Some(1) } else { None }},
+                    "status": {"state":"running"}, "turn_in_flight": true,
+                    "output_schema": {"type":"string"},
+                    "native_checkpoint": {"model":"claude-haiku-4-5",
+                        "session_id": format!("restored-{id}"), "thinking":"none",
+                        "payload":"{\"messages\":[]}", "has_conversation":true}
+                })
+            })
+            .collect();
+        for (id, status) in [
+            (7, json!({"state":"completed","output":"done"})),
+            (8, json!({"state":"failed","error":"retained failure"})),
+            (9, json!({"state":"closed"})),
+            (10, json!({"state":"interrupted"})),
+        ] {
+            agents.push(json!({
+                "descriptor":{"id":id,"session_id":format!("retained-{id}"),
+                    "role":"retained","task":"retained task","parent":null},
+                "status":status, "output_schema":{"type":"string"}
+            }));
+        }
+        let store = MemorySubagentStore::new();
+        store
+            .save(
+                &journey.session,
+                json!({"version":1,"agents":agents}).to_string(),
+            )
+            .await
+            .unwrap();
+        journey.registry.set_store(Arc::new(store));
+        let report = journey.registry.restore(&journey.session).await.unwrap();
+        assert_eq!(report.restored, 10);
+        assert_eq!(report.interrupted.len(), 6);
+        let turn = journey
+            .parent
+            .prompt("Inspect the recovered directory.")
+            .await
+            .unwrap();
+        let pending = journey.next().await;
+        let pending = journey
+            .tool(
+                pending,
+                "restored-default",
+                "list_agents",
+                json!({"include_completed":false}),
+            )
+            .await;
+        let listed: Value =
+            serde_json::from_str(tool_output(&pending.0, "restored-default")).unwrap();
+        let entries = listed["agents"].as_array().unwrap();
+        assert_eq!(entries.len(), 6);
+        for (index, entry) in entries.iter().enumerate() {
+            assert_eq!(entry["agent_id"], index + 1);
+            assert_eq!(entry["status"]["state"], "interrupted");
+            assert_eq!(entry["can_message"], true);
+            assert_eq!(entry["can_manage"], true);
+        }
+        assert_eq!(entries[1]["parent_agent_id"], 1);
+        let pending = journey
+            .tool(
+                pending,
+                "restored-all",
+                "list_agents",
+                json!({"include_completed":true}),
+            )
+            .await;
+        let all: Value = serde_json::from_str(tool_output(&pending.0, "restored-all")).unwrap();
+        assert_eq!(all["agents"].as_array().unwrap().len(), 10);
+        assert_eq!(&all["agents"].as_array().unwrap()[..6], entries.as_slice());
+
+        // Public directory permissions remain relative to the caller's tree.
+        let child_view = journey.registry.directory("restored-1", false, false).await;
+        assert_eq!(child_view.len(), 5);
+        assert!(
+            child_view
+                .iter()
+                .find(|e| e.agent_id.to_string() == "2")
+                .unwrap()
+                .can_manage
+        );
+        assert!(
+            !child_view
+                .iter()
+                .find(|e| e.agent_id.to_string() == "3")
+                .unwrap()
+                .can_manage
+        );
+        let self_view = journey.registry.directory("restored-1", false, true).await;
+        assert!(!self_view[0].can_message && !self_view[0].can_manage);
+        assert!(
+            journey
+                .registry
+                .directory("unrelated-root", true, true)
+                .await
+                .is_empty()
+        );
+        let sibling: AgentId = "3".parse().unwrap();
+        assert!(journey.registry.close("restored-1", sibling).await.is_err());
+
+        // A fresh registry has no root factory, so resume deterministically fails
+        // before any provider call. No replacement children are started.
+        let payload = json!({"version":1,"agents":agents}).to_string();
+        let store = MemorySubagentStore::new();
+        store.save("unavailable-root", payload).await.unwrap();
+        let (recovered, _, _) = channel(8);
+        recovered.set_store(Arc::new(store));
+        recovered.restore("unavailable-root").await.unwrap();
+        let results = recovered.resume_interrupted("unavailable-root").await;
+        assert_eq!(results.len(), 6);
+        for (id, result) in results {
+            let error = result.unwrap_err();
+            println!("RESUME {id} failed: {error}");
+        }
+        let after = recovered.directory("unavailable-root", false, false).await;
+        assert_eq!(after.len(), 6);
+        assert!(after.iter().all(|e| e.status == AgentStatus::Interrupted));
+        println!(
+            "AFTER failed resume {}",
+            serde_json::to_string(&after).unwrap()
+        );
+        pending
+            .1
+            .send(generation(None))
+            .unwrap_or_else(|_| panic!("root closed"));
+        turn.result().await.unwrap();
+        journey.parent.shutdown().await.unwrap();
+    })
+    .await
+    .unwrap();
+}

@@ -894,14 +894,14 @@ impl Tool for ListAgents {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition::function(
             LIST_AGENTS_TOOL,
-            "Lists a compact directory of agents in the same task tree. Active recipients are returned by default; completed agents can be included when a follow-up message is needed.",
+            "Lists a compact directory of agents in the same task tree. Pending, running, and recoverable interrupted agents are returned by default; other retained agents can be included when a follow-up message is needed.",
             json!({
                 "type": "object",
                 "properties": {
                     "include_completed": {
                         "type": "boolean",
                         "default": false,
-                        "description": "Includes completed, interrupted, failed, and closed agents."
+                        "description": "Also includes completed, failed, closed, and nonrecoverable interrupted agents."
                     },
                     "include_self": {
                         "type": "boolean",

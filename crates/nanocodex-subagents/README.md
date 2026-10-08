@@ -109,3 +109,9 @@ Schema for advanced constraints. Old tool calls containing `output_schema` may
 finish after upgrade, but new model-visible declarations advertise only
 `output_contract`. Strict provider generation does not constrain calls from
 Code Mode JavaScript; the runtime still parses and validates before child launch.
+
+The default `list_agents` directory includes pending, running, and recoverable
+interrupted children, including journal-restored children awaiting resume. Their
+status remains `interrupted` until a turn actually starts. `include_completed: true`
+adds all other retained states. Visibility does not change `can_message`,
+`can_manage`, self exclusion, or task-tree authorization.

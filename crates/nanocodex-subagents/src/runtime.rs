@@ -562,8 +562,14 @@ impl RegistryState {
             .filter(|id| include_self || caller != Some(*id))
             .filter_map(|id| {
                 let session = scope.sessions.get(&id)?;
+                // Restoration releases its gate before resuming children (resume
+                // also waits on that gate). Keep recoverable Interrupted entries
+                // discoverable during that interval and after a failed resume.
+                let recoverable_interrupted = matches!(session.status, AgentStatus::Interrupted)
+                    && (session.harness.is_some() || session.stored_runtime.is_some());
                 if !include_completed
                     && !matches!(session.status, AgentStatus::Pending | AgentStatus::Running)
+                    && !recoverable_interrupted
                 {
                     return None;
                 }
