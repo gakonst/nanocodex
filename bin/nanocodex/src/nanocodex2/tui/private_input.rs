@@ -315,16 +315,17 @@ impl Flow {
             visible: false,
             focused: true,
             drain: true,
-            token: uuid::Uuid::new_v4().simple().to_string(),
+            token: safety_token(),
             matched: 0,
             ready: false,
             retry_save: false,
         }
     }
+    /// Phase boundary: discard typeahead and require one rendered frame before
+    /// input. The typed safety token is per flow, so it is not re-requested at
+    /// every step (review, fields, Vault picker) of the same private request.
     fn reset(&mut self) {
-        self.token = uuid::Uuid::new_v4().simple().to_string();
         self.matched = 0;
-        self.ready = false;
         self.visible = false;
         self.drain = true;
     }
@@ -416,23 +417,19 @@ impl Flow {
         self.reset();
     }
     pub(crate) fn intercept(&mut self, mut event: Event) -> Action {
+        // Switching to a password manager and back must not destroy the form.
+        // Input is ignored while unfocused; regaining focus discards typeahead
+        // and waits for a fresh frame, keeping entered values masked.
         if matches!(event, Event::FocusGained) {
             self.focused = true;
-            if matches!(
-                self.phase,
-                Phase::Fields(_) | Phase::Display(_, _) | Phase::Sending | Phase::VaultLoading(_)
-            ) {
-                self.cancel_local();
-                return Action::Cancel;
-            }
             self.reset();
             return Action::None;
         }
         if matches!(event, Event::FocusLost) {
             self.focused = false;
+            return Action::None;
         }
-        let cancel = matches!(event, Event::FocusLost)
-            || matches!(&event,Event::Key(k) if k.kind!=KeyEventKind::Release && (k.code==KeyCode::Esc || (k.modifiers.contains(KeyModifiers::CONTROL)&&matches!(k.code,KeyCode::Char('c'|'d'|'z')))));
+        let cancel = matches!(&event,Event::Key(k) if k.kind!=KeyEventKind::Release && (k.code==KeyCode::Esc || (k.modifiers.contains(KeyModifiers::CONTROL)&&matches!(k.code,KeyCode::Char('c'|'d'|'z')))));
         if cancel {
             wipe_paste(&mut event);
             if matches!(self.phase, Phase::Status(_)) {
@@ -755,7 +752,14 @@ impl Flow {
             self.phase,
             Phase::Loading | Phase::Sending | Phase::VaultLoading(_)
         ) {
-            text.push_str(&if self.ready{"\n\nSafety token verified. Controls above are now enabled.".into()}else{format!("\n\nInput disabled until this fresh token is typed, NOT pasted.\nType safety token (keys only): {}",self.token)});
+            text.push_str(&if self.ready {
+                "\n\nSafety token verified. Controls above are now enabled.".into()
+            } else {
+                format!(
+                    "\n\nType {} to enable input (typed, not pasted).",
+                    self.token
+                )
+            });
         }
         let lines = super::vault::review_lines(&text, body.width);
         self.visible = body.width >= 20 && lines.len() <= usize::from(body.height);
@@ -1568,8 +1572,17 @@ mod tests {
             .collect::<String>();
         assert!(!screen.contains("private-canary"));
         assert!(screen.contains("********"));
+        // Focus changes keep the masked form; input is ignored while unfocused.
         flow.intercept(Event::FocusLost);
-        assert!(matches!(flow.phase, Phase::Status(_)));
+        assert!(matches!(flow.phase, Phase::Fields(_)));
+        flow.intercept(Event::Paste("unfocused-canary".into()));
+        flow.intercept(Event::FocusGained);
+        assert!(flow.take_drain());
+        let Phase::Fields(ref inputs) = flow.phase else {
+            panic!()
+        };
+        assert_eq!(inputs.values[0].value(), "entered-private-canary");
+        assert!(flow.ready);
     }
     #[test]
     fn saved_status_requires_safe_item_evidence_and_drops_arbitrary_strings() {
@@ -1591,6 +1604,14 @@ mod tests {
     }
 }
 
+/// Short per-flow token: blocks pasted or prequeued keystrokes from arming the
+/// panel without making the user retype a 32-character UUID at every step.
+fn safety_token() -> String {
+    let n = uuid::Uuid::new_v4().as_u128();
+    (0..4)
+        .map(|i| char::from(b'0' + ((n >> (i * 8)) % 10) as u8))
+        .collect()
+}
 fn current_millis() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
