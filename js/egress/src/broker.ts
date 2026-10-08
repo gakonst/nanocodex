@@ -386,6 +386,9 @@ function credentialMetric(detail: Readonly<Record<string, unknown>>): void {
   try { console.info(detail); } catch { /* Observation must not affect credential state. */ }
 }
 
+/** TEMPORARY: #890 placement row, removed with #recoverFromHome. */
+const MOVED_PLACEMENT_KEY = "broker-placement-v1";
+
 export class UserCredentialBroker extends DurableObject<BrokerEnv> {
   readonly #state: DurableObjectState;
   readonly #env: BrokerEnv;
@@ -415,9 +418,13 @@ export class UserCredentialBroker extends DurableObject<BrokerEnv> {
     this.#vault = new CredentialVault(env, `user/${state.id.toString()}`);
     this.#leaseVault = new CredentialVault(env, `user/${state.id.toString()}/model-credential-leases`);
     const startedAt = Date.now();
+    // TEMPORARY: an #890 home object only serves exportMovedRows; its rows are
+    // sealed under the legacy object's scope and must not load here.
+    if (state.id.name?.startsWith("~home/")) { this.#ready = Promise.reject(new Error("retired credential home")); this.#ready.catch(() => {}); return; }
     this.#ready = state.blockConcurrencyWhile(async () => {
       let completed = false;
       try {
+        await this.#recoverFromHome();
         await this.#initialize();
         this.#committedWalletIdentity = this.#credentials.wallet ? publicRootWallet(this.#credentials.wallet) : null;
         this.#activatedAt = Date.now();
@@ -433,6 +440,30 @@ export class UserCredentialBroker extends DurableObject<BrokerEnv> {
         });
       }
     });
+  }
+
+  // TEMPORARY one-shot recovery of #890's region homes. Delete after it has run.
+  // A legacy object whose rows #890 moved holds only {state:"moved",target}
+  // under this key; pull the sealed rows back verbatim (they were sealed under
+  // this object's scope) and drop the tombstone. The home is never used again.
+  async #recoverFromHome(): Promise<void> {
+    const placement = await this.#state.storage.get<{ state?: string; target?: string }>(MOVED_PLACEMENT_KEY);
+    if (!placement) return;
+    if (placement.state === "moved" && typeof placement.target === "string" && this.#env.USER_CREDENTIALS) {
+      const rows = await this.#env.USER_CREDENTIALS.getByName(placement.target).exportMovedRows() as [string, unknown][];
+      await this.#state.storage.transaction(async (transaction) => {
+        for (let index = 0; index < rows.length; index += 128) await transaction.put(Object.fromEntries(rows.slice(index, index + 128)));
+        await transaction.delete(MOVED_PLACEMENT_KEY);
+      });
+      credentialMetric({ type: "egress.credential.home_recovered", rows: rows.length });
+    } else await this.#state.storage.delete(MOVED_PLACEMENT_KEY);
+  }
+
+  /** TEMPORARY: raw sealed rows of an #890 home object, for its legacy object. */
+  async exportMovedRows(): Promise<[string, unknown][]> {
+    const rows: [string, unknown][] = [];
+    for (const [key, value] of await this.#state.storage.list()) if (key !== MOVED_PLACEMENT_KEY) rows.push([key, value]);
+    return rows;
   }
 
   async readWalletIdentity(): Promise<ReturnType<typeof publicRootWallet> | null> {
