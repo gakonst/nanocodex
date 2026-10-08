@@ -606,6 +606,141 @@ async fn live_open_with_preparation(acknowledged: bool) {
     .expect("live reconnect and replay must remain bounded");
 }
 
+#[tokio::test]
+async fn live_open_adopts_handshake_started_beside_state_at_same_cursor() {
+    live_open_overlapping_state(latest_socket::<40>, &["latest"]).await;
+}
+
+#[tokio::test]
+async fn live_open_discards_early_handshake_when_cursor_moved() {
+    // Events landed between the state read and the early upgrade: that socket
+    // would skip them, so the driver reconnects from the state cursor instead.
+    live_open_overlapping_state(latest_socket::<41>, &["latest", "40"]).await;
+}
+
+async fn live_open_overlapping_state<H, T>(socket: H, expected_handshakes: &[&str])
+where
+    H: axum::handler::Handler<T, Fixture>,
+    T: 'static,
+{
+    tokio::time::timeout(TEST_TIMEOUT, async {
+        let api_key = format!("ncx_live_{}_{}", "g".repeat(12), "h".repeat(43));
+        let fixture = Fixture::new(&api_key);
+        fixture
+            .inner
+            .preparation_acknowledged
+            .store(true, Ordering::SeqCst);
+        let app = Router::new()
+            .route("/v1/agents/{agent_id}", get(agent_state))
+            .route("/v1/agents/{agent_id}/ws", get(socket))
+            .with_state(fixture.clone());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let client = ManagedClient::new(
+            format!("http://{address}"),
+            ManagedApiKey::parse(api_key).unwrap(),
+        )
+        .unwrap();
+        let (agent, _events): (Nanocodex, AgentEvents) =
+            Nanocodex::builder(Managed::open_live(client, AGENT_ID))
+                .build()
+                .await
+                .unwrap();
+        let turn = agent
+            .prompt(PromptRequest::new("live prompt").request_id(ACTIVE_REQUEST_ID))
+            .await
+            .unwrap();
+        assert_result(
+            &turn.result().await.unwrap(),
+            ACTIVE_REQUEST_ID,
+            "overlapped answer",
+        );
+        assert_eq!(*lock(&fixture.inner.event_cursors), expected_handshakes);
+        assert_eq!(lock(&fixture.inner.state_reads).len(), 1);
+        agent.disconnect().await.unwrap();
+        server.abort();
+    })
+    .await
+    .expect("overlapped live open must remain bounded");
+}
+
+/// Upgrades at cursor `READY` when no cursor is requested, otherwise at the
+/// requested cursor, and answers one prompt.
+async fn latest_socket<const READY: u64>(
+    State(fixture): State<Fixture>,
+    Query(query): Query<HashMap<String, String>>,
+    headers: HeaderMap,
+    upgrade: WebSocketUpgrade,
+) -> impl IntoResponse {
+    authorize(&fixture, &headers);
+    let cursor = query
+        .get("cursor")
+        .map(|cursor| cursor.parse::<u64>().unwrap());
+    lock(&fixture.inner.event_cursors)
+        .push(cursor.map_or_else(|| "latest".to_owned(), |cursor| cursor.to_string()));
+    let ready_cursor = cursor.unwrap_or(READY).max(READY);
+    let mut response = upgrade
+        .on_upgrade(move |mut socket| async move {
+            let mut ready = agent_state_json(AGENT_ID, &ready_cursor.to_string());
+            ready["type"] = json!("ready");
+            ready["session_id"] = json!(AGENT_ID);
+            ready["restored"] = json!(true);
+            socket
+                .send(Message::Text(ready.to_string().into()))
+                .await
+                .unwrap();
+            if let Some(cursor) = cursor {
+                for next in cursor + 1..=ready_cursor {
+                    let event = nested_event(
+                        next,
+                        ROOT_SOURCE_REQUEST_ID,
+                        None,
+                        "assistant.message",
+                        json!({"text": format!("event {next}")}),
+                    );
+                    socket
+                        .send(Message::Text(wire_event(event).into()))
+                        .await
+                        .unwrap();
+                }
+            }
+            while let Some(Ok(Message::Text(frame))) = socket.recv().await {
+                let command: Value = serde_json::from_str(&frame).unwrap();
+                if command["type"] == "ping" {
+                    socket
+                        .send(Message::Text(r#"{"type":"pong"}"#.into()))
+                        .await
+                        .unwrap();
+                    continue;
+                }
+                assert_eq!(command["type"], "prompt");
+                for event in [
+                    accepted_event(ready_cursor + 1, ACTIVE_REQUEST_ID, "live prompt"),
+                    nested_event(
+                        ready_cursor + 2,
+                        ROOT_SOURCE_REQUEST_ID,
+                        None,
+                        "run.completed",
+                        json!({"status": "completed"}),
+                    ),
+                    completed_event(ready_cursor + 3, ACTIVE_REQUEST_ID, "overlapped answer"),
+                ] {
+                    socket
+                        .send(Message::Text(wire_event(event).into()))
+                        .await
+                        .unwrap();
+                }
+            }
+        })
+        .into_response();
+    response.headers_mut().insert(
+        "x-nanocodex-prepare",
+        "active-conversation".parse().unwrap(),
+    );
+    response
+}
+
 async fn prepare_conversation(State(fixture): State<Fixture>, headers: HeaderMap) -> StatusCode {
     authorize(&fixture, &headers);
     fixture
@@ -630,7 +765,14 @@ async fn reconnecting_socket(
         .inner
         .preparation_acknowledged
         .load(Ordering::SeqCst);
-    let cursor = query["cursor"].parse::<u64>().unwrap();
+    // A live open starts a cursorless handshake beside its state read. This
+    // fixture's ready cursor (440) never equals the first state cursor (40),
+    // so that early socket must be discarded; refuse it without consuming the
+    // delayed-ready release that the cursor fence below exercises.
+    let Some(cursor) = query.get("cursor") else {
+        return StatusCode::CONFLICT.into_response();
+    };
+    let cursor = cursor.parse::<u64>().unwrap();
     lock(&fixture.inner.event_cursors).push(cursor.to_string());
     let release = lock(&fixture.inner.steer_release).take();
     let mut response = upgrade

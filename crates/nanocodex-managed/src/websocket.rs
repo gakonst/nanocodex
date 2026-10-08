@@ -35,6 +35,65 @@ struct ConnectedSocket {
     preparation_accepted: bool,
 }
 
+/// A live socket opened at the server's latest cursor while the caller's
+/// durable state request is still in flight.
+///
+/// The socket is adopted only when its ready cursor equals the cursor the
+/// caller later opens from: such a socket is indistinguishable from one opened
+/// with that exact cursor (nothing to replay, live events after it). Any other
+/// outcome closes it and the driver connects normally from the requested
+/// cursor, so the state/event cursor fence is unchanged.
+#[derive(Debug)]
+pub(crate) struct Preconnect {
+    agent_id: String,
+    task: tokio::task::JoinHandle<Result<ConnectedSocket, ManagedError>>,
+}
+
+impl Drop for Preconnect {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+
+impl Preconnect {
+    /// Starts the live socket handshake for an existing agent at its latest cursor.
+    pub(crate) fn start(client: &ManagedClient, agent_id: &str) -> Result<Self, ManagedError> {
+        validate_id("agent", agent_id)?;
+        let mut endpoint = client.url(&format!("{}/ws", agent_path(agent_id)))?;
+        set_websocket_scheme(&mut endpoint)?;
+        let client = client.clone();
+        let expected = agent_id.to_owned();
+        let task = tokio::spawn(async move {
+            connect_endpoint(&client, endpoint, Some(&expected), "0")
+                .await
+                .map(|(connected, _)| connected)
+        });
+        Ok(Self {
+            agent_id: agent_id.to_owned(),
+            task,
+        })
+    }
+
+    pub(crate) fn agent_id(&self) -> &str {
+        &self.agent_id
+    }
+
+    /// Returns the socket only when it is exactly at `cursor`.
+    async fn adopt(mut self, cursor: &str) -> Option<ConnectedSocket> {
+        let connected = (&mut self.task).await.ok()?.ok()?;
+        (connected.replay_through == cursor).then_some(connected)
+    }
+}
+
+impl std::fmt::Debug for ConnectedSocket {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ConnectedSocket")
+            .field("replay_through", &self.replay_through)
+            .finish_non_exhaustive()
+    }
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct ManagedSocket {
     commands: mpsc::Sender<Command>,
@@ -139,11 +198,13 @@ impl ManagedSocket {
         client: ManagedClient,
         agent_id: String,
         cursor: EventCursor,
+        preconnect: Option<Preconnect>,
     ) -> Result<(Self, ManagedSocketEvents), ManagedError> {
         validate_id("agent", &agent_id)?;
         // The durable state and history remain usable while the live socket
         // reconnects. Connection establishment belongs to the background loop.
-        Ok(Self::start(client, agent_id, cursor, None))
+        let preconnect = preconnect.filter(|preconnect| preconnect.agent_id == agent_id);
+        Ok(Self::start_with(client, agent_id, cursor, None, preconnect))
     }
 
     fn start(
@@ -152,6 +213,16 @@ impl ManagedSocket {
         cursor: EventCursor,
         connected: Option<ConnectedSocket>,
     ) -> (Self, ManagedSocketEvents) {
+        Self::start_with(client, agent_id, cursor, connected, None)
+    }
+
+    fn start_with(
+        client: ManagedClient,
+        agent_id: String,
+        cursor: EventCursor,
+        connected: Option<ConnectedSocket>,
+        preconnect: Option<Preconnect>,
+    ) -> (Self, ManagedSocketEvents) {
         let (commands, command_rx) = mpsc::channel(1);
         let (event_tx, events) = mpsc::channel(EVENT_CAPACITY);
         tokio::spawn(run(
@@ -159,6 +230,7 @@ impl ManagedSocket {
             agent_id,
             cursor.as_str().to_owned(),
             connected,
+            preconnect,
             command_rx,
             event_tx,
         ));
@@ -226,9 +298,16 @@ async fn run(
     agent_id: String,
     mut cursor: String,
     mut connected: Option<ConnectedSocket>,
+    mut preconnect: Option<Preconnect>,
     mut commands: mpsc::Receiver<Command>,
     events: mpsc::Sender<Result<ManagedEvent, ManagedError>>,
 ) {
+    if let Some(preconnect) = preconnect.take() {
+        connected = tokio::select! {
+            adopted = preconnect.adopt(&cursor) => adopted,
+            () = events.closed() => return,
+        };
+    }
     let mut pending: Option<PendingSubmit> = None;
     let mut backoff = RECONNECT_MIN;
     let mut preparation_fallback_started = false;

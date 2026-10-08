@@ -224,6 +224,8 @@ pub enum ManagedResponse {
 pub struct ManagedService {
     client: ManagedClient,
     socket: Arc<tokio::sync::Mutex<Option<ManagedLiveSocket>>>,
+    /// Live handshake started beside an open recipe's state request.
+    preconnect: Arc<std::sync::Mutex<Option<crate::websocket::Preconnect>>>,
     transport: ManagedTransport,
 }
 
@@ -245,6 +247,7 @@ impl ManagedService {
         Self {
             client,
             socket: Arc::new(tokio::sync::Mutex::new(None)),
+            preconnect: Arc::new(std::sync::Mutex::new(None)),
             transport,
         }
     }
@@ -262,6 +265,7 @@ impl Service<ManagedRequest> for ManagedService {
     fn call(&mut self, request: ManagedRequest) -> Self::Future {
         let client = self.client.clone();
         let socket = Arc::clone(&self.socket);
+        let preconnect = Arc::clone(&self.preconnect);
         let transport = self.transport;
         Box::pin(async move {
             match request {
@@ -332,7 +336,26 @@ impl Service<ManagedRequest> for ManagedService {
                     })
                 }
                 ManagedRequest::State { agent_id } => {
-                    client.state(&agent_id).await.map(ManagedResponse::State)
+                    // A live open reads state and then connects from its
+                    // cursor. Start the handshake now so it overlaps the
+                    // state round trip; the driver adopts it only at the
+                    // exact same cursor.
+                    if matches!(transport, ManagedTransport::WebSocket)
+                        && socket.lock().await.is_none()
+                        && let Ok(started) = crate::websocket::Preconnect::start(&client, &agent_id)
+                    {
+                        *preconnect
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(started);
+                    }
+                    let state = client.state(&agent_id).await;
+                    if state.is_err() {
+                        preconnect
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .take();
+                    }
+                    state.map(ManagedResponse::State)
                 }
                 ManagedRequest::Events { agent_id, cursor } => {
                     match transport {
@@ -368,9 +391,18 @@ impl Service<ManagedRequest> for ManagedService {
                                     return Ok(ManagedResponse::Events(ManagedEvents::new(events)));
                                 }
                             }
-                            let (live, events) =
-                                ManagedSocket::open(client.clone(), agent_id.clone(), cursor)
-                                    .await?;
+                            let started = preconnect
+                                .lock()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                                .take()
+                                .filter(|started| started.agent_id() == agent_id);
+                            let (live, events) = ManagedSocket::open(
+                                client.clone(),
+                                agent_id.clone(),
+                                cursor,
+                                started,
+                            )
+                            .await?;
                             *socket.lock().await = Some(ManagedLiveSocket {
                                 agent_id,
                                 socket: live,
