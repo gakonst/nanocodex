@@ -248,8 +248,6 @@ jobs:
     name: shared Windows Hand and installer
     env:
       NANOCODEX_COMPUTER: "off"
-      # rust-lld links large MSVC test and CLI binaries much faster than link.exe.
-      CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER: rust-lld.exe
     runs-on: windows-2025
     timeout-minutes: 45
     permissions:
