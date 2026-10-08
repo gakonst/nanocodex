@@ -1429,6 +1429,7 @@ export class AccountHostedTools extends DurableObject<AccountHostedToolsEnv> {
 }
 
 const HAND_RECONNECT_ADMISSION_WAIT_MS = 10_000;
+const SELECTED_LOOKUP_REUSE_MS = 30_000;
 type HandFailureReason = "route_unavailable_after_recovery" | "route_replaced" | "route_unpublished" | "route_refresh_failed"
   | "process_runtime_replaced" | "transport_failed" | "outcome_unknown";
 
@@ -1487,6 +1488,7 @@ export class AccountHostedToolsProvider implements HostedToolsDynamicProvider {
   #optionalRetryAt = 0;
   #loadedAt = 0;
   #generation = 0;
+  #selectedFresh = new Map<string, { at: number; generation: number }>();
   #refreshGeneration = 0;
 
   constructor(
@@ -1636,6 +1638,14 @@ export class AccountHostedToolsProvider implements HostedToolsDynamicProvider {
   async refreshMachine(machineId: string, context: AuthorizationContext, computer = false): Promise<void> {
     if (!this.#allowed(context)) throw new Error("Hand access revoked");
     const generation = this.#generation;
+    // Shell routes do not need a per-call cross-region lookup: a recent
+    // successful lookup in this generation is reused, and a route that went
+    // stale is repinned by #repinNeverAdmitted before admission.
+    const fresh = this.#selectedFresh.get(machineId);
+    if (!computer && fresh !== undefined && fresh.generation === generation
+      && Date.now() - fresh.at < SELECTED_LOOKUP_REUSE_MS && this.#onlineMachineIds.has(machineId)
+      && this.#machineTools.has(machineToolKey(machineId, "exec_command"))) return;
+    this.#selectedFresh.delete(machineId);
     const snapshot = await fetchResponseWithDeadline(
       this.#namespace.getByName(this.#ownerId), "https://account-tools.internal/snapshot",
       { method: "POST", headers: { "content-type": "application/json" },
@@ -1666,6 +1676,7 @@ export class AccountHostedToolsProvider implements HostedToolsDynamicProvider {
       mount_roots: { ...this.#snapshot.mount_roots, ...snapshot.mount_roots },
       mount_aliases: { ...this.#snapshot.mount_aliases, ...snapshot.mount_aliases },
     });
+    if (generation === this.#generation) this.#selectedFresh.set(machineId, { at: Date.now(), generation });
   }
 
   setCatalogValidator(validator: HostedToolsCatalogValidator | undefined): void {

@@ -1013,7 +1013,7 @@ fn regional_hand_upgrade_identity_journey() -> Result<()> {
     }
     for (case, flag) in [
         ("default", None),
-        ("disabled", Some("true")),
+        ("disabled", Some("0")),
         ("regional", Some("1")),
         ("scoped", Some("1")),
         ("named", Some("1")),
@@ -1109,7 +1109,7 @@ async fn regional_hand_upgrade_case(case: &str) -> Result<()> {
                 catalog["attachment_id"] == "synthetic-machine",
                 "wrong attachment identity"
             );
-            if case == "regional" {
+            if case == "regional" || case == "default" {
                 ensure!(
                     catalog["machines"].as_array().map(Vec::len) == Some(1),
                     "expected one machine"

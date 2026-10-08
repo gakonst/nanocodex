@@ -77,7 +77,7 @@ new runtimes requires two distinct opt-ins:
   `NANOCODEX_REGIONAL_HAND_RELAYS="true"` on the managed Worker, enabling new
   regional placements when that configuration is deployed. Custom environments
   must set the same value explicitly.
-- Run a compatible native publisher with `NANOCODEX_REGIONAL_HAND_RELAYS=1` so
+- Compatible native publishers use regional relays by default (opt out with `NANOCODEX_REGIONAL_HAND_RELAYS=0`) so
   it sends machine/runtime identity headers. The native driver snapshots this
   setting for its lifetime, including reconnects.
 

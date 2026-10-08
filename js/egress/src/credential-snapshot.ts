@@ -1,12 +1,13 @@
 import { DurableObject, WorkerEntrypoint } from "cloudflare:workers";
 import { consumeRpcData } from "nanocodex/cloudflare/rpc";
 import { CredentialVault, type CredentialVaultEnv } from "./credential-vault";
-import type { ModelCredentialLeaseGrant, ModelCredentialValue, UserCredentialBroker } from "./broker";
+import type { ClaudeCredentialLeaseGrant, ClaudeCredentialValue, ModelCredentialLeaseGrant, ModelCredentialValue, UserCredentialBroker } from "./broker";
 
 /** Regions a trusted caller may place a replica in. */
 export const SNAPSHOT_REGIONS: ReadonlySet<string> = new Set(["wnam", "enam", "sam", "weur", "eeur", "apac", "oc"]);
 const OWNER = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const SNAPSHOT_KEY = "snapshot-v1";
+const CLAUDE_SNAPSHOT_KEY = "claude-snapshot-v1";
 const FLOOR_KEY = "floor-v1";
 /** One extra canonical attempt after a fenced (late) grant; then fail closed. */
 const MAX_FILL_ATTEMPTS = 2;
@@ -26,6 +27,13 @@ export type SnapshotResolve = Readonly<{
 export type PrewarmOutcome = "warm" | "filled" | "unavailable" | "invalid" | "unsupported";
 
 type Entry = { credential: ModelCredentialValue; epoch: number; expiresAt: number };
+type ClaudeEntry = { credential: ClaudeCredentialValue; epoch: number; expiresAt: number };
+export type ClaudeSnapshotResolve = Readonly<{
+  status: number;
+  credential: ClaudeCredentialValue | null;
+  source: "snapshot" | "filled" | "none";
+  canonical_ms?: number;
+}>;
 type StoredSnapshot = { envelope: unknown };
 
 /** Pending auth-only model upgrades held by this regional holder. */
@@ -88,6 +96,8 @@ export class UserCredentialSnapshot extends DurableObject<CredentialSnapshotEnv>
   #floor = 0;
   #entry: Entry | undefined;
   #fill: Promise<SnapshotResolve> | undefined;
+  #claudeEntry: ClaudeEntry | undefined;
+  #claudeFill: Promise<ClaudeSnapshotResolve> | undefined;
   readonly #pending = new Map<string, PendingUpgrade>();
   #activeUpgrades = 0;
   /** Preparations are refused while any invalidation is in flight. */
@@ -106,6 +116,17 @@ export class UserCredentialSnapshot extends DurableObject<CredentialSnapshotEnv>
     if (cached) return { status: 200, credential: cached.credential, source: "snapshot" };
     const fill = this.#fill ??= this.#fillFromCanonical(owner, region)
       .finally(() => { this.#fill = undefined; });
+    return fill;
+  }
+
+  /** Plain Claude subscription read under the same lease/floor fence. */
+  async resolveClaude(owner: string, region: string): Promise<ClaudeSnapshotResolve> {
+    if (!this.#boundTo(owner, region)) return { status: 403, credential: null, source: "none" };
+    await this.#load();
+    const cached = this.#claudeEntry;
+    if (cached && this.#claudeServable(cached)) return { status: 200, credential: cached.credential, source: "snapshot" };
+    const fill = this.#claudeFill ??= this.#fillClaudeFromCanonical(owner, region)
+      .finally(() => { this.#claudeFill = undefined; });
     return fill;
   }
 
@@ -133,10 +154,11 @@ export class UserCredentialSnapshot extends DurableObject<CredentialSnapshotEnv>
       await this.#load();
       if (epoch > this.#floor) this.#floor = epoch;
       this.#entry = undefined;
+      this.#claudeEntry = undefined;
       this.#disposeAllUpgrades("invalidated");
       // One implicit transaction; the output gate holds the ACK until durable.
       await this.ctx.storage.put(FLOOR_KEY, this.#floor);
-      await this.ctx.storage.delete(SNAPSHOT_KEY);
+      await this.ctx.storage.delete([SNAPSHOT_KEY, CLAUDE_SNAPSHOT_KEY]);
       this.#disposeAllUpgrades("invalidated");
       return true;
     } finally { this.#invalidating -= 1; }
@@ -310,11 +332,53 @@ export class UserCredentialSnapshot extends DurableObject<CredentialSnapshotEnv>
     return entry.credential.expiresAt === undefined || entry.credential.expiresAt > now;
   }
 
+  #claudeServable(entry: ClaudeEntry): boolean {
+    return entry.epoch >= this.#floor && entry.expiresAt > Date.now();
+  }
+
+  async #fillClaudeFromCanonical(owner: string, region: string): Promise<ClaudeSnapshotResolve> {
+    const canonicalStartedAt = Date.now();
+    for (let attempt = 0; attempt < MAX_FILL_ATTEMPTS; attempt += 1) {
+      const requestedAt = Date.now();
+      const grant = consumeRpcData(await this.env.USER_CREDENTIALS.getByName(owner)
+        .grantClaudeCredentialLease(owner, region)) as ClaudeCredentialLeaseGrant;
+      const canonical_ms = Date.now() - canonicalStartedAt;
+      if (grant.status < 200 || grant.status >= 300 || !grant.credential) {
+        return { status: grant.status >= 200 && grant.status < 300 ? 503 : grant.status, credential: null, source: "none", canonical_ms };
+      }
+      if (!Number.isSafeInteger(grant.epoch) || grant.epoch < this.#floor) continue;
+      if (!Number.isSafeInteger(grant.lease_ms) || grant.lease_ms <= 0) {
+        return { status: 503, credential: null, source: "none", canonical_ms };
+      }
+      const entry: ClaudeEntry = { credential: grant.credential, epoch: grant.epoch, expiresAt: requestedAt + grant.lease_ms };
+      if (!this.#claudeServable(entry)) continue;
+      const envelope = await this.#vault.seal(entry);
+      if (!this.#claudeServable(entry)) continue;
+      this.#claudeEntry = entry;
+      await this.ctx.storage.put(CLAUDE_SNAPSHOT_KEY, { envelope } satisfies StoredSnapshot);
+      if (this.#claudeEntry !== entry || !this.#claudeServable(entry)) {
+        if (this.#claudeEntry === entry) this.#claudeEntry = undefined;
+        continue;
+      }
+      return { status: 200, credential: entry.credential, source: "filled", canonical_ms };
+    }
+    return { status: 503, credential: null, source: "none", canonical_ms: Date.now() - canonicalStartedAt };
+  }
+
   #load(): Promise<void> {
     return this.#loaded ??= (async () => {
-      const stored = await this.ctx.storage.get<unknown>([FLOOR_KEY, SNAPSHOT_KEY]);
+      const stored = await this.ctx.storage.get<unknown>([FLOOR_KEY, SNAPSHOT_KEY, CLAUDE_SNAPSHOT_KEY]);
       const floor = stored.get(FLOOR_KEY);
       if (typeof floor === "number" && Number.isSafeInteger(floor) && floor > this.#floor) this.#floor = floor;
+      const claudeRow = stored.get(CLAUDE_SNAPSHOT_KEY) as StoredSnapshot | undefined;
+      if (claudeRow) {
+        try {
+          const opened = await this.#vault.open<ClaudeEntry>(claudeRow.envelope);
+          if (validClaudeEntry(opened.value) && opened.value.epoch >= this.#floor && !this.#claudeEntry) this.#claudeEntry = opened.value;
+        } catch {
+          // An unreadable snapshot is only a cache miss.
+        }
+      }
       const row = stored.get(SNAPSHOT_KEY) as StoredSnapshot | undefined;
       if (!row) return;
       try {
@@ -364,6 +428,16 @@ export class UserCredentialSnapshot extends DurableObject<CredentialSnapshotEnv>
     }
     return { status: 503, credential: null, source: "none", canonical_ms: Date.now() - canonicalStartedAt };
   }
+}
+
+function validClaudeEntry(value: unknown): value is ClaudeEntry {
+  if (!value || typeof value !== "object") return false;
+  const entry = value as Partial<ClaudeEntry>;
+  const credential = entry.credential as Partial<ClaudeCredentialValue> | undefined;
+  return Number.isSafeInteger(entry.epoch) && typeof entry.expiresAt === "number"
+    && !!credential && credential.kind === "claude" && typeof credential.revision === "string"
+    && !!credential.headers && typeof credential.headers === "object"
+    && typeof (credential.headers as Record<string, unknown>).authorization === "string";
 }
 
 function validEntry(value: unknown): value is Entry {

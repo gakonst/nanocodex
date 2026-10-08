@@ -61,9 +61,10 @@ pub(crate) async fn run(
     // Transport generations may change while the same runtime owns processes.
     // A new driver gets a new identity so local numeric IDs cannot be retargeted.
     let runtime_id = uuid::Uuid::new_v4().to_string();
-    // Snapshot the staged opt-in for this live runtime, including reconnects.
+    // Regional relays are the default; NANOCODEX_REGIONAL_HAND_RELAYS=0 opts out.
+    // Snapshot the choice for this live runtime, including reconnects.
     let regional_hand_relays =
-        std::env::var("NANOCODEX_REGIONAL_HAND_RELAYS").as_deref() == Ok("1");
+        std::env::var("NANOCODEX_REGIONAL_HAND_RELAYS").as_deref() != Ok("0");
     let mut active = Vec::<InFlight>::new();
     let mut journal = HashMap::<Box<str>, RetainedCall>::new();
     let (completed_tx, mut completed_rx) = mpsc::unbounded_channel::<Completion>();

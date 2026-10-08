@@ -130,6 +130,16 @@ export type ModelCredentialLeaseGrant = Readonly<{
   lease_ms: number;
 }>;
 
+export type ClaudeCredentialValue = ClaudeSubscription.PrivateCredential;
+export type ClaudeCredentialLeaseGrant = Readonly<{
+  status: number;
+  credential: ClaudeCredentialValue | null;
+  epoch: number;
+  lease_ms: number;
+}>;
+/** Regional Claude holders re-resolve before the provider token can age out. */
+const CLAUDE_LEASE_MS = 5 * 60_000;
+
 type ModelLease = { fingerprint: string; epoch: number; expiresAt: number };
 type PendingRevocation = { epoch: number; expiresAt: number };
 type LeaseRegistry = {
@@ -138,6 +148,9 @@ type LeaseRegistry = {
   owner?: string;
   leases: Record<string, ModelLease>;
   pending: Record<string, PendingRevocation>;
+  /** Durable Claude projection: generation bumps on every Claude mutation;
+   * revision tracks the last plain read, so holders are fenced on change. */
+  claude?: { generation: number; revision: string | null };
 };
 
 type ApiKeyCredential = { secret: string; createdAt: number; revision: number };
@@ -628,12 +641,71 @@ export class UserCredentialBroker extends DurableObject<BrokerEnv> {
         }
         const credential = await subscription.credential();
         this.#claudeCredential = credential;
+        await this.#noteClaudeRevision(credential.revision, recover);
         return { status: 200, credential };
       } catch {
         this.#claudeCredential = undefined;
+        await this.#noteClaudeRevision(null, true).catch(() => {});
         return { status: 401, credential: null };
       }
     }, { operation: "credential_rpc" });
+  }
+
+  /**
+   * Record a Claude plain-read change in the durable lease projection. The
+   * surrounding #exclusive reconciles (invalidates) every stale holder before
+   * the operation is acknowledged. Runs only on the canonical queue.
+   */
+  async #noteClaudeRevision(revision: string | null, mutation: boolean): Promise<void> {
+    const registry = this.#leaseRegistry;
+    const current = registry.claude;
+    if (!mutation && current && current.revision === revision) return;
+    if (!this.#leasesHeld() && current === undefined && !mutation) {
+      registry.claude = { generation: 0, revision };
+      return;
+    }
+    registry.claude = { generation: (current?.generation ?? 0) + (mutation ? 1 : 0), revision };
+    await this.#persistLeases();
+  }
+
+  /** Grant a regional holder one plain Claude read plus a bounded lease. */
+  async grantClaudeCredentialLease(owner: string, region: string): Promise<ClaudeCredentialLeaseGrant> {
+    const refuse = (status: number): ClaudeCredentialLeaseGrant => ({ status, credential: null, epoch: 0, lease_ms: 0 });
+    const namespace = this.#env.USER_CREDENTIALS;
+    if (typeof owner !== "string" || typeof region !== "string" || !USER_ID.test(owner)
+      || !LEASE_REGIONS.has(region) || !namespace || !this.#env.USER_CREDENTIAL_SNAPSHOTS
+      || !namespace.idFromName(owner).equals(this.#state.id)) return refuse(403);
+    return this.#exclusive(async () => {
+      await this.#ready;
+      const registry = this.#leaseRegistry;
+      try {
+        if (registry.owner === undefined) registry.owner = owner;
+        if (registry.owner !== owner) return refuse(403);
+        if (Object.keys(registry.pending).length && !await this.#revoke([])) return refuse(503);
+        const before = this.#plainProjection();
+        let credential: ClaudeCredentialValue;
+        try {
+          credential = await (await this.#claudeSubscription()).credential();
+        } catch {
+          this.#claudeCredential = undefined;
+          return refuse(401);
+        }
+        this.#claudeCredential = credential;
+        await this.#noteClaudeRevision(credential.revision, false);
+        if (await this.#reconcileLeases(before) !== "ok") return refuse(503);
+        const projection = this.#plainProjection();
+        const now = Date.now();
+        registry.owner = owner;
+        registry.leases[region] = { fingerprint: await leaseFingerprint(projection), epoch: registry.epoch,
+          expiresAt: now + CLAUDE_LEASE_MS };
+        await this.#persistLeases();
+        this.#reconciledProjection = projection;
+        return { status: 200, credential, epoch: registry.epoch, lease_ms: CLAUDE_LEASE_MS };
+      } catch (error) {
+        const problem = await this.#recoverFailedOperation(error);
+        return refuse(problem.status);
+      }
+    }, { operation: "lease_rpc" }, () => refuse(503));
   }
 
   #claudeSubscription(): Promise<ClaudeSubscription.Subscription> {
@@ -816,6 +888,11 @@ export class UserCredentialBroker extends DurableObject<BrokerEnv> {
   /** Side-effect-free mirror of the plain read's selection (no refresh). Any
    * difference, including the token itself, means a lease holder is stale. */
   #plainProjection(): string {
+    const claude = this.#leaseRegistry.claude;
+    return JSON.stringify([this.#modelProjection(), claude ? [claude.generation, claude.revision] : null]);
+  }
+
+  #modelProjection(): string {
     const state = this.#credentials;
     if (state.active === "openai" && state.openai) {
       return JSON.stringify(["openai", state.openai.revision, state.openai.secret]);
@@ -984,6 +1061,7 @@ export class UserCredentialBroker extends DurableObject<BrokerEnv> {
       if (url.pathname === "/v1/claude/login/start" && request.method === "POST") {
         if (await hasRequestPayload(request)) return jsonError(400, "invalid_request");
         this.#claudeCredential = undefined;
+        await this.#noteClaudeRevision(null, true);
         return json({ state: "pending", ...await (await this.#claudeSubscription()).startLogin() }, 200);
       }
       if (url.pathname === "/v1/claude/login/status" && request.method === "GET") {
@@ -995,6 +1073,7 @@ export class UserCredentialBroker extends DurableObject<BrokerEnv> {
           || body.code.length === 0 || body.code.length > 8192) return jsonError(400, "invalid_claude_code");
         try {
           this.#claudeCredential = undefined;
+          await this.#noteClaudeRevision(null, true);
           return json(await (await this.#claudeSubscription()).completeLogin(body.code), 200);
         } catch {
           // Never reflect a provider response or private completion material.
@@ -1004,6 +1083,7 @@ export class UserCredentialBroker extends DurableObject<BrokerEnv> {
       }
       if (url.pathname === "/v1/claude" && request.method === "DELETE") {
         this.#claudeCredential = undefined;
+        await this.#noteClaudeRevision(null, true);
         await (await this.#claudeSubscription()).logout();
         return json(await this.#claudePublicStatus(), 200);
       }
@@ -2794,7 +2874,9 @@ function validLeaseRegistry(value: unknown): value is LeaseRegistry {
       && typeof (entry as ModelLease).expiresAt === "number");
   return registry.version === 1 && Number.isSafeInteger(registry.epoch)
     && (registry.owner === undefined || (typeof registry.owner === "string" && USER_ID.test(registry.owner)))
-    && records(registry.leases) && records(registry.pending);
+    && records(registry.leases) && records(registry.pending)
+    && (registry.claude === undefined || (Number.isSafeInteger(registry.claude.generation)
+      && (registry.claude.revision === null || typeof registry.claude.revision === "string")));
 }
 
 class BrokerFailure extends Error {

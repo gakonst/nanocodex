@@ -17,6 +17,7 @@ import {
   AgentSubjectDirectory,
   type BrokerEnv,
   UserCredentialBroker,
+  type ClaudeCredentialValue as ClaudeSubscriptionCredential,
   type ModelCredentialValue,
   type VaultEntry,
   type VaultKind,
@@ -55,7 +56,7 @@ export { AgentSubjectDirectory, UserCredentialBroker } from "./broker";
 export { SessionCredentialPrewarm, UserCredentialSnapshot } from "./credential-snapshot";
 import {
   headerFingerprint, PREPARED_UPGRADE_HEADER, PREPARED_UPGRADE_URL, registerPreparedUpgradeStarter, snapshotStub,
-  type PrepareUpgradeResult, type SnapshotResolve,
+  type ClaudeSnapshotResolve, type PrepareUpgradeResult, type SnapshotResolve,
 } from "./credential-snapshot";
 export { UserConnectorBroker } from "./connector-broker";
 export { WhatsAppAccount } from "./whatsapp-account";
@@ -2824,7 +2825,7 @@ async function hasRequestPayload(request: Request): Promise<boolean> {
  */
 async function handleClaudeModels(env: EgressEnv, userId: string): Promise<Response> {
   try {
-    let result = consumeRpcData(await userBroker(env, userId).resolveClaudeCredential());
+    let result = await resolvePlainClaudeCredential(env, userId);
     if (result.status !== 200 || !result.credential) return jsonError(409, "claude_login_required");
     let credential = result.credential;
     const secrets = [credential.headers.authorization?.replace(/^Bearer /, "") ?? ""];
@@ -2915,7 +2916,7 @@ async function handleClaudeMessages(
   let dispatches = 0;
   let rejected = false;
   try {
-    let result = consumeRpcData(await userBroker(env, authority.owner).resolveClaudeCredential());
+    let result = await resolvePlainClaudeCredential(env, authority.owner);
     if (result.status !== 200 || !result.credential) return jsonError(409, "claude_login_required");
     let credential = result.credential;
     const secrets = [credential.headers.authorization?.replace(/^Bearer /, "") ?? ""];
@@ -3504,6 +3505,27 @@ async function resolveUserCredential(
 
 type CanonicalResolve = Readonly<{ status: number; credential: ModelCredentialValue | null;
   resolve_ms?: number; activation_ms?: number; activation_age_ms?: number; resolve_id?: string }>;
+
+/** Plain Claude read: the regional leased snapshot when placement is trusted,
+ * else the canonical broker. Recovery always stays canonical. */
+async function resolvePlainClaudeCredential(env: EgressEnv, userId: string): Promise<{
+  status: number; credential: ClaudeSubscriptionCredential | null;
+}> {
+  const region = env.trustedPlacementRegion;
+  const stub = region ? snapshotStub(env, userId, region) : undefined;
+  if (stub && region) {
+    const startedAt = Date.now();
+    try {
+      const result = consumeRpcData(await stub.resolveClaude(userId, region)) as ClaudeSnapshotResolve;
+      console.info({ type: "egress.credential.claude_snapshot", source: result.source, status: result.status,
+        snapshot_ms: Date.now() - startedAt,
+        ...(result.canonical_ms !== undefined ? { canonical_ms: result.canonical_ms } : {}) });
+      if (result.status === 200 && result.credential) return { status: 200, credential: result.credential };
+      if (result.status === 401 || result.status === 404) return { status: result.status, credential: null };
+    } catch { /* fall back to the canonical broker */ }
+  }
+  return consumeRpcData(await userBroker(env, userId).resolveClaudeCredential());
+}
 
 /** undefined means "use the canonical broker": unavailable binding, a fenced
  * or refused grant, or any replica failure. A definitive canonical answer
