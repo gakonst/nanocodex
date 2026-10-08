@@ -573,31 +573,7 @@ impl MessagesRequest {
         }
         for message in &self.messages {
             for block in &message.content {
-                let (control, eligible) = match block {
-                    ContentBlock::Text { text, extra } => {
-                        (extra.get("cache_control"), !text.is_empty())
-                    }
-                    ContentBlock::Thinking { extra, .. }
-                    | ContentBlock::RedactedThinking { extra, .. } => {
-                        (extra.get("cache_control"), false)
-                    }
-                    ContentBlock::Image { extra, .. }
-                    | ContentBlock::Document { extra, .. }
-                    | ContentBlock::ToolResult { extra, .. } => (extra.get("cache_control"), true),
-                    ContentBlock::ToolUse { extra, .. }
-                    | ContentBlock::ServerToolUse { extra, .. }
-                    | ContentBlock::WebSearchToolResult { extra, .. }
-                    | ContentBlock::WebFetchToolResult { extra, .. }
-                    | ContentBlock::ToolSearchToolResult { extra, .. }
-                    | ContentBlock::CodeExecutionToolResult { extra, .. }
-                    | ContentBlock::BashCodeExecutionToolResult { extra, .. }
-                    | ContentBlock::TextEditorCodeExecutionToolResult { extra, .. }
-                    | ContentBlock::McpToolUse { extra, .. }
-                    | ContentBlock::McpToolResult { extra, .. }
-                    | ContentBlock::McpToolListing { extra, .. } => {
-                        (extra.get("cache_control"), true)
-                    }
-                };
+                let (control, eligible) = block.cache_slot();
                 layout.block(control, eligible)?;
             }
         }
@@ -642,6 +618,91 @@ impl MessagesRequest {
             self.system = previous;
         }
         Ok(())
+    }
+    /// Replace top-level automatic caching with the equivalent explicit marker
+    /// on the last cacheable block, as Claude Code does. Automatic caching is
+    /// defined as one breakpoint on that block, so validated layouts keep the
+    /// same breakpoint count, TTL order and target; an equal explicit marker
+    /// already there is the documented deduplication. Message blocks are
+    /// preferred, then the system array. Thinking and empty text are skipped.
+    pub fn explicit_cache_tail(&mut self) -> Result<(), ClaudeError> {
+        self.validate_cache_control()?;
+        let Some(control) = self.cache_control.take() else {
+            return Ok(());
+        };
+        let marker = serde_json::to_value(&control)?;
+        for block in self
+            .messages
+            .iter_mut()
+            .rev()
+            .flat_map(|message| message.content.iter_mut().rev())
+        {
+            if block.cache_slot().1 {
+                block
+                    .extra_mut()
+                    .entry("cache_control".to_owned())
+                    .or_insert(marker);
+                return Ok(());
+            }
+        }
+        if let Some(Value::Array(blocks)) = self.system.as_mut()
+            && let Some(block) = blocks
+                .iter_mut()
+                .rev()
+                .find(|block| cacheable_json_block(block))
+            && let Some(block) = block.as_object_mut()
+        {
+            block.entry("cache_control").or_insert(marker);
+        }
+        // Without any cacheable target the automatic marker had no effect.
+        Ok(())
+    }
+}
+
+impl ContentBlock {
+    /// The block's own cache marker and whether it may carry one.
+    fn cache_slot(&self) -> (Option<&Value>, bool) {
+        match self {
+            Self::Text { text, extra } => (extra.get("cache_control"), !text.is_empty()),
+            Self::Thinking { extra, .. } | Self::RedactedThinking { extra, .. } => {
+                (extra.get("cache_control"), false)
+            }
+            Self::Image { extra, .. }
+            | Self::Document { extra, .. }
+            | Self::ToolResult { extra, .. }
+            | Self::ToolUse { extra, .. }
+            | Self::ServerToolUse { extra, .. }
+            | Self::WebSearchToolResult { extra, .. }
+            | Self::WebFetchToolResult { extra, .. }
+            | Self::ToolSearchToolResult { extra, .. }
+            | Self::CodeExecutionToolResult { extra, .. }
+            | Self::BashCodeExecutionToolResult { extra, .. }
+            | Self::TextEditorCodeExecutionToolResult { extra, .. }
+            | Self::McpToolUse { extra, .. }
+            | Self::McpToolResult { extra, .. }
+            | Self::McpToolListing { extra, .. } => (extra.get("cache_control"), true),
+        }
+    }
+    const fn extra_mut(&mut self) -> &mut BTreeMap<String, Value> {
+        match self {
+            Self::Image { extra, .. }
+            | Self::Document { extra, .. }
+            | Self::Text { extra, .. }
+            | Self::ToolUse { extra, .. }
+            | Self::ServerToolUse { extra, .. }
+            | Self::WebSearchToolResult { extra, .. }
+            | Self::WebFetchToolResult { extra, .. }
+            | Self::ToolSearchToolResult { extra, .. }
+            | Self::CodeExecutionToolResult { extra, .. }
+            | Self::BashCodeExecutionToolResult { extra, .. }
+            | Self::TextEditorCodeExecutionToolResult { extra, .. }
+            | Self::McpToolUse { extra, .. }
+            | Self::McpToolResult { extra, .. }
+            | Self::McpToolListing { extra, .. }
+            | Self::ToolResult { extra, .. }
+            | Self::Thinking { extra, .. }
+            | Self::RedactedThinking { extra, .. } => extra,
+        }
     }
 }
 
@@ -816,6 +877,10 @@ pub(crate) struct FrozenWireProfile {
     enabled: bool,
     identity: SubscriptionIdentity,
     session: String,
+    /// Automatic caching is sent as an explicit final-block marker. Absent in
+    /// cursors admitted before that conversion, which keep the top-level field.
+    #[serde(default, skip_serializing_if = "is_false")]
+    cache_tail: bool,
 }
 
 #[derive(Clone)]
@@ -826,6 +891,9 @@ pub struct ClaudeClient {
     subscription_compatibility: bool,
     subscription_identity: SubscriptionIdentity,
     subscription_session: String,
+    // New subscription requests send automatic caching as an explicit final
+    // block marker. Legacy cursors restore `false` to keep their exact bytes.
+    subscription_cache_tail: bool,
 }
 
 impl ClaudeClient {
@@ -843,6 +911,7 @@ impl ClaudeClient {
             subscription_compatibility: false,
             subscription_identity: SubscriptionIdentity::default(),
             subscription_session: uuid::Uuid::new_v4().to_string(),
+            subscription_cache_tail: true,
         }
     }
 
@@ -862,6 +931,7 @@ impl ClaudeClient {
             subscription_compatibility: false,
             subscription_identity: SubscriptionIdentity::default(),
             subscription_session: uuid::Uuid::new_v4().to_string(),
+            subscription_cache_tail: true,
         }
     }
 
@@ -880,6 +950,7 @@ impl ClaudeClient {
             subscription_compatibility: false,
             subscription_identity: SubscriptionIdentity::default(),
             subscription_session: uuid::Uuid::new_v4().to_string(),
+            subscription_cache_tail: true,
         }
     }
 
@@ -925,7 +996,7 @@ impl ClaudeClient {
     }
     /// Prepare subscription protocol blocks before freezing a logical request.
     /// `request_body` performs wire-only names, metadata and CCH over final bytes.
-    pub(crate) fn freeze_wire_profile(&self) -> FrozenWireProfile {
+    pub(crate) fn freeze_wire_profile(&self, automatic_cache: bool) -> FrozenWireProfile {
         let mut identity = self.subscription_identity.clone();
         identity.version = Some(identity.version().to_owned());
         identity
@@ -959,6 +1030,11 @@ impl ClaudeClient {
             enabled: self.subscription_compatibility,
             identity,
             session: self.subscription_session.clone(),
+            // Serialized only when it changes bytes, so cursors without
+            // automatic caching remain readable by earlier releases.
+            cache_tail: self.subscription_compatibility
+                && self.subscription_cache_tail
+                && automatic_cache,
         }
     }
     pub(crate) fn restore_wire_profile(&self, profile: Option<&FrozenWireProfile>) -> Self {
@@ -966,6 +1042,7 @@ impl ClaudeClient {
         // Old cursors predate final-byte attestation: retain their legacy body and
         // effect identity instead of silently adopting new default transformations.
         client.subscription_compatibility = profile.is_some_and(|p| p.enabled);
+        client.subscription_cache_tail = profile.is_some_and(|p| p.cache_tail);
         if let Some(profile) = profile {
             client.subscription_identity = profile.identity.clone();
             client.subscription_session = profile.session.clone();
@@ -990,6 +1067,7 @@ impl ClaudeClient {
                 streaming,
                 &self.subscription_identity,
                 &self.subscription_session,
+                self.subscription_cache_tail,
             )
         } else {
             #[derive(Serialize)]
@@ -2026,5 +2104,80 @@ mod sse_framing_tests {
         let mut state = state();
         state.bytes = vec![b'd', b'a', b't', b'a', b':', 0xff, b'\n'];
         assert!(matches!(state.pop_line(), Err(ClaudeError::Protocol(_))));
+    }
+}
+
+#[cfg(test)]
+mod cache_tail_profile_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn cached_request() -> MessagesRequest {
+        MessagesRequest {
+            model: "test".into(),
+            max_tokens: 16,
+            cache_control: Some(CacheControl {
+                kind: CacheType::Ephemeral,
+                ttl: Some(CacheTtl::OneHour),
+            }),
+            output_config: None,
+            speed: None,
+            tool_choice: None,
+            thinking: None,
+            context_management: None,
+            diagnostics: None,
+            system: Some(Value::String("stable".into())),
+            messages: vec![Message::text(Role::User, "hello")],
+            container: None,
+            tools: vec![],
+        }
+    }
+
+    // A cursor admitted before the conversion lacks `cache_tail` and must keep
+    // its exact durable bytes; durable steps fail closed on changed input.
+    #[test]
+    fn legacy_cursor_keeps_top_level_and_new_cursor_uses_explicit_tail() {
+        let client = ClaudeClient::new(reqwest::Client::new(), "http://127.0.0.1/v1/messages", "x")
+            .subscription_compatibility()
+            .bind_subscription_session("session");
+        let fresh = client.freeze_wire_profile(true);
+        let encoded = serde_json::to_value(&fresh).unwrap();
+        assert_eq!(encoded["cache_tail"], true);
+        let mut legacy = encoded;
+        legacy.as_object_mut().unwrap().remove("cache_tail");
+        let legacy: FrozenWireProfile = serde_json::from_value(legacy).unwrap();
+        // Profiles without automatic caching serialize exactly as before.
+        let uncached = serde_json::to_value(client.freeze_wire_profile(false)).unwrap();
+        assert!(uncached.get("cache_tail").is_none());
+
+        let request = cached_request();
+        let wire = |profile: &FrozenWireProfile| -> Value {
+            serde_json::from_str(
+                &client
+                    .restore_wire_profile(Some(profile))
+                    .request_body(&request, true)
+                    .unwrap(),
+            )
+            .unwrap()
+        };
+        let old = wire(&legacy);
+        assert_eq!(old["cache_control"], json!({"type":"ephemeral","ttl":"1h"}));
+        assert!(
+            old["messages"][0]["content"][0]
+                .get("cache_control")
+                .is_none()
+        );
+        let new = wire(&fresh);
+        assert!(new.get("cache_control").is_none());
+        assert_eq!(
+            new["messages"][0]["content"][0]["cache_control"],
+            json!({"type":"ephemeral","ttl":"1h"})
+        );
+        // Durable identity is the final wire body, so it is deterministic.
+        let restored = client.restore_wire_profile(Some(&fresh));
+        assert_eq!(
+            restored.durable_request(&request).unwrap(),
+            restored.durable_request(&request).unwrap()
+        );
     }
 }

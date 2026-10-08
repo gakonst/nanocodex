@@ -286,7 +286,12 @@ async fn subscription_rotation_tool_compaction_and_terminal_replay_survive_sqlit
                 }
                 assert!(!betas.split(',').any(|b|b=="extended-cache-ttl-2025-04-11"));
                 assert_eq!(betas.split(',').filter(|b|*b=="effort-2025-11-24").count(),usize::from(body.get("thinking").is_some()));
-                assert_eq!(body["cache_control"]["ttl"], "1h");
+                // Claude Code shape: no top-level automatic field; the 1h
+                // marker sits on the final cacheable block of the request.
+                assert!(body.get("cache_control").is_none());
+                let tail = body["messages"].as_array().unwrap().last().unwrap()["content"].as_array().unwrap().last().unwrap().clone();
+                assert_eq!(tail["cache_control"], json!({"type":"ephemeral","ttl":"1h"}));
+                assert_eq!(body.to_string().matches("\"cache_control\"").count(), 3);
                 let authorization = headers["authorization"].to_str().unwrap();
                 if !provider.accept_original.load(Ordering::SeqCst) && authorization == "Bearer synthetic-access-1" {
                     return StatusCode::UNAUTHORIZED.into_response();

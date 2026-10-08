@@ -256,6 +256,15 @@ test('Managed native Claude and mixed-family public delegation, account gates, c
       assert.ok(['claude-sonnet-4-6','claude-opus-4-6'].includes(body.model)); assert.equal(body.stream,true);
       assert.match(body.system[0].text,/^x-anthropic-billing-header: cc_version=2\.1\.280\.[0-9a-f]{3}; cc_entrypoint=cli; cch=[0-9a-f]{5};$/);
       assert.equal(body.system[1].text,"You are Claude Code, Anthropic's official CLI for Claude.");
+      // Claude Code cache shape for roots and children: identity + instructions
+      // system markers and one moving final-block marker, all 1h, never top-level.
+      const oneHour={type:'ephemeral',ttl:'1h'};
+      assert.equal(body.cache_control,undefined,'no top-level automatic cache on the subscription wire');
+      assert.deepEqual(body.system.map(block=>block.cache_control??null),[null,oneHour,oneHour]);
+      const markedBlocks=body.messages.flatMap(message=>message.content.filter(block=>block.cache_control!==undefined));
+      const cacheTail=[...body.messages.at(-1).content].reverse().find(block=>!['thinking','redacted_thinking'].includes(block.type)&&!(block.type==='text'&&!block.text));
+      assert.deepEqual(markedBlocks,[cacheTail],'exactly one message marker, on the final cacheable block');
+      assert.deepEqual(cacheTail.cache_control,oneHour);
       assert.equal(JSON.parse(body.metadata.user_id).session_id,request.headers.get('x-claude-code-session-id'));
       assert.equal(request.headers.get('accept'),'application/json');
       assert.equal(body.output_config.effort,'low');

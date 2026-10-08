@@ -274,6 +274,9 @@ impl State {
                 _ => None,
             })
             .collect();
+        let wire_profile = self
+            .client
+            .freeze_wire_profile(template.cache_control.is_some());
         let mut cursor = Cursor {
             lifecycle_turn_id: candidate_id("lifecycle"),
             stop_hook_active: false,
@@ -281,7 +284,7 @@ impl State {
             snapshot: self.snapshot(conversation).await?,
             template,
             dynamic_tool_names,
-            wire_profile: Some(self.client.freeze_wire_profile()),
+            wire_profile: Some(wire_profile),
             threshold: self.compaction_threshold(),
             parallel: self.parallel_tools,
             tool_search: self.client_tool_search,

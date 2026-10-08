@@ -11195,6 +11195,10 @@ export class DurableAgentSession extends DurableComputerObject {
             ...(configuration.environment?.skills.map(skill => `Available skill: ${skill.name}. Read /brain/skills/${skill.name}/SKILL.md before applying it.`) ?? []),
           ].join("\n\n");
       const claudeCapability: ClaudeOptions | undefined = claudeTools === undefined ? undefined : { model: isClaude ? this.#settings().model : "claude-sonnet-4-6", thinking: "low", instructions: claudeInstructions,
+            // Claude Code cache shape on the subscription wire: identity + instructions
+            // system markers and a moving final-block marker, all 1h. Children
+            // (Task, spawn_agent, alternate harness) inherit this capability.
+            cache: "1h",
             // Claude uses native Messages tool calls. Code Mode remains the policy for
             // Responses/Codex sessions, including Codex children of a Claude root.
             toolMode: "direct",

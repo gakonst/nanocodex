@@ -301,11 +301,17 @@ pub fn body(
     streaming: bool,
     identity: &SubscriptionIdentity,
     session: &str,
+    explicit_cache_tail: bool,
 ) -> Result<String, ClaudeError> {
     identity.validate()?;
     let mut prepared = request.clone();
     prepare(&mut prepared, identity);
     prepared.validate_cache_control()?;
+    // Claude Code never sends top-level automatic caching. After the identity
+    // marker has inherited its TTL, move the policy to the final cacheable block.
+    if explicit_cache_tail {
+        prepared.explicit_cache_tail()?;
+    }
     let mut value = serde_json::to_value(&prepared)?;
     value["stream"] = json!(streaming);
     value["metadata"] = identity.metadata(session)?;
@@ -375,7 +381,8 @@ mod tests {
                     &request,
                     false,
                     &identity,
-                    fixture["session_id"].as_str().unwrap()
+                    fixture["session_id"].as_str().unwrap(),
+                    true,
                 )
                 .unwrap(),
                 expected
@@ -385,6 +392,7 @@ mod tests {
                 true,
                 &identity,
                 fixture["session_id"].as_str().unwrap(),
+                true,
             )
             .unwrap();
             prepare(&mut request, &identity);
@@ -394,7 +402,8 @@ mod tests {
                     &request,
                     true,
                     &identity,
-                    fixture["session_id"].as_str().unwrap()
+                    fixture["session_id"].as_str().unwrap(),
+                    true,
                 )
                 .unwrap(),
                 before
@@ -411,7 +420,7 @@ mod tests {
                 {"type":"mcp_tool_use","id":"mcp","name":"read","server_name":"native","input":{}}
             ]}, {"role":"user","content":[{"type":"tool_result","tool_use_id":"search","content":[{"type":"tool_reference","tool_name":"_private"},{"type":"text","text":"native receipt","opaque":{"type":"tool_reference","tool_name":"user-data"}}]}]}],"tools":[],"tool_choice":{"type":"tool","name":"_private"}})).unwrap();
         let wire: Value = serde_json::from_str(
-            &body(&request, true, &Default::default(), "stable-session").unwrap(),
+            &body(&request, true, &Default::default(), "stable-session", true).unwrap(),
         )
         .unwrap();
         assert_eq!(wire["messages"][1]["content"][0]["name"], "__private");
