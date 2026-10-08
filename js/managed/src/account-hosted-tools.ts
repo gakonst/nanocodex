@@ -1647,6 +1647,11 @@ export class AccountHostedToolsProvider implements HostedToolsDynamicProvider {
     return refreshing;
   }
 
+  /** The current generation's in-flight full inventory refresh, if any. */
+  pendingRefresh(): Promise<void> | undefined {
+    return this.#refreshing !== undefined && this.#refreshGeneration === this.#generation ? this.#refreshing : undefined;
+  }
+
   /** Fresh selected-machine lookup. Never joins a slow full inventory request. */
   async refreshMachine(machineId: string, context: AuthorizationContext, computer = false, screens = computer): Promise<void> {
     if (!this.#allowed(context)) throw new Error("Hand access revoked");

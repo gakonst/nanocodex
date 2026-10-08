@@ -105,6 +105,39 @@ describe("account Hosted Tools provider", () => {
     expect(discoveries).toBe(1);
   });
 
+  it("exposes only the current generation's in-flight inventory for admission to join", async () => {
+    let release!: () => void;
+    const held = new Promise<void>(resolve => { release = resolve; });
+    const provider = new AccountHostedToolsProvider(fakeNamespace(new Map([[ACCOUNT_A, async () => {
+      await held;
+      return Response.json(snapshot);
+    }]])), ACCOUNT_A, () => true);
+    expect(provider.pendingRefresh()).toBeUndefined();
+    const refreshing = provider.refresh();
+    const pending = provider.pendingRefresh();
+    expect(pending).toBeDefined();
+    expect(provider.machines()).toEqual([]);
+    release();
+    await pending;
+    await refreshing;
+    expect(provider.machines().map(machine => machine.id)).toEqual(["laptop"]);
+    expect(provider.pendingRefresh()).toBeUndefined();
+    // An authorization change fences the old request: admission must not join it.
+    let releaseStale!: () => void;
+    const stale = new Promise<void>(resolve => { releaseStale = resolve; });
+    const fenced = new AccountHostedToolsProvider(fakeNamespace(new Map([[ACCOUNT_A, async () => {
+      await stale;
+      return Response.json(snapshot);
+    }]])), ACCOUNT_A, () => true);
+    const old = fenced.refresh();
+    expect(fenced.pendingRefresh()).toBeDefined();
+    fenced.invalidate();
+    expect(fenced.pendingRefresh()).toBeUndefined();
+    releaseStale();
+    await old;
+    expect(fenced.machines()).toEqual([]);
+  });
+
   it("joins screen discovery by machine identity without promoting an offline factory", async () => {
     const target = { machine_id: "laptop", machine_name: "Build laptop", id: "desktop", name: "Desktop",
       kind: "desktop", generation: "screen-generation", width: 1280, height: 800, controllable: true, agent_tools: true };

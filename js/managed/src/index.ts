@@ -425,6 +425,10 @@ export { ApiKeyRecord, NonceStorage, Organization, UserAccount } from "./account
 
 // Storage placement only: larger exact-replay receipts go directly to R2.
 const INLINE_REALTIME_RESPONSE_BYTES = 512 * 1024;
+// Admission budget for authorizing a client-reported origin Hand before dispatch.
+const TURN_ORIGIN_LOOKUP_BUDGET_MS = 1_500;
+// How long admission joins an in-flight full inventory before hedging with a selected lookup.
+const TURN_ORIGIN_INVENTORY_JOIN_MS = 500;
 const MAX_RETRY_DELAY_MS = 60_000;
 const MAX_IMPORT_BATCHES_PER_CREATE = 4;
 const UUID =
@@ -10067,21 +10071,39 @@ export class DurableAgentSession extends DurableComputerObject {
   async #resolveTurnOriginHand(turnId: string, authorization: TurnAuthorization | undefined,
     context: Pick<ToolContext, "sessionId" | "subagent">): Promise<void> {
     const hand = this.#startupContext.reportedTurnHand(turnId);
+    const provider = this.#accountHostedTools;
+    const listed = () => this.#accountMachines(authorization, context).some(machine => machine.id === hand);
     if (!hand?.startsWith("user:") || !this.#hasFullAccountAuthority(authorization)
-      || !this.#canUseExecutionNamespace(authorization) || !this.#accountHostedTools
-      || this.#accountMachines(authorization, context).some(machine => machine.id === hand)) return;
-    // This account-scoped selected lookup has its own deadline and never joins
-    // the background inventory. Unknown/foreign claims remain unattributed.
-    // Startup attribution reports screen capability, so it resolves screens too.
-    const lookup = this.#accountHostedTools.refreshMachine(hand.slice("user:".length), context, false, true).catch(() => {});
-    // Attribution gets a shorter admission budget than an explicit Hand tool.
-    // A late authorized catalog update may serve environment(), but cannot
-    // rewrite the startup snapshot or frozen dispatch input. The provider
-    // checks its authorization generation again before publishing that update.
-    this.ctx.waitUntil(lookup);
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    try { await Promise.race([lookup, new Promise<void>(resolve => { timer = setTimeout(resolve, 1_500); })]); }
-    finally { clearTimeout(timer); }
+      || !this.#canUseExecutionNamespace(authorization) || !provider || listed()) return;
+    const timers: ReturnType<typeof setTimeout>[] = [];
+    const after = (ms: number) => new Promise<"timeout">(resolve => { timers.push(setTimeout(() => resolve("timeout"), ms)); });
+    try {
+      // Agent construction starts a full inventory refresh before its CPU-bound
+      // work; on a fresh or evicted owner it is usually about to land. Join it
+      // first instead of queueing a second cross-region lookup behind it. A slow
+      // full inventory (relay or shared-Hand fan-out) is hedged by the selected
+      // lookup below, which keeps its own unchanged admission budget.
+      const inflight = provider.pendingRefresh();
+      if (inflight) {
+        await performanceStage("turn.origin.inventory_join", () =>
+          Promise.race([inflight.catch(() => {}), after(TURN_ORIGIN_INVENTORY_JOIN_MS)]));
+        // Still unlisted: the refresh settled without this Hand (the selected
+        // lookup stays authoritative for it) or the inventory is still slow.
+        if (listed()) return;
+      }
+      // This account-scoped selected lookup has its own deadline and never joins
+      // the background inventory. Unknown/foreign claims remain unattributed.
+      // Startup attribution reports screen capability, so it resolves screens too.
+      const lookup = provider.refreshMachine(hand.slice("user:".length), context, false, true).catch(() => {});
+      // Attribution gets a shorter admission budget than an explicit Hand tool.
+      // A late authorized catalog update may serve environment(), but cannot
+      // rewrite the startup snapshot or frozen dispatch input. The provider
+      // checks its authorization generation again before publishing that update.
+      this.ctx.waitUntil(lookup);
+      const inventoryListed = inflight ? inflight.then(() => listed() ? undefined : lookup, () => lookup) : lookup;
+      await performanceStage("turn.origin.selected_lookup", () =>
+        Promise.race([lookup, inventoryListed, after(TURN_ORIGIN_LOOKUP_BUDGET_MS)]));
+    } finally { for (const timer of timers) clearTimeout(timer); }
   }
 
   #refreshAccountHostedTools(session: SessionRow): void {
@@ -10230,8 +10252,11 @@ export class DurableAgentSession extends DurableComputerObject {
     // creation request in this same tick) are only dispatched once this
     // isolate yields and initialization writes clear the output gate. Release
     // them before CPU-bound construction (WASM compile, tool catalogs) so
-    // their round trips overlap it instead of starting after it.
+    // their round trips overlap it instead of starting after it. sync() alone
+    // is not enough: its continuation runs before the gate release and
+    // subrequest send, so yield one macrotask to let the event loop send them.
     await this.ctx.storage.sync();
+    await scheduler.wait(0);
     signal.throwIfAborted();
     const configuration = this.#configuration();
     const complete = async (create?: (options: NonNullable<Parameters<typeof CloudflareAgent.create>[1]>) => Promise<CloudflareAgent.Agent>) => {
