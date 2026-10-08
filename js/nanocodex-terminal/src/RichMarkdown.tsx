@@ -4,6 +4,7 @@ import { lazyCode as code } from "./lazyCode.js";
 import { lazyMermaid as mermaid } from "./lazyMermaid.js";
 import { HtmlPreview } from "./HtmlPreview.js";
 import { splitHtmlFences } from "./htmlDocument.js";
+import { MarkdownLink } from "./LinkedFile.js";
 
 const plugins = { code, mermaid };
 const controls = {
@@ -52,7 +53,7 @@ function MarkdownTable({ node: _node, ref: _ref, ...props }: ComponentProps<"tab
     </div>
   </div>;
 }
-const components = { input: MarkdownInput, img: MarkdownImage, table: MarkdownTable };
+const components = { a: MarkdownLink, input: MarkdownInput, img: MarkdownImage, table: MarkdownTable };
 
 /** Shared, sanitized rich content for responses and generated tool output.
  * Raw HTML never enters this document; closed ```html fences become sandboxed

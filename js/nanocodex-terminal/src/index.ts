@@ -17,3 +17,5 @@ export type { AgentEntry, ToolActivity, GeneratedOutput } from "nanocodex-react/
 
 export { ElevenLabsSettings } from "./ElevenLabsSettings.js";
 export type { ElevenLabsManager, ElevenLabsVoice } from "./ElevenLabsSettings.js";
+export { AgentFileProvider, logicalFilePath } from "./LinkedFile.js";
+export type { AgentFileReader } from "./LinkedFile.js";
