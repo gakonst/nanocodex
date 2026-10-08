@@ -2137,6 +2137,7 @@ mod cache_tail_profile_tests {
     // its exact durable bytes; durable steps fail closed on changed input.
     #[test]
     fn legacy_cursor_keeps_top_level_and_new_cursor_uses_explicit_tail() {
+        let _ = rustls::crypto::ring::default_provider().install_default();
         let client = ClaudeClient::new(reqwest::Client::new(), "http://127.0.0.1/v1/messages", "x")
             .subscription_compatibility()
             .bind_subscription_session("session");
