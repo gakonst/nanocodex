@@ -3682,6 +3682,14 @@ impl State {
                 if response.role != Role::Assistant {
                     return Err(provider_error("response role is not assistant"));
                 }
+                // A provider refusal is terminal, even if content includes a
+                // tool call. Classify it before dispatch or continuation; the
+                // ordinary error path also retains evidence of server effects.
+                if response.stop_reason == Some(StopReason::Refusal) {
+                    return Err(provider_error(
+                        "provider refused the request (stop_reason=refusal); turn stopped",
+                    ));
+                }
                 let mut tool_calls = Vec::new();
                 let mut seen_ids = HashSet::new();
                 let mut text = String::new();
