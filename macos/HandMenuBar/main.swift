@@ -162,8 +162,229 @@ struct MenuPresentation {
     }
 }
 
+// The daemon owns permission checks. The companion only presents its result.
+struct PermissionStatus: Decodable {
+    struct Daemon: Decodable { let pid: Int; let executable: String }
+    struct Permission: Decodable { let granted: Bool; let pane: String }
+    struct Permissions: Decodable { let input: Permission; let screenCapture: Permission }
+    let schema_version: Int
+    let daemon: Daemon
+    let permissions: Permissions
+}
+
+final class HandDragView: NSImageView, NSDraggingSource {
+    var file: URL?
+    var dropped: (() -> Void)?
+    override func mouseDown(with event: NSEvent) {}
+    override func mouseDragged(with event: NSEvent) {
+        guard let file else { return }
+        let item = NSDraggingItem(pasteboardWriter: file as NSURL)
+        item.setDraggingFrame(bounds, contents: image)
+        beginDraggingSession(with: [item], event: event, source: self)
+    }
+    func draggingSession(_ session: NSDraggingSession, sourceOperationMaskFor context: NSDraggingContext) -> NSDragOperation { .copy }
+    func draggingSession(_ session: NSDraggingSession, endedAt point: NSPoint, operation: NSDragOperation) {
+        dropped?()
+    }
+}
+
+final class PermissionGuide: NSObject, NSWindowDelegate {
+    private let cli: URL
+    private let onClose: () -> Void
+    private let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 390, height: 220), styleMask: [.titled, .closable, .nonactivatingPanel], backing: .buffered, defer: false)
+    private let icon = HandDragView()
+    private let instruction = NSTextField(wrappingLabelWithString: "Checking the running Hand…")
+    private let input = NSTextField(labelWithString: "○  Accessibility")
+    private let screen = NSTextField(labelWithString: "○  Screen Recording")
+    private let message = NSTextField(wrappingLabelWithString: "")
+    private var timers: [Timer] = []
+    private var child: Process?
+    private var closed = false
+    private var currentPane: String?
+    private var status: PermissionStatus?
+    private var droppedAt: Date?
+    private var restartAttempted = false
+    private var verifyingRestart = false
+    private var restartButton: NSButton!
+
+    init(cli: URL, onClose: @escaping () -> Void) {
+        self.cli = cli; self.onClose = onClose
+        super.init()
+        panel.title = "Allow Hand access"
+        panel.delegate = self
+        panel.level = .floating
+        panel.hidesOnDeactivate = false
+        panel.isReleasedWhenClosed = false
+        panel.collectionBehavior = [.moveToActiveSpace, .fullScreenAuxiliary]
+        let content = panel.contentView!
+        icon.frame = NSRect(x: 18, y: 136, width: 60, height: 60)
+        icon.imageScaling = .scaleProportionallyUpOrDown
+        icon.setAccessibilityLabel("Drag the running Hand executable into System Settings")
+        icon.dropped = { [weak self] in self?.droppedAt = Date() }
+        content.addSubview(icon)
+        instruction.font = .systemFont(ofSize: 13, weight: .medium)
+        instruction.frame = NSRect(x: 92, y: 136, width: 280, height: 60)
+        content.addSubview(instruction)
+        input.frame = NSRect(x: 20, y: 109, width: 350, height: 20)
+        screen.frame = NSRect(x: 20, y: 85, width: 350, height: 20)
+        content.addSubview(input); content.addSubview(screen)
+        message.font = .systemFont(ofSize: 11)
+        message.textColor = .secondaryLabelColor
+        message.frame = NSRect(x: 20, y: 43, width: 350, height: 37)
+        content.addSubview(message)
+        func button(_ title: String, _ action: Selector, _ x: CGFloat, _ width: CGFloat) -> NSButton {
+            let b = NSButton(title: title, target: self, action: action)
+            b.bezelStyle = .rounded
+            b.font = .systemFont(ofSize: 11)
+            b.frame = NSRect(x: x, y: 9, width: width, height: 26)
+            content.addSubview(b)
+            return b
+        }
+        _ = button("Accessibility", #selector(openInput), 10, 96)
+        _ = button("Screen Recording", #selector(openScreen), 107, 119)
+        restartButton = button("Restart Hand", #selector(restart), 227, 94)
+        _ = button("Done", #selector(done), 324, 56)
+    }
+
+    func show() {
+        guard timers.isEmpty else { attach(); return }
+        openPane("Privacy_Accessibility")
+        for (interval, action) in [(0.25, { [weak self] in self?.attach() }), (2.0, { [weak self] in self?.poll() })] {
+            let timer = Timer(timeInterval: interval, repeats: true) { _ in action() }
+            timers.append(timer)
+            RunLoop.main.add(timer, forMode: .common)
+        }
+        poll()
+    }
+
+    private func attach() {
+        guard !closed else { return }
+        let pids = Set(NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.systempreferences").map { $0.processIdentifier })
+        let windows = CGWindowListCopyWindowInfo(.optionOnScreenOnly, kCGNullWindowID) as? [[String: Any]] ?? []
+        let rectangles: [CGRect] = windows.compactMap { info in
+            guard let pid = info[kCGWindowOwnerPID as String] as? Int32, pids.contains(pid),
+                  info[kCGWindowLayer as String] as? Int == 0,
+                  let dictionary = info[kCGWindowBounds as String] as? [String: Any],
+                  let rect = CGRect(dictionaryRepresentation: dictionary as CFDictionary), rect.height > 150 else { return nil }
+            return rect
+        }
+        guard let bounds = rectangles.max(by: { $0.width * $0.height < $1.width * $1.height }),
+              let primary = NSScreen.screens.first else { panel.orderOut(nil); return }
+        let x = bounds.maxX - panel.frame.width - 16
+        let y = primary.frame.maxY - bounds.maxY + 16
+        panel.setFrameOrigin(NSPoint(x: x, y: y))
+        panel.orderFrontRegardless()
+    }
+
+    private func openPane(_ pane: String) {
+        currentPane = pane
+        NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?\(pane)")!)
+    }
+    @objc private func openInput() { openPane("Privacy_Accessibility") }
+    @objc private func openScreen() { openPane("Privacy_ScreenCapture") }
+    @objc private func done() { panel.close() }
+    func windowWillClose(_ notification: Notification) {
+        guard !closed else { return }
+        closed = true
+        timers.forEach { $0.invalidate() }; timers.removeAll()
+        // A restart may still finish after the guide is dismissed.
+        if child?.arguments?.contains("--check") == true { child?.terminate() }
+        onClose()
+    }
+
+    private func run(_ arguments: [String], completion: @escaping (Bool, Data) -> Void) {
+        guard child == nil, !closed else { return }
+        let process = Process()
+        process.executableURL = cli
+        process.arguments = ["hand"] + arguments
+        process.standardInput = FileHandle.nullDevice
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = pipe
+        child = process
+        restartButton.isEnabled = false
+        do { try process.run() } catch {
+            child = nil; restartButton.isEnabled = true
+            completion(false, Data(error.localizedDescription.utf8)); return
+        }
+        if arguments.contains("--check") {
+            DispatchQueue.global().asyncAfter(deadline: .now() + 22) { [weak process] in
+                if let process, process.isRunning { process.terminate() }
+            }
+        }
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            process.waitUntilExit()
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.child = nil
+                self.restartButton.isEnabled = true
+                guard !self.closed else { return }
+                completion(process.terminationStatus == 0, data)
+            }
+        }
+    }
+
+    private func poll() {
+        run(["permissions", "--check", "--json"]) { [weak self] success, data in
+            guard let self else { return }
+            guard success, let state = try? JSONDecoder().decode(PermissionStatus.self, from: data),
+                  state.schema_version == 1, state.daemon.pid > 0,
+                  state.daemon.executable.hasPrefix("/"),
+                  FileManager.default.isExecutableFile(atPath: state.daemon.executable) else {
+                self.icon.file = nil; self.icon.image = nil
+                self.instruction.stringValue = "Unable to check the running Hand."
+                self.input.stringValue = "—  Accessibility: unknown"
+                self.screen.stringValue = "—  Screen Recording: unknown"
+                self.message.stringValue = String((String(data: data, encoding: .utf8) ?? "Start the Hand and retry.").prefix(180))
+                return
+            }
+            self.status = state
+            self.icon.file = URL(fileURLWithPath: state.daemon.executable)
+            self.icon.image = NSWorkspace.shared.icon(forFile: state.daemon.executable)
+            self.icon.toolTip = state.daemon.executable
+            self.instruction.stringValue = "Drag \(URL(fileURLWithPath: state.daemon.executable).lastPathComponent) into the list above (or turn it on if it’s already listed)."
+            let inputAllowed = state.permissions.input.granted
+            let screenAllowed = state.permissions.screenCapture.granted
+            self.input.stringValue = "\(inputAllowed ? "✓" : "○")  Accessibility"
+            self.screen.stringValue = "\(screenAllowed ? "✓" : "○")  Screen Recording"
+            self.input.textColor = inputAllowed ? .systemGreen : .labelColor
+            self.screen.textColor = screenAllowed ? .systemGreen : .labelColor
+            if inputAllowed && screenAllowed {
+                if self.verifyingRestart { self.done(); return }
+                if !self.restartAttempted { self.restart(); return }
+            } else if self.currentPane == nil || (self.currentPane == "Privacy_Accessibility" && inputAllowed) || (self.currentPane == "Privacy_ScreenCapture" && screenAllowed) {
+                self.openPane(inputAllowed ? "Privacy_ScreenCapture" : "Privacy_Accessibility")
+            }
+            if !screenAllowed, let dropped = self.droppedAt, Date().timeIntervalSince(dropped) >= 10 {
+                self.message.stringValue = "Already allowed Screen Recording? Restart Hand to refresh its permission."
+            } else if !self.restartAttempted {
+                self.message.stringValue = "Only the running Hand receives this access."
+            }
+        }
+    }
+    @objc private func restart() {
+        guard child == nil else { return }
+        restartAttempted = true
+        verifyingRestart = false
+        message.stringValue = "Restarting Hand…"
+        run(["restart"]) { [weak self] success, data in
+            guard let self else { return }
+            if success {
+                self.verifyingRestart = true
+                self.message.stringValue = "Checking permissions after restart…"
+                self.poll()
+            } else {
+                self.message.stringValue = "Restart failed. \(String((String(data: data, encoding: .utf8) ?? "Try Restart Hand again.").prefix(130)))"
+            }
+        }
+    }
+}
+
 final class HandMenuBar: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let cli: URL
+    private let guideOnly: Bool
+    private var permissionGuide: PermissionGuide?
     private var item: NSStatusItem?
     private let menu = NSMenu()
     private var status: HandStatus?
@@ -180,10 +401,22 @@ final class HandMenuBar: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var signInStarted: Date?
     private var refreshTicks = 0
 
-    init(cli: URL) { self.cli = cli; super.init() }
+    init(cli: URL, guideOnly: Bool) { self.cli = cli; self.guideOnly = guideOnly; super.init() }
+
+    @objc private func showPermissionGuide() {
+        if permissionGuide == nil {
+            permissionGuide = PermissionGuide(cli: cli) { [weak self] in
+                guard let self else { return }
+                self.permissionGuide = nil
+                if self.guideOnly { NSApp.terminate(nil) }
+            }
+        }
+        permissionGuide?.show()
+    }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
+        if guideOnly { showPermissionGuide(); return }
         menu.autoenablesItems = false
         menu.delegate = self
         let autosaveName = "NanocodexStandaloneHand"
@@ -209,9 +442,10 @@ final class HandMenuBar: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func menuWillOpen(_ menu: NSMenu) { refreshStatus() }
-    func applicationDidBecomeActive(_ notification: Notification) { refreshStatus() }
+    func applicationDidBecomeActive(_ notification: Notification) { if !guideOnly { refreshStatus() } }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        if guideOnly { showPermissionGuide(); return false }
         item?.button?.performClick(nil)
         return false
     }
@@ -263,6 +497,7 @@ final class HandMenuBar: NSObject, NSApplicationDelegate, NSMenuDelegate {
         next.addItem(keepAwake)
         add("Refresh Status", #selector(refreshStatus), enabled: !busy)
         next.addItem(.separator())
+        add("Allow Screen & Input Permissions…", #selector(showPermissionGuide), enabled: true)
         add("Open Hand Log", #selector(openLog), enabled: true)
         add("Copy Status", #selector(copyStatus), enabled: true)
         next.addItem(.separator())
@@ -541,11 +776,11 @@ final class HandMenuBar: NSObject, NSApplicationDelegate, NSMenuDelegate {
 }
 
 let arguments = Array(CommandLine.arguments.dropFirst())
-if arguments.count != 2 || arguments[0] != "--cli" || !arguments[1].hasPrefix("/") {
-    fputs("Usage: nanocodex-hand-menu-bar --cli /absolute/path/to/nanocodex\n", stderr)
+if ![2, 3].contains(arguments.count) || (arguments.count == 3 && arguments[2] != "--permission-guide") || arguments[0] != "--cli" || !arguments[1].hasPrefix("/") {
+    fputs("Usage: nanocodex-hand-menu-bar --cli /absolute/path/to/nanocodex [--permission-guide]\n", stderr)
     exit(64)
 }
 let application = NSApplication.shared
-let delegate = HandMenuBar(cli: URL(fileURLWithPath: arguments[1]))
+let delegate = HandMenuBar(cli: URL(fileURLWithPath: arguments[1]), guideOnly: arguments.contains("--permission-guide"))
 application.delegate = delegate
 application.run()

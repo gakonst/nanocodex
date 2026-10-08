@@ -88,3 +88,30 @@ inventory, and refresh retaining accessibility item identities while open.
 A delayed refresh preserves the expired-login warning; recovery clears it only
 after a healthy observation arrives.
 It does not install or stop the live service.
+
+Choose **Allow Screen & Input Permissions…**, or run
+`nanocodex hand permissions --guide`, to open the floating permission guide.
+The icon drags the exact executable reported by the running Hand, not the menu
+companion. The guide follows the visible System Settings window and hides while
+that window is minimized. Accessibility is called Device Control and Data Access
+on newer macOS versions. Permission checks run in the daemon without prompting;
+`nanocodex hand permissions --check --json` exposes the same versioned result.
+
+The guide advances to the next missing permission, restarts the Hand once both
+are allowed, and verifies permission status before closing. If Screen Recording
+remains unchecked after a drop, use **Restart Hand** to refresh the daemon's
+cached permission state. Failed checks and restarts remain visible. **Done**
+closes the guide without granting access. Guide-only launches exit when closed.
+
+To check the permission CLI against a running updated daemon without changing
+its permissions:
+
+```sh
+python3 scripts/tests/hand-permissions-cli.py \
+  --cli /absolute/path/to/nanocodex \
+  --evidence /absolute/path/to/output/permission-check
+```
+
+This exercises the shipped CLI and actual daemon transport, checks rejected flag
+combinations and daemon identity, and records commands, exit codes, and output.
+It does not replace the interactive macOS grant, drag, and restart journey.

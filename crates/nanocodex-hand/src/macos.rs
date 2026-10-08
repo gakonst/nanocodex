@@ -678,6 +678,17 @@ pub fn request_access() -> Value {
     })
 }
 
+/// Read-only counterpart of [`request_access`] for permission guides that poll
+/// while the user edits System Settings. Never shows a prompt or adds an entry.
+/// Screen Recording preflight can stay false in an already-running process
+/// until it relaunches, so callers offer a restart rather than waiting forever.
+pub fn access_status() -> Value {
+    json!({
+        "screenCapture": {"granted": CGPreflightScreenCaptureAccess(), "requested": false},
+        "input": {"granted": CGPreflightPostEventAccess(), "requested": false},
+    })
+}
+
 fn capture_available() -> Result<()> {
     if !CGPreflightScreenCaptureAccess() {
         return Err(error(CAPTURE_PERMISSION));

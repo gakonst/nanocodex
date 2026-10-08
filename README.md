@@ -216,6 +216,13 @@ requires `gh`. The updater reuses its checkout and Cargo cache under
 `~/.nanocodex/source-build/target/cargo-timings` (or your `CARGO_TARGET_DIR`).
 These source builds do not package the native voice runtime.
 
+On macOS, run `nanocodex hand permissions --guide` to open a floating guide
+beside System Settings for Screen Recording and Accessibility. Drag the Hand
+executable into the list, or enable its existing entry. The guide checks the
+running Hand's permissions, advances through missing permissions, and restarts
+it when both are allowed. Use `nanocodex hand permissions --check --json` for
+read-only status. The menu companion offers **Allow Screen & Input Permissions…**.
+
 For managed agents, `nanocodex2 login` signs in with an SMS code and saves an
 account key; `nanocodex2 status` verifies it, and `nanocodex2 logout` removes the
 local login. `nanocodex account login/status/logout` manages the same saved account. Account

@@ -76,8 +76,17 @@ enum HandCommand {
     /// Accessibility consent for its own executable. You confirm in macOS.
     Permissions {
         /// Also open the matching System Settings pane for anything not yet allowed.
-        #[arg(long)]
+        #[arg(long, conflicts_with_all = ["check", "guide"])]
         open_settings: bool,
+        /// Report what macOS allows the running Hand without prompting.
+        #[arg(long, conflicts_with = "guide")]
+        check: bool,
+        /// With --check, print one JSON object for tools such as the menu bar.
+        #[arg(long, requires = "check")]
+        json: bool,
+        /// Open System Settings with a floating panel to drag the Hand into the list.
+        #[arg(long)]
+        guide: bool,
     },
     #[command(flatten)]
     Registry(crate::hand_registry::Command),
@@ -466,6 +475,7 @@ impl Hand {
         matches!(
             self.command,
             HandCommand::MenuStatus
+                | HandCommand::Permissions { check: true, .. }
                 | HandCommand::KeepAwake { setting: None }
                 | HandCommand::Status
                 | HandCommand::Registry(crate::hand_registry::Command::List)
@@ -561,7 +571,13 @@ impl Hand {
             }
             HandCommand::Restart => crate::update::restart_hand().await,
             HandCommand::Recover => crate::update::recover_hand_update().await,
-            HandCommand::Permissions { open_settings } => request_permissions(open_settings).await,
+            HandCommand::Permissions {
+                check: true, json, ..
+            } => check_permissions(json).await,
+            HandCommand::Permissions { guide: true, .. } => crate::hand_menu_bar::guide().await,
+            HandCommand::Permissions { open_settings, .. } => {
+                request_permissions(open_settings).await
+            }
             HandCommand::KeepAwake { setting } => keep_awake(setting.as_deref()).await,
         }
     }
@@ -585,6 +601,11 @@ const PERMISSIONS: [(&str, &str, &str); 2] = [
 /// made by this CLI would be attributed to the terminal app, not the Hand.
 /// macOS skips already-allowed permissions and alone decides what is allowed.
 async fn ask_daemon_for_consent() -> Result<(u32, PathBuf, serde_json::Value)> {
+    ask_daemon_permissions(false).await
+}
+
+/// `check` asks for status only: no prompt, no new System Settings entry.
+async fn ask_daemon_permissions(check: bool) -> Result<(u32, PathBuf, serde_json::Value)> {
     let state = crate::hand_service::status().await?;
     let (Some(pid), Some(executable)) = (state.pid, state.executable) else {
         bail!("The Hand service is not running. Start it with `nanocodex hand start`, then retry.");
@@ -593,7 +614,15 @@ async fn ask_daemon_for_consent() -> Result<(u32, PathBuf, serde_json::Value)> {
     let output = tokio::time::timeout(
         std::time::Duration::from_secs(20),
         Command::new(&executable)
-            .args(["__device-hand", "--request-permissions", "--daemon-pid"])
+            .args([
+                "__device-hand",
+                if check {
+                    "--check-permissions"
+                } else {
+                    "--request-permissions"
+                },
+                "--daemon-pid",
+            ])
             .arg(pid.to_string())
             .arg("--daemon-executable")
             .arg(&executable)
@@ -672,11 +701,57 @@ pub(crate) async fn request_onboarding_permissions() -> bool {
     false
 }
 
+/// `hand permissions --check`: read-only, safe to poll from the permission guide.
+async fn check_permissions(json: bool) -> Result<()> {
+    if !cfg!(target_os = "macos") {
+        bail!("Hand permissions are checked only on macOS; this platform needs no consent step");
+    }
+    let (pid, executable, reply) = ask_daemon_permissions(true).await?;
+    for (key, _, _) in PERMISSIONS {
+        if reply["permissions"][key]["granted"].as_bool().is_none() {
+            bail!("The running Hand returned an invalid permission status for {key}");
+        }
+    }
+    if json {
+        let permissions: serde_json::Map<String, serde_json::Value> = PERMISSIONS
+            .iter()
+            .map(|(key, _, pane)| {
+                (
+                    (*key).to_owned(),
+                    serde_json::json!({
+                        "granted": reply["permissions"][key]["granted"] == true,
+                        "pane": pane,
+                    }),
+                )
+            })
+            .collect();
+        println!(
+            "{}",
+            serde_json::json!({
+                "schema_version": 1,
+                "daemon": {"pid": pid, "executable": executable},
+                "permissions": permissions,
+            })
+        );
+        return Ok(());
+    }
+    println!("Hand service PID {pid}, {}", executable.display());
+    for (key, label, _) in PERMISSIONS {
+        let granted = reply["permissions"][key]["granted"] == true;
+        println!(
+            "  {label}: {}",
+            if granted { "allowed" } else { "not allowed" }
+        );
+    }
+    Ok(())
+}
+
 /// Explicit `hand permissions`: one request per invocation with full status.
 async fn request_permissions(open_settings: bool) -> Result<()> {
     if !cfg!(target_os = "macos") {
         bail!("Hand permissions are requested only on macOS; this platform needs no consent step");
     }
+    println!("For a drag-to-allow panel, run: nanocodex hand permissions --guide");
     let (pid, executable, reply) = ask_daemon_for_consent().await?;
     println!(
         "Asked the running Hand service (PID {pid}, {}) to request macOS permissions for itself.",

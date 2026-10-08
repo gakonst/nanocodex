@@ -24,6 +24,15 @@ pub(crate) async fn show() -> Result<()> {
     eyre::bail!("The Hand menu bar is only available on macOS")
 }
 
+pub(crate) async fn guide() -> Result<()> {
+    #[cfg(target_os = "macos")]
+    {
+        macos::guide().await
+    }
+    #[cfg(not(target_os = "macos"))]
+    eyre::bail!("The Hand permission guide is only available on macOS")
+}
+
 #[cfg(target_os = "macos")]
 use macos::ensure;
 
@@ -176,6 +185,29 @@ mod macos {
             );
         }
         Ok(launcher)
+    }
+
+    pub(super) async fn guide() -> Result<()> {
+        ensure(true).await?;
+        let home = PathBuf::from(std::env::var_os("HOME").ok_or_else(|| eyre!("HOME is unset"))?);
+        let bundle = home.join(".nanocodex/menu-bar/Nanocodex Hand.app");
+        let cli = cli_path(&home)?;
+        let output = Command::new("/usr/bin/open")
+            .arg("-n")
+            .arg(bundle)
+            .arg("--args")
+            .arg("--cli")
+            .arg(cli)
+            .arg("--permission-guide")
+            .output()
+            .await?;
+        if !output.status.success() {
+            bail!(
+                "Could not open the Hand permission guide: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+        Ok(())
     }
 
     pub(super) async fn ensure(explicit: bool) -> Result<()> {

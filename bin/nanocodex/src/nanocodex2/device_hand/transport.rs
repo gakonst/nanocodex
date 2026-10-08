@@ -122,15 +122,18 @@ pub(super) async fn prepare_idle_update(path: &Path) -> io::Result<bool> {
 // consent so the OS attributes it to the executable that captures the screen.
 // Reply is one bounded JSON object; older daemons close without replying.
 pub(super) const REQUEST_PERMISSIONS: u8 = 0xB1;
+/// Read-only status for permission guides; never prompts or adds a TCC entry.
+pub(super) const CHECK_PERMISSIONS: u8 = 0xB2;
 #[cfg(unix)]
 const PERMISSIONS_REPLY_LIMIT: u64 = 16 * 1024;
 
 /// Refuses before sending anything unless the kernel-attested socket owner is
 /// `expected_pid`. The OS request is non-blocking; the bound covers a stalled peer.
 #[cfg(unix)]
-pub(super) async fn request_permissions(
+pub(super) async fn permissions(
     path: &Path,
     expected_pid: u32,
+    opcode: u8,
 ) -> io::Result<serde_json::Value> {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     tokio::time::timeout(Duration::from_secs(10), async {
@@ -145,7 +148,7 @@ pub(super) async fn request_permissions(
                 ),
             ));
         }
-        stream.write_all(&[REQUEST_PERMISSIONS]).await?;
+        stream.write_all(&[opcode]).await?;
         let mut reply = Vec::new();
         (&mut stream)
             .take(PERMISSIONS_REPLY_LIMIT)

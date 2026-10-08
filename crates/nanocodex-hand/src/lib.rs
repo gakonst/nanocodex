@@ -7,7 +7,9 @@ mod capture;
 #[cfg(target_os = "macos")]
 mod macos;
 #[cfg(target_os = "macos")]
-pub use macos::{main_display_index, main_display_pixel_dimensions, request, request_access};
+pub use macos::{
+    access_status, main_display_index, main_display_pixel_dimensions, request, request_access,
+};
 
 #[cfg(target_os = "windows")]
 mod windows;

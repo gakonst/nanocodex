@@ -41,11 +41,15 @@ pub(crate) struct DeviceHand {
     #[arg(long, hide = true, requires_all = ["daemon_pid", "daemon_executable"],
         conflicts_with_all = ["describe", "daemon", "parent_pipe", "prepare_update", "service_protocol"])]
     request_permissions: bool,
+    /// Ask the running daemon for its OS consent status without prompting.
+    #[arg(long, hide = true, requires_all = ["daemon_pid", "daemon_executable"],
+        conflicts_with_all = ["describe", "daemon", "parent_pipe", "prepare_update", "service_protocol", "request_permissions"])]
+    check_permissions: bool,
     /// PID the service manager reports for the running daemon.
-    #[arg(long, hide = true, requires = "request_permissions")]
+    #[arg(long, hide = true)]
     daemon_pid: Option<u32>,
     /// Executable the service manager reports for the running daemon.
-    #[arg(long, hide = true, requires = "request_permissions")]
+    #[arg(long, hide = true)]
     daemon_executable: Option<PathBuf>,
     /// Print the shared identity without publishing a Hand.
     #[arg(long)]
@@ -514,11 +518,16 @@ pub(crate) async fn serve(command: DeviceHand) -> Result<(), ManagedError> {
         emit(&json!({"serviceProtocol": 1, "version": env!("CARGO_PKG_VERSION")}));
         return Ok(());
     }
-    if command.request_permissions {
+    if command.request_permissions || command.check_permissions {
         let (Some(pid), Some(executable)) = (command.daemon_pid, command.daemon_executable) else {
             return Err(error("--daemon-pid and --daemon-executable are required"));
         };
-        emit(&request_daemon_permissions(pid, &executable).await?);
+        let opcode = if command.check_permissions {
+            transport::CHECK_PERMISSIONS
+        } else {
+            transport::REQUEST_PERMISSIONS
+        };
+        emit(&request_daemon_permissions(pid, &executable, opcode).await?);
         return Ok(());
     }
     if command.prepare_update {
@@ -582,24 +591,38 @@ fn daemon_directory(hands: &Path, pid: u32) -> Result<PathBuf, ManagedError> {
         })
 }
 
-async fn request_daemon_permissions(pid: u32, executable: &Path) -> Result<Value, ManagedError> {
+async fn request_daemon_permissions(
+    pid: u32,
+    executable: &Path,
+    opcode: u8,
+) -> Result<Value, ManagedError> {
     let directory = daemon_directory(&home()?.join(".nanocodex/hands"), pid)?;
-    request_permissions_at(&socket_path(&directory)?, pid, executable).await
+    permissions_at(&socket_path(&directory)?, pid, executable, opcode).await
 }
 
-/// The OS attributes consent to the process that asks. Refuse unless the
-/// kernel-reported socket owner is the service manager's PID, and confirm the
-/// reply names the same process and executable. Never retried automatically.
+#[cfg(test)]
 async fn request_permissions_at(
     socket: &Path,
     pid: u32,
     executable: &Path,
 ) -> Result<Value, ManagedError> {
+    permissions_at(socket, pid, executable, transport::REQUEST_PERMISSIONS).await
+}
+
+/// The OS attributes consent to the process that asks. Refuse unless the
+/// kernel-reported socket owner is the service manager's PID, and confirm the
+/// reply names the same process and executable. Never retried automatically.
+async fn permissions_at(
+    socket: &Path,
+    pid: u32,
+    executable: &Path,
+    opcode: u8,
+) -> Result<Value, ManagedError> {
     #[cfg(unix)]
     {
         let canonical = |path: &Path| fs::canonicalize(path).unwrap_or_else(|_| path.to_owned());
         let expected = canonical(executable);
-        let reply = transport::request_permissions(socket, pid)
+        let reply = transport::permissions(socket, pid, opcode)
             .await
             .map_err(error)?;
         let daemon = &reply["daemon"];
@@ -617,8 +640,20 @@ async fn request_permissions_at(
     }
     #[cfg(not(unix))]
     {
-        let _ = (socket, pid, executable);
+        let _ = (socket, pid, executable, opcode);
         Err(error("Hand permission requests are only used on macOS"))
+    }
+}
+
+/// Read-only: what macOS allows this daemon right now. Never prompts.
+fn check_os_permissions() -> Value {
+    #[cfg(target_os = "macos")]
+    {
+        nanocodex_hand::access_status()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        json!({"unsupported": format!("no OS consent is needed on {}", std::env::consts::OS)})
     }
 }
 
@@ -638,12 +673,15 @@ fn request_os_permissions() -> Value {
 async fn answer_permissions(
     mut stream: impl tokio::io::AsyncWrite + Unpin,
     consent: fn() -> Value,
+    requested: bool,
 ) {
     let permissions = tokio::task::spawn_blocking(consent)
         .await
         .unwrap_or_else(|_| json!({"error": "the permission request failed"}));
-    tracing::info!(target: "nanocodex2", stage = "hand.permissions.requested", %permissions,
-        "Requested OS permissions on explicit user action");
+    if requested {
+        tracing::info!(target: "nanocodex2", stage = "hand.permissions.requested", %permissions,
+            "Requested OS permissions on explicit user action");
+    }
     let mut reply =
         serde_json::to_vec(&json!({"daemon": daemon_identity(), "permissions": permissions}))
             .unwrap_or_default();
@@ -923,7 +961,12 @@ async fn watch_clients_with_barrier<F, Fut>(
                             // Answered on this client's task: never admits a
                             // lease or participates in the update barrier.
                             Ok(transport::REQUEST_PERMISSIONS) => {
-                                answer_permissions(stream, consent).await;
+                                answer_permissions(stream, consent, true).await;
+                                None
+                            }
+                            // Polled by permission guides; read-only.
+                            Ok(transport::CHECK_PERMISSIONS) => {
+                                answer_permissions(stream, check_os_permissions, false).await;
                                 None
                             }
                             _ => None,
@@ -1529,6 +1572,14 @@ mod permission_tests {
             .to_string();
         assert!(refused.contains("no permission was requested"), "{refused}");
         assert_eq!(CONSENTS.load(Ordering::SeqCst), 0);
+
+        // A guide's status poll answers without requesting consent.
+        let checked = permissions_at(&path, pid, &executable, transport::CHECK_PERMISSIONS)
+            .await
+            .unwrap();
+        assert_eq!(CONSENTS.load(Ordering::SeqCst), 0);
+        assert_eq!(checked["daemon"]["pid"], pid);
+        assert!(checked["permissions"].is_object());
 
         let reply = request_permissions_at(&path, pid, &executable)
             .await
