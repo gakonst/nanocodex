@@ -153,6 +153,9 @@ pub(super) fn render_live_summary(
 }
 
 fn present(tool: &ToolEntry, width: u16, theme: &Theme, expanded: bool) -> Presentation {
+    if tool.name == "__tool_activity" {
+        return Presentation::new("Tools", "");
+    }
     if matches!(
         tool.family(),
         "browser_vault_status" | "browser_vault_fill" | "browser_vault_close"
@@ -359,6 +362,31 @@ fn summary_lines(
     theme: &Theme,
     expanded: bool,
 ) -> Vec<Line<'static>> {
+    if tool.name == "__tool_activity" {
+        let counts = tool.arguments.as_array().map(Vec::as_slice).unwrap_or(&[]);
+        let total = counts
+            .iter()
+            .filter_map(Value::as_u64)
+            .fold(0_u64, u64::saturating_add);
+        let mut text = format!(
+            "  ▶ {} {}",
+            status_symbol(tool.state),
+            count_label(total as usize, "tool", "tools")
+        );
+        for (count, label) in counts
+            .iter()
+            .zip(["running", "completed", "failed", "waiting"])
+        {
+            let count = count.as_u64().unwrap_or(0);
+            if count > 0 {
+                text.push_str(&format!(" · {count} {label}"));
+            }
+        }
+        if let Some(duration) = tool.duration_ns {
+            text.push_str(&format!(" · {}", format_duration(duration)));
+        }
+        return wrap_plain(&text, width, status_style(tool.state, theme));
+    }
     let border = Style::default().fg(theme.border());
     let status = status_style(tool.state, theme);
     let prefix = vec![

@@ -2397,6 +2397,8 @@ async fn terminal_preserves_steering_and_queue_across_repeated_connection_drops(
 async fn terminal_preserves_shell_waiting_prompts_and_followups_across_reconnect() {
     for finishes_offline in [false, true] {
         let mut fixture = Fixture::start().await;
+        // This journey inspects tool details; explicitly open them.
+        fixture.terminal.input("\x0f");
         let command = r#"/bin/sh -c 'i=0; while [ ! -e release-shell ] && [ "$i" -lt 500 ]; do sleep 0.02; i=$((i+1)); done; printf "SHELL_%s\n" FINISHED; : > shell-finished'"#;
         fixture.terminal.prompt(&format!("!{command}"), "\r");
         fixture.terminal.wait_text("Shell").await;
@@ -2457,6 +2459,8 @@ async fn terminal_preserves_shell_waiting_prompts_and_followups_across_reconnect
 async fn terminal_interrupts_a_local_shell_and_accepts_the_next_prompt() {
     for disconnected in [false, true] {
         let mut fixture = Fixture::start().await;
+        // This journey inspects tool details; explicitly open them.
+        fixture.terminal.input("\x0f");
         fixture.terminal.prompt("!sleep 30", "\r");
         fixture.terminal.wait_text("Shell").await;
         if disconnected {
@@ -3667,6 +3671,8 @@ async fn terminal_shows_the_durable_answer_when_the_final_stream_message_is_miss
 #[tokio::test]
 async fn terminal_settles_tools_when_only_the_durable_completion_arrives() {
     let mut fixture = Fixture::start().await;
+    // This journey inspects tool details; explicitly open them.
+    fixture.terminal.input("\x0f");
     fixture
         .terminal
         .prompt("finish a tool without its last stream events", "\r");
@@ -3868,6 +3874,8 @@ async fn terminal_preserves_retry_status_when_other_turns_finish() {
 #[tokio::test]
 async fn terminal_keeps_background_commands_connected_across_turns() {
     let mut fixture = Fixture::start().await;
+    // This journey inspects tool details; explicitly open them.
+    fixture.terminal.input("\x0f");
     fixture.terminal.prompt("start a background build", "\r");
     let first = fixture.submission("start a background build").await;
     fixture.nested(&first, "run.started", json!({}));
@@ -3905,7 +3913,10 @@ async fn terminal_keeps_background_commands_connected_across_turns() {
     fixture.terminal.wait_text("Enter send").await;
     let screen = fixture.terminal.screen.lock().unwrap().screen().contents();
     assert_eq!(
-        screen.matches("BACKGROUND_BUILD_COMMAND").count(),
+        screen
+            .lines()
+            .filter(|line| line.contains("Shell") && line.contains("BACKGROUND_BUILD_COMMAND"))
+            .count(),
         1,
         "{screen}"
     );
@@ -3930,6 +3941,8 @@ async fn terminal_live_restore_keeps_an_attached_tool_running() {
         json!({"call_id": "pending-read", "tool": "read_file", "arguments": {"path": "PENDING_ON_ATTACH.txt"}}),
     );
     let mut fixture = Fixture::start_with_history(true, true, history).await;
+    // This journey inspects tool details; explicitly open them.
+    fixture.terminal.input("\x0f");
     fixture.terminal.wait_text("PENDING_ON_ATTACH.txt").await;
     let screen = fixture.terminal.screen.lock().unwrap().screen().contents();
     assert!(
@@ -4134,6 +4147,8 @@ async fn terminal_keeps_local_shell_context_scoped_to_the_session_after_resume()
     const OTHER_AGENT: &str = "019fc927-b280-79a7-8445-1b9996ad2fb1";
     for succeeds in [true, false] {
         let mut fixture = Fixture::start().await;
+        // This journey inspects tool details; explicitly open them.
+        fixture.terminal.input("\x0f");
         fixture
             .terminal
             .prompt("!printf OLD_SESSION_SHELL_OUTPUT", "\r");
@@ -4360,6 +4375,8 @@ async fn terminal_keeps_a_draft_and_completion_received_while_attach_history_is_
 
 async fn assert_terminal_durable_stop(cancelled: bool) {
     let mut fixture = Fixture::start_with_active(true).await;
+    // This journey inspects tool details; explicitly open them.
+    fixture.terminal.input("\x0f");
     fixture.nested(REMOTE_TURN, "run.started", json!({}));
     fixture.nested(REMOTE_TURN, "assistant.delta", json!({"model_call_index": 1, "item_id": "partial", "phase": "final_answer", "text": "PARTIAL_BEFORE_DURABLE_STOP"}));
     fixture.nested(REMOTE_TURN, "tool.call", json!({"call_id": "unfinished-stop-read", "tool": "read_file", "arguments": {"path": "UNFINISHED_STOP_READ.txt"}}));
@@ -4476,6 +4493,67 @@ async fn terminal_retains_a_long_older_response_across_history_page_boundaries()
     fixture.terminal.input("\r");
     let turn = fixture.submission("DRAFT_DURING_OLDER_HISTORY").await;
     fixture.complete(&turn);
+}
+
+#[tokio::test]
+async fn terminal_tool_activity_is_compact_live_and_expandable() {
+    let mut fixture = Fixture::start_with_active(true).await;
+    for (id, command) in [
+        ("one", "FIRST_HIDDEN_COMMAND"),
+        ("two", "SECOND_HIDDEN_COMMAND"),
+    ] {
+        fixture.nested(
+            REMOTE_TURN,
+            "tool.call",
+            json!({"call_id": id, "tool": "exec_command", "arguments": {"cmd": command}}),
+        );
+    }
+    fixture.terminal.wait_text("2 running").await;
+    fixture.terminal.wait_no_text("FIRST_HIDDEN_COMMAND").await;
+    fixture.terminal.wait_no_text("SECOND_HIDDEN_COMMAND").await;
+    eprintln!(
+        "RUNNING\n{}",
+        fixture.terminal.screen.lock().unwrap().screen().contents()
+    );
+    fixture.nested(REMOTE_TURN, "tool.result", json!({"call_id": "one", "tool": "exec_command", "status": "completed", "duration_ns": 1000000000, "result": {"output": "FIRST_HIDDEN_OUTPUT", "exit_code": 0}}));
+    fixture.terminal.wait_text("1 running · 1 completed").await;
+    fixture.nested(REMOTE_TURN, "tool.result", json!({"call_id": "two", "tool": "exec_command", "status": "failed", "duration_ns": 2000000000, "result": {"output": "SECOND_HIDDEN_FAILURE", "exit_code": 1}}));
+    fixture.complete(REMOTE_TURN);
+    fixture.terminal.wait_text("Enter send").await;
+    fixture.terminal.wait_text("1 completed · 1 failed").await;
+    fixture.terminal.wait_no_text("FIRST_HIDDEN_OUTPUT").await;
+    fixture.terminal.wait_no_text("SECOND_HIDDEN_FAILURE").await;
+    eprintln!(
+        "SETTLED\n{}",
+        fixture.terminal.screen.lock().unwrap().screen().contents()
+    );
+    fn click(terminal: &mut Terminal, text: &str) {
+        let row = terminal
+            .screen
+            .lock()
+            .unwrap()
+            .screen()
+            .contents()
+            .lines()
+            .position(|line| line.contains(text))
+            .unwrap()
+            + 1;
+        terminal.input(&format!("\x1b[<0;2;{row}M\x1b[<0;2;{row}m"));
+    }
+    click(&mut fixture.terminal, "2 tools");
+    fixture.terminal.wait_text("FIRST_HIDDEN_OUTPUT").await;
+    fixture.terminal.wait_text("SECOND_HIDDEN_COMMAND").await;
+    click(&mut fixture.terminal, "SECOND_HIDDEN_COMMAND");
+    fixture.terminal.wait_text("21 B").await;
+    fixture.terminal.wait_text("SECOND_HIDDEN_FAILURE").await;
+    eprintln!(
+        "EXPANDED\n{}",
+        fixture.terminal.screen.lock().unwrap().screen().contents()
+    );
+    click(&mut fixture.terminal, "FIRST_HIDDEN_COMMAND");
+    fixture.terminal.wait_text("1 completed · 1 failed").await;
+    fixture.terminal.wait_no_text("FIRST_HIDDEN_COMMAND").await;
+    fixture.terminal.wait_no_text("SECOND_HIDDEN_FAILURE").await;
 }
 
 #[tokio::test]
