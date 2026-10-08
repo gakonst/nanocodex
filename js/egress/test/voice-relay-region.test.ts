@@ -199,7 +199,7 @@ describe("private managed voice ownership capability", () => {
     const getByName = vi.fn(() => ({ resolveModelCredential: credentials }));
     f.env.USER_CREDENTIALS = { getByName } as unknown as EgressEnv["USER_CREDENTIALS"];
     expect((await handleManagedRealtimeCall(f.request, f.env)).status).toBe(201);
-    expect(getByName).toHaveBeenCalledWith(`~home/v1/wnam/${owner}`, { locationHint: "wnam" });
+    expect(getByName).toHaveBeenCalledWith(owner, { locationHint: "wnam" });
     expect(f.env).not.toHaveProperty("trustedPlacementRegion");
     expect(directory).not.toHaveBeenCalled();
     expect(f.relay.mock.calls[0]![0].headers.has("x-nanocodex-realtime-owner")).toBe(false);

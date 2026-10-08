@@ -7,11 +7,6 @@ import type { CloudflareAccountVaultResult } from "nanocodex/cloudflare/egress";
 import { createSshKeyPair, sshPublicKey } from "nanocodex/tools/ssh";
 import { DurableObject } from "cloudflare:workers";
 import type { UserCredentialSnapshot } from "./credential-snapshot";
-import {
-  type AdoptResult, BROKER_MOVED_HEADER, BrokerMovedError, MAX_PLACEMENT_HOPS,
-  parseBrokerName, type BrokerName, type PlacementState, REHOME_COOLDOWN_MS, type ReleaseResult, validPlacement,
-} from "./broker-placement";
-import { consumeRpcData } from "nanocodex/cloudflare/rpc";
 import { Provider, ProviderRequest, secp256k1, Storage } from "accounts";
 import { createClient, http } from "viem";
 import { Account as TempoAccount, Actions } from "viem/tempo";
@@ -52,8 +47,7 @@ import {
 const STATE_KEY = "credential-state";
 /** Sealed regional lease registry; separate from credential state. */
 const LEASE_KEY = "model-credential-leases-v1";
-/** Informational: a prepared handshake lives at most 10 s in its holder. */
-const UPGRADE_HOLDER_MS = 60_000;
+const MODEL_LEASE_MS = 10 * 60_000;
 const REVOCATION_RETRY_MS = 5_000;
 const INVALIDATE_TIMEOUT_MS = 3_000;
 const LEASE_REGIONS: ReadonlySet<string> = new Set(["wnam", "enam", "sam", "weur", "eeur", "apac", "oc"]);
@@ -115,8 +109,6 @@ export interface BrokerEnv extends CredentialVaultEnv {
   ALLOW_LOCAL_CREDENTIAL_CLAIM?: string;
   NANOCODEX_LOCAL_SPONSORED_TRIAL_RESET?: string;
   LOCAL_CHATGPT_BOOTSTRAP?: string;
-  /** Honoured only in test/development environments. */
-  CREDENTIAL_REHOME_COOLDOWN_MS?: string;
 }
 
 export type ModelCredentialValue = Readonly<{
@@ -129,7 +121,24 @@ export type ModelCredentialValue = Readonly<{
   provenance?: "user" | "sponsor";
 }>;
 
+export type ModelCredentialLeaseGrant = Readonly<{
+  status: number;
+  credential: ModelCredentialValue | null;
+  /** Holder must discard the grant when epoch is below its invalidation floor. */
+  epoch: number;
+  /** Duration, not a timestamp: the holder anchors it to its own clock. */
+  lease_ms: number;
+}>;
+
 export type ClaudeCredentialValue = ClaudeSubscription.PrivateCredential;
+export type ClaudeCredentialLeaseGrant = Readonly<{
+  status: number;
+  credential: ClaudeCredentialValue | null;
+  epoch: number;
+  lease_ms: number;
+}>;
+/** Regional Claude holders re-resolve before the provider token can age out. */
+const CLAUDE_LEASE_MS = 5 * 60_000;
 
 type ModelLease = { fingerprint: string; epoch: number; expiresAt: number };
 type PendingRevocation = { epoch: number; expiresAt: number };
@@ -359,7 +368,7 @@ function subjectTombstoneOwner(value: string | undefined): string | undefined {
     : undefined;
 }
 
-type CredentialOperation = "credential_rpc" | "credential_http" | "metadata_rpc" | "http" | "alarm" | "placement";
+type CredentialOperation = "credential_rpc" | "credential_http" | "metadata_rpc" | "http" | "alarm" | "lease_rpc";
 type CredentialOperationObservation = Readonly<{
   operation: CredentialOperation;
   resolveId?: string;
@@ -368,8 +377,6 @@ type CredentialOperationObservation = Readonly<{
    * (idempotent retry after a persisted removal). */
   mutation?: boolean;
 }>;
-/** Durable canonical-placement row; absent means legacy=active, home=empty. */
-const PLACEMENT_KEY = "broker-placement-v1";
 type CredentialActivationPhase = "storage_load_ms" | "vault_open_ms" | "restore_ms"
   | "migration_ms" | "reseal_ms" | "alarm_ms";
 
@@ -400,30 +407,13 @@ export class UserCredentialBroker extends DurableObject<BrokerEnv> {
   #leaseRegistry: LeaseRegistry = { version: 1, epoch: 0, leases: {}, pending: {} };
   /** Plain-read projection that every unexpired, non-pending lease matches. */
   #reconciledProjection: string | undefined;
-  /** Bare user id (legacy) or region-placed home; undefined for unnamed ids. */
-  readonly #identity: BrokerName | undefined;
-  /**
-   * Vault scope identity. Every object of one user seals under the legacy
-   * object's id, so a re-home moves sealed rows verbatim (never plaintext)
-   * while rows still cannot be transplanted between users.
-   */
-  readonly #scopeId: string;
-  #placement: PlacementState = { state: "active", activatedAt: 0 };
 
   constructor(state: DurableObjectState, env: BrokerEnv) {
     super(state, env);
     this.#state = state;
     this.#env = env;
-    this.#identity = parseBrokerName(state.id.name);
-    if (this.#identity?.kind === "home") {
-      if (!env.USER_CREDENTIALS) throw new Error("home credential broker requires its namespace");
-      this.#scopeId = env.USER_CREDENTIALS.idFromName(this.#identity.userId).toString();
-      this.#placement = { state: "empty" };
-    } else {
-      this.#scopeId = state.id.toString();
-    }
-    this.#vault = new CredentialVault(env, `user/${this.#scopeId}`);
-    this.#leaseVault = new CredentialVault(env, `user/${this.#scopeId}/model-credential-leases`);
+    this.#vault = new CredentialVault(env, `user/${state.id.toString()}`);
+    this.#leaseVault = new CredentialVault(env, `user/${state.id.toString()}/model-credential-leases`);
     const startedAt = Date.now();
     this.#ready = state.blockConcurrencyWhile(async () => {
       let completed = false;
@@ -447,20 +437,10 @@ export class UserCredentialBroker extends DurableObject<BrokerEnv> {
 
   async readWalletIdentity(): Promise<ReturnType<typeof publicRootWallet> | null> {
     await this.#ready;
-    this.#assertServing();
     return this.#committedWalletIdentity ? { ...this.#committedWalletIdentity } : null;
   }
 
   fetch(request: Request): Promise<Response> {
-    return this.#fetch(request).catch((error: unknown) => {
-      if (!(error instanceof BrokerMovedError)) throw error;
-      // Refused before any work: the caller re-locates and may replay once.
-      return Response.json({ error: "credential_broker_moved" }, { status: 421, headers: {
-        "cache-control": "no-store", [BROKER_MOVED_HEADER]: error.target ?? "" } });
-    });
-  }
-
-  #fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
     if (request.method === "GET" && url.pathname === "/v1/wallet"
       && request.headers.get("accept") === "application/vnd.nanocodex.wallet-snapshot+json") return this.#walletSnapshot(request);
@@ -488,38 +468,48 @@ export class UserCredentialBroker extends DurableObject<BrokerEnv> {
   }
 
   /**
-   * A regional prepared-upgrade holder registers before starting an auth-only
-   * handshake. The registration is the holder's lease: every later change to
-   * the plain read invalidates (and so closes) its unconsumed handshakes
-   * before that change is acknowledged. No credential is returned.
+   * Grant a regional holder one plain read plus a bounded lease. Runs on the
+   * canonical queue, so refresh/selection stay serialized and no grant runs
+   * while a mutation is invalidating holders. Refused while any revocation is
+   * pending. The lease is durable before the grant is returned.
    */
-  async registerUpgradeHolder(owner: string, region: string): Promise<{ status: number; epoch: number }> {
-    const refuse = (status: number) => ({ status, epoch: 0 });
+  async grantModelCredentialLease(owner: string, region: string): Promise<ModelCredentialLeaseGrant> {
+    const refuse = (status: number): ModelCredentialLeaseGrant => ({ status, credential: null, epoch: 0, lease_ms: 0 });
+    const namespace = this.#env.USER_CREDENTIALS;
     if (typeof owner !== "string" || typeof region !== "string" || !USER_ID.test(owner)
-      || !LEASE_REGIONS.has(region) || !this.#env.USER_CREDENTIAL_SNAPSHOTS
-      || this.#identity?.userId !== owner) return refuse(403);
+      || !LEASE_REGIONS.has(region) || !namespace || !this.#env.USER_CREDENTIAL_SNAPSHOTS
+      || !namespace.idFromName(owner).equals(this.#state.id)) return refuse(403);
     return this.#exclusive(async () => {
       await this.#ready;
       const registry = this.#leaseRegistry;
       try {
+        // The owner is authenticated above (idFromName equals this object);
+        // it names every holder this registry must later invalidate.
         if (registry.owner === undefined) registry.owner = owner;
         if (registry.owner !== owner) return refuse(403);
         if (Object.keys(registry.pending).length && !await this.#revoke([])) return refuse(503);
         const before = this.#plainProjection();
-        // Refresh now, so the holder's own handshake read changes nothing.
-        await this.#credential(false, undefined);
+        const credential = await this.#credential(false, undefined);
         if (await this.#reconcileLeases(before) !== "ok") return refuse(503);
         const projection = this.#plainProjection();
+        const now = Date.now();
+        const leaseMs = Math.floor(Math.min(MODEL_LEASE_MS, credential.expiresAt === undefined
+          ? MODEL_LEASE_MS : credential.expiresAt - REFRESH_EARLY_MS - now));
+        // Never hand an unregistered credential to a replica: an unregistered
+        // recipient would receive no invalidation. The replica falls back to
+        // the canonical read instead.
+        if (!Number.isSafeInteger(leaseMs) || leaseMs <= 0) return refuse(503);
+        registry.owner = owner;
         registry.leases[region] = { fingerprint: await leaseFingerprint(projection), epoch: registry.epoch,
-          expiresAt: Date.now() + UPGRADE_HOLDER_MS };
+          expiresAt: now + leaseMs };
         await this.#persistLeases();
         this.#reconciledProjection = projection;
-        return { status: 200, epoch: registry.epoch };
+        return { status: 200, credential, epoch: registry.epoch, lease_ms: leaseMs };
       } catch (error) {
         const problem = await this.#recoverFailedOperation(error);
         return refuse(problem.status);
       }
-    }, { operation: "credential_rpc" }, () => refuse(503));
+    }, { operation: "lease_rpc" }, () => refuse(503));
   }
 
   /** Read the live snapshot under the same serialization and recovery as HTTP. */
@@ -678,6 +668,46 @@ export class UserCredentialBroker extends DurableObject<BrokerEnv> {
     await this.#persistLeases();
   }
 
+  /** Grant a regional holder one plain Claude read plus a bounded lease. */
+  async grantClaudeCredentialLease(owner: string, region: string): Promise<ClaudeCredentialLeaseGrant> {
+    const refuse = (status: number): ClaudeCredentialLeaseGrant => ({ status, credential: null, epoch: 0, lease_ms: 0 });
+    const namespace = this.#env.USER_CREDENTIALS;
+    if (typeof owner !== "string" || typeof region !== "string" || !USER_ID.test(owner)
+      || !LEASE_REGIONS.has(region) || !namespace || !this.#env.USER_CREDENTIAL_SNAPSHOTS
+      || !namespace.idFromName(owner).equals(this.#state.id)) return refuse(403);
+    return this.#exclusive(async () => {
+      await this.#ready;
+      const registry = this.#leaseRegistry;
+      try {
+        if (registry.owner === undefined) registry.owner = owner;
+        if (registry.owner !== owner) return refuse(403);
+        if (Object.keys(registry.pending).length && !await this.#revoke([])) return refuse(503);
+        const before = this.#plainProjection();
+        let credential: ClaudeCredentialValue;
+        try {
+          credential = await (await this.#claudeSubscription()).credential();
+        } catch {
+          this.#claudeCredential = undefined;
+          return refuse(401);
+        }
+        this.#claudeCredential = credential;
+        await this.#noteClaudeRevision(credential.revision, false);
+        if (await this.#reconcileLeases(before) !== "ok") return refuse(503);
+        const projection = this.#plainProjection();
+        const now = Date.now();
+        registry.owner = owner;
+        registry.leases[region] = { fingerprint: await leaseFingerprint(projection), epoch: registry.epoch,
+          expiresAt: now + CLAUDE_LEASE_MS };
+        await this.#persistLeases();
+        this.#reconciledProjection = projection;
+        return { status: 200, credential, epoch: registry.epoch, lease_ms: CLAUDE_LEASE_MS };
+      } catch (error) {
+        const problem = await this.#recoverFailedOperation(error);
+        return refuse(problem.status);
+      }
+    }, { operation: "lease_rpc" }, () => refuse(503));
+  }
+
   #claudeSubscription(): Promise<ClaudeSubscription.Subscription> {
     return this.#claude ??= this.#openClaudeSubscription().catch(() => {
       this.#claude = undefined;
@@ -686,8 +716,8 @@ export class UserCredentialBroker extends DurableObject<BrokerEnv> {
   }
 
   async #openClaudeSubscription(): Promise<ClaudeSubscription.Subscription> {
-    const id = `claude:${this.#scopeId}`;
-    const vault = new CredentialVault(this.#env, `user/${this.#scopeId}/claude-subscription`);
+    const id = `claude:${this.#state.id.toString()}`;
+    const vault = new CredentialVault(this.#env, `user/${this.#state.id.toString()}/claude-subscription`);
     return ClaudeSubscription.open({ id, module: claudeModule, store: {
       load: async (key) => {
         if (key !== id) throw new Error("Claude scope denied");
@@ -758,18 +788,7 @@ export class UserCredentialBroker extends DurableObject<BrokerEnv> {
     }, { operation: "metadata_rpc" });
   }
 
-  async alarm(): Promise<void> {
-    await this.#ready.catch(() => {});
-    if (this.#placement.state !== "active") {
-      await this.#state.storage.deleteAlarm();
-      return;
-    }
-    return this.#activeAlarm().catch((error: unknown) => {
-      if (!(error instanceof BrokerMovedError)) throw error;
-    });
-  }
-
-  #activeAlarm(): Promise<void> {
+  alarm(): Promise<void> {
     return this.#exclusive(async () => {
       await this.#ready;
       if (this.#credentials.login && this.#credentials.login.expiresAt <= Date.now()) {
@@ -824,9 +843,6 @@ export class UserCredentialBroker extends DurableObject<BrokerEnv> {
       // it is acknowledged, every regional lease holder whose snapshot no
       // longer matches is invalidated; no new grant can run meanwhile.
       const ready = await this.#ready.then(() => true, () => false);
-      // Refuse before any work once this object is not the canonical broker.
-      // Checked after the queue, so nothing ordered after a release runs.
-      if (observation.operation !== "placement") this.#assertServing();
       const before = ready && this.#leasesHeld() ? this.#plainProjection() : undefined;
       let result: T;
       try {
@@ -862,190 +878,6 @@ export class UserCredentialBroker extends DurableObject<BrokerEnv> {
         exclusive_operation_ms: finishedAt - startedAt,
       });
     }
-  }
-
-  #assertServing(): void {
-    const placement = this.#placement;
-    if (placement.state === "active") return;
-    throw new BrokerMovedError(placement.state === "moved" ? placement.target : undefined);
-  }
-
-  #brokerStub(name: string): DurableObjectStub<UserCredentialBroker> {
-    const parsed = parseBrokerName(name);
-    return this.#env.USER_CREDENTIALS!.getByName(name,
-      parsed?.kind === "home" ? { locationHint: parsed.region } : undefined);
-  }
-
-  /** Placement only; never credential material. Used by the egress router. */
-  placementState(): Promise<PlacementState> {
-    return this.#exclusive(async () => {
-      await this.#ready;
-      return { ...this.#placement };
-    }, { operation: "placement" });
-  }
-
-  /**
-   * Called only by a home broker of the same user that is adopting this
-   * object's state. Durably tombstones this object (naming its successor)
-   * BEFORE exporting, so every later operation here is refused. Rows are the
-   * raw sealed storage values; nothing is decrypted. Re-export to the same
-   * successor is idempotent until the successor confirms its commit.
-   */
-  releaseTo(target: unknown): Promise<ReleaseResult> {
-    return this.#exclusive(async () => {
-      await this.#ready;
-      const self = this.#identity;
-      const next = parseBrokerName(target);
-      if (!self || !next || next.kind !== "home" || next.userId !== self.userId || next.name === self.name) {
-        return { status: "invalid" };
-      }
-      const placement = this.#placement;
-      if (placement.state === "empty") return { status: "empty" };
-      if (placement.state === "moved" && (placement.target !== next.name || placement.released)) {
-        return { status: "moved", target: placement.target };
-      }
-      if (placement.state === "active") {
-        const moved: PlacementState = { state: "moved", target: next.name, movedAt: Date.now() };
-        await this.#state.storage.put(PLACEMENT_KEY, moved);
-        this.#placement = moved;
-        this.#liveWalletLink?.controller.abort();
-        this.#liveWalletLink = undefined;
-        await this.#state.storage.deleteAlarm();
-        credentialMetric({ type: "egress.credential.placement", outcome: "released",
-          from: self.kind === "home" ? self.region : "legacy", to: next.region });
-      }
-      const rows: [string, unknown][] = [];
-      for (const [key, value] of await this.#state.storage.list()) {
-        if (key !== PLACEMENT_KEY) rows.push([key, value]);
-      }
-      return { status: "exported", rows };
-    }, { operation: "placement" });
-  }
-
-  /**
-   * The successor committed: drop this tombstone's sealed rows. Verified
-   * against the successor itself, so a stray call can never discard the only
-   * copy. Runs outside the successor's queue (it calls back into it).
-   */
-  confirmRelease(target: unknown): Promise<boolean> {
-    return this.#exclusive(async () => {
-      await this.#ready;
-      const placement = this.#placement;
-      if (placement.state !== "moved" || placement.target !== target) return false;
-      if (placement.released) return true;
-      const successor = consumeRpcData(await this.#brokerStub(placement.target).placementState()) as PlacementState;
-      if (successor.state !== "active") return false;
-      const keys = [...(await this.#state.storage.list()).keys()].filter((key) => key !== PLACEMENT_KEY);
-      const released: PlacementState = { ...placement, released: true };
-      await this.#state.storage.transaction(async (transaction) => {
-        for (let index = 0; index < keys.length; index += 128) await transaction.delete(keys.slice(index, index + 128));
-        await transaction.put(PLACEMENT_KEY, released);
-      });
-      this.#placement = released;
-      return true;
-    }, { operation: "placement" });
-  }
-
-  /** Legacy directory shortcut: compare-and-set its successor pointer. */
-  repoint(expected: unknown, next: unknown): Promise<boolean> {
-    return this.#exclusive(async () => {
-      await this.#ready;
-      const placement = this.#placement;
-      const parsed = parseBrokerName(next);
-      if (this.#identity?.kind !== "legacy" || placement.state !== "moved" || placement.target !== expected
-        || !parsed || parsed.kind !== "home" || parsed.userId !== this.#identity.userId) return false;
-      const moved: PlacementState = { ...placement, target: parsed.name };
-      await this.#state.storage.put(PLACEMENT_KEY, moved);
-      this.#placement = moved;
-      return true;
-    }, { operation: "placement" });
-  }
-
-  /**
-   * Make this home object the user's canonical broker. Walks the directory
-   * from the legacy object to the active broker, honours the re-home
-   * cooldown (else redirects), and moves sealed rows under the predecessor's
-   * tombstone. Fail closed: any uncertainty leaves the predecessor
-   * authoritative or this object empty; a retry resumes idempotently.
-   */
-  adoptHome(): Promise<AdoptResult> {
-    return this.#exclusive(async () => {
-      await this.#ready;
-      const self = this.#identity;
-      if (!self || self.kind !== "home" || !this.#env.USER_CREDENTIALS) return { status: "invalid" };
-      if (this.#placement.state === "active") return { status: "active", migrated: false };
-      let name: string = self.userId;
-      let source: string | undefined;
-      let resuming = false;
-      for (let hop = 0; hop < MAX_PLACEMENT_HOPS && source === undefined; hop += 1) {
-        const status = consumeRpcData(await this.#brokerStub(name).placementState()) as PlacementState;
-        if (status.state === "active") {
-          if (parseBrokerName(name)?.kind === "home" && Date.now() - status.activatedAt < this.#rehomeCooldownMs()) {
-            return { status: "redirect", target: name };
-          }
-          source = name;
-        } else if (status.state === "moved" && status.target === self.name && !status.released) {
-          source = name;
-          resuming = true;
-        } else if (status.state === "moved") {
-          // A confirmed link back to this object: continue from our own
-          // successor rather than calling into our own (held) queue.
-          const own = this.#placement;
-          name = status.target !== self.name ? status.target : own.state === "moved" ? own.target : "";
-          if (!name || name === self.name) return { status: "unavailable" };
-        } else return { status: "unavailable" };
-      }
-      if (source === undefined) return { status: "unavailable" };
-      const released = consumeRpcData(await this.#brokerStub(source).releaseTo(self.name)) as ReleaseResult;
-      if (released.status === "moved") return { status: "redirect", target: released.target };
-      if (released.status !== "exported" || !Array.isArray(released.rows)
-        || released.rows.some((row) => !Array.isArray(row) || row.length !== 2 || typeof row[0] !== "string"
-          || row[0] === PLACEMENT_KEY)) return { status: "unavailable" };
-      const activated: PlacementState = { state: "active", activatedAt: Date.now(), source };
-      // A previous tenure's rows are stale; a crash before the commit leaves
-      // this object empty and the predecessor tombstoned toward it (resumable).
-      await this.#state.storage.deleteAll();
-      await this.#state.storage.transaction(async (transaction) => {
-        for (let index = 0; index < released.rows.length; index += 128) {
-          await transaction.put(Object.fromEntries(released.rows.slice(index, index + 128)));
-        }
-        await transaction.put(PLACEMENT_KEY, activated);
-      });
-      this.#credentials = { version: 1, active: null };
-      this.#leaseRegistry = { version: 1, epoch: 0, leases: {}, pending: {} };
-      this.#reconciledProjection = undefined;
-      this.#claude = undefined;
-      this.#claudeCredential = undefined;
-      this.#placement = activated;
-      try {
-        await this.#initialize();
-        this.#committedWalletIdentity = this.#credentials.wallet ? publicRootWallet(this.#credentials.wallet) : null;
-      } catch (error) {
-        // Never serve half-loaded state: restart and fail closed via #ready.
-        this.#state.abort("credential broker adoption reload failed");
-        throw error;
-      }
-      credentialMetric({ type: "egress.credential.placement", outcome: resuming ? "adopted_resumed" : "adopted",
-        region: self.region, from: parseBrokerName(source)?.kind === "home" ? "home" : "legacy",
-        rows: released.rows.length });
-      this.#state.waitUntil(this.#finishAdoption(source, self.name, self.userId));
-      return { status: "active", migrated: true, source };
-    }, { operation: "placement" });
-  }
-
-  /** Tests may shorten the cooldown; production always uses the constant. */
-  #rehomeCooldownMs(): number {
-    const environment = this.#env.ENVIRONMENT?.trim().toLowerCase();
-    const override = Number(this.#env.CREDENTIAL_REHOME_COOLDOWN_MS);
-    return (environment === "test" || environment === "development" || environment === "local")
-      && Number.isSafeInteger(override) && override >= 0 ? override : REHOME_COOLDOWN_MS;
-  }
-
-  async #finishAdoption(source: string, self: string, userId: string): Promise<void> {
-    try {
-      await this.#brokerStub(source).confirmRelease(self);
-      if (source !== userId) await this.#brokerStub(userId).repoint(source, self);
-    } catch { /* Tombstones stay fail closed; cleanup is retried on a later adoption. */ }
   }
 
   #leasesHeld(): boolean {
@@ -1166,15 +998,7 @@ export class UserCredentialBroker extends DurableObject<BrokerEnv> {
     };
     try {
       // One storage round trip for credential state and the lease registry.
-      const rows = await this.#state.storage.get<unknown>([PLACEMENT_KEY, STATE_KEY, LEASE_KEY]);
-      if (rows.has(PLACEMENT_KEY)) {
-        const placement = validPlacement(rows.get(PLACEMENT_KEY));
-        // Fail closed: an unreadable placement could hide a successor.
-        if (!placement) throw new BrokerFailure(503, "credential_placement_invalid");
-        this.#placement = placement;
-      }
-      // A tombstone or unadopted home never opens credential state.
-      if (this.#placement.state !== "active") return;
+      const rows = await this.#state.storage.get<unknown>([STATE_KEY, LEASE_KEY]);
       const leaseRow = rows.get(LEASE_KEY) as StoredRow | undefined;
       if (leaseRow) {
         // Fail closed: an unreadable or invalid registry may hide holders and
@@ -2664,14 +2488,14 @@ export class UserCredentialBroker extends DurableObject<BrokerEnv> {
   #entryVault(id: string): CredentialVault {
     return new CredentialVault(
       this.#env,
-      `user/${this.#scopeId}/vault/${id}`,
+      `user/${this.#state.id.toString()}/vault/${id}`,
     );
   }
 
   #browserCookieJarVault(id: string): CredentialVault {
     return new CredentialVault(
       this.#env,
-      `user/${this.#scopeId}/browser-cookie-jar/${id}`,
+      `user/${this.#state.id.toString()}/browser-cookie-jar/${id}`,
     );
   }
 

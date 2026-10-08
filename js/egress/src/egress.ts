@@ -56,9 +56,8 @@ export { AgentSubjectDirectory, UserCredentialBroker } from "./broker";
 export { SessionCredentialPrewarm, UserCredentialSnapshot } from "./credential-snapshot";
 import {
   headerFingerprint, PREPARED_UPGRADE_HEADER, PREPARED_UPGRADE_URL, registerPreparedUpgradeStarter, snapshotStub,
-  type PrepareUpgradeResult,
+  type ClaudeSnapshotResolve, type PrepareUpgradeResult, type SnapshotResolve,
 } from "./credential-snapshot";
-import { RoutedUserBroker } from "./broker-router";
 export { UserConnectorBroker } from "./connector-broker";
 export { WhatsAppAccount } from "./whatsapp-account";
 export { SpotifyRateLimit } from "./spotify-rate-limit";
@@ -2788,7 +2787,7 @@ async function handleReadiness(request: Request, env: EgressEnv): Promise<Respon
     const [subjects, credentials] = await Promise.all([
       env.AGENT_SUBJECTS.getByName(READINESS_SUBJECT_DIRECTORY_NAME)
         .fetch("https://subjects.internal/v1/health"),
-      env.USER_CREDENTIALS.getByName("broker-readiness-v1").fetch("https://credentials.internal/v1/health"),
+      userBroker(env, "broker-readiness-v1").fetch("https://credentials.internal/v1/health"),
     ]);
     if (!subjects.ok || !credentials.ok) {
       await Promise.all([
@@ -3487,9 +3486,12 @@ async function resolveUserCredential(
   revision?: number,
   accountId?: string,
 ): Promise<ModelCredentialValue & Pick<ResolvedModelCredential, "broker_ms" | "broker_activation_ms" | "broker_age_ms" | "broker_resolve_id">> {
-  // The canonical broker is placed next to the user: every read, refresh,
-  // revision fence and failover runs on its one serialized queue.
-  const result: CanonicalResolve = consumeRpcData(await userBroker(env, userId).resolveModelCredential(recover, revision, accountId));
+  // Only a plain read in a trusted placement region may use the regional
+  // leased snapshot. Recovery, revision fences, pinned accounts and failover
+  // stay on the canonical broker's serialized queue.
+  const regional = !recover && revision === undefined && accountId === undefined && env.trustedPlacementRegion
+    ? await resolveRegionalCredential(env, userId, env.trustedPlacementRegion) : undefined;
+  const result: CanonicalResolve = regional ?? consumeRpcData(await userBroker(env, userId).resolveModelCredential(recover, revision, accountId));
   if (result.status < 200 || result.status >= 300) {
     if (result.status === 429) throw new EgressFailure(429, accountId ? "chatgpt_account_exhausted" : "chatgpt_accounts_exhausted");
     throw new EgressFailure(result.status === 404 ? 409 : 503, accountId ? "chatgpt_account_unavailable" : "user_credential_unavailable");
@@ -3513,12 +3515,49 @@ async function resolveUserCredential(
 type CanonicalResolve = Readonly<{ status: number; credential: ModelCredentialValue | null;
   resolve_ms?: number; activation_ms?: number; activation_age_ms?: number; resolve_id?: string }>;
 
-/** Plain Claude read from the user's canonical broker (placed next to the
- * user). Recovery uses the same broker with a revision fence. */
+/** Plain Claude read: the regional leased snapshot when placement is trusted,
+ * else the canonical broker. Recovery always stays canonical. */
 async function resolvePlainClaudeCredential(env: EgressEnv, userId: string): Promise<{
   status: number; credential: ClaudeSubscriptionCredential | null;
 }> {
+  const region = env.trustedPlacementRegion;
+  const stub = region ? snapshotStub(env, userId, region) : undefined;
+  if (stub && region) {
+    const startedAt = Date.now();
+    try {
+      const result = consumeRpcData(await stub.resolveClaude(userId, region)) as ClaudeSnapshotResolve;
+      console.info({ type: "egress.credential.claude_snapshot", source: result.source, status: result.status,
+        snapshot_ms: Date.now() - startedAt,
+        ...(result.canonical_ms !== undefined ? { canonical_ms: result.canonical_ms } : {}) });
+      if (result.status === 200 && result.credential) return { status: 200, credential: result.credential };
+      if (result.status === 401 || result.status === 404) return { status: result.status, credential: null };
+    } catch { /* fall back to the canonical broker */ }
+  }
   return consumeRpcData(await userBroker(env, userId).resolveClaudeCredential());
+}
+
+/** undefined means "use the canonical broker": unavailable binding, a fenced
+ * or refused grant, or any replica failure. A definitive canonical answer
+ * relayed by the replica (404/409/422/429) is returned as-is. */
+async function resolveRegionalCredential(
+  env: EgressEnv,
+  userId: string,
+  region: string,
+): Promise<CanonicalResolve | undefined> {
+  const stub = snapshotStub(env, userId, region);
+  if (!stub) return undefined;
+  const startedAt = Date.now();
+  let result: SnapshotResolve;
+  try {
+    result = consumeRpcData(await stub.resolve(userId, region)) as SnapshotResolve;
+  } catch {
+    return undefined;
+  }
+  console.info({ type: "egress.credential.snapshot", source: result.source, status: result.status,
+    snapshot_ms: Date.now() - startedAt,
+    ...(result.canonical_ms !== undefined ? { canonical_ms: result.canonical_ms } : {}) });
+  if (result.status === 403 || result.status >= 500) return undefined;
+  return { status: result.status, credential: result.credential, resolve_ms: Date.now() - startedAt };
 }
 
 async function resolveSshIdentity(
@@ -3587,17 +3626,9 @@ function subjectDirectory(
 ): DurableObjectStub<AgentSubjectDirectory> {
   return env.AGENT_SUBJECTS.getByName(`${SUBJECT_DIRECTORY_PREFIX}${subject}`);
 }
-/**
- * The user's canonical credential broker, placed next to the user. Only a
- * trusted model-transport region may adopt (re-home) it; ingress placement is
- * a probe hint; regionless calls follow the legacy directory.
- */
-function userBroker(env: EgressEnv, userId: string): RoutedUserBroker {
-  return new RoutedUserBroker(env, userId, {
-    ...(env.trustedPlacementRegion ? { claim: env.trustedPlacementRegion } : {}),
-    ...(durablePlacementOptions(env.trustedClientIngressColo)?.locationHint
-      ? { hint: durablePlacementOptions(env.trustedClientIngressColo)!.locationHint } : {}),
-  });
+function userBroker(env: EgressEnv, userId: string): DurableObjectStub<UserCredentialBroker> {
+  return env.USER_CREDENTIALS.getByName(userId, env.trustedPlacementRegion
+    ? { locationHint: env.trustedPlacementRegion } : durablePlacementOptions(env.trustedClientIngressColo));
 }
 function connectorBroker(env: EgressEnv, userId: string): DurableObjectStub<UserConnectorBroker> {
   return env.USER_CONNECTORS.getByName(userId, durablePlacementOptions(env.trustedClientIngressColo));

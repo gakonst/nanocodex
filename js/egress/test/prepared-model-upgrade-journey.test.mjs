@@ -5,7 +5,7 @@ import { join, resolve } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
-// Production SessionModelEgress, regional upgrade holder, placed broker and
+// Production SessionModelEgress, regional UserCredentialSnapshot, broker and
 // the managed PreparedModelUpgrade run in workerd. Only the model provider
 // (a WebSocket fixture recording handshakes/frames/closes) is synthetic.
 const require = createRequire(import.meta.url);
@@ -25,9 +25,9 @@ test("prepared upgrade: ACK before writes, durable handoff, cancel, invalidation
     stdin: { contents: await readFile(join(directory, "src/egress.ts"), "utf8") + `
       // Test scheduling gate only: credential issuance remains the real broker.
       export class JourneyCredentialBroker extends UserCredentialBroker {
-        async resolveModelCredential(...args) {
+        async grantModelCredentialLease(owner, region) {
           await this.env.GRANT_GATE.fetch('https://fixture.internal/grant', { method: 'POST' });
-          return super.resolveModelCredential(...args);
+          return super.grantModelCredentialLease(owner, region);
         }
       }`, resolveDir: join(directory, "src"), loader: "ts" },
     alias: {
@@ -209,7 +209,7 @@ test("prepared upgrade: ACK before writes, durable handoff, cancel, invalidation
   heldUpgrades.delete(remoteRid);
 
   // A held credential RPC cannot be aborted by fetch cancellation. The real
-  // canonical broker resolves the credential only when this gate opens.
+  // broker issues its actual lease only when this test scheduling gate opens.
   await control("PUT", { api_key: "sk-key-1" });
   holdGrants = true;
   const capacityRids = [];

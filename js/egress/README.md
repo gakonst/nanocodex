@@ -190,39 +190,27 @@ and durable-state recovery after failures.
 `upstream_ms` includes our
 subscription relay and must not be interpreted as provider-only latency.
 
-The canonical credential broker is placed next to the user. Each user has
-exactly one active `UserCredentialBroker`: either the legacy object named by
-the bare user id (pinned wherever it was first created) or a home object named
-`~home/v1/<region>/<user>` and created with that region's location hint. Every
-other object is a fail-closed tombstone that names its successor, or an empty
-home. Non-active objects refuse every operation before any work (`421` with
-`x-nanocodex-broker-moved` over HTTP, `broker_moved:<target>` over RPC), so the
-egress router (`src/broker-router.ts`) may re-locate and replay exactly once.
+Regional credential snapshots (`UserCredentialSnapshot`, one per region and
+owner, region in the fixed seven-region set) serve only plain model reads (no
+recovery, revision, or account pin) placed by trusted Session or managed
+realtime authority. Every other read, refresh, selection, and mutation stays on
+the canonical broker. The broker grants a sealed lease bounded by 10 minutes and
+by credential expiry minus the refresh-early window, registering the holder
+durably before replying; it refuses a zero-length lease rather than return an
+unregistered credential. Before any credential mutation is acknowledged, every
+holder whose plain-read projection changed must durably raise its epoch floor
+and drop its snapshot. A failed invalidation stays pending across retries and
+restarts, regardless of lease expiry; until that holder acknowledges, every
+mutation (including idempotent retries) fails with
+`credential_revocation_pending` and no grant is issued. The replica discards
+late grants below its floor and rechecks floor, entry identity, lease expiry,
+and credential expiry after the canonical RPC, after sealing, and after the
+durable write. `test/credential-snapshot-journey.test.mjs` exercises these paths
+in workerd, including a grant reply held across a rotation and one held past its
+lease.
 
-Only a trusted model-transport region (private Session or managed realtime
-authority, and the account Worker's Session prewarm) may adopt the broker into
-that region's home; ingress placement is only a probe hint, and regionless
-callers follow the legacy directory. Adoption tombstones the predecessor
-durably before exporting its raw storage rows; rows are sealed under the
-legacy object's id for every object of the user, so they move verbatim (never
-decrypted) and still cannot be transplanted between users. The home replaces
-any previous tenure's rows, commits, then asks the predecessor to verify the
-commit and delete its copy, and repoints the legacy directory with a
-compare-and-set. An interrupted adoption resumes idempotently. A re-home to a
-different region is allowed only after `REHOME_COOLDOWN_MS` (15 minutes) of
-residency; within it the caller is redirected to the active home. The lease
-registry moves with the state, so pending revocations continue from the home.
-
-There is no regional credential cache: every read, refresh, account selection
-and mutation runs on the canonical broker's one serialized queue.
-`test/broker-placement.test.ts` exercises adoption, tombstones, cooldown
-redirect, re-home, stale-tenure replacement, resume and revocation in workerd.
-
-Fresh direct Sessions may also prepare an auth-only Responses WebSocket in a
-regional holder (`UserCredentialSnapshot`, one per region and owner). Before
-starting a handshake the holder registers with the canonical broker
-(`registerUpgradeHolder`), so any later credential change closes its
-unconsumed handshakes before the change is acknowledged. The private `SessionModelEgress` preparation RPC
+Fresh direct Sessions may also prepare an auth-only Responses WebSocket in
+this existing regional holder. The private `SessionModelEgress` preparation RPC
 acknowledges that the holder owns the handshake before Session initialization
 writes begin. It returns an opaque, one-use handle; WebSockets themselves cannot
 be serialized through Workers RPC. Consumption therefore uses the private fetch
