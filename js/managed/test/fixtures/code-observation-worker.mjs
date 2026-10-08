@@ -12,10 +12,12 @@ export class ObservationFixture extends DurableObject {
     super(ctx, env);
     ctx.storage.sql.exec('CREATE TABLE IF NOT EXISTS fixture_dispatch (name TEXT PRIMARY KEY, n INTEGER NOT NULL)');
     const count = name => ctx.storage.sql.exec('INSERT INTO fixture_dispatch VALUES (?,1) ON CONFLICT(name) DO UPDATE SET n=n+1', name);
+    this.checkpoint = new Promise(resolve => { this.checkpointed = resolve; });
     const real = createManagedCodeEffectJournal(ctx.storage);
     const journal = { ...real, observations: { ...real.observations, record: async (...args) => {
       await real.observations.record(...args);
       if (this.loseAck) throw Error('fixture terminal ACK lost after real storage.sync');
+      if (!JSON.parse(args[2]).cell.running) this.checkpointed();
     } } };
     this.journal = journal;
     const evaluator = managedCodeEvaluator();
@@ -32,7 +34,7 @@ export class ObservationFixture extends DurableObject {
     if (action === 'start') {
       const entered = new Promise(r => { this.enteredSecond = r; });
       this.thirdStarted = new Promise(r => { this.enteredThird = r; });
-      const source = input.terminal ? 'text(await tools.second({})); text("final-output");'
+      const source = input.terminal ? 'text(await tools.second({})); text("final-output");' + (input.failed ? 'throw new Error("background-failure");' : '')
         : 'text(await tools.first({})); text(await tools.second({})); await tools.third({operation_id:"stable-third"});';
       const active = this.runtime.executeCodeObserved(source, '018f1f9a-7b3c-7a07-8000-000000000021', 'origin');
       await entered;
@@ -47,6 +49,11 @@ export class ObservationFixture extends DurableObject {
       await this.thirdStarted;
       await this.ctx.storage.sync();
       return Response.json({advanced: true});
+    }
+    if (action === 'background') {
+      this.releaseSecond();
+      await this.checkpoint;
+      return Response.json({checkpointed:true});
     }
     if (action === 'finish') {
       this.loseAck = true;

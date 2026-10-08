@@ -709,7 +709,7 @@ export function createCodeRuntime(toolConfiguration = {}, extras = {}) {
       const options = parseExec(source);
       const cell = {
         id: `${cellGeneration}:${nextCellId++}`, sessionId, parentCallId, controller: new AbortController(),
-        content: [], updates: [], completedCalls: [], notifications: [], turn: turns.get(sessionId) ?? 0,
+        startedAt: performance.now(), content: [], updates: [], completedCalls: [], notifications: [], turn: turns.get(sessionId) ?? 0,
         budget: options.max_output_tokens ?? 10_000, result: undefined, observing: false,
       };
       cells.set(cell.id, cell);
@@ -736,14 +736,28 @@ export function createCodeRuntime(toolConfiguration = {}, extras = {}) {
         if (cell.observation) cell.observation.push(encoded);
         else cell.updates.push(encoded);
         if (update.type === "nested_call_completed") cell.completedCalls.push(update.call);
-      }, cell, turnId, localDefinitions, executeLocalTool).then((result) => {
+      }, cell, turnId, localDefinitions, executeLocalTool).then(async (result) => {
         const completed = JSON.parse(result);
         if (!completed.success && typeof completed.output === "string") {
           cell.content.push({ type: "input_text", text: completed.output.split("Output:\n").slice(1).join("Output:\n") || completed.output });
         }
+        // A yielded evaluator can finish while the model is thinking, before
+        // another wait. Persist that terminal evidence immediately: the next
+        // observer may arrive in a replacement runtime. Do not drain live
+        // output here; the foreground observer still owns delivery.
+        // Cancellation/reset is not a terminal checkpoint: dispatched effects
+        // can still be unknown. finished proves normal store finalization.
+        if (extras.effectJournal?.observations && cell.finished) {
+          await recordCellObservation(cell, JSON.stringify({
+            output: withStatus(completed.success ? "Script completed" : "Script failed", cell.startedAt, cell.content),
+            success: completed.success,
+            cell: { origin_call_id: cell.parentCallId, running: false },
+            nested_calls: cell.completedCalls, notifications: cell.notifications,
+          }), false);
+        }
         cell.result = { success: completed.success };
         cell.wake?.();
-      }, (error) => {
+      }).catch((error) => {
         if (error?.code === "host_interrupted") cell.interruption = error;
         cell.content.push({ type: "input_text", text: errorMessage(error) });
         cell.result = { success: false };
@@ -814,6 +828,19 @@ export function createCodeRuntime(toolConfiguration = {}, extras = {}) {
     }).finally(() => observation.close());
   }
 
+  function recordCellObservation(cell, encoded, running) {
+    if (!extras.effectJournal?.observations) return Promise.resolve();
+    // Storage acknowledgement yields. Serialize terminal checkpoints with
+    // foreground observations so a delayed running snapshot cannot overwrite
+    // proof of completion. A failed write poisons this owner's chain.
+    cell.recording = (cell.recording ?? Promise.resolve()).then(async () => {
+      if (running && cell.terminalRecorded) return;
+      await observationJournal(() => extras.effectJournal.observations.record(cell.sessionId, cell.id, encoded));
+      if (!running) cell.terminalRecorded = true;
+    });
+    return cell.recording;
+  }
+
   async function observeCell(cell, observation, yieldTime, budget) {
     const startedAt = performance.now();
     cell.observing = true;
@@ -855,9 +882,7 @@ export function createCodeRuntime(toolConfiguration = {}, extras = {}) {
         nested_calls: cell.completedCalls.slice(0, completedCount),
         notifications: cell.notifications.slice(0, notificationCount),
       });
-      if (extras.effectJournal?.observations) {
-        await observationJournal(() => extras.effectJournal.observations.record(cell.sessionId, cell.id, encoded));
-      }
+      await recordCellObservation(cell, encoded, !result);
       cell.content.splice(0, contentCount);
       cell.completedCalls.splice(0, completedCount);
       cell.notifications.splice(0, notificationCount);

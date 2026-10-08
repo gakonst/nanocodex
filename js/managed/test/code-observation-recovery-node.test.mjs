@@ -106,7 +106,7 @@ test("terminal observation survives lost acknowledgement and disk reopen without
     loseAck = true;
     await assert.rejects(old.waitCodeObserved(JSON.stringify({ cell_id: id }), "owner", "final-wait"), { code: "host_interrupted" });
     const meta = f.db.prepare("SELECT sequence FROM managed_code_public_cells WHERE cell_id = ?").get(id);
-    assert.equal(meta.sequence, 2);
+    assert.equal(meta.sequence, 3); // running, completion checkpoint, final observer
     await old.reset(); f.reopen();
     recovered = runtime(f.journal());
     const final = await parse(recovered.waitCodeObserved(JSON.stringify({ cell_id: id }), "owner", "final-wait"));
@@ -357,4 +357,58 @@ test("unmarked missing metadata and mismatched eviction sequence fail closed", a
     f.db.prepare("INSERT INTO managed_code_observation_evictions VALUES (?, ?)").run(id, 2);
     await assert.rejects(j.observations.recover("owner", id), /eviction identity mismatch/);
   } finally { f.close(); }
+});
+
+
+test("completion wins over a delayed running observation acknowledgement before restart", async () => {
+  const f = fixture(), entered = gate(), release = gate(), recording = gate(), ack = gate(), terminal = gate();
+  let calls = 0, recovered;
+  const real = f.journal();
+  const r = runtime({ ...real, observations: { ...real.observations, async record(...args) {
+    const running = JSON.parse(args[2]).cell.running;
+    await real.observations.record(...args);
+    if (running) { recording.resolve(); await ack.promise; }
+    else terminal.resolve();
+  } } }, { effect: { handler: async () => { calls++; entered.resolve(); await release.promise; return "saved-once"; } } });
+  try {
+    const active = r.executeCodeObserved('text(await tools.effect({})); text("background-final");', "owner", "origin");
+    await entered.promise; r.preempt("owner", "origin");
+    await recording.promise;
+    release.resolve(); await tick();
+    ack.resolve();
+    const id = cellId(await parse(active));
+    await terminal.promise; await tick();
+    // No wait consumed completion. The last durable observation must nevertheless
+    // be terminal, even though the foreground yield acknowledged after completion.
+    await r.reset(); f.reopen(); recovered = runtime(f.journal());
+    const final = await parse(recovered.waitCodeObserved(JSON.stringify({ cell_id: id }), "owner", "after-restart"));
+    assert.equal(final.success, true);
+    assert.equal(final.cell.running, false);
+    assert.match(output(final), /background-final/);
+    assert.match(output(final), /saved-once/);
+    assert.deepEqual(final.nested_calls, []);
+    assert.equal(calls, 1);
+  } finally { release.resolve(); ack.resolve(); await r.reset(); await recovered?.reset(); f.close(); }
+});
+
+
+test("runtime reset does not checkpoint cancellation as settled execution", async () => {
+  const f = fixture(), entered = gate(), release = gate();
+  let calls = 0, recovered;
+  const r = runtime(f.journal(), { effect: { handler: async () => {
+    calls++; entered.resolve(); await release.promise; return "late";
+  } } });
+  try {
+    const active = r.executeCodeObserved('await tools.effect({operation_id:"original"});', "owner", "origin");
+    await entered.promise; r.preempt("owner", "origin");
+    const id = cellId(await parse(active));
+    await r.reset(); await tick();
+    f.reopen(); recovered = runtime(f.journal());
+    const evidence = await parse(recovered.waitCodeObserved(JSON.stringify({cell_id:id}), "owner", "after-reset"));
+    assert.equal(evidence.success, false);
+    assert.equal(evidence.cell, undefined);
+    assert.match(output(evidence), /1 pending effects have unknown outcomes/);
+    assert.deepEqual(evidence.nested_calls, []);
+    assert.equal(calls, 1);
+  } finally { release.resolve(); await tick(); await r.reset(); await recovered?.reset(); f.close(); }
 });

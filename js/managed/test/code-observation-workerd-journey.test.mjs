@@ -10,7 +10,8 @@ const root = fileURLToPath(new URL('..',import.meta.url));
 const text = r => typeof r.output === 'string' ? r.output : r.output.map(v=>v.text??'').join('\n');
 const cell = r => text(r).match(/Script running with cell ID (\S+)/)?.[1];
 
-for (const terminal of [false,true]) test('workerd hard restart reconciles '+(terminal?'terminal ACK loss':'yield and late receipts'), {timeout:60000}, async () => {
+for (const mode of ['pending', 'ack-loss', 'background', 'background-failed']) test('workerd hard restart reconciles '+mode, {timeout:60000}, async () => {
+  const terminal = mode !== 'pending', failed = mode === 'background-failed';
   const directory = fileURLToPath(new URL('../../../output/code-observation-workerd/'+crypto.randomUUID()+'/',import.meta.url));
   await mkdir(directory,{recursive:true});
   const assets = [];
@@ -59,9 +60,10 @@ for (const terminal of [false,true]) test('workerd hard restart reconciles '+(te
   });
   try {
     await start();
-    const yielded=await call({action:'start',terminal}), id=cell(yielded);
+    const yielded=await call({action:'start',terminal,failed}), id=cell(yielded);
     assert.ok(id,JSON.stringify(yielded));
-    if(terminal) assert.equal((await call({action:'finish',id})).code,'host_interrupted');
+    if(mode.startsWith('background')) assert.equal((await call({action:'background'})).checkpointed,true);
+    else if(terminal) assert.equal((await call({action:'finish',id})).code,'host_interrupted');
     else await call({action:'advance'});
     const before=await call({action:'inspect'});
     assert.deepEqual(before.counts,terminal?[{name:'evaluate',n:1},{name:'second',n:1}]:
@@ -76,7 +78,7 @@ for (const terminal of [false,true]) test('workerd hard restart reconciles '+(te
     assert.deepEqual(recovered.notifications??[],[]);
     assert.match(text(recovered),terminal?/Durable terminal observation recovered/:/CODE_CELL_RECOVERED_EVIDENCE/);
     assert.match(text(recovered),/late-second/);
-    if(terminal) {assert.equal(recovered.success,true);assert.equal(recovered.cell.running,false);assert.match(text(recovered),/final-output/);}
+    if(terminal) {assert.equal(recovered.success,!failed);if(failed) assert.match(text(recovered),/background-failure/);assert.equal(recovered.cell.running,false);assert.match(text(recovered),/final-output/);}
     else {
       assert.equal(recovered.success,false);assert.equal(recovered.cell,undefined);
       const detail=JSON.parse(text(recovered).slice(text(recovered).indexOf('\n{')+1));
@@ -98,11 +100,11 @@ for (const terminal of [false,true]) test('workerd hard restart reconciles '+(te
     assert.doesNotMatch(JSON.stringify(rust.requests[1].input),/unknown field|failed to parse|CODE_CELL_UNAVAILABLE/);
     const rustResults=rust.events.filter(e=>e.type==='tool.result' && e.payload.call_id==='wasm-wait');
     assert.equal(rustResults.length,1);
-    assert.equal(rustResults[0].payload.status,terminal?'completed':'failed');
+    assert.equal(rustResults[0].payload.status,terminal && !failed?'completed':'failed');
     assert.match(JSON.stringify(rustResults[0].payload.result),terminal?/final-output/:/outcome unknown/);
     assert.equal(rust.events.filter(e=>e.type==='tool.result' && e.payload.call_id?.startsWith('origin/code-')).length,0);
     assert.deepEqual((await call({action:'inspect'})).counts,cold.counts);
-    await writeFile(directory+'/result.json',JSON.stringify({passed:true,terminal,trace},null,2));
+    await writeFile(directory+'/result.json',JSON.stringify({passed:true,mode,terminal,trace},null,2));
     console.log('WORKERD_RECOVERY_EVIDENCE '+directory);
   } finally {
     await kill();
