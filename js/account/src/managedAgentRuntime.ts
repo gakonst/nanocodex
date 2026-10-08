@@ -261,12 +261,27 @@ export function managedTerminalAgent(
     }),
     turn: Object.freeze({
       prompt: ({ input }: { input: string | readonly PromptAttachment[] }) => {
-        const id = crypto.randomUUID();
+        const id = browserLoginReceiptTurnId(input) ?? crypto.randomUUID();
         submitted?.add(id);
         return managedTerminalTurn(managed, id, input);
       },
     }),
   });
+}
+
+// Match the dedicated login page and native app: remounting an old receipt card
+// must replay its original turn, even after the previous answer has completed.
+function browserLoginReceiptTurnId(input: string | readonly PromptAttachment[]): string | undefined {
+  if (typeof input !== "string") return undefined;
+  try {
+    const receipt = JSON.parse(input);
+    if (!receipt || typeof receipt !== "object" || Array.isArray(receipt)
+      || Object.keys(receipt).length !== 3 || receipt.type !== "browser_login_receipt"
+      || !["finished", "cancelled"].includes(receipt.status)
+      || typeof receipt.request_id !== "string"
+      || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(receipt.request_id)) return undefined;
+    return `browser-login-${receipt.request_id}-${receipt.status}`;
+  } catch { return undefined; }
 }
 
 function isManagedAgent(source: ManagedTerminalSource): source is ManagedAgent {
@@ -276,7 +291,7 @@ function isManagedAgent(source: ManagedTerminalSource): source is ManagedAgent {
 
 function managedTerminalTurn(managed: ManagedTerminalSource, turnId: string, input: string | readonly PromptAttachment[]): AgentTurn {
   const controller = new AbortController();
-  const turn: ManagedTurn = managed.turn.prompt({ id: turnId, input });
+  const turn: ManagedTurn = managed.turn.prompt({ id: turnId, idempotencyKey: turnId, input });
   return Object.freeze({
     historyEntryId: `managed-user-${turnId}`,
     steer: ({ input }) => turn.steer({ input }),
