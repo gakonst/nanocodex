@@ -29,15 +29,9 @@ import { HostedToolsBroker } from "./hosted-tools-broker";
 import { observeHandCall, observeHandSummary } from "./hand-call-observation";
 import { annotateToolSpan, traceToolInvocation } from "./tool-tracing";
 import { DiagnosticJournal, diagnosticScope } from "./diagnostic-journal";
-import { RegionalHandDirectory, HAND_RELAY_REGION_HEADER, handRelayName, isHandRelayRegion,
-  relayRouteToken, parseRelayRouteToken, publisherIdentity, validPublisherId,
-  type HandPublication, type HandRelayLocation, type HandRelayRegion, type RegionalHandEnv } from "./regional-hand-routing";
-import type { RegionalHandRelay } from "./regional-hand-relay";
-import { RegionalScreenAuthority, SCREEN_DIRECTORY_HEADER, regionalScreenPrefix, regionalScreenRegion, screenAuthorized,
-  type RegionalScreenEnv, type ScreenFenceReason } from "./regional-screen-routing";
+import { HandDirectory, publisherIdentity, validPublisherId, type HandEnv, type HandPublication } from "./hand-directory";
+import { ScreenAuthority, screenAuthorized, type ScreenFenceReason } from "./screen-authority";
 import { recordScreenPlaybackHostResult, type ScreenPlaybackEnv } from "./screen-playback";
-
-type RetirementPublication = Pick<HandPublication, "route_id" | "publication_id" | "runtime_id" | "region"> & { machine: Pick<HostedMachine, "id"> };
 
 const OWNER_ASSERTION = "x-nanocodex-owner-id";
 const TOOL_RESULT = Symbol.for("nanocodex.toolResult");
@@ -67,7 +61,6 @@ type AccountHostedToolsSnapshot = Readonly<{
   tools: readonly AccountHostedTool[];
   machines: readonly AccountHostedMachine[];
   screens?: readonly ScreenTarget[];
-  publications?: readonly HandPublication[];
   mount_roots?: Readonly<Record<string, string>>;
   /** Historical roots of the same identities; never projected as Hands. */
   mount_aliases?: Readonly<Record<string, readonly string[]>>;
@@ -91,7 +84,7 @@ type RoutedHostedTool = HostedToolsCodeTool & Readonly<{
   timeoutMs: number;
 }>;
 
-type AccountHostedToolsEnv = RemoteICEEnv & RegionalHandEnv & RegionalScreenEnv & Partial<ScreenPlaybackEnv> & {
+type AccountHostedToolsEnv = RemoteICEEnv & HandEnv & Partial<ScreenPlaybackEnv> & {
   NANOCODEX_ACCOUNT_TOOLS?: DurableObjectNamespace<AccountHostedTools>;
   NANOCODEX_SESSIONS?: DurableObjectNamespace<import("./index").DurableAgentSession>;
 };
@@ -139,25 +132,23 @@ export class AccountHostedTools extends DurableObject<AccountHostedToolsEnv> {
   readonly #handHosts: HandHosts;
   readonly #diagnostics: DiagnosticJournal;
   #ownerId: string | undefined;
-  readonly #regional: boolean;
-  readonly #directory: RegionalHandDirectory;
+  readonly #directory: HandDirectory;
   #handPathsValue?: HandPaths;
   /** One instance per object keeps reclamation ordered against this instance's assignments. */
   get #handPaths(): HandPaths { return this.#handPathsValue ??= new HandPaths(this.ctx.storage); }
   #publicationQueue: Promise<unknown> = Promise.resolve();
-  #region: HandRelayRegion | undefined;
-  /** Owner only: which location/generation may publish each machine's screens. */
-  readonly #screens: RegionalScreenAuthority | undefined;
+  /** Which generation may publish each machine's screens. */
+  readonly #screens: ScreenAuthority;
 
-  constructor(ctx: DurableObjectState, env: AccountHostedToolsEnv, regional = false) {
+  constructor(ctx: DurableObjectState, env: AccountHostedToolsEnv) {
     super(ctx, env);
     this.#shares = new HandShareStore(ctx.storage);
-    this.#regional = regional;
-    this.#directory = new RegionalHandDirectory(ctx.storage);
+    this.#directory = new HandDirectory(ctx.storage);
     ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS regional_local_publications (
       route_id TEXT PRIMARY KEY, candidate_id TEXT, publication_json TEXT
     )`);
-    this.#region = ctx.storage.kv.get<HandRelayRegion>("regional_hand_region");
+    // Regional relays are gone: drop relay-only state; every Hand publishes here.
+    ctx.storage.kv.delete("regional_hand_region");
     // Thread-local tool hosts are not account Hands. Retire their derived index,
     // including overflow state, without changing any native routes or sessions.
     ctx.storage.sql.exec("DROP TABLE IF EXISTS workspace_hand_inventory");
@@ -198,16 +189,17 @@ export class AccountHostedTools extends DurableObject<AccountHostedToolsEnv> {
         console.info(record);
       },
     });
-    this.#screens = regional ? undefined : new RegionalScreenAuthority(ctx.storage, (location, machineId, keep, reason) => this.#fenceScreens(location, machineId, keep, reason));
+    this.#screens = new ScreenAuthority(ctx.storage, (machineId, keep, reason) => {
+      this.#remote.fenceMachine(machineId, keep, reason);
+      return this.#screenSequence(0);
+    });
     this.#remote = new HandRemoteBroker(ctx, {
       onObservation: observation => {
-        const record = { type: "hand.remote", ...(regional && this.#region ? { relay_region: this.#region } : {}), ...observation };
+        const record = { type: "hand.remote", ...observation };
         try { console.info(record); } catch { /* Remote diagnostics cannot change a socket outcome. */ }
         this.#diagnostics.record(record);
       },
-      claimCatalog: claim => regional ? this.#claimRegionalScreen(claim.machineId, claim.generation, claim.sequence)
-        : this.#screens!.claim(claim.machineId, "legacy", claim.generation, claim.sequence),
-      onClaimPublished: claim => { if (regional) void this.#confirmRegionalScreen(claim.machineId, claim.generation).catch(() => undefined); },
+      claimCatalog: claim => this.#screens.claim(claim.machineId, claim.generation, claim.sequence),
       nextSequence: () => this.#screenSequence(1),
       onHostResult: result => {
         const playback = this.env.NANOCODEX_SCREEN_PLAYBACK, owner = this.#ownerId;
@@ -215,13 +207,13 @@ export class AccountHostedTools extends DurableObject<AccountHostedToolsEnv> {
         // Status only; never awaited by the host socket.
         void recordScreenPlaybackHostResult({ NANOCODEX_SCREEN_PLAYBACK: playback }, result, owner).catch(() => false);
       },
-      idPrefix: () => regional && this.#region ? regionalScreenPrefix(this.#region) : "",
+      idPrefix: () => "",
     });
     this.#handHosts = new HandHosts(ctx.storage, this.#remote);
   }
 
   async createHandShare(ownerId: string, machineId: string) {
-    if (this.#regional || !isUserId(ownerId) || !this.#claim(ownerId) || typeof machineId !== "string"
+    if (!isUserId(ownerId) || !this.#claim(ownerId) || typeof machineId !== "string"
       || machineId.startsWith("shared:")) return { error: "not_found" } as const;
     const snapshot = await this.#ownedSnapshot(machineId);
     if (!snapshot.machines.some(entry => entry.machine.id === machineId)
@@ -232,15 +224,15 @@ export class AccountHostedTools extends DurableObject<AccountHostedToolsEnv> {
   }
 
   async listHandShares(ownerId: string) {
-    return !this.#regional && isUserId(ownerId) && this.#owns(ownerId) ? this.#shares.list() : [];
+    return isUserId(ownerId) && this.#owns(ownerId) ? this.#shares.list() : [];
   }
 
   async revokeHandShare(ownerId: string, id: string): Promise<boolean> {
-    return !this.#regional && isUserId(ownerId) && this.#owns(ownerId) && this.#shares.revoke(id);
+    return isUserId(ownerId) && this.#owns(ownerId) && this.#shares.revoke(id);
   }
 
   async redeemHandShare(recipientId: string, ownerId: string, token: string) {
-    if (this.#regional || !isUserId(recipientId) || !isUserId(ownerId) || recipientId === ownerId
+    if (!isUserId(recipientId) || !isUserId(ownerId) || recipientId === ownerId
       || !this.#claim(recipientId) || !this.env.NANOCODEX_ACCOUNT_TOOLS) return { error: "not_found" } as const;
     const share = await this.env.NANOCODEX_ACCOUNT_TOOLS.getByName(ownerId).acceptHandShare(ownerId, recipientId, token);
     if (!share) return { error: "not_found" } as const;
@@ -259,21 +251,21 @@ export class AccountHostedTools extends DurableObject<AccountHostedToolsEnv> {
 
   /** Internal account-to-account RPC: membership is authoritative only on the owner. */
   async acceptHandShare(ownerId: string, recipientId: string, token: string) {
-    if (this.#regional || !isUserId(ownerId) || !this.#owns(ownerId) || !isUserId(recipientId)
+    if (!isUserId(ownerId) || !this.#owns(ownerId) || !isUserId(recipientId)
       || recipientId === ownerId) return undefined;
     return this.#shares.redeem(recipientId, token);
   }
 
   async hasHandShare(ownerId: string, recipientId: string, id: string): Promise<boolean> {
-    return !this.#regional && this.#owns(ownerId) && !!this.#shares.grant(id, recipientId);
+    return this.#owns(ownerId) && !!this.#shares.grant(id, recipientId);
   }
 
   async sharedHandSnapshot(ownerId: string, recipientId: string, id: string): Promise<SharedMachineSnapshot | undefined> {
-    if (this.#regional || !this.#owns(ownerId) || !isUserId(recipientId)) return undefined;
+    if (!this.#owns(ownerId) || !isUserId(recipientId)) return undefined;
     const grant = this.#shares.grant(id, recipientId);
     if (!grant) return undefined;
     const snapshot = await this.#ownedSnapshot(grant.machine_id);
-    // Recheck after asynchronous regional discovery; revocation may have interleaved.
+    // Recheck after asynchronous discovery; revocation may have interleaved.
     if (!this.#shares.grant(id, recipientId)) return undefined;
     const alias = `shared:${id}`;
     const screens = (snapshot.screens ?? []).filter(target => target.machine_id === grant.machine_id).flatMap(target => {
@@ -281,7 +273,7 @@ export class AccountHostedTools extends DurableObject<AccountHostedToolsEnv> {
       const original = screenTool(target);
       const published = snapshot.tools.find(tool => tool.provider === "screens"
         && tool.definition.name === original.definition.name
-        && (parseRelayRouteToken(tool.route_token)?.token ?? tool.route_token) === original.route_token);
+        && tool.route_token === original.route_token);
       return published ? [{ ...exposed, generation: this.#shares.route(id, screenTool(exposed).definition.name, published.route_token) }] : [];
     });
     const selected = snapshot.machines.find(entry => entry.machine.id === grant.machine_id);
@@ -297,62 +289,50 @@ export class AccountHostedTools extends DurableObject<AccountHostedToolsEnv> {
 
   async #invokeSharedHand(ownerId: string, recipientId: string, invocation: InvocationRequest, signal: AbortSignal): Promise<Response> {
     const unavailable = () => Response.json({ error: "tool_unavailable" }, { status: 404 });
-    if (this.#regional || !this.#owns(ownerId) || !isUserId(recipientId)) return unavailable();
+    if (!this.#owns(ownerId) || !isUserId(recipientId)) return unavailable();
     const sharedSession = await sharedHandSession(recipientId, invocation.session_id);
     const route = this.#shares.resolve(invocation.route_token);
     const grant = route && this.#shares.grant(route.share_id, recipientId);
     if (!route || !grant || invocation.machine_id !== `shared:${grant.id}` || route.name !== invocation.name
       ) return unavailable();
-    const screenRelay = parseRelayRouteToken(route.route_token);
-    const screenRoute = screenRelay?.token ?? route.route_token;
+    const screenRoute = route.route_token;
     if (screenRoute.startsWith("screen:v1:")) {
       const snapshot = await this.#ownedSnapshot(grant.machine_id);
       const published = snapshot.tools.find(tool => tool.provider === "screens" && tool.route_token === route.route_token);
       if (!published || !this.#shares.grant(grant.id, recipientId)) return unavailable();
-      if (screenRelay && !this.env.NANOCODEX_HAND_RELAYS) return unavailable();
       const forwarded = new Request("https://account-tools.internal/invoke", { method: "POST", signal,
         headers: { "content-type": "application/json" }, body: JSON.stringify({ ...invocation,
           owner_id: ownerId, machine_id: undefined, name: published.definition.name,
           route_token: screenRoute, session_id: sharedSession }) });
-      return screenRelay
-        ? this.env.NANOCODEX_HAND_RELAYS!.getByName(handRelayName(ownerId, screenRelay.region)).fetch(forwarded)
-        : this.fetch(forwarded);
+      return this.fetch(forwarded);
     }
     if (!sharedMachineTool(route.name)) return unavailable();
-    const relay = parseRelayRouteToken(route.route_token);
-    if (relay && !this.env.NANOCODEX_HAND_RELAYS) return unavailable();
-    // The stored route, never recipient input, selects the machine, relay and tool.
+    if (route.route_token.startsWith("hand-relay:")) return unavailable();
+    // The stored route, never recipient input, selects the machine and tool.
     const forwarded = new Request("https://account-tools.internal/invoke", { method: "POST",
       signal, headers: { "content-type": "application/json" }, body: JSON.stringify({ ...invocation,
-        owner_id: ownerId, machine_id: grant.machine_id, route_token: relay?.token ?? route.route_token,
+        owner_id: ownerId, machine_id: grant.machine_id, route_token: route.route_token,
         session_id: sharedSession }) });
-    if (relay) this.#shares.turnTarget(sharedSession, invocation.turn_id,
-      ownerId, relay.region, sharedSession);
-    const response = relay
-      ? await this.env.NANOCODEX_HAND_RELAYS!.getByName(handRelayName(ownerId, relay.region)).fetch(forwarded)
-      : await this.fetch(forwarded);
+    const response = await this.fetch(forwarded);
     if (!response.ok) return response;
     const result = await response.json<InvocationResult>();
     return Response.json({ ...result, ...(result.process_route_token === undefined ? {} : {
-      process_route_token: this.#shares.route(grant.id, "write_stdin", relay
-        ? relayRouteToken(relay.region, result.process_route_token) : result.process_route_token),
+      process_route_token: this.#shares.route(grant.id, "write_stdin", result.process_route_token),
     }) }, { headers: { "cache-control": "no-store" } });
   }
 
   async cancelSharedHand(ownerId: string, recipientId: string, invocation: InvocationRequest): Promise<void> {
-    if (this.#regional || !this.#owns(ownerId) || !isUserId(recipientId)) return;
+    if (!this.#owns(ownerId) || !isUserId(recipientId)) return;
     const route = this.#shares.resolve(invocation.route_token);
     const grant = route && this.#shares.grant(route.share_id, recipientId, true);
     if (!route || !grant || invocation.machine_id !== `shared:${grant.id}` || invocation.name !== route.name) return;
     const session = await sharedHandSession(recipientId, invocation.session_id);
     this.#sharedScreens.get(JSON.stringify([session, invocation.call_id]))?.abort();
-    const relay = parseRelayRouteToken(route.route_token);
     const request = new Request("https://account-tools.internal/cancel-invocation", {
       method:"POST",headers:{"content-type":"application/json"},
       body:JSON.stringify({owner_id:ownerId,session_id:session,call_id:invocation.call_id}),
     });
-    if (relay) await this.env.NANOCODEX_HAND_RELAYS?.getByName(handRelayName(ownerId,relay.region)).fetch(request);
-    else await this.fetch(request);
+    await this.fetch(request);
   }
 
   /** Discovery returns only its public projection in one RPC reply. */
@@ -373,7 +353,7 @@ export class AccountHostedTools extends DurableObject<AccountHostedToolsEnv> {
       return mergeInventory([snapshot.machines.map(({ machine, online }) =>
         inventoryEntry(machine, unknown.has(machine.id) ? null : online))], unknown.size === 0);
     } catch {
-      // Preserve account identities when regional discovery itself failed.
+      // Preserve account identities when discovery itself failed.
       const local = this.#localSnapshot().machines.map(({ machine }) => inventoryEntry(machine, null));
       const retained = this.#directory.entries().map(({ machine }) => inventoryEntry(machine, null));
       return mergeInventory([local, retained], false);
@@ -382,7 +362,7 @@ export class AccountHostedTools extends DurableObject<AccountHostedToolsEnv> {
 
   /**
    * Owner-initiated removal of one Hand from the routed catalog and from
-   * regional routing. A Hand the owner no longer controls must still be
+   * Hand routing. A Hand the owner no longer controls must still be
    * evictable, so this never waits on the device; `force` is the caller's
    * acknowledgement that a live Hand is about to lose its account routing.
    */
@@ -398,27 +378,8 @@ export class AccountHostedTools extends DurableObject<AccountHostedToolsEnv> {
       }
       const selected = this.#directory.entries().find(entry => entry.machine.id === machineId);
       if (selected?.pending && !force) return { error: "hand_unknown" } as const;
-      for (const publication of selected ? [selected, ...selected.previous] : []) {
-        if (publication.region === "legacy") continue;
-        try {
-          if (!this.env.NANOCODEX_HAND_RELAYS) throw new Error("relay unavailable");
-          const status = await fetchResponseWithDeadline(
-            this.env.NANOCODEX_HAND_RELAYS.getByName(handRelayName(ownerId, publication.region)),
-            "https://account-tools.internal/regional/forget", {
-              method: "POST", headers: { [OWNER_ASSERTION]: ownerId, "content-type": "application/json" },
-              body: JSON.stringify({ machine_id: machineId, publication_id: publication.publication_id,
-                route_id: publication.route_id, runtime_id: publication.runtime_id, region: publication.region, force }),
-            }, 5_000, "forget regional Hand", async response => response.status);
-          if (status === 409) return { error: "hand_online" } as const;
-          if (status !== 200) throw new Error("relay removal unconfirmed");
-        } catch {
-          if (!force) return { error: "hand_unknown" } as const;
-          // Forced removal withdraws account routing even if the device's relay
-          // cannot be reached. Retired runtime tombstones reject later claims.
-        }
-      }
-      // Withdraw screen authority in every location; unconfirmed relays stay fenced-pending and unlisted.
-      const screens = await this.#screens!.revoke(machineId);
+      // Withdraw screen authority.
+      const screens = await this.#screens.revoke(machineId);
       if (!screens) console.warn({ type: "hand.screen.revoke_pending" });
       return { forgotten: this.#forget(machineId) } as const;
     });
@@ -434,7 +395,6 @@ export class AccountHostedTools extends DurableObject<AccountHostedToolsEnv> {
     let complete = inventory.complete;
     for (const entry of inventory.data) {
       if (entry.online !== false) continue;
-      // Presence can change while earlier removals await another relay.
       const result = await this.forgetMachine(ownerId, entry.id, false);
       if ("forgotten" in result && result.forgotten) forgotten.push(entry.id);
       if ("error" in result && result.error === "hand_unknown") complete = false;
@@ -477,10 +437,6 @@ export class AccountHostedTools extends DurableObject<AccountHostedToolsEnv> {
     const url = new URL(request.url);
     if (url.pathname.startsWith("/regional/")) return this.#regionalRequest(request, url);
     if (url.pathname === "/screens/host-command") return this.#screenHostCommand(request);
-    if (this.#regional && !["/tool-host", "/snapshot", "/invoke", "/cancel-invocation", "/turn-ended", "/diagnostics",
-      "/hands/host", "/hands/view", "/hands/renew", "/hands/screens"].includes(url.pathname)) {
-      return Response.json({ error: "not_found" }, { status: 404 });
-    }
     if (url.pathname === "/diagnostics") {
       if (request.method !== "GET") return Response.json({ error: "method_not_allowed" }, { status: 405 });
       const ownerId = request.headers.get(OWNER_ASSERTION);
@@ -558,20 +514,11 @@ export class AccountHostedTools extends DurableObject<AccountHostedToolsEnv> {
             || !Number.isSafeInteger(vm.expiresAt) || vm.expiresAt <= Date.now()) throw new Error();
         } catch { return Response.json({ error: "forbidden" }, { status: 403 }); }
       }
-      if (this.#regional) {
-        // Regional relays serve only native account publishers and their viewers;
-        // VM and server publishers keep owner-local revocation.
-        const region = request.headers.get(HAND_RELAY_REGION_HEADER);
-        if (vm || !isHandRelayRegion(region) || (this.#region && this.#region !== region)) return Response.json({ error: "not_found" }, { status: 404 });
-        if (!this.#region) { this.#region = region; this.ctx.storage.kv.put("regional_hand_region", region); }
-      } else if (url.pathname === "/hands/screens" && request.method === "GET" && !url.search && !vm) {
-        // Only the current authority is listed. Workers merge regional catalogs.
-        if (this.#screens!.pending()) void this.#screens!.retryPending().catch(() => undefined);
-        const authority = this.#screens!.hosts();
-        const surfaces = this.#remote.list().filter(target => screenAuthorized(authority, "legacy", target.machine_id, target.generation));
-        return Response.json({ surfaces, ...(request.headers.get(SCREEN_DIRECTORY_HEADER) === "1" ? {
-          regional_hosts: Object.fromEntries([...authority].filter(([, host]) => host.region !== "legacy" && host.generation)) } : {}) },
-        { headers: { "cache-control": "no-store" } });
+      if (url.pathname === "/hands/screens" && request.method === "GET" && !url.search && !vm) {
+        // Only the current authority is listed.
+        const authority = this.#screens.hosts();
+        const surfaces = this.#remote.list().filter(target => screenAuthorized(authority, target.machine_id, target.generation));
+        return Response.json({ surfaces }, { headers: { "cache-control": "no-store" } });
       }
       if (url.pathname === "/hands/renew" && request.method === "POST" && !url.search) {
         try {
@@ -666,12 +613,10 @@ export class AccountHostedTools extends DurableObject<AccountHostedToolsEnv> {
         return Response.json({ error: "not_found" }, { status: 404 });
       }
       const identity = publisherIdentity(request.headers);
-      if (identity === false || (this.#regional && !identity)) return Response.json({ error: "invalid_publisher_identity" }, { status: 400 });
-      if (this.#regional) {
-        const region = request.headers.get(HAND_RELAY_REGION_HEADER);
-        if (!isHandRelayRegion(region) || (this.#region && this.#region !== region)) return Response.json({ error: "not_found" }, { status: 404 });
-        this.#region = region;
-        this.ctx.storage.kv.put("regional_hand_region", region);
+      if (identity === false) return Response.json({ error: "invalid_publisher_identity" }, { status: 400 });
+      // A runtime superseded by a newer runtime of the same machine never republishes.
+      if (identity && this.#directory.retired(identity.machineId, identity.runtimeId)) {
+        return Response.json({ error: "hand_runtime_superseded" }, { status: 409 });
       }
       return this.#broker.upgrade(ownerId, undefined, undefined, undefined, undefined, identity || undefined);
     }
@@ -700,9 +645,9 @@ export class AccountHostedTools extends DurableObject<AccountHostedToolsEnv> {
       if (frame.type !== "turn_ended") return Response.json({ error: "invalid_request" }, { status: 400 });
       await this.#broker.endTurn(frame.session_id, frame.turn_id, frame.hook_event_name);
       await Promise.all(this.#shares.turnTargets(frame.session_id, frame.turn_id).map(async target => {
-        const stub = target.region === "account"
-          ? this.env.NANOCODEX_ACCOUNT_TOOLS?.getByName(target.owner_id)
-          : this.env.NANOCODEX_HAND_RELAYS?.getByName(handRelayName(target.owner_id, target.region as HandRelayRegion));
+        // Retained targets from removed regional relays have nothing left to clean up.
+        if (target.region !== "account") return;
+        const stub = this.env.NANOCODEX_ACCOUNT_TOOLS?.getByName(target.owner_id);
         if (!stub) throw new Error("Shared Hand cleanup target unavailable");
         const response = await stub.fetch("https://account-tools.internal/turn-ended", {
           method: "POST", headers: {"content-type":"application/json"},
@@ -755,7 +700,7 @@ export class AccountHostedTools extends DurableObject<AccountHostedToolsEnv> {
       if (sharedScreen) invocation = { ...invocation, machine_id: sharedScreen.machineId, route_token: sharedScreen.routeToken };
       if (invocation.route_token.startsWith("shared:") || invocation.machine_id?.startsWith("shared:")) {
         const share = this.#shares.received().find(entry => invocation.machine_id === `shared:${entry.id}`);
-        if (this.#regional || !share || !this.env.NANOCODEX_ACCOUNT_TOOLS) {
+        if (!share || !this.env.NANOCODEX_ACCOUNT_TOOLS) {
           return Response.json({ error: "tool_unavailable" }, { status: 404 });
         }
         this.#shares.turnTarget(invocation.session_id, invocation.turn_id, share.owner_id, "account",
@@ -870,9 +815,9 @@ export class AccountHostedTools extends DurableObject<AccountHostedToolsEnv> {
 
   #localSnapshot(): AccountHostedToolsSnapshot {
     const catalog = this.#broker.catalogSnapshot();
-    const authority = this.#screens?.hosts();
+    const authority = this.#screens.hosts();
     const screens = this.#remote.list(true).filter(target => target.agent_tools
-      && (!authority || screenAuthorized(authority, "legacy", target.machine_id, target.generation)));
+      && screenAuthorized(authority, target.machine_id, target.generation));
     return {
         screens,
         tools: [...catalog.definitions().flatMap((definition) => {
@@ -905,7 +850,7 @@ export class AccountHostedTools extends DurableObject<AccountHostedToolsEnv> {
 
   async #snapshot(machineId?: string, screens = true): Promise<AccountHostedToolsSnapshot> {
     const owned = await this.#ownedSnapshot(machineId, screens);
-    if (this.#regional || !this.env.NANOCODEX_ACCOUNT_TOOLS || !this.#ownerId) return owned;
+    if (!this.env.NANOCODEX_ACCOUNT_TOOLS || !this.#ownerId) return owned;
     const received = this.#shares.received().filter(share => machineId === undefined || machineId === `shared:${share.id}`);
     const shared = await Promise.all(received.map(async share => {
       try {
@@ -925,7 +870,7 @@ export class AccountHostedTools extends DurableObject<AccountHostedToolsEnv> {
     const full = this.#localSnapshot();
     // A selected route needs only its current publication and capabilities.
     // Inventory remains explicit; this request never probes unrelated regions.
-    // Shell-only lookups also skip screen authority: its relay round trip
+    // Shell-only lookups also skip screen authority: its round trip
     // would only refresh routes the caller does not use.
     const screensOmitted = machineId !== undefined && !includeScreens;
     const local = machineId === undefined ? full : {
@@ -936,67 +881,22 @@ export class AccountHostedTools extends DurableObject<AccountHostedToolsEnv> {
       machines: full.machines.filter(entry => entry.machine.id === machineId),
       ...(screensOmitted ? { screens_omitted: true as const } : {}),
     };
-    if (this.#regional) return { ...local, publications: this.ctx.storage.sql.exec<{ publication_json: string }>(
-      "SELECT publication_json FROM regional_local_publications WHERE publication_json IS NOT NULL").toArray().map(row => JSON.parse(row.publication_json) as HandPublication) };
-    const directory = this.#directory.entries().filter(entry => machineId === undefined || entry.machine.id === machineId);
-    const screenAuthority = screensOmitted ? [] : [...this.#screens!.hosts()].filter(([machine, host]) => host.region !== "legacy" && host.generation
-      && (machineId === undefined || machine === machineId));
-    if (!directory.length && !screenAuthority.length) return this.#withRoots(local, machineId === undefined);
-    const regions = [...new Set([...directory.filter(entry => !entry.pending && entry.region !== "legacy").map(entry => entry.region as HandRelayRegion),
-      ...screenAuthority.map(([, host]) => host.region as HandRelayRegion)])];
-    const snapshots = await Promise.all(regions.map(async region => {
-      try {
-        if (!this.env.NANOCODEX_HAND_RELAYS) return undefined;
-        const response = await fetchResponseWithDeadline(this.env.NANOCODEX_HAND_RELAYS.getByName(handRelayName(this.#ownerId!, region)),
-          "https://account-tools.internal/snapshot", { method: "POST", headers: { "content-type": "application/json" },
-            body: JSON.stringify({ owner_id: this.#ownerId, ...(machineId === undefined ? {} : { machine_id: machineId }) }) }, 5_000, "regional Hand discovery",
-          async response => response.ok ? response.json<AccountHostedToolsSnapshot>() : undefined);
-        return response ? { region, snapshot: response } : undefined;
-      } catch { return undefined; }
-    }));
-    const inventoryUnknownIds: string[] = [];
-    const regionalNames = new Set(directory.filter(entry => entry.region !== "legacy" || entry.pending).flatMap(entry => entry.tool_names));
-    const tools = local.tools.filter(tool => !regionalNames.has(tool.definition.name));
-    const machines = new Map(local.machines.filter(entry => {
-      const selected = directory.find(candidate => candidate.machine.id === entry.machine.id);
-      return !selected || (!selected.pending && selected.region === "legacy");
-    }).map(entry => [entry.machine.id, entry]));
-    for (const selected of directory) {
-      if (selected.region === "legacy" && !selected.pending) continue;
-      const remote = snapshots.find(snapshot => snapshot?.region === selected.region)?.snapshot;
-      if (selected.pending || (selected.region !== "legacy" && !remote)) inventoryUnknownIds.push(selected.machine.id);
-      const current = !selected.pending && remote?.publications?.some(publication => publication.machine.id === selected.machine.id
-        && publication.publication_id === selected.publication_id);
-      const machine = current ? remote?.machines.find(entry => entry.machine.id === selected.machine.id) : undefined;
-      const region = selected.region;
-      machines.set(selected.machine.id, machine && region !== "legacy" ? { ...machine,
-        tools: machine.tools.map(tool => ({ ...tool, route_token: relayRouteToken(region, tool.route_token) })) }
-        : { machine: selected.machine, online: false, tools: [] });
-      if (current && remote && region !== "legacy") for (const tool of remote.tools) {
-        if (selected.tool_names.includes(tool.definition.name)) tools.push({ ...tool, route_token: relayRouteToken(region, tool.route_token) });
-      }
-    }
-    // Regional screens: only the owner's current authority, routed through its relay.
-    const screens = [...local.screens ?? []];
-    for (const [machine, host] of screenAuthority) {
-      const remote = snapshots.find(snapshot => snapshot?.region === host.region)?.snapshot;
-      for (const target of remote?.screens ?? []) {
-        if (target.machine_id !== machine || target.generation !== host.generation) continue;
-        screens.push(target);
-        const route = screenTool(target).route_token;
-        for (const tool of remote!.tools) if (tool.provider === "screens" && tool.route_token === route) {
-          tools.push({ ...tool, route_token: relayRouteToken(host.region as HandRelayRegion, tool.route_token) });
-        }
-      }
-    }
-    return this.#withRoots({ tools, machines: [...machines.values()], screens, inventory_unknown_ids: inventoryUnknownIds,
-      ...(screensOmitted ? { screens_omitted: true as const } : {}) }, machineId === undefined);
+    // A machine whose publication is being claimed is neither listed nor routable yet.
+    const pending = this.#directory.entries().filter(entry => entry.pending
+      && (machineId === undefined || entry.machine.id === machineId));
+    if (!pending.length) return this.#withRoots(local, machineId === undefined);
+    const pendingIds = new Set(pending.map(entry => entry.machine.id));
+    const pendingNames = new Set(pending.flatMap(entry => entry.tool_names));
+    return this.#withRoots({ ...local,
+      tools: local.tools.filter(tool => !pendingNames.has(tool.definition.name)),
+      machines: local.machines.filter(entry => !pendingIds.has(entry.machine.id)),
+      inventory_unknown_ids: [...pendingIds] }, machineId === undefined);
   }
 
   #withRoots(snapshot: AccountHostedToolsSnapshot, complete = false): AccountHostedToolsSnapshot {
     // Read the registry synchronously with assignment: no owner deletion or
     // publication can interleave between the two.
-    const registry = this.#regional ? undefined : this.#registry();
+    const registry = this.#registry();
     const machines = snapshot.machines.map(entry => entry.machine)
       .filter(machine => registry === undefined || registry.ids.has(machine.id));
     // A filtered view still knows the full ledger, but reclamation runs only on complete owner views.
@@ -1009,7 +909,7 @@ export class AccountHostedTools extends DurableObject<AccountHostedToolsEnv> {
   }
 
   /**
-   * Every identity the account still owns, independent of presence, relay
+   * Every identity the account still owns, independent of presence,
    * reachability or duplicate-ID discovery fencing. Unreadable ledgers return
    * no registry, so nothing is reclaimed.
    */
@@ -1033,27 +933,20 @@ export class AccountHostedTools extends DurableObject<AccountHostedToolsEnv> {
 
   async #admitPublication(candidate: Parameters<NonNullable<import("./hosted-tools-broker").HostedToolsBrokerOptions["beforeCatalogPublish"]>>[0]): Promise<() => boolean> {
     if (!candidate.machine) {
-      if (this.#regional) throw new Error("regional publishers require one native Hand");
       const names = new Set(candidate.definitions.map(entry => entry.definition.name));
       if (this.#directory.entries().some(entry => entry.tool_names.some(name => names.has(name)))) {
         throw new Error("tool name is already exposed by an account Hand");
       }
-      // A regional claim can arrive while this broker awaits this guard.
+      // A claim can complete while this broker awaits this guard.
       // Recheck immediately before the local catalog commits.
       return () => !this.#directory.entries().some(entry => entry.tool_names.some(name => names.has(name)));
     }
     const publication: HandPublication = { route_id: candidate.routeId, publication_id: crypto.randomUUID(),
-      region: this.#regional ? this.#region! : "legacy", machine: candidate.machine,
+      region: "legacy", machine: candidate.machine,
       tool_names: candidate.definitions.map(entry => entry.definition.name), runtime_id: candidate.runtimeId };
-    if (this.#regional && !this.#region) throw new Error("regional identity is missing");
     this.ctx.storage.sql.exec("INSERT INTO regional_local_publications(route_id,candidate_id) VALUES(?,?) ON CONFLICT(route_id) DO UPDATE SET candidate_id=excluded.candidate_id", candidate.routeId, publication.publication_id);
     try {
-      if (this.#regional) {
-        const response = await fetchResponseWithDeadline(this.env.NANOCODEX_ACCOUNT_TOOLS!.getByName(this.#ownerId!), "https://account-tools.internal/regional/claim", {
-          method: "POST", headers: { [OWNER_ASSERTION]: this.#ownerId!, "content-type": "application/json" }, body: JSON.stringify(publication),
-        }, 10_000, "Hand publication", async response => response.ok);
-        if (!response) throw new Error("account Hand publication rejected");
-      } else await this.#queueClaim(publication);
+      await this.#queueClaim(publication);
     } catch (error) {
       this.ctx.storage.sql.exec("UPDATE regional_local_publications SET candidate_id=NULL WHERE route_id=? AND candidate_id=?", candidate.routeId, publication.publication_id);
       this.ctx.storage.sql.exec("DELETE FROM regional_local_publications WHERE candidate_id IS NULL AND publication_json IS NULL");
@@ -1069,54 +962,10 @@ export class AccountHostedTools extends DurableObject<AccountHostedToolsEnv> {
 
   #queueClaim(publication: HandPublication): Promise<void> {
     const result = this.#publicationQueue.then(async () => {
-      // A retained legacy publisher must explicitly drain its catalog before a
-      // regional runtime can replace it; transport loss is not a drain. In particular, never send it a terminal policy close.
-      if (publication.region !== "legacy" && this.#broker.machines().some(machine => machine.id === publication.machine.id)) {
-        throw new Error("legacy Hand requires drain before regional placement");
-      }
-      if (publication.region !== "legacy") {
-        const localNames = new Set(this.#broker.reservedToolNames());
-        if (publication.tool_names.some(name => localNames.has(name))) throw new Error("tool name is already exposed by a legacy attachment");
-      }
-      await this.#directory.claim(publication, async previous => {
-        if (previous.region === "legacy") { this.#fencePublication(previous); return; }
-        if (!this.env.NANOCODEX_HAND_RELAYS) throw new Error("regional relay unavailable");
-        const fenced = await fetchResponseWithDeadline(this.env.NANOCODEX_HAND_RELAYS.getByName(handRelayName(this.#ownerId!, previous.region)), "https://account-tools.internal/regional/fence", {
-          method: "POST", headers: { [OWNER_ASSERTION]: this.#ownerId!, "content-type": "application/json" }, body: JSON.stringify(previous),
-        }, 10_000, "Hand publication fence", async response => response.ok);
-        if (!fenced) throw new Error("previous Hand publication could not be fenced");
-      });
+      this.#directory.claim(publication);
     });
     this.#publicationQueue = result.catch(() => {});
     return result;
-  }
-
-  #fencePublication(publication: RetirementPublication): void {
-    const local = this.ctx.storage.sql.exec<{ candidate_id: string | null; publication_json: string | null }>(
-      "SELECT candidate_id,publication_json FROM regional_local_publications WHERE route_id=?", publication.route_id).toArray()[0];
-    if (local?.candidate_id === publication.publication_id) {
-      this.ctx.storage.sql.exec("UPDATE regional_local_publications SET candidate_id=NULL WHERE route_id=?", publication.route_id);
-    }
-    const active = local?.publication_json ? JSON.parse(local.publication_json) as HandPublication : undefined;
-    if (active?.publication_id === publication.publication_id) {
-      this.#broker.retireRoute(publication.route_id, "Hand publisher replaced in another region", publication.region === "legacy" ? 1012 : 1008);
-      this.ctx.storage.sql.exec("UPDATE regional_local_publications SET publication_json=NULL WHERE route_id=?", publication.route_id);
-    }
-    this.ctx.storage.sql.exec("DELETE FROM regional_local_publications WHERE candidate_id IS NULL AND publication_json IS NULL");
-  }
-
-  // No awaits between this check and the exact local fence. Unknown or changing
-  // publications must never be mistaken for disconnected hardware.
-  #regionalRetirementStatus(publication: RetirementPublication) {
-    const local = this.ctx.storage.sql.exec<{ candidate_id: string | null; publication_json: string | null }>(
-      "SELECT candidate_id,publication_json FROM regional_local_publications WHERE route_id=?", publication.route_id).toArray()[0];
-    const active = local?.publication_json ? JSON.parse(local.publication_json) as HandPublication : undefined;
-    const changed = (active !== undefined && active.publication_id !== publication.publication_id)
-      || (local?.candidate_id != null && local.candidate_id !== publication.publication_id);
-    const online = this.#broker.machineOnline(publication.machine.id);
-    const pending = this.ctx.storage.sql.exec<{ count: number }>(
-      "SELECT COUNT(*) AS count FROM hosted_tool_calls WHERE hand_id=? AND host_runtime_id IS ? AND state IN ('admitted','dispatched')", publication.machine.id, publication.runtime_id ?? null).toArray()[0]!.count;
-    return { online, pending_calls: pending, publication_changed: changed, retirable: !changed && !online && pending === 0 };
   }
 
   #settleAbandonedCalls(machineId: string, runtimeId: string | null): void {
@@ -1131,55 +980,10 @@ export class AccountHostedTools extends DurableObject<AccountHostedToolsEnv> {
     }
   }
 
-  async #regionalRetirementRPC(publication: HandPublication, operation: "inspect" | "retire-inactive", abandonPending = false) {
-    if (publication.region === "legacy" || !this.env.NANOCODEX_HAND_RELAYS) throw new Error("regional relay unavailable");
-    return fetchResponseWithDeadline(this.env.NANOCODEX_HAND_RELAYS.getByName(handRelayName(this.#ownerId!, publication.region)),
-      `https://account-tools.internal/regional/${operation}`, {
-        method: "POST", headers: { [OWNER_ASSERTION]: this.#ownerId!, "content-type": "application/json" },
-        // Device metadata and catalog names are not retirement authority and may
-        // exceed the bounded control endpoint even for ordinary native Hands.
-        body: JSON.stringify({ machine_id: publication.machine.id, runtime_id: publication.runtime_id,
-          route_id: publication.route_id, publication_id: publication.publication_id, region: publication.region,
-          ...(abandonPending ? { abandon_pending: true } : {}) }),
-      }, 5_000, "regional Hand retirement", async response => {
-        if (!response.ok) throw new Error("regional publication is not inactive");
-        return response.json<{ online: boolean; pending_calls: number; retirable: boolean; retired?: boolean }>();
-      });
-  }
-
-  async #retireRegional(body: Record<string, unknown>): Promise<Response> {
-    if ((body.abandon_pending !== undefined && body.abandon_pending !== true)
-      || Object.keys(body).length !== (body.abandon_pending === true ? 5 : 4) || !validPublisherId(body.machine_id) || !validPublisherId(body.runtime_id)
-      || !validPublisherId(body.publication_id) || !isHandRelayRegion(body.region)) return Response.json({ error: "invalid_request" }, { status: 400 });
-    const result = this.#publicationQueue.then(async () => {
-      const receiptKey = `regional_retirement:${body.machine_id}`;
-      const receipt = this.ctx.storage.kv.get<{ publication_id: string; runtime_id: string; region: string }>(receiptKey);
-      if (receipt && receipt.publication_id === body.publication_id && receipt.runtime_id === body.runtime_id && receipt.region === body.region) {
-        return Response.json({ retired: true, ...body });
-      }
-      const current = this.#directory.entries().find(entry => entry.machine.id === body.machine_id);
-      if (!current || current.pending || current.publication_id !== body.publication_id
-        || current.runtime_id !== body.runtime_id || current.region !== body.region) {
-        return Response.json({ error: "regional_publication_changed" }, { status: 409 });
-      }
-      try {
-        const status = await this.#regionalRetirementRPC(current, "retire-inactive", body.abandon_pending === true);
-        if (!status.retired) throw new Error("retirement not confirmed");
-      } catch { return Response.json({ error: "regional_retirement_unconfirmed" }, { status: 409 }); }
-      this.ctx.storage.transactionSync(() => {
-        this.#directory.retirePublication(current);
-        this.ctx.storage.kv.put(receiptKey, { publication_id: body.publication_id, runtime_id: body.runtime_id, region: body.region });
-      });
-      return Response.json({ retired: true, ...body });
-    });
-    this.#publicationQueue = result.then(() => {}, () => {});
-    return result;
-  }
-
   async #regionalRequest(request: Request, url: URL): Promise<Response> {
     const owner = request.headers.get(OWNER_ASSERTION);
     if (!isUserId(owner) || !this.#claim(owner)) return Response.json({ error: "not_found" }, { status: 404 });
-    if (url.pathname === "/regional/status" && !this.#regional && request.method === "GET" && !url.search) {
+    if (url.pathname === "/regional/status" && request.method === "GET" && !url.search) {
       const rows = this.ctx.storage.sql.exec<{ runtime_id: string | null; generation: number; machines_json: string | null }>(
         "SELECT runtime_id,generation,machines_json FROM hosted_tool_routes WHERE machines_json IS NOT NULL").toArray();
       const legacy = rows.flatMap(row => (JSON.parse(row.machines_json!) as HostedMachine[]).map(machine => {
@@ -1188,37 +992,14 @@ export class AccountHostedTools extends DurableObject<AccountHostedToolsEnv> {
         const online = this.#broker.machineOnline(machine.id);
         return { machine_id: machine.id, runtime_id: row.runtime_id, generation: row.generation, online, pending_calls: pending, retirable: !online && pending === 0 };
       }));
-      const regional = await Promise.all(this.#directory.entries().filter(entry => entry.region !== "legacy").map(async entry => {
-        const identity = { machine_id: entry.machine.id, runtime_id: entry.runtime_id ?? null, publication_id: entry.publication_id, region: entry.region };
-        if (!entry.pending && entry.runtime_id) try {
-          const status = await this.#regionalRetirementRPC(entry, "inspect");
-          return { ...identity, ...status, status: "confirmed", pending_publication: false };
-        } catch { /* Discovery failure is unknown, never evidence of inactivity. */ }
-        return { ...identity, status: "unknown", online: null, pending_calls: null, pending_publication: entry.pending, retirable: false };
-      }));
-      return Response.json({ legacy, regional }, { headers: { "cache-control": "no-store" } });
+      return Response.json({ legacy, regional: [] }, { headers: { "cache-control": "no-store" } });
     }
     if (request.method !== "POST" || url.search) return Response.json({ error: "invalid_request" }, { status: 400 });
     let body: Record<string, unknown>;
     try { body = await boundedJSON(request) as Record<string, unknown>; } catch { return Response.json({ error: "invalid_request" }, { status: 400 }); }
     if (!body || typeof body !== "object" || Array.isArray(body)) return Response.json({ error: "invalid_request" }, { status: 400 });
-    if (url.pathname === "/regional/select" && !this.#regional) {
-      if (!validPublisherId(body.machine_id) || !validPublisherId(body.runtime_id)
-        || (body.region !== "legacy" && !isHandRelayRegion(body.region))) return Response.json({ error: "invalid_request" }, { status: 400 });
-      // Upgrade-era legacy sockets predate the directory. Import their exact
-      // runtime placement from the broker ledger before considering new regions.
-      const states = this.ctx.storage.sql.exec<{ runtime_id: string | null; machines_json: string | null }>("SELECT runtime_id,machines_json FROM hosted_tool_routes").toArray();
-      const legacy = states.find(state => state.machines_json && (JSON.parse(state.machines_json) as HostedMachine[]).some(machine => machine.id === body.machine_id));
-      if (legacy?.runtime_id && !this.#directory.retired(body.machine_id, legacy.runtime_id)) this.#directory.select(body.machine_id, legacy.runtime_id, "legacy");
-      if (this.#directory.retired(body.machine_id, body.runtime_id)) return Response.json({ error: "hand_runtime_superseded" }, { status: 409 });
-      const pinned = this.#directory.placement(body.machine_id, body.runtime_id);
-      if (!pinned && body.region !== "legacy" && this.#broker.machines().some(machine => machine.id === body.machine_id)) {
-        return Response.json({ error: "legacy_hand_requires_drain" }, { status: 409 });
-      }
-      return Response.json({ region: pinned ?? this.#directory.select(body.machine_id, body.runtime_id, body.region) });
-    }
-    if (url.pathname === "/regional/retire" && !this.#regional) {
-      if (body.publication_id !== undefined || body.region !== undefined) return this.#retireRegional(body);
+    if (url.pathname === "/regional/retire") {
+      if (body.publication_id !== undefined || body.region !== undefined) return Response.json({ error: "invalid_request" }, { status: 400 });
       const unversioned = body.runtime_id === null;
       const abandonPending = body.abandon_pending === true;
       if ((body.abandon_pending !== undefined && !abandonPending) || !validPublisherId(body.machine_id) || (unversioned
@@ -1226,8 +1007,7 @@ export class AccountHostedTools extends DurableObject<AccountHostedToolsEnv> {
         : !validPublisherId(body.runtime_id) || Object.keys(body).length !== (abandonPending ? 3 : 2))) {
         return Response.json({ error: "invalid_request" }, { status: 400 });
       }
-      if (!unversioned && this.#directory.retired(body.machine_id, body.runtime_id as string)
-        && this.#directory.placement(body.machine_id, body.runtime_id as string) === "legacy") {
+      if (!unversioned && this.#directory.retired(body.machine_id, body.runtime_id as string)) {
         return Response.json({ retired: true, machine_id: body.machine_id, runtime_id: body.runtime_id });
       }
       const rows = this.ctx.storage.sql.exec<{ route_id: string; runtime_id: string | null; machines_json: string | null; lease_id: string | null; generation: number }>(
@@ -1259,89 +1039,11 @@ export class AccountHostedTools extends DurableObject<AccountHostedToolsEnv> {
       return Response.json({ retired: true, machine_id: body.machine_id, runtime_id: body.runtime_id,
         ...(unversioned ? { generation: body.generation } : {}) });
     }
-    if (this.#regional && url.pathname === "/regional/forget") {
-      if (!validPublisherId(body.machine_id) || !validPublisherId(body.runtime_id) || !validPublisherId(body.publication_id)
-        || body.region !== this.#region || typeof body.route_id !== "string" || body.route_id.length > 512
-        || typeof body.force !== "boolean" || Object.keys(body).length !== 6) {
-        return Response.json({ error: "invalid_request" }, { status: 400 });
-      }
-      const publication: RetirementPublication = { machine: { id: body.machine_id }, runtime_id: body.runtime_id,
-        publication_id: body.publication_id, route_id: body.route_id, region: this.#region! };
-      const status = this.#regionalRetirementStatus(publication);
-      if (status.publication_changed || (!body.force && (status.online || status.pending_calls > 0))) {
-        return Response.json({ error: "regional_publication_not_inactive" }, { status: 409 });
-      }
-      this.ctx.storage.transactionSync(() => {
-        this.#fencePublication(publication);
-        this.#broker.retireRoute(publication.route_id, "Owner forgot this Hand");
-        if (body.force) this.#settleAbandonedCalls(body.machine_id as string, body.runtime_id as string);
-      });
-      return Response.json({ forgotten: true });
-    }
-    if (this.#regional && (url.pathname === "/regional/inspect" || url.pathname === "/regional/retire-inactive")) {
-      const abandonPending = body.abandon_pending === true;
-      if (!validPublisherId(body.machine_id) || !validPublisherId(body.runtime_id) || !validPublisherId(body.publication_id)
-        || body.region !== this.#region || typeof body.route_id !== "string" || body.route_id.length > 512
-        || (body.abandon_pending !== undefined && !abandonPending)
-        || Object.keys(body).length !== (abandonPending ? 6 : 5)) return Response.json({ error: "invalid_request" }, { status: 400 });
-      const publication: RetirementPublication = { machine: { id: body.machine_id }, runtime_id: body.runtime_id,
-        publication_id: body.publication_id, route_id: body.route_id, region: this.#region! };
-      const status = this.#regionalRetirementStatus(publication);
-      if (url.pathname === "/regional/inspect") return Response.json(status);
-      if (status.online || status.publication_changed || (status.pending_calls > 0 && !abandonPending))
-        return Response.json({ error: "regional_publication_not_inactive" }, { status: 409 });
-      this.ctx.storage.transactionSync(() => {
-        this.#fencePublication(publication);
-        if (abandonPending) this.#settleAbandonedCalls(body.machine_id as string, body.runtime_id as string);
-      });
-      return Response.json({ ...status, retired: true });
-    }
-    if (url.pathname === "/regional/screen-claim" && !this.#regional) {
-      const region = body.region, generation = body.generation;
-      if (!validPublisherId(body.machine_id) || !isHandRelayRegion(region) || typeof generation !== "string"
-        || !validPublisherId(generation) || regionalScreenRegion(generation) !== region
-        || !Number.isSafeInteger(body.sequence) || (body.sequence as number) < 1 || Object.keys(body).length !== 4) {
-        return Response.json({ error: "invalid_request" }, { status: 400 });
-      }
-      const granted = await this.#screens!.claim(body.machine_id, region, generation, body.sequence as number);
-      // Authority decisions only: no endpoint, SDP or credential data.
-      try { console.info({ type: "hand.screen.claim", hand_id: body.machine_id, region, sequence: body.sequence, granted }); } catch { /* Passive. */ }
-      return Response.json({ granted }, { headers: { "cache-control": "no-store" } });
-    }
-    if (url.pathname === "/regional/screen-confirm" && !this.#regional) {
-      if (!validPublisherId(body.machine_id) || !isHandRelayRegion(body.region) || typeof body.generation !== "string"
-        || Object.keys(body).length !== 3) return Response.json({ error: "invalid_request" }, { status: 400 });
-      await this.#screens!.confirm(body.machine_id, body.region, body.generation);
-      return Response.json({ confirmed: true });
-    }
-    if (url.pathname === "/regional/screen-fence" && this.#regional) {
-      if (!validPublisherId(body.machine_id) || (body.keep !== undefined && !validPublisherId(body.keep))
-        || !["host_replaced", "publisher_revoked"].includes(body.reason as string)) return Response.json({ error: "invalid_request" }, { status: 400 });
-      this.#remote.fenceMachine(body.machine_id, body.keep as string | undefined, body.reason as ScreenFenceReason);
-      return Response.json({ fenced_through: this.#screenSequence(0) });
-    }
-    const publication = body as unknown as HandPublication;
-    if (!validPublisherId(publication.machine?.id) || !validPublisherId(publication.publication_id)
-      || typeof publication.machine.name !== "string" || !Array.isArray(publication.machine.capabilities)
-      || typeof publication.route_id !== "string" || publication.route_id.length > 512
-      || (publication.region !== "legacy" && !isHandRelayRegion(publication.region))
-      || !Array.isArray(publication.tool_names) || publication.tool_names.length > 256
-      || publication.tool_names.some(name => typeof name !== "string" || name.length > 256)
-      || (publication.runtime_id !== undefined && !validPublisherId(publication.runtime_id))) return Response.json({ error: "invalid_request" }, { status: 400 });
-    if (url.pathname === "/regional/fence") {
-      this.#fencePublication(publication);
-      return Response.json({ fenced: true });
-    }
-    if (url.pathname === "/regional/claim" && !this.#regional) {
-      try { await this.#queueClaim(publication); return Response.json({ admitted: true }); }
-      catch { return Response.json({ error: "hand_publication_conflict" }, { status: 409 }); }
-    }
     return Response.json({ error: "not_found" }, { status: 404 });
   }
 
   alarm(): void { this.#broker.expire(); }
 
-  /** Owner fence of one screen location. Legacy is this object: synchronous, never a self fetch. */
   /** Durable monotonic host-socket counter; `step` 0 reads the current high-water mark. */
   #screenSequence(step: 0 | 1): number {
     const next = (this.ctx.storage.kv.get<number>("screen_host_sequence") ?? 0) + step;
@@ -1349,35 +1051,7 @@ export class AccountHostedTools extends DurableObject<AccountHostedToolsEnv> {
     return next;
   }
 
-  async #fenceScreens(location: HandRelayLocation, machineId: string, keep: string | undefined, reason: ScreenFenceReason): Promise<number | false> {
-    if (location === "legacy") { this.#remote.fenceMachine(machineId, keep, reason); return this.#screenSequence(0); }
-    if (!this.env.NANOCODEX_HAND_RELAYS || !this.#ownerId) return false;
-    return fetchResponseWithDeadline(this.env.NANOCODEX_HAND_RELAYS.getByName(handRelayName(this.#ownerId, location)),
-      "https://account-tools.internal/regional/screen-fence", { method: "POST",
-        headers: { [OWNER_ASSERTION]: this.#ownerId, "content-type": "application/json" },
-        body: JSON.stringify({ machine_id: machineId, ...(keep === undefined ? {} : { keep }), reason }) }, 5_000, "fence regional screen",
-      async response => response.ok ? (await response.json<{ fenced_through: number }>()).fenced_through : false).catch(() => false as const);
-  }
-
-  /** Relay publication admission. Rejection or uncertainty closes the publisher. */
-  async #confirmRegionalScreen(machineId: string, generation: string): Promise<void> {
-    if (!this.#ownerId || !this.#region || !this.env.NANOCODEX_ACCOUNT_TOOLS) return;
-    await fetchResponseWithDeadline(this.env.NANOCODEX_ACCOUNT_TOOLS.getByName(this.#ownerId),
-      "https://account-tools.internal/regional/screen-confirm", { method: "POST",
-        headers: { [OWNER_ASSERTION]: this.#ownerId, "content-type": "application/json" },
-        body: JSON.stringify({ machine_id: machineId, region: this.#region, generation }) }, 5_000, "confirm regional screen", () => undefined);
-  }
-
-  async #claimRegionalScreen(machineId: string, generation: string, sequence: number): Promise<boolean> {
-    if (!this.#ownerId || !this.#region || !this.env.NANOCODEX_ACCOUNT_TOOLS) return false;
-    return fetchResponseWithDeadline(this.env.NANOCODEX_ACCOUNT_TOOLS.getByName(this.#ownerId),
-      "https://account-tools.internal/regional/screen-claim", { method: "POST",
-        headers: { [OWNER_ASSERTION]: this.#ownerId, "content-type": "application/json" },
-        body: JSON.stringify({ machine_id: machineId, region: this.#region, generation, sequence }) }, 8_000, "claim regional screen",
-      async response => response.ok && (await response.json<{ granted?: unknown }>()).granted === true);
-  }
-
-  /** Portable playback command (internal binding only); the owner forwards to the authority's relay. */
+  /** Portable playback command (internal binding only). */
   async #screenHostCommand(request: Request): Promise<Response> {
     const owner = request.headers.get(OWNER_ASSERTION);
     if (request.method !== "POST" || !isUserId(owner) || !this.#owns(owner)) return Response.json({ error: "not_found" }, { status: 404 });
@@ -1392,14 +1066,6 @@ export class AccountHostedTools extends DurableObject<AccountHostedToolsEnv> {
       || (command.action === "start" && (typeof command.preset !== "string" || !command.upload || typeof command.upload.url !== "string"
         || typeof command.upload.token !== "string" || !Number.isSafeInteger(command.upload.expires_at)))) {
       return Response.json({ error: "invalid_request" }, { status: 400 });
-    }
-    const authority = this.#screens?.hosts().get(body.machine_id);
-    if (authority && authority.region !== "legacy") {
-      if (!this.env.NANOCODEX_HAND_RELAYS) return Response.json({ error: "host_unavailable" }, { status: 503 });
-      if (generation !== undefined && generation !== authority.generation) return Response.json({ error: "stale_generation" }, { status: 409 });
-      return this.env.NANOCODEX_HAND_RELAYS.getByName(handRelayName(owner, authority.region)).fetch("https://account-tools.internal/screens/host-command", {
-        method: "POST", headers: { [OWNER_ASSERTION]: owner, "content-type": "application/json" },
-        body: JSON.stringify({ ...body, generation: authority.generation }) });
     }
     return this.#remote.sendHostCommand(body.machine_id, body.surface_id, generation, { action: command.action, request_id: command.request_id,
       stream_id: command.stream_id, ...(command.action === "start" ? { preset: command.preset,
@@ -1478,7 +1144,6 @@ export class AccountHostedToolsProvider implements HostedToolsDynamicProvider {
   readonly sourceId = "account-hands";
   readonly #turnTargets = new Map<string, Map<string, DurableObjectStub>>();
   readonly #namespace: DurableObjectNamespace<AccountHostedTools>;
-  readonly #relays: DurableObjectNamespace<RegionalHandRelay> | undefined;
   readonly #callRoutes: AccountHostedToolsCallRoutes | undefined;
   readonly #ownerId: string;
   readonly #threadId: string | undefined;
@@ -1509,11 +1174,9 @@ export class AccountHostedToolsProvider implements HostedToolsDynamicProvider {
     ownerId: string,
     allowed: (context?: AuthorizationContext) => boolean,
     threadId?: string,
-    relays?: DurableObjectNamespace<RegionalHandRelay>,
     callRoutes?: AccountHostedToolsCallRoutes,
   ) {
     this.#namespace = namespace;
-    this.#relays = relays;
     this.#callRoutes = callRoutes;
     this.#ownerId = ownerId;
     this.#threadId = threadId;
@@ -1824,9 +1487,7 @@ export class AccountHostedToolsProvider implements HostedToolsDynamicProvider {
       if (!target) continue;
       const expected = screenTool(target);
       const tool = tools.get(expected.definition.name);
-      // Regional screens keep their exact route inside the relay envelope.
-      if (!tool || tool.provider !== "screens" || (tool.routeToken !== expected.route_token
-        && parseRelayRouteToken(tool.routeToken ?? "")?.token !== expected.route_token)) continue;
+      if (!tool || tool.provider !== "screens" || tool.routeToken !== expected.route_token) continue;
       screenTools.set(machineId, tool);
       screenMachines.set(machineId, { id: machineId, name: target.machine_name,
         workspace: "/", capabilities: ["computer", "screen"] });
@@ -1859,7 +1520,6 @@ export class AccountHostedToolsProvider implements HostedToolsDynamicProvider {
   async #repinNeverAdmitted(
     name: string,
     routeToken: string,
-    region: string | undefined,
     input: unknown,
     context: InvocationContext,
     machineId: string | undefined,
@@ -1886,8 +1546,7 @@ export class AccountHostedToolsProvider implements HostedToolsDynamicProvider {
         : failed("Hand route refresh failed before this call was admitted; nothing was sent.", "unavailable", true, "route_refresh_failed");
     }
     const route = routeFor(this, name, machineId);
-    if (!route?.routeToken || route.routeToken === routeToken
-      || parseRelayRouteToken(route.routeToken)?.region !== region) {
+    if (!route?.routeToken || route.routeToken === routeToken) {
       return optional ? undefined
         : failed("The Hand is not currently published on a reachable route; this call was not admitted and nothing was sent.", "unavailable", true, "route_unpublished");
     }
@@ -1941,20 +1600,18 @@ export class AccountHostedToolsProvider implements HostedToolsDynamicProvider {
     if (!this.#allowed(context)) {
       return failed("Account hand is outside the active grant", "unavailable", true);
     }
-    if (routeToken.startsWith("hand-relay:") && !parseRelayRouteToken(routeToken)) return failed("Invalid regional Hand route", "unavailable", true);
+    // Routes minted by the removed regional relays are dead; nothing was sent.
+    if (routeToken.startsWith("hand-relay:")) return failed("This Hand route is no longer published; refresh and retry.", "unavailable", true, "route_unpublished");
     if (this.#callRoutes) {
       try { routeToken = this.#callRoutes.pin(context.sessionId, context.callId, name, machineId, routeToken); }
       catch { return failed("Hand call identity conflicts with its retained route", "ambiguous"); }
     }
-    const relay = parseRelayRouteToken(routeToken);
-    if (routeToken.startsWith("hand-relay:") && !relay) return failed("Invalid regional Hand route", "unavailable", true);
-    if (relay && !this.#relays) return failed("Regional Hand relay is unavailable", "unavailable", true);
-    const target = relay ? this.#relays!.getByName(handRelayName(this.#ownerId, relay.region)) : this.#namespace.getByName(this.#ownerId);
+    const target = this.#namespace.getByName(this.#ownerId);
     if (context.turnId !== undefined) {
       const key = JSON.stringify([context.sessionId, context.turnId]);
       let targets = this.#turnTargets.get(key);
       if (!targets) { targets = new Map(); this.#turnTargets.set(key, targets); }
-      targets.set(relay?.region ?? "account", target);
+      targets.set("account", target);
     }
     let response: Response;
     try {
@@ -1971,7 +1628,7 @@ export class AccountHostedToolsProvider implements HostedToolsDynamicProvider {
           call_id: context.callId,
           model: context.model,
           ...(machineId === undefined ? {} : { machine_id: machineId }),
-          route_token: relay?.token ?? routeToken,
+          route_token: routeToken,
         } satisfies InvocationRequest),
         signal: context.signal,
       });
@@ -2027,13 +1684,12 @@ export class AccountHostedToolsProvider implements HostedToolsDynamicProvider {
           : this.#machineTools.get(machineToolKey(machineId, name as HostedMachineToolName));
         // Receipt ledgers are shard-local. Even a routing rejection must never
         // move an existing effect identity to a different shard.
-        if (route?.routeToken && route.routeToken !== routeToken
-          && parseRelayRouteToken(route.routeToken)?.region === relay?.region) {
+        if (route?.routeToken && route.routeToken !== routeToken) {
           return this.#invoke(name, route.routeToken, input, context, machineId, "fixed");
         }
       }
       if (neverAdmitted && this.#callRoutes && routePolicy === "refresh" && name !== "write_stdin" && !context.signal?.aborted) {
-        return this.#repinNeverAdmitted(name, routeToken, relay?.region, input, context, machineId, failed);
+        return this.#repinNeverAdmitted(name, routeToken, input, context, machineId, failed);
       }
       if (neverAdmitted && machineId !== undefined && name === "write_stdin" && response.status === 409) {
         return failed("The Hand process runtime changed before this poll or stdin was admitted; nothing was sent. This saved process session cannot be routed to the replacement runtime.", "unavailable", true, "process_runtime_replaced");
@@ -2066,7 +1722,6 @@ export class AccountHostedToolsProvider implements HostedToolsDynamicProvider {
     } finally {
       timing.decode_ms = performance.now() - responseAt;
     }
-    if (relay && result.process_route_token) result = { ...result, process_route_token: relayRouteToken(relay.region, result.process_route_token) };
     const structuredStatus = result.structured_result && typeof result.structured_result === "object"
       ? (result.structured_result as { status?: unknown }).status : undefined;
     observeHandCall("account.decode", name, responseAt, result.pre_admission_unavailable === true ? "unavailable"
@@ -2081,7 +1736,7 @@ export class AccountHostedToolsProvider implements HostedToolsDynamicProvider {
       // physical Hand republished under a replacement route, move this
       // never-admitted call there once instead of asking the user to unblock.
       if (this.#callRoutes && routePolicy === "refresh" && name !== "write_stdin" && !context.signal?.aborted) {
-        const moved = await this.#repinNeverAdmitted(name, routeToken, relay?.region, input, context, machineId, failed, true);
+        const moved = await this.#repinNeverAdmitted(name, routeToken, input, context, machineId, failed, true);
         if (moved !== undefined) return moved;
       }
       const reason = typeof result.output === "string" ? result.output : "hand unavailable";

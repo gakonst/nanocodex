@@ -21,7 +21,6 @@ const history = [["deleted-workspace", "/gak-9"], ["old-gak", "/gak-9-2"], ["mac
 const source = `
 import worker, { AccountHostedTools, DurableAgentSession } from './src/index.ts';
 import { HandPaths } from './src/hand-paths.ts';
-export { RegionalHandRelay } from './src/regional-hand-relay.ts';
 import { routeManaged } from '../account/worker/managedProxy.ts';
 const rows = storage => {
   new HandPaths(storage);
@@ -64,7 +63,7 @@ export default {async fetch(request,env,ctx) {
 }};
 `;
 
-for (const regional of [false, true]) test(`registry deletion releases canonical Hand roots (${regional ? "regional" : "legacy"})`, { timeout: 90_000 }, async () => {
+for (const regional of [false, true]) test(`registry deletion releases canonical Hand roots (${regional ? "versioned" : "legacy"})`, { timeout: 90_000 }, async () => {
   const output = join(repo, "output/hand-paths-journey", `${Date.now()}-${process.pid}-${regional ? "regional" : "legacy"}`);
   await mkdir(output, { recursive: true });
   const http = [], wire = [], sockets = [], assets = [], calls = [];
@@ -134,10 +133,8 @@ for (const regional of [false, true]) test(`registry deletion releases canonical
       compatibilityDate: "2026-07-30", compatibilityFlags: ["nodejs_compat", "enable_request_signal"],
       modules: [{ type: "ESModule", path: "worker.mjs", contents: bundle.outputFiles[0].text }, ...assets],
       durableObjects: { NANOCODEX_ACCOUNT_TOOLS: { className: "PathsAccount", useSQLite: true },
-        NANOCODEX_SESSIONS: { className: "PathsSession", useSQLite: true },
-        NANOCODEX_HAND_RELAYS: { className: "RegionalHandRelay", useSQLite: true } },
-      bindings: { NANOCODEX_REGIONAL_HAND_RELAYS: regional ? "true" : "false" },
-      r2Buckets: ["NANOCODEX_HISTORY", "NANOCODEX_WORKSPACES"],
+        NANOCODEX_SESSIONS: { className: "PathsSession", useSQLite: true } },
+            r2Buckets: ["NANOCODEX_HISTORY", "NANOCODEX_WORKSPACES"],
       serviceBindings: { NANOCODEX: async request => {
         const path = new URL(request.url).pathname;
         if (path.startsWith("/subjects/")) return new Response(null, { status: 204 });

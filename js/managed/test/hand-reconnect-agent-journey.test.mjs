@@ -28,7 +28,7 @@ const PROCESS = Symbol.for('nanocodex.processSessionTool');
 export class AgentFixture extends DurableObject {
   constructor(ctx, env) { super(ctx, env); this.reset(); }
   reset() {
-    this.provider = new AccountHostedToolsProvider(this.env.ACCOUNT, '${owner}', () => true, '${thread}', undefined,
+    this.provider = new AccountHostedToolsProvider(this.env.ACCOUNT, '${owner}', () => true, '${thread}',
       new AccountHostedToolsCallRoutes(this.ctx.storage));
     this.captured = new Map(); this.processes = new Map();
   }

@@ -26,7 +26,6 @@
   ],
   "durable_objects": {
     "bindings": [
-      { "name": "NANOCODEX_HAND_RELAYS", "class_name": "RegionalHandRelay" },
       { "name": "NANOCODEX_CALENDAR_PUSH", "class_name": "CalendarPushDelivery" },
       { "name": "NANOCODEX_INFERENCE_KEYS", "class_name": "InferenceKey" },
       { "name": "NANOCODEX_INFERENCE_ACCOUNTS", "class_name": "InferenceAccount" },

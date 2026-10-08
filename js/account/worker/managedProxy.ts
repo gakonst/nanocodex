@@ -10,8 +10,6 @@ export type ManagedProxyEnv = PreviewBridgeEnv & {
   NANOCODEX_BACKEND?: Fetcher;
   NANOCODEX_ACCESS_SECRET?: string;
   NANOCODEX_HAND_BROKER?: DurableObjectNamespace;
-  /** Regional screen relays (managed RegionalHandRelay); viewers of rs.<region>. generations admit there directly. */
-  NANOCODEX_HAND_RELAYS?: { getByName(name: string, options?: { locationHint?: string }): { fetch(request: Request): Promise<Response> } };
   NANOCODEX_LIVE_API_KEYS?: {
     getByName(name: string): {
       id?: { toString(): string };
@@ -107,13 +105,7 @@ async function routeMeasuredManaged(
     const local = cached && !handRequestFailure(request, cached);
     let response: Response;
     if (local) {
-      const brokered = handBrokerRequest(request, cached);
-      // Regional generations name their relay; the owner DO is not on this path.
-      const region = regionalScreenRegion(url.searchParams.get("generation"));
-      const brokerResponse = region && env.NANOCODEX_HAND_RELAYS
-        ? await env.NANOCODEX_HAND_RELAYS.getByName(`${cached.userId}:hand-relay:v1:${region}`, { locationHint: region })
-          .fetch(regionalViewerRequest(brokered, cached.userId, region))
-        : await env.NANOCODEX_HAND_BROKER!.getByName(cached.userId).fetch(brokered);
+      const brokerResponse = await env.NANOCODEX_HAND_BROKER!.getByName(cached.userId).fetch(handBrokerRequest(request, cached));
       const headers = new Headers(brokerResponse.headers);
       headers.set("x-nanocodex-request-id", crypto.randomUUID());
       headers.append("server-timing", `managed_auth;dur=${(admitted - started).toFixed(1)};desc="access", screen_route;dur=${(performance.now() - admitted).toFixed(1)}, screen_total;dur=${(performance.now() - started).toFixed(1)}`);
@@ -142,7 +134,7 @@ async function routeMeasuredManaged(
     if (/^\/v1\/account\/hands\/(?:screens|host|view|ice|renew)$/.test(url.pathname)) {
       console.info({ type: "hand.proxy", request_id: response.headers.get("x-nanocodex-request-id"),
         method: request.method, path: url.pathname, status: response.status,
-        route: local ? (regionalScreenRegion(url.searchParams.get("generation")) && env.NANOCODEX_HAND_RELAYS ? "local_access_regional" : "local_access") : "managed",
+        route: local ? "local_access" : "managed",
         backend_ms: performance.now() - started, started_at_ms: startedAt, finished_at_ms: Date.now(),
         request_colo: typeof request.cf?.colo === "string" ? request.cf.colo : undefined });
     }
@@ -155,20 +147,6 @@ async function routeMeasuredManaged(
     });
     return json({ error: "managed_service_unavailable" }, { status: 503 });
   }
-}
-
-// Mirrors managed regional-screen-routing without importing the managed DO graph:
-// broker-minted "rs.<region>." generations name their relay; the owner is not on the path.
-const HAND_RELAY_REGIONS = new Set(["wnam", "enam", "weur", "eeur", "apac", "oc", "sam", "afr", "me"]);
-function regionalScreenRegion(id: string | null): string | undefined {
-  const region = id ? /^rs\.([a-z]+)\./.exec(id)?.[1] : undefined;
-  return region && HAND_RELAY_REGIONS.has(region) ? region : undefined;
-}
-function regionalViewerRequest(brokered: Request, owner: string, region: string): Request {
-  const headers = new Headers(brokered.headers);
-  headers.set("x-nanocodex-owner-id", owner);
-  headers.set("x-nanocodex-hand-relay-region", region);
-  return new Request(`https://account-tools.internal/hands/view${new URL(brokered.url).search}`, new Request(brokered, { headers }));
 }
 
 const INELIGIBLE = Symbol("ineligible");

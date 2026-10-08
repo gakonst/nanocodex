@@ -26,7 +26,6 @@ import { DurableObject } from 'cloudflare:workers';
 import { AccountHostedToolsProvider } from './src/account-hosted-tools.ts';
 import worker, { AccountHostedTools, DurableAgentSession } from './src/index.ts';
 export { AccountHostedTools, DurableAgentSession };
-export { RegionalHandRelay } from './src/regional-hand-relay.ts';
 import { routeManaged } from '../account/worker/managedProxy.ts';
 // No public direct tool-invocation endpoint exists. This narrow driver retains
 // a real provider handle so revocation can be tested against a cached route;
@@ -35,7 +34,7 @@ export class SharingDriver extends DurableObject {
   async fetch(request) {
     const {operation,machine,call}=await request.json();
     if(operation==='bind') {
-      this.provider=new AccountHostedToolsProvider(this.env.NANOCODEX_ACCOUNT_TOOLS,'${recipient}',()=>true,undefined,this.env.NANOCODEX_HAND_RELAYS);
+      this.provider=new AccountHostedToolsProvider(this.env.NANOCODEX_ACCOUNT_TOOLS,'${recipient}',()=>true,undefined);
       await this.provider.refresh(); this.tool=this.provider.machineTool(machine,'exec_command');
       return Response.json({bound:!!this.tool});
     }
@@ -79,7 +78,7 @@ export default {async fetch(request,env,ctx) {
 }};
 `;
 
-for (const regional of [false, true]) test(`revocable account Hand sharing (${regional ? "regional" : "legacy"})`, { timeout: 60_000 }, async () => {
+for (const regional of [false, true]) test(`revocable account Hand sharing (${regional ? "versioned" : "legacy"})`, { timeout: 60_000 }, async () => {
   const output = join(repo, "output/hand-sharing-journey", `${Date.now()}-${process.pid}-${regional ? "regional" : "legacy"}`);
   await mkdir(output, { recursive: true });
   const http = [], wire = [], sockets = [], assets = [], cli = [];
@@ -140,10 +139,8 @@ for (const regional of [false, true]) test(`revocable account Hand sharing (${re
       compatibilityDate: "2026-07-30", compatibilityFlags: ["nodejs_compat", "enable_request_signal"],
       modules: [{ type: "ESModule", path: "worker.mjs", contents: bundle }, ...assets],
       durableObjects: { DRIVER: {className:"SharingDriver",useSQLite:true}, NANOCODEX_ACCOUNT_TOOLS: { className: "AccountHostedTools", useSQLite: true },
-        NANOCODEX_SESSIONS: { className: "DurableAgentSession", useSQLite: true },
-        NANOCODEX_HAND_RELAYS: { className: "RegionalHandRelay", useSQLite: true } },
-      bindings: { NANOCODEX_REGIONAL_HAND_RELAYS: regional ? "true" : "false", NANOCODEX_REGIONAL_SCREEN_RELAYS: regional ? "true" : "false" },
-      r2Buckets: ["NANOCODEX_HISTORY", "NANOCODEX_WORKSPACES"],
+        NANOCODEX_SESSIONS: { className: "DurableAgentSession", useSQLite: true } },
+            r2Buckets: ["NANOCODEX_HISTORY", "NANOCODEX_WORKSPACES"],
       serviceBindings: { NANOCODEX: async request => {
         const path = new URL(request.url).pathname;
         if (path.startsWith("/subjects/")) return new Response(null, { status: 204 });
@@ -283,7 +280,6 @@ for (const regional of [false, true]) test(`revocable account Hand sharing (${re
       screenSocket.on('message',data=> {
         const frame=JSON.parse(String(data)); wire.push({id:'screen-device',direction:'broker',frame});
         if(frame.type==='ready') {
-          if(regional) assert.match(frame.generation,/^rs\.weur\./);
           screenSocket.send(JSON.stringify({type:'catalog',machine_id:'screen-device',machine_name:'Shared screen',
             surfaces:[{id:'desktop',name:'Desktop',kind:'desktop',width:1,height:1,controllable:true,agent_tools:true}]}));
         }
@@ -312,7 +308,7 @@ for (const regional of [false, true]) test(`revocable account Hand sharing (${re
     await request(shares+'/'+screenShare.value.id,{method:'DELETE'});
     const deniedScreen=await post('/__fixture/driver',{operation:'screen',call:'screen-after-revoke'},'recipient');
     assert.equal(deniedScreen.value.success,false,JSON.stringify(deniedScreen));
-    assert.equal(screenCalls().length,2,'revocation blocks cached regional screen route');
+    assert.equal(screenCalls().length,2,'revocation blocks cached screen route');
     if (process.env.NANOCODEX_TEST_CLI) {
       const cliHome = join(output, 'cli-home'); await mkdir(cliHome);
       const runCLI = async (actor, args) => {

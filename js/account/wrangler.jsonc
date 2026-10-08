@@ -87,7 +87,6 @@
     "bindings": [
       { "name": "ELEVENLABS_ACCOUNTS", "class_name": "ElevenLabsAccount" },
       { "name": "NANOCODEX_HAND_BROKER", "class_name": "AccountHostedTools", "script_name": "nanocodex-durable-agent" },
-      { "name": "NANOCODEX_HAND_RELAYS", "class_name": "RegionalHandRelay", "script_name": "nanocodex-durable-agent" },
       { "name": "NANOCODEX_LIVE_API_KEYS", "class_name": "ApiKeyRecord", "script_name": "nanocodex-durable-agent" },
       { "name": "NANOCODEX_LIVE_SESSIONS", "class_name": "DurableAgentSession", "script_name": "nanocodex-durable-agent" },
       {

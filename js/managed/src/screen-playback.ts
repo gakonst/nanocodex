@@ -2,10 +2,9 @@
 // Operator/user behavior: docs/hand-broadcasting.md (Playback links).
 import { DurableObject } from "cloudflare:workers";
 import type { Principal } from "./account-auth";
-import { handRelayRegion, isHandRelayRegion, type HandRelayRegion } from "./regional-hand-routing";
 
 type Stub = { fetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> };
-type Namespace = { getByName(name: string, options?: { locationHint?: string }): Stub };
+type Namespace = { getByName(name: string): Stub };
 export type ScreenPlaybackEnv = { NANOCODEX_SCREEN_PLAYBACK: Namespace };
 export type ScreenPlaybackHostCommand = Readonly<{
   ownerId: string; machine_id: string; surface_id: string; generation?: string | number;
@@ -78,8 +77,7 @@ export function accountToolsPlaybackHost(env: { NANOCODEX_ACCOUNT_TOOLS: Namespa
   );
 }
 
-const streamStub = (env: ScreenPlaybackEnv, id: string, region?: HandRelayRegion) =>
-  env.NANOCODEX_SCREEN_PLAYBACK.getByName(`stream:${id}`, region ? { locationHint: region } : undefined);
+const streamStub = (env: ScreenPlaybackEnv, id: string) => env.NANOCODEX_SCREEN_PLAYBACK.getByName(`stream:${id}`);
 const ownerStub = (env: ScreenPlaybackEnv, owner: string) => env.NANOCODEX_SCREEN_PLAYBACK.getByName(`owner:${owner}`);
 
 /**
@@ -145,13 +143,6 @@ async function hostError(response: Response): Promise<string> {
   return typeof body?.error === "string" ? body.error : "";
 }
 
-/** Region hint for a stream: a regional publisher generation names its relay region. */
-function streamRegion(request: Request, generation: string | number | undefined): HandRelayRegion | undefined {
-  const match = typeof generation === "string" ? /^rs\.([a-z]+)\./.exec(generation) : null;
-  if (match && isHandRelayRegion(match[1])) return match[1];
-  return handRelayRegion(request);
-}
-
 async function ownerRoute(request: Request, env: ScreenPlaybackEnv, url: URL, options: ScreenPlaybackOptions): Promise<Response> {
   if (url.search !== "") return error("invalid_request", 400);
   const principal = await options.authenticate();
@@ -201,7 +192,7 @@ async function createLink(request: Request, env: ScreenPlaybackEnv, url: URL, op
   if (reserved.status !== 201) return reserved;
   const created = await reserved.json() as { link: PublicLink; view_token: string; upload_token: string };
   const id = created.link.id;
-  const stream = streamStub(env, id, streamRegion(request, body.generation));
+  const stream = streamStub(env, id);
   // Tokens exist only in this request; durable state keeps their hashes.
   const initialized = await stream.fetch(internal("/stream/init", {
     id, owner: ownerId, machine_id: body.machine_id, surface_id: body.surface_id,

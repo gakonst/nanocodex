@@ -1,12 +1,7 @@
-import { AccountHostedTools } from "./account-hosted-tools";
-import type { RegionalHandEnv } from "./regional-hand-routing";
-import type { RemoteICEEnv } from "./hand-remote-ice";
+import { DurableObject } from "cloudflare:workers";
 
-/** One bounded regional shard per account: tool-host publishers and native
- * screen signaling (rs.<region>. IDs). Authority and VM/server publishers stay on the owner. */
-export class RegionalHandRelay extends AccountHostedTools {
-  constructor(ctx: DurableObjectState, env: RemoteICEEnv & RegionalHandEnv) {
-    super(ctx, env, true);
-  }
+/** Retired: regional Hand relays are gone. Kept only until its deleted_classes
+ * migration ships after no Worker binds it. Serves nothing. */
+export class RegionalHandRelay extends DurableObject {
+  fetch(): Response { return Response.json({ error: "not_found" }, { status: 404 }); }
 }
-export { routeRegionalToolHost } from "./regional-hand-routing";

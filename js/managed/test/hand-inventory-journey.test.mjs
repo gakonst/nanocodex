@@ -18,7 +18,6 @@ const principal = { kind: "api_key", userId: owner, organizationId: "22222222-22
   capabilities: ["agents:read", "agents:write", "tools:use"] };
 const source = `
 import worker, { AccountHostedTools, DurableAgentSession } from './src/index.ts';
-export { RegionalHandRelay } from './src/regional-hand-relay.ts';
 import { routeManaged } from '../account/worker/managedProxy.ts';
 export class InventoryAccount extends AccountHostedTools {
   async seedLegacy() {
@@ -56,7 +55,7 @@ export default {async fetch(request,env,ctx) {
 }};
 `;
 
-for (const regional of [false, true]) test(`account inventory and SDK retirement (${regional ? "regional" : "legacy"})`, { timeout: 60_000 }, async () => {
+for (const regional of [false, true]) test(`account inventory and SDK retirement (${regional ? "versioned" : "legacy"})`, { timeout: 60_000 }, async () => {
   const output = join(repo, "output/hand-inventory-journey", `${Date.now()}-${process.pid}-${regional ? "regional" : "legacy"}`);
   await mkdir(output, { recursive: true });
   const http = [], wire = [], sockets = [], assets = [];
@@ -103,10 +102,8 @@ for (const regional of [false, true]) test(`account inventory and SDK retirement
       compatibilityDate: "2026-07-30", compatibilityFlags: ["nodejs_compat", "enable_request_signal"],
       modules: [{ type: "ESModule", path: "worker.mjs", contents: bundle }, ...assets],
       durableObjects: { NANOCODEX_ACCOUNT_TOOLS: { className: "InventoryAccount", useSQLite: true },
-        NANOCODEX_SESSIONS: { className: "InventorySession", useSQLite: true },
-        NANOCODEX_HAND_RELAYS: { className: "RegionalHandRelay", useSQLite: true } },
-      bindings: { NANOCODEX_REGIONAL_HAND_RELAYS: regional ? "true" : "false" },
-      r2Buckets: ["NANOCODEX_HISTORY", "NANOCODEX_WORKSPACES"],
+        NANOCODEX_SESSIONS: { className: "InventorySession", useSQLite: true } },
+            r2Buckets: ["NANOCODEX_HISTORY", "NANOCODEX_WORKSPACES"],
       serviceBindings: { NANOCODEX: async request => {
         const path = new URL(request.url).pathname;
         if (path.startsWith("/subjects/")) return new Response(null, { status: 204 });
@@ -167,7 +164,7 @@ for (const regional of [false, true]) test(`account inventory and SDK retirement
     await assert.rejects(sdk.hand.forget("account-device"), { status: 409 });
     if (regional) {
       const relays = await request("/v1/account/hand-relays");
-      assert.equal(relays.value.regional[0].region, "weur", "publication uses the regional relay");
+      assert.deepEqual(relays.value.regional, [], "every publication lives on the account object");
     }
     assert.deepEqual(await inventory(), expected);
     assert.equal(http.at(-1).cacheControl, "no-store");

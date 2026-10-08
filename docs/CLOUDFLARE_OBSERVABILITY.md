@@ -115,8 +115,7 @@ failure categories, call correlation, and queries for command retry sequences.
 
 Correlate `hand.call.broker` observations by `transport_call_id` and connection
 identity. A session-attached Hand uses the session broker directly; an account
-Hand can use the account broker or a regional relay. Measure the route actually
-selected, since those paths have different preparation and transport costs.
+Hand uses the account broker.
 
 On WebSocket `host_progress` and `receipt` observations:
 

@@ -1,5 +1,4 @@
 import { AccountHostedToolsProvider, type AccountHostedTools, type AccountHostedToolsCallRoutes } from "./account-hosted-tools";
-import type { RegionalHandRelay } from "./regional-hand-relay";
 import type { ToolContext } from "nanocodex";
 import { AppError, type AppValidationResult, type AppValidator } from "./prompt-apps";
 
@@ -9,13 +8,12 @@ export function nativeAppValidator(
   namespace: DurableObjectNamespace<AccountHostedTools>, owner: string,
   context: Pick<ToolContext, "sessionId" | "callId" | "signal"> & Partial<Pick<ToolContext, "model" | "turnId" | "subagent">>,
   authorized: () => boolean,
-  relays?: DurableObjectNamespace<RegionalHandRelay>,
   callRoutes?: AccountHostedToolsCallRoutes,
 ): AppValidator {
   return async input => {
     context.signal.throwIfAborted();
     if (!authorized()) throw new AppError("forbidden", 403);
-    const provider = new AccountHostedToolsProvider(namespace, owner, authorized, undefined, relays, callRoutes);
+    const provider = new AccountHostedToolsProvider(namespace, owner, authorized, undefined, callRoutes);
     try { await provider.refresh(); } catch { throw new AppError("app_validation_unavailable", 503); }
     const candidates = provider.machines(context).filter(machine => provider.machineOnline(machine.id, context)
       && provider.machineTool(machine.id, "validate_app", context));
