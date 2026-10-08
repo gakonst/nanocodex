@@ -54,6 +54,8 @@ pub(super) struct ChildSession {
     pub(super) last_output: Option<Value>,
     pub(super) last_used: u64,
     pub(super) evicted: bool,
+    /// Journal-restored children need a fresh host binding before execution.
+    announce: bool,
 }
 
 pub(super) struct OutputContract {
@@ -1455,6 +1457,7 @@ impl Registry {
                 last_output: None,
                 last_used: 0,
                 evicted: false,
+                announce: false,
             },
         )?;
         drop(state);
@@ -1856,7 +1859,14 @@ impl Registry {
             session.harness_task = Some(task);
             session.event_task = Some(event_task);
             session.evicted = false;
+            // Publish the host binding before releasing the child's event stream.
+            // In-memory eviction keeps its existing binding; journal restoration does not.
+            let announce =
+                std::mem::take(&mut session.announce).then(|| session.descriptor.clone());
             drop(state);
+            if let Some(descriptor) = announce {
+                self.send(&root, AgentUpdate::Added(descriptor));
+            }
             let _ = start.send(());
         }
         Ok(())
@@ -2421,6 +2431,7 @@ impl ChildSession {
             last_output,
             last_used: 0,
             evicted: true,
+            announce: true,
         }
     }
 
@@ -3085,6 +3096,7 @@ mod tests {
             last_output: None,
             last_used: 0,
             evicted: false,
+            announce: false,
         }
     }
 
@@ -3159,6 +3171,163 @@ mod tests {
             restored.pending_resume.lock().unwrap().get("root"),
             Some(&vec![id])
         );
+    }
+
+    #[tokio::test]
+    async fn reconstructed_child_announces_host_binding_once_before_execution() {
+        let (registry, _, mut updates) = super::channel(4);
+        let factory_registry = registry.clone();
+        let constructions = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let factory_constructions = constructions.clone();
+        let openai = OpenAi::builder("test-key")
+            .service(|| PendingService {
+                called: Arc::new(Notify::new()),
+            })
+            .build()
+            .unwrap();
+        let (root, _events) = Nanocodex::builder(openai)
+            .tools_factory(move |handle| {
+                factory_constructions.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                factory_registry.register_handle(handle);
+                nanocodex_oai_tools::Tools::builder()
+                    .without_defaults()
+                    .build()
+            })
+            .build()
+            .unwrap();
+        let root_id = root.session_id();
+        let (source, _, _) = super::channel(4);
+        let (id, child_id) =
+            insert_pending_runtime_session(&source, root_id, None, Arc::new(Notify::new())).await;
+        let harness = source.state.lock().await.scopes[root_id].sessions[&id]
+            .harness
+            .clone()
+            .unwrap();
+        let checkpoint = harness.snapshot().await.unwrap();
+        source.record_checkpoint(root_id, id, checkpoint);
+        {
+            let mut state = source.state.lock().await;
+            state
+                .scopes
+                .get_mut(root_id)
+                .unwrap()
+                .sessions
+                .get_mut(&id)
+                .unwrap()
+                .status = AgentStatus::Running;
+        }
+        let payload = source.journal_payloads().await.pop().unwrap().1;
+        let store = crate::MemorySubagentStore::new();
+        crate::SubagentStore::save(&store, root_id, payload)
+            .await
+            .unwrap();
+        registry.set_store(Arc::new(store));
+        let report = registry.restore(root_id).await.unwrap();
+        assert_eq!(report.interrupted, vec![id]);
+        assert_eq!(
+            registry
+                .directory(root_id, false, false)
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+        // A failed reconstruction must leave the announcement pending so a
+        // later admitted delivery can bind the same retained child.
+        let parent = registry
+            .session_handles
+            .write()
+            .unwrap()
+            .remove(root_id)
+            .unwrap();
+        let error = registry
+            .send_message(
+                root_id,
+                id,
+                MessagePriority::Deferred,
+                MessagePurpose::Coordinate,
+                None,
+                "failed attempt".to_owned(),
+            )
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("parent runtime is unavailable"));
+        assert!(updates.try_recv().is_err());
+        {
+            let state = registry.state.lock().await;
+            let child = &state.scopes[root_id].sessions[&id];
+            assert!(child.announce && child.harness.is_none());
+        }
+        registry
+            .session_handles
+            .write()
+            .unwrap()
+            .insert(root_id.to_owned(), parent);
+        // Public admission owns the residency/message locks. Concurrent calls
+        // must construct and announce only one runtime, then queue both messages.
+        let (first, second) = timeout(Duration::from_secs(5), async {
+            tokio::join!(
+                registry.send_message(
+                    root_id,
+                    id,
+                    MessagePriority::Deferred,
+                    MessagePurpose::Coordinate,
+                    None,
+                    "first".to_owned()
+                ),
+                registry.send_message(
+                    root_id,
+                    id,
+                    MessagePriority::Deferred,
+                    MessagePurpose::Coordinate,
+                    None,
+                    "second".to_owned()
+                )
+            )
+        })
+        .await
+        .unwrap();
+        let first = first.unwrap();
+        let second = second.unwrap();
+        assert_ne!(first.message_id, second.message_id);
+        assert_eq!(
+            constructions.load(std::sync::atomic::Ordering::SeqCst),
+            2,
+            "one root plus exactly one restored child construction"
+        );
+        let first_update = updates.try_recv().unwrap();
+        assert!(
+            matches!(&first_update.update, AgentUpdate::Added(descriptor)
+            if descriptor.session_id == child_id),
+            "binding must precede execution updates"
+        );
+        let AgentUpdate::Added(first_descriptor) = first_update.update else {
+            unreachable!()
+        };
+        let mut additions = vec![first_descriptor];
+        while let Ok(update) = updates.try_recv() {
+            if let AgentUpdate::Added(descriptor) = update.update {
+                additions.push(descriptor);
+            }
+        }
+        assert_eq!(
+            additions.len(),
+            1,
+            "restored child must bind its host before any turn"
+        );
+        assert_eq!(additions[0].session_id, child_id);
+        registry
+            .rehydrate(root_id, id, MessagePurpose::Coordinate)
+            .await
+            .unwrap();
+        while let Ok(update) = updates.try_recv() {
+            assert!(
+                !matches!(update.update, AgentUpdate::Added(_)),
+                "resident child must not rebind"
+            );
+        }
+        registry.close_all(root_id).await.unwrap();
+        source.close_all(root_id).await.unwrap();
     }
 
     #[tokio::test]
