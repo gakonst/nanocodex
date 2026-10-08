@@ -70,20 +70,13 @@ Wrangler configurations bind it as `NANOCODEX_HAND_RELAYS`; migration `v15`
 creates its SQLite-backed Durable Object class. Existing Durable Object classes
 and their migration history remain intact.
 
-The namespace is optional in the runtime environment. Regional selection for
-new runtimes requires two distinct opt-ins:
+Regional relays are always on. Native account publishers always send
+machine/runtime identity headers, and the managed Worker places every eligible
+new runtime in the relay nearest its ingress whenever the relay namespace is
+bound. There is no opt-in flag on either side.
 
-- Production and development Wrangler configuration set
-  `NANOCODEX_REGIONAL_HAND_RELAYS="true"` on the managed Worker, enabling new
-  regional placements when that configuration is deployed. Custom environments
-  must set the same value explicitly.
-- Compatible native publishers use regional relays by default (opt out with `NANOCODEX_REGIONAL_HAND_RELAYS=0`) so
-  it sends machine/runtime identity headers. The native driver snapshots this
-  setting for its lifetime, including reconnects.
-
-Legacy publishers and unconfigured environments continue to use the account
-broker. Disabling the Worker flag prevents new regional placements while
-retained runtimes continue using their original destination. Deploy the managed
+Legacy publishers (older binaries without identity headers) and environments
+without the relay namespace continue to use the account broker. Deploy the managed
 service using the repository deployment command so its migration and bindings
 are applied together. A Hand reconnect reuses its retained destination; a runtime
 identity must not change merely because a transport reconnects. Removing a
@@ -163,7 +156,7 @@ request returns its receipt without touching a newer publication. Re-enrollment
 uses a fresh runtime identity; it does not replay old calls.
 
 After a successful drain or retirement, a compatible publisher can start
-with native `NANOCODEX_REGIONAL_HAND_RELAYS=1` and a new runtime identity; the
+with a new runtime identity; the
 Worker must also enable its `"true"` setting. Retiring the old runtime does not
 move its effect receipts or authorize replaying its calls on the new relay.
 

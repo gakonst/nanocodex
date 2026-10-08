@@ -9,7 +9,6 @@ export type HandRelayLocation = HandRelayRegion | "legacy";
 export type RegionalHandEnv = {
   NANOCODEX_ACCOUNT_TOOLS?: DurableObjectNamespace<AccountHostedTools>;
   NANOCODEX_HAND_RELAYS?: DurableObjectNamespace<RegionalHandRelay>;
-  NANOCODEX_REGIONAL_HAND_RELAYS?: string;
 };
 export const HAND_RELAY_REGION_HEADER = "x-nanocodex-hand-relay-region";
 export const HAND_MACHINE_HEADER = "x-nanocodex-hand-machine-id";
@@ -48,7 +47,7 @@ export async function routeRegionalToolHost(request: Request, owner: string, env
     const selection = await env.NANOCODEX_ACCOUNT_TOOLS!.getByName(owner).fetch("https://account-tools.internal/regional/select", {
       method: "POST", headers: { [HAND_OWNER_HEADER]: owner, "content-type": "application/json" },
       body: JSON.stringify({ machine_id: identity.machineId, runtime_id: identity.runtimeId,
-        region: env.NANOCODEX_REGIONAL_HAND_RELAYS === "true" && env.NANOCODEX_HAND_RELAYS
+        region: env.NANOCODEX_HAND_RELAYS
           ? handRelayRegion(request) ?? "legacy" : "legacy" }),
     });
     if (!selection.ok) return selection;

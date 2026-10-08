@@ -220,7 +220,6 @@
     { "tag": "v16", "new_sqlite_classes": ["ScreenPlayback"] }
   ],
   "vars": {
-    "NANOCODEX_REGIONAL_HAND_RELAYS": "true",
     "NANOCODEX_REGIONAL_SCREEN_RELAYS": "true",
     "NANOCODEX_REGIONAL_API_KEY_AUTHORITY": "true",
     "NANOCODEX_THREAD_ROUTING": "true",
@@ -303,7 +302,6 @@
         ]
       },
       "vars": {
-        "NANOCODEX_REGIONAL_HAND_RELAYS": "true",
     "NANOCODEX_REGIONAL_SCREEN_RELAYS": "true",
         "NANOCODEX_REGIONAL_API_KEY_AUTHORITY": "true",
         "AGENT_IDLE_TIMEOUT_MS": "1000",

@@ -2908,15 +2908,18 @@ async function handleClaudeMessages(
   if (version !== null && version !== "2023-06-01") return jsonError(403, "provider_header_forbidden");
   const beta = request.headers.get("anthropic-beta");
   if (beta !== null && (beta.length > 1024 || !/^[a-z0-9,-]+$/.test(beta))) return jsonError(403, "provider_header_forbidden");
+  const claudeStartedAt = Date.now();
   let body: string;
   try { body = await readBoundedText(request, MAX_MODEL_BODY_BYTES); }
   catch { return jsonError(413, "model_request_too_large"); }
+  const bodyReadAt = Date.now();
   const egressRequestId = crypto.randomUUID();
   let phase = "credential_resolution";
   let dispatches = 0;
   let rejected = false;
   try {
     let result = await resolvePlainClaudeCredential(env, authority.owner);
+    const credentialAt = Date.now();
     if (result.status !== 200 || !result.credential) return jsonError(409, "claude_login_required");
     let credential = result.credential;
     const secrets = [credential.headers.authorization?.replace(/^Bearer /, "") ?? ""];
@@ -2949,6 +2952,7 @@ async function handleClaudeMessages(
       return upstreamFetch(upstreamRequest);
     };
     let response = await dispatch();
+    const upstreamHeadersAt = Date.now();
     // A definitive unauthorized response is the only replay permission. Never
     // retry transport failures, redirects, overloads, or uncertain Messages POSTs.
     if (response.status === 401) {
@@ -2974,6 +2978,11 @@ async function handleClaudeMessages(
       return Response.json({ error: { type: "api_error", message: `Claude request rejected (HTTP ${response.status}).` } },
         { status: REDIRECT_STATUS.has(response.status) ? 502 : response.status, headers });
     }
+    console.info({ type: "egress.claude.timing", egress_request_id: egressRequestId,
+      body_bytes: body.length, body_read_ms: bodyReadAt - claudeStartedAt,
+      credential_ms: credentialAt - bodyReadAt, upstream_headers_ms: upstreamHeadersAt - credentialAt,
+      total_to_headers_ms: Date.now() - claudeStartedAt, attempts: dispatches, status: response.status,
+      ...(typeof request.cf?.colo === "string" ? { colo: request.cf.colo } : {}) });
     return new Response(privateClaudeStream(response.body, secrets), { status: response.status, headers });
   } catch (error) {
     const status = request.signal.aborted ? 499 : 502;

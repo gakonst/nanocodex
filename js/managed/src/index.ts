@@ -508,7 +508,6 @@ export interface Env extends
   NANOCODEX_REGIONAL_SCREEN_RELAYS?: string;
   /** Portable HLS playback links and their in-memory media buffers. */
   NANOCODEX_SCREEN_PLAYBACK?: DurableObjectNamespace<ScreenPlayback>;
-  NANOCODEX_REGIONAL_HAND_RELAYS?: string;
   NANOCODEX_REGIONAL_API_KEY_AUTHORITY?: string;
   NANOCODEX_TURN_KEY_ID?: string;
   NANOCODEX_TURN_API_TOKEN?: string;

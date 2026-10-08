@@ -1013,7 +1013,6 @@ fn regional_hand_upgrade_identity_journey() -> Result<()> {
     }
     for (case, flag) in [
         ("default", None),
-        ("disabled", Some("0")),
         ("regional", Some("1")),
         ("scoped", Some("1")),
         ("named", Some("1")),

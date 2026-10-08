@@ -61,10 +61,6 @@ pub(crate) async fn run(
     // Transport generations may change while the same runtime owns processes.
     // A new driver gets a new identity so local numeric IDs cannot be retargeted.
     let runtime_id = uuid::Uuid::new_v4().to_string();
-    // Regional relays are the default; NANOCODEX_REGIONAL_HAND_RELAYS=0 opts out.
-    // Snapshot the choice for this live runtime, including reconnects.
-    let regional_hand_relays =
-        std::env::var("NANOCODEX_REGIONAL_HAND_RELAYS").as_deref() != Ok("0");
     let mut active = Vec::<InFlight>::new();
     let mut journal = HashMap::<Box<str>, RetainedCall>::new();
     let (completed_tx, mut completed_rx) = mpsc::unbounded_channel::<Completion>();
@@ -79,7 +75,7 @@ pub(crate) async fn run(
             attempt, reconnect_delay_ms = previous_delay.as_millis() as u64);
         let _ = status.send(AttachmentStatus::Connecting);
         connection_span.in_scope(|| emit(&events, AttachmentEvent::Connecting));
-        let request = match request(&config, &connection_id, &runtime_id, regional_hand_relays) {
+        let request = match request(&config, &connection_id, &runtime_id) {
             Ok(request) => request,
             Err(error) => break Err(error),
         };
@@ -239,7 +235,6 @@ fn request(
     config: &Config,
     connection_id: &str,
     runtime_id: &str,
-    regional_hand_relays: bool,
 ) -> Result<http::Request<()>, AttachmentError> {
     let mut request = config
         .endpoint
@@ -260,8 +255,8 @@ fn request(
     // Only account machine publishers support regional pre-upgrade routing.
     // Named/scoped attachments retain the legacy owner route. Metadata::machine
     // guarantees one machine whose exact ID is also the catalog attachment_id.
-    if regional_hand_relays
-        && config.endpoint.path() == "/v1/account/tool-host"
+    // Account machine publishers always use regional relays.
+    if config.endpoint.path() == "/v1/account/tool-host"
         && let Some(machine) = config
             .metadata
             .as_ref()
