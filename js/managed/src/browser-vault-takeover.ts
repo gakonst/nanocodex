@@ -157,6 +157,10 @@ export async function privateVaultTakeover(
       }
       frameId = frame.id; loaderId = typeof frame.loaderId === "string" ? frame.loaderId : ""; currentOrigin = origin;
     };
+    // Non-observe actions never change emulation, so layout metrics share the
+    // initial check's round trip. Observation may resize and measures afterwards.
+    const early = action.action === "observe" ? undefined : cdp.send("Page.getLayoutMetrics", {}, sid);
+    early?.catch(() => {});
     await check();
     if (action.action === "observe") {
       touch.nativeFields = action.native_fields === true;
@@ -184,7 +188,7 @@ export async function privateVaultTakeover(
         await check();
       }
     }
-    const metrics = await cdp.send("Page.getLayoutMetrics", {}, sid);
+    const metrics = await (early ?? cdp.send("Page.getLayoutMetrics", {}, sid));
     const viewport = metrics?.cssLayoutViewport;
     const width = viewport?.clientWidth, height = viewport?.clientHeight;
     if (![width, height].every(n => typeof n === "number" && Number.isInteger(n) && n > 0 && n <= 8192)

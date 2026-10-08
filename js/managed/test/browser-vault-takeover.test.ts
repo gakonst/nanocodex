@@ -139,3 +139,34 @@ it.each(["Session closed", "Must send a TouchStart first to start a new touch."]
   expect(state.uncertain).toBe(true);
   expect(cdp.calls.some(c => c.method === "Page.captureScreenshot")).toBe(false);
 });
+
+it("opted-in clients receive compact JPEG frames sized to the CSS viewport", async () => {
+  const jpeg = "/9j/" + "A".repeat(96);
+  const cdp = fixture(method => method === "Page.captureScreenshot" ? { data: jpeg } : undefined), state = {};
+  expect(await privateVaultTakeover(cdp, identity, { action: "observe", image_format: "jpeg" }, state)).toEqual({ status: "active", image: `data:image/jpeg;base64,${jpeg}`, width: 800, height: 600 });
+  expect(cdp.calls.find(c => c.method === "Page.captureScreenshot")?.params).toMatchObject({ format: "jpeg" });
+  await privateVaultTakeover(cdp, identity, { action: "edit", delete_backward: 0, text: "a" }, state);
+  expect(cdp.calls.filter(c => c.method === "Page.captureScreenshot").at(-1)?.params).toMatchObject({ format: "jpeg" });
+  const bad = fixture(method => method === "Page.captureScreenshot" ? { data: png } : undefined);
+  await expect(privateVaultTakeover(bad, identity, { action: "observe", image_format: "jpeg" })).rejects.toThrow(failure);
+  await expect(privateVaultTakeover(fixture(), identity, { action: "observe", image_format: "webp" } as any)).rejects.toThrow(failure);
+});
+it("batches edits into one bracketed pipeline", async () => {
+  const cdp = fixture();
+  await privateVaultTakeover(cdp, identity, { action: "edit", delete_backward: 3, text: "abc" });
+  const first = cdp.calls.findIndex(c => c.method.startsWith("Input.")), last = cdp.calls.findLastIndex(c => c.method.startsWith("Input."));
+  expect(last - first).toBe(6);
+  expect(cdp.calls[first - 1]?.method).toBe("Page.getFrameTree");
+  expect(cdp.calls.slice(last + 1, last + 3).map(c => c.method)).toEqual(["Target.getTargetInfo", "Page.getFrameTree"]);
+  expect(cdp.calls.length).toBeLessThanOrEqual(20);
+});
+it("login takeovers reject unapproved subframes and report the current approved origin", async () => {
+  const allowed = [identity.expected_origin, "https://idp.example"];
+  const sub = (url: string) => fixture(method => method === "Page.getFrameTree" ? { frameTree: { frame: { id: "top", url: identity.expected_origin }, childFrames: [{ frame: { id: "c", parentId: "top", url } }] } } : undefined);
+  const state: any = {};
+  await privateVaultTakeover(sub("https://idp.example/x"), identity, { action: "observe" }, state, false, allowed);
+  expect(state.origin).toBe(identity.expected_origin);
+  await expect(privateVaultTakeover(sub("https://evil.example/x"), identity, { action: "observe" }, {}, false, allowed)).rejects.toThrow(failure);
+  const moved = fixture(method => method === "Target.getTargetInfo" ? { targetInfo: { type: "page", targetId: "tab1", url: "https://idp.example/" } } : undefined);
+  await expect(privateVaultTakeover(moved, identity, { action: "observe" }, {}, false, allowed)).rejects.toThrow(failure);
+});

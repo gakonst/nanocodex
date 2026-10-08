@@ -25,3 +25,19 @@ test('legacy and safe input frames parse, private fields and invalid rectangles 
  for(const extra of [{keyboard:{...hint,value:'private'}},{inputs:[{...region,x:.9}]},{inputs:Array(33).fill(region)},{inputs:[{...region,height:0}]},{keyboard:{type:'unknown',multiline:false}}]) await assert.rejects(browserTakeover(intake,{action:'observe'},async()=>Response.json({...frame,...extra})));
  let calls=0; await assert.rejects(browserTakeover(intake,{action:'edit',text:'x',delete_backward:0},async()=>{calls++;throw Error('uncertain');}));assert.equal(calls,1);
 });
+test('typing during a round trip batches into one edit and idle refreshes never delay input', () => {
+ const queue: BrowserTakeoverAction[] = [];
+ enqueueTakeover(queue,{action:'observe',image_format:'jpeg'});
+ for (const ch of 'hello') enqueueTakeover(queue,{action:'edit',delete_backward:0,text:ch});
+ enqueueTakeover(queue,{action:'edit',delete_backward:2,text:''});
+ enqueueTakeover(queue,{action:'edit',delete_backward:0,text:'p!'});
+ enqueueTakeover(queue,{action:'observe'});
+ assert.deepEqual(queue,[{action:'edit',delete_backward:0,text:'help!'}]);
+ enqueueTakeover(queue,{action:'key',key:'Enter'}); enqueueTakeover(queue,{action:'edit',delete_backward:1,text:''});
+ enqueueTakeover(queue,{action:'edit',delete_backward:1,text:'x'});
+ assert.deepEqual(queue.slice(1),[{action:'key',key:'Enter'},{action:'edit',delete_backward:2,text:'x'}]);
+ const viewport:BrowserTakeoverAction={action:'observe',viewport:{width:390,height:700,mobile:true}};
+ const q2: BrowserTakeoverAction[] = [viewport]; enqueueTakeover(q2,{action:'edit',delete_backward:0,text:'a'}); assert.deepEqual(q2,[viewport,{action:'edit',delete_backward:0,text:'a'}]);
+ const q3: BrowserTakeoverAction[] = [{action:'edit',delete_backward:0,text:'ab'}]; enqueueTakeover(q3,{action:'edit',delete_backward:3,text:''});
+ assert.deepEqual(q3,[{action:'edit',delete_backward:1,text:''}]);
+});
