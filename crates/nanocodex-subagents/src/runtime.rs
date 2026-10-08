@@ -3248,6 +3248,78 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn journaled_claude_child_restores_its_native_checkpoint_and_turn_input() {
+        let mut state = RegistryState::default();
+        let child = state.reserve("root", None).unwrap();
+        let mut session = test_session(child.id, "claude-child", None);
+        session.status = AgentStatus::Running;
+        session.active = true;
+        session.turn_input = Some("phase two".to_owned());
+        let native = ChildSnapshot::Native {
+            model: nanocodex_agent::HarnessModel::Claude(nanocodex_agent::ClaudeModel::Haiku45),
+            session_id: "claude-child".to_owned(),
+            thinking: nanocodex_agent::Thinking::None,
+            payload: r#"{"messages":[]}"#.to_owned(),
+            has_conversation: true,
+        };
+        session.stored_runtime = Some(native);
+        state
+            .insert("root".into(), child.id, "claude-child".into(), session)
+            .unwrap();
+        let journal = state.journal(&HashMap::new());
+        assert_eq!(journal.len(), 1);
+        assert!(journal[0].1.contains("\"native_checkpoint\""));
+
+        let store = crate::MemorySubagentStore::new();
+        crate::SubagentStore::save(&store, "root", journal[0].1.clone())
+            .await
+            .unwrap();
+        let (registry, _control, _updates) = super::channel(4);
+        registry.set_store(Arc::new(store));
+        let report = registry.restore("root").await.unwrap();
+        assert_eq!(report.interrupted, vec![child.id]);
+        assert!(report.unrecoverable.is_empty());
+        let restored = registry.state.lock().await;
+        let session = restored
+            .scopes
+            .get("root")
+            .unwrap()
+            .sessions
+            .get(&child.id)
+            .unwrap();
+        assert_eq!(session.status, AgentStatus::Interrupted);
+        assert!(session.announce && session.evicted);
+        let Some(ChildSnapshot::Native {
+            model,
+            thinking,
+            payload,
+            has_conversation,
+            ..
+        }) = &session.stored_runtime
+        else {
+            panic!("Claude child lost its native checkpoint");
+        };
+        assert_eq!(
+            *model,
+            nanocodex_agent::HarnessModel::Claude(nanocodex_agent::ClaudeModel::Haiku45)
+        );
+        assert_eq!(*thinking, nanocodex_agent::Thinking::None);
+        assert_eq!(payload, r#"{"messages":[]}"#);
+        assert!(has_conversation);
+        drop(restored);
+        // The interrupted turn's input is replayed with the resume header.
+        assert_eq!(
+            registry.pending_resume.lock().unwrap().get("root"),
+            Some(&vec![(child.id, Some("phase two".to_owned()))])
+        );
+        let message = crate::durable::resume_message(Some("phase two"));
+        assert!(
+            message.starts_with(crate::durable::RESUME_MESSAGE) && message.ends_with("phase two")
+        );
+        assert_eq!(crate::durable::resume_message(Some(&message)), message);
+    }
+
+    #[tokio::test]
     async fn submitted_outputs_are_validated_and_completed_as_json() {
         let mut registry = RegistryState::default();
         let reservation = registry.reserve("main", None).unwrap();
