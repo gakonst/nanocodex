@@ -1,3 +1,4 @@
+mod idle_wait;
 mod output;
 mod process;
 mod selection;
@@ -141,6 +142,9 @@ impl ShellSessions {
         workspace: &Path,
     ) -> ExecCommandResult {
         let started_at = Instant::now();
+        if let Some(reason) = idle_wait::rejection(&command.script) {
+            return ExecCommandResult::failed(started_at.elapsed(), reason);
+        }
         let session_id = self.next_session_id.fetch_add(1, Ordering::Relaxed);
         let workdir = resolve_workdir(workspace, command.workdir.as_deref());
         let shell = command.shell.as_deref().map_or_else(
