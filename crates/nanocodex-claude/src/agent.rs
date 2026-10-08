@@ -445,8 +445,11 @@ impl ClaudeBuilder {
         self.max_tokens = stored.max_tokens;
         self.effort = stored.effort;
         self.adaptive_thinking = stored.adaptive_thinking;
-        self.automatic_cache = stored.automatic_cache;
-        self.cache_one_hour = stored.cache_one_hour;
+        // Caching is a host policy that may be newly enabled for an existing
+        // session; a restored checkpoint must not silently disable it. Frozen
+        // cursors keep their admitted wire bytes, so only new steps change.
+        self.automatic_cache |= stored.automatic_cache;
+        self.cache_one_hour |= stored.cache_one_hour;
         self.keep_thinking = stored.keep_thinking;
         self.fast_mode = stored.fast_mode;
         self.message_diagnostics = stored.message_diagnostics;
