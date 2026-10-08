@@ -14,6 +14,8 @@ public struct RemoteHand: Decodable, Identifiable, Sendable {
     public let generation: String
     public let transport: Transport?
     public private(set) var broadcast: Bool? = nil
+    /// Older Hands omit this; playback links are hidden unless it is exactly true.
+    public private(set) var playback: Bool? = nil
     public private(set) var frameWindow: Int? = nil
     // Frames are Cloudflare's explicit HTTPS-only transport, not native recovery.
     var supportsLiveTransport: Bool {
@@ -22,7 +24,7 @@ public struct RemoteHand: Decodable, Identifiable, Sendable {
     }
     public var identity: String { machineID + ":" + id + ":" + generation }
     enum CodingKeys: String, CodingKey {
-        case id, name, kind, width, height, controllable, generation, transport, broadcast
+        case id, name, kind, width, height, controllable, generation, transport, broadcast, playback
         case machineID = "machine_id", machineName = "machine_name", frameWindow = "frame_window"
     }
 }
@@ -329,5 +331,126 @@ public final class RemoteSignaling: RemoteSignalingTransport {
             // authorization rejection should disable automatic recovery.
             self?.close(error: RemoteError.unavailable)
         }
+    }
+}
+
+// MARK: - View-only HLS playback links
+
+public enum RemotePlaybackPreset: String, Codable, CaseIterable, Sendable { case p720 = "720p", p1080 = "1080p" }
+
+public struct RemotePlaybackLink: Decodable, Identifiable, Equatable, Sendable {
+    public enum State: String, Decodable, Sendable { case starting, live, failed, ended, revoked, expired }
+    public let id: String
+    public let machineID: String
+    public let surfaceID: String
+    public let preset: RemotePlaybackPreset
+    public let state: State
+    public let createdAt: Int
+    public let expiresAt: Int
+    public let error: String?
+    public var isActive: Bool { state == .starting || state == .live }
+    public var expiresDate: Date { Date(timeIntervalSince1970: TimeInterval(expiresAt) / 1000) }
+    enum CodingKeys: String, CodingKey {
+        case id, preset, state, error
+        case machineID = "machine_id", surfaceID = "surface_id", createdAt = "created_at", expiresAt = "expires_at"
+    }
+}
+
+/// `url` is present only on the first create response; replays omit it. Keep it in view memory only.
+public struct RemotePlaybackCreation: Sendable {
+    public let link: RemotePlaybackLink
+    public let url: URL?
+}
+
+public struct RemotePlaybackError: LocalizedError, Equatable, Sendable {
+    public let message: String
+    /// The server may have created a link: reconcile the active list before a new request.
+    public let uncertain: Bool
+    public let code: String?
+    public var errorDescription: String? { message }
+    static let messages: [String: String] = [
+        "invalid_request": "The playback request was invalid. Refresh and try again.",
+        "unsupported": "This Hand needs an update before it can create playback links.",
+        "stale_generation": "The screen changed. Refresh and try again.",
+        "not_found": "This screen is no longer available.",
+        "host_unavailable": "The Hand is offline or not responding.",
+        "too_many_streams": "You already have the maximum number of active playback links. Stop one first.",
+        "operation_conflict": "This request changed while unconfirmed. Check active links before trying again.",
+        "unauthorized": "Sign in again to manage playback links.",
+        "forbidden": "This account cannot manage playback links for this Hand.",
+        "forbidden_origin": "This account cannot manage playback links for this Hand.",
+    ]
+}
+
+public extension RemoteService {
+    static let playbackDurations: [(seconds: Int, label: String)] = [(900, "15 minutes"), (3600, "1 hour"), (14_400, "4 hours"), (28_800, "8 hours")]
+
+    func playbackLinks() async throws -> [RemotePlaybackLink] {
+        struct Response: Decodable { let data: [RemotePlaybackLink] }
+        let data = try await playbackRequest(method: "GET")
+        guard let value = try? JSONDecoder().decode(Response.self, from: data), value.data.count <= 256 else {
+            throw RemotePlaybackError(message: "Invalid playback link response.", uncertain: false, code: nil)
+        }
+        return value.data
+    }
+
+    /// Never retried automatically. Reuse `operationID` only for an explicit user retry of the same request.
+    func createPlaybackLink(hand: RemoteHand, operationID: UUID, expiresInSeconds: Int, preset: RemotePlaybackPreset) async throws -> RemotePlaybackCreation {
+        guard hand.playback == true else { throw RemotePlaybackError(message: RemotePlaybackError.messages["unsupported"]!, uncertain: false, code: "unsupported") }
+        let body: [String: Any] = ["operation_id": operationID.uuidString.lowercased(), "machine_id": hand.machineID, "surface_id": hand.id,
+            "generation": hand.generation, "expires_in_seconds": expiresInSeconds, "preset": preset.rawValue]
+        let data = try await playbackRequest(method: "POST", body: JSONSerialization.data(withJSONObject: body))
+        let unreadable = RemotePlaybackError(message: "The response was unreadable. Check active links before trying again.", uncertain: true, code: nil)
+        struct Receipt: Decodable { let url: String?; let url_available: Bool? }
+        guard let link = try? JSONDecoder().decode(RemotePlaybackLink.self, from: data),
+              let receipt = try? JSONDecoder().decode(Receipt.self, from: data) else { throw unreadable }
+        if receipt.url == nil, receipt.url_available == false { return RemotePlaybackCreation(link: link, url: nil) }
+        guard let url = validPlaybackURL(receipt.url) else {
+            throw RemotePlaybackError(message: "The server returned an unexpected link. Stop it in active links before creating another.", uncertain: true, code: nil)
+        }
+        return RemotePlaybackCreation(link: link, url: url)
+    }
+
+    func revokePlaybackLink(id: String) async throws {
+        guard !id.isEmpty, id.count <= 128, let segment = id.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed.subtracting(CharacterSet(charactersIn: "/"))) else {
+            throw RemotePlaybackError(message: "Invalid playback link.", uncertain: false, code: nil)
+        }
+        do { _ = try await playbackRequest(method: "DELETE", suffix: "/" + segment) }
+        catch let error as RemotePlaybackError where error.code == "not_found" { return }
+    }
+
+    /// Only a same-origin playlist without userinfo, query or fragment is shown.
+    func validPlaybackURL(_ value: String?) -> URL? {
+        guard let value, value.count <= 2048, let parts = URLComponents(string: value), let url = parts.url,
+              let base = URLComponents(url: origin, resolvingAgainstBaseURL: false),
+              parts.scheme == base.scheme, parts.host?.lowercased() == base.host?.lowercased(), parts.port == base.port,
+              parts.user == nil, parts.password == nil, parts.query == nil, parts.fragment == nil,
+              parts.path.hasPrefix("/v1/screen-playback/"), parts.path.hasSuffix("/index.m3u8") else { return nil }
+        return url
+    }
+
+    private func playbackRequest(method: String, suffix: String = "", body: Data? = nil) async throws -> Data {
+        let write = method != "GET"
+        var request = try makeRequest(path: "/playback-links" + suffix)
+        request.httpMethod = method; request.httpBody = body; request.cachePolicy = .reloadIgnoringLocalCacheData
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        let data: Data, response: URLResponse
+        do { (data, response) = try await ManagedAccess.data(for: request, using: session) }
+        catch {
+            throw RemotePlaybackError(message: write ? "No response was received. Check active links before trying again." : "Could not load playback links.", uncertain: write, code: nil)
+        }
+        guard let http = response as? HTTPURLResponse, data.count <= 262_144 else {
+            throw RemotePlaybackError(message: "Invalid playback link response.", uncertain: write, code: nil)
+        }
+        guard (200..<300).contains(http.statusCode) else {
+            struct Failure: Decodable { let error: String }
+            var code = (try? JSONDecoder().decode(Failure.self, from: data))?.error
+            if code == nil, http.statusCode == 401 { code = "unauthorized" }
+            let uncertain = write && http.statusCode >= 500 && code != "host_unavailable"
+            throw RemotePlaybackError(message: code.flatMap { RemotePlaybackError.messages[$0] }
+                ?? (uncertain ? "The request did not complete. Check active links before trying again." : "The playback request failed."),
+                uncertain: uncertain, code: code)
+        }
+        return data
     }
 }

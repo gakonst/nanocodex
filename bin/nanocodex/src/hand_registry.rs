@@ -11,6 +11,9 @@ use reqwest::{
 };
 use serde_json::Value;
 
+#[path = "hand_playback.rs"]
+mod playback;
+
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(clap::Subcommand)]
@@ -25,6 +28,8 @@ pub(crate) enum Command {
     },
     /// Remove only Hands observed definitively offline.
     Prune,
+    /// Create or revoke a portable, view-only screen playback link.
+    Stream(playback::Playback),
 }
 
 impl Command {
@@ -33,6 +38,7 @@ impl Command {
             Self::List => list().await,
             Self::Forget { id, force } => forget(&id, force).await,
             Self::Prune => prune().await,
+            Self::Stream(command) => command.run().await,
         }
     }
 }

@@ -10,7 +10,24 @@ const noStore = { "cache-control": "no-store" };
 export const REMOTE_VM_ASSERTION = "x-nanocodex-remote-vm";
 export type RemoteVMPublisher = { machineId: string; machineName?: string; routeId: string; expiresAt: number; surfaceKind?: "desktop" };
 
-type Surface = { id: string; name: string; kind: "desktop" | "window" | "phone" | "vm"; width: number; height: number; controllable: boolean; agent_tools?: boolean; recording?: ScreenTarget["recording"]; recordingCapabilities?: Record<string, unknown>; broadcast?: boolean; transport?: "frames-v1"; frame_window?: number };
+type Surface = { id: string; name: string; kind: "desktop" | "window" | "phone" | "vm"; width: number; height: number; controllable: boolean; agent_tools?: boolean; recording?: ScreenTarget["recording"]; recordingCapabilities?: Record<string, unknown>; broadcast?: boolean; playback?: boolean; transport?: "frames-v1"; frame_window?: number };
+/** Authority decision for one complete host catalog, awaited before it becomes visible. */
+export type HandRemoteCatalogClaim = Readonly<{ machineId: string; generation: string; connectionId: string; surfaces: readonly string[] }>;
+/** Host-originated HLS playback status. Never carries upload URLs or tokens. */
+export type HandRemoteHostResult = Readonly<{ type: "broadcast_result"; target: "hls"; request_id: string; stream_id: string;
+  status: "starting" | "live" | "reconnecting" | "stopped" | "failed"; error?: string; machine_id: string; generation: string }>;
+export type HandRemoteHostCommand = Readonly<{ action: "start" | "stop" | "status"; request_id: string; stream_id: string;
+  preset?: string; upload?: Readonly<{ url: string; token: string; expires_at: number }> }>;
+export type HandRemoteHooks = Readonly<{
+  onObservation?: (observation: HandRemoteObservation) => void;
+  /** Resolve false to reject; throwing also rejects. Must not reenter this broker synchronously. */
+  claimCatalog?: (claim: HandRemoteCatalogClaim) => Promise<boolean>;
+  onHostResult?: (result: HandRemoteHostResult) => void;
+  /** Regional brokers prefix connection IDs and generations ("rs.<region>.") so Workers route without an owner hop. */
+  idPrefix?: string;
+}>;
+const HLS_STATUSES = ["starting", "live", "reconnecting", "stopped", "failed"];
+const HLS_ERRORS = ["invalid_request", "unsupported", "busy", "capture_failed", "encoder_failed", "upload_rejected", "expired", "broadcast_failed"];
 type Attachment = {
   kind: typeof TAG; role: "host" | "viewer"; id: string; generation: string; expiresAt: number;
   machineId?: string; machineName?: string; surfaces?: Surface[]; hostId?: string; surfaceId?: string;
@@ -21,6 +38,9 @@ type Attachment = {
   frameWindow?: number;
   broadcastRequest?: string;
   renewalCount?: number;
+  /** A complete catalog is awaiting owner authority; it is not yet visible. */
+  claiming?: boolean;
+  claimMachineId?: string;
 };
 type Context = Pick<DurableObjectState, "acceptWebSocket" | "getWebSockets">;
 
@@ -30,7 +50,7 @@ export type HandRemoteReasonCode = "connection_closed" | "websocket_closed" | "w
   | "invalid_signaling" | "send_failed" | "stale_catalog" | "invalid_input" | "invalid_agent"
   | "host_unavailable" | "busy" | "not_controllable" | "aborted" | "timeout"
   | "result_ok" | "result_busy" | "result_invalid" | "result_unavailable" | "result_cancelled"
-  | "retained_socket";
+  | "retained_socket" | "claim_rejected";
 export type HandRemoteObservation = Readonly<{
   stage: "snapshot" | "connection.accepted" | "connection.ready" | "connection.published" | "connection.replaced"
     | "connection.renewed" | "connection.closed" | "connection.lease_expired" | "connection.fenced"
@@ -49,14 +69,18 @@ const REASON_CODES: ReadonlySet<string> = new Set<HandRemoteReasonCode>([
   "connection_closed", "websocket_closed", "websocket_error", "publisher_revoked", "host_replaced",
   "host_disconnected", "viewer_closed", "lease_expired", "invalid_signaling", "send_failed", "stale_catalog",
   "invalid_input", "invalid_agent", "host_unavailable", "busy", "not_controllable", "aborted", "timeout",
-  "result_ok", "result_busy", "result_invalid", "result_unavailable", "result_cancelled", "retained_socket",
+  "result_ok", "result_busy", "result_invalid", "result_unavailable", "result_cancelled", "retained_socket", "claim_rejected",
 ]);
 
 export class HandRemoteBroker {
   private readonly sendFailures = new WeakSet<object>();
   private readonly pending = new Map<string, { socket: WebSocket; expectsImage: boolean; recording: boolean; observation: CallObservation;
     finish(result: AgentScreenResult, reasonCode?: HandRemoteReasonCode): void }>();
-  constructor(private readonly context: Context, private readonly onObservation?: (observation: HandRemoteObservation) => void) {
+  private readonly onObservation?: (observation: HandRemoteObservation) => void;
+  private readonly hooks: HandRemoteHooks;
+  constructor(private readonly context: Context, hooks?: HandRemoteHooks | ((observation: HandRemoteObservation) => void)) {
+    this.hooks = typeof hooks === "function" ? { onObservation: hooks } : hooks ?? {};
+    this.onObservation = this.hooks.onObservation;
     // Socket attachments survive hibernation; pending calls do not. Resumption
     // provides no evidence of whether an earlier call executed or completed.
     for (const socket of context.getWebSockets(TAG)) {
@@ -93,6 +117,41 @@ export class HandRemoteBroker {
     for (const socket of this.context.getWebSockets(TAG)) {
       if (this.attachment(socket)?.vm?.routeId === routeId) this.close(socket, "Hand revoked", "publisher_revoked");
     }
+  }
+
+  /** Close every host publication of a machine except `keepGeneration`, including
+   * hosts still awaiting a claim. Their viewers are fenced with them. */
+  fenceMachine(machineId: string, keepGeneration?: string, reasonCode: HandRemoteReasonCode = "host_replaced"): number {
+    let fenced = 0;
+    for (const socket of this.context.getWebSockets(TAG)) {
+      const state = this.attachment(socket);
+      if (state?.role !== "host" || state.expiresAt <= 0 || state.generation === keepGeneration) continue;
+      if (state.machineId !== machineId && state.claimMachineId !== machineId) continue;
+      this.close(socket, reasonCode === "publisher_revoked" ? "Hand revoked" : "Host replaced", reasonCode); fenced++;
+    }
+    return fenced;
+  }
+
+  /** Current visible publication of a machine, if any. */
+  publication(machineId: string): { generation: string; connectionId: string } | undefined {
+    this.sweep();
+    const host = this.hosts().find(({ state }) => state.machineId === machineId);
+    return host ? { generation: host.state.generation, connectionId: host.state.id } : undefined;
+  }
+
+  /** Broker-originated HLS command to the authenticated host socket. The upload
+   * token travels only over this socket and is never retained in attachments. */
+  sendHostCommand(machineId: string, surfaceId: string, generation: string | undefined, command: HandRemoteHostCommand): Response {
+    this.sweep();
+    const host = this.hosts().find(({ state }) => state.machineId === machineId && state.surfaces?.some(surface => surface.id === surfaceId));
+    if (!host) return Response.json({ error: "not_found" }, { status: 404, headers: noStore });
+    if (generation !== undefined && generation !== host.state.generation) return Response.json({ error: "stale_generation" }, { status: 409, headers: noStore });
+    if (!host.state.surfaces!.find(surface => surface.id === surfaceId)!.playback) return Response.json({ error: "unsupported" }, { status: 409, headers: noStore });
+    try {
+      this.send(host.socket, { type: "broadcast", target: "hls", action: command.action, request_id: command.request_id, surface_id: surfaceId,
+        stream_id: command.stream_id, ...(command.action === "start" ? { preset: command.preset, upload: command.upload } : {}) });
+    } catch { return Response.json({ error: "host_unavailable" }, { status: 503, headers: noStore }); }
+    return Response.json({ generation: host.state.generation }, { headers: noStore });
   }
 
   async invoke(name: string, route: string, input: unknown, agentId: string, signal: AbortSignal, context?: HandRemoteCallContext): Promise<Response | undefined> {
@@ -179,7 +238,8 @@ export class HandRemoteBroker {
     if (this.context.getWebSockets(TAG).length >= MAX_CONNECTIONS) {
       return Response.json({ error: "remote_capacity" }, { status: 429, headers: noStore });
     }
-    const state: Attachment = { kind: TAG, role: "host", id: crypto.randomUUID(), generation: crypto.randomUUID(),
+    const prefix = this.hooks.idPrefix ?? "";
+    const state: Attachment = { kind: TAG, role: "host", id: prefix + crypto.randomUUID(), generation: prefix + crypto.randomUUID(),
       expiresAt: Date.now() + LEASE_MS, rateWindow: Date.now(), rateCount: 0 };
     if (vm) {
       state.vm = vm;
@@ -251,9 +311,9 @@ export class HandRemoteBroker {
     return Response.json({ expires_at: state.expiresAt }, { headers: noStore });
   }
 
-  message(socket: WebSocket, message: string | ArrayBuffer): void {
+  async message(socket: WebSocket, message: string | ArrayBuffer): Promise<void> {
     this.sweep();
-    const state = this.attachment(socket);
+    let state = this.attachment(socket);
     if (!state || state.expiresAt <= Date.now()) return;
     try {
       if (typeof message !== "string" || new TextEncoder().encode(message).length > 750_000) throw new Error();
@@ -283,13 +343,25 @@ export class HandRemoteBroker {
       if (Date.now() - state.rateWindow >= 1000) { state.rateWindow = Date.now(); state.rateCount = 0; }
       if (++state.rateCount > 160) throw new Error();
       socket.serializeAttachment(state);
+      if (value.type === "broadcast_result" && value.target === "hls" && state.role === "host") {
+        exact(value, ["type", "target", "request_id", "stream_id", "status", "error"]);
+        if (!state.surfaces || typeof value.request_id !== "string" || !ID.test(value.request_id)
+          || typeof value.stream_id !== "string" || !ID.test(value.stream_id) || !HLS_STATUSES.includes(value.status)
+          || (value.error !== undefined && typeof value.error !== "string")) throw new Error();
+        // Native errors may echo upload URLs; only protocol codes are forwarded.
+        const result: HandRemoteHostResult = { type: "broadcast_result", target: "hls", request_id: value.request_id,
+          stream_id: value.stream_id, status: value.status, machine_id: state.machineId!, generation: state.generation,
+          ...(value.error === undefined ? {} : { error: HLS_ERRORS.includes(value.error) ? value.error : "broadcast_failed" }) };
+        try { this.hooks.onHostResult?.(result); } catch { /* Status forwarding never fences the host. */ }
+        return;
+      }
       if (["broadcast", "broadcast_result"].includes(value.type)) {
         this.relayBroadcast(socket, state, value); return;
       }
       if (["frame_request", "frame", "control", "input"].includes(value.type)) {
         this.relayFrameMessage(socket, state, value); return;
       }
-      if (value.type === "catalog" && state.role === "host" && state.surfaces === undefined) {
+      if (value.type === "catalog" && state.role === "host" && state.surfaces === undefined && !state.claiming) {
         exact(value, ["type", "machine_id", "machine_name", "surfaces"]);
         if (typeof value.machine_id !== "string" || !ID.test(value.machine_id) || typeof value.machine_name !== "string" || !value.machine_name.trim()
           || new TextEncoder().encode(value.machine_name).length > 128) throw new Error();
@@ -297,6 +369,20 @@ export class HandRemoteBroker {
         if (surfaces.some(surface => surface.transport === "frames-v1" && (!cloudflarePublisher(state) || !cloudflareFrames(value.machine_id, surface.kind)))) throw new Error();
         if (state.vm && (value.machine_id !== state.vm.machineId
           || surfaces.some(surface => surface.kind !== (state.vm!.surfaceKind ?? "vm")))) throw new Error();
+        if (this.hooks.claimCatalog) {
+          // Owner authority decides cross-region placement before visibility.
+          Object.assign(state, { claiming: true, claimMachineId: value.machine_id }); socket.serializeAttachment(state);
+          let granted = false;
+          try {
+            granted = await this.hooks.claimCatalog({ machineId: value.machine_id, generation: state.generation,
+              connectionId: state.id, surfaces: surfaces.map(surface => surface.id) }) === true;
+          } catch { granted = false; }
+          const current = this.attachment(socket);
+          // Closed, expired or fenced while awaiting: never publish late.
+          if (!current || current.id !== state.id || current.expiresAt <= Date.now()) return;
+          if (!granted) { this.close(socket, "Host publication rejected", "claim_rejected"); return; }
+          delete current.claiming; delete current.claimMachineId; state = current;
+        }
         // Publish only a complete validated catalog. Replacement fences every old viewer.
         for (const old of this.hosts().filter(({ state: old }) => old.machineId === value.machine_id)) {
           this.observe("connection.replaced", old.state, { reason_code: "host_replaced" });
@@ -562,7 +648,7 @@ function normalizeSurfaces(value: unknown): Surface[] {
   const ids = new Set();
   return value.map(surface => {
     if (!surface || typeof surface !== "object") throw new Error();
-    exact(surface, ["id", "name", "kind", "width", "height", "controllable", "agent_tools", "recording", "recordingCapabilities", "broadcast", "transport", "frame_window"]);
+    exact(surface, ["id", "name", "kind", "width", "height", "controllable", "agent_tools", "recording", "recordingCapabilities", "broadcast", "playback", "transport", "frame_window"]);
     if (typeof surface.id !== "string" || !ID.test(surface.id) || ids.has(surface.id)
       || typeof surface.name !== "string" || !surface.name.trim() || new TextEncoder().encode(surface.name).length > 128
       || !["desktop", "window", "phone", "vm"].includes(surface.kind) || typeof surface.controllable !== "boolean"
@@ -570,6 +656,7 @@ function normalizeSurfaces(value: unknown): Surface[] {
       || (surface.recordingCapabilities !== undefined && (!surface.recordingCapabilities || typeof surface.recordingCapabilities !== "object"
         || !validRecordingCapability(surface.recordingCapabilities) || surface.recordingCapabilities.available !== surface.recording))
       || (surface.broadcast !== undefined && typeof surface.broadcast !== "boolean")
+      || (surface.playback !== undefined && typeof surface.playback !== "boolean")
       || (surface.agent_tools !== undefined && typeof surface.agent_tools !== "boolean")
       || (surface.transport !== undefined && surface.transport !== "frames-v1")
       || (surface.frame_window !== undefined && (surface.transport !== "frames-v1"

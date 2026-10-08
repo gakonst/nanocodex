@@ -6,6 +6,7 @@ import { createPortal } from "react-dom";
 import { Monitor, X } from "lucide-react";
 import { canStartBroadcast, listRemoteHands, RemoteBrowserSession, RemoteScreenIntent, RemoteIceCredentials, type RemoteIceContext, remoteKeys, type RemoteScreenSelection, type RemoteHand, type BroadcastPreset, type RemoteState, type RemoteInput } from "./handRemote";
 import { RemoteMotionBuffer, RemoteMouseButtons } from "./handRemoteInput";
+import { PlaybackLinks } from "./RemotePlaybackLinks";
 import "./RemoteScreens.css";
 
 export function RemoteScreens({ showLabel = false }: { showLabel?: boolean }) {
@@ -123,6 +124,7 @@ export function Screen({ hand, onBack, preparing = false, selectedAt, iceContext
   const [streamPreset, setStreamPreset] = useState<BroadcastPreset>("source");
   const [streamOpen, setStreamOpen] = useState(false);
   const [statsOpen, setStatsOpen] = useState(false);
+  const [playbackOpen, setPlaybackOpen] = useState(false);
   const activeHand = session.current?.hand ?? hand;
   useEffect(() => {
     let mounted = true;
@@ -417,6 +419,7 @@ export function Screen({ hand, onBack, preparing = false, selectedAt, iceContext
         aria-pressed={Boolean(state.microphoneEnabled)} onClick={() => { void session.current?.setMicrophoneEnabled(!state.microphoneEnabled && !state.microphonePending); }}>
         {state.microphonePending ? "Cancel microphone" : state.microphoneEnabled ? "Mute microphone" : "Enable microphone"}</button>}
       {activeHand.broadcast && <button type="button" aria-expanded={streamOpen} onClick={() => setStreamOpen(!streamOpen)}>Stream RTMP</button>}
+      {activeHand.playback === true && <button type="button" aria-expanded={playbackOpen} onClick={() => setPlaybackOpen(!playbackOpen)}>Share playback</button>}
       {state.controlling && !pointerLocked && <button type="button" onClick={lockMouse}>Lock mouse</button>}
       <button type="button" aria-pressed={statsOpen} onClick={() => setStatsOpen(!statsOpen)}>Stats</button>
       <button type="button" title="Control–Command–F" onClick={toggleFullscreen}>{fullscreen || expanded ? "Exit fullscreen" : "Fullscreen"}</button>
@@ -441,6 +444,7 @@ export function Screen({ hand, onBack, preparing = false, selectedAt, iceContext
       {state.broadcastError && <span role="alert">{state.broadcastError}</span>}
       <small>Closing this preview keeps the stream running. Use Stop stream to end it.</small>
     </form>}
+    {playbackOpen && activeHand.playback === true && <PlaybackLinks hand={activeHand} />}
     {state.microphoneError && <p className="remote-screen-notice" role="alert">{state.microphoneError}</p>}
     {captureNotice && <p className="remote-screen-notice" role="status">{captureNotice}</p>}
     {/* srcObject clears on teardown. Display video as soon as it decodes, even while input channels connect. */}

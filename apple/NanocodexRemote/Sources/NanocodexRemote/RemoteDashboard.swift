@@ -287,6 +287,12 @@ public struct RemoteDashboard: View {
 #endif
                 }
                 if !gameControls && viewer.hand?.broadcast == true { broadcastControls }
+                if !gameControls, let hand = viewer.hand, hand.playback == true {
+                    RemotePlaybackLinks(service: service, hand: hand)
+#if os(iOS)
+                        .padding(.horizontal)
+#endif
+                }
                 if !gameControls && viewer.controlling && (!embedded || showKeyboard) {
                     VStack(spacing: 8) {
                         HStack {
