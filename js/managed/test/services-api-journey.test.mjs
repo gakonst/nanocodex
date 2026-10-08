@@ -59,7 +59,18 @@ test("standalone account services use real authentication, no agent, and private
       // Deliberately no session/model namespace: these routes must not create or run an agent.
       durableObjects: Object.fromEntries([["NANOCODEX_USERS", "UserAccount"], ["NANOCODEX_ORGANIZATIONS", "Organization"],
         ["NANOCODEX_API_KEYS", "ApiKeyRecord"], ["NANOCODEX_AUTH", "NonceStorage"]].map(([name, className]) => [name, { className, useSQLite: true }])),
-      serviceBindings: { NANOCODEX: async request => {
+      serviceBindings: { NANOCODEX: "egress" },
+    },
+    // A real egress-shaped entrypoint: RPC metadata reads and fetch share one dispatch trail.
+    { name: "egress", modules: true, compatibilityDate: "2026-07-30", script: `import { WorkerEntrypoint } from "cloudflare:workers";
+      export default class extends WorkerEntrypoint {
+        fetch(request) { return this.env.DISPATCH.fetch(request); }
+        async readAccountVault(userId) {
+          const response = await this.env.DISPATCH.fetch("https://broker.internal/users/" + encodeURIComponent(userId) + "/credentials/vault");
+          return { status: response.status, vault: response.ok ? (await response.json()).vault : null };
+        }
+      }`,
+      serviceBindings: { DISPATCH: async request => {
         const url = new URL(request.url);
         dispatches.push({ origin: url.origin, path: url.pathname, method: request.method,
           human_approval: request.headers.get("x-nanocodex-phone-human-approval") === "true" });
