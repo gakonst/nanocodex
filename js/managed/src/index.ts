@@ -13533,11 +13533,15 @@ export class DurableAgentSession extends DurableComputerObject {
 
   async #hasActiveSubagents(): Promise<boolean> {
     const agent = this.#agent;
-    if (!agent || this.#subagentBindings.authorizations.size === 0) return false;
+    if (!agent) return false;
+    // Restored children can precede managed binding registration. The runtime
+    // directory is authoritative, including reusable interrupted children.
     try {
       const { agents } = await Subagents.list(agent);
       return agents.some(({ status }) => status.state === "pending"
-        || status.state === "running" || status.state === "closing");
+        || status.state === "running" || status.state === "closing"
+        // Default listing excludes interrupted children without recovery state.
+        || status.state === "interrupted");
     } catch {
       // A transient directory failure must not destroy work owned by this runtime.
       return this.#agent === agent;
