@@ -10,6 +10,8 @@ import type { PersonalizationSnapshot } from "../src/personalization";
 async function withVoice(run: (f: Awaited<ReturnType<typeof fixture>>) => Promise<void>, connect = false, read = true) {
   const sessions = (env as unknown as { NANOCODEX_SESSIONS: DurableObjectNamespace<DurableAgentSession> }).NANOCODEX_SESSIONS;
   await runInDurableObject(sessions.getByName(crypto.randomUUID()), async (session, state) => {
+    // Fresh objects keep their constructor read-only; a handled route initializes the schema.
+    await session.fetch(new Request("https://session.internal/personalization/invalidate", { method: "POST" }));
     await run(await fixture(session, state, connect, read));
   });
 }

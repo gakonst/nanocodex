@@ -2226,6 +2226,30 @@ impl State {
             .is_ok_and(HarnessModel::supports_fast_mode);
         (supported && self.fast_mode.load(Ordering::SeqCst)).then_some(crate::Speed::Fast)
     }
+    /// Hosts that restate prompt-carried context (memory, request origin) need
+    /// to know when a summary replaced earlier history. Usage is omitted: turn
+    /// usage already accounts the summary request.
+    fn emit_compacted(
+        &self,
+        events: &AgentEventPublisher,
+        after_model_call_index: u32,
+        started: Instant,
+    ) {
+        self.emit(
+            events,
+            AgentEventKind::ModelCompactionCompleted,
+            json!({
+                "after_model_call_index": after_model_call_index,
+                "attempt": 1,
+                "connection_generation": 0,
+                "status": "completed",
+                "duration_ns": u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX),
+                "time_to_first_event_ns": 0,
+                "time_to_first_output_ns": null,
+                "usage": null,
+            }),
+        );
+    }
     fn emit_run_started(&self, request: &BackendPrompt) -> (&'static str, String) {
         let reasoning_mode = if matches!(
             self.model().as_str(),
@@ -3421,6 +3445,7 @@ impl State {
                     .saturating_add(incoming_tokens)
                     >= cursor.threshold
             {
+                let compaction_started = Instant::now();
                 add_usage(
                     &mut usage,
                     &self
@@ -3433,6 +3458,7 @@ impl State {
                         )
                         .await?,
                 );
+                self.emit_compacted(&request.events, 0, compaction_started);
             }
             pending = conversation.packed_messages();
             pending.extend(prompt);
@@ -3462,6 +3488,7 @@ impl State {
                 // large tool result, not just when the next user turn starts.
                 // Summarize only the prefix before the pending assistant round;
                 // the completed receipts remain lossless and are not reexecuted.
+                let compaction_started = Instant::now();
                 add_usage(
                     &mut usage,
                     &self
@@ -3474,6 +3501,7 @@ impl State {
                         )
                         .await?,
                 );
+                self.emit_compacted(&request.events, index, compaction_started);
                 pending = conversation.packed_messages();
                 previous_message_id = conversation.previous_message_id.clone();
                 cursor.pending = pending.clone();
@@ -3989,6 +4017,7 @@ impl State {
                     return Err(provider_error("context window exhausted after recovery"));
                 }
                 cursor.context_recovery_attempted = true;
+                let compaction_started = Instant::now();
                 add_usage(
                     &mut usage,
                     &self
@@ -4001,6 +4030,7 @@ impl State {
                         )
                         .await?,
                 );
+                self.emit_compacted(&request.events, index, compaction_started);
                 // A user continuation closes the interrupted assistant turn.
                 // Partial text and completed effects remain lossless; only
                 // fully resolved tool boundaries can reach this point.

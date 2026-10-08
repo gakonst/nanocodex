@@ -1,6 +1,7 @@
 //! Context recovery journeys through the public backend and loopback Messages API.
 use axum::{Json, Router, http::StatusCode, response::IntoResponse, routing::post};
-use nanocodex_agent::Nanocodex;
+use futures_util::StreamExt;
+use nanocodex_agent::{Nanocodex, events::AgentEventKind};
 use nanocodex_claude::{Claude, ClaudeClient, ToolDefinition};
 use serde_json::{Value, json};
 use std::sync::{
@@ -284,7 +285,7 @@ async fn advancing_rounds_allow_new_compaction_with_bounded_rapid_refill() {
     }, None).await;
     let effects = Arc::new(AtomicUsize::new(0));
     let counter = effects.clone();
-    let (agent, _) = Nanocodex::builder(Claude::latest(client))
+    let (agent, mut events) = Nanocodex::builder(Claude::latest(client))
         .auto_compact_window_tokens(100_000)
         .tool(tool(), move |_| {
             counter.fetch_add(1, Ordering::SeqCst);
@@ -299,6 +300,19 @@ async fn advancing_rounds_allow_new_compaction_with_bounded_rapid_refill() {
         .result()
         .await
         .unwrap();
+    // Hosts restate prompt-carried context after a summary replaces history.
+    let mut compactions = Vec::new();
+    loop {
+        let event = events.next().await.unwrap();
+        if event.kind == AgentEventKind::ModelCompactionCompleted {
+            let payload: Value = serde_json::from_str(event.payload.get()).unwrap();
+            compactions.push(payload["after_model_call_index"].as_u64().unwrap());
+        }
+        if event.kind == AgentEventKind::RunCompleted {
+            break;
+        }
+    }
+    assert_eq!(compactions, [1, 2, 5], "one event per summary (requests 2, 4 and 8)");
     assert_eq!(result.final_message(), "done");
     assert_eq!(result.usage().unwrap().input_tokens(), 630_000);
     let log = requests.lock().unwrap();

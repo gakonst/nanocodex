@@ -5733,7 +5733,7 @@ export class DurableAgentSession extends DurableComputerObject {
         await previous;
         if (this.#deleting || this.#deleted || this.#durabilityExported || this.#recoverableTurnCount() || this.#turns.size || await this.#hasActiveSubagents()) return json({ error: "agent_busy" }, { status: 409 });
         this.#compactionAuthorization = turnAuthorization;
-        try { const agent = await this.#ensureAgent(); await agent.session.compact(); return json({ compacted: true }); }
+        try { const agent = await this.#ensureAgent(); await agent.session.compact(); this.#startupContext.resetDelivered(); return json({ compacted: true }); }
         catch { return json({ error: "compaction_failed", message: "Compaction outcome is uncertain; inspect session history before retrying" }, { status: 503 }); }
         finally { this.#compactionAuthorization = undefined; }
       });
@@ -9168,7 +9168,7 @@ export class DurableAgentSession extends DurableComputerObject {
       if (this.#managedDispatchInput(row) === undefined && row.state !== "cancelling") {
         dispatchInputJson = JSON.stringify(this.#startupContext.enrichTurnOrigin(row.id,
           JSON.parse(dispatchInputJson) as PromptInput,
-          this.#accountMachines(parseTurnAuthorization(row.authorization_json), { sessionId: agent.sessionId })));
+          this.#accountMachines(parseTurnAuthorization(row.authorization_json), { sessionId: agent.sessionId }), true));
       }
       const dispatchable = this.#managedTurn(row.id);
       if (!dispatchable || isTerminalState(dispatchable.state)) {
@@ -9635,6 +9635,9 @@ export class DurableAgentSession extends DurableComputerObject {
       if (initializedTables.has("managed_hand_paths")) this.ctx.storage.sql.exec("DELETE FROM managed_hand_paths");
       this.ctx.storage.sql.exec("DELETE FROM managed_prepared_personalization");
       this.ctx.storage.sql.exec("DELETE FROM managed_personalization_state");
+      this.ctx.storage.sql.exec("DELETE FROM managed_personalization_invalidation");
+      this.ctx.storage.sql.exec("DELETE FROM managed_request_context_state");
+      this.ctx.storage.sql.exec("DELETE FROM managed_turn_request_context");
       this.#subagentBindings = new ManagedSubagentBindings();
       this.#goalRuntime.clear();
       this.ctx.storage.sql.exec("DELETE FROM managed_cron_triggers");
@@ -11653,7 +11656,7 @@ export class DurableAgentSession extends DurableComputerObject {
     if (!session || session.runtime_profile !== "managed") return;
     const profile = this.#preparedPersonalization(authorization);
     const inserted = this.#startupContext.reservePrepared(turnId, profile,
-      environment && accountToolsEnabled(this.#configuration()));
+      environment && accountToolsEnabled(this.#configuration()), !this.#personalizationAllowed(authorization));
     if (inserted) console.info({ type: "managed.personalization.pinned", turn_id: turnId,
       agent_id: session.session_id, cache_hit: profile !== undefined, document_count: (profile?.team_markdown?.documents.length ?? 0) + (profile?.user_markdown?.documents.length ?? 0) });
   }
@@ -12996,7 +12999,11 @@ export class DurableAgentSession extends DurableComputerObject {
     // Use the admitted operation identity without consuming the execution queue.
     if (event.type === "input.accepted" && event.payload.kind === "prompt" && typeof event.payload.request_id === "string") {
       turnId = event.payload.request_id;
+      // Delivery state advances only once the runtime holds this prompt.
+      if (this.#managedTurn(turnId)) this.#startupContext.acknowledgeTurn(turnId);
     }
+    // Summaries can drop earlier memory/origin blocks: restate them next turn.
+    if (event.type === "model.compaction.completed") this.#startupContext.resetDelivered();
     if (event.type === "run.started") {
       turnId = this.#eventTurnQueue.shift();
       this.#eventTurnId = turnId;

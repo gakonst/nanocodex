@@ -4,12 +4,16 @@ import type { AgentSessionContext } from "nanocodex";
 import type { DurableAgentSession } from "../src/index";
 import { ManagedStartupContext, type StartupEnvironment } from "../src/startup-context";
 import { personalizedVoiceContext, type PersonalizationSnapshot } from "../src/personalization";
+import type { CallerContext } from "../src/request-origin";
 
 import { X_API } from "nanocodex-tools/x";
 
 async function withStartup(run: (startup: ManagedStartupContext, state: DurableObjectState, session: DurableAgentSession) => Promise<void>) {
   const sessions = (env as unknown as { NANOCODEX_SESSIONS: DurableObjectNamespace<DurableAgentSession> }).NANOCODEX_SESSIONS;
   await runInDurableObject(sessions.getByName(crypto.randomUUID()), async (_session, state) => {
+    // Fresh objects keep their constructor read-only; any handled route
+    // initializes the schema (this one is a no-op without a session).
+    await _session.fetch(new Request("https://session.internal/personalization/invalidate", { method: "POST" }));
     state.storage.sql.exec(`INSERT INTO session_state (
       singleton, session_id, owner_id, organization_id, team_id, authorization_epoch,
       public_origin, runtime_profile, accepted_turns, last_active
@@ -164,9 +168,31 @@ describe("prepared personalization admission", () => {
       startup.reservePrepared("first", snapshot(), false);
       await startup.prepare("first", async () => undefined, assertActive);
       await startup.inject("first", runtime, assertActive);
+      startup.invalidatePrepared(2);
       startup.reservePrepared("second", undefined, false);
       await startup.prepare("second", async () => undefined, assertActive);
       await startup.inject("second", runtime, assertActive);
+      expect(runtime.appendDeveloperMessage.mock.calls[1]?.[0]).toContain("Disregard prior prepared-memory blocks");
+    });
+  });
+
+  it("keeps delivered memory current across a plain cache miss but revokes it when memory access is denied", async () => {
+    await withStartup(async startup => {
+      const runtime = developerSession();
+      startup.reservePrepared("first", snapshot(), false);
+      await startup.prepare("first", async () => undefined, assertActive);
+      await startup.inject("first", runtime, assertActive);
+      startup.reservePrepared("miss", undefined, false);
+      await startup.prepare("miss", async () => undefined, assertActive);
+      await startup.inject("miss", runtime, assertActive);
+      startup.reservePrepared("same", snapshot(), false);
+      await startup.prepare("same", async () => undefined, assertActive);
+      await startup.inject("same", runtime, assertActive);
+      expect(runtime.appendDeveloperMessage).toHaveBeenCalledOnce();
+      startup.reservePrepared("denied", undefined, false, true);
+      await startup.prepare("denied", async () => undefined, assertActive);
+      await startup.inject("denied", runtime, assertActive);
+      expect(runtime.appendDeveloperMessage).toHaveBeenCalledTimes(2);
       expect(runtime.appendDeveloperMessage.mock.calls[1]?.[0]).toContain("Disregard prior prepared-memory blocks");
     });
   });
@@ -477,5 +503,93 @@ it("voice attribution survives source archival while runtime routing is awaited"
     startup.steerTurnOrigin("temporary-voice", "active", snapshot);
     expect(startup.turnRequestOrigin("adopted").client?.name).toBe("voice-device");
     expect(startup.effectiveTurnRequestOrigin("active").client?.name).toBe("voice-device");
+  });
+});
+
+describe("prompt-carried context delivery", () => {
+  const enriched = (startup: ManagedStartupContext, turn: string) => {
+    const input = startup.enrich(turn, "hello");
+    return typeof input === "string" ? input : input.map(part => "text" in part ? part.text : "").join("\n");
+  };
+  const turn = async (startup: ManagedStartupContext, id: string, profile: PersonalizationSnapshot | undefined, acknowledge = true) => {
+    startup.reservePrepared(id, profile, false);
+    await startup.prepare(id, async () => undefined, assertActive);
+    const text = enriched(startup, id);
+    if (acknowledge) startup.acknowledgeTurn(id);
+    return text;
+  };
+  const bumped = (content = "Prefers concise answers."): PersonalizationSnapshot => ({ ...snapshot(content),
+    version: "markdown:9", user_version: "markdown:9",
+    team_markdown: { documents: [{ path: "MEMORY.md", revision: 9, content, truncated: false }] } });
+
+  it("sends the Markdown snapshot once and again only when its rendered content changes", async () => {
+    await withStartup(async startup => {
+      expect(await turn(startup, "first", snapshot())).toContain("Prefers concise answers");
+      expect(await turn(startup, "second", snapshot())).toBe("hello");
+      // Revision/version churn from unrelated writes is not a content change.
+      expect(await turn(startup, "third", bumped())).toBe("hello");
+      expect(await turn(startup, "fourth", bumped("Prefers detailed answers."))).toContain("Prefers detailed answers");
+      expect(await turn(startup, "fifth", bumped("Prefers detailed answers."))).toBe("hello");
+    });
+  });
+
+  it("does not count a prompt the runtime never accepted as delivered", async () => {
+    await withStartup(async startup => {
+      expect(await turn(startup, "first", snapshot(), false)).toContain("Prefers concise answers");
+      expect(await turn(startup, "second", snapshot())).toContain("Prefers concise answers");
+      startup.acknowledgeTurn("second"); // replayed acknowledgement is a no-op
+      expect(await turn(startup, "third", snapshot())).toBe("hello");
+    });
+  });
+
+  it("an acknowledgement prepared before invalidation cannot clear the forget fence", async () => {
+    await withStartup(async startup => {
+      await turn(startup, "first", snapshot("forgotten canary"));
+      expect(await turn(startup, "queued", snapshot("forgotten canary"), false)).toBe("hello");
+      startup.invalidatePrepared(2);
+      startup.acknowledgeTurn("queued");
+      expect(await turn(startup, "miss", undefined)).toContain("Disregard prior prepared-memory blocks");
+      expect(await turn(startup, "after", undefined)).toBe("hello");
+      expect(await turn(startup, "fresh", snapshot("current fact"))).toContain("current fact");
+    });
+  });
+
+  it("restates memory after compaction resets delivery", async () => {
+    await withStartup(async startup => {
+      await turn(startup, "first", snapshot());
+      startup.resetDelivered();
+      expect(await turn(startup, "second", snapshot())).toContain("Prefers concise answers");
+      expect(await turn(startup, "third", snapshot())).toBe("hello");
+    });
+  });
+
+  it("compacts an unchanged current_request_context but always keeps the origin", async () => {
+    await withStartup(async startup => {
+      const hands = environment.accountInfo.machines;
+      const origin = { reported: { client: "nanocodex2", hand: "user:hand", cwd: "/hand" } };
+      const text = (id: string, acknowledge = true, context: CallerContext = origin) => {
+        startup.reserveTurnOrigin(id, "websocket", context);
+        const input = startup.enrichTurnOrigin(id, "hi", hands, true) as string;
+        if (acknowledge) startup.acknowledgeTurn(id);
+        return input;
+      };
+      const full = text("first");
+      expect(full).toContain("<execution_preferences>");
+      expect(full).toContain('"path":"/hand"');
+      const compact = text("second");
+      expect(compact).toContain("Unchanged:");
+      expect(compact).toContain('"path":"/hand"');
+      expect(compact).not.toContain("<execution_preferences>");
+      expect(compact.length).toBeLessThan(full.length / 2);
+      expect(text("moved", true, { reported: { client: "web" } })).toContain("<execution_preferences>");
+      expect(text("back", false)).toContain("<execution_preferences>");
+      expect(text("again")).toContain("<execution_preferences>");
+      expect(text("same")).toContain("Unchanged:");
+      startup.resetDelivered();
+      expect(text("compacted")).toContain("<execution_preferences>");
+      // Voice steering and other callers keep the full block.
+      startup.reserveTurnOrigin("voice", "voice", origin);
+      expect(startup.enrichTurnOrigin("voice", "hi", hands) as string).toContain("<execution_preferences>");
+    });
   });
 });
