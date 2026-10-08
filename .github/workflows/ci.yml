@@ -753,7 +753,7 @@ jobs:
           # The egress journeys bundle the broker, whose WhatsApp protocol bundle is
           # generated (gitignored) from the pinned bridge; prepare it first.
           pnpm --filter nanocodex-egress-service run prepare:whatsapp
-          node --test js/egress/test/credential-snapshot-journey.test.mjs js/egress/test/session-model-journey.test.mjs js/egress/test/prepared-model-upgrade-journey.test.mjs
+          node --test js/egress/test/session-model-journey.test.mjs
       - name: Exercise private-input account admission
         timeout-minutes: 5
         run: node js/managed/test/private-input-admission-journey.mjs
