@@ -11,7 +11,7 @@ const reply = (value: unknown, status = 200) => Response.json(value, { status, h
 
 /** Sharing always requires a direct authenticated account and its own permissions. */
 export async function routeHandSharing(request: Request, principal: Principal | null | undefined,
-  namespace: Pick<DurableObjectNamespace<AccountHostedTools>, "getByName">): Promise<Response> {
+  namespace: DurableObjectNamespace<AccountHostedTools>): Promise<Response> {
   const url = new URL(request.url);
   if (!principal) return reply({ error: "unauthorized" }, 401);
   if (!["account_session", "api_key"].includes(principal.kind) || principal.connectGrant

@@ -6,7 +6,7 @@ import { AppError, type AppValidationResult, type AppValidator } from "./prompt-
 /** Use the installed runtime on an account-owned, online native Hand. No source
  * approximation, shell execution, or live agent/network callback is involved. */
 export function nativeAppValidator(
-  namespace: Pick<DurableObjectNamespace<AccountHostedTools>, "getByName">, owner: string,
+  namespace: DurableObjectNamespace<AccountHostedTools>, owner: string,
   context: Pick<ToolContext, "sessionId" | "callId" | "signal"> & Partial<Pick<ToolContext, "model" | "turnId" | "subagent">>,
   authorized: () => boolean,
   relays?: DurableObjectNamespace<RegionalHandRelay>,

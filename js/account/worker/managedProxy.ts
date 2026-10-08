@@ -14,8 +14,6 @@ export type ManagedProxyEnv = PreviewBridgeEnv & {
   };
   NANOCODEX_ACCESS_SECRET?: string;
   NANOCODEX_HAND_BROKER?: DurableObjectNamespace;
-  /** Canonical account homes, identical to the managed Worker's (owner:region[<previous]). */
-  NANOCODEX_ACCOUNT_HOMES?: string;
   /** Regional screen relays (managed RegionalHandRelay); viewers of rs.<region>. generations admit there directly. */
   NANOCODEX_HAND_RELAYS?: { getByName(name: string, options?: { locationHint?: string }): { fetch(request: Request): Promise<Response> } };
   NANOCODEX_LIVE_API_KEYS?: {
@@ -123,7 +121,7 @@ async function routeMeasuredManaged(
       const brokerResponse = region && env.NANOCODEX_HAND_RELAYS
         ? await env.NANOCODEX_HAND_RELAYS.getByName(`${cached.userId}:hand-relay:v1:${region}`, { locationHint: region })
           .fetch(regionalViewerRequest(brokered, cached.userId, region))
-        : await accountBroker(env, cached.userId).fetch(brokered);
+        : await env.NANOCODEX_HAND_BROKER!.getByName(cached.userId).fetch(brokered);
       const headers = new Headers(brokerResponse.headers);
       headers.set("x-nanocodex-request-id", crypto.randomUUID());
       headers.append("server-timing", `managed_auth;dur=${(admitted - started).toFixed(1)};desc="access", screen_route;dur=${(performance.now() - admitted).toFixed(1)}, screen_total;dur=${(performance.now() - started).toFixed(1)}`);
@@ -403,17 +401,4 @@ function json(body: unknown, init: ResponseInit): Response {
       ...init.headers,
     },
   });
-}
-
-/** The owner's account object: a pure function of its pinned home region. */
-function accountBroker(env: { NANOCODEX_HAND_BROKER?: DurableObjectNamespace; NANOCODEX_ACCOUNT_HOMES?: string }, owner: string): DurableObjectStub {
-  const namespace = env.NANOCODEX_HAND_BROKER!;
-  for (const entry of (env.NANOCODEX_ACCOUNT_HOMES ?? "").split(",")) {
-    const [pinned, placement] = entry.trim().split(":");
-    const region = placement?.split("<")[0];
-    if (pinned === owner && region) {
-      return namespace.get(namespace.idFromName(`~home/v1/${region}/${owner}`), { locationHint: region as DurableObjectLocationHint });
-    }
-  }
-  return namespace.getByName(owner);
 }

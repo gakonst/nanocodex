@@ -1,4 +1,3 @@
-import { accountTools } from "./account-placement";
 import type { HostedMachine } from "nanocodex-tools/hosted";
 import type { AccountHostedTools } from "./account-hosted-tools";
 import type { RegionalHandRelay } from "./regional-hand-relay";
@@ -45,7 +44,7 @@ export async function routeRegionalToolHost(request: Request, owner: string, env
   if (identity === false) return Response.json({ error: "invalid_publisher_identity" }, { status: 400 });
   let region: HandRelayLocation = "legacy";
   if (identity) {
-    const selection = await accountTools(env).getByName(owner).fetch("https://account-tools.internal/regional/select", {
+    const selection = await env.NANOCODEX_ACCOUNT_TOOLS!.getByName(owner).fetch("https://account-tools.internal/regional/select", {
       method: "POST", headers: { [HAND_OWNER_HEADER]: owner, "content-type": "application/json" },
       body: JSON.stringify({ machine_id: identity.machineId, runtime_id: identity.runtimeId,
         region: env.NANOCODEX_HAND_RELAYS
@@ -59,7 +58,7 @@ export async function routeRegionalToolHost(request: Request, owner: string, env
   if (region !== "legacy" && !env.NANOCODEX_HAND_RELAYS) return Response.json({ error: "relay_unavailable" }, { status: 503 });
   const target = region !== "legacy"
     ? env.NANOCODEX_HAND_RELAYS!.getByName(handRelayName(owner, region), { locationHint: region })
-    : accountTools(env).getByName(owner);
+    : env.NANOCODEX_ACCOUNT_TOOLS!.getByName(owner);
   if (region !== "legacy") headers.set(HAND_RELAY_REGION_HEADER, region);
   return target.fetch(new Request("https://account-tools.internal/tool-host", new Request(request, { headers })));
 }
