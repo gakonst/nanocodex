@@ -25,6 +25,7 @@ mod skill_picker;
 mod subagent_tree_layout;
 mod subagents;
 mod theme_selector;
+mod thread_sidebar;
 mod transcript;
 mod waved_text;
 

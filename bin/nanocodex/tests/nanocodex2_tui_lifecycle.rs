@@ -232,7 +232,7 @@ async fn terminal_discovery_omits_sigkill_orphans_even_with_a_recycled_pid() {
         command.env("CODEX_HOME", &home);
         command.env("NANOCODEX_TUI_CONTROL", "on");
     });
-    orphan.wait_text("actions").await;
+    orphan.wait_text("Threads").await;
     let both = list(&home).await;
     assert_eq!(both.len(), 2, "both running TUIs must be discoverable");
     let mut registration = both
@@ -687,9 +687,14 @@ async fn stalled_tmux_hint_keeps_terminal_usable_and_reaps_helper() {
         command.env("PATH", path);
         command.env("NANOCODEX_TEST_TMUX_PID", &pid_file);
     });
-    tokio::time::timeout(Duration::from_secs(3), terminal.wait_text("actions"))
+    if tokio::time::timeout(Duration::from_secs(3), terminal.wait_text("Threads"))
         .await
-        .expect("stalled tmux must not block the first frame");
+        .is_err()
+    {
+        let screen = terminal.screen.lock().unwrap().screen().contents();
+        let output = String::from_utf8_lossy(&terminal.output.lock().unwrap()).into_owned();
+        panic!("stalled tmux must not block the first frame; screen={screen:?}; output={output:?}");
+    }
     let first_frame = started.elapsed();
     let helpers = || {
         std::fs::read_to_string(&pid_file)
@@ -892,6 +897,12 @@ impl Terminal {
         self.input(&format!("\x1b[200~{input}\x1b[201~{key}"));
     }
 
+    async fn hide_sidebar(&mut self) {
+        self.wait_text("Alt+T").await;
+        self.input("\x1bs");
+        self.wait_no_text("Alt+T").await;
+    }
+
     fn resize(&self, cols: u16) {
         self.screen.lock().unwrap().set_size(32, cols);
         self._master
@@ -995,6 +1006,7 @@ struct Service {
     model_route: Arc<Mutex<Option<Value>>>,
     listed_agent: Arc<Mutex<String>>,
     listed_title: Arc<Mutex<String>>,
+    sidebar_listing: Arc<Mutex<Option<Value>>>,
     resume_gate: Arc<tokio::sync::Semaphore>,
     active: bool,
     state_available: Arc<AtomicBool>,
@@ -1011,6 +1023,12 @@ struct Service {
 }
 
 impl Service {
+    // Sidebar journeys use separate empty history for B. Legacy journeys retain
+    // their original single-agent fixture semantics.
+    fn is_other_sidebar_thread(&self, agent: &str) -> bool {
+        agent != AGENT && self.sidebar_listing.lock().unwrap().is_some()
+    }
+
     fn routing_enabled(&self) -> bool {
         self.routing_bodies
             .lock()
@@ -1090,6 +1108,9 @@ async fn approve_vault_origin(
 
 async fn list_agents(State(service): State<Service>) -> Json<Value> {
     let _permit = service.session_list_gate.acquire().await.unwrap();
+    if let Some(listing) = service.sidebar_listing.lock().unwrap().clone() {
+        return Json(listing);
+    }
     let agent = service.listed_agent.lock().unwrap().clone();
     let title = service.listed_title.lock().unwrap().clone();
     Json(
@@ -1099,6 +1120,7 @@ async fn list_agents(State(service): State<Service>) -> Json<Value> {
 
 async fn event_history(
     State(service): State<Service>,
+    axum::extract::Path(agent): axum::extract::Path<String>,
     Query(query): Query<HashMap<String, String>>,
 ) -> Json<Value> {
     let _permit = service.history_gate.acquire().await.unwrap();
@@ -1111,6 +1133,9 @@ async fn event_history(
         .and_then(|value| value.parse::<usize>().ok())
         .unwrap_or(100);
     service.history_requests.lock().unwrap().push(before);
+    if service.is_other_sidebar_thread(&agent) {
+        return Json(json!({"data": [], "has_more": false, "latest_cursor": "0"}));
+    }
     let events = service.history.lock().unwrap();
     let data: Vec<_> = events
         .iter()
@@ -1155,14 +1180,19 @@ async fn socket(
 }
 
 async fn serve(mut socket: WebSocket, service: Service, cursor: u64, agent: String) {
-    let history = service.history.lock().unwrap().clone();
+    let other = service.is_other_sidebar_thread(&agent);
+    let history = if other {
+        Vec::new()
+    } else {
+        service.history.lock().unwrap().clone()
+    };
     let latest_cursor = history
         .last()
         .map_or("0", |event| event["cursor"].as_str().unwrap());
     let (outgoing, mut events) = mpsc::unbounded_channel::<Value>();
     let ready = json!({
         "type": "ready", "session_id": agent, "restored": false,
-        "active_turns": service.active_turns(), "active_turn_details": [], "latest_event_cursor": latest_cursor,
+        "active_turns": if other { Vec::new() } else { service.active_turns() }, "active_turn_details": [], "latest_event_cursor": latest_cursor,
         "capabilities": {"durable_turns": true, "resumable_events": true,
             "workspace": "cloudflare-computer",
             "execution_environments": true, "execution_namespace": "cwd-root-v1", "native_cross_mounts": false},
@@ -1229,10 +1259,11 @@ async fn state(
             Json(json!({"error": "unavailable", "message": "try again"})),
         ));
     }
+    let other = service.is_other_sidebar_thread(&agent);
     Ok(Json(json!({
         "agent_id": agent, "session_id": agent, "has_snapshot": false,
         "completed_turns": 0, "last_active": 1, "agent_loaded": true, "connected_clients": 1,
-        "active_turns": service.active_turns(), "active_turn_details": [],
+        "active_turns": if other { Vec::new() } else { service.active_turns() }, "active_turn_details": [],
         "capabilities": {"durable_turns": true, "resumable_events": true,
             "workspace": "cloudflare-computer",
             "execution_environments": true, "execution_namespace": "cwd-root-v1", "native_cross_mounts": false},
@@ -1240,7 +1271,7 @@ async fn state(
         "model_routing_enabled": service.routing_enabled(),
         "model_routing_automatic": service.routing_automatic(),
         "model_route": service.model_route.lock().unwrap().clone(),
-        "latest_event_cursor": service.latest_cursor(), "stream_error": null
+        "latest_event_cursor": if other { "0".to_owned() } else { service.latest_cursor() }, "stream_error": null
     })))
 }
 
@@ -1414,6 +1445,7 @@ struct Fixture {
     model_route: Arc<Mutex<Option<Value>>>,
     listed_agent: Arc<Mutex<String>>,
     listed_title: Arc<Mutex<String>>,
+    sidebar_listing: Arc<Mutex<Option<Value>>>,
     resume_gate: Arc<tokio::sync::Semaphore>,
     origin: String,
     terminal: Terminal,
@@ -1532,6 +1564,7 @@ impl Fixture {
         let session_list_gate = Arc::new(tokio::sync::Semaphore::new(1));
         let listed_agent = Arc::new(Mutex::new(AGENT.to_owned()));
         let listed_title = Arc::new(Mutex::new("RETAINED_REMOTE_WORK".to_owned()));
+        let sidebar_listing = Arc::new(Mutex::new(None));
         let resume_gate = Arc::new(tokio::sync::Semaphore::new(1));
         let socket_paths = Arc::new(Mutex::new(Vec::new()));
         let vault_writes = Arc::new(Mutex::new(Vec::new()));
@@ -1618,6 +1651,7 @@ impl Fixture {
                 model_route: model_route.clone(),
                 listed_agent: listed_agent.clone(),
                 listed_title: listed_title.clone(),
+                sidebar_listing: sidebar_listing.clone(),
                 resume_gate: resume_gate.clone(),
                 active,
                 state_available: state_available.clone(),
@@ -1638,6 +1672,10 @@ impl Fixture {
             axum::serve(listener, app).await.unwrap();
         });
         let mut terminal = Terminal::start_with_reload_dir(&origin, attach, reload_dir);
+        // Legacy journeys assert full-width transcript wrapping. Exercise the
+        // public visibility shortcut to preserve that baseline; sidebar journeys
+        // explicitly reopen navigation with Alt+T at 120 columns.
+        terminal.hide_sidebar().await;
         if let Some(prompt) = startup_prompt {
             terminal.wait_text("actions").await;
             terminal.prompt(prompt, "\r");
@@ -1665,6 +1703,7 @@ impl Fixture {
             model_route,
             listed_agent,
             listed_title,
+            sidebar_listing,
             resume_gate,
             origin,
             terminal,
@@ -4239,6 +4278,7 @@ async fn terminal_failed_initial_attach_retries_without_submitting_its_draft() {
     let mut fixture = Fixture::start_with_active(true).await;
     fixture.state_available.store(false, Ordering::SeqCst);
     fixture.terminal = Terminal::start(&fixture.origin, true);
+    fixture.terminal.hide_sidebar().await;
     fixture.terminal.wait_text("Connection lost").await;
     fixture.terminal.prompt("DRAFT_THROUGH_ATTACH_RETRY", "");
     fixture
@@ -4802,6 +4842,7 @@ async fn terminal_reload_restarts_local_peers_without_stopping_durable_work() {
     second.replacement_connection().await;
 
     for fixture in [&mut first, &mut second] {
+        fixture.terminal.hide_sidebar().await;
         fixture.terminal.wait_text("Enter steer").await;
         assert_eq!(
             *fixture.socket_paths.lock().unwrap(),
@@ -5175,6 +5216,7 @@ async fn terminal_link_clicks_open_once_and_drag_still_copies() {
         command.env("PATH", path);
         command.env("NANOCODEX_TEST_LINK_LOG", &log);
     });
+    fixture.terminal.hide_sidebar().await;
     fixture.replacement_connection().await;
     fixture.terminal.wait_text("Enter steer").await;
     let reply = "[Release notes](https://example.test/release)\n\n[Unicode 界 label](https://example.test/unicode)\n\nAutolink <https://example.test/plain>";
@@ -5433,6 +5475,7 @@ async fn terminal_prompt_cache_survives_restart_and_scopes_sessions() {
         command.args(["attach", OTHER]);
         command.env("CODEX_HOME", &account_home);
     });
+    reopened.hide_sidebar().await;
     let events = tokio::time::timeout(TIMEOUT, fixture.connections.recv())
         .await
         .unwrap()
@@ -5485,6 +5528,7 @@ async fn terminal_prompt_cache_survives_restart_and_scopes_sessions() {
                 format!("ncx_live_{}_{}", "a".repeat(12), "c".repeat(43)),
             );
         });
+    different_login.hide_sidebar().await;
     different_login.wait_text("Enter send").await;
     different_login.input("\x12");
     different_login.wait_text("Recent prompts").await;
@@ -5496,6 +5540,7 @@ async fn terminal_prompt_cache_survives_restart_and_scopes_sessions() {
     let mut isolated = Terminal::start_with_command(&other_service.origin, true, None, |command| {
         command.env("CODEX_HOME", &account_home);
     });
+    isolated.hide_sidebar().await;
     isolated.wait_text("Enter send").await;
     isolated.input("\x12");
     isolated.wait_text("Recent prompts").await;
@@ -5515,6 +5560,7 @@ async fn terminal_prompt_cache_merges_concurrent_terminals_and_preserves_corrupt
         command.args(["attach", OTHER]);
         command.env("CODEX_HOME", &account_home);
     });
+    peer.hide_sidebar().await;
     let _peer_events = tokio::time::timeout(TIMEOUT, fixture.connections.recv())
         .await
         .unwrap()
@@ -5864,6 +5910,7 @@ async fn terminal_prompt_cache_flushes_failed_and_coalesced_writes_on_exit() {
     let mut reopened = Terminal::start_with_command(&fixture.origin, true, None, |command| {
         command.env("CODEX_HOME", &account_home);
     });
+    reopened.hide_sidebar().await;
     let _events = tokio::time::timeout(TIMEOUT, fixture.connections.recv())
         .await
         .unwrap()
@@ -5901,6 +5948,7 @@ async fn terminal_prompt_cache_persists_from_a_non_utf8_workspace() {
         command.cwd(&workspace);
         command.env("CODEX_HOME", &account_home);
     });
+    fixture.terminal.hide_sidebar().await;
     fixture.events = tokio::time::timeout(TIMEOUT, fixture.connections.recv())
         .await
         .unwrap()
@@ -5924,6 +5972,7 @@ async fn terminal_prompt_cache_persists_from_a_non_utf8_workspace() {
     let mut reopened = Terminal::start_with_command(&fixture.origin, true, None, |command| {
         command.env("CODEX_HOME", &account_home);
     });
+    reopened.hide_sidebar().await;
     let _events = tokio::time::timeout(TIMEOUT, fixture.connections.recv())
         .await
         .unwrap()
@@ -6756,6 +6805,7 @@ async fn terminal_inline_review_streams_wraps_copies_and_restores_snapshot() {
     let mut attached = Terminal::start_with_command(&fixture.origin, true, None, |command| {
         command.cwd(fixture.terminal._workspace.path());
     });
+    attached.hide_sidebar().await;
     attached.wait_text("Enter send").await;
     attached.wait_text("Cap the ceiling").await;
     let screen = inline_review_evidence(&attached, "new-attach-after-workspace-change", &markdown);
@@ -6875,4 +6925,239 @@ async fn terminal_inline_review_unavailable_context_preserves_findings() {
         }
         copy_journey_expect(&mut fixture, "/copy", "\r", &markdown).await;
     }
+}
+
+const SIDEBAR_OTHER: &str = "019fc927-b280-79a7-8445-1b9996ad2fb1";
+
+async fn sidebar_journey_list(fixture: &mut Fixture) {
+    fixture.terminal.resize(120);
+    *fixture.sidebar_listing.lock().unwrap() = Some(json!({
+        "data": [AGENT, SIDEBAR_OTHER],
+        "summaries": {
+            AGENT: {"title": "SIDEBAR_ALPHA", "created_at": 1, "updated_at": 2,
+                "turn_count": 1, "presentation": {"status": "idle"}},
+            SIDEBAR_OTHER: {"title": "SIDEBAR_BETA", "created_at": 1, "updated_at": 1,
+                "turn_count": 1, "presentation": {"status": "idle", "activeTurnIds": ["sidebar-active-turn"]}}
+        }
+    }));
+    fixture.terminal.input("\x1bs");
+    fixture.terminal.wait_text("Alt+T").await;
+    fixture.terminal.input("\x1btr");
+    fixture.terminal.wait_text("SIDEBAR_ALPHA").await;
+    fixture.terminal.wait_text("SIDEBAR_BETA").await;
+    fixture.terminal.input("\x1b");
+    fixture.terminal.wait_text("Alt+T").await;
+}
+
+fn sidebar_journey_evidence(fixture: &Fixture, step: &str) -> String {
+    let screen = fixture.terminal.screen.lock().unwrap().screen().contents();
+    eprintln!("SIDEBAR JOURNEY {step}\n{screen}");
+    if let Some(directory) = std::env::var_os("NANOCODEX_SIDEBAR_EVIDENCE") {
+        let directory = std::path::PathBuf::from(directory);
+        std::fs::create_dir_all(&directory).unwrap();
+        std::fs::write(directory.join(format!("{step}.screen.txt")), &screen).unwrap();
+        std::fs::write(
+            directory.join(format!("{step}.ansi")),
+            &*fixture.terminal.output.lock().unwrap(),
+        )
+        .unwrap();
+    }
+    screen
+}
+
+async fn sidebar_journey_switch(fixture: &mut Fixture, keys: &str) {
+    fixture.terminal.input(keys);
+    fixture.replacement_connection().await;
+    fixture.terminal.wait_no_text("Resuming session").await;
+}
+
+async fn sidebar_journey_submit(fixture: &mut Fixture, agent: &str, draft: &str) {
+    fixture.terminal.input("\r");
+    let message = tokio::time::timeout(TIMEOUT, fixture.submissions.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        message["fixture_agent_id"], agent,
+        "draft must reach its owning thread"
+    );
+    assert_eq!(prompt_text(&message["input"]), draft);
+    assert!(fixture.submissions.try_recv().is_err());
+    eprintln!("SIDEBAR SUBMISSION agent={agent} input={draft:?}");
+}
+
+// Run with NANOCODEX_SIDEBAR_EVIDENCE=/absolute/output/sidebar cargo test --locked
+// -p nanocodex2-bin --test nanocodex2_tui_lifecycle terminal_sidebar_ -- --nocapture
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn terminal_sidebar_summaries_drafts_mouse_and_narrow_navigation() {
+    let mut fixture = Fixture::start().await;
+    sidebar_journey_list(&mut fixture).await;
+    fixture.terminal.wait_text("Running").await;
+    fixture.sidebar_listing.lock().unwrap().as_mut().unwrap()["summaries"][SIDEBAR_OTHER]["presentation"] =
+        json!({"status": "completed", "activeTurnIds": []});
+    // No refresh key: a service-side status change must arrive on the periodic
+    // account-list refresh while the composer remains usable.
+    tokio::time::timeout(Duration::from_secs(16), async {
+        loop {
+            if fixture
+                .terminal
+                .screen
+                .lock()
+                .unwrap()
+                .screen()
+                .contents()
+                .contains("Completed")
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("periodic sidebar refresh did not display completed status");
+    fixture.terminal.prompt("ALPHA_UNSENT_DRAFT", "");
+    fixture.terminal.wait_text("ALPHA_UNSENT_DRAFT").await;
+    sidebar_journey_evidence(&fixture, "summaries-and-alpha-draft");
+
+    // Focus the persistent list, move to B, and select without submitting A.
+    sidebar_journey_switch(&mut fixture, "\x1bt\x1b[B\r").await;
+    fixture.terminal.wait_no_text("ALPHA_UNSENT_DRAFT").await;
+    fixture.terminal.prompt("BETA_UNSENT_DRAFT", "");
+    fixture.terminal.wait_text("BETA_UNSENT_DRAFT").await;
+    assert!(fixture.submissions.try_recv().is_err());
+
+    // Click A's actual visible row, located from terminal cells rather than a
+    // hardcoded layout coordinate. The current B heading is a different title.
+    let (row, col) = {
+        let parser = fixture.terminal.screen.lock().unwrap();
+        let screen = parser.screen();
+        let row = (0..32)
+            .find(|row| {
+                screen
+                    .contents_between(*row, 0, *row, 40)
+                    .contains("SIDEBAR_ALPHA")
+            })
+            .unwrap();
+        (row + 1, 6)
+    };
+    sidebar_journey_switch(
+        &mut fixture,
+        &format!("\x1b[<0;{col};{row}M\x1b[<0;{col};{row}m"),
+    )
+    .await;
+    fixture.terminal.wait_text("ALPHA_UNSENT_DRAFT").await;
+    fixture.terminal.wait_no_text("BETA_UNSENT_DRAFT").await;
+    sidebar_journey_evidence(&fixture, "mouse-return-restores-alpha");
+
+    fixture.terminal.input("\x1bs");
+    fixture.terminal.wait_no_text("SIDEBAR_BETA").await;
+    fixture.terminal.wait_text("ALPHA_UNSENT_DRAFT").await;
+    fixture.terminal.input("\x1bs");
+    fixture.terminal.wait_text("SIDEBAR_BETA").await;
+    fixture.terminal.resize(68);
+    fixture.terminal.wait_no_text("SIDEBAR_BETA").await;
+    fixture.terminal.input("\x1bt");
+    fixture.terminal.wait_text("Esc back").await;
+    fixture
+        .terminal
+        .prompt("PASTE_IN_NAVIGATION_MUST_NOT_EDIT", "");
+    fixture.terminal.input("\x1b");
+    fixture.terminal.wait_text("ALPHA_UNSENT_DRAFT").await;
+    fixture
+        .terminal
+        .wait_no_text("PASTE_IN_NAVIGATION_MUST_NOT_EDIT")
+        .await;
+    // CSI-u expresses Alt+] and Alt+[ unambiguously over a real PTY.
+    sidebar_journey_switch(&mut fixture, "\x1b[93;3u").await;
+    fixture.terminal.wait_text("BETA_UNSENT_DRAFT").await;
+    fixture.terminal.wait_no_text("ALPHA_UNSENT_DRAFT").await;
+    sidebar_journey_switch(&mut fixture, "\x1b[91;3u").await;
+    fixture.terminal.wait_text("ALPHA_UNSENT_DRAFT").await;
+    sidebar_journey_evidence(&fixture, "narrow-return-restores-alpha");
+    assert!(fixture.cancellations.try_recv().is_err());
+    sidebar_journey_submit(&mut fixture, AGENT, "ALPHA_UNSENT_DRAFT").await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn terminal_sidebar_cancelled_or_failed_switch_keeps_draft_and_current_thread() {
+    for cancel in [true, false] {
+        let mut fixture = Fixture::start().await;
+        sidebar_journey_list(&mut fixture).await;
+        fixture.terminal.prompt("PRESERVE_SWITCH_DRAFT", "");
+        fixture.terminal.wait_text("PRESERVE_SWITCH_DRAFT").await;
+        let pause = fixture.resume_gate.clone().acquire_owned().await.unwrap();
+        fixture.terminal.input("\x1bt\x1b[B\r");
+        fixture.terminal.wait_text("Resuming session").await;
+        if cancel {
+            fixture.terminal.input("\x1b");
+            fixture.terminal.wait_text("Session switch cancelled").await;
+            drop(pause);
+        } else {
+            fixture.state_available.store(false, Ordering::SeqCst);
+            drop(pause);
+            fixture.terminal.wait_no_text("Resuming session").await;
+        }
+        fixture.terminal.wait_text("PRESERVE_SWITCH_DRAFT").await;
+        sidebar_journey_evidence(
+            &fixture,
+            if cancel {
+                "cancel-retains-draft"
+            } else {
+                "failure-retains-draft"
+            },
+        );
+        // Return focus to the composer after a cancelled/failed selection.
+        fixture.terminal.input("\x1bs");
+        fixture.terminal.wait_no_text("SIDEBAR_BETA").await;
+        sidebar_journey_submit(&mut fixture, AGENT, "PRESERVE_SWITCH_DRAFT").await;
+        assert!(fixture.cancellations.try_recv().is_err());
+        assert!(fixture.connections.try_recv().is_err());
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn terminal_sidebar_switches_accepted_remote_work_without_cancelling_or_leaking_history() {
+    let mut fixture = Fixture::start().await;
+    sidebar_journey_list(&mut fixture).await;
+    fixture.terminal.prompt("ALPHA_REMOTE_WORK", "\r");
+    let turn = fixture.submission("ALPHA_REMOTE_WORK").await;
+    fixture.nested(&turn, "assistant.delta", json!({"model_call_index":1, "item_id":"alpha-progress", "phase":"commentary", "text":"ALPHA_RUNNING_RECORD"}));
+    fixture.terminal.wait_text("ALPHA_RUNNING_RECORD").await;
+    fixture.terminal.prompt("ALPHA_FOLLOWUP_DRAFT", "");
+    fixture.terminal.wait_text("ALPHA_FOLLOWUP_DRAFT").await;
+    let alpha_events = fixture.events.clone();
+    sidebar_journey_switch(&mut fixture, "\x1b[93;3u").await;
+    fixture.terminal.wait_no_text("ALPHA_RUNNING_RECORD").await;
+    fixture.terminal.wait_no_text("ALPHA_FOLLOWUP_DRAFT").await;
+    // The service keeps A running after its observer detaches. Retain a late
+    // event for replay and attempt delivery through A's old socket only.
+    let late = fixture.retain(
+        &turn,
+        json!({"type": "event", "event": {
+            "protocol_version": 1, "request_id": AGENT, "seq": fixture.cursor + 1,
+            "type": "assistant.delta", "payload": {"model_call_index": 1,
+                "item_id": "alpha-late", "phase": "commentary", "text": "ALPHA_WHILE_AWAY"}
+        }}),
+    );
+    let _ = alpha_events.send(late);
+    fixture.terminal.prompt("BETA_LOCAL_DRAFT", "");
+    fixture.terminal.wait_text("BETA_LOCAL_DRAFT").await;
+    fixture.terminal.wait_no_text("ALPHA_WHILE_AWAY").await;
+    sidebar_journey_evidence(&fixture, "remote-alpha-detached-beta-idle");
+    assert!(fixture.cancellations.try_recv().is_err());
+    assert!(fixture.submissions.try_recv().is_err());
+    sidebar_journey_switch(&mut fixture, "\x1b[91;3u").await;
+    fixture.terminal.wait_text("ALPHA_RUNNING_RECORD").await;
+    fixture.terminal.wait_text("ALPHA_WHILE_AWAY").await;
+    fixture.terminal.wait_no_text("BETA_LOCAL_DRAFT").await;
+    fixture.terminal.wait_text("ALPHA_FOLLOWUP_DRAFT").await;
+    fixture.nested(&turn, "assistant.message", json!({"model_call_index":1, "item_id":"alpha-answer", "phase":"final_answer", "text":"ALPHA_FINISHED_AFTER_RETURN"}));
+    fixture.complete(&turn);
+    fixture
+        .terminal
+        .wait_text("ALPHA_FINISHED_AFTER_RETURN")
+        .await;
+    sidebar_journey_evidence(&fixture, "remote-alpha-finishes-after-return");
+    assert!(fixture.cancellations.try_recv().is_err());
+    sidebar_journey_submit(&mut fixture, AGENT, "ALPHA_FOLLOWUP_DRAFT").await;
 }

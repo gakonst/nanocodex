@@ -19,6 +19,34 @@ keyboard input for capability probes. Recognized Kitty, Ghostty, iTerm2, and
 WezTerm environments use native images where supported; other terminals use
 half-block images.
 
+## Thread sidebar
+
+The terminal shows a persistent thread sidebar on windows at least 88 columns
+wide. Each thread has a one-line title and a readable status from the account's
+session list. The current thread stays visible at the top. Background status
+refreshes every ten seconds; failed refreshes keep the previous list and retry
+with backoff. The selected conversation's running/connection status updates live.
+
+Click a thread to switch, or use these shortcuts:
+
+| Shortcut | Action |
+| --- | --- |
+| Alt+T | Focus threads; use arrows and Enter to select, Esc to return |
+| Alt+[ / Alt+] | Switch to the previous / next listed thread |
+| Alt+S | Show or hide the sidebar |
+| / while threads are focused | Open the searchable session picker |
+| r while threads are focused | Refresh the thread list |
+
+On narrow terminals, Alt+T opens a compact navigation view. Thread order stays
+stable while status updates arrive. Switching retains each thread's unsent text,
+image attachments, and cursor position for the lifetime of the terminal. Failed
+or cancelled switches leave the current conversation and its draft intact.
+Accepted managed turns continue in the background when you switch. Returning
+replays their durable progress. Local queued messages, unresolved sends, shell
+commands, voice, and open side explorations must finish or close before switching;
+the terminal explains when a local operation prevents detaching. The Managed2
+preview does not expose the sidebar because it has no session-list API yet.
+
 ## Continue from mobile
 
 `nanocodex2 continue` brings unfinished sessions used in the last six hours,

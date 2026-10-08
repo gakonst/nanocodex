@@ -604,6 +604,7 @@ mod tests {
 
     fn summary(id: &str, preview: &str) -> SessionSummary {
         SessionSummary {
+            status: "Idle".to_owned(),
             session_id: id.to_owned(),
             updated_at_unix_ms: 1,
             model: "gpt".to_owned(),
