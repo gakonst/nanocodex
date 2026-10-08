@@ -767,24 +767,24 @@ test('Managed native Claude and mixed-family public delegation, account gates, c
     assert.ok(!mixed.data.find(model=>model.id==='gpt-6-astra').thinking.includes('none'));assert.ok(mixed.data.find(model=>model.id==='gpt-6-luna').thinking.includes('none'));
     const beforeMixedDefault=catalogRequests;
     const mixedDefault=await call('/v1/agents','POST',{},201);assert.equal((await call(`/v1/agents/${mixedDefault.agent_id}`)).settings.model,'gpt-6-astra');
-    assert.equal(catalogRequests,beforeMixedDefault,'default OpenAI admission skips the unavailable Claude catalog');
+    assert.equal(catalogRequests,beforeMixedDefault+1,'default admission checks Claude before falling back to OpenAI');
     catalogOutage=false;
     let releaseCatalog, deadline;
     catalogHold=new Promise(resolve=>{releaseCatalog=resolve;});
     try {
       const heldDefault=await Promise.race([
-        call('/v1/agents','POST',{},201),
+        call('/v1/agents','POST',{settings:{model:'gpt-6-astra',thinking:'low',reasoning_mode:'standard',fast_mode:false}},201),
         new Promise((_,reject)=>{deadline=setTimeout(()=>reject(new Error('default admission waited for the withheld Claude catalog')),5000);}),
       ]);
       assert.equal((await call(`/v1/agents/${heldDefault.agent_id}`)).settings.model,'gpt-6-astra');
-      assert.equal(catalogRequests,beforeMixedDefault,'default admission does not start an unrelated Claude lookup');
+      assert.equal(catalogRequests,beforeMixedDefault+1,'explicit OpenAI admission does not start a Claude lookup');
       trace.push({scenario:'both providers, Claude catalog withheld',default_model:'gpt-6-astra',catalog_requests:catalogRequests-beforeMixedDefault,completed_before_catalog_release:true});
     } finally { clearTimeout(deadline); releaseCatalog(); catalogHold=undefined; }
     const fullMixed=await call('/v1/models');
     assert.equal(fullMixed.partial,false);
     assert.deepEqual(fullMixed.data.map(model=>model.id),['gpt-6-astra','gpt-6.1-sol','gpt-6-luna','claude-sonnet-4-6','claude-opus-4-6']);
     assert.equal(fullMixed.default_model,'gpt-6-astra');
-    assert.equal(catalogRequests-beforeMixedDefault,2,'GET models still reads every Claude catalog page');
+    assert.equal(catalogRequests-beforeMixedDefault,3,'GET models still reads every Claude catalog page');
     assert.equal((await call('/v1/agents','POST',{settings:{model:'claude-sonnet-5-5',thinking:'low',reasoning_mode:'standard',fast_mode:false}},409)).error,'claude_model_unavailable');
     catalogOutage=true;
     await call('/v1/agents','POST',{settings:{model:'gpt-6-astra',thinking:'low',reasoning_mode:'standard',fast_mode:false}},201);
