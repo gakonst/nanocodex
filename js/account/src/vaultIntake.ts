@@ -87,7 +87,7 @@ export async function submitBrowserVerification(intake: VaultIntake, code: strin
   return JSON.stringify({ type: "browser_vault_challenge_receipt", status: "submitted", challenge_id: intake.challenge_id });
 }
 
-export type BrowserTakeoverAction = { action: "observe" | "click" | "type" | "key" | "scroll" | "finish" | "cancel" | "approve" | "touch" | "edit"; x?: number; y?: number; text?: string; key?: "Enter" | "Tab" | "Backspace" | "Escape"; delta_y?: number; phase?: "start" | "move" | "end" | "cancel"; delete_backward?: number; viewport?: { width: number; height: number; mobile: boolean } };
+export type BrowserTakeoverAction = { action: "observe" | "click" | "type" | "key" | "scroll" | "finish" | "cancel" | "approve" | "touch" | "edit"; x?: number; y?: number; text?: string; key?: "Enter" | "Tab" | "Backspace" | "Escape"; delta_y?: number; phase?: "start" | "move" | "end" | "cancel"; delete_backward?: number; viewport?: { width: number; height: number; mobile: boolean }; image_format?: "jpeg" };
 export type BrowserKeyboard = { type: "text" | "email" | "url" | "tel" | "number" | "password"; multiline: boolean };
 export type BrowserInputRegion = BrowserKeyboard & { x: number; y: number; width: number; height: number };
 export type BrowserTakeoverFrame = { status: "active"; image: string; width: number; height: number; origin?: string; keyboard?: BrowserKeyboard; inputs?: BrowserInputRegion[] } | { status: "finished" | "cancelled"; request_id?: string } | { status: "approved" };
@@ -104,7 +104,7 @@ export async function browserTakeover(intake: VaultIntake, action: BrowserTakeov
     if (["finish", "cancel", "approve"].includes(action.action)) throw new Error("Invalid login receipt");
   }
   if (action.action === "finish" && v?.status === "finished" && Object.keys(v).length === 1) return { status: "finished" };
-  if (action.action === "finish" || v?.status !== "active" || Object.keys(v).some(key => !["status", "image", "width", "height", "keyboard", "inputs", "native_form", ...(intake.operation === "browser_login" ? ["origin"] : [])].includes(key)) || typeof v.image !== "string" || v.image.length > 16 * 1024 * 1024 || !/^data:image\/png;base64,[A-Za-z0-9+/]+=*$/.test(v.image) || typeof v.width !== "number" || typeof v.height !== "number" || !Number.isInteger(v.width) || !Number.isInteger(v.height) || v.width < 1 || v.height < 1 || v.width > 16384 || v.height > 16384) throw new Error("Invalid takeover frame");
+  if (action.action === "finish" || v?.status !== "active" || Object.keys(v).some(key => !["status", "image", "width", "height", "keyboard", "inputs", "native_form", ...(intake.operation === "browser_login" ? ["origin"] : [])].includes(key)) || typeof v.image !== "string" || v.image.length > 16 * 1024 * 1024 || !/^data:image\/(?:png|jpeg);base64,[A-Za-z0-9+/]+=*$/.test(v.image) || typeof v.width !== "number" || typeof v.height !== "number" || !Number.isInteger(v.width) || !Number.isInteger(v.height) || v.width < 1 || v.height < 1 || v.width > 16384 || v.height > 16384) throw new Error("Invalid takeover frame");
   if (v.origin !== undefined && (typeof v.origin !== "string" || !intake.allowed_origins?.includes(v.origin))) throw new Error("Unapproved login site");
   const keyboard = (value: unknown, region = false): boolean => {
     if (!value || typeof value !== "object" || Array.isArray(value)) return false;

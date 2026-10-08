@@ -3,7 +3,7 @@ import { browserLoginIdentity } from "./browser-login";
 import { NATIVE_FORM_STATE, PrivateBrowserNoActiveTouch, isBrowserVaultOrigin, type BrowserVaultIdentity, type PrivateBrowserCdp } from "./browser-vault";
 
 export type BrowserVaultTakeoverAction =
-  | { action: "observe"; native_fields?: boolean; native_field_hints?: boolean; native_field_controls?: boolean; viewport?: { width: number; height: number; mobile: boolean } }
+  | { action: "observe"; image_format?: "jpeg"; native_fields?: boolean; native_field_hints?: boolean; native_field_controls?: boolean; viewport?: { width: number; height: number; mobile: boolean } }
   | { action: "click"; x: number; y: number }
   | { action: "type"; text: string }
   | { action: "fill_fields"; document_id: string; fields: { ref: string; value: string }[]; save_to_vault?: boolean; save_details?: PrivateVaultDetails }
@@ -11,7 +11,7 @@ export type BrowserVaultTakeoverAction =
   | { action: "touch"; phase: "start" | "move" | "end" | "cancel"; x?: number; y?: number }
   | { action: "key"; key: "Enter" | "Tab" | "Backspace" | "Escape" }
   | { action: "scroll"; delta_y: number };
-export type BrowserVaultTouchState = { active?: boolean; uncertain?: boolean; nativeFields?: boolean; nativeFieldHints?: boolean; nativeFieldControls?: boolean; nativeSelection?: string; nativeForm?: { documentId: string; contextId: number; frameId: string; loaderId: string; origin: string; form: BrowserVaultNativeForm } };
+export type BrowserVaultTouchState = { jpeg?: boolean; origin?: string; active?: boolean; uncertain?: boolean; nativeFields?: boolean; nativeFieldHints?: boolean; nativeFieldControls?: boolean; nativeSelection?: string; nativeForm?: { documentId: string; contextId: number; frameId: string; loaderId: string; origin: string; form: BrowserVaultNativeForm } };
 export type BrowserVaultKeyboard = { type: "text" | "email" | "url" | "tel" | "number" | "password"; multiline: boolean };
 const NATIVE_AUTOCOMPLETE = ["username", "current-password", "new-password", "one-time-code", "email", "tel", "cc-number", "cc-exp", "cc-exp-month", "cc-exp-year", "cc-csc", "name", "given-name", "family-name", "street-address", "postal-code", "address-line1", "address-line2", "address-level1", "address-level2", "country", "country-name"] as const;
 const NATIVE_INPUTMODES = ["text", "email", "url", "tel", "numeric", "decimal", "search"] as const;
@@ -39,6 +39,7 @@ export function validateBrowserVaultTakeoverAction(value: BrowserVaultTakeoverAc
   let allowed: string[];
   switch (value.action) {
     case "observe":
+      if (value.image_format !== undefined && value.image_format !== "jpeg") throw new Error();
       if (value.native_fields !== undefined && typeof value.native_fields !== "boolean") throw new Error();
       if (value.native_field_hints !== undefined && (typeof value.native_field_hints !== "boolean" || value.native_fields !== true)) throw new Error();
       if (value.native_field_controls !== undefined && (typeof value.native_field_controls !== "boolean" || value.native_fields !== true)) throw new Error();
@@ -48,7 +49,7 @@ export function validateBrowserVaultTakeoverAction(value: BrowserVaultTakeoverAc
           || ![v.width,v.height].every(n => Number.isInteger(n) && n >= 240 && n <= 1920)
           || Object.keys(v).some(k => !["width","height","mobile"].includes(k))) throw new Error();
       }
-      allowed = ["action", "viewport", "native_fields", "native_field_hints", "native_field_controls"]; break;
+      allowed = ["action", "image_format", "viewport", "native_fields", "native_field_hints", "native_field_controls"]; break;
     case "click":
       if (![value.x, value.y].every(n => Number.isFinite(n) && n >= 0 && n <= 1)) throw new Error();
       allowed = ["action", "x", "y"]; break;
@@ -107,8 +108,13 @@ export async function privateVaultTakeover(
   onFilled?: (origin:string, form:BrowserVaultNativeForm, values:{ref:string;value:string}[], enabled:boolean, details?:PrivateVaultDetails)=>void,
 ): Promise<BrowserVaultTakeoverResult> {
   let sid: string | undefined;
+  // Value-free performance trace: action kind, wall time, CDP calls, image size.
+  const started = Date.now(), base = cdp; let cdpCalls = 0, imageBytes = 0, measured: string | undefined;
+  cdp = { send: (method: string, params?: unknown, session?: string) => { cdpCalls++; return base.send(method, params, session); },
+    ...(base.attachTarget ? { attachTarget: (id: string) => base.attachTarget!(id) } : {}) } as typeof cdp;
   try {
     validateBrowserVaultTakeoverAction(action);
+    measured = action.action;
     if (action.action === "touch") {
       if (action.phase !== "cancel" && (touch.uncertain || (action.phase === "start" ? touch.active : !touch.active))) throw new Error();
     } else if (action.action !== "observe" && (touch.active || touch.uncertain)) throw new Error();
@@ -120,32 +126,44 @@ export async function privateVaultTakeover(
       const url = new URL(value);
       if (url.protocol !== "https:" || !(allowedOrigins ?? [identity.expected_origin]).includes(url.origin) || url.username || url.password) throw new Error();
     };
-    const checkTarget = async () => {
-      const { targetInfo } = await cdp.send("Target.getTargetInfo", { targetId: identity.target_id });
-      if (targetInfo?.type !== "page" || (targetInfo.targetId !== undefined && targetInfo.targetId !== identity.target_id)) throw new Error();
-      sameOrigin(targetInfo.url);
-    };
-    await checkTarget();
     const attached = cdp.attachTarget ? await cdp.attachTarget(identity.target_id) : await cdp.send("Target.attachToTarget", { targetId: identity.target_id, flatten: true });
     if (typeof attached?.sessionId !== "string" || !attached.sessionId) throw new Error();
     sid = attached.sessionId;
     let frameId = "", loaderId = "", currentOrigin = "";
+    // One pipelined round trip: target and frame tree are requested together.
+    // Login takeovers validate every frame against the approved origins.
     const check = async () => {
-      if (allowedOrigins) await browserLoginIdentity(cdp as PrivateBrowserCdp, identity, allowedOrigins);
-      await checkTarget();
-      const tree = await cdp.send("Page.getFrameTree", {}, sid);
+      const [info, tree] = await Promise.all([
+        cdp.send("Target.getTargetInfo", { targetId: identity.target_id }),
+        cdp.send("Page.getFrameTree", {}, sid)]);
+      const targetInfo = info?.targetInfo;
+      if (targetInfo?.type !== "page" || (targetInfo.targetId !== undefined && targetInfo.targetId !== identity.target_id)) throw new Error();
+      sameOrigin(targetInfo.url);
       const frame = tree?.frameTree?.frame;
       if (!frame || frame.parentId || typeof frame.id !== "string" || !frame.id) throw new Error();
       sameOrigin(frame.url);
-      frameId = frame.id; loaderId = typeof frame.loaderId === "string" ? frame.loaderId : ""; currentOrigin = new URL(frame.url).origin;
+      const origin = new URL(frame.url).origin;
+      if (allowedOrigins) {
+        if (new URL(targetInfo.url).origin !== origin) throw new Error();
+        let count = 0;
+        const visit = (node: any, parent: string) => {
+          if (++count > 128 || !node?.frame) throw new Error();
+          const url = node.frame.url;
+          let current = parent;
+          if (!(url === "about:blank" || url === "about:srcdoc")) { sameOrigin(url); current = new URL(url).origin; }
+          for (const child of node.childFrames ?? []) visit(child, current);
+        };
+        for (const child of tree.frameTree.childFrames ?? []) visit(child, origin);
+      }
+      frameId = frame.id; loaderId = typeof frame.loaderId === "string" ? frame.loaderId : ""; currentOrigin = origin;
     };
     await check();
     if (action.action === "observe") {
       touch.nativeFields = action.native_fields === true;
       touch.nativeFieldHints = touch.nativeFields && action.native_field_hints === true;
       touch.nativeFieldControls = touch.nativeFields && action.native_field_controls === true;
+      touch.jpeg = action.image_format === "jpeg";
       // Observation is explicit recovery after an ambiguous gesture, never a replay.
-      await check();
       // Chrome rejects touchCancel when no touch sequence has started.
       if (touch.active || touch.uncertain) {
         try { await cdp.send("Input.dispatchTouchEvent", { type: "touchCancel", touchPoints: [] }, sid); }
@@ -156,16 +174,13 @@ export async function privateVaultTakeover(
         }
       }
       touch.active = false; touch.uncertain = false;
-      await check();
       if (restoreViewport) {
-        await cdp.send("Emulation.clearDeviceMetricsOverride", {}, sid);
-        await check();
-        await cdp.send("Emulation.setTouchEmulationEnabled", { enabled: false }, sid);
+        await Promise.all([cdp.send("Emulation.clearDeviceMetricsOverride", {}, sid),
+          cdp.send("Emulation.setTouchEmulationEnabled", { enabled: false }, sid)]);
         await check();
       } else if (action.viewport) {
-        await cdp.send("Emulation.setDeviceMetricsOverride", { ...action.viewport, deviceScaleFactor: 1 }, sid);
-        await check();
-        await cdp.send("Emulation.setTouchEmulationEnabled", { enabled: action.viewport.mobile, maxTouchPoints: 1 }, sid);
+        await Promise.all([cdp.send("Emulation.setDeviceMetricsOverride", { ...action.viewport, deviceScaleFactor: 1 }, sid),
+          cdp.send("Emulation.setTouchEmulationEnabled", { enabled: action.viewport.mobile, maxTouchPoints: 1 }, sid)]);
         await check();
       }
     }
@@ -174,10 +189,14 @@ export async function privateVaultTakeover(
     const width = viewport?.clientWidth, height = viewport?.clientHeight;
     if (![width, height].every(n => typeof n === "number" && Number.isInteger(n) && n > 0 && n <= 8192)
       || width * height > 16_777_216) throw new Error();
+    // Every input is bracketed by origin checks; a leading check is skipped
+    // only when the immediately preceding operation already ended with one.
+    let checked = true;
     const input = async (method: string, params: unknown) => {
-      await check();
+      if (!checked) await check();
+      checked = false;
       await cdp.send(method, params, sid);
-      await check();
+      await check(); checked = true;
     };
     if (action.action === "fill_fields") {
       const binding = touch.nativeForm;
@@ -207,11 +226,14 @@ export async function privateVaultTakeover(
       touch.active = action.phase === "start" || action.phase === "move";
       touch.uncertain = false;
     } else if (action.action === "edit") {
+      // One bracketed, pipelined batch: CDP applies messages in order on one socket.
+      const events: Promise<unknown>[] = [];
       for (let i = 0; i < action.delete_backward; i++) {
-        await input("Input.dispatchKeyEvent", { type: "keyDown", key: "Backspace", code: "Backspace", windowsVirtualKeyCode: 8 });
-        await input("Input.dispatchKeyEvent", { type: "keyUp", key: "Backspace", code: "Backspace", windowsVirtualKeyCode: 8 });
+        events.push(cdp.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Backspace", code: "Backspace", windowsVirtualKeyCode: 8 }, sid));
+        events.push(cdp.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Backspace", code: "Backspace", windowsVirtualKeyCode: 8 }, sid));
       }
-      if (action.text) await input("Input.insertText", { text: action.text });
+      if (action.text) events.push(cdp.send("Input.insertText", { text: action.text }, sid));
+      if (events.length) { checked = false; await Promise.all(events); await check(); checked = true; }
     } else if (action.action === "click") {
       const position = { x: Math.min(action.x * width, width - 1), y: Math.min(action.y * height, height - 1), button: "left", clickCount: 1 };
       await input("Input.dispatchMouseEvent", { type: "mousePressed", ...position });
@@ -225,13 +247,19 @@ export async function privateVaultTakeover(
     } else if (action.action === "scroll") {
       await input("Input.dispatchMouseEvent", { type: "mouseWheel", x: width / 2, y: height / 2, deltaX: 0, deltaY: action.delta_y });
     }
-    await check();
+    if (!checked) await check();
     // Fixed isolated-world code returns only an allowlisted descriptor, never field values.
     let keyboard: BrowserVaultKeyboard | undefined;
     let inputs: BrowserVaultTakeoverResult["inputs"];
     let nativeForm: BrowserVaultNativeForm | undefined;
     delete touch.nativeForm;
-    try {
+    // Metadata discovery and capture are pipelined; the final origin check
+    // below still gates every returned byte.
+    const capture = cdp.send("Page.captureScreenshot", touch.jpeg
+      ? { format: "jpeg", quality: 70, fromSurface: true, captureBeyondViewport: false, optimizeForSpeed: true }
+      : { format: "png", fromSurface: true, captureBeyondViewport: false }, sid);
+    capture.catch(() => {});
+    const keyboardTask = (async () => { try {
       const world = await cdp.send("Page.createIsolatedWorld", { frameId, worldName: "nanocodex-private-keyboard", grantUniveralAccess: false }, sid);
       if (Number.isInteger(world?.executionContextId)) {
         const result = await cdp.send("Runtime.callFunctionOn", {
@@ -274,10 +302,10 @@ export async function privateVaultTakeover(
             .map((r: any) => ({ type:r.type, multiline:r.multiline, x:r.x, y:r.y, width:r.width, height:r.height }));
         }
       }
-    } catch { /* Optional focus metadata is unavailable; never forward provider errors. */ }
+    } catch { /* Optional focus metadata is unavailable; never forward provider errors. */ } })();
     // Only opted-in clients receive new metadata; older clients reject unknown keys.
     // Separate optional discovery keeps the viewport usable for custom controls and iframes.
-    if (touch.nativeFields) try {
+    const nativeTask = (async () => { if (touch.nativeFields) try {
       const world = await cdp.send("Page.createIsolatedWorld", { frameId, worldName: touch.nativeSelection ? "nanocodex-vault-continuation" : "nanocodex-private-native-form", grantUniveralAccess: false }, sid);
       if (Number.isInteger(world?.executionContextId) && loaderId) {
         const documentId = crypto.randomUUID();
@@ -304,16 +332,23 @@ export async function privateVaultTakeover(
           touch.nativeForm = {documentId,contextId:world.executionContextId,frameId,loaderId,origin:currentOrigin,form:{...nativeForm,fields:result.result.value.fields}};
         }
       }
-    } catch { /* Never forward provider errors. */ }
+    } catch { /* Never forward provider errors. */ } })();
+    await Promise.all([keyboardTask, nativeTask]);
     // A confirmed fill may legitimately rerender the form. Its success receipt
     // must not be mistaken for a stale request that still needs user input.
     const nativeFormStale = action.action !== "fill_fields" && touch.nativeFields === true && !!touch.nativeSelection && !nativeForm;
+    const screenshot = await capture;
     await check();
-    const screenshot = await cdp.send("Page.captureScreenshot", { format: "png", fromSurface: true, captureBeyondViewport: false }, sid);
-    await check();
+    touch.origin = currentOrigin;
     const data = screenshot?.data;
+    imageBytes = typeof data === "string" ? data.length : 0;
     if (typeof data !== "string" || data.length < 44 || data.length > MAX_IMAGE_BASE64
       || data.length % 4 !== 0 || !/^[A-Za-z0-9+/]+={0,2}$/.test(data)) throw new Error();
+    if (touch.jpeg) {
+      // JPEG pixels match the emulated CSS viewport at deviceScaleFactor 1.
+      if (!data.startsWith("/9j/")) throw new Error();
+      return { status: "active", image: `data:image/jpeg;base64,${data}`, width, height, ...(keyboard ? { keyboard } : {}), ...(inputs ? { inputs } : {}), ...(nativeForm ? {native_form:nativeForm} : {}), ...(touch.nativeFieldControls && nativeFormStale ? {native_form_status:"stale" as const} : {}) };
+    }
     const header = atob(data.slice(0, 44));
     if (header.slice(0, 8) !== "\x89PNG\r\n\x1a\n" || header.slice(12, 16) !== "IHDR") throw new Error();
     const dimension = (offset: number) => [...header.slice(offset, offset + 4)].reduce((n, c) => n * 256 + c.charCodeAt(0), 0);
@@ -322,6 +357,7 @@ export async function privateVaultTakeover(
     return { status: "active", image: `data:image/png;base64,${data}`, width: imageWidth, height: imageHeight, ...(keyboard ? { keyboard } : {}), ...(inputs ? { inputs } : {}), ...(nativeForm ? {native_form:nativeForm} : {}), ...(touch.nativeFieldControls && nativeFormStale ? {native_form_status:"stale" as const} : {}) };
   } catch { delete touch.nativeForm; throw new Error("Private browser takeover could not be completed safely"); }
   finally {
+    if (measured) console.log(JSON.stringify({ type: "browser_takeover.action", action: measured, ms: Date.now() - started, cdp_calls: cdpCalls, image_base64_bytes: imageBytes, jpeg: touch.jpeg === true }));
     if (sid && !cdp.attachTarget) {
       try { await cdp.send("Target.detachFromTarget", { sessionId: sid }); }
       catch { /* Caller owns the private connection and lease cleanup. */ }

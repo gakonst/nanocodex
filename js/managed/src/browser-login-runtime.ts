@@ -197,10 +197,12 @@ export function createBrowserLoginRuntime(options: { storage: DurableObjectStora
     }
     validateBrowserVaultTakeoverAction(action as BrowserVaultTakeoverAction);remember(action);
     try{return await transport.run(login.sessionId,identity(login),signal,async cdp=>{
-      const bound=await browserLoginIdentity(cdp,identity(login),login.allowedOrigins);
-      const frame=await privateVaultTakeover(cdp,bound,action as BrowserVaultTakeoverAction,touch,false,login.allowedOrigins,(origin,form,values,enabled,details)=>saves.stage(login.id,origin,form,values,enabled,login.sessionId+":"+login.targetId,details));
-      const observed = await browserLoginIdentity(cdp,identity(login),login.allowedOrigins);
-      return {...frame,origin:observed.expected_origin};
+      // privateVaultTakeover validates every frame against allowedOrigins before and
+      // after input and capture; the current top-level origin is reported in touch.
+      delete touch.origin;
+      const frame=await privateVaultTakeover(cdp,identity(login),action as BrowserVaultTakeoverAction,touch,false,login.allowedOrigins,(origin,form,values,enabled,details)=>saves.stage(login.id,origin,form,values,enabled,login.sessionId+":"+login.targetId,details));
+      if(!touch.origin || !login.allowedOrigins.includes(touch.origin))throw new Error("Private login reached an unapproved site");
+      return {...frame,origin:touch.origin};
     });}catch{saves.cancelScope(login.sessionId+":"+login.targetId,login.origin);touch.uncertain=true;throw new Error("Private browser action could not be confirmed; refresh before continuing");}
   });
   return {tools,submit,owns:async(id:unknown)=>{const l=await options.storage.get<Login>(key);return (!!l&&l.id===id)||!!await options.storage.get(terminalKey(id));},
