@@ -99,7 +99,8 @@ async fn unknown_call_is_paired_without_blocking_admitted_effects_or_expanding_c
         .await;
         let effects = Arc::new(AtomicUsize::new(0));
         let counter = effects.clone();
-        let (agent, _events) = Nanocodex::builder(Claude::new(client, "test")).max_tokens(128_000)
+        let (agent, _events) = Nanocodex::builder(Claude::new(client, "test"))
+            .max_tokens(128_000)
             .tool(effect(), move |_| {
                 counter.fetch_add(1, Ordering::SeqCst);
                 async { Ok("committed".into()) }
@@ -158,7 +159,8 @@ async fn repeated_unknown_calls_continue_but_ids_cannot_be_replayed() {
         .await;
         let effects = Arc::new(AtomicUsize::new(0));
         let counter = effects.clone();
-        let (agent, _events) = Nanocodex::builder(Claude::new(client, "test")).max_tokens(128_000)
+        let (agent, _events) = Nanocodex::builder(Claude::new(client, "test"))
+            .max_tokens(128_000)
             .tool(effect(), move |_| {
                 counter.fetch_add(1, Ordering::SeqCst);
                 async { Ok("unexpected".into()) }
@@ -215,7 +217,8 @@ async fn undiscovered_tool_must_be_searched_before_recovery_can_execute_it() {
     let counter = effects.clone();
     let mut definition = effect();
     definition.defer_loading = true;
-    let (agent, _events) = Nanocodex::builder(Claude::new(client, "test")).max_tokens(128_000)
+    let (agent, _events) = Nanocodex::builder(Claude::new(client, "test"))
+        .max_tokens(128_000)
         .client_tool_search()
         .tool(definition, move |_| {
             counter.fetch_add(1, Ordering::SeqCst);
@@ -255,7 +258,8 @@ async fn server_effect_before_invalid_response_is_not_automatically_retried() {
         tool("wrong", "Write"),
         tool("wrong", "Write"),
     ], "tool_use")]).await;
-    let (agent, _events) = Nanocodex::builder(Claude::new(client, "test")).max_tokens(128_000)
+    let (agent, _events) = Nanocodex::builder(Claude::new(client, "test"))
+        .max_tokens(128_000)
         .build()
         .unwrap();
     let error = agent

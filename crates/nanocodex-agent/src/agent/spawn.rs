@@ -125,6 +125,7 @@ where
             restored_snapshot: None,
             host_context: codex.host_context,
             service_factory,
+            subagent_journal: codex.subagent_journal,
         },
         session_id,
         workspace,
@@ -164,6 +165,9 @@ where
     );
     if let Some(factory) = &spawner.spawn_factory {
         child_handle = child_handle.with_spawn_factory(factory.clone());
+    }
+    if let Some(journal) = &spawner.subagent_journal {
+        child_handle = child_handle.with_subagent_journal(Arc::clone(journal));
     }
     let tools = spawner
         .tools

@@ -106,45 +106,64 @@ them.
 
 Durability attaches to the agent explicitly configured with it. Spawned
 children do not share the root's execution policy, storage owner or operation
-journal. Instead, a durable host installs a `nanocodex_subagents::SubagentStore`
-on the subagent registry, which journals each root's task tree as one
-versioned value under a separate fenced state ID
-(`{root_state_id}:subagents:{root_session_id}`) in the same host store.
+journal. Instead, `DurableAgentExt::durability` also attaches a subagent journal
+to the root builder, for both the Codex and Claude harnesses. The built root's
+`AgentHandle::subagent_journal` exposes it; children, forks and restored
+children never inherit it.
 
-The registry rewrites the journal after every lifecycle change. It holds the
-topology and stable agent IDs, roles, tasks, output schemas, statuses,
-accepted outputs, instruction revisions, whether a turn was in flight, and each
-child's latest committed conversation checkpoint. Checkpoints are captured at
-spawn, after every turn and on residency eviction.
+When a root installs the subagent tools, the registry sees the journal on the
+root handle and owns the rest:
 
-After process loss, a deployment or Durable Object eviction, the host rebuilds
-the root, then calls `Registry::restore` followed by
-`Registry::resume_interrupted`:
+1. It loads the root's tree from a separate fenced state ID,
+   `{root_state_id}:subagents`, in the same host store. The key depends only on
+   the durable state, because a reopened root may receive a new runtime session
+   ID. Journals written by earlier releases under
+   `{root_state_id}:subagents:{root_session_id}` are still read.
+2. It restores the tree, resumes every child whose turn was interrupted, and
+   only then admits the root's own subagent tool calls, so a resumed root
+   operation that waits on a child observes the resumed turn.
+3. It rewrites the journal after every lifecycle change: topology and stable
+   agent IDs, roles, tasks, output schemas, statuses, accepted outputs,
+   instruction revisions, whether a turn was in flight and the input that
+   started it, and each child's latest committed checkpoint. Codex children
+   persist their Responses checkpoint; Claude children persist their
+   credential-free native checkpoint. Checkpoints are captured at spawn, after
+   every turn and on residency eviction.
+
+Hosts need no subagent-specific wiring. Hosts that persist trees without root
+durability can still call `Registry::set_store` and `Registry::restore`.
+
+After process loss, a deployment or Durable Object eviction:
 
 - Completed, failed, interrupted and closed agents keep their status, outputs
   and IDs. They are non-resident until they are messaged, waited on or managed;
   new spawns continue the restored ID sequence.
-- Children whose turn was in flight are marked interrupted, rehydrated from
-  their latest checkpoint and automatically sent a continuation message.
-  `wait_agent` then observes the resumed turn.
-- A child that never reached a committed boundary keeps its original
-  assignment, which is replayed on resumption.
+- Children whose turn was in flight are rehydrated from their latest checkpoint
+  and sent a continuation message that replays the interrupted turn's input.
+  A child that never reached a committed boundary replays its assignment.
+- Restored children are announced to the host when they rehydrate, so the
+  Cloudflare host binds them again before their first resumed turn. The
+  managed host persists each child's pinned route (harness, model and effort)
+  and spawn-time authority in Durable Object SQLite, scoped to the session
+  authorization epoch, so restored children keep their non-default model. A
+  changed epoch discards those bindings and restored children fail closed.
 
 Graceful shutdown still closes descendants, and the journal records them as
 closed. Only process loss leaves in-flight children to resume.
 
 Limits, compared with the root:
 
-- Child recovery restarts from the latest committed checkpoint. Children have
-  no per-step effect receipts, so tool calls made after that checkpoint may
-  run again. The continuation message tells the child to inspect workspace
-  state and not repeat side effects.
+- Child recovery restarts the interrupted turn from the latest committed
+  checkpoint. Children have no per-step effect receipts, so tool calls made
+  within the interrupted turn may run again. The continuation message tells
+  the child to inspect workspace state and not repeat side effects. Committed
+  earlier turns are never re-sent.
 - Mailbox messages that were queued but not yet delivered are not journaled.
-- Claude-native children have no portable checkpoint. Their status and
-  outputs are restored, but they cannot run again, and an in-flight
-  Claude-native child is restored as failed.
 
 Root admission, effect recovery, and checkpoint behavior are unchanged.
+`bin/nanocodex/tests/durable_run.rs` covers the full journey: it SIGKILLs a CLI
+root while its child is mid-turn and verifies, on restart, that the child
+finishes and no committed root or child step is sent to the model again.
 
 ## Store contract
 

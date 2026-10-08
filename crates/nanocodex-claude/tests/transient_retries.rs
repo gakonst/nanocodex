@@ -192,7 +192,8 @@ async fn transient_failures_resend_the_current_request_after_backoff() {
     .await;
     let effects = Arc::new(AtomicUsize::new(0));
     let counter = effects.clone();
-    let (agent, mut events) = Nanocodex::builder(Claude::new(fixture.client.clone(), "test")).max_tokens(128_000)
+    let (agent, mut events) = Nanocodex::builder(Claude::new(fixture.client.clone(), "test"))
+        .max_tokens(128_000)
         .tool(effect_tool(), move |_| {
             counter.fetch_add(1, Ordering::SeqCst);
             async { Ok("committed once".into()) }
@@ -252,7 +253,8 @@ async fn transient_failures_resend_the_current_request_after_backoff() {
 #[tokio::test]
 async fn persistent_transient_failure_ends_after_five_attempts() {
     let fixture = Fixture::new(|_| Reply::Stream(stream_error("overloaded_error"))).await;
-    let (agent, mut events) = Nanocodex::builder(Claude::new(fixture.client.clone(), "test")).max_tokens(128_000)
+    let (agent, mut events) = Nanocodex::builder(Claude::new(fixture.client.clone(), "test"))
+        .max_tokens(128_000)
         .build()
         .unwrap();
     let error = agent
@@ -285,7 +287,8 @@ async fn compaction_ends_after_three_attempts() {
         })
     })
     .await;
-    let (agent, _events) = Nanocodex::builder(Claude::new(fixture.client.clone(), "test")).max_tokens(128_000)
+    let (agent, _events) = Nanocodex::builder(Claude::new(fixture.client.clone(), "test"))
+        .max_tokens(128_000)
         .build()
         .unwrap();
     agent
@@ -329,7 +332,8 @@ async fn unsafe_or_permanent_failures_are_not_retried() {
     for (scenario, reply, server_tool) in scenarios {
         let reply = Mutex::new(Some(reply));
         let fixture = Fixture::new(move |_| reply.lock().unwrap().take().unwrap()).await;
-        let mut builder = Nanocodex::builder(Claude::new(fixture.client.clone(), "test")).max_tokens(128_000);
+        let mut builder =
+            Nanocodex::builder(Claude::new(fixture.client.clone(), "test")).max_tokens(128_000);
         if server_tool {
             builder = builder.server_tool(ServerToolDefinition::code_execution_current());
         }
@@ -350,7 +354,8 @@ async fn retry_after_sets_a_cancellable_minimum_delay() {
         _ => Reply::Stream(completed(false)),
     })
     .await;
-    let (agent, mut events) = Nanocodex::builder(Claude::new(fixture.client.clone(), "test")).max_tokens(128_000)
+    let (agent, mut events) = Nanocodex::builder(Claude::new(fixture.client.clone(), "test"))
+        .max_tokens(128_000)
         .server_tool(ServerToolDefinition::code_execution_current())
         .build()
         .unwrap();
@@ -367,7 +372,8 @@ async fn retry_after_sets_a_cancellable_minimum_delay() {
     agent.shutdown().await.unwrap();
 
     let fixture = Fixture::new(|_| Reply::RateLimited("60")).await;
-    let (agent, mut events) = Nanocodex::builder(Claude::new(fixture.client.clone(), "test")).max_tokens(128_000)
+    let (agent, mut events) = Nanocodex::builder(Claude::new(fixture.client.clone(), "test"))
+        .max_tokens(128_000)
         .build()
         .unwrap();
     let turn = agent.prompt("cancel during backoff").await.unwrap();

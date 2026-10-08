@@ -44,6 +44,7 @@ pub struct AgentHandle {
     native_model_id: Arc<str>,
     pub(super) native: Arc<dyn super::backend::AgentFactory>,
     pub(super) factory: Option<Arc<dyn super::backend::AgentFactory>>,
+    subagent_journal: Option<Arc<dyn crate::SubagentStore>>,
 }
 
 impl AgentHandle {
@@ -60,7 +61,23 @@ impl AgentHandle {
             native_model_id: Arc::from(model.as_str()),
             native,
             factory: None,
+            subagent_journal: None,
         }
+    }
+
+    /// Attaches the durable journal for this root's subagent task tree.
+    ///
+    /// Builders with durability attached install it on their root handle only;
+    /// spawned children, forks and restored children never inherit it.
+    #[must_use]
+    pub fn with_subagent_journal(mut self, journal: Arc<dyn crate::SubagentStore>) -> Self {
+        self.subagent_journal = Some(journal);
+        self
+    }
+
+    /// Returns the durable subagent journal when this handle owns a durable root.
+    pub fn subagent_journal(&self) -> Option<&Arc<dyn crate::SubagentStore>> {
+        self.subagent_journal.as_ref()
     }
 
     /// Installs embedding-owned mixed-family construction for this capability.

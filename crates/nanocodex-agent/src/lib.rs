@@ -32,6 +32,8 @@ pub mod execution {
 pub mod rollout;
 /// Serializable local session snapshots returned when a backend supports them.
 pub mod session;
+mod subagent_journal;
+pub use subagent_journal::{SubagentStore, SubagentStoreFuture};
 /// Per-turn token accounting and USD estimates.
 pub mod usage;
 

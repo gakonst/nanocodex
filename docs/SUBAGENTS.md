@@ -83,10 +83,12 @@ bounded during cleanup. Subagents share the root’s provider, workspace, base
 tools, and process authority; clean conversation context is not a security
 sandbox.
 
-Subagent task trees are durable whenever their root is. A host that attaches
-durability to the root also installs a `SubagentStore` on the registry; the CLI
-`--local-durability` mode and the Cloudflare/WebAssembly durable host do this
-automatically. See [durable subagents](DURABILITY.md#durable-subagent-task-trees).
+Subagent task trees are durable whenever their root is. Attaching durability to
+a Codex or Claude root builder exposes a subagent journal on the root's handle;
+the registry whose tools that root installs restores the tree and resumes
+interrupted children without host wiring. This covers the CLI
+`--local-durability` mode, the Cloudflare/WebAssembly host and the managed
+server. See [durable subagents](DURABILITY.md#durable-subagent-task-trees).
 Without a store, children remain in-memory only: restarting the parent drops
 the tree, and historical IDs cannot resume those children.
 

@@ -1533,6 +1533,10 @@ impl DurableSession {
         &self.state_id
     }
 
+    pub(crate) fn shared_store(&self) -> SharedStore {
+        self.store.clone()
+    }
+
     /// Copies the current reduced state from the owning driver.
     pub async fn state(&self) -> Result<DurableState> {
         let (result, receiver) = oneshot::channel();

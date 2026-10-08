@@ -49,7 +49,8 @@ async fn server_web_search_results_and_citations_replay_without_client_result() 
         format!("http://{address}/v1/messages"),
         "synthetic",
     );
-    let (agent, mut events) = Nanocodex::builder(Claude::new(client, "test")).max_tokens(128_000)
+    let (agent, mut events) = Nanocodex::builder(Claude::new(client, "test"))
+        .max_tokens(128_000)
         .server_tool(ServerToolDefinition::web_search_basic(2))
         .build()
         .unwrap();
@@ -121,7 +122,8 @@ async fn pause_turn_resends_server_tools_and_assistant_blocks_without_user_resul
         format!("http://{address}/v1/messages"),
         "synthetic",
     );
-    let (agent, _) = Nanocodex::builder(Claude::new(client, "test")).max_tokens(128_000)
+    let (agent, _) = Nanocodex::builder(Claude::new(client, "test"))
+        .max_tokens(128_000)
         .server_tool(ServerToolDefinition::web_fetch_basic(1))
         .build()
         .unwrap();
@@ -193,7 +195,8 @@ async fn server_tool_search_reference_and_discovered_client_tool_continue_withou
         format!("http://{address}/v1/messages"),
         "synthetic",
     );
-    let (agent, _) = Nanocodex::builder(Claude::new(client, "test")).max_tokens(128_000)
+    let (agent, _) = Nanocodex::builder(Claude::new(client, "test"))
+        .max_tokens(128_000)
         .server_tool(ServerToolDefinition::tool_search_bm25())
         .tool(
             nanocodex_claude::ToolDefinition {
@@ -286,7 +289,8 @@ async fn provider_code_container_id_is_reused_on_next_turn_without_local_bash() 
         format!("http://{address}/v1/messages"),
         "synthetic",
     );
-    let (agent, _) = Nanocodex::builder(Claude::new(client, "test")).max_tokens(128_000)
+    let (agent, _) = Nanocodex::builder(Claude::new(client, "test"))
+        .max_tokens(128_000)
         .server_tool(ServerToolDefinition::code_execution_current())
         .build()
         .unwrap();
@@ -361,7 +365,8 @@ async fn uncertain_pause_turn_continuation_preserves_opaque_boundary_as_recovery
         format!("http://{address}/v1/messages"),
         "synthetic",
     );
-    let (agent, _) = Nanocodex::builder(Claude::new(client, "test")).max_tokens(128_000)
+    let (agent, _) = Nanocodex::builder(Claude::new(client, "test"))
+        .max_tokens(128_000)
         .server_tool(ServerToolDefinition::web_fetch_basic(1))
         .build()
         .unwrap();

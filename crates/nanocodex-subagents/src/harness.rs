@@ -547,7 +547,7 @@ impl Harness {
             .as_ref()
             .ok_or_else(|| std::io::Error::other(format!("agent {} is closed", self.id)))?;
         let Some(instruction_revision) = registry
-            .harness_turn_started(&self.root_session_id, self.id)
+            .harness_turn_started(&self.root_session_id, self.id, &prompt)
             .await
         else {
             return Err(std::io::Error::other(format!(

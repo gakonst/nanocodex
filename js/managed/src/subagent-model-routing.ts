@@ -39,6 +39,11 @@ export interface ChildRouteStore {
   commit(sessionId: string, value: RetainedChildRoute): void;
 }
 
+/** Haiku supports only ordinary inference; adaptive Claude models accept bounded efforts. */
+function claudeChildEfforts(model: string): readonly ("none" | "low" | "medium" | "high")[] {
+  return model.startsWith("claude-haiku-") ? ["none"] : ["low", "medium", "high"];
+}
+
 // Expiry bounds abandoned tickets while allowing normal batch admission and binding.
 export const CHILD_ROUTE_TICKET_TTL_MS = 15 * 60_000;
 
@@ -104,7 +109,6 @@ export function createSubagentRouteController(options: {
       if (family === "claude") {
         if (options.policy.candidates !== undefined) throw new Error("Claude child model is outside the explicit routing policy");
         if (!options.claude) throw new Error("Claude harness is unavailable for this managed session");
-        if (request.thinking !== undefined && !["low", "medium", "high"].includes(request.thinking)) throw new Error("Unsupported Claude child effort");
         options.claude!.authorize(request.parentSessionId, request.hostContextRef);
         expirePending();
         if (pending.size + resolving >= 64) throw new Error("Too many pending child routes");
@@ -113,6 +117,8 @@ export function createSubagentRouteController(options: {
           const available = await options.claude!.availableModels();
           const selected = model ?? claudeParent ?? available[0];
           if (!selected || !available.includes(selected)) throw new Error("Selected Claude child model is unavailable");
+          const efforts = claudeChildEfforts(selected);
+          if (request.thinking !== undefined && !(efforts as readonly string[]).includes(request.thinking)) throw new Error("Unsupported Claude child effort");
           options.claude!.authorize(request.parentSessionId, request.hostContextRef);
           const routeId = options.id ? options.id() : crypto.randomUUID();
           if (!routeId || pending.has(routeId)) throw new Error("Child route reference is not unique");
@@ -121,7 +127,7 @@ export function createSubagentRouteController(options: {
             route: null, claudeModel: selected,
           } });
           return claudeParent === undefined
-            ? { harness: "claude" as const, model: selected, thinking: request.thinking ?? "low", routeId }
+            ? { harness: "claude" as const, model: selected, thinking: request.thinking ?? efforts[0]!, routeId }
             : { native: true as const, routeId };
         } finally { resolving--; }
       }

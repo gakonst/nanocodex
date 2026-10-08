@@ -17,6 +17,7 @@ mod shared_store;
 mod sqlite;
 mod state;
 mod store;
+mod subagents;
 
 pub use memory::MemoryStore;
 #[cfg(all(feature = "postgres", not(target_family = "wasm")))]

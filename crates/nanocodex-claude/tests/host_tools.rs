@@ -146,7 +146,8 @@ async fn host_bridge_waits_for_user_and_preserves_real_identity_and_failures() {
         format!("http://{address}/v1/messages"),
         "synthetic",
     );
-    let (agent, mut events) = Nanocodex::builder(Claude::new(client, "test")).max_tokens(128_000)
+    let (agent, mut events) = Nanocodex::builder(Claude::new(client, "test"))
+        .max_tokens(128_000)
         .host_tools(host)
         .build()
         .unwrap();
@@ -341,7 +342,8 @@ async fn host_mcp_resources_reach_claude_and_history_with_explicit_media_errors(
         format!("http://{address}/v1/messages"),
         "synthetic",
     );
-    let (agent, _) = Nanocodex::builder(Claude::new(client, "test")).max_tokens(128_000)
+    let (agent, _) = Nanocodex::builder(Claude::new(client, "test"))
+        .max_tokens(128_000)
         .host_tools(Arc::new(ClaudeHostTools::new(
             MediaHost,
             [HostTool::TaskOutput],

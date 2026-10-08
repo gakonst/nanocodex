@@ -894,7 +894,6 @@ impl AgentArgs {
         } else {
             builder
         };
-        let mut subagent_journal = None;
         let builder = if let Some(local_durability) = local_durability {
             let store = SqliteStore::open(&local_durability.path).wrap_err_with(|| {
                 format!(
@@ -902,15 +901,6 @@ impl AgentArgs {
                     local_durability.path.display()
                 )
             })?;
-            if let Some((registry, _, _)) = &subagent_runtime {
-                let journal_store = SqliteStore::open(&local_durability.path)
-                    .wrap_err("failed to open local subagent journal")?;
-                registry.set_store(Arc::new(LocalSubagentJournal::new(
-                    journal_store,
-                    &local_durability.state_id,
-                )));
-                subagent_journal = Some(Arc::clone(registry));
-            }
             let state = PortableDurableSession::open(store, local_durability.state_id)
                 .await
                 .wrap_err("failed to open local durability state")?;
@@ -925,26 +915,6 @@ impl AgentArgs {
             let _timing = crate::startup_timing::Stage::new("native_agent");
             builder.build()?
         };
-        if let Some(registry) = subagent_journal {
-            let root_session_id = handle.session_id().to_string();
-            let report = registry
-                .restore(&root_session_id)
-                .await
-                .wrap_err("failed to restore durable subagents")?;
-            if report.restored > 0 {
-                tracing::info!(
-                    restored = report.restored,
-                    interrupted = report.interrupted.len(),
-                    unrecoverable = report.unrecoverable.len(),
-                    "restored durable subagent task tree"
-                );
-            }
-            for (id, result) in registry.resume_interrupted(&root_session_id).await {
-                if let Err(error) = result {
-                    tracing::warn!(%id, %error, "could not resume restored subagent");
-                }
-            }
-        }
         let (child_agents, subagent_updates) =
             subagent_runtime.map_or((None, None), |(_, control, updates)| {
                 let (drain_updates, subagent_updates) = if tui {
@@ -981,63 +951,6 @@ impl AgentArgs {
 pub(crate) struct LocalDurability {
     pub(crate) path: PathBuf,
     pub(crate) state_id: String,
-}
-
-/// Journals each root's subagent tree beside its durable root state, under a
-/// distinct fenced state ID in the same local SQLite database.
-struct LocalSubagentJournal {
-    store: tokio::sync::Mutex<SqliteStore>,
-    prefix: String,
-}
-
-impl LocalSubagentJournal {
-    fn new(store: SqliteStore, root_state_id: &str) -> Self {
-        Self {
-            store: tokio::sync::Mutex::new(store),
-            prefix: format!("{root_state_id}:subagents:"),
-        }
-    }
-}
-
-impl nanocodex_subagents::SubagentStore for LocalSubagentJournal {
-    fn load<'a>(
-        &'a self,
-        root_session_id: &'a str,
-    ) -> nanocodex_subagents::SubagentStoreFuture<'a, std::io::Result<Option<String>>> {
-        Box::pin(async move {
-            use nanocodex_durability::StateStore as _;
-            let state_id = format!("{}{root_session_id}", self.prefix);
-            let owned = self
-                .store
-                .lock()
-                .await
-                .acquire(&state_id, nanocodex_durability::OwnerId::new())
-                .await
-                .map_err(std::io::Error::other)?;
-            Ok(owned.state.payload)
-        })
-    }
-
-    fn save<'a>(
-        &'a self,
-        root_session_id: &'a str,
-        payload: String,
-    ) -> nanocodex_subagents::SubagentStoreFuture<'a, std::io::Result<()>> {
-        Box::pin(async move {
-            use nanocodex_durability::StateStore as _;
-            let state_id = format!("{}{root_session_id}", self.prefix);
-            let mut store = self.store.lock().await;
-            let owned = store
-                .acquire(&state_id, nanocodex_durability::OwnerId::new())
-                .await
-                .map_err(std::io::Error::other)?;
-            store
-                .replace(&state_id, &owned.owner, owned.state.revision, &payload, &[])
-                .await
-                .map_err(std::io::Error::other)?;
-            Ok(())
-        })
-    }
 }
 
 const fn selected_subagent_tools(

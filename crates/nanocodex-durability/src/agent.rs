@@ -25,7 +25,7 @@ pub trait DurableAgentExt: Sized {
 impl<F> DurableAgentExt for NanocodexBuilder<F> {
     async fn durability(self, state: DurableSession) -> AgentResult<Self> {
         let state_id = state.state_id().to_owned();
-        let mut builder = self;
+        let mut builder = self.subagent_journal(state.subagent_journal());
         let (owner, checkpoint) = state.acquire_agent().await.map_err(agent_error)?;
         let mut known_records = HashSet::new();
         if let Some(checkpoint) = checkpoint {

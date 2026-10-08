@@ -140,7 +140,8 @@ async fn tools_only_task_checkpoint_reopens_and_retains_id_watermark() {
         "synthetic",
     );
     let board = Arc::new(ClaudeTasks::new());
-    let (agent, _) = Nanocodex::builder(Claude::new(client.clone(), "test")).max_tokens(128_000)
+    let (agent, _) = Nanocodex::builder(Claude::new(client.clone(), "test"))
+        .max_tokens(128_000)
         .tasks(board.clone())
         .parallel_tools(true)
         .execution_policy(policy.clone(), None)
@@ -183,7 +184,8 @@ async fn tools_only_task_checkpoint_reopens_and_retains_id_watermark() {
         path,
         cursors: Mutex::new(vec![]),
     });
-    let (reopened, _) = Nanocodex::builder(Claude::new(client, "test")).max_tokens(128_000)
+    let (reopened, _) = Nanocodex::builder(Claude::new(client, "test"))
+        .max_tokens(128_000)
         .tasks(reopened_board.clone())
         .execution_policy(reopened_policy, Some(saved))
         .unwrap()
@@ -284,7 +286,8 @@ async fn older_custom_policy_preserves_plain_steering() {
     let endpoint = format!("http://{}/v1/messages", listener.local_addr().unwrap());
     let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
     let client = ClaudeClient::new(reqwest::Client::new(), endpoint, "synthetic");
-    let (agent, _) = Nanocodex::builder(Claude::new(client, "test")).max_tokens(128_000)
+    let (agent, _) = Nanocodex::builder(Claude::new(client, "test"))
+        .max_tokens(128_000)
         .execution_policy(policy, None)
         .unwrap()
         .build()

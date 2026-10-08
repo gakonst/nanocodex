@@ -239,6 +239,22 @@ describe("hosted child routing", () => {
     release();
     await Promise.all(admitted);
   });
+
+  it("routes Haiku children with the only effort Haiku supports", async () => {
+    const claudeAuthorize = vi.fn();
+    const { controller, rows } = fixture({ claude: { parentModel: () => undefined, authorize: claudeAuthorize,
+      availableModels: async () => ["claude-sonnet-4-6", "claude-haiku-4-5"] } });
+    for (const thinking of ["none", undefined] as const) {
+      const selected = await controller.resolve({ ...request, harness: "claude", model: "claude-haiku-4-5", ...(thinking ? { thinking } : {}) });
+      expect(selected).toEqual({ harness: "claude", model: "claude-haiku-4-5", thinking: "none", routeId: expect.any(String) });
+      controller.bind({ ...requestBinding(selected.routeId), sessionId: `haiku-${thinking ?? "default"}` });
+      expect(rows.get(`haiku-${thinking ?? "default"}`)?.claudeModel).toBe("claude-haiku-4-5");
+    }
+    await expect(controller.resolve({ ...request, harness: "claude", model: "claude-haiku-4-5", thinking: "low" })).rejects.toThrow("Unsupported Claude child effort");
+    await expect(controller.resolve({ ...request, harness: "claude", model: "claude-sonnet-4-6", thinking: "none" })).rejects.toThrow("Unsupported Claude child effort");
+    expect(await controller.resolve({ ...request, harness: "claude", model: "claude-sonnet-4-6" })).toMatchObject({ thinking: "low" });
+    expect(claudeAuthorize).toHaveBeenCalledWith("root", "account-turn");
+  });
 });
 function requestBinding(routeId: string) {
   return { parentSessionId: request.parentSessionId, hostContextRef: request.hostContextRef, routeId };

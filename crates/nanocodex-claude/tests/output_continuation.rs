@@ -137,7 +137,8 @@ async fn partial_tool_never_executes_and_signed_content_continues() {
         .await;
         let calls = Arc::new(AtomicUsize::new(0));
         let counter = calls.clone();
-        let (agent, _) = Nanocodex::builder(Claude::new(client, "test")).max_tokens(128_000)
+        let (agent, _) = Nanocodex::builder(Claude::new(client, "test"))
+            .max_tokens(128_000)
             .tool(
                 ToolDefinition {
                     name: "effect".into(),
@@ -202,7 +203,8 @@ async fn repeated_exhaustion_is_bounded_and_last_partial_is_retained() {
         )])
         .collect();
     let (client, log, server) = fixture(responses).await;
-    let (agent, _) = Nanocodex::builder(Claude::new(client, "test")).max_tokens(128_000)
+    let (agent, _) = Nanocodex::builder(Claude::new(client, "test"))
+        .max_tokens(128_000)
         .build()
         .unwrap();
     let error = agent
@@ -236,7 +238,8 @@ async fn repeated_exhaustion_is_bounded_and_last_partial_is_retained() {
 #[tokio::test]
 async fn malformed_terminal_without_token_cutoff_is_still_rejected() {
     let (client, log, server) = fixture(vec![cut_tool(false, "end_turn")]).await;
-    let (agent, _) = Nanocodex::builder(Claude::new(client, "test")).max_tokens(128_000)
+    let (agent, _) = Nanocodex::builder(Claude::new(client, "test"))
+        .max_tokens(128_000)
         .build()
         .unwrap();
     let error = agent
@@ -269,7 +272,8 @@ async fn automatic_compaction_omits_old_thinking_but_retains_cutoff_and_continua
         ),
     ])
     .await;
-    let (agent, _) = Nanocodex::builder(Claude::new(client, "test")).max_tokens(128_000)
+    let (agent, _) = Nanocodex::builder(Claude::new(client, "test"))
+        .max_tokens(128_000)
         .auto_compact_window_tokens(100_000)
         .build()
         .unwrap();
@@ -378,7 +382,8 @@ async fn interleaved_cutoffs_and_tool_rounds_succeed_beyond_three_total() {
     let (client, log, server) = fixture(responses).await;
     let calls = Arc::new(AtomicUsize::new(0));
     let counter = calls.clone();
-    let (agent, _) = Nanocodex::builder(Claude::new(client, "test")).max_tokens(128_000)
+    let (agent, _) = Nanocodex::builder(Claude::new(client, "test"))
+        .max_tokens(128_000)
         .tool(effect_tool(), move |_| {
             counter.fetch_add(1, Ordering::SeqCst);
             async { Ok("receipt committed".to_string()) }
@@ -423,7 +428,8 @@ async fn four_consecutive_cutoffs_after_a_tool_round_still_fail() {
     .await;
     let calls = Arc::new(AtomicUsize::new(0));
     let counter = calls.clone();
-    let (agent, _) = Nanocodex::builder(Claude::new(client, "test")).max_tokens(128_000)
+    let (agent, _) = Nanocodex::builder(Claude::new(client, "test"))
+        .max_tokens(128_000)
         .tool(effect_tool(), move |_| {
             counter.fetch_add(1, Ordering::SeqCst);
             async { Ok("receipt committed".to_string()) }
@@ -481,7 +487,8 @@ async fn cutoff_with_complete_tool_call_does_not_reset_budget() {
     .await;
     let calls = Arc::new(AtomicUsize::new(0));
     let counter = calls.clone();
-    let (agent, _) = Nanocodex::builder(Claude::new(client, "test")).max_tokens(128_000)
+    let (agent, _) = Nanocodex::builder(Claude::new(client, "test"))
+        .max_tokens(128_000)
         .tool(effect_tool(), move |_| {
             counter.fetch_add(1, Ordering::SeqCst);
             async { Ok("receipt committed".to_string()) }
@@ -550,7 +557,8 @@ async fn stop_hook_continuation_after_normal_finish_resets_budget() {
         finished("done"),
     ])
     .await;
-    let (agent, _) = Nanocodex::builder(Claude::new(client, "test")).max_tokens(128_000)
+    let (agent, _) = Nanocodex::builder(Claude::new(client, "test"))
+        .max_tokens(128_000)
         .tool_hooks(Arc::new(StopOnce(Default::default())))
         .build()
         .unwrap();
@@ -589,7 +597,8 @@ async fn steering_after_normal_finish_resets_budget() {
         Some((2, started.clone(), release.clone())),
     )
     .await;
-    let (agent, _) = Nanocodex::builder(Claude::new(client, "test")).max_tokens(128_000)
+    let (agent, _) = Nanocodex::builder(Claude::new(client, "test"))
+        .max_tokens(128_000)
         .build()
         .unwrap();
     let turn = agent.prompt("finish task").await.unwrap();
@@ -724,7 +733,8 @@ impl ClaudeExecutionPolicy for Store {
 }
 fn durable_agent(client: ClaudeClient, store: &Arc<Store>, calls: &Arc<AtomicUsize>) -> Nanocodex {
     let counter = calls.clone();
-    Nanocodex::builder(Claude::new(client, "test")).max_tokens(128_000)
+    Nanocodex::builder(Claude::new(client, "test"))
+        .max_tokens(128_000)
         .tool(effect_tool(), move |_| {
             counter.fetch_add(1, Ordering::SeqCst);
             async { Ok("receipt committed".to_string()) }

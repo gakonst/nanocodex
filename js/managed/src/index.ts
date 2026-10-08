@@ -1349,10 +1349,102 @@ function descriptorDigest(value: string): string {
   return createHash("sha256").update(JSON.stringify(value)).digest("hex");
 }
 
-/** Child authority and routes belong only to the current live runtime. */
+/**
+ * Child spawn authority and pinned model routes.
+ *
+ * Durable roots restore their subagent trees after a Durable Object restart,
+ * so each live binding is also written to SQLite. A restored child therefore
+ * keeps the exact route (harness, model and effort) and spawn-time authority it
+ * was admitted with. Rows are scoped to the session authorization epoch: a
+ * changed epoch discards them and restored children fail closed.
+ */
 export class ManagedSubagentBindings {
   readonly authorizations = new Map<string, ManagedSubagentAuthorizationRow>();
   readonly routes = new Map<string, RetainedChildRoute>();
+  readonly #storage: DurableObjectStorage | undefined;
+  readonly #epoch: number | undefined;
+
+  constructor(storage?: DurableObjectStorage, authorizationEpoch?: number) {
+    this.#storage = storage;
+    this.#epoch = authorizationEpoch;
+  }
+
+  /** Loads bindings retained for journal-restored children of this epoch. */
+  static load(storage: DurableObjectStorage, authorizationEpoch: number): ManagedSubagentBindings {
+    initializeManagedSubagentBindingSchema(storage);
+    const bindings = new ManagedSubagentBindings(storage, authorizationEpoch);
+    storage.transactionSync(() => {
+      storage.sql.exec("DELETE FROM managed_durable_subagent_bindings WHERE authorization_epoch != ?", authorizationEpoch);
+      for (const row of storage.sql.exec<{ session_id: string; authorization_row_json: string | null; route_json: string | null }>(
+        "SELECT session_id, authorization_row_json, route_json FROM managed_durable_subagent_bindings",
+      ).toArray()) {
+        try {
+          if (row.authorization_row_json !== null) {
+            const authorization = JSON.parse(row.authorization_row_json) as ManagedSubagentAuthorizationRow;
+            // Retained authority is re-validated before use, exactly like live rows.
+            parseTurnAuthorization(authorization.authorization_json);
+            if (authorization.sessionId !== row.session_id) throw new Error("mismatched binding");
+            bindings.authorizations.set(row.session_id, authorization);
+          }
+          if (row.route_json !== null) bindings.routes.set(row.session_id, JSON.parse(row.route_json) as RetainedChildRoute);
+        } catch {
+          bindings.authorizations.delete(row.session_id);
+          bindings.routes.delete(row.session_id);
+          storage.sql.exec("DELETE FROM managed_durable_subagent_bindings WHERE session_id = ?", row.session_id);
+        }
+      }
+    });
+    return bindings;
+  }
+
+  setAuthorization(sessionId: string, row: ManagedSubagentAuthorizationRow): void {
+    this.authorizations.set(sessionId, row);
+    this.#persist(sessionId);
+  }
+
+  setRoute(sessionId: string, route: RetainedChildRoute): void {
+    this.routes.set(sessionId, route);
+    this.#persist(sessionId);
+  }
+
+  release(sessionId: string): void {
+    this.authorizations.delete(sessionId);
+    this.routes.delete(sessionId);
+    this.#storage?.sql.exec("DELETE FROM managed_durable_subagent_bindings WHERE session_id = ?", sessionId);
+  }
+
+  #persist(sessionId: string): void {
+    if (this.#storage === undefined || this.#epoch === undefined) return;
+    const authorization = this.authorizations.get(sessionId);
+    const route = this.routes.get(sessionId);
+    this.#storage.sql.exec(
+      `INSERT INTO managed_durable_subagent_bindings
+         (session_id, authorization_epoch, authorization_row_json, route_json)
+       VALUES (?, ?, ?, ?)
+       ON CONFLICT(session_id) DO UPDATE SET
+         authorization_epoch = excluded.authorization_epoch,
+         authorization_row_json = excluded.authorization_row_json,
+         route_json = excluded.route_json`,
+      sessionId, this.#epoch,
+      authorization === undefined ? null : JSON.stringify(authorization),
+      route === undefined ? null : JSON.stringify(route),
+    );
+  }
+}
+
+function initializeManagedSubagentBindingSchema(storage: DurableObjectStorage): void {
+  storage.sql.exec(`CREATE TABLE IF NOT EXISTS managed_durable_subagent_bindings (
+    session_id TEXT PRIMARY KEY,
+    authorization_epoch INTEGER NOT NULL,
+    authorization_row_json TEXT,
+    route_json TEXT
+  )`);
+}
+
+/** Removes every retained child binding, for example when the session is deleted. */
+export function clearManagedSubagentBindings(storage: DurableObjectStorage): void {
+  initializeManagedSubagentBindingSchema(storage);
+  storage.sql.exec("DELETE FROM managed_durable_subagent_bindings");
 }
 
 /** Old child metadata cannot authorize or resurrect a child after deployment. */
@@ -1404,8 +1496,7 @@ export function applyManagedSubagentLifecycle(
       || retained.host_context_ref !== hostContextRef) {
       throw new Error("managed subagent release does not match live authorization");
     }
-    bindings.authorizations.delete(sessionId);
-    bindings.routes.delete(sessionId);
+    bindings.release(sessionId);
     return;
   }
   if (Object.keys(event).some((key) => ![
@@ -1445,7 +1536,7 @@ export function applyManagedSubagentLifecycle(
     row.root_session_id === rootSessionId && row.agentId === descriptor.agentId)) {
     throw new Error("managed subagent identity conflicts with live authorization");
   }
-  bindings.authorizations.set(descriptor.sessionId, {
+  bindings.setAuthorization(descriptor.sessionId, {
     ...descriptor,
     role: descriptorDigest(descriptor.role), task: descriptorDigest(descriptor.task),
     root_session_id: rootSessionId, host_context_ref: hostContextRef,
@@ -9674,6 +9765,7 @@ export class DurableAgentSession extends DurableComputerObject {
       this.ctx.storage.sql.exec("DELETE FROM managed_personalization_invalidation");
       this.ctx.storage.sql.exec("DELETE FROM managed_request_context_state");
       this.ctx.storage.sql.exec("DELETE FROM managed_turn_request_context");
+      clearManagedSubagentBindings(this.ctx.storage);
       this.#subagentBindings = new ManagedSubagentBindings();
       this.#goalRuntime.clear();
       this.ctx.storage.sql.exec("DELETE FROM managed_cron_triggers");
@@ -9966,8 +10058,13 @@ export class DurableAgentSession extends DurableComputerObject {
       }
       return this.#ensureAgent();
     }
-    // Shutdown has drained the previous runtime; no child bindings cross this boundary.
-    this.#subagentBindings = new ManagedSubagentBindings();
+    // Graceful shutdown released every child binding. Bindings that remain
+    // belong to children whose turn a crash or restart interrupted; the new
+    // runtime restores those children from its durable subagent journal.
+    const bindingSession = this.#session();
+    this.#subagentBindings = bindingSession === undefined
+      ? new ManagedSubagentBindings()
+      : ManagedSubagentBindings.load(this.ctx.storage, bindingSession.authorization_epoch);
     const construction: AgentConstructionOwnership = {
       abort: new AbortController(),
       deletionGeneration: this.#deletionGeneration,
@@ -10531,7 +10628,7 @@ export class DurableAgentSession extends DurableComputerObject {
           if (bindings.routes.has(sessionId) || [...bindings.routes.values()].some(route => route.routeId === binding.routeId)) {
             throw new Error("Child route conflicts with live binding");
           }
-          bindings.routes.set(sessionId, binding);
+          bindings.setRoute(sessionId, binding);
         },
       },
     }) : undefined;

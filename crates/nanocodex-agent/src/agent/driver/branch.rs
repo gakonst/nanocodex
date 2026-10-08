@@ -17,6 +17,8 @@ pub(in crate::agent) struct BranchSpawner<S> {
     pub(in crate::agent) restored_snapshot: Option<SessionSnapshot>,
     pub(in crate::agent) host_context: Option<Arc<str>>,
     pub(in crate::agent) service_factory: ServiceFactory<S>,
+    /// Durable root task-tree journal; never inherited by children or forks.
+    pub(in crate::agent) subagent_journal: Option<Arc<dyn crate::SubagentStore>>,
 }
 
 #[derive(Clone)]
@@ -50,6 +52,7 @@ impl<S> BranchSpawner<S> {
             restored_snapshot: None,
             host_context: self.host_context.as_ref().map(Arc::clone),
             service_factory: Arc::clone(&self.service_factory),
+            subagent_journal: None,
         }
     }
 }
@@ -147,6 +150,7 @@ where
             restored_snapshot: None,
             host_context,
             service_factory: Arc::clone(&self.service_factory),
+            subagent_journal: None,
         };
         let service = (spawner.service_factory)(Arc::clone(&spawner.config));
         spawn_agent_driver(

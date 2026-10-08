@@ -9,6 +9,7 @@ import {
   managedAuthorizationForRouting,
   type DurableAgentSession,
 } from "../src/index";
+import type { RetainedChildRoute } from "../src/subagent-model-routing";
 
 const ROOT_SESSION = "01992222-2222-7222-8222-222222222222";
 const ACCOUNT_SESSION = "01993333-3333-7333-8333-333333333333";
@@ -98,6 +99,46 @@ describe("managed subagent authorization ownership", () => {
       expect(authorization(replacement, child, account)).toBeUndefined();
       expect(managedAuthorizationForRouting(state.storage, replacement, ROOT_SESSION, ACCOUNT_SESSION, "account-turn")).toBeUndefined();
       expect(managedAuthorizationForRouting(state.storage, replacement, ROOT_SESSION, ROOT_SESSION, "account-turn")).toEqual(account);
+    });
+  });
+
+  it("restores a journaled child's pinned route and spawn authority after a restart", async () => {
+    await withSession(async (state) => {
+      insertTurn(state.storage, "account-turn", account);
+      const live = ManagedSubagentBindings.load(state.storage, 7);
+      const child = descriptor("restored", null, ACCOUNT_SESSION, "restored task");
+      bind(state.storage, live, child, "account-turn");
+      const route: RetainedChildRoute = {
+        routeId: "route-1", parentSessionId: ROOT_SESSION, hostContextRef: "account-turn",
+        route: null, claudeModel: "claude-haiku-4-5",
+      };
+      live.setRoute(ACCOUNT_SESSION, route);
+      // The root turn row no longer grants anything: authority is the child's own.
+      state.storage.sql.exec("DELETE FROM managed_turns");
+
+      const restarted = ManagedSubagentBindings.load(state.storage, 7);
+      expect(restarted.routes.get(ACCOUNT_SESSION)).toEqual(route);
+      expect(authorization(restarted, child, connect)).toEqual(account);
+      expect(managedAuthorizationForRouting(state.storage, restarted, ROOT_SESSION, ACCOUNT_SESSION, "account-turn")).toEqual(account);
+      // Re-binding the restored child in the new runtime is accepted as the same identity.
+      bind(state.storage, restarted, child, "account-turn");
+
+      // A changed authorization epoch discards retained children.
+      const reauthorized = ManagedSubagentBindings.load(state.storage, 8);
+      expect(reauthorized.routes.size).toBe(0);
+      expect(authorization(reauthorized, child, account)).toBeUndefined();
+      expect(ManagedSubagentBindings.load(state.storage, 7).authorizations.size).toBe(0);
+    });
+  });
+
+  it("releases retained bindings when the child closes", async () => {
+    await withSession(async (state) => {
+      insertTurn(state.storage, "account-turn", account);
+      const live = ManagedSubagentBindings.load(state.storage, 1);
+      const child = descriptor("closing", null, ACCOUNT_SESSION, "closing task");
+      bind(state.storage, live, child, "account-turn");
+      release(state.storage, live, child.sessionId, "account-turn");
+      expect(ManagedSubagentBindings.load(state.storage, 1).authorizations.size).toBe(0);
     });
   });
 

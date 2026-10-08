@@ -192,7 +192,8 @@ async fn automatic_agent_cache_keeps_system_prefix_across_compaction() {
         format!("http://{address}/v1/messages"),
         "synthetic",
     );
-    let (agent, _) = Nanocodex::builder(Claude::new(client, "test")).max_tokens(128_000)
+    let (agent, _) = Nanocodex::builder(Claude::new(client, "test"))
+        .max_tokens(128_000)
         .cache_one_hour()
         .system("Stable system")
         .build()
@@ -382,7 +383,8 @@ async fn subscription_wire_moves_one_explicit_final_block_marker() {
         "synthetic",
     )
     .subscription_compatibility();
-    let (agent, _) = Nanocodex::builder(Claude::new(client, "test")).max_tokens(128_000)
+    let (agent, _) = Nanocodex::builder(Claude::new(client, "test"))
+        .max_tokens(128_000)
         .cache_one_hour()
         .system("Stable system")
         .tool(

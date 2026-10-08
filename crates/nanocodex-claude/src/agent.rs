@@ -263,12 +263,16 @@ impl BuilderBackend for Claude {
 // https://platform.claude.com/docs/en/models/haiku-4-5/overview
 fn model_max_tokens(model: &str) -> Option<u32> {
     match model {
-        "claude-opus-5-5" | "claude-fable-5-1" | "claude-sonnet-5-5"
-        | "claude-haiku-5-5" | "claude-opus-5" | "claude-sonnet-5"
-        | "claude-opus-4-6" | "claude-sonnet-4-6" => Some(128_000),
-        "claude-haiku-4-5" | "claude-haiku-4-5-20251001"
-        | "claude-sonnet-4-5" | "claude-sonnet-4-5-20250929"
-        | "claude-opus-4-5" | "claude-opus-4-5-20251101" => Some(64_000),
+        "claude-opus-5-5" | "claude-fable-5-1" | "claude-sonnet-5-5" | "claude-haiku-5-5"
+        | "claude-opus-5" | "claude-sonnet-5" | "claude-opus-4-6" | "claude-sonnet-4-6" => {
+            Some(128_000)
+        }
+        "claude-haiku-4-5"
+        | "claude-haiku-4-5-20251001"
+        | "claude-sonnet-4-5"
+        | "claude-sonnet-4-5-20250929"
+        | "claude-opus-4-5"
+        | "claude-opus-4-5-20251101" => Some(64_000),
         _ => None,
     }
 }
@@ -312,6 +316,7 @@ pub struct ClaudeBuilder {
     client_tool_search: bool,
     code_only: bool,
     policy: Option<Arc<dyn ClaudeExecutionPolicy>>,
+    subagent_journal: Option<Arc<dyn nanocodex_agent::SubagentStore>>,
     restored: Option<Snapshot>,
     #[cfg(all(feature = "tools", not(target_family = "wasm")))]
     task_board: Option<Arc<nanocodex_claude_tools::tasks::ClaudeTasks>>,
@@ -357,6 +362,7 @@ impl ClaudeBuilder {
             client_tool_search: false,
             code_only: false,
             policy: None,
+            subagent_journal: None,
             restored: None,
             #[cfg(all(feature = "tools", not(target_family = "wasm")))]
             task_board: None,
@@ -379,6 +385,13 @@ impl ClaudeBuilder {
         self.restored = checkpoint.map(Snapshot::decode).transpose()?;
         self.policy = Some(policy);
         Ok(self)
+    }
+    /// Attaches the durable journal for this root's subagent task tree.
+    /// Usually installed by `nanocodex_durability::DurableAgentExt` together
+    /// with the execution policy; children built from this recipe never inherit it.
+    pub fn subagent_journal(mut self, journal: Arc<dyn nanocodex_agent::SubagentStore>) -> Self {
+        self.subagent_journal = Some(journal);
+        self
     }
     /// Builds an independent native callback collection for each root and child.
     pub fn tools_factory<F>(mut self, factory: F) -> Self
@@ -891,6 +904,7 @@ impl ClaudeBuilder {
         recipe.session_id = None;
         recipe.restored = None;
         recipe.policy = None;
+        recipe.subagent_journal = None;
         recipe.subagent_type = Some("general-purpose".into());
         let native_factory = Arc::new(ClaudeNativeFactory {
             recipe,
@@ -910,6 +924,9 @@ impl ClaudeBuilder {
         if let Some(factory) = &self.spawn_factory {
             handle = handle.with_spawn_factory(factory.clone());
         }
+        if let Some(journal) = &self.subagent_journal {
+            handle = handle.with_subagent_journal(Arc::clone(journal));
+        }
         let mut custom_tool_search = false;
         if let Some(factory) = &self.tools_factory {
             let native = factory(handle.clone())?;
@@ -927,7 +944,9 @@ impl ClaudeBuilder {
             return Err(unsupported("Claude model and max_tokens must be nonempty"));
         }
         if self.max_tokens.is_none() && model_max_tokens(&self.claude.model).is_none() {
-            return Err(unsupported("Unknown Claude model: configure max_tokens explicitly"));
+            return Err(unsupported(
+                "Unknown Claude model: configure max_tokens explicitly",
+            ));
         }
         if self.system_blocks.as_ref().is_some_and(|blocks| {
             blocks.is_empty()

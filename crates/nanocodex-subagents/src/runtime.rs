@@ -29,7 +29,7 @@ use std::{
     collections::HashMap,
     sync::{
         Arc, Weak,
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     time::Duration,
 };
@@ -54,6 +54,10 @@ pub(super) struct ChildSession {
     pub(super) last_output: Option<Value>,
     pub(super) last_used: u64,
     pub(super) evicted: bool,
+    /// Input that started the running turn, journaled for resumption.
+    pub(super) turn_input: Option<String>,
+    /// Restored from a journal and not yet bound in this runtime.
+    pub(super) announce: bool,
 }
 
 pub(super) struct OutputContract {
@@ -101,10 +105,19 @@ pub struct Registry {
     max_resident: AtomicUsize,
     residency_lock: tokio::sync::Mutex<()>,
     message_lock: tokio::sync::Mutex<()>,
-    store: std::sync::RwLock<Option<Arc<dyn SubagentStore>>>,
+    /// Explicit host store shared by every root without its own journal.
+    default_store: std::sync::RwLock<Option<Arc<dyn SubagentStore>>>,
+    /// Restored durable roots journaling into their handle's store.
+    journals: std::sync::Mutex<HashMap<String, Arc<dyn SubagentStore>>>,
+    /// Durable roots whose tree is still being restored.
+    restoring: std::sync::Mutex<HashMap<String, watch::Receiver<bool>>>,
+    journal_writer: AtomicBool,
     checkpoints: std::sync::Mutex<HashMap<(String, AgentId), ChildSnapshot>>,
-    pending_resume: std::sync::Mutex<HashMap<String, Vec<AgentId>>>,
+    pending_resume: std::sync::Mutex<HashMap<String, Vec<PendingResume>>>,
 }
+
+/// A restored child to continue, with the input of its interrupted turn.
+type PendingResume = (AgentId, Option<String>);
 
 #[derive(Default)]
 pub(super) struct RegistryState {
@@ -976,28 +989,53 @@ impl Registry {
             max_resident: AtomicUsize::new(crate::DEFAULT_MAX_RESIDENT_SUBAGENTS),
             residency_lock: tokio::sync::Mutex::new(()),
             message_lock: tokio::sync::Mutex::new(()),
-            store: std::sync::RwLock::new(None),
+            default_store: std::sync::RwLock::new(None),
+            journals: std::sync::Mutex::new(HashMap::new()),
+            restoring: std::sync::Mutex::new(HashMap::new()),
+            journal_writer: AtomicBool::new(false),
             checkpoints: std::sync::Mutex::new(HashMap::new()),
             pending_resume: std::sync::Mutex::new(HashMap::new()),
         }
     }
 
-    fn store(&self) -> Option<Arc<dyn SubagentStore>> {
-        self.store
-            .read()
+    /// Durable store journaling this root's tree, when one is installed.
+    fn store_for(&self, root_session_id: &str) -> Option<Arc<dyn SubagentStore>> {
+        self.journals
+            .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone()
+            .get(root_session_id)
+            .cloned()
+            .or_else(|| {
+                self.default_store
+                    .read()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .clone()
+            })
     }
 
-    /// Makes every root task tree in this registry durable.
+    fn journaling(&self, root_session_id: &str) -> bool {
+        self.store_for(root_session_id).is_some()
+    }
+
+    /// Makes every root task tree in this registry durable in one host store.
     ///
-    /// Install the store before spawning children, then call [`Self::restore`]
-    /// for a recovered root before it uses subagent tools.
+    /// Roots whose handle carries a durability journal need no store: their
+    /// trees are journaled and restored automatically. With an explicit store,
+    /// install it before spawning children, then call [`Self::restore`] for a
+    /// recovered root before it uses subagent tools.
     pub fn set_store(self: &Arc<Self>, store: Arc<dyn SubagentStore>) {
         *self
-            .store
+            .default_store
             .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Arc::clone(&store));
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(store);
+        self.ensure_journal_writer();
+    }
+
+    /// Starts the single background writer that persists changed trees.
+    fn ensure_journal_writer(self: &Arc<Self>) {
+        if self.journal_writer.swap(true, Ordering::AcqRel) {
+            return;
+        }
         let registry = Arc::downgrade(self);
         let mut revision = self.revision.subscribe();
         drop(platform::spawn(async move {
@@ -1007,8 +1045,14 @@ impl Registry {
                     return;
                 };
                 let payloads = live.journal_payloads().await;
+                let payloads = payloads
+                    .into_iter()
+                    .filter_map(|(root, payload)| {
+                        live.store_for(&root).map(|store| (root, payload, store))
+                    })
+                    .collect::<Vec<_>>();
                 drop(live);
-                for (root_session_id, payload) in payloads {
+                for (root_session_id, payload, store) in payloads {
                     if saved.get(&root_session_id) == Some(&payload) {
                         continue;
                     }
@@ -1051,7 +1095,7 @@ impl Registry {
         id: AgentId,
         harness: HarnessHandle,
     ) {
-        if self.store().is_none() {
+        if !self.journaling(&root_session_id) {
             return;
         }
         let registry = Arc::clone(self);
@@ -1063,18 +1107,122 @@ impl Registry {
         }));
     }
 
-    /// Restores a root's journaled task tree after a runtime restart.
+    /// Restores and journals a durable root's tree once its handle registers.
+    ///
+    /// Subagent tools invoked by that root wait until restoration and the
+    /// resumption of interrupted children have been admitted.
+    fn start_durable_root(self: &Arc<Self>, handle: AgentHandle, journal: Arc<dyn SubagentStore>) {
+        let root_session_id = handle.session_id().to_owned();
+        let (ready, receiver) = watch::channel(false);
+        {
+            let mut restoring = self
+                .restoring
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if restoring.contains_key(&root_session_id)
+                || self
+                    .journals
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .contains_key(&root_session_id)
+            {
+                return;
+            }
+            restoring.insert(root_session_id.clone(), receiver);
+        }
+        let registry = Arc::downgrade(self);
+        drop(platform::spawn(async move {
+            // Builders register tools before their driver accepts commands;
+            // restoring children needs the root runtime to be available.
+            for _ in 0..400 {
+                if handle.ensure_available().await.is_ok() {
+                    break;
+                }
+                platform::sleep(Duration::from_millis(25)).await;
+            }
+            let Some(live) = registry.upgrade() else {
+                return;
+            };
+            match live.restore_from(&root_session_id, journal.as_ref()).await {
+                Ok(report) => {
+                    if report.restored > 0 {
+                        tracing::info!(
+                            %root_session_id,
+                            restored = report.restored,
+                            interrupted = report.interrupted.len(),
+                            unrecoverable = report.unrecoverable.len(),
+                            "restored durable subagent task tree"
+                        );
+                    }
+                    live.journals
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .insert(root_session_id.clone(), journal);
+                    live.ensure_journal_writer();
+                    live.changed();
+                    for (id, result) in live.resume_interrupted(&root_session_id).await {
+                        if let Err(error) = result {
+                            tracing::warn!(%root_session_id, %id, %error, "could not resume restored subagent");
+                        }
+                    }
+                }
+                // Keep the retained journal intact for diagnosis rather than
+                // overwriting it with a fresh tree.
+                Err(error) => {
+                    tracing::warn!(%root_session_id, %error, "could not restore durable subagent tree; journaling is disabled for this root");
+                }
+            }
+            live.restoring
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .remove(&root_session_id);
+            let _ = ready.send(true);
+        }));
+    }
+
+    /// Waits until a durable root's restored tree is ready for its tools.
+    pub(super) async fn await_restored(&self, session_id: &str) {
+        let receiver = self
+            .restoring
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(session_id)
+            .cloned();
+        let Some(mut receiver) = receiver else {
+            return;
+        };
+        while !*receiver.borrow_and_update() {
+            if receiver.changed().await.is_err() {
+                return;
+            }
+        }
+    }
+
+    /// Restores a root's journaled task tree from the store installed with
+    /// [`Self::set_store`] after a runtime restart.
     ///
     /// Restored children are non-resident and rehydrate on first use. Agents
     /// whose turn was in flight are reported as interrupted; call
     /// [`Self::resume_interrupted`] once the root handle is registered.
+    /// Durable roots whose handle carries a journal are restored automatically.
     pub async fn restore(
         self: &Arc<Self>,
         root_session_id: &str,
     ) -> std::io::Result<RestoreReport> {
         let store = self
-            .store()
+            .default_store
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
             .ok_or_else(|| std::io::Error::other("no subagent store is installed"))?;
+        self.restore_from(root_session_id, store.as_ref()).await
+    }
+
+    async fn restore_from(
+        self: &Arc<Self>,
+        root_session_id: &str,
+        store: &dyn SubagentStore,
+    ) -> std::io::Result<RestoreReport> {
         let Some(payload) = store.load(root_session_id).await? else {
             return Ok(RestoreReport::default());
         };
@@ -1089,6 +1237,7 @@ impl Registry {
         let mut agents = journal.agents;
         agents.sort_by_key(|agent| agent.descriptor.id);
         let mut report = RestoreReport::default();
+        let mut resume = Vec::new();
         let mut state = self.state.lock().await;
         if state
             .scopes
@@ -1101,17 +1250,17 @@ impl Registry {
         }
         for agent in agents {
             let id = agent.descriptor.id;
-            let checkpoint = agent.checkpoint.clone().map(ChildSnapshot::Codex);
-            let (session, resume, lost) = durable::restored_session(agent)?;
-            state.insert_restored(root_session_id, session)?;
-            if let Some(checkpoint) = checkpoint {
+            let restored = durable::restored_session(agent)?;
+            state.insert_restored(root_session_id, restored.session)?;
+            if let Some(checkpoint) = restored.checkpoint {
                 self.record_checkpoint(root_session_id, id, checkpoint);
             }
             report.restored += 1;
-            if resume {
+            if let Some(turn_input) = restored.resume {
                 report.interrupted.push(id);
+                resume.push((id, turn_input));
             }
-            if lost {
+            if restored.unrecoverable {
                 report.unrecoverable.push(id);
             }
         }
@@ -1119,24 +1268,25 @@ impl Registry {
         self.pending_resume
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(root_session_id.to_owned(), report.interrupted.clone());
+            .insert(root_session_id.to_owned(), resume);
         self.changed();
         Ok(report)
     }
 
-    /// Continues every child whose turn was interrupted by the restart.
+    /// Continues every child whose turn was interrupted by the restart,
+    /// replaying the input that started the interrupted turn.
     pub async fn resume_interrupted(
         self: &Arc<Self>,
         root_session_id: &str,
     ) -> Vec<(AgentId, std::io::Result<MessageReceipt>)> {
-        let ids = self
+        let pending = self
             .pending_resume
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .remove(root_session_id)
             .unwrap_or_default();
-        let mut results = Vec::with_capacity(ids.len());
-        for id in ids {
+        let mut results = Vec::with_capacity(pending.len());
+        for (id, turn_input) in pending {
             let result = self
                 .send_message(
                     root_session_id,
@@ -1144,7 +1294,7 @@ impl Registry {
                     MessagePriority::Deferred,
                     MessagePurpose::Coordinate,
                     None,
-                    durable::RESUME_MESSAGE.to_owned(),
+                    durable::resume_message(turn_input.as_deref()),
                 )
                 .await;
             results.push((id, result));
@@ -1319,6 +1469,8 @@ impl Registry {
                 last_output: None,
                 last_used: 0,
                 evicted: false,
+                turn_input: None,
+                announce: false,
             },
         )?;
         drop(state);
@@ -1346,6 +1498,7 @@ impl Registry {
         &self,
         root_session_id: &str,
         id: AgentId,
+        input: &str,
     ) -> Option<u64> {
         let revision = {
             let mut state = self.state.lock().await;
@@ -1365,6 +1518,7 @@ impl Registry {
                 session.submitted_output = None;
                 session.last_used = last_used;
                 session.status = AgentStatus::Running;
+                session.turn_input = Some(input.to_owned());
                 Some(revision)
             }
         };
@@ -1400,6 +1554,7 @@ impl Registry {
             session.active_instruction_revision = None;
             session.steering = false;
             session.submitted_output = None;
+            session.turn_input = None;
             if !matches!(session.status, AgentStatus::Closing | AgentStatus::Closed) {
                 session.status = AgentStatus::Failed { error };
             }
@@ -1430,6 +1585,7 @@ impl Registry {
             session.active = false;
             session.active_instruction_revision = None;
             session.steering = false;
+            session.turn_input = None;
             let submitted_output = session.submitted_output.take();
             // Acceptance belongs to this turn even if cancellation/close wins settlement.
             // Keep its evidence, without claiming the interrupted execution completed.
@@ -1480,7 +1636,7 @@ impl Registry {
             };
             match harness.snapshot().await {
                 Ok(snapshot) => {
-                    if self.store().is_some() {
+                    if self.journaling(root_session_id) {
                         self.record_checkpoint(root_session_id, id, snapshot.clone());
                     }
                     if let Some(session) = self
@@ -1603,11 +1759,18 @@ impl Registry {
     }
 
     /// Keep weak factory capabilities, never a second owner of a child driver.
-    pub(crate) fn register_handle(&self, handle: AgentHandle) {
+    ///
+    /// A durable root's handle carries its subagent journal: registering it
+    /// restores that root's tree and resumes interrupted children.
+    pub(crate) fn register_handle(self: &Arc<Self>, handle: AgentHandle) {
+        let journal = handle.subagent_journal().cloned();
         self.session_handles
             .write()
             .expect("session handles poisoned")
-            .insert(handle.session_id().to_owned(), handle);
+            .insert(handle.session_id().to_owned(), handle.clone());
+        if let Some(journal) = journal {
+            self.start_durable_root(handle, journal);
+        }
     }
 
     // Caller holds residency_lock and message_lock, fencing eviction, close and
@@ -1717,7 +1880,14 @@ impl Registry {
             session.harness_task = Some(task);
             session.event_task = Some(event_task);
             session.evicted = false;
+            // A journal-restored child is new to this runtime's host: bind it
+            // before its first restored turn, exactly like a live spawn.
+            let announce =
+                std::mem::take(&mut session.announce).then(|| session.descriptor.clone());
             drop(state);
+            if let Some(descriptor) = announce {
+                self.send(&root, AgentUpdate::Added(descriptor));
+            }
             let _ = start.send(());
         }
         Ok(())
@@ -2274,6 +2444,8 @@ impl ChildSession {
             last_output,
             last_used: 0,
             evicted: true,
+            turn_input: None,
+            announce: true,
         }
     }
 
@@ -2928,6 +3100,8 @@ mod tests {
             last_output: None,
             last_used: 0,
             evicted: false,
+            turn_input: None,
+            announce: false,
         }
     }
 
@@ -3000,7 +3174,7 @@ mod tests {
         drop(state);
         assert_eq!(
             restored.pending_resume.lock().unwrap().get("root"),
-            Some(&vec![id])
+            Some(&vec![(id, None)])
         );
     }
 
@@ -3414,7 +3588,10 @@ mod tests {
             assert_eq!(session.active_instruction_revision, None);
             assert_eq!(session.submitted_output, None);
         }
-        assert_eq!(registry.harness_turn_started("main", id).await, Some(2));
+        assert_eq!(
+            registry.harness_turn_started("main", id, "test").await,
+            Some(2)
+        );
         assert_eq!(
             registry
                 .submit_result("child-session", Some(1), json!({"report": "old"}))

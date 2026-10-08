@@ -102,7 +102,8 @@ async fn public_compaction_gates_observation_and_fork_lifecycle() {
             "synthetic",
         ),
         "test",
-    )).max_tokens(128_000)
+    ))
+    .max_tokens(128_000)
     .auto_compact_window_tokens(100)
     .tool_hooks(hooks.clone())
     .build()

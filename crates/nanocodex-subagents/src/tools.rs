@@ -1049,7 +1049,7 @@ impl Tool for ChangeAgentLifecycle {
 
 fn shared_tools(parent: AgentHandle, registry: &Arc<Registry>) -> Vec<Arc<dyn Tool>> {
     registry.register_handle(parent.clone());
-    vec![
+    let tools: Vec<Arc<dyn Tool>> = vec![
         Arc::new(SubmitResult {
             registry: Arc::downgrade(registry),
         }),
@@ -1074,7 +1074,35 @@ fn shared_tools(parent: AgentHandle, registry: &Arc<Registry>) -> Vec<Arc<dyn To
             registry: Arc::downgrade(registry),
             operation: LifecycleOperation::Close,
         }),
-    ]
+    ];
+    tools
+        .into_iter()
+        .map(|tool| {
+            Arc::new(AfterRestore {
+                tool,
+                registry: Arc::downgrade(registry),
+            }) as Arc<dyn Tool>
+        })
+        .collect()
+}
+
+/// Holds a durable root's task-tree operations until its journaled tree is
+/// restored and interrupted children have been resumed.
+struct AfterRestore {
+    tool: Arc<dyn Tool>,
+    registry: Weak<Registry>,
+}
+#[async_trait]
+impl Tool for AfterRestore {
+    fn definition(&self) -> ToolDefinition {
+        self.tool.definition()
+    }
+    async fn execute(&self, input: ToolInput, context: ToolContext<'_>) -> ToolResult {
+        if let Some(registry) = self.registry.upgrade() {
+            registry.await_restored(context.session_id()).await;
+        }
+        self.tool.execute(input, context).await
+    }
 }
 
 struct SharedTool(Arc<dyn Tool>);

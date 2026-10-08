@@ -19,11 +19,13 @@ use crate::{
 impl DurableAgentExt for ClaudeBuilder {
     async fn durability(self, state: DurableSession) -> AgentResult<Self> {
         let state_id = state.state_id().to_owned();
+        let journal = state.subagent_journal();
         let (owner, checkpoint) = state.acquire_agent().await.map_err(agent_error)?;
         let checkpoint = checkpoint
             .map(|value| value.decode::<Value>().map_err(agent_error))
             .transpose()?;
-        self.execution_policy(Arc::new(ClaudeExecution { state_id, owner }), checkpoint)
+        self.subagent_journal(journal)
+            .execution_policy(Arc::new(ClaudeExecution { state_id, owner }), checkpoint)
     }
 }
 
