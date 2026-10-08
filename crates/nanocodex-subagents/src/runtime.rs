@@ -1423,6 +1423,21 @@ impl Registry {
         contract: OutputContract,
     ) -> std::io::Result<()> {
         let OutputContract { validator, schema } = contract;
+        // Capture before publishing the child or starting its first turn. Native
+        // snapshots may wait for an active turn's conversation lock; spawning a
+        // background capture here can journal a child with no recovery state.
+        let checkpoint = if self.store_for(&root_session_id).is_some() {
+            match agent.runtime_snapshot().await {
+                Ok(snapshot) => Some(snapshot),
+                Err(error) => {
+                    event_task.abort();
+                    let _ = agent.shutdown().await;
+                    return Err(std::io::Error::other(error));
+                }
+            }
+        } else {
+            None
+        };
         let mut state = self.state.lock().await;
         state.validate_insert(&root_session_id, &descriptor)?;
         let (harness, harness_task) = harness::spawn(
@@ -1434,9 +1449,9 @@ impl Registry {
             schema.clone(),
             None,
         );
-        let checkpoint_harness = harness.clone();
-        let checkpoint_root = root_session_id.clone();
-        let checkpoint_id = descriptor.id;
+        if let Some(snapshot) = checkpoint {
+            self.record_checkpoint(&root_session_id, descriptor.id, snapshot);
+        }
         state.insert(
             root_session_id,
             descriptor.id,
@@ -1464,7 +1479,6 @@ impl Registry {
             },
         )?;
         drop(state);
-        self.capture_checkpoint(checkpoint_root, checkpoint_id, checkpoint_harness);
         self.changed();
         Ok(())
     }
