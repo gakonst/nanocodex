@@ -161,49 +161,38 @@ describe("actual workerd UserCredentials + compiled Rust subscription", () => {
 });
 
 describe("subscription relay through real Worker and fixture Durable Objects", () => {
-  it("routes WNAM to a fresh regional class and leaves legacy traffic on its old class", async () => {
-    const owner = `synthetic-regional-${crypto.randomUUID()}`;
+  it("routes model, search and upgrade traffic through the owner's single relay", async () => {
+    const owner = `synthetic-relay-${crypto.randomUUID()}`;
     const future = 4_070_908_800_000;
     await credentialEnv.USER_CREDENTIALS.getByName(owner).putChatGptCredential({
       access_token: jwt(future / 1000), refresh_token: "synthetic-refresh",
       account_id: "synthetic-account", expires_at: future, fedramp: false,
     });
-    const send = (region?: string) => SELF.fetch("https://api.openai.com/v1/responses", {
-      method: "POST", headers: { "x-managed2-owner": owner,
-        ...(region ? { "x-managed2-relay-region": region } : {}),
-        authorization: "Bearer NANOCODEX_PROVIDER_CREDENTIAL", "content-type": "application/json" },
-      body: "{}",
+    const headers = { "x-managed2-owner": owner, authorization: "Bearer NANOCODEX_PROVIDER_CREDENTIAL" };
+    const model = await SELF.fetch("https://api.openai.com/v1/responses", {
+      method: "POST", headers: { ...headers, "content-type": "application/json" }, body: "{}",
     });
-    const regional = await send("wnam");
-    expect(regional.status).toBe(200);
-    expect(await regional.json()).toEqual({ relay: "wnam" });
-    const legacy = await send();
-    expect(legacy.status).toBe(200);
-    expect(await legacy.json()).toEqual({ relay: "legacy" });
+    expect(model.status).toBe(200);
+    expect(await model.json()).toEqual({ relay: "relay" });
     const search = await SELF.fetch("https://nanocodex.internal/v1/search", {
-      method: "POST", headers: { "x-managed2-owner": owner, "x-managed2-relay-region": "wnam",
-        authorization: "Bearer NANOCODEX_PROVIDER_CREDENTIAL", "content-type": "application/json" },
+      method: "POST", headers: { ...headers, "content-type": "application/json" },
       body: JSON.stringify({ session_id: "synthetic", commands: { search_query: [{ q: "fixture" }] } }),
     });
     expect(search.status).toBe(200);
-    expect(await search.json()).toEqual({ output: "wnam" });
+    expect(await search.json()).toEqual({ output: "relay" });
     for (const budget of [0, 250_000, -1]) {
       const budgeted = await SELF.fetch("https://nanocodex.internal/v1/search", {
-        method: "POST", headers: { "x-managed2-owner": owner, "x-managed2-relay-region": "wnam",
-          authorization: "Bearer NANOCODEX_PROVIDER_CREDENTIAL", "content-type": "application/json" },
+        method: "POST", headers: { ...headers, "content-type": "application/json" },
         body: JSON.stringify({ session_id: "synthetic", commands: { expected_output_budget: budget }, max_output_tokens: budget }),
       });
       expect(budgeted.status).toBe(budget < 0 ? 400 : 200);
     }
     const upgrade = await SELF.fetch("https://api.openai.com/v1/responses", {
-      method: "GET", headers: { "x-managed2-owner": owner, "x-managed2-relay-region": "wnam",
-        authorization: "Bearer NANOCODEX_PROVIDER_CREDENTIAL", upgrade: "websocket" },
+      method: "GET", headers: { ...headers, upgrade: "websocket" },
     });
     expect(upgrade.status).toBe(101);
     expect(upgrade.webSocket).toBeDefined();
     upgrade.webSocket?.accept();
     upgrade.webSocket?.close();
-    const invalid = await send("invented");
-    expect(invalid.status).toBe(502); // Invalid placement never silently reroutes to legacy.
   });
 });

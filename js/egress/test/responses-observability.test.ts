@@ -16,7 +16,7 @@ function fixture(method = "GET") {
   const env = {
     AGENT_SUBJECTS: { getByName: () => ({ fetch: async () => Response.json({ user_id: "synthetic-user" }) }) },
     USER_CREDENTIALS: { getByName: () => ({ resolveModelCredential: credential }) },
-    CHATGPT_EGRESS: { idFromName: (name: string) => name, get: () => ({ fetch: relay }) },
+    CHATGPT_EGRESS: { getByName: () => ({ fetch: relay }) },
   } as unknown as EgressEnv;
   const request = new Request("https://nanocodex.internal/v1/responses", { method,
     headers: { authorization: "Bearer NANOCODEX_PROVIDER_CREDENTIAL", "x-nanocodex-subject": "a".repeat(64),

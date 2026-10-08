@@ -9,7 +9,6 @@ import { cachedAccountMetadata, validDiscoveryOptions } from "./metadata-cache";
 import { consumeRpcData } from "nanocodex/cloudflare/rpc";
 import { annotateActiveSpan, tracing } from "nanocodex/cloudflare/tracing";
 import type { CloudflareAccountCatalogResult, CloudflareAccountVaultResult, CloudflareAccountDiscoveryResult } from "nanocodex/cloudflare/egress";
-import { durablePlacementOptions, ingressColo, TRUSTED_INGRESS_HEADER, type IngressPlacement } from "nanocodex/cloudflare/durable-placement";
 import { LINK_PATH } from "./connectors/link";
 import { chatGptFailoverSocket, chatGptLimitReset } from "./chatgpt-failover";
 import { WorkerEntrypoint } from "cloudflare:workers";
@@ -53,11 +52,6 @@ import {
 } from "./ssh";
 
 export { AgentSubjectDirectory, UserCredentialBroker } from "./broker";
-export { SessionCredentialPrewarm, UserCredentialSnapshot } from "./credential-snapshot";
-import {
-  headerFingerprint, PREPARED_UPGRADE_HEADER, PREPARED_UPGRADE_URL, registerPreparedUpgradeStarter, snapshotStub,
-  type ClaudeSnapshotResolve, type PrepareUpgradeResult, type SnapshotResolve,
-} from "./credential-snapshot";
 export { UserConnectorBroker } from "./connector-broker";
 export { WhatsAppAccount } from "./whatsapp-account";
 export { SpotifyRateLimit } from "./spotify-rate-limit";
@@ -235,22 +229,13 @@ const CONNECTOR_OPERATIONS: readonly ConnectorOperation[] = [
   },
 ];
 
-export interface EgressEnv extends BrokerEnv, ConnectorBrokerEnv, IngressPlacement, GmailPushIngressEnv, PhoneServiceEnv {
-  trustedPlacementRegion?: DurableObjectLocationHint;
+export interface EgressEnv extends BrokerEnv, ConnectorBrokerEnv, GmailPushIngressEnv, PhoneServiceEnv {
   USER_CREDENTIALS: DurableObjectNamespace<UserCredentialBroker>;
   USER_CONNECTORS: DurableObjectNamespace<UserConnectorBroker>;
   AGENT_SUBJECTS: DurableObjectNamespace<AgentSubjectDirectory>;
   MANAGED_AGENT_OWNERSHIP?: Fetcher;
   MCP_CONNECTIONS: DurableObjectNamespace<McpConnectionDirectory>;
   CHATGPT_EGRESS?: DurableObjectNamespace;
-  // Optional during phased account/egress rollout; absent bindings use legacy.
-  CHATGPT_EGRESS_WNAM?: DurableObjectNamespace;
-  CHATGPT_EGRESS_ENAM?: DurableObjectNamespace;
-  CHATGPT_EGRESS_WEUR?: DurableObjectNamespace;
-  CHATGPT_EGRESS_EEUR?: DurableObjectNamespace;
-  CHATGPT_EGRESS_APAC?: DurableObjectNamespace;
-  CHATGPT_EGRESS_SAM?: DurableObjectNamespace;
-  CHATGPT_EGRESS_OC?: DurableObjectNamespace;
   CHATGPT_VOICE_RELAY_RPC?: string;
   CODEX_RELAY_URL?: string;
   ALLOW_INSECURE_LOOPBACK_RELAY?: string;
@@ -296,9 +281,7 @@ export function handleManagedRealtimeCall(
   // organization, team, epoch, and deletion/export state for either retained
   // subject strategy. Legacy calls need no directory rebind/readback. Only this
   // private entrypoint may carry the result past generic agent egress.
-  const region = validatedRelayRegion(request.headers.get("x-nanocodex-voice-region"));
-  const placed = region ? { ...env, trustedPlacementRegion: region } : env;
-  return handleEgressWithOwner(request, placed, ctx, fetch, undefined, undefined, { subject, userId });
+  return handleEgressWithOwner(request, env, ctx, fetch, undefined, undefined, { subject, userId });
 }
 
 /** The same live ownership admission as calls, without a second Session hop.
@@ -342,13 +325,7 @@ export class ChiefOfStaffEgress extends WorkerEntrypoint<EgressEnv> {
 }
 
 const SESSION_MODEL_OWNER_HEADER = "x-nanocodex-session-model-owner";
-const SESSION_MODEL_REGION_HEADER = "x-nanocodex-model-region";
-type SessionModelAuthority = Readonly<{ subject: string; owner: string; region?: DurableObjectLocationHint }>;
-
-function validatedRelayRegion(value: string | null | undefined): DurableObjectLocationHint | undefined {
-  return value && ["wnam", "enam", "sam", "weur", "eeur", "apac", "oc"].includes(value)
-    ? value as DurableObjectLocationHint : undefined;
-}
+type SessionModelAuthority = Readonly<{ subject: string; owner: string }>;
 
 const SESSION_MODEL_TRANSPORT_URLS: ReadonlySet<string> = new Set([
   "https://nanocodex.internal/v1/responses", "https://nanocodex.internal/v1/messages",
@@ -371,45 +348,7 @@ const SESSION_MODEL_OPERATIONS: ReadonlySet<ModelOperation["id"]> = new Set([
  * never carries connector, Vault, SSH, MCP, Realtime, or control traffic.
  */
 export class SessionModelEgress extends WorkerEntrypoint<EgressEnv> {
-  /**
-   * Private Session preparation ACK. The regional credential holder starts the
-   * exact auth-only GET /v1/responses handshake and returns an opaque one-shot
-   * id; the Session awaits only this ACK before its first storage write.
-   */
-  async prepareModelUpgrade(input: unknown): Promise<PrepareUpgradeResult> {
-    const prepared = preparedUpgradeAuthority(input && typeof input === "object"
-      ? (input as { headers?: unknown }).headers : undefined);
-    if (!prepared) return { status: "invalid" };
-    const stub = snapshotStub(this.env, prepared.owner, prepared.region);
-    if (!stub) return { status: "unsupported" };
-    const fingerprint = await headerFingerprint(prepared.headers.entries());
-    const forwarded = new Headers(prepared.headers);
-    forwarded.delete(SESSION_MODEL_OWNER_HEADER);
-    forwarded.delete(SESSION_MODEL_REGION_HEADER);
-    try {
-      return consumeRpcData(await stub.prepareModelUpgrade(prepared.owner, prepared.region, prepared.subject,
-        fingerprint, [...forwarded.entries()])) as PrepareUpgradeResult;
-    } catch { return { status: "unsupported" }; }
-  }
-
-  /** Best-effort release of an unconsumed preparation by its owning Session. */
-  async cancelModelUpgrade(input: unknown): Promise<boolean> {
-    const record = input && typeof input === "object" ? input as { headers?: unknown; id?: unknown } : undefined;
-    const prepared = preparedUpgradeAuthority(record?.headers);
-    if (!prepared || typeof record?.id !== "string") return false;
-    const stub = snapshotStub(this.env, prepared.owner, prepared.region);
-    // Only the exact preparing Session authority (subject + header fingerprint)
-    // may cancel, even if another Session of the same owner learned the id.
-    const fingerprint = await headerFingerprint(prepared.headers.entries());
-    try {
-      return stub ? await stub.cancelModelUpgrade(prepared.owner, prepared.region, record.id,
-        prepared.subject, fingerprint) : false;
-    }
-    catch { return false; }
-  }
-
   fetch(request: Request): Promise<Response> {
-    if (request.headers.has(PREPARED_UPGRADE_HEADER)) return this.#consumePrepared(request);
     const owner = request.headers.get(SESSION_MODEL_OWNER_HEADER);
     const subject = request.headers.get(SUBJECT_HEADER);
     const transport = SESSION_MODEL_TRANSPORT_URLS.has(request.url)
@@ -421,49 +360,12 @@ export class SessionModelEgress extends WorkerEntrypoint<EgressEnv> {
     }
     const forwarded = new Request(request);
     forwarded.headers.delete(SESSION_MODEL_OWNER_HEADER);
-    // Only the private Session wrapper may assert placement; generic egress
-    // never derives a region from this header. Nothing private goes upstream.
-    // Placement applies to the model transport only, never to tool calls.
-    const region = transport ? validatedRelayRegion(forwarded.headers.get(SESSION_MODEL_REGION_HEADER)) : undefined;
-    forwarded.headers.delete(SESSION_MODEL_REGION_HEADER);
-    return handleEgress(forwarded, this.env, this.ctx, fetch, undefined, { subject, owner, ...(region ? { region } : {}) });
+    // Managed sessions may still send their former placement header; it carries nothing.
+    forwarded.headers.delete("x-nanocodex-model-region");
+    return handleEgress(forwarded, this.env, this.ctx, fetch, undefined, { subject, owner });
   }
 
-  /** Consumption is a fetch because a 101 WebSocket cannot cross RPC. */
-  async #consumePrepared(request: Request): Promise<Response> {
-    const id = request.headers.get(PREPARED_UPGRADE_HEADER)!;
-    const headers = new Headers(request.headers);
-    headers.delete(PREPARED_UPGRADE_HEADER);
-    const prepared = request.method === "GET" && request.url === "https://nanocodex.internal/v1/responses"
-      && /^[0-9a-f-]{36}$/.test(id) ? preparedUpgradeAuthority([...headers.entries()]) : undefined;
-    if (!prepared) return jsonError(403, "invalid_session_model_authority");
-    const stub = snapshotStub(this.env, prepared.owner, prepared.region);
-    if (!stub) return jsonError(404, "prepared_model_upgrade_unavailable");
-    return stub.fetch(PREPARED_UPGRADE_URL, { headers: {
-      upgrade: "websocket", [PREPARED_UPGRADE_HEADER]: id, [SESSION_MODEL_OWNER_HEADER]: prepared.owner,
-      [SESSION_MODEL_REGION_HEADER]: prepared.region, [SUBJECT_HEADER]: prepared.subject,
-      "x-nanocodex-upgrade-fingerprint": await headerFingerprint(headers.entries()),
-    } });
-  }
 }
-
-/** Exact Session authority for an auth-only Responses upgrade preparation.
- * Region is mandatory: the pending handshake lives in a regional holder. */
-function preparedUpgradeAuthority(value: unknown):
-  { owner: string; subject: string; region: DurableObjectLocationHint; headers: Headers } | undefined {
-  if (!Array.isArray(value) || value.length > 64) return undefined;
-  let headers: Headers;
-  try { headers = new Headers(value as [string, string][]); } catch { return undefined; }
-  const owner = headers.get(SESSION_MODEL_OWNER_HEADER);
-  const subject = headers.get(SUBJECT_HEADER);
-  const region = validatedRelayRegion(headers.get(SESSION_MODEL_REGION_HEADER));
-  if (!owner || !USER_ID.test(owner) || !subject || !MANAGED_SESSION_SUBJECT.test(subject) || !region
-    || headers.has(PREPARED_UPGRADE_HEADER) || headers.get("upgrade")?.toLowerCase() !== "websocket") return undefined;
-  return { owner, subject, region, headers };
-}
-
-registerPreparedUpgradeStarter((request, env, ctx, authority) =>
-  handleEgress(request, env as EgressEnv, ctx, fetch, undefined, authority));
 
 const SESSION_TOOL_OWNER_HEADER = "x-nanocodex-session-tool-owner";
 type SessionToolAuthority = Readonly<{ subject: string; owner: string }>;
@@ -652,11 +554,10 @@ async function handleMeasuredEgressWithOwner(
       return jsonError(403, "invalid_session_tool_authority");
     }
   }
-  if (sessionModelAuthority?.region) env = { ...env, trustedPlacementRegion: sessionModelAuthority.region };
   const started = Date.now();
   // Headers on the general broker are never an ownership assertion. Only the
   // dedicated Worker entrypoint may supply already-validated Session authority.
-  if (request.headers.has(SESSION_MODEL_OWNER_HEADER) || request.headers.has(PREPARED_UPGRADE_HEADER)) {
+  if (request.headers.has(SESSION_MODEL_OWNER_HEADER)) {
     return jsonError(403, "invalid_session_model_authority");
   }
   let url: URL;
@@ -900,9 +801,7 @@ async function handleMeasuredEgressWithOwner(
         operation,
         buildUpstreamRequest(request, env, operation, credential, body),
         upstreamFetch,
-        request.headers.get("x-nanocodex-voice-region"),
         egressRequestId,
-        sessionModelAuthority?.region,
       );
       let recovered = false;
       if (upstream.status === 401 && credential.kind === "chatgpt") {
@@ -928,9 +827,7 @@ async function handleMeasuredEgressWithOwner(
           operation,
           buildUpstreamRequest(request, env, operation, credential, body),
           upstreamFetch,
-          request.headers.get("x-nanocodex-voice-region"),
           egressRequestId,
-          sessionModelAuthority?.region,
         );
         recovered = true;
       }
@@ -957,7 +854,7 @@ async function handleMeasuredEgressWithOwner(
         rejectionBody = undefined;
         upstream = await fetchUpstream(env, userId, credential, operation,
           buildUpstreamRequest(request, env, operation, credential, body), upstreamFetch,
-          request.headers.get("x-nanocodex-voice-region"), egressRequestId, sessionModelAuthority?.region);
+          egressRequestId);
         recovered = true;
       }
       if (REDIRECT_STATUS.has(upstream.status)) {
@@ -1013,9 +910,6 @@ async function handleMeasuredEgressWithOwner(
         user_id: userId,
         deployment_sha: env.DEPLOYMENT_SHA, egress_request_id: egressRequestId,
         credential_kind: credential.kind,
-        ...(operation.id === "responses" && credential.kind === "chatgpt" && env.CHATGPT_EGRESS
-          && !env.CODEX_RELAY_URL && sessionModelAuthority?.region
-          ? { relay_region: sessionModelAuthority.region } : {}),
         subject_ms: subjectResolvedAt - started,
         credential_ms: credentialResolvedAt - subjectResolvedAt,
         credential_broker_ms: credentialBrokerMs,
@@ -2331,7 +2225,6 @@ function closeSponsoredSocket(socket: WebSocket, code: number, reason: string): 
 
 async function handleControl(request: Request, url: URL, env: EgressEnv): Promise<Response> {
   // This control API is service-binding only; public model egress never enters it.
-  env = { ...env, trustedClientIngressColo: ingressColo(request.headers.get(TRUSTED_INGRESS_HEADER)) };
   const gmailPush = /^\/users\/([A-Za-z0-9][A-Za-z0-9._:-]{0,127})\/gmail-push\/([A-Za-z0-9][A-Za-z0-9._:-]{0,127})$/.exec(url.pathname);
   if (gmailPush) {
     if (!env.GMAIL_PUSH_MAILBOXES) return jsonError(503, "gmail_push_unavailable");
@@ -3203,40 +3096,16 @@ async function fetchUpstream(
   operation: ModelOperation,
   request: Request,
   upstreamFetch: typeof fetch,
-  voiceRegion: string | null,
   egressRequestId: string | undefined,
-  textRegion: DurableObjectLocationHint | undefined,
 ): Promise<Response> {
   if (credential.kind !== "chatgpt" || env.CODEX_RELAY_URL || operation.directChatGpt) {
     return upstreamFetch(request);
   }
-  const region = operation.id === "realtime-call" ? validatedRelayRegion(voiceRegion)
-    : operation.id === "responses" ? validatedRelayRegion(textRegion) : undefined;
-  // DO hints place the controller; the selected application's constraints place
-  // its container. Validated text and voice regions share regional pools while
-  // keeping separate identities and transport state.
-  const regionalRelays: Partial<Record<DurableObjectLocationHint, DurableObjectNamespace | undefined>> = {
-    wnam: env.CHATGPT_EGRESS_WNAM,
-    enam: env.CHATGPT_EGRESS_ENAM,
-    weur: env.CHATGPT_EGRESS_WEUR,
-    eeur: env.CHATGPT_EGRESS_EEUR,
-    apac: env.CHATGPT_EGRESS_APAC,
-    sam: env.CHATGPT_EGRESS_SAM,
-    oc: env.CHATGPT_EGRESS_OC,
-  };
-  const relayNamespace = (region ? regionalRelays[region] : undefined)
-    ?? env.CHATGPT_EGRESS;
+  const relayNamespace = env.CHATGPT_EGRESS;
   if (relayNamespace) {
     const target = new URL(request.url);
     const internal = new URL(`${target.pathname}${target.search}`, "https://chatgpt-egress.internal");
-    // Hints apply only to initial allocation and are best effort. New text
-    // identities avoid legacy relay anchors; existing DOs never move. Keep
-    // voice separate because call-creation placement also affects media.
-    const relayName = region
-      ? `${operation.id === "realtime-call" ? "voice" : "text"}-v1:${region}:${userId}`
-      : `user-v1:${userId}`;
-    const id = relayNamespace.idFromName(relayName);
-    const relay = relayNamespace.get(id, region ? { locationHint: region } : undefined);
+    const relay = relayNamespace.getByName(`user-v1:${userId}`);
     if (operation.id === "realtime-call" && realtimeRelayRpc(env, request)) {
       const rpc = relay as typeof relay & {
         createRealtimeCall(body: string, headers: Record<string, string>, search: string): Promise<{
@@ -3486,12 +3355,7 @@ async function resolveUserCredential(
   revision?: number,
   accountId?: string,
 ): Promise<ModelCredentialValue & Pick<ResolvedModelCredential, "broker_ms" | "broker_activation_ms" | "broker_age_ms" | "broker_resolve_id">> {
-  // Only a plain read in a trusted placement region may use the regional
-  // leased snapshot. Recovery, revision fences, pinned accounts and failover
-  // stay on the canonical broker's serialized queue.
-  const regional = !recover && revision === undefined && accountId === undefined && env.trustedPlacementRegion
-    ? await resolveRegionalCredential(env, userId, env.trustedPlacementRegion) : undefined;
-  const result: CanonicalResolve = regional ?? consumeRpcData(await userBroker(env, userId).resolveModelCredential(recover, revision, accountId));
+  const result: CanonicalResolve = consumeRpcData(await userBroker(env, userId).resolveModelCredential(recover, revision, accountId));
   if (result.status < 200 || result.status >= 300) {
     if (result.status === 429) throw new EgressFailure(429, accountId ? "chatgpt_account_exhausted" : "chatgpt_accounts_exhausted");
     throw new EgressFailure(result.status === 404 ? 409 : 503, accountId ? "chatgpt_account_unavailable" : "user_credential_unavailable");
@@ -3515,49 +3379,10 @@ async function resolveUserCredential(
 type CanonicalResolve = Readonly<{ status: number; credential: ModelCredentialValue | null;
   resolve_ms?: number; activation_ms?: number; activation_age_ms?: number; resolve_id?: string }>;
 
-/** Plain Claude read: the regional leased snapshot when placement is trusted,
- * else the canonical broker. Recovery always stays canonical. */
 async function resolvePlainClaudeCredential(env: EgressEnv, userId: string): Promise<{
   status: number; credential: ClaudeSubscriptionCredential | null;
 }> {
-  const region = env.trustedPlacementRegion;
-  const stub = region ? snapshotStub(env, userId, region) : undefined;
-  if (stub && region) {
-    const startedAt = Date.now();
-    try {
-      const result = consumeRpcData(await stub.resolveClaude(userId, region)) as ClaudeSnapshotResolve;
-      console.info({ type: "egress.credential.claude_snapshot", source: result.source, status: result.status,
-        snapshot_ms: Date.now() - startedAt,
-        ...(result.canonical_ms !== undefined ? { canonical_ms: result.canonical_ms } : {}) });
-      if (result.status === 200 && result.credential) return { status: 200, credential: result.credential };
-      if (result.status === 401 || result.status === 404) return { status: result.status, credential: null };
-    } catch { /* fall back to the canonical broker */ }
-  }
   return consumeRpcData(await userBroker(env, userId).resolveClaudeCredential());
-}
-
-/** undefined means "use the canonical broker": unavailable binding, a fenced
- * or refused grant, or any replica failure. A definitive canonical answer
- * relayed by the replica (404/409/422/429) is returned as-is. */
-async function resolveRegionalCredential(
-  env: EgressEnv,
-  userId: string,
-  region: string,
-): Promise<CanonicalResolve | undefined> {
-  const stub = snapshotStub(env, userId, region);
-  if (!stub) return undefined;
-  const startedAt = Date.now();
-  let result: SnapshotResolve;
-  try {
-    result = consumeRpcData(await stub.resolve(userId, region)) as SnapshotResolve;
-  } catch {
-    return undefined;
-  }
-  console.info({ type: "egress.credential.snapshot", source: result.source, status: result.status,
-    snapshot_ms: Date.now() - startedAt,
-    ...(result.canonical_ms !== undefined ? { canonical_ms: result.canonical_ms } : {}) });
-  if (result.status === 403 || result.status >= 500) return undefined;
-  return { status: result.status, credential: result.credential, resolve_ms: Date.now() - startedAt };
 }
 
 async function resolveSshIdentity(
@@ -3627,11 +3452,10 @@ function subjectDirectory(
   return env.AGENT_SUBJECTS.getByName(`${SUBJECT_DIRECTORY_PREFIX}${subject}`);
 }
 function userBroker(env: EgressEnv, userId: string): DurableObjectStub<UserCredentialBroker> {
-  return env.USER_CREDENTIALS.getByName(userId, env.trustedPlacementRegion
-    ? { locationHint: env.trustedPlacementRegion } : durablePlacementOptions(env.trustedClientIngressColo));
+  return env.USER_CREDENTIALS.getByName(userId);
 }
 function connectorBroker(env: EgressEnv, userId: string): DurableObjectStub<UserConnectorBroker> {
-  return env.USER_CONNECTORS.getByName(userId, durablePlacementOptions(env.trustedClientIngressColo));
+  return env.USER_CONNECTORS.getByName(userId);
 }
 async function cancelResponseBody(response: Response): Promise<void> {
   try { await response.body?.cancel(); } catch { /* Response disposal is best-effort. */ }
@@ -3796,8 +3620,6 @@ function audit(
     || rule === "cloudflare" || rule === "slack" || rule === "x" || rule === "spotify" || rule === "soundcloud" || rule === "link" || rule === "whatsapp" || rule === "mcp";
   const log = action === "error" ? console.error : action === "deny" ? console.warn : console.info;
   const safeDetail = {
-    ...(rule === "responses" && typeof detail.relay_region === "string" && validatedRelayRegion(detail.relay_region)
-      ? { relay_region: detail.relay_region } : {}),
     ...(typeof detail.egress_request_id === "string"
       && /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(detail.egress_request_id)
       ? { egress_request_id: detail.egress_request_id } : {}),

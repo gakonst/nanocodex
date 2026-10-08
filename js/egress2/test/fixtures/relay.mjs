@@ -24,5 +24,4 @@ class FixtureRelay extends DurableObject {
     return Response.json({ relay: this.region });
   }
 }
-export class RelayLegacy extends FixtureRelay { region = "legacy"; }
-export class RelayWnam extends FixtureRelay { region = "wnam"; }
+export class Relay extends FixtureRelay { region = "relay"; }

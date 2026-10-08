@@ -8,7 +8,7 @@
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "test": "npm run prepare:whatsapp && vitest run && node --experimental-strip-types --test test/wallet-link-journey.node.test.mjs test/mercator-payment.node.test.mjs test/chatgpt-failover-journey.test.mjs test/session-model-journey.test.mjs test/credential-snapshot-journey.test.mjs test/prepared-model-upgrade-journey.test.mjs && npm run test:whatsapp && npm run test:vault-requests && npm run test:phone-service",
+    "test": "npm run prepare:whatsapp && vitest run && node --experimental-strip-types --test test/wallet-link-journey.node.test.mjs test/mercator-payment.node.test.mjs test/chatgpt-failover-journey.test.mjs test/session-model-journey.test.mjs && npm run test:whatsapp && npm run test:vault-requests && npm run test:phone-service",
     "dry-run:agent": "wrangler deploy --dry-run --config wrangler.agent.jsonc",
     "deploy:agent": "wrangler deploy --config wrangler.agent.jsonc",
     "dry-run:broker": "wrangler deploy --dry-run --config wrangler.broker.jsonc",

@@ -14,7 +14,7 @@ export type ActiveCredential =
   | { kind: "openai"; secret: string }
   | { kind: "chatgpt"; secret: string; accountId: string; fedramp: boolean; expiresAt: number; revision?: string };
 type CredentialReader<Env> = (ownerId: string, env: Env) => Promise<string | ActiveCredential | null>;
-type UpstreamFetch<Env> = (request: Request, ownerId: string, env: Env, region: string | null) => Promise<Response>;
+type UpstreamFetch<Env> = (request: Request, ownerId: string, env: Env) => Promise<Response>;
 type CredentialRecovery<Env> = (ownerId: string, rejectedRevision: string, env: Env) => Promise<ActiveCredential | null>;
 
 /** Credential storage and upstream transport are supplied by the private Worker entrypoint. */
@@ -138,7 +138,6 @@ export function createEgressHandler<Env>({
       // Created inside this service, never accepted from the caller. The subscription
       // route is a private relay; API-key egress goes directly to OpenAI.
       if (credential.kind === "chatgpt") egressRequestId = crypto.randomUUID();
-      const region = request.headers.get("x-managed2-relay-region");
       const send = (active: ActiveCredential, retry = false): Promise<Response> => {
         const headers = new Headers(request.headers);
         headers.set("authorization", `Bearer ${active.secret}`);
@@ -166,7 +165,7 @@ export function createEgressHandler<Env>({
             ? (!retry && active.kind === "chatgpt" && active.revision && recoverCredential
               ? request.clone().body : request.body) : null,
           duplex: "half", redirect: "manual",
-        } as RequestInit), ownerId, env, region);
+        } as RequestInit), ownerId, env);
       };
       // Never follow a provider redirect carrying the real credential to another origin.
       dispatchMs = clock() - credentialEnd;

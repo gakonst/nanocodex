@@ -30,7 +30,7 @@ describe("Session-only model egress", () => {
     const env = { USER_CREDENTIALS: { getByName }, MANAGED_AGENT_OWNERSHIP: { fetch: callback } } as unknown as EgressEnv;
     const entrypoint = new SessionModelEgress(createExecutionContext(), env);
     for (let i = 0; i < 2; i++) expect((await entrypoint.fetch(request())).status).toBe(200);
-    expect(getByName).toHaveBeenCalledWith(owner, undefined);
+    expect(getByName).toHaveBeenCalledWith(owner);
     expect(lookup).toHaveBeenCalledTimes(2);
     expect(callback).not.toHaveBeenCalled();
     expect(upstream).toHaveBeenCalledTimes(2);
@@ -138,7 +138,7 @@ describe("Session-only model egress", () => {
     const entrypoint = new SessionModelEgress(createExecutionContext(), {
       USER_CREDENTIALS: { getByName: () => ({ resolveModelCredential: async () => ({ status: 200,
         credential: { kind: "chatgpt", revision: 1, secret: "fixture", accountId: "account" } }) }) },
-      CHATGPT_EGRESS: { idFromName: () => "relay", get: () => ({ fetch: relay }) },
+      CHATGPT_EGRESS: { getByName: () => ({ fetch: relay }) },
     } as unknown as EgressEnv);
     const headers = new Headers(request().headers); headers.delete("upgrade"); headers.set("content-type", "application/json");
     const pending = entrypoint.fetch(new Request("https://nanocodex.internal/v1/responses", {

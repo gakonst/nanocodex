@@ -17,8 +17,7 @@ function fixture(subject = directSubject) {
     AGENT_SUBJECTS: { getByName: () => ({ fetch: directory }) },
     MANAGED_AGENT_OWNERSHIP: { fetch: directory },
     USER_CREDENTIALS: { getByName: credentials },
-    CHATGPT_EGRESS: { idFromName: relay, get: relay },
-    CHATGPT_EGRESS_WNAM: { idFromName: relay, get: relay },
+    CHATGPT_EGRESS: { idFromName: relay, get: relay, getByName: relay },
   } as unknown as EgressEnv;
   const request = new Request("https://nanocodex.internal/v1/realtime/sideband", {
     headers: {

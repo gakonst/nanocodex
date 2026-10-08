@@ -13,7 +13,7 @@ export function createSearchHandler<Env>({ readCredential, upstreamFetch, clock 
   log = (event: Record<string, string | number | null>) => console.info(event),
 }: {
   readCredential: (owner: string, env: Env) => Promise<ActiveCredential | null>;
-  upstreamFetch: (request: Request, owner: string, env: Env, region: string | null) => Promise<Response>;
+  upstreamFetch: (request: Request, owner: string, env: Env) => Promise<Response>;
   clock?: () => number;
   log?: (event: Record<string, string | number | null>) => void;
 }) {
@@ -73,7 +73,7 @@ export function createSearchHandler<Env>({ readCredential, upstreamFetch, clock 
         setSpanAttributes(span, { "managed2.trace_id": traceId ?? undefined, "egress2.route": route });
         const response = await upstreamFetch(new Request(target, {
           method: "POST", headers, body: JSON.stringify(body), redirect: "manual",
-        }), owner, env, request.headers.get("x-managed2-relay-region"));
+        }), owner, env);
         span.setAttribute("http.response.status_code", response.status);
         if (response.status >= 400) recordSpanException(span, "upstream_rejected");
         return response;

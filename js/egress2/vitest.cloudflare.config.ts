@@ -8,8 +8,7 @@ export default defineConfig({
     miniflare: {
       bindings: { CREDENTIAL_ENCRYPTION_KEY: btoa("0123456789abcdef0123456789abcdef") },
       durableObjects: {
-        CHATGPT_EGRESS: { className: "RelayLegacy", scriptName: "relay-fixture" },
-        CHATGPT_EGRESS_WNAM: { className: "RelayWnam", scriptName: "relay-fixture" },
+        CHATGPT_EGRESS: { className: "Relay", scriptName: "relay-fixture" },
       },
       workers: [{ name: "relay-fixture", modules: true,
         script: readFileSync(new URL("./test/fixtures/relay.mjs", import.meta.url), "utf8"),

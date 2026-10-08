@@ -87,7 +87,7 @@ describe("Session model egress: managed web search and image tools", () => {
     expect(response.status).toBe(200);
     expect(lookup).toHaveBeenCalledWith(false, undefined, "acct-fixture");
     // A region assertion places only the model transport, never tool calls.
-    expect(getByName).toHaveBeenCalledWith(owner, undefined);
+    expect(getByName).toHaveBeenCalledWith(owner);
     expect(callback).not.toHaveBeenCalled();
   });
 

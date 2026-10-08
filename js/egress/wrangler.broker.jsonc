@@ -51,7 +51,6 @@
         "name": "USER_CREDENTIALS",
         "class_name": "UserCredentialBroker"
       },
-      { "name": "USER_CREDENTIAL_SNAPSHOTS", "class_name": "UserCredentialSnapshot" },
       {
         "name": "AGENT_SUBJECTS",
         "class_name": "AgentSubjectDirectory"
@@ -72,14 +71,7 @@
         "name": "CHATGPT_EGRESS",
         "class_name": "ChatGptEgress",
         "script_name": "nanocodex"
-      },
-      {"name":"CHATGPT_EGRESS_WNAM","class_name":"ChatGptEgressWnam","script_name":"nanocodex"},
-      {"name":"CHATGPT_EGRESS_ENAM","class_name":"ChatGptEgressEnam","script_name":"nanocodex"},
-      {"name":"CHATGPT_EGRESS_WEUR","class_name":"ChatGptEgressWeur","script_name":"nanocodex"},
-      {"name":"CHATGPT_EGRESS_EEUR","class_name":"ChatGptEgressEeur","script_name":"nanocodex"},
-      {"name":"CHATGPT_EGRESS_APAC","class_name":"ChatGptEgressApac","script_name":"nanocodex"},
-      {"name":"CHATGPT_EGRESS_SAM","class_name":"ChatGptEgressSam","script_name":"nanocodex"},
-      {"name":"CHATGPT_EGRESS_OC","class_name":"ChatGptEgressOc","script_name":"nanocodex"}
+      }
     ]
   },
   "migrations": [
@@ -110,7 +102,8 @@
     { "tag": "v7", "new_sqlite_classes": ["GmailPushMailbox"] },
     { "tag": "v8", "new_sqlite_classes": ["WhatsAppAccount"] },
     { "tag": "v9", "new_sqlite_classes": ["PhoneServiceAccount"] },
-    { "tag": "v10", "new_sqlite_classes": ["UserCredentialSnapshot"] }
+    { "tag": "v10", "new_sqlite_classes": ["UserCredentialSnapshot"] },
+    { "tag": "v11", "deleted_classes": ["UserCredentialSnapshot"] }
   ],
   "env": {
     "development": {
@@ -134,8 +127,7 @@
           { "name": "GMAIL_PUSH_MAILBOXES", "class_name": "GmailPushMailbox" },
           { "name": "WHATSAPP_ACCOUNTS", "class_name": "WhatsAppAccount" },
           { "name": "USER_CREDENTIALS", "class_name": "UserCredentialBroker" },
-          { "name": "USER_CREDENTIAL_SNAPSHOTS", "class_name": "UserCredentialSnapshot" },
-          { "name": "AGENT_SUBJECTS", "class_name": "AgentSubjectDirectory" },
+              { "name": "AGENT_SUBJECTS", "class_name": "AgentSubjectDirectory" },
           { "name": "SPOTIFY_RATE_LIMITS", "class_name": "SpotifyRateLimit" },
           { "name": "USER_CONNECTORS", "class_name": "UserConnectorBroker" },
           { "name": "MCP_CONNECTIONS", "class_name": "McpConnectionDirectory" },
