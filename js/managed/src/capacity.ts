@@ -12,6 +12,8 @@ export type ManagedCapacitySnapshot = Readonly<{
   archived_realtime: ManagedRealtimeArchiveCapacity;
   archived_turns: ManagedTurnArchiveCapacity;
   database_size_bytes: number;
+  /** Content-free boundary diagnostics (bounded, seven-day retention). */
+  diagnostic_events: CountAndBytes;
   durable_state: CountAndBytes & Readonly<{
     revision: string;
   }>;
@@ -68,6 +70,7 @@ export function managedCapacitySnapshot(
   const durableState = durableStateCapacity(storage, cloudflareStateId(storage, sessionId));
   const durableRecords = eventCapacity(storage, "nanocodex_durable_records", "value");
   const managedEvents = managedEventCapacity(storage);
+  const diagnosticEvents = eventCapacity(storage, "diagnostic_events", "payload_json");
   const rawEvents = eventCapacity(
     storage,
     "nanocodex_cloudflare_events",
@@ -82,6 +85,7 @@ export function managedCapacitySnapshot(
   const knownPayloadBytes = durableState.bytes
     + durableRecords.bytes
     + managedEvents.bytes
+    + diagnosticEvents.bytes
     + rawEvents.bytes
     + realtimeOperations.bytes
     + turns.input_bytes
@@ -93,6 +97,7 @@ export function managedCapacitySnapshot(
     archived_realtime: archivedRealtime,
     archived_turns: archivedTurns,
     database_size_bytes: databaseSizeBytes,
+    diagnostic_events: diagnosticEvents,
     durable_state: durableState,
     durable_records: durableRecords,
     known_payload_bytes: knownPayloadBytes,
@@ -140,8 +145,8 @@ function durableStateCapacity(
 
 function eventCapacity(
   storage: DurableObjectStorage,
-  table: "managed_events" | "managed_realtime_operations" | "nanocodex_cloudflare_events" | "nanocodex_durable_records",
-  column: "event_json" | "message_json" | "response_json" | "value",
+  table: "diagnostic_events" | "managed_events" | "managed_realtime_operations" | "nanocodex_cloudflare_events" | "nanocodex_durable_records",
+  column: "event_json" | "message_json" | "payload_json" | "response_json" | "value",
 ): CountAndBytes {
   if (!tableExists(storage, table)) return EMPTY_AGGREGATE;
   return storage.sql.exec<AggregateRow>(

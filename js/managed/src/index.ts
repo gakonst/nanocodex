@@ -862,6 +862,35 @@ type StreamMessage = Extract<ServerMessage,
   | { type: "stream_failed" }
 >;
 
+/** Merged delta rows stay far below event chunking and history page limits. */
+const MAX_COALESCED_DELTA_BYTES = 16_384;
+
+/** Assistant/reasoning text deltas of one item are concatenable stream chunks.
+ * The key captures every field except text, so a merged row is identical to
+ * its parts apart from carrying their concatenated text and the latest seq. */
+function coalescableDelta(message: StreamMessage, turnId: string | null): { key: string; bytes: number } | undefined {
+  if (!turnId || message.type !== "event") return;
+  const event = message.event;
+  if (event.type !== "assistant.delta" && event.type !== "reasoning.summary.delta") return;
+  if (Object.keys(message).some(key => key !== "type" && key !== "event" && key !== "agent_id")) return;
+  const payload = event.payload as Record<string, unknown> | undefined;
+  if (!payload || typeof payload.text !== "string" || payload.call_id !== undefined) return;
+  const { text, ...rest } = payload;
+  return {
+    key: JSON.stringify([message.agent_id ?? null, event.protocol_version, event.request_id, event.type, rest]),
+    bytes: text.length,
+  };
+}
+
+function mergeDelta(staged: StreamMessage, next: StreamMessage): StreamMessage | undefined {
+  if (staged.type !== "event" || next.type !== "event") return;
+  const previous = staged.event.payload as Record<string, unknown>;
+  const following = next.event.payload as Record<string, unknown>;
+  if (typeof previous.text !== "string" || typeof following.text !== "string") return;
+  if (!(typeof next.event.seq === "number" && typeof staged.event.seq === "number" && next.event.seq > staged.event.seq)) return;
+  return { ...staged, event: { ...staged.event, seq: next.event.seq, payload: { ...previous, text: previous.text + following.text } } };
+}
+
 /** Shared chat is an allowlist, not a filtered copy of the owner's event stream.
  * Tool output and reasoning can contain credentials in ordinary text values. */
 type SharedEvent = { cursor: string; created_at: number; turn_id: string | null; type: string; [key: string]: unknown };
@@ -4121,6 +4150,7 @@ export class DurableAgentSession extends DurableComputerObject {
   #recoveryRequested = false;
   #historyProjectionTask?: Promise<void>;
   #streamError?: string;
+  #deltaFlush?: ReturnType<typeof setTimeout>;
   #deleting = false;
   #deleted = false;
   #durabilityExported = false;
@@ -9463,6 +9493,7 @@ export class DurableAgentSession extends DurableComputerObject {
     // been written. The reverse order can strand external ownership forever.
     this.#preparedModelUpgrade?.dispose("deleted");
     this.#deleting = true;
+    this.#eventLog?.discardStaged();
     this.#hostedTools.shutdown("managed agent is being deleted");
     let markerCommitted = false;
     const task = (async () => {
@@ -9506,6 +9537,7 @@ export class DurableAgentSession extends DurableComputerObject {
   async #performOwnedSessionDeletion(generation: number): Promise<void> {
     this.#preparedModelUpgrade?.dispose("deleted");
     this.#deleting = true;
+    this.#eventLog?.discardStaged();
     // Reconstruction can enter here from a marker committed just before a
     // crash. Reassert the permanent local tombstone before any cleanup await.
     this.#markInitializationDeleted();
@@ -13077,6 +13109,19 @@ export class DurableAgentSession extends DurableComputerObject {
   ): void {
     if (this.#deleting || this.#streamError) return;
     try {
+      const delta = coalescableDelta(message, turnId);
+      if (delta) {
+        // Text deltas arriving in one provider chunk or JS task share one
+        // durable row. The next append (or a zero-delay flush) writes it at
+        // its arrival position, before any later event, and broadcasts it.
+        const flushed = this.#eventLog.stage(message, turnId, delta.key, mergeDelta, delta.bytes, MAX_COALESCED_DELTA_BYTES);
+        if (flushed) this.#publish(flushed);
+        this.#deltaFlush ??= setTimeout(() => {
+          this.#deltaFlush = undefined;
+          this.#flushStagedDelta();
+        }, 0);
+        return;
+      }
       const event = this.ctx.storage.transactionSync(() => {
         if (turnId && message.type === "event") this.#recoverySafety.progress(turnId, message.event);
         return this.#eventLog.append(message, turnId);
@@ -13094,10 +13139,21 @@ export class DurableAgentSession extends DurableComputerObject {
     }
   }
 
+  #flushStagedDelta(): void {
+    if (this.#deleting || this.#streamError) { this.#eventLog.discardStaged(); return; }
+    try {
+      const event = this.#eventLog.flushStaged();
+      if (event) this.#publish(event);
+    } catch (error) {
+      this.#failEventStream(error);
+    }
+  }
+
   #failEventStream(error: unknown): void {
     if (this.#streamError) return;
     const detail = `event projection failed: ${errorMessage(error)}`;
     this.#streamError = detail;
+    this.#eventLog.discardStaged();
     this.#observe("managed.event_stream_failed", {
       outcome: "failure",
       error_kind: error instanceof Error ? error.name : typeof error,
@@ -13197,6 +13253,12 @@ export class DurableAgentSession extends DurableComputerObject {
   }
 
   #publish(event: DurableEvent<StreamMessage>): void {
+    // Coalesced deltas written by this event's transaction precede it.
+    for (const materialized of this.#eventLog.takeMaterialized(event)) this.#publishOne(materialized);
+    this.#publishOne(event);
+  }
+
+  #publishOne(event: DurableEvent<StreamMessage>): void {
     // Do no sidebar work per token or tool delta. Lifecycle and complete
     // commentary messages are sufficient to describe current work.
     const message = event.message;

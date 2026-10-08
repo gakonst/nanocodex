@@ -62,6 +62,8 @@ type Subscriber = {
 export class DurableEventLog<Message extends { type: string }> {
   readonly #storage: DurableObjectStorage;
   readonly #subscribers = new Set<Subscriber>();
+  #staged: { message: Message; turnId: string | null; key: string; bytes: number } | undefined;
+  #materialized: { event: DurableEvent<Message>; follower: string }[] = [];
 
   constructor(storage: DurableObjectStorage, readonly onAppend?: (event: DurableEvent<{ type: string }>) => void) {
     this.#storage = storage;
@@ -99,10 +101,95 @@ export class DurableEventLog<Message extends { type: string }> {
     `);
   }
 
-  /** Appends inside the caller's current SQLite transaction, if any. */
+  /** Appends inside the caller's current SQLite transaction, if any.
+   * A staged coalescable message is first materialized at the preceding
+   * cursor in that same transaction, so durable order equals arrival order. */
   append(
     message: Message,
     turnId: string | null = null,
+  ): DurableEvent<Message> {
+    const staged = this.#staged;
+    if (staged) {
+      this.#staged = undefined;
+      const materialized = this.#insert(staged.message, staged.turnId);
+      const event = this.#insert(message, turnId);
+      // Broadcast the materialized row only together with its follower, which
+      // committed or rolled back in the same transaction.
+      this.#materialized.push({ event: materialized, follower: event.cursor });
+      return event;
+    }
+    return this.#insert(message, turnId);
+  }
+
+  /**
+   * Holds one live-stream message (such as a text delta) in memory so that
+   * consecutive messages with the same key share a single durable row. The
+   * staged row is written by the next append, by flushStaged(), or merged with
+   * the next compatible stage(). Returns an event that was flushed because the
+   * staged key changed or the merged row would exceed maxBytes; the caller
+   * publishes it. Staged messages carry no cursor until written.
+   */
+  stage(
+    message: Message,
+    turnId: string | null,
+    key: string,
+    merge: (staged: Message, next: Message) => Message | undefined,
+    bytes: number,
+    maxBytes: number,
+  ): DurableEvent<Message> | undefined {
+    const staged = this.#staged;
+    if (staged && staged.key === key && staged.turnId === turnId && staged.bytes + bytes <= maxBytes) {
+      const merged = merge(staged.message, message);
+      if (merged !== undefined) {
+        staged.message = merged;
+        staged.bytes += bytes;
+        return;
+      }
+    }
+    const flushed = staged ? this.flushStaged() : undefined;
+    this.#staged = { message, turnId, key, bytes };
+    return flushed;
+  }
+
+  hasStaged(): boolean {
+    return this.#staged !== undefined;
+  }
+
+  /** Writes the staged message in its own transaction; the caller publishes it. */
+  flushStaged(): DurableEvent<Message> | undefined {
+    const staged = this.#staged;
+    if (!staged) return;
+    this.#staged = undefined;
+    return this.#storage.transactionSync(() => this.#insert(staged.message, staged.turnId));
+  }
+
+  /** Discards a staged message that must not become durable (deletion/fencing). */
+  discardStaged(): void {
+    this.#staged = undefined;
+    this.#materialized = [];
+  }
+
+  /**
+   * Materialized rows written in the same transaction as `published`, which
+   * must be broadcast before it. Rows whose follower was never published (its
+   * transaction failed, or its caller does not broadcast) are dropped from the
+   * live queue; committed rows remain readable through history and SSE.
+   */
+  takeMaterialized(published: DurableEvent<Message>): DurableEvent<Message>[] {
+    if (this.#materialized.length === 0) return [];
+    const ready: DurableEvent<Message>[] = [];
+    const pending: { event: DurableEvent<Message>; follower: string }[] = [];
+    for (const entry of this.#materialized) {
+      if (entry.follower === published.cursor) ready.push(entry.event);
+      else if (compareCursor(entry.follower, published.cursor) > 0) pending.push(entry);
+    }
+    this.#materialized = pending;
+    return ready;
+  }
+
+  #insert(
+    message: Message,
+    turnId: string | null,
   ): DurableEvent<Message> {
     const messageJson = JSON.stringify(message);
     const messageBytes = sseEncoder.encode(messageJson).byteLength;
@@ -386,6 +473,7 @@ export class DurableEventLog<Message extends { type: string }> {
   }
 
   clear(): void {
+    this.discardStaged();
     for (const subscriber of this.#subscribers) this.#close(subscriber, true);
     this.#storage.sql.exec("DELETE FROM managed_event_chunks");
     this.#storage.sql.exec("DELETE FROM managed_events");

@@ -112,8 +112,10 @@ export class DiagnosticJournal {
       seq INTEGER PRIMARY KEY AUTOINCREMENT, created_at INTEGER NOT NULL, thread_id TEXT,
       lease_id TEXT, connection_id TEXT, payload_json TEXT NOT NULL);
       CREATE INDEX IF NOT EXISTS diagnostic_events_thread ON diagnostic_events(thread_id,seq);
-      CREATE INDEX IF NOT EXISTS diagnostic_events_lease ON diagnostic_events(lease_id,seq);
-      CREATE INDEX IF NOT EXISTS diagnostic_events_connection ON diagnostic_events(connection_id,seq);
+      DROP INDEX IF EXISTS diagnostic_events_lease;
+      DROP INDEX IF EXISTS diagnostic_events_connection;
+      CREATE INDEX IF NOT EXISTS diagnostic_events_lease_present ON diagnostic_events(lease_id,seq) WHERE lease_id IS NOT NULL;
+      CREATE INDEX IF NOT EXISTS diagnostic_events_connection_present ON diagnostic_events(connection_id,seq) WHERE connection_id IS NOT NULL;
       CREATE TABLE IF NOT EXISTS diagnostic_retention(singleton INTEGER PRIMARY KEY CHECK(singleton=1),pruned_through INTEGER NOT NULL,write_failed INTEGER NOT NULL DEFAULT 0);
       INSERT OR IGNORE INTO diagnostic_retention(singleton,pruned_through) VALUES(1,0);`);
     const columns = this.storage.sql.exec<{ name: string }>("PRAGMA table_info(diagnostic_retention)").toArray();

@@ -60,6 +60,7 @@
     "test:screen-playback": "node --test test/screen-playback-journey.test.mjs",
     "test:hand-discovery": "node --test test/hand-discovery-journey.test.mjs",
     "test:claude-managed": "node --test test/claude-managed-journey.test.mjs",
+    "test:write-amplification": "node --test test/turn-write-amplification-journey.test.mjs",
     "test:hand-catalog-scaling": "node --test test/hand-catalog-scaling-journey.test.mjs",
     "test:hand-preparation": "node --test test/hand-preparation-journey.test.mjs",
     "test:hand-retirement": "node --test test/hand-retirement-journey.test.mjs",
