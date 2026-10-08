@@ -853,6 +853,11 @@ async fn run(cli: Cli) -> Result<(), ManagedError> {
         #[cfg(any(target_os = "linux", target_os = "macos", test))]
         Some(Command::UpdateHand) => unreachable!("handled before managed client setup"),
         Some(Command::Host(_)) => unreachable!("handled before managed client setup"),
+        Some(Command::New(settings)) if !settings.is_explicit() => {
+            // Omitted settings let the service choose its default (Claude Opus
+            // 5.5 at medium effort, with an OpenAI fallback when unavailable).
+            write_json(&client.create().await?)
+        }
         Some(Command::New(settings)) => {
             let account = settings.chatgpt_account.clone();
             let settings = settings.resolve_validated()?;
@@ -1170,7 +1175,12 @@ fn supported_agent_page_origin(url: &Url) -> bool {
 async fn run_turn(client: &ManagedClient, command: Run) -> Result<(), ManagedError> {
     let created = command.agent.is_none();
     let account = command.settings.chatgpt_account.clone();
-    let settings = command.settings.resolve_validated()?;
+    let settings = if command.settings.is_explicit() || command.agent.is_some() {
+        command.settings.resolve_validated()?
+    } else {
+        // The account catalog default: Claude Opus 5.5 at medium when available.
+        client.default_settings().await?
+    };
     let requested_agent = command.agent;
     let request_id = command
         .idempotency_key

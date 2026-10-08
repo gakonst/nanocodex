@@ -4,6 +4,7 @@ export const AGENT_REASONING_MODES: readonly ["standard", "pro"];
 export type ManagedAgentSettings = Readonly<{ model: typeof AGENT_MODELS[number]; thinking: typeof AGENT_THINKING[number]; reasoning_mode: typeof AGENT_REASONING_MODES[number]; fast_mode: boolean }>;
 export type ManagedAgentSettingsPatch = Partial<ManagedAgentSettings>;
 export const DEFAULT_AGENT_SETTINGS: ManagedAgentSettings;
+export const DEFAULT_OPENAI_AGENT_SETTINGS: ManagedAgentSettings;
 export function parseAgentSettingsQuery(search: URLSearchParams): ManagedAgentSettings;
 export function agentSettingsQuery(settings: ManagedAgentSettings): URLSearchParams;
 export function parseAgentSettingsPatch(value: unknown): ManagedAgentSettingsPatch;

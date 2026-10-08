@@ -1,6 +1,6 @@
 import { parseConfiguration, type AgentConfiguration } from "./agent-configuration";
-import { AGENT_MODELS, AGENT_THINKING, AGENT_REASONING_MODES, DEFAULT_AGENT_SETTINGS, parseAgentSettingsQuery, agentSettingsQuery, parseAgentSettingsPatch, parseCompleteAgentSettings, validateAgentSettings, validateAgentAdmissionSettings, isAgentModel, isAgentThinking, isAgentReasoningMode, type ManagedAgentSettings, type ManagedAgentSettingsPatch } from "nanocodex/cloudflare/agent-settings";
-export { AGENT_MODELS, AGENT_THINKING, AGENT_REASONING_MODES, DEFAULT_AGENT_SETTINGS, parseAgentSettingsQuery, agentSettingsQuery, parseAgentSettingsPatch, parseCompleteAgentSettings, validateAgentSettings, validateAgentAdmissionSettings, isAgentModel, isAgentThinking, isAgentReasoningMode, type ManagedAgentSettings, type ManagedAgentSettingsPatch };
+import { AGENT_MODELS, AGENT_THINKING, AGENT_REASONING_MODES, DEFAULT_AGENT_SETTINGS, DEFAULT_OPENAI_AGENT_SETTINGS, parseAgentSettingsQuery, agentSettingsQuery, parseAgentSettingsPatch, parseCompleteAgentSettings, validateAgentSettings, validateAgentAdmissionSettings, isAgentModel, isAgentThinking, isAgentReasoningMode, type ManagedAgentSettings, type ManagedAgentSettingsPatch } from "nanocodex/cloudflare/agent-settings";
+export { AGENT_MODELS, AGENT_THINKING, AGENT_REASONING_MODES, DEFAULT_AGENT_SETTINGS, DEFAULT_OPENAI_AGENT_SETTINGS, parseAgentSettingsQuery, agentSettingsQuery, parseAgentSettingsPatch, parseCompleteAgentSettings, validateAgentSettings, validateAgentAdmissionSettings, isAgentModel, isAgentThinking, isAgentReasoningMode, type ManagedAgentSettings, type ManagedAgentSettingsPatch };
 export type ManagedAgentCreateBody = Readonly<{
   scope?: { type: "personal" } | { type: "team"; team_id: string };
   durability?: unknown;
@@ -19,7 +19,7 @@ export type ManagedAgentRunBody = Readonly<{
 
 export function parseAgentCreateBody(encoded: string): ManagedAgentCreateBody {
   if (!encoded.trim()) {
-    return { settings: DEFAULT_AGENT_SETTINGS, settingsProvided: false };
+    return { settings: DEFAULT_OPENAI_AGENT_SETTINGS, settingsProvided: false };
   }
   const value = JSON.parse(encoded) as unknown;
   if (!value || typeof value !== "object" || Array.isArray(value)) {
@@ -61,7 +61,10 @@ export function parseAgentCreateBody(encoded: string): ManagedAgentCreateBody {
     ...(Object.hasOwn(body, "durability") ? { durability: body.durability } : {}),
     settings: settingsProvided
       ? validateAgentAdmissionSettings(parseCompleteAgentSettings(body.settings))
-      : DEFAULT_AGENT_SETTINGS,
+      // Baseline for omitted settings when no default is selected (imports,
+      // configuration-owned settings or routing). New agents select from the
+      // live catalog in the managed API, preferring DEFAULT_AGENT_SETTINGS.
+      : DEFAULT_OPENAI_AGENT_SETTINGS,
     ...(configuration === undefined ? {} : { configuration }),
     ...(body.definition_id === undefined ? {} : { definition_id: body.definition_id as string }),
     ...(body.environment_template_id === undefined ? {} : { environment_template_id: body.environment_template_id as string }),

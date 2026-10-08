@@ -21,7 +21,9 @@ import { runtimeDataDirectory } from "./data-directory.mjs";
 import { desktopFactoryRecipe, superviseVmFactory } from "./vm-factory.mjs";
 
 export const DEFAULT_ORIGIN = "https://nanocodex.gakonst.workers.dev";
-export const DEFAULT_SETTINGS = Object.freeze({ model: "gpt-6.1-sol", thinking: "low", reasoning_mode: "standard", fast_mode: false });
+// Display placeholder until the account's settings arrive. New threads without
+// an explicit choice let the service select its default (Claude Opus 5.5, medium).
+export const DEFAULT_SETTINGS = Object.freeze({ model: "claude-opus-5-5", thinking: "medium", reasoning_mode: "standard", fast_mode: false });
 
 export function validateSettings(settings) {
   if (!settings || typeof settings !== "object" || Array.isArray(settings)) throw new Error("Choose model settings first.");
@@ -437,11 +439,11 @@ export class DesktopRuntime extends EventEmitter {
     return pending.promise;
   }
 
-  async createThread(settings = DEFAULT_SETTINGS) {
+  async createThread(settings) {
     this.#requireConnection();
-    validateSettings(settings);
+    if (settings !== undefined) validateSettings(settings);
     const generation = this.#generation;
-    const { agent_id } = await this.request("/v1/agents", { method: "POST", headers: { "idempotency-key": randomUUID() }, body: JSON.stringify({ settings }) });
+    const { agent_id } = await this.request("/v1/agents", { method: "POST", headers: { "idempotency-key": randomUUID() }, body: JSON.stringify(settings === undefined ? {} : { settings }) });
     this.#sameAccount(generation);
     const agent = Agent.open(agent_id, this.#options);
     const thread = { id: agent.id, title: "New thread", updatedAt: Date.now(), turnCount: 0 };

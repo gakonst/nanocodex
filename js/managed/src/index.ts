@@ -15,7 +15,7 @@ import { Claude } from 'nanocodex/worker';
 import { createManagedClaudeTools } from './claude-tools';
 import { managedClaudeTasks } from './claude-tasks';
 import type { Options as ClaudeOptions } from '../../nanocodex/runtime/claude.mjs';
-import { availableManagedModels, selectDefaultManagedModel } from "./model-catalog";
+import { availableManagedModels, defaultSettingsForModel, selectDefaultManagedModel } from "./model-catalog";
 import { ManagedRecoverySafety, MANAGED_RECOVERY_UNKNOWN, createManagedCodeEffectJournal } from "./managed-recovery-safety";
 import { nativeAppValidator } from "./prompt-apps-native";
 import { gmailDecisionReceipts } from "./gmail-firehose-receipts";
@@ -312,7 +312,7 @@ import {
   type TurnTerminal,
 } from "./turn-completion";
 import {
-  DEFAULT_AGENT_SETTINGS,
+  DEFAULT_OPENAI_AGENT_SETTINGS,
   isAgentModel,
   isAgentThinking,
   INITIAL_MODEL_THINKING,
@@ -2393,7 +2393,7 @@ async function managedFetchRoute(
       }
       let contextTeamId: string | undefined;
       let durabilityArchive: unknown;
-      let creationSettings = DEFAULT_AGENT_SETTINGS;
+      let creationSettings = DEFAULT_OPENAI_AGENT_SETTINGS;
       let settingsProvided = false;
       let settingsSelection: ReturnType<typeof parseAgentCreateBody>["settingsSelection"];
       let creationConfiguration: AgentConfiguration = {};
@@ -2436,10 +2436,15 @@ async function managedFetchRoute(
         if (settingsSelection && !firstTurn) throw new TypeError("settings_selection requires combined creation and prompt");
         if (!settingsSelection && !settingsProvided && !creationConfiguration.settings && !creationConfiguration.model_routing && body.durability === undefined) {
           try {
-            const selection = await selectDefaultManagedModel(env.NANOCODEX, principal.userId, principal.connectGrant ? {} : env);
+            // Claude Opus 5.5 is the preferred default; keep the OpenAI default
+            // where Claude is not permitted or cannot honor the configuration.
+            const claude = !principal.connectGrant && creationConfiguration.output_schema === undefined
+              && creationConfiguration.prompt_cache === undefined && !creationConfiguration.tools?.includes("WebSearch");
+            const selection = await selectDefaultManagedModel(env.NANOCODEX, principal.userId, principal.connectGrant ? {} : env, { claude });
             modelCatalog = selection.catalog;
             if (selection.default_model === null) return json({ error: "no_available_models" }, { status: 409 });
-            if (selection.default_model?.startsWith("claude-")) creationSettings = { ...DEFAULT_AGENT_SETTINGS, model: selection.default_model };
+            if (selection.default_model.startsWith("claude-") || selection.default_model.startsWith("gpt-"))
+              creationSettings = defaultSettingsForModel(selection.default_model);
           } catch { return json({ error: "model_availability_unavailable" }, { status: 503 }); }
         }
         if (!settingsSelection && creationSettings.model.startsWith("claude-")) {
@@ -2478,7 +2483,7 @@ async function managedFetchRoute(
             managedArchive = validateManagedDurabilityArchive(durabilityArchive);
             durabilityStateId = managedArchive.durability.stateId;
             const importedSettings = managedArchive.managed_session.settings
-              ?? DEFAULT_AGENT_SETTINGS;
+              ?? DEFAULT_OPENAI_AGENT_SETTINGS;
             if (settingsProvided && !sameAgentSettings(creationSettings, importedSettings)) {
               return json({
                 error: "invalid_request",

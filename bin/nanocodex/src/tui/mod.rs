@@ -793,12 +793,13 @@ pub(crate) async fn run(
     reason = "the ordered terminal, agent, worker, and render event loop is intentionally cohesive"
 )]
 pub(crate) async fn run_observed(
-    config: AgentArgs,
+    mut config: AgentArgs,
     vm: crate::vm::VmArgs,
     initial_prompt: Option<InitialPrompt>,
     resume: Option<DurableSession>,
     observability: Option<crate::observability::ObservabilityArgs>,
 ) -> Result<()> {
+    config.prefer_codex_for_vm(&vm);
     let can_replace_backend = resume.is_none() && config.claude_resume.is_none();
     let mut backend_config = config.clone();
     let backend_vm = vm.clone();

@@ -388,7 +388,66 @@ impl AgentArgs {
                 Err(eyre!("--claude conflicts with --harness {family}"))
             }
             (true, _) | (false, Some("claude")) => Ok(HarnessFamily::Claude),
-            _ => Ok(HarnessFamily::Codex),
+            (false, Some(_)) => Ok(HarnessFamily::Codex),
+            (false, None) => Ok(self.default_harness()),
+        }
+    }
+
+    /// Claude Opus 5.5 (medium) is the preferred default. An explicit model or
+    /// Responses-only configuration keeps its family, and Codex remains the
+    /// fallback when no local Claude credential is configured.
+    fn default_harness(&self) -> HarnessFamily {
+        let explicit_model = self
+            .model
+            .as_deref()
+            .and_then(|value| value.parse::<HarnessModel>().ok());
+        if let Some(model) = explicit_model {
+            return model.family();
+        }
+        if self.model.is_some() || std::env::var_os("OPENAI_MODEL").is_some() {
+            return HarnessFamily::Codex;
+        }
+        if std::env::var_os("ANTHROPIC_MODEL").is_some() {
+            return HarnessFamily::Claude;
+        }
+        let responses_only = self.memory
+            || self.mpp.is_enabled()
+            || self.model_id_prefix.is_some()
+            || self.websocket_url.is_some()
+            || self.api_base_url.is_some()
+            || self.responses_transport.is_some()
+            || self.store_responses.is_some()
+            || self.reasoning_mode != ReasoningMode::Standard;
+        if responses_only {
+            return HarnessFamily::Codex;
+        }
+        if self.claude_api_key.is_some() || self.claude_auth.has_saved_credentials() {
+            HarnessFamily::Claude
+        } else {
+            HarnessFamily::Codex
+        }
+    }
+
+    /// Whether a harness family was chosen with --claude, --harness or a model.
+    pub(crate) fn has_explicit_harness(&self) -> bool {
+        self.claude
+            || self.harness.is_some()
+            || self.model.is_some()
+            || std::env::var_os("OPENAI_MODEL").is_some()
+            || std::env::var_os("ANTHROPIC_MODEL").is_some()
+    }
+
+    /// Resume uses the store owning the thread unless the family was chosen explicitly.
+    pub(crate) fn resume_with_harness(&mut self, family: HarnessFamily) {
+        if !self.has_explicit_harness() {
+            self.harness = Some(family.to_string());
+        }
+    }
+
+    /// The local Claude harness has no VM support; keep a defaulted session on Codex.
+    pub(crate) fn prefer_codex_for_vm(&mut self, vm: &VmArgs) {
+        if vm.is_enabled() && !self.claude && self.harness.is_none() && self.model.is_none() {
+            self.harness = Some(HarnessFamily::Codex.to_string());
         }
     }
 
@@ -519,12 +578,13 @@ impl AgentArgs {
     }
 
     async fn build_inner(
-        self,
+        mut self,
         durable: Option<DurableSession>,
         vm: VmArgs,
         tui: bool,
         local_durability: Option<LocalDurability>,
     ) -> Result<ConfiguredAgent> {
+        self.prefer_codex_for_vm(&vm);
         let harness = self.selected_harness()?;
         if self.claude_workflows && (harness != HarnessFamily::Claude || !self.subagents) {
             return Err(eyre!(

@@ -217,7 +217,7 @@ final class AppModel: ObservableObject {
                 continue
             }
             if let choice = received.models.first(where: { $0.id == received.defaultModel }) {
-                draft.selectModel(choice); tabs[index].draftSettings = draft
+                draft.selectDefaultModel(choice); tabs[index].draftSettings = draft
             }
         }
         settings = settingsForTab(activeTabID)
@@ -231,7 +231,7 @@ final class AppModel: ObservableObject {
     }
     private func defaultDraftSettings() -> AgentSettings {
         var value = AgentSettings()
-        if let choice = modelCatalog?.models.first(where: { $0.id == modelCatalog?.defaultModel }) { value.selectModel(choice) }
+        if let choice = modelCatalog?.models.first(where: { $0.id == modelCatalog?.defaultModel }) { value.selectDefaultModel(choice) }
         return value
     }
 

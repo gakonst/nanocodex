@@ -88,6 +88,15 @@ impl ClaudeAuthArgs {
         Ok(client.with_subscription_identity(identity))
     }
 
+    /// Whether a local Claude subscription store exists; validity is checked on use.
+    pub(crate) fn has_saved_credentials(&self) -> bool {
+        match &self.claude_auth_file {
+            Some(path) => !path.as_os_str().is_empty() && path.is_file(),
+            None => crate::config::default_codex_home()
+                .is_ok_and(|home| home.join("claude/private/auth").is_file()),
+        }
+    }
+
     fn manager(self) -> Result<(Arc<NativeHost>, ClaudeSubscription)> {
         let path = match self.claude_auth_file {
             Some(path) if !path.as_os_str().is_empty() => path,

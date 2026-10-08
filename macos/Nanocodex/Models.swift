@@ -69,6 +69,11 @@ struct AgentSettings: Codable, Equatable, Sendable {
         if !choice.reasoningModes.contains(reasoning_mode) { reasoning_mode = choice.reasoningModes.first ?? "standard" }
         if !choice.fastMode { fast_mode = false }
     }
+    /// The account default's initial effort, matching the service: Claude starts at medium.
+    mutating func selectDefaultModel(_ choice: ModelChoice) {
+        selectModel(choice)
+        if choice.provider == "claude", choice.efforts.contains("medium") { thinking = "medium" }
+    }
 }
 struct AgentThread: Codable, Identifiable, Equatable, Sendable {
     var id: String

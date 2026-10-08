@@ -1,4 +1,4 @@
-import { DEFAULT_AGENT_SETTINGS, isAgentModel } from "./agent-settings";
+import { DEFAULT_OPENAI_AGENT_SETTINGS, isAgentModel } from "./agent-settings";
 import { createManagedImageFetch } from "./managed-image-fetch";
 
 type ManagedToolPath = "/v1/search" | "/v1/images/generations" | "/v1/images/edits";
@@ -28,7 +28,7 @@ export function managedWebFetch(egress: Pick<Fetcher, "fetch">, storageId: strin
     }
     return fetchManagedTool(egress, storageId, "/v1/search", {
       id: value.session_id,
-      model: value.model ?? DEFAULT_AGENT_SETTINGS.model,
+      model: value.model ?? DEFAULT_OPENAI_AGENT_SETTINGS.model,
       commands: value.commands,
       settings: { allowed_callers: ["direct"], external_web_access: true },
       max_output_tokens: 10_000,

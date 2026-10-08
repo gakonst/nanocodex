@@ -323,9 +323,14 @@ async fn run(cli: Cli) -> Result<()> {
             Ok(())
         }
         Some(Command::Auth(command)) => {
-            command
-                .run(cli.agent.selected_harness()?, cli.agent.claude_auth)
-                .await
+            // Credential commands act on an explicitly chosen family; the
+            // credential-dependent session default must not redirect them.
+            let family = if cli.agent.has_explicit_harness() {
+                cli.agent.selected_harness()?
+            } else {
+                nanocodex::HarnessFamily::Codex
+            };
+            command.run(family, cli.agent.claude_auth).await
         }
         Some(Command::Login(command)) => command.run().await,
         Some(Command::Connect(command)) => command.run().await,
@@ -350,8 +355,21 @@ async fn run(cli: Cli) -> Result<()> {
             )
             .await
         }
-        Some(Command::Resume(command)) => {
+        Some(Command::Resume(mut command)) => {
             let codex_home = config::default_codex_home()?;
+            if !command.agent.has_explicit_harness() {
+                // A defaulted resume opens the store that owns the requested
+                // thread, otherwise the Codex thread picker as before.
+                let claude = command
+                    .thread_id
+                    .as_deref()
+                    .is_some_and(|id| native_sessions::load(&codex_home, id).is_ok());
+                command.agent.resume_with_harness(if claude {
+                    nanocodex::HarnessFamily::Claude
+                } else {
+                    nanocodex::HarnessFamily::Codex
+                });
+            }
             if command.agent.selected_harness()? == nanocodex::HarnessFamily::Claude {
                 let id = match command.thread_id {
                     Some(id) => id,
