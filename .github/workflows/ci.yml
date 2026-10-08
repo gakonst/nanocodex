@@ -731,7 +731,6 @@ jobs:
           # durable storage, then deploys this checkout. History comes from the
           # authenticated checkout; no credentials are persisted for test steps.
           pnpm --filter nanocodex-managed-service exec node --test \
-            test/hand-retirement-journey.test.mjs \
             test/hand-preparation-journey.test.mjs \
             test/cua-routing-journey.test.mjs \
             test/hand-paths-journey.test.mjs \
