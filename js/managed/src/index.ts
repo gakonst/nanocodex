@@ -10072,7 +10072,8 @@ export class DurableAgentSession extends DurableComputerObject {
       || this.#accountMachines(authorization, context).some(machine => machine.id === hand)) return;
     // This account-scoped selected lookup has its own deadline and never joins
     // the background inventory. Unknown/foreign claims remain unattributed.
-    const lookup = this.#accountHostedTools.refreshMachine(hand.slice("user:".length), context).catch(() => {});
+    // Startup attribution reports screen capability, so it resolves screens too.
+    const lookup = this.#accountHostedTools.refreshMachine(hand.slice("user:".length), context, false, true).catch(() => {});
     // Attribution gets a shorter admission budget than an explicit Hand tool.
     // A late authorized catalog update may serve environment(), but cannot
     // rewrite the startup snapshot or frozen dispatch input. The provider

@@ -77,6 +77,11 @@ type AccountHostedToolsSnapshot = Readonly<{
    */
   mount_registry?: Readonly<{ ids: readonly string[]; observed_at: number }>;
   inventory_unknown_ids?: readonly string[];
+  /**
+   * A selected lookup that did not resolve screens (shell-only callers). The
+   * caller keeps its previously published screens for that machine.
+   */
+  screens_omitted?: true;
 }>;
 
 type RoutedHostedTool = HostedToolsCodeTool & Readonly<{
@@ -671,7 +676,7 @@ export class AccountHostedTools extends DurableObject<AccountHostedToolsEnv> {
       return this.#broker.upgrade(ownerId, undefined, undefined, undefined, undefined, identity || undefined);
     }
     if (request.method === "POST" && url.pathname === "/snapshot") {
-      const body = await request.json<{ owner_id?: unknown; machine_id?: unknown }>();
+      const body = await request.json<{ owner_id?: unknown; machine_id?: unknown; screens?: unknown }>();
       const ownerId = body.owner_id;
       if (!isUserId(ownerId) || !this.#owns(ownerId)) {
         return Response.json({ error: "not_found" }, { status: 404 });
@@ -679,7 +684,11 @@ export class AccountHostedTools extends DurableObject<AccountHostedToolsEnv> {
       if (body.machine_id !== undefined && (typeof body.machine_id !== "string" || !body.machine_id || body.machine_id.length > 256)) {
         return Response.json({ error: "invalid_request" }, { status: 400 });
       }
-      return Response.json(await this.#snapshot(body.machine_id as string | undefined), { headers: { "cache-control": "no-store" } });
+      if (body.screens !== undefined && (body.screens !== false || body.machine_id === undefined)) {
+        return Response.json({ error: "invalid_request" }, { status: 400 });
+      }
+      return Response.json(await this.#snapshot(body.machine_id as string | undefined, body.screens !== false),
+        { headers: { "cache-control": "no-store" } });
     }
 
     if (request.method === "POST" && url.pathname === "/turn-ended") {
@@ -894,8 +903,8 @@ export class AccountHostedTools extends DurableObject<AccountHostedToolsEnv> {
       };
   }
 
-  async #snapshot(machineId?: string): Promise<AccountHostedToolsSnapshot> {
-    const owned = await this.#ownedSnapshot(machineId);
+  async #snapshot(machineId?: string, screens = true): Promise<AccountHostedToolsSnapshot> {
+    const owned = await this.#ownedSnapshot(machineId, screens);
     if (this.#regional || !this.env.NANOCODEX_ACCOUNT_TOOLS || !this.#ownerId) return owned;
     const received = this.#shares.received().filter(share => machineId === undefined || machineId === `shared:${share.id}`);
     const shared = await Promise.all(received.map(async share => {
@@ -912,21 +921,25 @@ export class AccountHostedTools extends DurableObject<AccountHostedToolsEnv> {
       machineId === undefined);
   }
 
-  async #ownedSnapshot(machineId?: string): Promise<AccountHostedToolsSnapshot> {
+  async #ownedSnapshot(machineId?: string, includeScreens = true): Promise<AccountHostedToolsSnapshot> {
     const full = this.#localSnapshot();
     // A selected route needs only its current publication and capabilities.
     // Inventory remains explicit; this request never probes unrelated regions.
+    // Shell-only lookups also skip screen authority: its relay round trip
+    // would only refresh routes the caller does not use.
+    const screensOmitted = machineId !== undefined && !includeScreens;
     const local = machineId === undefined ? full : {
       ...full,
-      tools: full.tools.filter(tool => (full.screens ?? []).some(target => target.machine_id === machineId
+      tools: screensOmitted ? [] : full.tools.filter(tool => (full.screens ?? []).some(target => target.machine_id === machineId
         && screenTool(target).route_token === tool.route_token && tool.provider === "screens")),
-      screens: (full.screens ?? []).filter(target => target.machine_id === machineId),
+      screens: screensOmitted ? [] : (full.screens ?? []).filter(target => target.machine_id === machineId),
       machines: full.machines.filter(entry => entry.machine.id === machineId),
+      ...(screensOmitted ? { screens_omitted: true as const } : {}),
     };
     if (this.#regional) return { ...local, publications: this.ctx.storage.sql.exec<{ publication_json: string }>(
       "SELECT publication_json FROM regional_local_publications WHERE publication_json IS NOT NULL").toArray().map(row => JSON.parse(row.publication_json) as HandPublication) };
     const directory = this.#directory.entries().filter(entry => machineId === undefined || entry.machine.id === machineId);
-    const screenAuthority = [...this.#screens!.hosts()].filter(([machine, host]) => host.region !== "legacy" && host.generation
+    const screenAuthority = screensOmitted ? [] : [...this.#screens!.hosts()].filter(([machine, host]) => host.region !== "legacy" && host.generation
       && (machineId === undefined || machine === machineId));
     if (!directory.length && !screenAuthority.length) return this.#withRoots(local, machineId === undefined);
     const regions = [...new Set([...directory.filter(entry => !entry.pending && entry.region !== "legacy").map(entry => entry.region as HandRelayRegion),
@@ -976,8 +989,8 @@ export class AccountHostedTools extends DurableObject<AccountHostedToolsEnv> {
         }
       }
     }
-    return this.#withRoots({ tools, machines: [...machines.values()], screens, inventory_unknown_ids: inventoryUnknownIds },
-      machineId === undefined);
+    return this.#withRoots({ tools, machines: [...machines.values()], screens, inventory_unknown_ids: inventoryUnknownIds,
+      ...(screensOmitted ? { screens_omitted: true as const } : {}) }, machineId === undefined);
   }
 
   #withRoots(snapshot: AccountHostedToolsSnapshot, complete = false): AccountHostedToolsSnapshot {
@@ -1635,7 +1648,7 @@ export class AccountHostedToolsProvider implements HostedToolsDynamicProvider {
   }
 
   /** Fresh selected-machine lookup. Never joins a slow full inventory request. */
-  async refreshMachine(machineId: string, context: AuthorizationContext, computer = false): Promise<void> {
+  async refreshMachine(machineId: string, context: AuthorizationContext, computer = false, screens = computer): Promise<void> {
     if (!this.#allowed(context)) throw new Error("Hand access revoked");
     const generation = this.#generation;
     // Shell routes do not need a per-call cross-region lookup: a recent
@@ -1649,7 +1662,8 @@ export class AccountHostedToolsProvider implements HostedToolsDynamicProvider {
     const snapshot = await fetchResponseWithDeadline(
       this.#namespace.getByName(this.#ownerId), "https://account-tools.internal/snapshot",
       { method: "POST", headers: { "content-type": "application/json" },
-        body: JSON.stringify({ owner_id: this.#ownerId, machine_id: machineId }) },
+        // Shell-only lookups never wait on screen authority in another region.
+        body: JSON.stringify({ owner_id: this.#ownerId, machine_id: machineId, ...(screens ? {} : { screens: false }) }) },
       10_000, "selected Hand lookup", async response => {
         if (!response.ok) throw new Error("Selected Hand lookup unavailable");
         return response.json<unknown>();
@@ -1662,14 +1676,17 @@ export class AccountHostedToolsProvider implements HostedToolsDynamicProvider {
       || (!computer && (snapshot.machines.length !== 1 || snapshot.machines[0]?.online !== true)))
       throw new Error("Selected Hand route unavailable");
     // Replace only this machine's screen routes; unrelated catalogs and cells survive.
-    const removed = new Set((this.#snapshot.screens ?? []).filter(target => target.machine_id === machineId)
+    // A lookup that omitted screens keeps this machine's retained screen routes.
+    const keepScreens = snapshot.screens_omitted === true;
+    if (keepScreens && screens) throw new Error("Selected Hand lookup omitted requested screens");
+    const removed = new Set(keepScreens ? [] : (this.#snapshot.screens ?? []).filter(target => target.machine_id === machineId)
       .map(target => screenTool(target).route_token));
-    const screens = (snapshot.screens ?? []).filter(target => target.machine_id === machineId);
-    const routes = new Set(screens.map(target => screenTool(target).route_token));
+    const selectedScreens = keepScreens ? [] : (snapshot.screens ?? []).filter(target => target.machine_id === machineId);
+    const routes = new Set(selectedScreens.map(target => screenTool(target).route_token));
     // A selected lookup cannot prove the earlier full registry is still current.
     const { mount_registry: _stale, ...current } = this.#snapshot;
     this.#publish({ ...current,
-      screens: [...(this.#snapshot.screens ?? []).filter(target => target.machine_id !== machineId), ...screens],
+      screens: [...(this.#snapshot.screens ?? []).filter(target => keepScreens || target.machine_id !== machineId), ...selectedScreens],
       tools: [...this.#snapshot.tools.filter(tool => tool.provider !== "screens" || !removed.has(tool.route_token)),
         ...snapshot.tools.filter(tool => tool.provider === "screens" && routes.has(tool.route_token))],
       machines: [...this.#snapshot.machines.filter(entry => entry.machine.id !== machineId), ...snapshot.machines],

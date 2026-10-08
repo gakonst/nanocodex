@@ -53,10 +53,18 @@ export class ObservedRegionalHandRelay extends RegionalHandRelay {
 }
 export class FixtureDriver extends DurableObject {
   async fetch(request) {
-    const {owner,operation,machine}=await request.json();
+    const body=await request.json(); const {owner,operation,machine}=body;
     if(operation==='snapshot') return this.env.NANOCODEX_ACCOUNT_TOOLS.getByName(owner).fetch('https://account-tools.internal/snapshot',{method:'POST',body:JSON.stringify({owner_id:owner})});
+    if(operation==='selected') return this.env.NANOCODEX_ACCOUNT_TOOLS.getByName(owner).fetch('https://account-tools.internal/snapshot',{method:'POST',
+      body:JSON.stringify({owner_id:owner,machine_id:machine,...(body.screens===false?{screens:false}:{})})});
     const provider=new AccountHostedToolsProvider(this.env.NANOCODEX_ACCOUNT_TOOLS,owner,()=>true,'00000000-0000-7000-8000-000000000093',this.env.NANOCODEX_HAND_RELAYS,new AccountHostedToolsCallRoutes(this.ctx.storage));
     await provider.refresh();
+    if(operation==='keep') {
+      // A screen-less selected lookup retains this machine's published screen route.
+      const before=provider.screenTool(machine)?.routeToken??null;
+      await provider.refreshMachine(machine,{sessionId:'regional-screen-session'},true,false);
+      return Response.json({before,after:provider.screenTool(machine)?.routeToken??null});
+    }
     const tool=provider.screenTool(machine);
     if(!tool) return Response.json({route:null});
     const value=await tool.handler({action:'observe'},{sessionId:'regional-screen-session',callId:'call-'+crypto.randomUUID(),model:'synthetic-model'});
@@ -183,7 +191,7 @@ test("regional screen relays keep owner authority, fail closed and route viewers
   const runtime = [], wire = [], http = [], observed = {};
   const evidence = { command, inputs: { owner, machine, ingress: { SJC: "wnam", FRA: "weur", LEG: "legacy" } },
     expected: { rejected_auth: true, regional_ids: true, legacy_ids: true, signed_fast_path_regional: true, signal_metrics_payload_free: true,
-      renew_regional_and_legacy: true, wrong_region_ids_rejected: true, agent_route_regional: true, cross_region_replacement: true,
+      renew_regional_and_legacy: true, wrong_region_ids_rejected: true, agent_route_regional: true, shell_lookup_skips_screen_relay: true, cross_region_replacement: true,
       fail_closed_unreachable_fence: true, old_viewer_until_fenced: true, recovery_after_fence: true, delayed_claim_not_resurrected: true,
       legacy_replaces_regional: true, owner_revocation: true, playback_command_routed: true, flag_off_retained_regional: true, authority_survives_restart: true }, observed };
   let mf, failure;
@@ -281,6 +289,27 @@ test("regional screen relays keep owner authority, fail closed and route viewers
     assert.equal(agent.value.value?.structuredResult?.status ?? agent.value.value?.status, "ok", JSON.stringify(agent.value.value).slice(0, 400));
     assert.ok(a.frames.some(f => f.type === "agent_call"));
     observed.agent_route_regional = true;
+
+    // Shell-only selected lookups never wait on the screen relay; full lookups still resolve it.
+    const relaySnapshots = () => runtime.filter(line => line.includes('"fixture.route"') && line.includes('"target":"relay"') && line.includes('"path":"/snapshot"')).length;
+    const relayBefore = relaySnapshots();
+    const shellOnly = await request("/__fixture/driver", { body: { operation: "selected", machine, screens: false } });
+    assert.equal(shellOnly.status, 200, JSON.stringify(shellOnly.value));
+    assert.equal(shellOnly.value.screens_omitted, true);
+    assert.deepEqual(shellOnly.value.screens, []);
+    assert.ok(!shellOnly.value.tools.some(tool => tool.provider === "screens"));
+    await delay(200);
+    assert.equal(relaySnapshots(), relayBefore, "shell-only lookup skipped the screen relay");
+    const withScreens = await request("/__fixture/driver", { body: { operation: "selected", machine } });
+    assert.equal(withScreens.status, 200, JSON.stringify(withScreens.value));
+    assert.equal(withScreens.value.screens_omitted, undefined);
+    assert.ok(withScreens.value.screens.some(target => target.machine_id === machine && target.generation === a.generation));
+    await ctx.until(() => relaySnapshots() > relayBefore, "screen lookup reached the relay");
+    const kept = await request("/__fixture/driver", { body: { operation: "keep", machine } });
+    assert.equal(kept.status, 200, JSON.stringify(kept.value));
+    assert.match(kept.value.before ?? "", /^hand-relay:v1:wnam:screen:v1:/);
+    assert.equal(kept.value.after, kept.value.before);
+    observed.shell_lookup_skips_screen_relay = true;
 
     // Cross-region replacement fences the old publisher and its viewer before the new one is listed.
     const b = host("b-weur", { colo: "FRA" }); await published(b);
