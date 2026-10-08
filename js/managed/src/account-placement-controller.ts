@@ -1,235 +1,104 @@
 import {
-  ACCOUNT_ADOPTED_ALARM_KEY, ACCOUNT_MIGRATING, ACCOUNT_MIGRATING_HEADER, ACCOUNT_MOVED, ACCOUNT_MOVED_HEADER,
-  ACCOUNT_PLACEMENT_KEY, ACCOUNT_REHOME_COOLDOWN_MS, ACCOUNT_REJECTED_KEY, HOME_ACCOUNT_PREFIX,
-  accountObjectStub, exportAccountStorage, homeAccountName, importAccountStorage, parseAccountName, validPlacement,
-  type AccountExport, type AccountPlacement,
+  ACCOUNT_ADOPTED_ALARM_KEY, ACCOUNT_PLACEMENT_KEY, ACCOUNT_WIPE_PENDING_KEY, ACCOUNT_EXPORT_PAGE_ROWS,
+  accountHomeName, accountObjectStub, accountSourceName, exportManifest, exportRows, importAccountStorage, parseAccountName,
+  type AccountManifest, type AccountRows, type HomesEnv,
 } from "./account-placement";
 import type { AccountHostedTools } from "./account-hosted-tools";
 
-const REHOME_IDLE_MS = 2_000;
-const RESUME_THROTTLE_MS = 2_000;
-const REJECTED_BACKOFF_MS = 60 * 60_000;
-const MAX_EXPORT_BYTES = 16 * 1024 * 1024;
+type PlacementEnv = HomesEnv & { NANOCODEX_ACCOUNT_TOOLS?: DurableObjectNamespace<AccountHostedTools> };
+type Active = Readonly<{ state: "active"; name: string; source: string; adopted_at: number }>;
 
-export type PlacementHooks = Readonly<{
-  ctx: DurableObjectState;
-  namespace: () => DurableObjectNamespace<AccountHostedTools> | undefined;
-  owner: () => string | undefined;
-  /** Single region where the owner's native Hands publish, if unanimous. */
-  desiredRegion: () => string | undefined;
-  pendingCalls: () => boolean;
-  enabled: () => boolean;
-}>;
+function active(ctx: DurableObjectState): Active | undefined {
+  const row = ctx.storage.kv.get<Active>(ACCOUNT_PLACEMENT_KEY);
+  return row?.state === "active" && typeof row.name === "string" ? row : undefined;
+}
 
-export type PlacementStatus = Readonly<{ adopted: boolean; rejected: boolean; state: AccountPlacement["state"] | "empty" }>;
+/** Whether this pinned home still has to pull its account. */
+export function homeNeedsAdoption(ctx: DurableObjectState): boolean {
+  return active(ctx)?.name !== ctx.id.name;
+}
 
-/** Owner-object placement: gating, idle re-home and adoption. Relays never construct one. */
-export class AccountPlacementController {
-  #value?: AccountPlacement;
-  #inflight = 0;
-  #timer?: ReturnType<typeof setTimeout>;
-  #running?: Promise<unknown>;
-  #resumeAt = 0;
-  #blockedUntil = 0;
-  /** Adopted and awaiting reset: refuse everything with stale caches. */
-  #resetting = false;
-
-  constructor(private readonly hooks: PlacementHooks) {
-    const alarm = hooks.ctx.storage.kv.get<number>(ACCOUNT_ADOPTED_ALARM_KEY);
-    if (typeof alarm === "number") void hooks.ctx.blockConcurrencyWhile(async () => {
-      const current = await hooks.ctx.storage.getAlarm();
-      if (current === null || current > alarm) await hooks.ctx.storage.setAlarm(alarm);
-      hooks.ctx.storage.kv.delete(ACCOUNT_ADOPTED_ALARM_KEY);
-    });
-  }
-
-  placement(): AccountPlacement {
-    if (this.#value) return this.#value;
-    const stored = validPlacement(this.hooks.ctx.storage.kv.get(ACCOUNT_PLACEMENT_KEY));
-    const name = (this.hooks.ctx.id as { name?: string }).name;
-    const home = name?.startsWith(HOME_ACCOUNT_PREFIX) ? parseAccountName(name) : undefined;
-    // An unadopted home names the legacy object; callers only reach it by mistake.
-    return this.#value = stored ?? (home ? { state: "moved", target: home.owner, moved_at: 0 } : { state: "active" });
-  }
-
-  #set(value: AccountPlacement): void {
-    this.hooks.ctx.storage.kv.put(ACCOUNT_PLACEMENT_KEY, value);
-    this.#value = value;
-  }
-
-  /** Non-active placement, checked before any work. */
-  refusal(): Exclude<AccountPlacement, { state: "active" }> | undefined {
-    if (this.#resetting) return { state: "migrating", target: "", migration_id: "", started_at: 0, source: "" };
-    const placement = this.placement();
-    if (placement.state === "active") return undefined;
-    if (placement.state === "migrating") this.#resume();
-    return placement;
-  }
-
-  refusalResponse(): Response | undefined {
-    const refusal = this.refusal();
-    if (!refusal) return undefined;
-    return refusal.state === "moved"
-      ? Response.json({ error: ACCOUNT_MOVED }, { status: 421, headers: { [ACCOUNT_MOVED_HEADER]: refusal.target } })
-      : Response.json({ error: ACCOUNT_MIGRATING }, { status: 503, headers: { [ACCOUNT_MIGRATING_HEADER]: "1", "retry-after": "1" } });
-  }
-
-  refusalError(): Error | undefined {
-    const refusal = this.refusal();
-    return refusal && new Error(refusal.state === "moved" ? `${ACCOUNT_MOVED}:${refusal.target}` : ACCOUNT_MIGRATING);
-  }
-
-  enter(): void { this.#inflight += 1; }
-  leave(): void {
-    this.#inflight -= 1;
-    if (this.#inflight === 0) this.#schedule();
-  }
-
-  /** Home name this object should move to, or undefined. */
-  target(now = Date.now()): string | undefined {
-    const placement = this.placement(), owner = this.hooks.owner();
-    if (placement.state !== "active" || !owner || !this.hooks.enabled() || now < this.#blockedUntil) return undefined;
-    if (placement.activated_at !== undefined && now - placement.activated_at < ACCOUNT_REHOME_COOLDOWN_MS) return undefined;
-    const region = this.hooks.desiredRegion();
-    if (!region) return undefined;
-    let target: string;
-    try { target = homeAccountName(region, owner); } catch { return undefined; }
-    return target === this.#name() ? undefined : target;
-  }
-
-  #name(): string {
-    const placement = this.placement();
-    return placement.state === "active" && placement.name ? placement.name : this.hooks.owner()!;
-  }
-
-  #quiet(): boolean {
-    return this.#inflight === 0 && !this.hooks.pendingCalls() && this.placement().state === "active";
-  }
-
-  #schedule(): void {
-    if (this.#timer || this.#running || !this.target()) return;
-    this.#timer = setTimeout(() => {
-      this.#timer = undefined;
-      const target = this.target();
-      if (target && this.#quiet()) this.#track(this.rehome(target).then(() => undefined));
-    }, REHOME_IDLE_MS);
-  }
-
-  #track(work: Promise<unknown>): void {
-    const running = work.catch(error => console.warn({ type: "account.placement.failed",
-      error: error instanceof Error ? error.message : String(error) })).finally(() => {
-      if (this.#running === running) this.#running = undefined;
-    });
-    this.#running = running;
-  }
-
-  /** Freeze, export and hand this account to `target`. Only runs while idle. */
-  async rehome(target: string): Promise<boolean> {
-    const owner = this.hooks.owner();
-    if (!owner || !this.#quiet()) return false;
-    const alarm = await this.hooks.ctx.storage.getAlarm();
-    // Re-check after the only await: nothing may run between export and freeze.
-    if (!this.#quiet() || parseAccountName(target)?.owner !== owner) return false;
-    const source = this.#name(), migration = crypto.randomUUID();
-    const data = exportAccountStorage(this.hooks.ctx.storage, { migration_id: migration, source, target, owner }, alarm);
-    const bytes = JSON.stringify(data).length;
-    if (bytes > MAX_EXPORT_BYTES) {
-      this.#blockedUntil = Date.now() + REJECTED_BACKOFF_MS;
-      console.warn({ type: "account.placement.skipped", reason: "export_too_large", bytes });
-      return false;
+/**
+ * Pull the account from its single source while the caller blocks every
+ * event: manifest, all pages, one import transaction, commit, then wipe the
+ * source. Any failure throws and leaves this home empty (fail closed); the
+ * retired source never changes, so the next activation repeats identically.
+ */
+export async function adoptAccount(ctx: DurableObjectState, env: PlacementEnv): Promise<void> {
+  const name = ctx.id.name, parsed = parseAccountName(name), namespace = env.NANOCODEX_ACCOUNT_TOOLS;
+  if (!name || parsed?.kind !== "home" || accountHomeName(env, parsed.owner) !== name || !namespace) throw new Error("account home unavailable");
+  const source = accountSourceName(env, parsed.owner);
+  if (!source) throw new Error("account home unavailable");
+  const started = Date.now();
+  const stub = accountObjectStub(namespace, source) as unknown as {
+    releaseManifest(owner: string, target: string): Promise<AccountManifest>;
+    releaseRows(owner: string, target: string, table: string, offset: number): Promise<AccountRows>;
+  };
+  const manifest = await stub.releaseManifest(parsed.owner, name);
+  const rows = new Map<string, AccountRows>();
+  for (const table of manifest.tables) {
+    const values: unknown[][] = [];
+    while (values.length < table.rows) {
+      const page = await stub.releaseRows(parsed.owner, name, table.name, values.length);
+      if (!page.length) throw new Error("incomplete account export");
+      values.push(...page.map(row => [...row]));
     }
-    this.#set({ state: "migrating", target, migration_id: migration, started_at: Date.now(), source });
-    // Hosts and viewers reconnect through the Worker, which follows the move.
-    for (const socket of this.hooks.ctx.getWebSockets()) { try { socket.close(1012, "Account moved"); } catch { /* already closed */ } }
-    console.info({ type: "account.placement.migrating", source, target, migration_id: migration, bytes, tables: data.tables.length });
-    await this.#finish(data);
-    return this.placement().state === "moved";
+    rows.set(table.name, values);
   }
-
-  #resume(): void {
-    if (this.#running || Date.now() < this.#resumeAt) return;
-    this.#resumeAt = Date.now() + RESUME_THROTTLE_MS;
-    this.#track(this.#finish());
+  ctx.storage.transactionSync(() => {
+    importAccountStorage(ctx.storage, manifest, rows);
+    if (typeof manifest.alarm === "number") ctx.storage.kv.put(ACCOUNT_ADOPTED_ALARM_KEY, manifest.alarm);
+    ctx.storage.kv.put(ACCOUNT_WIPE_PENDING_KEY, source);
+    ctx.storage.kv.put(ACCOUNT_PLACEMENT_KEY, { state: "active", name, source, adopted_at: Date.now() } satisfies Active);
+  });
+  // The source is wiped only after this import is durable.
+  await ctx.storage.sync();
+  if (typeof manifest.alarm === "number") {
+    const current = await ctx.storage.getAlarm();
+    if (current === null || current > manifest.alarm) await ctx.storage.setAlarm(manifest.alarm);
   }
+  ctx.storage.kv.delete(ACCOUNT_ADOPTED_ALARM_KEY);
+  console.info({ type: "account.placement.adopted", source, target: name, tables: manifest.tables.length,
+    rows: manifest.tables.reduce((sum, table) => sum + table.rows, 0), duration_ms: Date.now() - started });
+  await wipeSource(ctx, env);
+}
 
-  /** Idempotent adoption and verification; any uncertainty stays frozen. */
-  async #finish(prepared?: AccountExport): Promise<void> {
-    const placement = this.placement(), namespace = this.hooks.namespace(), owner = this.hooks.owner();
-    if (placement.state !== "migrating" || !namespace || !owner) return;
-    const data = prepared ?? exportAccountStorage(this.hooks.ctx.storage, { migration_id: placement.migration_id,
-      source: placement.source, target: placement.target, owner }, await this.hooks.ctx.storage.getAlarm());
-    const home = accountObjectStub(namespace, placement.target);
-    // Adoption resets the home after commit, so its own result is never trusted.
-    try { await home.adoptAccount(data); } catch { /* verified below */ }
-    // A reset object breaks its stubs; verify through a fresh one.
-    let status: PlacementStatus;
-    try { status = await accountObjectStub(namespace, placement.target).accountPlacement(placement.migration_id); }
-    catch (error) {
-      // Unknown outcome: stay frozen; the next request resumes the same migration.
-      console.warn({ type: "account.placement.unverified", target: placement.target, migration_id: placement.migration_id,
-        error: error instanceof Error ? error.message : String(error) });
-      return;
-    }
-    if (this.placement() !== placement) return;
-    if (status.adopted) {
-      this.#set({ state: "moved", target: placement.target, moved_at: Date.now() });
-      console.info({ type: "account.placement.moved", source: placement.source, target: placement.target, migration_id: placement.migration_id });
-    } else if (status.rejected) {
-      // The home durably refuses this id; resuming here cannot split the account.
-      this.#set({ state: "active", name: placement.source });
-      this.#blockedUntil = Date.now() + REJECTED_BACKOFF_MS;
-      console.warn({ type: "account.placement.rejected", source: placement.source, target: placement.target, migration_id: placement.migration_id });
-    }
-  }
-
-  #rejected(): string[] {
-    const value = this.hooks.ctx.storage.kv.get<unknown>(ACCOUNT_REJECTED_KEY);
-    return Array.isArray(value) ? value.filter((id): id is string => typeof id === "string") : [];
-  }
-
-  #reject(migration: string): never {
-    this.hooks.ctx.storage.kv.put(ACCOUNT_REJECTED_KEY, [...this.#rejected().filter(id => id !== migration), migration].slice(-32));
-    throw new Error("account_adopt_rejected");
-  }
-
-  status(migration: string): PlacementStatus {
-    const stored = validPlacement(this.hooks.ctx.storage.kv.get(ACCOUNT_PLACEMENT_KEY));
-    return { adopted: stored?.state === "active" && stored.migration_id === migration,
-      rejected: this.#rejected().includes(migration), state: stored?.state ?? "empty" };
-  }
-
-  /**
-   * Replace this object's state with an export, then reset so every cache
-   * reloads from storage. Only an unclaimed object or a moved tombstone adopts.
-   */
-  async adopt(data: AccountExport): Promise<void> {
-    const migration = typeof data?.migration_id === "string" ? data.migration_id : undefined;
-    if (!migration) throw new Error("account_adopt_rejected");
-    const stored = validPlacement(this.hooks.ctx.storage.kv.get(ACCOUNT_PLACEMENT_KEY));
-    if (stored?.state === "active" && stored.migration_id === migration) return;
-    if (this.#rejected().includes(migration)) throw new Error("account_adopt_rejected");
-    const target = parseAccountName(data.target), source = parseAccountName(data.source);
-    const claimed = this.hooks.ctx.storage.kv.get<string>("owner_id");
-    const name = (this.hooks.ctx.id as { name?: string }).name;
-    if (!target || !source || target.owner !== data.owner || source.owner !== data.owner || target.name === source.name
-      || (name !== undefined && name !== target.name) || !Array.isArray(data.tables) || !Array.isArray(data.kv)
-      || (stored ? stored.state !== "moved" : claimed !== undefined)
-      || (claimed !== undefined && claimed !== data.owner) || this.#inflight > 0) this.#reject(migration);
-    try {
-      this.hooks.ctx.storage.transactionSync(() => {
-        importAccountStorage(this.hooks.ctx.storage, data);
-        if (typeof data.alarm === "number") this.hooks.ctx.storage.kv.put(ACCOUNT_ADOPTED_ALARM_KEY, data.alarm);
-        this.hooks.ctx.storage.kv.put(ACCOUNT_PLACEMENT_KEY, { state: "active", name: target.name, activated_at: Date.now(),
-          migration_id: migration, source: source.name } satisfies AccountPlacement);
-      });
-    } catch (error) {
-      console.warn({ type: "account.placement.import_failed", error: error instanceof Error ? error.message : String(error) });
-      this.#reject(migration);
-    }
-    console.info({ type: "account.placement.adopted", source: source.name, target: target.name, migration_id: migration });
-    // Constructor caches (owner, broker, directory, shares) must reload from the
-    // import. Commit first (a reset discards unconfirmed writes); refuse meanwhile.
-    this.#resetting = true;
-    try { await this.hooks.ctx.storage.sync(); } finally { this.hooks.ctx.abort("account adopted"); }
+/** Wipe the adopted source if not yet confirmed. Failures retry on the next activation. */
+export async function wipeSource(ctx: DurableObjectState, env: PlacementEnv): Promise<void> {
+  const source = ctx.storage.kv.get<string>(ACCOUNT_WIPE_PENDING_KEY), parsed = parseAccountName(ctx.id.name);
+  if (!source || !parsed || !env.NANOCODEX_ACCOUNT_TOOLS) return;
+  try {
+    await accountObjectStub(env.NANOCODEX_ACCOUNT_TOOLS, source).wipeRetiredAccount(parsed.owner, ctx.id.name!);
+    ctx.storage.kv.delete(ACCOUNT_WIPE_PENDING_KEY);
+    console.info({ type: "account.placement.source_wiped", source, target: ctx.id.name });
+  } catch (error) {
+    console.warn({ type: "account.placement.wipe_deferred", source, error: error instanceof Error ? error.message : String(error) });
   }
 }
+
+/** Retired side: only the canonical home of the same owner may read or wipe it. */
+function authorizeRetired(ctx: DurableObjectState, env: HomesEnv, owner: string, target: string): void {
+  const self = parseAccountName(ctx.id.name);
+  if (!self || self.owner !== owner || accountHomeName(env, owner) !== target || target === ctx.id.name
+    || accountSourceName(env, owner) !== ctx.id.name) throw new Error("account unavailable");
+}
+
+export async function retiredManifest(ctx: DurableObjectState, env: HomesEnv, owner: string, target: string): Promise<AccountManifest> {
+  authorizeRetired(ctx, env, owner, target);
+  return exportManifest(ctx.storage, await ctx.storage.getAlarm());
+}
+
+export function retiredRows(ctx: DurableObjectState, env: HomesEnv, owner: string, target: string, table: string, offset: number): AccountRows {
+  authorizeRetired(ctx, env, owner, target);
+  return exportRows(ctx.storage, table, offset);
+}
+
+export async function wipeRetired(ctx: DurableObjectState, env: HomesEnv, owner: string, target: string): Promise<void> {
+  authorizeRetired(ctx, env, owner, target);
+  await ctx.storage.deleteAlarm();
+  await ctx.storage.deleteAll();
+  for (const socket of ctx.getWebSockets()) { try { socket.close(1012, "Account unavailable"); } catch { /* closed */ } }
+  console.info({ type: "account.placement.wiped", source: ctx.id.name, target });
+}
+
+export { ACCOUNT_EXPORT_PAGE_ROWS };

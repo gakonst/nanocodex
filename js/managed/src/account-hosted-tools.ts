@@ -36,8 +36,8 @@ import type { RegionalHandRelay } from "./regional-hand-relay";
 import { RegionalScreenAuthority, SCREEN_DIRECTORY_HEADER, regionalScreenPrefix, regionalScreenRegion, screenAuthorized,
   type RegionalScreenEnv, type ScreenFenceReason } from "./regional-screen-routing";
 import { recordScreenPlaybackHostResult, type ScreenPlaybackEnv } from "./screen-playback";
-import { accountTools, homeAccountName, type AccountExport, type AccountToolsNamespace } from "./account-placement";
-import { AccountPlacementController, type PlacementStatus } from "./account-placement-controller";
+import { accountRole, accountTools, type AccountManifest, type AccountRows, type AccountToolsNamespace } from "./account-placement";
+import { adoptAccount, homeNeedsAdoption, retiredManifest, retiredRows, wipeRetired, wipeSource } from "./account-placement-controller";
 
 type RetirementPublication = Pick<HandPublication, "route_id" | "publication_id" | "runtime_id" | "region"> & { machine: Pick<HostedMachine, "id"> };
 
@@ -95,9 +95,7 @@ type RoutedHostedTool = HostedToolsCodeTool & Readonly<{
 
 type AccountHostedToolsEnv = RemoteICEEnv & RegionalHandEnv & RegionalScreenEnv & Partial<ScreenPlaybackEnv> & {
   NANOCODEX_ACCOUNT_TOOLS?: DurableObjectNamespace<AccountHostedTools>;
-  /** "off" disables owner re-homing; "auto" also follows unanimous Hand regions. */
-  NANOCODEX_ACCOUNT_REHOME?: string;
-  /** Operator placement: comma-separated owner:region pins, preferred over Hand regions. */
+  /** Canonical account homes: comma-separated owner:region[<previousRegion] pins. */
   NANOCODEX_ACCOUNT_HOMES?: string;
   NANOCODEX_SESSIONS?: DurableObjectNamespace<import("./index").DurableAgentSession>;
 };
@@ -138,29 +136,46 @@ type AuthorizationContext = Pick<InvocationContext, "sessionId" | "subagent">;
 
 /** One account-owned reverse attachment shared by every managed agent in that account. */
 export class AccountHostedTools extends DurableObject<AccountHostedToolsEnv> {
-  readonly #shares: HandShareStore;
+  #shares!: HandShareStore;
   readonly #sharedScreens = new Map<string, AbortController>();
-  readonly #broker: HostedToolsBroker;
-  readonly #remote: HandRemoteBroker;
-  readonly #handHosts: HandHosts;
-  readonly #diagnostics: DiagnosticJournal;
+  #broker!: HostedToolsBroker;
+  #remote!: HandRemoteBroker;
+  #handHosts!: HandHosts;
+  #diagnostics!: DiagnosticJournal;
   #ownerId: string | undefined;
   readonly #regional: boolean;
-  readonly #directory: RegionalHandDirectory;
+  #directory!: RegionalHandDirectory;
   #handPathsValue?: HandPaths;
   /** One instance per object keeps reclamation ordered against this instance's assignments. */
   get #handPaths(): HandPaths { return this.#handPathsValue ??= new HandPaths(this.ctx.storage); }
   #publicationQueue: Promise<unknown> = Promise.resolve();
   #region: HandRelayRegion | undefined;
   /** Owner only: which location/generation may publish each machine's screens. */
-  readonly #screens: RegionalScreenAuthority | undefined;
-  /** Owner only: where this account lives; relays never move. */
-  readonly #placement: AccountPlacementController | undefined;
+  #screens: RegionalScreenAuthority | undefined;
+  /**
+   * A previous placement of a re-homed account. Its name alone retires it:
+   * it constructs nothing and serves only its canonical home's one-time pull.
+   */
+  readonly #retired: boolean;
 
   constructor(ctx: DurableObjectState, env: AccountHostedToolsEnv, regional = false) {
     super(ctx, env);
-    this.#shares = new HandShareStore(ctx.storage);
     this.#regional = regional;
+    const role = regional ? "current" : accountRole(ctx.id.name, env);
+    this.#retired = role === "retired";
+    if (this.#retired) return;
+    if (role === "home" && homeNeedsAdoption(ctx)) {
+      // Eager one-time migration before any event: a failure leaves this home
+      // empty and unconstructed; the next activation repeats it.
+      void ctx.blockConcurrencyWhile(async () => { await adoptAccount(ctx, env); this.#construct(ctx, regional); });
+      return;
+    }
+    this.#construct(ctx, regional);
+    if (role === "home") ctx.waitUntil(wipeSource(ctx, env));
+  }
+
+  #construct(ctx: DurableObjectState, regional: boolean): void {
+    this.#shares = new HandShareStore(ctx.storage);
     this.#directory = new RegionalHandDirectory(ctx.storage);
     ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS regional_local_publications (
       route_id TEXT PRIMARY KEY, candidate_id TEXT, publication_json TEXT
@@ -206,10 +221,6 @@ export class AccountHostedTools extends DurableObject<AccountHostedToolsEnv> {
         console.info(record);
       },
     });
-    this.#placement = regional ? undefined : new AccountPlacementController({ ctx,
-      namespace: () => this.env.NANOCODEX_ACCOUNT_TOOLS, owner: () => this.#ownerId,
-      desiredRegion: () => this.#homeRegion(), pendingCalls: () => this.#broker.hasPendingCalls(),
-      enabled: () => this.env.NANOCODEX_ACCOUNT_REHOME !== "off" });
     this.#screens = regional ? undefined : new RegionalScreenAuthority(ctx.storage, (location, machineId, keep, reason) => this.#fenceScreens(location, machineId, keep, reason));
     this.#remote = new HandRemoteBroker(ctx, {
       onObservation: observation => {
@@ -482,58 +493,36 @@ export class AccountHostedTools extends DurableObject<AccountHostedToolsEnv> {
   }
 
   async fetch(request: Request): Promise<Response> {
-    const refused = this.#placement?.refusalResponse();
-    if (refused) return refused;
-    this.#placement?.enter();
-    try { return await diagnosticScope(this.#diagnostics, () => this.#fetchRequest(request)); }
-    finally { this.#placement?.leave(); }
+    if (this.#retired) return Response.json({ error: "account_unavailable" }, { status: 503 });
+    return diagnosticScope(this.#diagnostics, () => this.#fetchRequest(request));
   }
 
-  /** Placement RPCs used by the previous owner object during a re-home. */
-  async adoptAccount(data: AccountExport): Promise<void> {
-    if (!this.#placement) throw new Error("account_adopt_rejected");
-    await this.#placement.adopt(data);
+  /** One-time pull by this owner's canonical home; only a retired object answers. */
+  async releaseManifest(owner: string, target: string): Promise<AccountManifest> {
+    if (!this.#retired) throw new Error("account unavailable");
+    return retiredManifest(this.ctx, this.env, owner, target);
   }
 
-  async accountPlacement(migrationId: string): Promise<PlacementStatus> {
-    if (!this.#placement) throw new Error("account placement unavailable");
-    return this.#placement.status(migrationId);
+  async releaseRows(owner: string, target: string, table: string, offset: number): Promise<AccountRows> {
+    if (!this.#retired) throw new Error("account unavailable");
+    return retiredRows(this.ctx, this.env, owner, target, table, offset);
   }
 
-  /** Test and operator hook: move now if idle. Never bypasses the idle checks. */
-  async rehomeAccount(ownerId: string, region: string): Promise<boolean> {
-    if (!this.#placement || !this.#owns(ownerId)) return false;
-    const refusal = this.#placement.refusalError();
-    if (refusal) throw refusal;
-    return this.#placement.rehome(homeAccountName(region, ownerId));
-  }
-
-  /** The single relay region of this owner's native Hands and screens, if unanimous. */
-  #homeRegion(): string | undefined {
-    for (const pin of (this.env.NANOCODEX_ACCOUNT_HOMES ?? "").split(",")) {
-      const [owner, region] = pin.trim().split(":");
-      if (owner && region && owner === this.#ownerId) return region;
-    }
-    if (this.env.NANOCODEX_ACCOUNT_REHOME !== "auto") return undefined;
-    const regions = new Set<string>();
-    for (const entry of this.#directory.entries()) if (!entry.pending && entry.region !== "legacy") regions.add(entry.region);
-    for (const [, host] of this.#screens?.hosts() ?? []) if (host.region !== "legacy") regions.add(host.region);
-    return regions.size === 1 ? [...regions][0] : undefined;
+  async wipeRetiredAccount(owner: string, target: string): Promise<void> {
+    if (!this.#retired) throw new Error("account unavailable");
+    await wipeRetired(this.ctx, this.env, owner, target);
   }
 
   static {
-    // Every owner RPC refuses before work when this object is not the active
-    // account, and counts as in-flight so a re-home only starts while idle.
+    // A retired object constructs nothing and serves no owner RPC.
     for (const method of ["createHandShare", "listHandShares", "revokeHandShare", "redeemHandShare", "acceptHandShare",
       "hasHandShare", "sharedHandSnapshot", "cancelSharedHand", "listMachines", "handInventory", "forgetMachine",
       "pruneMachines"] as const) {
       const original = AccountHostedTools.prototype[method] as (...args: unknown[]) => Promise<unknown>;
       Object.defineProperty(AccountHostedTools.prototype, method, { configurable: true, writable: true,
         value: async function (this: AccountHostedTools, ...args: unknown[]) {
-          const refusal = this.#placement?.refusalError();
-          if (refusal) throw refusal;
-          this.#placement?.enter();
-          try { return await original.apply(this, args); } finally { this.#placement?.leave(); }
+          if (this.#retired) throw new Error("account unavailable");
+          return original.apply(this, args);
         } });
     }
   }
@@ -1404,7 +1393,7 @@ export class AccountHostedTools extends DurableObject<AccountHostedToolsEnv> {
     return Response.json({ error: "not_found" }, { status: 404 });
   }
 
-  alarm(): void { if (!this.#placement?.refusal()) this.#broker.expire(); }
+  alarm(): void { if (!this.#retired) this.#broker.expire(); }
 
   /** Owner fence of one screen location. Legacy is this object: synchronous, never a self fetch. */
   /** Durable monotonic host-socket counter; `step` 0 reads the current high-water mark. */
@@ -1472,17 +1461,14 @@ export class AccountHostedTools extends DurableObject<AccountHostedToolsEnv> {
   }
 
   async webSocketMessage(socket: WebSocket, message: string | ArrayBuffer): Promise<void> {
-    if (this.#placement?.refusal()) { try { socket.close(1012, "Account moved"); } catch { /* closed */ } return; }
-    this.#placement?.enter();
-    try {
-      if (this.#remote.owns(socket)) { await this.#remote.message(socket, message); return; }
-      await this.#broker.webSocketMessage(socket, message);
-    } finally { this.#placement?.leave(); }
+    if (this.#retired) { try { socket.close(1012, "Account unavailable"); } catch { /* closed */ } return; }
+    if (this.#remote.owns(socket)) { await this.#remote.message(socket, message); return; }
+    await this.#broker.webSocketMessage(socket, message);
   }
 
   webSocketClose(socket: WebSocket, code: number, reason: string): void {
-    // A moved object's sockets carry no authority; their closure changes nothing.
-    if (this.#placement?.refusal()) return;
+    // A retired object's sockets carry no authority; their closure changes nothing.
+    if (this.#retired) return;
     if (this.#remote.owns(socket)) { this.#remote.close(socket, undefined, "websocket_closed", code); return; }
     console.warn({ type: "hand.socket.closed", code,
       pending: this.#broker.hasPendingCalls() });
@@ -1490,7 +1476,7 @@ export class AccountHostedTools extends DurableObject<AccountHostedToolsEnv> {
   }
 
   webSocketError(socket: WebSocket): void {
-    if (this.#placement?.refusal()) return;
+    if (this.#retired) return;
     if (this.#remote.owns(socket)) { this.#remote.close(socket, undefined, "websocket_error"); return; }
     console.warn({ type: "hand.socket.error", pending: this.#broker.hasPendingCalls() });
     this.#broker.webSocketError(socket);
