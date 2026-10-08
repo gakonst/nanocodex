@@ -4,6 +4,7 @@
 //! Async child-agent sessions, turns, and lifecycle orchestration.
 
 use super::diagnostics::{CompletionError, CompletionErrorCode};
+use super::durable::{self, RestoreReport, SubagentStore};
 use super::{
     capacity::{Capacity, TurnCapacity},
     harness::{self, HarnessHandle},
@@ -100,6 +101,9 @@ pub struct Registry {
     max_resident: AtomicUsize,
     residency_lock: tokio::sync::Mutex<()>,
     message_lock: tokio::sync::Mutex<()>,
+    store: std::sync::RwLock<Option<Arc<dyn SubagentStore>>>,
+    checkpoints: std::sync::Mutex<HashMap<(String, AgentId), ChildSnapshot>>,
+    pending_resume: std::sync::Mutex<HashMap<String, Vec<AgentId>>>,
 }
 
 #[derive(Default)]
@@ -238,6 +242,53 @@ impl RegistryState {
     const fn next_access(&mut self) -> u64 {
         self.next_access = self.next_access.wrapping_add(1);
         self.next_access
+    }
+
+    /// Reinstalls one journaled child without live-spawn parent checks: a
+    /// closed parent may legitimately own closed descendants.
+    fn insert_restored(&mut self, root_session_id: &str, session: ChildSession) -> std::io::Result<()> {
+        let id = session.descriptor.id;
+        let session_id = session.descriptor.session_id.clone();
+        self.scope_mut(root_session_id).topology.insert(
+            id,
+            session_id.clone(),
+            session.descriptor.parent,
+        )?;
+        self.root_by_session
+            .insert(session_id, root_session_id.to_owned());
+        let last_used = self.next_access();
+        let mut session = session;
+        session.last_used = last_used;
+        self.scope_mut(root_session_id).sessions.insert(id, session);
+        Ok(())
+    }
+
+    fn journal(
+        &self,
+        checkpoints: &HashMap<(String, AgentId), ChildSnapshot>,
+    ) -> Vec<(String, String)> {
+        let mut payloads = Vec::with_capacity(self.scopes.len());
+        for (root_session_id, scope) in &self.scopes {
+            let mut ids = scope.sessions.keys().copied().collect::<Vec<_>>();
+            ids.sort_unstable();
+            let agents = ids
+                .into_iter()
+                .filter_map(|id| {
+                    let session = scope.sessions.get(&id)?;
+                    let checkpoint = checkpoints.get(&(root_session_id.clone(), id));
+                    Some(durable::persist_agent(session, checkpoint))
+                })
+                .collect();
+            let journal = durable::PersistedScope {
+                version: durable::JOURNAL_VERSION,
+                agents,
+            };
+            match serde_json::to_string(&journal) {
+                Ok(payload) => payloads.push((root_session_id.clone(), payload)),
+                Err(error) => tracing::warn!(%error, "could not encode subagent journal"),
+            }
+        }
+        payloads
     }
 
     fn submit_result(
@@ -921,7 +972,173 @@ impl Registry {
             max_resident: AtomicUsize::new(crate::DEFAULT_MAX_RESIDENT_SUBAGENTS),
             residency_lock: tokio::sync::Mutex::new(()),
             message_lock: tokio::sync::Mutex::new(()),
+            store: std::sync::RwLock::new(None),
+            checkpoints: std::sync::Mutex::new(HashMap::new()),
+            pending_resume: std::sync::Mutex::new(HashMap::new()),
         }
+    }
+
+    fn store(&self) -> Option<Arc<dyn SubagentStore>> {
+        self.store
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    /// Makes every root task tree in this registry durable.
+    ///
+    /// Install the store before spawning children, then call [`Self::restore`]
+    /// for a recovered root before it uses subagent tools.
+    pub fn set_store(self: &Arc<Self>, store: Arc<dyn SubagentStore>) {
+        *self
+            .store
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Arc::clone(&store));
+        let registry = Arc::downgrade(self);
+        let mut revision = self.revision.subscribe();
+        drop(platform::spawn(async move {
+            let mut saved = HashMap::<String, String>::new();
+            loop {
+                let Some(live) = registry.upgrade() else {
+                    return;
+                };
+                let payloads = live.journal_payloads().await;
+                drop(live);
+                for (root_session_id, payload) in payloads {
+                    if saved.get(&root_session_id) == Some(&payload) {
+                        continue;
+                    }
+                    match store.save(&root_session_id, payload.clone()).await {
+                        Ok(()) => {
+                            saved.insert(root_session_id, payload);
+                        }
+                        Err(error) => {
+                            tracing::warn!(%error, %root_session_id, "could not save subagent journal");
+                        }
+                    }
+                }
+                if revision.changed().await.is_err() {
+                    return;
+                }
+            }
+        }));
+    }
+
+    async fn journal_payloads(&self) -> Vec<(String, String)> {
+        let state = self.state.lock().await;
+        let checkpoints = self
+            .checkpoints
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.journal(&checkpoints)
+    }
+
+    fn record_checkpoint(&self, root_session_id: &str, id: AgentId, snapshot: ChildSnapshot) {
+        self.checkpoints
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert((root_session_id.to_owned(), id), snapshot);
+    }
+
+    /// Captures a child's latest committed boundary for the durable journal.
+    fn capture_checkpoint(self: &Arc<Self>, root_session_id: String, id: AgentId, harness: HarnessHandle) {
+        if self.store().is_none() {
+            return;
+        }
+        let registry = Arc::clone(self);
+        drop(platform::spawn(async move {
+            if let Ok(snapshot) = harness.snapshot().await {
+                registry.record_checkpoint(&root_session_id, id, snapshot);
+                registry.changed();
+            }
+        }));
+    }
+
+    /// Restores a root's journaled task tree after a runtime restart.
+    ///
+    /// Restored children are non-resident and rehydrate on first use. Agents
+    /// whose turn was in flight are reported as interrupted; call
+    /// [`Self::resume_interrupted`] once the root handle is registered.
+    pub async fn restore(self: &Arc<Self>, root_session_id: &str) -> std::io::Result<RestoreReport> {
+        let store = self
+            .store()
+            .ok_or_else(|| std::io::Error::other("no subagent store is installed"))?;
+        let Some(payload) = store.load(root_session_id).await? else {
+            return Ok(RestoreReport::default());
+        };
+        let journal: durable::PersistedScope = serde_json::from_str(&payload).map_err(|error| {
+            std::io::Error::other(format!("invalid subagent journal: {error}"))
+        })?;
+        if journal.version != durable::JOURNAL_VERSION {
+            return Err(std::io::Error::other(format!(
+                "unsupported subagent journal version {}",
+                journal.version
+            )));
+        }
+        let mut agents = journal.agents;
+        agents.sort_by_key(|agent| agent.descriptor.id);
+        let mut report = RestoreReport::default();
+        let mut state = self.state.lock().await;
+        if state
+            .scopes
+            .get(root_session_id)
+            .is_some_and(|scope| !scope.sessions.is_empty())
+        {
+            return Err(std::io::Error::other(
+                "subagent scope already has live children and cannot be restored",
+            ));
+        }
+        for agent in agents {
+            let id = agent.descriptor.id;
+            let checkpoint = agent.checkpoint.clone().map(ChildSnapshot::Codex);
+            let (session, resume, lost) = durable::restored_session(agent)?;
+            state.insert_restored(root_session_id, session)?;
+            if let Some(checkpoint) = checkpoint {
+                self.record_checkpoint(root_session_id, id, checkpoint);
+            }
+            report.restored += 1;
+            if resume {
+                report.interrupted.push(id);
+            }
+            if lost {
+                report.unrecoverable.push(id);
+            }
+        }
+        drop(state);
+        self.pending_resume
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(root_session_id.to_owned(), report.interrupted.clone());
+        self.changed();
+        Ok(report)
+    }
+
+    /// Continues every child whose turn was interrupted by the restart.
+    pub async fn resume_interrupted(
+        self: &Arc<Self>,
+        root_session_id: &str,
+    ) -> Vec<(AgentId, std::io::Result<MessageReceipt>)> {
+        let ids = self
+            .pending_resume
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(root_session_id)
+            .unwrap_or_default();
+        let mut results = Vec::with_capacity(ids.len());
+        for id in ids {
+            let result = self
+                .send_message(
+                    root_session_id,
+                    id,
+                    MessagePriority::Deferred,
+                    MessagePurpose::Coordinate,
+                    None,
+                    durable::RESUME_MESSAGE.to_owned(),
+                )
+                .await;
+            results.push((id, result));
+        }
+        results
     }
 
     pub(super) fn reserve_turn(&self) -> std::io::Result<TurnCapacity> {
@@ -1066,6 +1283,9 @@ impl Registry {
             schema.clone(),
             None,
         );
+        let checkpoint_harness = harness.clone();
+        let checkpoint_root = root_session_id.clone();
+        let checkpoint_id = descriptor.id;
         state.insert(
             root_session_id,
             descriptor.id,
@@ -1091,6 +1311,7 @@ impl Registry {
             },
         )?;
         drop(state);
+        self.capture_checkpoint(checkpoint_root, checkpoint_id, checkpoint_harness);
         self.changed();
         Ok(())
     }
@@ -1216,8 +1437,12 @@ impl Registry {
                 }
             }
             .clone_into(&mut session.status);
-            session.status.clone()
+            (session.status.clone(), session.harness.clone())
         };
+        let (status, harness) = status;
+        if let Some(harness) = harness {
+            self.capture_checkpoint(root_session_id.to_owned(), id, harness);
+        }
         self.send(root_session_id, AgentUpdate::Status { id, status });
         self.changed();
         let registry = Arc::clone(self);
@@ -1244,6 +1469,9 @@ impl Registry {
             };
             match harness.snapshot().await {
                 Ok(snapshot) => {
+                    if self.store().is_some() {
+                        self.record_checkpoint(root_session_id, id, snapshot.clone());
+                    }
                     if let Some(session) = self
                         .state
                         .lock()
@@ -2006,6 +2234,38 @@ fn bounded_summary(value: &str) -> String {
 }
 
 impl ChildSession {
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn restored(
+        descriptor: AgentDescriptor,
+        host_context: Option<Arc<str>>,
+        status: AgentStatus,
+        contract: OutputContract,
+        output_schema: Value,
+        stored_runtime: Option<ChildSnapshot>,
+        next_instruction_revision: u64,
+        last_output: Option<Value>,
+    ) -> Self {
+        Self {
+            descriptor,
+            host_context,
+            event_task: None,
+            harness: None,
+            harness_task: None,
+            status,
+            active: false,
+            output_validator: contract.validator,
+            output_schema,
+            stored_runtime,
+            next_instruction_revision,
+            active_instruction_revision: None,
+            steering: false,
+            submitted_output: None,
+            last_output,
+            last_used: 0,
+            evicted: true,
+        }
+    }
+
     pub(super) fn summary(&self) -> AgentSummary {
         let last_output = if matches!(self.status, AgentStatus::Completed { .. }) {
             None
@@ -2658,6 +2918,61 @@ mod tests {
             last_used: 0,
             evicted: false,
         }
+    }
+
+    #[tokio::test]
+    async fn journal_restores_topology_outputs_and_statuses_after_restart() {
+        let mut state = RegistryState::default();
+        let parent = state.reserve("root", None).unwrap();
+        let mut parent_session = test_session(parent.id, "parent-session", None);
+        parent_session.status = AgentStatus::Completed {
+            output: json!({ "report": "done" }),
+        };
+        parent_session.last_output = Some(json!({ "report": "done" }));
+        parent_session.next_instruction_revision = 3;
+        state
+            .insert("root".into(), parent.id, "parent-session".into(), parent_session)
+            .unwrap();
+        let child = state.reserve("parent-session", Some(parent.id)).unwrap();
+        let mut child_session = test_session(child.id, "child-session", Some(parent.id));
+        child_session.status = AgentStatus::Running;
+        child_session.active = true;
+        state
+            .insert("root".into(), child.id, "child-session".into(), child_session)
+            .unwrap();
+        let journal = state.journal(&HashMap::new());
+        assert_eq!(journal.len(), 1);
+
+        let store = crate::MemorySubagentStore::new();
+        crate::SubagentStore::save(&store, "root", journal[0].1.clone())
+            .await
+            .unwrap();
+        let (registry, _control, _updates) = super::channel(4);
+        registry.set_store(Arc::new(store));
+        let report = registry.restore("root").await.unwrap();
+        assert_eq!(report.restored, 2);
+        // No portable checkpoint was journaled for the in-flight child.
+        assert_eq!(report.unrecoverable, vec![child.id]);
+        assert!(report.interrupted.is_empty());
+
+        let restored = registry.state.lock().await;
+        let scope = restored.scopes.get("root").unwrap();
+        let parent_restored = scope.sessions.get(&parent.id).unwrap();
+        assert!(matches!(parent_restored.status, AgentStatus::Completed { .. }));
+        assert_eq!(parent_restored.next_instruction_revision, 3);
+        assert!(parent_restored.evicted && parent_restored.harness.is_none());
+        assert!(matches!(
+            scope.sessions.get(&child.id).unwrap().status,
+            AgentStatus::Failed { .. }
+        ));
+        assert!(scope.topology.is_descendant(child.id, parent.id));
+        assert_eq!(restored.root_session_id("child-session"), "root");
+        drop(restored);
+        // New spawns continue the restored ID sequence instead of reusing IDs.
+        let next = registry.reserve("root").await.unwrap();
+        assert!(next.id > child.id);
+        // A scope that already has children cannot be restored twice.
+        assert!(registry.restore("root").await.is_err());
     }
 
     #[tokio::test]
