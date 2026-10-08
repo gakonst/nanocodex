@@ -280,7 +280,12 @@ impl Update {
                 store.promote_running_manager()?;
             }
             let show_status = matches!(action, automatic::AutoUpdate::Status);
+            let enable = matches!(action, automatic::AutoUpdate::Enable);
             automatic::configure(action, store.root(), self.nightly)?;
+            if enable {
+                // Explicit opt-in resumes updates over a local or source selection.
+                store.clear_explicit_selection()?;
+            }
             if show_status {
                 println!(
                     "Active version: {}",
@@ -290,6 +295,11 @@ impl Update {
                     "Pending update: {}",
                     store.pending()?.as_deref().unwrap_or("none")
                 );
+                if let Some(key) = store.held_explicit_selection()? {
+                    println!(
+                        "Background updates paused for explicit selection {key}; run nanocodex update --auto enable to resume"
+                    );
+                }
             }
             return Ok(());
         }
@@ -321,6 +331,14 @@ impl Update {
         automatic::ensure_default(store.root(), self.nightly || version::IS_NIGHTLY)?;
         VersionStore::promote_running_legacy_nightly_manager()?;
         let previous = store.active()?.unwrap_or_else(|| manager_key.clone());
+        if self.background
+            && let Some(key) = store.held_explicit_selection()?
+        {
+            eprintln!(
+                "Background update skipped: explicit installation {key} is selected. Run nanocodex update --auto enable to resume automatic updates."
+            );
+            return Ok(());
+        }
         // A verified pending bundle can activate even if the release server is offline.
         if self.background
             && let Some(key) = store.pending()?
@@ -1169,7 +1187,11 @@ async fn install_local_binary(
     } else {
         store.install(&key, &contents)?;
     }
-    if !activate_coordinated(store, &key, false, restart_hand).await? {
+    let activated = activate_coordinated(store, &key, false, restart_hand).await?;
+    // Preserve the previous selection if validation or the handover fails.
+    // The update lock fences background staging until this record is durable.
+    store.record_explicit_selection(&key)?;
+    if !activated {
         return Ok(());
     }
     store.promote_manager(&key)?;
@@ -1195,7 +1217,11 @@ async fn install_source(
     let build = source::build(selection, &checkout, &target).await?;
     let key = format!("{}-{}", selection.key_prefix(), build.sha);
     store.install_bundle(&key, &build.cli, &build.hand, None, None)?;
-    if !activate_coordinated(store, &key, false, restart_hand).await? {
+    let activated = activate_coordinated(store, &key, false, restart_hand).await?;
+    // Preserve the previous selection if validation or the handover fails.
+    // The update lock fences background staging until this record is durable.
+    store.record_explicit_selection(&key)?;
+    if !activated {
         return Ok(());
     }
     store.promote_manager(&key)?;

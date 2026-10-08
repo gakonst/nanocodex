@@ -79,7 +79,8 @@ impl SharedThreadClient {
     pub fn from_url(value: &str) -> Result<Self, ManagedError> {
         let mut url = Url::parse(value).map_err(|_| invalid_url())?;
         let loopback = matches!(url.host(), Some(Host::Ipv4(ip)) if ip.is_loopback())
-            || matches!(url.host(), Some(Host::Ipv6(ip)) if ip.is_loopback());
+            || matches!(url.host(), Some(Host::Ipv6(ip)) if ip.is_loopback())
+            || matches!(url.host(), Some(Host::Domain(host)) if host == "localhost" || host.ends_with(".localhost"));
         if !(url.scheme() == "https" || url.scheme() == "http" && loopback)
             || !url.username().is_empty()
             || url.password().is_some()
@@ -89,7 +90,11 @@ impl SharedThreadClient {
         {
             return Err(invalid_url());
         }
-        let id = url.path().strip_prefix("/share/").ok_or_else(invalid_url)?;
+        let id = url
+            .path()
+            .strip_prefix("/share/")
+            .ok_or_else(invalid_url)?
+            .trim_end_matches('/');
         let parsed = uuid::Uuid::parse_str(id).map_err(|_| invalid_url())?;
         if parsed.to_string() != id {
             return Err(invalid_url());

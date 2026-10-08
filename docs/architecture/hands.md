@@ -245,6 +245,13 @@ The old CLI stays selected until an explicitly authorized handover. Without an
 installed/loaded owner a verified pair may activate as CLI-only state, without
 installing or starting a Hand.
 
+An explicit `--path`, `--branch`, or `--pr` selection is preserved by background
+updates while it is active or pending. Hourly checks still refresh the separate
+upstream CUA components, but do not stage a release over that selection. Use
+`update --auto enable` to resume automatic release selection, or select a release
+explicitly with `update VERSION`. `update --auto status` reports a held selection.
+Failed installs preserve the previous choice. The Hand restart contract is unchanged.
+
 `update --apply --restart-hand`, `hand restart`, or `hand start` for an unloaded
 owner explicitly requests activation. The transaction verifies the candidate,
 preserves rollback state, hands over the existing service, and commits the CLI

@@ -83,3 +83,29 @@ export function redactSharedLinkTokens<T>(value: T): T {
   ) as T;
   return value;
 }
+
+/** Emit ordinary text immediately, including final n/ns/nsl suffixes. Once a
+ * bearer prefix completes, mask its underscore and following 43 characters.
+ * The already visible "nsl" cannot grant access. Replay must prime this state. */
+export function sharedTextStream() {
+  let tail = "";
+  let remaining = 0;
+  return (delta: string): string => {
+    const output: string[] = [];
+    for (const character of delta) {
+      if (remaining > 0) {
+        if (/^[A-Za-z0-9_-]$/.test(character)) { remaining--; continue; }
+        remaining = 0;
+      }
+      if (tail + character === "nsl_") {
+        output.push("[redacted share token]");
+        remaining = 43;
+        tail = "";
+      } else {
+        output.push(character);
+        tail = (tail + character).slice(-3);
+      }
+    }
+    return output.join("");
+  };
+}

@@ -12,6 +12,9 @@ To open a shared thread, pass its complete URL in quotes:
 nanocodex2 attach 'https://nanocodex.gakonst.workers.dev/share/THREAD_ID#token=SHARE_TOKEN'
 ```
 
+Alternatively, pass the share URL without its `#token=...` fragment and paste the
+token into the hidden terminal prompt. This keeps it out of shell history.
+
 Shared attachment needs no account login. It displays history and follows live
 updates; write-enabled links also accept text messages. Read-only links cannot
 submit messages. Scroll back to load earlier history, use `/id` to display the

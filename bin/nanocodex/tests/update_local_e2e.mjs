@@ -129,6 +129,44 @@ try {
     trace.push(`observed Linux disposition: active=${active()}, pending=${pending()}; no root/service mutation requested`);
   }
 
+  // Exercise the public hourly update path offline. Only external downloads
+  // are unavailable; real selection, cache, and staging logic still run. The
+  // separate CUA refresh may fail harmlessly inside the isolated install root.
+  const offline = {
+    HTTPS_PROXY: 'http://127.0.0.1:1', https_proxy: 'http://127.0.0.1:1',
+    HTTP_PROXY: 'http://127.0.0.1:1', http_proxy: 'http://127.0.0.1:1',
+    ALL_PROXY: 'http://127.0.0.1:1', all_proxy: 'http://127.0.0.1:1',
+    NO_PROXY: '', no_proxy: '',
+  };
+  const heldActive = active();
+  const heldPending = pending();
+  const background = () => run(runner, ['update', '--background'], 0, { env: offline });
+  background();
+  assert.equal(active(), heldActive, 'hourly update must retain the active selection');
+  assert.equal(pending(), heldPending, 'hourly update must not replace the staged local build');
+  const heldStatus = update(['--auto', 'status']);
+  assert.match(heldStatus.stdout, new RegExp(`explicit selection ${key}`));
+  // Model the already completed CLI selection without starting the real Hand.
+  // The live service restart/consent journey is deliberately separate.
+  rmSync(join(store, 'current'));
+  symlinkSync(join('versions', key), join(store, 'current'));
+  rmSync(join(store, 'pending-update'), { force: true });
+  background();
+  assert.equal(active(), key, 'hourly update must retain an active local build');
+  assert.equal(pending(), null, 'hourly update must not stage a release over a local build');
+  // A later pending selection takes precedence over the active local build.
+  // The public status reports this without touching the actual OS scheduler.
+  writeFileSync(join(store, 'pending-update'), `${heldActive}\n`);
+  if (heldActive !== key) {
+    assert.doesNotMatch(update(['--auto', 'status']).stdout, /Background updates paused/);
+  }
+  rmSync(join(store, 'current'));
+  symlinkSync(join('versions', heldActive), join(store, 'current'));
+  if (heldPending === null) rmSync(join(store, 'pending-update'), { force: true });
+  else writeFileSync(join(store, 'pending-update'), `${heldPending}\n`);
+  background();
+  trace.push('PASS: public offline background updates preserve staged and active local selections; newer pending selections supersede the hold; no real Hand or scheduler mutation');
+
   // Executable rejection fixture, not a fake updater/Hand service. Failure of
   // --version is exercised through the real public local-pair probe.
   const failing = join(fixture, 'pair', 'failing-probe');
@@ -141,6 +179,7 @@ try {
   assert.deepEqual(versions(), snapshot, 'failed pair must not install a candidate version');
   assert.equal(active(), oldActive);
   assert.equal(pending(), oldPending);
+  assert.match(update(['--auto', 'status']).stdout, new RegExp(`explicit selection ${key}`), 'failed install must preserve the prior hold');
   const mismatched = join(fixture, 'pair', 'mismatched-probe');
   const different = revision === '0'.repeat(40) ? '1'.repeat(40) : '0'.repeat(40);
   writeFileSync(mismatched, `#!/bin/sh\nprintf 'nanocodex2 Version: fixture\\nCommit SHA: ${different}\\n'\n`, { mode: 0o755 });

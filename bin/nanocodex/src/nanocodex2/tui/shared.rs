@@ -56,7 +56,68 @@ fn cursor_before(left: &str, right: &str) -> bool {
     left.len() < right.len() || (left.len() == right.len() && left < right)
 }
 
-pub(crate) async fn run_shared(client: SharedThreadClient) -> Result<(), ManagedError> {
+/// Keep bare share URLs usable without putting a token in shell history.
+pub(crate) async fn run_shared(reference: &str) -> Result<(), ManagedError> {
+    let mut url = url::Url::parse(reference)
+        .map_err(|_| ManagedError::Configuration("invalid shared thread URL".into()))?;
+    if url.fragment().is_some() {
+        return run_shared_client(SharedThreadClient::from_url(reference)?).await;
+    }
+    // Validate the origin/path before requesting private input. This client is
+    // never sent a request; the placeholder is only for format validation.
+    url.set_fragment(Some(
+        "token=nsl_0000000000000000000000000000000000000000000",
+    ));
+    SharedThreadClient::from_url(url.as_str())?;
+    let Some(token) = hidden_share_token().await? else {
+        return Ok(());
+    };
+    url.set_fragment(Some(&format!("token={}", token.as_str())));
+    run_shared_client(SharedThreadClient::from_url(url.as_str())?).await
+}
+
+async fn hidden_share_token() -> Result<Option<zeroize::Zeroizing<String>>, ManagedError> {
+    let mut terminal = TerminalSession::enter().await.map_err(terminal_error)?;
+    let mut keys = EventStream::new();
+    let mut token = zeroize::Zeroizing::new(String::new());
+    loop {
+        terminal
+            .draw(|frame| {
+                frame.render_widget(
+                    ratatui::widgets::Paragraph::new(
+                        "Paste shared token (hidden), then Enter. Esc cancels.",
+                    ),
+                    frame.area(),
+                )
+            })
+            .map_err(terminal_error)?;
+        match keys.next().await {
+            Some(Ok(Event::Paste(value))) => {
+                let value = zeroize::Zeroizing::new(value);
+                token.push_str(value.trim());
+            }
+            Some(Ok(Event::Key(key))) if key.kind != KeyEventKind::Release => match key.code {
+                KeyCode::Esc => return Ok(None),
+                KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    return Ok(None);
+                }
+                KeyCode::Enter => return Ok(Some(token)),
+                KeyCode::Backspace => {
+                    token.pop();
+                }
+                KeyCode::Char(c) => token.push(c),
+                _ => {}
+            },
+            None | Some(Err(_)) => return Ok(None),
+            _ => {}
+        }
+        if token.len() > 128 {
+            return Err(ManagedError::Configuration("invalid shared token".into()));
+        }
+    }
+}
+
+async fn run_shared_client(client: SharedThreadClient) -> Result<(), ManagedError> {
     let metadata = client.metadata().await?;
     let writable = metadata.permission == SharePermission::Write;
     let workspace = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));

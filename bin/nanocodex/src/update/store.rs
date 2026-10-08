@@ -82,6 +82,38 @@ impl VersionStore {
         }
     }
 
+    /// Record an explicit local/source selection that background updates must preserve.
+    pub(super) fn record_explicit_selection(&self, key: &str) -> Result<()> {
+        validate_key(key)?;
+        fs::create_dir_all(&self.root)?;
+        atomic_write(
+            &self.root.join("explicit-selection"),
+            format!("{key}\n").as_bytes(),
+            false,
+        )
+    }
+
+    /// The explicit selection while it is still active or staged for activation.
+    pub(super) fn held_explicit_selection(&self) -> Result<Option<String>> {
+        let key = match fs::read_to_string(self.root.join("explicit-selection")) {
+            Ok(key) => key.trim().to_owned(),
+            Err(error) if error.kind() == ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error.into()),
+        };
+        validate_key(&key)?;
+        // A newer explicit pending choice supersedes the active selection.
+        let selected = self.pending()?.or(self.active()?);
+        Ok((selected.as_deref() == Some(key.as_str())).then_some(key))
+    }
+
+    pub(super) fn clear_explicit_selection(&self) -> Result<()> {
+        match fs::remove_file(self.root.join("explicit-selection")) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(error.into()),
+        }
+    }
+
     pub(super) fn discover() -> Result<Self> {
         let root = if let Some(root) = std::env::var_os("NANOCODEX_DIR") {
             PathBuf::from(root)

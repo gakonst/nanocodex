@@ -5,7 +5,7 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { createServer } from 'node:http';
-import { mkdirSync, mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, writeFileSync, rmSync, readFileSync, readdirSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
@@ -15,17 +15,18 @@ const { Terminal } = require('@xterm/headless');
 
 const binary = resolve(process.env.NANOCODEX2_BIN || 'target/debug/nanocodex2');
 const bridge = fileURLToPath(new URL('./share-pty-bridge.py', import.meta.url));
-const output = resolve('output/shared-attach-tui');
+const output = resolve('output/shared-attach');
 mkdirSync(output, { recursive: true });
 const run = mkdtempSync(resolve(output, 'run-'));
 const agent = '019fc927-b280-79a7-8445-1b9996ad2fb0';
 const token = `nsl_${'g'.repeat(43)}`;
+const ownerKey = `ncx_live_${'a'.repeat(12)}_${'b'.repeat(43)}`;
 const base = `/v1/shared/${agent}`;
-const redact = value => String(value).replaceAll(token, '[synthetic-share-token]')
+const redact = value => String(value).replaceAll(token, '[synthetic-share-token]').replaceAll(ownerKey, '[synthetic-owner-key]')
   .replace(/nsl_[A-Za-z0-9_-]+/g, '[redacted-share-token]');
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 const trace = { command: 'node bin/nanocodex/tests/shared-attach-tui-e2e.mjs', binary,
-  boundary: 'Real CLI/PTy; synthetic HTTP service; isolated empty HOME, no account key',
+  boundary: 'Real CLI/PTy; synthetic HTTP service; isolated HOME with synthetic owner keys configured; guest bearer only',
   expected: 'history and live SSE visible; read blocks writes; write submits once with same origin; history activity blocks writes until completion; uncertain delivery retries only explicitly with the same identity; terminal 404 stops; malformed links redact tokens',
   stages: [], requests: [] };
 let current;
@@ -36,13 +37,26 @@ const oldest = [event(1, 'turn_accepted', 'history-old', { input: 'Older synthet
   event(2, 'turn_completed', 'history-old', { final_message: 'OLDER_HISTORY_VISIBLE' })];
 const live = [event(7, 'turn_accepted', 'live-turn', { input: 'Live synthetic question' }),
   event(8, 'turn_completed', 'live-turn', { final_message: 'LIVE_SSE_VISIBLE' })];
+const nested = (cursor, turn, type, payload) => ({
+  cursor: String(cursor), created_at: 1, turn_id: turn, type: 'event',
+  event: { protocol_version: 1, request_id: agent, seq: cursor, type, payload },
+});
+// Yield between writes to exercise incremental stream decoding,
+// including cuts inside multibyte UTF-8 characters. TCP may still coalesce bytes.
+async function emitSplit(state, item) {
+  const bytes = Buffer.from(`id: ${item.cursor}\nevent: ${item.type}\ndata: ${JSON.stringify(item)}\n\n`);
+  for (const byte of bytes) {
+    for (const stream of state.streams) stream.write(Buffer.from([byte]));
+    await delay(1);
+  }
+}
 function emit(res, item) {
   res.write(`id: ${item.cursor}\nevent: ${item.type}\ndata: ${JSON.stringify(item)}\n\n`);
 }
 const server = createServer(async (req, res) => {
   const url = new URL(req.url, 'http://localhost');
   const entry = { scenario: current?.name, method: req.method, path: url.pathname, query: url.search,
-    auth: req.headers.authorization === `Bearer ${token}` ? 'guest' : req.headers.authorization ? 'unexpected' : 'none',
+    auth: req.headers.authorization === `Bearer ${token}` ? 'guest' : req.headers.authorization === `Bearer ${ownerKey}` ? 'OWNER_LEAK' : req.headers.authorization ? 'unexpected' : 'none',
     origin: req.headers.origin ?? null, contentType: req.headers['content-type'] ?? null, lastEventId: req.headers['last-event-id'] ?? null };
   trace.requests.push(entry);
   const send = (status, body) => { entry.status = status; res.writeHead(status, { 'content-type': 'application/json' }); res.end(JSON.stringify(body)); };
@@ -122,11 +136,12 @@ const url = `${origin}/share/${agent}#token=${token}`;
 
 function launch(name, shareUrl = url, permission = 'read') {
   const home = resolve(run, name); mkdirSync(home, { recursive: true });
-  // Use a small allowlist rather than inherit credentials, connector settings or proxies.
+  // Only these synthetic owner credentials enter the isolated environment.
+  // Never inherit real credentials, connector settings or proxies.
   const env = { PATH: process.env.PATH, LANG: 'en_US.UTF-8', HOME: home,
     TMPDIR: home, CODEX_HOME: resolve(home, '.codex'), XDG_CONFIG_HOME: resolve(home, '.config'),
     NANOCODEX_RELOAD_DIR: resolve(home, '.reload'), TERM: 'xterm-256color', SSH_TTY: '/dev/synthetic-pty',
-    NANOCODEX_API_KEY: '', NC_API_KEY: '', OPENAI_API_KEY: '', TMUX: '', TMUX_PANE: '',
+    NANOCODEX_API_KEY: ownerKey, NC_API_KEY: ownerKey, OPENAI_API_KEY: '', TMUX: '', TMUX_PANE: '',
     NANOCODEX_MANAGED_URL: origin };
   // Do not disable Hand with an env flag: the guest path itself must prevent it.
   const child = spawn('python3', [bridge, binary, 'attach', shareUrl], { cwd: home, env, stdio: ['pipe', 'pipe', 'pipe'] });
@@ -155,10 +170,19 @@ async function wait(state, predicate, label, timeout = 15000) {
   }
 }
 const enter = (state, text) => state.child.stdin.write(`\x1b[200~${text}\x1b[201~\r`);
+const allFiles = root => readdirSync(root, { withFileTypes: true }).flatMap(entry => {
+  const path = resolve(root, entry.name);
+  return entry.isDirectory() ? allFiles(path) : entry.isFile() ? [path] : [];
+});
+function tokenNotPersisted(state) {
+  for (const path of allFiles(resolve(run, state.name)))
+    assert.ok(!readFileSync(path).includes(Buffer.from(token)), `${state.name}: share bearer persisted in ${path}`);
+}
 function boundaries(state) {
   const requests = trace.requests.filter(r => r.scenario === state.name);
   assert.ok(requests.every(r => !r.forbidden && !r.fixtureError), `${state.name}: only documented guest routes allowed`);
   assert.ok(requests.every(r => r.auth === 'guest'), `${state.name}: only share bearer allowed`);
+  tokenNotPersisted(state);
   assert.ok(!state.screen.includes(token) && !state.stderr.includes(token), `${state.name}: bearer leaked to terminal`);
 }
 async function stop(state) {
@@ -168,13 +192,20 @@ async function stop(state) {
   for (let i = 0; i < 40 && !state.closed; i++) await delay(25);
   if (!state.closed) { state.child.kill('SIGTERM'); await delay(100); }
   for (const stream of state.streams) stream.destroy();
-  // Keep only redacted evidence, not generated user configuration.
-  rmSync(resolve(run, state.name), { recursive: true, force: true });
-  state.terminal.dispose();
+  // Check shutdown writes too, then retain only redacted evidence.
+  try { tokenNotPersisted(state); } finally {
+    rmSync(resolve(run, state.name), { recursive: true, force: true });
+    state.terminal.dispose();
+  }
 }
-async function journey(name, permission, action) {
-  const state = launch(name, url, permission);
+async function journey(name, permission, action, hidden = false) {
+  const state = launch(name, hidden ? `${origin}/share/${agent}/` : url, permission);
   try {
+    if (hidden) {
+      await wait(state, () => /paste.*(?:shared|share).*token/i.test(plain(state)), 'private share token prompt');
+      assert.equal(trace.requests.filter(r => r.scenario === name).length, 0, 'bare URL must await its token before making requests');
+      state.child.stdin.write(`${token}\r`);
+    }
     await wait(state, () => plain(state).includes('OLDER_HISTORY_VISIBLE') && plain(state).includes('RECENT_HISTORY_VISIBLE'), 'paginated history visible');
     await wait(state, () => state.streams.size > 0, 'SSE connection');
     await action(state);
@@ -222,6 +253,38 @@ try {
     assert.equal(state.posts[0].body.input, 'Synthetic guest write exactly once');
     assert.ok(typeof state.posts[0].body.id === 'string' && state.posts[0].body.id.length > 0);
   });
+  await journey('hidden-streaming', 'write', async state => {
+    const turn = 'streamed-turn';
+    // Accented text exercises split UTF-8 independently of emoji-width tables.
+    const answer = 'STREAMED café résumé answer';
+    const reasoning = 'REASONING naïve résumé';
+    for (const stream of state.streams)
+      emit(stream, event(7, 'turn_accepted', turn, { input: 'Synthetic live streaming question' }));
+    const payload = { model_call_index: 0, item_id: 'streamed-answer', phase: 'final_answer', text: answer };
+    await emitSplit(state, nested(8, turn, 'assistant.delta', payload));
+    await wait(state, () => plain(state).includes(answer), 'UTF-8 assistant delta visible before completion');
+    await emitSplit(state, nested(9, turn, 'reasoning.summary.delta', { model_call_index: 0, text: reasoning }));
+    await wait(state, () => plain(state).includes(reasoning) && plain(state).includes(answer), 'reasoning and assistant both visible before completion');
+    for (const stream of state.streams) {
+      emit(stream, nested(10, turn, 'assistant.message', payload));
+      emit(stream, event(11, 'turn_completed', turn, { final_message: answer }));
+      stream.end();
+    }
+    // Reconnecting after 11 proves the completion was consumed before checking
+    // deduplication; merely seeing the earlier delta is insufficient evidence.
+    await wait(state, () => trace.requests.some(r => r.scenario === state.name
+      && r.path === `${base}/events` && r.after === '11') && state.streams.size > 0, 'completion consumed and cursor resumed');
+    await delay(250);
+    assert.equal(plain(state).split(answer).length - 1, 1, 'delta, message, and completion reconcile to one answer');
+    assert.ok(!plain(state).includes('�'), 'UTF-8 must not acquire replacement characters');
+    state.revoked = true;
+    for (const stream of state.streams) stream.end();
+    await wait(state, () => trace.requests.some(r => r.scenario === state.name && r.status === 404), 'write access revoked');
+    await wait(state, () => /revok|not.found|unavailable|404|no longer|expired/i.test(plain(state)), 'write revocation visible');
+    enter(state, 'Never submit after revocation');
+    await delay(300);
+    assert.equal(state.posts.length, 0, 'write permission cannot submit after revocation');
+  }, true);
   await journey('active-history', 'write', async state => {
     // Exercise the public terminal guard, not an internal activity counter.
     // A blocked draft must remain editable and become sendable on completion.

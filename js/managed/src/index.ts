@@ -71,7 +71,7 @@ import { ConnectInputs } from "./connect-inputs";
 import { accountToolsEnabled, normalizeToolNames, parseConfiguration, type AgentConfiguration } from "./agent-configuration";
 import { createHash } from "node:crypto";
 import { ThreadShareLinks, type SharePermission } from "./thread-share-links";
-import { threadSharingTools, redactSharedLinkTokens } from "./thread-sharing-tool";
+import { threadSharingTools, redactSharedLinkTokens, sharedTextStream } from "./thread-sharing-tool";
 import { initializeTurnInputs, inputChunks, lazyTurnInput, readTurnInput, storeTurnInput } from "./managed-turn-input";
 import { DurableObject, WorkerEntrypoint } from "cloudflare:workers";
 import { ArchiveMaintenance } from "./archive-maintenance";
@@ -852,8 +852,9 @@ type SharedEvent = { cursor: string; created_at: number; turn_id: string | null;
 
 /** Only the event types consumed by the standard Chat transcript are projected.
  * Never copy transport metadata, opaque provider envelopes, or whole payloads. */
-function sharedChatEvent(event: AgentEvent): AgentEvent | null {
-  // Guests receive completed messages, not fragments that could reconstruct a bearer token.
+function sharedChatEvent(event: AgentEvent, streamText?: (text: string) => string): AgentEvent | null {
+  // Deltas are only exposed through a stateful stream redactor. History keeps
+  // complete messages so pagination cannot split the redaction boundary.
   const fields: Record<string, readonly string[]> = {
     "assistant.message": ["text", "phase", "turn_id", "item_id", "managed_agent_id", "model_call_index"],
     "tool.call": ["tool", "call_id", "arguments", "turn_id", "item_id", "managed_agent_id", "model_call_index"],
@@ -866,19 +867,27 @@ function sharedChatEvent(event: AgentEvent): AgentEvent | null {
     "model.connection.started": [], "model.call.started": [], "model.call.completed": [],
     "model.attempt.retrying": [], "run.steered": [],
   };
-  const allowed = fields[event.type];
+  const delta = event.type === "assistant.delta" || event.type === "reasoning.summary.delta";
+  const allowed = delta && streamText
+    ? ["text", "phase", "turn_id", "item_id", "managed_agent_id", "model_call_index"]
+    : fields[event.type];
   if (!allowed) return null;
   const source = event.payload as Record<string, unknown> | undefined;
   const payload = Object.fromEntries(allowed.flatMap(key => source?.[key] === undefined ? [] : [[key, source[key]]]));
+  if (delta && streamText) {
+    if (typeof payload.text !== "string") return null;
+    payload.text = streamText(payload.text);
+    if (!payload.text) return null;
+  }
   return { protocol_version: event.protocol_version, request_id: event.request_id, seq: event.seq,
     type: event.type, payload };
 }
 
-function projectSharedEvent(event: DurableEvent<StreamMessage>): SharedEvent | null {
-  return redactSharedLinkTokens(sharedEventValue(event));
+function projectSharedEvent(event: DurableEvent<StreamMessage>, streamText?: (text: string) => string): SharedEvent | null {
+  return redactSharedLinkTokens(sharedEventValue(event, streamText));
 }
 
-function sharedEventValue({ cursor, created_at, turn_id, message }: DurableEvent<StreamMessage>): SharedEvent | null {
+function sharedEventValue({ cursor, created_at, turn_id, message }: DurableEvent<StreamMessage>, streamText?: (text: string) => string): SharedEvent | null {
   if (message.type === "turn_accepted") {
     const provenance = message as typeof message & { author?: "guest"; share_link_id?: string };
     return { cursor, created_at, turn_id, type: "turn_accepted", id: message.id,
@@ -886,7 +895,7 @@ function sharedEventValue({ cursor, created_at, turn_id, message }: DurableEvent
         ? { author: "guest", share_link_id: provenance.share_link_id } : {}) };
   }
   if (message.type === "event") {
-    const event = sharedChatEvent(message.event);
+    const event = sharedChatEvent(message.event, streamText);
     return event ? { cursor, created_at, turn_id, type: "event", event,
       ...(message.agent_id === undefined ? {} : { agent_id: message.agent_id }) } : null;
   }
@@ -4791,13 +4800,45 @@ export class DurableAgentSession extends DurableComputerObject {
         const requested = request.headers.get("last-event-id") ?? url.searchParams.get("after") ?? "latest";
         const cursor = requested === "latest" ? this.#eventArchive.latestCursor(this.#eventLog) : parseCursor(requested);
         if (cursor === undefined) return json({ error: "invalid_cursor" }, { status: 400, headers });
+        const textStreams = new Map<string, ReturnType<typeof sharedTextStream>>();
+        const projectStreamEvent = (event: DurableEvent<StreamMessage>) => {
+          let streamText: ReturnType<typeof sharedTextStream> | undefined;
+          const sourceMessage = event.message;
+          if (sourceMessage.type === "event" && (sourceMessage.event.type === "assistant.delta" || sourceMessage.event.type === "reasoning.summary.delta")) {
+            const payload = sourceMessage.event.payload as Record<string, unknown>;
+            const key = JSON.stringify([event.turn_id, sourceMessage.agent_id, sourceMessage.event.type, payload.item_id, payload.phase, payload.model_call_index]);
+            streamText = textStreams.get(key);
+            if (!streamText) { streamText = sharedTextStream(); textStreams.set(key, streamText); }
+          }
+          const projected = projectSharedEvent(event, streamText);
+          if (sourceMessage.type === "event" && sourceMessage.event.type === "assistant.message") {
+            const payload = sourceMessage.event.payload as Record<string, unknown>;
+            textStreams.delete(JSON.stringify([event.turn_id, sourceMessage.agent_id, "assistant.delta", payload.item_id, payload.phase, payload.model_call_index]));
+          }
+          if (["turn_completed", "turn_failed", "turn_cancelled"].includes(sourceMessage.type)) textStreams.clear();
+          return projected;
+        };
+        // Reconnecting inside a token must not reveal its suffix. Rebuild the
+        // redaction state from the current turn before publishing after cursor.
+        // Stop at the preceding terminal event rather than scanning old turns.
+        const priorPages: DurableEvent<StreamMessage>[][] = [];
+        let before: string | undefined = (BigInt(cursor) + 1n).toString();
+        while (cursor !== "0") {
+          const page = await this.#eventArchive.history(this.#eventLog, before, MAX_HISTORY_PAGE_SIZE);
+          const boundary = page.data.findLastIndex(event => ["turn_completed", "turn_failed", "turn_cancelled"].includes(event.message.type));
+          priorPages.push(page.data.slice(boundary + 1).filter(event => event.message.type === "event"
+            && ["assistant.delta", "reasoning.summary.delta", "assistant.message"].includes(event.message.event.type)));
+          if (boundary >= 0 || !page.has_more || page.data.length === 0) break;
+          before = page.data[0]!.cursor;
+        }
+        for (const page of priorPages.reverse()) for (const event of page) projectStreamEvent(event);
         return this.#eventLog.streamWithPage(cursor, this.#eventArchive.latestCursor(this.#eventLog),
           this.#eventArchive.pageReader(this.#eventLog), request.signal, {
             tag: link.id,
             authorize: () => this.#shareLinks.validate(bearer)?.id === link.id
               && !this.#deleting && !this.#deleted && !this.#durabilityExported,
             project: event => {
-              const projected = projectSharedEvent(event);
+              const projected = projectStreamEvent(event);
               if (!projected) return null;
               const { cursor, created_at, turn_id, ...message } = projected;
               return { cursor, created_at, turn_id, message };

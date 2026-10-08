@@ -147,15 +147,23 @@ it("write link admits real owner-thread turns, isolates identities, limits abuse
   expect((await api(`/v1/shared/${id}/comments`, "GET", undefined, undefined, secondToken)).status).toBe(404);
 });
 
-it("streams completed safe guest transcript events and closes the feed when its link is revoked", async () => {
+it("streams assistant and reasoning text with split-token redaction and closes the feed when its link is revoked", async () => {
   id = crypto.randomUUID(); await seed();
   // A real final-answer delta and an unrelated tool event share the durable log.
   await runInDurableObject(sessions().getByName(id), async (_, state) => {
     const log = new DurableEventLog<{ type: string; [key: string]: unknown }>(state.storage);
     log.record({ type: "event", event: { type: "assistant.delta", payload: {
-      phase: "final_answer", text: "safe live token", hidden: "SECRET_DELTA_METADATA",
+      phase: "final_answer", text: "safe live text.", hidden: "SECRET_DELTA_METADATA",
     } } }, "synthetic-turn");
-    log.record({ type: "event", event: { type: "reasoning.summary.delta", payload: { text: "SECRET_REASONING" } } }, "synthetic-turn");
+    log.record({ type: "event", event: { type: "reasoning.summary.delta", payload: { text: "Checking a plan" } } }, "synthetic-turn");
+    for (const text of [" n", "s", "l_", "a".repeat(20), "a".repeat(23), " after token."]) {
+      log.record({ type: "event", event: { type: "assistant.delta", payload: { phase: "final_answer", text } } }, "synthetic-turn");
+    }
+    for (const suffix of ["n", "ns", "nsl"]) {
+      log.record({ type: "event", event: { type: "assistant.delta", payload: {
+        phase: "commentary", item_id: suffix, text: ` ordinary ${suffix}`,
+      } } }, "synthetic-turn");
+    }
     log.record({ type: "event", event: { type: "assistant.message", payload: { phase: "final_answer", text: "safe live message", hidden: "SECRET_MESSAGE_METADATA" } } }, "synthetic-turn");
   });
   const path = `/v1/agents/${id}/share-links`;
@@ -170,7 +178,7 @@ it("streams completed safe guest transcript events and closes the feed when its 
   expect(stream.headers.get("content-type")).toContain("text/event-stream");
   const reader = stream.body!.getReader();
   let transcript = "";
-  for (let index = 0; index < 12 && !transcript.includes("safe live message"); index++) {
+  for (let index = 0; index < 20 && !transcript.includes("safe live message"); index++) {
     const next = await reader.read();
     if (next.done) break;
     transcript += new TextDecoder().decode(next.value);
@@ -180,8 +188,37 @@ it("streams completed safe guest transcript events and closes the feed when its 
   expect(transcript).toContain('event: event');
   expect(transcript).toContain('"text":"safe live message"');
   expect(transcript).toContain("SECRET_TOOL_OUTPUT");
-  expect(transcript).not.toContain("SECRET_REASONING");
-  expect(transcript).not.toContain("safe live token");
+  expect(transcript).toContain("Checking a plan");
+  expect(transcript).toContain("safe live text.");
+  expect(transcript).not.toMatch(/SECRET_DELTA_METADATA|SECRET_MESSAGE_METADATA/);
+  const streamedText = transcript.split("\n").filter(line => line.startsWith("data: "))
+    .map(line => JSON.parse(line.slice(6)))
+    .filter(row => row.event?.type === "assistant.delta").map(row => row.event.payload.text).join("");
+  expect(streamedText).toBe("safe live text. nsl[redacted share token] after token. ordinary n ordinary ns ordinary nsl");
+  const replay = await (await api(`/v1/shared/${id}/events?after=3`, "GET", undefined, undefined, token));
+  const replayReader = replay.body!.getReader();
+  let replayText = "";
+  while (!replayText.includes("safe live message")) {
+    const next = await replayReader.read();
+    if (next.done) break;
+    replayText += new TextDecoder().decode(next.value);
+  }
+  expect(replayText).toContain("safe live text.");
+  expect(replayText).not.toContain(`nsl_${"a".repeat(43)}`);
+  await replayReader.cancel();
+  for (const after of ["6", "7", "8", "9"]) {
+    const resumed = await api(`/v1/shared/${id}/events?after=${after}`, "GET", undefined, undefined, token);
+    const resumedReader = resumed.body!.getReader();
+    let resumedText = "";
+    while (!resumedText.includes("safe live message")) {
+      const next = await resumedReader.read();
+      if (next.done) break;
+      resumedText += new TextDecoder().decode(next.value);
+    }
+    expect(resumedText).not.toContain("a".repeat(20));
+    await resumedReader.cancel();
+  }
+  console.log(JSON.stringify({ journey: "shared-stream", assistant: streamedText, reasoning: "Checking a plan", trailingText: ["n", "ns", "nsl"], replay: true, hiddenMetadata: false }));
   expect(transcript).not.toMatch(/SECRET_USAGE|SECRET_ACCEPTED_METADATA|nsl_/);
   // Anonymous guests are capped below the owner's stream capacity.
   const otherStreams: Response[] = [];
@@ -336,7 +373,14 @@ it("shared history and SSE cannot redistribute new write or cross-thread bearer 
     live += new TextDecoder().decode(next.value);
   }
   expect(live).not.toMatch(/nsl_/);
-  expect(live).not.toMatch(/assistant\.delta|reasoning\.summary\.delta/);
+  for (const type of ["assistant.delta", "reasoning.summary.delta"]) {
+    const text = live.split("\n").filter(line => line.startsWith("data: "))
+      .map(line => JSON.parse(line.slice(6))).filter(row => row.event?.type === type)
+      .map(row => row.event.payload.text).join("");
+    expect(text).toContain("#token=nsl[redacted share token]");
+    expect(text).not.toContain(elevatedToken);
+    expect(text).not.toContain(foreignToken);
+  }
   expect(live).toContain("[redacted share token]");
   await reader.cancel();
   await invoke({ operation: "revoke_all" });

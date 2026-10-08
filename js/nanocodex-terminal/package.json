@@ -41,6 +41,8 @@
     "test": "npm run build && node --import ./test/register-peer-loader.mjs --test test/*.test.mjs && npm run check:pack"
   },
   "dependencies": {
+    "@streamdown/code": "^2.0.0",
+    "@streamdown/mermaid": "^1.0.3",
     "lucide-react": "1.24.0",
     "streamdown": "2.5.0"
   },

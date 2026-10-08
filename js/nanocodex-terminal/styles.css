@@ -274,60 +274,7 @@
   text-transform: uppercase;
 }
 
-.agent-terminal-markdown :where(h1, h2, h3, p, ul, ol, pre, blockquote, table) {
-  margin: 0;
-}
-
-.agent-terminal-markdown :where(h1, h2, h3, p, ul, ol, pre, blockquote, table)
-  + :where(h1, h2, h3, p, ul, ol, pre, blockquote, table) {
-  margin-top: 12px;
-}
-
-.agent-terminal-markdown :where(h1, h2, h3) {
-  font: 700 1em/1.45 var(--font-mono, ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace);
-}
-
-.agent-terminal-markdown :where(ul, ol) {
-  padding-left: 20px;
-}
-
-.agent-terminal-markdown :where(code, pre) {
-  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace);
-}
-
-.agent-terminal-markdown :not(pre) > code {
-  padding: 1px 4px;
-  color: var(--terminal-foreground, #111);
-  background: var(--terminal-hover, #f4f4f4);
-}
-
-.agent-terminal-markdown pre,
-.agent-terminal-tool pre {
-  max-width: 100%;
-  padding: 10px 12px;
-  overflow: auto;
-  color: var(--terminal-foreground, #111);
-  background: var(--terminal-hover, #f4f4f4);
-  border: 1px solid var(--terminal-border, #ddd);
-  border-radius: 0;
-  white-space: pre;
-}
-
-.agent-terminal-markdown [data-streamdown="code-block"] { display: grid; grid-template-columns: minmax(0, 1fr) auto; margin: 18px 0; overflow: hidden; background: var(--terminal-hover, #f4f4f4); border: 1px solid var(--terminal-border, #ddd); border-radius: 14px; }
-.agent-terminal-markdown [data-streamdown="code-block-header"] { display: flex; align-items: center; min-height: 42px; padding: 8px 16px; grid-column: 1; grid-row: 1; color: var(--terminal-muted, #6b6b6b); font: 12px/1.4 var(--terminal-font-sans, system-ui, sans-serif); }
-.agent-terminal-markdown [data-streamdown="code-block-header"] + div { display: flex; align-items: center; padding-right: 8px; grid-column: 2; grid-row: 1; }
-.agent-terminal-markdown [data-streamdown="code-block-actions"] { display: flex; align-items: center; }
-.agent-terminal-markdown [data-streamdown="code-block-copy-button"] { display: grid; place-items: center; width: 32px; height: 32px; padding: 0; color: var(--terminal-muted, #6b6b6b); background: transparent; border: 0; border-radius: 8px; cursor: pointer; }
-.agent-terminal-markdown [data-streamdown="code-block-copy-button"]:hover { color: var(--terminal-foreground, #111); background: var(--terminal-background, #fff); }
-.agent-terminal-markdown [data-streamdown="code-block-body"] { grid-column: 1 / -1; overflow-x: auto; padding: 16px; border-top: 1px solid var(--terminal-border, #ddd); }
-.agent-terminal-markdown [data-streamdown="code-block-body"] pre { margin: 0; padding: 0; border: 0; border-radius: 0; background: transparent; }
-.agent-terminal-markdown [data-streamdown="code-block-body"] pre > code > span { display: block; }
-
-.agent-terminal-markdown a {
-  color: inherit;
-  text-decoration: underline;
-  text-underline-offset: 3px;
-}
+.agent-terminal-tool pre { max-width: 100%; padding: 10px 12px; overflow: auto; background: var(--terminal-hover, #f4f4f4); border: 1px solid var(--terminal-border, #ddd); white-space: pre; }
 
 .agent-terminal-error,
 .agent-terminal-status,
@@ -746,3 +693,12 @@
 .agent-prompt-queue-row button:hover { background: var(--terminal-hover, #7772); }
 .agent-prompt-queue-row button:disabled { opacity: .5; cursor: wait; }
 .agent-prompt-queue-row button svg { width: 15px; height: 15px; }
+
+.agent-terminal-preview-card { display: flex; align-items: center; gap: 12px; min-width: 0; margin-block: 12px; padding: 14px 16px; border: 1px solid var(--terminal-border, #ddd); border-radius: 12px; color: inherit; text-decoration: none; font: 14px/1.5 var(--terminal-font-sans, system-ui, sans-serif); }
+.agent-terminal-preview-card:hover { background: var(--terminal-hover, #f6f6f6); }
+.agent-terminal-preview-card:focus-visible { outline: 2px solid currentColor; outline-offset: 3px; }
+.agent-terminal-preview-card > span:nth-child(2) { display: grid; min-width: 0; gap: 2px; }
+.agent-terminal-preview-card strong { font-weight: 600; }
+.agent-terminal-preview-card > span:nth-child(2) > span { color: var(--terminal-muted, #737373); overflow-wrap: anywhere; font-size: 12px; }
+.agent-terminal-preview-icon { font-size: 22px; }
+.agent-terminal-preview-action { margin-inline-start: auto; font-size: 12px; color: var(--terminal-muted, #737373); }

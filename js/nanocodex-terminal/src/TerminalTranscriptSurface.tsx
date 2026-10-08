@@ -1,7 +1,6 @@
 "use client";
 
 import {
-  type ComponentProps,
   type ReactNode,
   memo,
   useEffect,
@@ -12,7 +11,7 @@ import {
 } from "react";
 import { projectToolOutput, type AgentEntry, type GeneratedOutput, type ToolActivity } from "nanocodex-react/agent";
 import { ArrowDown, Check, Copy } from "lucide-react";
-import { Streamdown } from "streamdown";
+import { RichMarkdown } from "./RichMarkdown.js";
 import { GeneratedOutputView } from "./GeneratedOutputView.js";
 
 import type { AgentStatus, AgentTerminalMode } from "./types.js";
@@ -200,9 +199,9 @@ export function TerminalTranscriptSurface({
       >
         <div className="agent-dom-transcript-inner">
           {visibleWelcome ? <article className="agent-terminal-markdown is-assistant is-welcome">
-            <Streamdown components={MARKDOWN_COMPONENTS} controls={false} linkSafety={LINK_SAFETY} mode="static" skipHtml>
+            <RichMarkdown>
               {visibleWelcome}
-            </Streamdown>
+            </RichMarkdown>
           </article> : null}
           {transcriptEntries.map((entry) => (
             <TerminalEntryView entry={entry} key={entry.id} showToolCalls={showToolCalls} renderTool={renderTool} userLabel={userLabel} />
@@ -376,15 +375,7 @@ const TerminalEntryView = memo(function TerminalEntryView({
     <article className={`agent-terminal-markdown is-${entry.kind}`} data-source={voice ? "voice" : undefined}>
       {voice ? <span className="agent-terminal-entry-label">voice</span> : null}
       {entry.kind === "reasoning" ? <span className="agent-terminal-entry-label">thinking{entry.streaming ? "…" : ""}</span> : null}
-      <Streamdown
-        caret={entry.streaming ? "block" : undefined}
-        components={MARKDOWN_COMPONENTS}
-        controls={MARKDOWN_CONTROLS}
-        isAnimating={entry.streaming}
-        linkSafety={LINK_SAFETY}
-        mode={entry.streaming ? "streaming" : "static"}
-        skipHtml
-      >{entry.text}</Streamdown>
+      <RichMarkdown streaming={entry.streaming}>{entry.text}</RichMarkdown>
       {entry.kind === "assistant" && !entry.streaming && entry.text.trim() ? <ResponseActions text={entry.text} /> : null}
     </article>
   );
@@ -397,11 +388,28 @@ const TerminalEntryView = memo(function TerminalEntryView({
   </ol>;
   if (entry.kind === "tool") return <div className="agent-terminal-tool-entry">
     {showToolCalls ? <TerminalToolView tool={entry.tool} /> : null}
+    <ToolPreviews tool={entry.tool} />
     {renderToolTree(entry.tool, renderTool)}
     <GeneratedOutputView items={generatedToolOutput(entry.tool)} />
   </div>;
   return null;
 });
+
+function ToolPreviews({ tool }: { tool: ToolActivity }) {
+  const urls = new Set<string>();
+  function collect(activity: ToolActivity) {
+    const url = presentTool(activity).previewUrl;
+    if (url) urls.add(url);
+    activity.children.forEach(collect);
+  }
+  collect(tool);
+  return <>{[...urls].map(url => <a className="agent-terminal-preview-card" href={url}
+    target="_blank" rel="noopener noreferrer" key={url}>
+    <span className="agent-terminal-preview-icon" aria-hidden="true">↗</span>
+    <span><strong>Open preview</strong><span>{new URL(url).host}</span></span>
+    <span className="agent-terminal-preview-action">View</span>
+  </a>)}</>;
+}
 
 function renderToolTree(tool: ToolActivity, render: ((tool: ToolActivity) => ReactNode) | undefined): ReactNode {
   if (!render) return null;
@@ -442,21 +450,6 @@ function ResponseActions({ text }: { text: string }) {
     <span role="status">{state === "copied" ? "Copied" : state === "error" ? "Couldn’t copy. Select the text to copy it." : ""}</span>
   </div>;
 }
-
-function MarkdownInput({
-  node: _node,
-  ref: _ref,
-  ...props
-}: ComponentProps<"input"> & { node?: unknown }) {
-  return <input
-    {...props}
-    aria-label={props["aria-label"] ?? (props.type === "checkbox" ? "Checklist item" : undefined)}
-  />;
-}
-
-const MARKDOWN_COMPONENTS = { input: MarkdownInput };
-const MARKDOWN_CONTROLS = { code: { copy: true, download: false }, table: false, mermaid: false } as const;
-const LINK_SAFETY = { enabled: true } as const;
 
 function TerminalToolView({ isChild = false, tool }: { isChild?: boolean; tool: ToolActivity }) {
   const presentation = presentTool(tool);
@@ -506,9 +499,6 @@ function TerminalToolView({ isChild = false, tool }: { isChild?: boolean; tool: 
         <h4>Output</h4>
         <pre>{boundedToolDetail(output)}</pre>
       </section> : null}
-      {presentation.previewUrl ? <p className="agent-terminal-tool-preview">
-        <a href={presentation.previewUrl} rel="noopener noreferrer" target="_blank">Open preview</a>
-      </p> : null}
       {tool.children.map((child) => <TerminalToolView isChild key={child.callId} tool={child} />)}
     </div>
   </details>;

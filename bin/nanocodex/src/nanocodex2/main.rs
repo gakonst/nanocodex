@@ -707,8 +707,7 @@ async fn run(cli: Cli) -> Result<(), ManagedError> {
     let attach_reference = match &cli.command {
         Some(Command::Attach(Attach { agent: Some(value) })) => {
             if value.contains("/share/") || value.contains("#token=") {
-                let shared = nanocodex_managed::SharedThreadClient::from_url(value)?;
-                return tui::run_shared(shared).await;
+                return tui::run_shared(value).await;
             }
             Some(parse_agent_reference(value).map_err(ManagedError::Configuration)?)
         }

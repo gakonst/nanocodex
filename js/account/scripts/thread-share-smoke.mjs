@@ -1,4 +1,4 @@
-// Behavioral browser journey: owner creates/revokes a link, guest sends an actual AI turn without cookies.
+// Behavioral browser journey: owner creates/revokes a link, guest submits and streams a turn through a synthetic API without cookies.
 // Repro: SIDEBAR_BROWSER_CHANNEL=chrome node js/account/scripts/thread-share-smoke.mjs
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
@@ -94,10 +94,21 @@ try {
  const visitor=await browser.newPage();await visitor.goto(link);
  await visitor.getByText('The release is ready.').waitFor();
  emit({cursor:'4',type:'turn_accepted',id:'live-turn',turn_id:'live-turn',input:'Any updates?'});
- emit({cursor:'5',type:'assistant_delta',turn_id:'live-turn',delta:'Working on it…'});
+ const peer=await browser.newPage();await peer.goto(link);
+ await peer.getByText('The release is ready.').waitFor();
+ emit({cursor:'5',type:'event',turn_id:'live-turn',event:{type:'reasoning.summary.delta',payload:{text:'Checking shared progress…'}}});
+ for (const page of [visitor,peer]) await page.getByText('Checking shared progress…').waitFor();
+ emit({cursor:'6',type:'event',turn_id:'live-turn',event:{type:'tool.call',payload:{tool:'search',call_id:'live-search',arguments:{query:'progress'}}}});
+ emit({cursor:'7',type:'event',turn_id:'live-turn',event:{type:'tool.result',payload:{call_id:'live-search',result:{text:'progress found'}}}});
+ emit({cursor:'8',type:'event',turn_id:'live-turn',event:{type:'assistant.delta',payload:{phase:'final_answer',text:'Working on it…'}}});
+ for (const page of [visitor,peer]) await page.getByText('Working on it…').waitFor();
+ await Promise.all([visitor.waitForResponse(response=>response.url().endsWith('/events/history')),
+   visitor.getByRole('button',{name:'Refresh shared thread'}).click()]);
  await visitor.getByText('Working on it…').waitFor();
- emit({cursor:'6',type:'turn_completed',id:'live-turn',turn_id:'live-turn',final_message:'All updates complete.'});
- await visitor.getByText('All updates complete.').waitFor();
+ await visitor.screenshot({path:new URL('streaming.png',output).pathname});
+ emit({cursor:'9',type:'turn_completed',id:'live-turn',turn_id:'live-turn',final_message:'All updates complete.'});
+ for (const page of [visitor,peer]) await page.getByText('All updates complete.').waitFor();
+ await peer.close();
  assert.equal(await visitor.getByText('Working on it…').count(),0,'final answer replaces its streamed delta');
  await visitor.getByRole('button',{name:'Load earlier messages'}).click();
  await visitor.getByRole('button',{name:'Load earlier messages'}).click();
@@ -119,7 +130,7 @@ try {
  await visitor.waitForTimeout(150);
  assert.equal(await visitor.getByText('The release is ready.').count(),0,'stale history cannot repopulate a revoked transcript');
  await visitor.reload();await visitor.getByRole('alert').waitFor();
- // A new link with write access sends a real AI turn through the same guest chat surface.
+ // A new write link submits through the guest chat surface to the fixture API.
  revoked=false;links.push({id:'link-2',permission:'write',created_at:new Date().toISOString()});
  const writer=await browser.newPage();await writer.goto(link);
  await writer.getByRole('textbox',{name:'Message Nanocodex'}).fill('Can you follow up?');
@@ -146,6 +157,6 @@ try {
  assert.ok(await mobile.evaluate(()=>document.documentElement.scrollWidth <= window.innerWidth));
  await mobile.screenshot({path:new URL('mobile.png',output).pathname});
  await mobile.close();
- console.log('Share-link journey passed; screenshots: output/thread-share/{owner,read,write,mobile}.png');
+ console.log('Share-link journey passed; screenshots: output/thread-share/{owner,read,write,mobile,streaming}.png');
  await owner.close();await visitor.close();await writer.close();await reader.close();
 } finally {await browser.close();server.close();}

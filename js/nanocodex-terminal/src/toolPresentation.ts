@@ -34,7 +34,7 @@ export function presentTool(tool: ToolActivity): ToolPresentation {
   const output = parseDetail(tool.output ?? tool.result);
   const family = decodedName.family;
   const semanticWrapper = tool.name === "exec" && tool.children.length > 0;
-  const previewUrl = family === "sandbox_preview" ? safeHttpUrl(field(output, "url")) : undefined;
+  const previewUrl = ["sandbox_preview", "preview"].includes(family) ? safeHttpUrl(field(output, "url")) : undefined;
   const subject = semanticWrapper ? undefined : summarizeInput(family, input);
   const outputSummary = semanticWrapper ? undefined : summarizeOutput(family, output);
   const source = toolSource(decodedName.sources, family, input, semanticWrapper);
@@ -180,7 +180,7 @@ function summarizeInput(family: string, input: unknown): string | undefined {
       return undefined;
     }
     if (family === "send_agent_message") return compact(stringField(input, "message") ?? "");
-    if (family === "sandbox_preview" && typeof input.port === "number") return `Port ${input.port}`;
+    if (["sandbox_preview", "preview"].includes(family) && typeof input.port === "number") return `Port ${input.port}`;
     const command = stringField(input, family === "exec_command" ? "cmd" : "command");
     if (command) return compact(command);
     for (const key of ["path", "file_path", "query", "url", "port", "process_id", "session_id"]) {
@@ -237,7 +237,7 @@ function summarizeOutput(family: string, output: unknown): string | undefined {
       if (port !== undefined) parts.push(`Port ${port} ready`);
       if (parts.length) return parts.join(" · ");
     }
-    if (family === "sandbox_preview" && safeHttpUrl(field(output, "url"))) return "Preview ready";
+    if (["sandbox_preview", "preview"].includes(family) && safeHttpUrl(field(output, "url"))) return "Preview ready";
     if (family === "accountInfo") {
       const parts: string[] = [];
       const status = stringField(output, "status");
