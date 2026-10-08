@@ -160,7 +160,7 @@ export function createGatewayResponses(options) {
         // The portable Chat translator has no reasoning.mode field. Preserve it
         // explicitly on Responses transports and reject unsupported pro requests.
         const body = JSON.parse(request.body);
-        const supportsMode = ["gpt-6.1-sol", "gpt-6-luna"].includes(model);
+        const supportsMode = ["gpt-6-astra", "gpt-6.1-sol", "gpt-6-luna"].includes(model);
         const validateMode = value => {
           if (value !== undefined && !["standard", "pro"].includes(value)) fail("unsupported reasoning mode");
           if (value === "pro" && (provider !== "cloudflare" || !supportsMode)) fail("pro reasoning requires a supported Responses model");

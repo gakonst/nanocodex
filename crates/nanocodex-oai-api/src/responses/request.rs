@@ -715,18 +715,13 @@ impl<'a> ResponseCreate<'a> {
             // scheduler still accepts multi-call responses and replays.
             parallel_tool_calls: false,
             reasoning: ReasoningControls {
-                // Astra rejects the legacy `reasoning.mode` field. Standard
-                // already serializes as absent; keep this model guard as a
-                // final wire-level invariant for custom service factories.
-                mode: (!matches!(
-                    policy.model,
-                    crate::Model::Astra
-                        | crate::Model::Glm53
-                        | crate::Model::Kimi
-                        | crate::Model::Mimo
-                ))
-                .then(|| reasoning_mode.request_value())
-                .flatten(),
+                // Custom service factories can bypass configuration validation,
+                // so unsupported modes are omitted at the wire boundary.
+                mode: policy
+                    .model
+                    .supports_reasoning_mode(reasoning_mode)
+                    .then(|| reasoning_mode.request_value())
+                    .flatten(),
                 effort: policy.thinking.as_str(),
                 summary: None,
                 context: "all_turns",
@@ -1312,25 +1307,32 @@ mod tests {
     }
 
     #[test]
-    fn astra_omits_reasoning_mode_and_default_summary() {
+    fn astra_sends_pro_reasoning_mode_while_gateway_models_omit_it() {
         let config = ModelConfig {
             reasoning_mode: ReasoningMode::Pro,
             ..ModelConfig::default()
         };
         let profile = RequestProfile::new("astra-agent", "astra-lineage", Arc::from([]));
-        let request = serde_json::to_value(ResponseCreate::warmup(
-            &config,
-            Model::Astra,
-            Thinking::Max,
-            ServiceTier::Standard,
-            &profile,
-            None,
-        ))
-        .expect("request should serialize");
+        let request = |model, thinking| {
+            serde_json::to_value(ResponseCreate::warmup(
+                &config,
+                model,
+                thinking,
+                ServiceTier::Standard,
+                &profile,
+                None,
+            ))
+            .expect("request should serialize")
+        };
 
-        assert!(request["reasoning"].get("mode").is_none());
-        assert!(request["reasoning"].get("summary").is_none());
-        assert_eq!(request["reasoning"]["effort"], json!("max"));
+        let astra = request(Model::Astra, Thinking::Max);
+        assert_eq!(astra["reasoning"]["mode"], json!("pro"));
+        assert!(astra["reasoning"].get("summary").is_none());
+        assert_eq!(astra["reasoning"]["effort"], json!("max"));
+        for model in [Model::Glm53, Model::Kimi, Model::Mimo] {
+            let gateway = request(model, Thinking::Low);
+            assert!(gateway["reasoning"].get("mode").is_none(), "{model:?}");
+        }
     }
 
     #[test]

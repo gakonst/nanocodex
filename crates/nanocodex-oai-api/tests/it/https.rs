@@ -2,7 +2,7 @@ use std::time::{Duration, Instant};
 
 use eyre::{Result, eyre};
 use nanocodex_oai_api::{
-    Model, OpenAi,
+    Model, OpenAi, ReasoningMode, Thinking,
     pricing::ServiceTier,
     session::ResponseInput,
     transport::{ResponsesError, ResponsesTransport},
@@ -131,7 +131,20 @@ async fn service_tier_selects_the_wire_tier_and_estimate_supported_by_each_model
             ServiceTier::Ultrafast,
             "9",
         ),
-        (Model::Sol, None, Some("priority"), ServiceTier::Fast, "0.6"),
+        (
+            Model::Sol,
+            None,
+            Some("ultrafast"),
+            ServiceTier::Ultrafast,
+            "1.8",
+        ),
+        (
+            Model::Luna,
+            None,
+            Some("priority"),
+            ServiceTier::Fast,
+            "0.03",
+        ),
         (Model::Glm53, None, None, ServiceTier::Standard, "0.184"),
         (
             Model::Astra,
@@ -184,6 +197,38 @@ async fn service_tier_selects_the_wire_tier_and_estimate_supported_by_each_model
     timeout(std::time::Duration::from_secs(5), server)
         .await
         .map_err(|_| eyre!("mock HTTPS tier server did not finish"))???;
+    Ok(())
+}
+
+#[tokio::test]
+async fn astra_pro_reasoning_mode_reaches_the_https_wire() -> Result<()> {
+    let listener = TcpListener::bind("127.0.0.1:0").await?;
+    let api_base_url = format!("http://{}", listener.local_addr()?);
+    let server = tokio::spawn(async move {
+        let request = read_http_json(&listener).await?;
+        assert_eq!(request.body["model"], "gpt-6-astra");
+        assert_eq!(request.body["reasoning"]["mode"], "pro");
+        assert_eq!(request.body["reasoning"]["effort"], "low");
+        send_http_events(
+            request.stream,
+            None,
+            [completed_response("resp-pro", "pro accepted")],
+        )
+        .await
+    });
+
+    let openai = OpenAi::builder("test-key")
+        .model(Model::Astra)
+        .thinking(Thinking::Low)
+        .reasoning_mode(ReasoningMode::Pro)
+        .transport(ResponsesTransport::Https)
+        .api_base_url(api_base_url)
+        .build()?;
+    let mut session = openai.instructions("Answer briefly.").build()?;
+    session.turn().create("Use pro reasoning.").await?;
+    timeout(std::time::Duration::from_secs(5), server)
+        .await
+        .map_err(|_| eyre!("mock HTTPS pro server did not finish"))???;
     Ok(())
 }
 

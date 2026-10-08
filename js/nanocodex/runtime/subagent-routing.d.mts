@@ -1,5 +1,5 @@
 import type { Model, Thinking } from '../types.mjs';
-export type ChildRouteModel = Model | 'sol' | 'luna' | 'astra' | 'glm-5.3' | 'glm53' | 'kimi' | 'mimo' | 'opus' | 'sonnet' | 'fable' | 'haiku' | 'claude-opus-5-5' | 'claude-sonnet-5-5' | 'claude-fable-5-1' | 'claude-opus-4-6' | 'claude-sonnet-4-6' | 'claude-haiku-4-5';
+export type ChildRouteModel = Model | 'sol' | 'luna' | 'astra' | 'glm-5.3' | 'glm53' | 'kimi' | 'mimo' | 'opus' | 'sonnet' | 'haiku' | 'fable' | 'claude-opus-5-5' | 'claude-sonnet-5-5' | 'claude-haiku-5-5' | 'claude-fable-5-1' | 'claude-opus-4-6' | 'claude-sonnet-4-6' | 'claude-haiku-4-5';
 export type ChildRoute = Readonly<{
   harness?: 'codex' | 'claude';
   provider: string;

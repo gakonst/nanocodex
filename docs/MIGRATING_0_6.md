@@ -204,8 +204,8 @@ let (agent, events) = Nanocodex::builder(openai)
 ```
 
 This pins model and effort, not the old release's entire runtime behavior.
-Astra rejects `Thinking::None` and `ReasoningMode::Pro`; invalid combinations
-fail validation. Update model pickers and configuration validation accordingly.
+Astra rejects `Thinking::None`; invalid combinations fail validation. Update
+model pickers and configuration validation accordingly.
 
 `context_window_tokens(...)` is new on `OpenAi` and the local agent builder.
 The default remains 272,000; the supported maximum is 872,000 and larger

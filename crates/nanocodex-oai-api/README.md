@@ -51,8 +51,8 @@ alternate provider or arbitrary-model surface.
 
 [`OpenAiBuilder::service_tier`] selects Standard, Fast, or Ultrafast
 processing. Fast sends `service_tier: "priority"`, Ultrafast sends
-`service_tier: "ultrafast"`, and Standard omits the field. Only Astra supports
-Ultrafast; Sol and Luna run an Ultrafast selection as Fast, and gateway models
+`service_tier: "ultrafast"`, and Standard omits the field. Astra and Sol support
+Ultrafast; Luna runs an Ultrafast selection as Fast, and gateway models
 always use Standard. [`OpenAiBuilder::fast_mode`] selects Fast or Standard and
 replaces any earlier tier selection. Custom service factories read the requested
 tier from `ModelConfig::service_tier`.

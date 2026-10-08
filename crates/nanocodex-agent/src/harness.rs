@@ -61,6 +61,8 @@ pub enum ClaudeModel {
     Opus55,
     /// Claude Sonnet 5.5.
     Sonnet55,
+    /// Claude Haiku 5.5.
+    Haiku55,
     /// Claude Fable 5.1.
     Fable51,
     /// Claude Opus 4.6.
@@ -73,9 +75,10 @@ pub enum ClaudeModel {
 
 impl ClaudeModel {
     /// Known routing models; availability remains the embedding host's policy.
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 7] = [
         Self::Opus55,
         Self::Sonnet55,
+        Self::Haiku55,
         Self::Fable51,
         Self::Opus46,
         Self::Sonnet46,
@@ -87,6 +90,7 @@ impl ClaudeModel {
         match self {
             Self::Opus55 => "claude-opus-5-5",
             Self::Sonnet55 => "claude-sonnet-5-5",
+            Self::Haiku55 => "claude-haiku-5-5",
             Self::Fable51 => "claude-fable-5-1",
             Self::Opus46 => "claude-opus-4-6",
             Self::Sonnet46 => "claude-sonnet-4-6",
@@ -97,7 +101,7 @@ impl ClaudeModel {
     /// Default reasoning effort for a new thread.
     pub const fn default_thinking(self) -> Thinking {
         match self {
-            Self::Opus55 => Thinking::Medium,
+            Self::Opus55 | Self::Haiku55 => Thinking::Medium,
             Self::Haiku45 => Thinking::None,
             _ => Thinking::High,
         }
@@ -132,10 +136,11 @@ impl FromStr for ClaudeModel {
         match value {
             "claude-opus-5-5" | "opus" => Ok(Self::Opus55),
             "claude-sonnet-5-5" | "sonnet" => Ok(Self::Sonnet55),
+            "claude-haiku-5-5" | "haiku" => Ok(Self::Haiku55),
             "claude-fable-5-1" | "fable" => Ok(Self::Fable51),
             "claude-opus-4-6" => Ok(Self::Opus46),
             "claude-sonnet-4-6" => Ok(Self::Sonnet46),
-            "claude-haiku-4-5" | "claude-haiku-4-5-20251001" | "haiku" => Ok(Self::Haiku45),
+            "claude-haiku-4-5" | "claude-haiku-4-5-20251001" => Ok(Self::Haiku45),
             _ => Err(
                 "unsupported Claude routing model; use opus, sonnet, fable, haiku or a supported Claude model ID",
             ),

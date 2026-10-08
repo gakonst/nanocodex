@@ -130,9 +130,6 @@ export function validateAgentSettings(settings) {
     if (["gpt-6-astra", "gpt-6.1-sol"].includes(settings.model) && settings.thinking === "none") {
         throw new TypeError("GPT-6 Astra and GPT-6.1 Sol require low, medium, high, xhigh, or max thinking");
     }
-    if (settings.model === "gpt-6-astra" && settings.reasoning_mode === "pro") {
-        throw new TypeError("GPT-6 Astra does not support pro reasoning mode");
-    }
     return settings;
 }
 /** Public admission cannot select the OSS model without a committed thread route. */

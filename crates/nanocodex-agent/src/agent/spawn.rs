@@ -324,7 +324,7 @@ pub(super) fn validate_model_reasoning_mode(
             (if model == Model::Glm53 {
                 "GLM-5.3 does not support pro reasoning mode"
             } else {
-                "GPT-6 Astra does not support pro reasoning mode"
+                "the selected gateway model does not support pro reasoning mode"
             })
             .to_owned(),
         ))

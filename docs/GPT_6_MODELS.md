@@ -35,8 +35,10 @@ GPT-6.1 Sol supports `low` through `max` and rejects `none` and `minimal`, as sp
 [Sol model contract](https://developers.openai.com/api/docs/models/gpt-6.1-sol).
 Luna also supports `none` under its
 [model contract](https://developers.openai.com/api/docs/models/gpt-6-luna).
-Sol and Luna support standard and Pro reasoning independently of effort, following
+Astra, Sol, and Luna support standard and Pro reasoning independently of effort, following
 the [reasoning-mode contract](https://developers.openai.com/api/docs/guides/reasoning#reasoning-mode).
+Pro has no separate per-token rate; cost estimates use the selected model and
+service tier in both modes.
 
 The API context window is 1,050,000 tokens with up to 128,000 output tokens.
 Nanocodex uses Codex's 272,000-token default prompt context and configurable
@@ -52,8 +54,8 @@ are outside these contracts.
 
 ## Astra protocol boundaries
 
-Astra accepts `low` through `max` effort, but rejects `none` and Pro mode;
-requests omit `reasoning.mode`. `ToolDefinition::with_async_execution()` marks
+Astra accepts `low` through `max` effort and rejects `none`; Pro mode sends
+`reasoning.mode: "pro"`. `ToolDefinition::with_async_execution()` marks
 application-owned async tools, whose jobs and original `call_id` remain the
 application's responsibility. Managed tools do not enable this automatically.
 Steering is applied at model-call boundaries, not through `response.steer`.
@@ -95,9 +97,9 @@ remain rejected.
 
 Fast mode sends `service_tier: "priority"`; disabling it omits `service_tier`,
 matching [codex-rs request normalization](https://github.com/openai/codex/blob/822e58cc3d666166c7446c5b1ea2e52f5d09594c/codex-rs/protocol/src/openai_models.rs#L988-L1003).
-Astra also supports Ultrafast, which sends `service_tier: "ultrafast"`
+Astra and Sol also support Ultrafast, which sends `service_tier: "ultrafast"`
 ([Ultrafast mode](https://developers.openai.com/api/docs/guides/ultrafast-mode)).
-Sol and Luna run an Ultrafast selection as Fast. Select a tier with
+Luna runs an Ultrafast selection as Fast. Select a tier with
 `service_tier(ServiceTier)` on `OpenAiBuilder` or `NanocodexBuilder`, or with
 `Nanocodex::set_service_tier` for later turns; the boolean `fast_mode` and
 `set_fast_mode` calls select Fast or Standard. Child snapshots keep the requested
@@ -117,8 +119,8 @@ tokens at standard short-context rates:
 
 Above 272,000 input tokens, the whole request uses twice the input and cache
 rates and 1.5 times the output rate. Fast mode doubles those applicable rates.
-Astra Ultrafast uses six times the Standard rates, with the same long-context
-multipliers.
+Astra and Sol Ultrafast use six times the Standard rates, with the same
+long-context multipliers.
 Provider-reported usage drives result and trace estimates. API-equivalent
 subscription estimates are not subscription charges. Historical measurements
 retain their original model IDs and do not establish GPT-6.1 Sol performance.

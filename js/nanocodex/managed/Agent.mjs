@@ -171,9 +171,6 @@ function managedCreateOptions(options) {
   if (["gpt-6-astra", "gpt-6.1-sol"].includes(settings.model) && settings.thinking === "none") {
     throw new TypeError("GPT-6 Astra and GPT-6.1 Sol require low, medium, high, xhigh, or max thinking");
   }
-  if (settings.model === "gpt-6-astra" && settings.reasoningMode === "pro") {
-    throw new TypeError("GPT-6 Astra does not support pro reasoning mode");
-  }
   if (settings.model.startsWith("claude-") && (!["low", "medium", "high"].includes(settings.thinking) || settings.reasoningMode !== "standard" || settings.fastMode)) throw new TypeError("unsupported Claude settings");
   return {
     clientOptions,
@@ -454,9 +451,6 @@ function managedSettingsPatch(patch) {
   if (["gpt-6-astra", "gpt-6.1-sol"].includes(patch.model) && patch.thinking === "none") {
     throw new TypeError("GPT-6 Astra and GPT-6.1 Sol require low, medium, high, xhigh, or max thinking");
   }
-  if (patch.model === "gpt-6-astra" && patch.reasoningMode === "pro") {
-    throw new TypeError("GPT-6 Astra does not support pro reasoning mode");
-  }
   return JSON.stringify({
     ...(Object.hasOwn(patch, "model") ? { model: patch.model } : {}),
     ...(Object.hasOwn(patch, "thinking") ? { thinking: patch.thinking } : {}),
@@ -472,7 +466,6 @@ function managedSettings(value) {
     || (["@cf/zai-org/glm-5.3", "kimi-k3", "mimo-v2.6-pro"].includes(value.model) && (!(value.model === "kimi-k3" ? ["low", "high"] : ["low", "medium", "high"]).includes(value.thinking) || value.reasoning_mode === "pro"))
     || (["gpt-6-astra", "gpt-6.1-sol"].includes(value.model) && value.thinking === "none")
     || (value.model.startsWith("claude-") && (!["low", "medium", "high"].includes(value.thinking) || value.reasoning_mode !== "standard" || value.fast_mode))
-    || (value.model === "gpt-6-astra" && value.reasoning_mode === "pro")
   ) {
     throw new ManagedError("invalid_response", "managed agent settings are malformed");
   }

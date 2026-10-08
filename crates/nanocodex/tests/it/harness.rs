@@ -3,7 +3,7 @@
 use axum::{Json, Router, routing::post};
 use nanocodex::{
     Claude, ClaudeModel, Harness, HarnessFamily, HarnessModel, Model, Nanocodex, NanocodexError,
-    OpenAi, Thinking,
+    OpenAi, ReasoningMode, Thinking,
     agent::{AgentHandle, SpawnOptions},
     claude::{ClaudeClient, ClaudeToolReply, ClaudeTools, ToolResultContent},
     oai::transport::ResponsesTransport,
@@ -268,6 +268,23 @@ async fn journey() {
     sol.shutdown().await.unwrap();
     luna.shutdown().await.unwrap();
 
+    let (astra, _events) = Nanocodex::builder(openai.clone())
+        .model(Model::Astra)
+        .reasoning_mode(ReasoningMode::Pro)
+        .build()
+        .expect("Astra supports pro reasoning mode");
+    astra
+        .prompt("astra-pro-policy")
+        .await
+        .unwrap()
+        .result()
+        .await
+        .unwrap();
+    let astra_request = transcript.lock().unwrap().last().unwrap().clone();
+    assert_eq!(astra_request["request"]["model"], Model::Astra.as_str());
+    assert_eq!(astra_request["request"]["reasoning"]["mode"], "pro");
+    astra.shutdown().await.unwrap();
+
     let (opus, _events) =
         Nanocodex::builder(Claude::new(claude.clone(), ClaudeModel::Opus55.as_str()))
             .thinking(Thinking::Medium)
@@ -361,8 +378,36 @@ async fn journey() {
     assert_eq!(opus_request["request"]["thinking"]["type"], "adaptive");
     assert_eq!(opus_request["request"]["output_config"]["effort"], "medium");
     mutable.shutdown().await.unwrap();
+
+    // The `haiku` alias selects Haiku 5.5, which keeps adaptive effort through Max
+    // and rejects the ordinary inference mode reserved for Haiku 4.5.
+    let haiku: HarnessModel = "haiku".parse().unwrap();
+    assert_eq!(haiku, HarnessModel::Claude(ClaudeModel::Haiku55));
+    assert!(matches!(
+        Nanocodex::builder(Claude::new(claude.clone(), haiku.as_str())).thinking(Thinking::None),
+        Err(NanocodexError::InvalidRequest(_))
+    ));
+    let (opus, _events) =
+        Nanocodex::builder(Claude::new(claude.clone(), ClaudeModel::Opus55.as_str()))
+            .thinking(Thinking::Max)
+            .unwrap()
+            .build()
+            .unwrap();
+    opus.set_harness_model(haiku).await.unwrap();
+    opus.prompt("claude-haiku-5-5-policy")
+        .await
+        .unwrap()
+        .result()
+        .await
+        .unwrap();
+    let haiku_request = transcript.lock().unwrap().last().unwrap().clone();
+    assert_eq!(haiku_request["request"]["model"], "claude-haiku-5-5");
+    assert_eq!(haiku_request["request"]["thinking"]["type"], "adaptive");
+    assert_eq!(haiku_request["request"]["output_config"]["effort"], "max");
+    assert!(haiku_request["request"].get("speed").is_none());
+    opus.shutdown().await.unwrap();
     println!(
-        "MODEL_POLICY Luna/None -> Sol/Low; Opus -> Haiku disables thinking; untouched restore -> Opus enables thinking; used restore stays locked with native history"
+        "MODEL_POLICY Luna/None -> Sol/Low; Opus -> Haiku 4.5 disables thinking; untouched restore -> Opus enables thinking; used restore stays locked with native history; Opus/Max -> haiku alias keeps Haiku 5.5 adaptive Max"
     );
     let (registry, control, _updates) = channel(4);
     control.set_max_resident(1);

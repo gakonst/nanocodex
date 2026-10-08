@@ -513,7 +513,7 @@ impl AgentSettings {
                 } else if self.model == Model::Glm53 {
                     "GLM-5.3 does not support pro reasoning mode"
                 } else {
-                    "GPT-6 Astra does not support pro reasoning mode"
+                    "the selected gateway model does not support pro reasoning mode"
                 })
                 .to_owned(),
             ));
@@ -911,17 +911,17 @@ mod settings_tests {
     }
 
     #[test]
-    fn astra_settings_reject_pro_reasoning_before_transport() {
-        let error = AgentSettings {
+    fn astra_settings_accept_pro_reasoning() {
+        let settings = AgentSettings {
             model: Model::Astra.into(),
             thinking: Thinking::Max,
             reasoning_mode: ReasoningMode::Pro,
             fast_mode: false,
-        }
-        .validate()
-        .expect_err("Astra must reject pro reasoning mode");
-
-        assert!(error.to_string().contains("does not support pro"));
+        };
+        assert!(settings.is_valid());
+        settings
+            .validate()
+            .expect("Astra supports pro reasoning mode");
     }
 }
 

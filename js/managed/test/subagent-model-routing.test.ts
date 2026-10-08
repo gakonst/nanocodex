@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { availableClaudeChildModels } from "../src/model-catalog";
 import { CHILD_ROUTE_TICKET_TTL_MS, createSubagentRouteController, subagentRoutingPolicy, type RetainedChildRoute } from "../src/subagent-model-routing";
 import { ROUTING_CANDIDATES, routingPolicySchema } from "../src/thread-model-routing";
 
@@ -238,6 +239,29 @@ describe("hosted child routing", () => {
     await expect(controller.resolve(request)).rejects.toThrow("Too many pending");
     release();
     await Promise.all(admitted);
+  });
+
+  it("admits Claude children from the account's live model grant with each model's native efforts", async () => {
+    const broker = { fetch: vi.fn(async (input: RequestInfo | URL) => {
+      const path = new URL(String(input)).pathname;
+      if (path.endsWith("/credentials")) return Response.json({ claude: { connected: true } });
+      return Response.json({ models: [{ id: "claude-haiku-5-5" }, { id: "claude-haiku-4-5-20251001" }, { id: "claude-opus-5-5" }] });
+    }) };
+    const available = await availableClaudeChildModels(broker as unknown as Fetcher, "synthetic-user");
+    expect(available).toEqual(["claude-opus-5-5", "claude-haiku-5-5", "claude-haiku-4-5"]);
+    const claudeAuthorize = vi.fn();
+    const { controller, rows } = fixture({ claude: { parentModel: () => undefined, authorize: claudeAuthorize, availableModels: async () => available } });
+
+    const haiku = await controller.resolve({ ...request, harness: "claude", model: "claude-haiku-5-5" });
+    expect(haiku).toMatchObject({ harness: "claude", model: "claude-haiku-5-5", thinking: "low" });
+    controller.bind({ ...requestBinding(haiku.routeId), sessionId: "haiku-child" });
+    expect(rows.get("haiku-child")?.claudeModel).toBe("claude-haiku-5-5");
+    for (const thinking of ["xhigh", "max"]) {
+      expect(await controller.resolve({ ...request, model: "claude-haiku-5-5", thinking })).toMatchObject({ model: "claude-haiku-5-5", thinking });
+    }
+    await expect(controller.resolve({ ...request, model: "claude-haiku-5-5", thinking: "none" })).rejects.toThrow("Unsupported Claude child effort");
+    expect(await controller.resolve({ ...request, model: "claude-haiku-4-5" })).toMatchObject({ model: "claude-haiku-4-5", thinking: "none" });
+    await expect(controller.resolve({ ...request, model: "claude-sonnet-5-5" })).rejects.toThrow("Selected Claude child model is unavailable");
   });
 });
 function requestBinding(routeId: string) {

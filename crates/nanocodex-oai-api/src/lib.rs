@@ -227,10 +227,7 @@ impl Model {
     pub const fn supports_reasoning_mode(self, mode: ReasoningMode) -> bool {
         !matches!(
             (self, mode),
-            (
-                Self::Astra | Self::Glm53 | Self::Kimi | Self::Mimo,
-                ReasoningMode::Pro
-            )
+            (Self::Glm53 | Self::Kimi | Self::Mimo, ReasoningMode::Pro)
         )
     }
 

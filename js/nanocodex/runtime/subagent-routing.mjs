@@ -3,7 +3,7 @@ const modelAliases = new Map([
   ['sol', 'sol'], ['gpt-6.1-sol', 'sol'],
   ['luna', 'luna'], ['gpt-6-luna', 'luna'],
   ['astra', 'astra'], ['gpt-6-astra', 'astra'],
-  ...[['opus','claude-opus-5-5'], ['sonnet','claude-sonnet-5-5'], ['fable','claude-fable-5-1'], ['haiku','claude-haiku-4-5'], ...['claude-opus-5-5','claude-sonnet-5-5','claude-fable-5-1','claude-opus-4-6','claude-sonnet-4-6','claude-haiku-4-5'].map(id => [id,id])],
+  ...[['opus','claude-opus-5-5'], ['sonnet','claude-sonnet-5-5'], ['haiku','claude-haiku-5-5'], ['fable','claude-fable-5-1'], ...['claude-opus-5-5','claude-sonnet-5-5','claude-haiku-5-5','claude-fable-5-1','claude-opus-4-6','claude-sonnet-4-6','claude-haiku-4-5'].map(id => [id,id])],
   ['glm-5.3', 'glm-5.3'], ['glm53', 'glm-5.3'], ['@cf/zai-org/glm-5.3', 'glm-5.3'],
 ]);
 const thinkingLevels = new Set(['none', 'low', 'medium', 'high', 'xhigh', 'max']);

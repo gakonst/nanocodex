@@ -92,7 +92,7 @@ def main():
                     if key!='root':
                         require('ROOT_HISTORY_SECRET' not in json.dumps(body['messages']),'clean child inherited parent transcript')
                         if key in ('PROFILE_CHILD_MARKER','NESTED_CHILD_MARKER','SKILL_CHILD_MARKER','RESUME_PROFILE_MARKER'):
-                            require(body['model']=='claude-haiku-4-5','profile model was not enforced');require('PROFILE_INSTRUCTIONS_SENTINEL' in json.dumps(body.get('system')),'admission lost profile instructions')
+                            require(body['model']=='claude-haiku-5-5','profile model was not enforced');require('PROFILE_INSTRUCTIONS_SENTINEL' in json.dumps(body.get('system')),'admission lost profile instructions')
                         if key=='SKILL_CHILD_MARKER':require('SKILL_ARGUMENT_LITERAL' in first,'skill arguments absent')
                         if key=='NO_READ_CHILD_MARKER':require('ROOT_CONTEXT_SECRET' not in json.dumps(body.get('system')),'startup leaked blocked project context')
                     if stage['pending']:

@@ -549,7 +549,7 @@ test("GPT-6.1 Sol rejects unsupported none effort before dispatch", () => {
 });
 
 
-for (const model of ["gpt-6.1-sol"]) for (const mode of ["standard", "pro"]) {
+for (const model of ["gpt-6-astra", "gpt-6.1-sol"]) for (const mode of ["standard", "pro"]) {
   for (const wire of ["binding", "rest"]) test(`${model}/${mode}/${wire} preserves Responses reasoning mode`, async () => {
     const run = async (_model, payload) => {
       assert.deepEqual(payload.reasoning, { effort: "medium", mode });
@@ -584,7 +584,7 @@ test("invalid and unsupported reasoning modes never dispatch", async () => {
     const transport = createGatewayResponses({ provider: "cloudflare", model, reasoningEffort: "medium", ai: {
       async run() { calls++; return nativeResponse([nativeText("unexpected")]); },
     } });
-    for (const mode of ["invalid", null, ...(model === "gpt-6-astra" ? ["pro"] : [])]) {
+    for (const mode of ["invalid", null]) {
       await assert.rejects(invoke(transport, { input: "test", reasoning: { mode } }), /incompatible/);
       await assert.rejects(invoke(transport, { reasoning: { mode }, input: [{ type: "configuration_update", reasoning: { mode: "standard" } }] }), /incompatible/);
       await assert.rejects(invoke(transport, { input: [{ type: "configuration_update", reasoning: { mode } }, { type: "configuration_update", reasoning: { mode: "standard" } }] }), /incompatible/);

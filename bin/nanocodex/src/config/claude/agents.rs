@@ -429,7 +429,7 @@ async fn execute(
                     Some("sonnet") => Some("claude-sonnet-5-5"),
                     Some("opus") => Some("claude-opus-5-5"),
                     Some("fable") => Some("claude-fable-5-1"),
-                    Some("haiku") => Some("claude-haiku-4-5"),
+                    Some("haiku") => Some("claude-haiku-5-5"),
                     other => other,
                 };
                 let thinking = if model == Some("claude-haiku-4-5") && args.thinking.is_none() {

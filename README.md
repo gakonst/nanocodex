@@ -384,7 +384,8 @@ family. Null values inherit the parent family and its current settings; switchin
 families uses the selected family's defaults. Mixed children share the same task
 tree, result contracts and lifecycle tools. Each family uses its own credentials,
 native tools and transcript format. A model from the wrong family fails before
-provider dispatch. Claude aliases are `opus`, `sonnet`, `fable` and `haiku`.
+provider dispatch. Claude aliases are `opus`, `sonnet`, `fable` and `haiku`;
+`haiku` selects Claude Haiku 5.5, and `claude-haiku-4-5` still selects Haiku 4.5.
 
 Libraries compose the same routing through [`Harness`](crates/nanocodex/README.md)
 with concrete provider builders and host-owned construction recipes.

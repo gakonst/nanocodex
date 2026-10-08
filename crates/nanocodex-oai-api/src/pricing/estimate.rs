@@ -79,6 +79,18 @@ const ASTRA_LONG_CONTEXT_PRIORITY: TokenRates = TokenRates {
 };
 
 // https://developers.openai.com/api/docs/pricing?latest-pricing=ultrafast
+const SOL_ULTRAFAST: TokenRates = TokenRates {
+    input: 12_000,
+    cached_input: 600,
+    cache_write_input: 15_000,
+    output: 60_000,
+};
+const SOL_LONG_CONTEXT_ULTRAFAST: TokenRates = TokenRates {
+    input: 24_000,
+    cached_input: 1_200,
+    cache_write_input: 30_000,
+    output: 90_000,
+};
 const ASTRA_ULTRAFAST: TokenRates = TokenRates {
     input: 60_000,
     cached_input: 6_000,
@@ -125,35 +137,32 @@ struct TokenRates {
 }
 
 impl TokenRates {
+    /// Selects published rates for an already model-clamped tier; Luna has no
+    /// Ultrafast rates because `ServiceTier::effective_for_model` runs it as Fast.
     const fn for_model(model: Model, service_tier: ServiceTier, input_tokens: u64) -> Self {
+        use ServiceTier::{Fast, Priority, Standard, Ultrafast};
+
         let long = input_tokens > LONG_CONTEXT_THRESHOLD;
-        if matches!(
-            (model, service_tier),
-            (Model::Astra, ServiceTier::Ultrafast)
-        ) {
-            return if long {
-                ASTRA_LONG_CONTEXT_ULTRAFAST
-            } else {
-                ASTRA_ULTRAFAST
-            };
-        }
-        let fast = !matches!(service_tier, ServiceTier::Standard);
-        match (model, fast, long) {
+        match (model, service_tier, long) {
             (Model::Glm53, _, _) => GLM53_STANDARD,
             (Model::Kimi, _, _) => KIMI_STANDARD,
             (Model::Mimo, _, _) => MIMO_STANDARD,
-            (Model::Sol, false, false) => SOL_STANDARD,
-            (Model::Sol, true, false) => SOL_PRIORITY,
-            (Model::Sol, false, true) => SOL_LONG_CONTEXT_STANDARD,
-            (Model::Sol, true, true) => SOL_LONG_CONTEXT_PRIORITY,
-            (Model::Luna, false, false) => LUNA_STANDARD,
-            (Model::Luna, true, false) => LUNA_PRIORITY,
-            (Model::Luna, false, true) => LUNA_LONG_CONTEXT_STANDARD,
-            (Model::Luna, true, true) => LUNA_LONG_CONTEXT_PRIORITY,
-            (Model::Astra, false, false) => ASTRA_STANDARD,
-            (Model::Astra, true, false) => ASTRA_PRIORITY,
-            (Model::Astra, false, true) => ASTRA_LONG_CONTEXT_STANDARD,
-            (Model::Astra, true, true) => ASTRA_LONG_CONTEXT_PRIORITY,
+            (Model::Sol, Standard, false) => SOL_STANDARD,
+            (Model::Sol, Priority | Fast, false) => SOL_PRIORITY,
+            (Model::Sol, Ultrafast, false) => SOL_ULTRAFAST,
+            (Model::Sol, Standard, true) => SOL_LONG_CONTEXT_STANDARD,
+            (Model::Sol, Priority | Fast, true) => SOL_LONG_CONTEXT_PRIORITY,
+            (Model::Sol, Ultrafast, true) => SOL_LONG_CONTEXT_ULTRAFAST,
+            (Model::Luna, Standard, false) => LUNA_STANDARD,
+            (Model::Luna, Priority | Fast | Ultrafast, false) => LUNA_PRIORITY,
+            (Model::Luna, Standard, true) => LUNA_LONG_CONTEXT_STANDARD,
+            (Model::Luna, Priority | Fast | Ultrafast, true) => LUNA_LONG_CONTEXT_PRIORITY,
+            (Model::Astra, Standard, false) => ASTRA_STANDARD,
+            (Model::Astra, Priority | Fast, false) => ASTRA_PRIORITY,
+            (Model::Astra, Ultrafast, false) => ASTRA_ULTRAFAST,
+            (Model::Astra, Standard, true) => ASTRA_LONG_CONTEXT_STANDARD,
+            (Model::Astra, Priority | Fast, true) => ASTRA_LONG_CONTEXT_PRIORITY,
+            (Model::Astra, Ultrafast, true) => ASTRA_LONG_CONTEXT_ULTRAFAST,
         }
     }
 }
@@ -169,7 +178,7 @@ pub enum ServiceTier {
     Priority,
     /// Fast processing and token rates.
     Fast,
-    /// Ultrafast processing and token rates, supported by Astra.
+    /// Ultrafast processing and token rates, supported by Astra and Sol.
     Ultrafast,
 }
 
@@ -196,7 +205,7 @@ impl ServiceTier {
     pub const fn effective_for_model(self, model: Model) -> Self {
         match (model, self) {
             (Model::Glm53 | Model::Kimi | Model::Mimo, _) => Self::Standard,
-            (Model::Sol | Model::Luna, Self::Ultrafast) => Self::Fast,
+            (Model::Luna, Self::Ultrafast) => Self::Fast,
             _ => self,
         }
     }
@@ -535,6 +544,55 @@ mod tests {
         assert_eq!(long_standard.amount().decimal(), "11.39002");
         assert_eq!(long_fast.amount().decimal(), "22.78004");
         assert_eq!(long_fast.service_tier(), ServiceTier::Fast);
+    }
+
+    #[test]
+    fn sol_ultrafast_rates_include_cache_and_long_context_while_luna_runs_fast() {
+        let sol = |input_tokens| {
+            estimate_tokens(
+                input_tokens,
+                100_000,
+                50_000,
+                100_000,
+                Model::Sol,
+                ServiceTier::Ultrafast,
+            )
+        };
+        let (short, long) = (sol(272_000), sol(272_001));
+        assert_eq!(
+            [
+                short.input(),
+                short.cached_input(),
+                short.cache_write_input(),
+                short.output(),
+                short.amount(),
+            ]
+            .map(|amount| amount.decimal()),
+            ["1.464", "0.06", "0.75", "6", "8.274"]
+        );
+        assert_eq!(
+            [
+                long.input(),
+                long.cached_input(),
+                long.cache_write_input(),
+                long.output(),
+                long.amount(),
+            ]
+            .map(|amount| amount.decimal()),
+            ["2.928024", "0.12", "1.5", "9", "13.548024"]
+        );
+        assert_eq!(long.service_tier(), ServiceTier::Ultrafast);
+
+        let luna = estimate_tokens(
+            272_001,
+            100_000,
+            50_000,
+            100_000,
+            Model::Luna,
+            ServiceTier::Ultrafast,
+        );
+        assert_eq!(luna.amount().decimal(), "0.2278004");
+        assert_eq!(luna.service_tier(), ServiceTier::Fast);
     }
 
     #[test]

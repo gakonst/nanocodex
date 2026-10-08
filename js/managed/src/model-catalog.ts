@@ -42,7 +42,7 @@ export function defaultSettingsForModel(model: ManagedAgentSettings["model"]): M
 
 /** Catalog admission comes from the account broker, never a client label. */
 /** Native Claude models children may use: every model the Rust Claude harness supports, gated by the account's live grant. */
-const NATIVE_CLAUDE_CHILD_MODELS = ["claude-opus-5-5", "claude-sonnet-5-5", "claude-fable-5-1", "claude-opus-4-6", "claude-sonnet-4-6", "claude-haiku-4-5"] as const;
+const NATIVE_CLAUDE_CHILD_MODELS = ["claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5", "claude-fable-5-1", "claude-opus-4-6", "claude-sonnet-4-6", "claude-haiku-4-5"] as const;
 export async function availableClaudeChildModels(broker: Fetcher, userId: string): Promise<string[]> {
   if (!connected((await credentialStatus(broker, userId)).claude)) return [];
   const allowed = await fetchResponseWithDeadline(broker,
@@ -82,7 +82,7 @@ async function modelsFromStatus(broker: Fetcher, userId: string, runtime: ModelR
   const data: Array<{ id: ManagedAgentSettings["model"]; name: string; provider: string; thinking: string[]; fast_mode: boolean; reasoning_modes: string[] }> = [];
   if (connected(status.chatgpt) || connected(status.openai)) {
     for (const [id, name] of openAIModels)
-      data.push({ id, name, provider: "openai", thinking: [...(id === "gpt-6-luna" ? ["none"] : []), "low", "medium", "high", "xhigh", "max"], fast_mode: true, reasoning_modes: id === "gpt-6-astra" ? ["standard"] : ["standard", "pro"] });
+      data.push({ id, name, provider: "openai", thinking: [...(id === "gpt-6-luna" ? ["none"] : []), "low", "medium", "high", "xhigh", "max"], fast_mode: true, reasoning_modes: ["standard", "pro"] });
   }
   // Provider access is independent from credentials being connected. The public
   // catalog is the intersection of that live grant and this runtime's verified

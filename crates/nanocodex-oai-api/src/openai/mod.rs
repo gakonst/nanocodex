@@ -620,7 +620,7 @@ fn validate(config: &ModelConfig) -> Result<(), OpenAiError> {
             detail: (if config.model == Model::Glm53 {
                 "GLM-5.3 does not support pro reasoning mode"
             } else {
-                "GPT-6 Astra does not support pro reasoning mode"
+                "the selected gateway model does not support pro reasoning mode"
             }),
         });
     }
@@ -841,16 +841,22 @@ mod tests {
     }
 
     #[test]
-    fn astra_rejects_unsupported_pro_reasoning_mode() {
-        let error = OpenAi::builder("test-key")
-            .model(crate::Model::Astra)
-            .reasoning_mode(crate::ReasoningMode::Pro)
-            .service(|| NeverCalled)
-            .build()
-            .err()
-            .expect("Astra pro reasoning mode should fail validation");
+    fn gateway_models_reject_pro_reasoning_mode() {
+        for model in [crate::Model::Glm53, crate::Model::Kimi, crate::Model::Mimo] {
+            let error = OpenAi::builder("test-key")
+                .model(model)
+                .thinking(crate::Thinking::Low)
+                .reasoning_mode(crate::ReasoningMode::Pro)
+                .service(|| NeverCalled)
+                .build()
+                .err()
+                .expect("gateway pro reasoning mode should fail validation");
 
-        assert!(error.to_string().contains("does not support pro"));
+            assert!(
+                error.to_string().contains("does not support pro"),
+                "{model:?}"
+            );
+        }
     }
 
     #[test]
