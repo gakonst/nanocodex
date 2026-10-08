@@ -208,9 +208,11 @@ pub struct RestoreReport {
 }
 
 pub(super) const RESUME_MESSAGE: &str = "The sub-agent runtime restarted while your previous \
-turn was running. Your conversation was restored from its latest committed checkpoint, so \
-recent tool calls may not appear in your history. Inspect the current workspace state before \
-acting, do not repeat side effects that already happened, and continue your delegated task.";
+turn was running. Your conversation was restored from its latest committed checkpoint: every \
+step in your history completed, but a tool call that was still running at the restart is not \
+shown and may or may not have taken effect. Inspect the current workspace state where that \
+matters, do not repeat side effects that already happened, and continue your delegated task \
+from where your history ends. Submit a result only once the whole delegated task is complete.";
 
 pub(super) fn persist_agent(
     session: &ChildSession,

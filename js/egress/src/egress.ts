@@ -2720,7 +2720,11 @@ async function hasRequestPayload(request: Request): Promise<boolean> {
  * OAuth catalog support is a separate rollout gate from Messages inference;
  * unsupported/rejected catalog access remains unavailable, never guessed.
  */
+// Agent creation checks the live Claude catalog; Anthropic's /v1/models adds
+// ~1s per create. Reuse a successful listing for the credential cache window.
 async function handleClaudeModels(env: EgressEnv, userId: string): Promise<Response> {
+  const cached = cacheGet(caches(env).claudeModels, userId);
+  if (cached) return json({ models: cached, has_more: false }, 200);
   try {
     let result = await resolvePlainClaudeCredential(env, userId);
     if (result.status !== 200 || !result.credential) return jsonError(409, "claude_login_required");
@@ -2773,6 +2777,7 @@ async function handleClaudeModels(env: EgressEnv, userId: string): Promise<Respo
           if (secrets.some(secret => secret && model.id.includes(secret))) throw new Error("invalid Claude catalog");
           if (secrets.some(secret => secret && model.display_name.includes(secret))) model.display_name = model.id;
         }
+        cachePut(caches(env).claudeModels, userId, rows, CREDENTIAL_CACHE_MS);
         return json({ models: rows, has_more: false }, 200);
       }
       const last = value.data[value.data.length - 1];
@@ -3367,12 +3372,13 @@ const CREDENTIAL_CACHE_MS = 10 * 60_000;
 const CREDENTIAL_CACHE_EARLY_MS = 5 * 60_000;
 const CREDENTIAL_CACHE_MAX = 1024;
 type CachedClaude = { status: number; credential: ClaudeSubscriptionCredential | null };
-type CredentialCaches = { model: Map<string, { value: CanonicalResolve; until: number }>; claude: Map<string, { value: CachedClaude; until: number }> };
+type ClaudeModelRows = Array<{ id: string; display_name: string }>;
+type CredentialCaches = { model: Map<string, { value: CanonicalResolve; until: number }>; claude: Map<string, { value: CachedClaude; until: number }>; claudeModels: Map<string, { value: ClaudeModelRows; until: number }> };
 // Scoped to the broker binding, so distinct deployments/tests never share entries.
 const credentialCaches = new WeakMap<object, CredentialCaches>();
 function caches(env: EgressEnv): CredentialCaches {
   let entry = credentialCaches.get(env.USER_CREDENTIALS);
-  if (!entry) credentialCaches.set(env.USER_CREDENTIALS, entry = { model: new Map(), claude: new Map() });
+  if (!entry) credentialCaches.set(env.USER_CREDENTIALS, entry = { model: new Map(), claude: new Map(), claudeModels: new Map() });
   return entry;
 }
 function cacheGet<T>(cache: Map<string, { value: T; until: number }>, key: string): T | undefined {
@@ -3391,6 +3397,7 @@ function cachePut<T>(cache: Map<string, { value: T; until: number }>, key: strin
 export function forgetCachedCredentials(env: EgressEnv, userId: string): void {
   caches(env).model.delete(userId);
   caches(env).claude.delete(userId);
+  caches(env).claudeModels.delete(userId);
 }
 
 async function resolveUserCredential(

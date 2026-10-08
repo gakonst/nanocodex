@@ -2326,8 +2326,13 @@ async function managedFetchRoute(
       const startedAt = Date.now();
       const started = performance.now();
       try {
-        const phases = await env.NANOCODEX_SESSIONS.get(id).activationProbe();
-        return json({ kind, dispatch_ms: roundMilliseconds(performance.now() - started),
+        const stub = env.NANOCODEX_SESSIONS.get(id);
+        const phases = await stub.activationProbe();
+        const dispatchMs = Date.now() - startedAt;
+        const warmStartedAt = Date.now();
+        await stub.activationProbe();
+        return json({ kind, dispatch_ms: dispatchMs, warm_dispatch_ms: Date.now() - warmStartedAt,
+          worker_colo: (request as { cf?: { colo?: string } }).cf?.colo, object_colo: phases.colo,
           before_constructor_ms: phases.constructor_entered_at_ms - startedAt,
           constructor_ms: phases.constructor_ms,
           constructor_base_ms: phases.constructor_base_ms,
@@ -2657,6 +2662,9 @@ async function managedFetchRoute(
           session_after_constructor_ms: afterConstructorMs,
           session_handler_ms: handlerMs,
           session_return_ms: returnMs,
+          session_storage_sync_ms: phases.storage_sync_ms,
+          first_turn_admit_wall_ms: hasBoundaryTimes && Number.isFinite(phases.first_turn_admitted_at_ms)
+            ? phases.first_turn_admitted_at_ms - phases.response_ready_at_ms : undefined,
           session_prepare_ms: phases.prepare_ms,
           session_initialize_ms: phases.initialize_ms, session_commit_ms: phases.commit_ms,
           session_commit_attach_ms: phases.commit_attach_ms,
@@ -2691,6 +2699,8 @@ async function managedFetchRoute(
         if (firstTurn && !streaming && phases.first_turn_settings) response.headers.set("x-nanocodex-settings", JSON.stringify(phases.first_turn_settings));
         response.headers.append("server-timing", `managed_create;dur=${createMs}, managed_session_create;dur=${sessionCreateMs}`);
         if (firstTurn && Number.isFinite(phases.first_turn_admit_ms)) response.headers.append("server-timing", `managed_first_turn_admit;dur=${phases.first_turn_admit_ms}`);
+        if (firstTurn && Number.isFinite(phases.storage_sync_ms)) response.headers.append("server-timing", `managed_session_storage_sync;dur=${phases.storage_sync_ms}`);
+        if (firstTurn && hasBoundaryTimes && Number.isFinite(phases.first_turn_admitted_at_ms)) response.headers.append("server-timing", `managed_first_turn_admit_wall;dur=${phases.first_turn_admitted_at_ms - phases.response_ready_at_ms}`);
         if (preHandlerMs !== undefined) response.headers.append("server-timing", `managed_session_pre_handler;dur=${preHandlerMs}`);
         if (beforeConstructorMs !== undefined) response.headers.append("server-timing", `managed_session_before_constructor;dur=${beforeConstructorMs}`);
         if (Number.isFinite(phases.constructor_ms)) response.headers.append("server-timing", `managed_session_constructor;dur=${phases.constructor_ms}`);
@@ -4497,12 +4507,16 @@ export class DurableAgentSession extends DurableComputerObject {
       schema_ms: this.#constructorSqlMs });
   }
 
+  #activationProbed = false;
   /** No user state: compare first activation of a named and a unique ID. */
   async activationProbe(): Promise<Readonly<{
     constructor_entered_at_ms: number; constructor_ready_at_ms: number;
-    constructor_ms: number; constructor_base_ms: number; handler_entered_at_ms: number;
+    constructor_ms: number; constructor_base_ms: number; handler_entered_at_ms: number; colo?: string;
   }>> {
     const handlerEnteredAt = Date.now();
+    if (this.#activationProbed) return { constructor_entered_at_ms: 0, constructor_ready_at_ms: 0,
+      constructor_ms: 0, constructor_base_ms: 0, handler_entered_at_ms: handlerEnteredAt };
+    this.#activationProbed = true;
     if (this.#storageInitialized && (this.#session() || this.#credentialBinding || this.#initializationOwnership()))
       throw new Error("activation_probe_not_empty");
     const phases = {
@@ -4513,7 +4527,10 @@ export class DurableAgentSession extends DurableComputerObject {
       handler_entered_at_ms: handlerEnteredAt,
     };
     await this.ctx.storage.deleteAll();
-    return phases;
+    let colo: string | undefined;
+    try { colo = /^colo=([A-Z]{3})$/m.exec(await (await fetch("https://cloudflare.com/cdn-cgi/trace")).text())?.[1]; }
+    catch { /* Diagnostic only. */ }
+    return { ...phases, colo };
   }
 
   /** Private RPC: live ownership without serializing a streamed HTTP body. */
@@ -5181,7 +5198,9 @@ export class DurableAgentSession extends DurableComputerObject {
       return new Response(null, { status: 204 });
     }
     if (request.method === "POST" && url.pathname === "/create") {
-      return this.#createHttp(request);
+      // Fresh creates commit identity locally and publish the registry entry in
+      // the background (retried), like /create-run; no blocking registry RPC.
+      return this.#createHttp(request, undefined, true);
     }
     if (request.method === "PUT" && url.pathname === "/credential-binding") {
       return this.#prepareCredentialBinding(request);
@@ -6446,6 +6465,12 @@ export class DurableAgentSession extends DurableComputerObject {
     try { summary = JSON.parse(admitted.headers.get("x-nanocodex-turn-summary") ?? "null"); }
     catch { /* Best effort summary, never part of turn admission. */ }
     const admissionMs = roundMilliseconds(performance.now() - admitStartedAt);
+    // Date.now() advances only across I/O, so measure the output-gated commit
+    // explicitly: this is the durable write the response would wait on anyway.
+    const admittedAt = Date.now();
+    await this.ctx.storage.sync();
+    phases.first_turn_admitted_at_ms = admittedAt;
+    phases.storage_sync_ms = Date.now() - admittedAt;
     if (stream) {
       const events = await this.#streamHttpTurn(request, turnReceipt, turn.key);
       if (!events.ok) return events;

@@ -16,7 +16,9 @@ import type { AgentControllerEvent } from "nanocodex-react/agent";
 import type { ArtifactDocument } from "nanocodex/tools/artifact";
 import type { ManagedCreateSettings } from "nanocodex/managed";
 import {
+  AgentFileProvider,
   AgentTerminalView,
+  type AgentFileReader,
   type AgentTerminalMode,
   type AgentTerminalState,
 } from "nanocodex-terminal";
@@ -278,6 +280,16 @@ export const ManagedAgentTerminal = memo(function ManagedAgentTerminal({
   const retryAgent = useCallback(() => {
     void stateQuery.refetch();
   }, [stateQuery.refetch]);
+  const readAgentFile = useCallback<AgentFileReader>(async (path, signal) => {
+    const response = await fetch(`/v1/agents/${encodeURIComponent(agentId)}/files?path=${encodeURIComponent(path)}`, {
+      credentials: "same-origin", cache: "no-store", redirect: "error", referrerPolicy: "no-referrer", signal,
+    });
+    if (!response.ok) {
+      const body = await response.json().catch(() => undefined) as { message?: string } | undefined;
+      throw new Error(body?.message ?? `File unavailable (${response.status})`);
+    }
+    return response.blob();
+  }, [agentId]);
   const recordConversationActivity = useCallback((input: string) => {
     setLocallyStarted(true);
     onConversationActivity(input);
@@ -290,6 +302,7 @@ export const ManagedAgentTerminal = memo(function ManagedAgentTerminal({
   return (
     <>
     <PhoneCallsPanel key={`${accountId}:${agentId}`} parentAgentId={agentId} enabled={Boolean(accountId) && mode !== "hidden"} />
+    <AgentFileProvider read={readAgentFile}>
     <AgentTerminalView
       agent={agent}
       attachments={attachmentPolicy}
@@ -326,6 +339,7 @@ export const ManagedAgentTerminal = memo(function ManagedAgentTerminal({
         </>
       )}
     />
+    </AgentFileProvider>
     </>
   );
 });

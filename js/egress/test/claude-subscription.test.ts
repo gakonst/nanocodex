@@ -112,7 +112,7 @@ describe('real workerd broker and Rust WASM Claude account journeys', () => {
     expect(await catalog.json()).toMatchObject({models:[{id:'claude-synthetic-a'},{id:'claude-sonnet-4-6'}],has_more:false});
     expect(await trace('catalog-refresh')).toEqual({exchange:1,profile:2,models:3,refresh:1});
     expect((await control(user,'/claude/models')).status).toBe(200);
-    expect(await trace('catalog-refresh')).toEqual({exchange:1,profile:2,models:5,refresh:1});
+    expect(await trace('catalog-refresh')).toEqual({exchange:1,profile:2,models:3,refresh:1}); // second listing served from the isolate cache
   });
   it('rechecks earlier-page names against a later rotated private credential', async () => {
     const user='claude-catalog-reflection'; await login(user,'catalog-reflection');
