@@ -2315,7 +2315,8 @@ impl State {
         let completed = |response: &crate::MessageResponse,
                          attempt: u32,
                          first_event: u64,
-                         first_output: Option<u64>| {
+                         first_output: Option<u64>,
+                         dispatch: Option<u64>| {
             let Some(events) = events else { return };
             // Shared usage counts all input, including cache reads and writes.
             let input_tokens = response
@@ -2333,6 +2334,7 @@ impl State {
                 "duration_ns": elapsed_ns(),
                 "time_to_first_event_ns": first_event,
                 "time_to_first_output_ns": first_output,
+                "time_to_dispatch_ns": dispatch,
                 "tool_calls": response.content.iter().filter(|block| matches!(block, ContentBlock::ToolUse { .. })).count(),
                 "usage": {
                     "input_tokens": input_tokens,
@@ -2391,7 +2393,7 @@ impl State {
             ),
             Step::Replay(value) => {
                 let response = serde_json::from_value(value).map_err(durable::recovery_error)?;
-                completed(&response, 0, 0, None);
+                completed(&response, 0, 0, None, None);
                 return Ok(ResponseOutcome {
                     message: response,
                     upgrade: None,
@@ -2438,7 +2440,7 @@ impl State {
                     .await?
             {
                 let response = serde_json::from_value(value).map_err(durable::recovery_error)?;
-                completed(&response, 0, 0, None);
+                completed(&response, 0, 0, None, None);
                 return Ok(ResponseOutcome {
                     message: response,
                     upgrade: Some(upgrade.clone()),
@@ -2450,6 +2452,7 @@ impl State {
         // crash or reopen starts with a fresh budget.
         let max_attempts = if context.disable_tools { 3 } else { 5 };
         let mut attempt = 0;
+        let mut dispatched: Option<u64> = None;
         loop {
             if cancel.flag.load(Ordering::SeqCst) {
                 return Err(ResponseFailure {
@@ -2467,6 +2470,9 @@ impl State {
             // only when both identify the same provider message; a null delta ID
             // beside a concrete final ID renders every Claude answer twice.
             let mut message_id: Option<String> = None;
+            // Pre-send work (durable admission, output gate, request build)
+            // is the part of time-to-first-event spent before the provider fetch.
+            dispatched.get_or_insert_with(&elapsed_ns);
             let opened = tokio::select! {
                 result = client.stream(&request) => result,
                 () = cancel.cancelled() => return Err(ResponseFailure {
@@ -2533,6 +2539,7 @@ impl State {
                         attempt,
                         first_event.unwrap_or_default(),
                         first_output,
+                        dispatched,
                     );
                     return Ok(ResponseOutcome {
                         message: response,

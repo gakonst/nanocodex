@@ -11203,11 +11203,17 @@ export class DurableAgentSession extends DurableComputerObject {
             configuration.instructions ?? "",
             ...(configuration.environment?.skills.map(skill => `Available skill: ${skill.name}. Read /brain/skills/${skill.name}/SKILL.md before applying it.`) ?? []),
           ].join("\n\n");
+      // TEMPORARY TTFE experiment (perf pass 2026-10-08, claude-ttft): the
+      // prompt-cache policy is chosen per session from the last hex digit of its
+      // ID, so interleaved fresh sessions measure 1h vs 5m vs off (pre-#875
+      // shape) time-to-first-event. Fixed per session, so durable cursors and
+      // children stay consistent. Replaced by the winning policy after the A/B.
+      const claudeCacheArm = (["1h", "5m", "off"] as const)[(parseInt(session.session_id.slice(-1), 16) || 0) % 3]!;
       const claudeCapability: ClaudeOptions | undefined = claudeTools === undefined ? undefined : { model: isClaude ? this.#settings().model : "claude-sonnet-4-6", thinking: "low", instructions: claudeInstructions,
             // Claude Code cache shape on the subscription wire: identity + instructions
-            // system markers and a moving final-block marker, all 1h. Children
+            // system markers and a moving final-block marker. Children
             // (Task, spawn_agent, alternate harness) inherit this capability.
-            cache: "1h",
+            cache: claudeCacheArm,
             // Claude uses native Messages tool calls. Code Mode remains the policy for
             // Responses/Codex sessions, including Codex children of a Claude root.
             toolMode: "direct",
@@ -11229,6 +11235,9 @@ export class DurableAgentSession extends DurableComputerObject {
                 : child === undefined ? undefined : managedAuthorizationForRouting(this.ctx.storage, bindings, rootRoutingSessionId(), inferenceSession!, child.host_context_ref);
               if (!this.#hasFullAccountAuthority(authorization) || !turnCanUseExecutionNamespace(authorization))
                 throw new Error("Claude inference requires current session authority");
+              // Dispatch timestamp (event time) for the DO-side vs egress split.
+              console.info({ type: "managed.claude.fetch", session_id: session.session_id, cache_arm: claudeCacheArm,
+                root: inferenceSession === rootRoutingSessionId() });
               return this.#modelEgress().fetch(request);
             },
           };

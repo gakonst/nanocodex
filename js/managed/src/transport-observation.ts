@@ -26,7 +26,8 @@ export function transportObservation(event: AgentEvent, turnId?: string): Record
     if (typeof value === "number" && Number.isSafeInteger(value) && value >= 0) detail[target] = value;
   }
   for (const [source, target] of Object.entries({ delay_ns: "retry_delay_ms", duration_ns: "duration_ms",
-    time_to_first_event_ns: "time_to_first_event_ms", time_to_first_output_ns: "time_to_first_output_ms" })) {
+    time_to_first_event_ns: "time_to_first_event_ms", time_to_first_output_ns: "time_to_first_output_ms",
+    time_to_dispatch_ns: "time_to_dispatch_ms" })) {
     const value = p[source];
     if (typeof value === "number" && Number.isFinite(value) && value >= 0) detail[target] = value / 1_000_000;
   }
