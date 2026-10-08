@@ -427,6 +427,11 @@ impl Flow {
         }
         if matches!(event, Event::FocusLost) {
             self.focused = false;
+            // Displayed one-time codes never stay on screen after focus leaves.
+            if matches!(self.phase, Phase::Display(_, _)) {
+                self.cancel_local();
+                return Action::Cancel;
+            }
             return Action::None;
         }
         let cancel = matches!(&event,Event::Key(k) if k.kind!=KeyEventKind::Release && (k.code==KeyCode::Esc || (k.modifiers.contains(KeyModifiers::CONTROL)&&matches!(k.code,KeyCode::Char('c'|'d'|'z')))));
