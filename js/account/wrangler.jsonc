@@ -223,9 +223,7 @@
   ],
   "vars": {
     "ENVIRONMENT": "production",
-    "NANOCODEX_REGIONAL_API_KEY_AUTHORITY": "true",
-    // Must equal js/managed/wrangler.jsonc NANOCODEX_ACCOUNT_HOMES.
-    "NANOCODEX_ACCOUNT_HOMES": "631f6a83-9e3f-474a-977a-68897d3ee436:wnam"
+    "NANOCODEX_REGIONAL_API_KEY_AUTHORITY": "true"
   },
   "env": {
     "development": {
