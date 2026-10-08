@@ -4,7 +4,78 @@ use crate::{Error, Result};
 use serde::{Serialize, de::DeserializeOwned};
 
 const STATE_FORMAT: u8 = 4;
-const RECORD_BYTES: usize = 256_000;
+/// Payloads below this size remain one inline `=` record.
+const INLINE_BYTES: usize = 16 * 1024;
+/// Content-defined chunk bounds. These constants and [`GEAR`] define stored
+/// chunk identities; changing them only loses cross-version deduplication,
+/// never readability, because manifests list their exact chunk hashes.
+const CHUNK_MIN: usize = 2 * 1024;
+const CHUNK_AVG: usize = 8 * 1024;
+const CHUNK_MAX: usize = 32 * 1024;
+/// Harder cut condition before the average size, easier after it (FastCDC
+/// normalized chunking). The gear hash shifts left, so its top bits cover the
+/// most recent 64 bytes.
+const CHUNK_MASK_SMALL: u64 = !(u64::MAX >> 15);
+const CHUNK_MASK_LARGE: u64 = !(u64::MAX >> 11);
+/// A manifest record lists the SHA-256 identities of its `c:` chunk records.
+/// Legacy `=` inline and `+N` offset-chunked records remain readable.
+const MANIFEST_PREFIX: char = '#';
+
+const GEAR: [u64; 256] = gear_table();
+
+const fn gear_table() -> [u64; 256] {
+    // SplitMix64 from a fixed seed: deterministic across builds and targets.
+    let mut table = [0_u64; 256];
+    let mut state: u64 = 0x6e61_6e6f_636f_6465;
+    let mut index = 0;
+    while index < 256 {
+        state = state.wrapping_add(0x9e37_79b9_7f4a_7c15);
+        let mut value = state;
+        value = (value ^ (value >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+        value = (value ^ (value >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+        table[index] = value ^ (value >> 31);
+        index += 1;
+    }
+    table
+}
+
+/// Returns the byte length of the next content-defined chunk, on a UTF-8
+/// character boundary. Cut decisions depend only on nearby content, so an edit
+/// changes the chunks around it and later boundaries resynchronize.
+fn chunk_end(content: &str) -> usize {
+    let bytes = content.as_bytes();
+    let length = bytes.len();
+    // Avoid tiny tails: a short remainder stays one final chunk.
+    if length <= CHUNK_MIN * 2 {
+        return length;
+    }
+    let limit = length.min(CHUNK_MAX);
+    let normal = limit.min(CHUNK_AVG);
+    let mut hash = 0_u64;
+    let mut index = CHUNK_MIN;
+    let mut cut = limit;
+    while index < limit {
+        hash = (hash << 1).wrapping_add(GEAR[bytes[index] as usize]);
+        let mask = if index < normal {
+            CHUNK_MASK_SMALL
+        } else {
+            CHUNK_MASK_LARGE
+        };
+        if hash & mask == 0 {
+            cut = index + 1;
+            break;
+        }
+        index += 1;
+    }
+    while cut < length && !content.is_char_boundary(cut) {
+        cut += 1;
+    }
+    cut
+}
+
+fn chunk_key(hash: &str) -> String {
+    format!("c:{hash}")
+}
 
 /// An immutable payload reference. Content is loaded only for its consumer.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -59,30 +130,34 @@ impl EncodedPayload {
         let Some(content) = self.content.take() else {
             return;
         };
-        if content.len() < RECORD_BYTES {
+        if content.len() < INLINE_BYTES {
             records.push(crate::StoreRecord {
                 key: self.key.to_string(),
                 value: format!("={content}"),
             });
             return;
         }
+        // Content-defined chunks: an unchanged transcript prefix (and any
+        // repeated region, such as a conversation retained twice by one
+        // cursor) yields the same chunk identities across model rounds, so
+        // the store's content-addressed insert writes only new chunks.
+        let mut manifest = String::with_capacity(1 + content.len() / CHUNK_MIN * 64);
+        manifest.push(MANIFEST_PREFIX);
         let mut offset = 0;
-        let mut count = 0;
         while offset < content.len() {
-            let mut end = (offset + RECORD_BYTES).min(content.len());
-            while !content.is_char_boundary(end) {
-                end -= 1;
-            }
+            let end = offset + chunk_end(&content[offset..]);
+            let chunk = &content[offset..end];
+            let hash = record_key(chunk);
             records.push(crate::StoreRecord {
-                key: format!("{}/{count}", self.key),
-                value: content[offset..end].to_owned(),
+                key: chunk_key(&hash),
+                value: chunk.to_owned(),
             });
-            count += 1;
+            manifest.push_str(&hash);
             offset = end;
         }
         records.push(crate::StoreRecord {
             key: self.key.to_string(),
-            value: format!("+{count}"),
+            value: manifest,
         });
     }
 
@@ -131,6 +206,30 @@ impl EncodedPayload {
     ) -> Result<Self> {
         let content = if let Some(content) = record.strip_prefix('=') {
             content.to_owned()
+        } else if let Some(hashes) = record.strip_prefix(MANIFEST_PREFIX) {
+            if hashes.is_empty()
+                || hashes.len() % 64 != 0
+                || !hashes.bytes().all(|byte| byte.is_ascii_hexdigit())
+            {
+                return Err(Error::InvalidState("invalid payload chunk manifest".into()));
+            }
+            let keys: Vec<String> = (0..hashes.len() / 64)
+                .map(|index| chunk_key(&hashes[index * 64..(index + 1) * 64]))
+                .collect();
+            let mut content = String::new();
+            for page in keys.chunks(16) {
+                let chunks = store.read_records(state_id, page).await?;
+                if chunks.len() != page.len() {
+                    return Err(Error::InvalidState("record batch length mismatch".into()));
+                }
+                for (key, chunk) in page.iter().zip(chunks) {
+                    let chunk = chunk.ok_or_else(|| {
+                        Error::InvalidState(format!("missing payload chunk {key} of {}", self.key))
+                    })?;
+                    content.push_str(&chunk);
+                }
+            }
+            content
         } else {
             let count: usize = record
                 .strip_prefix('+')
@@ -1550,5 +1649,197 @@ mod withdrawal_tests {
             Some(3)
         );
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod chunk_tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    #[derive(Default)]
+    struct Records(HashMap<String, String>);
+
+    impl Records {
+        fn stage(&mut self, payload: &EncodedPayload) -> usize {
+            let mut staged = Vec::new();
+            payload.clone().stage(&mut staged);
+            let mut written = 0;
+            for record in staged {
+                if let Some(previous) = self.0.get(&record.key) {
+                    assert_eq!(previous, &record.value, "immutable record conflict");
+                } else {
+                    written += record.key.len() + record.value.len();
+                    self.0.insert(record.key, record.value);
+                }
+            }
+            written
+        }
+    }
+
+    impl crate::StateStore for Records {
+        fn read_record<'a>(
+            &'a mut self,
+            _: &'a str,
+            key: &'a str,
+        ) -> crate::StoreFuture<'a, std::result::Result<Option<String>, crate::StoreError>>
+        {
+            let value = self.0.get(key).cloned();
+            Box::pin(async move { Ok(value) })
+        }
+        fn acquire<'a>(
+            &'a mut self,
+            _: &'a str,
+            _: crate::OwnerId,
+        ) -> crate::StoreFuture<'a, std::result::Result<crate::OwnedState, crate::StoreError>>
+        {
+            unreachable!()
+        }
+        fn replace<'a>(
+            &'a mut self,
+            _: &'a str,
+            _: &'a crate::OwnerToken,
+            _: u64,
+            _: &'a str,
+            _: &'a [crate::StoreRecord],
+        ) -> crate::StoreFuture<'a, std::result::Result<u64, crate::StoreError>> {
+            unreachable!()
+        }
+    }
+
+    fn transcript(messages: usize) -> serde_json::Value {
+        let messages: Vec<_> = (0..messages)
+            .map(|index| {
+                serde_json::json!({
+                    "role": if index % 2 == 0 { "user" } else { "assistant" },
+                    "content": format!("message {index} é→ {}", "lorem ipsum dolor ".repeat(400 + index % 7 * 50)),
+                })
+            })
+            .collect();
+        serde_json::json!({"tools": "t".repeat(40_000), "messages": messages, "tail": {"cursor": 1}})
+    }
+
+    async fn round_trip(records: &mut Records, payload: &EncodedPayload) -> String {
+        payload
+            .reference()
+            .load(records, "state")
+            .await
+            .unwrap()
+            .json()
+            .unwrap()
+            .to_owned()
+    }
+
+    #[tokio::test]
+    async fn growing_transcript_writes_only_new_chunks_and_reads_back_exactly() {
+        let mut records = Records::default();
+        let mut previous_total = 0;
+        for messages in [40, 41, 42, 43] {
+            let value = transcript(messages);
+            let payload = EncodedPayload::encode(&value).unwrap();
+            let total = payload.json().unwrap().len();
+            let written = records.stage(&payload);
+            if previous_total != 0 {
+                let appended = total - previous_total;
+                // Only new content plus a bounded number of boundary chunks.
+                assert!(
+                    written < appended + 3 * CHUNK_MAX,
+                    "wrote {written} bytes for {appended} appended of {total}"
+                );
+                assert!(
+                    written * 4 < total,
+                    "no deduplication: {written} of {total}"
+                );
+            }
+            previous_total = total;
+            assert_eq!(
+                round_trip(&mut records, &payload).await,
+                payload.json().unwrap()
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn legacy_inline_and_offset_chunk_records_remain_readable() {
+        let content = serde_json::to_string(&transcript(30)).unwrap();
+        let key = record_key(&content);
+        let mut records = Records::default();
+        let mut count = 0;
+        let mut offset = 0;
+        while offset < content.len() {
+            let mut end = (offset + 256_000).min(content.len());
+            while !content.is_char_boundary(end) {
+                end -= 1;
+            }
+            records
+                .0
+                .insert(format!("{key}/{count}"), content[offset..end].to_owned());
+            count += 1;
+            offset = end;
+        }
+        records.0.insert(key.clone(), format!("+{count}"));
+        let legacy = EncodedPayload {
+            key: key.into(),
+            content: None,
+            pending: Vec::new(),
+        };
+        assert_eq!(round_trip(&mut records, &legacy).await, content);
+
+        let mut small = EncodedPayload::encode(&"small").unwrap();
+        let mut staged = Vec::new();
+        small.stage(&mut staged);
+        assert_eq!(staged.len(), 1);
+        assert!(staged[0].value.starts_with('='));
+    }
+
+    #[tokio::test]
+    async fn tampered_or_missing_chunks_fail_closed() {
+        let value = transcript(30);
+        let payload = EncodedPayload::encode(&value).unwrap();
+        let mut records = Records::default();
+        records.stage(&payload);
+        let chunk = records
+            .0
+            .keys()
+            .find(|key| key.starts_with("c:"))
+            .unwrap()
+            .clone();
+        let original = records.0.insert(chunk.clone(), "tampered".into()).unwrap();
+        let error = payload
+            .reference()
+            .load(&mut records, "state")
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("checksum mismatch"), "{error}");
+        records.0.insert(chunk.clone(), original);
+        records.0.remove(&chunk);
+        let error = payload
+            .reference()
+            .load(&mut records, "state")
+            .await
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("missing payload chunk"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn chunk_boundaries_are_bounded_and_respect_utf8() {
+        let content = "→é漢字🙂".repeat(60_000);
+        let mut offset = 0;
+        let mut chunks = 0;
+        while offset < content.len() {
+            let end = offset + chunk_end(&content[offset..]);
+            assert!(content.is_char_boundary(end));
+            assert!(end - offset <= CHUNK_MAX + 3);
+            assert!(end == content.len() || end - offset > CHUNK_MIN);
+            offset = end;
+            chunks += 1;
+        }
+        assert!(chunks > 1);
+        // The identity table is part of the stored chunk format.
+        assert_eq!(GEAR[0], gear_table()[0]);
+        assert_ne!(GEAR[0], GEAR[1]);
     }
 }

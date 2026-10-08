@@ -292,9 +292,18 @@ struct Driver {
     claimed: HashMap<String, Caller>,
     running: HashSet<String>,
     poisoned: bool,
+    /// Immutable record keys this owner has observed committed for its state.
+    /// Content-addressed records are never rewritten and are deleted only by
+    /// destroy, which first fences every owner. The set is extended only after
+    /// an acknowledged replace and cleared on every acquisition, so an
+    /// uncertain or foreign write never suppresses a record a head needs.
+    committed_records: HashSet<String>,
     commands: mpsc::Receiver<Command>,
     releases: mpsc::UnboundedReceiver<ReleaseSignal>,
 }
+
+/// Bounds the per-owner committed-record cache; clearing only resends records.
+const COMMITTED_RECORD_LIMIT: usize = 65_536;
 
 const OWNER_ACTIVE: u8 = 0;
 const OWNER_RELEASING: u8 = 1;
@@ -868,6 +877,7 @@ impl Driver {
         };
         self.owner = acquired.owner;
         self.state = state;
+        self.committed_records.clear();
         self.claimed.clear();
         self.running.clear();
         self.next_agent_generation = generation;
@@ -1298,7 +1308,8 @@ impl Driver {
                 next.revision()
             )));
         }
-        let records = next.stage_records();
+        let mut records = next.stage_records();
+        records.retain(|record| !self.committed_records.contains(&record.key));
         let payload = next.checkpoint_payload()?;
         let revision = match self
             .store
@@ -1324,6 +1335,11 @@ impl Driver {
                 "store returned revision {revision} after replacing expected revision {expected_revision}"
             )));
         }
+        if self.committed_records.len() + records.len() > COMMITTED_RECORD_LIMIT {
+            self.committed_records.clear();
+        }
+        self.committed_records
+            .extend(records.into_iter().map(|record| record.key));
         self.state = next;
         Ok(())
     }
@@ -1496,6 +1512,7 @@ impl DurableSession {
             claimed: HashMap::new(),
             running: HashSet::new(),
             poisoned: false,
+            committed_records: HashSet::new(),
             commands: receiver,
             releases: release_receiver,
         })?;
