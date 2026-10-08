@@ -323,6 +323,8 @@ export type HostedToolsCallObservation = Readonly<{
   host_stage?: HostedToolDiagnosticStage;
   host_elapsed_ms?: number;
   reason_code?: HostedToolsDiagnosticReason;
+  /** Fixed schema field names only; never retained/proposed values. */
+  conflict_fields?: readonly ImmutableCallField[];
   outcome?: HostedToolCallOutcome["status"] | "failed";
   success?: boolean;
   duration_ms?: number;
@@ -1615,9 +1617,11 @@ export class HostedToolsBrokerCore {
           ...(context.turnId === undefined ? {} : { turnId: context.turnId }),
           model: context.model ?? "unknown",
           input: input as Record<string, unknown> | string,
-          // The hosted wire protocol requires a positive safe integer.
-          // Use its representable maximum when no caller budget is supplied.
-          outputTokenBudget: Number.MAX_SAFE_INTEGER,
+          // This adapter generates the budget; replay must retain the admitted
+          // default across releases. Explicit invoke budgets and input remain
+          // subject to the strict immutable-call comparison below.
+          outputTokenBudget: this.#persistence.callBySource(context.sessionId, context.callId)
+            ?.output_token_budget ?? Number.MAX_SAFE_INTEGER,
           ...(context.signal === undefined ? {} : { signal: context.signal }),
         });
         if (outcome.status === "completed") {
@@ -2014,9 +2018,10 @@ export class HostedToolsBrokerCore {
   }
 
   async #repeatedCall(existing: HostedToolsCallRow, proposed: HostedToolsCallRow, binding: HostedToolsCatalogBinding, signal?: AbortSignal): Promise<HostedToolsInvocationOutcome> {
+    const matches = sameImmutableCall(existing, proposed);
     this.#observe("replay", { ...existing, thread_id: existing.thread_id ?? proposed.thread_id },
-      sameImmutableCall(existing, proposed) ? {} : { reason_code: "call_conflict" });
-    if (!sameImmutableCall(existing, proposed)) {
+      matches ? {} : { reason_code: "call_conflict", conflict_fields: immutableCallDifferences(existing, proposed) });
+    if (!matches) {
       const state = this.#stateForLease(existing.lease_id, existing.generation);
       const socket = this.#socketForState(state);
       if (socket) this.#fence(socket, "call ID was reused with different immutable fields", 1008, "call_conflict");
@@ -2583,6 +2588,19 @@ function canonicalJson(value: unknown): string {
     }
     return item;
   });
+}
+
+const IMMUTABLE_CALL_FIELDS = [
+  "call_id", "session_id", "source_call_id", "turn_id", "host_id", "lease_id",
+  "generation", "model", "name", "input_json", "output_token_budget",
+  "output_byte_budget", "deadline_at",
+] as const satisfies readonly (keyof HostedToolsCallRow)[];
+type ImmutableCallField = (typeof IMMUTABLE_CALL_FIELDS)[number];
+
+function immutableCallDifferences(left: HostedToolsCallRow, right: HostedToolsCallRow): readonly ImmutableCallField[] {
+  return Object.freeze(IMMUTABLE_CALL_FIELDS.filter(field => field === "turn_id"
+    ? (left.turn_id ?? null) !== (right.turn_id ?? null)
+    : left[field] !== right[field]));
 }
 
 function sameImmutableCall(left: HostedToolsCallRow, right: HostedToolsCallRow): boolean {

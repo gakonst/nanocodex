@@ -858,7 +858,7 @@ describe("HostedToolsBroker socket-owned protocol", () => {
       model,
       name: "fixture__lookup",
       input: { id: "42" },
-      output_token_budget: 10_000,
+      output_token_budget: Number.MAX_SAFE_INTEGER,
       output_byte_budget: Number.MAX_SAFE_INTEGER,
       deadline_at: NOW + 30_000,
     });
@@ -1515,3 +1515,39 @@ function result(callId: string, output: string): string {
     },
   });
 }
+
+it("retains admission-time generated budget across an adapter upgrade without resending", async () => {
+  const fixture = createFixture(); const host = fixture.socket();
+  await catalog(fixture.broker, host);
+  const tool = fixture.broker.provider().resolve("fixture__lookup")!;
+  const context = {sessionId:"session",callId:"upgrade-replay",model:"fixture"};
+  const pending = tool.handler({},context);
+  const frame = host.sent.find(frame=>frame.type==="call")!;
+  expect(frame.output_token_budget).toBe(Number.MAX_SAFE_INTEGER);
+  fixture.persistence.calls.get(String(frame.call_id))!.output_token_budget = 10000;
+  const replay = tool.handler({},context);
+  await fixture.broker.message(host.webSocket,result(String(frame.call_id),"ok"));
+  expect(await pending).toMatchObject({success:true});
+  expect(await replay).toMatchObject({success:true});
+  expect(await tool.handler({},context)).toMatchObject({success:true});
+  expect(host.closed).toBeUndefined();
+  expect(host.sent.filter(frame=>frame.type==="call")).toHaveLength(1);
+});
+
+it("preserves explicit input budget conflicts and the collateral poll fence", async () => {
+  const fixture = createFixture(); const host = fixture.socket();
+  await catalog(fixture.broker, host);
+  const tool = fixture.broker.provider().resolve("fixture__lookup")!;
+  const context = {sessionId:"session",callId:"old-call",model:"fixture"};
+  const old = tool.handler({max_output_tokens:100},context);
+  const frame = host.sent.find(frame=>frame.type==="call")!;
+  await fixture.broker.message(host.webSocket,result(String(frame.call_id),"old receipt"));
+  await old;
+  fixture.persistence.calls.get(String(frame.call_id))!.output_token_budget=10000;
+  const poll = tool.handler({session_id:42,chars:"",yield_time_ms:300000},{...context,callId:"poll-call"});
+  const conflict = await tool.handler({max_output_tokens:200},context);
+  expect(conflict).toMatchObject({success:false,structuredResult:{message:"Hosted Tools call ID conflicts with retained durable state"}});
+  expect(await poll).toMatchObject({success:false,structuredResult:{message:"Hosted Tools outcome is ambiguous after transport loss: call ID was reused with different immutable fields"}});
+  expect(host.closed).toMatchObject({code:1008});
+  expect(host.sent.filter(frame=>frame.type==="call")).toHaveLength(2);
+});

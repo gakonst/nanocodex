@@ -25,6 +25,12 @@ const NUMBER_FIELDS = new Set([
   "renewal_count", "dispatch_to_message_ms", "frame_decode_ms", "lease_validation_ms", "message_to_handler_ms",
 ]);
 const BOOLEAN_FIELDS = new Set(["success", "intentional", "close_clean", "replayed", "start_observed", "reconnect_enabled", "opens_new_socket", "server_requested_delay", "active", "connected"]);
+// Only broker schema names survive persistence; arbitrary strings/values do not.
+const CONFLICT_FIELDS = new Set([
+  "call_id", "session_id", "source_call_id", "turn_id", "host_id", "lease_id",
+  "generation", "model", "name", "input_json", "output_token_budget",
+  "output_byte_budget", "deadline_at",
+]);
 const HOST_TIMING_FIELDS = new Set(["scheduler_ms", "execution_gate_ms", "execution_ms", "result_encode_ms", "result_queue_ms", "host_elapsed_ms"]);
 
 export type DiagnosticPage = Readonly<{
@@ -150,6 +156,9 @@ function project(value: unknown): Record<string, unknown> | undefined {
     if (STRING_FIELDS.has(key) && typeof field === "string" && ID.test(field)) safe[key] = field;
     if (NUMBER_FIELDS.has(key) && typeof field === "number" && Number.isFinite(field) && Math.abs(field) <= Number.MAX_SAFE_INTEGER) safe[key] = field;
     if (BOOLEAN_FIELDS.has(key) && typeof field === "boolean") safe[key] = field;
+    if (key === "conflict_fields" && Array.isArray(field)) safe[key] = [...new Set(
+      field.slice(0, CONFLICT_FIELDS.size).filter(name => typeof name === "string" && CONFLICT_FIELDS.has(name)),
+    )];
     if (key === "host_timing" && field && typeof field === "object" && !Array.isArray(field)) safe[key] = Object.fromEntries(
       Object.entries(field).filter(([name, measurement]) => HOST_TIMING_FIELDS.has(name)
         && typeof measurement === "number" && Number.isFinite(measurement) && measurement >= 0 && measurement <= Number.MAX_SAFE_INTEGER),
