@@ -450,6 +450,11 @@ impl AgentArgs {
             || std::env::var_os("ANTHROPIC_MODEL").is_some()
     }
 
+    /// The workspace requested with `--cwd`, if any.
+    pub(crate) fn requested_workspace(&self) -> Option<&std::path::Path> {
+        self.cwd.as_deref()
+    }
+
     /// Resume uses the store owning the thread unless the family was chosen explicitly.
     pub(crate) fn resume_with_harness(&mut self, family: HarnessFamily) {
         if !self.has_explicit_harness() {
