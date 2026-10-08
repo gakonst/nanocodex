@@ -461,26 +461,6 @@ html[data-theme="light"] .chat-workspace {
 .chat-workspace .agent-terminal-entry-label {
   font-size: 11px;
 }
-.chat-workspace .agent-terminal-tool {
-  margin-bottom: 10px;
-  border: 0;
-  border-radius: 8px;
-  background: color-mix(in srgb, var(--chat-text) 3%, var(--chat-background));
-}
-.chat-workspace .agent-terminal-tool summary {
-  padding: 12px;
-}
-.chat-workspace .agent-terminal-tool-heading strong {
-  font: 500 13px/1.5 var(--font-sans);
-}
-.chat-workspace .agent-terminal-tool-heading > span {
-  display: none;
-}
-.chat-workspace .agent-terminal-tool-meta {
-  font-family: var(--font-sans);
-  text-transform: none;
-  letter-spacing: 0;
-}
 .chat-workspace .agent-terminal-status {
   font: 13px/1.6 var(--font-sans);
   color: var(--chat-muted);

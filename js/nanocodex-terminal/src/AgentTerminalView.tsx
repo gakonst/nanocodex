@@ -4,6 +4,7 @@ import {
   type ReactNode,
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
 } from "react";
@@ -222,13 +223,21 @@ export function AgentTerminalView({
   const cancelTouchTurn = useCallback(() => {
     if (agentStatus === "ready") void voiceState.noteTypedInput().then(() => controller.cancel());
   }, [agentStatus, controller, voiceState.noteTypedInput]);
+  // The snapshot changes every streamed frame; its submit control is stable per controller.
+  const submitToController = controller.submit;
   const submitAccessoryPrompt = useCallback((input: string) => {
     if (agentStatus !== "ready") return;
     const submittedAt = performance.now();
     setFollowTailRequest((current) => current + 1);
     retainSubmittedPrompt(submittedPrompts.current, input, submittedAt);
-    void voiceState.noteTypedInput().then(() => controller.submit(input, { intent: "queue" }));
-  }, [agentStatus, controller, voiceState.noteTypedInput]);
+    void voiceState.noteTypedInput().then(() => submitToController(input, { intent: "queue" }));
+  }, [agentStatus, submitToController, voiceState.noteTypedInput]);
+
+  // A stable renderer lets completed transcript rows skip rendering while tokens stream.
+  const agentReady = agentStatus === "ready";
+  const transcriptRenderTool = useMemo(() => renderTool
+    ? (tool: ToolActivity) => renderTool(tool, { agentReady, submit: submitAccessoryPrompt })
+    : undefined, [agentReady, renderTool, submitAccessoryPrompt]);
 
   const terminal = (
     <TerminalTranscriptSurface
@@ -265,7 +274,9 @@ export function AgentTerminalView({
       inactiveMessage={unavailableMessage ?? ""}
       isLoadingOlder={controller.isLoadingOlder}
       mode={mode}
-      renderTool={renderTool ? (tool) => renderTool(tool, { agentReady: agentStatus === "ready", submit: submitAccessoryPrompt }) : undefined}
+      running={terminalRunning}
+      activity={controller.status}
+      renderTool={transcriptRenderTool}
       showToolCalls={showToolCalls}
       userLabel={userLabel}
       status={agentStatus}

@@ -8,10 +8,17 @@ or a second agent backend.
 
 ## User surfaces
 
-- **Home** shows an ephemeral browser-agent demo. Both browser chats and durable
-  agents include native `browseX` public X browsing, listed in `accountInfo.apis`
-  without an X connection. **Durable Agent** retains a
-  thread only after the user connects their own ChatGPT or OpenAI credential.
+- **Home** (`/`) is the product homepage for every visitor; signed-in accounts
+  see shortcuts to Agents and Account instead of the sign-in form.
+- **Agents** (`/agents`, `/agents/:id`) is the durable-agent chat app. Agents
+  include native `browseX` public X browsing, listed in `accountInfo.apis`
+  without an X connection, and retain a thread only after the user connects
+  their own ChatGPT or OpenAI credential.
+- **Account** (`/account`, `/account/vault`, `/account/wallet`,
+  `/account/access`) manages connections, Vault, wallet and API keys.
+  Superseded `/agent…` and `/connect…` links redirect there, keeping query and
+  fragment; `/connect?user_code=…` and `/connect/device` remain device
+  authorization, and `/vault` and `/services/phone` remain hosted service pages.
 - **Thread sharing** creates revocable view or write links for a durable
   agent conversation. Guests see the normal Chat transcript; write links admit
   real AI turns with attenuated account-tool permissions. See [thread sharing](../../docs/THREAD_SHARING.md).
@@ -165,3 +172,12 @@ selection without grants, cross-origin popup and frame behavior, number search, 
 incoming SMS, release confirmation, and reload/status recovery after an uncertain
 purchase. Screenshots and a redacted HTTP transcript are saved in ignored
 `output/services-ui/`; no live number is purchased.
+
+Run `pnpm --filter nanocodex-web test:chat-performance` after installing Playwright
+Chromium to exercise chat rendering at scale. A synthetic agent replays a capped
+200-entry history of rich answers, grouped and nested tools, subagents, and previews
+through the real controller and terminal view, then streams a live turn one event per
+frame at 4× CPU throttling (`CPU_THROTTLE`, `RUNS`, `LABEL` override). It asserts live
+status, reading position, jump-to-latest, and completion behavior; render, script, and
+long-task costs are recorded, not asserted, in ignored `output/chat-performance/`.
+`CPU_PROFILE=1` also saves an unminified CPU profile of the streaming phase.

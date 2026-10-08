@@ -79,7 +79,7 @@ export function CloudflareConnection({ accountId, requiresLogin = false }: { acc
       <label>Vault API key<select aria-label="Cloudflare Vault API key" value={vaultId} disabled={busy || requiresLogin} onChange={event => setVaultId(event.target.value)}><option value="">Choose an API key</option>{vault.query.data?.map(entry => <option key={entry.id} value={entry.id}>{entry.name}</option>)}</select></label>
       <label>Account ID (optional)<input aria-label="Cloudflare account ID" value={owner} pattern="[a-f0-9]{32}" disabled={busy || requiresLogin} onChange={event => setOwner(event.target.value)} /></label>
       <p>Account-owned tokens require an account ID. Leave blank for user tokens.</p>
-      {vault.query.data?.length === 0 ? <p><a href="/connect/vault?add=api_key">Save an API key in Vault</a> to connect.</p> : null}
+      {vault.query.data?.length === 0 ? <p><a href="/account/vault?add=api_key">Save an API key in Vault</a> to connect.</p> : null}
       <button disabled={busy || uncertain || requiresLogin || !vault.query.data?.some(entry => entry.id === vaultId)} type="submit">{busy ? "Updating…" : "Connect Cloudflare"}</button>
     </form> : null}
     {connections.query.data?.map(connection => <div className="account-service-identity" key={connection.id}><div><strong>{connection.label}</strong><span>Cloudflare account</span></div><button disabled={busy || uncertain || requiresLogin} type="button" onClick={() => void act(connection.id)}>Revoke {connection.label}</button></div>)}

@@ -1,4 +1,4 @@
-/* Signed-out homepage and the signed-in Connections default. */
+/* Homepage for every visitor; signed-in accounts see agent/account shortcuts. */
 .site-shell.surface-home:has(.home-landing, .account-hub, .home-landing-loading) {
   position: static; height: auto; min-height: 100dvh; overflow: visible; transform: none;
 }
@@ -56,6 +56,8 @@
 .home-command svg { width: 16px; height: 16px; }
 .home-panel > .home-fine { font-size: 12px; }
 .home-fine code { font-size: 12px; overflow-wrap: anywhere; }
+.home-panel .home-landing-loading { min-height: 160px; }
+.home-signed-in-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 4px; }
 .home-sign-in .sms-auth-panel { padding: 0; background: transparent; box-shadow: none; border: 0; }
 .home-features { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 28px; padding-top: 32px; border-top: 1px solid var(--home-line); }
 .home-feature { display: grid; gap: 8px; align-content: start; }

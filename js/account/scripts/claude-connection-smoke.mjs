@@ -103,7 +103,7 @@ try{
   claudeUnavailable=true;
   await page.getByRole('button',{name:/Model settings:/}).click();
   await page.getByText('Couldn’t load Claude models. Reopen to retry.',{exact:true}).waitFor();
-  assert.equal(await page.getByRole('menuitem',{name:'Manage Claude connection',exact:true}).getAttribute('href'),'/connect#claude-connection');
+  assert.equal(await page.getByRole('menuitem',{name:'Manage Claude connection',exact:true}).getAttribute('href'),'/account#claude-connection');
   await page.keyboard.press('Escape');
   claudeUnavailable=false;
   catalogFailure=true;
@@ -119,7 +119,7 @@ try{
   await card.getByRole('button',{name:/Claude.*Disconnect/}).click();await card.getByRole('button',{name:/Claude.*Connect/}).waitFor();
   if(!inline && await card.count()!==0) await page.getByRole('button',{name:'Close account panel'}).click();
   await page.getByRole('button',{name:/Model settings:/}).click();
-  assert.equal(await page.getByRole('menuitem',{name:'Connect Claude',exact:true}).getAttribute('href'),'/connect#claude-connection');
+  assert.equal(await page.getByRole('menuitem',{name:'Connect Claude',exact:true}).getAttribute('href'),'/account#claude-connection');
   await page.keyboard.press('Escape');
   console.log('Disconnected, checking create denial');
   await page.getByRole('button',{name:'Create managed chat'}).click();await page.getByLabel('create-receipt').filter({hasText:'Connect a model subscription'}).waitFor();

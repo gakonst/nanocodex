@@ -74,8 +74,8 @@ try{
   await page.locator('[data-streamdown="mermaid-block"]').scrollIntoViewIfNeeded();
   try { await page.locator('[data-streamdown="mermaid"] svg').waitFor({timeout:10000}); } catch(error) { writeFileSync(new URL('failure.html',output),await page.content()); await page.screenshot({path:new URL('failure.png',output).pathname,fullPage:true}); console.log(errors); throw error; }
   const preview=page.getByRole('link',{name:/Open preview.*View/});assert.equal(await preview.getAttribute('href'),'https://preview.example.com/release');
-  assert.equal(await page.locator('.agent-terminal-tool.is-completed').getAttribute('open'),null);
-  assert.equal(await page.locator('.agent-terminal-tool.is-failed').getAttribute('open'),'');
+  assert.equal(await page.locator('.agent-tool-row.is-completed > details').getAttribute('open'),null);
+  assert.match(await page.locator('.agent-tool-row.is-failed .agent-tool-error-line').textContent(),/release manifest missing/);
   await page.getByRole('button',{name:'Copy table',exact:true}).click();
   assert.match(await page.evaluate(()=>navigator.clipboard.readText()),/Release\tState\tOwner/);
   const downloadPromise=page.waitForEvent('download');await page.getByRole('button',{name:'Save CSV'}).click();

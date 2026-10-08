@@ -574,9 +574,14 @@ test("child JSON is disclosed separately while root JSON survives live and repla
     try {
       const child = renderer.root.findByProps({ "data-agent-id": 7 });
       assert.equal(child.type, "details");
-      assert.equal(child.props.open, undefined);
-      assert.equal(child.findByType("summary").children.join(""), "Agent 7 activity");
-      assert.ok(child.findAll(node => node.props.children === '{"report":"child"}').length > 0);
+      assert.equal(child.props.open, false);
+      assert.match(JSON.stringify(child.findByType("summary").findAllByType("strong").map(node => node.children)), /Agent 7/);
+      assert.ok(child.findByType("summary").findAll(node => node.props.className === "agent-subagent-preview" && node.props.children === '{"report":"child"}').length > 0);
+      await act(async () => child.props.onToggle({ currentTarget: { open: true } }));
+      const opened = renderer.root.findByProps({ "data-agent-id": 7 });
+      assert.equal(opened.props.open, true);
+      assert.ok(opened.findAll(node => node.props.className === "agent-subagent-body").length === 1);
+      assert.ok(opened.findAll(node => node.props.children === '{"report":"child"}').length > 0);
       const root = renderer.root.findAllByType("article").find(article => article.findAll(node => node.props.children === '{"answer":"root"}').length > 0);
       assert.ok(root);
       assert.match(JSON.stringify(renderer.toJSON()), /root/);

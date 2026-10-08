@@ -6,14 +6,15 @@ import { AccountChooser } from "nanocodex-connect-ui/AccountChooser";
 import { AccountMenu } from "./AccountMenu";
 import { Vault } from "./Vault";
 import { useAccountSession } from "./AccountSession";
+import { accountSectionPaths, pathForSurface } from "./navigation";
 import "./AccountWorkspace.css";
 
 const sections = [
-  { path: "/connect", label: "Connections", icon: Plug, section: "connections", description: "Models and services your agents can use. Credentials stay in the broker; agents only receive scoped access." },
-  { path: "/connect/vault", label: "Vault", icon: LockKeyhole, section: "vault", description: "" },
+  { path: accountSectionPaths.connections, label: "Connections", icon: Plug, section: "connections", description: "Models and services your agents can use. Credentials stay in the broker; agents only receive scoped access." },
+  { path: accountSectionPaths.vault, label: "Vault", icon: LockKeyhole, section: "vault", description: "" },
   { path: "/services/phone", label: "Phone numbers", icon: Phone, section: "phone", description: "Dedicated numbers for SMS verification codes and calls." },
-  { path: "/connect/wallet", label: "Wallet", icon: Wallet, section: "wallet", description: "Your account wallet for paid tools and services." },
-  { path: "/connect/access", label: "API access", icon: KeyRound, section: "access", description: "Keys for the CLI, SDKs and apps that act on your account." },
+  { path: accountSectionPaths.wallet, label: "Wallet", icon: Wallet, section: "wallet", description: "Your account wallet for paid tools and services." },
+  { path: accountSectionPaths.access, label: "API access", icon: KeyRound, section: "access", description: "Keys for the CLI, SDKs and apps that act on your account." },
 ] as const;
 
 export function ConnectHome({ theme: controlledTheme, onThemeChange }: {
@@ -24,7 +25,8 @@ export function ConnectHome({ theme: controlledTheme, onThemeChange }: {
   const session = useAccountSession();
   const [localTheme, setLocalTheme] = useState<"light" | "dark">(() => document.documentElement.dataset.theme === "light" ? "light" : "dark");
   const theme = controlledTheme ?? localTheme;
-  const section = sections.find(item => item.path === (location.pathname.replace(/\/+$/, "") === "/vault" ? "/connect/vault" : location.pathname.replace(/\/+$/, ""))) ?? sections[0];
+  const currentPath = location.pathname.replace(/\/+$/, "");
+  const section = sections.find(item => item.path === (currentPath === "/vault" ? accountSectionPaths.vault : currentPath)) ?? sections[0];
   const account = session.account?.persistent ? session.account : null;
   const heading = useRef<HTMLHeadingElement>(null);
   const previousPath = useRef(location.pathname);
@@ -58,6 +60,7 @@ export function ConnectHome({ theme: controlledTheme, onThemeChange }: {
         </NavLink>
         <div className="account-hub-utilities">
           {account ? <button className="account-icon-button account-mobile-sign-out" type="button" disabled={session.operation !== null} onClick={() => void session.signOut()} aria-label="Sign out" title="Sign out"><LogOut aria-hidden="true" /></button> : null}
+          <NavLink to={pathForSurface("agent")} className="account-docs">Agents</NavLink>
           <a href="/docs" className="account-docs">Docs <ArrowUpRight aria-hidden="true" /></a>
           <button className="account-icon-button" type="button" onClick={toggleTheme} aria-label={`Use ${theme === "light" ? "dark" : "light"} appearance`} title="Change appearance">
             {theme === "light" ? <Moon aria-hidden="true" /> : <Sun aria-hidden="true" />}
@@ -77,8 +80,8 @@ export function ConnectHome({ theme: controlledTheme, onThemeChange }: {
           <aside className="account-hub-sidebar">
             <span className="account-nav-label">Your account</span>
             <nav aria-label="Account navigation">
-              {sections.map(item => <NavLink end={item.path === "/connect"} key={item.path} to={item.path}
-                className={({ isActive }) => isActive || (item.section === "connections" && location.pathname === "/") ? "active is-current" : undefined}>
+              {sections.map(item => <NavLink end={item.path === accountSectionPaths.connections} key={item.path} to={item.path}
+                className={({ isActive }) => isActive ? "active is-current" : undefined}>
                 <item.icon aria-hidden="true" /><span>{item.label}</span>
               </NavLink>)}
             </nav>

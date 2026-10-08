@@ -649,7 +649,7 @@ function completedTool(tool, payload, status, terminalPoll = false) {
       ? {}
       : { metadata: payload.metadata }),
     result: summarizeToolResult(tool.name, generatedOutput.some(item => item.kind !== "text") ? formatToolOutput(result) : result, status),
-    output: terminal && isObject(result) ? JSON.stringify(result) : boundedMultiline(formatToolOutput(result)),
+    output: terminal && isObject(result) ? JSON.stringify(result) : boundedMultiline(formatToolOutput(result), 160, 12_000),
   };
 }
 
@@ -736,7 +736,8 @@ function isEmptyTerminalPoll(tool, value) {
 }
 
 function serializeToolDetail(value) {
-  return boundedMultiline(formatValue(value));
+  // Inputs carry file edits and patches; keep enough for a readable diff.
+  return boundedMultiline(formatValue(value), 400, 24_000);
 }
 
 function summarizeToolArguments(tool, value) {
@@ -795,12 +796,12 @@ function compact(value) {
   return [...normalized].length <= 180 ? normalized : `${[...normalized].slice(0, 180).join("")}…`;
 }
 
-function boundedMultiline(value) {
+function boundedMultiline(value, maxLines = 24, maxCharacters = 4_000) {
   const lines = value.trim().split("\n");
-  const output = lines.slice(0, 24).join("\n");
+  const output = lines.slice(0, maxLines).join("\n");
   const characters = [...output];
-  if (characters.length > 4_000) return `${characters.slice(0, 4_000).join("")}…`;
-  return lines.length > 24 ? `${output}\n…` : output;
+  if (characters.length > maxCharacters) return `${characters.slice(0, maxCharacters).join("")}…`;
+  return lines.length > maxLines ? `${output}\n…` : output;
 }
 
 function formatValue(value) {

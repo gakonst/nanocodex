@@ -5,7 +5,7 @@ import {
   Compass,
   Layers,
   Link2,
-  MessageCircle,
+  House,
   PanelLeftClose,
   Search,
   SquarePen,
@@ -168,15 +168,15 @@ export function AgentSidebar({
             <SquarePen />
             <span>{landing ? "New chat" : "New agent"}</span>
           </button>
-          <Link to="/" aria-current={landing ? "page" : undefined}>
-            <MessageCircle />
-            <span>Chat</span>
+          <Link to="/">
+            <House aria-hidden="true" />
+            <span>Home</span>
           </Link>
-          <Link to="/agent" aria-current={!landing ? "page" : undefined}>
+          <Link to="/agents" aria-current={!landing ? "page" : undefined}>
             <Layers aria-hidden="true" />
             <span>Agents</span>
           </Link>
-          <Link to="/connect">
+          <Link to="/account">
             <Link2 />
             <span>Connections</span>
           </Link>
@@ -235,7 +235,7 @@ export function AgentSidebar({
             {landing ? (
               <div className="agent-navigation-empty">
                 <p>Give your work a place to keep going.</p>
-                <Link to="/agent">
+                <Link to="/agents">
                   Open your agents <span aria-hidden="true">↗</span>
                 </Link>
               </div>
@@ -267,7 +267,7 @@ export function AgentSidebar({
             </summary>
             <nav aria-label="Explore Nanocodex">
               {[
-                ...demoNavigation.filter(({ surface }) => surface !== "agent"),
+                ...demoNavigation,
                 ...primaryNavigation.filter(
                   ({ surface }) => surface !== "docs",
                 ),
@@ -286,7 +286,7 @@ export function AgentSidebar({
               </a>
             </nav>
           </details>
-          <Link className="agent-navigation-account" to="/connect">
+          <Link className="agent-navigation-account" to="/account">
             <CircleUserRound aria-hidden="true" />
             <span>
               <strong>{persistent ? "Your account" : "Get started"}</strong>

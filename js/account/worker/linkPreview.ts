@@ -1,4 +1,5 @@
 import { docsPreview } from "./docsPreview.ts";
+import { legacyRedirectPath } from "../src/navigation.ts";
 
 const SITE_NAME = "Nanocodex";
 const IMAGE_WIDTH = 1200;
@@ -57,6 +58,18 @@ export async function routeLinkPreview(
     || !env.ASSETS
   ) return null;
   if (documentStatus == null) return documentNotFound(request);
+  const legacyDestination = legacyRedirectPath(url);
+  if (legacyDestination != null) {
+    // Superseded app paths stay valid links; browsers keep the fragment.
+    return new Response(null, {
+      status: 302,
+      headers: {
+        "cache-control": "no-store",
+        location: legacyDestination,
+        "x-content-type-options": "nosniff",
+      },
+    });
+  }
 
   const preview = await previewForUrl(url, env);
   const assetHeaders = new Headers(request.headers);
@@ -149,7 +162,7 @@ function isIframeNavigation(request: Request): boolean {
 
 export function documentStatusForPath(pathname: string): 200 | 404 | null {
   pathname = normalizePath(pathname);
-  if (pathname === "/" || pathname === "/agent" || isAgentDocumentPath(pathname)
+  if (pathname === "/" || pathname === "/agent" || pathname === "/agents" || isAgentDocumentPath(pathname)
     || isShareDocumentPath(pathname)
     || pathname === "/multiplayer" || pathname === "/browser-login"
     || pathname === "/world" || pathname === "/artifact-runtime"
@@ -158,7 +171,9 @@ export function documentStatusForPath(pathname: string): 200 | 404 | null {
     || pathname === "/requests" || pathname === "/router" || pathname === "/connect"
     || pathname === "/connect/device" || pathname === "/connect/vault"
     || pathname === "/vault" || pathname === "/services/phone"
-    || pathname === "/connect/wallet" || pathname === "/connect/access") return 200;
+    || pathname === "/connect/wallet" || pathname === "/connect/access"
+    || pathname === "/account" || pathname === "/account/vault"
+    || pathname === "/account/wallet" || pathname === "/account/access") return 200;
   if (Object.hasOwn(docsPreview, pathname) || isEvalDocumentPath(pathname)) return 200;
   if (pathname.startsWith("/docs/") || pathname.startsWith("/evals/")) return 404;
   return null;
@@ -243,22 +258,23 @@ async function previewForUrl(url: URL, env: LinkPreviewEnv): Promise<Preview> {
     // token, which is available only to the guest browser after navigation.
     return fixed(pathname, "Shared thread", "Open a Nanocodex conversation shared with you.");
   }
-  if (pathname === "/agent" || isAgentDocumentPath(pathname)) {
-    return fixed(pathname, "Durable agent", "Open an account-owned durable Nanocodex agent.");
+  if (pathname === "/agent" || pathname === "/agents" || isAgentDocumentPath(pathname)) {
+    return fixed(pathname, "Agents", "Open your account-owned durable Nanocodex agents.");
   }
+  if (pathname === "/account") return fixed(pathname, "Account", "Manage your Nanocodex connections, vault, wallet, and API keys.", "NANOCODEX ACCOUNT");
+  if (pathname === "/account/vault") return fixed(pathname, "Vault", "Store encrypted SSH keys, logins, API keys, cards, addresses, and phone numbers.", "NANOCODEX ACCOUNT");
+  if (pathname === "/account/wallet") return fixed(pathname, "Wallet", "Manage your MACH wallet and funding.", "NANOCODEX ACCOUNT");
+  if (pathname === "/account/access") return fixed(pathname, "API access", "Manage Nanocodex API keys for your apps and devices.", "NANOCODEX ACCOUNT");
   if (pathname === "/demos/chief-of-staff") return fixed(pathname, "Chief of Staff", "Connect a signed Slack ingress to account-owned durable Nanocodex agents.", "CHAT SDK INTEGRATION");
   if (pathname === "/multiplayer") return fixed(pathname, "Multiplayer", "Join a durable room with many humans and one secretless managed Nanocodex agent.", "DURABLE MULTIPLAYER");
   if (pathname === "/world") return fixed(pathname, "Springleaf Town", "Watch Nanocodex inhabitants act inside a living pixel world.", "MONSTER WORLD");
   if (pathname === "/changelog") return fixed(pathname, "Changelog", "Follow focused Nanocodex SDK, runtime, tooling, and evaluation changes.");
   if (pathname === "/commits") return fixed(pathname, "Commits", "Inspect the published Nanocodex source history and focused patches.");
   if (pathname === "/requests") return fixed(pathname, "Requests", "Track proposed changes to the published Nanocodex source tree.", "REQUESTS");
-  if (pathname === "/connect") return fixed(pathname, "Connect", "Manage your Nanocodex identity, connections, and API keys.", "NANOCODEX CONNECT");
+  if (pathname === "/connect") return fixed(pathname, "Connect device", "Authorize a Nanocodex device with your passkey-backed account.", "NANOCODEX CONNECT");
   if (pathname === "/connect/device") return fixed(pathname, "Connect device", "Authorize a Nanocodex device with your passkey-backed account.", "NANOCODEX CONNECT");
-  if (pathname === "/connect/vault" || pathname === "/vault") return fixed(pathname, "Vault", "Manage encrypted credentials and authenticator accounts.", "NANOCODEX SERVICES");
+  if (pathname === "/vault") return fixed(pathname, "Vault", "Manage encrypted credentials and authenticator accounts.", "NANOCODEX SERVICES");
   if (pathname === "/services/phone") return fixed(pathname, "Phone services", "Manage dedicated numbers, SMS and purchase approvals.", "NANOCODEX SERVICES");
-  if (pathname === "/connect/wallet") return fixed(pathname, "Wallet", "Manage your MACH wallet and funding.", "NANOCODEX CONNECT");
-  if (pathname === "/connect/access") return fixed(pathname, "API access", "Manage Nanocodex API keys for your apps and devices.", "NANOCODEX CONNECT");
-  if (pathname === "/connect/vault") return fixed(pathname, "Vault", "Store encrypted SSH keys, logins, API keys, cards, addresses, and phone numbers.", "NANOCODEX CONNECT");
   if (pathname === "/code") {
     const sourcePath = boundedText(url.searchParams.get("path"), 240);
     const canonical = new URL("https://canonical.invalid/code");
@@ -300,7 +316,7 @@ function isShareDocumentPath(pathname: string): boolean {
 }
 
 function isAgentDocumentPath(pathname: string): boolean {
-  return /^\/agent\/[^/]+$/.test(pathname);
+  return /^\/agents?\/[^/]+$/.test(pathname);
 }
 
 async function evalPreview(pathname: string, env: LinkPreviewEnv): Promise<Preview> {

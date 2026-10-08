@@ -26,7 +26,6 @@ import {
 } from "react";
 import { flushSync } from "react-dom";
 import { useLocation, useNavigate } from "react-router";
-import { AgentExperience } from "./AgentExperience";
 import { HomeLanding } from "./HomeLanding";
 import {
   DropdownMenu,
@@ -36,7 +35,13 @@ import {
 } from "./DropdownMenu";
 import { lockDocumentScroll, useModalBoundary } from "./modalBoundary";
 import { VirtualCommitList } from "./VirtualCommitList";
-import { preloadChangelog, preloadDocsRoute, preloadEvalOverview } from "./routeModulePreloads";
+import {
+  loadAgentExperience,
+  preloadAgentExperience,
+  preloadChangelog,
+  preloadDocsRoute,
+  preloadEvalOverview,
+} from "./routeModulePreloads";
 import type { CodeBrowserHandle } from "./CodeBrowser";
 import type { CommitCodeStreamHandle } from "./CommitCodeStream";
 import {
@@ -47,9 +52,11 @@ import { fuzzyScore } from "./fuzzy";
 import {
   accountNavigation,
   agentIdFromPath,
+  agentsNavigation,
   connectDemoUrl,
   demoNavigation,
   gitNavigation,
+  legacyRedirectPath,
   pathForAgent,
   pathForCommit,
   pathForSurface,
@@ -72,6 +79,7 @@ import type { PreparedDirectRoute, PreparedRepositorySurface } from "./routeLoad
 
 // Route-only UI stays outside the initial home/agent bundle. Intent preloads
 // below fetch the same modules before navigation where useful.
+const AgentExperience = lazy(() => loadAgentExperience().then((module) => ({ default: module.AgentExperience })));
 const DeviceConnect = lazy(() => import("./DeviceConnect").then((module) => ({ default: module.DeviceConnect })));
 const ChiefOfStaffDemo = lazy(() => import("./ChiefOfStaffDemo").then((module) => ({ default: module.ChiefOfStaffDemo })));
 const HostedToolsDemo = lazy(() => import("./HostedToolsDemo").then((module) => ({ default: module.HostedToolsDemo })));
@@ -275,6 +283,12 @@ function NanocodexShell({ preparedRoute }: Required<NanocodexAppProps>) {
     ? commitHashFromSearch(location.search)
     : undefined;
   const routeAgentId = surface === "agent" ? agentIdFromPath(location.pathname) : undefined;
+  const legacyDestination = legacyRedirectPath(location);
+  // Superseded paths (/agent, /connect, …) render their current surface and
+  // are rewritten in place, so in-app links and callbacks never remount it.
+  useLayoutEffect(() => {
+    if (legacyDestination) navigate(legacyDestination, { replace: true, state: location.state });
+  }, [legacyDestination, location.state, navigate]);
   const [activeAgentId, setActiveAgentId] = useState(routeAgentId);
   const [snapshot, setSnapshot] = useState<PublishedRepositorySnapshot | undefined>(
     preparedRoute.repositorySnapshot,
@@ -304,7 +318,7 @@ function NanocodexShell({ preparedRoute }: Required<NanocodexAppProps>) {
   const [mobileNavigationOpen, setMobileNavigationOpen] = useState(false);
   const [demoNavigationOpen, setDemoNavigationOpen] = useState(false);
   const [gitNavigationOpen, setGitNavigationOpen] = useState(false);
-  // The homepage is a marketing/Connect surface; only /agent mounts the terminal.
+  // The homepage is a marketing page; only /agents mounts the terminal.
   const [agentExperienceMounted, setAgentExperienceMounted] = useState(surface === "agent");
   const terminalSurfaceActive = surface === "agent";
   const needsRepository = surface === "code" || surface === "commits";
@@ -708,8 +722,10 @@ function NanocodexShell({ preparedRoute }: Required<NanocodexAppProps>) {
       ? "Nanocodex · agents connected to your accounts"
       : `${surface === "code"
         ? "Source"
+        : surface === "agent"
+          ? "Agents"
         : surface === "connect"
-          ? "Connect"
+          ? "Account"
           : surface === "tools"
             ? "Attached Tools"
             : surface === "chief-of-staff"
@@ -733,11 +749,9 @@ function NanocodexShell({ preparedRoute }: Required<NanocodexAppProps>) {
   }, [location.pathname, location.search, navigate, surface]);
 
   const preloadSurface = useCallback((nextSurface: Surface) => {
-    if (nextSurface === "home") {
-      void import("./ConnectHome").catch(() => undefined);
-      return;
-    }
+    if (nextSurface === "home") return;
     if (nextSurface === "agent") {
+      preloadAgentExperience();
       return;
     }
     if (nextSurface === "multiplayer") {
@@ -1204,6 +1218,7 @@ function NanocodexShell({ preparedRoute }: Required<NanocodexAppProps>) {
               >
                 <span className="surface-label">Home</span>
               </a>
+              {surfaceNavigationLink(agentsNavigation, "desktop")}
               {surfaceNavigationLink(accountNavigation, "desktop")}
               <span
                 className={`surface-navigation-group${demoNavigationActive ? " is-active" : ""}`}
@@ -1335,6 +1350,7 @@ function NanocodexShell({ preparedRoute }: Required<NanocodexAppProps>) {
                 <span>Home</span><small>Overview</small>
               </a>
               <div className="mobile-navigation-grid mobile-navigation-account">
+                {surfaceNavigationLink(agentsNavigation, "mobile")}
                 {surfaceNavigationLink(accountNavigation, "mobile")}
               </div>
               <section className="mobile-navigation-group" aria-labelledby="mobile-demos-title">
@@ -1381,14 +1397,16 @@ function NanocodexShell({ preparedRoute }: Required<NanocodexAppProps>) {
               <article className="home-article">
                 <h1 className="sr-only" id="agent-page-title">Your Nanocodex agents</h1>
                 <section className="home-demo" id="agent-demo">
-                  <AgentExperience
-                    theme={theme}
-                    onThemeChange={setTheme}
-                    agentId={routeAgentId}
-                    landing={false}
-                    mode={surface === "agent" ? "full" : "hidden"}
-                    onAgentChange={handleAgentChange}
-                  />
+                  <Suspense fallback={surface === "agent" ? <p role="status">Loading agents…</p> : null}>
+                    <AgentExperience
+                      theme={theme}
+                      onThemeChange={setTheme}
+                      agentId={routeAgentId}
+                      landing={false}
+                      mode={surface === "agent" ? "full" : "hidden"}
+                      onAgentChange={handleAgentChange}
+                    />
+                  </Suspense>
                 </section>
               </article>
             </section>

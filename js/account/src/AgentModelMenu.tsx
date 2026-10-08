@@ -149,7 +149,7 @@ export function AgentModelMenu({
                 {claude.error ? "Couldn’t load Claude models. Reopen to retry." : "No Claude models are available for this subscription."}
               </Menu.Label> : null}
               <Menu.Item asChild className="agent-model-menu-item">
-                <Link to="/connect#claude-connection">{claude.connected ? "Manage Claude connection" : "Connect Claude"}</Link>
+                <Link to="/account#claude-connection">{claude.connected ? "Manage Claude connection" : "Connect Claude"}</Link>
               </Menu.Item>
             </> : null}
             <Menu.Separator className="agent-model-menu-separator" />

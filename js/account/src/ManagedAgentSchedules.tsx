@@ -119,7 +119,7 @@ function ScheduleDialog({ agent, onClose }: { agent: ScheduleAgent; onClose(): v
         });
       }}>
         <h3>{editing ? "Edit schedule" : "New schedule"}</h3>
-        <p className="agent-schedules-note">{editing ? "This schedule belongs to " : "New schedules belong to "}<a href={`/agent/${encodeURIComponent(editingAgent.id)}`}>{editingAgent.id === agent.id ? "this conversation" : editingAgent.id}</a>.</p>
+        <p className="agent-schedules-note">{editing ? "This schedule belongs to " : "New schedules belong to "}<a href={`/agents/${encodeURIComponent(editingAgent.id)}`}>{editingAgent.id === agent.id ? "this conversation" : editingAgent.id}</a>.</p>
         <fieldset disabled={pending}>
           <label>Schedule ID<input required pattern={"[A-Za-z0-9_\\-]{1,64}"} maxLength={64} readOnly={editing}
             value={draft.id} onChange={(event) => setDraft({ ...draft, id: event.target.value })} /></label>
@@ -158,12 +158,12 @@ function ScheduleDialog({ agent, onClose }: { agent: ScheduleAgent; onClose(): v
       <ul className="agent-schedules-list">
         {rows?.map((row) => <li key={`${row.owner.id}:${row.id}`} aria-label={`Schedule ${row.id}`}>
           <div className="agent-schedules-row"><strong>{row.id}</strong><span>{row.enabled ? "Enabled" : "Paused"}</span></div>
-          {allAgents && <p>Agent: <a href={`/agent/${encodeURIComponent(row.owner.id)}`}>{row.ownerTitle}</a></p>}
+          {allAgents && <p>Agent: <a href={`/agents/${encodeURIComponent(row.owner.id)}`}>{row.ownerTitle}</a></p>}
           <p>{row.session_mode === "new" ? "New session each time" : "Continues its agent conversation"}</p>
           <p><code>{row.cron}</code> · {row.timezone}</p>
           <p className="agent-schedules-prompt">{row.input}</p>
           <p>Next: {row.next_run_at === null ? "Paused" : formatTime(row.next_run_at, row.timezone)}</p>
-          {row.last_run_at !== null && <p title={row.last_turn_id ?? undefined}>Last dispatched: {formatTime(row.last_run_at, row.timezone)} · <a href={`/agent/${encodeURIComponent(row.last_agent_id ?? row.owner.id)}`}>Open run</a></p>}
+          {row.last_run_at !== null && <p title={row.last_turn_id ?? undefined}>Last dispatched: {formatTime(row.last_run_at, row.timezone)} · <a href={`/agents/${encodeURIComponent(row.last_agent_id ?? row.owner.id)}`}>Open run</a></p>}
           {row.last_skipped_at !== null && <p>Last skipped while busy: {formatTime(row.last_skipped_at, row.timezone)}</p>}
           <div className="agent-schedules-actions">
             <button type="button" disabled={pending || Boolean(draft)} onClick={() => {

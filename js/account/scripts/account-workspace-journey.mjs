@@ -70,19 +70,19 @@ try{
  for(const [device,viewport] of Object.entries({desktop:{width:1280,height:900},mobile:{width:360,height:800}}))for(const theme of ['light','dark']){
   const context=await contextFor(viewport,theme);const page=await context.newPage();page.on('pageerror',e=>errors.push(e.message));
   for(const section of ['connections','vault','wallet','access']){
-   await page.goto(origin+'/connect'+(section==='connections'?'':'/'+section));await page.waitForLoadState('networkidle');
+   await page.goto(origin+'/account'+(section==='connections'?'':'/'+section));await page.waitForLoadState('networkidle');
    await page.getByRole('heading',{level:1,name:section==='access'?'API access':section[0].toUpperCase()+section.slice(1),exact:true}).waitFor();
    assert.equal(await page.locator('[role="alert"]:visible').count(),0,section+' has no error: '+await page.locator('[role="alert"]:visible').allTextContents());
    if(section==='vault')await page.getByText('Example account',{exact:true}).waitFor();
    if(section==='wallet')await page.getByText('Balance: $5.00',{exact:true}).waitFor();
    await screenshot(page,`${device}-${theme}-${section}`);
   }
-  await page.goto(origin+'/connect/vault?add=login');await page.getByLabel('Password',{exact:true}).waitFor();await screenshot(page,`${device}-${theme}-add-login`);
+  await page.goto(origin+'/account/vault?add=login');await page.getByLabel('Password',{exact:true}).waitFor();await screenshot(page,`${device}-${theme}-add-login`);
   await context.close();
  }
  const context=await contextFor({width:390,height:844});const page=await context.newPage();page.on('pageerror',e=>errors.push(e.message));
  signedOut=true;
- await page.goto(origin+'/connect/vault?add=login');await page.locator('input[type="tel"]').waitFor();await screenshot(page,'mobile-sign-in');
+ await page.goto(origin+'/account/vault?add=login');await page.locator('input[type="tel"]').waitFor();await screenshot(page,'mobile-sign-in');
  await page.locator('input[type="tel"]').fill('+15555550123');await page.getByRole('button',{name:'Text me a code',exact:true}).click();
  await page.getByLabel('6-digit code',{exact:true}).fill('123456');await page.getByRole('button',{name:'Continue',exact:true}).click();
  await page.getByLabel('Password',{exact:true}).waitFor();assert.equal(new URL(page.url()).search,'?add=login');assert.equal(writes(),0);
@@ -94,13 +94,13 @@ try{
  await page.getByRole('button',{name:'Cancel',exact:true}).click();assert.equal(requests.filter(r=>r.method==='DELETE').length,0);
  await page.getByRole('button',{name:'Delete Journey login',exact:true}).click();await page.getByRole('button',{name:'Delete',exact:true}).click();await page.getByText('No matching items',{exact:true}).waitFor();assert.equal(requests.filter(r=>r.method==='DELETE').length,1);
  await page.getByLabel('Search vault',{exact:true}).fill('');await page.getByRole('button',{name:'Cards',exact:true}).click();await page.getByText('Travel card',{exact:true}).waitFor();assert.equal(await page.locator('.vault-items > li').count(),1);
- await page.goto(origin+'/connect/vault?add=api_key');await page.getByLabel('API key',{exact:true}).fill('synthetic-key');await page.getByRole('button',{name:'Cancel',exact:true}).click();assert.equal(writes(),1);await page.locator('.vault-inline-entry').waitFor({state:'detached'});assert.equal(await page.locator('input[type="password"]').count(),0);
- for(const [path,title] of [['/connect','Connections'],['/connect/wallet','Wallet'],['/connect/access','API access'],['/connect/vault','Vault']]){
+ await page.goto(origin+'/account/vault?add=api_key');await page.getByLabel('API key',{exact:true}).fill('synthetic-key');await page.getByRole('button',{name:'Cancel',exact:true}).click();assert.equal(writes(),1);await page.locator('.vault-inline-entry').waitFor({state:'detached'});assert.equal(await page.locator('input[type="password"]').count(),0);
+ for(const [path,title] of [['/account','Connections'],['/account/wallet','Wallet'],['/account/access','API access'],['/account/vault','Vault']]){
   await page.getByRole('navigation',{name:'Account navigation'}).getByRole('link',{name:title,exact:true}).click();await page.waitForURL(origin+path);assert.equal(new URL(page.url()).pathname,path);await page.reload();await page.getByRole('heading',{level:1,name:title,exact:true}).waitFor();
  }
- await page.goto(origin+'/connect?connect=constructor');await page.getByRole('heading',{level:1,name:'Connections',exact:true}).waitFor();
- await page.goto(origin+'/connect?connect=github');await page.locator('[data-provider="github"] button').first().waitFor();assert.equal(await page.locator('[data-provider="github"] button').first().evaluate(el=>el===document.activeElement),true);
- await page.goto(origin+'/connect?connect=cloudflare');
+ await page.goto(origin+'/account?connect=constructor');await page.getByRole('heading',{level:1,name:'Connections',exact:true}).waitFor();
+ await page.goto(origin+'/account?connect=github');await page.locator('[data-provider="github"] button').first().waitFor();assert.equal(await page.locator('[data-provider="github"] button').first().evaluate(el=>el===document.activeElement),true);
+ await page.goto(origin+'/account?connect=cloudflare');
  const cf=page.locator('[data-provider="cloudflare"]');await cf.getByLabel('Cloudflare Vault API key').waitFor();
  assert.equal(requests.filter(r=>r.method==='POST'&&r.path==='/v1/connectors/cloudflare').length,0);
  assert.equal(await cf.getByRole('button',{name:'Connect Cloudflare',exact:true}).isEnabled(),false);
@@ -113,9 +113,9 @@ try{
  await cf.getByRole('button',{name:'Revoke Synthetic Cloudflare',exact:true}).click();await cf.getByText('Synthetic Cloudflare',{exact:true}).waitFor({state:'detached'});
  assert.equal(requests.filter(r=>r.method==='DELETE'&&r.path==='/v1/connectors/cloudflare/connections/'+'f'.repeat(43)).length,1);
  await page.goto(origin+'/connect?connector=github&connector_result=failed');await page.getByText('GitHub couldn’t be connected. Try again.',{exact:true}).waitFor();
- pendingChatGpt=true;await page.goto(origin+'/connect');await page.getByText('SYNTHETIC',{exact:true}).waitFor();await page.reload();await page.getByText('SYNTHETIC',{exact:true}).waitFor();pendingChatGpt=false;
- credentialsFailure=true;await page.goto(origin+'/connect/vault');await page.getByRole('alert').waitFor();credentialsFailure=false;await page.getByRole('button',{name:'Retry',exact:true}).click();await page.getByText('Example account',{exact:true}).waitFor();
- await page.goto(origin+'/connect/vault?add=login');await page.getByLabel('Password',{exact:true}).fill('discard-on-expiry');signedOut=true;await page.getByLabel('Name',{exact:true}).fill('Expired');await page.getByLabel('Username',{exact:true}).fill('fixture');await page.getByRole('button',{name:'Save',exact:true}).click();await page.locator('input[type="tel"]').waitFor();assert.equal(await page.locator('input[type="password"]').count(),0);
+ pendingChatGpt=true;await page.goto(origin+'/account');await page.getByText('SYNTHETIC',{exact:true}).waitFor();await page.reload();await page.getByText('SYNTHETIC',{exact:true}).waitFor();pendingChatGpt=false;
+ credentialsFailure=true;await page.goto(origin+'/account/vault');await page.getByRole('alert').waitFor();credentialsFailure=false;await page.getByRole('button',{name:'Retry',exact:true}).click();await page.getByText('Example account',{exact:true}).waitFor();
+ await page.goto(origin+'/account/vault?add=login');await page.getByLabel('Password',{exact:true}).fill('discard-on-expiry');signedOut=true;await page.getByLabel('Name',{exact:true}).fill('Expired');await page.getByLabel('Username',{exact:true}).fill('fixture');await page.getByRole('button',{name:'Save',exact:true}).click();await page.locator('input[type="tel"]').waitFor();assert.equal(await page.locator('input[type="password"]').count(),0);
  assert.deepEqual(errors,[]);await context.close();
  await writeFile(`${out}/requests.json`,JSON.stringify({requests,errors,shots},null,2));await checkpoint(`PASS: desktop/mobile light/dark; all routes; sign-in deep link; single save; cancel; search/filter; delete confirmation; callback error; pending login reload; retry; expired session clears secret. ${shots.length} screenshots. No page errors.`);
  console.log('PASS account workspace browser journey ('+shots.length+' screenshots)');

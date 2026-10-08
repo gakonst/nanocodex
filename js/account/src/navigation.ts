@@ -39,12 +39,17 @@ export function connectDemoUrl(origin: string): string {
 
 export const accountNavigation = {
   surface: "connect",
-  label: "Connect",
-  description: "Identity, connections & vault",
+  label: "Account",
+  description: "Connections, vault & keys",
+} as const satisfies ProductNavigationItem;
+
+export const agentsNavigation = {
+  surface: "agent",
+  label: "Agents",
+  description: "Your durable agents",
 } as const satisfies ProductNavigationItem;
 
 export const demoNavigation = [
-  { surface: "agent", label: "Durable Agent", description: "Managed durable agent" },
   { surface: "chief-of-staff", label: "Chief of Staff", description: "Chat SDK channels" },
   { surface: "tools", label: "Attached Tools", description: "Browser tool host" },
   { surface: "multiplayer", label: "Multiplayer", description: "Shared room" },
@@ -65,7 +70,7 @@ export const gitNavigation = [
 
 const surfacePaths: Record<Surface, string> = {
   home: "/",
-  agent: "/agent",
+  agent: "/agents",
   tools: "/agent?demo=attached-tools",
   "chief-of-staff": "/demos/chief-of-staff",
   multiplayer: "/multiplayer",
@@ -77,7 +82,7 @@ const surfacePaths: Record<Surface, string> = {
   requests: "/requests",
   evals: "/evals",
   router: "/router",
-  connect: "/connect",
+  connect: "/account",
 };
 
 const surfaces = new Set<Surface>(Object.keys(surfacePaths) as Surface[]);
@@ -87,11 +92,50 @@ export function pathForSurface(surface: Surface) {
 }
 
 export function pathForAgent(agentId: string) {
-  return `/agent/${encodeURIComponent(agentId)}`;
+  return `/agents/${encodeURIComponent(agentId)}`;
+}
+
+/** Account sections rendered by the account hub, keyed by canonical path. */
+export const accountSectionPaths = {
+  connections: "/account",
+  vault: "/account/vault",
+  wallet: "/account/wallet",
+  access: "/account/access",
+} as const;
+
+const legacyAccountPaths: Record<string, string> = {
+  "/connect": accountSectionPaths.connections,
+  "/connect/vault": accountSectionPaths.vault,
+  "/connect/wallet": accountSectionPaths.wallet,
+  "/connect/access": accountSectionPaths.access,
+};
+
+/**
+ * Canonical location for a superseded app path, or null when the path is
+ * current. Search and hash are preserved so OAuth/connector callbacks
+ * (`connector_result`, `mcp_result`), focus links (`?connect=github`) and
+ * anchors (`#claude-connection`) keep working. Device authorization
+ * (`/connect?user_code=…`, `/connect/device`), hosted service pages
+ * (`/vault`, `/services/phone`) and the attached-tools demo keep their URLs.
+ */
+export function legacyRedirectPath(url: Pick<URL, "pathname" | "search" | "hash">): string | null {
+  const pathname = url.pathname === "/" ? "/" : url.pathname.replace(/\/+$/, "");
+  const search = new URLSearchParams(url.search);
+  let destination: string | undefined;
+  if (pathname === "/agent") {
+    if (search.get("demo") === "attached-tools") return null;
+    destination = "/agents";
+  } else if (/^\/agent\/[^/]+$/.test(pathname)) {
+    destination = `/agents/${pathname.slice("/agent/".length)}`;
+  } else if (Object.hasOwn(legacyAccountPaths, pathname)) {
+    if (pathname === "/connect" && search.has("user_code")) return null;
+    destination = legacyAccountPaths[pathname];
+  }
+  return destination === undefined ? null : `${destination}${url.search}${url.hash}`;
 }
 
 export function agentIdFromPath(pathname: string): string | undefined {
-  const match = pathname.match(/^\/agent\/([^/]+)\/?$/);
+  const match = pathname.match(/^\/agents?\/([^/]+)\/?$/);
   if (!match) return undefined;
   try {
     return decodeURIComponent(match[1]);
@@ -113,9 +157,12 @@ export function surfaceFromUrl(url: Pick<URL, "pathname" | "searchParams">): Sur
   if (pathname === "/docs" || pathname.startsWith("/docs/")) return "docs";
   if (agentIdFromPath(pathname)) return "agent";
   if (pathname === "/agent" && url.searchParams.get("demo") === "attached-tools") return "tools";
+  // Legacy `/agent` resolves to the chat surface until its redirect lands.
+  if (pathname === "/agent") return "agent";
   if (pathname === "/connect/device") return "connect";
-  if (["/connect/vault", "/vault", "/services/phone"].includes(pathname)) return "connect";
-  if (pathname === "/connect/vault" || pathname === "/connect/wallet" || pathname === "/connect/access") return "connect";
+  if (pathname === "/vault" || pathname === "/services/phone") return "connect";
+  if ((Object.values(accountSectionPaths) as string[]).includes(pathname)) return "connect";
+  if (Object.hasOwn(legacyAccountPaths, pathname)) return "connect";
 
   const pathMatch = (Object.entries(surfacePaths) as Array<[Surface, string]>).find(
     ([, path]) => path === pathname,

@@ -293,7 +293,7 @@ export default function RouterDashboard() {
             <div className="router-notice" role="alert">
               <AlertTriangle size={18} />
               <span>
-                {error} <a href="/connect">Connect</a>
+                {error} <a href="/account">Account</a>
               </span>
             </div>
           ) : !snapshot ? (

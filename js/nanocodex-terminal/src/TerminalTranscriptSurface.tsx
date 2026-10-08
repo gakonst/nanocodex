@@ -9,13 +9,15 @@ import {
   useRef,
   useState,
 } from "react";
-import { projectToolOutput, type AgentEntry, type GeneratedOutput, type ToolActivity } from "nanocodex-react/agent";
+import type { AgentEntry, ToolActivity } from "nanocodex-react/agent";
 import { ArrowDown, Check, Copy } from "lucide-react";
 import { RichMarkdown } from "./RichMarkdown.js";
-import { GeneratedOutputView } from "./GeneratedOutputView.js";
 
 import type { AgentStatus, AgentTerminalMode } from "./types.js";
-import { boundedToolDetail, presentTool } from "./toolPresentation.js";
+import {
+  LiveStatus, SubagentBlock, WorkGroup, groupTranscript, readableActivity, subagentRoles,
+  type TranscriptRow,
+} from "./TranscriptActivity.js";
 
 export type VoiceTerminalEntry = Readonly<{
   afterEntryId?: string;
@@ -51,6 +53,8 @@ export function TerminalTranscriptSurface({
   inactiveMessage,
   isLoadingOlder,
   mode,
+  running = false,
+  activity,
   showToolCalls = true,
   renderTool,
   userLabel,
@@ -66,6 +70,10 @@ export function TerminalTranscriptSurface({
   inactiveMessage: string;
   isLoadingOlder: boolean;
   mode: AgentTerminalMode;
+  /** The agent is producing the latest turn; drives live work groups and the activity line. */
+  running?: boolean;
+  /** Controller phase, such as "Running exec_command", shown while running. */
+  activity?: string;
   showToolCalls?: boolean;
   renderTool?(tool: ToolActivity): ReactNode;
   userLabel?(entry: Extract<AgentEntry, { kind: "user" }>): string | undefined;
@@ -90,6 +98,14 @@ export function TerminalTranscriptSurface({
     [entries, voiceEntries],
   );
   const visibleWelcome = transcriptEntries.length === 0 ? welcome : undefined;
+  // Streaming replaces only the changed tail entry. Reusing unchanged rows and
+  // role labels lets completed rows skip rendering on every token.
+  const rows = useReusedRows(transcriptEntries);
+  const roles = useStableRoles(entries);
+  const [turnStartedAt, setTurnStartedAt] = useState(() => Date.now());
+  useEffect(() => { if (running) setTurnStartedAt(Date.now()); }, [running]);
+  const lastRow = rows.at(-1);
+  const streamingAnswer = lastRow?.type === "entry" && lastRow.entry.kind === "assistant" && lastRow.entry.streaming;
 
   useLayoutEffect(() => {
     const element = transcript.current;
@@ -203,9 +219,11 @@ export function TerminalTranscriptSurface({
               {visibleWelcome}
             </RichMarkdown>
           </article> : null}
-          {transcriptEntries.map((entry) => (
-            <TerminalEntryView entry={entry} key={entry.id} showToolCalls={showToolCalls} renderTool={renderTool} userLabel={userLabel} />
+          {rows.map((row, index) => (
+            <TranscriptRowView key={row.id} row={row} live={running && index === rows.length - 1}
+              roles={roles} showToolCalls={showToolCalls} renderTool={renderTool} userLabel={userLabel} />
           ))}
+          {running && !streamingAnswer ? <LiveStatus activity={readableActivity(activity)} startedAt={turnStartedAt} /> : null}
           {status !== "ready" && inactiveMessage ? (
             <p className="agent-terminal-status" role={status === "error" ? "alert" : "status"}>
               {inactiveMessage}
@@ -350,24 +368,59 @@ function decodeRealtimeText(text: string): string {
     .replaceAll("&amp;", "&");
 }
 
+function useReusedRows<E extends { id: string; kind: string }>(entries: readonly E[], nested = false): TranscriptRow<E>[] {
+  const committed = useRef<readonly TranscriptRow<E>[]>([]);
+  const rows = useMemo(() => groupTranscript(entries, committed.current, nested), [entries, nested]);
+  useLayoutEffect(() => { committed.current = rows; }, [rows]);
+  return rows;
+}
+
+function useStableRoles(entries: readonly AgentEntry[]): ReadonlyMap<number, string> {
+  const committed = useRef<ReadonlyMap<number, string>>(new Map());
+  const roles = useMemo(() => {
+    const next = subagentRoles(entries);
+    const previous = committed.current;
+    return next.size === previous.size && [...next].every(([id, role]) => previous.get(id) === role) ? previous : next;
+  }, [entries]);
+  useLayoutEffect(() => { committed.current = roles; }, [roles]);
+  return roles;
+}
+
+type RowProps = {
+  showToolCalls: boolean;
+  renderTool?: ((tool: ToolActivity) => ReactNode) | undefined;
+  userLabel?: ((entry: Extract<AgentEntry, { kind: "user" }>) => string | undefined) | undefined;
+};
+
+const TranscriptRowView = memo(function TranscriptRowView({ row, live, roles, ...props }: RowProps & {
+  row: TranscriptRow<TerminalEntry>;
+  live: boolean;
+  roles: ReadonlyMap<number, string>;
+}) {
+  if (row.type === "entry") return <TerminalEntryView entry={row.entry} {...props} />;
+  if (row.type === "work") return <WorkGroup entries={row.entries} live={live} showToolCalls={props.showToolCalls}
+    renderTool={props.renderTool} renderEntry={(entry) => <TerminalEntryView entry={entry} {...props} />} />;
+  return <SubagentRowView row={row} live={live} roles={roles} {...props} />;
+});
+
+function SubagentRowView({ row, live, roles, ...props }: RowProps & {
+  row: Extract<TranscriptRow<TerminalEntry>, { type: "agent" }>;
+  live: boolean;
+  roles: ReadonlyMap<number, string>;
+}) {
+  const nested = useReusedRows<TerminalEntry>(row.entries, true);
+  return <SubagentBlock agentId={row.agentId} role={roles.get(row.agentId)} entries={row.entries} live={live}>
+    {nested.map((child, index) => <TranscriptRowView key={child.id} row={child} live={live && index === nested.length - 1} roles={roles} {...props} />)}
+  </SubagentBlock>;
+}
+
 const TerminalEntryView = memo(function TerminalEntryView({
   entry,
   showToolCalls,
   renderTool,
   userLabel,
-}: {
-  entry: TerminalEntry;
-  showToolCalls: boolean;
-  renderTool?(tool: ToolActivity): ReactNode;
-  userLabel?(entry: Extract<AgentEntry, { kind: "user" }>): string | undefined;
-}) {
+}: RowProps & { entry: TerminalEntry }) {
   const voice = isVoiceEntry(entry);
-  if (!voice && entry.responseIdentity?.agentId != null) return (
-    <details className="agent-terminal-child" data-agent-id={entry.responseIdentity.agentId}>
-      <summary>Agent {entry.responseIdentity.agentId} activity</summary>
-      <TerminalEntryView entry={{ ...entry, responseIdentity: { ...entry.responseIdentity, agentId: undefined } }} showToolCalls={showToolCalls} renderTool={renderTool} userLabel={userLabel} />
-    </details>
-  );
   if (entry.kind === "user") return <pre className="agent-terminal-user" data-source={voice ? "voice" : undefined}>
     {voice ? <span className="agent-terminal-entry-label">voice</span> : !voice && (userLabel?.(entry) || entry.author === "guest") ? <span className="agent-terminal-entry-label">{userLabel?.(entry) || "Guest"}</span> : null}{entry.text}
   </pre>;
@@ -386,54 +439,11 @@ const TerminalEntryView = memo(function TerminalEntryView({
       {step.step}
     </li>)}
   </ol>;
-  if (entry.kind === "tool") return <div className="agent-terminal-tool-entry">
-    {showToolCalls ? <TerminalToolView tool={entry.tool} /> : null}
-    <ToolPreviews tool={entry.tool} />
-    {renderToolTree(entry.tool, renderTool)}
-    <GeneratedOutputView items={generatedToolOutput(entry.tool)} />
-  </div>;
+  // Tools are normally grouped; this path only covers a lone tool outside a group.
+  if (entry.kind === "tool") return <WorkGroup entries={[entry]} live={false} showToolCalls={showToolCalls}
+    renderTool={renderTool} renderEntry={() => null} />;
   return null;
 });
-
-function ToolPreviews({ tool }: { tool: ToolActivity }) {
-  const urls = new Set<string>();
-  function collect(activity: ToolActivity) {
-    const url = presentTool(activity).previewUrl;
-    if (url) urls.add(url);
-    activity.children.forEach(collect);
-  }
-  collect(tool);
-  return <>{[...urls].map(url => <a className="agent-terminal-preview-card" href={url}
-    target="_blank" rel="noopener noreferrer" key={url}>
-    <span className="agent-terminal-preview-icon" aria-hidden="true">↗</span>
-    <span><strong>Open preview</strong><span>{new URL(url).host}</span></span>
-    <span className="agent-terminal-preview-action">View</span>
-  </a>)}</>;
-}
-
-function renderToolTree(tool: ToolActivity, render: ((tool: ToolActivity) => ReactNode) | undefined): ReactNode {
-  if (!render) return null;
-  return <>{render(tool)}{tool.children.map(child => <div key={child.callId}>{renderToolTree(child, render)}</div>)}</>;
-}
-
-function generatedToolOutput(tool: ToolActivity): GeneratedOutput[] {
-  const items: GeneratedOutput[] = [];
-  const seen = new Set<string>();
-  function append(tool: ToolActivity) {
-    const output = tool.generatedOutput ?? projectToolOutput(tool.images?.map((image_url, index) => ({
-      type: "input_image", image_url, name: `${presentTool(tool).title} result ${index + 1}`,
-    })));
-    const emitsText = ["exec", "wait"].includes(tool.name.split(".").at(-1) ?? "");
-    for (const item of output) {
-      if (item.kind === "text" && !emitsText) continue;
-      const key = item.kind === "text" ? `text:${item.text}` : `${item.kind}:${item.url}`;
-      if (!seen.has(key)) { seen.add(key); items.push(item); }
-    }
-    tool.children.forEach(append);
-  }
-  append(tool);
-  return items;
-}
 
 function ResponseActions({ text }: { text: string }) {
   const [state, setState] = useState<"idle" | "copied" | "error">("idle");
@@ -449,57 +459,4 @@ function ResponseActions({ text }: { text: string }) {
     }}>{state === "copied" ? <Check aria-hidden="true" /> : <Copy aria-hidden="true" />}</button>
     <span role="status">{state === "copied" ? "Copied" : state === "error" ? "Couldn’t copy. Select the text to copy it." : ""}</span>
   </div>;
-}
-
-function TerminalToolView({ isChild = false, tool }: { isChild?: boolean; tool: ToolActivity }) {
-  const presentation = presentTool(tool);
-  const semanticWrapper = tool.name === "exec" && tool.children.length > 0;
-  const input = semanticWrapper ? undefined : tool.input ?? tool.arguments;
-  const output = semanticWrapper ? undefined : tool.output ?? tool.result;
-  const status = tool.status === "completed" ? "Succeeded"
-    : tool.status === "running" ? "Running"
-      : tool.status === "cancelled" ? "Cancelled" : "Failed";
-  return <details
-    className={`agent-terminal-tool is-${tool.status}${isChild ? " is-child" : ""}`}
-    {...(tool.status === "failed" || tool.status === "cancelled" || tool.children.length > 0
-      ? { open: true }
-      : {})}
-  >
-    <summary>
-      <span className="agent-terminal-tool-glyph" aria-hidden="true">
-        {tool.status === "completed" ? "✓" : tool.status === "running" ? "→" : "!"}
-      </span>
-      <span className="agent-terminal-tool-heading">
-        <strong>{presentation.title}</strong>
-        {presentation.subject ? <span>{presentation.subject}</span> : null}
-        {presentation.outputSummary ? <span>{presentation.outputSummary}</span> : null}
-      </span>
-      <span className="agent-terminal-tool-meta">
-        {presentation.source ? <span className="agent-terminal-tool-source">{presentation.source}</span> : null}
-        <span className="agent-terminal-tool-status" role={tool.status === "running" ? "status" : undefined}>
-          {status}
-        </span>
-        {presentation.duration ? <span>{presentation.duration}</span> : null}
-      </span>
-    </summary>
-    <div className="agent-terminal-tool-body">
-      <p className="agent-terminal-tool-wire"><span>Wire name</span> <code>{tool.name}</code></p>
-      {presentation.inputDetail || input ? <section className="agent-terminal-tool-detail">
-        <h4>{presentation.inputDetail?.label ?? "Input"}</h4>
-        <pre>{boundedToolDetail(presentation.inputDetail?.value ?? input ?? "")}</pre>
-      </section> : null}
-      {presentation.outputDetails?.map((detail) => <section
-        className="agent-terminal-tool-detail agent-terminal-tool-result"
-        key={detail.label}
-      >
-        <h4>{detail.label}</h4>
-        <pre>{boundedToolDetail(detail.value)}</pre>
-      </section>)}
-      {!presentation.outputDetails && output ? <section className="agent-terminal-tool-detail agent-terminal-tool-result">
-        <h4>Output</h4>
-        <pre>{boundedToolDetail(output)}</pre>
-      </section> : null}
-      {tool.children.map((child) => <TerminalToolView isChild key={child.callId} tool={child} />)}
-    </div>
-  </details>;
 }

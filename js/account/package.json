@@ -27,7 +27,8 @@
     "test:vault": "node scripts/vault-ui-journey.mjs",
     "test:account-workspace": "node scripts/account-workspace-journey.mjs",
     "test:figma": "node scripts/figma-ui-journey.mjs",
-    "test:services": "node scripts/services-ui-journey.mjs"
+    "test:services": "node scripts/services-ui-journey.mjs",
+    "test:chat-performance": "node scripts/chat-performance-journey.mjs"
   },
   "portless": {
     "name": "nanocodex",

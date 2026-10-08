@@ -311,7 +311,7 @@ export const AgentExperience = memo(function AgentExperience({
       setRuntimeState(undefined);
       setEphemeralThreadId(crypto.randomUUID());
     } else if (canCreateManaged) createConversation();
-    else if (!sessionChecking) void navigate("/connect");
+    else if (!sessionChecking) void navigate("/account");
   };
   const selectedConversation = managedConversations.find(({ id }) => id === visibleManagedConversationId);
   const title = landing ? "New chat" : selectedConversation
@@ -385,7 +385,7 @@ export const AgentExperience = memo(function AgentExperience({
                 : <ReservedTerminal message={inactiveMessage} mode={mode}
                   welcome={sessionChecking ? undefined : "# What should we work on?"}
                   composer={sessionChecking ? <p className="agent-connection-loading" role="status">Opening your workspace…</p>
-                    : !hasDurableCredential ? <div className="agent-connect-prompt"><Link to="/connect">Connect your account</Link><span>Connect a model account to start a durable agent.</span></div> : null}
+                    : !hasDurableCredential ? <div className="agent-connect-prompt"><Link to="/account">Connect your account</Link><span>Connect a model account to start a durable agent.</span></div> : null}
                 />}
         <p className="agent-chat-footnote">{landing ? "Chats here are temporary. Use Agents to keep your work across sessions." : "Your agent keeps working when you leave. Come back anytime."}</p>
       </div>
@@ -440,7 +440,7 @@ function HomepageTrialActions() {
     </div>
     <nav aria-label="Continue after free prompts">
       {funding.checkoutUrl ? <a href={funding.checkoutUrl} target="_blank" rel="noopener noreferrer">Open Stripe checkout</a> : null}
-      <Link to="/connect">Connect</Link>
+      <Link to="/account">Connect</Link>
       <button
         disabled={funding.loading || !funding.available || funding.operation !== null}
         onClick={funding.fund}
