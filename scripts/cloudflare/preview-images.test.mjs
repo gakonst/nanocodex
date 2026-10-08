@@ -13,6 +13,7 @@ test('preview image selection uses committed image inputs, not Worker or SDK Jav
  const commit=()=>{git('add','.');git('-c','user.name=Fixture','-c','user.email=fixture@example.invalid','commit','-qm','fixture');return git('rev-parse','HEAD');};
  git('init','-q');put('Cargo.toml','[workspace]');
  put('crates/phone/Cargo.toml','[package]\nname="nanocodex-phone"');put('crates/hand/Cargo.toml','[package]\nname="nanocodex2-bin"');
+ put('js/managed/Dockerfile','FROM scratch\n');
  const base=commit(),account='a'.repeat(32);
  put('js/managed/src/index.ts','export {};');put('js/nanocodex/cloudflare/provider.mjs','export {};');commit();
  assert.deepEqual(changedImages({base,account,cwd}),[]);
@@ -29,9 +30,15 @@ test('preview image selection uses committed image inputs, not Worker or SDK Jav
    changed: ['phone'], required: true, rollout: 'immediate', matrix: {image: ['phone']},
  });
  put('hands/remote/image/labwc/config','desktop');commit();
+ assert.deepEqual(changedImages({base:phone,account,cwd}),[]);
+ put('js/managed/Dockerfile','FROM scratch\nRUN true\n');commit();
  assert.deepEqual(changedImages({base:phone,account,cwd}),['sandbox']);
  assert.deepEqual(changedImages({base:'missing',account,cwd}),['phone','sandbox']);
  assert.deepEqual(changedImages({base:'f'.repeat(40),cwd}),['phone','sandbox']);
  put('Cargo.lock', '# dependency change'); commit();
+ // The static sandbox image never rebuilds for Rust/Cargo changes.
  assert.deepEqual(changedImages({base:phone,cwd}),['phone','sandbox']);
+ const beforeLock=git('rev-parse','HEAD');
+ put('Cargo.lock', '# another dependency change'); commit();
+ assert.deepEqual(changedImages({base:beforeLock,account,cwd}),['phone']);
 });
