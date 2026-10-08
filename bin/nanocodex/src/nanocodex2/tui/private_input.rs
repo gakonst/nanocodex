@@ -1540,6 +1540,8 @@ mod tests {
         let mut flow = flow(native(
             json!([{ "ref":FIELD,"type":"text","label":"Notes" }]),
         ));
+        // A fresh flow is unarmed until its token is typed.
+        flow.ready = false;
         flow.reset();
         flow.visible = true;
         flow.intercept(Event::Paste(flow.token.clone()));
