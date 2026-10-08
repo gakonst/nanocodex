@@ -223,5 +223,9 @@ name = "codex_resume_picker"
 path = "tests/codex_resume_picker.rs"
 
 [[test]]
+name = "codex_resume_from"
+path = "tests/codex_resume_from.rs"
+
+[[test]]
 name = "tui_log_location"
 path = "tests/tui_log_location.rs"

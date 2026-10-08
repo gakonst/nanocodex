@@ -40,6 +40,7 @@ mod mpp;
 mod native_sessions;
 mod observability;
 mod rewind;
+mod rollout_fork;
 mod run;
 mod setup;
 mod startup_timing;
@@ -60,7 +61,7 @@ mod vm;
 mod vm;
 mod windows_hand;
 
-use std::process::ExitCode;
+use std::{path::PathBuf, process::ExitCode};
 
 use clap::{Args, Parser, Subcommand, builder::NonEmptyStringValueParser};
 use eyre::{Result, WrapErr, eyre};
@@ -191,6 +192,20 @@ struct ResumeCommand {
     /// Session ID to resume. Omit it to select from the selected harness’s sessions.
     #[arg(value_parser = NonEmptyStringValueParser::new())]
     thread_id: Option<String>,
+
+    /// Start a new Codex thread from this rollout file instead of a saved thread.
+    ///
+    /// The file is copied, never changed. The new thread's workspace is
+    /// `--cwd`, or the current directory, so rollouts recorded elsewhere work.
+    #[arg(long, value_name = "ROLLOUT", conflicts_with = "thread_id")]
+    from: Option<PathBuf>,
+
+    /// Start from this point: a turn ID, or a completed-turn number from 1.
+    ///
+    /// Forks the thread or `--from` rollout as a new Codex thread whose history
+    /// ends after that turn. The original thread and file are not changed.
+    #[arg(long, value_name = "TURN", value_parser = NonEmptyStringValueParser::new())]
+    at: Option<String>,
 
     #[command(flatten)]
     agent: AgentArgs,
@@ -357,6 +372,13 @@ async fn run(cli: Cli) -> Result<()> {
         }
         Some(Command::Resume(mut command)) => {
             let codex_home = config::default_codex_home()?;
+            let forking = command.from.is_some() || command.at.is_some();
+            if forking {
+                // Rollout files and turn points belong to Codex threads.
+                command
+                    .agent
+                    .resume_with_harness(nanocodex::HarnessFamily::Codex);
+            }
             if !command.agent.has_explicit_harness() {
                 // A defaulted resume opens the store that owns the requested
                 // thread, otherwise the Codex thread picker as before.
@@ -371,6 +393,11 @@ async fn run(cli: Cli) -> Result<()> {
                 });
             }
             if command.agent.selected_harness()? == nanocodex::HarnessFamily::Claude {
+                if forking {
+                    return Err(eyre!(
+                        "--from and --at start Codex threads; use `nanocodex rewind` for Claude"
+                    ));
+                }
                 let id = match command.thread_id {
                     Some(id) => id,
                     None => {
@@ -398,9 +425,38 @@ async fn run(cli: Cli) -> Result<()> {
                 .await;
             }
             let rollouts = RolloutConfig::new(&codex_home);
-            let thread_id = match command.thread_id {
-                Some(thread_id) => thread_id,
-                None => {
+            let source = match (command.from, &command.thread_id) {
+                (Some(path), _) => Some(path),
+                (None, Some(thread_id)) if command.at.is_some() => Some(
+                    rollouts
+                        .load_session(thread_id)
+                        .wrap_err_with(|| format!("failed to load Codex thread {thread_id}"))?
+                        .rollout_path()
+                        .to_path_buf(),
+                ),
+                (None, None) if command.at.is_some() => {
+                    return Err(eyre!("--at needs a thread ID or --from"));
+                }
+                _ => None,
+            };
+            let thread_id = match (source, command.thread_id) {
+                (Some(source), _) => {
+                    let workspace = match command.agent.requested_workspace() {
+                        Some(path) => path.to_path_buf(),
+                        None => std::env::current_dir()?,
+                    }
+                    .canonicalize()
+                    .wrap_err("failed to resolve the new thread's workspace")?;
+                    let point = rollout_fork::Point::parse(command.at.as_deref())?;
+                    let thread_id = rollout_fork::fork(&source, &point, &codex_home, &workspace)?;
+                    eprintln!(
+                        "Started Codex thread {thread_id} from {}.",
+                        source.display()
+                    );
+                    thread_id
+                }
+                (None, Some(thread_id)) => thread_id,
+                (None, None) => {
                     let sessions = rollouts.list_sessions().wrap_err_with(|| {
                         format!(
                             "failed to discover Codex threads under {}",
