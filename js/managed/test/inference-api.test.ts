@@ -166,5 +166,5 @@ it("takes inference origin only from Cloudflare metadata and rebuilds private se
   });
   expect((await routeInferenceApi(request, bindings, new URL(request.url)))!.status).toBe(200);
   expect(forwarded[0].headers.get("x-inference-ingress-colo")).toBe("SJC");
-  expect(placements).toEqual([[sessionId, { locationHint: "wnam" }]]);
+  expect(placements).toEqual([[sessionId]]);
 });
