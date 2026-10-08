@@ -7,6 +7,8 @@ export type RemoteHand = Readonly<{
   transport?: "webrtc" | "frames-v1";
   frame_window?: number;
   broadcast?: boolean;
+  /** Host can publish view-only HLS playback links. Absent on older Hands. */
+  playback?: boolean;
 }>;
 export type RemoteScreenSelection = Readonly<{ hand?: RemoteHand; selected: boolean; selectedAt?: number }>;
 const sameScreen = (a: RemoteHand | undefined, b: RemoteHand | undefined): boolean => a === b || !!a && !!b
@@ -186,6 +188,7 @@ export async function listRemoteHands(signal?: AbortSignal): Promise<readonly Re
     && [hand.id, hand.name, hand.machine_id, hand.machine_name, hand.generation].every(string)
     && ["desktop", "window", "phone", "vm"].includes(hand.kind) && typeof hand.controllable === "boolean"
     && (hand.broadcast === undefined || typeof hand.broadcast === "boolean")
+    && (hand.playback === undefined || typeof hand.playback === "boolean")
     && (hand.transport === undefined || ["webrtc", "frames-v1"].includes(hand.transport))
     && Number.isInteger(hand.width) && hand.width > 0 && Number.isInteger(hand.height) && hand.height > 0)) {
     throw new RemoteError("Invalid screen catalog.", true);

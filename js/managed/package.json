@@ -13,7 +13,7 @@
     "deploy": "node ../../scripts/cloudflare/managed-crm.mjs deploy",
     "prebuild": "npm run prepare:code-evaluator",
     "prepare:code-evaluator": "node scripts/prepare-code-evaluator.mjs && node scripts/prepare-hand-image.mjs && node scripts/prepare-just-bash-lazy.mjs",
-    "test": "vitest run && npm run test:sms-otp && npm run test:connect-signin && npm run test:mcp-hosted-authorization && npm run test:native-input-discovery && npm run test:hosted-tools && npm run test:apps && npm run test:rpc-lifecycle && npm run test:discovery-cache && npm run test:routing && npm run test:todo-mail && npm run test:done && npm run test:meetings && npm run test:recovery && npm run test:startup && npm run test:model-pause && npm run test:tool-timing && npm run test:regional-hand-relay && npm run test:hand-reconnect && npm run test:hand-owner-restart && npm run test:hand-ledger-memory && npm run test:hand-leased-recovery && npm run test:hand-communication && npm run test:hand-discovery && npm run test:hand-inventory && npm run test:cua-routing && npm run test:claude-managed && npm run test:hand-catalog-scaling && npm run test:hand-preparation && npm run test:hand-retirement && npm run test:native-process-recovery && npm run test:code-mode-warm && npm run test:user-data && npm run test:whatsapp && npm run test:permissions && npm run test:crm-search && npm run test:vault-requests && npm run test:agent-runs && npm run test:code-mode-only && npm run test:provider-vault && npm run test:services && npm run test:admin-threads",
+    "test": "vitest run && npm run test:sms-otp && npm run test:connect-signin && npm run test:mcp-hosted-authorization && npm run test:native-input-discovery && npm run test:hosted-tools && npm run test:apps && npm run test:rpc-lifecycle && npm run test:discovery-cache && npm run test:routing && npm run test:todo-mail && npm run test:done && npm run test:meetings && npm run test:recovery && npm run test:startup && npm run test:model-pause && npm run test:tool-timing && npm run test:regional-hand-relay && npm run test:regional-screens && npm run test:screen-playback && npm run test:hand-reconnect && npm run test:hand-owner-restart && npm run test:hand-ledger-memory && npm run test:hand-leased-recovery && npm run test:hand-communication && npm run test:hand-discovery && npm run test:hand-inventory && npm run test:cua-routing && npm run test:claude-managed && npm run test:hand-catalog-scaling && npm run test:hand-preparation && npm run test:hand-retirement && npm run test:native-process-recovery && npm run test:code-mode-warm && npm run test:user-data && npm run test:whatsapp && npm run test:permissions && npm run test:crm-search && npm run test:vault-requests && npm run test:agent-runs && npm run test:code-mode-only && npm run test:provider-vault && npm run test:services && npm run test:admin-threads",
     "test:sms-otp": "node --test test/sms-otp-journey.test.mjs",
     "test:connect-signin": "node ../egress/scripts/prepare-whatsapp.mjs && node --test test/connect-signin-broker-journey.test.mjs",
     "test:mcp-hosted-authorization": "node --test test/mcp-hosted-authorization-journey.test.mjs",
@@ -46,7 +46,7 @@
     "test:images": "npm run test:images:node && vitest run --config vitest.images.config.ts",
     "test:recovery": "node --test test/managed-crash-recovery-journey.test.mjs && npm run test:code-observations && npm run test:code-observations:workerd",
     "test:code-observations": "node --experimental-transform-types --import ./test-fixtures/node-types-loader.mjs --test test/code-observation-recovery-node.test.mjs",
-    "test:startup": "node --test test/startup-overlap-journey.test.mjs",
+    "test:startup": "node --test test/prepared-model-upgrade-journey.test.mjs test/startup-overlap-journey.test.mjs test/pristine-restoration-journey.test.mjs",
     "test:model-pause": "node --test test/model-pause-journey.test.mjs",
     "test:tool-timing": "node --test test/thread-tool-timing-journey.test.mjs test/just-bash-telemetry-journey.test.mjs",
     "test:hand-reconnect": "node --test test/hand-reconnect-journey.test.mjs",
@@ -56,6 +56,8 @@
     "test:hand-leased-recovery": "node --test test/hand-leased-recovery-journey.test.mjs",
     "test:hosted-tools": "vitest run --config vitest.hosted-tools.config.ts",
     "test:cua-routing": "node --test test/cua-routing-journey.test.mjs",
+    "test:regional-screens": "node --test test/regional-screen-journey.test.mjs",
+    "test:screen-playback": "node --test test/screen-playback-journey.test.mjs",
     "test:hand-discovery": "node --test test/hand-discovery-journey.test.mjs",
     "test:claude-managed": "node --test test/claude-managed-journey.test.mjs",
     "test:hand-catalog-scaling": "node --test test/hand-catalog-scaling-journey.test.mjs",
@@ -105,7 +107,7 @@
     "miniflare": "4.20260730.0",
     "typescript": "5.9.3",
     "vitest": "^4.0.18",
-    "wrangler": "4.127.1",
+    "wrangler": "4.137.0",
     "ws": "^8.18.3"
   }
 }

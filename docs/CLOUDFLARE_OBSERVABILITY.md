@@ -151,3 +151,32 @@ local workerd/account-broker journey and `test:hand-preparation` for managed
 Code Mode route preparation. Their ignored `output/` artifacts contain source
 hashes, timings, public diagnostics, and ownership/recovery evidence. Local
 journey durations do not establish a production WAN latency improvement.
+
+## Fresh session startup
+
+Correlate the public live-create request, `DurableAgentSession`, and private
+egress spans by their native trace ID. Keep client connection readiness,
+`managed.turn.accepted`, provider socket readiness, and first answer output as
+separate boundaries. A CLI that does not emit connection readiness has no
+measurement for that boundary; provider socket readiness is not a substitute.
+
+`session.create.commit` observes the storage synchronization promise without
+adding an awaited application barrier. Its duration includes the Durable Object
+output gate for the first write batch. Removing the observer does not remove
+that gate. Synchronous constructor timings can be zero because the Worker clock
+does not advance during synchronous execution; they do not establish zero CPU.
+Use native invocation CPU measurements with their stated scope.
+
+`managed.credential.prewarm` records the authenticated edge preparation's region,
+fixed outcome, and elapsed duration. This preparation runs concurrently with
+session creation. `egress.credential.snapshot` distinguishes a regional hit
+(`snapshot`) from a canonical fill (`filled`) and reports the canonical duration
+when applicable. A cold fill still reaches the canonical credential broker;
+a warm regional hit does not. Neither event logs credential material.
+
+Compare durations measured on one clock. Do not subtract timestamps on different
+Workers to label the residual as an exact cold-start, routing, or scheduling
+cost. Discovery, credential preparation, storage commit, and provider setup may
+overlap: their durations are not necessarily additive. Confirm overlap with
+causal span relationships and controlled runtime journeys, then measure actual
+fresh-client startup on the deployed revision.

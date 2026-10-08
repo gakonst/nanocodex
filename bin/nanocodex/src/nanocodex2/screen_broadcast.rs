@@ -17,37 +17,45 @@ pub(crate) type Source = Arc<dyn Fn() -> BoxFuture<'static, Result<Command>> + S
 pub(crate) type RawSource =
     Arc<dyn Fn() -> BoxFuture<'static, Result<(Capture, usize, usize)>> + Send + Sync>;
 pub(crate) struct Broadcast {
-    source: Option<Source>,
-    encoded: Option<VideoSource>,
-    raw: Option<RawSource>,
-    audio: Option<VideoSource>,
+    inputs: Inputs,
     task: Option<Task>,
     status: watch::Receiver<Value>,
     stop: Option<watch::Sender<bool>>,
+    /// Stream ID of the current HLS playback, if the shared slot holds one.
+    hls: Option<String>,
+    events: watch::Sender<Value>,
 }
 impl Broadcast {
     pub fn new(source: Option<Source>, audio: Option<VideoSource>) -> Self {
         let (_, status) = watch::channel(json!({"status":"idle"}));
         Self {
-            source,
-            encoded: None,
-            raw: None,
-            audio,
+            inputs: Inputs {
+                source,
+                raw: None,
+                encoded: None,
+                audio,
+            },
             task: None,
             stop: None,
             status,
+            hls: None,
+            events: watch::channel(Value::Null).0,
         }
     }
     #[cfg(target_os = "macos")]
     pub fn with_raw(mut self, source: RawSource) -> Self {
-        self.raw = Some(source);
+        self.inputs.raw = Some(source);
         self
     }
     pub fn with_encoded(mut self, encoded: Option<VideoSource>) -> Self {
-        if self.source.is_none() {
-            self.encoded = encoded;
+        if self.inputs.source.is_none() {
+            self.inputs.encoded = encoded;
         }
         self
+    }
+    /// Asynchronous HLS status transitions, already in the exact broker shape.
+    pub fn events(&self) -> watch::Receiver<Value> {
+        self.events.subscribe()
     }
     pub async fn stop(&mut self) {
         if let Some(stop) = self.stop.take() {
@@ -61,14 +69,98 @@ impl Broadcast {
             task.0.abort();
             let _ = (&mut task.0).await;
         }
+        if let Some(stream) = self.hls.take() {
+            let last = self.events.borrow().clone();
+            if last["stream_id"] == stream.as_str()
+                && !matches!(last["status"].as_str(), Some("stopped" | "failed"))
+            {
+                self.events.send_replace(super::screen_hls::result(
+                    &last["request_id"],
+                    &stream,
+                    "stopped",
+                    None,
+                ));
+            }
+        }
         let (_, status) = watch::channel(json!({"status":"stopped"}));
         self.status = status;
     }
     pub fn supported(&self) -> bool {
-        self.source.is_some() || self.encoded.is_some() || self.raw.is_some()
+        self.inputs.source.is_some() || self.inputs.encoded.is_some() || self.inputs.raw.is_some()
+    }
+    fn running(&self) -> bool {
+        self.task.as_ref().is_some_and(|task| !task.0.is_finished())
+    }
+    /// Broker-originated HLS command. `origin` is the authenticated publisher origin;
+    /// the upload URL must match it exactly. Replies never contain the URL or token.
+    pub async fn hls_request(&mut self, request: &Value, origin: &url::Origin) -> Value {
+        use super::screen_hls::{parse_start, result};
+        let stream = request["stream_id"].as_str().unwrap_or_default().to_owned();
+        let id = &request["request_id"];
+        let current = self.hls.as_deref() == Some(stream.as_str());
+        match request["action"].as_str() {
+            Some("status") => {
+                let last = self.events.borrow().clone();
+                if current && last["stream_id"] == stream.as_str() {
+                    let mut last = last;
+                    last["request_id"] = id.clone();
+                    last
+                } else {
+                    result(id, &stream, "stopped", None)
+                }
+            }
+            Some("stop") => {
+                if current {
+                    self.stop().await;
+                }
+                result(id, &stream, "stopped", None)
+            }
+            Some("start") if current && self.running() => {
+                let mut last = self.events.borrow().clone();
+                last["request_id"] = id.clone();
+                last
+            }
+            Some("start") if self.running() => result(id, &stream, "failed", Some("busy")),
+            Some("start") if !self.supported() => {
+                result(id, &stream, "failed", Some("unsupported"))
+            }
+            Some("start") => {
+                let preset = request["preset"].as_str().unwrap_or("720p");
+                if !["720p", "1080p"].contains(&preset) {
+                    return result(id, &stream, "failed", Some("invalid_request"));
+                }
+                let target = match parse_start(request, origin, super::screen_hls::now_ms()) {
+                    Ok(target) => target,
+                    Err(error) => return result(id, &stream, "failed", Some(error)),
+                };
+                self.stop().await;
+                let starting = result(id, &stream, "starting", None);
+                self.events.send_replace(starting.clone());
+                let (stop, stopped) = watch::channel(false);
+                self.stop = Some(stop);
+                self.hls = Some(stream);
+                self.task = Some(Task(tokio::spawn(super::screen_hls::run(
+                    self.inputs.clone(),
+                    target,
+                    preset.to_owned(),
+                    id.clone(),
+                    self.events.clone(),
+                    stopped,
+                ))));
+                starting
+            }
+            _ => result(id, &stream, "failed", Some("invalid_request")),
+        }
     }
     pub async fn request(&mut self, request: &Value) -> Value {
         let error = match request["action"].as_str() {
+            // The viewer RTMP path can never select a playback target or upload.
+            _ if ["target", "upload", "stream_id"]
+                .iter()
+                .any(|key| request.get(key).is_some()) =>
+            {
+                Some("invalid_request")
+            }
             Some("status") => None,
             Some("stop") => {
                 self.stop().await;
@@ -80,16 +172,14 @@ impl Broadcast {
                 if !valid_url(url) || !["source", "1080p", "720p", "twitch", "x"].contains(&preset)
                 {
                     Some("invalid_request")
-                } else if self.task.as_ref().is_some_and(|task| !task.0.is_finished()) {
+                } else if self.running() {
                     Some("busy")
                 } else if self.supported() {
-                    let source = self.source.clone();
-                    let encoded = self.encoded.clone();
-                    let raw = self.raw.clone();
+                    self.stop().await;
                     let (sender, receiver) =
                         watch::channel(json!({"status":"starting", "preset":preset}));
                     self.status = receiver;
-                    let audio = self.audio.clone();
+                    let inputs = self.inputs.clone();
                     let url = url.to_owned();
                     let preset = preset.to_owned();
                     let (stop, mut stopped) = watch::channel(false);
@@ -102,17 +192,7 @@ impl Broadcast {
                                 );
                                 tokio::select! { _ = stopped.changed() => return, _ = tokio::time::sleep(Duration::from_secs(1 << attempt)) => {} }
                             }
-                            let _ = run(
-                                source.as_ref(),
-                                raw.as_ref(),
-                                encoded.as_ref(),
-                                audio.as_ref(),
-                                &url,
-                                &preset,
-                                &sender,
-                                &mut stopped,
-                            )
-                            .await;
+                            let _ = run(&inputs, &url, &preset, &sender, &mut stopped).await;
                             if *stopped.borrow() {
                                 return;
                             }
@@ -130,6 +210,9 @@ impl Broadcast {
         };
         let mut result = if let Some(error) = error {
             json!({"status":"failed","error":error})
+        } else if self.hls.is_some() && self.running() {
+            // The shared slot holds a playback stream; never describe it to a viewer.
+            json!({"status":"failed","error":"busy"})
         } else {
             self.status.borrow().clone()
         };
@@ -156,7 +239,7 @@ fn valid_url(value: &str) -> bool {
 }
 fn output(
     command: Command,
-    url: &str,
+    sink: &Sink<'_>,
     preset: &str,
     audio: Option<&str>,
 ) -> Result<tokio::process::Command> {
@@ -196,17 +279,36 @@ fn output(
             audio,
         ]);
     }
-    let (width, height, bitrate) = match preset {
-        "720p" => (1280, 720, 4500),
-        "1080p" => (1920, 1080, 8000),
-        "twitch" => (1920, 1080, 6000),
-        "x" => (1920, 1080, 9000),
+    let hls = matches!(sink, Sink::Hls { .. });
+    // HLS: 30 fps, 2 s GOPs, bitrates that keep 2 s segments far below 4 MiB.
+    let (width, height, bitrate) = match (hls, preset) {
+        (true, "1080p") => (1920, 1080, 5000),
+        (true, _) => (1280, 720, 2500),
+        (_, "720p") => (1280, 720, 4500),
+        (_, "1080p") => (1920, 1080, 8000),
+        (_, "twitch") => (1920, 1080, 6000),
+        (_, "x") => (1920, 1080, 9000),
         _ => (3840, 2160, 24000),
+    };
+    let (fps, gop) = if hls || preset == "x" {
+        ("30", "60")
+    } else {
+        ("60", "120")
+    };
+    let gop = if hls {
+        "60"
+    } else if preset == "x" {
+        "90"
+    } else {
+        gop
     };
     // min(iw/ih, bound) prevents upscaling, including portrait displays.
     out.args(["-map","0:v:0","-vf", &format!("scale=w='min(iw,{width})':h='min(ih,{height})':force_original_aspect_ratio=decrease:force_divisible_by=2"),
-        "-r",if preset == "x" {"30"} else {"60"},"-fps_mode","cfr","-pix_fmt","yuv420p","-profile:v","high",
-        "-b:v", &format!("{bitrate}k"),"-maxrate", &format!("{bitrate}k"),"-bufsize", &format!("{}k",bitrate*2),"-g",if preset == "x" {"90"} else {"120"}]);
+        "-r",fps,"-fps_mode","cfr","-pix_fmt","yuv420p","-profile:v","high",
+        "-b:v", &format!("{bitrate}k"),"-maxrate", &format!("{bitrate}k"),"-bufsize", &format!("{}k",bitrate*2),"-g",gop]);
+    if hls {
+        out.args(["-force_key_frames", "expr:gte(t,n_forced*2)"]);
+    }
     if cfg!(target_os = "macos") {
         out.args([
             "-c:v",
@@ -235,15 +337,12 @@ fn output(
             "-c:a",
             "aac",
             "-b:a",
-            if preset == "x" { "128k" } else { "192k" },
+            if hls || preset == "x" { "128k" } else { "192k" },
             "-af",
             "aresample=async=1:first_pts=0",
         ]);
     } else {
         out.arg("-an");
-    }
-    if url.starts_with("rtmps:") {
-        out.args(["-tls_verify", "1"]);
     }
     out.args([
         "-nostdin",
@@ -253,14 +352,42 @@ fn output(
         "pipe:1",
         "-stats_period",
         "0.5",
-        "-rw_timeout",
-        "10000000",
-        "-f",
-        "flv",
-        "-flvflags",
-        "no_duration_filesize",
-        url,
     ]);
+    match sink {
+        Sink::Rtmp(url) => {
+            if url.starts_with("rtmps:") {
+                out.args(["-tls_verify", "1"]);
+            }
+            out.args([
+                "-rw_timeout",
+                "10000000",
+                "-f",
+                "flv",
+                "-flvflags",
+                "no_duration_filesize",
+                url,
+            ]);
+        }
+        Sink::Hls { dir, start } => {
+            out.args([
+                "-f",
+                "hls",
+                "-hls_time",
+                "2",
+                "-hls_list_size",
+                "6",
+                "-hls_flags",
+                "temp_file+independent_segments+omit_endlist",
+                "-hls_segment_type",
+                "mpegts",
+                "-start_number",
+                &start.to_string(),
+                "-hls_segment_filename",
+            ]);
+            out.arg(dir.join("s%d.ts"));
+            out.arg(dir.join(super::screen_hls::LOCAL_PLAYLIST));
+        }
+    }
     out.stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -269,18 +396,61 @@ fn output(
     out.creation_flags(0x08000000);
     Ok(out)
 }
-async fn run(
-    source: Option<&Source>,
-    raw: Option<&RawSource>,
-    encoded: Option<&VideoSource>,
-    audio: Option<&VideoSource>,
-    url: &str,
+/// A running capture->FFmpeg pipeline. Dropping it kills FFmpeg and its feeders.
+pub(crate) struct Encoder {
+    child: tokio::process::Child,
+    lines: tokio::io::Lines<BufReader<tokio::process::ChildStdout>>,
+    advanced: tokio::time::Instant,
+    timestamp: u64,
+    pub audio: bool,
+    _video: Option<Task>,
+    _audio: Option<Task>,
+}
+impl Encoder {
+    /// Resolves with `Ok(())` whenever encoded output time advances; errors when
+    /// FFmpeg exits or stalls for 15 s. Cancellation-safe.
+    pub async fn progress(&mut self) -> Result<()> {
+        loop {
+            tokio::select! {
+                _ = tokio::time::sleep_until(self.advanced + Duration::from_secs(15)) => { let _ = self.child.kill().await; return Err("encoder stalled".into()); },
+                _ = self.child.wait() => return Err("encoder stopped".into()),
+                line = self.lines.next_line() => {
+                    let Some(line) = line? else { return Err("encoder stopped".into()); };
+                    if let Some(n) = line.strip_prefix("out_time_us=").and_then(|v|v.trim().parse::<u64>().ok()).filter(|n| *n > self.timestamp) {
+                        self.timestamp = n; self.advanced = tokio::time::Instant::now();
+                        return Ok(());
+                    }
+                }
+            }
+        }
+    }
+    pub async fn kill(mut self) {
+        let _ = self.child.kill().await;
+    }
+}
+/// Capture inputs shared by RTMP and HLS. Cloning shares the same sources.
+#[derive(Clone)]
+pub(crate) struct Inputs {
+    source: Option<Source>,
+    raw: Option<RawSource>,
+    encoded: Option<VideoSource>,
+    audio: Option<VideoSource>,
+}
+pub(crate) enum Sink<'a> {
+    Rtmp(&'a str),
+    /// Local 2 s MPEG-TS segments `s<N>.ts` plus `local.m3u8`, numbered from `start`.
+    Hls {
+        dir: &'a std::path::Path,
+        start: u64,
+    },
+}
+pub(crate) async fn spawn_encoder(
+    inputs: &Inputs,
+    sink: &Sink<'_>,
     preset: &str,
-    status: &watch::Sender<Value>,
-    stopped: &mut watch::Receiver<bool>,
-) -> Result<()> {
+) -> Result<Encoder> {
     let mut video_task = None;
-    let command = if let Some(raw) = raw {
+    let command = if let Some(raw) = &inputs.raw {
         let (capture, width, height) =
             tokio::time::timeout(Duration::from_secs(8), raw()).await??;
         let (mut reader, owner) = capture.into_bytes()?;
@@ -312,13 +482,13 @@ async fn run(
             &address,
         ]);
         command
-    } else if let Some(source) = source {
+    } else if let Some(source) = &inputs.source {
         tokio::time::timeout(Duration::from_secs(8), source()).await??
     } else {
         // Encoded capture is independent of preview peers; its wire transport may be framed.
         let capture = tokio::time::timeout(
             Duration::from_secs(8),
-            encoded.ok_or("capture unavailable")?(),
+            inputs.encoded.as_ref().ok_or("capture unavailable")?(),
         )
         .await??;
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
@@ -351,9 +521,8 @@ async fn run(
         ]);
         command
     };
-    let _video = video_task;
     // A private loopback PCM socket supports native WASAPI and PulseAudio equally.
-    let capture = if let Some(audio) = audio {
+    let capture = if let Some(audio) = &inputs.audio {
         Some(tokio::time::timeout(Duration::from_secs(3), audio()).await??)
     } else {
         None
@@ -373,22 +542,32 @@ async fn run(
             }
         })));
     }
-    let _audio = audio_task;
-    let mut child = output(command, url, preset, address.as_deref())?.spawn()?;
-    let mut lines = BufReader::new(child.stdout.take().ok_or("progress unavailable")?).lines();
-    let mut advanced = tokio::time::Instant::now();
-    let mut timestamp = 0u64;
+    let mut child = output(command, sink, preset, address.as_deref())?.spawn()?;
+    let lines = BufReader::new(child.stdout.take().ok_or("progress unavailable")?).lines();
+    Ok(Encoder {
+        child,
+        lines,
+        advanced: tokio::time::Instant::now(),
+        timestamp: 0,
+        audio: address.is_some(),
+        _video: video_task,
+        _audio: audio_task,
+    })
+}
+async fn run(
+    inputs: &Inputs,
+    url: &str,
+    preset: &str,
+    status: &watch::Sender<Value>,
+    stopped: &mut watch::Receiver<bool>,
+) -> Result<()> {
+    let mut encoder = spawn_encoder(inputs, &Sink::Rtmp(url), preset).await?;
     loop {
         tokio::select! {
-            _ = stopped.changed() => { let _ = child.kill().await; return Ok(()); },
-            _ = tokio::time::sleep_until(advanced + Duration::from_secs(15)) => { let _ = child.kill().await; return Err("encoder stalled".into()); },
-            _ = child.wait() => return Err("encoder stopped".into()),
-            line = tokio::time::timeout(Duration::from_secs(15), lines.next_line()) => {
-                let Some(line) = line?? else { return Err("encoder stopped".into()); };
-                if let Some(n) = line.strip_prefix("out_time_us=").and_then(|v|v.trim().parse::<u64>().ok()).filter(|n| *n > timestamp) {
-                    timestamp = n; advanced = tokio::time::Instant::now();
-                    status.send_replace(json!({"status":"live","audio":address.is_some(),"preset":preset,"fps":if preset == "x" {30} else {60},"bitrate_kbps":match preset {"720p"=>4500,"1080p"=>8000,"twitch"=>6000,"x"=>9000,_=>24000}}));
-                }
+            _ = stopped.changed() => { encoder.kill().await; return Ok(()); },
+            progress = encoder.progress() => {
+                progress?;
+                status.send_replace(json!({"status":"live","audio":encoder.audio,"preset":preset,"fps":if preset == "x" {30} else {60},"bitrate_kbps":match preset {"720p"=>4500,"1080p"=>8000,"twitch"=>6000,"x"=>9000,_=>24000}}));
             }
         }
     }
@@ -420,7 +599,13 @@ mod tests {
             "h264",
             "pipe:1",
         ]);
-        let out = output(source, "rtmp://localhost/live/secret", "source", None).unwrap();
+        let out = output(
+            source,
+            &Sink::Rtmp("rtmp://localhost/live/secret"),
+            "source",
+            None,
+        )
+        .unwrap();
         let args: Vec<_> = out
             .as_std()
             .get_args()
@@ -432,7 +617,7 @@ mod tests {
         source.args(["-f", "lavfi", "-i", "testsrc2"]);
         let out = output(
             source,
-            "rtmps://localhost/live/secret",
+            &Sink::Rtmp("rtmps://localhost/live/secret"),
             "x",
             Some("tcp://127.0.0.1:1"),
         )

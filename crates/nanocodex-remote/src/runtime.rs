@@ -66,6 +66,37 @@ pub trait Broadcast: Send {
     fn supported(&self) -> bool;
     fn request<'a>(&'a mut self, value: &'a Value) -> BoxFuture<'a, Value>;
     fn stop(&mut self) -> BoxFuture<'_, ()>;
+    /// Portable HLS playback (catalog `playback: true`), sharing the broadcast slot.
+    fn playback(&self) -> bool {
+        false
+    }
+    /// Broker-originated `target:"hls"` command. `origin` is the authenticated
+    /// publisher origin; upload URLs must match it exactly.
+    fn playback_request<'a>(
+        &'a mut self,
+        value: &'a Value,
+        _origin: &'a url::Origin,
+    ) -> BoxFuture<'a, Value> {
+        Box::pin(async move {
+            json!({"type":"broadcast_result","target":"hls","request_id":value["request_id"],
+                "stream_id":value["stream_id"],"status":"failed","error":"unsupported"})
+        })
+    }
+    /// Asynchronous playback status results, already in their exact wire shape.
+    fn playback_events(&self) -> Option<watch::Receiver<Value>> {
+        None
+    }
+}
+/// Broker HLS command identifiers use the broker's exact ID grammar.
+fn valid_playback_id(value: &Value) -> bool {
+    value.as_str().is_some_and(|id| {
+        !id.is_empty()
+            && id.len() <= 128
+            && id.as_bytes()[0].is_ascii_alphanumeric()
+            && id
+                .bytes()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'.' | b'_' | b':' | b'-'))
+    })
 }
 struct NoBroadcast;
 impl Broadcast for NoBroadcast {
@@ -644,6 +675,12 @@ async fn session_loop(
     let mut request_id = String::new();
     let mut recording_job = false;
     let broadcast_supported = broadcast.supported();
+    let playback_supported = broadcast.playback();
+    let origin = base.origin();
+    let mut playback_events = broadcast.playback_events();
+    if let Some(events) = &mut playback_events {
+        events.mark_unchanged();
+    }
     // The mutex lends mutable ownership to a single scoped future. Dropping the
     // session cancels it before the publisher calls stop; no worker is detached.
     let broadcast = tokio::sync::Mutex::new(broadcast);
@@ -703,10 +740,15 @@ async fn session_loop(
             result = async { match &mut broadcast_job { Some(job) => job.await, None => std::future::pending().await } } => {
                 broadcast_job = None;
                 let result = result?;
-                if viewers.contains(result["viewer_id"].as_str().unwrap_or(""))
+                if result["target"] == "hls" || viewers.contains(result["viewer_id"].as_str().unwrap_or(""))
                     || preparations.contains(result["viewer_id"].as_str().unwrap_or("")) {
                     send(&mut socket, result).await?;
                 }
+            },
+            changed = async { match &mut playback_events { Some(events) => events.changed().await, None => std::future::pending().await } } => {
+                let Some(events) = playback_events.as_mut().filter(|_| changed.is_ok()) else { playback_events = None; continue; };
+                let value = events.borrow_and_update().clone();
+                if value["target"] == "hls" { send(&mut socket, value).await?; }
             },
             result = completed(&mut job) => {
                 job=None;
@@ -717,6 +759,7 @@ async fn session_loop(
             },
             message = socket.next() => {
                 let message=message.ok_or(SessionError::SocketEnded)?.map_err(|_|SessionError::SocketReadFailed)?;
+                let from_broker = matches!(message, Incoming::Broker(_));
                 let (value, admission)=match message {
                     Incoming::Peer(value, admission)=>(value, admission),
                     Incoming::Broker(Message::Text(text))=>{
@@ -742,6 +785,7 @@ async fn session_loop(
                         connection=value["connection_id"].as_str().filter(|s|!s.is_empty()).ok_or(SessionError::Closed)?.into();
                         let mut surface=json!({"id":"desktop","name":"Desktop","kind":if base.path().starts_with("/v1/vm-host-attachments/"){"vm"}else{"desktop"},"width":dimensions.0,"height":dimensions.1,"controllable":true,"agent_tools":true});
                         surface["broadcast"]=json!(broadcast_supported);
+                        if playback_supported { surface["playback"]=json!(true); }
                         surface["recording"] = recording_capability(capabilities).cloned().unwrap_or(json!(false));
                         let details = &capabilities["recordingCapabilities"];
                         if capabilities["status"] == "ok" && details["schemaVersion"] == 1
@@ -756,6 +800,26 @@ async fn session_loop(
                         generation = value["generation"].as_str().ok_or(SessionError::Closed)?.into();
                         if socket.video.is_some() { ice.prefetch(); }
                         if let Some(ready) = ready.take() { let _ = ready.send(true); }
+                    },
+                    // Playback is commanded only by the broker itself, never by a
+                    // relayed viewer (which always carries viewer_id) or a peer.
+                    "broadcast" if value.get("target").is_some() || value.get("upload").is_some() => {
+                        if from_broker && playback_supported && value["target"] == "hls"
+                            && value.get("viewer_id").is_none() && value["surface_id"] == "desktop"
+                            && valid_playback_id(&value["request_id"]) && valid_playback_id(&value["stream_id"]) {
+                            if broadcast_job.is_some() {
+                                send(&mut socket, json!({"type":"broadcast_result","target":"hls","request_id":value["request_id"],
+                                    "stream_id":value["stream_id"],"status":"failed","error":"busy"})).await?;
+                            } else {
+                                let broadcast = &broadcast;
+                                let origin = &origin;
+                                broadcast_job = Some(Box::pin(async move {
+                                    let mut broadcast = broadcast.lock().await;
+                                    tokio::time::timeout(Duration::from_secs(5), broadcast.playback_request(&value, origin))
+                                        .await.map_err(|_| SessionError::Closed)
+                                }));
+                            }
+                        }
                     },
                     // Status is read-only and is sent when the viewer socket opens,
                     // before asynchronous ICE preparation has admitted its peer.

@@ -51,6 +51,7 @@
         "name": "USER_CREDENTIALS",
         "class_name": "UserCredentialBroker"
       },
+      { "name": "USER_CREDENTIAL_SNAPSHOTS", "class_name": "UserCredentialSnapshot" },
       {
         "name": "AGENT_SUBJECTS",
         "class_name": "AgentSubjectDirectory"
@@ -108,7 +109,8 @@
     },
     { "tag": "v7", "new_sqlite_classes": ["GmailPushMailbox"] },
     { "tag": "v8", "new_sqlite_classes": ["WhatsAppAccount"] },
-    { "tag": "v9", "new_sqlite_classes": ["PhoneServiceAccount"] }
+    { "tag": "v9", "new_sqlite_classes": ["PhoneServiceAccount"] },
+    { "tag": "v10", "new_sqlite_classes": ["UserCredentialSnapshot"] }
   ],
   "env": {
     "development": {
@@ -132,6 +134,7 @@
           { "name": "GMAIL_PUSH_MAILBOXES", "class_name": "GmailPushMailbox" },
           { "name": "WHATSAPP_ACCOUNTS", "class_name": "WhatsAppAccount" },
           { "name": "USER_CREDENTIALS", "class_name": "UserCredentialBroker" },
+          { "name": "USER_CREDENTIAL_SNAPSHOTS", "class_name": "UserCredentialSnapshot" },
           { "name": "AGENT_SUBJECTS", "class_name": "AgentSubjectDirectory" },
           { "name": "SPOTIFY_RATE_LIMITS", "class_name": "SpotifyRateLimit" },
           { "name": "USER_CONNECTORS", "class_name": "UserConnectorBroker" },

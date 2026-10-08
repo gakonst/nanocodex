@@ -42,3 +42,12 @@
 .remote-screen-stats { position: absolute; top: 10px; right: 10px; display: grid; grid-template-columns: auto auto; gap: 3px 12px; margin: 0; padding: 10px 12px; border-radius: 6px; background: #000c; color: #fff; font: 11px/1.4 ui-monospace, monospace; font-variant-numeric: tabular-nums; pointer-events: none; }
 .remote-screen-stats dt { opacity: .75; }
 .remote-screen-stats dd { margin: 0; text-align: right; }
+
+.remote-screen-playback { display: flex; flex-direction: column; gap: 8px; padding: 12px; }
+.remote-screen-playback form, .remote-screen-playback-url { display: flex; flex-wrap: wrap; align-items: end; gap: 10px; }
+.remote-screen-playback label { display: flex; flex-direction: column; gap: 4px; }
+.remote-screen-playback-url input { min-width: 320px; font-family: ui-monospace, monospace; }
+.remote-screen-playback-url small { flex-basis: 100%; }
+.remote-screen-playback ul { margin: 0; padding: 0; list-style: none; display: grid; gap: 6px; }
+.remote-screen-playback li { display: flex; align-items: center; gap: 10px; }
+.remote-screen-playback h3 { margin: 4px 0 0; font-size: 13px; }

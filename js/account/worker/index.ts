@@ -195,7 +195,7 @@ export default {
     if (connectDialog != null) return connectDialog;
     const chiefOfStaff = await routeChiefOfStaff(request, env, url);
     if (chiefOfStaff != null) return chiefOfStaff;
-    const managed = await routeManaged(request, env, url);
+    const managed = await routeManaged(request, env, url, context);
     if (managed != null) return managed;
     const evalMutation = await routeEvalMutation(request, env, url);
     if (evalMutation != null) return evalMutation;

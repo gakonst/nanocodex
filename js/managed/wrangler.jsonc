@@ -19,6 +19,8 @@
   "upload_source_maps": true,
   "observability": {
     "enabled": true,
+    // Capability tokens (screen playback, OAuth) travel only in query strings; never index them.
+    "redact_query_string": true,
     "logs": {
       "enabled": true,
       "head_sampling_rate": 1,
@@ -128,6 +130,10 @@
         "class_name": "RegionalHandRelay"
       },
       {
+        "name": "NANOCODEX_SCREEN_PLAYBACK",
+        "class_name": "ScreenPlayback"
+      },
+      {
         "name": "NANOCODEX_VM_HOST_POOLS",
         "class_name": "VmHostPool"
       },
@@ -210,10 +216,12 @@
     { "tag": "v12", "new_sqlite_classes": ["MeetingPreview"] },
     { "tag": "v13", "new_sqlite_classes": ["CalendarPushDelivery"] },
     { "tag": "v14", "new_sqlite_classes": ["UserDataScope"] },
-    { "tag": "v15", "new_sqlite_classes": ["RegionalHandRelay"] }
+    { "tag": "v15", "new_sqlite_classes": ["RegionalHandRelay"] },
+    { "tag": "v16", "new_sqlite_classes": ["ScreenPlayback"] }
   ],
   "vars": {
     "NANOCODEX_REGIONAL_HAND_RELAYS": "true",
+    "NANOCODEX_REGIONAL_SCREEN_RELAYS": "true",
     "NANOCODEX_REGIONAL_API_KEY_AUTHORITY": "true",
     "NANOCODEX_THREAD_ROUTING": "true",
     "NANOCODEX_FIREHOSE_DECISIONS_ADMIN_ENABLED": "true",
@@ -282,6 +290,7 @@
           { "name": "NANOCODEX_SESSIONS", "class_name": "DurableAgentSession" },
           { "name": "NANOCODEX_ACCOUNT_TOOLS", "class_name": "AccountHostedTools" },
           { "name": "NANOCODEX_HAND_RELAYS", "class_name": "RegionalHandRelay" },
+          { "name": "NANOCODEX_SCREEN_PLAYBACK", "class_name": "ScreenPlayback" },
           { "name": "NANOCODEX_VM_HOST_POOLS", "class_name": "VmHostPool" },
           { "name": "NANOCODEX_ROOMS", "class_name": "MultiplayerRoom" },
           { "name": "NANOCODEX_MULTIPLAYER_QUOTA", "class_name": "MultiplayerQuota" },
@@ -296,6 +305,7 @@
       },
       "vars": {
         "NANOCODEX_REGIONAL_HAND_RELAYS": "true",
+    "NANOCODEX_REGIONAL_SCREEN_RELAYS": "true",
         "NANOCODEX_REGIONAL_API_KEY_AUTHORITY": "true",
         "AGENT_IDLE_TIMEOUT_MS": "1000",
         "MANAGED_AGENT_DIRECT_CREDENTIALS": "true",

@@ -58,9 +58,10 @@ provider or discovering a replacement publisher cannot move an existing call to
 a new shard and execute the same effect again. Session native app validation,
 file reads and native-input submission share this durable call-route store.
 
-Screen signaling and viewing, VM host pools, session-owned publishers and other
-public routes retain their existing routing. Regional tool relays change the
-native account tool-host transport and the provider's execution destination.
+Screen signaling has a separate regional opt-in described below. VM host pools,
+session-owned publishers and their effect journals retain their existing routing.
+Regional tool relays change the native account tool-host transport and the
+provider's execution destination.
 
 ## Configuration and rollout
 
@@ -181,3 +182,27 @@ They cannot establish Cloudflare's production placement or latency; deployment
 receipts and observed execution traces are required for those claims.
 
 Owners can retire a permanently stopped runtime with `abandon_pending: true` in the exact observed retirement request. This remains forbidden for a connected runtime or a changed generation/publication. Admitted calls become unavailable and dispatched calls retain an ambiguous result; receipts and replay fences remain stored. Omit the flag to reject retirement while any call is pending. Regional retirement RPCs transmit identifiers only, so large saved device descriptions do not prevent cleanup.
+
+
+## Regional screen signaling
+
+`NANOCODEX_REGIONAL_SCREEN_RELAYS="true"` enables regional routing for native
+account screen publishers on `/v1/account/hands/host`. The authenticated Worker
+selects the region from trusted Cloudflare ingress metadata. New screen
+generations and viewer connection IDs include `rs.<region>.`, so viewer upgrades
+and lease renewals route directly to that regional broker. The account website's
+verified viewer-access path uses the same destination; legacy identifiers still
+use the account broker.
+
+The account owner retains a directory of screen generations and fences a previous
+publisher before exposing its replacement. Discovery merges regional and legacy
+screens against that directory. Stale or replaced generations cannot reclaim a
+screen, and account Hand removal fences regional screen publication too. CUA
+uses the discovered route for that screen. VM publisher credentials continue to
+use their existing broker.
+
+This removes the account-owner detour from repeated screen signaling. It does
+not remove ICE negotiation, network relay selection, capture startup or player
+decoding. Measure admission and first decoded frame separately. Location hints
+remain best effort; inspect actual Durable Object execution placement before
+attributing a production latency change to geography.

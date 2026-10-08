@@ -30,8 +30,11 @@ import { annotateToolSpan, traceToolInvocation } from "./tool-tracing";
 import { DiagnosticJournal, diagnosticScope } from "./diagnostic-journal";
 import { RegionalHandDirectory, HAND_RELAY_REGION_HEADER, handRelayName, isHandRelayRegion,
   relayRouteToken, parseRelayRouteToken, publisherIdentity, validPublisherId,
-  type HandPublication, type HandRelayRegion, type RegionalHandEnv } from "./regional-hand-routing";
+  type HandPublication, type HandRelayLocation, type HandRelayRegion, type RegionalHandEnv } from "./regional-hand-routing";
 import type { RegionalHandRelay } from "./regional-hand-relay";
+import { RegionalScreenAuthority, SCREEN_DIRECTORY_HEADER, regionalScreenPrefix, regionalScreenRegion, screenAuthorized,
+  type RegionalScreenEnv, type ScreenFenceReason } from "./regional-screen-routing";
+import { recordScreenPlaybackHostResult, type ScreenPlaybackEnv } from "./screen-playback";
 
 type RetirementPublication = Pick<HandPublication, "route_id" | "publication_id" | "runtime_id" | "region"> & { machine: Pick<HostedMachine, "id"> };
 
@@ -70,7 +73,7 @@ type RoutedHostedTool = HostedToolsCodeTool & Readonly<{
   timeoutMs: number;
 }>;
 
-type AccountHostedToolsEnv = RemoteICEEnv & RegionalHandEnv & {
+type AccountHostedToolsEnv = RemoteICEEnv & RegionalHandEnv & RegionalScreenEnv & Partial<ScreenPlaybackEnv> & {
   NANOCODEX_SESSIONS?: DurableObjectNamespace<import("./index").DurableAgentSession>;
 };
 
@@ -119,6 +122,8 @@ export class AccountHostedTools extends DurableObject<AccountHostedToolsEnv> {
   readonly #directory: RegionalHandDirectory;
   #publicationQueue: Promise<unknown> = Promise.resolve();
   #region: HandRelayRegion | undefined;
+  /** Owner only: which location/generation may publish each machine's screens. */
+  readonly #screens: RegionalScreenAuthority | undefined;
 
   constructor(ctx: DurableObjectState, env: AccountHostedToolsEnv, regional = false) {
     super(ctx, env);
@@ -164,10 +169,24 @@ export class AccountHostedTools extends DurableObject<AccountHostedToolsEnv> {
         console.info(record);
       },
     });
-    this.#remote = new HandRemoteBroker(ctx, observation => {
-      const record = { type: "hand.remote", ...observation };
-      this.#diagnostics.record(record);
-      try { console.info(record); } catch { /* Remote diagnostics cannot change a socket outcome. */ }
+    this.#screens = regional ? undefined : new RegionalScreenAuthority(ctx.storage, (location, machineId, keep, reason) => this.#fenceScreens(location, machineId, keep, reason));
+    this.#remote = new HandRemoteBroker(ctx, {
+      onObservation: observation => {
+        const record = { type: "hand.remote", ...(regional && this.#region ? { relay_region: this.#region } : {}), ...observation };
+        try { console.info(record); } catch { /* Remote diagnostics cannot change a socket outcome. */ }
+        this.#diagnostics.record(record);
+      },
+      claimCatalog: claim => regional ? this.#claimRegionalScreen(claim.machineId, claim.generation, claim.sequence)
+        : this.#screens!.claim(claim.machineId, "legacy", claim.generation, claim.sequence),
+      onClaimPublished: claim => { if (regional) void this.#confirmRegionalScreen(claim.machineId, claim.generation).catch(() => undefined); },
+      nextSequence: () => this.#screenSequence(1),
+      onHostResult: result => {
+        const playback = this.env.NANOCODEX_SCREEN_PLAYBACK, owner = this.#ownerId;
+        if (!playback || !owner) return;
+        // Status only; never awaited by the host socket.
+        void recordScreenPlaybackHostResult({ NANOCODEX_SCREEN_PLAYBACK: playback }, result, owner).catch(() => false);
+      },
+      idPrefix: () => regional && this.#region ? regionalScreenPrefix(this.#region) : "",
     });
     this.#handHosts = new HandHosts(ctx.storage, this.#remote);
   }
@@ -234,6 +253,9 @@ export class AccountHostedTools extends DurableObject<AccountHostedToolsEnv> {
           // cannot be reached. Retired runtime tombstones reject later claims.
         }
       }
+      // Withdraw screen authority in every location; unconfirmed relays stay fenced-pending and unlisted.
+      const screens = await this.#screens!.revoke(machineId);
+      if (!screens) console.warn({ type: "hand.screen.revoke_pending" });
       return { forgotten: this.#forget(machineId) } as const;
     });
     this.#publicationQueue = result.then(() => {}, () => {});
@@ -287,7 +309,9 @@ export class AccountHostedTools extends DurableObject<AccountHostedToolsEnv> {
   async #fetchRequest(request: Request): Promise<Response> {
     const url = new URL(request.url);
     if (url.pathname.startsWith("/regional/")) return this.#regionalRequest(request, url);
-    if (this.#regional && !["/tool-host", "/snapshot", "/invoke", "/turn-ended", "/diagnostics"].includes(url.pathname)) {
+    if (url.pathname === "/screens/host-command") return this.#screenHostCommand(request);
+    if (this.#regional && !["/tool-host", "/snapshot", "/invoke", "/turn-ended", "/diagnostics",
+      "/hands/host", "/hands/view", "/hands/renew", "/hands/screens"].includes(url.pathname)) {
       return Response.json({ error: "not_found" }, { status: 404 });
     }
     if (url.pathname === "/diagnostics") {
@@ -366,6 +390,21 @@ export class AccountHostedTools extends DurableObject<AccountHostedToolsEnv> {
               || !vm.machineName.trim() || new TextEncoder().encode(vm.machineName).length > 128))
             || !Number.isSafeInteger(vm.expiresAt) || vm.expiresAt <= Date.now()) throw new Error();
         } catch { return Response.json({ error: "forbidden" }, { status: 403 }); }
+      }
+      if (this.#regional) {
+        // Regional relays serve only native account publishers and their viewers;
+        // VM and server publishers keep owner-local revocation.
+        const region = request.headers.get(HAND_RELAY_REGION_HEADER);
+        if (vm || !isHandRelayRegion(region) || (this.#region && this.#region !== region)) return Response.json({ error: "not_found" }, { status: 404 });
+        if (!this.#region) { this.#region = region; this.ctx.storage.kv.put("regional_hand_region", region); }
+      } else if (url.pathname === "/hands/screens" && request.method === "GET" && !url.search && !vm) {
+        // Only the current authority is listed. Workers merge regional catalogs.
+        if (this.#screens!.pending()) void this.#screens!.retryPending().catch(() => undefined);
+        const authority = this.#screens!.hosts();
+        const surfaces = this.#remote.list().filter(target => screenAuthorized(authority, "legacy", target.machine_id, target.generation));
+        return Response.json({ surfaces, ...(request.headers.get(SCREEN_DIRECTORY_HEADER) === "1" ? {
+          regional_hosts: Object.fromEntries([...authority].filter(([, host]) => host.region !== "legacy" && host.generation)) } : {}) },
+        { headers: { "cache-control": "no-store" } });
       }
       if (url.pathname === "/hands/renew" && request.method === "POST" && !url.search) {
         try {
@@ -589,8 +628,11 @@ export class AccountHostedTools extends DurableObject<AccountHostedToolsEnv> {
 
   #localSnapshot(): AccountHostedToolsSnapshot {
     const catalog = this.#broker.catalogSnapshot();
+    const authority = this.#screens?.hosts();
+    const screens = this.#remote.list(true).filter(target => target.agent_tools
+      && (!authority || screenAuthorized(authority, "legacy", target.machine_id, target.generation)));
     return {
-        screens: this.#remote.list(true).filter(target => target.agent_tools),
+        screens,
         tools: [...catalog.definitions().flatMap((definition) => {
           const tool = catalog.resolve(definition.name) as RoutedHostedTool | undefined;
           return tool?.routeToken === undefined ? [] : [{
@@ -602,7 +644,7 @@ export class AccountHostedTools extends DurableObject<AccountHostedToolsEnv> {
             timeout_ms: tool.timeoutMs,
             route_token: tool.routeToken,
           } satisfies AccountHostedTool];
-        }), ...this.#remote.tools()],
+        }), ...screens.map(screenTool)],
         machines: catalog.machines().map(({ machine, online }) => ({
           machine,
           online,
@@ -633,8 +675,11 @@ export class AccountHostedTools extends DurableObject<AccountHostedToolsEnv> {
     if (this.#regional) return { ...local, publications: this.ctx.storage.sql.exec<{ publication_json: string }>(
       "SELECT publication_json FROM regional_local_publications WHERE publication_json IS NOT NULL").toArray().map(row => JSON.parse(row.publication_json) as HandPublication) };
     const directory = this.#directory.entries().filter(entry => machineId === undefined || entry.machine.id === machineId);
-    if (!directory.length) return this.#withRoots(local);
-    const regions = [...new Set(directory.filter(entry => !entry.pending && entry.region !== "legacy").map(entry => entry.region as HandRelayRegion))];
+    const screenAuthority = [...this.#screens!.hosts()].filter(([machine, host]) => host.region !== "legacy" && host.generation
+      && (machineId === undefined || machine === machineId));
+    if (!directory.length && !screenAuthority.length) return this.#withRoots(local);
+    const regions = [...new Set([...directory.filter(entry => !entry.pending && entry.region !== "legacy").map(entry => entry.region as HandRelayRegion),
+      ...screenAuthority.map(([, host]) => host.region as HandRelayRegion)])];
     const snapshots = await Promise.all(regions.map(async region => {
       try {
         if (!this.env.NANOCODEX_HAND_RELAYS) return undefined;
@@ -667,7 +712,20 @@ export class AccountHostedTools extends DurableObject<AccountHostedToolsEnv> {
         if (selected.tool_names.includes(tool.definition.name)) tools.push({ ...tool, route_token: relayRouteToken(region, tool.route_token) });
       }
     }
-    return this.#withRoots({ tools, machines: [...machines.values()], screens: local.screens, inventory_unknown_ids: inventoryUnknownIds });
+    // Regional screens: only the owner's current authority, routed through its relay.
+    const screens = [...local.screens ?? []];
+    for (const [machine, host] of screenAuthority) {
+      const remote = snapshots.find(snapshot => snapshot?.region === host.region)?.snapshot;
+      for (const target of remote?.screens ?? []) {
+        if (target.machine_id !== machine || target.generation !== host.generation) continue;
+        screens.push(target);
+        const route = screenTool(target).route_token;
+        for (const tool of remote!.tools) if (tool.provider === "screens" && tool.route_token === route) {
+          tools.push({ ...tool, route_token: relayRouteToken(host.region as HandRelayRegion, tool.route_token) });
+        }
+      }
+    }
+    return this.#withRoots({ tools, machines: [...machines.values()], screens, inventory_unknown_ids: inventoryUnknownIds });
   }
 
   #withRoots(snapshot: AccountHostedToolsSnapshot): AccountHostedToolsSnapshot {
@@ -939,6 +997,30 @@ export class AccountHostedTools extends DurableObject<AccountHostedToolsEnv> {
       });
       return Response.json({ ...status, retired: true });
     }
+    if (url.pathname === "/regional/screen-claim" && !this.#regional) {
+      const region = body.region, generation = body.generation;
+      if (!validPublisherId(body.machine_id) || !isHandRelayRegion(region) || typeof generation !== "string"
+        || !validPublisherId(generation) || regionalScreenRegion(generation) !== region
+        || !Number.isSafeInteger(body.sequence) || (body.sequence as number) < 1 || Object.keys(body).length !== 4) {
+        return Response.json({ error: "invalid_request" }, { status: 400 });
+      }
+      const granted = await this.#screens!.claim(body.machine_id, region, generation, body.sequence as number);
+      // Authority decisions only: no endpoint, SDP or credential data.
+      try { console.info({ type: "hand.screen.claim", hand_id: body.machine_id, region, sequence: body.sequence, granted }); } catch { /* Passive. */ }
+      return Response.json({ granted }, { headers: { "cache-control": "no-store" } });
+    }
+    if (url.pathname === "/regional/screen-confirm" && !this.#regional) {
+      if (!validPublisherId(body.machine_id) || !isHandRelayRegion(body.region) || typeof body.generation !== "string"
+        || Object.keys(body).length !== 3) return Response.json({ error: "invalid_request" }, { status: 400 });
+      await this.#screens!.confirm(body.machine_id, body.region, body.generation);
+      return Response.json({ confirmed: true });
+    }
+    if (url.pathname === "/regional/screen-fence" && this.#regional) {
+      if (!validPublisherId(body.machine_id) || (body.keep !== undefined && !validPublisherId(body.keep))
+        || !["host_replaced", "publisher_revoked"].includes(body.reason as string)) return Response.json({ error: "invalid_request" }, { status: 400 });
+      this.#remote.fenceMachine(body.machine_id, body.keep as string | undefined, body.reason as ScreenFenceReason);
+      return Response.json({ fenced_through: this.#screenSequence(0) });
+    }
     const publication = body as unknown as HandPublication;
     if (!validPublisherId(publication.machine?.id) || !validPublisherId(publication.publication_id)
       || typeof publication.machine.name !== "string" || !Array.isArray(publication.machine.capabilities)
@@ -960,8 +1042,73 @@ export class AccountHostedTools extends DurableObject<AccountHostedToolsEnv> {
 
   alarm(): void { this.#broker.expire(); }
 
+  /** Owner fence of one screen location. Legacy is this object: synchronous, never a self fetch. */
+  /** Durable monotonic host-socket counter; `step` 0 reads the current high-water mark. */
+  #screenSequence(step: 0 | 1): number {
+    const next = (this.ctx.storage.kv.get<number>("screen_host_sequence") ?? 0) + step;
+    if (step) this.ctx.storage.kv.put("screen_host_sequence", next);
+    return next;
+  }
+
+  async #fenceScreens(location: HandRelayLocation, machineId: string, keep: string | undefined, reason: ScreenFenceReason): Promise<number | false> {
+    if (location === "legacy") { this.#remote.fenceMachine(machineId, keep, reason); return this.#screenSequence(0); }
+    if (!this.env.NANOCODEX_HAND_RELAYS || !this.#ownerId) return false;
+    return fetchResponseWithDeadline(this.env.NANOCODEX_HAND_RELAYS.getByName(handRelayName(this.#ownerId, location)),
+      "https://account-tools.internal/regional/screen-fence", { method: "POST",
+        headers: { [OWNER_ASSERTION]: this.#ownerId, "content-type": "application/json" },
+        body: JSON.stringify({ machine_id: machineId, ...(keep === undefined ? {} : { keep }), reason }) }, 5_000, "fence regional screen",
+      async response => response.ok ? (await response.json<{ fenced_through: number }>()).fenced_through : false).catch(() => false as const);
+  }
+
+  /** Relay publication admission. Rejection or uncertainty closes the publisher. */
+  async #confirmRegionalScreen(machineId: string, generation: string): Promise<void> {
+    if (!this.#ownerId || !this.#region || !this.env.NANOCODEX_ACCOUNT_TOOLS) return;
+    await fetchResponseWithDeadline(this.env.NANOCODEX_ACCOUNT_TOOLS.getByName(this.#ownerId),
+      "https://account-tools.internal/regional/screen-confirm", { method: "POST",
+        headers: { [OWNER_ASSERTION]: this.#ownerId, "content-type": "application/json" },
+        body: JSON.stringify({ machine_id: machineId, region: this.#region, generation }) }, 5_000, "confirm regional screen", () => undefined);
+  }
+
+  async #claimRegionalScreen(machineId: string, generation: string, sequence: number): Promise<boolean> {
+    if (!this.#ownerId || !this.#region || !this.env.NANOCODEX_ACCOUNT_TOOLS) return false;
+    return fetchResponseWithDeadline(this.env.NANOCODEX_ACCOUNT_TOOLS.getByName(this.#ownerId),
+      "https://account-tools.internal/regional/screen-claim", { method: "POST",
+        headers: { [OWNER_ASSERTION]: this.#ownerId, "content-type": "application/json" },
+        body: JSON.stringify({ machine_id: machineId, region: this.#region, generation, sequence }) }, 8_000, "claim regional screen",
+      async response => response.ok && (await response.json<{ granted?: unknown }>()).granted === true);
+  }
+
+  /** Portable playback command (internal binding only); the owner forwards to the authority's relay. */
+  async #screenHostCommand(request: Request): Promise<Response> {
+    const owner = request.headers.get(OWNER_ASSERTION);
+    if (request.method !== "POST" || !isUserId(owner) || !this.#owns(owner)) return Response.json({ error: "not_found" }, { status: 404 });
+    let body: Record<string, any>;
+    try { body = await boundedJSON(request) as Record<string, any>; } catch { return Response.json({ error: "invalid_request" }, { status: 400 }); }
+    const command = body?.command;
+    const generation = body?.generation === undefined ? undefined : String(body.generation);
+    if (!validPublisherId(body?.machine_id) || !validPublisherId(body?.surface_id) || (generation !== undefined && !validPublisherId(generation))
+      || !command || typeof command !== "object" || command.type !== "broadcast" || command.target !== "hls"
+      || (command.surface_id !== undefined && command.surface_id !== body.surface_id) || !["start", "stop", "status"].includes(command.action)
+      || !validPublisherId(command.request_id) || !validPublisherId(command.stream_id)
+      || (command.action === "start" && (typeof command.preset !== "string" || !command.upload || typeof command.upload.url !== "string"
+        || typeof command.upload.token !== "string" || !Number.isSafeInteger(command.upload.expires_at)))) {
+      return Response.json({ error: "invalid_request" }, { status: 400 });
+    }
+    const authority = this.#screens?.hosts().get(body.machine_id);
+    if (authority && authority.region !== "legacy") {
+      if (!this.env.NANOCODEX_HAND_RELAYS) return Response.json({ error: "host_unavailable" }, { status: 503 });
+      if (generation !== undefined && generation !== authority.generation) return Response.json({ error: "stale_generation" }, { status: 409 });
+      return this.env.NANOCODEX_HAND_RELAYS.getByName(handRelayName(owner, authority.region)).fetch("https://account-tools.internal/screens/host-command", {
+        method: "POST", headers: { [OWNER_ASSERTION]: owner, "content-type": "application/json" },
+        body: JSON.stringify({ ...body, generation: authority.generation }) });
+    }
+    return this.#remote.sendHostCommand(body.machine_id, body.surface_id, generation, { action: command.action, request_id: command.request_id,
+      stream_id: command.stream_id, ...(command.action === "start" ? { preset: command.preset,
+        upload: { url: command.upload.url, token: command.upload.token, expires_at: command.upload.expires_at } } : {}) });
+  }
+
   async webSocketMessage(socket: WebSocket, message: string | ArrayBuffer): Promise<void> {
-    if (this.#remote.owns(socket)) { this.#remote.message(socket, message); return; }
+    if (this.#remote.owns(socket)) { await this.#remote.message(socket, message); return; }
     await this.#broker.webSocketMessage(socket, message);
   }
 
@@ -1324,7 +1471,9 @@ export class AccountHostedToolsProvider implements HostedToolsDynamicProvider {
       if (!target) continue;
       const expected = screenTool(target);
       const tool = tools.get(expected.definition.name);
-      if (!tool || tool.provider !== "screens" || tool.routeToken !== expected.route_token) continue;
+      // Regional screens keep their exact route inside the relay envelope.
+      if (!tool || tool.provider !== "screens" || (tool.routeToken !== expected.route_token
+        && parseRelayRouteToken(tool.routeToken ?? "")?.token !== expected.route_token)) continue;
       screenTools.set(machineId, tool);
       screenMachines.set(machineId, { id: machineId, name: target.machine_name,
         workspace: "/", capabilities: ["computer", "screen"] });

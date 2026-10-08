@@ -18,6 +18,9 @@ export class FixtureSession extends DurableAgentSession {
   async fetch(request) {
     const path = new URL(request.url).pathname;
     if (path === '/__seed') {
+      // Enter the production HTTP lifecycle before fault-injecting retained work.
+      // Fresh sessions intentionally defer schema setup until their first request.
+      await super.fetch(new Request('https://fixture.internal/__initialize'));
       const { id } = await request.json(); const now = Date.now();
       this.ctx.storage.sql.exec("INSERT OR IGNORE INTO session_state (singleton,session_id,owner_id,organization_id,team_id,authorization_epoch,public_origin,runtime_profile,last_active) VALUES (1,'00000000-0000-7000-8000-000000000001','fixture-owner','fixture-org','fixture-team',1,'https://nanocodex.example/','managed',?)", now);
       this.ctx.storage.sql.exec("INSERT OR IGNORE INTO managed_configuration VALUES (1, ?)",JSON.stringify({environment:{files:[],skills:[],setup_commands:[],network:{access:'enabled'}}}));

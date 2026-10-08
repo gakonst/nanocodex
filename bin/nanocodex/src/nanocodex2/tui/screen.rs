@@ -13,7 +13,7 @@ use std::{
     process::Stdio,
     sync::{
         Arc, Mutex,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU16, Ordering},
     },
     time::{Duration, Instant},
 };
@@ -46,6 +46,43 @@ mod graphics;
 pub(crate) use graphics::VideoFrame;
 
 const VIDEO_REORDER_WINDOW: usize = 4096;
+
+/// Payload-free connect milestones, relative to one viewer attempt. Never logs
+/// SDP, candidates, addresses or credentials; each milestone is reported once.
+struct ViewerTiming {
+    started: Instant,
+    reported: AtomicU16,
+}
+impl ViewerTiming {
+    fn new() -> Arc<Self> {
+        Arc::new(Self {
+            started: Instant::now(),
+            reported: AtomicU16::new(0),
+        })
+    }
+    fn mark(&self, event: &'static str) {
+        let bit = match event {
+            "catalog_ready" => 1,
+            "admitted" => 2,
+            "ice_ready" => 4,
+            "ready" => 8,
+            "offer_received" => 16,
+            "answer_sent" => 32,
+            "connected" => 64,
+            "failed" => 128,
+            "first_rtp" => 256,
+            "first_sample" => 512,
+            "first_decoded" => 1024,
+            _ => return,
+        };
+        // The packet and decoder loops perform no allocation or locking here.
+        if self.reported.fetch_or(bit, Ordering::Relaxed) & bit != 0 {
+            return;
+        }
+        let elapsed_ms = self.started.elapsed().as_secs_f64() * 1000.0;
+        tracing::info!(target: "nanocodex2::screen", stage = "screen.viewer.timing", event, elapsed_ms);
+    }
+}
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
 // A small bounded queue absorbs decoder bursts without dropping every second
@@ -387,11 +424,13 @@ async fn session(
     size: watch::Receiver<Size>,
     font: ratatui_image::FontSize,
 ) -> Result<()> {
+    let timing = ViewerTiming::new();
     // Resolve the current generation only for this explicitly selected identity.
     let current = catalog(request(http, target, "screens", None).await?)?
         .into_iter()
         .find(|s| s.machine_id == surface.machine_id && s.id == surface.id)
         .ok_or("This Hand is no longer publishing that screen")?;
+    timing.mark("catalog_ready");
     let fallback = current.transport.as_deref() == Some("frames-v1");
     output.send_modify(|s| s.audio = if fallback { "not published" } else { "waiting" }.into());
     let mut url = endpoint(target, "view")?;
@@ -414,6 +453,7 @@ async fn session(
         tokio_tungstenite::connect_async_with_config(req, Some(config), false),
     )
     .await??;
+    timing.mark("admitted");
     let (mut sink, mut stream) = socket.split();
     let (signals, mut outgoing) = mpsc::channel::<Value>(128);
     let mut tasks = Vec::new();
@@ -421,6 +461,7 @@ async fn session(
         None
     } else {
         let ice = request(http, target, "ice", Some(json!({}))).await?;
+        timing.mark("ice_ready");
         let mut engine = MediaEngine::default();
         engine.register_default_codecs()?;
         let registry = viewer_interceptors(&mut engine)?;
@@ -442,6 +483,16 @@ async fn session(
                 })
                 .await?,
         );
+        let state_timing = timing.clone();
+        peer.on_peer_connection_state_change(Box::new(move |state| {
+            use webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState as State;
+            match state {
+                State::Connected => state_timing.mark("connected"),
+                State::Failed => state_timing.mark("failed"),
+                _ => {}
+            }
+            Box::pin(async {})
+        }));
         let sender = signals.clone();
         peer.on_ice_candidate(Box::new(move |candidate| { let sender = sender.clone(); Box::pin(async move { if let Some(candidate) = candidate && let Ok(candidate) = candidate.to_json() { let _ = sender.send(json!({"type":"candidate", "candidate":candidate.candidate,"sdpMid":candidate.sdp_mid,"sdpMLineIndex":candidate.sdp_mline_index})).await; } }) }));
         // The session owns both tracks, so closing or switching Hands stops sound too.
@@ -454,6 +505,7 @@ async fn session(
         }));
         let frames = frames.clone();
         let decoder_peer = peer.clone();
+        let decode_timing = timing.clone();
         let sender = signals.clone();
         tasks.push(Task(tokio::spawn(async move {
             let mut decoders = Vec::new();
@@ -468,8 +520,10 @@ async fn session(
                         let sender = sender.clone();
                         let size = size.clone();
                         let peer = decoder_peer.clone();
+                        let timing = decode_timing.clone();
                         decoders.push(Task(tokio::spawn(async move {
-                            if let Err(error) = decode_track(track, frames, size, font, peer).await
+                            if let Err(error) =
+                                decode_track(track, frames, size, font, peer, timing).await
                             {
                                 let _ = sender
                                     .send(json!({"decoder_error":error.to_string()}))
@@ -523,7 +577,7 @@ async fn session(
                 let Message::Text(text) = message else { if matches!(message, Message::Close(_)) { return Err("Screen disconnected".into()); } continue; };
                 let value: Value = serde_json::from_str(&text)?;
                 match value["type"].as_str() {
-                    Some("ready") => { connection = Some(value["connection_id"].as_str().filter(|v| !v.is_empty() && v.len() <= 128).ok_or("Invalid screen lease")?.to_owned()); authorized = Instant::now(); if fallback { sink.send(Message::Text(json!({"type":"frame_request"}).to_string().into())).await?; } }
+                    Some("ready") => { timing.mark("ready"); connection = Some(value["connection_id"].as_str().filter(|v| !v.is_empty() && v.len() <= 128).ok_or("Invalid screen lease")?.to_owned()); authorized = Instant::now(); if fallback { sink.send(Message::Text(json!({"type":"frame_request"}).to_string().into())).await?; } }
                     Some("renewed") => authorized = Instant::now(),
                     Some("pong") | Some("control") => {},
                     Some("frame") if fallback => {
@@ -538,12 +592,14 @@ async fn session(
                         let signal = &value["signal"];
                         match signal["type"].as_str() {
                             Some("offer") => {
+                                timing.mark("offer_received");
                                 let sdp = signal["sdp"].as_str().filter(|s| s.len() <= 65536).ok_or("Invalid video offer")?;
                                 peer.set_remote_description(RTCSessionDescription::offer(sdp.to_owned())?).await?;
                                 for candidate in candidates.drain(..) { peer.add_ice_candidate(candidate).await?; }
                                 let answer = peer.create_answer(None).await?;
                                 peer.set_local_description(answer.clone()).await?;
                                 sink.send(Message::Text(json!({"type":"signal","signal":{"type":"answer","sdp":answer.sdp}}).to_string().into())).await?;
+                                timing.mark("answer_sent");
                             }
                             Some("candidate") => {
                                 let candidate: RTCIceCandidateInit = serde_json::from_value(signal.clone())?;
@@ -615,6 +671,7 @@ async fn decode_track(
     mut size: watch::Receiver<Size>,
     font: ratatui_image::FontSize,
     peer: Arc<RTCPeerConnection>,
+    timing: Arc<ViewerTiming>,
 ) -> Result<()> {
     if !track
         .codec()
@@ -662,6 +719,7 @@ async fn decode_track(
             }
         }));
         let input = track.clone();
+        let feed_timing = timing.clone();
         let _feed = Task(tokio::spawn(async move {
             let mut samples = video_samples();
             let mut packets = 0u32;
@@ -670,6 +728,7 @@ async fn decode_track(
             let mut previous_sequence: Option<u16> = None;
             let mut report = Instant::now();
             while let Ok((packet, _)) = input.read_rtp().await {
+                feed_timing.mark("first_rtp");
                 packets += 1;
                 if let Some(previous) = previous_sequence {
                     let gap = packet
@@ -683,6 +742,7 @@ async fn decode_track(
                 previous_sequence = Some(packet.header.sequence_number);
                 samples.push(packet);
                 while let Some(sample) = samples.pop() {
+                    feed_timing.mark("first_sample");
                     decoded += 1;
                     if stdin.write_all(&sample.data).await.is_err() {
                         return;
@@ -708,6 +768,7 @@ async fn decode_track(
                 }
                 frame = tokio::time::timeout(Duration::from_secs(15), read_ppm(&mut reader)) => {
                     frames.push(frame.map_err(|_| "Video stream stalled")??);
+                    timing.mark("first_decoded");
                 }
             }
         }

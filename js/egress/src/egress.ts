@@ -17,7 +17,7 @@ import {
   AgentSubjectDirectory,
   type BrokerEnv,
   UserCredentialBroker,
-  type UserCredentialSnapshot,
+  type ModelCredentialValue,
   type VaultEntry,
   type VaultKind,
   validChatGptCredentialImport,
@@ -52,6 +52,11 @@ import {
 } from "./ssh";
 
 export { AgentSubjectDirectory, UserCredentialBroker } from "./broker";
+export { SessionCredentialPrewarm, UserCredentialSnapshot } from "./credential-snapshot";
+import {
+  headerFingerprint, PREPARED_UPGRADE_HEADER, PREPARED_UPGRADE_URL, registerPreparedUpgradeStarter, snapshotStub,
+  type PrepareUpgradeResult, type SnapshotResolve,
+} from "./credential-snapshot";
 export { UserConnectorBroker } from "./connector-broker";
 export { WhatsAppAccount } from "./whatsapp-account";
 export { SpotifyRateLimit } from "./spotify-rate-limit";
@@ -365,7 +370,45 @@ const SESSION_MODEL_OPERATIONS: ReadonlySet<ModelOperation["id"]> = new Set([
  * never carries connector, Vault, SSH, MCP, Realtime, or control traffic.
  */
 export class SessionModelEgress extends WorkerEntrypoint<EgressEnv> {
+  /**
+   * Private Session preparation ACK. The regional credential holder starts the
+   * exact auth-only GET /v1/responses handshake and returns an opaque one-shot
+   * id; the Session awaits only this ACK before its first storage write.
+   */
+  async prepareModelUpgrade(input: unknown): Promise<PrepareUpgradeResult> {
+    const prepared = preparedUpgradeAuthority(input && typeof input === "object"
+      ? (input as { headers?: unknown }).headers : undefined);
+    if (!prepared) return { status: "invalid" };
+    const stub = snapshotStub(this.env, prepared.owner, prepared.region);
+    if (!stub) return { status: "unsupported" };
+    const fingerprint = await headerFingerprint(prepared.headers.entries());
+    const forwarded = new Headers(prepared.headers);
+    forwarded.delete(SESSION_MODEL_OWNER_HEADER);
+    forwarded.delete(SESSION_MODEL_REGION_HEADER);
+    try {
+      return consumeRpcData(await stub.prepareModelUpgrade(prepared.owner, prepared.region, prepared.subject,
+        fingerprint, [...forwarded.entries()])) as PrepareUpgradeResult;
+    } catch { return { status: "unsupported" }; }
+  }
+
+  /** Best-effort release of an unconsumed preparation by its owning Session. */
+  async cancelModelUpgrade(input: unknown): Promise<boolean> {
+    const record = input && typeof input === "object" ? input as { headers?: unknown; id?: unknown } : undefined;
+    const prepared = preparedUpgradeAuthority(record?.headers);
+    if (!prepared || typeof record?.id !== "string") return false;
+    const stub = snapshotStub(this.env, prepared.owner, prepared.region);
+    // Only the exact preparing Session authority (subject + header fingerprint)
+    // may cancel, even if another Session of the same owner learned the id.
+    const fingerprint = await headerFingerprint(prepared.headers.entries());
+    try {
+      return stub ? await stub.cancelModelUpgrade(prepared.owner, prepared.region, record.id,
+        prepared.subject, fingerprint) : false;
+    }
+    catch { return false; }
+  }
+
   fetch(request: Request): Promise<Response> {
+    if (request.headers.has(PREPARED_UPGRADE_HEADER)) return this.#consumePrepared(request);
     const owner = request.headers.get(SESSION_MODEL_OWNER_HEADER);
     const subject = request.headers.get(SUBJECT_HEADER);
     const transport = SESSION_MODEL_TRANSPORT_URLS.has(request.url)
@@ -384,7 +427,42 @@ export class SessionModelEgress extends WorkerEntrypoint<EgressEnv> {
     forwarded.headers.delete(SESSION_MODEL_REGION_HEADER);
     return handleEgress(forwarded, this.env, this.ctx, fetch, undefined, { subject, owner, ...(region ? { region } : {}) });
   }
+
+  /** Consumption is a fetch because a 101 WebSocket cannot cross RPC. */
+  async #consumePrepared(request: Request): Promise<Response> {
+    const id = request.headers.get(PREPARED_UPGRADE_HEADER)!;
+    const headers = new Headers(request.headers);
+    headers.delete(PREPARED_UPGRADE_HEADER);
+    const prepared = request.method === "GET" && request.url === "https://nanocodex.internal/v1/responses"
+      && /^[0-9a-f-]{36}$/.test(id) ? preparedUpgradeAuthority([...headers.entries()]) : undefined;
+    if (!prepared) return jsonError(403, "invalid_session_model_authority");
+    const stub = snapshotStub(this.env, prepared.owner, prepared.region);
+    if (!stub) return jsonError(404, "prepared_model_upgrade_unavailable");
+    return stub.fetch(PREPARED_UPGRADE_URL, { headers: {
+      upgrade: "websocket", [PREPARED_UPGRADE_HEADER]: id, [SESSION_MODEL_OWNER_HEADER]: prepared.owner,
+      [SESSION_MODEL_REGION_HEADER]: prepared.region, [SUBJECT_HEADER]: prepared.subject,
+      "x-nanocodex-upgrade-fingerprint": await headerFingerprint(headers.entries()),
+    } });
+  }
 }
+
+/** Exact Session authority for an auth-only Responses upgrade preparation.
+ * Region is mandatory: the pending handshake lives in a regional holder. */
+function preparedUpgradeAuthority(value: unknown):
+  { owner: string; subject: string; region: DurableObjectLocationHint; headers: Headers } | undefined {
+  if (!Array.isArray(value) || value.length > 64) return undefined;
+  let headers: Headers;
+  try { headers = new Headers(value as [string, string][]); } catch { return undefined; }
+  const owner = headers.get(SESSION_MODEL_OWNER_HEADER);
+  const subject = headers.get(SUBJECT_HEADER);
+  const region = validatedRelayRegion(headers.get(SESSION_MODEL_REGION_HEADER));
+  if (!owner || !USER_ID.test(owner) || !subject || !MANAGED_SESSION_SUBJECT.test(subject) || !region
+    || headers.has(PREPARED_UPGRADE_HEADER) || headers.get("upgrade")?.toLowerCase() !== "websocket") return undefined;
+  return { owner, subject, region, headers };
+}
+
+registerPreparedUpgradeStarter((request, env, ctx, authority) =>
+  handleEgress(request, env as EgressEnv, ctx, fetch, undefined, authority));
 
 const SESSION_TOOL_OWNER_HEADER = "x-nanocodex-session-tool-owner";
 type SessionToolAuthority = Readonly<{ subject: string; owner: string }>;
@@ -577,7 +655,9 @@ async function handleMeasuredEgressWithOwner(
   const started = Date.now();
   // Headers on the general broker are never an ownership assertion. Only the
   // dedicated Worker entrypoint may supply already-validated Session authority.
-  if (request.headers.has(SESSION_MODEL_OWNER_HEADER)) return jsonError(403, "invalid_session_model_authority");
+  if (request.headers.has(SESSION_MODEL_OWNER_HEADER) || request.headers.has(PREPARED_UPGRADE_HEADER)) {
+    return jsonError(403, "invalid_session_model_authority");
+  }
   let url: URL;
   try { url = new URL(request.url); } catch { return jsonError(400, "invalid_url"); }
   if (url.username || url.password || url.hash) return jsonError(403, "destination_denied");
@@ -3009,7 +3089,7 @@ function buildUpstreamRequest(
   original: Request,
   env: EgressEnv,
   operation: ModelOperation,
-  credential: UserCredentialSnapshot,
+  credential: ModelCredentialValue,
   body: Uint8Array | null,
 ): Request {
   const headers = new Headers();
@@ -3073,7 +3153,7 @@ function buildUpstreamRequest(
 function upstreamUrl(
   env: EgressEnv,
   operation: ModelOperation,
-  kind: UserCredentialSnapshot["kind"],
+  kind: ModelCredentialValue["kind"],
 ): URL {
   if (kind === "openai") return new URL(operation.openai);
   const configured = env.CODEX_RELAY_URL?.trim();
@@ -3109,7 +3189,7 @@ function realtimeRelayRpc(env: EgressEnv, request: Request): boolean {
 async function fetchUpstream(
   env: EgressEnv,
   userId: string,
-  credential: UserCredentialSnapshot,
+  credential: ModelCredentialValue,
   operation: ModelOperation,
   request: Request,
   upstreamFetch: typeof fetch,
@@ -3273,7 +3353,7 @@ async function subjectUser(response: Response): Promise<string> {
 async function reportChatGptLimit(
   env: EgressEnv,
   userId: string,
-  credential: UserCredentialSnapshot,
+  credential: ModelCredentialValue,
   resetAt: number,
   select = true,
   egressRequestId?: string,
@@ -3328,7 +3408,7 @@ async function resolveCredential(
   return { ...await resolveSponsoredChatGptCredential(env, recover, revision), source: "sponsored" };
 }
 
-type ResolvedModelCredential = UserCredentialSnapshot & Readonly<{
+type ResolvedModelCredential = ModelCredentialValue & Readonly<{
   source: "sponsored" | "user";
   broker_ms?: number;
   broker_activation_ms?: number;
@@ -3340,7 +3420,7 @@ async function resolveSponsoredChatGptCredential(
   env: EgressEnv,
   recover: boolean,
   revision?: number,
-): Promise<UserCredentialSnapshot> {
+): Promise<ModelCredentialValue> {
   const sponsorUserId = env.NANOCODEX_SPONSORED_CHATGPT_USER_ID?.trim();
   if (!sponsorUserId || !USER_ID.test(sponsorUserId)) {
     throw new EgressFailure(409, "sponsored_chatgpt_unavailable");
@@ -3371,7 +3451,7 @@ export function isLegacyLocalBootstrapCredential(
     "ALLOW_LOCAL_CREDENTIAL_CLAIM" | "ENVIRONMENT" | "LOCAL_CHATGPT_BOOTSTRAP"
     | "NANOCODEX_SPONSORED_CHATGPT_USER_ID">,
   userId: string,
-  credential: UserCredentialSnapshot,
+  credential: ModelCredentialValue,
 ): boolean {
   if (!localClaimEnabled(env) || credential.kind !== "chatgpt" || credential.provenance
     || userId === env.NANOCODEX_SPONSORED_CHATGPT_USER_ID?.trim()) {
@@ -3395,8 +3475,13 @@ async function resolveUserCredential(
   recover: boolean,
   revision?: number,
   accountId?: string,
-): Promise<UserCredentialSnapshot & Pick<ResolvedModelCredential, "broker_ms" | "broker_activation_ms" | "broker_age_ms" | "broker_resolve_id">> {
-  const result = consumeRpcData(await userBroker(env, userId).resolveModelCredential(recover, revision, accountId));
+): Promise<ModelCredentialValue & Pick<ResolvedModelCredential, "broker_ms" | "broker_activation_ms" | "broker_age_ms" | "broker_resolve_id">> {
+  // Only a plain read in a trusted placement region may use the regional
+  // leased snapshot. Recovery, revision fences, pinned accounts and failover
+  // stay on the canonical broker's serialized queue.
+  const regional = !recover && revision === undefined && accountId === undefined && env.trustedPlacementRegion
+    ? await resolveRegionalCredential(env, userId, env.trustedPlacementRegion) : undefined;
+  const result: CanonicalResolve = regional ?? consumeRpcData(await userBroker(env, userId).resolveModelCredential(recover, revision, accountId));
   if (result.status < 200 || result.status >= 300) {
     if (result.status === 429) throw new EgressFailure(429, accountId ? "chatgpt_account_exhausted" : "chatgpt_accounts_exhausted");
     throw new EgressFailure(result.status === 404 ? 409 : 503, accountId ? "chatgpt_account_unavailable" : "user_credential_unavailable");
@@ -3406,15 +3491,42 @@ async function resolveUserCredential(
     || !Number.isSafeInteger(value.revision)) {
     throw new EgressFailure(503, "invalid_credential_response");
   }
-  return { ...value, ...(Number.isFinite(result.resolve_ms) && result.resolve_ms >= 0
+  return { ...value, ...(typeof result.resolve_ms === "number" && Number.isFinite(result.resolve_ms) && result.resolve_ms >= 0
     ? { broker_ms: result.resolve_ms } : {}),
-    ...(Number.isFinite(result.activation_ms) && result.activation_ms >= 0
+    ...(typeof result.activation_ms === "number" && Number.isFinite(result.activation_ms) && result.activation_ms >= 0
       ? { broker_activation_ms: result.activation_ms } : {}),
-    ...(Number.isFinite(result.activation_age_ms) && result.activation_age_ms >= 0
+    ...(typeof result.activation_age_ms === "number" && Number.isFinite(result.activation_age_ms) && result.activation_age_ms >= 0
       ? { broker_age_ms: result.activation_age_ms } : {}),
     ...(typeof result.resolve_id === "string" && /^[0-9a-f-]{36}$/.test(result.resolve_id)
       ? { broker_resolve_id: result.resolve_id } : {}),
   };
+}
+
+type CanonicalResolve = Readonly<{ status: number; credential: ModelCredentialValue | null;
+  resolve_ms?: number; activation_ms?: number; activation_age_ms?: number; resolve_id?: string }>;
+
+/** undefined means "use the canonical broker": unavailable binding, a fenced
+ * or refused grant, or any replica failure. A definitive canonical answer
+ * relayed by the replica (404/409/422/429) is returned as-is. */
+async function resolveRegionalCredential(
+  env: EgressEnv,
+  userId: string,
+  region: string,
+): Promise<CanonicalResolve | undefined> {
+  const stub = snapshotStub(env, userId, region);
+  if (!stub) return undefined;
+  const startedAt = Date.now();
+  let result: SnapshotResolve;
+  try {
+    result = consumeRpcData(await stub.resolve(userId, region)) as SnapshotResolve;
+  } catch {
+    return undefined;
+  }
+  console.info({ type: "egress.credential.snapshot", source: result.source, status: result.status,
+    snapshot_ms: Date.now() - startedAt,
+    ...(result.canonical_ms !== undefined ? { canonical_ms: result.canonical_ms } : {}) });
+  if (result.status === 403 || result.status >= 500) return undefined;
+  return { status: result.status, credential: result.credential, resolve_ms: Date.now() - startedAt };
 }
 
 async function resolveSshIdentity(

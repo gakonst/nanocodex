@@ -1,4 +1,4 @@
-# Broadcasting a Hand to RTMP
+# Broadcasting a Hand
 
 Open a connected screen and choose **Stream RTMP** in the web or native Apple
 screen viewer. Enter the complete RTMP/RTMPS publish URL (including the stream
@@ -11,6 +11,52 @@ messages and sanitized status; it does not carry the outgoing media. RTMPS
 verifies the destination certificate. Stream keys are not persisted in account
 state, viewer state, or diagnostics. FFmpeg receives the destination locally;
 local process inspection by the machine owner can see its arguments/environment.
+
+## Playback links for VLC and other players
+
+An updated Rust Hand also exposes **Playback links** in the web and Apple screen
+viewer. Choose 720p or 1080p and an expiry, then create and copy the URL. In VLC,
+use **Open Network Stream** and paste that URL. It is an HLS playlist, so an
+HLS-capable player can open it without Nanocodex authentication. Other players
+must support HLS with H.264/AAC; a WebRTC signaling URL is not a media URL.
+
+Anyone holding the link can watch the screen and hear available system audio.
+It does not grant keyboard, mouse or account access. The URL is shown only once;
+keep it private. The active-link list contains status and expiry, and **Stop**
+revokes playback. Repeating an unconfirmed create uses the same operation ID;
+if its URL was lost, stop that link and create another.
+
+The CLI exposes the same operations:
+
+```sh
+nanocodex2 hand stream create MACHINE_ID --expires-in 3600 --preset 720p
+nanocodex2 hand stream list
+nanocodex2 hand stream stop LINK_ID
+```
+
+Use `--surface SURFACE_ID` when a Hand publishes more than one screen. The create
+command returns JSON containing the playback URL. Avoid putting that output in
+shared logs. Expiry can be 60 seconds through eight hours. One broadcast can run
+on a Hand at a time, including RTMP; up to four playback links can be active per
+account on separate Hands.
+
+The Hand makes two-second MPEG-TS segments and uploads them to a dedicated
+Worker Durable Object. Only the latest six segments are kept in memory; this is
+live playback, not a recording. The Hand keeps a temporary rolling window so an evicted playback server
+can refill its buffer while the publisher remains connected. Revocation or expiry denies subsequent
+playlist and segment reads and stops uploading; a player's already-buffered
+media may finish playing. Stopping the Hand or losing its publisher authority
+also stops encoding. HLS adds player buffering and is intended for watching;
+use WebRTC for interactive screen control.
+
+The managed Worker must deploy the `ScreenPlayback` binding and migration before
+an updated Hand advertises `playback: true`. Clients hide playback creation for
+older Hands. Server uploads use a separate scoped token and cannot control the
+screen. Link hashes and lifecycle metadata are durable; media and plaintext
+view tokens are not. Public view tokens use a query parameter; both serving
+Workers enable query-string redaction in Cloudflare logs and traces. Application
+logs record only the route, never the playback URL. FFmpeg and screen/audio
+permissions are the same as RTMP.
 
 ## Quality
 
@@ -91,3 +137,29 @@ For Rust fixtures, `NANOCODEX_RTMP_TEST_SIZE=3840x2160` tests source quality,
 capture is opt-in via `screen_native::broadcast_live_tests::local_rtmp_native`.
 Go's `TestBroadcastRTMP` uses the production supervisor with synthetic media;
 `NANOCODEX_RTMP_TEST_DESKTOP=1` switches it to real Wayland/Pulse capture.
+
+Playback links are covered by a real workerd journey with synthetic accounts and
+FFmpeg-generated H.264/AAC media. It verifies decoding, account isolation,
+concurrent creation, expiry, revocation during creation, and recovery after both
+DO eviction and a whole-runtime restart with a continuously running synthetic
+uploader. A real Hand stops encoding when its publisher connection is lost:
+
+```sh
+pnpm --filter nanocodex-managed-service exec node --test test/screen-playback-journey.test.mjs
+```
+
+The fixture can also run the actual CLI or Apple HTTP client. It creates an
+isolated account and passes its temporary credentials directly to the child
+process; its saved transcript redacts tokens. Build the selected client first:
+
+```sh
+node js/managed/test/screen-playback-fixture.mjs -- \
+  node js/managed/test/screen-playback-cli.mjs /absolute/path/to/nanocodex2
+node js/managed/test/screen-playback-fixture.mjs -- \
+  swift test --skip-build --package-path apple/NanocodexRemote --filter RemotePlaybackLinkTests
+```
+
+Native encoder checks use the production broadcast controller and FFmpeg against
+a local HTTP upload sink. The server journey and native encoder checks use
+synthetic media; actual desktop permission and capture still require a live Hand
+verification after installation. Keep evidence in ignored `output/`.

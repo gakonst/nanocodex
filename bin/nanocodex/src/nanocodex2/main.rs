@@ -52,6 +52,7 @@ mod screen_broadcast;
 mod screen_gamepad;
 #[cfg(target_os = "linux")]
 mod screen_helpers;
+mod screen_hls;
 #[cfg(target_os = "linux")]
 mod screen_host;
 mod screen_ice;

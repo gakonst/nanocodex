@@ -732,6 +732,11 @@ jobs:
             test/hand-retirement-journey.test.mjs \
             test/hand-preparation-journey.test.mjs \
             test/cua-routing-journey.test.mjs
+      - name: Exercise startup durability and regional credentials
+        timeout-minutes: 5
+        run: |
+          pnpm --filter nanocodex-managed-service run test:startup
+          node --test js/egress/test/credential-snapshot-journey.test.mjs js/egress/test/session-model-journey.test.mjs js/egress/test/prepared-model-upgrade-journey.test.mjs
       - name: Exercise private-input account admission
         timeout-minutes: 5
         run: node js/managed/test/private-input-admission-journey.mjs

@@ -59,6 +59,7 @@
     ]
   },
   "services": [
+    { "binding": "NANOCODEX_SESSION_CREDENTIAL_PREWARM", "service": "nanocodex-egress", "entrypoint": "SessionCredentialPrewarm" },
     { "binding": "PHONE_SERVICE_EGRESS", "service": "nanocodex-egress" },
     { "binding": "GMAIL_PUSH_EGRESS", "service": "nanocodex-egress" },
     { "binding": "NANOCODEX_X", "service": "nanocodex-x" },
@@ -83,6 +84,7 @@
     "bindings": [
       { "name": "ELEVENLABS_ACCOUNTS", "class_name": "ElevenLabsAccount" },
       { "name": "NANOCODEX_HAND_BROKER", "class_name": "AccountHostedTools", "script_name": "nanocodex-durable-agent" },
+      { "name": "NANOCODEX_HAND_RELAYS", "class_name": "RegionalHandRelay", "script_name": "nanocodex-durable-agent" },
       { "name": "NANOCODEX_LIVE_API_KEYS", "class_name": "ApiKeyRecord", "script_name": "nanocodex-durable-agent" },
       { "name": "NANOCODEX_LIVE_SESSIONS", "class_name": "DurableAgentSession", "script_name": "nanocodex-durable-agent" },
       {
@@ -223,6 +225,7 @@
     "development": {
       "name": "nanocodex",
       "services": [
+        { "binding": "NANOCODEX_SESSION_CREDENTIAL_PREWARM", "service": "nanocodex-egress", "entrypoint": "SessionCredentialPrewarm", "remote": false },
         { "binding": "GMAIL_PUSH_EGRESS", "service": "nanocodex-egress", "remote": false },
         { "binding": "PHONE_SERVICE_EGRESS", "service": "nanocodex-egress", "remote": false },
         { "binding": "NANOCODEX_X", "service": "nanocodex-x", "remote": false },

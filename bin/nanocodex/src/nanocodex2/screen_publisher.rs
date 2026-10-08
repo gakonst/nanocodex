@@ -123,6 +123,19 @@ impl runtime::Broadcast for super::screen_broadcast::Broadcast {
     fn stop(&mut self) -> BoxFuture<'_, ()> {
         Box::pin(self.stop())
     }
+    fn playback(&self) -> bool {
+        self.supported()
+    }
+    fn playback_request<'a>(
+        &'a mut self,
+        value: &'a Value,
+        origin: &'a url::Origin,
+    ) -> BoxFuture<'a, Value> {
+        Box::pin(self.hls_request(value, origin))
+    }
+    fn playback_events(&self) -> Option<tokio::sync::watch::Receiver<Value>> {
+        Some(self.events())
+    }
 }
 
 #[cfg(test)]

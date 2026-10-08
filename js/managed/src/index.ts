@@ -75,7 +75,8 @@ import { threadSharingTools, redactSharedLinkTokens, sharedTextStream } from "./
 import { initializeTurnInputs, inputChunks, lazyTurnInput, readTurnInput, storeTurnInput } from "./managed-turn-input";
 import { DurableObject, WorkerEntrypoint } from "cloudflare:workers";
 import { ArchiveMaintenance } from "./archive-maintenance";
-import { managedCredentialSubject, scopedManagedModelEgress, scopedSessionToolEgress, sessionCredentialOwner } from "./session-credential-ownership";
+import { PreparedModelUpgrade } from "./prepared-model-upgrade";
+import { sessionModelRelayRegion, managedCredentialSubject, scopedManagedModelEgress, scopedSessionToolEgress, sessionCredentialOwner } from "./session-credential-ownership";
 import { remoteICE } from "./hand-remote-ice";
 import { REMOTE_VM_ASSERTION, type RemoteVMPublisher } from "./hand-remote";
 import { serverHandTool } from "./ssh-hand-setup";
@@ -185,6 +186,9 @@ import {
   AccountHostedToolsProvider,
 } from "./account-hosted-tools";
 import { RegionalHandRelay, routeRegionalToolHost } from "./regional-hand-relay";
+import { handRelayRegion } from "./regional-hand-routing";
+import { SCREEN_DIRECTORY_HEADER, routeRegionalScreens } from "./regional-screen-routing";
+import { ScreenPlayback, accountToolsPlaybackHost, routeScreenPlayback } from "./screen-playback";
 import { VmHostPool } from "./vm-host-pool";
 import { initializeEmptyVmHostScope, initializeVmHostScopeSchema, markVmHostScopeRegistration, shouldProbeAgentVmHostScope } from "./vm-host-scope";
 import { isVmFactoryName } from "./vm-factory-name";
@@ -411,6 +415,7 @@ export { MemoryScope } from "./memory-scope";
 export { UserDataScope } from "./user-data-scope";
 export { AccountHostedTools } from "./account-hosted-tools";
 export { RegionalHandRelay } from "./regional-hand-relay";
+export { ScreenPlayback } from "./screen-playback";
 export { VmHostPool } from "./vm-host-pool";
 export { ApiKeyRecord, NonceStorage, Organization, UserAccount } from "./account-auth";
 
@@ -495,6 +500,10 @@ export interface Env extends
   NANOCODEX_SESSIONS: DurableObjectNamespace<DurableAgentSession>;
   NANOCODEX_ACCOUNT_TOOLS: DurableObjectNamespace<AccountHostedTools>;
   NANOCODEX_HAND_RELAYS?: DurableObjectNamespace<RegionalHandRelay>;
+  /** "true" places new native screen publishers in their ingress region's relay. */
+  NANOCODEX_REGIONAL_SCREEN_RELAYS?: string;
+  /** Portable HLS playback links and their in-memory media buffers. */
+  NANOCODEX_SCREEN_PLAYBACK?: DurableObjectNamespace<ScreenPlayback>;
   NANOCODEX_REGIONAL_HAND_RELAYS?: string;
   NANOCODEX_REGIONAL_API_KEY_AUTHORITY?: string;
   NANOCODEX_TURN_KEY_ID?: string;
@@ -1875,6 +1884,13 @@ async function managedFetchRoute(
         publicOrigin: url.origin,
       });
     }
+    if (env.NANOCODEX_SCREEN_PLAYBACK) {
+      // Public playback is token-authorized in its own DO; owner links need an account principal.
+      const playback = await routeScreenPlayback(request, { NANOCODEX_SCREEN_PLAYBACK: env.NANOCODEX_SCREEN_PLAYBACK }, url, {
+        authenticate: async () => trustedAgentPrincipal ?? await authenticate(request, env, url),
+        host: accountToolsPlaybackHost(env) });
+      if (playback) return playback;
+    }
     if (url.pathname === "/v1/account/hands/inventory") {
       if (url.search !== "") return json({ error: "invalid_request" }, { status: 400 });
       if (request.method !== "GET") return json({ error: "method_not_allowed" }, { status: 405 });
@@ -1934,9 +1950,20 @@ async function managedFetchRoute(
         if (request.method !== "POST" || url.search) return json({ error: "invalid_request" }, { status: 400 });
         return remoteICE(env, principal.userId);
       }
-      return timeHandStage(request, "route", () => env.NANOCODEX_ACCOUNT_TOOLS.getByName(principal.userId).fetch(
-        handBrokerRequest(request, principal),
-      ));
+      return timeHandStage(request, "route", async () => {
+        const brokered = (_path: string, init?: { body?: string; directory?: boolean }) => {
+          const source = init?.body === undefined ? request
+            : new Request(request.url, { method: request.method, headers: request.headers, body: init.body });
+          const base = handBrokerRequest(source, principal);
+          const headers = new Headers(base.headers);
+          headers.delete(SCREEN_DIRECTORY_HEADER);
+          if (init?.directory) headers.set(SCREEN_DIRECTORY_HEADER, "1");
+          return new Request(base, { headers });
+        };
+        // Regional screen signaling; legacy IDs and unflagged publishers stay on the owner.
+        return await routeRegionalScreens(request, env, principal.userId, handRelayRegion(request), brokered)
+          ?? env.NANOCODEX_ACCOUNT_TOOLS.getByName(principal.userId).fetch(brokered(url.pathname));
+      });
     }
     if (url.pathname === "/v1/account/hand-relays") {
       if (request.method !== "GET" || url.search !== "") return json({ error: "invalid_request" }, { status: 400 });
@@ -3964,7 +3991,7 @@ const LazyWorkspaceOwner = withWorkspace(WorkspaceOwner, (self) => ({
 export class DurableAgentSession extends DurableComputerObject {
   #handPathsValue?: HandPaths;
   get #handPaths(): HandPaths { return this.#handPathsValue ??= new HandPaths(this.ctx.storage); }
-  #processSessions: NamespaceProcessSessions;
+  #processSessions!: NamespaceProcessSessions;
   #workspaceHolder?: InstanceType<typeof LazyWorkspaceOwner>;
 
   async #workspace() {
@@ -3974,13 +4001,17 @@ export class DurableAgentSession extends DurableComputerObject {
 
   /** Internal RPC after allocation authentication; labels never select a machine. */
   vmHostDisplayName(ownerId: string, machineId: string): string | undefined {
+    this.#initializeStorage();
     const session = this.#session();
     if (!session || session.owner_id !== ownerId || this.#deleting || this.#deleted) return;
     const mount = this.#managedMounts().find(mount => vmHostMountAllocation(mount)?.machine_id === machineId);
     return mount ? managedMountDisplayName(mount) : undefined;
   }
-  #operations: SessionOperations;
-  #connectInputs: ConnectInputs;
+  #operations!: SessionOperations;
+  #connectInputsValue?: ConnectInputs;
+  get #connectInputs(): ConnectInputs {
+    return this.#connectInputsValue ??= new ConnectInputs(this.ctx.storage);
+  }
   #brainStorage?: R2Bucket;
   #agent?: CloudflareAgent.Agent;
   #subagentBindings = new ManagedSubagentBindings();
@@ -3998,13 +4029,13 @@ export class DurableAgentSession extends DurableComputerObject {
   }
   #presentation?: AgentPresentationWriter;
   #events?: EventWatcher;
-  readonly #eventLog: DurableEventLog<StreamMessage>;
-  readonly #eventArchive: ManagedEventArchive<StreamMessage>;
+  #eventLog!: DurableEventLog<StreamMessage>;
+  #eventArchive!: ManagedEventArchive<StreamMessage>;
   #eventArchiveTask?: Promise<ManagedEventSealResult>;
-  readonly #archiveMaintenance: ArchiveMaintenance;
-  readonly #turnArchive: ManagedTurnArchive;
+  #archiveMaintenance!: ArchiveMaintenance;
+  #turnArchive!: ManagedTurnArchive;
   #turnArchiveTask?: Promise<ManagedTurnSealResult>;
-  readonly #realtimeArchive: ManagedRealtimeArchive;
+  #realtimeArchive!: ManagedRealtimeArchive;
   #realtimeArchiveTask?: Promise<ManagedRealtimeSealResult>;
   #portabilityArchiveValue?: ManagedPortabilityArchive;
   get #portabilityArchive(): ManagedPortabilityArchive {
@@ -4025,8 +4056,8 @@ export class DurableAgentSession extends DurableComputerObject {
   #preparationTask?: Promise<void>;
   #preparationExpiresAt = 0;
   readonly #cancellationTasks = new Map<string, Promise<void>>();
-  readonly #hostedTools: HostedToolsBroker;
-  readonly #diagnostics: DiagnosticJournal;
+  #hostedTools!: HostedToolsBroker;
+  #diagnostics!: DiagnosticJournal;
   #accountHostedTools?: AccountHostedToolsProvider;
   readonly #fileReadAuthorizations = new Map<string, TurnAuthorization>();
   readonly #pendingDeviceToolCalls = new Map<string, PendingDeviceToolCall>();
@@ -4035,11 +4066,11 @@ export class DurableAgentSession extends DurableComputerObject {
   readonly #inFlight = new Set<Promise<unknown>>();
   #realtimeEventBuffer?: AgentEvent[];
   #realtimeRouteTail: Promise<void> = Promise.resolve();
-  readonly #cronTriggers: CronTriggers;
-  readonly #goals: Goals;
-  readonly #goalRuntime: GoalRuntime;
+  #cronTriggers!: CronTriggers;
+  #goals!: Goals;
+  #goalRuntime!: GoalRuntime;
   #cronPresencePublished?: boolean;
-  readonly #startupContext: ManagedStartupContext;
+  #startupContext!: ManagedStartupContext;
   readonly #personalization = new PreparedPersonalizationCache();
   #settingsMutationTail: Promise<void> = Promise.resolve();
   // Request-scoped inference authority for idle manual compaction. Never
@@ -4069,8 +4100,8 @@ export class DurableAgentSession extends DurableComputerObject {
   #deletionTask?: Promise<void>;
   #deletionGeneration = 0;
   #runtimeOwnershipGeneration = 0;
-  readonly #recoverySafety: ManagedRecoverySafety;
-  readonly #codeEffectJournal: ReturnType<typeof createManagedCodeEffectJournal>;
+  #recoverySafety!: ManagedRecoverySafety;
+  #codeEffectJournal!: ReturnType<typeof createManagedCodeEffectJournal>;
   #commandReceiptsValue?: CommandReceipts;
   get #commandReceipts(): CommandReceipts { return this.#commandReceiptsValue ??= new CommandReceipts(this.ctx.storage); }
   #shareLinksValue?: ThreadShareLinks;
@@ -4091,7 +4122,29 @@ export class DurableAgentSession extends DurableComputerObject {
     super(ctx, env);
     this.#constructorEnteredAtMs = enteredAt;
     this.#constructorBaseMs = roundMilliseconds(performance.now() - constructorStartedAt);
-    ctx = this.ctx;
+    // A genuinely fresh object has no lifecycle fences to restore. Keep its
+    // constructor read-only so validated discovery can leave before first writes.
+    // Existing objects must restore recovery and deletion fences immediately.
+    if (ctx.storage.sql.exec("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'session_state'").toArray().length > 0) {
+      this.#initializeStorage();
+    }
+    this.#constructorReadyAtMs = Date.now();
+    this.#constructorMs = roundMilliseconds(performance.now() - constructorStartedAt);
+  }
+
+  #preparedModelUpgrade?: PreparedModelUpgrade;
+  #liveAdmissionReserved = false;
+  #storageInitialized = false;
+  #initializeStorage(): void {
+    if (this.#storageInitialized) return;
+    const ctx = this.ctx;
+    const constructorStartedAt = performance.now();
+    // Decide before any DDL: absence of a session row alone does not prove
+    // freshness after interrupted initialization/import. Any prior schema or
+    // KV entry (including lifecycle fences) keeps the full restoration path.
+    const pristine = ctx.storage.sql.exec(
+      "SELECT 1 FROM sqlite_master WHERE type = 'table' LIMIT 1",
+    ).toArray().length === 0 && Array.from(ctx.storage.kv.list({ limit: 1 })).length === 0;
     this.#diagnostics = new DiagnosticJournal(ctx.storage, "managed");
     this.#recoverySafety = new ManagedRecoverySafety(ctx.storage);
     initializeTurnInputs(ctx.storage, "managed_history_projection_chunks");
@@ -4269,8 +4322,6 @@ export class DurableAgentSession extends DurableComputerObject {
     initializeManagedAgentSettingsSchema(this.ctx.storage);
     initializeVmHostScopeSchema(this.ctx.storage);
     this.#operations = new SessionOperations(this.ctx.storage);
-    new OutputCheckpoints(this.ctx.storage);
-    this.#connectInputs = new ConnectInputs(this.ctx.storage);
     discardObsoleteManagedSubagents(this.ctx.storage);
     // A pending realtime mutation belonged to the previous in-memory owner.
     // Its external outcome is unknown, so cold construction must not replay it.
@@ -4322,8 +4373,6 @@ export class DurableAgentSession extends DurableComputerObject {
     this.#deleted = this.#initializationOwnership()?.state === "deleted";
     const retainedSession = this.#session();
     this.#streamError = retainedSession?.stream_error ?? undefined;
-    const constructorSyncMs = roundMilliseconds(performance.now() - constructorStartedAt);
-    const restoreStartedAt = performance.now();
     performanceSyncScope(this.ctx.id.toString(), "session.constructor.restore", () => {
       // SQLite KV reads restore lifecycle fences before the constructor returns.
       const retained = this.ctx.storage.kv;
@@ -4339,7 +4388,7 @@ export class DurableAgentSession extends DurableComputerObject {
       // Re-admission or deletion may load external resources, so neither sits
       // on the object's request-readiness boundary.
       if (this.#deleting) this.#scheduleDeletion();
-      else {
+      else if (!pristine) {
         if (!this.#deleted && !this.#durabilityExported && this.#durabilityImportState !== "pending")
           retireSessionProjects(this.ctx.storage, id => { this.#markCancelling(id); });
         this.#scheduleRecovery();
@@ -4347,16 +4396,11 @@ export class DurableAgentSession extends DurableComputerObject {
         this.#resumeClientReplays();
       }
     });
-    this.#constructorReadyAtMs = Date.now();
-    this.#constructorMs = roundMilliseconds(performance.now() - constructorStartedAt);
-    if (!retainedSession || this.#constructorMs >= 100) {
-      console.info({ type: "managed.session.constructor", fresh: !retainedSession,
-        constructor_ms: this.#constructorMs,
-        constructor_base_ms: this.#constructorBaseMs,
-        constructor_sync_ms: constructorSyncMs,
-        constructor_restore_read_ms: this.#constructorRestoreReadMs,
-        constructor_sql_ms: this.#constructorSqlMs });
-    }
+    this.#storageInitialized = true;
+    console.info({ type: "managed.session.storage_initialized", fresh: !retainedSession,
+      restore_skipped: pristine,
+      initialization_ms: roundMilliseconds(performance.now() - constructorStartedAt),
+      schema_ms: this.#constructorSqlMs });
   }
 
   /** No user state: compare first activation of a named and a unique ID. */
@@ -4365,7 +4409,7 @@ export class DurableAgentSession extends DurableComputerObject {
     constructor_ms: number; constructor_base_ms: number; handler_entered_at_ms: number;
   }>> {
     const handlerEnteredAt = Date.now();
-    if (this.#session() || this.#credentialBinding || this.#initializationOwnership())
+    if (this.#storageInitialized && (this.#session() || this.#credentialBinding || this.#initializationOwnership()))
       throw new Error("activation_probe_not_empty");
     const phases = {
       constructor_entered_at_ms: this.#constructorEnteredAtMs,
@@ -4381,6 +4425,7 @@ export class DurableAgentSession extends DurableComputerObject {
   /** Private RPC: live ownership without serializing a streamed HTTP body. */
   resolveCredentialSubject(assertions: Record<string, string>, traceId?: string):
     { subject: string; strategy: "session_v1" | "directory_v1"; chatgpt_account_id?: string } | undefined {
+    this.#initializeStorage();
     return performanceSyncScope(traceId && /^[0-9a-f-]{36}$/.test(traceId) ? traceId : this.ctx.id.toString(), "voice.ownership", () => {
     const asserted = forwardedPrincipal(new Headers(assertions));
     const session = this.#session();
@@ -4415,6 +4460,7 @@ export class DurableAgentSession extends DurableComputerObject {
   /** Private delivery RPC. The persisted source binds agent, owner and connection;
    * callbacks cannot choose any of those authorities. Resolved events use durable idle-only admission. */
   async calendarPushReconcile(id: string): Promise<{ enabled: boolean; complete: boolean; nextAt?: number }> {
+    this.#initializeStorage();
     return this.#calendarPushSerial(() => this.#reconcileCalendarPush(id));
   }
   async #reconcileCalendarPush(id: string): Promise<{ enabled: boolean; complete: boolean; nextAt?: number }> {
@@ -4475,6 +4521,7 @@ export class DurableAgentSession extends DurableComputerObject {
 
   /** Account-bound Gmail processing. Receipts never create a conversation turn. */
   async gmailPushWake(value: unknown): Promise<GmailPushWakeResult> {
+    this.#initializeStorage();
     const wake = parseGmailPushWake(value);
     const result = this.#gmailPushQueue.then(() => this.#processGmailPush(wake));
     this.#gmailPushQueue = result.catch(() => {});
@@ -4578,6 +4625,7 @@ export class DurableAgentSession extends DurableComputerObject {
 
   /** Called only by the private EmailAgentBackend binding, never by fetch routing. */
   async resumeEmail(value: unknown): Promise<EmailResumeResult> {
+    this.#initializeStorage();
     const input = parseEmailResume(value);
     const session = this.#session();
     if (!session || this.#deleting || this.#deleted || session.runtime_profile !== "managed"
@@ -4615,6 +4663,7 @@ export class DurableAgentSession extends DurableComputerObject {
   /** Binding-only read surface. Operator identity comes from the guarded Worker,
    * never an owner assertion supplied to the ordinary session routes. */
   async inspectForAdmin(operatorId: string, raw: AdminThreadInput): Promise<{ status: number; body: string }> {
+    this.#initializeStorage();
     const reply = (status: number, body: unknown) => ({ status, body: JSON.stringify(body) });
     if (!this.env.NANOCODEX_ADMIN_USER_ID || operatorId !== this.env.NANOCODEX_ADMIN_USER_ID)
       return reply(403, { error: "forbidden" });
@@ -4676,6 +4725,13 @@ export class DurableAgentSession extends DurableComputerObject {
 
   async #measuredFetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
+    // A fresh live admission yields before its first writes. Competing HTTP
+    // handlers must not initialize or claim that same object in the gap.
+    if (this.#liveAdmissionReserved) return json({ error: "agent_initialized" }, { status: 409 });
+    if (request.method === "GET" && url.pathname === "/create-live") {
+      return this.#createLive(request, url);
+    }
+    this.#initializeStorage();
     if (url.pathname === "/personalization/invalidate" && request.method === "POST") {
       const session = this.#session();
       if (!session || this.#deleting || this.#deleted) return new Response(null, { status: 204 });
@@ -5084,6 +5140,9 @@ export class DurableAgentSession extends DurableComputerObject {
       }
     }
     if (request.method === "POST" && url.pathname === "/durability/export") {
+      // Feature schemas are normally absent on a plain text session.
+      new OutputCheckpoints(this.ctx.storage);
+      void this.#connectInputs;
       if (this.#settings().model.startsWith("claude-")) return json({ error: "claude_portability_unsupported" }, { status: 409 });
       if (this.#configuration().model_routing || this.#threadRoute() || ["@cf/zai-org/glm-5.3", "kimi-k3", "mimo-v2.6-pro"].includes(this.#settings().model)) {
         return json({ error: "routed_session_not_portable", message: "Thread-routed sessions are not yet portable." }, { status: 409 });
@@ -5115,6 +5174,7 @@ export class DurableAgentSession extends DurableComputerObject {
         ).one().count > 0) {
         return json({ error: "agent_busy" }, { status: 409 });
       }
+      this.#preparedModelUpgrade?.dispose("exported");
       this.#durabilityExported = true;
       // Fence socket-owned mutation synchronously with the admission flag.
       // No request may cross an await between observing active admission and
@@ -5812,6 +5872,7 @@ export class DurableAgentSession extends DurableComputerObject {
 
   /** Trusted container-proxy RPC; public HTTP routes never expose this method. */
   async brainFilesystem(request: Request, readOnly: boolean): Promise<Response> {
+    this.#initializeStorage();
     const session = this.#session();
     if (!session || this.#deleting || this.#deleted || this.#durabilityExported
       || this.#durabilityImportState === "pending") return new Response(null, { status: 409 });
@@ -5819,6 +5880,7 @@ export class DurableAgentSession extends DurableComputerObject {
   }
 
   async webSocketMessage(socket: WebSocket, message: string | ArrayBuffer): Promise<void> {
+    this.#initializeStorage();
     if (this.#durabilityExported || this.#durabilityImportState === "pending") {
       closeSocket(socket, 1008, "agent durability transfer fenced this connection");
       return;
@@ -5852,6 +5914,7 @@ export class DurableAgentSession extends DurableComputerObject {
   }
 
   webSocketClose(socket: WebSocket, code: number, reason: string): void {
+    this.#initializeStorage();
     if (this.#hostedTools.owns(socket)) {
       this.#hostedTools.close(socket, reason || "peer closed");
     } else {
@@ -5862,6 +5925,7 @@ export class DurableAgentSession extends DurableComputerObject {
   }
 
   webSocketError(socket: WebSocket): void {
+    this.#initializeStorage();
     if (this.#hostedTools.owns(socket)) {
       this.#hostedTools.close(socket, "WebSocket failed");
     } else {
@@ -5872,6 +5936,7 @@ export class DurableAgentSession extends DurableComputerObject {
   }
 
   async alarm(): Promise<void> {
+    this.#initializeStorage();
     if (this.#deleting) {
       try {
         await this.#deleteOwnedSession();
@@ -6017,6 +6082,7 @@ export class DurableAgentSession extends DurableComputerObject {
         await transaction.setAlarm(prepared.cleanup_at);
       });
       this.#credentialBinding = prepared;
+      this.#preparedModelUpgrade?.dispose("imported");
       this.#durabilityImportState = requestedImport ? "pending" : undefined;
     } else if (current.state === "preparing") {
       const refreshed = {
@@ -6435,7 +6501,7 @@ export class DurableAgentSession extends DurableComputerObject {
     if (request.headers.get("upgrade")?.toLowerCase() !== "websocket") {
       return new Response("Expected WebSocket upgrade", { status: 426 });
     }
-    if (this.#deleting || this.#deleted || this.#sessionId() || this.#credentialBinding) {
+    if (this.#deleting || this.#deleted || (this.#storageInitialized && this.#sessionId()) || this.#credentialBinding) {
       return json({ error: "agent_initialized" }, { status: 409 });
     }
     const asserted = forwardedPrincipal(request.headers);
@@ -6484,34 +6550,89 @@ export class DurableAgentSession extends DurableComputerObject {
         this.#accountCatalog.vault(this.env.NANOCODEX, asserted.ownerId, authorityKey),
       ]).then(() => {}));
     }
-    const credentialBinding: CredentialBindingOwnership = {
-      cleanup_at: Date.now(),
-      owner_id: asserted.ownerId,
-      session_id: sessionId,
-      state: "active",
-      subject: this.ctx.id.toString(),
-      ...(this.env.MANAGED_AGENT_DIRECT_CREDENTIALS === "true" ? { strategy: "session_v1" as const } : {}),
-    };
-    // Keep ownership and initialization in the same synchronous write batch.
-    // The SQLite output gate still confirms both before the upgrade, registry
-    // publication, or provider traffic can leave this object.
-    this.ctx.storage.kv.put(CREDENTIAL_BINDING_KEY, credentialBinding);
-    this.#credentialBinding = credentialBinding;
-    const initialized = this.#initializeSession({
-      session_id: sessionId,
-      owner_id: asserted.ownerId,
-      organization_id: asserted.organizationId,
-      team_id: asserted.teamId,
-      authorization_epoch: asserted.authorizationEpoch,
-      public_origin: publicOrigin,
-      settings,
-    }, normalizeProviderColo(request.headers.get(MANAGED_INGRESS_COLO)));
-    if (!initialized.ok) return initialized;
+    // Header contract: nanocodex/cloudflare/egress.mjs openBrokeredWebSocket;
+    // covered against the real SDK by prepared-model-upgrade-journey.test.mjs.
+    // Reserve the exact SDK transport identity before storage opens its output
+    // gate. This handshake has no prompt and never accepts/sends socket frames.
+    const earlyRuntimeId = prepare && !this.#storageInitialized
+      && !asserted.authorization.connectGrant && !asserted.authorization.guestShareLinkId
+      && this.env.MANAGED_AGENT_DIRECT_CREDENTIALS === "true"
+      && this.env.NANOCODEX_SESSION_MODEL_EGRESS && !settings.model.startsWith("claude-")
+      ? uuidV7() : undefined;
+    if (earlyRuntimeId) {
+      const headers = new Headers({
+        authorization: "Bearer NANOCODEX_PROVIDER_CREDENTIAL", upgrade: "websocket",
+        "openai-beta": "responses_websockets=2026-02-06",
+        "session-id": earlyRuntimeId, "thread-id": earlyRuntimeId, "x-client-request-id": earlyRuntimeId,
+        "x-openai-internal-codex-responses-lite": "true", "x-responsesapi-include-timing-metrics": "true",
+        "user-agent": "nanocodex-js/cloudflare",
+        "x-nanocodex-subject": managedCredentialSubject(this.ctx.id.toString()),
+        "x-nanocodex-session-model-owner": asserted.ownerId,
+      });
+      const region = sessionModelRelayRegion(normalizeProviderColo(request.headers.get(MANAGED_INGRESS_COLO)));
+      if (region) headers.set("x-nanocodex-model-region", region);
+      this.#preparedModelUpgrade = new PreparedModelUpgrade(
+        new Request("https://nanocodex.internal/v1/responses", { headers }), this.env.NANOCODEX_SESSION_MODEL_EGRESS!);
+    }
+    this.#liveAdmissionReserved = true;
+    try {
+      if (earlyRuntimeId) {
+        // A remote holder acknowledges ownership of the auth-only handshake
+        // before these writes close our output gate. WebSocket transfer and
+        // every inference frame still wait for durable admission.
+        await this.#preparedModelUpgrade?.acknowledged();
+        // Trusted RPCs may run during the yield. Never overwrite ownership or
+        // resurrect a session retired/imported by another handler.
+        if (this.#deleting || this.#deleted || this.#durabilityExported
+          || this.#durabilityImportState || this.#credentialBinding
+          || (this.#storageInitialized && (this.#sessionId() || this.#initializationOwnership()))) {
+          this.#preparedModelUpgrade?.dispose("admission_failed");
+          return json({ error: "agent_initialized" }, { status: 409 });
+        }
+      }
+      this.#initializeStorage();
+      if (earlyRuntimeId) {
+        // Same schema/identity consumed by Cloudflare Agent durableIdentity.
+        // Persist in the initial ownership batch; never replace an existing ID.
+        this.ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS nanocodex_cloudflare_agent (
+          singleton INTEGER PRIMARY KEY CHECK (singleton = 1), session_id TEXT NOT NULL UNIQUE)`);
+        this.ctx.storage.sql.exec("INSERT INTO nanocodex_cloudflare_agent(singleton,session_id) VALUES(1,?)", earlyRuntimeId);
+      }
+      const credentialBinding: CredentialBindingOwnership = {
+        cleanup_at: Date.now(),
+        owner_id: asserted.ownerId,
+        session_id: sessionId,
+        state: "active",
+        subject: this.ctx.id.toString(),
+        ...(this.env.MANAGED_AGENT_DIRECT_CREDENTIALS === "true" ? { strategy: "session_v1" as const } : {}),
+      };
+      // Keep ownership and initialization in the same synchronous write batch.
+      // The SQLite output gate still confirms both before the upgrade, registry
+      // publication, or provider inference frames can leave this object.
+      // The auth-only upgrade fetch was invoked before this batch.
+      this.ctx.storage.kv.put(CREDENTIAL_BINDING_KEY, credentialBinding);
+      this.#credentialBinding = credentialBinding;
+      const initialized = this.#initializeSession({
+        session_id: sessionId,
+        owner_id: asserted.ownerId,
+        organization_id: asserted.organizationId,
+        team_id: asserted.teamId,
+        authorization_epoch: asserted.authorizationEpoch,
+        public_origin: publicOrigin,
+        settings,
+      }, normalizeProviderColo(request.headers.get(MANAGED_INGRESS_COLO)));
+      if (!initialized.ok) { this.#preparedModelUpgrade?.dispose("admission_failed"); return initialized; }
 
-    this.#publishLiveRegistration(asserted.ownerId, sessionId);
-    const response = this.#upgrade(asserted.authorization, null, callerContext(request.headers), prepare);
-    performanceCommit(this.ctx, "session.create.commit");
-    return response;
+      this.#publishLiveRegistration(asserted.ownerId, sessionId);
+      const response = this.#upgrade(asserted.authorization, null, callerContext(request.headers), prepare);
+      performanceCommit(this.ctx, "session.create.commit");
+      return response;
+    } catch (error) {
+      this.#preparedModelUpgrade?.dispose("admission_failed");
+      throw error;
+    } finally {
+      this.#liveAdmissionReserved = false;
+    }
   }
 
   #publishLiveRegistration(ownerId: string, sessionId: string, preparedRegistry = false): void {
@@ -9296,6 +9417,7 @@ export class DurableAgentSession extends DurableComputerObject {
     // Fence reconstruction first. A crash after this transaction is recovered
     // by the retained marker/alarm even if the local SQL tombstone has not yet
     // been written. The reverse order can strand external ownership forever.
+    this.#preparedModelUpgrade?.dispose("deleted");
     this.#deleting = true;
     this.#hostedTools.shutdown("managed agent is being deleted");
     let markerCommitted = false;
@@ -9338,6 +9460,7 @@ export class DurableAgentSession extends DurableComputerObject {
   }
 
   async #performOwnedSessionDeletion(generation: number): Promise<void> {
+    this.#preparedModelUpgrade?.dispose("deleted");
     this.#deleting = true;
     // Reconstruction can enter here from a marker committed just before a
     // crash. Reassert the permanent local tombstone before any cleanup await.
@@ -9455,7 +9578,7 @@ export class DurableAgentSession extends DurableComputerObject {
       "SELECT name FROM sqlite_master WHERE type = 'table'",
     ).toArray().map(({ name }) => name));
     this.ctx.storage.transactionSync(() => {
-      for (const table of ["managed_recovery_safety", "managed_recovery_progress", "managed_recovery_call_indices", "managed_code_effect_legacy_parents", "managed_code_effect_legacy_sessions", "managed_code_effect_migration", "managed_code_effect_runtime", "managed_code_effects", "managed_code_effect_receipt_chunks", "managed_configuration", "managed_environment_setup", "managed_webhook", "managed_webhook_deliveries", "managed_turn_usage", "managed_model_usage", "managed_artifacts", "managed_artifact_publications", "managed_output_checkpoints", "managed_output_checkpoint_chunks", "managed_turn_file_owners", "managed_connect_inputs"]) this.ctx.storage.sql.exec(`DELETE FROM ${table}`);
+      for (const table of ["managed_recovery_safety", "managed_recovery_progress", "managed_recovery_call_indices", "managed_code_effect_legacy_parents", "managed_code_effect_legacy_sessions", "managed_code_effect_migration", "managed_code_effect_runtime", "managed_code_effects", "managed_code_effect_receipt_chunks", "managed_configuration", "managed_environment_setup", "managed_webhook", "managed_webhook_deliveries", "managed_turn_usage", "managed_model_usage", "managed_artifacts", "managed_artifact_publications", "managed_output_checkpoints", "managed_output_checkpoint_chunks", "managed_turn_file_owners", "managed_connect_inputs"]) if (initializedTables.has(table)) this.ctx.storage.sql.exec(`DELETE FROM ${table}`);
       this.ctx.storage.sql.exec("DROP TABLE IF EXISTS managed_fork_seed");
       this.ctx.storage.sql.exec("DELETE FROM managed_turn_dispatch_chunks");
       this.ctx.storage.sql.exec("DELETE FROM managed_turn_input_chunks");
@@ -12816,18 +12939,33 @@ export class DurableAgentSession extends DurableComputerObject {
   }
 
   #modelEgress(): Pick<Fetcher, "fetch"> {
+    const owner = () => sessionCredentialOwner({
+      subject: this.#credentialSubject(), storageId: this.ctx.id.toString(),
+      binding: this.#credentialBinding, session: this.#session(),
+      initialization: this.#initializationOwnership(),
+      deleting: this.#deleting, deleted: this.#deleted,
+      exported: this.#durabilityExported, importPending: this.#durabilityImportState === "pending",
+    });
     return scopedManagedModelEgress(
       this.env.NANOCODEX, this.ctx.id.toString(), this.#credentialSubject(),
       this.#credentialBinding?.strategy !== "session_v1" || this.env.NANOCODEX_SESSION_MODEL_EGRESS === undefined ? undefined : {
-        binding: this.env.NANOCODEX_SESSION_MODEL_EGRESS,
+        binding: {
+          fetch: async (input: RequestInfo | URL, init?: RequestInit) => {
+            const request = new Request(input, init);
+            const prepared = this.#preparedModelUpgrade;
+            const generation = this.#runtimeOwnershipGeneration;
+            const valid = () => this.#runtimeOwnershipGeneration === generation
+              && owner() === request.headers.get("x-nanocodex-session-model-owner")
+              && (!prepared || this.#preparedModelUpgrade === prepared);
+            const response = await prepared?.take(request, () => this.ctx.storage.sync(), valid);
+            // Retirement can run while awaiting preparation or durability. An
+            // obsolete request must not escape through the ordinary fallback.
+            if (!valid()) throw new Error("Managed model ownership is no longer available");
+            return response ?? this.env.NANOCODEX_SESSION_MODEL_EGRESS!.fetch(request);
+          },
+        } as Fetcher,
         clientIngressColo: () => this.#routingOrigin().clientIngressColo,
-        owner: () => sessionCredentialOwner({
-          subject: this.#credentialSubject(), storageId: this.ctx.id.toString(),
-          binding: this.#credentialBinding, session: this.#session(),
-          initialization: this.#initializationOwnership(),
-          deleting: this.#deleting, deleted: this.#deleted,
-          exported: this.#durabilityExported, importPending: this.#durabilityImportState === "pending",
-        }),
+        owner,
       },
       this.#configuration().chatgpt_account_id,
     );
@@ -13195,6 +13333,8 @@ export class DurableAgentSession extends DurableComputerObject {
     strict = false,
     options: { preserveAccountDiscovery?: boolean } = {},
   ): Promise<void> {
+    this.#preparedModelUpgrade?.dispose("retired");
+    this.#preparedModelUpgrade = undefined;
     // Idle retirement leaves account authority and the original discovery TTL
     // intact. Other lifecycle transitions still invalidate discovery, including
     // settings changes, deletion, and credential recovery.

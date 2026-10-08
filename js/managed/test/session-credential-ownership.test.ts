@@ -159,6 +159,8 @@ describe("Session-owned credential authority", () => {
           NANOCODEX_SESSIONS: DurableObjectNamespace<DurableAgentSession>;
         }).NANOCODEX_SESSIONS;
         const stub = sessions.getByName(crypto.randomUUID());
+        // Admission, rather than fresh construction, now creates the schema.
+        await (await stub.fetch(new Request("https://session.internal/__initialize"))).body?.cancel();
         await runInDurableObject(stub, async (_session, state) => {
           state.storage.sql.exec(`INSERT INTO session_state (
             singleton, session_id, owner_id, organization_id, team_id,

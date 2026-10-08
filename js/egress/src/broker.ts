@@ -6,6 +6,7 @@ import { createMercatorMcpCredential, MercatorPaymentInputError } from "./mercat
 import type { CloudflareAccountVaultResult } from "nanocodex/cloudflare/egress";
 import { createSshKeyPair, sshPublicKey } from "nanocodex/tools/ssh";
 import { DurableObject } from "cloudflare:workers";
+import type { UserCredentialSnapshot } from "./credential-snapshot";
 import { Provider, ProviderRequest, secp256k1, Storage } from "accounts";
 import { createClient, http } from "viem";
 import { Account as TempoAccount, Actions } from "viem/tempo";
@@ -44,6 +45,12 @@ import {
 } from "./ssh";
 
 const STATE_KEY = "credential-state";
+/** Sealed regional lease registry; separate from credential state. */
+const LEASE_KEY = "model-credential-leases-v1";
+const MODEL_LEASE_MS = 10 * 60_000;
+const REVOCATION_RETRY_MS = 5_000;
+const INVALIDATE_TIMEOUT_MS = 3_000;
+const LEASE_REGIONS: ReadonlySet<string> = new Set(["wnam", "enam", "sam", "weur", "eeur", "apac", "oc"]);
 const CLAUDE_STATE_KEY = "claude-subscription-v1";
 type ClaudeRow = { revision: string; envelope: EncryptedEnvelope };
 type ClaudeCredential = ClaudeSubscription.PrivateCredential;
@@ -92,6 +99,10 @@ const MAX_SPONSORED_CALL_IDS = 64;
 
 export interface BrokerEnv extends CredentialVaultEnv {
   AGENT_SUBJECTS: DurableObjectNamespace<AgentSubjectDirectory>;
+  /** Used only to authenticate the owner named by a regional lease request. */
+  USER_CREDENTIALS?: DurableObjectNamespace<UserCredentialBroker>;
+  /** Optional during rollout; absent means no regional leases are granted. */
+  USER_CREDENTIAL_SNAPSHOTS?: DurableObjectNamespace<UserCredentialSnapshot>;
   CHIEF_OF_STAFF_OPENAI_API_KEY?: string;
   NANOCODEX_SPONSORED_CHATGPT_USER_ID?: string;
   CHATGPT_ISSUER?: string;
@@ -100,7 +111,7 @@ export interface BrokerEnv extends CredentialVaultEnv {
   LOCAL_CHATGPT_BOOTSTRAP?: string;
 }
 
-export type UserCredentialSnapshot = Readonly<{
+export type ModelCredentialValue = Readonly<{
   kind: "openai" | "chatgpt";
   secret: string;
   accountId?: string;
@@ -109,6 +120,25 @@ export type UserCredentialSnapshot = Readonly<{
   revision: number;
   provenance?: "user" | "sponsor";
 }>;
+
+export type ModelCredentialLeaseGrant = Readonly<{
+  status: number;
+  credential: ModelCredentialValue | null;
+  /** Holder must discard the grant when epoch is below its invalidation floor. */
+  epoch: number;
+  /** Duration, not a timestamp: the holder anchors it to its own clock. */
+  lease_ms: number;
+}>;
+
+type ModelLease = { fingerprint: string; epoch: number; expiresAt: number };
+type PendingRevocation = { epoch: number; expiresAt: number };
+type LeaseRegistry = {
+  version: 1;
+  epoch: number;
+  owner?: string;
+  leases: Record<string, ModelLease>;
+  pending: Record<string, PendingRevocation>;
+};
 
 type ApiKeyCredential = { secret: string; createdAt: number; revision: number };
 type ChatGptCredential = {
@@ -325,10 +355,14 @@ function subjectTombstoneOwner(value: string | undefined): string | undefined {
     : undefined;
 }
 
-type CredentialOperation = "credential_rpc" | "credential_http" | "metadata_rpc" | "http" | "alarm";
+type CredentialOperation = "credential_rpc" | "credential_http" | "metadata_rpc" | "http" | "alarm" | "lease_rpc";
 type CredentialOperationObservation = Readonly<{
   operation: CredentialOperation;
   resolveId?: string;
+  /** A credential mutation must not be acknowledged while ANY holder
+   * revocation is pending, even when this invocation changed nothing
+   * (idempotent retry after a persisted removal). */
+  mutation?: boolean;
 }>;
 type CredentialActivationPhase = "storage_load_ms" | "vault_open_ms" | "restore_ms"
   | "migration_ms" | "reseal_ms" | "alarm_ms";
@@ -356,12 +390,17 @@ export class UserCredentialBroker extends DurableObject<BrokerEnv> {
   #claudeCredential: ClaudeCredential | undefined;
   #tail: Promise<void> = Promise.resolve();
   #liveWalletLink: { operationId: string; controller: AbortController } | undefined;
+  readonly #leaseVault: CredentialVault;
+  #leaseRegistry: LeaseRegistry = { version: 1, epoch: 0, leases: {}, pending: {} };
+  /** Plain-read projection that every unexpired, non-pending lease matches. */
+  #reconciledProjection: string | undefined;
 
   constructor(state: DurableObjectState, env: BrokerEnv) {
     super(state, env);
     this.#state = state;
     this.#env = env;
     this.#vault = new CredentialVault(env, `user/${state.id.toString()}`);
+    this.#leaseVault = new CredentialVault(env, `user/${state.id.toString()}/model-credential-leases`);
     const startedAt = Date.now();
     this.#ready = state.blockConcurrencyWhile(async () => {
       let completed = false;
@@ -410,13 +449,60 @@ export class UserCredentialBroker extends DurableObject<BrokerEnv> {
           operation_ms: Date.now() - startedAt,
         });
       }
-    }, { operation: measureCredential ? "credential_http" : "http" });
+    }, { operation: measureCredential ? "credential_http" : "http",
+      mutation: !measureCredential && request.method !== "GET" && request.method !== "HEAD" },
+    () => jsonError(503, "credential_revocation_pending"));
+  }
+
+  /**
+   * Grant a regional holder one plain read plus a bounded lease. Runs on the
+   * canonical queue, so refresh/selection stay serialized and no grant runs
+   * while a mutation is invalidating holders. Refused while any revocation is
+   * pending. The lease is durable before the grant is returned.
+   */
+  async grantModelCredentialLease(owner: string, region: string): Promise<ModelCredentialLeaseGrant> {
+    const refuse = (status: number): ModelCredentialLeaseGrant => ({ status, credential: null, epoch: 0, lease_ms: 0 });
+    const namespace = this.#env.USER_CREDENTIALS;
+    if (typeof owner !== "string" || typeof region !== "string" || !USER_ID.test(owner)
+      || !LEASE_REGIONS.has(region) || !namespace || !this.#env.USER_CREDENTIAL_SNAPSHOTS
+      || !namespace.idFromName(owner).equals(this.#state.id)) return refuse(403);
+    return this.#exclusive(async () => {
+      await this.#ready;
+      const registry = this.#leaseRegistry;
+      try {
+        // The owner is authenticated above (idFromName equals this object);
+        // it names every holder this registry must later invalidate.
+        if (registry.owner === undefined) registry.owner = owner;
+        if (registry.owner !== owner) return refuse(403);
+        if (Object.keys(registry.pending).length && !await this.#revoke([])) return refuse(503);
+        const before = this.#plainProjection();
+        const credential = await this.#credential(false, undefined);
+        if (await this.#reconcileLeases(before) !== "ok") return refuse(503);
+        const projection = this.#plainProjection();
+        const now = Date.now();
+        const leaseMs = Math.floor(Math.min(MODEL_LEASE_MS, credential.expiresAt === undefined
+          ? MODEL_LEASE_MS : credential.expiresAt - REFRESH_EARLY_MS - now));
+        // Never hand an unregistered credential to a replica: an unregistered
+        // recipient would receive no invalidation. The replica falls back to
+        // the canonical read instead.
+        if (!Number.isSafeInteger(leaseMs) || leaseMs <= 0) return refuse(503);
+        registry.owner = owner;
+        registry.leases[region] = { fingerprint: await leaseFingerprint(projection), epoch: registry.epoch,
+          expiresAt: now + leaseMs };
+        await this.#persistLeases();
+        this.#reconciledProjection = projection;
+        return { status: 200, credential, epoch: registry.epoch, lease_ms: leaseMs };
+      } catch (error) {
+        const problem = await this.#recoverFailedOperation(error);
+        return refuse(problem.status);
+      }
+    }, { operation: "lease_rpc" }, () => refuse(503));
   }
 
   /** Read the live snapshot under the same serialization and recovery as HTTP. */
   async resolveModelCredential(recover: boolean, revision?: number, accountId?: string): Promise<{
     status: number;
-    credential: UserCredentialSnapshot | null;
+    credential: ModelCredentialValue | null;
     resolve_ms: number;
     activation_ms: number;
     activation_age_ms: number;
@@ -436,7 +522,7 @@ export class UserCredentialBroker extends DurableObject<BrokerEnv> {
         const problem = await this.#recoverFailedOperation(error);
         return { status: problem.status, credential: null };
       }
-    }, { operation: "credential_rpc", resolveId });
+    }, { operation: "credential_rpc", resolveId }, () => ({ status: 503, credential: null }));
     credentialMetric({ type: "egress.credential.rpc", resolve_id: resolveId, status: result.status,
       queue_scope: "after_method_entry", recover: recover === true,
       queue_ms: operationAt - startedAt, operation_ms: Date.now() - operationAt,
@@ -652,12 +738,13 @@ export class UserCredentialBroker extends DurableObject<BrokerEnv> {
         }
       }
       await this.#schedule();
-    }, { operation: "alarm" });
+    }, { operation: "alarm" }, () => undefined);
   }
 
   async #exclusive<T>(
     operation: () => Promise<T>,
     observation: CredentialOperationObservation,
+    revocationFailure?: () => T,
   ): Promise<T> {
     // Only the application queue after method entry is visible here. The
     // runtime can hold invocation delivery behind blockConcurrencyWhile.
@@ -680,7 +767,24 @@ export class UserCredentialBroker extends DurableObject<BrokerEnv> {
     this.#activeOperation = observation.operation;
     let completed = false;
     try {
-      const result = await operation();
+      // Every queued operation may change what a plain read returns. Before
+      // it is acknowledged, every regional lease holder whose snapshot no
+      // longer matches is invalidated; no new grant can run meanwhile.
+      const ready = await this.#ready.then(() => true, () => false);
+      const before = ready && this.#leasesHeld() ? this.#plainProjection() : undefined;
+      let result: T;
+      try {
+        result = await operation();
+      } catch (error) {
+        if (ready) await this.#reconcileLeases(before).catch(() => "failed_changed");
+        throw error;
+      }
+      const revoked = ready ? await this.#reconcileLeases(before).catch(() => "failed_changed" as const) : "ok";
+      if (revoked === "failed_changed" || (revoked === "failed_unchanged" && observation.mutation === true)) {
+        credentialMetric({ type: "egress.credential.revocation_pending", operation: observation.operation });
+        if (revocationFailure) return revocationFailure();
+        throw new BrokerFailure(503, "credential_revocation_pending");
+      }
       completed = true;
       return result;
     } finally {
@@ -704,6 +808,109 @@ export class UserCredentialBroker extends DurableObject<BrokerEnv> {
     }
   }
 
+  #leasesHeld(): boolean {
+    return Object.keys(this.#leaseRegistry.leases).length > 0
+      || Object.keys(this.#leaseRegistry.pending).length > 0;
+  }
+
+  /** Side-effect-free mirror of the plain read's selection (no refresh). Any
+   * difference, including the token itself, means a lease holder is stale. */
+  #plainProjection(): string {
+    const state = this.#credentials;
+    if (state.active === "openai" && state.openai) {
+      return JSON.stringify(["openai", state.openai.revision, state.openai.secret]);
+    }
+    if (state.active !== "chatgpt") return JSON.stringify(["none", state.active]);
+    const now = Date.now();
+    const account = this.#chatGptAccounts().find((candidate) => !candidate.deadReason
+      && (candidate.limitedUntil ?? 0) <= now
+      && (candidate.expiresAt > now || (candidate.refreshToken && (candidate.refreshAfter ?? 0) <= now)))
+      ?? state.chatgpt;
+    if (!account) return JSON.stringify(["none", "chatgpt"]);
+    return JSON.stringify(["chatgpt", account.accountId, account.revision, account.accessToken,
+      account.expiresAt, account.fedramp, account.provenance ?? null, account.deadReason,
+      (account.limitedUntil ?? 0) > now]);
+  }
+
+  async #persistLeases(): Promise<void> {
+    await this.#state.storage.put(LEASE_KEY, {
+      envelope: await this.#leaseVault.seal(this.#leaseRegistry),
+    } satisfies StoredRow);
+  }
+
+  /**
+   * Invalidate stale holders. "failed_changed" means this operation changed
+   * the plain read and some holder could not be invalidated: the caller must
+   * receive a failure. The pending revocation is durable and retried by the
+   * alarm and before any new grant.
+   */
+  async #reconcileLeases(before: string | undefined): Promise<"ok" | "failed_changed" | "failed_unchanged"> {
+    const registry = this.#leaseRegistry;
+    if (!this.#leasesHeld()) return "ok";
+    const projection = this.#plainProjection();
+    const changed = before !== undefined && before !== projection;
+    // No time-based pruning: expiry only stops local use, it never proves
+    // revocation. Holders (bounded by the seven regions) and pending
+    // revocations leave the registry only on a durable holder ACK.
+    const pending = Object.keys(registry.pending).length > 0;
+    if (!pending && projection === this.#reconciledProjection) return "ok";
+    const digest = await leaseFingerprint(projection);
+    const stale = Object.entries(registry.leases)
+      .filter(([, lease]) => lease.fingerprint !== digest).map(([region]) => region);
+    if (!stale.length && !pending) {
+      this.#reconciledProjection = projection;
+      return "ok";
+    }
+    if (await this.#revoke(stale)) {
+      this.#reconciledProjection = projection;
+      return "ok";
+    }
+    return changed ? "failed_changed" : "failed_unchanged";
+  }
+
+  /** Durably mark holders pending under a new epoch, then invalidate every
+   * pending holder. Returns true only when none remain pending. */
+  async #revoke(regions: readonly string[]): Promise<boolean> {
+    const registry = this.#leaseRegistry;
+    registry.epoch += 1;
+    const epoch = registry.epoch;
+    for (const region of regions) {
+      const lease = registry.leases[region]!;
+      // ABA-safe: a pending holder is invalidated even if the fingerprint
+      // later matches again.
+      registry.pending[region] = { epoch, expiresAt: Math.max(lease.expiresAt, registry.pending[region]?.expiresAt ?? 0) };
+      delete registry.leases[region];
+    }
+    await this.#persistLeases();
+    const owner = registry.owner;
+    const targets = Object.keys(registry.pending);
+    const outcomes = await Promise.all(targets.map((region) => this.#invalidateHolder(owner, region, epoch)));
+    targets.forEach((region, index) => { if (outcomes[index]) delete registry.pending[region]; });
+    await this.#persistLeases();
+    const remaining = Object.keys(registry.pending).length;
+    credentialMetric({ type: "egress.credential.lease_revocation", holders: targets.length,
+      failed: remaining, epoch });
+    if (remaining) await this.#ensureAlarmBy(Date.now() + REVOCATION_RETRY_MS);
+    return remaining === 0;
+  }
+
+  async #invalidateHolder(owner: string | undefined, region: string, epoch: number): Promise<boolean> {
+    const namespace = this.#env.USER_CREDENTIAL_SNAPSHOTS;
+    if (!owner || !namespace) return false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const stub = namespace.getByName(`${region}:${owner}`, { locationHint: region as DurableObjectLocationHint });
+      return await Promise.race([
+        Promise.resolve(stub.invalidate(owner, region, epoch)).then((value) => value === true),
+        new Promise<false>((resolve) => { timer = setTimeout(() => resolve(false), INVALIDATE_TIMEOUT_MS); }),
+      ]);
+    } catch {
+      return false;
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+    }
+  }
+
   async #initialize(): Promise<void> {
     let phaseStartedAt = Date.now();
     const advance = (phase: CredentialActivationPhase): void => {
@@ -713,8 +920,32 @@ export class UserCredentialBroker extends DurableObject<BrokerEnv> {
       phaseStartedAt = now;
     };
     try {
-      const row = await this.#state.storage.get<StoredRow>(STATE_KEY);
-      if (!row) return;
+      // One storage round trip for credential state and the lease registry.
+      const rows = await this.#state.storage.get<unknown>([STATE_KEY, LEASE_KEY]);
+      const leaseRow = rows.get(LEASE_KEY) as StoredRow | undefined;
+      if (leaseRow) {
+        // Fail closed: an unreadable or invalid registry may hide holders and
+        // their epochs, and no safe epoch can be guessed. Initialization
+        // rejects, so every grant, read and mutation fails until an operator
+        // repairs the row; nothing is acknowledged without holder ACKs.
+        let leases: LeaseRegistry;
+        try {
+          leases = (await this.#leaseVault.open<LeaseRegistry>(leaseRow.envelope)).value;
+        } catch {
+          credentialMetric({ type: "egress.credential.lease_registry_invalid", reason: "unreadable" });
+          throw new BrokerFailure(503, "credential_lease_registry_unreadable");
+        }
+        if (!validLeaseRegistry(leases)) {
+          credentialMetric({ type: "egress.credential.lease_registry_invalid", reason: "invalid" });
+          throw new BrokerFailure(503, "credential_lease_registry_invalid");
+        }
+        this.#leaseRegistry = leases;
+      }
+      const row = rows.get(STATE_KEY) as StoredRow | undefined;
+      if (!row) {
+        if (Object.keys(this.#leaseRegistry.pending).length) await this.#ensureAlarmBy(Date.now() + 1_000);
+        return;
+      }
       advance("vault_open_ms");
       const opened = await this.#vault.open<CredentialState>(row.envelope);
       advance("restore_ms");
@@ -735,6 +966,7 @@ export class UserCredentialBroker extends DurableObject<BrokerEnv> {
       if (alarm !== undefined && await this.#state.storage.getAlarm() === null) {
         await this.#state.storage.setAlarm(alarm);
       }
+      if (Object.keys(this.#leaseRegistry.pending).length) await this.#ensureAlarmBy(Date.now() + 1_000);
     } finally {
       this.#activationPhases[this.#activationPhase] = Date.now() - phaseStartedAt;
     }
@@ -1855,7 +2087,7 @@ export class UserCredentialBroker extends DurableObject<BrokerEnv> {
     revision: number | undefined,
     accountId?: string,
     resolveId?: string,
-  ): Promise<UserCredentialSnapshot> {
+  ): Promise<ModelCredentialValue> {
     if (accountId !== undefined && (typeof accountId !== "string" || !/^[\x21-\x7e]{1,256}$/.test(accountId))) {
       throw new BrokerFailure(400, "invalid_chatgpt_account");
     }
@@ -2325,7 +2557,14 @@ export class UserCredentialBroker extends DurableObject<BrokerEnv> {
         ));
       }
     }
+    // A durable pending revocation keeps retrying across restarts.
+    if (Object.keys(this.#leaseRegistry.pending).length) times.push(Date.now() + REVOCATION_RETRY_MS);
     return times.length ? Math.min(...times) : undefined;
+  }
+
+  async #ensureAlarmBy(at: number): Promise<void> {
+    const current = await this.#state.storage.getAlarm();
+    if (current === null || current > at) await this.#state.storage.setAlarm(at);
   }
 }
 
@@ -2538,6 +2777,24 @@ async function hasRequestPayload(request: Request): Promise<boolean> {
     await reader.cancel().catch(() => {});
     reader.releaseLock();
   }
+}
+
+async function leaseFingerprint(projection: string): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256",
+    new TextEncoder().encode(`nanocodex/model-credential-lease/v1\n${projection}`));
+  return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+function validLeaseRegistry(value: unknown): value is LeaseRegistry {
+  if (!value || typeof value !== "object") return false;
+  const registry = value as Partial<LeaseRegistry>;
+  const records = (entries: unknown) => !!entries && typeof entries === "object"
+    && Object.entries(entries).every(([region, entry]) => LEASE_REGIONS.has(region) && !!entry
+      && typeof entry === "object" && Number.isSafeInteger((entry as ModelLease).epoch)
+      && typeof (entry as ModelLease).expiresAt === "number");
+  return registry.version === 1 && Number.isSafeInteger(registry.epoch)
+    && (registry.owner === undefined || (typeof registry.owner === "string" && USER_ID.test(registry.owner)))
+    && records(registry.leases) && records(registry.pending);
 }
 
 class BrokerFailure extends Error {
