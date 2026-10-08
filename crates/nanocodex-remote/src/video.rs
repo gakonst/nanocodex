@@ -1,4 +1,6 @@
-//! Continuous 60 Hz H.264 capture, independent of agent screenshots and input.
+//! Viewer-driven 60 Hz H.264 capture, independent of agent screenshots and input.
+//! The encoder runs only while a WebRTC viewer is attached or preparing, plus a
+//! short idle grace; it restarts lazily for the next viewer.
 //! Encoders expose packet boundaries; legacy Annex B remains supported. Only signaling crosses the
 //! account broker; media and leased input use authenticated WebRTC peers.
 use crate::capture::{CaptureData, PacketStream};
@@ -240,7 +242,55 @@ pub struct Video {
     incoming: mpsc::Receiver<Event>,
     motion: Arc<Motion>,
     failed: Arc<AtomicBool>,
-    _capture: Task,
+    source: VideoSource,
+    /// Running encoder, if any. None while no viewer has watched for the grace.
+    capture: Option<Task>,
+    idle_since: Option<tokio::time::Instant>,
+}
+/// Keep the encoder briefly after the last viewer so quick reconnects (page
+/// reload, iOS resume, MediaFailed recovery) skip encoder startup.
+pub const CAPTURE_IDLE_GRACE: Duration = Duration::from_secs(30);
+/// One encoder process. Dropping the task drops the capture owner and stops it.
+fn spawn_capture(
+    source: VideoSource,
+    captured: broadcast::Sender<EncodedFrame>,
+    failure: Arc<AtomicBool>,
+    mut ready: Option<tokio::sync::oneshot::Sender<()>>,
+) -> Task {
+    Task(tokio::spawn(async move {
+        let mut phase = "capture_start";
+        let mut packet_bytes = 0usize;
+        let result: Result<()> = async {
+            let capture = tokio::time::timeout(Duration::from_secs(8), source()).await??;
+            let _owner = capture.owner;
+            let mut packets = packet_stream(capture.data);
+            let mut first = true;
+            loop {
+                phase = "capture_read";
+                // Encoder startup gets the same budget as the initial probe.
+                let wait = Duration::from_secs(if first { 10 } else { 5 });
+                let data = tokio::time::timeout(wait, packets.try_next())
+                    .await??
+                    .ok_or("encoder stopped")?;
+                first = false;
+                packet_bytes = data.len();
+                phase = "packet_validation";
+                crate::frames::validate_packet(&data)?;
+                let _ = captured.send(EncodedFrame {
+                    data,
+                    captured_at: Instant::now(),
+                });
+                if let Some(ready) = ready.take() {
+                    let _ = ready.send(());
+                }
+            }
+        }
+        .await;
+        if let Err(error) = result {
+            tracing::warn!(target: "nanocodex2", stage = "screen.video.failed", phase, packet_bytes, timed_out = error.downcast_ref::<tokio::time::error::Elapsed>().is_some(), webrtc_error = ?error.downcast_ref::<webrtc::Error>().map(std::mem::discriminant));
+            failure.store(true, Ordering::Release);
+        }
+    }))
 }
 impl Video {
     pub async fn start(source: &VideoSource, audio_source: Option<&VideoSource>) -> Result<Self> {
@@ -251,47 +301,19 @@ impl Video {
         audio_source: Option<&VideoSource>,
         microphone_factory: Option<SinkFactory>,
     ) -> Result<Self> {
-        let capture = tokio::time::timeout(Duration::from_secs(8), source()).await??;
         // Complete encoded frames are shared without copying payloads. Each
         // viewer owns its own packetizer and sender, so network backpressure
-        // cannot hold capture or another viewer's RTP stream.
+        // cannot hold capture or another viewer's RTP stream. The channel
+        // outlives individual encoder processes, so a lazily restarted
+        // capture feeds already-built peers without rewiring them.
         let (frames, _) = broadcast::channel::<EncodedFrame>(2);
         let (events, incoming) = mpsc::channel(128);
         let failed = Arc::new(AtomicBool::new(false));
+        // Verify the encoder before the session advertises a surface. The
+        // probe capture is then retained only for the idle grace period.
         let (ready, waiting) = tokio::sync::oneshot::channel();
-        let captured = frames.clone();
-        let failure = failed.clone();
-        let task = Task(tokio::spawn(async move {
-            let _owner = capture.owner;
-            let mut ready = Some(ready);
-            let mut packets = packet_stream(capture.data);
-            let mut phase = "capture_read";
-            let mut packet_bytes = 0usize;
-            let result: Result<()> = async {
-                loop {
-                    phase = "capture_read";
-                    let data = tokio::time::timeout(Duration::from_secs(5), packets.try_next())
-                        .await??
-                        .ok_or("encoder stopped")?;
-                    packet_bytes = data.len();
-                    phase = "packet_validation";
-                    crate::frames::validate_packet(&data)?;
-                    let _ = captured.send(EncodedFrame {
-                        data,
-                        captured_at: Instant::now(),
-                    });
-                    if let Some(ready) = ready.take() {
-                        let _ = ready.send(());
-                    }
-                }
-            }
-            .await;
-            if let Err(error) = result {
-                tracing::warn!(target: "nanocodex2", stage = "screen.video.failed", phase, packet_bytes, timed_out = error.downcast_ref::<tokio::time::error::Elapsed>().is_some(), webrtc_error = ?error.downcast_ref::<webrtc::Error>().map(std::mem::discriminant));
-                failure.store(true, Ordering::Release);
-            }
-        }));
-        tokio::time::timeout(Duration::from_secs(10), waiting).await??;
+        let task = spawn_capture(source.clone(), frames.clone(), failed.clone(), Some(ready));
+        tokio::time::timeout(Duration::from_secs(18), waiting).await??;
         let audio = if let Some(source) = audio_source {
             match crate::audio::Audio::start(source).await {
                 Ok(audio) => Some(audio),
@@ -313,8 +335,45 @@ impl Video {
             incoming,
             motion: Arc::new(Motion::default()),
             failed,
-            _capture: task,
+            source: source.clone(),
+            capture: Some(task),
+            idle_since: Some(tokio::time::Instant::now()),
         })
+    }
+    /// Start the encoder if it was stopped while nobody was watching. Startup
+    /// failure surfaces through [`Video::failed`], like a mid-stream failure.
+    pub fn ensure_capture(&mut self) {
+        self.idle_since = None;
+        if self.capture.is_none() {
+            tracing::info!(target: "nanocodex2", stage = "screen.video.capture_started");
+            self.capture = Some(spawn_capture(
+                self.source.clone(),
+                self.frames.clone(),
+                self.failed.clone(),
+                None,
+            ));
+        }
+    }
+    pub const fn capturing(&self) -> bool {
+        self.capture.is_some()
+    }
+    /// Poll periodically. Stops the encoder once no peer is installed or
+    /// preparing here, and the caller has no pending viewer, for the grace
+    /// period. Returns true when the capture was stopped by this call.
+    pub fn retain_capture(&mut self, pending: bool) -> bool {
+        if pending || !self.peers.is_empty() || !self.preparing.is_empty() {
+            self.idle_since = None;
+            return false;
+        }
+        let now = tokio::time::Instant::now();
+        let idle_since = *self.idle_since.get_or_insert(now);
+        if self.capture.is_some() && now.duration_since(idle_since) >= CAPTURE_IDLE_GRACE {
+            tracing::info!(target: "nanocodex2", stage = "screen.video.capture_idle_stopped");
+            // Dropping the task drops the capture owner (kill_on_drop encoder).
+            self.capture = None;
+            return true;
+        }
+        false
     }
     pub async fn next(&mut self) -> Option<Event> {
         loop {
@@ -456,6 +515,7 @@ impl Video {
         {
             return Err("viewer capacity or duplicate".into());
         }
+        self.ensure_capture();
         let builder = PeerBuilder {
             frames: self.frames.clone(),
             audio: self.audio.as_ref().map(|a| a.track.clone()),
@@ -1294,5 +1354,173 @@ mod tests {
             ice_servers(&json!({"iceServers":[{"urls":"stun:example.com:3478"}]})).unwrap();
         assert_eq!(servers[0].urls, ["stun:example.com:3478"]);
         assert!(servers[0].username.is_empty());
+    }
+
+    /// Counts encoder starts and stops. Frames tick every 20 ms so the
+    /// per-read stall timeout never fires while paused time advances.
+    fn counted_source(
+        starts: Arc<std::sync::atomic::AtomicUsize>,
+        stops: Arc<std::sync::atomic::AtomicUsize>,
+        fail_after: usize,
+    ) -> VideoSource {
+        struct Stopped(Arc<std::sync::atomic::AtomicUsize>);
+        impl Drop for Stopped {
+            fn drop(&mut self) {
+                self.0.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+        Arc::new(move || {
+            let attempt = starts.fetch_add(1, Ordering::SeqCst);
+            let stopped = Stopped(stops.clone());
+            Box::pin(async move {
+                if attempt >= fail_after {
+                    return Err("fixture encoder unavailable".into());
+                }
+                let owner = Task(tokio::spawn(async move {
+                    let _stopped = stopped;
+                    std::future::pending::<()>().await
+                }));
+                Ok(Capture::packets(
+                    stream::unfold(
+                        tokio::time::interval(Duration::from_millis(20)),
+                        |mut tick| async move {
+                            tick.tick().await;
+                            Some((Ok(bytes::Bytes::from_static(&[0, 0, 0, 1, 0x65, 1])), tick))
+                        },
+                    ),
+                    Some(owner),
+                ))
+            })
+        })
+    }
+
+    /// Mirrors the session's one-second tick.
+    async fn idle(video: &mut Video, seconds: u64, pending: bool) {
+        for _ in 0..seconds {
+            tokio::time::advance(Duration::from_secs(1)).await;
+            video.retain_capture(pending);
+            tokio::task::yield_now().await;
+        }
+    }
+
+    async fn stopped(stops: &std::sync::atomic::AtomicUsize, expected: usize) {
+        for _ in 0..100 {
+            if stops.load(Ordering::SeqCst) == expected {
+                return;
+            }
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(
+            stops.load(Ordering::SeqCst),
+            expected,
+            "encoder owner not dropped"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn no_encoder_runs_without_viewers_after_startup_probe() {
+        let (starts, stops) = Default::default();
+        let source = counted_source(Arc::clone(&starts), Arc::clone(&stops), usize::MAX);
+        let mut video = Video::start(&source, None).await.unwrap();
+        // Only the pre-publication probe; it is kept for the grace period.
+        assert_eq!(starts.load(Ordering::SeqCst), 1);
+        idle(&mut video, CAPTURE_IDLE_GRACE.as_secs() - 1, false).await;
+        assert!(video.capturing());
+        idle(&mut video, 2, false).await;
+        assert!(!video.capturing());
+        stopped(&stops, 1).await;
+        // Nobody watching: the encoder is never restarted.
+        idle(&mut video, 600, false).await;
+        assert!(!video.capturing());
+        assert_eq!(starts.load(Ordering::SeqCst), 1);
+        assert!(!video.failed());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn first_viewer_starts_encoder_and_last_viewer_stops_it_after_grace() {
+        let (starts, stops) = Default::default();
+        let source = counted_source(Arc::clone(&starts), Arc::clone(&stops), usize::MAX);
+        let mut video = Video::start(&source, None).await.unwrap();
+        idle(&mut video, CAPTURE_IDLE_GRACE.as_secs() + 1, false).await;
+        stopped(&stops, 1).await;
+
+        let mut frames = video.frames.subscribe();
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(8);
+        video.add("viewer", Vec::new(), deadline).unwrap();
+        assert!(video.capturing());
+        // The restarted encoder feeds the shared channel peers subscribe to.
+        tokio::time::timeout(Duration::from_secs(1), frames.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(starts.load(Ordering::SeqCst), 2);
+        // An attached viewer keeps the encoder indefinitely.
+        idle(&mut video, 300, false).await;
+        assert!(video.capturing());
+        assert_eq!(stops.load(Ordering::SeqCst), 1);
+
+        video.remove("viewer");
+        idle(&mut video, CAPTURE_IDLE_GRACE.as_secs() - 1, false).await;
+        assert!(video.capturing());
+        idle(&mut video, 2, false).await;
+        assert!(!video.capturing());
+        stopped(&stops, 2).await;
+        assert_eq!(starts.load(Ordering::SeqCst), 2);
+        assert!(!video.failed());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn reconnect_within_grace_reuses_the_running_encoder() {
+        let (starts, stops) = Default::default();
+        let source = counted_source(Arc::clone(&starts), Arc::clone(&stops), usize::MAX);
+        let mut video = Video::start(&source, None).await.unwrap();
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(8);
+        video.add("viewer", Vec::new(), deadline).unwrap();
+        video.remove("viewer");
+        idle(&mut video, CAPTURE_IDLE_GRACE.as_secs() - 5, false).await;
+        video.add("reconnected", Vec::new(), deadline).unwrap();
+        // The grace restarts only after the reconnected viewer leaves.
+        idle(&mut video, 60, false).await;
+        assert!(video.capturing());
+        assert_eq!(starts.load(Ordering::SeqCst), 1);
+        assert_eq!(stops.load(Ordering::SeqCst), 0);
+        // A viewer still fetching ICE servers in the session also keeps it.
+        video.remove("reconnected");
+        idle(&mut video, 60, true).await;
+        assert!(video.capturing());
+        video.ensure_capture();
+        assert_eq!(starts.load(Ordering::SeqCst), 1);
+        idle(&mut video, CAPTURE_IDLE_GRACE.as_secs() + 1, false).await;
+        assert!(!video.capturing());
+        stopped(&stops, 1).await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn lazy_encoder_restart_failure_reports_media_failure() {
+        let (starts, stops) = Default::default();
+        let source = counted_source(Arc::clone(&starts), Arc::clone(&stops), 1);
+        let mut video = Video::start(&source, None).await.unwrap();
+        idle(&mut video, CAPTURE_IDLE_GRACE.as_secs() + 1, false).await;
+        assert!(!video.failed());
+        video.ensure_capture();
+        for _ in 0..100 {
+            if video.failed() {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        assert!(
+            video.failed(),
+            "restart failure must surface as MediaFailed"
+        );
+        assert_eq!(starts.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn failed_startup_probe_is_reported_before_publication() {
+        let (starts, stops) = Default::default();
+        let source = counted_source(Arc::clone(&starts), stops, 0);
+        assert!(Video::start(&source, None).await.is_err());
+        assert_eq!(starts.load(Ordering::SeqCst), 1);
     }
 }

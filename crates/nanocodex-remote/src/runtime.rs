@@ -689,6 +689,8 @@ async fn session_loop(
         tokio::select! {
             _ = tick.tick() => {
                 if socket.video.as_ref().is_some_and(Video::failed) { return Err(SessionError::MediaFailed); }
+                // Viewer-driven encoder lifecycle: ICE-preparing viewers keep it warm.
+                if let Some(video) = &mut socket.video { video.retain_capture(!preparations.is_empty()); }
                 for viewer in socket.video.as_ref().map(Video::expired).unwrap_or_default() {
                     if lease.owner() == viewer { release(&mut lease, backend, &mut socket).await?; }
                     viewers.remove(&viewer);
@@ -856,7 +858,9 @@ async fn session_loop(
                         }
                         if viewers.len()+preparations.len()>=VIEWER_CAPACITY {
                             send(&mut socket,json!({"type":"close_viewer","viewer_id":viewer})).await?;
-                        } else if socket.video.is_some() {
+                        } else if let Some(video) = &mut socket.video {
+                            // Warm the encoder while ICE servers are fetched.
+                            video.ensure_capture();
                             let deadline=tokio::time::Instant::now()+Duration::from_secs(8);
                             preparations.insert(viewer, deadline, ice.request()).map_err(|_|SessionError::Closed)?;
                         } else {
