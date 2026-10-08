@@ -1,5 +1,4 @@
 import { validatePrivateVaultSave, validatePrivateVaultDetails, type PrivateVaultDetails } from "./browser-vault-save";
-import { browserLoginIdentity } from "./browser-login";
 import { NATIVE_FORM_STATE, PrivateBrowserNoActiveTouch, isBrowserVaultOrigin, type BrowserVaultIdentity, type PrivateBrowserCdp } from "./browser-vault";
 
 export type BrowserVaultTakeoverAction =
