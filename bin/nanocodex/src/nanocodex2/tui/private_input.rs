@@ -1152,6 +1152,8 @@ pub(crate) async fn run(c: &ManagedClient, r: &Request, operation: Operation) ->
             body["native_fields"] = json!(true);
             body["native_field_hints"] = json!(true);
             body["native_field_controls"] = json!(true);
+            // The terminal never renders the frame; request the compact encoding.
+            body["image_format"] = json!("jpeg");
             let Some(v) = post(c, r, body).await else {
                 return Outcome::Failed;
             };
