@@ -4,6 +4,8 @@
 //! cancellation after an effect starts (unknown outcome, never dispatched again);
 //! opaque compaction suffixes and container/discovery state across reopen.
 //! Pending effects after a process crash follow the store's at-least-once policy.
+//! Synthetic models have no catalog limits; configure their output budget explicitly.
+//! The 4,096-token fixture budget is also asserted across checkpoint recovery.
 #![cfg(all(feature = "claude", feature = "sqlite"))]
 
 use axum::{Json, Router, response::IntoResponse, routing::post};
@@ -144,6 +146,7 @@ async fn completed_request_receipt_replays_after_sqlite_reopen() {
     let mut usage = None;
     for _ in 0..2 {
         let (agent, events) = Nanocodex::builder(Claude::new(client.clone(), "test"))
+            .max_tokens(4096)
             .durability(reopen(&path).await)
             .await
             .unwrap()
@@ -208,6 +211,7 @@ async fn retried_model_call_receipt_replays_after_sqlite_reopen() {
     for _ in 0..2 {
         let counter = effects.clone();
         let (agent, events) = Nanocodex::builder(Claude::new(client.clone(), "test"))
+            .max_tokens(4096)
             .tool(tool(), move |_| {
                 counter.fetch_add(1, Ordering::SeqCst);
                 async { Ok("committed once".into()) }
@@ -266,6 +270,7 @@ async fn completed_effect_and_opaque_compaction_suffix_survive_reopen() {
         let counter = effects.clone();
         let returned = receipt.clone();
         let (agent, events) = Nanocodex::builder(Claude::new(client.clone(), "test"))
+            .max_tokens(4096)
             .auto_compact_window_tokens(100_000)
             .tool_blocks(tool(), move |_| {
                 counter.fetch_add(1, Ordering::SeqCst);
@@ -337,6 +342,7 @@ async fn cancelled_started_tool_publishes_one_unknown_terminal_event() {
     let started = Arc::new(tokio::sync::Notify::new());
     let (counter, notify) = (effects.clone(), started.clone());
     let (agent, mut events) = Nanocodex::builder(Claude::new(client, "test"))
+        .max_tokens(4096)
         .tool(tool(), move |_| {
             counter.fetch_add(1, Ordering::SeqCst);
             notify.notify_one();
@@ -437,6 +443,7 @@ async fn live_interrupted_effect_is_unknown_after_compaction_and_reopen() {
     let counter = effects.clone();
     let notify = started.clone();
     let (agent, events) = Nanocodex::builder(Claude::new(client.clone(), "test"))
+        .max_tokens(4096)
         .tool(tool(), move |_| {
             counter.fetch_add(1, Ordering::SeqCst);
             notify.notify_one();
@@ -461,6 +468,7 @@ async fn live_interrupted_effect_is_unknown_after_compaction_and_reopen() {
     drop((agent, events));
     let counter = effects.clone();
     let (agent, events) = Nanocodex::builder(Claude::new(client, "test"))
+        .max_tokens(4096)
         .tool(tool(), move |_| {
             counter.fetch_add(1, Ordering::SeqCst);
             async { Ok("must not repeat".into()) }
@@ -515,6 +523,7 @@ async fn discovery_and_container_survive_restart_then_compaction_requires_redisc
         deferred.defer_loading = true;
         let counter = effects.clone();
         let (agent, events) = Nanocodex::builder(Claude::new(client.clone(), "test"))
+            .max_tokens(4096)
             .client_tool_search()
             .tools_factory(|_| {
                 let mut search = tool();
@@ -611,6 +620,7 @@ async fn server_interruption_notice_survives_lossy_summary_and_sqlite_reopen() {
         _ => sse(text("reconciled"), "end_turn", 10),
     }).await;
     let (agent, events) = Nanocodex::builder(Claude::new(client.clone(), "test"))
+        .max_tokens(4096)
         .server_tool(nanocodex_claude::ServerToolDefinition::code_execution_current())
         .durability(reopen(&path).await)
         .await
@@ -632,6 +642,7 @@ async fn server_interruption_notice_survives_lossy_summary_and_sqlite_reopen() {
     agent.shutdown().await.unwrap();
     drop((agent, events));
     let (agent, events) = Nanocodex::builder(Claude::new(client, "test"))
+        .max_tokens(4096)
         .server_tool(nanocodex_claude::ServerToolDefinition::code_execution_current())
         .durability(reopen(&path).await)
         .await
@@ -826,6 +837,7 @@ async fn transaction_recovery(
     let request =
         || PromptRequest::new("complete one synthetic effect").request_id("transaction-request");
     let (agent, events) = Nanocodex::builder(Claude::new(client.clone(), "test"))
+        .max_tokens(4096)
         .auto_compact_window_tokens(100_000)
         .server_tool(nanocodex_claude::ServerToolDefinition::web_fetch_basic(1))
         .tasks(board.clone())
@@ -1050,6 +1062,7 @@ async fn image_receipt_stays_original_while_replayed_history_is_bounded() {
         let counter = effects.clone();
         let returned = receipt.clone();
         Nanocodex::builder(Claude::new(client.clone(), "test"))
+            .max_tokens(4096)
             .tool_blocks(tool(), move |_| {
                 counter.fetch_add(1, Ordering::SeqCst);
                 // The next durability write records this completed receipt.
@@ -1163,6 +1176,7 @@ async fn completed_task_mutation_replays_without_handler_into_reconstructed_boar
     .await
     .unwrap();
     let (agent, events) = Nanocodex::builder(Claude::new(client.clone(), "test"))
+        .max_tokens(4096)
         .tasks(board.clone())
         .tool(tool(), move |_| {
             let board = handler_board.clone();
@@ -1193,6 +1207,7 @@ async fn completed_task_mutation_replays_without_handler_into_reconstructed_boar
 
     let restored_board = Arc::new(ClaudeTasks::new());
     let (agent, events) = Nanocodex::builder(Claude::new(client, "test"))
+        .max_tokens(4096)
         // The effect handler is intentionally absent from this fresh host.
         .tasks(restored_board.clone())
         .durability(reopen(&path).await)
@@ -1295,6 +1310,7 @@ async fn blocked_provider_owner_journey(fence: bool) {
     let counter = old_effects.clone();
     let state = reopen(&path).await;
     let (agent, events) = Nanocodex::builder(Claude::new(client.clone(), "test"))
+        .max_tokens(4096)
         .tool(tool(), move |_| {
             counter.fetch_add(1, Ordering::SeqCst);
             async { Ok("old host receipt".into()) }
@@ -1315,6 +1331,7 @@ async fn blocked_provider_owner_journey(fence: bool) {
         let counter = new_effects.clone();
         let (recovered, recovered_events) =
             Nanocodex::builder(Claude::new(client, "changed-host-model"))
+                .max_tokens(4096)
                 .system("changed-host-system")
                 .tool(tool(), move |_| {
                     counter.fetch_add(1, Ordering::SeqCst);
@@ -1396,6 +1413,7 @@ async fn blocked_provider_owner_journey(fence: bool) {
         assert_eq!(old_effects.load(Ordering::SeqCst), 1);
         agent.shutdown().await.unwrap();
         let (recovered, recovered_events) = Nanocodex::builder(Claude::new(client, "test"))
+            .max_tokens(4096)
             .durability(reopen(&path).await)
             .await
             .unwrap()
@@ -1473,6 +1491,7 @@ async fn pending_task_receipt_fixture() -> (
     .await
     .unwrap();
     let (agent, events) = Nanocodex::builder(Claude::new(client.clone(), "test"))
+        .max_tokens(4096)
         .tasks(board)
         .tool(tool(), move |_| {
             let board = handler_board.clone(); let arm = arm.clone(); let counter = counter.clone();
@@ -1507,6 +1526,7 @@ async fn recovery_cancel_on_admission_preserves_committed_tool_and_task_receipt(
     let path = directory.path().join("state.sqlite");
     let board = Arc::new(ClaudeTasks::new());
     let (agent, events) = Nanocodex::builder(Claude::new(client.clone(), "test"))
+        .max_tokens(4096)
         .tasks(board.clone())
         .durability(reopen(&path).await)
         .await
@@ -1541,6 +1561,7 @@ async fn recovery_cancel_on_admission_preserves_committed_tool_and_task_receipt(
     drop((agent, events, board));
     let board = Arc::new(ClaudeTasks::new());
     let (agent, events) = Nanocodex::builder(Claude::new(client, "test"))
+        .max_tokens(4096)
         .tasks(board.clone())
         .durability(reopen(&path).await)
         .await
@@ -1581,6 +1602,7 @@ async fn recovery_missing_task_board_leaves_pending_operation_recoverable() {
     let (directory, client, requests, server, effects) = pending_task_receipt_fixture().await;
     let path = directory.path().join("state.sqlite");
     let unconfigured = Nanocodex::builder(Claude::new(client.clone(), "test"))
+        .max_tokens(4096)
         .durability(reopen(&path).await)
         .await;
     match unconfigured {
@@ -1617,6 +1639,7 @@ async fn recovery_missing_task_board_leaves_pending_operation_recoverable() {
     );
     let board = Arc::new(ClaudeTasks::new());
     let (agent, events) = Nanocodex::builder(Claude::new(client, "test"))
+        .max_tokens(4096)
         .tasks(board.clone())
         .durability(state)
         .await
@@ -1726,6 +1749,7 @@ async fn aborted_lifecycle_caller_journey(compaction: bool) {
     .await
     .unwrap();
     let (agent, events) = Nanocodex::builder(Claude::new(client, "test"))
+        .max_tokens(4096)
         .durability(state.clone())
         .await
         .unwrap()
@@ -1874,6 +1898,7 @@ async fn cancelled_summary_reopens_safely(context_exhaustion: bool) {
     let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
     let client = ClaudeClient::new(reqwest::Client::new(), endpoint, "synthetic");
     let (agent, events) = Nanocodex::builder(Claude::new(client.clone(), "test"))
+        .max_tokens(4096)
         .durability(reopen(&path).await)
         .await
         .unwrap()
@@ -1922,6 +1947,7 @@ async fn cancelled_summary_reopens_safely(context_exhaustion: bool) {
     );
     drop(retained);
     let (agent, events) = Nanocodex::builder(Claude::new(client, "test"))
+        .max_tokens(4096)
         .durability(state)
         .await
         .unwrap()
@@ -1982,6 +2008,7 @@ async fn manual_compaction_cancels_active_tool_then_preserves_safe_context_on_re
     let effects = Arc::new(AtomicUsize::new(0));
     let counter = effects.clone();
     let (agent, events) = Nanocodex::builder(Claude::new(client.clone(), "test"))
+        .max_tokens(4096)
         .tool(tool(), move |_| {
             counter.fetch_add(1, Ordering::SeqCst);
             notify.notify_one();
@@ -2014,6 +2041,7 @@ async fn manual_compaction_cancels_active_tool_then_preserves_safe_context_on_re
     agent.shutdown().await.unwrap();
     drop((agent, events));
     let (agent, events) = Nanocodex::builder(Claude::new(client, "test"))
+        .max_tokens(4096)
         .durability(reopen(&path).await)
         .await
         .unwrap()
@@ -2133,6 +2161,7 @@ async fn uncertain_paused_server_turn_survives_compaction_cancellation_and_sqlit
                 .request_id("after-uncertain-reopen")
         };
         let (agent, mut events) = Nanocodex::builder(Claude::new(client.clone(), "test"))
+            .max_tokens(4096)
             .auto_compact_window_tokens(100_000)
             .server_tool(nanocodex_claude::ServerToolDefinition::code_execution_current())
             .durability(reopen(&path).await)
@@ -2168,6 +2197,7 @@ async fn uncertain_paused_server_turn_survives_compaction_cancellation_and_sqlit
         // Reopen before any new input. Replaying the terminal ID cannot resume
         // the failed/cancelled continuation or issue another native effect.
         let (agent, events) = Nanocodex::builder(Claude::new(client.clone(), "test"))
+            .max_tokens(4096)
             .server_tool(nanocodex_claude::ServerToolDefinition::code_execution_current())
             .durability(reopen(&path).await)
             .await
@@ -2203,6 +2233,7 @@ async fn uncertain_paused_server_turn_survives_compaction_cancellation_and_sqlit
         drop((agent, events));
 
         let (agent, events) = Nanocodex::builder(Claude::new(client.clone(), "test"))
+            .max_tokens(4096)
             .server_tool(nanocodex_claude::ServerToolDefinition::code_execution_current())
             .durability(reopen(&path).await)
             .await
@@ -2222,6 +2253,7 @@ async fn uncertain_paused_server_turn_survives_compaction_cancellation_and_sqlit
         drop((agent, events));
 
         let (agent, events) = Nanocodex::builder(Claude::new(client, "test"))
+            .max_tokens(4096)
             .server_tool(nanocodex_claude::ServerToolDefinition::code_execution_current())
             .durability(reopen(&path).await)
             .await
@@ -2343,6 +2375,7 @@ async fn paused_server_cursor_replays_across_store_failure_without_terminalizing
         let request =
             || PromptRequest::new("perform durable server operation").request_id("pending-server");
         let (agent, events) = Nanocodex::builder(Claude::new(client.clone(), "original-model"))
+            .max_tokens(4096)
             .server_tool(nanocodex_claude::ServerToolDefinition::code_execution_current())
             .durability(state)
             .await
@@ -2363,6 +2396,7 @@ async fn paused_server_cursor_replays_across_store_failure_without_terminalizing
         drop((agent, events));
 
         let (agent, events) = Nanocodex::builder(Claude::new(client, "different-model"))
+            .max_tokens(4096)
             .durability(reopen(&path).await)
             .await
             .unwrap()
@@ -2445,6 +2479,7 @@ async fn legacy_failed_server_snapshot_accepts_new_input_without_native_replay()
     let (client, requests, server) =
         server(|_, _| sse(text("legacy state reconciled"), "end_turn", 10)).await;
     let (agent, events) = Nanocodex::builder(Claude::new(client, "test"))
+        .max_tokens(4096)
         .server_tool(nanocodex_claude::ServerToolDefinition::web_fetch_basic(1))
         .durability(reopen(&path).await)
         .await
@@ -2528,6 +2563,7 @@ async fn tool_only_policies_preserve_default_wire_and_durable_write_count() {
         .unwrap();
         let invoked = Arc::new(AtomicUsize::new(0));
         let mut builder = Nanocodex::builder(Claude::new(client.clone(), "test"))
+            .max_tokens(4096)
             .tool(tool(), |_| async { Ok("real-tool-receipt".into()) });
         for _ in 0..policies {
             builder = builder.tool_hooks(Arc::new(ToolPolicy(invoked.clone())));
@@ -2611,6 +2647,7 @@ async fn identified_steering_receipts_withdrawal_and_recovery() {
     let client = ClaudeClient::new(reqwest::Client::new(), endpoint, "synthetic");
     let state = reopen(&path).await;
     let (agent, mut events) = Nanocodex::builder(Claude::new(client.clone(), "test"))
+        .max_tokens(4096)
         .durability(state.clone())
         .await
         .unwrap()
@@ -2647,6 +2684,7 @@ async fn identified_steering_receipts_withdrawal_and_recovery() {
     // Fence the blocked owner and replay the unfinished operation with a real reopened store.
     let recovered_state = reopen(&path).await;
     let (recovered, mut recovered_events) = Nanocodex::builder(Claude::new(client, "test"))
+        .max_tokens(4096)
         .durability(recovered_state.clone())
         .await
         .unwrap()
@@ -2743,6 +2781,7 @@ async fn native_identified_steering_without_durability_policy() {
     let started = Arc::new(tokio::sync::Notify::new());
     let release = Arc::new(tokio::sync::Notify::new());
     let (agent, mut events) = Nanocodex::builder(Claude::new(client, "test"))
+        .max_tokens(4096)
         .tool(tool(), {
             let started = started.clone();
             let release = release.clone();
@@ -2881,6 +2920,7 @@ async fn legacy_model_zero_steer_reaches_first_new_boundary_without_repeating_wr
     let writes = Arc::new(AtomicUsize::new(0));
     let counter = writes.clone();
     let (agent, _) = Nanocodex::builder(Claude::new(client.clone(), "test"))
+        .max_tokens(4096)
         .tool(tool(), move |_| {
             counter.fetch_add(1, Ordering::SeqCst);
             async { Ok("prior Write completed".into()) }
@@ -2954,6 +2994,7 @@ async fn legacy_model_zero_steer_reaches_first_new_boundary_without_repeating_wr
     drop(store);
     let counter = writes.clone();
     let (recovered, mut events) = Nanocodex::builder(Claude::new(client, "test"))
+        .max_tokens(4096)
         .tool(tool(), move |_| {
             counter.fetch_add(1, Ordering::SeqCst);
             async { Ok("unexpected repeated Write".into()) }
