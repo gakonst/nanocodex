@@ -90,6 +90,7 @@ export default defineConfig({
         },
         bindings: {
           ENVIRONMENT: "test",
+          CREDENTIAL_REHOME_COOLDOWN_MS: "4000",
           CREDENTIAL_ENCRYPTION_KEY: TEST_KEY,
           CHIEF_OF_STAFF_OPENAI_API_KEY: "sk-chief-of-staff-test-secret",
           NANOCODEX_SPONSORED_CHATGPT_USER_ID: "99999999-9999-4999-8999-999999999999",

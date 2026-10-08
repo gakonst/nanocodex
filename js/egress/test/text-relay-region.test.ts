@@ -83,7 +83,8 @@ describe("private regional ChatGPT text relay", () => {
       const f = fixture();
       expect((await f.entrypoint.fetch(request(region, method))).status).toBe(204);
       expect(f.get).toHaveBeenCalledWith(`text-v1:${region}:${owner}`, { locationHint: region });
-      expect(f.getByName).toHaveBeenCalledWith(owner, { locationHint: region });
+      // The canonical credential broker is the home placed in this region.
+      expect(f.getByName).toHaveBeenCalledWith(`~home/v1/${region}/${owner}`, { locationHint: region });
       expect(f.callback).not.toHaveBeenCalled();
       const sent = f.relay.mock.calls[0]![0];
       expect(sent.headers.get("authorization")).toBe("Bearer fixture-secret");
