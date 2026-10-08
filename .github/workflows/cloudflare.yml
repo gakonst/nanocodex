@@ -100,6 +100,12 @@ on:
         type: boolean
         default: false
 
+# A newer master push supersedes any in-flight master run. PR and manual runs
+# keep their own per-run groups so they are never cancelled by master.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'push' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'push' }}
+
 env:
   # Bump this repository variable to refresh mutable upstream base images or
   # recover a receipt whose registry image was explicitly deleted.
