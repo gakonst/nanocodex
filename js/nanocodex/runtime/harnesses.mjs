@@ -30,7 +30,9 @@ export async function prepareHarnesses(harnesses, emit, {
       const host = createClaudeHost({ ...options, onEvent: emit, subagentSessions, subagentRouting, codeEffectJournal, traceTool });
       const id = registerDefinitionHost(host);
       hosts.push([id, host]);
-      result.claude = { ...config, hostDefinitionId: id, authHostId: id, tools: JSON.parse(host.toolDefinitions()) };
+      const parallelSafeTools = host.parallelSafeTools();
+      result.claude = { ...config, hostDefinitionId: id, authHostId: id, tools: JSON.parse(host.toolDefinitions()),
+        ...(parallelSafeTools.length ? { parallelSafeTools } : {}) };
     }
     if (harnesses.codex) {
       const options = harnesses.codex;

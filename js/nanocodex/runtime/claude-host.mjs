@@ -6,7 +6,7 @@ const TOOL_RESULT = Symbol.for('nanocodex.toolResult');
 const MEDIA = new Set(['input_text', 'input_image', 'input_audio', 'encrypted_content']);
 // These are Codex runtime contracts, not Claude capabilities. Never reinterpret
 // a namedTool() from the existing default catalog as a native Claude definition.
-const TOOL_KEYS = new Set(['name', 'description', 'handler', 'inputSchema', 'parameters', 'strict', 'deferLoading', 'defer_loading']);
+const TOOL_KEYS = new Set(['name', 'description', 'handler', 'inputSchema', 'parameters', 'strict', 'deferLoading', 'defer_loading', 'supportsParallelToolCalls']);
 const CODEX_TOOL_NAMES = new Set([
   'exec', 'wait', 'tool_search', 'exec_command', 'write_stdin', 'apply_patch',
   'view_image', 'update_plan', 'web__run', 'image_gen__imagegen',
@@ -22,6 +22,7 @@ const PLATFORM_SUBAGENT_NAMES = new Set([
 export function resolveClaudeTools(tools = []) {
   if (!Array.isArray(tools)) throw new TypeError('Claude tools must be an explicit array');
   const handlers = new Map();
+  const parallelSafe = [];
   const definitions = tools.map((tool) => {
     if (!tool || typeof tool !== 'object'
       || typeof tool.name !== 'string' || !/^[a-zA-Z0-9_-]{1,64}$/.test(tool.name)
@@ -31,7 +32,7 @@ export function resolveClaudeTools(tools = []) {
     if (Object.keys(tool).some(key => !TOOL_KEYS.has(key))) throw new TypeError('unsupported Claude tool field');
     if (tool.inputSchema !== undefined && tool.parameters !== undefined) throw new TypeError('Claude tool schema aliases are mutually exclusive');
     if (tool.deferLoading !== undefined && tool.defer_loading !== undefined) throw new TypeError('Claude tool deferLoading aliases are mutually exclusive');
-    for (const key of ['strict', 'deferLoading', 'defer_loading']) if (tool[key] !== undefined && typeof tool[key] !== 'boolean') throw new TypeError('Claude tool flags must be boolean');
+    for (const key of ['strict', 'deferLoading', 'defer_loading', 'supportsParallelToolCalls']) if (tool[key] !== undefined && typeof tool[key] !== 'boolean') throw new TypeError('Claude tool flags must be boolean');
     if (CODEX_TOOL_NAMES.has(tool.name)) throw new TypeError('Codex tool definitions are not accepted by the Claude catalog');
     if (PLATFORM_SUBAGENT_NAMES.has(tool.name)) throw new TypeError('Nanocodex subagent tools are installed by the shared runtime');
     if (handlers.has(tool.name)) throw new TypeError('duplicate Claude tool name');
@@ -40,12 +41,14 @@ export function resolveClaudeTools(tools = []) {
       throw new TypeError('Claude tool inputSchema must be an object schema');
     }
     handlers.set(tool.name, tool.handler);
+    // Scheduling metadata only; never part of the model-visible definition.
+    if (tool.supportsParallelToolCalls === true) parallelSafe.push(tool.name);
     return { name: tool.name, description: tool.description, input_schema: JSON.parse(JSON.stringify(schema)),
       ...(tool.strict === undefined ? {} : { strict: tool.strict }),
       ...(tool.deferLoading === undefined && tool.defer_loading === undefined ? {} : { defer_loading: tool.deferLoading ?? tool.defer_loading }),
     };
   });
-  return { handlers, definitions: freezeJson(definitions) };
+  return { handlers, definitions: freezeJson(definitions), parallelSafe: Object.freeze(parallelSafe) };
 }
 
 /** Credentials remain in this host closure, never the WASM configuration. */
@@ -85,7 +88,7 @@ export function createClaudeHost({ auth, tools = [], onEvent = () => {}, fetch, 
   if (toolMode === 'code-only' && typeof codeEvaluator !== 'function') throw new TypeError('Claude Code Mode requires an explicit codeEvaluator');
   let apiKey = auth.apiKey;
   let headerProvider = auth.headers;
-  const { handlers, definitions } = resolveClaudeTools(tools);
+  const { handlers, definitions, parallelSafe } = resolveClaudeTools(tools);
   const sessions = new Map();
   const children = new Map();
   let disposed = false;
@@ -162,6 +165,8 @@ export function createClaudeHost({ auth, tools = [], onEvent = () => {}, fetch, 
       } catch { throw new Error('Claude authentication unavailable'); }
     },
     toolDefinitions() { return JSON.stringify(modelDefinitions); },
+    // Code Mode exposes only exec/wait, which keep the serial default.
+    parallelSafeTools() { return code ? [] : [...parallelSafe]; },
     toolMode() { return toolMode; },
     emitEvent(event, ...args) {
       // Claude's native model-call cursor is zero-based. The shared effect

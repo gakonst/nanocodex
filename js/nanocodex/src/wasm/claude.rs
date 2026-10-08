@@ -7,7 +7,8 @@
 //! adaptiveThinking, keepThinking, cache ("off", "5m", "1h"), autoCompact
 //! (false rejects unsupported disabling, true keeps backend policy),
 //! autoCompactWindowTokens, contextWindowTokens, instructions, systemBlocks,
-//! workspace, parallelTools, clientToolSearch, durabilityHostId, durabilityId,
+//! workspace, parallelTools, parallelSafeTools (host-derived), clientToolSearch,
+//! durabilityHostId, durabilityId,
 //! terminalReceiptRetention. Credentials never enter a checkpoint.
 //!
 //! Host contracts: claudeAuth(authHostId) -> Promise<JSON header map string>;
@@ -83,6 +84,9 @@ pub(super) struct ClaudeConfig {
     workspace: Option<String>,
     #[serde(default)]
     parallel_tools: bool,
+    /// Host tools declaring `supportsParallelToolCalls`; consecutive calls overlap.
+    #[serde(default)]
+    parallel_safe_tools: Vec<String>,
     #[serde(default)]
     client_tool_search: bool,
     durability_host_id: Option<String>,
@@ -691,7 +695,8 @@ pub(super) async fn build_claude(
     }
     let builder_model = config.model.clone();
     let mut builder = RustNanocodex::builder(Claude::new(client, config.model))
-        .parallel_tools(config.parallel_tools);
+        .parallel_tools(config.parallel_tools)
+        .parallel_safe_tools(config.parallel_safe_tools);
     if let Some(session_id) = config.session_id {
         builder = builder.session_id(session_id);
     }

@@ -96,6 +96,10 @@ export async function createClaude(options, load, type, harnessDefaults) {
   config.hostDefinitionId = hostDefinitionId;
   config.authHostId = hostDefinitionId;
   config.tools = JSON.parse(host.toolDefinitions());
+  // Tools that declare supportsParallelToolCalls overlap in consecutive runs;
+  // every other call keeps the serial, ordered default.
+  const parallelSafeTools = host.parallelSafeTools();
+  if (parallelSafeTools.length) config.parallelSafeTools = parallelSafeTools;
   let owner;
   let cleaned = false;
   let detached = false;

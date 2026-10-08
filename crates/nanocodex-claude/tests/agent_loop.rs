@@ -2534,3 +2534,107 @@ async fn truncated_complete_tool_block_is_never_dispatched_or_finalized() {
     agent.shutdown().await.unwrap();
     server.abort();
 }
+
+// Per-tool gating (Claude Code scheduling): consecutive declared parallel-safe
+// calls overlap, while an undeclared call waits for them and runs alone before
+// any later call starts. Results stay in response order in one user message.
+#[tokio::test]
+async fn parallel_safe_tools_overlap_only_in_runs_and_unsafe_calls_stay_ordered() {
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    let captured = Arc::new(Mutex::new(Vec::<Value>::new()));
+    let received = captured.clone();
+    let app = Router::new().route(
+        "/v1/messages",
+        post(move |Json(body): Json<Value>| {
+            let received = received.clone();
+            async move {
+                let index = {
+                    let mut requests = received.lock().unwrap();
+                    requests.push(body);
+                    requests.len()
+                };
+                let blocks = if index == 1 {
+                    vec![
+                        json!({"type":"tool_use","id":"r1","name":"read","input":{}}),
+                        json!({"type":"tool_use","id":"r2","name":"read","input":{}}),
+                        json!({"type":"tool_use","id":"w1","name":"write","input":{}}),
+                        json!({"type":"tool_use","id":"r3","name":"read","input":{}}),
+                    ]
+                } else {
+                    vec![json!({"type":"text","text":"done"})]
+                };
+                (
+                    [("content-type", "text/event-stream")],
+                    stream(blocks, if index == 1 { "tool_use" } else { "end_turn" }),
+                )
+                    .into_response()
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let trace = Arc::new(Mutex::new(Vec::<String>::new()));
+    let active = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let peak = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let definition = |name: &str| ToolDefinition {
+        name: name.into(),
+        description: "Synthetic".into(),
+        input_schema: json!({"type":"object"}),
+        strict: None,
+        defer_loading: false,
+    };
+    let handler = |kind: &'static str| {
+        let (trace, active, peak) = (trace.clone(), active.clone(), peak.clone());
+        move |_input: Value, invocation: nanocodex_claude::ClaudeToolInvocation| {
+            let (trace, active, peak) = (trace.clone(), active.clone(), peak.clone());
+            async move {
+                let id = invocation.call_id;
+                trace.lock().unwrap().push(format!("start {id}"));
+                let now = active.fetch_add(1, Ordering::SeqCst) + 1;
+                peak.fetch_max(now, Ordering::SeqCst);
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                active.fetch_sub(1, Ordering::SeqCst);
+                trace.lock().unwrap().push(format!("end {id}"));
+                Ok::<_, String>(nanocodex_claude::ClaudeToolReply::success(
+                    nanocodex_claude::ToolResultContent::Text(format!("{kind} {id}")),
+                ))
+            }
+        }
+    };
+    let client = ClaudeClient::new(
+        reqwest::Client::new(),
+        format!("http://{address}/v1/messages"),
+        "synthetic",
+    );
+    let (agent, _) = Nanocodex::builder(Claude::new(client, "test"))
+        .parallel_safe_tools(["read"])
+        .tool_with_context(definition("read"), handler("read"))
+        .tool_with_context(definition("write"), handler("write"))
+        .build()
+        .unwrap();
+    let result = agent.prompt("go").await.unwrap().result().await.unwrap();
+    assert_eq!(result.final_message(), "done");
+    let trace = trace.lock().unwrap().clone();
+    let at = |entry: &str| trace.iter().position(|e| e == entry).unwrap();
+    // r1 and r2 overlap; w1 starts only after both finish; r3 only after w1.
+    assert!(
+        at("start r2") < at("end r1") && at("start r1") < at("end r2"),
+        "{trace:?}"
+    );
+    assert!(
+        at("end r1") < at("start w1") && at("end r2") < at("start w1"),
+        "{trace:?}"
+    );
+    assert!(at("end w1") < at("start r3"), "{trace:?}");
+    assert_eq!(peak.load(Ordering::SeqCst), 2);
+    let requests = captured.lock().unwrap();
+    let returned = &requests[1]["messages"][2]["content"];
+    let ids: Vec<_> = returned
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|b| b["tool_use_id"].clone())
+        .collect();
+    assert_eq!(ids, [json!("r1"), json!("r2"), json!("w1"), json!("r3")]);
+}

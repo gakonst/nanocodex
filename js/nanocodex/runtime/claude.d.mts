@@ -32,6 +32,8 @@ export type Tool = Readonly<{
   deferLoading?: boolean;
   /** Native wire-name alias for deferLoading; do not supply both. */
   defer_loading?: boolean;
+  /** Independent calls may overlap with adjacent parallel-safe calls in one response. */
+  supportsParallelToolCalls?: boolean;
   handler(input: unknown, context: ToolContext): unknown | Promise<unknown>;
 }>;
 export type CodexHarnessOptions = Readonly<{

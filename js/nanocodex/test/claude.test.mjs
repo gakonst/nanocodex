@@ -209,6 +209,15 @@ test('Claude preserves native strict/deferLoading flags and rejects unknown tool
   }
 });
 
+test('Claude parallel-safe declarations are scheduling metadata, never wire definitions', () => {
+  const base = { description: 'explicit', handler() {} };
+  const resolved = resolveClaudeTools([{ ...base, name: 'Read', supportsParallelToolCalls: true },
+    { ...base, name: 'Write', supportsParallelToolCalls: false }, { ...base, name: 'Edit' }]);
+  assert.deepEqual(resolved.parallelSafe, ['Read']);
+  for (const definition of resolved.definitions) assert.equal('supportsParallelToolCalls' in definition, false);
+  assert.throws(() => resolveClaudeTools([{ ...base, name: 'Read', supportsParallelToolCalls: 'yes' }]), TypeError);
+});
+
 for (const outcome of ['success', 'failure']) {
   test(`Claude detached issued turn ${outcome} proactively defers and releases auth/durability routes`, async () => {
     const completion = Promise.withResolvers();

@@ -290,6 +290,7 @@ pub struct ClaudeBuilder {
     host_context: Option<Arc<str>>,
     server_tools: Vec<ServerToolDefinition>,
     parallel_tools: bool,
+    parallel_safe_tools: HashSet<String>,
     client_tool_search: bool,
     code_only: bool,
     policy: Option<Arc<dyn ClaudeExecutionPolicy>>,
@@ -334,6 +335,7 @@ impl ClaudeBuilder {
             host_context: None,
             server_tools: Vec::new(),
             parallel_tools: false,
+            parallel_safe_tools: HashSet::new(),
             client_tool_search: false,
             code_only: false,
             policy: None,
@@ -571,6 +573,21 @@ impl ClaudeBuilder {
     /// safe to overlap. Results remain ordered in one user message.
     pub const fn parallel_tools(mut self, enabled: bool) -> Self {
         self.parallel_tools = enabled;
+        self
+    }
+    /// Declare individual client tools whose invocations are independent and
+    /// safe to overlap, as Claude Code does for concurrency-safe tools. When
+    /// `parallel_tools` is off, each maximal run of consecutive calls to these
+    /// tools in one response executes concurrently; every other call runs
+    /// alone, in response order, after the preceding calls finish. Results
+    /// remain ordered in one user message and keep per-call durable receipts.
+    pub fn parallel_safe_tools<I, S>(mut self, names: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.parallel_safe_tools
+            .extend(names.into_iter().map(Into::into));
         self
     }
     /// Install caller-owned pre/post client-tool hooks. A pre-hook error or
@@ -1101,6 +1118,7 @@ impl ClaudeBuilder {
             client_tool_search: self.client_tool_search,
             code_only: self.code_only,
             parallel_tools: self.parallel_tools,
+            parallel_safe_tools: self.parallel_safe_tools,
             conversation: Mutex::new(restored.conversation),
             dispatch_fork: std::sync::RwLock::new(None),
             policy: self.policy,
@@ -1643,6 +1661,24 @@ fn current_server_turn_start(messages: &[Message]) -> Option<usize> {
 // Normalize custom handlers and older retained receipts at the request boundary.
 // The API expands native references into definitions and rejects mixed content.
 // Companions follow all receipts so parallel tool-result ordering stays valid.
+/// Contiguous position ranges executed one batch at a time, in response order.
+/// Calls inside a multi-call batch overlap; `all` admits every call together.
+fn tool_batches<'a>(
+    names: impl IntoIterator<Item = &'a str>,
+    all: bool,
+    parallel_safe: &HashSet<String>,
+) -> Vec<std::ops::Range<usize>> {
+    let mut batches: Vec<(std::ops::Range<usize>, bool)> = Vec::new();
+    for (position, name) in names.into_iter().enumerate() {
+        let safe = all || parallel_safe.contains(name);
+        match batches.last_mut() {
+            Some((range, true)) if safe => range.end = position + 1,
+            _ => batches.push((position..position + 1, safe)),
+        }
+    }
+    batches.into_iter().map(|(range, _)| range).collect()
+}
+
 fn separate_tool_references(messages: &mut [Message]) {
     for message in messages {
         let mut companions = Vec::new();
@@ -1998,6 +2034,9 @@ struct State {
     client_tool_search: bool,
     code_only: bool,
     parallel_tools: bool,
+    // Scheduling only: receipts are keyed by call ID and results by position,
+    // so this set need not be frozen with an admitted cursor.
+    parallel_safe_tools: HashSet<String>,
     conversation: Mutex<Conversation>,
     // Native context before the active tool batch; callbacks must not lock conversation.
     dispatch_fork: std::sync::RwLock<Option<Snapshot>>,
@@ -3707,11 +3746,20 @@ impl State {
             let fork_boundary = DispatchForkBoundary(&self.dispatch_fork);
             let mut results = vec![None; tool_calls.len()];
             let mut interrupted = false;
+            // Ordered batches: one batch when the embedding declared every tool
+            // independent, otherwise maximal runs of declared parallel-safe
+            // tools, with every other call alone (Claude Code's scheduling).
+            let batches = tool_batches(
+                tool_calls.iter().map(|(_, name, _, _)| name.as_str()),
+                cursor.parallel,
+                &self.parallel_safe_tools,
+            );
             if self.policy.is_some() {
                 // Reconcile every committed receipt before cancelling a recovered batch.
-                if cursor.parallel {
+                for batch in batches {
                     let mut calls = futures_util::stream::FuturesUnordered::new();
-                    for (position, (id, name, input, handler)) in tool_calls.iter().enumerate() {
+                    for position in batch {
+                        let (id, name, input, handler) = &tool_calls[position];
                         let cursor = &cursor;
                         calls.push(async move {
                             (
@@ -3731,74 +3779,57 @@ impl State {
                     while let Some((position, result)) = calls.next().await {
                         results[position] = Some(result?);
                     }
-                } else {
-                    for (position, (id, name, input, handler)) in tool_calls.iter().enumerate() {
-                        results[position] = Some(
-                            self.durable_tool(
-                                (&cursor, cancel),
-                                id,
-                                name,
-                                input,
-                                *handler,
-                                &request.events,
-                            )
-                            .await?,
-                        );
-                    }
                 }
                 interrupted = cancel.flag.load(Ordering::SeqCst);
-            } else if cursor.parallel {
-                let mut calls = futures_util::stream::FuturesUnordered::new();
-                for (position, (id, name, input, handler)) in tool_calls.iter().enumerate() {
-                    let cursor = &cursor;
-                    calls.push(async move {
-                        // A prior completion can cancel before this queued
-                        // future is first polled. Do not start its handler.
-                        let result = if cancel.flag.load(Ordering::SeqCst) {
-                            None
-                        } else {
-                            Some(
-                                self.durable_tool(
-                                    (cursor, cancel),
-                                    id,
-                                    name,
-                                    input,
-                                    *handler,
-                                    &request.events,
-                                )
-                                .await,
-                            )
-                        };
-                        (position, result)
-                    });
-                }
-                let mut remaining = tool_calls.len();
-                while remaining > 0 {
-                    tokio::select! {
-                        biased;
-                        next = calls.next() => {
-                            let Some((position, result)) = next else { break };
-                            interrupted |= result.is_none();
-                            results[position] = result.transpose()?;
-                            remaining -= 1;
-                        }
-                        () = cancel.cancelled() => { interrupted = true; break; }
-                    }
-                }
             } else {
-                for (position, (id, name, input, handler)) in tool_calls.iter().enumerate() {
-                    // Retain a completed receipt even if its handler cancelled
-                    // the turn, but never poll the next sequential handler.
+                for batch in batches {
+                    // Retain completed receipts even if a handler cancelled
+                    // the turn, but never start a later batch.
                     if cancel.flag.load(Ordering::SeqCst) {
                         interrupted = true;
                         break;
                     }
-                    let result = tokio::select! {
-                        biased;
-                        value = self.durable_tool((&cursor, cancel), id, name, input, *handler, &request.events) => value,
-                        () = cancel.cancelled() => { interrupted = true; break; },
-                    };
-                    results[position] = Some(result?);
+                    let mut calls = futures_util::stream::FuturesUnordered::new();
+                    let mut remaining = batch.len();
+                    for position in batch {
+                        let (id, name, input, handler) = &tool_calls[position];
+                        let cursor = &cursor;
+                        calls.push(async move {
+                            // A prior completion can cancel before this queued
+                            // future is first polled. Do not start its handler.
+                            let result = if cancel.flag.load(Ordering::SeqCst) {
+                                None
+                            } else {
+                                Some(
+                                    self.durable_tool(
+                                        (cursor, cancel),
+                                        id,
+                                        name,
+                                        input,
+                                        *handler,
+                                        &request.events,
+                                    )
+                                    .await,
+                                )
+                            };
+                            (position, result)
+                        });
+                    }
+                    while remaining > 0 {
+                        tokio::select! {
+                            biased;
+                            next = calls.next() => {
+                                let Some((position, result)) = next else { break };
+                                interrupted |= result.is_none();
+                                results[position] = result.transpose()?;
+                                remaining -= 1;
+                            }
+                            () = cancel.cancelled() => { interrupted = true; break; }
+                        }
+                    }
+                    if interrupted {
+                        break;
+                    }
                 }
             }
             if self.system_resolver.is_some() {
@@ -4845,5 +4876,27 @@ mod subscription_discovery_tests {
         assert_eq!(found, HashSet::from(["Read", "_custom"]));
         assert!(server_discovered_tools(&blocks, &tools, false).is_empty());
         assert_eq!(serde_json::to_value(&blocks).unwrap(), before);
+    }
+}
+
+#[cfg(test)]
+mod tool_batch_tests {
+    use super::*;
+    #[test]
+    fn parallel_safe_runs_batch_and_unsafe_calls_stay_ordered_alone() {
+        let safe = HashSet::from(["Read".to_owned(), "Bash".to_owned()]);
+        let names = [
+            "Read", "Bash", "Write", "Read", "Read", "Edit", "Edit", "Bash",
+        ];
+        assert_eq!(
+            tool_batches(names, false, &safe),
+            vec![0..2, 2..3, 3..5, 5..6, 6..7, 7..8]
+        );
+        assert_eq!(tool_batches(names, true, &HashSet::new()), vec![0..8]);
+        assert_eq!(
+            tool_batches(names, false, &HashSet::new()),
+            (0..8).map(|i| i..i + 1).collect::<Vec<_>>()
+        );
+        assert!(tool_batches([], false, &safe).is_empty());
     }
 }
