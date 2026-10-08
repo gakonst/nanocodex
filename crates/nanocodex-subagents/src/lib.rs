@@ -1,9 +1,12 @@
-//! Ephemeral, reusable subagent tools and in-memory task-tree runtime.
+//! Reusable subagent tools and task-tree runtime.
 //!
-//! Children and their retained history exist only for the lifetime of this runtime.
+//! Without a [`SubagentStore`], children live only as long as this runtime.
+//! With one installed, task trees survive restarts like their root agent.
 
 mod capacity;
 mod diagnostics;
+mod durable;
+pub use durable::{MemorySubagentStore, RestoreReport, SubagentStore, SubagentStoreFuture};
 
 pub use diagnostics::{CompletionError, CompletionErrorCode};
 mod harness;
