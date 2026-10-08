@@ -1,3 +1,4 @@
+import { accountTools } from "./account-placement";
 import {
   ContainerProxy as CloudflareContainerProxy,
   Sandbox as CloudflareSandbox,
@@ -24,7 +25,7 @@ export class Sandbox extends CloudflareSandbox<SandboxRuntimeEnv> {
 
   private remoteDesktop(): SandboxDesktop {
     if (!this.env.NANOCODEX_ACCOUNT_TOOLS) throw new Error("sandbox desktop binding is unavailable");
-    return this.desktop ??= new SandboxDesktop(this.ctx.storage, this, this.env.NANOCODEX_ACCOUNT_TOOLS, async ({ owner, id }) => {
+    return this.desktop ??= new SandboxDesktop(this.ctx.storage, this, accountTools(this.env as never), async ({ owner, id }) => {
       const subject = await this.ctx.storage.get<string>("nanocodex-egress-subject");
       if (!subject) throw new Error("sandbox account must be bound before desktop setup");
       await this.setOutboundByHost("nanocodex-hand.internal", "account", { subject, hand: { owner, id } });
@@ -75,7 +76,7 @@ export async function handleSandboxEgress(
     }
     // The bound mount determines routing. Its separate publisher credential is
     // still required by the account broker and cannot view another desktop.
-    return env.NANOCODEX_ACCOUNT_TOOLS.getByName(hand.owner!).fetch(new Request(
+    return accountTools(env as never).getByName(hand.owner!).fetch(new Request(
       `https://account-tools.internal/hand-hosts/${hand.id}/hands/${match[3]}`,
       { method: request.method, headers, body: request.body },
     ));

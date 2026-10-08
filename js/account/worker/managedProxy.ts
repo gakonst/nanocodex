@@ -122,6 +122,11 @@ async function routeMeasuredManaged(
         ? await env.NANOCODEX_HAND_RELAYS.getByName(`${cached.userId}:hand-relay:v1:${region}`, { locationHint: region })
           .fetch(regionalViewerRequest(brokered, cached.userId, region))
         : await env.NANOCODEX_HAND_BROKER!.getByName(cached.userId).fetch(brokered);
+      // A re-homed owner refuses before any work; the managed Worker follows the move.
+      if (brokerResponse.status === 421 && brokerResponse.headers.has("x-nanocodex-account-moved")) {
+        await brokerResponse.body?.cancel().catch(() => undefined);
+        return await env.NANOCODEX_BACKEND.fetch(request);
+      }
       const headers = new Headers(brokerResponse.headers);
       headers.set("x-nanocodex-request-id", crypto.randomUUID());
       headers.append("server-timing", `managed_auth;dur=${(admitted - started).toFixed(1)};desc="access", screen_route;dur=${(performance.now() - admitted).toFixed(1)}, screen_total;dur=${(performance.now() - started).toFixed(1)}`);

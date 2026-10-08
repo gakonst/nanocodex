@@ -1,3 +1,4 @@
+import { accountTools } from "./account-placement";
 import { resolveCompanyTeam } from "./company-teams";
 import { routeHandSharing, handShareAPIPath, handShareDocumentPath, handShareDocument } from "./hand-sharing-http";
 import { idempotentAgentId } from "nanocodex/cloudflare/managed-live";
@@ -1814,7 +1815,7 @@ async function managedFetchRoute(
         if (value !== null) headers.set(name, value);
       }
       headers.set(SESSION_OWNER_ASSERTION, handPublisher[1]!);
-      return env.NANOCODEX_ACCOUNT_TOOLS.getByName(handPublisher[1]!).fetch(
+      return accountTools(env).getByName(handPublisher[1]!).fetch(
         `https://account-tools.internal/hand-hosts/${handPublisher[2]}/hands/${handPublisher[3]}${url.search}`,
         new Request(request, { headers }),
       );
@@ -1829,7 +1830,7 @@ async function managedFetchRoute(
         && request.headers.get("origin") !== url.origin) return json({ error: "forbidden_origin" }, { status: 403 });
       const headers = new Headers({ [SESSION_OWNER_ASSERTION]: principal.userId });
       const suffix = handManagement[1] ? `/${handManagement[1]}` : "";
-      const response = await env.NANOCODEX_ACCOUNT_TOOLS.getByName(principal.userId).fetch(
+      const response = await accountTools(env).getByName(principal.userId).fetch(
         `https://account-tools.internal/hand-hosts${suffix}${url.search}`, new Request(request, { headers }),
       );
       if (response.status !== 201) return response;
@@ -1894,7 +1895,7 @@ async function managedFetchRoute(
     if (handShareDocumentPath.test(url.pathname)) return handShareDocument(request);
     if (handShareAPIPath.test(url.pathname)) {
       const principal = trustedAgentPrincipal ?? await authenticateHandSharingAccount(request, env, url);
-      return routeHandSharing(request, principal, env.NANOCODEX_ACCOUNT_TOOLS);
+      return routeHandSharing(request, principal, accountTools(env));
     }
     if (env.NANOCODEX_SCREEN_PLAYBACK) {
       // Public playback is token-authorized in its own DO; owner links need an account principal.
@@ -1911,7 +1912,7 @@ async function managedFetchRoute(
       if (principal.connectGrant || !principal.capabilities.includes("agents:read")
         || !principal.capabilities.includes("tools:use")) return json({ error: "forbidden" }, { status: 403 });
       const inventory = await timeHandStage(request, "route", () =>
-        env.NANOCODEX_ACCOUNT_TOOLS.getByName(principal.userId).handInventory(principal.userId));
+        accountTools(env).getByName(principal.userId).handInventory(principal.userId));
       return json(inventory, { headers: { "cache-control": "no-store" } });
     }
     if (url.pathname === "/v1/account/hands/prune") {
@@ -1923,7 +1924,7 @@ async function managedFetchRoute(
       if (principal.kind !== "api_key" && request.headers.get("origin") !== url.origin) {
         return json({ error: "forbidden_origin" }, { status: 403 });
       }
-      const pruned = await env.NANOCODEX_ACCOUNT_TOOLS.getByName(principal.userId).pruneMachines(principal.userId);
+      const pruned = await accountTools(env).getByName(principal.userId).pruneMachines(principal.userId);
       if ("error" in pruned) return json(pruned, { status: 404 });
       return json(pruned, { headers: { "cache-control": "no-store" } });
     }
@@ -1946,7 +1947,7 @@ async function managedFetchRoute(
       if (principal.kind !== "api_key" && request.headers.get("origin") !== url.origin) {
         return json({ error: "forbidden_origin" }, { status: 403 });
       }
-      const result = await env.NANOCODEX_ACCOUNT_TOOLS.getByName(principal.userId)
+      const result = await accountTools(env).getByName(principal.userId)
         .forgetMachine(principal.userId, machineId, force);
       if ("error" in result) {
         return json(result, { status: result.error === "not_found" ? 404 : 409 });
@@ -1974,7 +1975,7 @@ async function managedFetchRoute(
         };
         // Regional screen signaling; legacy IDs and unflagged publishers stay on the owner.
         return await routeRegionalScreens(request, env, principal.userId, handRelayRegion(request), brokered)
-          ?? env.NANOCODEX_ACCOUNT_TOOLS.getByName(principal.userId).fetch(brokered(url.pathname));
+          ?? accountTools(env).getByName(principal.userId).fetch(brokered(url.pathname));
       });
     }
     if (url.pathname === "/v1/account/hand-relays") {
@@ -1988,7 +1989,7 @@ async function managedFetchRoute(
       }
       const headers = new Headers(request.headers);
       forwardPrincipalAssertions(headers, principal);
-      return env.NANOCODEX_ACCOUNT_TOOLS.getByName(principal.userId).fetch(
+      return accountTools(env).getByName(principal.userId).fetch(
         new Request("https://account-tools.internal/regional/status", new Request(request, { headers })),
       );
     }
@@ -2006,7 +2007,7 @@ async function managedFetchRoute(
       }
       const headers = new Headers(request.headers);
       forwardPrincipalAssertions(headers, principal);
-      return env.NANOCODEX_ACCOUNT_TOOLS.getByName(principal.userId).fetch(
+      return accountTools(env).getByName(principal.userId).fetch(
         new Request("https://account-tools.internal/regional/retire", new Request(request, { headers })),
       );
     }
@@ -2043,7 +2044,7 @@ async function managedFetchRoute(
     }
     if (url.pathname === "/v1/apps" || url.pathname.startsWith("/v1/apps/")) {
       const principal = trustedAgentPrincipal ?? await authenticate(request, env, url);
-      const validator = principal ? nativeAppValidator(env.NANOCODEX_ACCOUNT_TOOLS, principal.userId,
+      const validator = principal ? nativeAppValidator(accountTools(env), principal.userId,
         { sessionId: "apps:" + crypto.randomUUID(), callId: crypto.randomUUID(), signal: request.signal },
         () => principal.kind !== "connect_grant" && principal.connectGrant === undefined
           && principal.capabilities.includes("tools:use") && principal.capabilities.includes("agents:write"), env.NANOCODEX_HAND_RELAYS) : undefined;
@@ -2102,7 +2103,7 @@ async function managedFetchRoute(
         || !principal.capabilities.includes("agents:read") || !principal.capabilities.includes("tools:use")) {
         return json({ error: "forbidden" }, { status: 403 });
       }
-      const response = await env.NANOCODEX_ACCOUNT_TOOLS.getByName(principal.userId).fetch(
+      const response = await accountTools(env).getByName(principal.userId).fetch(
         "https://account-tools.internal/hosted-tool-stats",
         { headers: { [SESSION_OWNER_ASSERTION]: principal.userId } },
       );
@@ -2118,7 +2119,7 @@ async function managedFetchRoute(
         return json({ error: "forbidden" }, { status: 403 });
       }
       const machines = await timeHandStage(request, "route", () =>
-        env.NANOCODEX_ACCOUNT_TOOLS.getByName(principal.userId).listMachines(principal.userId));
+        accountTools(env).getByName(principal.userId).listMachines(principal.userId));
       return json({ data: machines }, { headers: { "cache-control": "no-store" } });
     }
     if (/^\/v1\/(agent-definitions|environment-templates)(?:\/|$)/.test(url.pathname)) {
@@ -3483,7 +3484,7 @@ async function routeVmHostToolAttachment(
   if (endpoint.startsWith("hands/")) {
     headers.set(REMOTE_VM_ASSERTION, JSON.stringify({ machineId: grant.machine_id,
       routeId: grant.route_id, expiresAt: grant.lease_expires_at } satisfies RemoteVMPublisher));
-    return env.NANOCODEX_ACCOUNT_TOOLS.getByName(grant.owner_id).fetch(
+    return accountTools(env).getByName(grant.owner_id).fetch(
       `https://account-tools.internal/${endpoint}`, new Request(request, { headers }),
     );
   }
@@ -4742,7 +4743,7 @@ export class DurableAgentSession extends DurableComputerObject {
       target.searchParams.set("thread_id", session.session_id);
       target.searchParams.set("after", String(handAfter));
       target.searchParams.set("limit", String(limit));
-      hand = await fetchResponseWithDeadline(this.env.NANOCODEX_ACCOUNT_TOOLS.getByName(session.owner_id), target.toString(), {
+      hand = await fetchResponseWithDeadline(accountTools(this.env).getByName(session.owner_id), target.toString(), {
         headers: { "x-nanocodex-owner-id": session.owner_id }, signal,
       }, 2_000, "Hand diagnostics", response => response.ok ? response.json() : hand);
     } catch { /* Explicit unavailable evidence; never fail the real operation. */ }
@@ -5409,7 +5410,7 @@ export class DurableAgentSession extends DurableComputerObject {
           const context = {sessionId:`native-input-${crypto.randomUUID()}`,callId:crypto.randomUUID(),signal:request.signal};
           this.#fileReadAuthorizations.set(context.sessionId, turnAuthorization);
           try {
-            const provider = new AccountHostedToolsProvider(this.env.NANOCODEX_ACCOUNT_TOOLS, session.owner_id, () => true, session.session_id, this.env.NANOCODEX_HAND_RELAYS, new AccountHostedToolsCallRoutes(this.ctx.storage));
+            const provider = new AccountHostedToolsProvider(accountTools(this.env), session.owner_id, () => true, session.session_id, this.env.NANOCODEX_HAND_RELAYS, new AccountHostedToolsCallRoutes(this.ctx.storage));
             await provider.refresh();
             return json(await this.#nativeSecureInput(session.session_id).submit(payload, context,
               (machine, ctx) => this.#leasedSessionMachineTool(machine, "native_secure_input", ctx)
@@ -5439,7 +5440,7 @@ export class DurableAgentSession extends DurableComputerObject {
         if (path.startsWith("/brain/")) return await downloadBrainFile(this.#brainBucket(), session.session_id, path);
         // This provider is scoped to the authenticated HTTP read, independent of
         // whichever model turn may currently be running (or absent).
-        const provider = new AccountHostedToolsProvider(this.env.NANOCODEX_ACCOUNT_TOOLS, session.owner_id, () => true, session.session_id, this.env.NANOCODEX_HAND_RELAYS, new AccountHostedToolsCallRoutes(this.ctx.storage));
+        const provider = new AccountHostedToolsProvider(accountTools(this.env), session.owner_id, () => true, session.session_id, this.env.NANOCODEX_HAND_RELAYS, new AccountHostedToolsCallRoutes(this.ctx.storage));
         await provider.refresh();
         const mounts = this.#managedMounts().filter(mount => executionMountOwner(mount) === undefined);
         // Physical computers are account Hands; leased VMs resolve by mount below.
@@ -10108,7 +10109,7 @@ export class DurableAgentSession extends DurableComputerObject {
 
   #refreshAccountHostedTools(session: SessionRow): void {
     this.#accountHostedTools ??= new AccountHostedToolsProvider(
-      this.env.NANOCODEX_ACCOUNT_TOOLS,
+      accountTools(this.env),
       session.owner_id,
       (context) => this.#hasFullAccountAuthority(
         context === undefined
@@ -10988,7 +10989,7 @@ export class DurableAgentSession extends DurableComputerObject {
       ...(multiplayer ? [] : appTools({
         db: this.env.NANOCODEX_CRM, ownerId: session.owner_id,
         authorization: context => this.#authorizationForToolContext(context),
-        validator: context => nativeAppValidator(this.env.NANOCODEX_ACCOUNT_TOOLS, session.owner_id, context, () => {
+        validator: context => nativeAppValidator(accountTools(this.env), session.owner_id, context, () => {
           const auth = this.#authorizationForToolContext(context);
           return this.#hasFullAccountAuthority(auth) && auth!.capabilities.includes("tools:use")
             && auth!.capabilities.includes("agents:write");
@@ -11082,7 +11083,7 @@ export class DurableAgentSession extends DurableComputerObject {
       ...(multiplayer ? [] : [serverHandTool({
         owner: session.owner_id, subject: this.#credentialSubject(), origin: session.public_origin,
         image: this.env.NANOCODEX_HAND_IMAGE, egress: this.#toolEgress(),
-        hosts: this.env.NANOCODEX_ACCOUNT_TOOLS.getByName(session.owner_id),
+        hosts: accountTools(this.env).getByName(session.owner_id),
         authorize: context => {
           context.signal.throwIfAborted();
           const authorization = this.#authorizationForToolContext(context);

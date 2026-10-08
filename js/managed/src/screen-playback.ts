@@ -1,3 +1,4 @@
+import { accountTools } from "./account-placement";
 // Screen HLS playback: owner-authorized, token-scoped, in-memory live HLS relay.
 // Operator/user behavior: docs/hand-broadcasting.md (Playback links).
 import { DurableObject } from "cloudflare:workers";
@@ -67,7 +68,7 @@ export function redactScreenPlaybackPath(path: string): string {
 
 /** Host command transport through the owner's account-tools broker (index/account-tools integration). */
 export function accountToolsPlaybackHost(env: { NANOCODEX_ACCOUNT_TOOLS: Namespace }): ScreenPlaybackHost {
-  return (input) => env.NANOCODEX_ACCOUNT_TOOLS.getByName(input.ownerId).fetch(
+  return (input) => accountTools(env as never).getByName(input.ownerId).fetch(
     "https://account-tools.internal/screens/host-command",
     {
       method: "POST",

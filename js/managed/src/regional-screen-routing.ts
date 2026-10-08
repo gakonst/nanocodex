@@ -1,3 +1,4 @@
+import { accountTools } from "./account-placement";
 import { HAND_OWNER_HEADER, HAND_RELAY_REGION_HEADER, handRelayName, isHandRelayRegion,
   type HandRelayLocation, type HandRelayRegion, type RegionalHandEnv } from "./regional-hand-routing";
 
@@ -74,13 +75,13 @@ export async function routeRegionalScreens(request: Request, env: RegionalScreen
     try { body = JSON.parse(text); } catch { body = undefined; }
     const region = regionalScreenTarget(url, body);
     if (region) return relay(region, { body: text });
-    return env.NANOCODEX_ACCOUNT_TOOLS.getByName(owner).fetch(brokered(path, { body: text }));
+    return accountTools(env).getByName(owner).fetch(brokered(path, { body: text }));
   }
   if (path === "/hands/screens" && request.method === "GET" && !url.search) {
     const listing = async (response: Response) => response.ok ? (await response.json<{ surfaces: ListedSurface[] }>()).surfaces : undefined;
     // Speculate on the likely relay only when new hosts are placed regionally.
     const speculative = ingress && regionalScreensEnabled(env) ? relay(ingress).then(listing).catch(() => undefined) : undefined;
-    const ownerResponse = await env.NANOCODEX_ACCOUNT_TOOLS.getByName(owner).fetch(brokered(path, { directory: true }));
+    const ownerResponse = await accountTools(env).getByName(owner).fetch(brokered(path, { directory: true }));
     if (!ownerResponse.ok) return ownerResponse;
     const value = await ownerResponse.json<{ surfaces: ListedSurface[]; regional_hosts?: Record<string, { region: string; generation: string }> }>();
     const hosts = value.regional_hosts ?? {};

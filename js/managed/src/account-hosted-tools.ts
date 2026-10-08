@@ -36,6 +36,8 @@ import type { RegionalHandRelay } from "./regional-hand-relay";
 import { RegionalScreenAuthority, SCREEN_DIRECTORY_HEADER, regionalScreenPrefix, regionalScreenRegion, screenAuthorized,
   type RegionalScreenEnv, type ScreenFenceReason } from "./regional-screen-routing";
 import { recordScreenPlaybackHostResult, type ScreenPlaybackEnv } from "./screen-playback";
+import { accountTools, homeAccountName, type AccountExport, type AccountToolsNamespace } from "./account-placement";
+import { AccountPlacementController, type PlacementStatus } from "./account-placement-controller";
 
 type RetirementPublication = Pick<HandPublication, "route_id" | "publication_id" | "runtime_id" | "region"> & { machine: Pick<HostedMachine, "id"> };
 
@@ -93,6 +95,10 @@ type RoutedHostedTool = HostedToolsCodeTool & Readonly<{
 
 type AccountHostedToolsEnv = RemoteICEEnv & RegionalHandEnv & RegionalScreenEnv & Partial<ScreenPlaybackEnv> & {
   NANOCODEX_ACCOUNT_TOOLS?: DurableObjectNamespace<AccountHostedTools>;
+  /** "off" disables owner re-homing; "auto" also follows unanimous Hand regions. */
+  NANOCODEX_ACCOUNT_REHOME?: string;
+  /** Operator placement: comma-separated owner:region pins, preferred over Hand regions. */
+  NANOCODEX_ACCOUNT_HOMES?: string;
   NANOCODEX_SESSIONS?: DurableObjectNamespace<import("./index").DurableAgentSession>;
 };
 
@@ -148,6 +154,8 @@ export class AccountHostedTools extends DurableObject<AccountHostedToolsEnv> {
   #region: HandRelayRegion | undefined;
   /** Owner only: which location/generation may publish each machine's screens. */
   readonly #screens: RegionalScreenAuthority | undefined;
+  /** Owner only: where this account lives; relays never move. */
+  readonly #placement: AccountPlacementController | undefined;
 
   constructor(ctx: DurableObjectState, env: AccountHostedToolsEnv, regional = false) {
     super(ctx, env);
@@ -198,6 +206,10 @@ export class AccountHostedTools extends DurableObject<AccountHostedToolsEnv> {
         console.info(record);
       },
     });
+    this.#placement = regional ? undefined : new AccountPlacementController({ ctx,
+      namespace: () => this.env.NANOCODEX_ACCOUNT_TOOLS, owner: () => this.#ownerId,
+      desiredRegion: () => this.#homeRegion(), pendingCalls: () => this.#broker.hasPendingCalls(),
+      enabled: () => this.env.NANOCODEX_ACCOUNT_REHOME !== "off" });
     this.#screens = regional ? undefined : new RegionalScreenAuthority(ctx.storage, (location, machineId, keep, reason) => this.#fenceScreens(location, machineId, keep, reason));
     this.#remote = new HandRemoteBroker(ctx, {
       onObservation: observation => {
@@ -242,13 +254,13 @@ export class AccountHostedTools extends DurableObject<AccountHostedToolsEnv> {
   async redeemHandShare(recipientId: string, ownerId: string, token: string) {
     if (this.#regional || !isUserId(recipientId) || !isUserId(ownerId) || recipientId === ownerId
       || !this.#claim(recipientId) || !this.env.NANOCODEX_ACCOUNT_TOOLS) return { error: "not_found" } as const;
-    const share = await this.env.NANOCODEX_ACCOUNT_TOOLS.getByName(ownerId).acceptHandShare(ownerId, recipientId, token);
+    const share = await accountTools(this.env).getByName(ownerId).acceptHandShare(ownerId, recipientId, token);
     if (!share) return { error: "not_found" } as const;
     if (!this.#shares.received().some(entry => entry.id === share.id) && !this.#shares.canReceive()) {
       await Promise.all(this.#shares.received().map(async received => {
         try {
           const active = await withHardDeadline<boolean>("shared Hand grant check", 5000, async () =>
-            await this.env.NANOCODEX_ACCOUNT_TOOLS!.getByName(received.owner_id).hasHandShare(received.owner_id, recipientId, received.id));
+            await accountTools(this.env).getByName(received.owner_id).hasHandShare(received.owner_id, recipientId, received.id));
           if (!active) this.#shares.forgetReceived(received.id);
         } catch { /* Keep references when the owner cannot confirm revocation. */ }
       }));
@@ -470,7 +482,60 @@ export class AccountHostedTools extends DurableObject<AccountHostedToolsEnv> {
   }
 
   async fetch(request: Request): Promise<Response> {
-    return diagnosticScope(this.#diagnostics, () => this.#fetchRequest(request));
+    const refused = this.#placement?.refusalResponse();
+    if (refused) return refused;
+    this.#placement?.enter();
+    try { return await diagnosticScope(this.#diagnostics, () => this.#fetchRequest(request)); }
+    finally { this.#placement?.leave(); }
+  }
+
+  /** Placement RPCs used by the previous owner object during a re-home. */
+  async adoptAccount(data: AccountExport): Promise<void> {
+    if (!this.#placement) throw new Error("account_adopt_rejected");
+    await this.#placement.adopt(data);
+  }
+
+  async accountPlacement(migrationId: string): Promise<PlacementStatus> {
+    if (!this.#placement) throw new Error("account placement unavailable");
+    return this.#placement.status(migrationId);
+  }
+
+  /** Test and operator hook: move now if idle. Never bypasses the idle checks. */
+  async rehomeAccount(ownerId: string, region: string): Promise<boolean> {
+    if (!this.#placement || !this.#owns(ownerId)) return false;
+    const refusal = this.#placement.refusalError();
+    if (refusal) throw refusal;
+    return this.#placement.rehome(homeAccountName(region, ownerId));
+  }
+
+  /** The single relay region of this owner's native Hands and screens, if unanimous. */
+  #homeRegion(): string | undefined {
+    for (const pin of (this.env.NANOCODEX_ACCOUNT_HOMES ?? "").split(",")) {
+      const [owner, region] = pin.trim().split(":");
+      if (owner && region && owner === this.#ownerId) return region;
+    }
+    if (this.env.NANOCODEX_ACCOUNT_REHOME !== "auto") return undefined;
+    const regions = new Set<string>();
+    for (const entry of this.#directory.entries()) if (!entry.pending && entry.region !== "legacy") regions.add(entry.region);
+    for (const [, host] of this.#screens?.hosts() ?? []) if (host.region !== "legacy") regions.add(host.region);
+    return regions.size === 1 ? [...regions][0] : undefined;
+  }
+
+  static {
+    // Every owner RPC refuses before work when this object is not the active
+    // account, and counts as in-flight so a re-home only starts while idle.
+    for (const method of ["createHandShare", "listHandShares", "revokeHandShare", "redeemHandShare", "acceptHandShare",
+      "hasHandShare", "sharedHandSnapshot", "cancelSharedHand", "listMachines", "handInventory", "forgetMachine",
+      "pruneMachines"] as const) {
+      const original = AccountHostedTools.prototype[method] as (...args: unknown[]) => Promise<unknown>;
+      Object.defineProperty(AccountHostedTools.prototype, method, { configurable: true, writable: true,
+        value: async function (this: AccountHostedTools, ...args: unknown[]) {
+          const refusal = this.#placement?.refusalError();
+          if (refusal) throw refusal;
+          this.#placement?.enter();
+          try { return await original.apply(this, args); } finally { this.#placement?.leave(); }
+        } });
+    }
   }
 
   async #fetchRequest(request: Request): Promise<Response> {
@@ -701,7 +766,7 @@ export class AccountHostedTools extends DurableObject<AccountHostedToolsEnv> {
       await this.#broker.endTurn(frame.session_id, frame.turn_id, frame.hook_event_name);
       await Promise.all(this.#shares.turnTargets(frame.session_id, frame.turn_id).map(async target => {
         const stub = target.region === "account"
-          ? this.env.NANOCODEX_ACCOUNT_TOOLS?.getByName(target.owner_id)
+          ? (this.env.NANOCODEX_ACCOUNT_TOOLS ? accountTools(this.env).getByName(target.owner_id) : undefined)
           : this.env.NANOCODEX_HAND_RELAYS?.getByName(handRelayName(target.owner_id, target.region as HandRelayRegion));
         if (!stub) throw new Error("Shared Hand cleanup target unavailable");
         const response = await stub.fetch("https://account-tools.internal/turn-ended", {
@@ -723,7 +788,7 @@ export class AccountHostedTools extends DurableObject<AccountHostedToolsEnv> {
       if (screen) body = { ...body, machine_id: screen.machineId, route_token: screen.routeToken };
       if (body.machine_id?.startsWith("shared:")) {
         const share = this.#shares.received().find(entry => body.machine_id === `shared:${entry.id}`);
-        if (share) await this.env.NANOCODEX_ACCOUNT_TOOLS?.getByName(share.owner_id).cancelSharedHand(share.owner_id, body.owner_id, body);
+        if (share && this.env.NANOCODEX_ACCOUNT_TOOLS) await accountTools(this.env).getByName(share.owner_id).cancelSharedHand(share.owner_id, body.owner_id, body);
       } else {
         this.#sharedScreens.get(JSON.stringify([body.session_id, body.call_id]))?.abort();
         const row = this.ctx.storage.sql.exec<{call_id:string}>("SELECT call_id FROM hosted_tool_calls WHERE session_id=? AND source_call_id=?", body.session_id, body.call_id).toArray()[0];
@@ -760,7 +825,7 @@ export class AccountHostedTools extends DurableObject<AccountHostedToolsEnv> {
         }
         this.#shares.turnTarget(invocation.session_id, invocation.turn_id, share.owner_id, "account",
           await sharedHandSession(invocation.owner_id, invocation.session_id));
-        return this.env.NANOCODEX_ACCOUNT_TOOLS.getByName(share.owner_id).fetch("https://account-tools.internal/shared-invoke", {
+        return accountTools(this.env).getByName(share.owner_id).fetch("https://account-tools.internal/shared-invoke", {
           method:"POST", signal:request.signal, headers:{"content-type":"application/json"},
           body:JSON.stringify({owner_id:share.owner_id,recipient_id:invocation.owner_id,invocation}),
         });
@@ -910,7 +975,7 @@ export class AccountHostedTools extends DurableObject<AccountHostedToolsEnv> {
     const shared = await Promise.all(received.map(async share => {
       try {
         return await withHardDeadline<SharedMachineSnapshot | undefined>("shared Hand discovery", 5_000, async () =>
-          this.env.NANOCODEX_ACCOUNT_TOOLS!.getByName(share.owner_id).sharedHandSnapshot(share.owner_id, this.#ownerId!, share.id));
+          accountTools(this.env).getByName(share.owner_id).sharedHandSnapshot(share.owner_id, this.#ownerId!, share.id));
       } catch { return undefined; }
     }));
     const available = shared.filter((entry): entry is SharedMachineSnapshot => entry !== undefined);
@@ -1049,7 +1114,7 @@ export class AccountHostedTools extends DurableObject<AccountHostedToolsEnv> {
     this.ctx.storage.sql.exec("INSERT INTO regional_local_publications(route_id,candidate_id) VALUES(?,?) ON CONFLICT(route_id) DO UPDATE SET candidate_id=excluded.candidate_id", candidate.routeId, publication.publication_id);
     try {
       if (this.#regional) {
-        const response = await fetchResponseWithDeadline(this.env.NANOCODEX_ACCOUNT_TOOLS!.getByName(this.#ownerId!), "https://account-tools.internal/regional/claim", {
+        const response = await fetchResponseWithDeadline(accountTools(this.env).getByName(this.#ownerId!), "https://account-tools.internal/regional/claim", {
           method: "POST", headers: { [OWNER_ASSERTION]: this.#ownerId!, "content-type": "application/json" }, body: JSON.stringify(publication),
         }, 10_000, "Hand publication", async response => response.ok);
         if (!response) throw new Error("account Hand publication rejected");
@@ -1339,7 +1404,7 @@ export class AccountHostedTools extends DurableObject<AccountHostedToolsEnv> {
     return Response.json({ error: "not_found" }, { status: 404 });
   }
 
-  alarm(): void { this.#broker.expire(); }
+  alarm(): void { if (!this.#placement?.refusal()) this.#broker.expire(); }
 
   /** Owner fence of one screen location. Legacy is this object: synchronous, never a self fetch. */
   /** Durable monotonic host-socket counter; `step` 0 reads the current high-water mark. */
@@ -1362,7 +1427,7 @@ export class AccountHostedTools extends DurableObject<AccountHostedToolsEnv> {
   /** Relay publication admission. Rejection or uncertainty closes the publisher. */
   async #confirmRegionalScreen(machineId: string, generation: string): Promise<void> {
     if (!this.#ownerId || !this.#region || !this.env.NANOCODEX_ACCOUNT_TOOLS) return;
-    await fetchResponseWithDeadline(this.env.NANOCODEX_ACCOUNT_TOOLS.getByName(this.#ownerId),
+    await fetchResponseWithDeadline(accountTools(this.env).getByName(this.#ownerId),
       "https://account-tools.internal/regional/screen-confirm", { method: "POST",
         headers: { [OWNER_ASSERTION]: this.#ownerId, "content-type": "application/json" },
         body: JSON.stringify({ machine_id: machineId, region: this.#region, generation }) }, 5_000, "confirm regional screen", () => undefined);
@@ -1370,7 +1435,7 @@ export class AccountHostedTools extends DurableObject<AccountHostedToolsEnv> {
 
   async #claimRegionalScreen(machineId: string, generation: string, sequence: number): Promise<boolean> {
     if (!this.#ownerId || !this.#region || !this.env.NANOCODEX_ACCOUNT_TOOLS) return false;
-    return fetchResponseWithDeadline(this.env.NANOCODEX_ACCOUNT_TOOLS.getByName(this.#ownerId),
+    return fetchResponseWithDeadline(accountTools(this.env).getByName(this.#ownerId),
       "https://account-tools.internal/regional/screen-claim", { method: "POST",
         headers: { [OWNER_ASSERTION]: this.#ownerId, "content-type": "application/json" },
         body: JSON.stringify({ machine_id: machineId, region: this.#region, generation, sequence }) }, 8_000, "claim regional screen",
@@ -1407,11 +1472,17 @@ export class AccountHostedTools extends DurableObject<AccountHostedToolsEnv> {
   }
 
   async webSocketMessage(socket: WebSocket, message: string | ArrayBuffer): Promise<void> {
-    if (this.#remote.owns(socket)) { await this.#remote.message(socket, message); return; }
-    await this.#broker.webSocketMessage(socket, message);
+    if (this.#placement?.refusal()) { try { socket.close(1012, "Account moved"); } catch { /* closed */ } return; }
+    this.#placement?.enter();
+    try {
+      if (this.#remote.owns(socket)) { await this.#remote.message(socket, message); return; }
+      await this.#broker.webSocketMessage(socket, message);
+    } finally { this.#placement?.leave(); }
   }
 
   webSocketClose(socket: WebSocket, code: number, reason: string): void {
+    // A moved object's sockets carry no authority; their closure changes nothing.
+    if (this.#placement?.refusal()) return;
     if (this.#remote.owns(socket)) { this.#remote.close(socket, undefined, "websocket_closed", code); return; }
     console.warn({ type: "hand.socket.closed", code,
       pending: this.#broker.hasPendingCalls() });
@@ -1419,6 +1490,7 @@ export class AccountHostedTools extends DurableObject<AccountHostedToolsEnv> {
   }
 
   webSocketError(socket: WebSocket): void {
+    if (this.#placement?.refusal()) return;
     if (this.#remote.owns(socket)) { this.#remote.close(socket, undefined, "websocket_error"); return; }
     console.warn({ type: "hand.socket.error", pending: this.#broker.hasPendingCalls() });
     this.#broker.webSocketError(socket);
@@ -1477,7 +1549,7 @@ export class AccountHostedToolsCallRoutes {
 export class AccountHostedToolsProvider implements HostedToolsDynamicProvider {
   readonly sourceId = "account-hands";
   readonly #turnTargets = new Map<string, Map<string, DurableObjectStub>>();
-  readonly #namespace: DurableObjectNamespace<AccountHostedTools>;
+  readonly #namespace: AccountToolsNamespace;
   readonly #relays: DurableObjectNamespace<RegionalHandRelay> | undefined;
   readonly #callRoutes: AccountHostedToolsCallRoutes | undefined;
   readonly #ownerId: string;
@@ -1505,7 +1577,7 @@ export class AccountHostedToolsProvider implements HostedToolsDynamicProvider {
   #refreshGeneration = 0;
 
   constructor(
-    namespace: DurableObjectNamespace<AccountHostedTools>,
+    namespace: AccountToolsNamespace,
     ownerId: string,
     allowed: (context?: AuthorizationContext) => boolean,
     threadId?: string,
