@@ -7209,12 +7209,12 @@ async fn perf_cycle(
         tick(pace).await;
         if delta % 4 == 0 {
             emitter.nested(REMOTE_TURN, "reasoning.summary.delta", json!({
-                "model_call_index": 2 + step as u64, "text": format!("thinking about {label} {step} part {delta}. ")
+                "model_call_index": 2 + step as u64, "text": format!("thinking about {label}_{step:04}_{:03}. ", calls + delta + 2)
             }));
         } else {
             emitter.nested(REMOTE_TURN, "assistant.delta", json!({
                 "model_call_index": 1, "item_id": format!("{label}-d{step}"), "phase": "commentary",
-                "text": format!("token{delta} ")
+                "text": format!("{label}_{step:04}_{:03} ", calls + delta + 2)
             }));
         }
     }
@@ -7369,6 +7369,7 @@ fn perf_type_round(terminal: &mut Terminal, round: usize, samples: &mut Vec<Dura
 async fn terminal_perf_input_stays_responsive_while_an_agent_streams_large_tool_groups() {
     let history_cycles = perf_env("NANOCODEX_TUI_PERF_HISTORY", 120) as usize;
     let live_calls = perf_env("NANOCODEX_TUI_PERF_CALLS", 24) as usize;
+    let history_calls = perf_env("NANOCODEX_TUI_PERF_HISTORY_CALLS", 8) as usize;
     let pace = Duration::from_micros(perf_env("NANOCODEX_TUI_PERF_INTERVAL_US", 2000));
     let mut fixture = Fixture::start_with_active(true).await;
     let pid = fixture.terminal.child.process_id().expect("TUI pid");
@@ -7381,7 +7382,7 @@ async fn terminal_perf_input_stays_responsive_while_an_agent_streams_large_tool_
     let preload = PerfPhase::begin(&fixture, pid, &emitter);
     let start = std::time::Instant::now();
     for step in 0..history_cycles {
-        perf_cycle(&emitter, "HIST", step, 8, 12, Duration::ZERO, &never).await;
+        perf_cycle(&emitter, "HIST", step, history_calls, 12, Duration::ZERO, &never).await;
     }
     let last = format!("HIST_{:04}", history_cycles - 1);
     let settle = perf_wait(&screen, start, Duration::from_secs(60), |contents| {
@@ -7566,7 +7567,7 @@ async fn terminal_perf_input_stays_responsive_while_an_agent_streams_large_tool_
     fixture.cursor = emitter.cursor.load(Ordering::SeqCst);
     fixture.emit(REMOTE_TURN, json!({"type": "turn_cancelled", "id": REMOTE_TURN}));
     report.insert("config".into(), json!({
-        "history_cycles": history_cycles, "live_calls_per_group": live_calls,
+        "history_cycles": history_cycles, "history_calls": history_calls, "live_calls_per_group": live_calls,
         "pace_us": pace.as_micros() as u64, "live_steps": live_steps,
         "events_total": emitter.sent.load(Ordering::Relaxed),
         "terminal": "160x32 vt100 over portable-pty", "clk_tck_assumed": 100
@@ -7576,10 +7577,12 @@ async fn terminal_perf_input_stays_responsive_while_an_agent_streams_large_tool_
     if let Some(path) = std::env::var_os("NANOCODEX_TUI_PERF_OUT") {
         std::fs::write(path, serde_json::to_string_pretty(&report).unwrap()).unwrap();
     }
+    assert!(settle.is_some(), "preloaded history never reached the viewport");
     assert!(!typing.is_empty() && !steer_receipt.is_empty());
     assert!(cancelled.is_some(), "cancel never reached the service under load");
     let scroll = &report["streaming_scroll"];
     assert_eq!(scroll["scroll_misses"], 0, "scroll steps never moved the viewport under load: {scroll}");
+    assert_eq!(scroll["toggle_misses"], 0, "tool mode changes were not visible under load: {scroll}");
     // Meaningful but non-flaky ceilings: a frame budget miss is tolerated, a
     // visibly stuck composer or steer is not. Override for slow debug builds.
     let typing_p95 = perf_env("NANOCODEX_TUI_PERF_TYPING_P95_MS", 150) as f64;

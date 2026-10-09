@@ -129,6 +129,9 @@ struct ToolGroups {
 struct LayoutCache {
     tool_groups: std::cell::RefCell<ToolGroups>,
     entries: HashMap<EntryId, CachedEntry>,
+    // A frame walks the same folded group repeatedly while placing its rows.
+    // Aggregate retained calls once, then reuse the exact layout for this frame.
+    validated_activity: std::collections::HashSet<EntryId>,
     live_tool_durations: HashMap<EntryId, u64>,
     expansion_overrides: HashMap<EntryId, bool>,
     expand_all: Option<bool>,
@@ -143,6 +146,7 @@ impl Default for LayoutCache {
         Self {
             tool_groups: Default::default(),
             entries: HashMap::new(),
+            validated_activity: Default::default(),
             live_tool_durations: HashMap::new(),
             expansion_overrides: HashMap::new(),
             expand_all: tool_calls_from_env().0,
@@ -334,6 +338,7 @@ impl Transcript {
     }
 
     pub(crate) fn with_effort(effort: ReasoningEffort) -> Self {
+        highlight::prewarm();
         Self {
             model: TranscriptModel::default(),
             cache: LayoutCache::default(),
@@ -478,6 +483,7 @@ impl Transcript {
         let previous_activity = self.activity();
         let change = self.model.apply(&record);
         self.cache.tool_groups.get_mut().ranges.clear();
+        self.cache.validated_activity.clear();
         let now = Instant::now();
         self.sync_retry_timer(now, unix_milliseconds());
         let activity = self.activity();
@@ -530,6 +536,7 @@ impl Transcript {
     ) -> ComponentUpdate<TranscriptEffect> {
         let change = self.model.apply_message(perspective, update);
         self.cache.tool_groups.get_mut().ranges.clear();
+        self.cache.validated_activity.clear();
         if let Some(id) = change.removed {
             self.forget_entry(id);
         }
@@ -568,6 +575,7 @@ impl Transcript {
 
     fn agent_stream_closed(&mut self) -> ComponentUpdate<TranscriptEffect> {
         self.cache.tool_groups.get_mut().ranges.clear();
+        self.cache.validated_activity.clear();
         let previous_activity = self.activity();
         if !self.model.agent_stream_closed() {
             return ComponentUpdate::none();
@@ -997,6 +1005,7 @@ impl Transcript {
         if width == 0 || height == 0 {
             return RenderPlan::default();
         }
+        self.cache.validated_activity.clear();
         self.viewport_height = height;
         self.apply_pending_expandable_anchor(width, theme);
         self.apply_pending_scroll(width, height, theme);
@@ -1507,6 +1516,7 @@ impl LayoutCache {
 
     fn forget(&mut self, id: EntryId) {
         self.entries.remove(&id);
+        self.validated_activity.clear();
         self.live_tool_durations.remove(&id);
         self.expansion_overrides.remove(&id);
     }
@@ -1529,6 +1539,13 @@ impl LayoutCache {
                 .find(|entry| !entry.hidden)
                 .is_some_and(|head| head.id == entry.id)
         {
+            if self.validated_activity.contains(&entry.id)
+                && self.entries.get(&entry.id).is_some_and(|cached| {
+                    cached.activity && cached.width == width && cached.depth == depth
+                })
+            {
+                return &self.entries[&entry.id].lines;
+            }
             let EntryKind::Tool(first) = &entry.kind else {
                 unreachable!()
             };
@@ -1651,6 +1668,7 @@ impl LayoutCache {
                 crate::nanocodex2::tui::transcript::ToolState::Succeeded
             };
             let state = call.state;
+            self.validated_activity.insert(entry.id);
             if self.entries.get(&entry.id).is_some_and(|cached| {
                 cached.activity
                     && cached.revision == summary.revision
@@ -1742,6 +1760,7 @@ impl LayoutCache {
         });
         if display_changed {
             self.live_tool_durations.insert(id, duration_ns);
+            self.validated_activity.clear();
         }
         display_changed
     }
@@ -1753,6 +1772,7 @@ impl LayoutCache {
     fn toggle(&mut self, entry: &TranscriptEntry) {
         let expanded = self.expanded(entry);
         self.expansion_overrides.insert(entry.id, !expanded);
+        self.validated_activity.clear();
         self.entries.remove(&entry.id);
     }
 
