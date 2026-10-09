@@ -168,6 +168,14 @@ issuance, attestation and rotation across the daemon and CLI. Secrets are
 zeroized and redacted from `Debug`, logs, `--describe` and child
 processes. A server container keeps the same files in `/state/hand-device/`.
 
+Platform coverage: the key is a 0600 PKCS#8 file on every platform. macOS
+Keychain, Windows TPM/CNG and Linux TPM storage are not used, so a process
+running as the Hand's user (or root) can read the key; revocation is the
+response to that compromise. On Windows the file lives in the per-user profile
+but the POSIX owner and mode checks do not apply. ring's in-memory key pair and
+its generated PKCS#8 document cannot be zeroized; only the Hand's own copies
+are wrapped in zeroizing buffers.
+
 `nanocodex hand devices list|revoke|rotate|reenroll` manages devices;
 `reenroll` discards the local enrollment so the next start enrolls a new
 device.
