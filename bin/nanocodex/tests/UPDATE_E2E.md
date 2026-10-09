@@ -87,6 +87,46 @@ existing native Hand remains running and unchanged. Transcript, request trace,
 and structured results are written to the output directory. This does not
 exercise voice execution or first installation of an OS service.
 
+## Published nightly journey (Linux)
+
+```sh
+python3 bin/nanocodex/tests/nightly_install_e2e.py --old-sha PREVIOUS_NIGHTLY_SHA \
+  --new-sha NEW_NIGHTLY_SHA --output output/nightly-install
+```
+
+Run it only after `nightly-NEW_NIGHTLY_SHA` is published and the `nightly` pointer
+names it. It installs real immutable nightlies with the public installer
+(`curl -fsSL https://nanocodex.paradigm.xyz | bash -s -- --no-setup --no-modify-path`
+with `NANOCODEX_RELEASE_TAG=nightly-SHA`) and the shipped `nanocodex update --nightly`.
+No binary is built, copied in or faked. Every installer/CLI process runs in a
+private user + mount + PID namespace with an empty tmpfs `/run` (no systemd, so no
+Hand owner is found or started), read-only binds of `/opt/nanocodex` and the real
+`~/.nanocodex`, and a synthetic HOME/TMPDIR/`NANOCODEX_DIR` with automatic updates
+opted out. Host `nanocodex*` unit state, MainPID, InvocationID, the selected Hand
+hash, `/opt/nanocodex` listing and the real store are captured outside the
+namespace before and after; any difference fails the run.
+
+Prefix A: install OLD; OLD `update --nightly` downloads NEW; NEW `update --nightly`
+is a cached no-op; roll back with the installer for `nightly-OLD` (cached bundle);
+OLD `update --nightly` reactivates cached NEW. Prefix B: a fresh NEW install by the
+NEW updater (Hand stored once under `hand-versions/<identity>` and linked), rollback
+to OLD, then roll forward. Each step checks the active immutable key
+(`nightly-<sha>-<cli>-<hand>-<guest>` asset IDs), every entrypoint's `--version`
+Commit SHA/Hand Identity and link, and that cached activations rewrite no version
+or Hand file (inode, size, mtime, SHA-256). Each Linux payload is streamed once
+independently: its digest must equal SHA256SUMS and its decompressed bytes (and
+each voice archive member) must equal the installed files and receipts. The
+`modes` step runs `ncl run` and a local TUI turn against a loopback synthetic
+Responses server, starts the managed TUI with an empty HOME (it reaches a managed
+session or stops at the login boundary; the transcript records which), and
+checks `hand status`/`nc-hand status` report no owner. Steps may run separately
+(`--steps a1,old-modes` before publication); state lives in OUTPUT/state.json.
+
+Not covered: OS-service handover, `--restart-hand`, the running-service Hand
+reuse decision (no service exists in the namespace), cross-version reuse of an
+identical Hand (only when two published nightlies share a Hand Identity), managed
+work after sign-in, and voice execution.
+
 ## Local-pair runner
 
 The runner copies the **real CLI and nanocodex-hand binaries** into a disposable directory,
