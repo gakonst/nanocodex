@@ -83,6 +83,9 @@ export default defineConfig({
         // direct subjects without loading the managed application's runtime.
         serviceBindings: {
           MANAGED_AGENT_OWNERSHIP: async () => new Response(null, { status: 503 }),
+          // Device host-key attestation is exercised by test:ssh-device-trust;
+          // here it is unavailable, so device trust fails closed.
+          HAND_DEVICE_SSH_HOST_KEYS: async () => new Response(null, { status: 503 }),
           TWILIO_PHONE_PROVIDER: async () => {
             throw new Error("Phone provider calls require the phone-service journey fixture");
           },

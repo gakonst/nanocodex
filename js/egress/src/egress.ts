@@ -3768,6 +3768,17 @@ function audit(
     ...(typeof detail.upstream_status === "number" ? { upstream_status: detail.upstream_status } : {}),
     ...(typeof detail.recovered === "boolean" ? { recovered: detail.recovered } : {}),
     ...(typeof detail.connector === "string" ? { connector: detail.connector } : {}),
+    // SSH host verification: mode, matched authority and the public host-key
+    // fingerprint only, each in its exact format.
+    ...(detail.host_key_trust_mode === "vault_pin" || detail.host_key_trust_mode === "device"
+      ? { host_key_trust_mode: detail.host_key_trust_mode } : {}),
+    ...(typeof detail.attested_host_keys === "number" && Number.isInteger(detail.attested_host_keys)
+      && detail.attested_host_keys >= 0 && detail.attested_host_keys <= 8 ? { attested_host_keys: detail.attested_host_keys } : {}),
+    ...(typeof detail.host_key_source === "string"
+      && /^(?:vault_pin|device:[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$/.test(detail.host_key_source)
+      ? { host_key_source: detail.host_key_source } : {}),
+    ...(typeof detail.host_key_sha256 === "string" && /^SHA256:[A-Za-z0-9+/]{43}=?$/.test(detail.host_key_sha256)
+      ? { host_key_sha256: detail.host_key_sha256 } : {}),
     ...(typeof detail.deployment_sha === "string" ? { deployment_sha: detail.deployment_sha } : {}),
   };
   try { annotateActiveSpan({ "nanocodex.egress_request_id": safeDetail.egress_request_id,
