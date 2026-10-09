@@ -104,6 +104,8 @@ fn read(tool: &ToolEntry, width: u16, theme: &Theme, expanded: bool) -> Presenta
         let footer = match tool.state {
             ToolState::Failed => "read failed",
             ToolState::Unknown => "read outcome unknown",
+            // Resumed nested calls keep their outcome but not their output.
+            ToolState::Succeeded => "read completed · output not retained",
             _ => "read pending",
         };
         return with_error(presentation, tool, width, theme).footer(footer);
