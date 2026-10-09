@@ -17,5 +17,5 @@ entrypoints without sending SMS or modifying real accounts:
 
 ```sh
 cargo test -p nanocodex-cli-auth
-cargo test -p nanocodex-bin -p nanocodex2-bin --test account_auth
+cargo test -p nanocodex-bin --test account_auth
 ```

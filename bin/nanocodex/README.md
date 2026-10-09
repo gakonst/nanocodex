@@ -1,22 +1,30 @@
-# Nanocodex2
+# Nanocodex CLI
+
+One `nanocodex` binary serves two command trees, selected by the name it is
+invoked as. `nanocodex`, `nc`, and `nanocodex2` are the managed client
+documented here. `ncl` (or `nanocodex --local ...`) is the local, non-durable
+agent: `ncl` opens its TUI, `ncl run` is the headless JSONL run (exit code 75
+means the run is retryable), and `ncl auth` manages harness provider
+subscriptions. Commands that exist in only one tree, such as `update`,
+`install`, `setup`, `computer`, `cookies`, and `eval`, work under every name.
 
 The managed terminal client uses the same durable agents, model settings, and
-scheduled prompts as the web and native apps. Run `nanocodex2 login` to sign in
+scheduled prompts as the web and native apps. Run `nanocodex login` to sign in
 with an SMS code. `NANOCODEX_MANAGED_URL` selects another cluster.
-Running `nanocodex2` opens a new interactive session;
-`nanocodex2 attach AGENT_URL_OR_ID` resumes an existing one with local workspace
+Running `nanocodex` opens a new interactive session;
+`nanocodex attach AGENT_URL_OR_ID` resumes an existing one with local workspace
 tools. Both a bare ID and an account thread URL are accepted:
 
 ```bash
-nanocodex2 attach THREAD_ID
-nanocodex2 attach 'https://nanocodex.gakonst.workers.dev/agent/THREAD_ID'
+nanocodex attach THREAD_ID
+nanocodex attach 'https://nanocodex.gakonst.workers.dev/agent/THREAD_ID'
 ```
 
 These two forms use your account access. To open a shared thread, pass its
 complete URL in quotes:
 
 ```bash
-nanocodex2 attach 'https://nanocodex.gakonst.workers.dev/share/THREAD_ID#token=SHARE_TOKEN'
+nanocodex attach 'https://nanocodex.gakonst.workers.dev/share/THREAD_ID#token=SHARE_TOKEN'
 ```
 
 Alternatively, pass the share URL without its `#token=...` fragment and paste the
@@ -45,7 +53,7 @@ half-block images.
 
 ## Continue from mobile
 
-`nanocodex2 continue` brings unfinished sessions used in the last six hours,
+`nanocodex continue` brings unfinished sessions used in the last six hours,
 plus older sessions still running, into named tmux windows. Existing windows
 are reused by session ID. `/done` (or swipe left → Done on mobile) hides a
 session from future restores without deleting history or cancelling work;
@@ -54,13 +62,13 @@ for preview, lookback, detached operation, and headless commands.
 
 ## Managed2 preview (explicit opt-in)
 
-`nanocodex2 --managed2` opens the familiar terminal UI against the separate
-Managed2 API. `nanocodex2 --managed2 run "Say hello"` prints one prompt's
-answer without opening the UI; `nanocodex2 --managed2 attach AGENT_UUID`
+`nanocodex --managed2` opens the familiar terminal UI against the separate
+Managed2 API. `nanocodex --managed2 run "Say hello"` prints one prompt's
+answer without opening the UI; `nanocodex --managed2 attach AGENT_UUID`
 resumes an existing Managed2 agent in the same terminal UI.
 The original managed service remains the default. Managed2 has its own
 `ncx2_` credential: supply `NANOCODEX_MANAGED2_API_KEY` or a private local
-`~/.config/nanocodex/managed2-api-key` file. The ordinary `nanocodex2 login`
+`~/.config/nanocodex/managed2-api-key` file. The ordinary `nanocodex login`
 account key cannot authenticate to Managed2. Set `NANOCODEX_MANAGED2_URL`
 for an alternate HTTPS origin (loopback HTTP is permitted for local tests).
 
@@ -172,23 +180,24 @@ image transport and do not publish audio.
 ## Account sign-in
 
 ```bash
-nanocodex2 login                    # Prompts for your phone number and SMS code
-nanocodex2 status                   # Verifies the selected key; prints account JSON
-nanocodex2 logout                   # Removes this server's saved login locally
+nanocodex login                    # Prompts for your phone number and SMS code
+nanocodex status                   # Verifies the selected key; prints account JSON
+nanocodex logout                   # Removes this server's saved login locally
 
 # Import an existing account-issued key through stdin, never a command argument.
-cat /path/to/private-api-key | nanocodex2 login --with-api-key
+cat /path/to/private-api-key | nanocodex login --with-api-key
 
 # Select a different server for both authentication and managed commands.
 export NANOCODEX_MANAGED_URL=https://your-cluster.example
-nanocodex2 login --phone '+1 415 555 0123' --label 'Work laptop CLI'
+nanocodex login --phone '+1 415 555 0123' --label 'Work laptop CLI'
 ```
 
 `nanocodex account login/status/logout` uses the same implementation and saved
-account credentials. `nanocodex2 account` (also `auth`) groups those commands.
-The native CLI's existing `nanocodex login/connect/status/logout` commands still
-manage Connect installation grants; `nanocodex auth` manages ChatGPT provider
-credentials. Those credentials are independent of the managed account key.
+account credentials. `nanocodex account` (also `auth`) groups those commands.
+`nanocodex connect login|status|logout` manages Connect installation grants
+(`ncl login|status|logout` manage the same grants), and `ncl auth` manages
+ChatGPT provider credentials. Those credentials are independent of the managed
+account key.
 
 Connect accepts `chatgpt`, `github`, `gmail`, `gdrive`, `gcalendar`, `gtasks`,
 `gdocs`, `gsheets`, `gslides`, `gcontacts`, `slack`, `x`, `spotify`, `soundcloud`,
@@ -234,10 +243,10 @@ immediately and leaves agent work running. Switching conversations closes the pr
 For a voice-only terminal session:
 
 ```bash
-nanocodex2 voice                         # Creates a conversation
-nanocodex2 voice --agent AGENT_ID         # Resumes an existing conversation
-nanocodex2 voice --voice cove --muted     # Connects with the microphone muted
-nanocodex2 voice --muted --duration 10 --log-format json
+nanocodex voice                         # Creates a conversation
+nanocodex voice --agent AGENT_ID         # Resumes an existing conversation
+nanocodex voice --voice cove --muted     # Connects with the microphone muted
+nanocodex voice --muted --duration 10 --log-format json
 ```
 
 Ctrl+C stops the call. The command prints the conversation ID and JSON status
@@ -259,7 +268,7 @@ connection and delaying spoken tool results.
 
 On macOS and Linux, after installing a new binary at the same executable path,
 use `/reload` in any
-terminal to restart this user's reload-capable interactive nanocodex2 instances
+terminal to restart this user's reload-capable interactive nanocodex instances
 on the current machine. Each returns to its current managed thread in the same
 terminal and working directory. Accepted managed turns continue running; pending
 local operations finish before the client disconnects. This does not restart
@@ -269,7 +278,7 @@ Reload restores the managed thread, not unsent drafts or the current pane layout
 
 
 Use `/id` to open the agent ID popup. Press Enter to copy the full ID to the
-clipboard, or Esc to close it. Resume it later with `nanocodex2 attach AGENT_ID`.
+clipboard, or Esc to close it. Resume it later with `nanocodex attach AGENT_ID`.
 
 Press Enter to send steering input during a response, or Tab to queue a
 follow-up for when the current turn finishes. Esc twice interrupts the turn.
@@ -361,7 +370,7 @@ a response. Empty messages, reasoning, tool output, and unfinished streamed
 messages are excluded. Remote terminals use the terminal clipboard protocol.
 
 Scrolling back through older history keeps typing and live updates responsive.
-`nanocodex2 attach` and the in-TUI `/attach` command show recent threads first,
+`nanocodex attach` and the in-TUI `/attach` command show recent threads first,
 ordered by last activity, with titles above session IDs. Type to fuzzy search
 titles and IDs; space-separated terms can appear in any order. Title matches rank
 by relevance, with recent activity breaking ties. The same query also searches
@@ -404,27 +413,27 @@ available without reopening the menu.
 
 ```bash
 # Create with explicit initial settings; defaults are Astra, low, standard, fast mode disabled.
-nanocodex2 new --model astra --thinking high
-nanocodex2 run "Inspect this repository" --model sol --thinking high
-nanocodex2 run "Continue the review" --agent AGENT_ID
+nanocodex new --model astra --thinking high
+nanocodex run "Inspect this repository" --model sol --thinking high
+nanocodex run "Continue the review" --agent AGENT_ID
 
 # Pin a new session to one connected ChatGPT account for testing.
-nanocodex2 new --chatgpt-account ACCOUNT_ID
-nanocodex2 run "Reply with hello" --chatgpt-account ACCOUNT_ID
+nanocodex new --chatgpt-account ACCOUNT_ID
+nanocodex run "Reply with hello" --chatgpt-account ACCOUNT_ID
 
 # Read settings or update one field for subsequent turns.
-nanocodex2 settings AGENT_ID
-nanocodex2 settings AGENT_ID model astra
-nanocodex2 settings AGENT_ID thinking high
-nanocodex2 settings AGENT_ID reasoning-mode standard
-nanocodex2 settings AGENT_ID fast-mode true
+nanocodex settings AGENT_ID
+nanocodex settings AGENT_ID model astra
+nanocodex settings AGENT_ID thinking high
+nanocodex settings AGENT_ID reasoning-mode standard
+nanocodex settings AGENT_ID fast-mode true
 
 # Create or replace a durable schedule, then inspect or delete it.
-nanocodex2 cron put AGENT_ID daily --cron "0 9 * * *" \
+nanocodex cron put AGENT_ID daily --cron "0 9 * * *" \
   --timezone Europe/Athens --prompt "Summarize overnight progress"
-nanocodex2 cron list AGENT_ID
-nanocodex2 cron get AGENT_ID daily
-nanocodex2 cron delete AGENT_ID daily
+nanocodex cron list AGENT_ID
+nanocodex cron get AGENT_ID daily
+nanocodex cron delete AGENT_ID daily
 ```
 
 New terminal sessions, `new`, and `run` use the hosted defaults immediately:
@@ -445,16 +454,16 @@ process exits, and preserves recent diagnostics when a process disappears.
 Expanded tool results retain text and resource URLs alongside media metadata;
 embedded binary payloads are hidden.
 
-Build and test both CLI consumers from the repository root:
+Build and test the CLI from the repository root:
 
 ```bash
-cargo build -p nanocodex-bin -p nanocodex2-bin
-cargo test -p nanocodex-bin -p nanocodex2-bin -p nanocodex-managed -p nanocodex-cli-auth
+cargo build -p nanocodex-bin
+cargo test -p nanocodex-bin -p nanocodex-managed -p nanocodex-cli-auth
 ```
 
 ## VM hand
 
-`nanocodex2 hand` registers one retained libkrun VM as an account-scoped
+`nanocodex hand` registers one retained libkrun VM as an account-scoped
 execution hand. Any hosted agent in the account can use the VM through the
 standard `exec_command` and `write_stdin` process contracts over the existing
 outbound Hosted Tools WebSocket. The logical cwd selects the hand; inside the
@@ -465,7 +474,7 @@ cargo build -p nanocodex-vm --no-default-features --features guest-runtime \
   --bin nanocodex-vm-guest --target x86_64-unknown-linux-musl
 
 NANOCODEX_API_KEY=ncx_live_... \
-nanocodex2 hand \
+nanocodex hand \
   --vm /srv/nanocodex/build-root.ext4 \
   --vm-guest-runtime target/x86_64-unknown-linux-musl/debug/nanocodex-vm-guest \
   --vm-workspace /workspace \
@@ -505,7 +514,7 @@ Build the image for the selected Docker daemon's architecture from the repo root
 
 ```bash
 pnpm build:hand-docker
-nanocodex2 hand \
+nanocodex hand \
   --docker nanocodex-hand:local \
   --volume personal-hand-workspace \
   --machine-id personal-hand \
@@ -613,7 +622,7 @@ single `hand` command and the `nanocodex_vm::docker` library API.
 
 ## On-demand VM hosts
 
-`nanocodex2 host` advertises bounded capacity instead of attaching one VM. The
+`nanocodex host` advertises bounded capacity instead of attaching one VM. The
 command registers a named VM factory. The managed control plane asks that exact
 factory to create a private VM when an agent uses its name as the `/mount`
 provider, and releases that VM when the durable agent is deleted.
@@ -631,7 +640,7 @@ pays cold-start time; this does not make cold boot instantaneous.
 
 ```bash
 NANOCODEX_API_KEY=ncx_live_... \
-nanocodex2 host \
+nanocodex host \
   --scope user \
   --factory-name garage-mac \
   --vm-template /srv/nanocodex/template.ext4 \
@@ -679,14 +688,14 @@ are omitted. Use `--log-format json`, `--log-file PATH`, or
 
 ### This computer and its VMs
 
-Opening `nanocodex2`, attaching a conversation, or using `run` automatically
+Opening `nanocodex`, attaching a conversation, or using `run` automatically
 connects this computer as an account-wide Hand in `~/Nanocodex`. The Mac app and
 terminal share one computer identity and local publisher, including across
 separate login keys for the same account. Closing one client leaves the host and
 its VMs running while another client is connected. The last client disconnects
 the host after a short grace period; retained VM disks remain on disk.
 
-Use `nanocodex2 hand` to keep the computer connected without opening a
+Use `nanocodex hand` to keep the computer connected without opening a
 conversation. Use `hand --workspace /path/to/repo --state-dir /private/identity`
 for an additional explicit workspace, or `hand --vm ...` / `hand --docker ...`
 for an isolated Hand. Set `NANOCODEX_DISABLE_HAND=1` to disable automatic
@@ -709,7 +718,7 @@ provider may still be connecting; mount verifies current readiness and capacity.
 
 The Hand publisher is owned by an OS service. The CLI and desktop app connect
 as clients; closing the last client leaves the Hand and VM host running.
-`NANOCODEX_DISABLE_HAND=1` opts out of CLI attachment. `nanocodex2 hand` runs the
+`NANOCODEX_DISABLE_HAND=1` opts out of CLI attachment. `nanocodex hand` runs the
 publisher in the foreground; `hand --workspace PATH` publishes a separately
 retained workspace.
 
@@ -807,7 +816,7 @@ for `nestedVirtualization` and supported Windows configurations.
 
 Linux servers installed with `nanocodex hand install` keep their systemd service,
 private workspace, and machine identity across idempotent repairs. VM factories
-remain a separate `nanocodex2 host` capability and are not installed implicitly.
+remain a separate `nanocodex host` capability and are not installed implicitly.
 
 To run the startup journeys against an installed or optimized build, set
 `NANOCODEX2_TEST_BINARY` to its absolute path when invoking the
