@@ -20,9 +20,9 @@ one invocation (`cargo build -p nanocodex-bin --bin nanocodex --bin nanocodex-ha
 `nanocodex2-<triple>[.gz]` is the `nanocodex-hand` daemon, keeping the companion
 name older updaters fetch (`nanocodex-x86_64-pc-windows-msvc.exe` and
 `nanocodex2-x86_64-pc-windows-msvc.exe` on Windows). `SHA256SUMS` lists both.
-x86_64 Linux also contains the static VM guest. On Apple Silicon both binaries
-are ad-hoc signed with the hypervisor entitlement required by their libkrun VMM
-children. `nanocodex update --nightly` verifies and installs that complete
+x86_64 Linux also contains the static VM guest. On Apple Silicon the Hand is
+ad-hoc signed with the hypervisor entitlement required by its libkrun VMM
+children; the CLI forwards VMM children to it and keeps the default signature. `nanocodex update --nightly` verifies and installs that complete
 platform bundle atomically and exposes the CLI as `nanocodex`, `nc`, and `ncl`
 under `$NANOCODEX_DIR/bin`; the invoked name selects the managed tree
 (`nanocodex`, `nc`) or the local agent tree (`ncl`, or `nanocodex --local`).

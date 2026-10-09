@@ -178,13 +178,11 @@ jobs:
         if: matrix.target == 'aarch64-apple-darwin'
         shell: bash
         run: |
-          # The Hand and the CLI's local --vm agent both start libkrun VMM children.
-          for binary in nanocodex-hand nanocodex; do
-            codesign --force --sign - \
-              --entitlements nanocodex-vm.entitlements \
-              "target/${{ matrix.target }}/release/$binary"
-            codesign --verify --strict "target/${{ matrix.target }}/release/$binary"
-          done
+          # Only the Hand starts libkrun VMM children; the CLI forwards them to it.
+          codesign --force --sign - \
+            --entitlements nanocodex-vm.entitlements \
+            "target/${{ matrix.target }}/release/nanocodex-hand"
+          codesign --verify --strict "target/${{ matrix.target }}/release/nanocodex-hand"
       - uses: ./.github/actions/voice-release
         env:
           STABLE_GIT_COMMIT: ${{ github.sha }}

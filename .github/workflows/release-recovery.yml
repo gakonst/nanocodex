@@ -87,7 +87,7 @@ jobs:
               --package nanocodex-bin --bin nanocodex --bin nanocodex-hand --features tempo \
               --target ${{ matrix.target }}
             echo "HAND_BINARY=$release/nanocodex-hand" >> "$GITHUB_ENV"
-            echo "VM_BINARIES=$release/nanocodex-hand $release/nanocodex" >> "$GITHUB_ENV"
+            echo "VM_BINARIES=$release/nanocodex-hand" >> "$GITHUB_ENV"
           fi
       - name: Verify shipped Linux Hand screen payload
         if: matrix.target == 'x86_64-unknown-linux-gnu'

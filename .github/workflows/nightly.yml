@@ -112,13 +112,11 @@ jobs:
         if: runner.os == 'macOS' && matrix.component == 'cli'
         shell: bash
         run: |
-          # The Hand and the CLI's local --vm agent both start libkrun VMM children.
-          for binary in nanocodex-hand nanocodex; do
-            codesign --force --sign - \
-              --entitlements nanocodex-vm.entitlements \
-              "target/${{ matrix.target }}/nightly/$binary"
-            codesign --verify --strict "target/${{ matrix.target }}/nightly/$binary"
-          done
+          # Only the Hand starts libkrun VMM children; the CLI forwards them to it.
+          codesign --force --sign - \
+            --entitlements nanocodex-vm.entitlements \
+            "target/${{ matrix.target }}/nightly/nanocodex-hand"
+          codesign --verify --strict "target/${{ matrix.target }}/nightly/nanocodex-hand"
       - uses: ./.github/actions/voice-release
         if: matrix.component == 'voice'
         with:
