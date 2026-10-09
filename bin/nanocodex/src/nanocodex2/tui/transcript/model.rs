@@ -1106,7 +1106,11 @@ impl TranscriptModel {
         let result = preferred_result(payload.structured_result, payload.result);
         let resumed_result = resumed_shell.map(|_| result.clone());
         let nested_shell_followup = resumed_shell.is_some();
-        let state = tool_result_state(family, &payload.status, &result);
+        let state = if payload.outcome_unknown == Some(true) {
+            ToolState::Unknown
+        } else {
+            tool_result_state(family, &payload.status, &result)
+        };
         // An unknown outcome stays open to the call's later actual result.
         if state == ToolState::Unknown {
             self.settled_calls.remove(&payload.call_id);
@@ -2207,6 +2211,9 @@ struct ToolResultPayload {
     #[serde(default)]
     structured_result: Value,
     metadata: Option<Value>,
+    /// Set when observation ended before the call reported a settled outcome.
+    #[serde(default)]
+    outcome_unknown: Option<bool>,
 }
 
 #[derive(Deserialize)]
