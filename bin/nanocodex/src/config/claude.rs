@@ -314,6 +314,7 @@ impl AgentArgs {
         let responses = self.responses_settings();
         let codex_auth = self.auth.clone();
         let codex = self.codex_recipe(
+            HarnessFamily::Claude,
             codex::CodexConnection::lazy(move || {
                 responses.client(codex_auth.clone().resolve()?.nanocodex()?, None)
             }),

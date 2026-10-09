@@ -2268,6 +2268,9 @@ impl AgentWorker {
                         .await
                         .map_err(|error| error.to_string())?;
                 }
+                // Reselecting the live family recovers from a failed family
+                // replacement: the retained backend is valid again.
+                self.model_selection_required = false;
                 let _ = self.updates.send(WorkerEvent::ModelChanged { model });
                 return Ok(());
             }
