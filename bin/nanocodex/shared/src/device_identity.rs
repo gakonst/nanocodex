@@ -1343,7 +1343,7 @@ pub async fn authorize(
 /// Server Hand publisher: enroll once with the one-time bootstrap grant (then
 /// delete it), or reuse the existing enrollment, and return its credentials.
 /// The grant is ignored once `device.json` exists.
-pub(crate) async fn authorize_server_host(
+pub async fn authorize_server_host(
     endpoint: &Url,
     directory: &Path,
     grant_file: Option<&Path>,

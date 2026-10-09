@@ -407,7 +407,7 @@ pub(crate) async fn serve(mut prepared: Prepared) -> Result<(), ManagedError> {
         Some(directory) => {
             let credentials = tokio::select! {
                 result = &mut signal => { if let Some(desktop) = desktop.take() { desktop.stop().await; } return result; }
-                credentials = super::device_identity::authorize_server_host(
+                credentials = nanocodex_bin_shared::device_identity::authorize_server_host(
                     prepared.target.endpoint(),
                     &directory,
                     prepared.command.device_grant_file.as_deref(),
@@ -444,13 +444,15 @@ pub(crate) async fn serve(mut prepared: Prepared) -> Result<(), ManagedError> {
             Err(_) => {
                 markers.write(true, b"publisher unavailable\n")?;
                 if let Some(credentials) = &device {
-                    if let Err(super::device_identity::DeviceError::Reenroll) =
+                    if let Err(nanocodex_bin_shared::device_identity::DeviceError::Reenroll) =
                         credentials.current().await
                     {
                         if let Some(desktop) = desktop.take() {
                             desktop.stop().await;
                         }
-                        return Err(super::device_identity::DeviceError::Reenroll.into());
+                        return Err(
+                            nanocodex_bin_shared::device_identity::DeviceError::Reenroll.into()
+                        );
                     }
                 } else if let Some(file) = &prepared.command.credential_file {
                     prepared.target =
@@ -475,12 +477,12 @@ pub(crate) async fn serve(mut prepared: Prepared) -> Result<(), ManagedError> {
             _ = device_check.tick(), if device.is_some() => {
                 let Some(credentials) = &device else { continue };
                 // Revocation stops publication; never fall back to the scoped bearer.
-                if let Err(super::device_identity::DeviceError::Reenroll) = credentials.current().await {
-                    break Err(super::device_identity::DeviceError::Reenroll.into());
+                if let Err(nanocodex_bin_shared::device_identity::DeviceError::Reenroll) = credentials.current().await {
+                    break Err(nanocodex_bin_shared::device_identity::DeviceError::Reenroll.into());
                 }
                 if last_attestation.elapsed() >= Duration::from_secs(600) {
                     last_attestation = std::time::Instant::now();
-                    super::device_identity::attest(credentials, false).await;
+                    nanocodex_bin_shared::device_identity::attest(credentials, false).await;
                 }
             }
             _ = tick.tick() => {
