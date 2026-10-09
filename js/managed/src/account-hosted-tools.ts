@@ -928,14 +928,14 @@ export class AccountHostedTools extends DurableObject<AccountHostedToolsEnv> {
       const identity = publisherIdentity(request.headers);
       if (identity === false) return Response.json({ error: "invalid_publisher_identity" }, { status: 400 });
       // A runtime superseded by a newer runtime of the same machine never republishes.
-      if (identity && this.#directory.retired(identity.machineId, identity.runtimeId)) {
-        return Response.json({ error: "hand_runtime_superseded" }, { status: 409 });
-      }
       // Downgrade fence at connect; catalog admission repeats it for header-less publishers.
       if ((identity && this.#devices.deviceRequired(identity.machineId)) || this.#devices.policy().require_device_keys) {
         console.info({ type: "hand.connection", auth_mode: "account_api_key", legacy: true, machine_id: identity ? identity.machineId : null,
           surface: "tool_host", outcome: "rejected", reason_code: "hand_device_required" });
         return deviceFailure(403, "hand_device_required");
+      }
+      if (identity && this.#directory.retired(identity.machineId, identity.runtimeId)) {
+        return Response.json({ error: "hand_runtime_superseded" }, { status: 409 });
       }
       return this.#broker.upgrade(ownerId, undefined, undefined, undefined, undefined, identity || undefined);
     }
