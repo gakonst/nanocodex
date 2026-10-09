@@ -558,6 +558,21 @@ impl EmbeddedToolRuntimeControl {
         }
     }
 
+    /// Leaves cells the current turn did not finish running in the bound host.
+    /// The host owns embedded cells, so this runtime has no nested-tool
+    /// updates of its own to relay after the turn.
+    pub async fn detach_turn_with_updates(
+        &self,
+        _observer: &mut (dyn FnMut(&str) -> Box<dyn CodeModeObserver> + Send),
+    ) {
+    }
+
+    /// Cancels work owned by the current logical turn. The bound host owns
+    /// embedded cells, so their remaining updates are not relayed here.
+    pub async fn cancel_turn_with_updates(&self, _observer: &mut dyn CodeModeObserver) {
+        self.cancel_turn().await;
+    }
+
     /// Cancels active work.
     pub async fn cancel(&self) {
         if let (Some(host), Some(session_id)) = (&self.host, &self.session_id)

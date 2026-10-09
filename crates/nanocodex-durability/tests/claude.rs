@@ -3200,7 +3200,7 @@ async fn native_claude_journal_adoption_directory_evidence() {
         })
         .await
         .unwrap();
-        let captured = requests.lock().unwrap();
+        let captured = requests.lock().unwrap().clone();
         let result = |id: &str| -> Value {
             for message in captured.last().unwrap()["messages"].as_array().unwrap() {
                 for block in message["content"].as_array().unwrap() {
@@ -3261,8 +3261,7 @@ async fn native_claude_journal_adoption_directory_evidence() {
             let close_all = control
                 .close_all(root)
                 .await
-                .err()
-                .expect("restoration must fail");
+                .expect_err("restoration must fail");
             assert_eq!(direct.to_string(), close_all.to_string());
             control.cancel_all(root).await;
             eprintln!(
