@@ -11,7 +11,8 @@ use std::{
 
 use eyre::{Result, eyre};
 use nanocodex_agent::{
-    ExecutionPolicyDisposition, Model, Nanocodex, NanocodexError, OpenAi, PromptRequest,
+    ExecutionPolicyDisposition, ForkRequest, Model, Nanocodex, NanocodexError, OpenAi,
+    PromptRequest,
     PromptRoute, ResponseError, ServiceTier, Tools,
     events::{AgentEventKind, AgentEvents, RunStatus, RunTerminal},
     execution::{
@@ -4024,7 +4025,7 @@ async fn model_recovery_uses_current_conversation_across_runtime_changes() -> Re
 }
 
 #[tokio::test]
-async fn durable_parent_without_catalog_rejects_unsaved_subagents() -> Result<()> {
+async fn durable_parent_without_catalog_journals_subagents_and_rejects_forks() -> Result<()> {
     let store = MemoryStore::new()?;
     let acquisitions = Arc::new(std::sync::Mutex::new(Vec::new()));
     let state = DurableSession::open(
@@ -4075,17 +4076,23 @@ async fn durable_parent_without_catalog_rejects_unsaved_subagents() -> Result<()
         1,
         "parent receipts must still replay"
     );
-    // Without a session catalog the parent has nowhere to record a child, so a
-    // spawn must fail explicitly instead of creating an unsaved subagent.
-    assert!(matches!(
-        parent.spawn().await,
-        Err(NanocodexError::ExecutionPolicyBranchUnsupported { operation: "spawn" })
-    ));
-    assert_eq!(
-        *acquisitions.lock().unwrap(),
-        ["ephemeral-parent", "ephemeral-parent"],
-        "a rejected spawn never acquires a durable owner"
+    // Without a session catalog the root saves the subagents it spawns in its
+    // task-tree journal (restored by its host), so a spawn succeeds without a
+    // catalog session of its own. A fork has no such home and is rejected.
+    let (child, child_events) = parent.spawn().await?;
+    assert_ne!(child.session_id(), parent.session_id());
+    let persistence = child.persistence().expect("every subagent mirrors a rollout");
+    assert!(
+        persistence.durable_state_id.is_none(),
+        "a journal-backed subagent has no catalog session of its own"
     );
+    assert!(persistence.rollout.is_some());
+    assert!(matches!(
+        parent.fork(ForkRequest::latest()).await,
+        Err(NanocodexError::ExecutionPolicyBranchUnsupported { operation: "fork" })
+    ));
+    child.shutdown().await?;
+    drop((child, child_events));
     parent
         .prompt(PromptRequest::new("parent work").request_id("parent-turn"))
         .await?

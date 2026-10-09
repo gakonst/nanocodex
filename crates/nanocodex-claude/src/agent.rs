@@ -2418,12 +2418,13 @@ impl AgentFactory for ClaudeNativeFactory {
     }
     fn spawn(
         &self,
-        _parent: AgentHandle,
+        parent: AgentHandle,
         options: SpawnOptions,
         host_context: Option<Arc<str>>,
     ) -> BackendFuture<Result<(Nanocodex, AgentEvents)>> {
         let state = self.owner();
         let recipe = self.recipe();
+        let journal_backed = parent.child_journal().is_some();
         Box::pin(async move {
             let state = state?;
             let native_model = state.model();
@@ -2431,7 +2432,7 @@ impl AgentFactory for ClaudeNativeFactory {
             let mut recipe = recipe;
             let lineage = Lineage::child_of(&state.lineage, state.session_id.as_str(), Origin::Subagent);
             let child_id = uuid::Uuid::now_v7().to_string();
-            state.durable_child(&mut recipe, &child_id, &lineage)?;
+            state.durable_child(&mut recipe, &child_id, &lineage, "spawn", journal_backed)?;
             recipe.session_id = Some(child_id);
             recipe.lineage = Some(lineage);
             if options.selected_harness_model().is_none()
@@ -2475,19 +2476,20 @@ impl AgentFactory for ClaudeNativeFactory {
     }
     fn restore(
         &self,
-        _parent: AgentHandle,
+        parent: AgentHandle,
         checkpoint: SessionCheckpoint,
         host_context: Option<Arc<str>>,
     ) -> BackendFuture<Result<(Nanocodex, AgentEvents)>> {
         let available = self.owner();
         let recipe = self.recipe();
+        let journal_backed = parent.child_journal().is_some();
         Box::pin(async move {
             let state = available?;
             let mut recipe = recipe.resume(checkpoint)?;
             // An evicted subagent reopens the durable state it recorded under
             // its own session ID, exactly like a resumed fork.
             if let (Some(child_id), Some(lineage)) = (recipe.session_id.clone(), recipe.lineage.clone()) {
-                state.durable_child(&mut recipe, &child_id, &lineage)?;
+                state.durable_child(&mut recipe, &child_id, &lineage, "restore", journal_backed)?;
             }
             state.initialize_child_workspace(&mut recipe)?;
             recipe.host_context(host_context).build()
@@ -2945,15 +2947,23 @@ impl State {
         recipe: &mut ClaudeBuilder,
         child_id: &str,
         lineage: &Lineage,
+        operation: &'static str,
+        journal_backed: bool,
     ) -> Result<()> {
         let Some(parent) = &self.policy else {
             return Ok(());
         };
         let child = nanocodex_agent::SessionInfo::new(child_id, HarnessFamily::Claude, lineage.clone());
-        // A durable parent never silently creates an unsaved child.
-        let policy = parent
-            .branch(&child)?
-            .ok_or(NanocodexError::ExecutionPolicyBranchUnsupported { operation: "spawn" })?;
+        // A durable parent never silently creates an unsaved child. A durable
+        // root without a session catalog still saves its subagents in its
+        // task-tree journal, exactly as for Codex.
+        let Some(policy) = parent.branch(&child)? else {
+            return if journal_backed {
+                Ok(())
+            } else {
+                Err(NanocodexError::ExecutionPolicyBranchUnsupported { operation })
+            };
+        };
         if policy.state_id() != child_id {
             return Err(NanocodexError::InvalidRequest(
                 "durable branch state ID must equal the child session ID".into(),

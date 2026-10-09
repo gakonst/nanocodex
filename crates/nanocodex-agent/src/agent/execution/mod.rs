@@ -605,9 +605,13 @@ impl ExecutionConfig {
         &self,
         operation: &'static str,
         branch_policy: Option<Arc<dyn ExecutionPolicy>>,
+        journal_backed: bool,
     ) -> Result<Self> {
-        // A durable parent never silently creates an unsaved child.
-        if self.policy.is_some() && branch_policy.is_none() {
+        // A durable parent never silently creates an unsaved child. A durable
+        // root without a session catalog still saves the subagents it spawns
+        // or restores in its task-tree journal; a fork has no such home.
+        let saved_by_journal = journal_backed && operation != "fork";
+        if self.policy.is_some() && branch_policy.is_none() && !saved_by_journal {
             return Err(NanocodexError::ExecutionPolicyBranchUnsupported { operation });
         }
         Ok(Self {

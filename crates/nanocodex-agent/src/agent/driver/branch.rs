@@ -58,7 +58,11 @@ impl<S> BranchSpawner<S> {
         operation: &'static str,
         branch_policy: Option<Arc<dyn execution::ExecutionPolicy>>,
     ) -> Result<Self> {
-        Ok(self.with_execution(self.execution.for_new_thread(operation, branch_policy)?))
+        Ok(self.with_execution(self.execution.for_new_thread(
+            operation,
+            branch_policy,
+            self.child_journal.is_some(),
+        )?))
     }
 
     fn with_execution(&self, execution: ExecutionConfig) -> Self {
@@ -207,7 +211,11 @@ where
             context_config: self.context_config.clone(),
             context_source: self.context_config.build(),
             lineage,
-            execution: self.execution.for_new_thread("spawn", branch_policy)?,
+            execution: self.execution.for_new_thread(
+                "spawn",
+                branch_policy,
+                self.child_journal.is_some(),
+            )?,
             restored_snapshot: None,
             host_context,
             service_factory: Arc::clone(&self.service_factory),
