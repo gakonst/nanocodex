@@ -24,6 +24,7 @@ use ratatui::{
 use serde::Deserialize;
 use serde_json::Value;
 
+use super::ToolCalls;
 use super::composer::ComposerLayout;
 use super::selection::{
     ScreenSelection, SelectionClick, SelectionScrollDirection, SelectionScrollRequest,
@@ -1359,7 +1360,7 @@ pub(super) struct App {
     cancel_confirmation: Option<CancelConfirmation>,
     screen_selection: ScreenSelection,
     pending_link_destination: Option<String>,
-    tool_details_expanded: bool,
+    tool_calls: ToolCalls,
     fast_mode: bool,
     model: HarnessModel,
     has_rejected_start_input: bool,
@@ -1459,7 +1460,7 @@ impl App {
             cancel_confirmation: None,
             screen_selection: ScreenSelection::default(),
             pending_link_destination: None,
-            tool_details_expanded: true,
+            tool_calls: ToolCalls::Expanded,
             fast_mode: false,
             model: HarnessModel::default(),
             has_rejected_start_input: false,
@@ -2370,35 +2371,32 @@ impl App {
             splitting: false,
             conversation,
         });
-        if !self.tool_details_expanded
-            && let Some(btw) = &mut self.btw
-        {
-            btw.conversation.transcript.set_tool_details_expanded(false);
+        if let Some(btw) = &mut self.btw {
+            btw.conversation.transcript.set_tool_calls(self.tool_calls);
         }
         self.focus = PaneId::Btw(id);
         id
     }
 
-    pub(super) fn toggle_tool_details(&mut self) -> bool {
-        self.tool_details_expanded = !self.tool_details_expanded;
-        let expanded = self.tool_details_expanded;
-        self.main.transcript.set_tool_details_expanded(expanded);
-        for branch in &mut self.main_branches {
-            branch
-                .conversation
-                .transcript
-                .set_tool_details_expanded(expanded);
-        }
-        if let Some(btw) = &mut self.btw {
-            btw.conversation
-                .transcript
-                .set_tool_details_expanded(expanded);
-        }
-        expanded
+    /// Switches every transcript to the next tool-call mode and returns it.
+    pub(super) fn cycle_tool_calls(&mut self) -> ToolCalls {
+        self.set_tool_calls(self.tool_calls.next());
+        self.tool_calls
     }
 
-    pub(super) const fn tool_details_expanded(&self) -> bool {
-        self.tool_details_expanded
+    pub(super) fn set_tool_calls(&mut self, mode: ToolCalls) {
+        self.tool_calls = mode;
+        self.main.transcript.set_tool_calls(mode);
+        for branch in &mut self.main_branches {
+            branch.conversation.transcript.set_tool_calls(mode);
+        }
+        if let Some(btw) = &mut self.btw {
+            btw.conversation.transcript.set_tool_calls(mode);
+        }
+    }
+
+    pub(super) const fn tool_calls(&self) -> ToolCalls {
+        self.tool_calls
     }
 
     pub(super) fn btw_id(&self) -> Option<u64> {

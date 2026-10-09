@@ -4,7 +4,7 @@ use std::{
     mem,
     sync::{
         Arc, Mutex, PoisonError,
-        atomic::{AtomicBool, AtomicU64, Ordering},
+        atomic::{AtomicU8, AtomicU64, Ordering},
     },
 };
 
@@ -19,6 +19,7 @@ use ratatui::{
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
+use super::ToolCalls;
 use super::app::PlanStepStatus;
 use super::composer::ComposerLayout;
 use super::diff::{PatchPresentation, present_apply_patch};
@@ -63,11 +64,42 @@ pub(super) enum ToolStatus {
     Failed,
 }
 
+/// The tool-call mode shared by one transcript, its entries, and its branches.
+#[derive(Default)]
+pub(super) struct SharedToolCalls(AtomicU8);
+
+impl SharedToolCalls {
+    const fn encode(mode: ToolCalls) -> u8 {
+        match mode {
+            ToolCalls::Expanded => 0,
+            ToolCalls::Folded => 1,
+            ToolCalls::Hidden => 2,
+        }
+    }
+
+    const fn decode(value: u8) -> ToolCalls {
+        match value {
+            1 => ToolCalls::Folded,
+            2 => ToolCalls::Hidden,
+            _ => ToolCalls::Expanded,
+        }
+    }
+
+    fn get(&self) -> ToolCalls {
+        Self::decode(self.0.load(Ordering::Relaxed))
+    }
+
+    /// Stores `mode` and returns the previous mode.
+    fn swap(&self, mode: ToolCalls) -> ToolCalls {
+        Self::decode(self.0.swap(Self::encode(mode), Ordering::Relaxed))
+    }
+}
+
 pub(super) struct Transcript {
     entries: Vec<Arc<TranscriptEntry>>,
     editable_users: Vec<usize>,
     cached_total_height: AtomicU64,
-    tool_details_expanded: Arc<AtomicBool>,
+    tool_calls: Arc<SharedToolCalls>,
     math_renderer: Option<Ratatex>,
 }
 
@@ -77,7 +109,7 @@ impl Default for Transcript {
             entries: Vec::new(),
             editable_users: Vec::new(),
             cached_total_height: AtomicU64::new(0),
-            tool_details_expanded: Arc::new(AtomicBool::new(true)),
+            tool_calls: Arc::default(),
             math_renderer: None,
         }
     }
@@ -89,7 +121,7 @@ impl Clone for Transcript {
             entries: self.entries.clone(),
             editable_users: self.editable_users.clone(),
             cached_total_height: AtomicU64::new(self.cached_total_height.load(Ordering::Relaxed)),
-            tool_details_expanded: Arc::clone(&self.tool_details_expanded),
+            tool_calls: Arc::clone(&self.tool_calls),
             math_renderer: self.math_renderer.clone(),
         }
     }
@@ -130,7 +162,7 @@ impl Transcript {
         }
         self.entries.push(Arc::new(TranscriptEntry::new(
             item,
-            Arc::clone(&self.tool_details_expanded),
+            Arc::clone(&self.tool_calls),
             self.math_renderer.clone(),
         )));
         self.invalidate_total_height();
@@ -155,8 +187,8 @@ impl Transcript {
         self.invalidate_total_height();
     }
 
-    pub(super) fn set_tool_details_expanded(&mut self, expanded: bool) {
-        if self.tool_details_expanded.swap(expanded, Ordering::Relaxed) == expanded {
+    pub(super) fn set_tool_calls(&mut self, mode: ToolCalls) {
+        if self.tool_calls.swap(mode) == mode {
             return;
         }
         self.invalidate_total_height();
@@ -197,7 +229,7 @@ impl Transcript {
     pub(super) fn push_editable_user(&mut self, message: String, prompt_id: u64) {
         let mut entry = TranscriptEntry::new(
             TranscriptItem::User(message),
-            Arc::clone(&self.tool_details_expanded),
+            Arc::clone(&self.tool_calls),
             self.math_renderer.clone(),
         );
         entry.prompt_id = Some(prompt_id);
@@ -430,7 +462,7 @@ impl Transcript {
                 [..self.editable_users.partition_point(|i| *i < end)]
                 .to_vec(),
             cached_total_height: AtomicU64::new(0),
-            tool_details_expanded: Arc::clone(&self.tool_details_expanded),
+            tool_calls: Arc::clone(&self.tool_calls),
             math_renderer: self.math_renderer.clone(),
         }
     }
@@ -925,7 +957,7 @@ struct ToolActivity {
     patch: Option<PatchPresentation>,
     plain_detail: Option<StreamingText>,
     cached_layout: Mutex<Option<Box<CachedToolLayout>>>,
-    details_expanded: Arc<AtomicBool>,
+    tool_calls: Arc<SharedToolCalls>,
 }
 
 struct MarkdownContent {
@@ -1032,7 +1064,7 @@ impl Clone for ToolActivity {
                     .unwrap_or_else(PoisonError::into_inner)
                     .clone(),
             ),
-            details_expanded: Arc::clone(&self.details_expanded),
+            tool_calls: Arc::clone(&self.tool_calls),
         }
     }
 }
@@ -1083,7 +1115,7 @@ impl Clone for TranscriptEntry {
 impl TranscriptEntry {
     fn new(
         item: TranscriptItem,
-        tool_details_expanded: Arc<AtomicBool>,
+        tool_calls: Arc<SharedToolCalls>,
         math_renderer: Option<Ratatex>,
     ) -> Self {
         let (kind, user_message, content) = match item {
@@ -1118,11 +1150,7 @@ impl TranscriptEntry {
                 },
                 None,
                 EntryContent::Tool(ToolActivity::new(
-                    call_id,
-                    name,
-                    arguments,
-                    status,
-                    tool_details_expanded,
+                    call_id, name, arguments, status, tool_calls,
                 )),
             ),
             TranscriptItem::Plan { explanation, steps } => (
@@ -1193,6 +1221,11 @@ impl TranscriptEntry {
         }
     }
 
+    /// Tool rows take no space while tool calls are hidden.
+    fn is_hidden(&self) -> bool {
+        matches!(&self.content, EntryContent::Tool(tool) if tool.tool_calls.get() == ToolCalls::Hidden)
+    }
+
     fn invalidate_math_layout(&self) {
         if let EntryContent::Markdown(markdown) = &self.content {
             markdown.invalidate_math_layout();
@@ -1203,9 +1236,12 @@ impl TranscriptEntry {
         const HEIGHT_MASK: u64 = (1_u64 << 47) - 1;
         const TOOL_EXPANDED: u64 = 1_u64 << 47;
 
+        if self.is_hidden() {
+            return 0;
+        }
         let cached = self.cached_height.load(Ordering::Relaxed);
         let tool_expanded = match &self.content {
-            EntryContent::Tool(tool) => Some(tool.details_expanded.load(Ordering::Relaxed)),
+            EntryContent::Tool(tool) => Some(tool.details_expanded()),
             _ => None,
         };
         let cache_entry_height = !matches!(self.content, EntryContent::Markdown(_));
@@ -1245,6 +1281,9 @@ impl TranscriptEntry {
         selected: bool,
         math_fallback: bool,
     ) {
+        if self.is_hidden() {
+            return;
+        }
         match &self.content {
             EntryContent::Static(text) => {
                 let mut paragraph = Paragraph::new(text.clone()).wrap(Wrap { trim: false });
@@ -1339,7 +1378,7 @@ impl TranscriptEntry {
             name,
             arguments,
             status,
-            Arc::clone(&tool.details_expanded),
+            Arc::clone(&tool.tool_calls),
         ));
         self.cached_height.store(0, Ordering::Relaxed);
     }
@@ -1391,7 +1430,7 @@ impl ToolActivity {
         name: String,
         arguments: String,
         status: ToolStatus,
-        details_expanded: Arc<AtomicBool>,
+        tool_calls: Arc<SharedToolCalls>,
     ) -> Self {
         let patch = (name == "apply_patch")
             .then(|| present_apply_patch(&arguments))
@@ -1410,7 +1449,7 @@ impl ToolActivity {
             patch,
             plain_detail,
             cached_layout: Mutex::new(None),
-            details_expanded,
+            tool_calls,
         }
     }
 
@@ -1434,8 +1473,12 @@ impl ToolActivity {
         });
     }
 
+    fn details_expanded(&self) -> bool {
+        self.tool_calls.get() == ToolCalls::Expanded
+    }
+
     fn uses_plain_detail(&self) -> bool {
-        self.details_expanded.load(Ordering::Relaxed) && self.plain_detail.is_some()
+        self.details_expanded() && self.plain_detail.is_some()
     }
 
     fn height(&self, width: u16) -> usize {
@@ -1507,7 +1550,7 @@ impl ToolActivity {
     }
 
     fn with_rendered<R>(&self, width: u16, read: impl FnOnce(&RenderedText) -> R) -> R {
-        let expanded = self.details_expanded.load(Ordering::Relaxed);
+        let expanded = self.details_expanded();
         let mut cached = self
             .cached_layout
             .lock()
@@ -1558,7 +1601,7 @@ impl ToolActivity {
     }
 
     fn text(&self, width: u16) -> Text<'static> {
-        let details_expanded = self.details_expanded.load(Ordering::Relaxed);
+        let details_expanded = self.details_expanded();
         if details_expanded
             && self.children.is_empty()
             && let Some(patch) = &self.patch
@@ -3058,7 +3101,7 @@ fn saturating_u16(value: usize) -> u16 {
 #[cfg(test)]
 mod tests {
     use std::{
-        sync::{Arc, atomic::AtomicBool, mpsc},
+        sync::{Arc, mpsc},
         time::Duration,
     };
 
@@ -3074,8 +3117,9 @@ mod tests {
     };
 
     use super::{
-        EntryContent, InlineEdit, MarkdownContent, StreamingLine, ToolActivity, ToolStatus,
-        Transcript, TranscriptItem, child_lines, render_agent_markdown, saturating_u16, tool_style,
+        EntryContent, InlineEdit, MarkdownContent, SharedToolCalls, StreamingLine, ToolActivity,
+        ToolCalls, ToolStatus, Transcript, TranscriptItem, child_lines, render_agent_markdown,
+        saturating_u16, tool_style,
     };
 
     const ASYNC_RENDER_TIMEOUT: Duration = Duration::from_secs(10);
@@ -3621,20 +3665,20 @@ R_{\mu\nu}-\frac12R\,g_{\mu\nu}+\Lambda g_{\mu\nu}
 
     #[test]
     fn long_nested_tool_result_cache_matches_full_paragraph_scrolling() {
-        let details_expanded = Arc::new(AtomicBool::new(true));
+        let tool_calls = Arc::new(SharedToolCalls::default());
         let mut tool = ToolActivity::new(
             "code-mode-1".to_owned(),
             "exec".to_owned(),
             "text(await tools.exec_command({ cmd: 'render report' }));".to_owned(),
             ToolStatus::Completed,
-            Arc::clone(&details_expanded),
+            Arc::clone(&tool_calls),
         );
         let mut child = ToolActivity::new(
             "code-mode-1/code-1".to_owned(),
             "exec_command".to_owned(),
             "render report".to_owned(),
             ToolStatus::Completed,
-            details_expanded,
+            tool_calls,
         );
         child.duration_ns = Some(1_000_000);
         child.result = Some("styled λ output ".repeat(20_000));
@@ -3919,7 +3963,7 @@ R_{\mu\nu}-\frac12R\,g_{\mu\nu}+\Lambda g_{\mu\nu}
             "*** Begin Patch\n*** Update File: src/main.rs\n@@\n-old();\n+new();\n*** End Patch"
                 .to_owned(),
             ToolStatus::Completed,
-            Arc::new(AtomicBool::new(true)),
+            Arc::new(SharedToolCalls::default()),
         );
 
         let lines = child_lines(&child, "  └──", "      ", 80);
@@ -3955,7 +3999,7 @@ R_{\mu\nu}-\frac12R\,g_{\mu\nu}+\Lambda g_{\mu\nu}
                 .contains("second detail line")
         );
 
-        transcript.set_tool_details_expanded(false);
+        transcript.set_tool_calls(ToolCalls::Folded);
         let mut folded = Terminal::new(TestBackend::new(80, 8)).unwrap();
         folded
             .draw(|frame| {
@@ -3969,6 +4013,42 @@ R_{\mu\nu}-\frac12R\,g_{\mu\nu}+\Lambda g_{\mu\nu}
     }
 
     #[test]
+    fn hidden_tool_calls_leave_only_the_conversation() {
+        let mut transcript = Transcript::default();
+        transcript.push(TranscriptItem::User("check the build".to_owned()));
+        transcript.push(TranscriptItem::Tool {
+            call_id: "call-hidden".to_owned(),
+            name: "exec_command".to_owned(),
+            arguments: "cargo build --workspace".to_owned(),
+            status: ToolStatus::Completed,
+        });
+        transcript.push(TranscriptItem::Assistant("The build passes.".to_owned()));
+        let draw = |transcript: &Transcript| {
+            let mut terminal = Terminal::new(TestBackend::new(80, 12)).unwrap();
+            terminal
+                .draw(|frame| {
+                    frame.render_widget(transcript.widget(0, None, None, "empty"), frame.area());
+                })
+                .unwrap();
+            terminal.backend().to_string()
+        };
+        let shown_height = transcript.total_height(80);
+
+        transcript.set_tool_calls(ToolCalls::Hidden);
+        let hidden = draw(&transcript);
+        assert!(hidden.contains("check the build"));
+        assert!(hidden.contains("The build passes."));
+        assert!(!hidden.contains("exec_command"));
+        assert!(!hidden.contains("cargo build"));
+        assert_eq!(transcript.height_at(1, 80), Some(0));
+        assert!(transcript.total_height(80) < shown_height);
+
+        transcript.set_tool_calls(ToolCalls::Expanded);
+        assert!(draw(&transcript).contains("cargo build --workspace"));
+        assert_eq!(transcript.total_height(80), shown_height);
+    }
+
+    #[test]
     fn folding_does_not_copy_branch_shared_tool_entries() {
         let mut transcript = Transcript::default();
         transcript.push(TranscriptItem::Tool {
@@ -3979,7 +4059,7 @@ R_{\mu\nu}-\frac12R\,g_{\mu\nu}+\Lambda g_{\mu\nu}
         });
         let shared = transcript.clone();
 
-        transcript.set_tool_details_expanded(false);
+        transcript.set_tool_calls(ToolCalls::Folded);
 
         assert!(Arc::ptr_eq(&transcript.entries[0], &shared.entries[0]));
     }

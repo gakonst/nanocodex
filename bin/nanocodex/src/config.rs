@@ -161,6 +161,13 @@ pub(crate) struct AgentArgs {
     #[arg(long, env = "NANOCODEX_VOICE_ANIMATIONS", default_value_t = true, action = clap::ArgAction::Set)]
     pub(crate) voice_animations: bool,
 
+    /// How the TUI shows tool calls: expanded, folded, or hidden.
+    ///
+    /// Ctrl+O cycles through the modes. Hidden keeps only the conversation;
+    /// the footer still shows the turn as Working until it ends.
+    #[arg(long, env = "NANOCODEX_TOOL_CALLS", value_enum, default_value_t)]
+    pub(crate) tool_calls: crate::tui::ToolCalls,
+
     #[command(flatten)]
     auth: AuthArgs,
 

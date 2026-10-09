@@ -79,6 +79,29 @@ use crate::{
 pub(crate) use eval_attach::attach_evaluation;
 pub(crate) use resume_picker::select_resume_session;
 
+/// How the transcript shows tool calls. Ctrl+O cycles through the modes.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, clap::ValueEnum)]
+pub(crate) enum ToolCalls {
+    /// Each call with its arguments, output, and patch.
+    #[default]
+    Expanded,
+    /// One summary line per call.
+    Folded,
+    /// No tool rows; the footer still shows the turn as Working.
+    Hidden,
+}
+
+impl ToolCalls {
+    /// The mode Ctrl+O switches to.
+    pub(crate) const fn next(self) -> Self {
+        match self {
+            Self::Expanded => Self::Folded,
+            Self::Folded => Self::Hidden,
+            Self::Hidden => Self::Expanded,
+        }
+    }
+}
+
 const BTW_BOUNDARY: &str = r"You are answering an ephemeral BTW side question.
 Treat inherited conversation history only as reference context. Do not resume or complete an
 earlier task. Answer only the question after this boundary. Do not modify the workspace unless
@@ -819,6 +842,7 @@ pub(crate) async fn run_observed(
         .with_fast_mode(initial_fast_mode);
     app.voice.mute_key = config.voice_mute_key.clone();
     app.voice.animations = config.voice_animations;
+    app.set_tool_calls(config.tool_calls);
     "Initializing".clone_into(&mut app.main.status);
     let (worker_tx, mut worker_rx) = mpsc::unbounded_channel();
     let mut ui = UiModel::new(app, Arc::from(""));
@@ -3452,7 +3476,7 @@ fn handle_key(
             KeyCode::Char('c') => return Ok(TerminalAction::Quit),
             KeyCode::Char('g') => return Ok(TerminalAction::ExternalEditor),
             KeyCode::Char('o') => {
-                let _ = app.toggle_tool_details();
+                let _ = app.cycle_tool_calls();
             }
             KeyCode::Char('d') if app.input.is_empty() => return Ok(TerminalAction::Quit),
             KeyCode::Char('d') => app.delete(),
@@ -4390,8 +4414,8 @@ mod tests {
 
     use super::{
         BTW_BOUNDARY, CollapseDelivery, PaneId, RedrawPriority, SubagentCompletionTracker,
-        Submission, SubmitIntent, TerminalAction, UiAction, UiModel, UiUpdate, VoiceControl,
-        WorkerCommand, WorkerEvent, active_session_id, apply_main_agent_event_batch,
+        Submission, SubmitIntent, TerminalAction, ToolCalls, UiAction, UiModel, UiUpdate,
+        VoiceControl, WorkerCommand, WorkerEvent, active_session_id, apply_main_agent_event_batch,
         classify_submission, handle_key, handle_subagent_update, handle_worker_update,
         paste_clipboard_image, prepare_btw_prompt, report_cancel_outcome, session_trace_url,
         spawn_agent_worker, submit,
@@ -5997,17 +6021,19 @@ mod tests {
     }
 
     #[test]
-    fn control_o_toggles_tool_detail_density() {
+    fn control_o_cycles_expanded_folded_and_hidden_tool_calls() {
         let (commands, _worker) = mpsc::unbounded_channel();
         let mut app = App::new("/workspace".into());
         let key = KeyEvent::new(KeyCode::Char('o'), KeyModifiers::CONTROL);
 
-        assert!(app.tool_details_expanded());
-        assert_eq!(
-            handle_key(key, &mut app, "main-session", &commands).unwrap(),
-            TerminalAction::Redraw
-        );
-        assert!(!app.tool_details_expanded());
+        assert_eq!(app.tool_calls(), ToolCalls::Expanded);
+        for expected in [ToolCalls::Folded, ToolCalls::Hidden, ToolCalls::Expanded] {
+            assert_eq!(
+                handle_key(key, &mut app, "main-session", &commands).unwrap(),
+                TerminalAction::Redraw
+            );
+            assert_eq!(app.tool_calls(), expected);
+        }
     }
 
     #[test]

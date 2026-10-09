@@ -8,6 +8,7 @@ use ratatui::{
 use std::time::Instant;
 
 use super::{
+    ToolCalls,
     app::{App, Conversation, PaneId, ReasoningPicker},
     composer::ComposerLayout,
     transcript::InlineEdit,
@@ -657,10 +658,10 @@ fn render_footer(frame: &mut Frame<'_>, app: &App, area: Rect) {
     } else {
         "Esc interrupt/send"
     };
-    let tool_help = if app.tool_details_expanded() {
-        "Ctrl+O fold tools"
-    } else {
-        "Ctrl+O expand tools"
+    let tool_help = match app.tool_calls() {
+        ToolCalls::Expanded => "Ctrl+O fold tools",
+        ToolCalls::Folded => "Ctrl+O hide tools",
+        ToolCalls::Hidden => "Ctrl+O show tools",
     };
     let help = if app.btw.is_some() {
         format!(
