@@ -458,14 +458,37 @@ impl ClaudeBuilder {
         self.code_only = enabled;
         self
     }
-    /// Attaches a host policy and restores its provider-native checkpoint.
+    /// Attaches a host policy and restores its provider-native checkpoint,
+    /// including the thinking and fast-mode policy it recorded.
     /// Usually installed by `nanocodex_durability::DurableAgentExt`.
     pub fn execution_policy(
         mut self,
         policy: Arc<dyn ClaudeExecutionPolicy>,
         checkpoint: Option<Value>,
     ) -> Result<Self> {
-        self.restored = checkpoint.map(Snapshot::decode).transpose()?;
+        let restored = checkpoint.map(Snapshot::decode).transpose()?;
+        // A durable boundary records the session's thinking and fast-mode
+        // policy, which applies like [`Self::resume`]: settings configured
+        // later override it. Boundaries recorded before these settings existed
+        // carry neither and keep the builder's.
+        if let Some(snapshot) = &restored
+            && (snapshot.effort.is_some() || snapshot.fast_mode)
+        {
+            // Recorded settings must still be valid for this builder's model;
+            // models outside the shared catalog are not checked.
+            if let Ok(model) = self.claude.model.parse::<HarnessModel>()
+                && (!model.supports_thinking(effort_thinking(snapshot.effort))
+                    || (snapshot.fast_mode && !model.supports_fast_mode()))
+            {
+                return Err(NanocodexError::InvalidCheckpoint(format!(
+                    "recorded Claude thinking or fast mode is unsupported by {model}"
+                )));
+            }
+            self.effort = snapshot.effort;
+            self.adaptive_thinking = snapshot.effort.is_some();
+            self.fast_mode = snapshot.fast_mode;
+        }
+        self.restored = restored;
         self.policy = Some(policy);
         Ok(self)
     }
@@ -566,6 +589,7 @@ impl ClaudeBuilder {
         if stored.version != 1
             || stored.model.parse::<HarnessModel>().ok() != Some(model)
             || !model.supports_thinking(thinking)
+            || (stored.fast_mode && !model.supports_fast_mode())
             || stored.max_tokens == Some(0)
             || stored.context_window_tokens == 0
         {

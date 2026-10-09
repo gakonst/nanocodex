@@ -3958,7 +3958,8 @@ async fn durable_claude_resume_keeps_recorded_fast_mode_and_thinking() {
         .await
         .unwrap()
         .session_checkpoint()
-        .unwrap();
+        .unwrap()
+        .expect("a settled Claude session has a portable checkpoint");
     assert_eq!(checkpoint.thinking(), Thinking::High);
     server.abort();
 }
