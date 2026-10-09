@@ -366,6 +366,26 @@ fn summary_lines(
     theme: &Theme,
     expanded: bool,
 ) -> Vec<Line<'static>> {
+    summary_lines_with_origin(
+        tool,
+        presentation,
+        live_duration_ns,
+        width,
+        theme,
+        expanded,
+        true,
+    )
+}
+
+fn summary_lines_with_origin(
+    tool: &ToolEntry,
+    presentation: &Presentation,
+    live_duration_ns: Option<u64>,
+    width: u16,
+    theme: &Theme,
+    expanded: bool,
+    show_origin: bool,
+) -> Vec<Line<'static>> {
     if tool.name == "__tool_activity" {
         let counts = tool
             .arguments
@@ -437,11 +457,13 @@ fn summary_lines(
         );
     }
     let mut origin_spans = Vec::new();
-    append_span(
-        &mut origin_spans,
-        &format!(" · {}", tool.execution_qualifier()),
-        Style::default().fg(theme.muted()),
-    );
+    if show_origin {
+        append_span(
+            &mut origin_spans,
+            &format!(" · {}", tool.execution_qualifier()),
+            Style::default().fg(theme.muted()),
+        );
+    }
     let mut error_spans = Vec::new();
     if tool.state == ToolState::Failed
         && !matches!(
@@ -639,7 +661,9 @@ pub(super) fn group_lines(group: &ToolGroup<'_>, width: u16, theme: &Theme) -> V
         let (call, live) = group.calls[index];
         let presentation = present(call, width, theme, false).truncate_summary();
         let row_width = width.saturating_sub(display_width(connector)).saturating_add(4);
-        let mut row = summary_lines(call, &presentation, live, row_width, theme, false)
+        // The batch header already belongs to this transcript; rows stay terse.
+        let mut row =
+            summary_lines_with_origin(call, &presentation, live, row_width, theme, false, false)
             .into_iter()
             .next()
             .unwrap_or_default();
@@ -660,7 +684,7 @@ pub(super) fn group_lines(group: &ToolGroup<'_>, width: u16, theme: &Theme) -> V
 }
 
 /// Rows worth showing when a batch is long: every running or failed call,
-/// then the most recent calls.
+/// then subagent coordination, then the most recent calls.
 fn group_rows(group: &ToolGroup<'_>) -> Vec<usize> {
     let count = group.calls.len();
     if count <= MAX_GROUP_ROWS {
@@ -675,6 +699,12 @@ fn group_rows(group: &ToolGroup<'_>) -> Vec<usize> {
             )
         })
         .collect::<Vec<_>>();
+    let coordination = (0..count)
+        .filter(|&index| {
+            is_subagent_tool(group.calls[index].0.family()) && !rows.contains(&index)
+        })
+        .collect::<Vec<_>>();
+    rows.extend(coordination);
     rows.truncate(budget);
     for index in (0..count).rev() {
         if rows.len() >= budget {
@@ -695,9 +725,13 @@ fn parallel_groups(calls: &[(&ToolEntry, Option<u64>)]) -> Vec<Range<usize>> {
     let mut group_end_ms = None::<u64>;
     for (index, (call, live)) in calls.iter().enumerate() {
         let start = call.started_at_unix_ms;
-        let end = live
-            .or(call.duration_ns)
-            .map(|duration| start.saturating_add(duration / 1_000_000));
+        // A settled call's own duration is authoritative; live ticks may be stale.
+        let duration = if call.state == ToolState::Running {
+            live.or(call.duration_ns)
+        } else {
+            call.duration_ns.or(*live)
+        };
+        let end = duration.map(|duration| start.saturating_add(duration / 1_000_000));
         // Millisecond timestamps: require a real overlap, not shared rounding.
         let overlaps = group_end_ms.is_some_and(|group_end| start.saturating_add(1) < group_end)
             || (call.state == ToolState::Running
@@ -951,6 +985,7 @@ pub(super) fn format_bytes(bytes: usize) -> String {
 
 fn meaningful_subject(arguments: &Value) -> Option<String> {
     [
+        "pattern",
         "path",
         "file_path",
         "query",

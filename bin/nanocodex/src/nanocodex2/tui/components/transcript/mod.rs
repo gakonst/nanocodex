@@ -132,6 +132,8 @@ struct LayoutCache {
     live_tool_durations: HashMap<EntryId, u64>,
     expansion_overrides: HashMap<EntryId, bool>,
     expand_all: Option<bool>,
+    /// Ctrl+O's third state: only the conversation, no tool rows.
+    tools_hidden: bool,
     workspace: std::path::PathBuf,
     images: image::Cache,
 }
@@ -143,7 +145,8 @@ impl Default for LayoutCache {
             entries: HashMap::new(),
             live_tool_durations: HashMap::new(),
             expansion_overrides: HashMap::new(),
-            expand_all: None,
+            expand_all: tool_calls_from_env().0,
+            tools_hidden: tool_calls_from_env().1,
             workspace: std::env::current_dir().unwrap_or_default(),
             images: image::Cache::default(),
         }
@@ -1394,6 +1397,16 @@ fn is_expandable(entry: &TranscriptEntry) -> bool {
     )
 }
 
+/// Initial tool display from NANOCODEX_TOOL_CALLS, shared with the classic CLI's
+/// --tool-calls: expanded (every detail), folded (summaries, default) or hidden.
+fn tool_calls_from_env() -> (Option<bool>, bool) {
+    match std::env::var("NANOCODEX_TOOL_CALLS").as_deref() {
+        Ok("expanded") => (Some(true), false),
+        Ok("hidden") => (None, true),
+        _ => (None, false),
+    }
+}
+
 impl LayoutCache {
     fn expanded(&self, entry: &TranscriptEntry) -> bool {
         self.expansion_overrides
@@ -1438,7 +1451,7 @@ impl LayoutCache {
 
     // Hidden wrappers are transparent, but every visible ancestor must be open.
     fn visible_depth(&self, entry: &TranscriptEntry, model: &TranscriptModel) -> Option<u16> {
-        if entry.hidden {
+        if entry.hidden || (self.tools_hidden && matches!(entry.kind, EntryKind::Tool(_))) {
             return None;
         }
         if let Some(head) = self
@@ -1565,6 +1578,7 @@ impl LayoutCache {
                         self.live_tool_durations
                             .get(&member.id)
                             .copied()
+                            .filter(|_| call.state == ToolState::Running)
                             .or(call.duration_ns)
                             .unwrap_or(0),
                     );
@@ -1587,7 +1601,13 @@ impl LayoutCache {
                 } else {
                     only_computer = false;
                 }
-                calls.push((call, self.live_tool_durations.get(&member.id).copied()));
+                // Live ticks describe running calls only; settled calls keep their own duration.
+                let live = self
+                    .live_tool_durations
+                    .get(&member.id)
+                    .copied()
+                    .filter(|_| call.state == ToolState::Running);
+                calls.push((call, live));
                 counts[match call.state {
                     ToolState::Running => 0,
                     ToolState::Succeeded => 1,
@@ -1595,10 +1615,7 @@ impl LayoutCache {
                     ToolState::Yielded => 3,
                 }] += 1;
                 duration = duration.saturating_add(
-                    self.live_tool_durations
-                        .get(&member.id)
-                        .copied()
-                        .or(call.duration_ns)
+                    live.or(call.duration_ns)
                         .unwrap_or(0),
                 );
             }
@@ -1740,7 +1757,12 @@ impl LayoutCache {
     }
 
     fn toggle_all(&mut self) {
-        self.expand_all = Some(!matches!(self.expand_all, Some(true)));
+        // Ctrl+O cycles summaries -> every detail -> hidden tool rows -> summaries.
+        (self.expand_all, self.tools_hidden) = match (self.expand_all, self.tools_hidden) {
+            (_, true) => (None, false),
+            (Some(true), false) => (None, true),
+            _ => (Some(true), false),
+        };
         self.expansion_overrides.clear();
         self.entries.clear();
     }

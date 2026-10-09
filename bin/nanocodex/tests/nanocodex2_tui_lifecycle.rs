@@ -4401,8 +4401,8 @@ async fn terminal_tool_activity_keeps_wrapper_failures_visible() {
     fixture.nested(REMOTE_TURN, "tool.result", json!({"call_id": "wrapper/code-0", "tool": "exec_command", "status": "completed", "duration_ns": 1, "result": {"output": "child succeeded", "exit_code": 0}}));
     fixture.nested(REMOTE_TURN, "tool.result", json!({"call_id": "wrapper", "tool": "exec", "status": "failed", "duration_ns": 2, "result": {"error": "WRAPPER_FAILURE"}}));
     fixture.complete(REMOTE_TURN);
-    fixture.terminal.wait_text("execution failed").await;
-    fixture.terminal.wait_no_text("CHILD_COMMAND").await;
+    fixture.terminal.wait_text("WRAPPER_FAILURE").await;
+    fixture.terminal.wait_text("CHILD_COMMAND").await;
     eprintln!(
         "WRAPPER FAILURE\n{}",
         fixture.terminal.screen.lock().unwrap().screen().contents()
@@ -4511,21 +4511,21 @@ async fn terminal_tool_activity_is_compact_live_and_expandable() {
             json!({"call_id": id, "tool": "exec_command", "arguments": {"cmd": command}}),
         );
     }
-    fixture.terminal.wait_text("2 running").await;
-    fixture.terminal.wait_no_text("FIRST_HIDDEN_COMMAND").await;
-    fixture.terminal.wait_no_text("SECOND_HIDDEN_COMMAND").await;
+    fixture.terminal.wait_text("Tools  2 calls").await;
+    fixture.terminal.wait_text("FIRST_HIDDEN_COMMAND").await;
+    fixture.terminal.wait_text("SECOND_HIDDEN_COMMAND").await;
     eprintln!(
         "RUNNING\n{}",
         fixture.terminal.screen.lock().unwrap().screen().contents()
     );
     fixture.nested(REMOTE_TURN, "tool.result", json!({"call_id": "one", "tool": "exec_command", "status": "completed", "duration_ns": 1000000000, "result": {"output": "FIRST_HIDDEN_OUTPUT", "exit_code": 0}}));
-    fixture.terminal.wait_text("1 running · 1 completed").await;
+    fixture.terminal.wait_text("exit 0").await;
     fixture.nested(REMOTE_TURN, "tool.result", json!({"call_id": "two", "tool": "exec_command", "status": "failed", "duration_ns": 2000000000, "result": {"output": "SECOND_HIDDEN_FAILURE", "exit_code": 1}}));
     fixture.complete(REMOTE_TURN);
     fixture.terminal.wait_text("Enter send").await;
-    fixture.terminal.wait_text("1 completed · 1 failed").await;
+    fixture.terminal.wait_text("2 calls · 1 failed").await;
     fixture.terminal.wait_no_text("FIRST_HIDDEN_OUTPUT").await;
-    fixture.terminal.wait_no_text("SECOND_HIDDEN_FAILURE").await;
+    fixture.terminal.wait_text("SECOND_HIDDEN_FAILURE").await;
     eprintln!(
         "SETTLED\n{}",
         fixture.terminal.screen.lock().unwrap().screen().contents()
@@ -4543,7 +4543,7 @@ async fn terminal_tool_activity_is_compact_live_and_expandable() {
             + 1;
         terminal.input(&format!("\x1b[<0;2;{row}M\x1b[<0;2;{row}m"));
     }
-    click(&mut fixture.terminal, "2 tools");
+    click(&mut fixture.terminal, "Tools  2 calls");
     fixture.terminal.wait_text("FIRST_HIDDEN_OUTPUT").await;
     fixture.terminal.wait_text("SECOND_HIDDEN_COMMAND").await;
     click(&mut fixture.terminal, "SECOND_HIDDEN_COMMAND");
@@ -4554,9 +4554,9 @@ async fn terminal_tool_activity_is_compact_live_and_expandable() {
         fixture.terminal.screen.lock().unwrap().screen().contents()
     );
     click(&mut fixture.terminal, "FIRST_HIDDEN_COMMAND");
-    fixture.terminal.wait_text("1 completed · 1 failed").await;
-    fixture.terminal.wait_no_text("FIRST_HIDDEN_COMMAND").await;
-    fixture.terminal.wait_no_text("SECOND_HIDDEN_FAILURE").await;
+    fixture.terminal.wait_text("2 calls · 1 failed").await;
+    fixture.terminal.wait_text("FIRST_HIDDEN_COMMAND").await;
+    fixture.terminal.wait_text("SECOND_HIDDEN_FAILURE").await;
 }
 
 #[tokio::test]
@@ -4600,9 +4600,9 @@ async fn terminal_batch_children_expand_independently_and_collapse_with_parent()
     fixture.complete(REMOTE_TURN);
     // Completion appends an answer and moves the batch row; wait before hit testing.
     fixture.terminal.wait_text("Enter send").await;
-    fixture.terminal.wait_text("2 tools").await;
-    fixture.terminal.wait_no_text("check-first").await;
-    fixture.terminal.wait_no_text("check-second").await;
+    fixture.terminal.wait_text("Tools  2 calls").await;
+    fixture.terminal.wait_text("check-first").await;
+    fixture.terminal.wait_text("check-second").await;
 
     fn click_row(terminal: &mut Terminal, text: &str) {
         let row = terminal
@@ -4618,7 +4618,8 @@ async fn terminal_batch_children_expand_independently_and_collapse_with_parent()
         terminal.input(&format!("\x1b[<0;2;{row}M\x1b[<0;2;{row}m"));
     }
 
-    click_row(&mut fixture.terminal, "2 tools");
+    click_row(&mut fixture.terminal, "Tools  2 calls");
+    fixture.terminal.wait_text("2 tools").await;
     fixture.terminal.wait_text("check-first").await;
     fixture.terminal.wait_text("check-second").await;
     fixture.terminal.wait_no_text("FIRST_CHILD_OUTPUT").await;
@@ -4636,11 +4637,11 @@ async fn terminal_batch_children_expand_independently_and_collapse_with_parent()
     fixture.terminal.wait_text("FIRST_CHILD_OUTPUT").await;
     fixture.terminal.wait_no_text("SECOND_CHILD_OUTPUT").await;
     click_row(&mut fixture.terminal, "2 tools");
-    fixture.terminal.wait_no_text("check-first").await;
-    fixture.terminal.wait_no_text("check-second").await;
+    fixture.terminal.wait_text("check-first").await;
+    fixture.terminal.wait_text("check-second").await;
     fixture.terminal.wait_no_text("FIRST_CHILD_OUTPUT").await;
 
-    click_row(&mut fixture.terminal, "2 tools");
+    click_row(&mut fixture.terminal, "Tools  2 calls");
     fixture.terminal.wait_text("FIRST_CHILD_OUTPUT").await;
     fixture.terminal.wait_text("check-second").await;
     fixture.terminal.wait_no_text("SECOND_CHILD_OUTPUT").await;
@@ -6958,54 +6959,109 @@ async fn terminal_inline_review_unavailable_context_preserves_findings() {
     }
 }
 
+// Folded tool batches use the classic CLI summary: one "Tools" header with the
+// call count and duration, then one terse row per call. Failures stay visible,
+// long batches elide quiet rows, and Ctrl+O discloses every call's details.
 #[tokio::test]
-async fn terminal_tool_summary_capture_probe() {
+async fn terminal_tool_batches_fold_into_classic_summaries() {
     let mut fixture = Fixture::start_with_active(true).await;
+    let evidence = std::env::var_os("NANOCODEX_TUI_EVIDENCE");
+    let dump = |label: &str, fixture: &Fixture| {
+        let contents = fixture.terminal.screen.lock().unwrap().screen().contents();
+        if let Some(dir) = &evidence {
+            std::fs::write(Path::new(dir).join(format!("{label}.screen.txt")), &contents).unwrap();
+        }
+        contents
+    };
     let comment = |item: &str, text: &str| json!({"model_call_index": 1, "item_id": item, "phase": "commentary", "text": text});
-    fixture.nested(REMOTE_TURN, "assistant.message", comment("c-one", "I'll look around the workspace first."));
-    fixture.nested(REMOTE_TURN, "tool.call", json!({"call_id": "cell1", "tool": "exec", "arguments": "const [files, readme] = await Promise.all([tools.Glob({pattern: \"*.md\"}), tools.Read({file_path: \"/ws/README.md\"})]);\nconst ls = await tools.Bash({command: \"ls -la\"});\ntext(\"README_FIRST_LINE\");"}));
-    for (index, tool, arguments, result, duration) in [
-        (0, "Glob", json!({"pattern": "*.md"}), json!({"filenames": ["README.md", "notes.md"], "numFiles": 2}), 4_000_000_u64),
-        (1, "Read", json!({"file_path": "/ws/README.md"}), json!({"content": "1\t# Demo project\n2\tTODO: write docs"}), 2_000_000),
-        (2, "Bash", json!({"command": "ls -la", "description": "List workspace"}), json!({"stdout": "total 8\nREADME.md\nnotes.md", "exit_code": 0}), 10_000_000),
-    ] {
-        let id = format!("cell1/code-{index}");
+    // Sequential calls are separated by real time so they do not read as parallel.
+    async fn call(fixture: &mut Fixture, id: &str, tool: &str, arguments: Value) {
+        tokio::time::sleep(Duration::from_millis(20)).await;
         fixture.nested(REMOTE_TURN, "tool.call", json!({"call_id": id, "tool": tool, "arguments": arguments}));
-        fixture.nested(REMOTE_TURN, "tool.result", json!({"call_id": id, "tool": tool, "status": "completed", "duration_ns": duration, "result": result}));
     }
-    fixture.nested(REMOTE_TURN, "tool.result", json!({"call_id": "cell1", "tool": "exec", "status": "completed", "duration_ns": 25_000_000, "result": [{"type": "input_text", "text": "README_FIRST_LINE # Demo project"}]}));
+    fn finish(fixture: &mut Fixture, id: &str, tool: &str, status: &str, duration_ns: u64, result: Value) {
+        fixture.nested(REMOTE_TURN, "tool.result", json!({"call_id": id, "tool": tool, "status": status, "duration_ns": duration_ns, "result": result}));
+    }
+
+    fixture.nested(REMOTE_TURN, "assistant.message", comment("c-one", "I'll look around the workspace first."));
+    call(&mut fixture, "cell1", "exec", json!("const [files, readme] = await Promise.all([tools.Glob({pattern: \"*.md\"}), tools.Read({file_path: \"/ws/README.md\"})]);\nawait tools.Bash({command: \"ls -la\"});\ntext(\"README_FIRST_LINE\");")).await;
+    // Glob and Read run in parallel; Bash follows them.
+    call(&mut fixture, "cell1/code-0", "Glob", json!({"pattern": "GLOB_PATTERN_*.md"})).await;
+    fixture.nested(REMOTE_TURN, "tool.call", json!({"call_id": "cell1/code-1", "tool": "Read", "arguments": {"file_path": "/ws/README.md"}}));
+    fixture.terminal.wait_text("2 calls").await;
+    let running = dump("running", &fixture);
+    assert!(running.lines().any(|line| line.contains("Tools  2 calls")), "{running}");
+    assert!(running.contains("◌ Glob") && running.contains("◌ Read"), "{running}");
+    tokio::time::sleep(Duration::from_millis(40)).await;
+    finish(&mut fixture, "cell1/code-0", "Glob", "completed", 40_000_000, json!({"filenames": ["README.md"], "numFiles": 1}));
+    finish(&mut fixture, "cell1/code-1", "Read", "completed", 41_000_000, json!({"content": "RAW_README_CONTENT"}));
+    call(&mut fixture, "cell1/code-2", "Bash", json!({"command": "ls -la", "description": "List workspace"})).await;
+    finish(&mut fixture, "cell1/code-2", "Bash", "completed", 10_000_000, json!({"stdout": "RAW_LS_OUTPUT", "exit_code": 0}));
+    finish(&mut fixture, "cell1", "exec", "completed", 95_000_000, json!([{"type": "input_text", "text": "README_FIRST_LINE # Demo project"}]));
+
     fixture.nested(REMOTE_TURN, "assistant.message", comment("c-two", "Now checking for TODOs and the missing file."));
-    fixture.nested(REMOTE_TURN, "tool.call", json!({"call_id": "cell2", "tool": "exec", "arguments": "await tools.Grep({pattern: \"TODO\"}); text(await tools.Bash({command: \"cat MISSING_FILE.txt\"}));"}));
-    fixture.nested(REMOTE_TURN, "tool.call", json!({"call_id": "cell2/code-0", "tool": "Grep", "arguments": {"pattern": "TODO", "path": "/ws"}}));
-    fixture.nested(REMOTE_TURN, "tool.result", json!({"call_id": "cell2/code-0", "tool": "Grep", "status": "completed", "duration_ns": 3_000_000, "result": {"filenames": ["README.md"], "numFiles": 1}}));
-    fixture.nested(REMOTE_TURN, "tool.call", json!({"call_id": "cell2/code-1", "tool": "Bash", "arguments": {"command": "cat MISSING_FILE.txt", "description": "Read missing file"}}));
-    fixture.nested(REMOTE_TURN, "tool.result", json!({"call_id": "cell2/code-1", "tool": "Bash", "status": "failed", "duration_ns": 11_000_000, "result": {"stderr": "cat: MISSING_FILE.txt: No such file or directory", "exit_code": 1}}));
-    fixture.nested(REMOTE_TURN, "tool.result", json!({"call_id": "cell2", "tool": "exec", "status": "completed", "duration_ns": 24_000_000, "result": [{"type": "input_text", "text": "exit_code: 1"}]}));
-    fixture.nested(REMOTE_TURN, "assistant.message", comment("c-three", "Delegating a review to a subagent."));
-    fixture.nested(REMOTE_TURN, "tool.call", json!({"call_id": "cell3", "tool": "exec", "arguments": "const a = await tools.spawn_agent({role: \"Reviewer\", task: \"Review README\"}); await tools.wait_agent({agent_ids: [a.agent_id]});"}));
-    fixture.nested(REMOTE_TURN, "tool.call", json!({"call_id": "cell3/code-0", "tool": "spawn_agent", "arguments": {"role": "Reviewer", "task": "Review README"}}));
-    fixture.nested(REMOTE_TURN, "tool.result", json!({"call_id": "cell3/code-0", "tool": "spawn_agent", "status": "completed", "duration_ns": 5_000_000, "result": {"agent_id": 7, "status": "running"}}));
-    fixture.nested(REMOTE_TURN, "tool.call", json!({"call_id": "cell3/code-1", "tool": "wait_agent", "arguments": {"agent_ids": [7]}}));
-    fixture.nested(REMOTE_TURN, "tool.result", json!({"call_id": "cell3/code-1", "tool": "wait_agent", "status": "completed", "duration_ns": 1_500_000_000_u64, "result": {"agents": [{"agent_id": 7, "status": "completed", "output": "README is fine"}]}}));
-    fixture.nested(REMOTE_TURN, "tool.result", json!({"call_id": "cell3", "tool": "exec", "status": "completed", "duration_ns": 1_510_000_000_u64, "result": [{"type": "input_text", "text": "review done"}]}));
-    fixture.nested(REMOTE_TURN, "assistant.message", json!({"model_call_index": 2, "item_id": "final", "phase": "final_answer", "text": "FINAL_ANSWER: the workspace has a README with one TODO."}));
+    call(&mut fixture, "cell2", "exec", json!("await tools.Grep({pattern: \"TODO\"}); text(await tools.Bash({command: \"cat MISSING_FILE.txt\"}));")).await;
+    call(&mut fixture, "cell2/code-0", "Grep", json!({"pattern": "TODO", "path": "/ws"})).await;
+    finish(&mut fixture, "cell2/code-0", "Grep", "completed", 3_000_000, json!({"filenames": ["README.md"], "numFiles": 1}));
+    call(&mut fixture, "cell2/code-1", "Bash", json!({"command": "cat MISSING_FILE.txt", "description": "Read missing file"})).await;
+    finish(&mut fixture, "cell2/code-1", "Bash", "failed", 11_000_000, json!({"stderr": "MISSING_FILE_ERROR: No such file or directory", "exit_code": 1}));
+    finish(&mut fixture, "cell2", "exec", "completed", 24_000_000, json!([{"type": "input_text", "text": "exit_code: 1"}]));
+
+    fixture.nested(REMOTE_TURN, "assistant.message", comment("c-three", "Delegating a review, then sweeping files."));
+    call(&mut fixture, "cell3", "exec", json!("const a = await tools.spawn_agent({role: \"Reviewer\", task: \"Review README\"}); await tools.wait_agent({agent_ids: [a.agent_id]}); for (const f of files) await tools.Read({file_path: f});")).await;
+    call(&mut fixture, "cell3/code-0", "spawn_agent", json!({"role": "Reviewer", "task": "Review README"})).await;
+    finish(&mut fixture, "cell3/code-0", "spawn_agent", "completed", 5_000_000, json!({"agent_id": 7, "status": "running"}));
+    call(&mut fixture, "cell3/code-1", "wait_agent", json!({"agent_ids": [7]})).await;
+    finish(&mut fixture, "cell3/code-1", "wait_agent", "completed", 1_500_000_000, json!({"agents": [{"agent_id": 7, "status": "completed", "output": "README is fine"}]}));
+    for index in 2..10 {
+        let id = format!("cell3/code-{index}");
+        call(&mut fixture, &id, "Read", json!({"file_path": format!("/ws/SWEEP_FILE_{index}.md")})).await;
+        let (status, result) = if index == 4 {
+            ("failed", json!({"error": "SWEEP_READ_DENIED"}))
+        } else {
+            ("completed", json!({"content": "RAW_SWEEP_CONTENT"}))
+        };
+        finish(&mut fixture, &id, "Read", status, 1_000_000, result);
+    }
+    finish(&mut fixture, "cell3", "exec", "completed", 1_610_000_000, json!([{"type": "input_text", "text": "review done"}]));
+    fixture.nested(REMOTE_TURN, "assistant.message", json!({"model_call_index": 2, "item_id": "final", "phase": "final_answer", "text": "FINAL_ANSWER: one TODO."}));
     fixture.complete(REMOTE_TURN);
     fixture.terminal.wait_text("FINAL_ANSWER").await;
     fixture.terminal.wait_text("Enter send").await;
-    tokio::time::sleep(Duration::from_millis(300)).await;
-    let dump = |label: &str, fixture: &Fixture| {
-        let contents = fixture.terminal.screen.lock().unwrap().screen().contents();
-        eprintln!("=== {label}\n{contents}");
-        if let Some(dir) = std::env::var_os("NANOCODEX_TUI_EVIDENCE") {
-            std::fs::write(Path::new(&dir).join(format!("{label}.screen.txt")), contents).unwrap();
-        }
-    };
-    dump("default", &fixture);
+    fixture.terminal.wait_text("10 calls").await;
+
+    let folded = dump("folded", &fixture);
+    for expected in [
+        "✓ Tools  3 calls", "README_FIRST_LINE # Demo project", "GLOB_PATTERN_*.md", "/ws/README.md", "$ ls -la",
+        "× Tools  2 calls · 1 failed", "MISSING_FILE_ERROR", "TODO",
+        "Tools  10 calls · 1 failed", "Spawned", "Waited on", "SWEEP_READ_DENIED", "5 more · Ctrl+O",
+    ] {
+        assert!(folded.contains(expected), "folded summary lacks {expected:?}\n{folded}");
+    }
+    // Glob and Read overlap, so they share a parallel branch; Bash closes the batch.
+    assert!(folded.lines().any(|line| line.contains("├─┬") && line.contains("Glob")), "{folded}");
+    assert!(folded.lines().any(|line| line.contains("└──") && line.contains("ls -la")), "{folded}");
+    for raw in ["RAW_README_CONTENT", "RAW_LS_OUTPUT", "RAW_SWEEP_CONTENT", "SWEEP_FILE_2", "Local"] {
+        assert!(!folded.contains(raw), "folded summary leaked {raw:?}\n{folded}");
+    }
+
     fixture.terminal.input("\x0f");
-    tokio::time::sleep(Duration::from_millis(500)).await;
-    dump("ctrl-o-1", &fixture);
+    fixture.terminal.wait_text("RAW_SWEEP_CONTENT").await;
+    dump("expanded", &fixture);
+    // Ctrl+O's third state hides tool rows but keeps the conversation.
     fixture.terminal.input("\x0f");
-    tokio::time::sleep(Duration::from_millis(500)).await;
-    dump("ctrl-o-2", &fixture);
+    fixture.terminal.wait_no_text("RAW_SWEEP_CONTENT").await;
+    fixture.terminal.wait_no_text("Tools  3 calls").await;
+    let hidden = dump("hidden", &fixture);
+    for kept in ["I’ll look around the workspace first.", "Now checking for TODOs", "FINAL_ANSWER"] {
+        assert!(hidden.contains(kept), "hidden mode lost {kept:?}\n{hidden}");
+    }
+    for gone in ["Tools", "MISSING_FILE", "Glob"] {
+        assert!(!hidden.contains(gone), "hidden mode leaked {gone:?}\n{hidden}");
+    }
+    fixture.terminal.input("\x0f");
+    fixture.terminal.wait_text("5 more · Ctrl+O").await;
+    fixture.terminal.wait_text("Tools  3 calls").await;
+    dump("refolded", &fixture);
 }
 
