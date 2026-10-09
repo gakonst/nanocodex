@@ -8,7 +8,11 @@ import WebSocket from "ws";
 import { EXEC_COMMAND_PARAMETERS, EXECUTION_OUTPUT_SCHEMA } from "../../nanocodex-tools/tools/execution-contract.mjs";
 import { startHandDeviceServer } from "./support/hand-device-server.mjs";
 
-// Run from js/managed: node --test test/hand-device-keys-journey.test.mjs
+// Run from js/managed: npm run test:hand-device-keys. The bundled Worker needs the
+// generated QuickJS evaluator (prepared by the script) and the js/nanocodex
+// pkg-web WASM build: CI downloads the nanocodex-wasm artifact produced by
+// ./js/nanocodex-vite/scripts/build-js-package.sh --release; locally run that
+// script (or its debug variant) from the repository root first.
 // Public managed routes over real loopback HTTP + WebSocket against workerd
 // SQLite Durable Objects. Only external identity is synthetic.
 const repo = fileURLToPath(new URL("../../../", import.meta.url));

@@ -82,7 +82,7 @@
     "test:account-links": "node --test test/account-navigation-journey.test.mjs",
     "test:services": "node ../egress/scripts/prepare-whatsapp.mjs && node scripts/prepare-code-evaluator.mjs && node scripts/prepare-just-bash-lazy.mjs && node --test test/services-api-journey.test.mjs test/phone-provider-journey.test.mjs test/phone-stack-journey.test.mjs",
     "test:hand-sharing": "node --test test/hand-sharing-journey.test.mjs",
-    "test:hand-device-keys": "node --test test/hand-device-keys-journey.test.mjs",
+    "test:hand-device-keys": "node scripts/prepare-code-evaluator.mjs && node --test test/hand-device-keys-journey.test.mjs",
     "test:hand-device-cli": "node --test test/hand-device-cli-journey.test.mjs",
     "test:hand-inventory": "node --test test/hand-inventory-journey.test.mjs",
     "test:code-observations:workerd": "node scripts/prepare-code-evaluator.mjs && node --test test/code-observation-workerd-journey.test.mjs",

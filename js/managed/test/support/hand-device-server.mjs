@@ -32,13 +32,13 @@ const source = (keys, publicOrigin) => [
   "// Test-only driver: the model-facing tool path that invokes a published Hand tool.",
   "export class ToolDriver extends DurableObject {",
   "  async fetch(request) {",
-  "    const { owner, machine, call, cmd } = await request.json();",
+  "    const { owner, machine, call, cmd, workdir } = await request.json();",
   "    const provider = new AccountHostedToolsProvider(this.env.NANOCODEX_ACCOUNT_TOOLS, owner, () => true, undefined);",
   "    await provider.refresh();",
   "    const tool = provider.machineTool(machine, 'exec_command');",
   "    if (!tool) return Response.json({ error: 'tool_unavailable' }, { status: 404 });",
   "    try {",
-  "      const result = await tool.handler({ cmd, workdir: '/synthetic/workspace' },",
+  "      const result = await tool.handler({ cmd, workdir: workdir || '/synthetic/workspace' },",
   "        { sessionId: 'device-journey', turnId: 'device-turn', callId: call, model: 'synthetic', signal: request.signal });",
   "      return Response.json(result);",
   "    } catch (error) { return Response.json({ error: String(error && error.message || error) }, { status: 502 }); }",
@@ -116,9 +116,9 @@ export async function startHandDeviceServer({ output, ttlSeconds = 10, publicOri
     } });
   const base = (await mf.ready).href.replace(/\/$/, "");
   /** Invoke exec_command on an attached account machine through the model-facing provider path. */
-  const callHandTool = async ({ ownerId = owner, machineId, cmd, callId = crypto.randomUUID() }) => {
+  const callHandTool = async ({ ownerId = owner, machineId, cmd, workdir, callId = crypto.randomUUID() }) => {
     const response = await fetch(base + "/__fixture/tool", { method: "POST", headers: { "content-type": "application/json" },
-      body: JSON.stringify({ owner: ownerId, machine: machineId, call: callId, cmd }), signal: AbortSignal.timeout(20_000) });
+      body: JSON.stringify({ owner: ownerId, machine: machineId, call: callId, cmd, workdir }), signal: AbortSignal.timeout(20_000) });
     return { status: response.status, body: await response.json() };
   };
   return { base, origin: publicOrigin ?? new URL(base).origin, owner, apiKey, otherOwner, otherApiKey, observations, logs, callHandTool,
