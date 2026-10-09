@@ -419,7 +419,8 @@ async fn permission_request_targets_only_the_running_daemon() {
         )
     });
 
-    let executable = Path::new(env!("CARGO_BIN_EXE_nanocodex"));
+    // The CLI forwards `hand` to the Hand executable, which owns the daemon.
+    let executable = Path::new(env!("CARGO_BIN_EXE_nanocodex-hand"));
     let request = |pid: u32| {
         let mut command = command(&home, &origin);
         command

@@ -204,7 +204,7 @@ impl Tmux {
                     .is_some_and(|at| at >= now.saturating_sub(10_000));
                 let agent = if dead {
                     marker
-                } else if current_command != "nanocodex2" {
+                } else if !matches!(current_command, "nanocodex" | "nanocodex2" | "nc") {
                     ""
                 } else if fresh {
                     // A fresh empty identity means /new/connecting, not the previous thread.

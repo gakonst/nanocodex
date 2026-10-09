@@ -405,9 +405,9 @@ async fn validate_candidate(candidate: &Path) -> Result<PathBuf> {
         .arg("--version")
         .output()
         .await
-        .wrap_err("Could not start nanocodex2.exe")?;
+        .wrap_err("Could not start the Nanocodex Hand executable")?;
     if !version.status.success() {
-        bail!("nanocodex2.exe could not start");
+        bail!("The Nanocodex Hand executable could not start");
     }
     Ok(candidate)
 }
@@ -512,7 +512,7 @@ async fn wait_publication(
         }
         if tokio::time::Instant::now() >= deadline {
             bail!(
-                "Windows started the Hand task, but nanocodex2.exe did not remain running. Check {}",
+                "Windows started the Hand task, but the Hand executable did not remain running. Check {}",
                 data_directory()?.join("hand.log").display()
             );
         }
@@ -598,16 +598,9 @@ pub(crate) async fn ensure(candidate: Option<PathBuf>) -> Result<()> {
     refuse_legacy_service().await?;
     let candidate = match candidate {
         Some(candidate) => candidate,
-        None => {
-            let sibling = std::env::current_exe()?.with_file_name("nanocodex2.exe");
-            if sibling.is_file() {
-                sibling
-            } else {
-                crate::update::active_windows_hand_binary()?.ok_or_else(|| {
-                    eyre!("nanocodex2.exe is not installed beside the CLI or in the active bundle")
-                })?
-            }
-        }
+        // This one executable is the Hand; keep an identical nanocodex2.exe
+        // beside it as the task's recorded name when present.
+        None => crate::hand_executable::hand_binary()?,
     };
     let candidate = validate_candidate(&candidate).await?;
     if let Some(existing) = task_definition().await? {

@@ -1313,7 +1313,11 @@ fn prepare(
     Ok(journal)
 }
 fn validate_hand_args(args: &[String]) -> Result<()> {
-    if args.first().map(String::as_str) != Some(EXE) {
+    // Units are written with EXE; the same binary is also released as nanocodex.
+    if !matches!(
+        args.first().map(String::as_str),
+        Some(EXE | "/opt/nanocodex/current/nanocodex")
+    ) {
         bail!("unknown Hand executable");
     }
     if args.get(1).map(String::as_str) == Some("__device-hand")
@@ -2080,6 +2084,8 @@ mod tests {
             "/opt/nanocodex/current/nanocodex2 __device-hand --daemon",
         ))
         .unwrap();
+        validate_hand_args(&args("/opt/nanocodex/current/nanocodex hand")).unwrap();
+        assert!(validate_hand_args(&args("/opt/nanocodex/current/ncl hand")).is_err());
     }
     #[test]
     fn rejects_factory_vm_enrollment_and_ambiguous_args() {

@@ -122,7 +122,7 @@ impl RecoveryRecord {
                 .bytes()
                 .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c))
             || !self.helper.is_absolute()
-            || self.helper.file_name().is_none_or(|n| n != "nanocodex2")
+            || !crate::hand_executable::is_hand_file_name(&self.helper)
         {
             bail!("invalid Linux Hand recovery record");
         }

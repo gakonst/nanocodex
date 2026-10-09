@@ -185,10 +185,24 @@ path = "tests/local_managed_server.rs"
 name = "tui_control"
 path = "tests/tui_control.rs"
 
+# One crate, two executables split by role: the user-facing CLI and the Hand
+# daemon (installed under the historical file name nanocodex2).
+[lib]
+name = "nanocodex_cli"
+path = "src/lib.rs"
+doc = false
+
 [[bin]]
 name = "nanocodex"
 path = "src/main.rs"
 doc = false
+test = false
+
+[[bin]]
+name = "nanocodex-hand"
+path = "src/hand_main.rs"
+doc = false
+test = false
 
 # The installed entrypoint initializes its environment before
 # starting any threads. Keep that one unsafe boundary locally auditable while

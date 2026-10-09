@@ -293,8 +293,19 @@ async fn install_user_service() -> Result<service_start::Reply, String> {
     // The installer locks/rechecks ownership and requires a matching saved login.
     let account =
         nanocodex_cli_auth::saved_enrollment_account_file().map_err(|error| error.to_string())?;
-    let binary = std::env::current_exe().map_err(|error| error.to_string())?;
-    let installer = binary.with_file_name("nanocodex");
+    // The Hand executable is this process when the daemon runs it, otherwise
+    // the installed Hand beside the CLI; the CLI owns service installation.
+    let (binary, installer) = if crate::hand_executable::is_hand_role() {
+        (
+            std::env::current_exe().map_err(|error| error.to_string())?,
+            crate::hand_executable::cli_binary().map_err(|error| error.to_string())?,
+        )
+    } else {
+        (
+            crate::hand_executable::hand_binary().map_err(|error| error.to_string())?,
+            std::env::current_exe().map_err(|error| error.to_string())?,
+        )
+    };
     let status = Command::new(&installer)
         .args(["hand", "install", "--if-missing", "--executable"])
         .arg(&binary)

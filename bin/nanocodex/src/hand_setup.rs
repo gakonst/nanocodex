@@ -30,13 +30,13 @@ pub(crate) enum HandCommand {
         /// SSH port for --target; otherwise use normal SSH configuration.
         #[arg(short, long, requires = "target")]
         port: Option<u16>,
-        /// nanocodex2 executable override for local macOS or Windows development.
+        /// Hand executable override for local macOS or Windows development (default: this binary).
         #[arg(long, conflicts_with = "target")]
         executable: Option<PathBuf>,
         /// macOS account file override for local development.
         #[arg(long, conflicts_with = "target")]
         account_file: Option<PathBuf>,
-        /// Directory containing a development Linux nanocodex2 binary.
+        /// Directory containing a development Linux nanocodex (or nanocodex2) binary.
         #[arg(long, value_name = "DIRECTORY", hide = true)]
         artifacts: Option<PathBuf>,
         /// First-launch enrollment only; never replace or restart an owner.
@@ -413,11 +413,19 @@ async fn run_linux_installer(
         destination.label()
     );
     let binary = match artifacts {
-        Some(directory) => fs::read(directory.join("nanocodex2"))
-            .wrap_err_with(|| format!("Missing nanocodex2 in {}", directory.display()))?,
+        Some(directory) => ["nanocodex2", "nanocodex"]
+            .iter()
+            .map(|name| directory.join(name))
+            .find(|path| path.is_file())
+            .map_or_else(
+                || Err(eyre::eyre!("Missing nanocodex in {}", directory.display())),
+                |path| fs::read(path).wrap_err("Could not read the Linux Hand binary"),
+            )?,
         None => {
-            let local = executable.unwrap_or(std::env::current_exe()?.with_file_name("nanocodex2"));
-            if matches!(destination, Destination::Local) && local.is_file() {
+            let local = executable.or_else(|| crate::hand_executable::hand_binary().ok());
+            if let Some(local) =
+                local.filter(|local| matches!(destination, Destination::Local) && local.is_file())
+            {
                 fs::read(&local).wrap_err("Could not read the installed Hand binary")?
             } else {
                 crate::update::linux_hand_binary().await?
