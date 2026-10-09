@@ -100,7 +100,7 @@ fn image_dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
 }
 
 // Model-visible notes that replace an image Claude cannot use. The first three
-// match the notes of the shared image preparation and the OpenAI driver.
+// repeat the notes of the shared image preparation.
 const IMAGE_UNPROCESSABLE: &str = "image content omitted because it could not be processed";
 const IMAGE_TOO_LARGE: &str =
     "image content omitted because it exceeded the supported size limit; use a smaller image";
@@ -358,7 +358,6 @@ fn local_image(path: &std::path::Path) -> std::result::Result<String, &'static s
     ))
 }
 
-/// Local files need a native filesystem.
 #[cfg(target_family = "wasm")]
 fn local_image(_path: &std::path::Path) -> std::result::Result<String, &'static str> {
     Err("requires a native filesystem")

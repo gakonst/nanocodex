@@ -973,7 +973,7 @@ async fn tool_images_fit_many_image_limit_before_history_crosses_twenty() {
         "the completed effect is not an error"
     );
     assert_eq!(receipt["content"][0]["text"], "captured");
-    // The standard tier's native size, already within the many-image limit.
+    // The standard tier's native size, which is within the many-image limit.
     assert_eq!(image_dimensions(&receipt["content"][1]), Some((1568, 78)));
     assert_eq!(
         receipt["content"][2]["type"], "text",
@@ -2086,7 +2086,7 @@ async fn steering_acknowledges_consumption_at_tool_and_terminal_boundaries() {
                 accepted.push(payload);
             }
         }
-        // Admission reports each steer's accepted input, as for prompts.
+        // Admission reports each steer's accepted input.
         assert_eq!(
             accepted
                 .iter()
@@ -2418,7 +2418,7 @@ async fn steers_admitted_during_streaming_keep_every_event() {
     server.abort();
 }
 
-/// A turn whose run panics still retires, so the agent can shut down.
+/// A turn retires even when its run panics, so the agent can shut down.
 #[tokio::test]
 async fn a_panicking_tool_does_not_block_shutdown() {
     use std::time::Duration;

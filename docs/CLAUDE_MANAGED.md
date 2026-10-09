@@ -86,8 +86,8 @@ Durable Object reopen in the shared durability store. Events retain streaming
 assistant text and tool cards. This does **not** make OpenAI snapshots portable
 to Claude. Managed Claude accepts ordered text, base64 images and inline PDF or
 UTF-8 plain text documents, and replaces a remote image URL with a note to the
-model, as the OpenAI driver does. JPEG, PNG, GIF and WebP originals uploaded by
-native clients are frozen into the dispatch when they fit the application bounds;
+model. JPEG, PNG, GIF and WebP originals uploaded by native clients are frozen
+into the dispatch when they fit the application bounds;
 other image formats and oversized originals use the bounded JPEG preview. Missing,
 invalid or over-limit originals and previews produce an explicit notice. Hand-local
 images require that Hand's image tools. Frozen dispatch and native Messages history

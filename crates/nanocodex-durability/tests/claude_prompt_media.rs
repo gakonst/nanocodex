@@ -249,7 +249,7 @@ async fn accepted_queued_local_image_is_frozen_before_file_deletion() {
 }
 
 /// An image Claude cannot use is replaced by a note telling the model why,
-/// and the rest of the prompt is still sent.
+/// and the rest of the prompt is sent.
 #[tokio::test]
 async fn unusable_prompt_images_are_replaced_by_notes() {
     let dir = tempfile::tempdir().unwrap();

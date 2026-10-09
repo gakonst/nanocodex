@@ -98,11 +98,11 @@ and reduced to the model's native resolution, the size the Messages API would
 otherwise reduce them to: a 2576 px long edge
 and 4,784 visual tokens of 28×28 px on Claude 4.7 and later models, and 1568 px
 and 1,568 tokens on other models. A prepared image must fit 5 MiB, so a larger
-encoding is shrunk further; originals of up to 64 MiB are read. As in the OpenAI
-driver, an image Claude cannot use is replaced in place by a short note that
-tells the model why, and the rest of the prompt is sent: an opaque OpenAI file
-ID, an unreadable or undecodable image, one that cannot fit 5 MiB, a remote
-image URL, or a local image on WASM. Audio prompts fail explicitly before HTTP.
+encoding is shrunk further; originals of up to 64 MiB are read. An image Claude
+cannot use is replaced in place by a short note that tells the model why, and
+the rest of the prompt is sent: an opaque OpenAI file ID, an unreadable or
+undecodable image, one that cannot fit 5 MiB, a remote image URL, or a local
+image on WASM. Audio prompts fail explicitly before HTTP.
 Limits are 100 content items, 20 images, and 20 MiB of combined prepared media
 per prompt. Durable steers are journaled in this prepared form.
 A resumed durable operation prepares its prompt and steers for the model its
@@ -195,10 +195,9 @@ latency.
 `ModelCallCompleted` publishes response usage before client tools finish, including
 cache-read/write details. Compaction calls are excluded from active-response
 events; their usage still participates in the turn totals described below.
-Each admitted steer is reported by an `InputAccepted` event of kind `steer`, as
-in the OpenAI driver. Like the prompt's event, it carries the prepared input the
-model receives, with a note in place of each unusable image, where the OpenAI
-driver reports the submitted input. Steering is acknowledged
+Each admitted steer is reported by an `InputAccepted` event of kind `steer`.
+Like the prompt's event, it carries the prepared input the model receives, with
+a note in place of each unusable image. Steering is acknowledged
 with `RunSteered` when the runtime consumes the queued instruction at a tool or
 terminal response boundary, rather than when it is submitted. Multiple
 instructions retain their order as separate native messages.

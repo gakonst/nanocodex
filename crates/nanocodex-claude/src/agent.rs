@@ -1488,7 +1488,6 @@ fn host_reply(
                                 .map_err(|error| error.to_string())?
                                 .0
                             }
-                            // Tool-result preparation replaces a remote image with a note.
                             ImageSource::Url { url } => json!({"type":"url","url":url}),
                         };
                         json!({"type":"image","source":source})
@@ -2332,9 +2331,10 @@ struct TurnSteering {
     revision: Option<u64>,
     accepting: bool,
     /// The native image resolution of the model this turn's requests name.
-    /// Admission settles it before the turn accepts steers.
+    ///
+    /// Steers are prepared with it as they are accepted, so it is fixed at
+    /// admission.
     images: crate::prompt::ImageResolution,
-    /// Publishes events on the turn's streams.
     events: AgentEventPublisher,
 }
 
@@ -3066,7 +3066,7 @@ impl State {
         let mut result = self
             .run_locked(&mut conversation, &request, speed, &cancel)
             .await;
-        // The model loop has ended, so the turn accepts no more steers.
+        // A steer accepted after the model loop could never reach the model.
         if let Some(turn) = self.steering.lock().await.get_mut(&request.key) {
             turn.accepting = false;
         }
@@ -3491,9 +3491,9 @@ impl State {
             (&self.policy, &turn.operation)
             && policy.supports_steering()
         {
-            // The journal retains the frozen steer: it freezes again unchanged on
-            // recovery and holds only what the model receives, never an omitted
-            // image or its URL.
+            // Journal the prepared steer: recovery prepares it again without
+            // change, and the journal never holds an image the model did not
+            // receive, such as a URL that may carry credentials.
             let journaled = serde_json::to_string(&frozen).map_err(provider_error)?;
             let Some(index) = policy
                 .accept_steer(
@@ -5011,7 +5011,7 @@ impl LifecycleBackend for Driver {
                     // Queued turns keep the speed selected when they were accepted.
                     let speed = state.speed();
                     let task = async move {
-                        // A panicking run still retires its turn: the steering entry
+                        // The turn retires even if its run panics: its steering entry
                         // holds a publisher that keeps the turn's event stream open,
                         // and shutdown waits until no turn remains.
                         let result = AssertUnwindSafe(running.run(request, speed, cancellation))
