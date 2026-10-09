@@ -68,10 +68,14 @@ jobs:
       - name: Install macOS init linker
         if: runner.os == 'macOS' && matrix.component == 'cli'
         run: brew install lld
+      # Only the CLI builds are on the release critical path. Cold voice builds
+      # (418s Linux, 256s macOS) still finish well before a warm CLI (~540s),
+      # so their ~1GB target archives would only evict the CLI/Windows caches
+      # from the repository's 10GB Actions cache.
       - uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2
+        if: matrix.component == 'cli'
         with:
           key: nightly-${{ matrix.component }}-${{ matrix.target }}
-          # Voice helpers have their own Cargo target directories.
           workspaces: ${{ matrix.workspaces }}
           cache-on-failure: true
       # rust-cache restores third-party dependencies but always rebuilds
@@ -427,9 +431,8 @@ jobs:
         with:
           toolchain: stable
           targets: x86_64-unknown-linux-musl
-      - uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2
-        with:
-          cache-on-failure: true
+      # No target cache: the cold guest build takes ~100s, far off the
+      # critical path, while its 849MB archive evicted critical-path caches.
       - run: sudo apt-get update && sudo apt-get install --yes musl-tools
       - name: Build nightly VM guest
         shell: bash
