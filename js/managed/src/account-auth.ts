@@ -8,6 +8,7 @@ import { initializeTodoMail, handleTodoMail } from "./todo-mail";
 import { consumeRpcData } from "nanocodex/cloudflare/rpc";
 import { API_KEY, apiKeyDigest, apiKeyPrincipal, isOrganizationCapabilities, isApiKeyBase, isStoredApiKey, forwardPrincipalAssertions } from "nanocodex/cloudflare/managed-auth";
 export { isOrganizationCapabilities, forwardPrincipalAssertions };
+import { isHandDeviceAuthorization } from "./hand-devices";
 import { LAST_USER_PROMPT_LIMIT, type AgentPresentation } from "./agent-presentation";
 import { retireAccountProjects } from "./retired-projects";
 import { initializeTodoInbox, handleTodoInbox, proposeTodoDecision, type TodoDecisionProposal } from "./todo-inbox";
@@ -1002,6 +1003,8 @@ export async function authenticate(
   env: AccountAuthEnv,
   url = new URL(request.url),
 ): Promise<Principal | undefined> {
+  // Hand device credentials and server grants never confer account authority.
+  if (isHandDeviceAuthorization(request.headers.get("authorization"))) return undefined;
   const started = performance.now();
   const startedAt = Date.now();
   const reuse = managedAccessRequest(request) && request.headers.has(MANAGED_ACCESS_HEADER);
@@ -1140,6 +1143,12 @@ async function resolveUserPrincipal(
     resolvedPrincipalAccounts.set(principal, value.account);
   }
   return principal;
+}
+
+/** Live account authorization snapshot used when a Hand device asks for a publisher credential. */
+export async function resolveHandDeviceAccount(env: AccountAuthEnv, userId: string, deviceId: string): Promise<Principal | undefined> {
+  if (!isUserId(userId) || !/^[0-9a-f-]{36}$/.test(deviceId)) return undefined;
+  return resolveUserPrincipal(env, userId, `hand_device:${deviceId}`);
 }
 
 export async function resolveChiefOfStaffPrincipal(

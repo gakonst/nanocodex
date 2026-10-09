@@ -67,12 +67,37 @@ export class HandHosts {
     return Response.json({ ...metadata(result), credential: token }, { status: 201, headers });
   }
 
+  /** The machine a host record publishes, if the record exists. */
+  async machine(id: string): Promise<string | undefined> {
+    if (!HAND_HOST_ID.test(id)) return undefined;
+    const record = await this.storage.get<Host>(PREFIX + id);
+    return record ? record.machineId ?? `server:${id}` : undefined;
+  }
+
+  /**
+   * Device-path server Hand: create or refresh the host record without any
+   * usable bearer. The publisher authenticates only with device credentials
+   * after its one-time grant enrollment; prior bearer publishers are revoked.
+   */
+  async ensureDeviceHost(id: string, name: string, machineId = `server:${id}`): Promise<boolean> {
+    if (!HAND_HOST_ID.test(id) || !name.trim() || /[\u0000-\u001f\u007f]/u.test(name)
+      || new TextEncoder().encode(name.trim()).length > 128) return false;
+    const now = Date.now();
+    await this.storage.transaction(async transaction => {
+      const existing = await transaction.get<Host>(PREFIX + id);
+      await transaction.put(PREFIX + id, { id, name: name.trim(), machineId: existing?.machineId ?? machineId, tokenDigest: "",
+        createdAt: existing?.createdAt ?? now, expiresAt: now + CREDENTIAL_LIFETIME } satisfies Host);
+    });
+    this.remote.revokePublisher(PREFIX + id);
+    return true;
+  }
+
   async authorize(request: Request, id: string): Promise<RemoteVMPublisher | undefined> {
     const token = request.headers.get("authorization")?.match(/^Bearer ([A-Za-z0-9_-]{43})$/)?.[1];
     if (!HAND_HOST_ID.test(id) || !token || !TOKEN.test(token)) return undefined;
     const tokenDigest = await digest(token);
     const record = await this.storage.get<Host>(PREFIX + id);
-    if (!record || record.tokenDigest !== tokenDigest || record.expiresAt <= Date.now()) return undefined;
+    if (!record || !record.tokenDigest || record.tokenDigest !== tokenDigest || record.expiresAt <= Date.now()) return undefined;
     return { machineId: record.machineId ?? `server:${id}`, routeId: PREFIX + id, expiresAt: record.expiresAt, surfaceKind: "desktop" };
   }
 }

@@ -5,6 +5,8 @@ import { HandShareStore } from "./hand-share-store";
 import { HandRemoteBroker, REMOTE_VM_ASSERTION, type RemoteVMPublisher } from "./hand-remote";
 import { validRecordingCapability, screenTool, type ScreenTarget } from "./hand-remote-agent";
 import { HandHosts, boundedJSON } from "./hand-hosts";
+import { HandDevices, handDeviceCredentialTtlMs, isHandDeviceAuthorization, reservedHandDeviceMachine,
+  validHandDeviceId, type HandDeviceEnrolledBy, type HandDeviceResult, type HandDeviceAccount } from "./hand-devices";
 import { remoteICE, type RemoteICEEnv } from "./hand-remote-ice";
 import {
   parseHostedToolsManagedFrame,
@@ -87,7 +89,22 @@ type RoutedHostedTool = HostedToolsCodeTool & Readonly<{
 type AccountHostedToolsEnv = RemoteICEEnv & HandEnv & Partial<ScreenPlaybackEnv> & {
   NANOCODEX_ACCOUNT_TOOLS?: DurableObjectNamespace<AccountHostedTools>;
   NANOCODEX_SESSIONS?: DurableObjectNamespace<import("./index").DurableAgentSession>;
+  /** Device credential lifetime in seconds, clamped to [5, 900]; local/E2E only. */
+  NANOCODEX_HAND_DEVICE_CREDENTIAL_TTL_SECONDS?: string;
 };
+
+export type HandDeviceAccountRequest = Readonly<{
+  operation: "challenge" | "enroll" | "list" | "revoke" | "policy";
+  origin: string;
+  body?: unknown;
+  device_id?: string;
+  enrolled_by?: HandDeviceEnrolledBy;
+  /** A browser account session (not an API key), already origin-checked by the Worker. */
+  session_principal?: boolean;
+}>;
+const HAND_DEVICE_ORIGIN = "x-nanocodex-hand-device-origin";
+const noStore = { "cache-control": "no-store" };
+const deviceFailure = (status: number, error: string) => Response.json({ error }, { status, headers: noStore });
 
 type InvocationRequest = Readonly<{
   owner_id: string;
@@ -136,6 +153,7 @@ export class AccountHostedTools extends DurableObject<AccountHostedToolsEnv> {
   readonly #broker: HostedToolsBroker;
   readonly #remote: HandRemoteBroker;
   readonly #handHosts: HandHosts;
+  readonly #devices: HandDevices;
   readonly #diagnostics: DiagnosticJournal;
   #ownerId: string | undefined;
   readonly #directory: HandDirectory;
@@ -212,7 +230,7 @@ export class AccountHostedTools extends DurableObject<AccountHostedToolsEnv> {
         try { console.info(record); } catch { /* Remote diagnostics cannot change a socket outcome. */ }
         this.#diagnostics.record(record);
       },
-      claimCatalog: claim => this.#screens.claim(claim.machineId, claim.generation, claim.sequence),
+      claimCatalog: claim => this.#admitRemoteClaim(claim) ? this.#screens.claim(claim.machineId, claim.generation, claim.sequence) : Promise.resolve(false),
       nextSequence: () => this.#screenSequence(1),
       onHostResult: result => {
         const playback = this.env.NANOCODEX_SCREEN_PLAYBACK, owner = this.#ownerId;
@@ -223,6 +241,162 @@ export class AccountHostedTools extends DurableObject<AccountHostedToolsEnv> {
       idPrefix: () => "",
     });
     this.#handHosts = new HandHosts(ctx.storage, this.#remote);
+    this.#devices = new HandDevices(ctx.storage.kv, callback => ctx.storage.transactionSync(callback),
+      handDeviceCredentialTtlMs(env.NANOCODEX_HAND_DEVICE_CREDENTIAL_TTL_SECONDS));
+  }
+
+  /** Downgrade fence for screen publishers: account-key hosts never publish a device-bound machine. */
+  #admitRemoteClaim(claim: { machineId: string; routeId?: string }): boolean {
+    if (claim.routeId?.startsWith("hand-device:")) {
+      return this.#devices.activeDevice(claim.machineId)?.id === claim.routeId.slice("hand-device:".length);
+    }
+    if (claim.routeId === undefined) {
+      if (this.#devices.deviceRequired(claim.machineId)) {
+        console.info({ type: "hand.connection", auth_mode: "account_api_key", legacy: true, machine_id: claim.machineId,
+          surface: "remote", outcome: "rejected", reason_code: "hand_device_required" });
+        return false;
+      }
+      this.#devices.recordLegacy(claim.machineId, undefined);
+      console.info({ type: "hand.connection", auth_mode: "account_api_key", legacy: true, machine_id: claim.machineId, surface: "remote" });
+      return true;
+    }
+    // A server bearer for a machine that has an enrolled device is a legacy downgrade.
+    return !(claim.routeId.startsWith("hand-host:") && this.#devices.machineBound(claim.machineId));
+  }
+
+  /** Close every live publisher socket authenticated by one device. */
+  #closeDeviceSockets(deviceId: string, reason: string, code: 1008 | 1012 = 1008): number {
+    let closed = 0;
+    for (const socket of this.ctx.getWebSockets(`hand-device:${deviceId}`)) {
+      if (socket.readyState === WebSocket.OPEN) closed++;
+      try { this.#broker.close(socket, reason); } catch { /* Retirement is best effort; the close below fences the peer. */ }
+      try { socket.close(code, reason); } catch { /* Already closed. */ }
+    }
+    return closed + this.#remote.revokePublisher(`hand-device:${deviceId}`);
+  }
+
+  /** The device tag of the tool-host socket that holds this candidate lease, if any. */
+  #publishingDevice(leaseId: string, generation: number): string | undefined {
+    for (const socket of this.ctx.getWebSockets("hosted-tools")) {
+      let attachment: { leaseId?: string; generation?: number } | null = null;
+      try { attachment = socket.deserializeAttachment(); } catch { continue; }
+      if (attachment?.leaseId !== leaseId || attachment.generation !== generation) continue;
+      const tag = this.ctx.getTags(socket).find(value => value.startsWith("hand-device:"));
+      return tag?.slice("hand-device:".length);
+    }
+    return undefined;
+  }
+
+  async handDeviceAccount(ownerId: string, request: HandDeviceAccountRequest): Promise<HandDeviceResult> {
+    if (!isUserId(ownerId) || !this.#claim(ownerId)) return { status: 404, body: { error: "not_found" } };
+    switch (request.operation) {
+      case "challenge":
+        if (request.body !== undefined && !(request.body && typeof request.body === "object"
+          && !Array.isArray(request.body) && Object.keys(request.body).length === 0)) return { status: 400, body: { error: "invalid_hand_device_request" } };
+        return this.#devices.enrollChallenge(ownerId);
+      case "enroll": {
+        const machine = (request.body as { machine_id?: unknown } | undefined)?.machine_id;
+        if (typeof machine === "string" && (reservedHandDeviceMachine(machine) || this.#remote.scopedPublisher(machine))) {
+          return { status: 400, body: { error: "hand_device_machine_reserved" } };
+        }
+        return this.#devices.enroll(ownerId, request.origin, request.body, request.enrolled_by ?? { kind: "unknown" });
+      }
+      case "list": return this.#devices.list();
+      case "policy": {
+        const body = request.body;
+        if (!body || typeof body !== "object" || Array.isArray(body) || Object.keys(body).length !== 1
+          || typeof (body as { require_device_keys?: unknown }).require_device_keys !== "boolean") {
+          return { status: 400, body: { error: "invalid_hand_device_request" } };
+        }
+        const required = (body as { require_device_keys: boolean }).require_device_keys;
+        // Relaxing the policy needs a signed-in browser session, never an API key.
+        if (!required && !request.session_principal) return { status: 403, body: { error: "forbidden" } };
+        this.#devices.setPolicy(required);
+        return { status: 200, body: { policy: this.#devices.policy() } };
+      }
+      case "revoke": {
+        if (!validHandDeviceId(request.device_id)) return { status: 404, body: { error: "not_found" } };
+        const revoked = this.#devices.revoke(request.device_id);
+        if (!revoked) return { status: 404, body: { error: "not_found" } };
+        let closed = this.#closeDeviceSockets(request.device_id, "hand_device_revoked");
+        closed += this.#remote.fenceMachine(revoked.record.machine_id, undefined, "publisher_revoked").length;
+        return { status: 200, body: { id: revoked.record.id, status: "revoked", revoked_at: revoked.record.revoked_at, closed_connections: closed } };
+      }
+    }
+    return { status: 400, body: { error: "invalid_hand_device_request" } };
+  }
+
+  /** Proof-of-possession device routes. No account credential; an unowned object never creates state. */
+  async handDevicePossession(ownerId: string, deviceId: string, operation: "challenges" | "credentials" | "rotate" | "ssh-host-keys",
+    body: unknown, origin: string, account: HandDeviceAccount = {}): Promise<HandDeviceResult> {
+    if (!isUserId(ownerId) || !this.#owns(ownerId) || !validHandDeviceId(deviceId)) return { status: 401, body: { error: "hand_reenroll_required" } };
+    if (operation === "challenges") return this.#devices.deviceChallenge(ownerId, deviceId, body);
+    if (operation === "credentials") return this.#devices.credential(ownerId, origin, deviceId, body, account);
+    if (operation === "ssh-host-keys") return this.#devices.sshHostKeys(ownerId, origin, deviceId, body);
+    const rotated = await this.#devices.rotate(ownerId, origin, deviceId, body);
+    // Live publishers reconnect with the new key; old-version credentials are already gone.
+    if (rotated.rotated) this.#closeDeviceSockets(deviceId, "hand_device_rotated", 1012);
+    return { status: rotated.status, body: rotated.body };
+  }
+
+  /** Trusted lookup for SSH host attestation: only the ACTIVE device bound to machineId. */
+  async deviceSshHostKeys(ownerId: string, machineId: string) {
+    if (!isUserId(ownerId) || !this.#owns(ownerId) || typeof machineId !== "string") return null;
+    return this.#devices.activeSshHostKeys(machineId);
+  }
+
+  /**
+   * One-time server bootstrap grant for server:{hostId}. Creates/refreshes the
+   * host record without a usable 90-day bearer. A new grant replaces any
+   * unused one for the host.
+   */
+  async mintServerHandDeviceGrant(ownerId: string, hostId: string, name: string) {
+    if (!isUserId(ownerId) || !this.#claim(ownerId) || typeof name !== "string"
+      || !await this.#handHosts.ensureDeviceHost(hostId, name)) return { error: "invalid_request" } as const;
+    const machineId = await this.#handHosts.machine(hostId);
+    if (!machineId) return { error: "invalid_request" } as const;
+    return this.#devices.mintGrant(ownerId, hostId, machineId);
+  }
+
+  /** Device-credential scope for publisher-only surfaces outside this object (VM factory). */
+  async authorizeHandDevice(ownerId: string, authorization: string): Promise<{ device_id: string; machine_id: string; expires_at: number } | undefined> {
+    if (!isUserId(ownerId) || !this.#owns(ownerId)) return undefined;
+    const authorized = await this.#devices.authorize(ownerId, authorization);
+    return authorized ? { device_id: authorized.device.id, machine_id: authorized.device.machine_id, expires_at: authorized.expiresAt } : undefined;
+  }
+
+  /** Device-credential publisher routes: tool-host, hands/host, hands/ice and hands/renew. */
+  async #handDevicePublisher(request: Request, ownerId: string | null, endpoint: string, hostMachine?: string): Promise<Response> {
+    if (new URL(request.url).search || !isUserId(ownerId) || !this.#owns(ownerId)) return deviceFailure(401, "unauthorized");
+    const presented = await this.#devices.credentialDigest(request.headers.get("authorization"));
+    if (!presented) return deviceFailure(401, "unauthorized");
+    const websocket = request.method === "GET" && request.headers.get("upgrade")?.toLowerCase() === "websocket";
+    if ((endpoint === "tool-host" || endpoint === "hands/host") && !websocket) return new Response("Expected WebSocket upgrade", { status: 426 });
+    if ((endpoint === "hands/ice" || endpoint === "hands/renew") && request.method !== "POST") return deviceFailure(400, "invalid_request");
+    let renewal: string | undefined;
+    if (endpoint === "hands/renew") {
+      try {
+        const body = await boundedJSON(request);
+        if (!body || typeof body !== "object" || Array.isArray(body) || Object.keys(body).length !== 1
+          || typeof (body as { connection_id?: unknown }).connection_id !== "string") throw new Error();
+        renewal = (body as { connection_id: string }).connection_id;
+      } catch { return deviceFailure(400, "invalid_request"); }
+    }
+    const identity = endpoint === "tool-host" ? publisherIdentity(request.headers) : undefined;
+    // Synchronous from here: the device row is re-checked immediately before acceptance.
+    const authorized = this.#devices.authorizeDigest(ownerId, presented);
+    if (!authorized) return deviceFailure(401, "unauthorized");
+    const device = authorized.device;
+    if (hostMachine !== undefined && device.machine_id !== hostMachine) return deviceFailure(403, "hand_device_machine_mismatch");
+    if (endpoint === "tool-host") {
+      if (!identity || identity.machineId !== device.machine_id) return deviceFailure(403, "hand_device_machine_mismatch");
+      if (this.#directory.retired(identity.machineId, identity.runtimeId)) return Response.json({ error: "hand_runtime_superseded" }, { status: 409 });
+      return this.#broker.upgrade(ownerId, undefined, undefined, undefined, undefined, identity, [`hand-device:${device.id}`]);
+    }
+    if (endpoint === "hands/ice") return remoteICE(this.env, ownerId);
+    const scope: RemoteVMPublisher = { machineId: device.machine_id, routeId: `hand-device:${device.id}`, expiresAt: authorized.expiresAt, anySurface: true };
+    if (endpoint === "hands/renew") return this.#remote.renew(renewal!, true, scope);
+    return this.#remote.fetch(new Request("https://account-tools.internal/hands/host", request), scope);
   }
 
   async createHandShare(ownerId: string, machineId: string) {
@@ -394,10 +568,25 @@ export class AccountHostedTools extends DurableObject<AccountHostedToolsEnv> {
       // Withdraw screen authority.
       const screens = await this.#screens.revoke(machineId);
       if (!screens) console.warn({ type: "hand.screen.revoke_pending" });
-      return { forgotten: this.#forget(machineId) } as const;
+      // Revoke devices and close their sockets; the device-required mark stays permanent.
+      const devices = this.#revokeMachineDevices(machineId, true);
+      return { forgotten: this.#forget(machineId) || devices } as const;
     });
     this.#publicationQueue = result.then(() => {}, () => {});
     return result;
+  }
+
+  /** Revoke every device bound to a machine and close its live publishers. */
+  #revokeMachineDevices(machineId: string, forget = false): boolean {
+    const active = this.#devices.activeDevice(machineId);
+    if (active) {
+      this.#devices.revoke(active.id);
+      this.#closeDeviceSockets(active.id, "hand_device_revoked");
+    }
+    const removed = forget ? this.#devices.forgetMachine(machineId) : [];
+    for (const id of removed) if (id !== active?.id) this.#closeDeviceSockets(id, "hand_device_revoked");
+    if (active || removed.length) this.#remote.fenceMachine(machineId, undefined, "publisher_revoked");
+    return !!active || removed.length > 0;
   }
 
   /** Bulk eviction of Hands observed definitively offline; unknown stays put. */
@@ -450,6 +639,8 @@ export class AccountHostedTools extends DurableObject<AccountHostedToolsEnv> {
     const url = new URL(request.url);
     if (url.pathname.startsWith("/regional/")) return this.#regionalRequest(request, url);
     if (url.pathname === "/screens/host-command") return this.#screenHostCommand(request);
+    const devicePublisher = url.pathname.match(/^\/hand-device\/(tool-host|hands\/host|hands\/ice|hands\/renew)$/);
+    if (devicePublisher) return this.#handDevicePublisher(request, request.headers.get(OWNER_ASSERTION), devicePublisher[1]!);
     if (url.pathname === "/diagnostics") {
       if (request.method !== "GET") return Response.json({ error: "method_not_allowed" }, { status: 405 });
       const ownerId = request.headers.get(OWNER_ASSERTION);
@@ -487,11 +678,34 @@ export class AccountHostedTools extends DurableObject<AccountHostedToolsEnv> {
     if (url.pathname === "/hand-hosts" || url.pathname.startsWith("/hand-hosts/")) {
       const ownerId = request.headers.get(OWNER_ASSERTION);
       if (!isUserId(ownerId)) return Response.json({ error: "not_found" }, { status: 404 });
+      const enrollment = url.pathname.match(/^\/hand-hosts\/([^/]+)\/hands\/device$/);
+      if (enrollment) {
+        if (url.search || !this.#owns(ownerId) || request.method !== "POST") return Response.json({ error: "not_found" }, { status: 404 });
+        const machineId = await this.#handHosts.machine(enrollment[1]!);
+        if (!machineId) return deviceFailure(401, "unauthorized");
+        let body: unknown;
+        try { body = await boundedJSON(request); } catch { return deviceFailure(400, "invalid_hand_device_request"); }
+        const origin = request.headers.get(HAND_DEVICE_ORIGIN) ?? "";
+        const enrolled = await this.#devices.enrollWithGrant(ownerId, origin, enrollment[1]!, request.headers.get("authorization"), body, machineId);
+        // Owner-authorized re-bootstrap atomically revoked the prior device; fence its live sockets.
+        if (enrolled.replaced) {
+          this.#closeDeviceSockets(enrolled.replaced.id, "hand_device_revoked");
+          this.#remote.fenceMachine(machineId, undefined, "publisher_revoked");
+        }
+        return Response.json(enrolled.body, { status: enrolled.status, headers: noStore });
+      }
       const publisher = url.pathname.match(/^\/hand-hosts\/([^/]+)\/hands\/(host|ice|renew)$/);
       if (publisher) {
         if (url.search || !this.#owns(ownerId)) return Response.json({ error: "not_found" }, { status: 404 });
+        if (isHandDeviceAuthorization(request.headers.get("authorization"))) {
+          const machineId = await this.#handHosts.machine(publisher[1]!);
+          if (!machineId) return deviceFailure(401, "unauthorized");
+          return this.#handDevicePublisher(request, ownerId, `hands/${publisher[2]}`, machineId);
+        }
         const scope = await this.#handHosts.authorize(request, publisher[1]!);
         if (!scope) return Response.json({ error: "unauthorized" }, { status: 401 });
+        // Downgrade fence: once this server machine has an enrolled device, its bearer is legacy.
+        if (this.#devices.machineBound(scope.machineId)) return deviceFailure(403, "hand_device_required");
         const endpoint = publisher[2]!;
         if (endpoint !== "host" && request.method !== "POST") return Response.json({ error: "invalid_request" }, { status: 400 });
         if (endpoint === "ice") return remoteICE(this.env, ownerId);
@@ -509,6 +723,12 @@ export class AccountHostedTools extends DurableObject<AccountHostedToolsEnv> {
       }
       const management = url.pathname.match(/^\/hand-hosts(?:\/([^/]+))?$/);
       if (!management || !this.#claim(ownerId)) return Response.json({ error: "not_found" }, { status: 404 });
+      if (request.method === "DELETE" && management[1] !== undefined) {
+        // Disconnecting a server Hand revokes its device and any unused bootstrap grant.
+        const machineId = await this.#handHosts.machine(management[1]);
+        this.#devices.revokeGrant(management[1]);
+        if (machineId) this.#revokeMachineDevices(machineId);
+      }
       return this.#handHosts.manage(request, management[1]);
     }
     if (url.pathname === "/hands" || url.pathname.startsWith("/hands/")) {
@@ -630,6 +850,12 @@ export class AccountHostedTools extends DurableObject<AccountHostedToolsEnv> {
       // A runtime superseded by a newer runtime of the same machine never republishes.
       if (identity && this.#directory.retired(identity.machineId, identity.runtimeId)) {
         return Response.json({ error: "hand_runtime_superseded" }, { status: 409 });
+      }
+      // Downgrade fence at connect; catalog admission repeats it for header-less publishers.
+      if ((identity && this.#devices.deviceRequired(identity.machineId)) || this.#devices.policy().require_device_keys) {
+        console.info({ type: "hand.connection", auth_mode: "account_api_key", legacy: true, machine_id: identity ? identity.machineId : null,
+          surface: "tool_host", outcome: "rejected", reason_code: "hand_device_required" });
+        return deviceFailure(403, "hand_device_required");
       }
       return this.#broker.upgrade(ownerId, undefined, undefined, undefined, undefined, identity || undefined);
     }
@@ -1035,6 +1261,23 @@ export class AccountHostedTools extends DurableObject<AccountHostedToolsEnv> {
   }
 
   async #admitPublication(candidate: Parameters<NonNullable<import("./hosted-tools-broker").HostedToolsBrokerOptions["beforeCatalogPublish"]>>[0]): Promise<() => boolean> {
+    const device = this.#publishingDevice(candidate.leaseId, candidate.generation);
+    if (device !== undefined && !candidate.machine) throw new Error("hand_device_required: a device publishes only its machine");
+    const fenced = (): boolean => {
+      if (!candidate.machine) return false;
+      if (device !== undefined) return this.#devices.activeDevice(candidate.machine.id)?.id !== device;
+      return this.#devices.deviceRequired(candidate.machine.id);
+    };
+    if (fenced()) {
+      if (device === undefined) console.info({ type: "hand.connection", auth_mode: "account_api_key", legacy: true,
+        machine_id: candidate.machine!.id, surface: "tool_host", outcome: "rejected", reason_code: "hand_device_required" });
+      throw new Error("hand_device_required");
+    }
+    if (candidate.machine && device === undefined) {
+      this.#devices.recordLegacy(candidate.machine.id, candidate.runtimeId);
+      console.info({ type: "hand.connection", auth_mode: "account_api_key", legacy: true, machine_id: candidate.machine.id,
+        runtime_id: candidate.runtimeId ?? null, surface: "tool_host" });
+    }
     if (!candidate.machine) {
       const names = new Set(candidate.definitions.map(entry => entry.definition.name));
       if (this.#directory.entries().some(entry => entry.tool_names.some(name => names.has(name)))) {
@@ -1056,6 +1299,8 @@ export class AccountHostedTools extends DurableObject<AccountHostedToolsEnv> {
       throw error;
     }
     return () => {
+      // Revocation or a new device mark may have committed while admission awaited.
+      if (fenced()) return false;
       const local = this.ctx.storage.sql.exec<{ candidate_id: string | null }>("SELECT candidate_id FROM regional_local_publications WHERE route_id=?", candidate.routeId).toArray()[0];
       if (local?.candidate_id !== publication.publication_id) return false;
       this.ctx.storage.sql.exec("UPDATE regional_local_publications SET publication_json=? WHERE route_id=?", JSON.stringify(publication), candidate.routeId);
