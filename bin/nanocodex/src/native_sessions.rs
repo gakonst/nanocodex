@@ -240,23 +240,27 @@ fn admitted_prompts(
     id: &str,
     retained: &Value,
     limit: usize,
-) -> Vec<Vec<PromptPart>> {
+) -> Vec<AdmittedPrompt> {
     let mut operations = retained["operations"]
         .as_object()
         .into_iter()
         .flatten()
         .filter_map(|(_, operation)| {
+            // Consumed steering bodies are retired, but their count is kept.
+            let steers = operation["retired_steers"].as_u64().unwrap_or(0) as usize
+                + operation["steers"].as_array().map_or(0, Vec::len);
             Some((
                 operation["accepted_order"].as_u64()?,
                 operation["input"].as_str()?,
+                steers,
             ))
         })
         .collect::<Vec<_>>();
-    operations.sort_unstable_by_key(|(order, _)| *order);
+    operations.sort_unstable_by_key(|(order, _, _)| *order);
     // Image prompts retain their media in the input; bound the total read.
     let mut budget = 4 * MAX_BYTES;
     let mut prompts = Vec::new();
-    for (_, key) in operations {
+    for (_, key, steers) in operations {
         if prompts.len() >= limit {
             break;
         }
@@ -273,7 +277,7 @@ fn admitted_prompts(
         if input["provider"] != "claude" || input["kind"] != "prompt" {
             continue;
         }
-        prompts.push(match &input["prompt"]["instruction"] {
+        let parts = match &input["prompt"]["instruction"] {
             Value::String(text) => vec![PromptPart::Text(text.clone())],
             Value::Array(items) => items
                 .iter()
@@ -285,9 +289,28 @@ fn admitted_prompts(
                 })
                 .collect(),
             _ => continue,
-        });
+        };
+        prompts.push(AdmittedPrompt { parts, steers });
     }
     prompts
+}
+
+/// One admitted prompt and how many steering inputs its operation consumed.
+struct AdmittedPrompt {
+    parts: Vec<PromptPart>,
+    steers: usize,
+}
+
+fn user_rows(messages: &[&Value], notices: &[&str], items: &mut Vec<RolloutTranscriptItem>) {
+    for message in messages {
+        if recovery_notice(message, notices) {
+            continue;
+        }
+        let text = prompt_display(message);
+        if !text.is_empty() {
+            items.push(RolloutTranscriptItem::User(text));
+        }
+    }
 }
 
 fn blocks(message: &Value) -> impl Iterator<Item = &Value> {
@@ -354,7 +377,7 @@ fn tool_output(content: &Value) -> String {
     }
 }
 
-fn transcript(checkpoint: &Value, prompts: &[Vec<PromptPart>]) -> Vec<RolloutTranscriptItem> {
+fn transcript(checkpoint: &Value, prompts: &[AdmittedPrompt]) -> Vec<RolloutTranscriptItem> {
     let mut items = Vec::new();
     let conversation = &checkpoint["conversation"];
     if let Some(summary) = conversation["summary"].as_str().filter(|s| !s.is_empty()) {
@@ -458,39 +481,59 @@ fn transcript(checkpoint: &Value, prompts: &[Vec<PromptPart>]) -> Vec<RolloutTra
             .map_or(messages.len(), |offset| index + offset);
         let run = &messages[index..end];
         index = end;
-        // Several admissions can be adjacent when earlier turns produced no
-        // assistant message; every matched prompt is its own user turn.
-        let mut admitted = false;
-        let mut unmatched = Vec::new();
+        // An admission writes its hook context and prompt as adjacent user
+        // messages, followed by steering consumed before its first model call.
+        // Several admissions are adjacent when earlier turns produced no
+        // assistant message; each matched prompt is its own user turn.
+        let mut segment = Vec::new();
+        let mut steers = None;
         for message in run {
             let parts = prompt_parts(message);
-            let matched = prompts
+            let Some(offset) = prompts
                 .get(next_prompt..)
-                .and_then(|rest| rest.iter().position(|prompt| *prompt == parts));
-            if let Some(offset) = matched {
-                next_prompt += offset + 1;
-                admitted = true;
-                items.push(RolloutTranscriptItem::User(prompt_display(message)));
-            } else {
-                unmatched.push(message);
-            }
-        }
-        if admitted {
-            continue;
-        }
-        // Unknown provenance: steering input, or a prompt whose journal input
-        // was not retained. Show it rather than guess it was harness text.
-        for message in unmatched {
-            if recovery_notice(message, &notices) {
+                .and_then(|rest| rest.iter().position(|prompt| prompt.parts == parts))
+            else {
+                segment.push(message);
                 continue;
+            };
+            match steers {
+                Some(steers) => steer_rows(&segment, steers, &notices, &mut items),
+                // Hook context of the first admission. A skipped journal prompt
+                // leaves this text's provenance unknown, so it stays visible.
+                None if offset == 0 => {}
+                None => user_rows(&segment, &notices, &mut items),
             }
-            let text = prompt_display(message);
-            if !text.is_empty() {
-                items.push(RolloutTranscriptItem::User(text));
-            }
+            segment.clear();
+            steers = Some(prompts[next_prompt + offset].steers);
+            next_prompt += offset + 1;
+            items.push(RolloutTranscriptItem::User(prompt_display(message)));
+        }
+        // Without a matched admission the provenance is unknown: steering
+        // input, or a prompt whose journal input was not retained. Show it
+        // rather than guess that it was harness text.
+        match steers {
+            Some(steers) => steer_rows(&segment, steers, &notices, &mut items),
+            None => user_rows(&segment, &notices, &mut items),
         }
     }
     items
+}
+
+/// Steering is appended after the prompt's hook context, so at most the last
+/// `steers` messages can be steering input; earlier ones are hook context. When
+/// later steers were consumed at a later boundary, the remaining tail is
+/// ambiguous and is kept visible.
+fn steer_rows(
+    segment: &[&Value],
+    steers: usize,
+    notices: &[&str],
+    items: &mut Vec<RolloutTranscriptItem>,
+) {
+    user_rows(
+        &segment[segment.len().saturating_sub(steers)..],
+        notices,
+        items,
+    );
 }
 
 fn clean(value: &str) -> String {
