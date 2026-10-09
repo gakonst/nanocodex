@@ -264,7 +264,8 @@ export function SshIdentityManager({
               <div>
                 <strong>{identity.reference}</strong>
                 <span>{identity.username}@{identity.hostname}:{identity.port}</span>
-                <code>{identity.hostKeySha256}</code>
+                {identity.hostKeySha256 ? <code>{identity.hostKeySha256}</code> : null}
+                {identity.hostKeyTrust ? <span>Host key trusted from enrolled device ({identity.hostKeyTrust})</span> : null}
                 {identity.publicKey ? <>
                   <label className="ssh-public-key-field">Public key to install
                     <textarea readOnly rows={3} spellCheck={false} value={identity.publicKey} aria-label={`Public key for ${identity.reference}`} />
