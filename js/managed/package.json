@@ -84,6 +84,7 @@
     "test:hand-sharing": "node --test test/hand-sharing-journey.test.mjs",
     "test:hand-device-keys": "node scripts/prepare-code-evaluator.mjs && node --test test/hand-device-keys-journey.test.mjs",
     "test:hand-device-cli": "node scripts/prepare-code-evaluator.mjs && node --test test/hand-device-cli-journey.test.mjs",
+    "test:hand-device-server-hand": "node scripts/prepare-code-evaluator.mjs && node --test test/hand-device-server-hand-journey.test.mjs",
     "test:hand-device-vm-host": "node scripts/prepare-code-evaluator.mjs && node --test test/hand-device-vm-host-journey.test.mjs",
     "test:hand-inventory": "node --test test/hand-inventory-journey.test.mjs",
     "test:code-observations:workerd": "node scripts/prepare-code-evaluator.mjs && node --test test/code-observation-workerd-journey.test.mjs",

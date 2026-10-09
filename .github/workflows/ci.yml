@@ -194,6 +194,23 @@ jobs:
             output/hand-device-keys/cli-journey/**
             !output/hand-device-keys/cli-journey/**/sqlite/**
           if-no-files-found: warn
+      - name: Exercise server_hand bootstrap through a real sshd and the Hand server publisher
+        if: runner.os == 'Linux'
+        timeout-minutes: 10
+        shell: bash
+        run: |
+          # The journey runs a real sshd; ubuntu runners need the server package.
+          command -v /usr/sbin/sshd >/dev/null || sudo apt-get install -y openssh-server
+          NANOCODEX_HAND_EXECUTABLE="$GITHUB_WORKSPACE/target/debug/nanocodex-hand" \
+            pnpm --filter nanocodex-managed-service run test:hand-device-server-hand
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always() && runner.os == 'Linux'
+        with:
+          name: hand-device-server-hand-journey
+          path: |
+            output/hand-device-keys/server-hand-journey/**
+            !output/hand-device-keys/server-hand-journey/**/sqlite/**
+          if-no-files-found: warn
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 24
