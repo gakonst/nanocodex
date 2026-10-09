@@ -483,6 +483,9 @@ importers:
       '@jitl/quickjs-wasmfile-release-asyncify':
         specifier: 0.32.0
         version: 0.32.0
+      '@nanocodex/sites':
+        specifier: workspace:*
+        version: link:../sites
       accounts:
         specifier: https://pkg.pr.new/tempoxyz/accounts@232cc59cb4f8b4c8daf2113d0881b161e76a69d3
         version: https://pkg.pr.new/tempoxyz/accounts@232cc59cb4f8b4c8daf2113d0881b161e76a69d3(@modelcontextprotocol/sdk@1.30.0(@cfworker/json-schema@4.1.1)(supports-color@10.2.2)(zod@4.5.4))(@types/react@19.2.14)(@wagmi/core@3.6.5)(express@5.2.1(supports-color@10.2.2))(immer@11.1.18)(react@19.2.8)(typescript@5.9.3)(use-sync-external-store@1.6.0(react@19.2.8))(viem@2.57.2(typescript@5.9.3)(zod@4.5.4))(wagmi@3.7.7)
@@ -803,6 +806,18 @@ importers:
       vite:
         specifier: 8.2.1
         version: 8.2.1(@types/node@22.20.1)(esbuild@0.28.1)(jiti@2.7.0)(yaml@2.9.0)
+      wrangler:
+        specifier: 4.127.1
+        version: 4.127.1(@cloudflare/workers-types@5.20260831.1)
+
+  js/sites:
+    devDependencies:
+      '@cloudflare/workers-types':
+        specifier: ^5.20260730.1
+        version: 5.20260831.1
+      typescript:
+        specifier: 5.9.3
+        version: 5.9.3
       wrangler:
         specifier: 4.127.1
         version: 4.127.1(@cloudflare/workers-types@5.20260831.1)

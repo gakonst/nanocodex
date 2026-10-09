@@ -100,7 +100,9 @@
     { "binding": "NANOCODEX_WORKSPACES_12", "bucket_name": "nanocodex-sandbox-workspaces" },
     { "binding": "NANOCODEX_WORKSPACES_13", "bucket_name": "nanocodex-sandbox-workspaces" },
     { "binding": "NANOCODEX_WORKSPACES_14", "bucket_name": "nanocodex-sandbox-workspaces" },
-    { "binding": "NANOCODEX_WORKSPACES_15", "bucket_name": "nanocodex-sandbox-workspaces" }
+    { "binding": "NANOCODEX_WORKSPACES_15", "bucket_name": "nanocodex-sandbox-workspaces" },
+    // Published static sites; served by the separate nanocodex-sites Worker.
+    { "binding": "NANOCODEX_SITES", "bucket_name": "nanocodex-sites" }
   ],
   "ai_search": [
     {
@@ -274,7 +276,8 @@
         { "binding": "NANOCODEX_WORKSPACES_12", "bucket_name": "nanocodex-sandbox-workspaces" },
         { "binding": "NANOCODEX_WORKSPACES_13", "bucket_name": "nanocodex-sandbox-workspaces" },
         { "binding": "NANOCODEX_WORKSPACES_14", "bucket_name": "nanocodex-sandbox-workspaces" },
-        { "binding": "NANOCODEX_WORKSPACES_15", "bucket_name": "nanocodex-sandbox-workspaces" }
+        { "binding": "NANOCODEX_WORKSPACES_15", "bucket_name": "nanocodex-sandbox-workspaces" },
+        { "binding": "NANOCODEX_SITES", "bucket_name": "nanocodex-sites" }
       ],
       "ai_search": [],
       "durable_objects": {

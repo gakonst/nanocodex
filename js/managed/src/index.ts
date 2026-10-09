@@ -72,6 +72,8 @@ import { accountToolsEnabled, normalizeToolNames, parseConfiguration, type Agent
 import { createHash } from "node:crypto";
 import { ThreadShareLinks, type SharePermission } from "./thread-share-links";
 import { threadSharingTools, redactSharedLinkTokens, sharedTextStream } from "./thread-sharing-tool";
+import { ThreadSites, SiteError, bucketSiteSource, handleThreadSitesRequest, workspaceSiteSource, type SiteSource } from "./sites";
+import { siteTools } from "./site-tools";
 import { sessionControlTool } from "./session-control-tool";
 import { initializeTurnInputs, inputChunks, lazyTurnInput, readTurnInput, storeTurnInput } from "./managed-turn-input";
 import { DurableObject, WorkerEntrypoint } from "cloudflare:workers";
@@ -533,6 +535,10 @@ export interface Env extends
   NANOCODEX_X?: Fetcher;
   NANOCODEX_HISTORY: R2Bucket;
   NANOCODEX_WORKSPACES: R2Bucket;
+  /** Immutable published site versions and the host records that expose them. */
+  NANOCODEX_SITES?: R2Bucket;
+  /** Site link origin with `*` for the host label, such as `https://*.sites.example`. */
+  NANOCODEX_SITES_ORIGIN?: string;
   NANOCODEX_ATTACHMENT_IMAGES?: ImagesBinding;
   NANOCODEX_USER_DATA_OBJECTS: R2Bucket;
   NANOCODEX_ADMIN_TOKEN: string;
@@ -2998,6 +3004,23 @@ async function managedFetchRoute(
         method: request.method, headers, body: request.body, signal: request.signal,
       });
     }
+    if (resource === "sites" || resource.startsWith("sites/")) {
+      if ((principal.kind !== "account_session" && principal.kind !== "api_key") || principal.connectGrant
+        || !principal.capabilities.includes("agents:read")
+        || (request.method !== "GET" && !principal.capabilities.includes("agents:write"))
+        || (resource === "sites" && request.method === "POST" && !principal.capabilities.includes("tools:use")))
+        return json({ error: "forbidden" }, { status: 403 });
+      if (request.method !== "GET") {
+        const failure = requireSameOriginMutation(request, url, principal);
+        if (failure) return failure;
+      }
+      const headers = new Headers();
+      forwardPrincipalAssertions(headers, principal);
+      if (request.headers.get("content-type")) headers.set("content-type", request.headers.get("content-type")!);
+      return stub.fetch(`https://session.internal/${resource}${url.search}`, {
+        method: request.method, headers, body: request.body, signal: request.signal,
+      });
+    }
     if (resource === "_connect-existence") {
       if (request.method !== "GET"
         || url.origin !== CONNECT_SERVICE_ORIGIN
@@ -4250,6 +4273,10 @@ export class DurableAgentSession extends DurableComputerObject {
   get #commandReceipts(): CommandReceipts { return this.#commandReceiptsValue ??= new CommandReceipts(this.ctx.storage); }
   #shareLinksValue?: ThreadShareLinks;
   get #shareLinks(): ThreadShareLinks { return this.#shareLinksValue ??= new ThreadShareLinks(this.ctx.storage); }
+  #sitesValue?: ThreadSites;
+  get #sites(): ThreadSites {
+    return this.#sitesValue ??= new ThreadSites(this.ctx.storage, this.#sessionId()!, this.env.NANOCODEX_SITES, this.env.NANOCODEX_SITES_ORIGIN);
+  }
   readonly #constructorEnteredAtMs: number;
   #constructorBaseMs = 0;
   #constructorReadyAtMs?: number;
@@ -5172,6 +5199,19 @@ export class DurableAgentSession extends DurableComputerObject {
       const publicOrigin = url.searchParams.get("public_origin") ?? session.public_origin;
       return json({ ...link, url: `${publicOrigin}/share/${session.session_id}#token=${token}` }, { status: 201, headers });
     }
+    if (url.pathname === "/sites" || url.pathname.startsWith("/sites/")) {
+      const headers = { "cache-control": "no-store" };
+      const publishing = url.pathname === "/sites" && request.method === "POST";
+      if (!ownerAssertion || !this.#hasFullAccountAuthority(turnAuthorization)
+        || !turnAuthorization.capabilities.includes("agents:read")
+        || (request.method !== "GET" && !turnAuthorization.capabilities.includes("agents:write"))
+        || (publishing && !turnAuthorization.capabilities.includes("tools:use")))
+        return json({ error: "forbidden" }, { status: 403, headers });
+      const session = this.#session();
+      if (!session || session.runtime_profile !== "managed" || this.#deleting || this.#deleted || this.#durabilityExported)
+        return json({ error: "not_found" }, { status: 404, headers });
+      return handleThreadSitesRequest(request, url, this.#sites, path => this.#siteSource(path));
+    }
     if (/^\/phone\/calls(?:\/[0-9a-f-]{36}\/(?:steer|hangup))?$/.test(url.pathname)) {
       if (!ownerAssertion || !this.#hasFullAccountAuthority(turnAuthorization)
         || !["agents:read","agents:write","tools:use"].every(capability => turnAuthorization.capabilities.includes(capability as OrganizationCapability)))
@@ -6059,6 +6099,33 @@ export class DurableAgentSession extends DurableComputerObject {
   #brainBucket(): R2Bucket {
     if (this.env.NANOCODEX_SANDBOX_LOCAL === "true") return this.env.NANOCODEX_WORKSPACES;
     return this.#brainStorage ??= createBrainBucket(this.ctx.storage, this.env.NANOCODEX_WORKSPACES, this.#sessionId()!);
+  }
+
+  /** Resolves a site publish path to files the Session reads directly, without running model code. */
+  async #siteSource(path: string): Promise<SiteSource> {
+    const session = this.#session()!;
+    if (path.length > 1024 || /[\u0000-\u001f\u007f\\]/.test(path)
+      || path.split("/").slice(1).some(segment => segment === "." || segment === "..")) {
+      throw new SiteError(400, "invalid_site_path", "path must be a canonical absolute path");
+    }
+    const canonical = path.replace(/\/{2,}/g, "/").replace(/\/+$/, "") || "/";
+    if (canonical === "/brain" || canonical.startsWith("/brain/")) {
+      return workspaceSiteSource(createBrainWorkspace(this.#brainBucket(), session.session_id), canonical);
+    }
+    const root = `/${canonical.split("/")[1]}`;
+    const relative = canonical.slice(root.length + 1);
+    const mounts = this.#managedMounts("mounted")
+      .filter(mount => mount.provider === "cloudflare" && executionMountOwner(mount) === undefined);
+    let resourceId = mounts.find(mount => mount.root === root)?.provider_resource_id;
+    if (resourceId === undefined && root === "/workspace") {
+      if (mounts.length > 1) throw new SiteError(422, "site_source_ambiguous", "This thread has several Cloudflare workspaces; publish from one of their roots");
+      // Threads from before mounts used one sandbox named after the thread.
+      resourceId = mounts[0]?.provider_resource_id ?? session.session_id;
+    }
+    if (resourceId === undefined) {
+      throw new SiteError(422, "site_source_unsupported", "Publish from /workspace, a Cloudflare workspace root, or /brain");
+    }
+    return bucketSiteSource(this.env.NANOCODEX_WORKSPACES, `sessions/${resourceId}/`, relative, canonical);
   }
 
   /** Trusted container-proxy RPC; public HTTP routes never expose this method. */
@@ -9655,6 +9722,8 @@ export class DurableAgentSession extends DurableComputerObject {
     if (this.#historyProjectionTask) await this.#historyProjectionTask.catch(() => {});
     if (session?.runtime_profile === "managed") {
       await performanceStage("delete.attachments", () => this.#attachmentStore().cleanup());
+      // Public site links stop resolving before slower cleanup can stall.
+      await performanceStage("delete.sites", () => this.#sites.deleteAll());
       const scope = this.#contextScope(session);
       const memory = this.env.NANOCODEX_MEMORY.getByName(scope.organization_id);
       const tombstoned = await performanceStage("delete.memory", () => memory.fetch(
@@ -9775,6 +9844,7 @@ export class DurableAgentSession extends DurableComputerObject {
       this.ctx.storage.sql.exec("DELETE FROM managed_cron_triggers");
       this.ctx.storage.sql.exec("DELETE FROM managed_cron_deliveries");
       if (initializedTables.has("managed_share_links")) this.#shareLinks.clear();
+      if (initializedTables.has("managed_site_hosts")) this.#sites.clear();
       this.ctx.storage.sql.exec("DELETE FROM managed_turns");
       this.ctx.storage.sql.exec("DELETE FROM managed_thread_route");
       this.ctx.storage.sql.exec("DELETE FROM managed_routing_origin");
@@ -11090,6 +11160,24 @@ export class DurableAgentSession extends DurableComputerObject {
             organizationId: current.organization_id, teamId: current.team_id,
             authorizationEpoch: current.authorization_epoch, role: "writer",
             subjectId: `user:${current.owner_id}`, credentialId: `sharing-tool:${context.callId}`,
+            capabilities: authorization.capabilities };
+        },
+        request: (request, principal) => managedFetch(request, this.env, this.ctx, principal,
+          this.#routingOrigin().clientIngressColo),
+      })),
+      ...(multiplayer ? [] : siteTools({
+        sessionId: session.session_id, ownerId: session.owner_id,
+        authorizationEpoch: session.authorization_epoch, origin: session.public_origin,
+        authorization: context => {
+          const current = this.#session();
+          const authorization = this.#authorizationForToolContext(context);
+          if (!current || this.#deleting || this.#deleted || this.#durabilityExported || !authorization
+            || authorization.connectGrant !== undefined || authorization.guestShareLinkId !== undefined
+            || current.owner_id !== session.owner_id || current.authorization_epoch !== session.authorization_epoch) return undefined;
+          return { kind: "account_session", userId: current.owner_id,
+            organizationId: current.organization_id, teamId: current.team_id,
+            authorizationEpoch: current.authorization_epoch, role: "writer",
+            subjectId: `user:${current.owner_id}`, credentialId: `site-tool:${context.callId}`,
             capabilities: authorization.capabilities };
         },
         request: (request, principal) => managedFetch(request, this.env, this.ctx, principal,

@@ -1,0 +1,16 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "nanocodex-sites",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-07-29",
+  "workers_dev": false,
+  "preview_urls": false,
+  // Serve only first-level subdomains of a dedicated registrable zone so every
+  // published site is its own origin and never shares the app's cookies. Attach
+  // the zone with a wildcard route and set SITES_DOMAIN to the same zone:
+  //   "routes": [{ "pattern": "*.<zone>/*", "zone_name": "<zone>" }]
+  // An empty SITES_DOMAIN serves nothing.
+  "vars": { "SITES_DOMAIN": "" },
+  "r2_buckets": [{ "binding": "SITES", "bucket_name": "nanocodex-sites" }],
+  "observability": { "enabled": true }
+}

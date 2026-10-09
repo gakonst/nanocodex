@@ -123,6 +123,16 @@ Results redact share bearer tokens and are untrusted session content.
 Run `pnpm --filter nanocodex-managed-service run test:session-control`; it
 writes its HTTP/WebSocket trace under `output/session-control-journey/`.
 
+## Static sites
+
+`publish_site` publishes a thread directory or file as an immutable static site
+version, and `site_sharing` creates and revokes public links to a version. The
+owner HTTP routes are `/v1/agents/:id/sites/...`, and links are served by the
+separate `nanocodex-sites` Worker. See [Static sites](../../docs/SITES.md) for
+sources, limits, isolation, and operations. Run
+`pnpm --filter nanocodex-managed-service run test:sites`; it writes its HTTP and
+curl trace to `output/sites-journey.json`.
+
 ## Thread sharing tool
 
 `thread_sharing` exposes `list`, `create`, `revoke`, and `revoke_all`. Omit
@@ -1088,6 +1098,7 @@ protocol. `/health` is the service health endpoint.
 | `NANOCODEX_HISTORY`, `HISTORY_AI_SEARCH` | R2 history archive and production history retrieval. |
 | `NANOCODEX_WORKSPACES`, `NANOCODEX_WORKSPACES_*`, `NANOCODEX_BRAIN` | Retained per-hand workspaces, read-only peer aliases, and the durable agent's shared writable `/brain` scratch. |
 | `BROWSER`, `LOADER` | Browser Run and the sandboxed Worker loader used by the official Agents browser runtime. |
+| `NANOCODEX_SITES`, `NANOCODEX_SITES_ORIGIN` | Published static site versions and link host records, and the link origin pattern (`https://*.<zone>`). See [Static sites](../../docs/SITES.md). |
 
 ### Persistent prompt apps
 
