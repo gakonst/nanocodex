@@ -263,7 +263,9 @@ def main():
         time.sleep(0.3)
         tmux("send-keys", "-t", session + ":0.0", "C-c")
         # remain-on-exit reports the CLI's own exit status once its pane dies.
-        screen = screen_until(name, session, lambda screen: "Pane is dead" in screen, 15)
+        began = time.monotonic()
+        screen = screen_until(name, session, lambda screen: "Pane is dead" in screen, 60)
+        checks.append(f"{name}: exited {time.monotonic() - began:.1f}s after Ctrl+C")
         tmux("kill-session", "-t", session)
         require("Pane is dead (status 0," in screen, f"{name} did not exit cleanly: {screen.strip()[-200:]}")
 
@@ -332,7 +334,7 @@ def main():
             return lines[start:]
 
         def tool_rows(region):
-            rows = [re.search(r"([✓×◌◇?]) (Batch|Code|Shell)  (\S.*?)(?:\s{2,}|$)", line) for line in region]
+            rows = [re.search(r"([✓×◌◇?]) (Tools|Code|Shell)  (\S.*?)(?:\s{2,}|$)", line) for line in region]
             return [(row[1], row[2], row[3].strip()) for row in rows if row]
 
         def prompt_row(screen):
@@ -374,9 +376,17 @@ def main():
         require(len(requests) - phase["start"] == 3, f"unexpected paste provider count {len(requests) - phase['start']}")
         live_rows = tool_rows(turn_region(live))
         require(prompt_row(live), "live prompt row lacks its image placeholder")
-        cards = [row for row in live_rows if row[1] != "Shell"]
-        require([row[:2] for row in cards] == [("✓", "Batch"), ("×", "Code")],
-                f"live cards differ from a 2-call batch and a failed cell: {live_rows}")
+        # The turn's work is one "Tools" workflow: the cell's two nested shells,
+        # then the throwing cell.
+        def workflow(rows):
+            header = [row for row in rows if row[1] == "Tools"]
+            require(len(header) == 1 and header[0][2].startswith("3 calls") and "1 failed" in header[0][2],
+                    f"workflow header lacks 3 calls with 1 failure: {rows}")
+            return [row for row in rows if row[1] != "Tools"]
+
+        live_cells = workflow(live_rows)
+        require([row[:2] for row in live_cells] == [("✓", "Shell"), ("✓", "Shell"), ("×", "Code")],
+                f"live cards differ from two nested shells and a failed cell: {live_rows}")
         milestone("Process paste passed; native image block, nested batch and failed cell rendered live.")
 
         phase.update(name="replay", start=len(requests))
@@ -388,15 +398,13 @@ def main():
         (artifact / "replay-comparison.json").write_text(json.dumps({"live": live_rows, "replay": rows}, indent=2))
         require(replay.count("after-image-marker") == 1 and prompt_row(replay),
                 "replayed image prompt is missing its placeholder or split into extra user rows")
-        replay_cards = [row for row in rows if row[1] != "Shell"]
-        require([row[:2] for row in replay_cards] == [row[:2] for row in cards],
+        replay_cells = workflow(rows)
+        require([row[1] for row in replay_cells] == [row[1] for row in live_cells] and replay_cells[-1][0] == "×",
                 f"replayed tool outcomes differ: {rows} vs {live_rows}")
-        require(replay_cards[0][2] == cards[0][2] == "2 tools", f"replayed batch lost its nested calls: {rows}")
         # Nested receipts retain status, not shell output: an exit status that
         # was never recorded must replay as outcome unknown (?), never as success.
-        shells, live_shells = [r for r in rows if r[1] == "Shell"], [r for r in live_rows if r[1] == "Shell"]
-        require(len(shells) == len(live_shells) and all(r[0] in (l[0], "?") for r, l in zip(shells, live_shells)),
-                f"replayed nested shells differ: {shells} vs {live_shells}")
+        require(all(r[0] in (l[0], "?") for r, l in zip(replay_cells[:2], live_cells[:2])),
+                f"replayed nested shells differ: {replay_cells} vs {live_cells}")
         for leaked in ("data:image", "base64", "Harness recovery notice", "Historical context"):
             require(leaked not in replay, f"replay shows internal or private text: {leaked}")
         # User rows: each admitted prompt once, the steer once and in order, and
