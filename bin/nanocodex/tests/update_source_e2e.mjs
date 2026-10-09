@@ -3,11 +3,14 @@
 // Current sources build the nanocodex CLI (package nanocodex-bin) and the
 // nanocodex-hand daemon (package nanocodex-hand-daemon); the Hand is installed as
 // nanocodex2. Earlier one-package splits and the historical nanocodex2-bin pair
-// still build.
+// still build. Revisions that ship scripts/release/hand-source-identity.py (the
+// real tool is copied from this checkout) get a computed, verified Hand identity:
+// CLI-only commits keep the stored Hand, a Hand edit replaces it, and an
+// inherited NANOCODEX_HAND_IDENTITY never stamps the pair.
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { copyFileSync, mkdtempSync, mkdirSync, readFileSync, readlinkSync, rmSync, writeFileSync, existsSync } from 'node:fs';
+import { copyFileSync, cpSync, mkdtempSync, mkdirSync, readFileSync, readlinkSync, rmSync, writeFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { resolve, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -115,6 +118,10 @@ fn main() {
         // Like the shipped entry points: the source updater supplies the commit.
         println!("{} Version: 0.1.0-dev\\nCommit SHA: {}", env!("CARGO_BIN_NAME"), option_env!("VERGEN_GIT_SHA").unwrap_or("unknown"));
         println!("Shared features: {:?}", shared::features());
+        // Like the shipped entry points: the release identity, when recorded.
+        if let Some(identity) = option_env!("NANOCODEX_HAND_IDENTITY").filter(|identity| !identity.is_empty()) {
+            println!("Hand Identity: {identity}");
+        }
     } else if args.get(1).map(String::as_str) == Some("__device-hand") {
         println!("{{\\"serviceProtocol\\":1}}");
     }
@@ -271,6 +278,79 @@ observed: nanocodex and nanocodex2 at ${onePackageSha}
   assert.match(legacyHand, /Shared features: \(true, true\)/);
   for (const output of [legacyCli, legacyHand]) assert.match(output, new RegExp(legacySha));
   transcript.push(`expected: historical two-package revision ${legacySha} builds and installs its distinct pair\nobserved: nanocodex and nanocodex2 report their own packages at ${legacySha}\n`);
+  // A current revision ships the release-stage Hand identity tool. The updater
+  // computes the identity from the fetched Hand closure before Cargo, stamps
+  // both executables with it, verifies it against the Hand's dep-info, and
+  // stores the Hand under it: CLI-only commits keep one Hand executable.
+  const identityTool = 'scripts/release/hand-source-identity.py';
+  assert.ok(existsSync(new URL(`../../../${identityTool}`, import.meta.url)), `${identityTool} is required for the source identity journey`);
+  // The tool's required workspace inputs, copied from this checkout.
+  for (const file of [identityTool, '.cargo/config.toml', 'scripts/aarch64-unknown-linux-musl-linker',
+    'scripts/aarch64-unknown-linux-musl-ar', 'scripts/tests/linux-screen-helpers-bundle.py', 'macos/HandMenuBar']) {
+    mkdirSync(join(source, file, '..'), { recursive: true });
+    cpSync(new URL(`../../../${file}`, import.meta.url), join(source, file), { recursive: true });
+  }
+  writeFileSync(join(source, 'Cargo.toml'), workspace(['cli', 'hand', 'shared']));
+  writePackage('cli', 'nanocodex-bin', 'nanocodex', ['cli']);
+  writePackage('hand', 'nanocodex-hand-daemon', 'nanocodex-hand', ['hand']);
+  run('cargo', ['generate-lockfile', '--offline'], { cwd: source });
+  const commitIdentityBranch = message => {
+    run('git', ['add', '-A', '.'], { cwd: source });
+    run('git', ['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-m', message], { cwd: source });
+    run('git', ['push', remote, 'HEAD:refs/heads/source-identity'], { cwd: source });
+    return run('git', ['rev-parse', 'HEAD'], { cwd: source }).stdout.trim();
+  };
+  const versionDir = commit => join(store, 'versions', `branch-${commit}`);
+  const recordedIdentity = commit => readFileSync(join(versionDir(commit), 'hand-identity'), 'utf8').trim();
+  const handTarget = commit => readlinkSync(join(versionDir(commit), 'nanocodex2'));
+  const computedIdentity = stderr => {
+    const identity = stderr.match(/computed Hand source identity ([0-9a-f]{64})/)?.[1];
+    assert.ok(identity, `the updater must compute the fetched revision's Hand identity:\n${stderr}`);
+    return identity;
+  };
+
+  const identitySha = commitIdentityBranch('release-stage Hand identity');
+  const inherited = 'f'.repeat(64);
+  result = update(['--branch', 'source-identity'], { NANOCODEX_HAND_IDENTITY: inherited });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stderr, /compiling nanocodex and nanocodex-hand at /);
+  const identity = computedIdentity(result.stderr);
+  assert.notEqual(identity, inherited, 'an inherited NANOCODEX_HAND_IDENTITY must not stamp the pair');
+  assert.equal(recordedIdentity(identitySha), identity);
+  assert.equal(handTarget(identitySha), `../../hand-versions/${identity}/nanocodex2`);
+  for (const executable of ['nanocodex', 'nanocodex2']) {
+    const version = run(join(versionDir(identitySha), executable), ['--version']).stdout;
+    assert.match(version, new RegExp(`^Hand Identity: ${identity}$`, 'm'), `${executable} must report the computed identity`);
+    assert.doesNotMatch(version, new RegExp(inherited));
+  }
+  transcript.push(`expected: revision ${identitySha} with the identity tool is stamped with the computed identity despite inherited NANOCODEX_HAND_IDENTITY=${inherited}\nobserved: ${identity}, versions/branch-${identitySha}/nanocodex2 -> ${handTarget(identitySha)}\n`);
+
+  // A CLI-only commit keeps the Hand identity and the stored Hand executable.
+  writeFileSync(join(source, 'cli/src/main.rs'), readFileSync(join(source, 'cli/src/main.rs'), 'utf8') + '// CLI-only change\n');
+  const cliOnlySha = commitIdentityBranch('CLI-only change');
+  result = update(['--branch', 'source-identity']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(computedIdentity(result.stderr), identity, 'a CLI-only commit must keep the Hand identity');
+  assert.equal(recordedIdentity(cliOnlySha), identity);
+  assert.equal(handTarget(cliOnlySha), handTarget(identitySha), 'a CLI-only commit must keep the stored Hand');
+  assert.match(run(join(versionDir(cliOnlySha), 'nanocodex'), ['--version']).stdout, new RegExp(cliOnlySha));
+  // The retained Hand is the executable built for the first revision.
+  assert.match(run(join(versionDir(cliOnlySha), 'nanocodex2'), ['--version']).stdout, new RegExp(identitySha));
+  transcript.push(`expected: CLI-only commit ${cliOnlySha} keeps identity ${identity} and the stored Hand\nobserved: versions/branch-${cliOnlySha}/nanocodex2 -> ${handTarget(cliOnlySha)}\n`);
+
+  // A Hand edit changes the identity and installs a new stored Hand.
+  writeFileSync(join(source, 'hand/src/main.rs'), readFileSync(join(source, 'hand/src/main.rs'), 'utf8') + '// Hand change\n');
+  const handSha = commitIdentityBranch('Hand change');
+  result = update(['--branch', 'source-identity']);
+  assert.equal(result.status, 0, result.stderr);
+  const handIdentity = computedIdentity(result.stderr);
+  assert.notEqual(handIdentity, identity, 'a Hand edit must change the Hand identity');
+  assert.equal(recordedIdentity(handSha), handIdentity);
+  assert.equal(handTarget(handSha), `../../hand-versions/${handIdentity}/nanocodex2`);
+  const editedHand = run(join(versionDir(handSha), 'nanocodex2'), ['--version']).stdout;
+  assert.match(editedHand, new RegExp(handSha));
+  assert.match(editedHand, new RegExp(`^Hand Identity: ${handIdentity}$`, 'm'));
+  transcript.push(`expected: Hand commit ${handSha} changes the identity and stores a new Hand\nobserved: ${identity} -> ${handIdentity}, versions/branch-${handSha}/nanocodex2 -> ${handTarget(handSha)}\n`);
   process.stdout.write(`source update journeys passed; transcript: ${join(output, 'transcript.log')}\n`);
 } finally {
   writeFileSync(join(output, 'transcript.log'), transcript.join('\n'));
