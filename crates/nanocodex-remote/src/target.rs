@@ -10,10 +10,19 @@ use std::{
 };
 use url::Url;
 
+/// Asynchronous source of short-lived publisher credentials (for example an
+/// enrolled Hand device). Consulted before every host upgrade, renewal and ICE
+/// request. An `io::ErrorKind::PermissionDenied` error means the credential
+/// can never be obtained again. Errors must never contain the credential.
+pub trait PublisherCredentials: Send + Sync + 'static {
+    fn bearer(&self) -> futures_util::future::BoxFuture<'_, io::Result<String>>;
+}
+
 #[derive(Clone)]
 pub struct PublisherTarget {
     endpoint: Url,
     bearer: Arc<str>,
+    credentials: Option<Arc<dyn PublisherCredentials>>,
 }
 
 impl PublisherTarget {
@@ -30,6 +39,7 @@ impl PublisherTarget {
         Ok(Self {
             endpoint,
             bearer: read_credential(path)?.into(),
+            credentials: None,
         })
     }
 
@@ -58,7 +68,33 @@ impl PublisherTarget {
         Ok(Self {
             endpoint,
             bearer: bearer.into(),
+            credentials: None,
         })
+    }
+
+    /// Fetch a fresh credential from `credentials` for every publisher
+    /// request. The static bearer remains only the initial value.
+    #[must_use]
+    pub fn with_credentials(mut self, credentials: Arc<dyn PublisherCredentials>) -> Self {
+        self.credentials = Some(credentials);
+        self
+    }
+
+    pub fn credentials(&self) -> Option<Arc<dyn PublisherCredentials>> {
+        self.credentials.clone()
+    }
+
+    /// A currently valid credential: fresh from the dynamic source, or the
+    /// static bearer.
+    pub async fn current_bearer(&self) -> io::Result<String> {
+        match &self.credentials {
+            Some(credentials) => {
+                let bearer = credentials.bearer().await?;
+                check_bearer(&bearer)?;
+                Ok(bearer)
+            }
+            None => Ok(self.bearer.to_string()),
+        }
     }
 
     pub const fn endpoint(&self) -> &Url {

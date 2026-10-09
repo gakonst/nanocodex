@@ -579,9 +579,15 @@ async fn session(
         .as_str()
         .into_client_request()
         .map_err(|_| SessionError::Closed)?;
-    let mut authorization = format!("Bearer {}", target.bearer())
+    // Dynamic (device) credentials are fetched fresh for every upgrade.
+    let bearer = target
+        .current_bearer()
+        .await
+        .map_err(|_| SessionError::Unauthorized)?;
+    let mut authorization = format!("Bearer {bearer}")
         .parse::<tokio_tungstenite::tungstenite::http::HeaderValue>()
         .map_err(|_| SessionError::Closed)?;
+    drop(bearer);
     authorization.set_sensitive(true);
     request.headers_mut().insert("authorization", authorization);
     let config = tokio_tungstenite::tungstenite::protocol::WebSocketConfig::default()
@@ -669,7 +675,8 @@ async fn session_loop(
     let mut generation = String::new();
     let mut viewers = HashSet::<String>::new();
     let mut preparations: Preparations<IceResponse> = Preparations::new();
-    let mut ice = IceCache::new(http.clone(), base.clone(), target.bearer());
+    let mut ice = IceCache::new(http.clone(), base.clone(), target.bearer())
+        .with_credentials(target.credentials());
     let mut lease = Lease::default();
     let mut job = None;
     let mut request_id = String::new();
@@ -705,8 +712,12 @@ async fn session_loop(
                 if last_authorized.elapsed()>Duration::from_secs(25) { return Err(SessionError::Unauthorized); }
                 ice.refresh();
                 if !connection.is_empty() && last_renewal.elapsed()>=Duration::from_secs(10) && renewal.is_none() {
-                    last_renewal=Instant::now(); let http=http.clone(); let url=renew_url.clone(); let token=target.bearer().to_string(); let id=connection.clone();
-                    renewal=Some(Box::pin(async move { HttpOutcome::response(&http.post(url).bearer_auth(token).json(&json!({"connection_id":id})).send().await) }));
+                    last_renewal=Instant::now(); let http=http.clone(); let url=renew_url.clone(); let target=target.clone(); let id=connection.clone();
+                    // Renewal requires a currently valid credential; fetch it per request.
+                    renewal=Some(Box::pin(async move {
+                        let Ok(token) = target.current_bearer().await else { return HttpOutcome::credential_unavailable(); };
+                        HttpOutcome::response(&http.post(url).bearer_auth(token).json(&json!({"connection_id":id})).send().await)
+                    }));
                 }
             },
             outcome = async { match &mut renewal { Some(future)=>future.await,None=>std::future::pending().await } } => {
