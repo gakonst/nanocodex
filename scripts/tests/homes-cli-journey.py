@@ -9,8 +9,9 @@ Build separately, then run:
 2. With linking disabled, Codex and Claude sessions both receive the user
    instructions of ~/.codex and ~/.claude, and Claude sees user skills of both
    homes. Only the HTTP model providers are synthetic.
-3. Both sessions land in the one durable store with a Codex-format JSONL
-   mirror each. Evidence: ignored output/homes-cli/<run>/.
+3. Both sessions have a Codex-format JSONL mirror and durable history, seen
+   through `nanocodex rewind` previews (no private store inspection).
+   Evidence: ignored output/homes-cli/<run>/.
 """
 import argparse
 import hashlib
@@ -18,7 +19,6 @@ import json
 import os
 from pathlib import Path
 import shlex
-import sqlite3
 import subprocess
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -218,21 +218,26 @@ def main():
                 "--link-homes false still created links")
         (artifact / "provider.json").write_text(json.dumps(providers.requests, indent=2))
 
-        # 3. One durable store and a Codex-format mirror for both families.
-        store = sqlite3.connect(f"file:{codex / 'sessions.sqlite'}?mode=ro", uri=True)
-        try:
-            heads = store.execute("SELECT state_id, payload FROM nanocodex_durable_states").fetchall()
-        finally:
-            store.close()
-        records = [json.loads(payload).get("nanocodex_session") for _, payload in heads]
-        records = [record for record in records if record]
-        models = sorted(record["model"] for record in records)
-        require(len(records) == 2 and any(m.startswith("claude") for m in models)
-                and any(not m.startswith("claude") for m in models), f"durable store records: {models}")
+        # 3. Public boundaries only: each session has a Codex-format JSONL
+        # mirror, and `nanocodex rewind` previews it from the durable store
+        # (a rollout-only thread previews as a rollout copy instead).
         rollouts = sorted((codex / "sessions").rglob("rollout-*.jsonl"))
-        mirrored = {json.loads(path.read_text().splitlines()[0])["payload"]["id"] for path in rollouts}
-        require({record["session_id"] for record in records} <= mirrored, f"missing JSONL mirrors: {mirrored}")
-        checks.append("both sessions are in ~/.codex/sessions.sqlite with Codex JSONL mirrors")
+        records = []
+        for path in rollouts:
+            meta = json.loads(path.read_text().splitlines()[0])
+            require(meta["type"] == "session_meta", f"{path} lacks session_meta")
+            session = meta["payload"]["id"]
+            preview = json.loads(run(f"rewind-preview-{session}",
+                                     [str(binary), "rewind", session, "--mode", "conversation"], env, workspace).stdout)
+            require(preview.get("session") == session and "checkpoints" in preview,
+                    f"session {session} is not in the durable store: {preview}")
+            require(len(preview["checkpoints"]) == 1, f"session {session} turns: {preview['checkpoints']}")
+            records.append({"session_id": session, "rollout": str(path),
+                            "input": preview["checkpoints"][0]["input"]})
+        inputs = sorted(json.dumps(record["input"]) for record in records)
+        require(len(records) == 2 and any("CODEX_HOMES_PROMPT" in i for i in inputs)
+                and any("CLAUDE_HOMES_PROMPT" in i for i in inputs), f"durable sessions: {records}")
+        checks.append("both sessions have Codex JSONL mirrors and durable history via `nanocodex rewind`")
         outcome.update(success=True, sessions=records)
     except Exception as error:
         outcome.update(error=str(error))

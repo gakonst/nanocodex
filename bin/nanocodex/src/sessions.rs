@@ -4,6 +4,18 @@
 //! of both families. Codex-compatible JSONL rollouts are written as a mirror;
 //! rollouts without durable state (older Codex threads or imported files) stay
 //! listable and resumable through this same catalog.
+//!
+//! `~/.codex/claude/sessions.sqlite`, written by Claude sessions before both
+//! families shared `~/.codex/sessions.sqlite`, is a read-only fallback: its
+//! sessions stay listable, resumable and branchable in place, and nothing new
+//! is written there. A session found in both stores is listed once, from the
+//! shared store.
+//!
+//! A Claude session's JSONL rollout is a mirror of its durable state, not a
+//! resumable source on its own. Rollout-only Claude sessions (a mirror whose
+//! durable state was removed, or a copied file) are therefore not listed, and
+//! resuming one by ID fails with an explicit error instead of reading it as a
+//! Codex thread.
 use std::{
     collections::HashSet,
     io,
@@ -195,6 +207,14 @@ pub(crate) async fn list(home: &Path) -> Result<Vec<SessionSummary>> {
         if !seen.insert(info.thread_id().to_owned()) {
             continue;
         }
+        // Only Codex threads resume from a rollout alone; see the module docs.
+        if info.harness_family() == Some(HarnessFamily::Claude) {
+            tracing::debug!(
+                session = info.thread_id(),
+                "skipping a Claude rollout mirror without durable state"
+            );
+            continue;
+        }
         sessions.push(SessionSummary {
             id: info.thread_id().to_owned(),
             family: info.harness_family().unwrap_or(HarnessFamily::Codex),
@@ -242,21 +262,31 @@ pub(crate) async fn load(home: &Path, id: &str) -> Result<ResumedSession> {
             rollout: None,
         });
     }
-    let session = RolloutConfig::new(home)
-        .load_session(id)
-        .wrap_err_with(|| {
-            format!(
-                "unknown session {id}: nothing saved under {}",
-                home.display()
-            )
-        })?;
+    let rollouts = RolloutConfig::new(home);
+    if let Some(info) = rollouts
+        .list_sessions()
+        .ok()
+        .and_then(|listed| listed.into_iter().find(|info| info.thread_id() == id))
+        && info.harness_family() == Some(HarnessFamily::Claude)
+    {
+        return Err(eyre!(
+            "session {id} is a Claude session with no durable state under {}; its JSONL rollout is a read-only mirror, and Claude sessions resume only from the session store",
+            home.display()
+        ));
+    }
+    let session = rollouts.load_session(id).wrap_err_with(|| {
+        format!(
+            "unknown session {id}: nothing saved under {}",
+            home.display()
+        )
+    })?;
     let checkpoint = session
         .checkpoint()
         .wrap_err_with(|| format!("failed to read the boundary of rollout {id}"))?;
     let transcript = session.transcript().to_vec();
     let info = SessionSummary {
         id: session.thread_id().to_owned(),
-        family: HarnessFamily::Codex,
+        family: checkpoint.model().family(),
         model: Some(checkpoint.model()),
         workspace: Some(PathBuf::from(session.workspace())),
         preview: transcript.iter().find_map(|item| match item {
