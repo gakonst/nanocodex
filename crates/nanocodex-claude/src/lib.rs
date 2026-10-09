@@ -1610,7 +1610,7 @@ enum BlockAccumulator {
 
 impl BlockAccumulator {
     // Diagnostics must never format payloads or provider-controlled type strings.
-    fn diagnostic_kind(&self) -> &'static str {
+    const fn diagnostic_kind(&self) -> &'static str {
         match self {
             Self::Text { .. } => "text",
             Self::ToolUse { .. } => "tool_use",
@@ -2030,7 +2030,8 @@ fn is_user_turn_start(message: &Message) -> bool {
 
 mod agent;
 pub use agent::{
-    Claude, ClaudeBuilder, ClaudeToolInvocation, ClaudeToolReply, ClaudeTools, rewind_checkpoint,
+    Claude, ClaudeBuilder, ClaudeCheckpointView, ClaudeToolInvocation, ClaudeToolReply,
+    ClaudeTools, decode_checkpoint, decode_session_checkpoint, rewind_checkpoint,
 };
 
 /// Portable durability integration with provider-native state.

@@ -1063,7 +1063,7 @@ impl<S> ManagedBuilder<S> {
         };
 
         let (runtime, events) = BackendRuntime::with_agent_id(agent_id.clone(), session_id);
-        let (backend, commands, shutdown) = ManagedAgent::new();
+        let (backend, commands, shutdown) = ManagedAgent::new(model);
         let driver = ManagedDriver::new(
             self.managed.service,
             agent_id,

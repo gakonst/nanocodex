@@ -1,4 +1,31 @@
-import type { Agent, AgentSessionContext, DefaultAgent, ForkOptions, RealtimeTranscriptEntry, Thinking } from "../types.mjs";
+import type {
+  Agent,
+  AgentSessionContext,
+  DefaultAgent,
+  ForkOptions,
+  HarnessModel,
+  RealtimeTranscriptEntry,
+  SessionCapabilities,
+  SessionCheckpoint,
+  SessionInfo,
+  SessionPersistence,
+  Thinking,
+} from "../types.mjs";
+
+/** Returns this session's identity, harness family, and lineage. */
+export function info(agent: Agent<object>): SessionInfo;
+
+/** Returns the lifecycle operations this session's backend supports. */
+export function capabilities(agent: Agent<object>): SessionCapabilities;
+
+/** Returns where this session is persisted, or null when it lives only in memory. */
+export function persistence(agent: Agent<object>): SessionPersistence | null;
+
+/** Exports the latest committed safe boundary as a portable checkpoint. */
+export function checkpoint(agent: Agent<object>): Promise<SessionCheckpoint>;
+
+/** Cancels every nonterminal turn issued through this Agent. */
+export function cancel(agent: Agent<object>): Promise<void>;
 
 /** Appends adapter-owned developer context and returns the latest safe session context. */
 export function appendDeveloperMessage(
@@ -31,7 +58,10 @@ export function compact(agent: Agent<object>): Promise<void>;
 /** Returns complete read-only model context at the latest safe boundary. */
 export function context(agent: Agent<object>): Promise<AgentSessionContext>;
 
-/** Forks the latest checkpoint, or the exact completed result supplied in `options.at`. */
+/**
+ * Forks the latest committed boundary, or the completed result or portable
+ * checkpoint supplied in `options.at`. `options.origin` marks side conversations.
+ */
 export function fork(agent: Agent<object>, options?: fork.Options): Promise<fork.ReturnType>;
 export declare namespace fork {
   type Options = ForkOptions;
@@ -46,6 +76,9 @@ export declare namespace spawn {
 
 /** Changes the reasoning effort for subsequently accepted turns. */
 export function setThinking(agent: Agent<object>, thinking: Thinking): Promise<void>;
+
+/** Changes the model to another model id of the session's harness family. */
+export function setModel(agent: Agent<object>, model: HarnessModel): Promise<void>;
 
 /** Enables or disables priority processing for subsequently accepted turns. */
 export function setFastMode(agent: Agent<object>, enabled: boolean): Promise<void>;

@@ -341,6 +341,13 @@ impl Monitor {
                 .stdin(Stdio::null())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
+                .envs(
+                    nanocodex::tools::SessionEnvironment::new(
+                        &context.session_id,
+                        &context.root_session_id,
+                    )
+                    .variables(),
+                )
                 .kill_on_drop(true);
             #[cfg(unix)]
             process.process_group(0);

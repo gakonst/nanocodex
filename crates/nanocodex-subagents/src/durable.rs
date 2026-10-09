@@ -16,8 +16,8 @@ use super::{
     model::{AgentDescriptor, AgentId, AgentStatus},
     runtime::{ChildSession, OutputContract},
 };
-use nanocodex_agent::{ChildRuntimeSnapshot, ChildSnapshot};
-use serde::{Deserialize, Serialize};
+use nanocodex_agent::{HarnessModel, Lineage, SessionCheckpoint, Thinking};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
 use std::{
     collections::HashMap,
@@ -98,7 +98,15 @@ impl SubagentStore for MemorySubagentStore {
     }
 }
 
-pub(super) const JOURNAL_VERSION: u32 = 1;
+/// Journal version written by this runtime.
+///
+/// Version 1 stored the removed per-family child snapshots: a Codex
+/// `ChildRuntimeSnapshot` under `checkpoint` and a Claude form under
+/// `native_checkpoint`. Version 2 stores one family-tagged
+/// [`SessionCheckpoint`] under `checkpoint`. Both remain readable.
+pub(super) const JOURNAL_VERSION: u32 = 2;
+/// Oldest journal version this runtime still restores.
+pub(super) const MIN_JOURNAL_VERSION: u32 = 1;
 
 #[derive(Serialize, Deserialize)]
 pub(super) struct PersistedScope {
@@ -125,12 +133,11 @@ pub(super) struct PersistedAgent {
     /// Automatic restart resumes since the child last finished a turn.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub(super) resume_attempts: u32,
-    /// Latest committed boundary; absent for native backends without a
-    /// portable checkpoint.
+    /// Latest committed boundary; absent when no portable checkpoint exists.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(super) checkpoint: Option<ChildRuntimeSnapshot>,
-    /// Latest committed boundary of a native (for example Claude) backend.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) checkpoint: Option<JournaledCheckpoint>,
+    /// Version-1 boundary of a native (Claude) backend; read, never written.
+    #[serde(default, skip_serializing)]
     pub(super) native_checkpoint: Option<PersistedNative>,
     /// Bounded tool calls observed during the unfinished turn.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -240,48 +247,171 @@ pub(super) fn in_flight_evidence(calls: &[InFlightCall], omitted: u32) -> Option
     ))
 }
 
-/// Portable form of [`ChildSnapshot::Native`], decoded only by its family.
+/// A journaled conversation boundary, decoded by its stored format.
+pub(super) enum JournaledCheckpoint {
+    /// Version-2 family-tagged portable checkpoint.
+    Current(SessionCheckpoint),
+    /// Version-1 Codex `ChildRuntimeSnapshot` JSON, upgraded on restore.
+    LegacyCodex(Value),
+}
+
+impl Serialize for JournaledCheckpoint {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self {
+            Self::Current(checkpoint) => checkpoint.serialize(serializer),
+            Self::LegacyCodex(value) => value.serialize(serializer),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for JournaledCheckpoint {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        // Every current checkpoint carries a format tag; version-1 Codex
+        // snapshots never did. Decode the tagged form strictly so a corrupt
+        // current checkpoint is reported instead of misread as legacy data.
+        let value = Value::deserialize(deserializer)?;
+        if value.get("format").is_some() {
+            serde_json::from_value(value)
+                .map(Self::Current)
+                .map_err(serde::de::Error::custom)
+        } else {
+            Ok(Self::LegacyCodex(value))
+        }
+    }
+}
+
+impl JournaledCheckpoint {
+    fn checkpoint(&self, lineage: &Lineage) -> std::io::Result<SessionCheckpoint> {
+        match self {
+            Self::Current(checkpoint) => {
+                checkpoint.validate().map_err(std::io::Error::other)?;
+                Ok(checkpoint.clone())
+            }
+            Self::LegacyCodex(value) => Ok(legacy_codex_checkpoint(value, lineage)?),
+        }
+    }
+}
+
+/// A version-1 journal checkpoint that cannot be upgraded to a
+/// [`SessionCheckpoint`].
+#[derive(Debug)]
+pub(super) enum LegacyCheckpointError {
+    /// The stored Codex `ChildRuntimeSnapshot` is malformed.
+    Codex(String),
+    /// The stored native (Claude) checkpoint is malformed.
+    Native(String),
+}
+
+impl std::fmt::Display for LegacyCheckpointError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Codex(detail) => {
+                write!(formatter, "invalid journaled Codex checkpoint: {detail}")
+            }
+            Self::Native(detail) => {
+                write!(formatter, "invalid journaled native checkpoint: {detail}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for LegacyCheckpointError {}
+
+impl From<LegacyCheckpointError> for std::io::Error {
+    fn from(error: LegacyCheckpointError) -> Self {
+        Self::new(std::io::ErrorKind::InvalidData, error)
+    }
+}
+
+fn legacy_field<T: serde::de::DeserializeOwned>(
+    fields: &mut serde_json::Map<String, Value>,
+    name: &str,
+) -> Result<T, LegacyCheckpointError> {
+    let value = fields
+        .remove(name)
+        .ok_or_else(|| LegacyCheckpointError::Codex(format!("missing {name}")))?;
+    serde_json::from_value(value)
+        .map_err(|error| LegacyCheckpointError::Codex(format!("invalid {name}: {error}")))
+}
+
+/// Upgrades a version-1 Codex `ChildRuntimeSnapshot`.
+///
+/// Its non-identity fields (service tier, transport mode, and conversation)
+/// are exactly the Codex checkpoint payload. Before the first turn a Codex
+/// child's cache lineage was its own session ID; afterwards it is the
+/// lineage recorded by the conversation itself.
+fn legacy_codex_checkpoint(
+    value: &Value,
+    lineage: &Lineage,
+) -> Result<SessionCheckpoint, LegacyCheckpointError> {
+    let Value::Object(fields) = value else {
+        return Err(LegacyCheckpointError::Codex("expected an object".into()));
+    };
+    let mut payload = fields.clone();
+    let session_id: String = legacy_field(&mut payload, "session_id")?;
+    let model: nanocodex_agent::Model = legacy_field(&mut payload, "model")?;
+    let thinking: Thinking = legacy_field(&mut payload, "thinking")?;
+    let conversation = payload
+        .get("conversation")
+        .filter(|conversation| !conversation.is_null());
+    let has_conversation = conversation.is_some();
+    let conversation_id = match conversation {
+        Some(conversation) => conversation
+            .get("lineage_id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| LegacyCheckpointError::Codex("conversation has no lineage".into()))?
+            .to_owned(),
+        None => session_id.clone(),
+    };
+    Ok(SessionCheckpoint::native(
+        session_id,
+        HarnessModel::Codex(model),
+        thinking,
+        lineage.clone(),
+        conversation_id,
+        None,
+        has_conversation,
+        Value::Object(payload),
+    ))
+}
+
+/// Version-1 portable form of a native (Claude) child checkpoint.
 #[derive(Clone, Serialize, Deserialize)]
 pub(super) struct PersistedNative {
     model: String,
     session_id: String,
-    thinking: nanocodex_agent::Thinking,
+    thinking: Thinking,
     payload: String,
     has_conversation: bool,
 }
 
 impl PersistedNative {
-    fn from_snapshot(snapshot: &ChildSnapshot) -> Option<Self> {
-        match snapshot {
-            ChildSnapshot::Native {
-                model,
-                session_id,
-                thinking,
-                payload,
-                has_conversation,
-            } => Some(Self {
-                model: model.as_str().to_owned(),
-                session_id: session_id.clone(),
-                thinking: *thinking,
-                payload: payload.clone(),
-                has_conversation: *has_conversation,
-            }),
-            ChildSnapshot::Codex(_) => None,
+    /// Upgrades to a [`SessionCheckpoint`]. Version 1 stored the backend's
+    /// native state as JSON text; checkpoints carry the same state as a JSON
+    /// value, decoded only by the owning family when the child is restored.
+    fn into_checkpoint(
+        self,
+        lineage: &Lineage,
+    ) -> Result<SessionCheckpoint, LegacyCheckpointError> {
+        let model = self.model.parse::<HarnessModel>().map_err(|error| {
+            LegacyCheckpointError::Native(format!("invalid journaled model: {error}"))
+        })?;
+        if self.session_id.trim().is_empty() {
+            return Err(LegacyCheckpointError::Native("empty session ID".into()));
         }
-    }
-
-    fn into_snapshot(self) -> std::io::Result<ChildSnapshot> {
-        let model = self
-            .model
-            .parse::<nanocodex_agent::HarnessModel>()
-            .map_err(|error| std::io::Error::other(format!("invalid journaled model: {error}")))?;
-        Ok(ChildSnapshot::Native {
+        let payload = serde_json::from_str(&self.payload).map_err(|error| {
+            LegacyCheckpointError::Native(format!("payload is not JSON: {error}"))
+        })?;
+        Ok(SessionCheckpoint::native(
+            self.session_id.clone(),
             model,
-            session_id: self.session_id,
-            thinking: self.thinking,
-            payload: self.payload,
-            has_conversation: self.has_conversation,
-        })
+            self.thinking,
+            lineage.clone(),
+            self.session_id,
+            None,
+            self.has_conversation,
+            payload,
+        ))
     }
 }
 
@@ -325,14 +455,12 @@ from where your history ends. Submit a result only once the whole delegated task
 
 pub(super) fn persist_agent(
     session: &ChildSession,
-    checkpoint: Option<&ChildSnapshot>,
+    checkpoint: Option<&SessionCheckpoint>,
 ) -> PersistedAgent {
-    let latest = checkpoint.or(session.stored_runtime.as_ref());
-    let native_checkpoint = latest.and_then(PersistedNative::from_snapshot);
-    let checkpoint = latest.and_then(|snapshot| match snapshot {
-        ChildSnapshot::Codex(snapshot) => Some(snapshot.clone()),
-        ChildSnapshot::Native { .. } => None,
-    });
+    let checkpoint = checkpoint
+        .or(session.stored_runtime.as_ref())
+        .cloned()
+        .map(JournaledCheckpoint::Current);
     PersistedAgent {
         descriptor: session.descriptor.clone(),
         binding_task: Some(session.binding_task.clone()),
@@ -344,22 +472,58 @@ pub(super) fn persist_agent(
         turn_in_flight: session.active || matches!(session.status, AgentStatus::Running),
         resume_attempts: session.resume_attempts,
         checkpoint,
-        native_checkpoint,
+        native_checkpoint: None,
         in_flight_calls: session.in_flight_calls.clone(),
         in_flight_omitted: session.in_flight_omitted,
     }
 }
 
 impl PersistedAgent {
-    /// The journaled checkpoint for any backend family.
-    pub(super) fn snapshot(&self) -> std::io::Result<Option<ChildSnapshot>> {
-        if let Some(snapshot) = &self.checkpoint {
-            return Ok(Some(ChildSnapshot::Codex(snapshot.clone())));
+    /// The journaled checkpoint for any backend family, upgrading version-1
+    /// entries. `lineage` is assigned to legacy entries, which recorded none.
+    pub(super) fn snapshot(&self, lineage: &Lineage) -> std::io::Result<Option<SessionCheckpoint>> {
+        if let Some(checkpoint) = &self.checkpoint {
+            return checkpoint.checkpoint(lineage).map(Some);
         }
-        self.native_checkpoint
+        Ok(self
+            .native_checkpoint
             .clone()
-            .map(PersistedNative::into_snapshot)
-            .transpose()
+            .map(|native| native.into_checkpoint(lineage))
+            .transpose()?)
+    }
+}
+
+/// Lineage of a journaled child within its root's restored tree.
+pub(super) fn journaled_lineage(
+    root_session_id: &str,
+    agents: &[PersistedAgent],
+    id: AgentId,
+) -> Lineage {
+    let parent_of = |id: AgentId| {
+        agents
+            .iter()
+            .find(|agent| agent.descriptor.id == id)
+            .and_then(|agent| agent.descriptor.parent)
+    };
+    let parent_session_id = parent_of(id)
+        .and_then(|parent| agents.iter().find(|agent| agent.descriptor.id == parent))
+        .map_or_else(
+            || root_session_id.to_owned(),
+            |parent| parent.descriptor.session_id.clone(),
+        );
+    let mut depth = 1;
+    let mut current = parent_of(id);
+    while let Some(parent) = current
+        && depth <= agents.len()
+    {
+        depth += 1;
+        current = parent_of(parent);
+    }
+    Lineage {
+        root_session_id: root_session_id.to_owned(),
+        parent_session_id: Some(parent_session_id),
+        origin: nanocodex_agent::Origin::Subagent,
+        depth: u32::try_from(depth).unwrap_or(u32::MAX),
     }
 }
 
@@ -373,9 +537,9 @@ const fn is_zero(value: &u32) -> bool {
 
 pub(super) fn restored_session(
     agent: PersistedAgent,
+    snapshot: Option<SessionCheckpoint>,
 ) -> std::io::Result<(ChildSession, bool, bool)> {
     let contract = OutputContract::compile(&agent.output_schema)?;
-    let snapshot = agent.snapshot()?;
     let recoverable = snapshot.is_some();
     let terminal = matches!(agent.status, AgentStatus::Closing | AgentStatus::Closed);
     let in_flight = !terminal

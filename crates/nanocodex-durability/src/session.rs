@@ -279,6 +279,11 @@ enum Command {
         checkpoint: EncodedPayload,
         result: oneshot::Sender<Result<()>>,
     },
+    Describe {
+        caller: Caller,
+        record: crate::catalog::SessionRecord,
+        result: oneshot::Sender<Result<crate::catalog::SessionRecord>>,
+    },
 }
 
 struct Driver {
@@ -808,6 +813,17 @@ impl Driver {
                     };
                     drop(result.send(outcome));
                 }
+                Command::Describe {
+                    caller,
+                    record,
+                    result,
+                } => {
+                    let outcome = match self.authorize(&caller) {
+                        Ok(()) => self.describe(record).await,
+                        Err(error) => Err(error),
+                    };
+                    drop(result.send(outcome));
+                }
             }
             if self.poisoned {
                 break;
@@ -1310,6 +1326,9 @@ impl Driver {
         }
         let mut records = next.stage_records();
         records.retain(|record| !self.committed_records.contains(&record.key));
+        if let Some(session) = next.session_mut() {
+            session.touch();
+        }
         let payload = next.checkpoint_payload()?;
         let revision = match self
             .store
@@ -1342,6 +1361,35 @@ impl Driver {
             .extend(records.into_iter().map(|record| record.key));
         self.state = next;
         Ok(())
+    }
+
+    /// Records catalog metadata, keeping the original creation time and any
+    /// lineage already stored, then publishes it with the current head.
+    async fn describe(
+        &mut self,
+        record: crate::catalog::SessionRecord,
+    ) -> Result<crate::catalog::SessionRecord> {
+        if record.session_id != *self.state_id {
+            return Err(Error::InvalidState(format!(
+                "session record {} does not describe state {}",
+                record.session_id, self.state_id
+            )));
+        }
+        let merged = match self.state.session() {
+            Some(stored) => stored.merged(record),
+            None => record,
+        };
+        if self.state.session() == Some(&merged) {
+            return Ok(merged);
+        }
+        let mut next = self.state.clone();
+        next.set_session(Some(merged.clone()));
+        let revision = self.state.revision().checked_add(1).ok_or_else(|| {
+            Error::InvalidState("state revision exceeded the u64 range".to_owned())
+        })?;
+        next.advance_revision(revision)?;
+        self.persist(next).await?;
+        Ok(self.state.session().cloned().unwrap_or(merged))
     }
 
     async fn apply_terminal(&mut self, entry: Transition) -> Result<()> {
@@ -1389,11 +1437,19 @@ fn reduce(stored: StoredState) -> Result<DurableState> {
     }
     let RetainedCheckpoint {
         nanocodex_durable_state,
+        nanocodex_session,
     } = serde_json::from_str(&payload).map_err(|source| Error::Decode {
         revision: stored.revision,
         source,
     })?;
-    DurableState::from_checkpoint(stored.revision, nanocodex_durable_state)
+    let mut state = DurableState::from_checkpoint(stored.revision, nanocodex_durable_state)?;
+    state.set_session(nanocodex_session);
+    Ok(state)
+}
+
+/// Reduces a head observed without ownership, for read-only inspection.
+pub(crate) fn reduce_peeked(stored: StoredState) -> Result<DurableState> {
+    reduce(stored)
 }
 
 /// Cheap command handle for an owned durable-state driver.
@@ -1486,7 +1542,7 @@ impl DurableSession {
         Self::open_shared(store, state_id, terminal_receipt_limit).await
     }
 
-    async fn open_shared(
+    pub(crate) async fn open_shared(
         mut store: SharedStore,
         state_id: String,
         terminal_receipt_limit: Option<usize>,
@@ -1525,6 +1581,44 @@ impl DurableSession {
             caller_id: OwnerId::new(),
             active_claims: AtomicUsize::new(0),
         })
+    }
+
+    /// Records family-neutral catalog metadata inside this state's head.
+    ///
+    /// The creation time and an already recorded lineage are kept; model,
+    /// workspace, and title follow `record`. Fails while an agent owns the
+    /// state; describe a session before attaching it to a builder.
+    pub async fn describe(
+        &self,
+        record: crate::catalog::SessionRecord,
+    ) -> Result<crate::catalog::SessionRecord> {
+        let (result, receiver) = oneshot::channel();
+        self.send(Command::Describe {
+            caller: Caller::Direct(self.caller_id.clone()),
+            record,
+            result,
+        })
+        .await?;
+        receive(receiver).await
+    }
+
+    /// Catalog metadata recorded for this session, if any.
+    pub async fn record(&self) -> Result<Option<crate::catalog::SessionRecord>> {
+        Ok(self.state().await?.session().cloned())
+    }
+
+    /// Opens another state in the same store, such as a fork's own session.
+    pub async fn open_sibling(&self, state_id: impl Into<String>) -> Result<Self> {
+        Self::open_shared(
+            self.store.clone(),
+            state_id.into(),
+            self.terminal_receipt_limit,
+        )
+        .await
+    }
+
+    pub(crate) fn shared_store(&self) -> SharedStore {
+        self.store.clone()
     }
 
     /// Durable subagent task-tree journal stored beside this state.

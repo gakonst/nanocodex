@@ -500,7 +500,16 @@ async fn claude_native_create_route_prompt_and_retained_reopen_journey() {
         // Both native File fields survive the managed serde contract; no URL/path translation.
         let decoded: PromptInput = serde_json::from_value(document_wire.clone()).unwrap();
         assert_eq!(serde_json::to_value(decoded).unwrap(), document_wire);
-        agent.set_model(Model::Luna).await.unwrap();
+        // The session's family is fixed by its first model; the handle rejects a
+        // cross-family switch before any request reaches the managed service.
+        assert_eq!(agent.harness_family(), nanocodex_agent::HarnessFamily::Claude);
+        assert!(matches!(
+            agent.set_harness_model(Model::Luna.into()).await,
+            Err(NanocodexError::InvalidRequest(_))
+        ));
+        // A server-side switch reaches the driver through the next settings acknowledgement.
+        client.set_model(AGENT_ID, Model::Luna).await.unwrap();
+        agent.set_thinking(Thinking::Medium).await.unwrap();
         let rejected = agent.prompt(document()).await;
         assert!(matches!(rejected, Err(NanocodexError::UnsupportedCapability { capability: "document_input" })));
         assert!(lock(&fixture.inner.submissions).is_empty(), "GPT document rejection must happen before transport");

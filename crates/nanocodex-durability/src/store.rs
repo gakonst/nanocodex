@@ -105,6 +105,10 @@ pub struct StoreRecord {
     pub value: String,
 }
 
+fn read_only_unsupported() -> StoreError {
+    StoreError::Backend("this store does not support non-fencing reads".to_owned())
+}
+
 /// Minimal host-owned persistence contract.
 ///
 /// `acquire` atomically installs a fencing owner and returns the execution head.
@@ -135,6 +139,27 @@ pub trait StateStore: Send {
             }
             Ok(records)
         })
+    }
+
+    /// Reads the execution head without installing an owner or fencing anyone.
+    ///
+    /// Read-only catalog and inspection paths use this so listing sessions can
+    /// never interrupt a live process. Stores that cannot read without
+    /// acquiring ownership keep the default, which reports the gap.
+    fn peek<'a>(
+        &'a mut self,
+        _state_id: &'a str,
+    ) -> StoreFuture<'a, Result<StoredState, StoreError>> {
+        Box::pin(async { Err(read_only_unsupported()) })
+    }
+
+    /// Lists retained state identities, most recently created first, without
+    /// acquiring any owner. At most `limit` identities are returned.
+    fn list_states<'a>(
+        &'a mut self,
+        _limit: usize,
+    ) -> StoreFuture<'a, Result<Vec<String>, StoreError>> {
+        Box::pin(async { Err(read_only_unsupported()) })
     }
 
     /// Acquires exclusive authority and loads only the execution head.
@@ -179,6 +204,27 @@ pub trait StateStore {
             }
             Ok(records)
         })
+    }
+
+    /// Reads the execution head without installing an owner or fencing anyone.
+    ///
+    /// Read-only catalog and inspection paths use this so listing sessions can
+    /// never interrupt a live process. Stores that cannot read without
+    /// acquiring ownership keep the default, which reports the gap.
+    fn peek<'a>(
+        &'a mut self,
+        _state_id: &'a str,
+    ) -> StoreFuture<'a, Result<StoredState, StoreError>> {
+        Box::pin(async { Err(read_only_unsupported()) })
+    }
+
+    /// Lists retained state identities, most recently created first, without
+    /// acquiring any owner. At most `limit` identities are returned.
+    fn list_states<'a>(
+        &'a mut self,
+        _limit: usize,
+    ) -> StoreFuture<'a, Result<Vec<String>, StoreError>> {
+        Box::pin(async { Err(read_only_unsupported()) })
     }
 
     /// Acquires exclusive authority and loads only the execution head.

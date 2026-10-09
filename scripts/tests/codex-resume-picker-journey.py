@@ -129,7 +129,7 @@ def main():
                 plain = re.sub(rb"\x1b\[[0-?]*[ -/]*[@-~]", b"", bytes(transcript)).decode(errors="replace")
                 assert child.returncode == 0, f"{name}: exit {child.returncode}"
                 assert cancelled, f"{name}: session never appeared"
-                assert "1 resumable threads" in plain, f"{name}: unexpected session eligibility"
+                assert "1 resumable sessions" in plain, f"{name}: unexpected session eligibility"
                 assert expected in plain, f"{name}: missing {expected!r}; see {artifact / (name + '.terminal.txt')}"
                 if name != "unnamed":
                     assert "(prompt unavailable)" not in plain, f"{name}: missing preview"

@@ -35,6 +35,27 @@ impl ManagedModel {
         }
     }
 
+    /// Native agent-loop family whose conversation format this model uses.
+    #[must_use]
+    pub const fn family(self) -> nanocodex_agent::HarnessFamily {
+        match self {
+            Self::Oai(_) => nanocodex_agent::HarnessFamily::Codex,
+            Self::ClaudeSonnet46
+            | Self::ClaudeOpus46
+            | Self::ClaudeSonnet55
+            | Self::ClaudeOpus55 => nanocodex_agent::HarnessFamily::Claude,
+        }
+    }
+
+    /// Managed identity of a shared harness model, when the service hosts it.
+    #[must_use]
+    pub fn from_harness(model: nanocodex_agent::HarnessModel) -> Option<Self> {
+        match model {
+            nanocodex_agent::HarnessModel::Codex(model) => Some(Self::Oai(model)),
+            nanocodex_agent::HarnessModel::Claude(model) => model.as_str().parse().ok(),
+        }
+    }
+
     /// Default effort for a newly selected model (not account availability).
     #[must_use]
     pub const fn default_thinking(self) -> Thinking {

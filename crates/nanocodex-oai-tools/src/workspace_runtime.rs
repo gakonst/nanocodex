@@ -9,7 +9,7 @@
 use std::{ffi::OsString, path::PathBuf, sync::Arc};
 
 use crate::{
-    StandardTool, Tool, ToolContext, ToolInput, ToolOutput,
+    SessionEnvironment, StandardTool, Tool, ToolContext, ToolInput, ToolOutput,
     apply_patch::ApplyPatchHandler,
     shell::{ExecCommandHandler, ShellSessions, WriteStdinHandler},
     view_image::ViewImageHandler,
@@ -51,15 +51,21 @@ impl WorkspaceTools {
 }
 
 impl WorkspaceToolRuntime {
-    /// Creates a runtime rooted at `workspace` with a sanitized guest process
-    /// environment.
+    /// Creates a runtime rooted at `workspace` for one agent session.
+    ///
+    /// Commands run with a sanitized process environment plus the session's
+    /// [`SessionEnvironment`] variables.
     #[must_use]
-    pub fn new(workspace: PathBuf) -> Self {
-        Self::with_optional_view_image_wire_limit(
-            workspace,
-            None,
-            Arc::<Vec<(OsString, OsString)>>::default(),
-        )
+    pub fn new(workspace: PathBuf, session: &SessionEnvironment) -> Self {
+        Self::with_optional_view_image_wire_limit(workspace, None, Arc::new(session.os_variables()))
+    }
+
+    /// Creates a runtime for a tool selection that no session has bound.
+    ///
+    /// Commands receive no session variables, not even inherited ones.
+    #[cfg(feature = "attachment")]
+    pub(crate) fn unbound(workspace: PathBuf) -> Self {
+        Self::with_optional_view_image_wire_limit(workspace, None, Arc::default())
     }
 
     /// Creates a retained runtime whose `view_image` responses must fit one
@@ -178,7 +184,10 @@ mod tests {
     #[tokio::test]
     async fn retains_shell_sessions_and_cancels_them() {
         let workspace = tempdir().unwrap();
-        let runtime = WorkspaceToolRuntime::new(workspace.path().to_path_buf());
+        let runtime = WorkspaceToolRuntime::new(
+            workspace.path().to_path_buf(),
+            &SessionEnvironment::root("session"),
+        );
         let input = ToolInput::Function(
             to_raw_value(&serde_json::json!({
                 "cmd": "printf ready; sleep 30",
@@ -200,7 +209,10 @@ mod tests {
     #[tokio::test]
     async fn rejects_non_workspace_tools() {
         let workspace = tempdir().unwrap();
-        let runtime = WorkspaceToolRuntime::new(workspace.path().to_path_buf());
+        let runtime = WorkspaceToolRuntime::new(
+            workspace.path().to_path_buf(),
+            &SessionEnvironment::root("session"),
+        );
         let output = runtime
             .execute_tool(
                 "web_search",

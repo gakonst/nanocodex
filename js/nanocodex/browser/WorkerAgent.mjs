@@ -4,7 +4,7 @@ import {
   createBrowserVoice,
   defineRuntime,
   freezeJson,
-  getEncodedTurnSnapshot,
+  getEncodedTurnCheckpoint,
   getEncodedTurnUsage,
   releaseAgentSession,
   reportError,
@@ -533,8 +533,8 @@ async function dispatch(message, state) {
     turn?.dispose();
     return;
   }
-  if (method === "result.snapshot") {
-    return withWorkerResult(results, args[0], getEncodedTurnSnapshot);
+  if (method === "result.checkpoint") {
+    return withWorkerResult(results, args[0], getEncodedTurnCheckpoint);
   }
   if (method === "result.usage") {
     return withWorkerResult(results, args[0], getEncodedTurnUsage);
@@ -588,11 +588,19 @@ async function dispatch(message, state) {
     return state.allocateVoice(await createBrowserVoice(agent, args[1]));
   }
   if (method === "agent.fork") {
-    if (args[1] === undefined) return state.allocateAgent(await agent.session.fork());
-    return withWorkerResult(results, args[1], async (at) => (
-      state.allocateAgent(await agent.session.fork({ at }))
-    ));
+    const { resultId, checkpoint, origin } = args[1] ?? {};
+    if (resultId !== undefined) {
+      return withWorkerResult(results, resultId, async (at) => (
+        state.allocateAgent(await agent.session.fork({ at, origin }))
+      ));
+    }
+    return state.allocateAgent(await agent.session.fork({
+      ...(checkpoint === undefined ? {} : { at: JSON.parse(checkpoint) }),
+      origin,
+    }));
   }
+  if (method === "agent.checkpoint") return JSON.stringify(await agent.session.checkpoint());
+  if (method === "agent.cancel") return agent.session.cancel();
   if (method === "agent.spawn") return state.allocateAgent(await agent.session.spawn());
   if (method === "agent.compact") return agent.session.compact();
   if (method === "agent.context") return agent.session.context();
@@ -647,7 +655,15 @@ function releaseWorkerResult(results, resultId) {
 }
 
 function describeAgent(agentId, agent) {
-  return { handleId: agentId, agentId: agent.agentId, sessionId: agent.sessionId };
+  // Identity, lineage, capabilities, and persistence are fixed per session.
+  return {
+    handleId: agentId,
+    agentId: agent.agentId,
+    sessionId: agent.sessionId,
+    session: agent.session.info(),
+    capabilities: agent.session.capabilities(),
+    persistence: agent.session.persistence(),
+  };
 }
 
 class WorkerConnection {
@@ -764,13 +780,23 @@ class WorkerConnection {
       released: false,
       prompt(input, id) { return connection.prompt(handleId, { input, ...(id === undefined ? {} : { id }) }); },
       promptContent(input, id) { return connection.prompt(handleId, { input: JSON.parse(input), ...(id === undefined ? {} : { id }) }); },
-      fork: async () => connection.rawAgent(await connection.rpc("agent.fork", [handleId])),
-      forkFrom: async (result) => {
+      session: () => JSON.stringify(descriptor.session),
+      capabilities: () => JSON.stringify(descriptor.capabilities),
+      persistence: () => descriptor.persistence === null || descriptor.persistence === undefined
+        ? undefined
+        : JSON.stringify(descriptor.persistence),
+      checkpoint: () => connection.rpc("agent.checkpoint", [handleId]),
+      cancel: () => connection.rpc("agent.cancel", [handleId]),
+      fork: async (origin) => connection.rawAgent(await connection.rpc("agent.fork", [handleId, { origin }])),
+      forkAtTurn: async (result, origin) => {
         if (result?.connection !== connection) {
-          throw new TypeError("historical forks require a result from the same Worker Agent");
+          throw new TypeError("turn forks require a result from the same Worker Agent");
         }
-        return connection.rawAgent(await connection.rpc("agent.fork", [handleId, result.resultId]));
+        return connection.rawAgent(await connection.rpc("agent.fork", [handleId, { resultId: result.resultId, origin }]));
       },
+      forkAtCheckpoint: async (checkpoint, origin) => connection.rawAgent(
+        await connection.rpc("agent.fork", [handleId, { checkpoint, origin }]),
+      ),
       spawn: async () => connection.rawAgent(await connection.rpc("agent.spawn", [handleId])),
       compact: () => connection.rpc("agent.compact", [handleId]),
       context: async () => JSON.stringify(await connection.rpc("agent.context", [handleId])),
@@ -1188,9 +1214,9 @@ async function connectionResult(connection, turnId) {
     connection,
     finalMessage: result.finalMessage,
     resultId: result.resultId,
-    snapshot() {
+    checkpoint() {
       if (released) return Promise.reject(new Error("the Nanocodex turn result has been disposed"));
-      return connection.rpc("result.snapshot", [result.resultId]);
+      return connection.rpc("result.checkpoint", [result.resultId]);
     },
     usage() {
       if (released) return Promise.reject(new Error("the Nanocodex turn result has been disposed"));

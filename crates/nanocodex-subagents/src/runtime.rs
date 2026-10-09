@@ -20,7 +20,7 @@ use super::{
 use futures_util::future::join_all;
 use jsonschema::Validator;
 use nanocodex_agent::{
-    AgentEvents, AgentHandle, ChildSnapshot, Nanocodex, NanocodexError, Result as AgentResult,
+    AgentEvents, AgentHandle, Nanocodex, NanocodexError, Result as AgentResult, SessionCheckpoint,
     TurnResult, events::AgentEventKind,
 };
 use serde::Serialize;
@@ -48,7 +48,7 @@ pub(super) struct ChildSession {
     pub(super) active: bool,
     pub(super) output_validator: Validator,
     pub(super) output_schema: Value,
-    pub(super) stored_runtime: Option<ChildSnapshot>,
+    pub(super) stored_runtime: Option<SessionCheckpoint>,
     pub(super) next_instruction_revision: u64,
     pub(super) active_instruction_revision: Option<u64>,
     pub(super) steering: bool,
@@ -121,7 +121,7 @@ pub struct Registry {
     journal_writer: std::sync::atomic::AtomicBool,
     /// Orders background snapshots and the final pre-teardown journal flush.
     journal_write_lock: tokio::sync::Mutex<()>,
-    checkpoints: std::sync::Mutex<HashMap<(String, AgentId), ChildSnapshot>>,
+    checkpoints: std::sync::Mutex<HashMap<(String, AgentId), SessionCheckpoint>>,
     /// Terminal checkpoints registered before their completed status is visible.
     pending_checkpoints: std::sync::Mutex<HashMap<String, usize>>,
     /// In-flight mid-turn checkpoint captures; `true` requests one more pass.
@@ -155,7 +155,7 @@ impl AgentScope {
     fn journal_payload(
         &self,
         root_session_id: &str,
-        checkpoints: &HashMap<(String, AgentId), ChildSnapshot>,
+        checkpoints: &HashMap<(String, AgentId), SessionCheckpoint>,
     ) -> std::io::Result<String> {
         let mut ids = self.sessions.keys().copied().collect::<Vec<_>>();
         ids.sort_unstable();
@@ -323,7 +323,7 @@ impl RegistryState {
 
     fn journal(
         &self,
-        checkpoints: &HashMap<(String, AgentId), ChildSnapshot>,
+        checkpoints: &HashMap<(String, AgentId), SessionCheckpoint>,
     ) -> Vec<(String, String)> {
         let mut payloads = Vec::with_capacity(self.scopes.len());
         for (root_session_id, scope) in self
@@ -1262,7 +1262,7 @@ impl Registry {
             .collect()
     }
 
-    fn record_checkpoint(&self, root_session_id: &str, id: AgentId, snapshot: ChildSnapshot) {
+    fn record_checkpoint(&self, root_session_id: &str, id: AgentId, snapshot: SessionCheckpoint) {
         self.checkpoints
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -1445,7 +1445,7 @@ impl Registry {
             .map_err(|error| std::io::Error::other(format!("invalid subagent journal: {error}")))?;
         // Journals carry whole child conversations; do not hold a second copy.
         drop(payload);
-        if journal.version != durable::JOURNAL_VERSION {
+        if !(durable::MIN_JOURNAL_VERSION..=durable::JOURNAL_VERSION).contains(&journal.version) {
             return Err(std::io::Error::other(format!(
                 "unsupported subagent journal version {}",
                 journal.version
@@ -1464,10 +1464,14 @@ impl Registry {
                 "subagent scope already has live children and cannot be restored",
             ));
         }
-        for agent in agents {
+        let lineages = agents
+            .iter()
+            .map(|agent| durable::journaled_lineage(root_session_id, &agents, agent.descriptor.id))
+            .collect::<Vec<_>>();
+        for (agent, lineage) in agents.into_iter().zip(lineages) {
             let id = agent.descriptor.id;
-            let checkpoint = agent.snapshot()?;
-            let (session, resume, lost) = durable::restored_session(agent)?;
+            let checkpoint = agent.snapshot(&lineage)?;
+            let (session, resume, lost) = durable::restored_session(agent, checkpoint.clone())?;
             state.insert_restored(root_session_id, session)?;
             if let Some(checkpoint) = checkpoint {
                 self.record_checkpoint(root_session_id, id, checkpoint);
@@ -1730,7 +1734,7 @@ impl Registry {
         // snapshots may wait for an active turn's conversation lock; spawning a
         // background capture here can journal a child with no recovery state.
         let checkpoint = if self.store_for(&root_session_id).is_some() {
-            match agent.runtime_snapshot().await {
+            match agent.checkpoint().await {
                 Ok(snapshot) => Some(snapshot),
                 Err(error) => {
                     event_task.abort();
@@ -2864,7 +2868,7 @@ impl ChildSession {
         status: AgentStatus,
         contract: OutputContract,
         output_schema: Value,
-        stored_runtime: Option<ChildSnapshot>,
+        stored_runtime: Option<SessionCheckpoint>,
         next_instruction_revision: u64,
         last_output: Option<Value>,
     ) -> Self {
@@ -3018,8 +3022,8 @@ pub fn channel(
 #[cfg(test)]
 mod tests {
     use super::{
-        AgentDescriptor, AgentId, AgentStatus, ChildSession, ChildSnapshot, OutputContract,
-        Registry, RegistryState, complete_session, forward_events,
+        AgentDescriptor, AgentId, AgentStatus, ChildSession, OutputContract, Registry,
+        RegistryState, SessionCheckpoint, complete_session, forward_events,
     };
     use crate::platform;
     use crate::{
@@ -3648,10 +3652,13 @@ mod tests {
         let session = state.scopes.get("root").unwrap().sessions.get(&id).unwrap();
         assert_eq!(session.status, AgentStatus::Interrupted);
         assert_eq!(session.descriptor.session_id, session_id);
-        assert!(matches!(
-            session.stored_runtime,
-            Some(ChildSnapshot::Codex(_))
-        ));
+        assert_eq!(
+            session
+                .stored_runtime
+                .as_ref()
+                .map(SessionCheckpoint::family),
+            Some(nanocodex_agent::HarnessFamily::Codex)
+        );
         assert!(session.evicted && session.harness.is_none());
         drop(state);
         assert_eq!(
@@ -3731,8 +3738,47 @@ mod tests {
         assert!(!has_checkpoint());
     }
 
+    /// Rewrites a current journal as the version-1 layout, which stored a
+    /// Codex child's boundary as an untagged `ChildRuntimeSnapshot`.
+    fn legacy_codex_journal(payload: &str) -> String {
+        let mut journal: serde_json::Value = serde_json::from_str(payload).unwrap();
+        journal["version"] = json!(1);
+        for agent in journal["agents"].as_array_mut().unwrap() {
+            let checkpoint: SessionCheckpoint =
+                serde_json::from_value(agent["checkpoint"].take()).unwrap();
+            let nanocodex_agent::HarnessModel::Codex(model) = checkpoint.model() else {
+                panic!("expected a Codex checkpoint");
+            };
+            let mut legacy = checkpoint.payload().as_object().unwrap().clone();
+            legacy.insert("session_id".into(), json!(checkpoint.session_id()));
+            legacy.insert("model".into(), serde_json::to_value(model).unwrap());
+            legacy.insert(
+                "thinking".into(),
+                serde_json::to_value(checkpoint.thinking()).unwrap(),
+            );
+            agent["checkpoint"] = serde_json::Value::Object(legacy);
+        }
+        journal.to_string()
+    }
+
+    fn restore_journaled(agent: crate::durable::PersistedAgent) -> (ChildSession, bool, bool) {
+        let lineage = nanocodex_agent::Lineage::root("root");
+        let checkpoint = agent.snapshot(&lineage).unwrap();
+        crate::durable::restored_session(agent, checkpoint).unwrap()
+    }
+
     #[tokio::test]
     async fn reconstructed_child_announces_host_binding_once_before_execution() {
+        reconstructed_child_announces_host_binding_once(false).await;
+    }
+
+    /// Version-1 Codex journal entries upgrade to restorable checkpoints.
+    #[tokio::test]
+    async fn legacy_codex_journal_child_reconstructs_and_binds_once() {
+        reconstructed_child_announces_host_binding_once(true).await;
+    }
+
+    async fn reconstructed_child_announces_host_binding_once(legacy: bool) {
         let (registry, _, mut updates) = super::channel(4);
         let factory_registry = registry.clone();
         let constructions = Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -3774,7 +3820,11 @@ mod tests {
                 .unwrap()
                 .status = AgentStatus::Running;
         }
-        let payload = source.journal_payloads().await.pop().unwrap().1;
+        let mut payload = source.journal_payloads().await.pop().unwrap().1;
+        if legacy {
+            payload = legacy_codex_journal(&payload);
+            assert!(payload.contains("\"version\":1") && !payload.contains("\"format\""));
+        }
         let store = crate::MemorySubagentStore::new();
         crate::SubagentStore::save(&store, root_id, payload)
             .await
@@ -3896,13 +3946,12 @@ mod tests {
         let encoded =
             serde_json::to_string(&crate::durable::persist_agent(&session, None)).unwrap();
         let decoded = serde_json::from_str(&encoded).unwrap();
-        let (restored, _, _) = crate::durable::restored_session(decoded).unwrap();
+        let (restored, _, _) = restore_journaled(decoded);
         assert_eq!(restored.descriptor.task, "delegated replacement");
         assert_eq!(restored.binding_task, original);
         let mut legacy: serde_json::Value = serde_json::from_str(&encoded).unwrap();
         legacy.as_object_mut().unwrap().remove("binding_task");
-        let (legacy, _, _) =
-            crate::durable::restored_session(serde_json::from_value(legacy).unwrap()).unwrap();
+        let (legacy, _, _) = restore_journaled(serde_json::from_value(legacy).unwrap());
         assert_eq!(legacy.binding_task, legacy.descriptor.task);
     }
 
@@ -3940,13 +3989,12 @@ mod tests {
                 ))
                 .unwrap()
             };
-            let (restored, _, _) =
-                crate::durable::restored_session(serde_json::from_str(&encoded).unwrap()).unwrap();
+            let (restored, _, _) = restore_journaled(serde_json::from_str(&encoded).unwrap());
             assert_eq!(restored.descriptor.task, task);
             assert_eq!(restored.binding_task, original);
             // A second checkpoint after restoration must retain both identities.
             let next = crate::durable::persist_agent(&restored, None);
-            let (again, _, _) = crate::durable::restored_session(next).unwrap();
+            let (again, _, _) = restore_journaled(next);
             assert_eq!(again.descriptor.task, task);
             assert_eq!(again.binding_task, original);
             registry.interrupt("main", child).await.unwrap();
@@ -5395,7 +5443,12 @@ mod tests {
         let reservation = registry.reserve(root_id).await.unwrap();
         let (parent, events) = root.spawn().await.unwrap();
         let (child, child_events) = parent.spawn().await.unwrap();
-        child.set_model(nanocodex_agent::Model::Sol).await.unwrap();
+        child
+            .set_harness_model(nanocodex_agent::HarnessModel::Codex(
+                nanocodex_agent::Model::Sol,
+            ))
+            .await
+            .unwrap();
         child
             .set_thinking(nanocodex_agent::Thinking::High)
             .await
@@ -5490,11 +5543,13 @@ mod tests {
             .harness
             .clone()
             .unwrap();
-        let ChildSnapshot::Codex(snapshot) = harness.snapshot().await.unwrap() else {
-            panic!("expected native Codex checkpoint");
-        };
-        assert_eq!(snapshot.model, nanocodex_agent::Model::Sol);
-        assert_eq!(snapshot.thinking, nanocodex_agent::Thinking::High);
+        let snapshot = harness.snapshot().await.unwrap();
+        assert_eq!(snapshot.family(), nanocodex_agent::HarnessFamily::Codex);
+        assert_eq!(
+            snapshot.model(),
+            nanocodex_agent::HarnessModel::Codex(nanocodex_agent::Model::Sol)
+        );
+        assert_eq!(snapshot.thinking(), nanocodex_agent::Thinking::High);
         assert_eq!(
             registry
                 .host_context(root_id, child_reservation.id)
@@ -5531,11 +5586,7 @@ mod tests {
                 decoded_json_text: false
             }
         );
-        assert!(
-            serde_json::to_string(&snapshot.conversation)
-                .unwrap()
-                .contains("retain amber history")
-        );
+        assert!(snapshot.to_json().unwrap().contains("retain amber history"));
         assert!(
             registry.state.lock().await.scopes[root_id].sessions[&child_reservation.id].active,
             "reading in-memory history must not interrupt running children or discard their mailbox"

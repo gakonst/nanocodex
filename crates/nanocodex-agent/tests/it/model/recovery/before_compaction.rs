@@ -347,21 +347,35 @@ async fn before_compaction_cancellation_drops_hook_without_discarding_source() -
 async fn before_compaction_is_not_inherited_by_spawn_fork_or_restored_children() -> Result<()> {
     let workspace = tempfile::tempdir()?;
     let evidence = Arc::new(Evidence::default());
+    let (handles, mut received_handles) = tokio::sync::mpsc::unbounded_channel();
     let (agent, events) = Nanocodex::builder(provider(&evidence, Trigger::Manual)?)
         .workspace(workspace.path())
         .before_compaction(Preserve(evidence.clone()))
+        .tools_factory(move |handle| {
+            drop(handles.send(handle));
+            Ok(Tools::default())
+        })
         .build()?;
     drop(events);
+    let root_handle = received_handles
+        .recv()
+        .await
+        .ok_or_else(|| eyre!("root agent handle was not materialized"))?;
     agent.prompt("root only").await?.result().await?;
     let (spawned, events) = agent.spawn().await?;
     drop(events);
     spawned.compact().await?;
-    let (fork, events) = agent.fork().await?;
+    let (fork, events) = agent.fork(ForkRequest::latest()).await?;
     drop(events);
     fork.compact().await?;
-    let snapshot = spawned.child_snapshot().await?;
+    let checkpoint = spawned.checkpoint().await?;
     spawned.shutdown().await?;
-    let (restored, events) = agent.restore_child(snapshot, None).await?;
+    let (restored, events) = root_handle.restore_runtime(checkpoint, None).await?;
+    assert_eq!(restored.session_id(), spawned.session_id());
+    assert_eq!(
+        restored.session().lineage.parent_session_id.as_deref(),
+        Some(agent.session_id())
+    );
     drop(events);
     restored.compact().await?;
     assert!(evidence.requests.lock().unwrap().is_empty());
@@ -535,7 +549,11 @@ async fn before_compaction_boundary_is_stable_and_durable_receipt_replays_after_
         .await?
         .result()
         .await?;
-    let snapshot = completed.snapshot().expect("completed source snapshot");
+    let snapshot = completed
+        .checkpoint()
+        .as_ref()
+        .map(conversation)
+        .expect("completed source snapshot");
     seed.shutdown().await?;
     for attempt in 0..3 {
         journal.attempt.store(attempt, Ordering::SeqCst);
@@ -543,7 +561,7 @@ async fn before_compaction_boundary_is_stable_and_durable_receipt_replays_after_
             .session_id(test_session_id())
             .workspace(workspace.path())
             .execution_policy(journal.clone())
-            .resume(snapshot.clone())
+            .resume_native_snapshot(snapshot.clone())
             .before_compaction(Preserve(evidence.clone()))
             .build()?;
         drop(events);

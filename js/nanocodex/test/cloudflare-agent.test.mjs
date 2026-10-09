@@ -450,13 +450,18 @@ test("a failed speculative connection does not authorize a later managed text tu
   }
 });
 
-test("Cloudflare checkpoint rejects before the first safe boundary and fork resume requires pristine storage", async () => {
+test("Cloudflare checkpoint before the first turn cannot seed a fork and fork resume requires pristine storage", async () => {
   const module = await readFile(new URL("../pkg-web/nanocodex_bg.wasm", import.meta.url));
   const storage = new MemoryStorage();
   const owner = durableOwner(storage);
   const agent = await create(module, owner);
   try {
-    await assert.rejects(checkpoint(agent), /safe conversation boundary/);
+    // A fresh session has a portable boundary, but no conversation to continue.
+    const empty = await checkpoint(agent);
+    assert.deepEqual(JSON.parse(JSON.stringify(empty)), empty);
+    await assert.rejects(create(module, durableOwner(new MemoryStorage(), egressBinding(), SECOND_OBJECT_ID), {
+      [Symbol.for("nanocodex.cloudflare.internalForkResume")]: empty,
+    }), /no committed conversation/);
     await assert.rejects(create(module, durableOwner(new MemoryStorage(), egressBinding(), SECOND_OBJECT_ID), {
       resume: {},
     }), /does not accept resume/);
@@ -795,7 +800,10 @@ test("Cloudflare Agent exports and imports one stable state across a fresh runti
     /invalid shape/,
   );
   const destination = await create(module, destinationOwner);
-  assert.notEqual(destination.sessionId, sourceSessionId);
+  // The durable state is the session's source of truth, so the imported
+  // session keeps its identity inside the new Durable Object runtime.
+  assert.equal(destination.sessionId, sourceSessionId);
+  assert.equal(destination.session.info().sessionId, stateId);
   assert.equal(destinationStorage.stateId, stateId);
   assert.deepEqual(createCloudflareDurabilityStore(destinationStorage).load(stateId), {
     revision: "1",
@@ -1174,8 +1182,9 @@ test("Cloudflare checkpoint copies committed history and seeds only a pristine d
   try {
     assert.equal((await parent.turn.prompt({ input: "Say PARENT_DONE" }).result()).finalMessage, "PARENT_DONE");
     const copied = await checkpoint(parent);
-    assert.equal(copied.version, 1);
-    assert.ok(copied.history.some(item => JSON.stringify(item).includes("PARENT_DONE")));
+    assert.equal(parent.session.capabilities().checkpoint, true);
+    assert.ok((await parent.session.context()).history.some(item => JSON.stringify(item).includes("PARENT_DONE")));
+    assert.deepEqual(JSON.parse(JSON.stringify(copied)), copied, "checkpoints are JSON-safe");
     assert.deepEqual(await checkpoint(parent), copied);
     // A failed managed preparation must pin the seed *before* catalog/tools
     // discovery so a cold retry can use the same fork without re-admission.
@@ -1197,7 +1206,7 @@ test("Cloudflare checkpoint copies committed history and seeds only a pristine d
     await assert.rejects(create(module, childOwner, {
       ...options,
       [Symbol.for("nanocodex.cloudflare.internalForkResume")]: {
-        ...copied, prompt_cache_key: "forged-cache-lineage",
+        ...copied, turn_id: "forged-turn",
       },
     }), /pristine Durable Object|retained seed/);
     child = await create(module, childOwner, {
@@ -1205,14 +1214,12 @@ test("Cloudflare checkpoint copies committed history and seeds only a pristine d
       [Symbol.for("nanocodex.cloudflare.internalForkResume")]: copied,
     });
     assert.equal((await child.turn.prompt({ input: "Say CHILD_DONE" }).result()).finalMessage, "CHILD_DONE");
-    const childBoundary = await checkpoint(child);
-    assert.ok(childBoundary.history.some(item => JSON.stringify(item).includes("CHILD_DONE")));
+    const childInfo = child.session.info();
+    assert.ok((await child.session.context()).history.some(item => JSON.stringify(item).includes("CHILD_DONE")));
     await child.session.shutdown();
     child = await create(module, childOwner, options);
-    const recoveredChild = await checkpoint(child);
-    assert.equal(recoveredChild.lineage_id, childBoundary.lineage_id);
-    assert.equal(recoveredChild.prompt_cache_key, childBoundary.prompt_cache_key);
-    assert.ok(recoveredChild.history.some(item => JSON.stringify(item).includes("CHILD_DONE")),
+    assert.deepEqual(child.session.info(), childInfo, "cold recovery keeps the child's identity and lineage");
+    assert.ok((await child.session.context()).history.some(item => JSON.stringify(item).includes("CHILD_DONE")),
       "child cold recovery keeps its own committed model history");
     assert.deepEqual(await checkpoint(parent), copied, "fork does not mutate the parent history");
   } finally {

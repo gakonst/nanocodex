@@ -4,7 +4,7 @@ use std::{collections::HashMap, future::Future, sync::Arc};
 
 use crate::{AgentEvents, HarnessFamily, HarnessModel, Nanocodex, NanocodexError, Thinking};
 use nanocodex_agent::{
-    AgentHandle, ChildSnapshot, SpawnOptions,
+    AgentHandle, ForkRequest, SessionCheckpoint, SpawnOptions,
     backend::{AgentFactory, BackendFuture},
 };
 
@@ -26,9 +26,10 @@ pub struct HarnessRequest {
     pub parent: Option<AgentHandle>,
     /// Private host context inherited at this boundary, never model arguments.
     pub host_context: Option<Arc<str>>,
-    /// Native idle boundary to restore with the recipe's current host capabilities.
-    /// Its unredacted transcript stays in memory and must not enter model arguments.
-    pub snapshot: Option<ChildSnapshot>,
+    /// Portable boundary to restore with the recipe's current host capabilities,
+    /// keeping the checkpoint's session identity. Its unredacted transcript stays
+    /// in memory and must not enter model arguments.
+    pub checkpoint: Option<SessionCheckpoint>,
     /// Shared router to install on every per-agent weak handle.
     pub spawn_factory: Arc<dyn AgentFactory>,
 }
@@ -130,7 +131,7 @@ impl Router {
         parent: Option<AgentHandle>,
         options: SpawnOptions,
         host_context: Option<Arc<str>>,
-        snapshot: Option<ChildSnapshot>,
+        checkpoint: Option<SessionCheckpoint>,
     ) -> AgentResult {
         let model = options.selected_harness_model().ok_or_else(|| {
             NanocodexError::InvalidRequest("harness construction requires a resolved model".into())
@@ -155,7 +156,7 @@ impl Router {
             options,
             parent,
             host_context,
-            snapshot,
+            checkpoint,
             spawn_factory,
         })
         .await
@@ -177,8 +178,9 @@ impl AgentFactory for RoutedFactory {
         Box::pin(async move { parent.settings().await })
     }
 
-    fn fork(&self, parent: AgentHandle) -> BackendFuture<AgentResult> {
-        Box::pin(async move { parent.fork().await })
+    /// Forks stay native: a conversation is continued by the family that owns it.
+    fn fork(&self, parent: AgentHandle, request: ForkRequest) -> BackendFuture<AgentResult> {
+        Box::pin(async move { parent.fork(request).await })
     }
 
     fn spawn(
@@ -191,10 +193,7 @@ impl AgentFactory for RoutedFactory {
         Box::pin(async move {
             parent.ensure_available().await?;
             options.validate_harness()?;
-            let family = options
-                .selected_harness()
-                .unwrap_or(parent.harness_family());
-            if family == parent.harness_family() {
+            if resolve_family(&parent, &options) == parent.harness_family() {
                 return parent
                     .spawn_native_with_host_context(options, host_context)
                     .await;
@@ -209,31 +208,61 @@ impl AgentFactory for RoutedFactory {
         })
     }
 
+    /// Batches carry no family override, so they resolve exactly like a
+    /// default single spawn: the parent's family, through its native batch
+    /// boundary with atomic admission and rollback.
+    fn spawn_many(
+        &self,
+        parent: AgentHandle,
+        count: usize,
+        observer: Arc<dyn Fn(&str) + Send + Sync>,
+        host_context: Option<Arc<str>>,
+    ) -> BackendFuture<nanocodex_agent::Result<Vec<(Nanocodex, AgentEvents)>>> {
+        Box::pin(async move {
+            parent.ensure_available().await?;
+            debug_assert_eq!(
+                resolve_family(&parent, &SpawnOptions::new()),
+                parent.harness_family()
+            );
+            parent
+                .spawn_many_native_with_host_context(count, move |id| observer(id), host_context)
+                .await
+        })
+    }
+
     fn restore(
         &self,
         parent: AgentHandle,
-        snapshot: ChildSnapshot,
+        checkpoint: SessionCheckpoint,
         host_context: Option<Arc<str>>,
     ) -> BackendFuture<AgentResult> {
         let inner = Arc::clone(&self.inner);
         Box::pin(async move {
             parent.ensure_available().await?;
-            let model = snapshot.model();
-            if model.family() == parent.harness_family() {
-                return parent.restore_native_runtime(snapshot, host_context).await;
+            checkpoint.validate()?;
+            if checkpoint.family() == parent.harness_family() {
+                return parent
+                    .restore_native_runtime(checkpoint, host_context)
+                    .await;
             }
-            let thinking = match &snapshot {
-                ChildSnapshot::Codex(snapshot) => snapshot.thinking,
-                ChildSnapshot::Native { thinking, .. } => *thinking,
-            };
+            let model = checkpoint.model();
             let options = SpawnOptions::new()
                 .harness(model.family())
                 .harness_model(model)
-                .thinking(thinking);
+                .thinking(checkpoint.thinking());
             options.validate_harness()?;
             inner
-                .construct(Some(parent), options, host_context, Some(snapshot))
+                .construct(Some(parent), options, host_context, Some(checkpoint))
                 .await
         })
     }
+}
+
+/// The family a child of `parent` runs in: an explicit harness or model
+/// selection, otherwise the parent's own family.
+fn resolve_family(parent: &AgentHandle, options: &SpawnOptions) -> HarnessFamily {
+    options
+        .selected_harness()
+        .or_else(|| options.selected_harness_model().map(HarnessModel::family))
+        .unwrap_or(parent.harness_family())
 }

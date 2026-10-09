@@ -43,7 +43,7 @@ use nanocodex::{
     TurnResult,
     agent::{
         events::{AgentEvent, TimedAgentEvent},
-        rollout::DurableSession,
+        session::{ForkRequest, Mutability},
     },
     tools::mcp::McpHandle,
 };
@@ -808,9 +808,8 @@ pub(crate) async fn run(
     config: AgentArgs,
     vm: crate::vm::VmArgs,
     initial_prompt: Option<InitialPrompt>,
-    resume: Option<DurableSession>,
 ) -> Result<()> {
-    run_observed(config, vm, initial_prompt, resume, None).await
+    run_observed(config, vm, initial_prompt, None).await
 }
 
 #[allow(
@@ -821,23 +820,21 @@ pub(crate) async fn run_observed(
     mut config: AgentArgs,
     vm: crate::vm::VmArgs,
     initial_prompt: Option<InitialPrompt>,
-    resume: Option<DurableSession>,
     observability: Option<crate::observability::ObservabilityArgs>,
 ) -> Result<()> {
     config.prefer_codex_for_vm(&vm);
-    let can_replace_backend = resume.is_none() && config.claude_resume.is_none();
+    // A resumed session of either harness pins its model and conversation.
+    let can_replace_backend = config.resumed().is_none();
     let mut backend_config = config.clone();
     let backend_vm = vm.clone();
-    let resumed_model = resume
-        .as_ref()
-        .map(|session| HarnessModel::from(session.model()));
+    let resumed_model = config.resumed().map(crate::sessions::ResumedSession::model);
     let first_frame = crate::startup_timing::Stage::new("tui_first_frame");
     let initial_thinking = config.thinking();
     let initial_fast_mode = config.fast_mode();
-    let cwd = resume
-        .as_ref()
-        .map(|session| PathBuf::from(session.workspace()))
-        .unwrap_or_else(|| config.cwd().to_path_buf());
+    let cwd = config
+        .resumed()
+        .and_then(crate::sessions::ResumedSession::workspace)
+        .map_or_else(|| config.cwd().to_path_buf(), Path::to_path_buf);
     let mut app = App::new(cwd)
         .with_model(resumed_model.unwrap_or(config.harness_model()?))
         .with_thinking(initial_thinking)
@@ -866,19 +863,15 @@ pub(crate) async fn run_observed(
     )?;
 
     drop(first_frame);
-    if let Some(session) = &resume {
+    if let Some(session) = config.resumed() {
         ui.app
             .restore_transcript(session.transcript().iter().cloned());
-    }
-    if let Some(session) = &config.claude_resume {
-        ui.app
-            .restore_transcript(session.transcript.iter().cloned());
     }
     submit_initial_prompt(&mut ui.app, "", &worker_tx, initial_prompt)?;
     scheduler.request_immediate(Instant::now());
     // Synchronous pieces of backend construction run on a runtime worker, never
     // in the input loop. Both tasks are owned and cancelled on every exit path.
-    let mut backend = startup::Backend::start(config, vm, resume, observability);
+    let mut backend = startup::Backend::start(config, vm, observability);
     let (math_update_tx, mut math_update_rx) = mpsc::channel(1);
     let mut display = startup::Task::spawn(async move {
         let profile = terminal_profile::detect().await;
@@ -894,7 +887,7 @@ pub(crate) async fn run_observed(
             if !backend.is_pending() && let Some(model) = pending.recovery_model() {
                 let mut candidate = backend_config.clone();
                 candidate.select_tui_model(model, ui.app.thinking(), ui.app.fast_mode());
-                backend = startup::Backend::start(candidate.clone(), backend_vm.clone(), None, None);
+                backend = startup::Backend::start(candidate.clone(), backend_vm.clone(), None);
                 backend_config = candidate;
                 ui.app.set_active_status("Initializing selected model");
             }
@@ -980,8 +973,8 @@ pub(crate) async fn run_observed(
     let mut agent_events = configured.events;
     let mut root_session_id = Arc::<str>::from(agent_events.request_id());
     ui.root_session_id = Arc::clone(&root_session_id);
-    let mut claude_interactions = configured.claude_interactions;
-    let mut claude_scheduler = configured.claude_scheduler;
+    let mut host_interactions = configured.host.interactions;
+    let mut host_scheduler = configured.host.scheduler;
     let mut cron_tick = tokio::time::interval(std::time::Duration::from_secs(1));
     cron_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut subagent_updates = configured.subagent_updates;
@@ -1031,14 +1024,14 @@ pub(crate) async fn run_observed(
 
             let render_deadline = scheduler.deadline();
             tokio::select! {
-            _ = cron_tick.tick(), if claude_scheduler.is_some() => {
+            _ = cron_tick.tick(), if host_scheduler.is_some() => {
                 // User input and queued turns have priority. This timer never
                 // interrupts a response, routes to BTW, or creates a new agent.
                 if ui.app.main_accepts_automatic_prompt() && !ui.app.has_input()
                     && ui.app.claude_interaction.as_ref().is_none_or(crate::config::PendingInteraction::is_closed)
                 {
                     let session = ui.app.main_branch_request_id().unwrap_or(&root_session_id);
-                    match claude_scheduler.as_ref().expect("enabled scheduler").take_due(session) {
+                    match host_scheduler.as_ref().expect("enabled scheduler").take_due(session) {
                         Ok(Some(due)) => {
                             let source = if due.id.starts_with("monitor-") { "Monitor" } else { "Scheduled" };
                             let display = format!("[{source} {}] {}", due.id, due.prompt);
@@ -1064,13 +1057,13 @@ pub(crate) async fn run_observed(
                         Ok(None) => {}
                         Err(error) => {
                             ui.app.main.push_output(TranscriptItem::Error(format!("Scheduler paused: {error}. Reopen the session after fixing its journal.")));
-                            claude_scheduler = None;
+                            host_scheduler = None;
                             scheduler.request_immediate(Instant::now());
                         }
                     }
                 }
             }
-            interaction = async { match &mut claude_interactions { Some(receiver) => receiver.recv().await, None => std::future::pending().await } }, if ui.app.claude_interaction.as_ref().is_none_or(crate::config::PendingInteraction::is_closed) => {
+            interaction = async { match &mut host_interactions { Some(receiver) => receiver.recv().await, None => std::future::pending().await } }, if ui.app.claude_interaction.as_ref().is_none_or(crate::config::PendingInteraction::is_closed) => {
                 if let Some(interaction) = interaction {
                     if !interaction.is_closed() {
                         // A draft or buffered key belongs to the previous UI
@@ -1085,7 +1078,7 @@ pub(crate) async fn run_observed(
                         ui.app.set_active_status("Awaiting your answer");
                         scheduler.request_immediate(Instant::now());
                     }
-                } else { claude_interactions = None; }
+                } else { host_interactions = None; }
             }
             command = async { match &mut control_server { Some(server) => server.commands.recv().await, None => std::future::pending().await } } => {
                 if let Some(command) = command { control::dispatch(&mut ui, command, &worker_tx)?; scheduler.request_immediate(Instant::now()); }
@@ -1100,7 +1093,7 @@ pub(crate) async fn run_observed(
                     std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "terminal input closed")
                 })?;
                 if matches!(&event, Event::Key(key) if key.code == KeyCode::Esc)
-                    && let Some(cron) = &claude_scheduler
+                    && let Some(cron) = &host_scheduler
                 {
                     let session = ui.app.main_branch_request_id().unwrap_or(&root_session_id);
                     if let Err(error) = cron.stop_wakeup(session) {
@@ -1147,8 +1140,8 @@ pub(crate) async fn run_observed(
                         root_session_id = Arc::from(agent_events.request_id());
                         ui.root_session_id = Arc::clone(&root_session_id);
                         ui.agent_events_open = true;
-                        claude_interactions = configured.claude_interactions;
-                        claude_scheduler = configured.claude_scheduler;
+                        host_interactions = configured.host.interactions;
+                        host_scheduler = configured.host.scheduler;
                         subagent_updates = configured.subagent_updates;
                         child_agents = configured.child_agents;
                         mpp_adapter = configured.mpp_adapter;
@@ -2252,14 +2245,35 @@ impl AgentWorker {
     }
 
     async fn change_model(&mut self, model: HarnessModel) -> Result<(), String> {
-        if !self.can_replace_backend
-            || self.next_turn_id != 1
-            || !self.archived_main.is_empty()
-            || self.btw.is_some()
-            || self.voice.is_some()
-            || self.voice_shutdown.is_some()
-        {
-            return Err("Cannot change model after a thread has started".into());
+        const STARTED: &str = "Cannot change model after a thread has started";
+        if self.voice.is_some() || self.voice_shutdown.is_some() {
+            return Err(STARTED.into());
+        }
+        let fresh = self.next_turn_id == 1 && self.archived_main.is_empty() && self.btw.is_none();
+        // Within one family the session itself switches models when its
+        // backend allows; only a family change replaces the backend.
+        if model.family() == self.main.agent.harness_family() {
+            let mutable = match self.main.agent.capabilities().model {
+                Mutability::Anytime => true,
+                Mutability::BeforeFirstPrompt => fresh,
+                Mutability::Fixed => false,
+            };
+            if mutable {
+                let agents = std::iter::once(&self.main.agent)
+                    .chain(self.archived_main.iter().map(|branch| &branch.agent))
+                    .chain(self.btw.iter().map(|branch| &branch.agent));
+                for agent in agents {
+                    agent
+                        .set_harness_model(model)
+                        .await
+                        .map_err(|error| error.to_string())?;
+                }
+                let _ = self.updates.send(WorkerEvent::ModelChanged { model });
+                return Ok(());
+            }
+        }
+        if !self.can_replace_backend || !fresh {
+            return Err(STARTED.into());
         }
         self.model_selection_required = true;
         let (reply, receive) = tokio::sync::oneshot::channel();
@@ -2486,8 +2500,8 @@ impl AgentWorker {
                     Some("BTW has an active turn; wait for it to finish before /collapse")
                 } else if !branch.has_durable_turn {
                     Some("BTW needs one completed turn before /collapse")
-                } else if !inline && branch.agent.rollout().is_none() {
-                    Some("/collapse requires rollout recording; restart without `--rollouts false`")
+                } else if !inline && !control::resumable(&branch.agent) {
+                    Some("/collapse needs a resumable BTW session; restart without `--rollouts false`")
                 } else {
                     None
                 }
@@ -2660,7 +2674,7 @@ impl AgentWorker {
         match self
             .main
             .agent
-            .fork_side_conversation()
+            .fork(ForkRequest::latest().side_conversation())
             .instrument(span.clone())
             .await
         {
@@ -2673,7 +2687,7 @@ impl AgentWorker {
                 drop(self.updates.send(WorkerEvent::BtwOpened {
                     id,
                     request_id: Arc::clone(&request_id),
-                    resumable: agent.rollout().is_some(),
+                    resumable: control::resumable(&agent),
                 }));
                 let mut branch = BtwWorker {
                     id,
@@ -2753,16 +2767,15 @@ impl AgentWorker {
             );
             return;
         }
-        let Some(rollout) = branch.agent.rollout() else {
-            // Forks keep their history in the running parent, not a resumable session.
+        if !control::resumable(&branch.agent) {
             drop(self.updates.send(WorkerEvent::BtwSplitFailed {
                 id,
                 error: "/split needs a resumable session, but this BTW is not saved to disk; use /collapse to bring it into main".to_owned(),
                 detached: false,
             }));
             return;
-        };
-        let thread_id = rollout.thread_id().to_owned();
+        }
+        let thread_id = branch.agent.session().session_id.clone();
         let prepared = match split::PreparedSplit::detect(cwd) {
             Ok(prepared) => prepared,
             Err(error) => {
@@ -2854,7 +2867,7 @@ impl AgentWorker {
                     .map(|(_, result)| result.clone())
             });
         let fork = if let Some(parent) = parent.as_ref() {
-            self.main.agent.fork_from(parent).await
+            self.main.agent.fork(ForkRequest::at_turn(parent)).await
         } else {
             self.main.agent.spawn().await
         };
@@ -2962,7 +2975,7 @@ impl AgentWorker {
             };
             if let Some((agent, turns)) = branch
                 && let Some(turn) = turns.iter().find(|turn| turn.id == finished.id)
-                && let Some(rollout) = agent.rollout()
+                && let Some(rollout) = control::rollout(agent)
             {
                 let boundary = rollout.committed_bytes();
                 bridge.committed(agent.session_id(), boundary);
@@ -3096,7 +3109,7 @@ async fn start_turn(
                             std::io::Error::other(error),
                         ));
                     }
-                    let rollout_result = agent.flush_rollout().await;
+                    let rollout_result = agent.flush().await;
                     let persistence_succeeded = rollout_result.is_ok();
                     let (result, error, status, otel_status) = match (turn_result, rollout_result) {
                         (Ok(result), Ok(())) => (Some(result), None, "completed", "OK"),
@@ -3956,23 +3969,8 @@ fn execute_submission(
     submission: Submission,
 ) -> Result<()> {
     match submission {
-        Submission::Prompt(mut prompt) => {
-            if !prompt.has_instruction() && app.model().family() != nanocodex::HarnessFamily::Claude
-            {
-                match crate::config::expand_user_skill(
-                    app.model().family(),
-                    &app.cwd,
-                    prompt.display(),
-                ) {
-                    Ok(Some(instruction)) => prompt.set_instruction(instruction),
-                    Ok(None) => {}
-                    Err(error) => {
-                        app.push_active_error(error);
-                        app.set_active_status("Skill unavailable");
-                        return Ok(());
-                    }
-                }
-            }
+        Submission::Prompt(prompt) => {
+            // Skills expand in the worker against the session's own catalog.
             let target = app.focus;
             if matches!(intent, SubmitIntent::Immediate) && app.is_running(target) {
                 if let Some(id) = app.queue_steer(target, prompt.clone()) {
@@ -4059,9 +4057,9 @@ fn execute_submission(
             if !app.begin_btw_collapse(id) {
                 return Ok(());
             }
-            // Claude forks (and Codex without rollouts) have no session another
-            // turn can read, so carry the side exchanges inline, as Claude Code
-            // threads its /btw question/answer history.
+            // A BTW without a resumable session has nothing another turn can
+            // read, so carry the side exchanges inline, as Claude Code threads
+            // its /btw question/answer history.
             let inline = !resumable;
             let prompt = if inline {
                 inline_collapse_btw_prompt(&exchanges)
@@ -4334,9 +4332,9 @@ fn classify_submission(input: impl Into<SubmittedPrompt>) -> Submission {
 }
 
 fn collapse_btw_prompt(thread_id: &str) -> SubmittedPrompt {
-    let mut prompt = SubmittedPrompt::text(format!("BTW Codex thread ID: {thread_id}"));
+    let mut prompt = SubmittedPrompt::text(format!("BTW session ID: {thread_id}"));
     prompt.set_instruction(format!(
-        "The user completed a /btw side exploration in local Codex thread {thread_id}. Read that thread and incorporate its relevant findings into the main task. Use `read_session` with source `local` and session_id `{thread_id}` when available; otherwise locate the local Codex rollout by this thread ID and inspect it with local tools."
+        "The user completed a /btw side exploration in local session {thread_id}. Read that session and incorporate its relevant findings into the main task. Use `read_session` with source `local` and session_id `{thread_id}` when available; otherwise locate the local Codex-format rollout for this session ID under CODEX_HOME/sessions and inspect it with local tools."
     ));
     prompt
 }
@@ -4915,7 +4913,7 @@ mod tests {
         assert!(app.main.pending_steers.is_empty());
         assert_eq!(
             app.main.queued_prompts.front().map(String::as_str),
-            Some("BTW Codex thread ID: btw-thread-id")
+            Some("BTW session ID: btw-thread-id")
         );
         assert_eq!(app.main.pending_turns, 1);
         let WorkerCommand::CollapseBtw {
@@ -4932,11 +4930,11 @@ mod tests {
         };
         assert_eq!(collapsed_id, id);
         assert!(prompt_id > 0);
-        assert_eq!(prompt.display(), "BTW Codex thread ID: btw-thread-id");
+        assert_eq!(prompt.display(), "BTW session ID: btw-thread-id");
         assert!(matches!(
             prompt.into_prompt().instruction,
             PromptInput::Text(text)
-                if text.contains("local Codex thread btw-thread-id")
+                if text.contains("local session btw-thread-id")
                     && text.contains("session_id `btw-thread-id`")
         ));
         assert!(worker.try_recv().is_err());
@@ -5528,7 +5526,10 @@ mod tests {
             .rollout(nanocodex::agent::rollout::RolloutConfig::new(&workspace))
             .build()?;
             let session = agent.session_id().to_owned();
-            let path = agent.rollout().unwrap().path().to_path_buf();
+            let path = super::control::rollout(&agent)
+                .unwrap()
+                .path()
+                .to_path_buf();
             let (control_tx, _control_rx) = mpsc::channel(32);
             let bridge = nanocodex_tui_control::Bridge::new(
                 nanocodex_tui_control::Registration {
@@ -5707,7 +5708,10 @@ mod tests {
             .session_id(session_id)
             .rollout(nanocodex::agent::rollout::RolloutConfig::new(&workspace))
             .build()?;
-        let rollout_path = agent.rollout().unwrap().path().to_path_buf();
+        let rollout_path = super::control::rollout(&agent)
+            .unwrap()
+            .path()
+            .to_path_buf();
         let (commands, worker_rx) = mpsc::unbounded_channel();
         let (updates, mut update_rx) = mpsc::unbounded_channel();
         spawn_agent_worker(

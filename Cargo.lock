@@ -5804,6 +5804,7 @@ dependencies = [
  "eyre",
  "futures-util",
  "iana-time-zone",
+ "nanocodex-home",
  "nanocodex-oai-api",
  "nanocodex-oai-tools",
  "reqwest",
@@ -5860,6 +5861,7 @@ dependencies = [
  "nanocodex-egress",
  "nanocodex-eval",
  "nanocodex-eval-adapters",
+ "nanocodex-home",
  "nanocodex-oai-tools",
  "nanocodex-observability",
  "nanocodex-subagents",
@@ -5948,6 +5950,7 @@ dependencies = [
  "libc",
  "nanocodex-agent",
  "nanocodex-claude-tools",
+ "nanocodex-oai-api",
  "nanocodex-oai-tools",
  "regex",
  "reqwest",
@@ -5974,6 +5977,7 @@ dependencies = [
  "globset",
  "ignore",
  "image",
+ "nanocodex-home",
  "nix 0.31.3",
  "regex",
  "schemars 0.8.22",
@@ -6207,6 +6211,16 @@ dependencies = [
  "windows-sys 0.61.2",
  "x11rb",
  "x11rb-protocol",
+]
+
+[[package]]
+name = "nanocodex-home"
+version = "0.6.7"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
 ]
 
 [[package]]

@@ -32,7 +32,8 @@ pub(crate) struct Run {
     /// Attach the portable durability engine to a local SQLite database.
     ///
     /// This is a testing mode for crash, replay, fencing, and spawned-agent
-    /// durability exercises. It cannot be combined with rollouts.
+    /// durability exercises. It replaces the shared session store; the
+    /// Codex-compatible rollout mirror still follows --rollouts.
     #[arg(long, value_name = "PATH")]
     local_durability: Option<PathBuf>,
 
@@ -61,7 +62,8 @@ impl Run {
         });
         let configured = config.build(vm, local_durability).await?;
         let interaction_task = configured
-            .claude_interactions
+            .host
+            .interactions
             .map(|receiver| tokio::spawn(crate::config::serve_claude_terminal(receiver)));
         let handle = configured.handle;
         let mut events = configured.events;
@@ -129,7 +131,7 @@ impl Run {
                         return Err(eyre!("interrupted"));
                     }
                 }
-                handle.flush_rollout().await?;
+                handle.flush().await?;
             }
             Ok(())
         }

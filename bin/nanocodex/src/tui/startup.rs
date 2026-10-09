@@ -144,14 +144,14 @@ impl Backend {
     pub(super) fn start(
         config: AgentArgs,
         vm: crate::vm::VmArgs,
-        resume: Option<DurableSession>,
         observability: Option<crate::observability::ObservabilityArgs>,
     ) -> Task<Result<Self>> {
         Task::spawn(async move {
             let _backend = crate::startup_timing::Stage::new("native_backend");
-            let cwd = resume
-                .as_ref()
-                .map(|session| PathBuf::from(session.workspace()))
+            let cwd = config
+                .resumed()
+                .and_then(crate::sessions::ResumedSession::workspace)
+                .map(Path::to_path_buf)
                 .map_or_else(|| resolve_cwd(&config), Ok)?;
             let observability = observability.map(|args| args.install(true)).transpose()?;
             tracing::info!(
@@ -172,11 +172,7 @@ impl Backend {
             } else {
                 None
             };
-            let configured = if let Some(session) = resume {
-                config.build_resumed_tui(session, vm).await?
-            } else {
-                config.build_tui(vm).await?
-            };
+            let configured = config.build_tui(vm).await?;
             tracing::info!(
                 pid = std::process::id(),
                 session.id = %configured.handle.session_id(),

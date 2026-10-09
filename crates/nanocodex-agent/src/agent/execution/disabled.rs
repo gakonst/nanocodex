@@ -4,7 +4,7 @@ use crate::{Result, session::CommittedSession};
 pub(super) struct Config;
 
 impl Config {
-    pub(super) const fn for_new_thread(&self) -> Self {
+    pub(super) const fn for_new_thread(&self, _branch: bool) -> Self {
         Self
     }
 
@@ -15,8 +15,9 @@ impl Config {
         _prompt_cache_key: &str,
         _workspace: Option<&str>,
         _instructions: &str,
-        _origin_kind: &'static str,
+        _start: crate::session::SessionStart,
         _parent_session_id: Option<&str>,
+        _root_session_id: &str,
         _resume_history_len: Option<usize>,
     ) -> Result<Execution> {
         Ok(Execution)

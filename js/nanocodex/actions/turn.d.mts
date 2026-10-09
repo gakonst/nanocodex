@@ -1,7 +1,7 @@
 import type {
   Agent,
   PromptInput,
-  SessionSnapshot,
+  SessionCheckpoint,
   Turn,
   TurnResult,
   TurnUsage,
@@ -29,10 +29,10 @@ export declare namespace getResult {
   type ReturnType = TurnResult;
 }
 
-/** Materializes a completed result's serializable session snapshot. */
-export function getSnapshot(result: TurnResult): Promise<getSnapshot.ReturnType>;
-export declare namespace getSnapshot {
-  type ReturnType = SessionSnapshot;
+/** Materializes the portable checkpoint a completed result committed. */
+export function getCheckpoint(result: TurnResult): Promise<getCheckpoint.ReturnType>;
+export declare namespace getCheckpoint {
+  type ReturnType = SessionCheckpoint;
 }
 
 /** Materializes exact aggregate token usage from a completed result. */

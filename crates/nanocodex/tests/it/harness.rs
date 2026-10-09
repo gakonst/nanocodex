@@ -2,8 +2,8 @@
 //! builders, Code Mode, registry admission, eviction and routing run normally.
 use axum::{Json, Router, routing::post};
 use nanocodex::{
-    Claude, ClaudeModel, Harness, HarnessFamily, HarnessModel, Model, Nanocodex, NanocodexError,
-    OpenAi, ReasoningMode, Thinking,
+    Claude, ClaudeModel, Harness, HarnessFamily, HarnessModel, Model, Mutability, Nanocodex,
+    NanocodexError, OpenAi, ReasoningMode, Thinking,
     agent::{AgentHandle, SpawnOptions},
     claude::{ClaudeClient, ClaudeToolReply, ClaudeTools, ToolResultContent},
     oai::transport::ResponsesTransport,
@@ -307,7 +307,7 @@ async fn journey() {
     );
     assert!(haiku_request["request"].get("thinking").is_none());
     assert!(haiku_request["request"].get("output_config").is_none());
-    let used_snapshot = opus.runtime_snapshot().await.unwrap();
+    let used_snapshot = opus.checkpoint().await.unwrap();
     let used_session = opus.session_id().to_owned();
     opus.shutdown().await.unwrap();
     let (restored, _events) =
@@ -321,10 +321,9 @@ async fn journey() {
         restored.set_harness_model(ClaudeModel::Opus55.into()).await,
         Err(NanocodexError::InvalidRequest(_))
     ));
-    assert!(matches!(
-        restored.set_thinking(Thinking::None).await,
-        Err(NanocodexError::InvalidRequest(_))
-    ));
+    // Effort follows the advertised capability; the model stays locked.
+    assert_eq!(restored.capabilities().thinking, Mutability::Anytime);
+    restored.set_thinking(Thinking::None).await.unwrap();
     restored
         .prompt("claude-retained-history")
         .await
@@ -350,7 +349,7 @@ async fn journey() {
             .unwrap()
             .build()
             .unwrap();
-    let untouched_snapshot = untouched.runtime_snapshot().await.unwrap();
+    let untouched_snapshot = untouched.checkpoint().await.unwrap();
     untouched.shutdown().await.unwrap();
     let (mutable, _events) =
         Nanocodex::builder(Claude::new(claude.clone(), ClaudeModel::Haiku45.as_str()))
@@ -436,12 +435,8 @@ async fn journey() {
                             capture(&handles, &handle);
                             Ok(registry_tools(handle, Arc::clone(&registry)))
                         });
-                    if let Some(nanocodex::agent::ChildSnapshot::Codex(snapshot)) = request.snapshot
-                    {
-                        builder = builder.session_id(snapshot.session_id.parse().unwrap());
-                        if let Some(conversation) = snapshot.conversation {
-                            builder = builder.resume(conversation);
-                        }
+                    if let Some(checkpoint) = request.checkpoint {
+                        builder = builder.restore_runtime(checkpoint)?;
                     }
                     builder.build()
                 }
@@ -457,7 +452,7 @@ async fn journey() {
                 let registry = Arc::clone(&registry);
                 let handles = Arc::clone(&handles);
                 recipe_calls.fetch_add(1, Ordering::SeqCst);
-                if request.snapshot.is_some() {
+                if request.checkpoint.is_some() {
                     restore_calls.fetch_add(1, Ordering::SeqCst);
                 }
                 async move {
@@ -470,8 +465,8 @@ async fn journey() {
                                 capture(&handles, &handle);
                                 Ok(claude_tools(handle, Arc::clone(&registry)))
                             });
-                    if let Some(snapshot) = request.snapshot {
-                        builder = builder.restore_runtime(snapshot)?;
+                    if let Some(checkpoint) = request.checkpoint {
+                        builder = builder.restore_runtime(checkpoint)?;
                     }
                     builder.build()
                 }
@@ -486,7 +481,7 @@ async fn journey() {
     let session = parent.session_id().to_owned();
     let owner = handles.lock().unwrap()[&session].clone();
     // The handle predates both updates. Omitted child defaults must be live.
-    parent.set_model(Model::Luna).await.unwrap();
+    parent.set_harness_model(Model::Luna.into()).await.unwrap();
     parent.set_thinking(Thinking::High).await.unwrap();
     assert_eq!(
         harness
@@ -648,7 +643,7 @@ async fn journey() {
 
     let snapshot = {
         let (agent, _events) = owner.spawn_with(options).await.unwrap();
-        let snapshot = agent.runtime_snapshot().await.unwrap();
+        let snapshot = agent.checkpoint().await.unwrap();
         agent.shutdown().await.unwrap();
         snapshot
     };

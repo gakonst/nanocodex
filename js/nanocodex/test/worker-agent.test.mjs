@@ -49,25 +49,25 @@ test("Worker Agent preserves synchronous prompt handles, independent results, an
   fixture.complete("root", "done");
   const result = await pending;
   assert.equal(result.finalMessage, "done");
-  assert.deepEqual(fixture.resultStats, { snapshots: 0, usages: 0, released: 0 });
+  assert.deepEqual(fixture.resultStats, { checkpoints: 0, usages: 0, released: 0 });
   const completion = worker.outgoing.find((message) => message.value?.resultId);
   assert.deepEqual(Object.keys(completion.value).sort(), ["finalMessage", "resultId"]);
   assert.equal(JSON.stringify(completion.value).length < 128, true);
   assert.throws(() => structuredClone(result), /could not be cloned/i);
 
-  const [snapshot, sameSnapshot] = await Promise.all([result.snapshot(), result.snapshot()]);
+  const [checkpoint, sameCheckpoint] = await Promise.all([result.checkpoint(), result.checkpoint()]);
   const [usage, sameUsage] = await Promise.all([result.usage(), result.usage()]);
-  assert.equal(snapshot.workspace, "/workspace/root");
+  assert.equal(checkpoint.session_id, "root");
   assert.equal(usage.total_tokens, 3);
-  assert.strictEqual(sameSnapshot, snapshot);
+  assert.strictEqual(sameCheckpoint, checkpoint);
   assert.strictEqual(sameUsage, usage);
-  assert.equal(Object.isFrozen(snapshot), true);
+  assert.equal(Object.isFrozen(checkpoint), true);
   assert.equal(Object.isFrozen(usage), true);
-  assert.deepEqual(fixture.resultStats, { snapshots: 1, usages: 1, released: 0 });
-  assert.equal(worker.incoming.filter((message) => message.method === "result.snapshot").length, 1);
+  assert.deepEqual(fixture.resultStats, { checkpoints: 1, usages: 1, released: 0 });
+  assert.equal(worker.incoming.filter((message) => message.method === "result.checkpoint").length, 1);
   assert.equal(worker.incoming.filter((message) => message.method === "result.usage").length, 1);
   result.dispose();
-  await assert.rejects(result.snapshot(), /disposed/);
+  await assert.rejects(result.checkpoint(), /disposed/);
   await assert.rejects(result.usage(), /disposed/);
   turn.dispose();
   watch.off();
@@ -228,7 +228,7 @@ test("disposing an unawaited Turn releases its Worker lease exactly once", async
 });
 
 test("completed results survive Turn and Agent disposal until their own async work settles", async () => {
-  const fixture = createFixture({ holdSnapshot: true });
+  const fixture = createFixture({ holdCheckpoint: true });
   const worker = new LoopbackWorker(fixture.createAgent);
   const agent = await createWorkerAgent({ sessionId: "root", harness: false }, { worker });
   const turn = agent.turn.prompt({ input: "retain the checkpoint" });
@@ -240,12 +240,12 @@ test("completed results survive Turn and Agent disposal until their own async wo
   await agent.session.shutdown();
   assert.equal(worker.terminated, 0);
 
-  const pendingSnapshot = result.snapshot();
+  const pendingCheckpoint = result.checkpoint();
   await tick();
   result.dispose();
   assert.equal(worker.terminated, 0);
-  fixture.releaseSnapshot();
-  assert.equal((await pendingSnapshot).workspace, "/workspace/root");
+  fixture.releaseCheckpoint();
+  assert.equal((await pendingCheckpoint).session_id, "root");
   await tick();
   assert.equal(worker.terminated, 1);
   assert.equal(fixture.resultStats.released, 1);
@@ -279,18 +279,18 @@ test("historical result identity rejects clones, disposed handles, and another W
 });
 
 test("malformed on-demand result JSON rejects once without poisoning Worker cleanup", async () => {
-  const fixture = createFixture({ invalidSnapshot: true });
+  const fixture = createFixture({ invalidCheckpoint: true });
   const worker = new LoopbackWorker(fixture.createAgent);
   const agent = await createWorkerAgent({ sessionId: "root", harness: false }, { worker });
-  const turn = agent.turn.prompt({ input: "invalid snapshot" });
+  const turn = agent.turn.prompt({ input: "invalid checkpoint" });
   const pending = turn.result();
   await tick();
   fixture.complete("root", "done");
   const result = await pending;
 
-  await assert.rejects(result.snapshot(), SyntaxError);
-  await assert.rejects(result.snapshot(), SyntaxError);
-  assert.equal(fixture.resultStats.snapshots, 1);
+  await assert.rejects(result.checkpoint(), SyntaxError);
+  await assert.rejects(result.checkpoint(), SyntaxError);
+  assert.equal(fixture.resultStats.checkpoints, 1);
   assert.equal((await result.usage()).total_tokens, 3);
   result.dispose();
   turn.dispose();
@@ -453,11 +453,22 @@ test("Worker branching preserves child lifetime through root shutdown", async ()
   assert.equal(fork.sessionId, "root-fork");
   assert.equal(spawn.sessionId, "root-spawn");
   assert.equal(fixture.log.some(([kind]) => kind === "fork-at"), true);
+  assert.equal(fork.session.info().sessionId, "root-fork");
+  assert.equal(fork.session.capabilities().forkAt, true);
+  assert.equal(fork.session.persistence(), null);
 
   const childEvents = [];
   const childWatch = spawn.events.watch();
   childWatch.onEvent((event) => childEvents.push(event.seq));
   fork.dispose();
+  // A stored checkpoint crosses the Worker boundary as JSON and keeps its origin.
+  const stored = JSON.parse(JSON.stringify(await completed.checkpoint()));
+  const side = await root.session.fork({ at: stored, origin: "side_conversation" });
+  assert.deepEqual(
+    fixture.log.find(([kind]) => kind === "fork-checkpoint"),
+    ["fork-checkpoint", "root", "root", "side_conversation"],
+  );
+  side.dispose();
   await root.session.shutdown();
   fixture.emit("root-spawn", 7);
   await tick();
@@ -1460,8 +1471,8 @@ function createFixture(options = {}) {
   const acceptances = new Map();
   const disposedAgents = new Set();
   const log = [];
-  const resultStats = { snapshots: 0, usages: 0, released: 0 };
-  let releaseSnapshot;
+  const resultStats = { checkpoints: 0, usages: 0, released: 0 };
+  let releaseCheckpoint;
   let releaseBranch;
   const watcherStats = { active: 0, created: 0, released: 0, options: [] };
   const runtime = defineRuntime({
@@ -1496,10 +1507,10 @@ function createFixture(options = {}) {
     disposedAgents,
     log,
     resultStats,
-    releaseSnapshot() {
-      if (!releaseSnapshot) throw new Error("no retained snapshot request is pending");
-      const release = releaseSnapshot;
-      releaseSnapshot = undefined;
+    releaseCheckpoint() {
+      if (!releaseCheckpoint) throw new Error("no retained checkpoint request is pending");
+      const release = releaseCheckpoint;
+      releaseCheckpoint = undefined;
       release();
     },
     releaseBranch() {
@@ -1527,14 +1538,11 @@ function createFixture(options = {}) {
       const completion = completions.get(sessionId);
       if (!completion) throw new Error(`no pending turn for ${sessionId}`);
       completions.delete(sessionId);
-      const snapshot = Object.freeze({
-        version: 1,
-        model: "gpt-6.1-sol",
-        lineage_id: sessionId,
-        prompt_cache_key: sessionId,
-        workspace: `/workspace/${sessionId}`,
-        canonical_context: {},
-        history: [],
+      // Stand-in for the Rust-encoded checkpoint; the Worker never decodes it.
+      const checkpoint = Object.freeze({
+        format: "nanocodex-session-checkpoint/1",
+        session_id: sessionId,
+        payload: {},
       });
       const usage = Object.freeze({
         input_tokens: 1,
@@ -1547,14 +1555,14 @@ function createFixture(options = {}) {
         cost_status: "usage_not_reported",
       });
       let released = false;
-      const encodedSnapshot = JSON.stringify(snapshot);
+      const encodedCheckpoint = JSON.stringify(checkpoint);
       completion({
         finalMessage,
-        snapshot() {
-          resultStats.snapshots += 1;
-          if (options.invalidSnapshot) return "{";
-          if (!options.holdSnapshot) return encodedSnapshot;
-          return new Promise((resolve) => { releaseSnapshot = () => resolve(encodedSnapshot); });
+        checkpoint() {
+          resultStats.checkpoints += 1;
+          if (options.invalidCheckpoint) return "{";
+          if (!options.holdCheckpoint) return encodedCheckpoint;
+          return new Promise((resolve) => { releaseCheckpoint = () => resolve(encodedCheckpoint); });
         },
         usage() { resultStats.usages += 1; return JSON.stringify(usage); },
         free() {
@@ -1595,8 +1603,13 @@ function createFixture(options = {}) {
         };
       },
       promptContent(input, id) { return agent.prompt(JSON.parse(input)[0].text, id); },
-      async fork() { log.push(["fork", sessionId]); return branch(`${sessionId}-fork`); },
-      async forkFrom(at) { log.push([at ? "fork-at" : "fork", sessionId]); return branch(`${sessionId}-fork`); },
+      session: () => JSON.stringify({ sessionId, harness: "codex", lineage: {
+        rootSessionId: sessionId.split("-")[0], parentSessionId: null, origin: "root", depth: 0 } }),
+      capabilities: () => JSON.stringify({ checkpoint: true, fork: true, forkAt: true }),
+      persistence: () => undefined,
+      async fork(origin) { log.push(["fork", sessionId, origin]); return branch(`${sessionId}-fork`); },
+      async forkAtTurn(at, origin) { log.push(["fork-at", sessionId, origin]); return branch(`${sessionId}-fork`); },
+      async forkAtCheckpoint(checkpoint, origin) { log.push(["fork-checkpoint", sessionId, JSON.parse(checkpoint).session_id, origin]); return branch(`${sessionId}-fork`); },
       async spawn() { log.push(["spawn", sessionId]); return branch(`${sessionId}-spawn`); },
       compact() {
         log.push(["compact", sessionId]);

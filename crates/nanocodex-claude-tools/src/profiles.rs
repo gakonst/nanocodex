@@ -1,6 +1,8 @@
 //! Bounded project subagent definitions. These are requests to the host, never
 //! independent authority. Hosts must enforce tool limits and inherited policy.
-use crate::context::{FILE_BYTES, authorized_root, frontmatter, local_directory, read_local};
+use crate::context::{
+    FILE_BYTES, authorized_root, frontmatter, local_directory, read_local, read_user_file,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
@@ -29,12 +31,26 @@ pub struct AgentProfileCatalog {
 #[derive(Clone, Debug)]
 pub struct ClaudeAgentProfiles {
     root: PathBuf,
+    user: Vec<nanocodex_home::AgentProfileRoot>,
 }
 impl ClaudeAgentProfiles {
     pub fn new(root: impl AsRef<Path>) -> Result<Self, String> {
         Ok(Self {
             root: authorized_root(root.as_ref())?,
+            user: Vec::new(),
         })
+    }
+    /// Adds host-resolved user profile roots (for example
+    /// `nanocodex_home::AgentHome::agent_profile_roots`). Only Claude Markdown
+    /// roots such as `~/.claude/agents` apply; Codex TOML roots are ignored.
+    /// Project profiles win over same-named user profiles, as in Claude Code.
+    #[must_use]
+    pub fn with_user_roots(mut self, roots: Vec<nanocodex_home::AgentProfileRoot>) -> Self {
+        self.user = roots
+            .into_iter()
+            .filter(|root| root.format == nanocodex_home::ProfileFormat::ClaudeMarkdown)
+            .collect();
+        self
     }
     pub fn catalog(&self) -> AgentProfileCatalog {
         let mut catalog = AgentProfileCatalog::default();
@@ -107,6 +123,28 @@ impl ClaudeAgentProfiles {
                 }
             }
         }
+        if !self.user.is_empty() {
+            let resolved = nanocodex_home::resolve_agent_profiles(&self.user);
+            for diagnostic in resolved.diagnostics {
+                catalog.diagnostics.push(diagnostic.to_string());
+            }
+            for file in resolved.profiles {
+                match self.read(&file.path) {
+                    // Project definitions (and earlier user roots) take precedence.
+                    Ok(profile) if names.contains_key(&profile.name) => {}
+                    Ok(profile) if catalog.profiles.len() < 64 => {
+                        names.insert(profile.name.clone(), ());
+                        catalog.profiles.push(profile);
+                    }
+                    Ok(_) => catalog
+                        .diagnostics
+                        .push("agent catalog exceeded 64 profiles".into()),
+                    Err(error) => catalog
+                        .diagnostics
+                        .push(format!("{}: {error}", file.path.display())),
+                }
+            }
+        }
         catalog.profiles.sort_by(|a, b| a.name.cmp(&b.name));
         catalog
     }
@@ -123,8 +161,17 @@ impl ClaudeAgentProfiles {
                 )
             })
     }
+    /// Project profiles are workspace-relative and never follow symlinks; user
+    /// profiles are absolute paths under a configured user root.
     fn read(&self, path: &Path) -> Result<AgentProfile, String> {
-        let (text, truncated) = read_local(&self.root, path, FILE_BYTES)?;
+        let (text, truncated) = if path.is_absolute() {
+            if !self.user.iter().any(|root| path.starts_with(&root.path)) {
+                return Err("agent profile path is outside the configured roots".into());
+            }
+            read_user_file(path, FILE_BYTES)?
+        } else {
+            read_local(&self.root, path, FILE_BYTES)?
+        };
         if truncated {
             return Err("agent profile exceeds 32 KiB".into());
         }

@@ -36,7 +36,7 @@ async fn latest_completed_ephemeral_fork_replays_parent_history() -> Result<()> 
         .await?
         .result()
         .await?;
-    let (fork, fork_events) = agent.fork().await?;
+    let (fork, fork_events) = agent.fork(ForkRequest::latest()).await?;
     assert_eq!(
         fork.prompt("BTW question")
             .await?
@@ -111,7 +111,7 @@ async fn latest_fork_during_streaming_inherits_the_active_prompt_delta() -> Resu
         .await
         .map_err(|_| eyre!("root request was not observed"))?;
     agent.set_thinking(Thinking::High).await?;
-    let (fork, fork_events) = agent.fork().await?;
+    let (fork, fork_events) = agent.fork(ForkRequest::latest()).await?;
     let branch = fork.prompt("BTW question").await?;
     assert_eq!(branch.result().await?.final_message(), "done");
     release_root
@@ -251,7 +251,7 @@ async fn active_boundary_fork_sends_tool_and_steer_delta_then_replays_on_checkpo
         .await
         .map_err(|_| eyre!("root boundary request was not observed"))?;
 
-    let (fork, fork_events) = agent.fork().await?;
+    let (fork, fork_events) = agent.fork(ForkRequest::latest()).await?;
     assert_eq!(
         fork.prompt("BTW question")
             .await?
@@ -357,7 +357,7 @@ async fn latest_and_historical_forks_keep_distinct_boundaries_during_an_active_t
         .await
         .map_err(|_| eyre!("active root request was not observed"))?;
 
-    let (latest, latest_events) = agent.fork().await?;
+    let (latest, latest_events) = agent.fork(ForkRequest::latest()).await?;
     assert_eq!(
         latest
             .prompt("latest branch prompt")
@@ -367,7 +367,7 @@ async fn latest_and_historical_forks_keep_distinct_boundaries_during_an_active_t
             .final_message(),
         "done"
     );
-    let (historical, historical_events) = agent.fork_from(&completed).await?;
+    let (historical, historical_events) = agent.fork(ForkRequest::at_turn(&completed)).await?;
     assert_eq!(
         historical
             .prompt("historical branch prompt")
@@ -470,7 +470,7 @@ async fn historical_fork_runs_while_the_mainline_turn_is_in_flight() -> Result<(
     root_started_rx
         .await
         .map_err(|_| eyre!("root request was not observed"))?;
-    let (fork, fork_events) = agent.fork_from(&first).await?;
+    let (fork, fork_events) = agent.fork(ForkRequest::at_turn(&first)).await?;
     let branch = fork.prompt("fork prompt").await?;
     let (mainline, branch) = tokio::join!(mainline.result(), branch.result());
     assert_eq!(mainline?.final_message(), "done");

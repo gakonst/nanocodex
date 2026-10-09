@@ -1,11 +1,17 @@
+// Without the Codex backend only the harness-neutral writer and loader are used.
+#![cfg_attr(not(feature = "openai"), allow(dead_code))]
+
 mod load;
+mod record;
 mod store;
 mod wire;
 
-#[cfg(test)]
+#[cfg(all(test, feature = "openai"))]
 mod tests;
 
-pub use load::{DurableSession, RolloutSessionInfo, RolloutTranscriptItem};
+pub use load::{DurableSession, RolloutSessionInfo};
+pub use record::{RolloutSession, RolloutTurnRecord, RolloutWriter};
+use store::RolloutCommit;
 pub use store::RolloutInfo;
 pub(crate) use store::{RolloutCreate, RolloutOrigin, RolloutRecorder, RolloutTurn};
 
@@ -17,9 +23,10 @@ use std::{
 };
 
 use chrono::{Local, SecondsFormat, Utc};
+#[cfg(feature = "openai")]
+use nanocodex_oai_api::responses::ResponseHistory;
 use nanocodex_oai_api::{
-    ImageDetail, Model, Prompt, PromptInput, Thinking, UserInput,
-    responses::{ResponseHistory, ResponseItem},
+    ImageDetail, Model, Prompt, PromptInput, Thinking, UserInput, responses::ResponseItem,
 };
 use serde::Serialize;
 use tokio::{
@@ -29,10 +36,43 @@ use tokio::{
 };
 use tracing::error;
 
-use crate::{
-    model::context::ContextBaseline,
-    session::{CommittedSession, SessionSnapshot},
-};
+#[cfg(feature = "openai")]
+use crate::session::CommittedSession;
+use crate::session::{ContextBaseline, SessionSnapshot};
+
+/// Committed history handed to the writer: Codex's shared segments, or a
+/// neutral item list recorded by another harness.
+#[derive(Clone)]
+pub(crate) enum RolloutHistory {
+    #[cfg(feature = "openai")]
+    Shared(ResponseHistory),
+    Items(std::sync::Arc<[ResponseItem]>),
+}
+
+impl RolloutHistory {
+    pub(crate) fn len(&self) -> usize {
+        match self {
+            #[cfg(feature = "openai")]
+            Self::Shared(history) => history.len(),
+            Self::Items(items) => items.len(),
+        }
+    }
+
+    pub(crate) fn iter(&self) -> Box<dyn Iterator<Item = &ResponseItem> + Send + '_> {
+        self.iter_from(0)
+    }
+
+    pub(crate) fn iter_from(
+        &self,
+        start: usize,
+    ) -> Box<dyn Iterator<Item = &ResponseItem> + Send + '_> {
+        match self {
+            #[cfg(feature = "openai")]
+            Self::Shared(history) => Box::new(history.iter_from(start)),
+            Self::Items(items) => Box::new(items.iter().skip(start)),
+        }
+    }
+}
 
 const COMMAND_CAPACITY: usize = 8;
 
@@ -92,6 +132,11 @@ impl RolloutConfig {
     /// Returns an error when a session directory exists but cannot be read.
     pub fn list_sessions(&self) -> io::Result<Vec<RolloutSessionInfo>> {
         load::list_sessions(&self.codex_home)
+    }
+
+    /// A fresh configuration for a new conversation under the same Codex home.
+    pub(crate) fn for_branch(&self) -> Self {
+        Self::new(self.codex_home.clone())
     }
 
     pub(crate) fn resumed(mut self, rollout_path: PathBuf) -> Self {

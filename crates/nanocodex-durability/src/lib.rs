@@ -4,8 +4,15 @@
 
 mod agent;
 mod branch;
+mod catalog;
 mod child_journal;
 pub use branch::{BranchTurn, CheckpointBranch};
+pub use catalog::SessionRecord;
+#[cfg(not(target_family = "wasm"))]
+pub use catalog::{
+    BranchPoint, LIST_LIMIT, SessionStore, SessionSummary, StoredSession, StoredTurn,
+    TranscriptItem, TurnStatus,
+};
 #[cfg(feature = "claude")]
 mod claude;
 mod context;
@@ -144,6 +151,12 @@ pub enum Error {
     /// The spawned durability owner is no longer running.
     #[error("durability driver stopped")]
     DriverStopped,
+    /// No durable session with this identity exists in the store.
+    #[error("unknown session `{session_id}`")]
+    SessionNotFound {
+        /// Requested session identity.
+        session_id: String,
+    },
     /// A caller-supplied payload was not valid JSON.
     #[error("durability payload is invalid JSON: {0}")]
     InvalidPayload(#[from] serde_json::Error),

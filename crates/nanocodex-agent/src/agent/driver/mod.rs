@@ -27,6 +27,7 @@ pub(super) struct AgentDriver<S> {
     pub(super) spawner: BranchSpawner<S>,
     pub(super) initial_model: Option<PreparedCheckpoint>,
     pub(super) origin: AgentOrigin,
+    pub(super) checkpoints: Arc<CheckpointSource>,
     pub(super) execution: Execution,
 }
 
@@ -321,6 +322,7 @@ where
                     let mut reopen = false;
                     let Some(command) = accept_execution_command(
                         &self.execution,
+                        &self.checkpoints,
                         &self.spawner.config,
                         default_thinking,
                         command,
@@ -367,6 +369,7 @@ where
                 let mut reopen = false;
                 let Some(command) = accept_idle_route(
                     &self.execution,
+                    &self.checkpoints,
                     &self.spawner.config,
                     default_thinking,
                     command,
@@ -637,6 +640,7 @@ where
                                 let command = match command {
                                     Some(command) => accept_execution_command(
                                         &self.execution,
+                                        &self.checkpoints,
                                         &self.spawner.config,
                                         default_thinking,
                                         command,
@@ -698,6 +702,7 @@ where
                                             result,
                                         }) = accept_idle_route(
                                             &self.execution,
+                                            &self.checkpoints,
                                             &self.spawner.config,
                                             default_thinking,
                                             command,
@@ -798,7 +803,7 @@ where
                                     Some(Command::SteerWithId { result, .. } | Command::Steer { result, .. }) => {
                                         drop(result.send(Err(NanocodexError::TurnNotSteerable)));
                                     }
-                                    Some(command @ (Command::Snapshot { .. } | Command::ChildSnapshot { .. } | Command::Fork { .. } | Command::Spawn { .. } | Command::SpawnBatch { .. })) => {
+                                    Some(command @ (Command::ChildSnapshot { .. } | Command::Fork { .. } | Command::Spawn { .. } | Command::SpawnBatch { .. })) => {
                                         handle_idle_command(
                                             command,
                                             latest_fork_checkpoint.as_ref(),
@@ -1223,6 +1228,7 @@ where
                         let command = match command {
                             Some(command) => accept_execution_command(
                                 &self.execution,
+                                &self.checkpoints,
                                 &self.spawner.config,
                                 default_thinking,
                                 command,
@@ -1439,7 +1445,7 @@ where
                                 cancel_result = Some(cancellation);
                                 break execution.as_mut().await;
                             }
-                            Some(command @ (Command::Snapshot { .. } | Command::ChildSnapshot { .. } | Command::Fork { .. } | Command::Spawn { .. } | Command::SpawnBatch { .. })) => {
+                            Some(command @ (Command::ChildSnapshot { .. } | Command::Fork { .. } | Command::Spawn { .. } | Command::SpawnBatch { .. })) => {
                                 if let Some(snapshot) =
                                     fork_snapshot_rx.borrow_and_update().clone()
                                 {
@@ -1566,9 +1572,14 @@ where
                     (
                         persisted.map(|()| TurnResult {
                             request_id: execution_operation.clone(),
+                            turn_id: None,
                             final_message,
                             usage: Some(usage),
-                            checkpoint: TurnCheckpoint::Live(checkpoint),
+                            boundary: Some(self.checkpoints.live(
+                                checkpoint,
+                                thinking,
+                                service_tier,
+                            )),
                         }),
                         false,
                         None,
@@ -1919,6 +1930,7 @@ where
 
 async fn accept_execution_command(
     execution: &Execution,
+    checkpoints: &Arc<CheckpointSource>,
     config: &ModelConfig,
     default_thinking: Thinking,
     command: Command,
@@ -2040,9 +2052,15 @@ async fn accept_execution_command(
             }
             drop(result.send(Ok(TurnResult {
                 request_id: Some(operation_id),
+                turn_id: None,
                 final_message: output.final_message,
                 usage: Some(output.usage),
-                checkpoint: TurnCheckpoint::Replayed(snapshot),
+                boundary: Some(checkpoints.replayed(
+                    snapshot,
+                    config.model,
+                    replay_thinking,
+                    service_tier.unwrap_or(config.service_tier),
+                )),
             })));
             None
         }
@@ -2093,6 +2111,7 @@ async fn accept_execution_command(
 
 async fn accept_idle_route(
     execution: &Execution,
+    checkpoints: &Arc<CheckpointSource>,
     config: &ModelConfig,
     default_thinking: Thinking,
     command: Command,
@@ -2219,9 +2238,15 @@ async fn accept_idle_route(
             }
             drop(turn_result.send(Ok(TurnResult {
                 request_id: Some(operation_id),
+                turn_id: None,
                 final_message: output.final_message,
                 usage: Some(output.usage),
-                checkpoint: TurnCheckpoint::Replayed(snapshot),
+                boundary: Some(checkpoints.replayed(
+                    snapshot,
+                    config.model,
+                    default_thinking,
+                    config.service_tier,
+                )),
             })));
             None
         }

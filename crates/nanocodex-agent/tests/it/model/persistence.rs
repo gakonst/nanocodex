@@ -123,7 +123,7 @@ async fn missing_stored_checkpoint_replays_local_history_once() -> Result<()> {
         .await?
         .result()
         .await?;
-    let (fork, mut fork_events) = agent.fork_from(&first).await?;
+    let (fork, mut fork_events) = agent.fork(ForkRequest::at_turn(&first)).await?;
     let branch = fork.prompt("branch after eviction").await?;
     assert_eq!(branch.result().await?.final_message(), "done");
 
@@ -207,7 +207,8 @@ async fn serialized_session_and_codex_rollout_share_committed_history() -> Resul
         .rollout(RolloutConfig::new(&rollout_home))
         .build()?;
     let rollout_path = agent
-        .rollout()
+        .persistence()
+        .and_then(|persistence| persistence.rollout)
         .ok_or_else(|| eyre!("rollout was not configured"))?
         .path()
         .to_path_buf();
@@ -220,10 +221,12 @@ async fn serialized_session_and_codex_rollout_share_committed_history() -> Resul
     }
     let encoded = serde_json::to_vec(
         &first
-            .snapshot()
+            .checkpoint()
+            .as_ref()
+            .map(conversation)
             .expect("local turns always retain a snapshot"),
     )?;
-    agent.flush_rollout().await?;
+    agent.flush().await?;
     let durable_config = RolloutConfig::new(&rollout_home);
     let durable = durable_config.load_session("019c0d31-c308-7d91-bff4-5dca82d15ac6")?;
     assert_eq!(durable.thread_id(), agent.session_id().to_string());
@@ -291,7 +294,11 @@ async fn serialized_session_and_codex_rollout_share_committed_history() -> Resul
                 && line["payload"]["item_id"] == input["payload"]["item_id"])
     );
     assert_eq!(
-        agent.rollout().unwrap().committed_bytes(),
+        agent
+            .persistence()
+            .and_then(|persistence| persistence.rollout)
+            .unwrap()
+            .committed_bytes(),
         std::fs::metadata(&rollout_path)?.len()
     );
     let assistant = live_events
@@ -329,7 +336,9 @@ async fn serialized_session_and_codex_rollout_share_committed_history() -> Resul
     let mut unsupported: Value = serde_json::from_slice(&encoded)?;
     unsupported["version"] = json!(2);
     let unsupported: SessionSnapshot = serde_json::from_value(unsupported)?;
-    let unsupported = Nanocodex::builder(openai()?).resume(unsupported).build();
+    let unsupported = Nanocodex::builder(openai()?)
+        .resume_native_snapshot(unsupported)
+        .build();
     assert!(matches!(
         unsupported,
         Err(NanocodexError::InvalidSessionSnapshot(message))
@@ -341,7 +350,7 @@ async fn serialized_session_and_codex_rollout_share_committed_history() -> Resul
     let astra_snapshot: SessionSnapshot = serde_json::from_value(astra_snapshot)?;
     let incompatible = Nanocodex::builder(openai()?)
         .thinking(Thinking::None)
-        .resume(astra_snapshot)
+        .resume_native_snapshot(astra_snapshot)
         .build();
     assert!(matches!(
         incompatible,
@@ -354,14 +363,14 @@ async fn serialized_session_and_codex_rollout_share_committed_history() -> Resul
     let retired: SessionSnapshot = serde_json::from_value(retired)?;
     assert!(
         Nanocodex::builder(openai()?)
-            .resume(retired)
+            .resume_native_snapshot(retired)
             .build()
             .is_err()
     );
 
     let incompatible = Nanocodex::builder(openai()?)
         .thinking(Thinking::None)
-        .resume(snapshot.clone())
+        .resume_native_snapshot(snapshot.clone())
         .build();
     assert!(matches!(
         incompatible,
@@ -372,7 +381,7 @@ async fn serialized_session_and_codex_rollout_share_committed_history() -> Resul
     let (compatible, compatible_events) = Nanocodex::builder(openai()?)
         .model(Model::Astra)
         .thinking(Thinking::Low)
-        .resume(snapshot.clone())
+        .resume_native_snapshot(snapshot.clone())
         .build()?;
     compatible.shutdown().await?;
     drop((compatible, compatible_events));
@@ -382,7 +391,7 @@ async fn serialized_session_and_codex_rollout_share_committed_history() -> Resul
         .instructions("durable instructions")
         .thinking(Thinking::Low)
         .workspace(&other_workspace)
-        .resume(snapshot.clone())
+        .resume_native_snapshot(snapshot.clone())
         .build();
     assert!(matches!(
         incompatible,
@@ -393,7 +402,7 @@ async fn serialized_session_and_codex_rollout_share_committed_history() -> Resul
         .instructions("durable instructions")
         .thinking(Thinking::Low)
         .prompt_cache_key("changed-cache")
-        .resume(snapshot.clone())
+        .resume_native_snapshot(snapshot.clone())
         .build();
     assert!(matches!(
         incompatible,
@@ -406,7 +415,7 @@ async fn serialized_session_and_codex_rollout_share_committed_history() -> Resul
         .instructions("instructions from the resumed rollout")
         .thinking(Thinking::Low)
         .session_id(thread_id.parse()?)
-        .resume(snapshot)
+        .resume_native_snapshot(snapshot)
         .rollout(rollout)
         .build()?;
     assert_eq!(
@@ -422,10 +431,11 @@ async fn serialized_session_and_codex_rollout_share_committed_history() -> Resul
             .final_message(),
         "done"
     );
-    resumed.flush_rollout().await?;
+    resumed.flush().await?;
     assert_eq!(
         resumed
-            .rollout()
+            .persistence()
+            .and_then(|persistence| persistence.rollout)
             .map(|rollout| rollout.path().canonicalize())
             .transpose()?,
         Some(rollout_path.canonicalize()?)
@@ -509,7 +519,9 @@ async fn serialized_session_rebinds_deployed_instructions_and_tools() -> Result<
     let first = agent.prompt("first prompt").await?.result().await?;
     let snapshot_json = serde_json::to_value(
         first
-            .snapshot()
+            .checkpoint()
+            .as_ref()
+            .map(conversation)
             .expect("local turns always retain a snapshot"),
     )?;
     assert_eq!(snapshot_json["model"], "gpt-6-luna");
@@ -525,7 +537,7 @@ async fn serialized_session_rebinds_deployed_instructions_and_tools() -> Result<
         .instructions("instructions from the new deployment")
         .tools(Tools::builder().without_defaults().build()?)
         .thinking(Thinking::Low)
-        .resume(snapshot)
+        .resume_native_snapshot(snapshot)
         .build()?;
     assert_eq!(
         resumed
@@ -615,7 +627,7 @@ async fn failed_accepted_prompt_is_durable_without_partial_assistant_output() ->
     let (resumed, resumed_events) = Nanocodex::builder(openai()?)
         .thinking(Thinking::Low)
         .session_id(thread_id.parse()?)
-        .resume(snapshot)
+        .resume_native_snapshot(snapshot)
         .rollout(rollout)
         .build()?;
     assert_eq!(
@@ -673,7 +685,7 @@ async fn accepted_prompt_survives_a_fatal_warmup_boundary() -> Result<()> {
     let (resumed, resumed_events) = Nanocodex::builder(openai()?)
         .thinking(Thinking::Low)
         .session_id(thread_id.parse()?)
-        .resume(snapshot)
+        .resume_native_snapshot(snapshot)
         .rollout(rollout)
         .build()?;
     assert_eq!(

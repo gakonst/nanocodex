@@ -3389,3 +3389,125 @@ async fn native_claude_journal_adoption_directory_evidence() {
         server.abort();
     }
 }
+
+/// One store lists, reads, branches, and resumes Claude sessions, and a fork
+/// of a durable Claude root persists as its own session with lineage.
+#[tokio::test]
+async fn claude_sessions_share_the_family_neutral_catalog() {
+    use nanocodex_agent::{ClaudeModel, ForkRequest, HarnessFamily, HarnessModel, Origin};
+    use nanocodex_durability::{BranchPoint, SessionRecord, SessionStore, TranscriptItem};
+    let prompts = |transcript: &[TranscriptItem]| {
+        transcript
+            .iter()
+            .filter_map(|item| match item {
+                TranscriptItem::User(text) => Some(text.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
+    let home = tempfile::tempdir().unwrap();
+    let (client, requests, server) =
+        server(|index, _| sse(text(&format!("claude reply {index}")), "end_turn", 12)).await;
+    let model = ClaudeModel::Sonnet55;
+    let store = SessionStore::open(home.path()).unwrap();
+    let root_id = uuid::Uuid::now_v7().to_string();
+    let (root, _events) = Nanocodex::builder(Claude::new(client.clone(), model.as_str()))
+        .max_tokens(4096)
+        .durability(
+            store
+                .session(SessionRecord::root(
+                    root_id.clone(),
+                    HarnessModel::Claude(model),
+                    Some(home.path().to_path_buf()),
+                ))
+                .await
+                .unwrap(),
+        )
+        .await
+        .unwrap()
+        .build()
+        .unwrap();
+    assert_eq!(root.session_id(), root_id);
+    for (id, prompt) in [("turn-1", "remember amber"), ("turn-2", "now say teal")] {
+        root.prompt(PromptRequest::new(prompt).request_id(id))
+            .await
+            .unwrap()
+            .result()
+            .await
+            .unwrap();
+    }
+    let (fork, _fork_events) = root.fork(ForkRequest::latest()).await.unwrap();
+    let fork_id = fork.session_id().to_owned();
+    assert_eq!(fork.session().lineage.origin, Origin::Fork);
+    assert_eq!(
+        fork.persistence().and_then(|p| p.durable_state_id),
+        Some(fork_id.clone()),
+        "a durable Claude root's fork persists to its own state"
+    );
+    fork.prompt(PromptRequest::new("fork only").request_id("fork-1"))
+        .await
+        .unwrap()
+        .result()
+        .await
+        .unwrap();
+    fork.shutdown().await.unwrap();
+    root.shutdown().await.unwrap();
+
+    let listed = store.list().await.unwrap();
+    assert_eq!(listed.len(), 2, "root and fork are listed");
+    assert!(
+        listed
+            .iter()
+            .all(|summary| summary.record.family() == HarnessFamily::Claude)
+    );
+    let loaded = store.load(&root_id).await.unwrap();
+    assert_eq!(
+        prompts(&loaded.transcript),
+        ["remember amber", "now say teal"]
+    );
+    assert_eq!(loaded.summary.preview.as_deref(), Some("remember amber"));
+    let stored_fork = store.load(&fork_id).await.unwrap();
+    assert_eq!(stored_fork.summary.record.lineage.origin, Origin::Fork);
+    assert_eq!(
+        stored_fork
+            .summary
+            .record
+            .lineage
+            .parent_session_id
+            .as_deref(),
+        Some(root_id.as_str())
+    );
+    assert_eq!(
+        prompts(&stored_fork.transcript),
+        ["remember amber", "now say teal", "fork only"]
+    );
+
+    let branch = store
+        .branch(&root_id, BranchPoint::Before("turn-2".into()), None)
+        .await
+        .unwrap();
+    assert_eq!(branch.record.lineage.origin, Origin::Branch);
+    let (resumed, _events) = Nanocodex::builder(Claude::new(client.clone(), model.as_str()))
+        .max_tokens(4096)
+        .durability(store.resume(&branch.record.session_id).await.unwrap())
+        .await
+        .unwrap()
+        .build()
+        .unwrap();
+    assert_eq!(resumed.session_id(), branch.record.session_id);
+    resumed
+        .prompt(PromptRequest::new("branch question").request_id("branch-1"))
+        .await
+        .unwrap()
+        .result()
+        .await
+        .unwrap();
+    resumed.shutdown().await.unwrap();
+    let sent = requests.lock().unwrap().last().unwrap().to_string();
+    assert!(sent.contains("remember amber") && sent.contains("branch question"));
+    assert!(
+        !sent.contains("now say teal"),
+        "the branch drops the later turn"
+    );
+    server.abort();
+}

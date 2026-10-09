@@ -208,11 +208,6 @@ impl ClaudeConnection {
         self
     }
 
-    pub(super) fn with_policy(mut self, policy: permissions::Policy) -> Self {
-        self.policy = policy;
-        self
-    }
-
     pub(super) fn with_permission_config(
         mut self,
         path: Option<&Path>,
@@ -248,16 +243,27 @@ impl ClaudeConnection {
     }
 }
 
+/// Claude's view of the shared host catalog: host tools without Codex's
+/// Responses built-ins, which Claude replaces with its native equivalents.
+pub(super) fn host_tools(tools: &Tools) -> Result<Tools> {
+    Ok(tools
+        .clone()
+        .into_builder()
+        .workspace(false)
+        .web_search(false)
+        .image_generation(false)
+        .build()?)
+}
+
 impl AgentArgs {
     pub(super) async fn build_claude(
         self,
-        durable: Option<DurableSession>,
+        root: RootSession,
+        codex_home: PathBuf,
         vm: VmArgs,
         tui: bool,
-        local_durability: Option<LocalDurability>,
         requested_model: Option<HarnessModel>,
     ) -> Result<ConfiguredAgent> {
-        let responses_transport = self.responses_transport();
         let web_search = self.web_search();
         let model = requested_model.unwrap_or_else(|| HarnessFamily::Claude.default_model());
         let thinking = self
@@ -267,259 +273,83 @@ impl AgentArgs {
         if !model.supports_thinking(thinking) {
             return Err(eyre!("model {model} does not support thinking {thinking}"));
         }
-        if local_durability.is_some() && self.rollouts {
-            return Err(eyre!(
-                "local durability testing requires `--rollouts false`"
-            ));
-        }
-        if durable.is_some() {
-            return Err(eyre!(
-                "Codex rollouts cannot be resumed with --harness claude; use a native Claude durability store"
-            ));
-        }
+        // Provider necessities: the VM workspace is served through Codex's
+        // workspace tools, and Tempo proxies OpenAI Responses.
         if vm.is_enabled() {
-            return Err(eyre!("the native Claude CLI does not yet support --vm"));
+            return Err(eyre!(
+                "--vm requires the Codex harness; the Claude harness has no VM workspace tools"
+            ));
         }
         if self.mpp.is_enabled() {
             return Err(eyre!(
-                "the native Claude CLI does not yet support the Tempo provider"
+                "the Tempo provider serves OpenAI Responses and requires the Codex harness"
             ));
         }
-        if self.memory {
-            return Err(eyre!("the native Claude CLI does not yet support --memory"));
-        }
-        let policy = permissions::Policy::load(
-            self.claude_permissions.as_deref(),
-            self.permission_mode.as_deref(),
-        )
-        .map_err(|error| eyre!(error))?;
-        let connection = ClaudeConnection::new(
-            self.claude_auth,
-            self.claude_api_key,
-            self.claude_messages_url,
-        )
-        .with_hooks(self.claude_hooks)
-        .with_policy(policy);
+        let connection = self.claude_connection()?;
         let client = connection.client().await.map_err(|error| eyre!(error))?;
-        let workspace = self
-            .cwd
-            .unwrap_or_else(|| PathBuf::from("."))
-            .canonicalize()
-            .wrap_err("failed to resolve the Claude workspace")?;
-        let codex_home = default_codex_home()?;
-        let persistence = local_durability.or_else(|| {
-            self.rollouts.then(|| LocalDurability {
-                path: codex_home.join("claude/sessions.sqlite"),
-                state_id: self.claude_resume.as_ref().map_or_else(
-                    || SessionId::new().to_string(),
-                    |session| session.id.clone(),
-                ),
-            })
-        });
-        let session_id = persistence.as_ref().map_or_else(
-            || SessionId::new().to_string(),
-            |state| state.state_id.clone(),
-        );
+        let session_id = root.session_id.clone();
         let workspaces = Arc::new(WorkspaceRegistry::new(
-            workspace.clone(),
+            root.workspace.clone(),
             codex_home.clone(),
         ));
         workspaces
-            .seed(&session_id, workspace.clone())
+            .seed(&session_id, root.workspace.clone())
             .map_err(|error| eyre!(error))?;
         let workspace = workspaces
             .current(&session_id)
             .map_err(|error| eyre!(error))?;
         let claude_scheduler = scheduler::SessionScheduler::enabled(tui)
             .then(|| Arc::new(scheduler::SessionScheduler::new(codex_home.clone())));
-        let managed_mcp = if self.mcp.loads_managed() {
-            load_managed_mcp_credential(&codex_home).await?
-        } else {
-            None
-        };
-        let mcp = self.mcp.build(&codex_home, None, managed_mcp.as_ref())?;
-        let mcp_handle = mcp.as_ref().map(|mcp| mcp.handle.clone());
-        let mut tools = Tools::builder()
-            .workspace(false)
-            .web_search(false)
-            .image_generation(false);
-        if let Some(ConfiguredMcp { provider, .. }) = mcp {
-            tools = tools.provider(provider);
-        }
-        if self.workspace_tools {
-            let _timing = crate::startup_timing::Stage::new("computer_discovery");
-            if let Some(computer) = crate::computer::connect_for_startup()
-                .await
-                .map_err(eyre::Report::msg)?
-            {
-                for tool in computer.tools() {
-                    tools = tools.add(tool);
-                }
-            }
-        }
-        let tools = tools.build()?;
+        let managed_memory = self.managed_memory(&codex_home, &session_id).await?;
+        let (catalog, mcp_handle) = self
+            .host_tools(&codex_home, None, None, managed_memory.as_ref())
+            .await?;
+        let tools = host_tools(&catalog)?;
         let registry = self
             .subagents
             .then(|| subagents::channel(self.max_subagents));
         let tool_registry = registry
             .as_ref()
             .map(|(registry, _, _)| Arc::clone(registry));
-        let instructions = self.instructions;
-        let codex_auth = self.auth;
-        let codex_tools = tools
-            .clone()
-            .into_builder()
-            .workspace(true)
-            .web_search(web_search)
-            .image_generation(self.image_generation.unwrap_or(true))
-            .build()?;
-        let codex_home_for_recipe = codex_home.clone();
-        let codex_workspace = workspace.clone();
-        let codex_workspaces = workspaces.clone();
-        let codex_registry = tool_registry.clone();
-        let codex_instructions = instructions.clone();
-        let websocket_url = self.websocket_url;
-        let api_base_url = self.api_base_url;
-        let model_id_prefix = self.model_id_prefix;
-        let reasoning_mode = self.reasoning_mode;
-        let fast_mode = self.fast_mode.unwrap_or(true);
-        let websocket_warmup = self.websocket_warmup;
-        let store_responses = self.store_responses;
-        let harness_builder =
-            nanocodex::Harness::builder().register(HarnessFamily::Codex, move |request| {
-                let auth = codex_auth.clone();
-                let tools = codex_tools.clone();
-                let workspace = codex_workspace.clone();
-                let workspaces = codex_workspaces.clone();
-                let codex_home = codex_home_for_recipe.clone();
-                let registry = codex_registry.clone();
-                let instructions = codex_instructions.clone();
-                let websocket_url = websocket_url.clone();
-                let api_base_url = api_base_url.clone();
-                let model_id_prefix = model_id_prefix.clone();
-                async move {
-                    workspaces
-                        .authorize_cross_family(request.parent.as_ref())
-                        .map_err(nanocodex::NanocodexError::InvalidRequest)?;
-                    let session_id = match &request.snapshot {
-                        Some(nanocodex::agent::ChildSnapshot::Codex(snapshot)) => {
-                            snapshot.session_id.parse::<SessionId>().map_err(|error| {
-                                nanocodex::NanocodexError::InvalidRequest(error.to_string())
-                            })?
-                        }
-                        _ => SessionId::new(),
-                    };
-                    let session_key = session_id.to_string();
-                    if let Some(parent) = &request.parent {
-                        workspaces.initialize(parent.session_id(), &session_key)
-                    } else {
-                        workspaces.seed(&session_key, workspace)
-                    }
-                    .map_err(nanocodex::NanocodexError::InvalidRequest)?;
-                    let workspace = workspaces
-                        .current(&session_key)
-                        .map_err(nanocodex::NanocodexError::InvalidRequest)?;
-                    let tool_workspace = workspace.clone();
-                    let HarnessModel::Codex(model) = request.model else {
-                        return Err(nanocodex::NanocodexError::InvalidRequest(
-                            "Codex recipe received a Claude model".into(),
-                        ));
-                    };
-                    let auth = auth
-                        .resolve()
-                        .map_err(|error| {
-                            nanocodex::NanocodexError::InvalidRequest(error.to_string())
-                        })?
-                        .nanocodex()
-                        .map_err(|error| {
-                            nanocodex::NanocodexError::InvalidRequest(error.to_string())
-                        })?;
-                    let mut openai = OpenAi::builder(auth.clone())
-                        .transport(responses_transport)
-                        .websocket_warmup(websocket_warmup)
-                        .websocket_url(direct_websocket_url(websocket_url, auth.mode()));
-                    if let Some(store) = store_responses {
-                        openai = openai.store(store);
-                    }
-                    if let Some(url) = api_base_url {
-                        openai = openai.api_base_url(url);
-                    }
-                    if let Some(prefix) = model_id_prefix {
-                        openai = openai.model_id_prefix(prefix);
-                    }
-                    let client = openai.build().map_err(|error| {
-                        nanocodex::NanocodexError::InvalidRequest(error.to_string())
-                    })?;
-                    let registry_enabled = registry.is_some();
-                    let mut builder = Nanocodex::builder(client)
-                        .session_id(session_id)
-                        .workspace(workspace)
-                        .codex_home(codex_home)
-                        .model(model)
-                        .thinking(request.thinking)
-                        .reasoning_mode(reasoning_mode)
-                        .fast_mode(fast_mode)
-                        .host_context(request.host_context)
-                        .spawn_factory(request.spawn_factory)
-                        .tools_factory(move |parent| {
-                            workspaces
-                                .seed(parent.session_id(), tool_workspace.clone())
-                                .map_err(
-                                    nanocodex::tools::runtime::ToolsBuildError::HostInitialization,
-                                )?;
-                            if let Some(registry) = &registry {
-                                nanocodex_subagents::install_tools(
-                                    tools.clone(),
-                                    parent,
-                                    Arc::clone(registry),
-                                )
-                            } else {
-                                Ok(tools.clone())
-                            }
-                        });
-                    if instructions.is_none()
-                        && let Some(extra) = session_instructions(None, registry_enabled, false)
-                    {
-                        builder = builder.additional_instructions(extra);
-                    }
-                    if let Some(instructions) = instructions {
-                        builder = builder.instructions(instructions);
-                    }
-                    if let Some(checkpoint) = request.snapshot {
-                        builder = builder.restore_runtime(checkpoint)?;
-                    }
-                    builder.build()
-                }
-            });
+        let responses = self.responses_settings();
+        let codex_auth = self.auth.clone();
+        let codex = self.codex_recipe(
+            codex::CodexConnection::lazy(move || {
+                responses.client(codex_auth.clone().resolve()?.nanocodex()?, None)
+            }),
+            catalog.clone(),
+            &codex_home,
+            &workspace,
+            &workspaces,
+            tool_registry.clone(),
+            managed_memory.is_some(),
+        );
+        let harness = self
+            .harness(
+                codex,
+                connection.clone(),
+                &catalog,
+                &workspace,
+                tool_registry.clone(),
+                mcp_handle.clone(),
+                &workspaces,
+            )?
+            .build();
         let tool_hooks = connection.hooks(workspaces.clone())?;
         let permission_workspaces = workspaces.clone();
-        let (interaction, claude_interactions) =
-            interaction::Interaction::new_with_policy_and_workspace(
-                interaction::Interaction::available(tui),
-                codex_home.join("claude/plan-mode"),
-                tool_hooks,
-                connection.policy.clone(),
-                Arc::new(move |id| permission_workspaces.current(id)),
-            );
-        let harness = register_claude_recipe(
-            harness_builder,
-            connection,
-            workspace.clone(),
-            instructions.clone(),
-            tools.clone(),
-            web_search,
-            tool_registry.clone(),
-            mcp_handle.clone(),
-            workspaces.clone(),
-        )
-        .build();
-        let session_workspace = workspace.clone();
+        let (interaction, interactions) = interaction::Interaction::new_with_policy_and_workspace(
+            interaction::Interaction::available(tui),
+            codex_home.join("claude/plan-mode"),
+            tool_hooks,
+            connection.policy.clone(),
+            Arc::new(move |id| permission_workspaces.current(id)),
+        );
         let mut builder = configured_claude_builder(
             client,
             model,
             thinking,
             workspace,
-            instructions,
+            self.instructions.clone(),
             tools,
             web_search,
             tool_registry,
@@ -527,27 +357,23 @@ impl AgentArgs {
             interaction.clone(),
             codex_home.clone(),
             workspaces.clone(),
-            session_id.clone(),
+            session_id,
             claude_scheduler.clone(),
             self.claude_workflows,
-            self.claude_monitor_ws_origin,
+            self.claude_monitor_ws_origin.clone(),
         )
         .spawn_factory(harness.spawn_factory());
-        let native_session_id = persistence
-            .as_ref()
-            .filter(|p| p.path == crate::native_sessions::store_path(&codex_home))
-            .map(|p| p.state_id.clone());
-        if let Some(persistence) = persistence {
-            if let Some(parent) = persistence.path.parent() {
-                std::fs::create_dir_all(parent)
-                    .wrap_err("failed to create Claude durability directory")?;
-            }
-            let store = SqliteStore::open(&persistence.path)
-                .wrap_err("failed to open Claude durability store")?;
-            let state = PortableDurableSession::open(store, persistence.state_id).await?;
-            builder = builder.durability(state).await?;
+        if let Some(persistence) = &root.persistence {
+            let state = persistence.open(model, &root.workspace).await?;
+            builder = builder
+                .durability(state)
+                .await
+                .wrap_err("failed to attach session durability")?;
         }
-        let (handle, events) = builder.build()?;
+        let (handle, events) = {
+            let _timing = crate::startup_timing::Stage::new("native_agent");
+            builder.build()?
+        };
         if let Some(scheduler) = &claude_scheduler {
             scheduler
                 .resume(handle.session_id())
@@ -561,31 +387,23 @@ impl AgentArgs {
             )
             .map_err(|error| eyre!(error))?;
         }
-        if let Some(id) = native_session_id {
-            crate::native_sessions::register(&codex_home, &id, &session_workspace, model)?;
-        }
-        let (child_agents, subagent_updates) =
-            registry.map_or((None, None), |(_, control, updates)| {
-                let (drain, updates) = if tui {
-                    (None, Some(updates))
-                } else {
-                    (Some(updates), None)
-                };
-                (
-                    Some(ChildAgents::new(
-                        handle.session_id().to_owned(),
-                        control,
-                        drain,
-                    )),
-                    updates,
-                )
-            });
+        let (child_agents, subagent_updates) = super::child_agents(&handle, registry, tui);
+        // Voice needs OpenAI realtime credentials whatever the agent family.
+        let realtime = self
+            .auth
+            .clone()
+            .resolve()
+            .and_then(|auth| auth.nanocodex())
+            .and_then(|auth| Ok(OpenAi::new(auth)?))
+            .ok();
         Ok(ConfiguredAgent {
-            claude_interactions,
-            claude_scheduler,
+            host: HostChannels {
+                interactions,
+                scheduler: claude_scheduler,
+            },
             handle,
             events,
-            realtime: None,
+            realtime,
             child_agents,
             subagent_updates,
             mpp_adapter: None,
@@ -734,6 +552,7 @@ fn configured_claude_builder(
             };
             let mut native = native_tools(
                 workspace,
+                &nanocodex::tools::SessionEnvironment::root(parent.session_id()),
                 tools,
                 registry.is_some(),
                 mcp_handle.clone(),
@@ -785,12 +604,10 @@ pub(super) fn register_claude_recipe(
         let mcp_handle = mcp_handle.clone();
         async move {
             let workspace = workspace.map_err(nanocodex::NanocodexError::InvalidRequest)?;
-            let session_id = match &request.snapshot {
-                Some(nanocodex::agent::ChildSnapshot::Native { session_id, .. }) => {
-                    session_id.clone()
-                }
-                _ => SessionId::new().to_string(),
-            };
+            let session_id = request.checkpoint.as_ref().map_or_else(
+                || SessionId::new().to_string(),
+                |checkpoint| checkpoint.session_id().to_owned(),
+            );
             if let Some(parent) = &request.parent {
                 workspaces.initialize(parent.session_id(), &session_id)
             } else {
@@ -845,7 +662,7 @@ pub(super) fn register_claude_recipe(
             .spawn_factory(request.spawn_factory)
             .subagent_type("general-purpose")
             .host_context(request.host_context);
-            if let Some(checkpoint) = request.snapshot {
+            if let Some(checkpoint) = request.checkpoint {
                 builder = builder.restore_runtime(checkpoint)?;
             }
             builder.build()
@@ -868,6 +685,7 @@ const fn claude_effort(thinking: Thinking) -> Option<Effort> {
 #[allow(clippy::too_many_arguments)]
 fn native_tools(
     workspace: Arc<worktree::Workspace>,
+    session: &nanocodex::tools::SessionEnvironment,
     tools: Tools,
     subagents: bool,
     mcp_handle: Option<McpHandle>,
@@ -928,9 +746,11 @@ fn native_tools(
     let bash = shell.clone();
     native = native.tool_with_context(shell::Shell::definition(), move |input, invocation| {
         let bash = bash.clone();
-        async move { bash.execute(input, invocation.session_id).await }
+        async move { bash.execute(input, invocation).await }
     });
+    // Shared MCP stdio servers and host tools run with this session's identity.
     let direct_tools = tools
+        .for_session(session)
         .into_builder()
         .exposure(nanocodex::tools::runtime::ToolExposure::DirectOnly)
         .build()

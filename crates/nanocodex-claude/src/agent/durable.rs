@@ -13,6 +13,13 @@ pub(super) struct Snapshot {
     pub(super) model: Option<String>,
     #[serde(default)]
     pub(super) workspace: Option<String>,
+    /// Provenance of the session that owns this state, so a reopened durable
+    /// fork, side conversation or subagent keeps its lineage.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) lineage: Option<Lineage>,
+    /// Conversation-tree identity shared with forks of the same session.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) conversation_id: Option<String>,
 }
 impl Default for Snapshot {
     fn default() -> Self {
@@ -24,18 +31,28 @@ impl Default for Snapshot {
             tasks: None,
             model: None,
             workspace: None,
+            lineage: None,
+            conversation_id: None,
         }
     }
 }
 impl Snapshot {
     pub(super) fn decode(value: Value) -> Result<Self> {
-        let snapshot: Self = serde_json::from_value(value).map_err(provider_error)?;
-        if snapshot.provider != "claude" || snapshot.version != 1 {
-            return Err(unsupported(
-                "unsupported Claude checkpoint version/provider",
+        serde_json::from_value::<Self>(value)
+            .map_err(provider_error)?
+            .validated()
+    }
+    pub(super) fn validated(self) -> Result<Self> {
+        if self.provider != "claude" || self.version != 1 {
+            return Err(NanocodexError::InvalidSessionSnapshot(
+                "unsupported Claude checkpoint version/provider".into(),
             ));
         }
-        Ok(snapshot)
+        Ok(self)
+    }
+    /// Whether this boundary contains at least one committed exchange.
+    pub(super) const fn has_conversation(&self) -> bool {
+        !self.conversation.messages.is_empty() || !self.conversation.summary.is_empty()
     }
 }
 #[derive(Serialize, Deserialize)]
@@ -202,13 +219,13 @@ impl State {
             #[cfg(all(feature = "tools", not(target_family = "wasm")))]
             self.task_board
                 .as_ref()
-                .ok_or_else(|| unsupported("Claude task checkpoint requires a task board"))?
+                .ok_or_else(|| invalid("Claude task checkpoint requires a task board"))?
                 .restore(tasks)
                 .map_err(provider_error)?;
             #[cfg(not(all(feature = "tools", not(target_family = "wasm"))))]
             {
                 let _ = tasks;
-                return Err(unsupported(
+                return Err(invalid(
                     "Claude task checkpoint restoration requires a native target with tools and a task board",
                 ));
             }
@@ -222,6 +239,8 @@ impl State {
             tasks: self.task_snapshot()?,
             model: Some(self.model()),
             workspace: Some(self.workspace()),
+            lineage: Some(self.lineage.clone()),
+            conversation_id: Some(self.conversation_id.clone()),
             ..Snapshot::default()
         })
     }
@@ -487,6 +506,7 @@ pub(super) fn replay(operation: String, output: Value) -> Result<TurnResult> {
         Some(operation),
         output.final_message,
         output.usage,
+        None,
     ))
 }
 pub(super) fn candidate_id(kind: &str) -> String {
@@ -508,10 +528,24 @@ pub(super) fn recovery_error(error: impl std::fmt::Display) -> NanocodexError {
 /// replays historical tools. Effect identity and recovery warnings survive the
 /// branch even when later transcript content is forgotten. Provider containers
 /// are not reused because their filesystem may contain later effects.
-pub fn rewind_checkpoint(previous: Option<Value>, latest: Value) -> Result<Value> {
+///
+/// The branch records [`Origin::Branch`] lineage: its parent is
+/// `source_session_id`, it stays in the source's conversation tree (same
+/// root), and it sits one level deeper than the source.
+pub fn rewind_checkpoint(
+    source_session_id: &str,
+    previous: Option<Value>,
+    latest: Value,
+) -> Result<Value> {
     let latest = Snapshot::decode(latest)?;
+    // The source's own lineage, as recorded by its newest boundary; a legacy
+    // snapshot without one belonged to a root session.
+    let source_lineage = latest
+        .lineage
+        .clone()
+        .unwrap_or_else(|| Lineage::root(source_session_id));
     if latest.conversation.pending_continuation {
-        return Err(unsupported(
+        return Err(invalid(
             "conversation rewind refuses a pending tool/provider continuation",
         ));
     }
@@ -524,7 +558,7 @@ pub fn rewind_checkpoint(previous: Option<Value>, latest: Value) -> Result<Value
         },
     };
     if selected.conversation.pending_continuation {
-        return Err(unsupported(
+        return Err(invalid(
             "selected checkpoint has a pending tool/provider continuation",
         ));
     }
@@ -544,5 +578,119 @@ pub fn rewind_checkpoint(previous: Option<Value>, latest: Value) -> Result<Value
     selected.conversation.lifecycle_started = false;
     selected.conversation.container = None;
     selected.conversation.previous_message_id = None;
+    // The rewound branch is a new session in the source's tree: it adopts its
+    // own identity and prompt-cache lineage, derived from the source session.
+    selected.lineage = Some(Lineage::child_of(
+        &source_lineage,
+        source_session_id,
+        Origin::Branch,
+    ));
+    selected.conversation_id = None;
     serde_json::to_value(selected).map_err(provider_error)
+}
+
+/// Model-visible content of a Claude checkpoint, decoded for session listing,
+/// previews and transcript replay. Signed thinking and binary payloads are
+/// never exposed.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ClaudeCheckpointView {
+    /// Claude model pinned by the checkpoint, when recorded.
+    pub model: Option<HarnessModel>,
+    /// Session workspace recorded by the checkpoint, when any.
+    pub workspace: Option<String>,
+    /// Provenance recorded by the checkpoint; older checkpoints omit it.
+    pub lineage: Option<Lineage>,
+    /// User and assistant text plus tool invocations, in conversation order.
+    pub transcript: Vec<nanocodex_agent::session::TranscriptItem>,
+}
+
+/// Decodes a durable Claude checkpoint (the provider-native state committed
+/// by the execution policy) without opening or owning the session.
+///
+/// # Errors
+///
+/// Returns [`NanocodexError::InvalidSessionSnapshot`] when the value is not a
+/// supported Claude checkpoint or records a non-Claude model.
+pub fn decode_checkpoint(checkpoint: Value) -> Result<ClaudeCheckpointView> {
+    let snapshot: Snapshot = serde_json::from_value::<Snapshot>(checkpoint)
+        .map_err(|error| NanocodexError::InvalidSessionSnapshot(error.to_string()))?
+        .validated()?;
+    snapshot.view()
+}
+
+/// Decodes a portable Claude [`SessionCheckpoint`] into its model-visible view.
+///
+/// # Errors
+///
+/// Returns [`NanocodexError::CheckpointFamilyMismatch`] for another family's
+/// checkpoint and [`NanocodexError::InvalidSessionSnapshot`] for an invalid one.
+pub fn decode_session_checkpoint(checkpoint: &SessionCheckpoint) -> Result<ClaudeCheckpointView> {
+    checkpoint.validate()?;
+    checkpoint.require_family(HarnessFamily::Claude)?;
+    let stored: NativeChildState = serde_json::from_value(checkpoint.payload().clone())
+        .map_err(|error| NanocodexError::InvalidSessionSnapshot(error.to_string()))?;
+    let mut view = stored.snapshot.validated()?.view()?;
+    view.model = Some(checkpoint.model());
+    view.lineage = Some(checkpoint.lineage().clone());
+    Ok(view)
+}
+
+impl Snapshot {
+    fn view(&self) -> Result<ClaudeCheckpointView> {
+        let model = self
+            .model
+            .as_deref()
+            .map(|model| {
+                model
+                    .parse::<HarnessModel>()
+                    .ok()
+                    .filter(|model| model.family() == HarnessFamily::Claude)
+                    .ok_or_else(|| {
+                        NanocodexError::InvalidSessionSnapshot(
+                            "checkpoint model is not a Claude model".into(),
+                        )
+                    })
+            })
+            .transpose()?;
+        Ok(ClaudeCheckpointView {
+            model,
+            workspace: self
+                .workspace
+                .clone()
+                .filter(|workspace| !workspace.is_empty()),
+            lineage: self.lineage.clone(),
+            transcript: self.transcript(),
+        })
+    }
+    fn transcript(&self) -> Vec<nanocodex_agent::session::TranscriptItem> {
+        use nanocodex_agent::session::TranscriptItem;
+        let mut items = Vec::new();
+        if !self.conversation.summary.is_empty() {
+            items.push(TranscriptItem::Assistant(format!(
+                "Retained conversation summary:\n{}",
+                self.conversation.summary
+            )));
+        }
+        for message in &self.conversation.messages {
+            for block in &message.content {
+                match block {
+                    ContentBlock::Text { text, .. } => items.push(match message.role {
+                        Role::Assistant => TranscriptItem::Assistant(text.clone()),
+                        Role::User => TranscriptItem::User(text.clone()),
+                    }),
+                    ContentBlock::ToolUse {
+                        id, name, input, ..
+                    } => {
+                        items.push(TranscriptItem::Tool {
+                            call_id: id.clone(),
+                            name: name.clone(),
+                            arguments: input.to_string(),
+                        });
+                    }
+                    _ => {}
+                }
+            }
+        }
+        items
+    }
 }

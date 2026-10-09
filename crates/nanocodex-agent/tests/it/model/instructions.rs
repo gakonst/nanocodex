@@ -41,7 +41,9 @@ async fn model_prompt_selection_preserves_explicit_and_additional_instructions()
             builder = builder.additional_instructions(additional);
         }
         let (agent, events) = builder.build()?;
-        agent.set_model(selected).await?;
+        agent
+            .set_harness_model(HarnessModel::Codex(selected))
+            .await?;
         assert_eq!(
             agent
                 .prompt("first turn")
@@ -90,14 +92,15 @@ async fn astra_prompt_is_restored_from_the_retained_model() -> Result<()> {
         .additional_instructions("host instructions")
         .build()?;
     let first = agent.prompt("first turn").await?.result().await?;
-    let snapshot: SessionSnapshot =
-        serde_json::from_value(serde_json::to_value(first.snapshot().unwrap())?)?;
+    let snapshot: SessionSnapshot = serde_json::from_value(serde_json::to_value(
+        first.checkpoint().as_ref().map(conversation).unwrap(),
+    )?)?;
     agent.shutdown().await?;
     drop((agent, events, first));
     let (resumed, events) = Nanocodex::builder(openai)
         .thinking(Thinking::Low)
         .additional_instructions("host instructions")
-        .resume(snapshot)
+        .resume_native_snapshot(snapshot)
         .build()?;
     assert_eq!(
         resumed
@@ -195,7 +198,8 @@ async fn overridden_identity_follows_gateway_model_child_switch_and_resume() -> 
         .additional_instructions(HOST)
         .build()?;
     // Model selection can change only before the first accepted history.
-    root.set_model(Model::Mimo).await?;
+    root.set_harness_model(HarnessModel::Codex(Model::Mimo))
+        .await?;
     assert_eq!(
         root.prompt("original root turn")
             .await?
@@ -220,8 +224,9 @@ async fn overridden_identity_follows_gateway_model_child_switch_and_resume() -> 
     drop((child, child_events));
     let completed = root.prompt("parent after child").await?.result().await?;
     assert_eq!(completed.final_message(), "done");
-    let snapshot: SessionSnapshot =
-        serde_json::from_value(serde_json::to_value(completed.snapshot().unwrap())?)?;
+    let snapshot: SessionSnapshot = serde_json::from_value(serde_json::to_value(
+        completed.checkpoint().as_ref().map(conversation).unwrap(),
+    )?)?;
     root.shutdown().await?;
     drop((root, root_events, completed));
     // The retained MiMo model must win over this builder's original GLM model.
@@ -229,7 +234,7 @@ async fn overridden_identity_follows_gateway_model_child_switch_and_resume() -> 
         .thinking(Thinking::Low)
         .instructions(CALLER)
         .additional_instructions(HOST)
-        .resume(snapshot)
+        .resume_native_snapshot(snapshot)
         .build()?;
     assert_eq!(
         resumed
@@ -343,7 +348,7 @@ async fn run_global_instructions_case(
         "done"
     );
 
-    agent.flush_rollout().await?;
+    agent.flush().await?;
     drop((agent, events));
     timeout(std::time::Duration::from_secs(5), server)
         .await

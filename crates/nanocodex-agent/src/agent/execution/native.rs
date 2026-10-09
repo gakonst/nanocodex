@@ -20,9 +20,14 @@ impl Config {
         self.rollout = Some(rollout);
     }
 
-    pub(super) const fn for_new_thread(&self) -> Self {
-        // Child history belongs to the running parent, never a resumable disk session.
-        Self { rollout: None }
+    pub(super) fn for_new_thread(&self, branch: bool) -> Self {
+        // A fork or side conversation is its own resumable conversation and records
+        // beside its parent; a subagent's history belongs to the running parent.
+        Self {
+            rollout: branch
+                .then(|| self.rollout.as_ref().map(RolloutConfig::for_branch))
+                .flatten(),
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -32,8 +37,9 @@ impl Config {
         prompt_cache_key: &str,
         workspace: Option<&str>,
         instructions: &str,
-        origin_kind: &'static str,
+        start: crate::session::SessionStart,
         parent_session_id: Option<&str>,
+        root_session_id: &str,
         resume_history_len: Option<usize>,
     ) -> Result<Execution> {
         let Some(config) = &self.rollout else {
@@ -55,8 +61,9 @@ impl Config {
                 cwd: &cwd,
                 instructions,
                 origin: RolloutOrigin {
-                    kind: origin_kind,
+                    start,
                     parent_thread_id: parent_session_id,
+                    root_session_id: Some(root_session_id),
                 },
                 resume_history_len,
             },

@@ -11,6 +11,11 @@ export function agentActions() {
       watch: (options) => events.watch(agent, options),
     },
     session: {
+      info: () => session.info(agent),
+      capabilities: () => session.capabilities(agent),
+      persistence: () => session.persistence(agent),
+      checkpoint: () => session.checkpoint(agent),
+      cancel: () => session.cancel(agent),
       appendDeveloperMessage: (text) => session.appendDeveloperMessage(agent, text),
       compact: () => session.compact(agent),
       context: () => session.context(agent),

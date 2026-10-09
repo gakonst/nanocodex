@@ -8,7 +8,8 @@
 //! (false rejects unsupported disabling, true keeps backend policy),
 //! autoCompactWindowTokens, contextWindowTokens, instructions, systemBlocks,
 //! workspace, parallelTools, parallelSafeTools (host-derived),
-//! durabilityHostId, durabilityId,
+//! durabilityHostId, durabilityId, resume (a portable Claude session
+//! checkpoint whose conversation the new session continues),
 //! terminalReceiptRetention. Code Mode is mandatory; provider tools and direct
 //! client tool search are rejected. Credentials never enter a checkpoint.
 //!
@@ -18,10 +19,9 @@
 //! metadata?: value, structuredResult?: value}>. Host errors are redacted.
 
 use super::{
-    AgentEvents, Cell, DurableAgentExt, HashMap, JavaScriptDurabilityStore, JavaScriptSpawnRouter,
-    JsFuture, JsValue, Mutex, Prompt, PromptRoute, Rc, RefCell, RustNanocodex, TurnState,
-    WasmHarnessFactory, WasmSubagents, WasmSubagentsConfig, WasmTurn, forward_events,
-    host_cancel_code_turn, js_error, validate_operation_id,
+    AgentEvents, DurableAgentExt, HashMap, JavaScriptDurabilityStore, JavaScriptSpawnRouter,
+    JsFuture, JsValue, Mutex, RustNanocodex, SessionCheckpoint, WasmHarnessFactory, WasmNanocodex,
+    WasmSubagents, WasmSubagentsConfig, host_cancel_code_turn, js_agent_error, js_error,
 };
 use nanocodex_claude::{
     Claude, ClaudeAuthFuture, ClaudeAuthProvider, ClaudeAuthUnavailable, ClaudeClient,
@@ -30,7 +30,7 @@ use nanocodex_claude::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::{collections::BTreeMap, rc::Weak, sync::Arc};
+use std::{collections::BTreeMap, sync::Arc};
 use wasm_bindgen::prelude::*;
 
 #[wasm_bindgen]
@@ -93,6 +93,7 @@ pub(super) struct ClaudeConfig {
     durability_host_id: Option<String>,
     durability_id: Option<String>,
     terminal_receipt_retention: Option<usize>,
+    resume: Option<SessionCheckpoint>,
     subagents: Option<WasmSubagentsConfig>,
     #[serde(default)]
     subagent_routing: bool,
@@ -364,22 +365,22 @@ async fn execute_tool(
     })
 }
 
-/// Opt-in Claude-native WASM lifecycle. Authentication remains host-owned.
-#[wasm_bindgen(js_name = Nanoclaude)]
-pub struct WasmNanoclaude {
-    inner: RustNanocodex,
-    event_forwarding: Rc<Cell<bool>>,
-    turns: RefCell<Vec<Weak<RefCell<TurnState>>>>,
-    subagents: Option<WasmSubagents>,
-}
-
-#[wasm_bindgen(js_class = Nanoclaude)]
-impl WasmNanoclaude {
-    /// Creates only explicitly supplied Claude capabilities.
-    pub async fn create(config_json: &str) -> Result<Self, JsValue> {
+#[wasm_bindgen(js_class = Nanocodex)]
+impl WasmNanocodex {
+    /// Builds a Claude-native session behind the shared Nanocodex handle.
+    ///
+    /// Only explicitly supplied Claude capabilities are installed;
+    /// authentication remains host-owned.
+    ///
+    /// # Errors
+    ///
+    /// Throws when the configuration or agent policy is invalid. Messages never
+    /// echo configuration values, which may contain credentials.
+    #[wasm_bindgen(js_name = createClaude)]
+    pub async fn create_claude(config_json: &str) -> Result<Self, JsValue> {
         // Serde errors can include caller-supplied strings; do not echo config secrets.
         let config: ClaudeConfig = serde_json::from_str(config_json)
-            .map_err(|_| js_error("invalid Nanoclaude configuration"))?;
+            .map_err(|_| js_error("invalid Claude configuration"))?;
         let (factory, subagents) = if let Some(settings) = &config.subagents {
             let host = config
                 .host_definition_id
@@ -424,239 +425,14 @@ impl WasmNanoclaude {
             (None, None)
         };
         let (inner, events) = build_claude(config, factory, None, None).await?;
-        let event_forwarding = Rc::new(Cell::new(false));
-        forward_events(events, Rc::clone(&event_forwarding));
-        Ok(Self {
-            inner,
-            event_forwarding,
-            turns: RefCell::new(Vec::new()),
-            subagents,
-        })
-    }
-
-    #[wasm_bindgen(getter, js_name = sessionId)]
-    pub fn session_id(&self) -> String {
-        self.inner.session_id().to_owned()
-    }
-
-    #[wasm_bindgen(getter, js_name = agentId)]
-    pub fn agent_id(&self) -> String {
-        self.inner.agent_id().to_owned()
-    }
-
-    #[wasm_bindgen(js_name = setEventForwarding)]
-    pub fn set_event_forwarding(&self, enabled: bool) {
-        if self.event_forwarding.replace(enabled) != enabled
-            && let Some(subagents) = &self.subagents
-        {
-            subagents.set_event_forwarding(enabled);
-        }
-    }
-
-    /// Accepts text using the shared Turn/TurnResult and durable request-ID path.
-    pub fn prompt(
-        &self,
-        input: &str,
-        request_id: Option<String>,
-        cancel_on_admission: Option<bool>,
-    ) -> Result<WasmTurn, JsValue> {
-        validate_operation_id(request_id.as_deref())?;
-        if input.trim().is_empty() {
-            return Err(js_error("prompt input must not be empty"));
-        }
-        let turn = WasmTurn::accept(
-            self.inner.clone(),
-            Prompt::new(input),
-            request_id,
-            cancel_on_admission.unwrap_or(false),
-        );
-        self.track(&turn);
-        Ok(turn)
-    }
-
-    /// Accepts ordered multimodal JSON content: text, image URLs or data URLs,
-    /// and inline `file` documents (PDF or plain text). Local paths are rejected.
-    #[wasm_bindgen(js_name = promptContent)]
-    pub fn prompt_content(
-        &self,
-        content_json: &str,
-        request_id: Option<String>,
-        cancel_on_admission: Option<bool>,
-    ) -> Result<WasmTurn, JsValue> {
-        validate_operation_id(request_id.as_deref())?;
-        let turn = WasmTurn::accept(
-            self.inner.clone(),
-            super::parse_browser_prompt(content_json)?,
-            request_id,
-            cancel_on_admission.unwrap_or(false),
-        );
-        self.track(&turn);
-        Ok(turn)
-    }
-
-    /// Atomically steers the active Claude turn or starts a new one, for live
-    /// frontends such as realtime voice. Returns `undefined` when steered.
-    #[wasm_bindgen(js_name = routePrompt)]
-    pub async fn route_prompt(&self, instruction: &str) -> Result<Option<WasmTurn>, JsValue> {
-        if instruction.trim().is_empty() {
-            return Err(js_error("prompt instruction must not be empty"));
-        }
-        match self
-            .inner
-            .route_prompt(Prompt::new(instruction))
-            .await
-            .map_err(js_error)?
-        {
-            PromptRoute::Steered => Ok(None),
-            PromptRoute::Started(turn) => {
-                let turn = WasmTurn::started(turn);
-                self.track(&turn);
-                Ok(Some(turn))
-            }
-        }
-    }
-
-    fn track(&self, turn: &WasmTurn) {
-        let mut turns = self.turns.borrow_mut();
-        turns.retain(|turn| {
-            turn.upgrade()
-                .is_some_and(|state| state.borrow().completed.is_none())
-        });
-        turns.push(Rc::downgrade(&turn.state));
-    }
-
-    pub async fn compact(&self) -> Result<(), JsValue> {
-        self.inner.compact().await.map_err(js_error)
-    }
-
-    /// Cancels nonterminal prompts issued by this handle (not an in-flight compact).
-    pub async fn cancel(&self) -> Result<(), JsValue> {
-        let pending: Vec<_> = self
-            .turns
-            .borrow()
-            .iter()
-            .filter_map(Weak::upgrade)
-            .filter(|state| state.borrow().completed.is_none())
-            .collect();
-        for state in pending {
-            let turn = WasmTurn { state };
-            match turn.control().await {
-                Ok(control) => control.cancel().await.map_err(js_error)?,
-                Err(error) if turn.state.borrow().completed.is_none() => {
-                    return Err(js_error(error));
-                }
-                Err(_) => {} // Completion can race cancellation.
-            }
-        }
-        Ok(())
-    }
-
-    pub async fn shutdown(&self) -> Result<(), JsValue> {
-        if let Some(subagents) = &self.subagents {
-            subagents
-                .close_all(self.inner.session_id())
-                .await
-                .map_err(js_error)?;
-        }
-        self.inner.shutdown().await.map_err(js_error)?;
-        self.set_event_forwarding(false);
-        Ok(())
-    }
-
-    #[wasm_bindgen(js_name = spawnSubagent)]
-    pub async fn spawn_subagent(&self, task: &str) -> Result<String, JsValue> {
-        self.subagents
-            .as_ref()
-            .ok_or_else(|| js_error("this agent was not created with the subagent extension"))?
-            .spawn_subagent(self.inner.session_id(), task)
-            .await
-    }
-    #[wasm_bindgen(js_name = waitSubagents)]
-    pub async fn wait_subagents(&self, task: &str) -> Result<String, JsValue> {
-        self.subagents
-            .as_ref()
-            .ok_or_else(|| js_error("this agent was not created with the subagent extension"))?
-            .wait_subagents(self.inner.session_id(), task)
-            .await
-    }
-    #[wasm_bindgen(js_name = listSubagents)]
-    pub async fn list_subagents(&self, task: &str) -> Result<String, JsValue> {
-        self.subagents
-            .as_ref()
-            .ok_or_else(|| js_error("this agent was not created with the subagent extension"))?
-            .list_subagents(self.inner.session_id(), task)
-            .await
-    }
-    #[wasm_bindgen(js_name = sendSubagentMessage)]
-    pub async fn send_subagent_message(&self, task: &str) -> Result<String, JsValue> {
-        self.subagents
-            .as_ref()
-            .ok_or_else(|| js_error("this agent was not created with the subagent extension"))?
-            .send_subagent_message(self.inner.session_id(), task)
-            .await
-    }
-    #[wasm_bindgen(js_name = interruptSubagent)]
-    pub async fn interrupt_subagent(&self, task: &str) -> Result<String, JsValue> {
-        self.subagents
-            .as_ref()
-            .ok_or_else(|| js_error("this agent was not created with the subagent extension"))?
-            .interrupt_subagent(self.inner.session_id(), task)
-            .await
-    }
-    #[wasm_bindgen(js_name = closeSubagent)]
-    pub async fn close_subagent(&self, task: &str) -> Result<String, JsValue> {
-        self.subagents
-            .as_ref()
-            .ok_or_else(|| js_error("this agent was not created with the subagent extension"))?
-            .close_subagent(self.inner.session_id(), task)
-            .await
-    }
-    #[wasm_bindgen(js_name = spawnSubagents)]
-    pub async fn spawn_subagents(&self, tasks_json: &str) -> Result<String, JsValue> {
-        self.subagents
-            .as_ref()
-            .ok_or_else(|| js_error("this agent was not created with the subagent extension"))?
-            .spawn_subagents(self.inner.session_id(), tasks_json)
-            .await
-    }
-
-    /// Claude checkpoints are stored natively by durability, not OpenAI snapshots.
-    pub fn snapshot(&self) -> Result<String, JsValue> {
-        Err(js_error(
-            "Claude snapshot export is unsupported; reopen the configured durabilityId",
-        ))
-    }
-
-    pub fn checkpoint(&self) -> Result<String, JsValue> {
-        Err(js_error(
-            "Claude checkpoint export is unsupported; checkpoints are managed by durability",
-        ))
-    }
-}
-
-impl Drop for WasmNanoclaude {
-    fn drop(&mut self) {
-        if self.event_forwarding.replace(false)
-            && let Some(subagents) = &self.subagents
-        {
-            subagents.set_event_forwarding(false);
-        }
-        if let Some(subagents) = &self.subagents
-            && subagents.remove_parent(self.inner.session_id())
-        {
-            let subagents = subagents.clone();
-            let session_id = self.inner.session_id().to_owned();
-            wasm_bindgen_futures::spawn_local(async move {
-                let _ = subagents.close_all(&session_id).await;
-            });
-        }
+        Ok(Self::from_parts(inner, events, subagents))
     }
 }
 
 pub(super) async fn build_claude(
     config: ClaudeConfig,
     factory: Option<Arc<WasmHarnessFactory>>,
-    snapshot: Option<nanocodex_agent::ChildSnapshot>,
+    checkpoint: Option<SessionCheckpoint>,
     host_context: Option<Arc<str>>,
 ) -> Result<(RustNanocodex, AgentEvents), JsValue> {
     config.validate().map_err(js_error)?;
@@ -694,6 +470,11 @@ pub(super) async fn build_claude(
     let mut builder = RustNanocodex::builder(Claude::new(client, config.model))
         .parallel_tools(config.parallel_tools)
         .parallel_safe_tools(config.parallel_safe_tools);
+    // Resuming starts a fresh root continuing the checkpoint's conversation;
+    // the configured identity and host policy below then apply to it.
+    if let Some(resume) = config.resume {
+        builder = builder.resume(resume).map_err(js_agent_error)?;
+    }
     if let Some(session_id) = config.session_id {
         builder = builder.session_id(session_id);
     }
@@ -808,8 +589,10 @@ pub(super) async fn build_claude(
             });
     }
     builder = builder.host_context(host_context);
-    if let Some(snapshot) = snapshot {
-        builder = builder.restore_runtime(snapshot).map_err(js_error)?;
+    if let Some(checkpoint) = checkpoint {
+        builder = builder
+            .restore_runtime(checkpoint)
+            .map_err(js_agent_error)?;
     }
     builder.build().map_err(js_error)
 }

@@ -59,7 +59,7 @@ for (const rawApiEvents of [undefined, false]) {
       watch(agent);
       const result = await agent.turn.prompt({ input: "synthetic task" }).result();
       assert.equal(result.finalMessage, "finished");
-      const resume = await result.snapshot();
+      const resume = await result.checkpoint();
       await agent.session.shutdown();
       agent = await Agent.create({ ...options, resume });
       instrumentBridge();
@@ -88,15 +88,15 @@ for (const rawApiEvents of [undefined, false]) {
   });
 }
 
-test("real WASM completed snapshot preserves the next-turn compaction decision", { timeout: 60_000 }, async () => {
+test("real WASM completed checkpoint preserves the next-turn compaction decision", { timeout: 60_000 }, async () => {
   const fixture = modelFixture(265639);
   const options = { codeEvaluator, tools: [], rawApiEvents: false, transport: fixture.transport };
   let agent = await Agent.create(options);
   try {
     const first = await agent.turn.prompt({ input: "synthetic task" }).result();
-    const resume = JSON.parse(JSON.stringify(await first.snapshot()));
-    assert.equal(resume.context_usage.usage.total_tokens, 265639);
-    assert.equal(resume.context_usage.server_reasoning_included, true);
+    // The reopened session must compact before its next turn, proving the
+    // stored checkpoint carried the completed turn's context usage.
+    const resume = JSON.parse(JSON.stringify(await first.checkpoint()));
     await agent.turn.prompt({ input: "continue live" }).result();
     assert.deepEqual(fixture.requests.map(r => r.phase), ["generate", "compact", "generate"]);
     await agent.session.shutdown();

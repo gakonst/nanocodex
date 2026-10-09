@@ -113,7 +113,6 @@ impl Benchmark {
                 agent,
                 vm,
                 Some(tui::InitialPrompt::workflow(display, prompt)),
-                None,
             )
             .await
         };
