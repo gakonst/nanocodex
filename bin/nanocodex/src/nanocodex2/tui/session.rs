@@ -16,6 +16,8 @@ pub(crate) struct SessionSummary {
     pub(crate) reasoning_mode: ReasoningMode,
     pub(crate) workspace: PathBuf,
     pub(crate) preview: String,
+    #[serde(default)]
+    pub(crate) status: String,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]

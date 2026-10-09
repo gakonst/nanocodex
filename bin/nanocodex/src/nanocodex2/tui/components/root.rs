@@ -257,6 +257,13 @@ pub(crate) enum RootEvent {
     AnimationFrame(Instant),
 }
 
+#[derive(Default)]
+pub(super) struct ThreadDraft {
+    current: Option<ComposerDraft>,
+    discarded: Option<ComposerDraft>,
+    withdrawn: Option<ComposerDraft>,
+}
+
 pub(crate) struct RestoredSessionProjection {
     transcript: Transcript,
     subagents: SubagentTree,
@@ -313,6 +320,7 @@ pub(crate) enum SessionListKind {
 
 #[derive(Debug, Eq, PartialEq)]
 pub(crate) enum RootEffect {
+    RefreshThreads,
     AutoRoute,
     Connectors(String),
     Reload,
@@ -2540,6 +2548,76 @@ impl RootNode {
         }
     }
 
+    pub(crate) const fn supports_threads(&self) -> bool {
+        !self.managed2_preview
+    }
+
+    pub(crate) fn thread_shortcuts_available(&self) -> bool {
+        self.supports_threads()
+            && self.overlay.is_none()
+            && self.blocking_task.is_none()
+            && !self.resuming_session
+            && self.queue_edit.is_none()
+    }
+
+    pub(crate) fn has_pending_thread_work(&self) -> bool {
+        !self.queue.component().is_empty()
+            || self.queue.component().has_pending_steer()
+            || self.queue_edit.is_some()
+            || self.blocking_task.is_some()
+            || self.in_flight_shells > 0
+            || self.withdrawing_steer.is_some()
+    }
+
+    pub(crate) fn sidebar_status(&self) -> &'static str {
+        if self.resuming_session {
+            "Switching…"
+        } else if self.reconnecting == Some(true) {
+            "Connecting…"
+        } else if self.reconnecting == Some(false) {
+            "Offline"
+        } else if self.has_active_turns() {
+            "Running"
+        } else {
+            "Idle"
+        }
+    }
+
+    pub(super) fn take_thread_draft(&mut self) -> ThreadDraft {
+        ThreadDraft {
+            current: self.composer.component_mut().take_draft(),
+            discarded: self.discarded_draft.take(),
+            withdrawn: self.withdrawn_draft.take(),
+        }
+    }
+
+    pub(super) fn restore_thread_draft(&mut self, draft: ThreadDraft) {
+        if let Some(current) = draft.current {
+            self.composer.component_mut().restore_draft(current);
+        }
+        self.discarded_draft = draft.discarded;
+        self.withdrawn_draft = draft.withdrawn;
+    }
+
+    pub(crate) fn resume_thread(&mut self, session_id: String) -> ComponentUpdate<RootEffect> {
+        if self.has_pending_thread_work() {
+            return self.session_load_failed(
+                "Finish local work and send or remove queued messages before switching threads."
+                    .to_owned(),
+            );
+        }
+        if self.resuming_session {
+            return ComponentUpdate::none();
+        }
+        self.overlay = None;
+        self.resuming_session = true;
+        self.session_resume_status();
+        ComponentUpdate {
+            effects: vec![RootEffect::ResumeSession(session_id)],
+            render: RenderRequest::Immediate,
+        }
+    }
+
     pub(super) fn load_sessions(&mut self) -> ComponentUpdate<RootEffect> {
         self.pending_session_mention = None;
         self.start_session_list(SessionListKind::Resume)
@@ -2716,15 +2794,7 @@ impl RootNode {
                     render: RenderRequest::Immediate,
                 }
             }
-            Some(SessionPickerEffect::Resume(session_id)) => {
-                self.overlay = None;
-                self.resuming_session = true;
-                self.session_resume_status();
-                ComponentUpdate {
-                    effects: vec![RootEffect::ResumeSession(session_id)],
-                    render: RenderRequest::Immediate,
-                }
-            }
+            Some(SessionPickerEffect::Resume(session_id)) => self.resume_thread(session_id),
             Some(SessionPickerEffect::Mention(session_id)) => {
                 self.overlay = None;
                 let Some(start) = self.pending_session_mention.take() else {
@@ -6726,6 +6796,7 @@ mod live_control_tests {
             root.sessions_loaded(
                 root.pending_session_list.unwrap(),
                 vec![SessionSummary {
+                    status: "Idle".to_owned(),
                     session_id: "selected-agent".to_owned(),
                     updated_at_unix_ms: 0,
                     model: "gpt-6-astra".to_owned(),

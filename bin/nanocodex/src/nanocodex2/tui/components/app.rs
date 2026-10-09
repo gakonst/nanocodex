@@ -6,7 +6,8 @@
 use super::{
     node::{ComponentUpdate, Node, RenderRequest},
     queue::QueueId,
-    root::{DraftReset, RestoredSessionProjection, RootEffect, RootEvent, RootNode},
+    root::{DraftReset, RestoredSessionProjection, RootEffect, RootEvent, RootNode, ThreadDraft},
+    thread_sidebar::{SidebarAction, ThreadSidebar},
 };
 use crate::{
     config::{ReasoningEffort, ReasoningMode},
@@ -35,6 +36,9 @@ const SPLIT_HINT: &str = " mouse: focus · Ctrl+C: clear · Ctrl+C×2: close ";
 const MIN_SPLIT_HINT_WIDTH: u16 = 60;
 
 pub(crate) enum AppEvent {
+    ThreadsLoaded(Vec<SessionSummary>),
+    ThreadsFailed(String),
+    ThreadSelected(String),
     Screen(crate::tui::screen::Snapshot),
     Terminal(Event),
     PasteImage(String),
@@ -283,6 +287,10 @@ pub(crate) enum AppEffect {
 }
 
 pub(crate) struct AppNode {
+    sidebar: ThreadSidebar,
+    thread_drafts: std::collections::HashMap<String, ThreadDraft>,
+    thread_refresh: Option<Instant>,
+    thread_refreshing: bool,
     screen: Option<super::screen::ScreenPane>,
     screen_focused: bool,
     screen_area: Rect,
@@ -302,6 +310,10 @@ impl AppNode {
     pub(crate) fn new(theme: Theme, workspace: PathBuf, mut root: RootNode) -> Self {
         root.set_theme_mode(theme.mode());
         Self {
+            thread_refresh: root.supports_threads().then(Instant::now),
+            thread_refreshing: false,
+            sidebar: ThreadSidebar::default(),
+            thread_drafts: std::collections::HashMap::new(),
             screen: None,
             screen_focused: false,
             screen_area: Rect::default(),
@@ -329,6 +341,34 @@ impl AppNode {
 
     pub(crate) fn update(&mut self, event: AppEvent) -> ComponentUpdate<AppEffect> {
         match event {
+            AppEvent::ThreadsLoaded(sessions) => {
+                self.thread_refreshing = false;
+                self.sidebar.loaded(sessions);
+                self.thread_refresh = Some(Instant::now() + std::time::Duration::from_secs(10));
+                ComponentUpdate::render(RenderRequest::Immediate)
+            }
+            AppEvent::ThreadsFailed(error) => {
+                self.thread_refreshing = false;
+                self.sidebar.failed(error);
+                self.thread_refresh = Some(Instant::now() + std::time::Duration::from_secs(30));
+                ComponentUpdate::render(RenderRequest::Immediate)
+            }
+            AppEvent::ThreadSelected(id) => {
+                let previous = std::mem::replace(&mut self.sidebar.current, id.clone());
+                if previous != id && !previous.is_empty() {
+                    if let Some(root) = self.root_mut(PaneId::Main) {
+                        let draft = root.take_thread_draft();
+                        self.thread_drafts.insert(previous, draft);
+                    }
+                    let draft = self.thread_drafts.remove(&id).unwrap_or_default();
+                    if let Some(root) = self.root_mut(PaneId::Main) {
+                        root.restore_thread_draft(draft);
+                    }
+                }
+                self.sidebar.select_current();
+                self.thread_refresh = Some(Instant::now());
+                ComponentUpdate::render(RenderRequest::Immediate)
+            }
             AppEvent::Screen(snapshot) => {
                 if let Some(screen) = &mut self.screen {
                     screen.snapshot = snapshot;
@@ -337,6 +377,9 @@ impl AppNode {
             }
             AppEvent::Terminal(event) => self.update_terminal(event),
             AppEvent::PasteImage(data_url) => {
+                if self.sidebar.focused() {
+                    return ComponentUpdate::none();
+                }
                 if self.screen_focused {
                     ComponentUpdate::none()
                 } else {
@@ -690,7 +733,20 @@ impl AppNode {
                     ComponentUpdate::none()
                 }
             }
-            AppEvent::AnimationFrame(now) => self.update_all(RootEvent::AnimationFrame(now)),
+            AppEvent::AnimationFrame(now) => {
+                let mut update = self.update_all(RootEvent::AnimationFrame(now));
+                if self.thread_refresh.is_some_and(|deadline| deadline <= now) {
+                    self.thread_refresh = None;
+                    if !self.thread_refreshing {
+                        self.thread_refreshing = true;
+                        update.effects.push(AppEffect::Pane {
+                            pane: PaneId::Main,
+                            effect: RootEffect::RefreshThreads,
+                        });
+                    }
+                }
+                update
+            }
         }
     }
 
@@ -704,6 +760,27 @@ impl AppNode {
 
     pub(crate) fn render(&mut self, frame: &mut Frame<'_>) {
         let mut area = frame.area();
+        if self
+            .root(PaneId::Main)
+            .is_some_and(RootNode::supports_threads)
+        {
+            let status = self
+                .root(PaneId::Main)
+                .map_or("Idle", RootNode::sidebar_status);
+            let draft = self
+                .root(PaneId::Main)
+                .map(|root| {
+                    root.composer()
+                        .draft()
+                        .chars()
+                        .take(240)
+                        .collect::<String>()
+                })
+                .unwrap_or_default();
+            area = self
+                .sidebar
+                .render(frame, area, &self.theme, status, &draft);
+        }
         self.main_area = Rect::default();
         self.fork_area = Rect::default();
         self.screen_area = Rect::default();
@@ -867,6 +944,7 @@ impl AppNode {
 
     pub(crate) fn animation_deadline(&self) -> Option<Instant> {
         [
+            self.thread_refresh,
             self.main
                 .as_ref()
                 .and_then(|(_, root)| root.component().animation_deadline()),
@@ -880,6 +958,39 @@ impl AppNode {
     }
 
     fn update_terminal(&mut self, event: Event) -> ComponentUpdate<AppEffect> {
+        let shortcuts = self
+            .root(PaneId::Main)
+            .is_some_and(RootNode::thread_shortcuts_available);
+        if self
+            .root(PaneId::Main)
+            .is_some_and(RootNode::supports_threads)
+        {
+            if let Some(action) = self.sidebar.event(&event, shortcuts) {
+                match action {
+                    SidebarAction::Select(id) => {
+                        self.sidebar.unfocus();
+                        if id != self.sidebar.current {
+                            self.focus = PaneId::Main;
+                            self.screen_focused = false;
+                            let update = self
+                                .root_mut(PaneId::Main)
+                                .map(|root| root.resume_thread(id));
+                            if let Some(update) = update {
+                                return self.map_root_update(PaneId::Main, update);
+                            }
+                        }
+                    }
+                    SidebarAction::Search => {
+                        self.focus = self.main_pane().unwrap_or(PaneId::Main);
+                        self.screen_focused = false;
+                        return self.open_resume_selector();
+                    }
+                    SidebarAction::Refresh => self.thread_refresh = Some(Instant::now()),
+                    SidebarAction::Changed => {}
+                }
+                return ComponentUpdate::render(RenderRequest::Immediate);
+            }
+        }
         if self.screen_focused
             && let Event::Paste(text) = &event
         {

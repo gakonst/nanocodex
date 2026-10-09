@@ -496,6 +496,7 @@ struct SessionSearchCompletion {
 }
 
 enum ConnectionResult {
+    Threads(Result<AgentList, ManagedError>),
     Recovered(Result<ConnectedAgent, ConnectionFailure>),
     Agent {
         purpose: ConnectionPurpose,
@@ -657,6 +658,7 @@ struct DriverRuntime {
     recent_prompt_request: u64,
     recent_prompt_loads: HashMap<PaneId, u64>,
     connection: JoinSet<ConnectionResult>,
+    thread_lists: JoinSet<ConnectionResult>,
     session_list_cancellations: HashMap<(PaneId, u64), CancellationToken>,
     review_branch_loads: JoinSet<ReviewBranchesCompletion>,
     session_searches: JoinSet<SessionSearchCompletion>,
@@ -1830,6 +1832,47 @@ impl DriverRuntime {
             && self.active_shells == 0
     }
 
+    // Accepted service-owned turns survive detachment. Only their completion
+    // listeners/control handles may remain; local mutations must first settle.
+    // Also check RootNode's queue, which is not represented in this runtime.
+    fn can_detach_thread(&self) -> bool {
+        self.recovery.is_none()
+            && self.admissions.is_empty()
+            && self.admitting.is_empty()
+            && self.unacknowledged_inputs.is_empty()
+            && self.pending_submission.is_none()
+            && self.steers.is_empty()
+            && self.waiting_steers.is_empty()
+            && self.unconfirmed_steer.is_none()
+            && self.pending_steer_target.is_none()
+            && self.receipt_reconciliations.is_empty()
+            && self.unresolved_steers.is_empty()
+            && self.withdrawals.is_empty()
+            && self.pending_withdrawals.is_empty()
+            && self.cancellations.is_empty()
+            && self.cancel_after_admission.is_empty()
+            && !self.cancellation_fences.has_in_flight()
+            && self.settings_updates.is_empty()
+            && self.settings_queue.is_empty()
+            && self.routing_updates.is_empty()
+            && self.pending_settings.is_none()
+            && self.pending_autoroute.is_none()
+            && self.active_shells == 0
+            && self.shells.is_empty()
+            && self.vault_tasks.is_empty()
+            && self.secure_input.is_none()
+            && self.secure_input_tasks.is_empty()
+            && self.share_tasks.is_empty()
+            && self.done_updates.is_empty()
+            && self.voice_tasks.is_empty()
+            && self.voice.is_none()
+            && self.pending_voice.is_none()
+            && self.clone_panel.is_none()
+            && self.btw.is_none()
+            && self.links.is_empty()
+            && self.review_branch_loads.is_empty()
+    }
+
     fn idle(&self) -> bool {
         self.pending_resume.is_none()
             && self.recovery.is_none()
@@ -2207,6 +2250,7 @@ async fn run_inner(
         recent_prompt_request: 0,
         recent_prompt_loads: HashMap::new(),
         connection: JoinSet::new(),
+        thread_lists: JoinSet::new(),
         session_list_cancellations: HashMap::new(),
         review_branch_loads: JoinSet::new(),
         session_searches: JoinSet::new(),
@@ -2967,6 +3011,16 @@ async fn run_inner(
                     }), &mut scheduler);
                 }
             }
+            Some(result) = runtime.thread_lists.join_next(), if !runtime.thread_lists.is_empty() => {
+                let event = match result {
+                    Ok(ConnectionResult::Threads(Ok(list))) =>
+                        AppEvent::ThreadsLoaded(session_summaries(&list, &runtime.workspace)),
+                    Ok(ConnectionResult::Threads(Err(error))) => AppEvent::ThreadsFailed(error.to_string()),
+                    Err(error) => AppEvent::ThreadsFailed(format!("Thread refresh failed: {error}")),
+                    Ok(_) => unreachable!("thread list task must return thread metadata"),
+                };
+                request_render(app.update(event), &mut scheduler);
+            }
             result = runtime.connection.join_next_with_id(), if !runtime.connection.is_empty() => {
                 if let Some(result) = result {
                     let (task_id, result) = match result {
@@ -3048,6 +3102,7 @@ async fn run_inner(
                         continue;
                     }
                     match result {
+                        ConnectionResult::Threads(_) => unreachable!("thread metadata has its own task set"),
                         ConnectionResult::Recovered(Ok((agent, events, agent_id, workspace, history, _, settings, _, active_turns))) => {
                             runtime.agent = Some(agent);
                             if runtime.agent_id != agent_id {
@@ -3116,9 +3171,31 @@ async fn run_inner(
                             stopping = apply_update(update, &mut app, &mut runtime, &mut terminal, &mut scheduler).await?;
                         }
                         ConnectionResult::Agent { purpose, result: Ok((agent, managed_events, agent_id, workspace, history, warning, settings, created, active_turns)) } => {
-                            if matches!(purpose, ConnectionPurpose::Bug(_)) {
+                            if let ConnectionPurpose::Resume(pane) = purpose {
+                                // Recheck after attach: source events/control requests may
+                                // have admitted new local work while the target was loading.
+                                if !runtime.can_detach_thread()
+                                    || app.root(pane).is_some_and(RootNode::has_pending_thread_work)
+                                {
+                                    runtime.connection.spawn(async move {
+                                        ConnectionResult::Disconnected(agent.disconnect().await)
+                                    });
+                                    request_render(app.update(AppEvent::SessionLoadFailed {
+                                        pane,
+                                        error: "Local work changed while switching. Finish it before switching threads.".into(),
+                                    }), &mut scheduler);
+                                    if !runtime.managed_events_open {
+                                        runtime.begin_recovery(&mut app, &mut scheduler, true);
+                                    }
+                                    continue;
+                                }
+                            }
+                            if matches!(purpose, ConnectionPurpose::Bug(_) | ConnectionPurpose::Resume(_)) {
+                                // Dropping accepted Turn handles does not cancel remote work.
+                                // The guarded resume path has no unresolved local mutations.
                                 runtime.detach_bug_source();
                             }
+                            request_render(app.update(AppEvent::ThreadSelected(agent_id.clone())), &mut scheduler);
                             runtime.startup_attach = false;
                             runtime.retry_target = None;
                             let requested_startup_settings = if created {
@@ -3233,7 +3310,8 @@ async fn run_inner(
                                         pane,
                                         draft_reset: match purpose {
                                             ConnectionPurpose::Startup => DraftReset::Preserve,
-                                            ConnectionPurpose::Resume(_) | ConnectionPurpose::Bug(_) => DraftReset::Clear,
+                                            ConnectionPurpose::Resume(_) => DraftReset::Preserve,
+                                            ConnectionPurpose::Bug(_) => DraftReset::Clear,
                                         },
                                         projection: Box::new(projection),
                                         effort,
@@ -4035,6 +4113,24 @@ async fn apply_update(
                     absorb(app.update(event), &mut effects, scheduler);
                     continue;
                 }
+                if matches!(effect, RootEffect::RefreshThreads) {
+                    if runtime.thread_lists.is_empty() {
+                        let client = runtime.client.clone();
+                        runtime.thread_lists.spawn(async move {
+                            ConnectionResult::Threads(
+                                match tokio::time::timeout(Duration::from_secs(10), client.list())
+                                    .await
+                                {
+                                    Ok(result) => result,
+                                    Err(_) => Err(ManagedError::Configuration(
+                                        "Thread refresh timed out".into(),
+                                    )),
+                                },
+                            )
+                        });
+                    }
+                    continue;
+                }
                 if let RootEffect::LoadRecentPrompts(drafts) = effect {
                     runtime.load_prompt_cache(pane, drafts);
                     continue;
@@ -4792,7 +4888,7 @@ async fn apply_update(
                             }
                         }
                     }
-                    RootEffect::LoadRecentPrompts(_) => unreachable!("handled before pane routing"),
+                    RootEffect::LoadRecentPrompts(_) | RootEffect::RefreshThreads => unreachable!("handled before pane routing"),
                     RootEffect::LoadOlderHistory => {
                         runtime.history_prefetch.request_replay();
                         runtime.start_requested_history_replay(pane);
@@ -4802,12 +4898,16 @@ async fn apply_update(
                         if let Some(task) = runtime.session_search_tasks.remove(&pane) {
                             task.abort();
                         }
-                        if !runtime.idle() {
+                        if runtime.pending_resume.is_some()
+                            || !runtime.can_detach_thread()
+                            || runtime.connection.len() != runtime.session_list_cancellations.len()
+                            || app.root(pane).is_some_and(RootNode::has_pending_thread_work)
+                        {
                             absorb(
                             app.update(AppEvent::SessionLoadFailed {
                                 pane,
                                 error:
-                                    "Finish or interrupt the active work before switching agents."
+                                    "Finish local operations and send or remove queued messages before switching threads."
                                         .to_owned(),
                             }),
                             &mut effects,
@@ -4887,6 +4987,7 @@ async fn apply_update(
                             fast_mode: root.composer().fast_mode(),
                         });
                         request_render(app.update(AppEvent::VoiceStatus(None)), scheduler);
+                        request_render(app.update(AppEvent::ThreadSelected(String::new())), scheduler);
                         runtime.start_new_session(settings);
                         absorb(
                             app.update(AppEvent::NewSessionReady {
@@ -5195,6 +5296,38 @@ fn session_summaries(list: &AgentList, workspace: &Path) -> Vec<SessionSummary> 
                 reasoning_mode: ReasoningMode::Standard,
                 workspace: workspace.to_path_buf(),
                 preview: summary.title.clone(),
+                status: summary.presentation.as_ref().map_or_else(
+                    || "Unknown".to_owned(),
+                    |presentation| {
+                        let status = presentation
+                            .get("status")
+                            .and_then(serde_json::Value::as_str);
+                        match status {
+                            Some("stopping") => "Stopping",
+                            _ if status == Some("running")
+                                || presentation
+                                    .get("activeTurnIds")
+                                    .and_then(serde_json::Value::as_array)
+                                    .is_some_and(|ids| !ids.is_empty()) =>
+                            {
+                                "Running"
+                            }
+                            Some("failed") => "Failed",
+                            Some("cancelled") => "Cancelled",
+                            _ if presentation
+                                .get("done")
+                                .and_then(serde_json::Value::as_bool)
+                                == Some(true) =>
+                            {
+                                "Done"
+                            }
+                            Some("completed") => "Completed",
+                            Some("idle") => "Idle",
+                            _ => "Unknown",
+                        }
+                        .to_owned()
+                    },
+                ),
             })
         })
         .collect()
@@ -5863,6 +5996,7 @@ mod tests {
             recent_prompt_request: 0,
             recent_prompt_loads: HashMap::new(),
             connection: JoinSet::new(),
+            thread_lists: JoinSet::new(),
             session_list_cancellations: HashMap::new(),
             review_branch_loads: JoinSet::new(),
             session_searches: JoinSet::new(),
