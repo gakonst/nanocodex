@@ -6,7 +6,7 @@
 // fallback to the account API key. Only the account principal and clocks are
 // fixtures; the CLI and daemon reach the Worker through a recording relay.
 //
-// Requires the built binaries: cargo build --locked -p nanocodex-bin --bin nanocodex --bin nanocodex-hand
+// Requires the built binaries: cargo build --locked -p nanocodex-bin --bin nanocodex -p nanocodex-hand-daemon --bin nanocodex-hand
 // NANOCODEX_BIN / NANOCODEX_HAND_EXECUTABLE override their paths. Evidence: output/hand-device-keys/cli-journey/<ts>/.
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
@@ -149,7 +149,7 @@ test("the shipped CLI Hand enrolls a device key, rotates it crash-safely and sto
   if (!existsSync(binary) || !existsSync(handExecutable)) {
     // CI builds the binaries first: a missing binary there is a failure, never a green skip.
     if (process.env.CI) assert.fail("missing " + binary + " or " + handExecutable);
-    t.skip("build the CLI and Hand first: cargo build --locked -p nanocodex-bin --bin nanocodex --bin nanocodex-hand (or set NANOCODEX_BIN / NANOCODEX_HAND_EXECUTABLE)");
+    t.skip("build the CLI and Hand first: cargo build --locked -p nanocodex-bin --bin nanocodex -p nanocodex-hand-daemon --bin nanocodex-hand (or set NANOCODEX_BIN / NANOCODEX_HAND_EXECUTABLE)");
     return;
   }
   mkdirSync(evidence, { recursive: true });
