@@ -7095,3 +7095,468 @@ async fn terminal_code_details_show_available_source_without_placeholder_blocks(
         eprintln!("CODE SOURCE {label}\n{screen}");
     }
 }
+
+// ---------------------------------------------------------------------------
+// Responsiveness journey: real PTY input-to-visible latency while an attached
+// agent streams commentary, reasoning, and large Tools groups into a long
+// transcript. Run explicitly:
+//   NANOCODEX_TUI_PERF_OUT=/path/report.json cargo test -p nanocodex-bin \
+//     --test nanocodex2_tui_lifecycle terminal_perf_ -- --ignored --nocapture
+// Optional: NANOCODEX_TUI_PERF_INTERVAL_US (live event pacing, default 2000),
+// NANOCODEX_TUI_PERF_HISTORY (preloaded cycles, default 120),
+// NANOCODEX_TUI_PERF_CALLS (calls per live Tools group, default 24).
+
+#[derive(Clone)]
+struct PerfEmitter {
+    events: mpsc::UnboundedSender<Value>,
+    history: Arc<Mutex<Vec<Value>>>,
+    cursor: Arc<std::sync::atomic::AtomicU64>,
+    sent: Arc<std::sync::atomic::AtomicU64>,
+}
+
+impl PerfEmitter {
+    fn from_fixture(fixture: &Fixture) -> Self {
+        Self {
+            events: fixture.events.clone(),
+            history: fixture.history.clone(),
+            cursor: Arc::new(std::sync::atomic::AtomicU64::new(fixture.cursor)),
+            sent: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+        }
+    }
+
+    /// Same wire shape as Fixture::nested, safe to call from the live loader
+    /// and the test body concurrently (the history lock orders cursors).
+    fn nested(&self, turn: &str, kind: &str, payload: Value) {
+        let mut history = self.history.lock().unwrap();
+        let cursor = self.cursor.fetch_add(1, Ordering::SeqCst) + 1;
+        let value = json!({"type": "event", "cursor": cursor.to_string(), "turn_id": turn,
+            "event": {"protocol_version": 1, "request_id": AGENT, "seq": cursor,
+                "type": kind, "payload": payload}});
+        history.push(value.clone());
+        let _ = self.events.send(value);
+        drop(history);
+        self.sent.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+fn perf_env(name: &str, default: u64) -> u64 {
+    std::env::var(name)
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(default)
+}
+
+/// One agent "step": commentary, a Code Mode cell with a large nested Tools
+/// group, reasoning summary deltas, then streamed commentary deltas.
+async fn perf_cycle(
+    emitter: &PerfEmitter,
+    label: &str,
+    step: usize,
+    calls: usize,
+    deltas: usize,
+    pace: Duration,
+    stop: &AtomicBool,
+) -> bool {
+    async fn tick(pace: Duration) {
+        if !pace.is_zero() {
+            tokio::time::sleep(pace).await;
+        }
+    }
+    emitter.nested(REMOTE_TURN, "assistant.message", json!({
+        "model_call_index": 1, "item_id": format!("{label}-c{step}"), "phase": "commentary",
+        "text": format!("{label}_{step:04} reviewing module {step}.\nThe second line explains the plan for step {step} in detail.\nA third line keeps the history tall.")
+    }));
+    tick(pace).await;
+    let cell = format!("{label}-cell{step}");
+    emitter.nested(REMOTE_TURN, "tool.call", json!({
+        "call_id": cell, "tool": "exec",
+        "arguments": format!("for (const f of files) await tools.Read({{file_path: f}}); // {label} {step}")
+    }));
+    for call in 0..calls {
+        if stop.load(Ordering::Relaxed) {
+            return false;
+        }
+        tick(pace).await;
+        let id = format!("{cell}/code-{call}");
+        let (tool, arguments, result) = if call % 3 == 2 {
+            (
+                "Bash",
+                json!({"command": format!("rg -n step_{step}_{call} src"), "description": "Search sources"}),
+                json!({"stdout": format!("src/lib.rs:{call}: step_{step}_{call}\n").repeat(4), "exit_code": 0}),
+            )
+        } else {
+            (
+                "Read",
+                json!({"file_path": format!("/ws/src/module_{step}_{call}.rs")}),
+                json!({"content": format!("fn module_{step}_{call}() {{}}\n").repeat(20)}),
+            )
+        };
+        emitter.nested(REMOTE_TURN, "tool.call", json!({"call_id": id, "tool": tool, "arguments": arguments}));
+        tick(pace).await;
+        emitter.nested(REMOTE_TURN, "tool.result", json!({
+            "call_id": id, "tool": tool, "status": "completed", "duration_ns": 2_000_000u64, "result": result
+        }));
+    }
+    tick(pace).await;
+    emitter.nested(REMOTE_TURN, "tool.result", json!({
+        "call_id": cell, "tool": "exec", "status": "completed", "duration_ns": 50_000_000u64,
+        "result": [{"type": "input_text", "text": format!("{label} cell {step} done")}]
+    }));
+    for delta in 0..deltas {
+        if stop.load(Ordering::Relaxed) {
+            return false;
+        }
+        tick(pace).await;
+        if delta % 4 == 0 {
+            emitter.nested(REMOTE_TURN, "reasoning.summary.delta", json!({
+                "model_call_index": 2 + step as u64, "text": format!("thinking about {label} {step} part {delta}. ")
+            }));
+        } else {
+            emitter.nested(REMOTE_TURN, "assistant.delta", json!({
+                "model_call_index": 1, "item_id": format!("{label}-d{step}"), "phase": "commentary",
+                "text": format!("token{delta} ")
+            }));
+        }
+    }
+    true
+}
+
+fn perf_screen(screen: &Arc<Mutex<vt100::Parser>>) -> String {
+    screen.lock().unwrap().screen().contents()
+}
+
+/// Busy-poll the parsed PTY screen (200us resolution) until done() holds.
+fn perf_wait(
+    screen: &Arc<Mutex<vt100::Parser>>,
+    start: std::time::Instant,
+    limit: Duration,
+    done: impl Fn(&str) -> bool,
+) -> Option<Duration> {
+    tokio::task::block_in_place(|| loop {
+        let contents = perf_screen(screen);
+        if done(&contents) {
+            return Some(start.elapsed());
+        }
+        if start.elapsed() > limit {
+            return None;
+        }
+        std::thread::sleep(Duration::from_micros(200));
+    })
+}
+
+/// Preloaded transcript markers visible on screen (live rows never contain them).
+fn perf_markers(contents: &str) -> Vec<String> {
+    let mut found = Vec::new();
+    let mut rest = contents;
+    while let Some(index) = rest.find("HIST_") {
+        let tail = &rest[index..];
+        if tail.len() >= 9 && tail.as_bytes()[5..9].iter().all(u8::is_ascii_digit) {
+            found.push(tail[..9].to_owned());
+        }
+        rest = &rest[index + 5..];
+    }
+    found
+}
+
+/// utime+stime clock ticks of the TUI process and its direct children.
+fn perf_cpu_ticks(pid: u32) -> u64 {
+    fn fields(path: &Path) -> Option<(u32, u64)> {
+        let stat = std::fs::read_to_string(path).ok()?;
+        let (_, after) = stat.rsplit_once(')')?;
+        let fields: Vec<&str> = after.split_whitespace().collect();
+        let ppid = fields.get(1)?.parse().ok()?;
+        let ticks = fields.get(11)?.parse::<u64>().ok()? + fields.get(12)?.parse::<u64>().ok()?;
+        Some((ppid, ticks))
+    }
+    let mut total = fields(Path::new(&format!("/proc/{pid}/stat"))).map_or(0, |(_, ticks)| ticks);
+    if let Ok(entries) = std::fs::read_dir("/proc") {
+        for entry in entries.flatten() {
+            if let Some((ppid, ticks)) = fields(&entry.path().join("stat"))
+                && ppid == pid
+            {
+                total += ticks;
+            }
+        }
+    }
+    total
+}
+
+fn perf_stats(samples: &[Duration]) -> Value {
+    let mut ms: Vec<f64> = samples.iter().map(|sample| sample.as_secs_f64() * 1000.0).collect();
+    ms.sort_by(|left, right| left.partial_cmp(right).unwrap());
+    let pick = |quantile: f64| {
+        if ms.is_empty() {
+            0.0
+        } else {
+            ms[((ms.len() as f64 - 1.0) * quantile).round() as usize]
+        }
+    };
+    let round = |value: f64| (value * 100.0).round() / 100.0;
+    json!({"n": ms.len(), "p50_ms": round(pick(0.5)), "p95_ms": round(pick(0.95)),
+        "max_ms": round(ms.last().copied().unwrap_or(0.0))})
+}
+
+struct PerfPhase {
+    started: std::time::Instant,
+    ticks: u64,
+    bytes: usize,
+    events: u64,
+}
+
+impl PerfPhase {
+    fn begin(fixture: &Fixture, pid: u32, emitter: &PerfEmitter) -> Self {
+        Self {
+            started: std::time::Instant::now(),
+            ticks: perf_cpu_ticks(pid),
+            bytes: fixture.terminal.output.lock().unwrap().len(),
+            events: emitter.sent.load(Ordering::Relaxed),
+        }
+    }
+
+    /// CPU percent of one core (assumes CLK_TCK=100), PTY bytes and
+    /// synchronized-update frames emitted, and events delivered in the phase.
+    fn end(&self, fixture: &Fixture, pid: u32, emitter: &PerfEmitter) -> Value {
+        let wall = self.started.elapsed().as_secs_f64();
+        let ticks = perf_cpu_ticks(pid).saturating_sub(self.ticks);
+        let output = fixture.terminal.output.lock().unwrap();
+        let emitted = &output[self.bytes.min(output.len())..];
+        let frames = emitted.windows(8).filter(|window| *window == b"\x1b[?2026h").count();
+        let events = emitter.sent.load(Ordering::Relaxed) - self.events;
+        json!({"wall_s": (wall * 1000.0).round() / 1000.0,
+            "cpu_pct": ((ticks as f64 / wall) * 100.0).round() / 100.0,
+            "cpu_ticks": ticks, "pty_bytes": emitted.len(), "sync_frames": frames,
+            "events": events, "events_per_s": ((events as f64 / wall) * 10.0).round() / 10.0})
+    }
+}
+
+fn perf_type_round(terminal: &mut Terminal, round: usize, samples: &mut Vec<Duration>) {
+    let text = format!("Q{round:02}xkcdtypingprobeabcdefghijklmnopqrst");
+    let screen = terminal.screen.clone();
+    for (index, character) in text.char_indices() {
+        std::thread::sleep(Duration::from_millis(8));
+        let start = std::time::Instant::now();
+        terminal.input(&character.to_string());
+        let prefix = text[..=index].to_owned();
+        let elapsed = perf_wait(&screen, start, Duration::from_secs(5), |contents| contents.contains(&prefix))
+            .unwrap_or_else(|| panic!("typed {prefix:?} never became visible:\n{}", perf_screen(&screen)));
+        if index >= 4 {
+            samples.push(elapsed);
+        }
+    }
+    let start = std::time::Instant::now();
+    terminal.input(&"\x7f".repeat(text.len()));
+    let head = text[..5].to_owned();
+    perf_wait(&screen, start, Duration::from_secs(5), |contents| !contents.contains(&head))
+        .unwrap_or_else(|| panic!("draft {head:?} was not erased:\n{}", perf_screen(&screen)));
+}
+
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "responsiveness journey; run explicitly with --ignored and NANOCODEX_TUI_PERF_OUT"]
+async fn terminal_perf_input_stays_responsive_while_an_agent_streams_large_tool_groups() {
+    let history_cycles = perf_env("NANOCODEX_TUI_PERF_HISTORY", 120) as usize;
+    let live_calls = perf_env("NANOCODEX_TUI_PERF_CALLS", 24) as usize;
+    let pace = Duration::from_micros(perf_env("NANOCODEX_TUI_PERF_INTERVAL_US", 2000));
+    let mut fixture = Fixture::start_with_active(true).await;
+    let pid = fixture.terminal.child.process_id().expect("TUI pid");
+    let screen = fixture.terminal.screen.clone();
+    let emitter = PerfEmitter::from_fixture(&fixture);
+    let never = AtomicBool::new(false);
+    let mut report = serde_json::Map::new();
+
+    // Long history: many commentary blocks and Tools groups in the active turn.
+    let preload = PerfPhase::begin(&fixture, pid, &emitter);
+    let start = std::time::Instant::now();
+    for step in 0..history_cycles {
+        perf_cycle(&emitter, "HIST", step, 8, 12, Duration::ZERO, &never).await;
+    }
+    let last = format!("HIST_{:04}", history_cycles - 1);
+    let settle = perf_wait(&screen, start, Duration::from_secs(60), |contents| {
+        contents.contains(&last)
+    });
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    report.insert("preload".into(), json!({
+        "cycles": history_cycles, "visible_after_ms": settle.map(|elapsed| elapsed.as_millis() as u64),
+        "load": preload.end(&fixture, pid, &emitter)
+    }));
+
+    // Baseline typing with no live stream.
+    let idle = PerfPhase::begin(&fixture, pid, &emitter);
+    let mut idle_typing = Vec::new();
+    perf_type_round(&mut fixture.terminal, 0, &mut idle_typing);
+    perf_type_round(&mut fixture.terminal, 1, &mut idle_typing);
+    report.insert("idle_typing".into(), json!({"latency": perf_stats(&idle_typing), "load": idle.end(&fixture, pid, &emitter)}));
+
+    // Live agent stream: commentary + reasoning + large Tools groups.
+    let stop = Arc::new(AtomicBool::new(false));
+    let loader = {
+        let emitter = emitter.clone();
+        let stop = stop.clone();
+        tokio::spawn(async move {
+            let mut step = 0;
+            while perf_cycle(&emitter, "LIVE", step, live_calls, 40, pace, &stop).await {
+                step += 1;
+            }
+            step
+        })
+    };
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    let streaming = PerfPhase::begin(&fixture, pid, &emitter);
+    let mut typing = Vec::new();
+    for round in 2..6 {
+        perf_type_round(&mut fixture.terminal, round, &mut typing);
+    }
+    report.insert("streaming_typing".into(), json!({"latency": perf_stats(&typing), "load": streaming.end(&fixture, pid, &emitter)}));
+
+    // Scroll into the preloaded history and back while the stream continues.
+    let scrolling = PerfPhase::begin(&fixture, pid, &emitter);
+    let mut scroll_up = Vec::new();
+    let mut scroll_down = Vec::new();
+    let mut scroll_misses = 0;
+    for _ in 0..8 {
+        let before = perf_markers(&perf_screen(&screen));
+        let start = std::time::Instant::now();
+        fixture.terminal.input("\x1b[5~");
+        match perf_wait(&screen, start, Duration::from_secs(3), |contents| {
+            let now = perf_markers(contents);
+            !now.is_empty() && now != before
+        }) {
+            Some(elapsed) => scroll_up.push(elapsed),
+            None => scroll_misses += 1,
+        }
+        tokio::time::sleep(Duration::from_millis(30)).await;
+    }
+    // Expand and fold every Tools group while reading history (view change).
+    let mut toggles = Vec::new();
+    let mut toggle_misses = 0;
+    for _ in 0..6 {
+        let before = perf_screen(&screen);
+        let before_rows: Vec<String> = before.lines().take(20).map(str::to_owned).collect();
+        let start = std::time::Instant::now();
+        fixture.terminal.input("\x0f");
+        match perf_wait(&screen, start, Duration::from_secs(3), |contents| {
+            contents.lines().take(20).map(str::to_owned).collect::<Vec<_>>() != before_rows
+        }) {
+            Some(elapsed) => toggles.push(elapsed),
+            None => toggle_misses += 1,
+        }
+        tokio::time::sleep(Duration::from_millis(60)).await;
+    }
+    for _ in 0..8 {
+        let before = perf_markers(&perf_screen(&screen));
+        let start = std::time::Instant::now();
+        fixture.terminal.input("\x1b[6~");
+        match perf_wait(&screen, start, Duration::from_secs(3), |contents| perf_markers(contents) != before) {
+            Some(elapsed) => scroll_down.push(elapsed),
+            None => scroll_misses += 1,
+        }
+        tokio::time::sleep(Duration::from_millis(30)).await;
+    }
+    fixture.terminal.input("\x1b[F");
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    report.insert("streaming_scroll".into(), json!({
+        "page_up": perf_stats(&scroll_up), "page_down": perf_stats(&scroll_down),
+        "toggle_tools": perf_stats(&toggles), "scroll_misses": scroll_misses,
+        "toggle_misses": toggle_misses, "load": scrolling.end(&fixture, pid, &emitter)
+    }));
+
+    // Queue a follow-up, move focus into and out of the queue pane.
+    let queueing = PerfPhase::begin(&fixture, pid, &emitter);
+    let start = std::time::Instant::now();
+    fixture.terminal.input("\x1b[200~PERF_QUEUED_FOLLOWUP\x1b[201~");
+    let paste = perf_wait(&screen, start, Duration::from_secs(5), |contents| contents.contains("PERF_QUEUED_FOLLOWUP"))
+        .expect("pasted follow-up visible");
+    let start = std::time::Instant::now();
+    fixture.terminal.input("\t");
+    let queued = perf_wait(&screen, start, Duration::from_secs(5), |contents| contents.contains("queue · enter steer latest"))
+        .unwrap_or_else(|| panic!("queue never appeared:\n{}", perf_screen(&screen)));
+    let mut focus = Vec::new();
+    for round in 0..6 {
+        tokio::time::sleep(Duration::from_millis(40)).await;
+        let entering = round % 2 == 0;
+        let start = std::time::Instant::now();
+        fixture.terminal.input("\t");
+        focus.push(
+            perf_wait(&screen, start, Duration::from_secs(5), |contents| contents.contains("e edit") == entering)
+                .unwrap_or_else(|| panic!("queue focus={entering} never rendered:\n{}", perf_screen(&screen))),
+        );
+    }
+    report.insert("streaming_queue".into(), json!({
+        "paste_visible_ms": paste.as_secs_f64() * 1000.0, "queue_visible_ms": queued.as_secs_f64() * 1000.0,
+        "focus_toggle": perf_stats(&focus), "load": queueing.end(&fixture, pid, &emitter)
+    }));
+
+    // Steering: Enter to service receipt, then the acknowledgement round trip.
+    let steering = PerfPhase::begin(&fixture, pid, &emitter);
+    let mut steer_receipt = Vec::new();
+    for index in 0..4 {
+        tokio::time::sleep(Duration::from_millis(80)).await;
+        let instruction = format!("PERF_STEER_{index}");
+        let start = std::time::Instant::now();
+        fixture.terminal.prompt(&instruction, "\r");
+        let (steer, ack) = tokio::time::timeout(TIMEOUT, fixture.steers.recv())
+            .await
+            .expect("steer reached the service")
+            .unwrap();
+        steer_receipt.push(start.elapsed());
+        assert_eq!(prompt_text(&steer["input"]), instruction);
+        emitter.nested(REMOTE_TURN, "run.steered", json!({"steer_index": index + 1, "instruction_bytes": instruction.len()}));
+        ack.send(true).unwrap();
+    }
+    report.insert("streaming_steer".into(), json!({"enter_to_service": perf_stats(&steer_receipt), "load": steering.end(&fixture, pid, &emitter)}));
+
+    // Cancel under load: first Esc shows the interrupt prompt, second reaches the service.
+    let cancelling = PerfPhase::begin(&fixture, pid, &emitter);
+    let start = std::time::Instant::now();
+    fixture.terminal.input("\x1b");
+    let prompt = perf_wait(&screen, start, Duration::from_secs(3), |contents| contents.contains("Interrupt"));
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    let start = std::time::Instant::now();
+    fixture.terminal.input("\x1b");
+    let cancelled = tokio::time::timeout(Duration::from_secs(5), fixture.cancellations.recv())
+        .await
+        .ok()
+        .flatten()
+        .map(|turn| {
+            assert_eq!(turn, REMOTE_TURN);
+            start.elapsed()
+        });
+    report.insert("streaming_cancel".into(), json!({
+        "interrupt_prompt_ms": prompt.map(|elapsed| elapsed.as_secs_f64() * 1000.0),
+        "esc_to_service_ms": cancelled.map(|elapsed| elapsed.as_secs_f64() * 1000.0),
+        "load": cancelling.end(&fixture, pid, &emitter)
+    }));
+
+    stop.store(true, Ordering::Relaxed);
+    let live_steps = loader.await.unwrap();
+    fixture.cursor = emitter.cursor.load(Ordering::SeqCst);
+    fixture.emit(REMOTE_TURN, json!({"type": "turn_cancelled", "id": REMOTE_TURN}));
+    report.insert("config".into(), json!({
+        "history_cycles": history_cycles, "live_calls_per_group": live_calls,
+        "pace_us": pace.as_micros() as u64, "live_steps": live_steps,
+        "events_total": emitter.sent.load(Ordering::Relaxed),
+        "terminal": "160x32 vt100 over portable-pty", "clk_tck_assumed": 100
+    }));
+    let report = Value::Object(report);
+    println!("TUI_PERF {report}");
+    if let Some(path) = std::env::var_os("NANOCODEX_TUI_PERF_OUT") {
+        std::fs::write(path, serde_json::to_string_pretty(&report).unwrap()).unwrap();
+    }
+    assert!(!typing.is_empty() && !steer_receipt.is_empty());
+    assert!(cancelled.is_some(), "cancel never reached the service under load");
+    // Meaningful but non-flaky ceilings: a frame budget miss is tolerated, a
+    // visibly stuck composer or steer is not. Override for slow debug builds.
+    let typing_p95 = perf_env("NANOCODEX_TUI_PERF_TYPING_P95_MS", 150) as f64;
+    let typing_max = perf_env("NANOCODEX_TUI_PERF_TYPING_MAX_MS", 1000) as f64;
+    let steer_p95 = perf_env("NANOCODEX_TUI_PERF_STEER_P95_MS", 1000) as f64;
+    let streaming_typing = &report["streaming_typing"]["latency"];
+    assert!(
+        streaming_typing["p95_ms"].as_f64().unwrap() <= typing_p95
+            && streaming_typing["max_ms"].as_f64().unwrap() <= typing_max,
+        "typing lagged while the agent streamed: {streaming_typing}"
+    );
+    let steer = &report["streaming_steer"]["enter_to_service"];
+    assert!(steer["p95_ms"].as_f64().unwrap() <= steer_p95, "steering lagged: {steer}");
+}
+
