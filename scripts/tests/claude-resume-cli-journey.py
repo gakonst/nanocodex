@@ -12,19 +12,12 @@ the replayed prompt row and tool cards with the live screen.
 from claude_code_fixture import normalize_request, wrap_tool
 import argparse
 import base64
-import errno
-import fcntl
 import hashlib
 import json
-import os
 from pathlib import Path
-import pty
 import re
-import select
 import shlex
-import struct
 import subprocess
-import termios
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -69,6 +62,10 @@ def main():
     workspace, launch, home = (artifact / name for name in ("workspace", "launch-elsewhere", "home"))
     for path in (workspace, launch, home):
         path.mkdir()
+    # Bare `nanocodex` is the managed client; the local tree is selected by name.
+    ncl = artifact / "bin" / "ncl"
+    ncl.parent.mkdir()
+    ncl.symlink_to(binary)
     (workspace / "workspace-marker.txt").write_text("saved-workspace-visible")
     environment = {"HOME": str(home), "CODEX_HOME": str(home / "codex"),
                    "PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "TERM": "xterm-256color",
@@ -232,67 +229,68 @@ def main():
                          "cwd": str(launch), "environment": env})
         (artifact / "commands.json").write_text(json.dumps(commands, indent=2))
 
-    def run_pty(name, command, env, picker=False, session_id=None):
+    frames = {}
+
+    def tmux(*argv):
+        return subprocess.run(["tmux", *argv], capture_output=True, text=True)
+
+    def start(name, command, env):
+        """Run the CLI in a real tmux terminal; frames are the rendered screen."""
         record(name, command, env)
-        master, slave = pty.openpty()
-        fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 45, 180, 0, 0))
-        child = subprocess.Popen(command, cwd=launch, env=env, stdin=slave, stdout=slave, stderr=slave, start_new_session=True)
-        os.close(slave)
-        transcript = bytearray()
-        selected, done, sent_exit = not picker, False, 0
-        deadline = time.monotonic() + 40
+        session = f"claude-resume-{name}-{uuid4().hex[:8]}"
+        shell = "env -i " + " ".join(shlex.quote(f"{k}={v}") for k, v in env.items()) + " " + shlex.join(command)
+        tmux("new-session", "-d", "-x", "170", "-y", "80", "-s", session, "-c", str(launch), shell,
+             ";", "set-option", "-t", session, "remain-on-exit", "on")
+        return session
+
+    def screen_until(name, session, predicate, timeout=40):
+        deadline = time.monotonic() + timeout
+        while True:
+            screen = tmux("capture-pane", "-p", "-t", session + ":0.0").stdout
+            frames.setdefault(name, []).append(screen)
+            (artifact / f"{name}.frames.txt").write_text("\n=====FRAME=====\n".join(frames[name]))
+            if errors:
+                raise AssertionError("; ".join(errors))
+            if predicate(screen):
+                return screen
+            if time.monotonic() > deadline:
+                raise AssertionError(f"{name}: timed out; see {name}.frames.txt")
+            time.sleep(0.4)
+
+    def close(name, session):
+        # Ctrl+C asks for confirmation; a second Ctrl+C quits.
+        tmux("send-keys", "-t", session + ":0.0", "C-c")
+        time.sleep(0.3)
+        tmux("send-keys", "-t", session + ":0.0", "C-c")
+        # remain-on-exit reports the CLI's own exit status once its pane dies.
+        screen = screen_until(name, session, lambda screen: "Pane is dead" in screen, 15)
+        tmux("kill-session", "-t", session)
+        require("Pane is dead (status 0," in screen, f"{name} did not exit cleanly: {screen.strip()[-200:]}")
+
+    def run_pty(name, command, env, picker=False, session_id=None):
+        session = start(name, command, env)
         try:
-            while time.monotonic() < deadline:
-                if select.select([master], [], [], 0.1)[0]:
-                    try:
-                        chunk = os.read(master, 65536)
-                    except OSError as error:
-                        if error.errno == errno.EIO:
-                            break
-                        raise
-                    if not chunk:
-                        break
-                    transcript.extend(chunk)
-                    (artifact / f"{name}.pty.log").write_bytes(transcript)
-                    if b"\x1b[6n" in chunk:
-                        os.write(master, b"\x1b[1;1R")
-                    if not selected and b"Resume a Claude session" in transcript and session_id.encode() in transcript:
-                        checks.append("picker displayed the saved session ID")
-                        os.write(master, b"\r")
-                        selected = True
-                    if f"{name}-resume-complete".encode() in transcript:
-                        done = True
-                    if b"resume-fixture-assertion-failed" in transcript:
-                        raise AssertionError("; ".join(errors))
-                if done and time.monotonic() - sent_exit > 0.5:
-                    os.write(master, b"\x04")
-                    sent_exit = time.monotonic()
-                if child.poll() is not None:
-                    break
-            require(selected, "picker never displayed/selectable saved session")
-            require(done, f"{name} terminal never rendered final response; see PTY transcript")
-            if child.poll() is None and done:
-                child.wait(timeout=5)  # PTY EOF can precede the process exit notification.
-            require(child.poll() is not None, f"{name} did not exit on Ctrl-D")
-            require(child.returncode == 0, f"{name} exit {child.returncode}")
+            if picker:
+                # The unified picker lists both harnesses; the row shows the
+                # saved prompt preview, harness and (width-truncated) ID.
+                screen_until(name, session, lambda screen: "Resume a thread" in screen
+                             and "original-resume-prompt" in screen and "· claude ·" in screen
+                             and session_id[:8] in screen)
+                checks.append("picker displayed the saved Claude session and its first prompt")
+                tmux("send-keys", "-t", session + ":0.0", "Enter")
+            screen = screen_until(name, session, lambda screen: f"{name}-resume-complete" in screen)
+            require("original-resume-prompt" in screen and "initial-resume-complete" in screen,
+                    f"{name}: resumed terminal does not show the saved transcript")
+            checks.append(f"{name}: resumed terminal replays the saved transcript")
+            close(name, session)
         finally:
-            if child.poll() is None:
-                child.terminate()
-                try:
-                    child.wait(timeout=3)
-                except subprocess.TimeoutExpired:
-                    child.kill()
-                    child.wait()
-            (artifact / f"{name}.pty.log").write_bytes(transcript)
-            plain = re.sub(rb"\x1b\[[0-?]*[ -/]*[@-~]", b"", bytes(transcript))
-            (artifact / f"{name}.terminal.txt").write_bytes(plain)
-            os.close(master)
+            tmux("kill-session", "-t", session)
 
     outcome = {"success": False, "boundary": "actual native CLI, native default journal, real PTY input and HTTP/SSE; external model only is synthetic"}
     try:
         outcome["binary_sha256"] = hashlib.sha256(binary.read_bytes()).hexdigest()
         milestone("Started normal persistence + explicit resume + picker journey.")
-        initial = [str(binary), "run", *common, "--model", "claude-sonnet-5-5", "--thinking", "medium", "--cwd", str(workspace), "original-resume-prompt"]
+        initial = [str(ncl), "run", *common, "--model", "claude-sonnet-5-5", "--thinking", "medium", "--cwd", str(workspace), "original-resume-prompt"]
         record("initial", initial, environment)
         result = subprocess.run(initial, cwd=launch, env=environment, capture_output=True, timeout=40)
         (artifact / "initial.jsonl").write_bytes(result.stdout)
@@ -312,7 +310,7 @@ def main():
         resume_env = {**environment, "ANTHROPIC_MODEL": "claude-opus-5-5"}
         for name in ("explicit", "picker"):
             phase.update(name=name, start=len(requests))
-            command = [str(binary), "resume", *([session_id] if name == "explicit" else []), *common,
+            command = [str(ncl), "resume", *([session_id] if name == "explicit" else []), *common,
                        "--prompt", f"{name}-followup-prompt"]
             run_pty(name, command, resume_env, picker=name == "picker", session_id=session_id)
             require(not errors, "; ".join(errors))
@@ -322,44 +320,11 @@ def main():
             milestone(f"Process {name} passed; saved model/workspace/transcript and task watermark retained; shell not replayed.")
         # Rich replay: paste an image into the real TUI, run nested and failing
         # Code Mode cells, then replay the checkpoint in a fresh process.
-        ncl = artifact / "bin" / "ncl"
-        ncl.parent.mkdir()
-        ncl.symlink_to(binary)  # The local command tree is selected by name.
         image_path = artifact / "pasted.png"
         image_path.write_bytes(png)
-        frames = {}
-
-        def tmux(*argv):
-            return subprocess.run(["tmux", *argv], capture_output=True, text=True)
-
         def tui(name, wait_for):
-            session = f"claude-resume-{name}-{uuid4().hex[:8]}"
-            command = [str(ncl), "resume", session_id, *common]
-            record(name, command, resume_env)
-            shell = "env -i " + " ".join(shlex.quote(f"{k}={v}") for k, v in resume_env.items()) + " " + shlex.join(command)
-            tmux("new-session", "-d", "-x", "170", "-y", "80", "-s", session, "-c", str(launch), shell + "; echo EXITED $?",
-                 ";", "set-option", "-t", session, "remain-on-exit", "on")
+            session = start(name, [str(ncl), "resume", session_id, *common], resume_env)
             return session, screen_until(name, session, wait_for)
-
-        def screen_until(name, session, predicate, timeout=40):
-            deadline = time.monotonic() + timeout
-            while True:
-                screen = tmux("capture-pane", "-p", "-t", session + ":0.0").stdout
-                frames.setdefault(name, []).append(screen)
-                (artifact / f"{name}.frames.txt").write_text("\n=====FRAME=====\n".join(frames[name]))
-                if errors:
-                    raise AssertionError("; ".join(errors))
-                if predicate(screen):
-                    return screen
-                if time.monotonic() > deadline:
-                    raise AssertionError(f"{name}: timed out; see {name}.frames.txt")
-                time.sleep(0.4)
-
-        def close(name, session):
-            tmux("send-keys", "-t", session + ":0.0", "C-d")
-            screen = screen_until(name, session, lambda screen: "EXITED" in screen, 15)
-            tmux("kill-session", "-t", session)
-            require("EXITED 0" in screen, f"{name} did not exit cleanly")
 
         def turn_region(screen):
             lines = screen.splitlines()
@@ -457,7 +422,7 @@ def main():
             if name == "deleted-workspace":
                 workspace.rename(moved)
             try:
-                command = [str(binary), "resume", *extra, *common, "--prompt", "must-not-contact-provider"]
+                command = [str(ncl), "resume", *extra, *common, "--prompt", "must-not-contact-provider"]
                 record(name, command, resume_env)
                 before = len(requests)
                 result = subprocess.run(command, cwd=launch, env=resume_env, capture_output=True, timeout=10)

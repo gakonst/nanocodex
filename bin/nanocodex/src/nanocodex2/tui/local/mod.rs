@@ -173,7 +173,10 @@ impl LocalState {
                 session_id: backend.handle.session_id().to_string(),
                 workspace: backend.workspace.clone(),
                 settings: settings_from_launch(&backend.launch)?,
-                created: backend.launch.resume.is_none(),
+                // A resumed Claude session is not new: its replayed history
+                // must be restored rather than discarded as a fresh creation.
+                created: backend.launch.resume.is_none()
+                    && backend.launch.args.claude_resume.is_none(),
                 history: sessions::history_window(&backend.transcript, backend.handle.session_id()),
             };
             let replaced = slot
