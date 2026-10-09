@@ -33,7 +33,7 @@ settings need enough capture/encoding CPU and network bandwidth; verify decoded
 frame rate in the actual viewer after changing them.
 
 For a real Mac stream check, run
-`cargo test -p nanocodex-bin --bin nanocodex macos_live_webrtc -- --ignored --nocapture`
+`cargo test -p nanocodex-bin --lib macos_live_webrtc -- --ignored --nocapture`
 from a Screen Recording-authorized application. This opt-in test captures the
 main display, encodes with VideoToolbox, negotiates a local WebRTC connection,
 and requires Chromium to decode at least 60 H.264 frames. It uses an isolated

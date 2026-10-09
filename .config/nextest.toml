@@ -9,7 +9,7 @@ failure-output = "immediate-final"
 host-ipc = { max-threads = 1 }
 
 [[profile.ci.overrides]]
-filter = "package(nanocodex-bin) & kind(bin) & test(/hand/)"
+filter = "package(nanocodex-bin) & kind(lib) & test(/hand/)"
 test-group = "host-ipc"
 retries = 2
 

@@ -150,7 +150,7 @@ jobs:
         # Temporarily disabled: CI tests are paused.
         if: needs.changes.outputs.tests == 'true'
         # The ci profile serializes and retries these host IPC tests.
-        run: cargo nextest run --locked --profile ci -p nanocodex-bin --bins -E '(test(/^nanocodex2::/) | binary(nanocodex-hand)) & test(hand)'
+        run: cargo nextest run --locked --profile ci -p nanocodex-bin --lib -E 'test(/^nanocodex2::/) & test(hand)'
       - name: Build the CLI and Hand journey executables
         # Journeys that start the Hand by its installed nanocodex2 name get the
         # nanocodex-hand binary there; it forwards CLI commands to nanocodex.
@@ -166,7 +166,7 @@ jobs:
           cargo test --locked -p nanocodex-managed --lib account_services
           cargo test --locked -p nanocodex-managed --lib phone_services
           cargo test --locked -p nanocodex-bin --test nanocodex2_connectors --test nanocodex2_vault
-          cargo test --locked -p nanocodex-bin --bin nanocodex account_management_journeys
+          cargo test --locked -p nanocodex-bin --lib account_management_journeys
       - name: Resolve the trusted loopback origin on macOS
         if: runner.os == 'macOS'
         run: printf '\n::1 nanocodex.localhost\n' | sudo tee -a /etc/hosts > /dev/null
@@ -309,7 +309,7 @@ jobs:
         shell: pwsh
         env:
           NANOCODEX_COMPUTER: "off"
-        run: cargo nextest run --locked --profile ci --package nanocodex-bin --bins -E 'test(/^nanocodex2::/) | binary(nanocodex-hand)'
+        run: cargo nextest run --locked --profile ci --package nanocodex-bin --lib -E 'test(/^nanocodex2::/)'
       - name: Build the native controller and account Hand
         shell: pwsh
         env:
@@ -320,7 +320,7 @@ jobs:
       - name: Test native Windows Hand task policy
         shell: pwsh
         run: >-
-          cargo nextest run --locked --profile ci --package nanocodex-bin --bin nanocodex
+          cargo nextest run --locked --profile ci --package nanocodex-bin --lib
           -E 'test(windows_hand) | test(update::automatic::tests::windows_schedule)'
       - name: Run real CLI/app sharing against a local account server
         # Temporarily disabled: CI tests are paused.
