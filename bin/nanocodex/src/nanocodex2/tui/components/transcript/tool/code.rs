@@ -13,11 +13,10 @@ pub(super) fn present(tool: &ToolEntry, width: u16, theme: &Theme, expanded: boo
     if tool.family() == "wait" {
         return wait(tool, width, theme, expanded);
     }
-    let source = tool.arguments.as_str().unwrap_or_else(|| {
-        tool.arguments
-            .get("input")
-            .and_then(Value::as_str)
-            .unwrap_or("<source unavailable>")
+    let source = tool.arguments.as_str().or_else(|| {
+        ["code", "input"]
+            .into_iter()
+            .find_map(|key| tool.arguments.get(key).and_then(Value::as_str))
     });
     let result = tool.code_display_result.as_ref().or(tool.result.as_ref());
     let emitted = result.map_or(0, emitted_count);
@@ -34,10 +33,13 @@ pub(super) fn present(tool: &ToolEntry, width: u16, theme: &Theme, expanded: boo
     if !expanded {
         return presentation;
     }
-    let details =
-        super::super::markdown::render(&format!("```javascript\n{source}\n```"), width, theme)
-            .lines;
-    let mut presentation = presentation.unselectable_details(details);
+    let mut presentation = presentation;
+    if let Some(source) = source.filter(|source| !source.trim().is_empty()) {
+        let details =
+            super::super::markdown::render(&format!("```javascript\n{source}\n```"), width, theme)
+                .lines;
+        presentation = presentation.unselectable_details(details);
+    }
     if let Some(result) = result {
         if let Some(items) = result.as_array() {
             for item in items {

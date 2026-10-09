@@ -7065,3 +7065,33 @@ async fn terminal_tool_batches_fold_into_classic_summaries() {
     dump("refolded", &fixture);
 }
 
+
+#[tokio::test]
+async fn terminal_code_details_show_available_source_without_placeholder_blocks() {
+    for (label, arguments, has_source) in [
+        ("raw", json!("const SOURCE_MARKER = 42;"), true),
+        ("code", json!({"code": "const SOURCE_MARKER = 42;"}), true),
+        ("input", json!({"input": "const SOURCE_MARKER = 42;"}), true),
+        ("missing", json!({}), false),
+    ] {
+        let mut fixture = Fixture::start_with_active(true).await;
+        fixture.terminal.input("\x0f");
+        fixture.nested(REMOTE_TURN, "tool.call", json!({
+            "call_id": "source-cell", "tool": "exec", "arguments": arguments
+        }));
+        fixture.nested(REMOTE_TURN, "tool.result", json!({
+            "call_id": "source-cell", "tool": "exec", "status": "completed",
+            "duration_ns": 1, "result": [{"type": "input_text", "text": "CELL_RESULT_MARKER"}]
+        }));
+        fixture.complete(REMOTE_TURN);
+        fixture.terminal.wait_text("CELL_RESULT_MARKER").await;
+        fixture.terminal.wait_text("Enter send").await;
+        let screen = fixture.terminal.screen.lock().unwrap().screen().contents();
+        assert_eq!(screen.contains("SOURCE_MARKER"), has_source, "{label}: {screen}");
+        assert!(!screen.contains("<source unavailable>"), "{label}: {screen}");
+        if !has_source {
+            assert!(!screen.contains("javascript"), "{label}: {screen}");
+        }
+        eprintln!("CODE SOURCE {label}\n{screen}");
+    }
+}
