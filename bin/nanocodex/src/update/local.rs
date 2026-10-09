@@ -208,7 +208,7 @@ mod tests {
         );
         let error = matching_revision(&cli, &companion).unwrap_err().to_string();
         assert!(error.contains("differs from Hand"));
-        assert!(error.contains("Rebuild nanocodex-bin (cargo build -p nanocodex-bin --bins)"));
+        assert!(error.contains("Rebuild both executables from one checkout (cargo build)"));
     }
 
     #[test]
