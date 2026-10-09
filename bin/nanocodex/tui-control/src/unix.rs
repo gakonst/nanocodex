@@ -2,7 +2,7 @@ use super::*;
 use std::{
     fs::{self, OpenOptions},
     io::Write,
-    os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt},
+    os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt},
     path::Path,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
@@ -41,7 +41,14 @@ fn prepare_registry() -> io::Result<PathBuf> {
     let home = directory.ancestors().nth(3).unwrap();
     fs::create_dir_all(home)?;
     let parent = home.join("nanocodex");
-    fs::create_dir_all(&parent)?;
+    // A permissive login umask must not make our newly created state
+    // directory fail its own trust check. Existing directories are still
+    // validated below without changing their ownership or permissions.
+    match fs::DirBuilder::new().mode(0o700).create(&parent) {
+        Ok(()) => {}
+        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {}
+        Err(e) => return Err(e),
+    }
     let meta = fs::symlink_metadata(&parent)?;
     if !meta.is_dir() || meta.uid() != unsafe { libc::geteuid() } || meta.mode() & 0o022 != 0 {
         return Err(io::Error::other("untrusted nanocodex state directory"));
