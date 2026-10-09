@@ -1,0 +1,31 @@
+.site-card-header { display: flex; gap: 12px; align-items: flex-start; }
+.site-card-header svg { flex: none; width: 20px; height: 20px; margin-top: 2px; color: var(--brand-accent-text); }
+.site-card-header strong { display: block; }
+.site-card-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.site-card-actions button, .site-card-created button, .site-card-links button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.site-card-actions svg, .site-card-created svg, .site-card-links svg { width: 15px; height: 15px; }
+.site-card-created { display: grid; gap: 6px; }
+.site-card-created label { font-size: 12px; color: var(--text-muted); }
+.site-card-created > div { display: flex; gap: 8px; min-width: 0; }
+.site-card-created input {
+  flex: 1;
+  min-width: 0;
+  min-height: 44px;
+  padding: 0 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+.site-card-created small { color: var(--text-muted); font-size: 12px; }
+.site-card-links { display: grid; gap: 6px; margin: 0; padding: 0; list-style: none; }
+.site-card-links li { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; }
+.site-card-links a { color: var(--text); font-family: var(--font-mono); font-size: 12px; }
+.site-card-links small { color: var(--text-muted); font-size: 12px; }
+.site-card-links button { min-height: 36px; margin-left: auto; padding: 6px 12px; }
