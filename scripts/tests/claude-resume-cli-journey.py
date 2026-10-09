@@ -331,7 +331,7 @@ def main():
             return lines[start:]
 
         def tool_rows(region):
-            rows = [re.search(r"([✓×◌◇]) (Batch|Code|Shell)  (\S.*?)(?:\s{2,}|$)", line) for line in region]
+            rows = [re.search(r"([✓×◌◇?]) (Batch|Code|Shell)  (\S.*?)(?:\s{2,}|$)", line) for line in region]
             return [(row[1], row[2], row[3].strip()) for row in rows if row]
 
         def prompt_row(screen):
@@ -370,9 +370,9 @@ def main():
                 f"replayed tool outcomes differ: {rows} vs {live_rows}")
         require(replay_cards[0][2] == cards[0][2] == "2 tools", f"replayed batch lost its nested calls: {rows}")
         # Nested receipts retain status, not shell output: an exit status that
-        # was never recorded must replay as unknown (◇), never as success.
+        # was never recorded must replay as outcome unknown (?), never as success.
         shells, live_shells = [r for r in rows if r[1] == "Shell"], [r for r in live_rows if r[1] == "Shell"]
-        require(len(shells) == len(live_shells) and all(r[0] in (l[0], "◇") for r, l in zip(shells, live_shells)),
+        require(len(shells) == len(live_shells) and all(r[0] in (l[0], "?") for r, l in zip(shells, live_shells)),
                 f"replayed nested shells differ: {shells} vs {live_shells}")
         for leaked in ("data:image", "base64", "Harness recovery notice", "Continue the current task",
                        "Historical context", "Host Stop hook"):
