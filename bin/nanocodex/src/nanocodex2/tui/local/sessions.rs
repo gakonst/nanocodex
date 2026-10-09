@@ -467,9 +467,10 @@ pub(in crate::nanocodex2::tui) fn history_window(
                 };
                 let (call_id, name) = replay.open_tools.remove(position);
                 let result = replayed_result(&name, output, *is_error);
+                let status = if *is_error { "failed" } else { "completed" };
                 replay.agent(
                     "tool.result",
-                    json!({"call_id": call_id, "tool": name, "status": if *is_error { "failed" } else { "completed" }, "duration_ns": 0, "result": result}),
+                    json!({"call_id": call_id, "tool": name, "status": status, "duration_ns": 0, "result": result}),
                 );
             }
         }
