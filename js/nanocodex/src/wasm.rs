@@ -3371,6 +3371,7 @@ fn forward_events(mut events: AgentEvents, forwarding: Rc<Cell<bool>>) {
     });
 }
 
+#[allow(clippy::too_many_arguments)]
 fn forward_subagent_updates(
     host_definition_id: u32,
     registry: Weak<SubagentRegistry>,
