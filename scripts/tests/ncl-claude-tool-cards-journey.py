@@ -94,14 +94,14 @@ def main():
         collapsed = session.screen.text(); (artifact / 'collapsed.screen.txt').write_text(collapsed)
         flat = re.sub(r'\s+', ' ', collapsed)
         expected_rows = {
-            'Write row: path and size, not a diff': r'Write notes/cards\.txt Â· 3 lines Â· 23 B',
-            'Edit row: path and hunk counts': r'Edit notes/cards\.txt Â· \+1 â1',
-            'Read row: path and returned range': r'Read notes/cards\.txt Â· lines 2â3',
-            'Grep row: pattern and match count': r'Grep "BETA_EDITED" Â· 1 matching line',
-            'Glob row: pattern and file count': r'Glob \*\*/\*\.txt Â· 1 file',
-            'TodoWrite row: plan progress and current step': r'Plan 1/2 complete Â· Reviewing cards',
-            'large Write row: line count only': r'Write notes/large\.txt Â· 400 lines',
-            'failed Edit row: failure text visible': r'Ã Edit notes/cards\.txt Â· \+1 â1 Â· old_string not found',
+            'Write row: path and size, not a diff': r'Write notes/cards\.txt · 3 lines · 17 B',
+            'Edit row: path and hunk counts': r'Edit notes/cards\.txt · \+1 −1',
+            'Read row: path and returned range': r'Read notes/cards\.txt · lines 2–3',
+            'Grep row: pattern and match count': r'Grep "BETA_EDITED" · 1 matching line',
+            'Glob row: pattern and file count': r'Glob \*\*/\*\.txt · 1 file',
+            'TodoWrite row: plan progress and current step': r'Plan 1/2 complete · Reviewing cards',
+            'large Write row: line count only': r'Write notes/large\.txt · 400 lines',
+            'failed Edit row: failure text visible': r'× Edit notes/cards\.txt · \+1 −1 · old_string not found',
         }
         for label, pattern in expected_rows.items():
             require(re.search(pattern, flat), f'{label} absent from collapsed screen: {pattern}')
@@ -114,17 +114,17 @@ def main():
             os.write(session.master, b'\x1b[5~'); time.sleep(.15); session.drain()
         frames = '\n=====\n'.join(session.seen[-200:]); (artifact / 'expanded.frames.txt').write_text(frames)
         expected_expanded = {
-            'Edit hunk header with path and counts': 'notes/cards.txt Â· +1 â1',
+            'Edit hunk header with path and counts': 'notes/cards.txt · +1 −1',
             'Edit hunk relative-line label': 'relative lines',
             'Edit removed text': 'beta',
             'Edit added text': 'BETA_EDITED',
-            'Edit footer': 'replaced text Â· surrounding file not shown',
-            'Write footer: full contents, not a diff': 'full contents written Â· previous contents not shown',
+            'Edit footer': 'replaced text · surrounding file not shown',
+            'Write footer: full contents, not a diff': 'full contents written · previous contents not shown',
             'bounded large body': 'LARGE_LINE_79',
             'large body omission note': '320 more lines not shown',
             'Read output with line numbers': '2\tBETA_EDITED'.replace('\t', ''),
             'Grep options': 'content',
-            'TodoWrite checklist': 'â Review cards',
+            'TodoWrite checklist': '◐ Review cards',
             'failed Edit error text': 'old_string not found',
         }
         for label, text in expected_expanded.items():

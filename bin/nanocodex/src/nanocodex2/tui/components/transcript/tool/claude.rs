@@ -55,7 +55,7 @@ fn read(tool: &ToolEntry, width: u16, theme: &Theme, expanded: bool) -> Presenta
             || count_label(media, "attachment", "attachments"),
             |kind| {
                 format!(
-                    "{} Â· {kind}",
+                    "{} · {kind}",
                     count_label(media, "attachment", "attachments")
                 )
             },
@@ -85,7 +85,7 @@ fn read(tool: &ToolEntry, width: u16, theme: &Theme, expanded: bool) -> Presenta
             .map_or(0, |result| result.to_string().len());
         presentation = presentation.unselectable_details(super::super::markdown::wrap_plain(
             &format!(
-                "{} returned Â· {}",
+                "{} returned · {}",
                 count_label(media, "attachment", "attachments"),
                 format_bytes(size)
             ),
@@ -106,7 +106,7 @@ fn read(tool: &ToolEntry, width: u16, theme: &Theme, expanded: bool) -> Presenta
             presentation.selectable_plain(text, width, Style::default().fg(theme.text()));
     }
     presentation.footer(format!(
-        "{} Â· {}",
+        "{} · {}",
         count_label(line_count(text), "line", "lines"),
         format_bytes(text.len())
     ))
@@ -118,7 +118,7 @@ fn write(tool: &ToolEntry, width: u16, theme: &Theme, expanded: bool) -> Present
     let mut subject = display_path(path);
     if let Some(content) = content {
         subject.push_str(&format!(
-            " Â· {} Â· {}",
+            " · {} · {}",
             count_label(line_count(content), "line", "lines"),
             format_bytes(content.len())
         ));
@@ -132,7 +132,7 @@ fn write(tool: &ToolEntry, width: u16, theme: &Theme, expanded: bool) -> Present
             presentation.unselectable_details(source_lines(content, language(path), width, theme));
     }
     with_error(presentation, tool, width, theme)
-        .footer("full contents written Â· previous contents not shown")
+        .footer("full contents written · previous contents not shown")
 }
 
 fn edit(tool: &ToolEntry, width: u16, theme: &Theme, expanded: bool) -> Presentation {
@@ -142,7 +142,7 @@ fn edit(tool: &ToolEntry, width: u16, theme: &Theme, expanded: bool) -> Presenta
     let replace_all = tool.arguments.get("replace_all").and_then(Value::as_bool) == Some(true);
     let subject = vec![
         Span::styled(
-            format!("{} Â· ", display_path(path)),
+            format!("{} · ", display_path(path)),
             Style::default().fg(theme.text()),
         ),
         Span::styled(
@@ -151,7 +151,7 @@ fn edit(tool: &ToolEntry, width: u16, theme: &Theme, expanded: bool) -> Presenta
         ),
         Span::raw(" "),
         Span::styled(
-            format!("â{}", line_count(old)),
+            format!("−{}", line_count(old)),
             Style::default().fg(Color::Red),
         ),
     ];
@@ -174,7 +174,7 @@ fn edit(tool: &ToolEntry, width: u16, theme: &Theme, expanded: bool) -> Presenta
             presentation.unselectable_details(edit_diff(path, old, new, replace_all, width, theme));
     }
     with_error(presentation, tool, width, theme)
-        .footer("replaced text Â· surrounding file not shown")
+        .footer("replaced text · surrounding file not shown")
 }
 
 fn notebook(tool: &ToolEntry, width: u16, theme: &Theme, expanded: bool) -> Presentation {
@@ -187,7 +187,7 @@ fn notebook(tool: &ToolEntry, width: u16, theme: &Theme, expanded: bool) -> Pres
         (mode, None) => mode.to_owned(),
     };
     let mut presentation =
-        Presentation::new("Notebook", format!("{path} Â· {target}")).truncate_summary();
+        Presentation::new("Notebook", format!("{path} · {target}")).truncate_summary();
     if !expanded {
         return presentation;
     }
@@ -205,7 +205,7 @@ fn notebook(tool: &ToolEntry, width: u16, theme: &Theme, expanded: bool) -> Pres
     let footer = match mode {
         "delete" => "cell deleted",
         "insert" => "new cell source",
-        _ => "new cell source Â· previous source not shown",
+        _ => "new cell source · previous source not shown",
     };
     with_error(presentation, tool, width, theme).footer(footer)
 }
@@ -223,7 +223,7 @@ fn search(tool: &ToolEntry, width: u16, theme: &Theme, expanded: bool) -> Presen
     }
     for key in ["glob", "type"] {
         if let Some(filter) = argument(tool, key) {
-            subject.push_str(&format!(" Â· {filter}"));
+            subject.push_str(&format!(" · {filter}"));
         }
     }
     let mode = if grep {
@@ -261,7 +261,7 @@ fn search(tool: &ToolEntry, width: u16, theme: &Theme, expanded: bool) -> Presen
             presentation.selectable_plain(text, width, Style::default().fg(theme.text()));
     }
     presentation.footer(format!(
-        "{} Â· {}",
+        "{} · {}",
         count_label(line_count(text), "line", "lines"),
         format_bytes(text.len())
     ))
@@ -291,7 +291,7 @@ fn todos(tool: &ToolEntry, width: u16, theme: &Theme, expanded: bool) -> Present
     });
     let subject = match current {
         _ if total == 0 => "list cleared".to_owned(),
-        Some(current) => format!("{completed}/{total} complete Â· {current}"),
+        Some(current) => format!("{completed}/{total} complete · {current}"),
         None => format!("{completed}/{total} complete"),
     };
     let mut presentation = Presentation::new("Plan", subject).truncate_summary();
@@ -362,7 +362,7 @@ fn web(tool: &ToolEntry, width: u16, theme: &Theme, expanded: bool) -> Presentat
         return with_error(presentation, tool, width, theme).footer("web result");
     };
     presentation = presentation.selectable_plain(text, width, Style::default().fg(theme.text()));
-    presentation.footer(format!("web result Â· {}", format_bytes(text.len())))
+    presentation.footer(format!("web result · {}", format_bytes(text.len())))
 }
 
 fn skill(tool: &ToolEntry, width: u16, theme: &Theme, expanded: bool) -> Presentation {
@@ -370,7 +370,7 @@ fn skill(tool: &ToolEntry, width: u16, theme: &Theme, expanded: bool) -> Present
         .unwrap_or("<skill unavailable>")
         .to_owned();
     if let Some(arguments) = argument(tool, "args").filter(|args| !args.trim().is_empty()) {
-        subject.push_str(&format!(" Â· {}", arguments.trim()));
+        subject.push_str(&format!(" · {}", arguments.trim()));
     }
     let text = (!failed(tool))
         .then(|| result_text(tool.result.as_ref()))
@@ -386,7 +386,7 @@ fn skill(tool: &ToolEntry, width: u16, theme: &Theme, expanded: bool) -> Present
         return with_error(presentation, tool, width, theme).footer("skill");
     };
     presentation = presentation.selectable_plain(text, width, Style::default().fg(theme.text()));
-    presentation.footer(format!("skill guidance Â· {}", format_bytes(text.len())))
+    presentation.footer(format!("skill guidance · {}", format_bytes(text.len())))
 }
 
 fn task(tool: &ToolEntry, width: u16, theme: &Theme, expanded: bool) -> Presentation {
@@ -406,7 +406,7 @@ fn task(tool: &ToolEntry, width: u16, theme: &Theme, expanded: bool) -> Presenta
         "TaskCreate" => (
             "Task",
             format!(
-                "create Â· {}",
+                "create · {}",
                 argument(tool, "subject").unwrap_or_default()
             ),
             field("/task/id").map(|id| format!("#{id}")),
@@ -422,7 +422,7 @@ fn task(tool: &ToolEntry, width: u16, theme: &Theme, expanded: bool) -> Presenta
                 .into_iter()
                 .flatten()
                 .collect::<Vec<_>>()
-                .join(" Â· "),
+                .join(" · "),
                 _ => "not found".to_owned(),
             }),
         ),
@@ -430,7 +430,7 @@ fn task(tool: &ToolEntry, width: u16, theme: &Theme, expanded: bool) -> Presenta
             "Task",
             update_subject(tool, &task_label),
             match (field("/statusChange/from"), field("/statusChange/to")) {
-                (Some(from), Some(to)) => Some(format!("{from} â {to}")),
+                (Some(from), Some(to)) => Some(format!("{from} → {to}")),
                 _ => field("/success").map(|_| "updated".to_owned()),
             },
         ),
@@ -449,7 +449,7 @@ fn task(tool: &ToolEntry, width: u16, theme: &Theme, expanded: bool) -> Presenta
                         })
                         .count();
                     format!(
-                        "{} Â· {completed} completed",
+                        "{} · {completed} completed",
                         count_label(tasks.len(), "task", "tasks")
                     )
                 }),
@@ -528,7 +528,7 @@ fn todo_status(item: &Value) -> &str {
 
 fn update_subject(tool: &ToolEntry, task: &str) -> String {
     if let Some(status) = argument(tool, "status") {
-        return format!("{task} â {status}");
+        return format!("{task} → {status}");
     }
     let fields = [
         "subject",
@@ -545,7 +545,7 @@ fn update_subject(tool: &ToolEntry, task: &str) -> String {
     if fields.is_empty() {
         task.to_owned()
     } else {
-        format!("{task} Â· {}", fields.join(", "))
+        format!("{task} · {}", fields.join(", "))
     }
 }
 
@@ -703,11 +703,11 @@ fn requested_range(tool: &ToolEntry) -> Option<String> {
     let limit = tool.arguments.get("limit").and_then(Value::as_u64);
     match (offset, limit) {
         (Some(offset), Some(limit)) => Some(format!(
-            "lines {offset}â{}",
+            "lines {offset}–{}",
             offset.saturating_add(limit.saturating_sub(1))
         )),
         (Some(offset), None) => Some(format!("from line {offset}")),
-        (None, Some(limit)) => Some(format!("lines 1â{limit}")),
+        (None, Some(limit)) => Some(format!("lines 1–{limit}")),
         (None, None) => None,
     }
 }
@@ -726,7 +726,7 @@ fn returned_range(text: &str) -> String {
     let last = body.rsplit('\n').next().and_then(number);
     match (first, last) {
         (Some(first), Some(last)) if first == last => format!("line {first}"),
-        (Some(first), Some(last)) if first < last => format!("lines {first}â{last}"),
+        (Some(first), Some(last)) if first < last => format!("lines {first}–{last}"),
         _ => count_label(line_count(body), "line", "lines"),
     }
 }
@@ -783,7 +783,7 @@ fn grep_options(arguments: &Value, mode: &str) -> String {
             options.push(format!("{key} {value}"));
         }
     }
-    options.join(" Â· ")
+    options.join(" · ")
 }
 
 /// Leading lines within the source budget and the count of omitted lines.
@@ -812,7 +812,7 @@ fn leading_lines(text: &str, max_lines: usize) -> (&str, usize) {
 
 fn omitted(hidden: usize, noun: &str, theme: &Theme) -> Line<'static> {
     Line::from(Span::styled(
-        format!("â¦ {hidden} more {noun} not shown"),
+        format!("… {hidden} more {noun} not shown"),
         Style::default().fg(theme.muted()),
     ))
 }
