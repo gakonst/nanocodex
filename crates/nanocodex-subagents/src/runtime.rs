@@ -56,7 +56,7 @@ pub(super) struct ChildSession {
     pub(super) last_output: Option<Value>,
     pub(super) last_used: u64,
     pub(super) evicted: bool,
-    /// Automatic restart resumes since this child last finished a turn.
+    /// Consecutive automatic restart resumes without committed progress.
     pub(super) resume_attempts: u32,
     /// Bounded tool calls observed during the current or interrupted turn.
     pub(super) in_flight_calls: Vec<durable::InFlightCall>,
@@ -126,6 +126,9 @@ pub struct Registry {
     pending_checkpoints: std::sync::Mutex<HashMap<String, usize>>,
     /// In-flight mid-turn checkpoint captures; `true` requests one more pass.
     progress_captures: std::sync::Mutex<HashMap<(String, AgentId), bool>>,
+    /// Children that finished a tool call in this runtime since their last
+    /// journaled progress checkpoint.
+    completed_tools: std::sync::Mutex<std::collections::HashSet<(String, AgentId)>>,
     pending_resume: std::sync::Mutex<HashMap<String, Vec<AgentId>>>,
     /// Terminal results each caller session already received from `wait`.
     wait_reported: std::sync::Mutex<HashMap<(String, AgentId), u64>>,
@@ -1086,6 +1089,7 @@ impl Registry {
             checkpoints: std::sync::Mutex::new(HashMap::new()),
             pending_checkpoints: std::sync::Mutex::new(HashMap::new()),
             progress_captures: std::sync::Mutex::new(HashMap::new()),
+            completed_tools: std::sync::Mutex::new(std::collections::HashSet::new()),
             pending_resume: std::sync::Mutex::new(HashMap::new()),
             wait_reported: std::sync::Mutex::new(HashMap::new()),
             idle_waits: std::sync::Mutex::new(HashMap::new()),
@@ -1379,13 +1383,28 @@ impl Registry {
         let registry = Arc::clone(self);
         drop(platform::spawn(async move {
             loop {
+                // Taken before the snapshot, so the checkpoint includes that tool.
+                let progressed = registry
+                    .completed_tools
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .remove(&key);
                 let harness = registry.running_harness(&key.0, key.1).await;
                 if let Some(harness) = harness
                     && let Ok(snapshot) = harness.snapshot().await
                     && registry.running_harness(&key.0, key.1).await.is_some()
                 {
                     registry.record_checkpoint(&key.0, key.1, snapshot);
+                    if progressed {
+                        registry.reset_resume_attempts(&key.0, key.1).await;
+                    }
                     registry.changed();
+                } else if progressed {
+                    registry
+                        .completed_tools
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .insert(key.clone());
                 }
                 let mut captures = registry
                     .progress_captures
@@ -1400,6 +1419,21 @@ impl Registry {
                 }
             }
         }));
+    }
+
+    /// A resumed child journaled a checkpoint after finishing a tool call in
+    /// this runtime. Its turn is advancing, so a later restart is a new loss
+    /// rather than the same one recurring: the consecutive budget starts over.
+    async fn reset_resume_attempts(&self, root_session_id: &str, id: AgentId) {
+        let mut state = self.state.lock().await;
+        if let Some(session) = state
+            .scopes
+            .get_mut(root_session_id)
+            .and_then(|scope| scope.sessions.get_mut(&id))
+            && session.active
+        {
+            session.resume_attempts = 0;
+        }
     }
 
     /// Journals bounded tool calls observed during a child's turn until the
@@ -3039,6 +3073,7 @@ pub(super) fn forward_events(
                 event.kind,
                 AgentEventKind::ModelCallStarted | AgentEventKind::ToolCall
             );
+            let completed_tool = event.kind == AgentEventKind::ToolResult;
             let kind = event.kind;
             let payload = matches!(kind, AgentEventKind::ToolCall | AgentEventKind::ToolResult)
                 .then(|| event.payload.clone());
@@ -3054,6 +3089,13 @@ pub(super) fn forward_events(
                 registry
                     .track_in_flight(&root_session_id, id, &kind, &payload)
                     .await;
+                if completed_tool {
+                    registry
+                        .completed_tools
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .insert((root_session_id.clone(), id));
+                }
                 if progress {
                     registry.capture_progress(&root_session_id, id);
                 }

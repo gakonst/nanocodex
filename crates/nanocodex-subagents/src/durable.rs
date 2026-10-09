@@ -522,8 +522,10 @@ impl PersistedAgent {
     }
 }
 
-/// Consecutive restart resumes allowed before a turn must settle. Runtime loss
-/// that recurs on every resume would otherwise restart the child forever.
+/// Consecutive restart resumes allowed without committed progress. Runtime loss
+/// that recurs on every resume would otherwise restart the child forever; a
+/// resumed turn that journals a checkpoint after completing a tool call starts
+/// the budget over, so unrelated restarts during a long turn do not exhaust it.
 pub(super) const MAX_RESUME_ATTEMPTS: u32 = 3;
 
 const fn is_zero(value: &u32) -> bool {
