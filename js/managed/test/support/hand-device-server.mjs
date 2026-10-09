@@ -27,6 +27,8 @@ const source = (keys, publicOrigin) => [
   "import { AccountHostedToolsProvider } from './src/account-hosted-tools.ts';",
   "import worker, { AccountHostedTools, DurableAgentSession, VmHostPool } from './src/index.ts';",
   "export { AccountHostedTools, DurableAgentSession, VmHostPool };",
+  "// Private service-binding entrypoint for egress SSH host-key attestation lookups.",
+  "export { HandDeviceSshHostKeys } from './src/index.ts';",
   "const PUBLIC_ORIGIN = " + JSON.stringify(publicOrigin ?? null) + ";",
   "// Structured observations as JSON lines so the journey can assert on them.",
   "const info = console.info.bind(console);",
@@ -76,8 +78,12 @@ const source = (keys, publicOrigin) => [
   "} };",
 ].join("\n");
 
-/** Start the managed Worker. Returns its base URL and captured structured observations. */
-export async function startHandDeviceServer({ output, ttlSeconds = 10, publicOrigin } = {}) {
+/**
+ * Start the managed Worker. Returns its base URL and captured structured observations.
+ * Optional workers run beside it in the same workerd (e.g. the egress Worker,
+ * which binds the managed "managed" Worker's HandDeviceSshHostKeys entrypoint).
+ */
+export async function startHandDeviceServer({ output, ttlSeconds = 10, publicOrigin, workers = [] } = {}) {
   await mkdir(output, { recursive: true });
   const assets = [];
   let wasmSequence = 0;
@@ -99,7 +105,7 @@ export async function startHandDeviceServer({ output, ttlSeconds = 10, publicOri
     const start = line.indexOf("{");
     if (start >= 0 && line.includes('"type"')) { try { observations.push(JSON.parse(line.slice(start))); } catch { /* unstructured */ } }
   };
-  const mf = new Miniflare({ port: 0, host: "127.0.0.1", durableObjectsPersist: join(output, "sqlite"),
+  const managed = { name: "managed",
     compatibilityDate: "2026-07-30", compatibilityFlags: ["nodejs_compat", "enable_request_signal"],
     modules: [{ type: "ESModule", path: "worker.mjs", contents: bundle.outputFiles[0].text }, ...assets],
     bindings: { NANOCODEX_HAND_DEVICE_CREDENTIAL_TTL_SECONDS: String(ttlSeconds) },
@@ -114,7 +120,9 @@ export async function startHandDeviceServer({ output, ttlSeconds = 10, publicOri
       if (path.endsWith("/catalog")) return Response.json({ connectors: {}, mcp_connections: [] });
       if (path.endsWith("/credentials/vault")) return Response.json({ vault: [] });
       return Response.json({ tools: [], machines: [], connections: [] });
-    } },
+    } } };
+  const mf = new Miniflare({ port: 0, host: "127.0.0.1", durableObjectsPersist: join(output, "sqlite"),
+    ...(workers.length ? { workers: [managed, ...workers] } : managed),
     handleRuntimeStdio(stdout, stderr) {
       createInterface({ input: stdout }).on("line", capture);
       createInterface({ input: stderr }).on("line", capture);
@@ -127,5 +135,5 @@ export async function startHandDeviceServer({ output, ttlSeconds = 10, publicOri
     return { status: response.status, body: await response.json() };
   };
   return { base, origin: publicOrigin ?? new URL(base).origin, owner, apiKey, otherOwner, otherApiKey, sessionCookie, observations, logs, callHandTool,
-    stop: () => mf.dispose() };
+    worker: name => mf.getWorker(name), stop: () => mf.dispose() };
 }
