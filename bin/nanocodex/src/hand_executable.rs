@@ -155,9 +155,27 @@ pub(crate) fn is_hand_role() -> bool {
     HAND_ROLE.load(std::sync::atomic::Ordering::Relaxed)
 }
 
+static FORWARDED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Record whether the other role forwarded this process here, then remove the
+/// marker from this process's environment so no child (Hand services, tool
+/// commands, terminals, or a later forward) inherits it. Call first thing in
+/// `main`, before any thread starts.
+pub(crate) fn take_forwarded() {
+    if std::env::var_os(FORWARDED_ENV).is_some() {
+        FORWARDED.store(true, std::sync::atomic::Ordering::Relaxed);
+        // SAFETY: called once at process start, before Tokio or any other
+        // thread exists, so no concurrent environment access is possible.
+        #[allow(unsafe_code)]
+        unsafe {
+            std::env::remove_var(FORWARDED_ENV);
+        }
+    }
+}
+
 /// Whether this process was forwarded here by the other role.
 pub(crate) fn forwarded() -> bool {
-    std::env::var_os(FORWARDED_ENV).is_some()
+    FORWARDED.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 /// Run `executable` with `arguments` (argv without argv\[0\]) in place of this

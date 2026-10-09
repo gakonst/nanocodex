@@ -7,7 +7,7 @@
 
 use std::{ffi::OsString, path::PathBuf, process::ExitCode};
 
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory as _, FromArgMatches as _, Parser, Subcommand};
 use nanocodex_cli_auth::client_from_environment;
 use nanocodex_managed::ManagedError;
 
@@ -18,24 +18,30 @@ use super::{
     vm_hand, vm_host,
 };
 
+/// Content identity of the Hand executable built from this tree, produced by
+/// the build script. Absent until the identity producer lands; the version
+/// then simply omits the line, so an updater falls back to byte comparison.
+pub(crate) const HAND_IDENTITY: Option<&str> = option_env!("NANOCODEX_HAND_IDENTITY");
+
 /// Version reported by the Hand: its package version and the content
 /// identity of its source and dependency closure. It deliberately carries no
 /// repository commit or build timestamp, which change with CLI-only commits.
-pub(crate) const HAND_LONG_VERSION: &str = concat!(
-    "Version: ",
-    env!("CARGO_PKG_VERSION"),
-    "\nHand Identity: ",
-    env!("NANOCODEX_HAND_IDENTITY"),
-);
-
-/// Content identity of the Hand executable built from this tree.
-pub(crate) const HAND_IDENTITY: &str = env!("NANOCODEX_HAND_IDENTITY");
+fn hand_version() -> &'static str {
+    static VERSION: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    VERSION.get_or_init(|| {
+        let mut version = format!("Version: {}", env!("CARGO_PKG_VERSION"));
+        if let Some(identity) = HAND_IDENTITY.filter(|identity| !identity.is_empty()) {
+            version.push_str("
+Hand Identity: ");
+            version.push_str(identity);
+        }
+        version
+    })
+}
 
 #[derive(Parser)]
 #[command(
     name = "nanocodex-hand",
-    version = HAND_LONG_VERSION,
-    long_version = HAND_LONG_VERSION,
     about = "Nanocodex Hand daemon; user commands are provided by the nanocodex CLI",
     disable_help_subcommand = true
 )]
@@ -106,8 +112,25 @@ fn try_main(arguments: Vec<OsString>) -> Result<(), ManagedError> {
                 .map_err(|error| ManagedError::Configuration(error.to_string()))
         });
     }
+    // A service validator must probe the Hand itself. A CLI path forwards
+    // here marked as forwarded; refusing it keeps a CLI from passing as a Hand.
+    if crate::hand_executable::forwarded()
+        && arguments.get(1).is_some_and(|argument| argument == "__device-hand")
+        && arguments.iter().any(|argument| argument == "--service-protocol")
+    {
+        return Err(ManagedError::Configuration(
+            "the Hand service protocol is answered only by the Hand executable itself, not through the nanocodex CLI".into(),
+        ));
+    }
     let _ = dotenvy::dotenv();
-    let cli = DaemonCli::parse_from(arguments);
+    // Report the Hand's own name whatever file name it is installed under
+    // (historically `nanocodex2`).
+    let command = DaemonCli::command()
+        .display_name("nanocodex-hand")
+        .version(hand_version())
+        .long_version(hand_version());
+    let cli = DaemonCli::from_arg_matches(&command.get_matches_from(arguments))
+        .unwrap_or_else(|error| error.exit());
     // VMM children are synchronous and must not start Tokio; standalone
     // screen hosts set their environment before any thread starts.
     match cli.command {

@@ -246,9 +246,16 @@ enum Tree {
 /// entrypoints are forwarded to the installed Hand executable; the CLI never
 /// runs them in-process.
 pub fn cli_main() -> ExitCode {
+    hand_executable::take_forwarded();
     let mut arguments: Vec<OsString> = std::env::args_os().collect();
     let tree = select_tree(&mut arguments);
     if is_daemon_command(&arguments) {
+        if hand_executable::forwarded() {
+            // The Hand forwarded this here, so it does not serve it either;
+            // never bounce it back.
+            eprintln!("Error: this command is served by the Nanocodex Hand executable, which did not accept it");
+            return ExitCode::FAILURE;
+        }
         return match hand_executable::hand_binary() {
             // Keep the invoked name so help and errors read as this command.
             Ok(hand) => {
@@ -268,34 +275,52 @@ pub fn cli_main() -> ExitCode {
 
 /// Entry point of the `nanocodex-hand` daemon executable.
 ///
-/// Daemon commands (and `--version`/`--help`) run here. Older installations
-/// may point `bin/nanocodex2` at this file, so any other command is forwarded
-/// to the CLI installed beside it, or runs here when none is installed.
+/// Only daemon commands (and the Hand's own `--version`/`--help`) run here;
+/// this entry never reaches the CLI command trees or the terminal UI, so they
+/// are not linked into the Hand. Older installations may point `bin/nanocodex2`
+/// at this file, so every other invocation, including a leading `--local`, is
+/// forwarded unchanged to the CLI installed beside it.
 pub fn hand_main() -> ExitCode {
     hand_executable::set_hand_role();
-    let mut arguments: Vec<OsString> = std::env::args_os().collect();
-    let tree = select_tree(&mut arguments);
-    let identity = arguments.len() == 2
-        && matches!(
-            arguments[1].to_str(),
-            Some("--version" | "-V" | "--help" | "-h")
-        );
-    if !is_daemon_command(&arguments)
-        && !identity
-        && !hand_executable::forwarded()
-        && let Ok(cli) = hand_executable::cli_binary()
-    {
-        return hand_executable::forward(&cli, arguments.first().cloned(), &arguments[1..]);
+    hand_executable::take_forwarded();
+    let arguments: Vec<OsString> = std::env::args_os().collect();
+    if nanocodex2::is_helper_process() || is_hand_daemon_invocation(&arguments) {
+        return nanocodex2::daemon::main(arguments);
     }
-    if arguments
-        .get(1)
-        .is_some_and(|argument| argument == "vm-run-config")
-    {
-        return local_main(arguments);
+    if hand_executable::forwarded() {
+        // The CLI forwarded this here; never bounce it back.
+        eprintln!("Error: this command is provided by the nanocodex CLI, not the Hand executable");
+        return ExitCode::FAILURE;
     }
-    match tree {
-        Tree::Managed => nanocodex2::main(arguments),
-        Tree::Local => local_main(arguments),
+    match hand_executable::cli_binary() {
+        Ok(cli) => hand_executable::forward(&cli, arguments.first().cloned(), &arguments[1..]),
+        Err(error) => {
+            eprintln!("Error: {error}; user commands are provided by the nanocodex CLI");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// Invocations the Hand executable serves itself, decided without the CLI
+/// command trees: daemon entrypoints, `hand` serving (no management
+/// subcommand, no help flag), and the Hand's bare `--version`/`--help`.
+fn is_hand_daemon_invocation(arguments: &[OsString]) -> bool {
+    let argument = |index: usize| arguments.get(index).and_then(|argument| argument.to_str());
+    match argument(1) {
+        Some("--version" | "-V" | "--help" | "-h") => arguments.len() == 2,
+        Some(
+            "__device-hand" | "__hand-screen" | "__hand-desktop" | "__install-hand"
+            | "__update-hand" | "wayland-host" | "desktop-host" | "server-host" | "__vm-run-config"
+            | "vm-run-config" | "__vm-clone-image" | "host",
+        ) => true,
+        // Serving flags start with `-`; a word is a CLI management subcommand.
+        Some("hand") => {
+            argument(2).is_none_or(|next| next.starts_with('-'))
+                && !arguments[2..]
+                    .iter()
+                    .any(|argument| argument == "-h" || argument == "--help")
+        }
+        _ => false,
     }
 }
 
