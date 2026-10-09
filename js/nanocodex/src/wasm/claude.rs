@@ -25,8 +25,8 @@ use super::{
 };
 use nanocodex_claude::{
     Claude, ClaudeAuthFuture, ClaudeAuthProvider, ClaudeAuthUnavailable, ClaudeClient,
-    ClaudeToolInvocation, ClaudeToolReply, ClaudeTools, ServerToolDefinition, ToolDefinition,
-    ToolResultContent,
+    ClaudeNestedToolUpdate, ClaudeToolInvocation, ClaudeToolProgress, ClaudeToolReply, ClaudeTools,
+    ServerToolDefinition, ToolDefinition, ToolResultContent,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -50,6 +50,64 @@ extern "C" {
         local_definitions: &str,
         execute_local_tool: &JsValue,
     ) -> Result<js_sys::Promise, JsValue>;
+
+    #[wasm_bindgen(catch, js_namespace = ["globalThis", "nanocodexHost"], js_name = nextClaudeCodeUpdate)]
+    fn host_next_claude_code_update(
+        host_definition_id: u32,
+        session_id: &str,
+        call_id: &str,
+    ) -> Result<js_sys::Promise, JsValue>;
+}
+
+/// Streams the live nested starts and results of one exec/wait observation
+/// until the host closes it. Missing support or host errors only end live
+/// observation; the final receipt still settles every reported call.
+async fn observe_live_updates(
+    host_definition_id: u32,
+    session_id: &str,
+    call_id: &str,
+    progress: &ClaudeToolProgress,
+) {
+    #[derive(Deserialize)]
+    #[serde(tag = "type", rename_all = "snake_case")]
+    enum Update {
+        NestedCallStarted {
+            call_id: String,
+            name: String,
+            input: Value,
+        },
+        NestedCallCompleted {
+            call: Value,
+        },
+        #[serde(other)]
+        Other,
+    }
+    loop {
+        let Ok(next) = host_next_claude_code_update(host_definition_id, session_id, call_id) else {
+            return;
+        };
+        let Ok(value) = JsFuture::from(next).await else {
+            return;
+        };
+        let Some(encoded) = value.as_string() else {
+            return;
+        };
+        match serde_json::from_str::<Update>(&encoded) {
+            Ok(Update::NestedCallStarted {
+                call_id,
+                name,
+                input,
+            }) => progress.update(ClaudeNestedToolUpdate::Started {
+                call_id,
+                name,
+                input,
+            }),
+            Ok(Update::NestedCallCompleted { call }) => {
+                progress.update(ClaudeNestedToolUpdate::Completed(call));
+            }
+            Ok(Update::Other) | Err(_) => {}
+        }
+    }
 }
 
 #[derive(Deserialize, Serialize)]
@@ -283,6 +341,7 @@ async fn execute_tool(
             let tools = local_tools.clone();
             let mut invocation = original.clone();
             invocation.call_id = call_id;
+            invocation.progress = None;
             let (abort, registration) = futures_util::future::AbortHandle::new_pair();
             let future = futures_util::future::Abortable::new(
                 async move {
@@ -337,6 +396,15 @@ async fn execute_tool(
             .and_then(|value| value.dyn_into().ok()),
         settled: false,
     };
+    if let Some(progress) = &invocation.progress {
+        observe_live_updates(
+            host_definition_id,
+            &invocation.session_id,
+            &invocation.call_id,
+            progress,
+        )
+        .await;
+    }
     let response = JsFuture::from(promise).await;
     pending.settled = true;
     let response = response.map_err(|error| {

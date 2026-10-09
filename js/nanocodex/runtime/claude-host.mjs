@@ -237,7 +237,7 @@ export function createClaudeHost({ auth, tools = [], onEvent = () => {}, fetch, 
         const wire = wireOutput(value);
         if (Array.isArray(value?.nested_calls)) {
           wire.metadata = { ...wire.metadata, _nanocodex_code: { calls: value.nested_calls.map(nestedEventCall),
-            origin_call_id: value.cell?.origin_call_id ?? callId } };
+            origin_call_id: value.cell?.origin_call_id ?? callId, running: value.cell?.running === true } };
         }
         const content = typeof wire.output === 'string' ? wire.output : wire.output.map((item) => {
           if (item.type === 'input_text') return { type: 'text', text: item.text };
@@ -256,6 +256,16 @@ export function createClaudeHost({ auth, tools = [], onEvent = () => {}, fetch, 
       // Preserve the session and other turn controllers for queued/reusable work.
       Object.defineProperty(operation, 'cancel', { value: () => abort(sessionId, turnId) });
       return operation;
+    },
+    // Live nested starts/results of the exec/wait observation started by
+    // executeClaudeTool for this call. Resolves null once that observation
+    // closes; the final _nanocodex_code receipt stays authoritative.
+    async nextClaudeCodeUpdate(sessionId, callId) {
+      const encoded = await code.nextCodeUpdate(sessionId, callId);
+      if (typeof encoded !== 'string') return null;
+      const update = JSON.parse(encoded);
+      if (update?.type === 'nested_call_completed') return JSON.stringify({ ...update, call: nestedEventCall(update.call) });
+      return update?.type === 'nested_call_started' ? encoded : JSON.stringify({ type: 'ignored' });
     },
     async executeTool(...args) { return JSON.stringify(wireOutput(await host.invokeTool(...args))); },
     async invokeTool(name, encodedInput, sessionId, callId, model, turnId) {

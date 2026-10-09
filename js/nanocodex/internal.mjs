@@ -480,6 +480,12 @@ const hostBridge = Object.freeze({
   executeClaudeTool(hostDefinitionId, name, input, sessionId, callId, model, turnId, localDefinitions, executeLocalTool) {
     return requiredDefinitionHost(hostDefinitionId).executeClaudeTool(name, input, sessionId, callId, model, turnId, localDefinitions, executeLocalTool);
   },
+  nextClaudeCodeUpdate(hostDefinitionId, sessionId, callId) {
+    const host = requiredDefinitionHost(hostDefinitionId);
+    // Hosts without live nested updates end the observation immediately.
+    return typeof host.nextClaudeCodeUpdate === "function"
+      ? host.nextClaudeCodeUpdate(sessionId, callId) : Promise.resolve(null);
+  },
   httpOpen(endpoint, apiKey, accountId, fedramp, sessionId, threadId, turnState, body) {
     const host = requiredSessionHost(threadId);
     if (typeof host.httpOpen !== "function") {

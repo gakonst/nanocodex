@@ -2,8 +2,12 @@
 //! comes from the builder's already-hooked catalog; no native effect bypasses it.
 use super::*;
 use nanocodex::{
-    claude::ClaudeToolInvocation,
-    tools::{Tool, ToolDefinition as CodeDefinition, ToolOutput, runtime::DynamicToolProvider},
+    claude::{ClaudeNestedToolUpdate, ClaudeToolInvocation, ClaudeToolProgress},
+    tools::{
+        Tool, ToolDefinition as CodeDefinition, ToolOutput,
+        code_mode::{CodeModeObserver, CodeModeUpdate, NestedToolCall},
+        runtime::DynamicToolProvider,
+    },
 };
 use std::{
     collections::HashMap,
@@ -85,6 +89,7 @@ impl DynamicToolProvider for Catalog {
             call_id: context.call_id().into(),
             instruction_revision: context.instruction_revision(),
             host_context,
+            progress: None,
         };
         Some(match admitted.execute(name, input, invocation).await {
             Ok(reply) => {
@@ -159,6 +164,41 @@ impl DynamicToolProvider for Catalog {
                 ToolOutput::error(error)
             }
         })
+    }
+}
+
+/// One nested call receipt in the `_nanocodex_code` shape the Claude driver
+/// publishes, shared by live updates and the final observation receipt.
+fn nested_call_json(call: &NestedToolCall) -> Value {
+    json!({
+        "call_id":call.call_id, "name":call.name, "input":call.input,
+        "output":call.output, "structured_result":call.structured_result,
+        "success":call.success, "started_after_ns":call.started_after_ns,
+        "duration_ns":call.duration_ns, "metadata":call.metadata,
+    })
+}
+
+/// Forwards nested starts and results to the Claude driver while a cell runs.
+struct LiveProgress(Option<ClaudeToolProgress>);
+impl CodeModeObserver for LiveProgress {
+    fn update(&mut self, update: CodeModeUpdate<'_>) {
+        let Some(progress) = &self.0 else {
+            return;
+        };
+        progress.update(match update {
+            CodeModeUpdate::NestedCallStarted {
+                call_id,
+                name,
+                input,
+            } => ClaudeNestedToolUpdate::Started {
+                call_id: call_id.to_owned(),
+                name: name.to_owned(),
+                input: input.clone(),
+            },
+            CodeModeUpdate::NestedCallCompleted(call) => {
+                ClaudeNestedToolUpdate::Completed(nested_call_json(call))
+            }
+        });
     }
 }
 
@@ -252,6 +292,7 @@ pub(super) fn wrap(native: ClaudeTools) -> nanocodex::agent::Result<ClaudeTools>
                             (snapshot, invocation.host_context.clone()),
                         );
                     }
+                    let mut progress = LiveProgress(invocation.progress.clone());
                     let context = ToolContext::new(
                         &invocation.model,
                         &invocation.session_id,
@@ -263,15 +304,18 @@ pub(super) fn wrap(native: ClaudeTools) -> nanocodex::agent::Result<ClaudeTools>
                     .with_instruction_revision(invocation.instruction_revision)
                     .with_host_context(Some(&invocation.call_id));
                     let execution = if wait {
-                        runtime.wait_for_code(&input.to_string(), context).await
+                        runtime
+                            .wait_for_code_with_updates(&input.to_string(), context, &mut progress)
+                            .await
                     } else {
                         runtime
-                            .execute_code(
+                            .execute_code_with_updates(
                                 input
                                     .get("code")
                                     .and_then(Value::as_str)
                                     .ok_or("exec requires a code string")?,
                                 context,
+                                &mut progress,
                             )
                             .await
                     }
@@ -291,14 +335,10 @@ pub(super) fn wrap(native: ClaudeTools) -> nanocodex::agent::Result<ClaudeTools>
                         ToolResultContent::Blocks(blocks) => blocks.push(json!({"type":"text","text":notice.text})),
                     }
                 }
-                let calls = execution.nested_calls.iter().map(|call| json!({
-                    "call_id":call.call_id, "name":call.name, "input":call.input,
-                    "output":call.output, "structured_result":call.structured_result,
-                    "success":call.success, "started_after_ns":call.started_after_ns,
-                    "duration_ns":call.duration_ns, "metadata":call.metadata,
-                })).collect::<Vec<_>>();
+                let calls = execution.nested_calls.iter().map(nested_call_json).collect::<Vec<_>>();
                 reply.metadata = Some(json!({"_nanocodex_code":{
                     "calls":calls,
+                    "running":execution.cell.as_ref().is_some_and(|cell| cell.running),
                     "origin_call_id":execution.cell.as_ref().map_or(invocation.call_id.as_str(), |cell| cell.origin_call_id.as_str()),
                 }}));
                 Ok(reply)

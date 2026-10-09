@@ -533,6 +533,11 @@ test('Managed Code Mode Claude and mixed-family public delegation, account gates
           controller.enqueue(new TextEncoder().encode(`event: message_start\ndata: ${JSON.stringify({type:'message_start',message:{id:'cancel-fixture',role:'assistant',model:body.model,content:[],usage:{input_tokens:10,output_tokens:0}}})}\n\n`));
         } }),{headers:{'content-type':'text/event-stream'}});
       }
+      if(prompt.includes('Live nested Code Mode proof')) {
+        // The exec yields while its nested call still runs; the generic running
+        // branch above continues it through wait.
+        return code('// @exec: {"yield_time_ms": 200}\nconst slow = await tools.exec_command({cmd:"sleep 2; printf LIVE_NESTED_MANAGED",workdir:"/brain",yield_time_ms:10000,max_output_tokens:1000}); let failure = "none"; try { await tools.exec_command({}); } catch (error) { failure = "caught"; } text(slow.output, failure);');
+      }
       assert.ok(admits('exec_command'));assert.ok(admits('Write'));assert.ok(admits('Read'));
       if(prompt.includes('Write durable proof')){writes++;return use('Write',{file_path:'/brain/proof.txt',content:'NATIVE_CLAUDE_DURABLE_PROOF'});}
       if(prompt.includes('Read durable proof')){
@@ -762,6 +767,32 @@ test('Managed Code Mode Claude and mixed-family public delegation, account gates
     await turn(agent,'Read durable proof','journey-read');
     await mf.dispose(); mf=new Miniflare(options);
     await turn(agent,'Run exec_command durable proof','journey-exec-command');
+    {
+      // Live nested Code Mode events through the public Worker and real Rust
+      // WASM: the yielded exec announces its still-running nested call before
+      // the parent result, and the wait reports it exactly once.
+      const live=(await call('/v1/agents','POST',{},201)).agent_id;
+      await turn(live,'Live nested Code Mode proof','journey-live-nested');
+      const liveHistory=await call(`/v1/agents/${live}/events/history?after=0&limit=256`);
+      await writeFile(resolve(evidence,'live-nested-history.json'),JSON.stringify(liveHistory,null,2));
+      const rows=liveHistory.data.map(row=>row.event).filter(event=>event&&['tool.call','tool.result'].includes(event.type));
+      const exec=rows.find(event=>event.type==='tool.call'&&event.payload.tool==='exec').payload.call_id;
+      const wait=rows.find(event=>event.type==='tool.call'&&event.payload.tool==='wait').payload.call_id;
+      const at=(type,id)=>rows.findIndex(event=>event.type===type&&event.payload.call_id===id);
+      const nested=[...new Set(rows.map(event=>event.payload.call_id).filter(id=>id.startsWith(exec+'/code-')))];
+      assert.equal(nested.length,2,'slow and failing nested calls are both published');
+      for (const id of nested) {
+        const own=rows.filter(event=>event.payload.call_id===id);
+        assert.deepEqual(own.map(event=>event.type),['tool.call','tool.result'],`${id} has exactly one start and one result`);
+        assert.ok(own.every(event=>event.payload.parent_call_id===exec),`${id} keeps its parent exec identity`);
+      }
+      const slow=nested.find(id=>JSON.stringify(rows[at('tool.call',id)].payload.arguments).includes('LIVE_NESTED_MANAGED'));
+      assert.ok(at('tool.call',slow)<at('tool.result',exec),'nested start is published live before the yielded exec result');
+      assert.ok(at('tool.result',exec)<at('tool.result',slow)&&at('tool.result',slow)<at('tool.result',wait),'slow result arrives during the wait observation');
+      assert.deepEqual(nested.map(id=>rows[at('tool.result',id)].payload.status).sort(),['completed','failed'],'nested outcomes keep their status');
+      assert.match(JSON.stringify(rows[at('tool.result',wait)].payload),/LIVE_NESTED_MANAGED caught/);
+      trace.push({liveNested:{exec,wait,nested}});
+    }
     {
       // Attachments: images and inline PDFs reach Claude as native blocks.
       const media=(await call('/v1/agents','POST',{settings:{model:'claude-opus-4-6',thinking:'low',reasoning_mode:'standard',fast_mode:false}},201)).agent_id;

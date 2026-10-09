@@ -2059,7 +2059,8 @@ fn is_user_turn_start(message: &Message) -> bool {
 
 mod agent;
 pub use agent::{
-    Claude, ClaudeBuilder, ClaudeToolInvocation, ClaudeToolReply, ClaudeTools, rewind_checkpoint,
+    Claude, ClaudeBuilder, ClaudeNestedToolUpdate, ClaudeToolInvocation, ClaudeToolProgress,
+    ClaudeToolReply, ClaudeTools, rewind_checkpoint,
 };
 
 /// Portable durability integration with provider-native state.
