@@ -5,7 +5,7 @@ mod wire;
 #[cfg(test)]
 mod tests;
 
-pub use load::{DurableSession, RolloutSessionInfo, RolloutTranscriptItem};
+pub use load::{DurableSession, RolloutSessionInfo, RolloutToolOutcome, RolloutTranscriptItem};
 pub use store::RolloutInfo;
 pub(crate) use store::{RolloutCreate, RolloutOrigin, RolloutRecorder, RolloutTurn};
 

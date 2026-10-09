@@ -1,7 +1,10 @@
 //! Discovery for native Claude journals. Discovery is read-only and never claims
 //! a durable owner; the normal Claude builder acquires ownership on continuation.
 use eyre::{Result, WrapErr, eyre};
-use nanocodex::{HarnessFamily, HarnessModel, agent::rollout::RolloutTranscriptItem};
+use nanocodex::{
+    HarnessFamily, HarnessModel,
+    agent::rollout::{RolloutToolOutcome, RolloutTranscriptItem},
+};
 use rusqlite::{Connection, OpenFlags, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -229,14 +232,6 @@ enum PromptPart {
     Media,
 }
 
-/// Harness-authored user-role messages that are never admitted as prompts.
-/// Exact recovery notices are retained in the checkpoint itself.
-const HARNESS_PREFIXES: &[&str] = &[
-    "Continue the current task from the interrupted response.",
-    "Host Stop hook requests continuation: ",
-    "Harness recovery notice: ",
-];
-
 /// Prompt inputs admitted by this journal, in acceptance order. They are the
 /// authority for real user turns: hook context, harness notices and
 /// continuations share the user role in the checkpoint but are never admitted.
@@ -330,7 +325,8 @@ fn prompt_display(message: &Value) -> String {
     text
 }
 
-fn harness_authored(message: &Value, notices: &[&str]) -> bool {
+/// Recovery and catalog-upgrade notices are recorded verbatim in the checkpoint.
+fn recovery_notice(message: &Value, notices: &[&str]) -> bool {
     let mut text = String::new();
     for block in blocks(message) {
         match block["text"].as_str() {
@@ -338,7 +334,7 @@ fn harness_authored(message: &Value, notices: &[&str]) -> bool {
             _ => return false,
         }
     }
-    notices.contains(&text.as_str()) || HARNESS_PREFIXES.iter().any(|p| text.starts_with(p))
+    notices.contains(&text.as_str())
 }
 
 fn tool_output(content: &Value) -> String {
@@ -378,16 +374,21 @@ fn transcript(checkpoint: &Value, prompts: &[Vec<PromptPart>]) -> Vec<RolloutTra
     let receipt = |message: &Value| blocks(message).any(|block| block["type"] == "tool_result");
     // Code Mode child calls retained by the engine without their results. A
     // call started by exec and finished by a later wait keeps its final status.
-    let mut children = HashMap::<&str, Vec<&Value>>::new();
+    let mut children = HashMap::<&str, Vec<(&str, &Value)>>::new();
     let mut outcomes = HashMap::<&str, &str>::new();
     for round in conversation["code_calls"].as_array().into_iter().flatten() {
-        let Some(parent) = round["tool_use_id"].as_str() else {
+        let Some(receipt_id) = round["tool_use_id"].as_str() else {
             continue;
         };
+        let origin = round["origin_call_id"].as_str();
         for call in round["calls"].as_array().into_iter().flatten() {
             if let Some(call_id) = call["call_id"].as_str() {
                 outcomes.insert(call_id, call["status"].as_str().unwrap_or("unknown"));
-                children.entry(parent).or_default().push(call);
+                let cell = call["parent_call_id"]
+                    .as_str()
+                    .or(origin)
+                    .unwrap_or(receipt_id);
+                children.entry(receipt_id).or_default().push((cell, call));
             }
         }
     }
@@ -407,6 +408,7 @@ fn transcript(checkpoint: &Value, prompts: &[Vec<PromptPart>]) -> Vec<RolloutTra
                         call_id: block["id"].as_str().unwrap_or_default().into(),
                         name: block["name"].as_str().unwrap_or_default().into(),
                         arguments: block["input"].to_string(),
+                        parent_call_id: None,
                     }),
                     _ => {} // Never expose signed thinking or binary payloads in the picker/TUI.
                 }
@@ -417,7 +419,7 @@ fn transcript(checkpoint: &Value, prompts: &[Vec<PromptPart>]) -> Vec<RolloutTra
         if receipt(message) {
             for block in blocks(message).filter(|block| block["type"] == "tool_result") {
                 let parent = block["tool_use_id"].as_str().unwrap_or_default();
-                for call in children.get(parent).into_iter().flatten() {
+                for (cell, call) in children.get(parent).into_iter().flatten() {
                     let call_id = call["call_id"].as_str().unwrap_or_default();
                     if !replayed_children.insert(call_id) {
                         continue;
@@ -426,17 +428,23 @@ fn transcript(checkpoint: &Value, prompts: &[Vec<PromptPart>]) -> Vec<RolloutTra
                         call_id: call_id.into(),
                         name: call["name"].as_str().unwrap_or_default().into(),
                         arguments: call["input"].to_string(),
+                        parent_call_id: Some((*cell).into()),
                     });
-                    items.push(match outcomes.get(call_id).copied() {
-                        Some("completed") => RolloutTranscriptItem::tool_result(call_id, "", false),
-                        Some("failed") => RolloutTranscriptItem::tool_result(call_id, "", true),
-                        _ => RolloutTranscriptItem::tool_result(call_id, "Outcome unknown", true),
-                    });
+                    let outcome = match outcomes.get(call_id).copied() {
+                        Some("completed") => RolloutToolOutcome::Completed,
+                        Some("failed") => RolloutToolOutcome::Failed,
+                        _ => RolloutToolOutcome::Unknown,
+                    };
+                    items.push(RolloutTranscriptItem::tool_result(call_id, "", outcome));
                 }
                 items.push(RolloutTranscriptItem::tool_result(
                     parent,
                     &tool_output(&block["content"]),
-                    block["is_error"].as_bool() == Some(true),
+                    if block["is_error"].as_bool() == Some(true) {
+                        RolloutToolOutcome::Failed
+                    } else {
+                        RolloutToolOutcome::Completed
+                    },
                 ));
             }
             index += 1;
@@ -450,24 +458,32 @@ fn transcript(checkpoint: &Value, prompts: &[Vec<PromptPart>]) -> Vec<RolloutTra
             .map_or(messages.len(), |offset| index + offset);
         let run = &messages[index..end];
         index = end;
-        let admitted = run.iter().find_map(|message| {
+        // Several admissions can be adjacent when earlier turns produced no
+        // assistant message; every matched prompt is its own user turn.
+        let mut admitted = false;
+        let mut unmatched = Vec::new();
+        for message in run {
             let parts = prompt_parts(message);
-            prompts
-                .get(next_prompt..)?
-                .iter()
-                .position(|prompt| *prompt == parts)
-                .map(|offset| (message, offset))
-        });
-        if let Some((message, offset)) = admitted {
-            next_prompt += offset + 1;
-            items.push(RolloutTranscriptItem::User(prompt_display(message)));
+            let matched = prompts
+                .get(next_prompt..)
+                .and_then(|rest| rest.iter().position(|prompt| *prompt == parts));
+            if let Some(offset) = matched {
+                next_prompt += offset + 1;
+                admitted = true;
+                items.push(RolloutTranscriptItem::User(prompt_display(message)));
+            } else {
+                unmatched.push(message);
+            }
+        }
+        if admitted {
             continue;
         }
-        // Steering input, or a prompt whose journal input was not retained.
-        for message in run
-            .iter()
-            .filter(|message| !harness_authored(message, &notices))
-        {
+        // Unknown provenance: steering input, or a prompt whose journal input
+        // was not retained. Show it rather than guess it was harness text.
+        for message in unmatched {
+            if recovery_notice(message, &notices) {
+                continue;
+            }
             let text = prompt_display(message);
             if !text.is_empty() {
                 items.push(RolloutTranscriptItem::User(text));

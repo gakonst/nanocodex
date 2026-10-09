@@ -1963,6 +1963,10 @@ fn text_may_encode_value(text: &str, value: &Value) -> bool {
 }
 
 fn tool_result_state(tool: &str, status: &str, result: &Value) -> ToolState {
+    // Replayed history retains unrecorded outcomes as unknown, not failure.
+    if status == "unknown" {
+        return ToolState::Yielded;
+    }
     if !matches!(status, "success" | "completed") {
         return ToolState::Failed;
     }

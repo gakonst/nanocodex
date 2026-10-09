@@ -158,6 +158,8 @@ pub enum RolloutTranscriptItem {
         name: String,
         /// Serialized tool arguments sent by the model.
         arguments: String,
+        /// Code Mode cell that issued this call, when it is a nested call.
+        parent_call_id: Option<String>,
     },
     /// The settled outcome of an earlier [`Self::Tool`] call.
     ToolResult {
@@ -165,9 +167,20 @@ pub enum RolloutTranscriptItem {
         call_id: String,
         /// Bounded model-visible text; media is represented by placeholders.
         output: String,
-        /// Whether the tool reported a failed outcome.
-        is_error: bool,
+        /// Outcome as recorded; unknown is never presented as failure.
+        outcome: RolloutToolOutcome,
     },
+}
+
+/// Recorded outcome of a replayed tool call.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RolloutToolOutcome {
+    /// The tool returned without reporting an error.
+    Completed,
+    /// The tool reported an error.
+    Failed,
+    /// No outcome was recorded, or the recorded outcome is unknown.
+    Unknown,
 }
 
 impl RolloutTranscriptItem {
@@ -176,7 +189,11 @@ impl RolloutTranscriptItem {
 
     /// Creates a tool outcome bounded to [`Self::MAX_TOOL_OUTPUT_BYTES`].
     #[must_use]
-    pub fn tool_result(call_id: impl Into<String>, output: &str, is_error: bool) -> Self {
+    pub fn tool_result(
+        call_id: impl Into<String>,
+        output: &str,
+        outcome: RolloutToolOutcome,
+    ) -> Self {
         let mut end = output.len().min(Self::MAX_TOOL_OUTPUT_BYTES);
         while !output.is_char_boundary(end) {
             end -= 1;
@@ -188,7 +205,7 @@ impl RolloutTranscriptItem {
         Self::ToolResult {
             call_id: call_id.into(),
             output: bounded,
-            is_error,
+            outcome,
         }
     }
 }
@@ -585,6 +602,7 @@ fn materialize_rollout(path: &Path, thread_id: &str) -> io::Result<MaterializedR
             Some("event_msg") => {
                 if let Some(item) = visible_rollout_event(&value["payload"]) {
                     transcript.push(item);
+                    transcript.extend(visible_rollout_outcome(&value["payload"]));
                 }
             }
             _ => {}
@@ -650,12 +668,14 @@ pub(in crate::rollout) fn visible_rollout_event(
                 call_id: payload.get("call_id")?.as_str()?.to_owned(),
                 name: format!("{server}.{tool}"),
                 arguments: serde_json::to_string(invocation.get("arguments")?).ok()?,
+                parent_call_id: None,
             })
         }
         "web_search_end" => Some(RolloutTranscriptItem::Tool {
             call_id: payload.get("call_id")?.as_str()?.to_owned(),
             name: "web_search".to_owned(),
             arguments: serde_json::to_string(payload.get("action")?).ok()?,
+            parent_call_id: None,
         }),
         _ => None,
     }
@@ -728,8 +748,60 @@ pub(in crate::rollout) fn visible_tool_output(
             .join("\n"),
         _ => return None,
     };
-    let is_error = success.and_then(serde_json::Value::as_bool) == Some(false);
-    Some(RolloutTranscriptItem::tool_result(call_id, &text, is_error))
+    let outcome = if success.and_then(serde_json::Value::as_bool) == Some(false) {
+        RolloutToolOutcome::Failed
+    } else {
+        RolloutToolOutcome::Completed
+    };
+    Some(RolloutTranscriptItem::tool_result(call_id, &text, outcome))
+}
+
+/// Outcome recorded by a Codex end event for the call it also reconstructs.
+pub(in crate::rollout) fn visible_rollout_outcome(
+    payload: &serde_json::Value,
+) -> Option<RolloutTranscriptItem> {
+    let call_id = payload.get("call_id")?.as_str()?;
+    match payload.get("type")?.as_str()? {
+        "mcp_tool_call_end" => {
+            let result = payload.get("result")?;
+            let (output, outcome) = if let Some(ok) = result.get("Ok") {
+                let text = ok
+                    .get("content")
+                    .and_then(serde_json::Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|item| match item.get("type")?.as_str()? {
+                        "text" => item.get("text")?.as_str().map(str::to_owned),
+                        "image" => Some("[image]".to_owned()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                let failed = ok.get("isError").and_then(serde_json::Value::as_bool) == Some(true);
+                let outcome = if failed {
+                    RolloutToolOutcome::Failed
+                } else {
+                    RolloutToolOutcome::Completed
+                };
+                (text, outcome)
+            } else {
+                let error = result.get("Err")?;
+                let text = error
+                    .as_str()
+                    .map_or_else(|| error.to_string(), str::to_owned);
+                (text, RolloutToolOutcome::Failed)
+            };
+            Some(RolloutTranscriptItem::tool_result(
+                call_id, &output, outcome,
+            ))
+        }
+        "web_search_end" => Some(RolloutTranscriptItem::tool_result(
+            call_id,
+            "",
+            RolloutToolOutcome::Completed,
+        )),
+        _ => None,
+    }
 }
 
 fn visible_text(payload: &serde_json::Value, key: &str) -> Option<String> {
@@ -758,5 +830,6 @@ pub(in crate::rollout) fn visible_tool_call(
         call_id: payload.get("call_id")?.as_str()?.to_owned(),
         name,
         arguments,
+        parent_call_id: None,
     })
 }
