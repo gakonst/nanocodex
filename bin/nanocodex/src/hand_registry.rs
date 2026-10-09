@@ -45,7 +45,9 @@ impl Command {
             Self::Prune => prune().await,
             Self::Stream(command) => command.run().await,
             Self::Devices { command } => command
-                .unwrap_or(nanocodex_bin_shared::device_identity::DevicesCommand::List { json: false })
+                .unwrap_or(
+                    nanocodex_bin_shared::device_identity::DevicesCommand::List { json: false },
+                )
                 .run()
                 .await
                 .map_err(|error| eyre!(error.to_string())),

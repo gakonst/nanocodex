@@ -603,10 +603,13 @@ impl DeviceIdentity {
     }
 
     fn generate(&self, name: &str) -> Result<DeviceKey, DeviceError> {
-        let document = Ed25519KeyPair::generate_pkcs8(&SystemRandom::new())
-            .map_err(|_| fatal("Cannot generate a Hand device key"))?;
-        let bytes = Zeroizing::new(document.as_ref().to_vec());
-        drop(document);
+        // ring's PKCS#8 document cannot be zeroized; keep it scoped to this
+        // copy and zeroize the copy that is written and parsed.
+        let bytes = {
+            let document = Ed25519KeyPair::generate_pkcs8(&SystemRandom::new())
+                .map_err(|_| fatal("Cannot generate a Hand device key"))?;
+            Zeroizing::new(document.as_ref().to_vec())
+        };
         create_private_file(&self.directory.join(name), &bytes)
             .and_then(|()| sync_directory(&self.directory))
             .map_err(|error| local("Cannot create the Hand device key", &error))?;
