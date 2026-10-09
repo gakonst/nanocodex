@@ -11,3 +11,33 @@ export const VM_HOST_ATTACHMENT_ROUTE =
 export function vmHostAttachmentRouteId(allocationId: string, hostEpoch: number): string {
   return `vm-host:${allocationId}:${hostEpoch}`;
 }
+
+/** Device-credential binding of an account VM factory socket; set only by the Worker. */
+export const VM_HOST_DEVICE_ID = "x-nanocodex-vm-host-device-id";
+export const VM_HOST_DEVICE_MACHINE = "x-nanocodex-vm-host-device-machine";
+export const VM_HOST_DEVICE_KEY_VERSION = "x-nanocodex-vm-host-device-key-version";
+
+export type VmHostDevice = Readonly<{ device_id: string; machine_id: string; key_version: number }>;
+
+/**
+ * Sets the authenticated device binding, or removes every device header so a
+ * caller cannot assert one on an account-credential connection.
+ */
+export function setVmHostDevice(headers: Headers, device: VmHostDevice | undefined): void {
+  for (const name of [VM_HOST_DEVICE_ID, VM_HOST_DEVICE_MACHINE, VM_HOST_DEVICE_KEY_VERSION]) headers.delete(name);
+  if (device === undefined) return;
+  headers.set(VM_HOST_DEVICE_ID, device.device_id);
+  headers.set(VM_HOST_DEVICE_MACHINE, device.machine_id);
+  headers.set(VM_HOST_DEVICE_KEY_VERSION, String(device.key_version));
+}
+
+/** Durable object name of a scope's VM host pool. */
+export async function vmHostPoolLocator(scope: "agent" | "account" | "system", identity: string): Promise<string> {
+  const digest = new Uint8Array(await crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(`nanocodex:vm-host-pool:v1\0${scope}\0${identity}`),
+  ));
+  let binary = "";
+  for (const byte of digest) binary += String.fromCharCode(byte);
+  return btoa(binary).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/u, "");
+}

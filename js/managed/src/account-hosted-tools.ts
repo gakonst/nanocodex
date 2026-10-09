@@ -5,6 +5,7 @@ import { HandShareStore } from "./hand-share-store";
 import { HandRemoteBroker, REMOTE_VM_ASSERTION, type RemoteVMPublisher } from "./hand-remote";
 import { validRecordingCapability, screenTool, type ScreenTarget } from "./hand-remote-agent";
 import { HandHosts, boundedJSON } from "./hand-hosts";
+import { vmHostPoolLocator } from "./vm-host-boundary";
 import { HandDevices, handDeviceCredentialTtlMs, isHandDeviceAuthorization, reservedHandDeviceMachine,
   validHandDeviceId, type HandDeviceEnrolledBy, type HandDeviceResult, type HandDeviceAccount } from "./hand-devices";
 import { remoteICE, type RemoteICEEnv } from "./hand-remote-ice";
@@ -89,6 +90,8 @@ type RoutedHostedTool = HostedToolsCodeTool & Readonly<{
 type AccountHostedToolsEnv = RemoteICEEnv & HandEnv & Partial<ScreenPlaybackEnv> & {
   NANOCODEX_ACCOUNT_TOOLS?: DurableObjectNamespace<AccountHostedTools>;
   NANOCODEX_SESSIONS?: DurableObjectNamespace<import("./index").DurableAgentSession>;
+  /** Account VM factory pools; device revoke/rotate closes factory sockets there. */
+  NANOCODEX_VM_HOST_POOLS?: DurableObjectNamespace<import("./vm-host-pool").VmHostPool>;
   /** Device credential lifetime in seconds, clamped to [5, 900]; local/E2E only. */
   NANOCODEX_HAND_DEVICE_CREDENTIAL_TTL_SECONDS?: string;
 };
@@ -270,7 +273,10 @@ export class AccountHostedTools extends DurableObject<AccountHostedToolsEnv> {
   }
 
   /** Close every live publisher socket authenticated by one device. */
-  #closeDeviceSockets(deviceId: string, reason: string, code: 1008 | 1012 = 1008): number {
+  #closeDeviceSockets(deviceId: string, reason: string, code: 1008 | 1012 = 1008, minKeyVersion: number | null = null): number {
+    const vmClose = this.#closeVmHostDevice(deviceId, minKeyVersion, reason);
+    this.#vmHostCloses.add(vmClose);
+    void vmClose.finally(() => this.#vmHostCloses.delete(vmClose));
     let closed = 0;
     for (const socket of this.ctx.getWebSockets(`hand-device:${deviceId}`)) {
       if (socket.readyState === WebSocket.OPEN) closed++;
@@ -278,6 +284,64 @@ export class AccountHostedTools extends DurableObject<AccountHostedToolsEnv> {
       try { socket.close(code, reason); } catch { /* Already closed. */ }
     }
     return closed + this.#remote.revokePublisher(`hand-device:${deviceId}`);
+  }
+
+  readonly #vmHostCloses = new Set<Promise<number>>();
+
+  /**
+   * Closes the device's VM factory sockets in the owner's account pool and fences
+   * the device there (revoked, or key versions older than minKeyVersion).
+   */
+  async #closeVmHostDevice(deviceId: string, minKeyVersion: number | null, reason: string): Promise<number> {
+    const pools = this.env.NANOCODEX_VM_HOST_POOLS, owner = this.#ownerId;
+    if (!pools || !owner) return 0;
+    const close = pools.getByName(await vmHostPoolLocator("account", owner)).closeHandDevice(deviceId, minKeyVersion, reason)
+      .catch(() => { console.warn({ type: "vm.pool.device_close_failed", device_id: deviceId }); return 0; });
+    this.ctx.waitUntil(close);
+    return close;
+  }
+
+  /** Waits for VM factory closes started by #closeDeviceSockets; returns how many sockets closed. */
+  async #settleVmHostCloses(): Promise<number> {
+    const pending = [...this.#vmHostCloses];
+    return (await Promise.all(pending)).reduce((sum, value) => sum + value, 0);
+  }
+
+  /**
+   * Admission of a VM factory registration in this owner's VM host pool. A
+   * device registers only a factory its own (directory) machine advertises; an
+   * account credential is refused for a factory advertised by a device-bound
+   * machine or when the owner requires device keys.
+   */
+  async vmFactoryAdmission(ownerId: string, factoryName: string, device?: { device_id: string; key_version: number }):
+    Promise<{ ok: true; machine_id?: string } | { ok: false; code: string }> {
+    if (!isUserId(ownerId) || typeof factoryName !== "string") return { ok: false, code: "unauthorized" };
+    if (!this.#owns(ownerId)) return device ? { ok: false, code: "hand_reenroll_required" } : { ok: true };
+    const capability = "vm_factory:" + factoryName;
+    const advertisers = this.#directory.entries()
+      .filter(entry => entry.machine.capabilities?.includes(capability)).map(entry => entry.machine.id);
+    if (device) {
+      const record = this.#devices.get(device.device_id);
+      if (!record || record.status !== "active" || record.key_version !== device.key_version) {
+        return { ok: false, code: "hand_reenroll_required" };
+      }
+      if (!advertisers.includes(record.machine_id)) {
+        console.info({ type: "hand.connection", auth_mode: "device_key", device_id: record.id, machine_id: record.machine_id,
+          surface: "vm_host", outcome: "rejected", reason_code: "vm_factory_not_advertised" });
+        return { ok: false, code: "vm_factory_not_advertised" };
+      }
+      console.info({ type: "hand.connection", auth_mode: "device_key", device_id: record.id, key_version: record.key_version,
+        machine_id: record.machine_id, surface: "vm_host" });
+      return { ok: true, machine_id: record.machine_id };
+    }
+    const bound = advertisers.find(machine => this.#devices.deviceRequired(machine));
+    if (bound !== undefined || this.#devices.policy().require_device_keys) {
+      console.info({ type: "hand.connection", auth_mode: "account_api_key", legacy: true, surface: "vm_host",
+        ...(bound === undefined ? {} : { machine_id: bound }), outcome: "rejected", reason_code: "hand_device_required" });
+      return { ok: false, code: "hand_device_required" };
+    }
+    console.info({ type: "hand.connection", auth_mode: "account_api_key", legacy: true, surface: "vm_host" });
+    return { ok: true };
   }
 
   /** The device tag of the tool-host socket that holds this candidate lease, if any. */
@@ -325,6 +389,7 @@ export class AccountHostedTools extends DurableObject<AccountHostedToolsEnv> {
         if (!revoked) return { status: 404, body: { error: "not_found" } };
         let closed = this.#closeDeviceSockets(request.device_id, "hand_device_revoked");
         closed += this.#remote.fenceMachine(revoked.record.machine_id, undefined, "publisher_revoked").length;
+        closed += await this.#settleVmHostCloses();
         return { status: 200, body: { id: revoked.record.id, status: "revoked", revoked_at: revoked.record.revoked_at, closed_connections: closed } };
       }
     }
@@ -340,7 +405,10 @@ export class AccountHostedTools extends DurableObject<AccountHostedToolsEnv> {
     if (operation === "ssh-host-keys") return this.#devices.sshHostKeys(ownerId, origin, deviceId, body);
     const rotated = await this.#devices.rotate(ownerId, origin, deviceId, body);
     // Live publishers reconnect with the new key; old-version credentials are already gone.
-    if (rotated.rotated) this.#closeDeviceSockets(deviceId, "hand_device_rotated", 1012);
+    if (rotated.rotated) {
+      this.#closeDeviceSockets(deviceId, "hand_device_rotated", 1012, rotated.rotated.key_version);
+      await this.#settleVmHostCloses();
+    }
     return { status: rotated.status, body: rotated.body };
   }
 

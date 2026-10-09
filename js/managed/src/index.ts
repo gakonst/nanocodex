@@ -202,6 +202,9 @@ import {
   VM_HOST_POOL_OWNER,
   VM_HOST_POOL_SCOPE,
   VM_HOST_PUBLIC_ORIGIN,
+  setVmHostDevice,
+  vmHostPoolLocator,
+  type VmHostDevice,
 } from "./vm-host-boundary";
 import {
   hostedToolCatalogEntryAllowed,
@@ -1886,8 +1889,8 @@ async function managedFetchRoute(
     const handDevice = await routeHandDevices(request, url, { tools: env.NANOCODEX_ACCOUNT_TOOLS,
       authenticate: () => authenticate(request, env, url),
       resolveAccount: (ownerId, deviceId) => resolveHandDeviceAccount(env, ownerId, deviceId),
-      vmHost: async (ownerId, _device) => vmHostPoolUpgrade(request, env, { scope: "account", owner: ownerId, donor: ownerId,
-        locator: await vmHostPoolLocator("account", ownerId), publicOrigin: url.origin }) });
+      vmHost: async (ownerId, device) => vmHostPoolUpgrade(request, env, { scope: "account", owner: ownerId, donor: ownerId,
+        locator: await vmHostPoolLocator("account", ownerId), publicOrigin: url.origin, device }) });
     if (handDevice) return handDevice;
     const nativeInputDiscovery = await routeNativeInputDiscovery(request, env, url);
     if (nativeInputDiscovery) return nativeInputDiscovery;
@@ -3752,9 +3755,13 @@ function vmHostPoolUpgrade(
     donor: string;
     locator: string;
     publicOrigin: string;
+    /** Authenticated Hand device; its factory registration is bound to the device's machine. */
+    device?: VmHostDevice;
   }>,
 ): Promise<Response> {
   const headers = new Headers(request.headers);
+  // Device binding headers come only from authentication, never from the caller.
+  setVmHostDevice(headers, options.device);
   headers.delete("authorization");
   headers.delete("cookie");
   headers.delete("origin");
@@ -3770,16 +3777,6 @@ function vmHostPoolUpgrade(
     "https://vm-host-pool.internal/host",
     new Request(request, { headers }),
   );
-}
-
-async function vmHostPoolLocator(scope: VmHostPoolScope, identity: string): Promise<string> {
-  const digest = new Uint8Array(await crypto.subtle.digest(
-    "SHA-256",
-    encoder.encode(`nanocodex:vm-host-pool:v1\0${scope}\0${identity}`),
-  ));
-  let binary = "";
-  for (const byte of digest) binary += String.fromCharCode(byte);
-  return btoa(binary).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/u, "");
 }
 
 async function authorizedSystemVmHost(request: Request, expected: string | undefined): Promise<boolean> {

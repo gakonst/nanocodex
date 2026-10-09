@@ -1,8 +1,13 @@
 import { DurableObject } from "cloudflare:workers";
 
+import type { AccountHostedTools } from "./account-hosted-tools";
+
 import { isUserId } from "./account-auth";
 import { isVmFactoryName } from "./vm-factory-name";
 import {
+  VM_HOST_DEVICE_ID as DEVICE_ID,
+  VM_HOST_DEVICE_KEY_VERSION as DEVICE_KEY_VERSION,
+  VM_HOST_DEVICE_MACHINE as DEVICE_MACHINE,
   VM_HOST_DONOR as DONOR_ID,
   VM_HOST_POOL_AGENT as POOL_AGENT,
   VM_HOST_POOL_LOCATOR as POOL_LOCATOR,
@@ -48,6 +53,8 @@ type HostRow = {
   epoch: number;
   lease_id: string | null;
   lease_expires_at: number;
+  /** Device-bound machine that owns this factory registration; permanent once set. */
+  machine_id: string | null;
 };
 
 type AllocationRow = {
@@ -73,16 +80,20 @@ type AllocationRow = {
   updated_at: number;
 };
 
+type HostDevice = { id: string; machineId: string; keyVersion: number };
+
 type HostAttachment = {
   kind: "vm-host";
   donorId: string;
   publicOrigin: string;
+  /** Authenticating Hand device; the socket also carries its hand-device tag. */
+  device?: HostDevice;
   hostId?: string;
   leaseId?: string;
   epoch?: number;
 };
 
-type HostClaim = PoolClaim & { donorId: string; publicOrigin: string };
+type HostClaim = PoolClaim & { donorId: string; publicOrigin: string; device?: HostDevice };
 
 type AcquireRequest = {
   factory_name: string;
@@ -108,6 +119,8 @@ type AllocationReleaseIntent = AcquireRequest;
 
 export type VmHostPoolEnv = {
   NANOCODEX_SESSIONS: DurableObjectNamespace;
+  /** Owner Hand directory and device store; admits factory registrations. */
+  NANOCODEX_ACCOUNT_TOOLS?: DurableObjectNamespace<AccountHostedTools>;
 };
 
 /** A scope-keyed, durable scheduler for independently connected VM hosts. */
@@ -161,6 +174,10 @@ export class VmHostPool extends DurableObject<VmHostPoolEnv> {
         UNIQUE(owner_id, agent_id, mount_id),
         FOREIGN KEY(host_id) REFERENCES vm_hosts(host_id)
       );
+      CREATE TABLE IF NOT EXISTS vm_device_fences (
+        device_id TEXT PRIMARY KEY,
+        min_key_version INTEGER NOT NULL
+      );
       CREATE INDEX IF NOT EXISTS vm_allocations_host_state
         ON vm_allocations(host_id, state, slot);
       CREATE UNIQUE INDEX IF NOT EXISTS vm_allocations_live_slot
@@ -187,6 +204,9 @@ export class VmHostPool extends DurableObject<VmHostPoolEnv> {
         "ALTER TABLE vm_hosts ADD COLUMN public_origin TEXT NOT NULL DEFAULT ''",
       );
     }
+    if (!hostColumns.has("machine_id")) {
+      this.ctx.storage.sql.exec("ALTER TABLE vm_hosts ADD COLUMN machine_id TEXT");
+    }
     const allocationColumns = new Set(this.ctx.storage.sql.exec<{ name: string }>(
       "PRAGMA table_info(vm_allocations)",
     ).toArray().map((column) => column.name));
@@ -205,14 +225,20 @@ export class VmHostPool extends DurableObject<VmHostPoolEnv> {
       }
       const claim = hostClaim(request.headers);
       if (!claim || !this.#claimPool(claim)) return notFound();
+      // Synchronous device fence immediately before accept: a revoke or rotation
+      // that reached this pool first can never be outrun by an in-flight upgrade.
+      if (claim.device && this.#deviceFenced(claim.device)) {
+        return Response.json({ error: "hand_reenroll_required" }, { status: 401, headers: { "cache-control": "no-store" } });
+      }
       const pair = new WebSocketPair();
       const [client, server] = Object.values(pair);
       server.serializeAttachment({
         kind: "vm-host",
         donorId: claim.donorId,
         publicOrigin: claim.publicOrigin,
+        ...(claim.device ? { device: claim.device } : {}),
       } satisfies HostAttachment);
-      this.ctx.acceptWebSocket(server, ["vm-host"]);
+      this.ctx.acceptWebSocket(server, claim.device ? ["vm-host", "hand-device:" + claim.device.id] : ["vm-host"]);
       return new Response(null, { status: 101, webSocket: client });
     }
     if (request.method === "POST" && url.pathname === "/acquire") {
@@ -331,6 +357,32 @@ export class VmHostPool extends DurableObject<VmHostPoolEnv> {
   }
 
   webSocketClose(socket: WebSocket): void { this.#retireSocket(socket); }
+
+  /**
+   * Closes every factory socket authenticated by a Hand device and fences the
+   * device: revoked (minKeyVersion null) or rotated (older key versions). The
+   * fence is checked synchronously before accepting and after admission.
+   */
+  async closeHandDevice(deviceId: string, minKeyVersion: number | null, reason: string): Promise<number> {
+    if (typeof deviceId !== "string" || !UUID_V4.test(deviceId)
+      || (minKeyVersion !== null && !positiveInteger(minKeyVersion))) return 0;
+    const minimum = minKeyVersion ?? Number.MAX_SAFE_INTEGER;
+    this.ctx.storage.sql.exec(
+      "INSERT INTO vm_device_fences (device_id, min_key_version) VALUES (?, ?) "
+        + "ON CONFLICT(device_id) DO UPDATE SET min_key_version = MAX(min_key_version, excluded.min_key_version)",
+      deviceId, minimum,
+    );
+    const code = minKeyVersion === null ? 1008 : 1012;
+    const closeReason = reason === "hand_device_rotated" ? reason : "hand_device_revoked";
+    let closed = 0;
+    for (const socket of this.ctx.getWebSockets("hand-device:" + deviceId)) {
+      if (socket.readyState === WebSocket.OPEN) closed += 1;
+      closeSocket(socket, code, closeReason);
+      this.#retireSocket(socket);
+    }
+    console.info({ type: "vm.pool.device_closed", device_id: deviceId, reason: closeReason, closed });
+    return closed;
+  }
 
   webSocketError(socket: WebSocket): void { this.#retireSocket(socket); }
 
@@ -589,14 +641,34 @@ export class VmHostPool extends DurableObject<VmHostPoolEnv> {
 
   async #attachHost(
     socket: WebSocket,
-    attachment: HostAttachment,
+    initial: HostAttachment,
     command: Extract<VmHostCommand, { type: "attach" }>,
   ): Promise<void> {
+    let attachment = initial;
     if (attachment.hostId || attachment.leaseId || attachment.epoch) {
       throw new VmHostProtocolError("already_attached", "this socket already holds a VM host lease");
     }
+    const admission = await this.#admitFactory(attachment.device, command.factory_name);
+    // Re-validate after the owner round trip; nothing below awaits.
+    attachment = socket.deserializeAttachment() as HostAttachment;
+    if (socket.readyState !== WebSocket.OPEN || attachment?.kind !== "vm-host") {
+      throw new VmHostProtocolError("stale_lease", "the VM host socket closed during admission");
+    }
+    if (attachment.hostId || attachment.leaseId || attachment.epoch) {
+      throw new VmHostProtocolError("already_attached", "this socket already holds a VM host lease");
+    }
+    if (admission === true && attachment.device && this.#deviceFenced(attachment.device)) {
+      this.#rejectFactory(socket, attachment, command.factory_name, "hand_reenroll_required");
+    }
+    if (admission !== true) this.#rejectFactory(socket, attachment, command.factory_name, admission);
     const existing = this.#host(command.host_id);
     const named = this.#factory(command.factory_name);
+    // A factory registered by a device-bound machine stays bound to it forever.
+    const bound = existing?.machine_id ?? named?.machine_id ?? null;
+    if (attachment.device ? bound !== null && bound !== attachment.device.machineId : bound !== null) {
+      this.#rejectFactory(socket, attachment, command.factory_name,
+        attachment.device ? "hand_device_machine_mismatch" : "hand_device_required");
+    }
     if (existing && existing.donor_id !== attachment.donorId) {
       throw new VmHostProtocolError("host_conflict", "host_id is owned by a different donor");
     }
@@ -626,16 +698,17 @@ export class VmHostPool extends DurableObject<VmHostPoolEnv> {
     this.ctx.storage.sql.exec(
       `INSERT INTO vm_hosts
          (host_id, factory_name, donor_id, max_vms, vm_cpus, vm_memory_mib,
-          public_origin, epoch, lease_id, lease_expires_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          public_origin, epoch, lease_id, lease_expires_at, machine_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(host_id) DO UPDATE SET
+         machine_id = COALESCE(vm_hosts.machine_id, excluded.machine_id),
          public_origin = excluded.public_origin,
          epoch = excluded.epoch,
          lease_id = excluded.lease_id,
          lease_expires_at = excluded.lease_expires_at`,
       command.host_id, command.factory_name, attachment.donorId, command.max_vms,
       command.vm.cpus, command.vm.memory_mib, attachment.publicOrigin,
-      epoch, leaseId, expiresAt,
+      epoch, leaseId, expiresAt, attachment.device?.machineId ?? null,
     );
     this.ctx.storage.sql.exec(
       `UPDATE vm_allocations SET public_origin = ?, updated_at = ?
@@ -1013,6 +1086,48 @@ export class VmHostPool extends DurableObject<VmHostPoolEnv> {
     return undefined;
   }
 
+  #deviceFenced(device: HostDevice): boolean {
+    const fence = this.ctx.storage.sql.exec<{ min_key_version: number }>(
+      "SELECT min_key_version FROM vm_device_fences WHERE device_id = ?", device.id,
+    ).toArray()[0];
+    return fence !== undefined && device.keyVersion < fence.min_key_version;
+  }
+
+  /** Refuses a factory registration with a fixed code and closes its socket. */
+  #rejectFactory(socket: WebSocket, attachment: HostAttachment, factoryName: string, code: string): never {
+    console.info({ type: "vm.pool.factory_rejected", factory_name: factoryName, reason_code: code,
+      auth_mode: attachment.device ? "device_key" : "account_api_key",
+      ...(attachment.device ? { device_id: attachment.device.id, machine_id: attachment.device.machineId } : {}) });
+    try { this.#send(socket, { type: "error", code, message: "VM factory registration rejected" }); } catch { /* Closing fences. */ }
+    closeSocket(socket, 1008, code);
+    // stale_lease is not echoed again by the message handler.
+    throw new VmHostProtocolError("stale_lease", code);
+  }
+
+  /**
+   * Owner admission of a factory name. A device may register only a factory its
+   * own machine advertises; an account credential is refused for factories of
+   * device-bound machines and when the owner requires device keys. Returns
+   * true or a fixed rejection code.
+   */
+  async #admitFactory(device: HostDevice | undefined, factoryName: string): Promise<true | string> {
+    const claim = this.#poolClaim();
+    if (!claim || claim.scope === "system") return device ? "hand_device_required" : true;
+    if (device && claim.scope !== "account") return "hand_device_required";
+    const tools = this.#env.NANOCODEX_ACCOUNT_TOOLS;
+    if (!tools || !isUserId(claim.owner_id)) return device ? "vm_factory_admission_unavailable" : true;
+    let admission: { ok: true; machine_id?: string } | { ok: false; code: string };
+    try {
+      admission = await tools.getByName(claim.owner_id).vmFactoryAdmission(claim.owner_id, factoryName,
+        device ? { device_id: device.id, key_version: device.keyVersion } : undefined);
+    } catch {
+      return "vm_factory_admission_unavailable";
+    }
+    if (!admission.ok) return admission.code;
+    if (device && admission.machine_id !== device.machineId) return "hand_device_machine_mismatch";
+    return true;
+  }
+
   #poolClaim(): PoolClaim | undefined {
     return this.ctx.storage.sql.exec<PoolClaim>(
       "SELECT * FROM vm_pool_claim WHERE singleton = 1",
@@ -1073,7 +1188,18 @@ function hostClaim(headers: Headers): HostClaim | undefined {
   if (scope === "agent" && (!isUserId(ownerId) || !identifier(agentId))) return undefined;
   if (scope === "account" && (!isUserId(ownerId) || agentId !== null)) return undefined;
   if (scope === "system" && (ownerId !== null || agentId !== null || donorId !== "system")) return undefined;
+  const deviceId = headers.get(DEVICE_ID), deviceMachine = headers.get(DEVICE_MACHINE);
+  const deviceVersion = headers.get(DEVICE_KEY_VERSION);
+  let device: HostDevice | undefined;
+  if (deviceId !== null || deviceMachine !== null || deviceVersion !== null) {
+    // Only the Worker sets these, and only for an authenticated account-scope device.
+    if (scope !== "account" || !deviceId || !UUID_V4.test(deviceId) || !deviceMachine
+      || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(deviceMachine)
+      || !deviceVersion || !/^[1-9][0-9]{0,15}$/.test(deviceVersion)) return undefined;
+    device = { id: deviceId, machineId: deviceMachine, keyVersion: Number(deviceVersion) };
+  }
   return {
+    ...(device ? { device } : {}),
     scope,
     owner_id: ownerId,
     agent_id: agentId,
