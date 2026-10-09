@@ -87,12 +87,12 @@ assistant text and tool cards. This does **not** make OpenAI snapshots portable
 to Claude. Managed Claude accepts ordered text, base64 images and inline PDF or
 UTF-8 plain text documents, and replaces a remote image URL with a note to the
 model. JPEG, PNG, GIF and WebP originals uploaded by native clients are frozen
-into the dispatch when they fit the application bounds;
-other image formats and oversized originals use the bounded JPEG preview. Missing,
-invalid or over-limit originals and previews produce an explicit notice. Hand-local
-images require that Hand's image tools. Frozen dispatch and native Messages history
-preserve media across reopen without rereading mutable uploads. Web, Connect and
-native transcripts retain document labels alongside images and captions.
+into the dispatch when they fit the application bounds; other image formats and
+oversized originals use the bounded JPEG preview. Missing, invalid or over-limit
+originals and previews produce an explicit notice. Hand-local images require
+that Hand's image tools. Frozen dispatch and native Messages history preserve
+media across reopen without rereading mutable uploads. Web, Connect and native
+transcripts retain document labels alongside images and captions.
 
 The application bounds are 20 images, 5 MiB per inline image, five documents,
 10 MiB per document and 20 MiB combined inline media per prompt; these are conservative application limits, not a claim

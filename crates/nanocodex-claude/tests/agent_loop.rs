@@ -1033,8 +1033,8 @@ async fn tool_images_are_prepared_for_the_models_native_resolution() {
         json!({"type":"image","source":{"type":"url","url":"https://example.com/screenshot.png"}}),
     ];
 
-    // Sizes from Anthropic's resolution examples for each tier; the noise
-    // image fits the high-resolution tier but not the byte limit.
+    // Sizes from Anthropic's resolution examples for each tier. The noise image
+    // fits the high-resolution tier but not the byte limit.
     for (model, screenshot, noise) in [
         ("claude-opus-5-5", (2576, 1449), (1500, 750)),
         ("claude-haiku-4-5", (1456, 819), (1568, 784)),
@@ -2679,7 +2679,7 @@ async fn prompt_images_and_documents_become_native_claude_blocks() {
             log[0]["messages"][0]["content"]
         );
     }
-    // JPEG and WebP images that fit are sent unchanged; a GIF becomes a PNG of
+    // JPEG and WebP images that fit are sent unchanged. A GIF becomes a PNG of
     // its first frame, the only frame Claude reads.
     for (format, sent) in [
         (ImageFormat::Jpeg, "image/jpeg"),
@@ -2784,10 +2784,10 @@ async fn prompt_images_and_documents_become_native_claude_blocks() {
     server.abort();
 }
 
-/// Prompt images are prepared like tool-result images: converted to a format
-/// Claude accepts, reduced at most to the model's native resolution (the size
-/// the Messages API would otherwise reduce them to) and the per-image byte
-/// limit, or replaced by a note when they cannot be.
+/// Prompt images are prepared like tool-result images. They are converted to a
+/// format Claude accepts and reduced at most to the model's native resolution
+/// (the size the Messages API would otherwise reduce them to) and the per-image
+/// byte limit, or replaced by a note when they cannot be.
 #[tokio::test]
 async fn prompt_images_are_prepared_for_the_models_native_resolution() {
     use nanocodex_agent::input::{Prompt, UserInput};

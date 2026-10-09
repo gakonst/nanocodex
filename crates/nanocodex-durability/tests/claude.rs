@@ -1139,8 +1139,8 @@ async fn reopened_image_prompt(fail_at: Option<usize>, local: bool) -> usize {
     use std::sync::atomic::{AtomicUsize, Ordering};
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("state.sqlite");
-    // Anthropic's example size: kept by the high-resolution tier and reduced
-    // to 1456x819 by the standard tier.
+    // Anthropic's example size, which the high-resolution tier keeps and the
+    // standard tier reduces to 1456x819.
     let image = png_block(1920, 1080);
     let data = image["source"]["data"].as_str().unwrap();
     let input = if local {

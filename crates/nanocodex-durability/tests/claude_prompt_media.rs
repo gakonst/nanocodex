@@ -405,9 +405,10 @@ impl StateStore for SlowReads {
 
 /// An agent reopened with another model resumes an unfinished turn on the
 /// model its frozen requests name, so its image steers are prepared for that
-/// model: one retained across the reopen, and one accepted while the turn is
-/// still loading its continuation. A steer image Claude cannot use is retained
-/// as the note that replaces it, so URL credentials never reach the journal.
+/// model. One steer is retained across the reopen, and another is accepted
+/// while the turn is still loading its continuation. A steer image Claude
+/// cannot use is retained as the note that replaces it, so URL credentials
+/// never reach the journal.
 #[tokio::test]
 async fn recovered_image_steers_keep_the_resolution_of_the_frozen_model() {
     use base64::{Engine as _, engine::general_purpose::STANDARD};
@@ -415,8 +416,8 @@ async fn recovered_image_steers_keep_the_resolution_of_the_frozen_model() {
 
     let dir = tempfile::tempdir().unwrap();
     let db = dir.path().join("steer.sqlite");
-    // Anthropic's example size: kept by the high-resolution tier and reduced
-    // to 1456x819 by the standard tier.
+    // Anthropic's example size, which the high-resolution tier keeps and the
+    // standard tier reduces to 1456x819.
     let mut png = Cursor::new(Vec::new());
     image::DynamicImage::new_rgb8(1920, 1080)
         .write_to(&mut png, image::ImageFormat::Png)

@@ -12,7 +12,7 @@ use serde_json::{Value, json};
 /// images, so preparing a result when it is first admitted keeps earlier image
 /// bytes, and therefore the cached prefix, stable as history grows. The tool
 /// result keeps its error status: the tool's effect has already completed. A
-/// URL source becomes the same omission as a remote prompt image; file sources
+/// URL source becomes the same omission as a remote prompt image. File sources
 /// are provider-resolved and left unchanged.
 pub(super) async fn prepare_tool_images(results: &mut [ContentBlock], resolution: ImageResolution) {
     let images: Vec<&mut Value> = results

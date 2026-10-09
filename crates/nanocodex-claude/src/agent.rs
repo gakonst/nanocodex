@@ -2332,8 +2332,7 @@ struct TurnSteering {
     accepting: bool,
     /// The native image resolution of the model this turn's requests name.
     ///
-    /// Steers are prepared with it as they are accepted, so it is fixed at
-    /// admission.
+    /// Steers are prepared with it when accepted, so it is fixed at admission.
     images: crate::prompt::ImageResolution,
     events: AgentEventPublisher,
 }
@@ -3491,9 +3490,9 @@ impl State {
             (&self.policy, &turn.operation)
             && policy.supports_steering()
         {
-            // Journal the prepared steer: recovery prepares it again without
-            // change, and the journal never holds an image the model did not
-            // receive, such as a URL that may carry credentials.
+            // Journaling the prepared steer keeps images the model never
+            // receives, such as URLs that may carry credentials, out of the
+            // journal. Recovery prepares it again without change.
             let journaled = serde_json::to_string(&frozen).map_err(provider_error)?;
             let Some(index) = policy
                 .accept_steer(
@@ -5011,9 +5010,9 @@ impl LifecycleBackend for Driver {
                     // Queued turns keep the speed selected when they were accepted.
                     let speed = state.speed();
                     let task = async move {
-                        // The turn retires even if its run panics: its steering entry
-                        // holds a publisher that keeps the turn's event stream open,
-                        // and shutdown waits until no turn remains.
+                        // The steering entry's publisher keeps the turn's event stream
+                        // open, and shutdown waits until no turn remains, so the turn
+                        // retires even when its run panics.
                         let result = AssertUnwindSafe(running.run(request, speed, cancellation))
                             .catch_unwind()
                             .await;

@@ -12,8 +12,8 @@ use serde_json::json;
 use std::io::Cursor;
 
 const MAX_IMAGE_BYTES: usize = 5 * 1024 * 1024;
-/// Bounds an inline or local image before it is decoded and prepared within
-/// [`MAX_IMAGE_BYTES`].
+/// Bounds an inline or local image before it is decoded and prepared
+/// within [`MAX_IMAGE_BYTES`].
 const MAX_SOURCE_IMAGE_BYTES: usize = 64 * 1024 * 1024;
 /// Claude views images in square patches of this many pixels, one visual token each.
 const IMAGE_PATCH: u32 = 28;
@@ -29,8 +29,8 @@ fn invalid(message: impl Into<String>) -> NanocodexError {
     NanocodexError::InvalidRequest(message.into())
 }
 
-/// The largest image a model processes without the Messages API reducing it:
-/// a long-edge limit and a visual-token budget. See
+/// The largest image a model processes without the Messages API reducing it,
+/// given as a long-edge limit and a visual-token budget. See
 /// <https://platform.claude.com/docs/en/build-with-claude/vision#resolution-and-token-cost>.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct ImageResolution {
@@ -39,7 +39,7 @@ pub(crate) struct ImageResolution {
 }
 
 impl ImageResolution {
-    /// Claude 4.7 and later models use the high-resolution tier; all other
+    /// Claude 4.7 and later models use the high-resolution tier. All other
     /// models, including unknown ones, use the standard tier.
     pub(crate) fn of(model: &str) -> Self {
         match model {
@@ -61,8 +61,8 @@ impl ImageResolution {
             && u64::from(columns) * u64::from(rows) <= u64::from(self.max_tokens)
     }
 
-    /// The size the Messages API reduces an image to: the largest
-    /// aspect-preserving size within both limits, following Anthropic's
+    /// The largest aspect-preserving size within both limits, which is the
+    /// size the Messages API reduces an image to. It follows Anthropic's
     /// reference implementation, including its rounding. See
     /// <https://platform.claude.com/docs/en/build-with-claude/vision-coordinates#resize-your-image-before-uploading>.
     fn fit(self, width: u32, height: u32) -> (u32, u32) {
@@ -155,7 +155,7 @@ pub(crate) async fn prepare_base64(
     }
 }
 
-/// Prepares a prompt image the way tool-result images are prepared: an inline
+/// Prepares a prompt image the way tool-result images are prepared. An inline
 /// image is decoded, converted to a format Claude accepts, and reduced to the
 /// model's native resolution and the per-image byte limit. An image Claude
 /// cannot use, including any remote URL, yields the note that replaces it.
@@ -364,7 +364,7 @@ fn local_image(_path: &std::path::Path) -> std::result::Result<String, &'static 
 }
 
 /// Freeze local paths exactly once and prepare inline images for the model's
-/// native resolution; portable images need no host capability. An image Claude
+/// native resolution. Portable images need no host capability. An image Claude
 /// cannot use is replaced by a note that tells the model why, and the rest of
 /// the prompt is kept. Claude has no OpenAI image-detail field, so detail
 /// hints are not forwarded.
