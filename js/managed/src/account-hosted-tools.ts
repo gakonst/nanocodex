@@ -32,6 +32,7 @@ import { DiagnosticJournal, diagnosticScope } from "./diagnostic-journal";
 import { HandDirectory, publisherIdentity, validPublisherId, type HandEnv, type HandPublication } from "./hand-directory";
 import { ScreenAuthority, screenAuthorized, type ScreenFenceReason } from "./screen-authority";
 import { recordScreenPlaybackHostResult, type ScreenPlaybackEnv } from "./screen-playback";
+import { ScreenCallLedger } from "./screen-call-ledger";
 
 const OWNER_ASSERTION = "x-nanocodex-owner-id";
 const TOOL_RESULT = Symbol.for("nanocodex.toolResult");
@@ -133,6 +134,8 @@ export class AccountHostedTools extends DurableObject<AccountHostedToolsEnv> {
    * only /cancel-invocation aborts these controllers.
    */
   readonly #invocations = new Map<string, { controller: AbortController; refs: number }>();
+  /** Durable receipts for admitted screen actions; never redispatched. */
+  readonly #screenCalls: ScreenCallLedger;
   readonly #broker: HostedToolsBroker;
   readonly #remote: HandRemoteBroker;
   readonly #handHosts: HandHosts;
@@ -156,6 +159,7 @@ export class AccountHostedTools extends DurableObject<AccountHostedToolsEnv> {
       session_id TEXT NOT NULL, call_id TEXT NOT NULL, created_at INTEGER NOT NULL,
       PRIMARY KEY(session_id, call_id)
     )`);
+    this.#screenCalls = new ScreenCallLedger(ctx.storage.sql);
     ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS regional_local_publications (
       route_id TEXT PRIMARY KEY, candidate_id TEXT, publication_json TEXT
     )`);
@@ -220,6 +224,8 @@ export class AccountHostedTools extends DurableObject<AccountHostedToolsEnv> {
         // Status only; never awaited by the host socket.
         void recordScreenPlaybackHostResult({ NANOCODEX_SCREEN_PLAYBACK: playback }, result, owner).catch(() => false);
       },
+      // A host result for a call this instance lost (eviction) settles only its exact retained identity.
+      onLateResult: late => { this.#screenCalls.late(late); },
       idPrefix: () => "",
     });
     this.#handHosts = new HandHosts(ctx.storage, this.#remote);
@@ -304,6 +310,18 @@ export class AccountHostedTools extends DurableObject<AccountHostedToolsEnv> {
     const unavailable = () => Response.json({ error: "tool_unavailable" }, { status: 404 });
     if (!this.#owns(ownerId) || !isUserId(recipientId)) return unavailable();
     const sharedSession = await sharedHandSession(recipientId, invocation.session_id);
+    // Track the owner-side identity from arrival, so a concurrent receipt read
+    // waits for this call instead of fencing it while discovery is awaited.
+    const key = JSON.stringify([sharedSession, invocation.call_id]);
+    let tracked = this.#invocations.get(key);
+    if (!tracked) { tracked = { controller: new AbortController(), refs: 0 }; this.#invocations.set(key, tracked); }
+    tracked.refs++;
+    try { return await this.#invokeSharedRoute(ownerId, recipientId, invocation, sharedSession, signal); }
+    finally { if (--tracked.refs === 0 && this.#invocations.get(key) === tracked) this.#invocations.delete(key); }
+  }
+
+  async #invokeSharedRoute(ownerId: string, recipientId: string, invocation: InvocationRequest, sharedSession: string, signal: AbortSignal): Promise<Response> {
+    const unavailable = () => Response.json({ error: "tool_unavailable" }, { status: 404 });
     const route = this.#shares.resolve(invocation.route_token);
     const grant = route && this.#shares.grant(route.share_id, recipientId);
     if (!route || !grant || invocation.machine_id !== `shared:${grant.id}` || route.name !== invocation.name
@@ -334,18 +352,59 @@ export class AccountHostedTools extends DurableObject<AccountHostedToolsEnv> {
     }) }, { headers: { "cache-control": "no-store" } });
   }
 
-  async cancelSharedHand(ownerId: string, recipientId: string, invocation: InvocationRequest): Promise<void> {
-    if (!this.#owns(ownerId) || !isUserId(recipientId)) return;
+  /**
+   * Explicit cancellation of a recipient's call on the owner. A revoked grant
+   * may still cancel (it only reduces effects). Returns the owner's ledger
+   * cancellation state, which the recipient reports unchanged.
+   */
+  async cancelSharedHand(ownerId: string, recipientId: string, invocation: InvocationRequest): Promise<string> {
+    if (!this.#owns(ownerId) || !isUserId(recipientId)) return "unconfirmed";
     const route = this.#shares.resolve(invocation.route_token);
     const grant = route && this.#shares.grant(route.share_id, recipientId, true);
-    if (!route || !grant || invocation.machine_id !== `shared:${grant.id}` || invocation.name !== route.name) return;
+    if (!route || !grant || invocation.machine_id !== `shared:${grant.id}` || invocation.name !== route.name) return "unconfirmed";
     const session = await sharedHandSession(recipientId, invocation.session_id);
-    this.#sharedScreens.get(JSON.stringify([session, invocation.call_id]))?.abort();
-    const request = new Request("https://account-tools.internal/cancel-invocation", {
+    // /cancel-invocation reads the ledger state before it aborts the in-flight call.
+    const response = await this.fetch(new Request("https://account-tools.internal/cancel-invocation", {
       method:"POST",headers:{"content-type":"application/json"},
-      body:JSON.stringify({owner_id:ownerId,session_id:session,call_id:invocation.call_id}),
-    });
-    await this.fetch(request);
+      body:JSON.stringify({owner_id:ownerId,session_id:session,call_id:invocation.call_id,route_token:route.route_token}),
+    }));
+    const value = response.ok ? await response.json<{ cancel?: unknown }>().catch(() => undefined) : undefined;
+    return typeof value?.cancel === "string" && /^[a-z_]{1,32}$/.test(value.cancel) ? value.cancel : "unconfirmed";
+  }
+
+  /**
+   * Receipt-only read of a recipient's shared call on the owner. Requires the
+   * active (non-revoked) grant before and after every await; revocation
+   * withholds the result. Never resolves a handler, admits or dispatches.
+   */
+  async #sharedHandReceipt(ownerId: string, recipientId: string, invocation: InvocationRequest, waitMs: number): Promise<Response> {
+    const headers = { "cache-control": "no-store" };
+    const unauthorized = () => Response.json({ error: "receipt_unauthorized" }, { status: 403, headers });
+    if (!this.#owns(ownerId) || !isUserId(recipientId) || typeof invocation.route_token !== "string") return unauthorized();
+    const route = this.#shares.resolve(invocation.route_token);
+    const grant = route && this.#shares.grant(route.share_id, recipientId);
+    if (!route || !grant || invocation.machine_id !== `shared:${grant.id}` || route.name !== invocation.name) return unauthorized();
+    const sharedSession = await sharedHandSession(recipientId, invocation.session_id);
+    if (!this.#shares.grant(grant.id, recipientId)) return unauthorized();
+    let response: Response;
+    if (route.route_token.startsWith("screen:v1:")) {
+      // The stored owner route identifies the screen; the exposed alias name differs.
+      response = await this.#screenReceipt({ ...invocation, owner_id: ownerId, machine_id: undefined,
+        route_token: route.route_token, session_id: sharedSession }, waitMs, false);
+    } else {
+      if (!sharedMachineTool(route.name) || route.route_token.startsWith("hand-relay:")) return unauthorized();
+      response = await this.#invocationReceipt({ ...invocation, owner_id: ownerId, machine_id: grant.machine_id,
+        route_token: route.route_token, session_id: sharedSession }, waitMs);
+    }
+    // Revocation during the bounded wait withholds any result.
+    if (!this.#shares.grant(grant.id, recipientId)) { try { await response.body?.cancel(); } catch { /* Discarded. */ } return unauthorized(); }
+    if (response.status !== 200) return response;
+    const value = await response.json<InvocationResult & { receipt?: unknown }>();
+    if (!this.#shares.grant(grant.id, recipientId)) return unauthorized();
+    if (value.receipt === "running") return Response.json(value, { headers });
+    return Response.json({ ...value, ...(typeof value.process_route_token !== "string" ? {} : {
+      process_route_token: this.#shares.route(grant.id, "write_stdin", value.process_route_token),
+    }) }, { headers });
   }
 
   /** Discovery returns only its public projection in one RPC reply. */
@@ -679,28 +738,49 @@ export class AccountHostedTools extends DurableObject<AccountHostedToolsEnv> {
       }
       const screen = typeof body.route_token === "string" ? parseSharedScreenRoute(body.route_token) : undefined;
       if (screen) body = { ...body, machine_id: screen.machineId, route_token: screen.routeToken };
-      let cancel: "forwarded" | "requested" | "queued" | "not_delivered" | "not_dispatched" | "terminal" | "fenced" = "forwarded";
+      let cancel: "forwarded" | "unconfirmed" | "requested" | "queued" | "not_delivered" | "not_dispatched" | "terminal" | "fenced" = "forwarded";
       if (body.machine_id?.startsWith("shared:")) {
         const share = this.#shares.received().find(entry => body.machine_id === `shared:${entry.id}`);
-        if (share) await this.env.NANOCODEX_ACCOUNT_TOOLS?.getByName(share.owner_id).cancelSharedHand(share.owner_id, body.owner_id, body);
+        if (share && this.env.NANOCODEX_ACCOUNT_TOOLS) {
+          const owner = await this.env.NANOCODEX_ACCOUNT_TOOLS.getByName(share.owner_id).cancelSharedHand(share.owner_id, body.owner_id, body);
+          if (typeof owner === "string") cancel = owner as typeof cancel;
+        }
       } else {
+        // Screen actions keep their own ledger; read it before the abort settles them.
+        const screen = this.#screenCalls.cancelState(body.session_id, body.call_id);
         this.#sharedScreens.get(JSON.stringify([body.session_id, body.call_id]))?.abort();
         this.#invocations.get(JSON.stringify([body.session_id, body.call_id]))?.controller.abort();
-        const row = this.ctx.storage.sql.exec<{call_id:string;state:string}>("SELECT call_id,state FROM hosted_tool_calls WHERE session_id=? AND source_call_id=?", body.session_id, body.call_id).toArray()[0];
+        const row = screen ? undefined : this.ctx.storage.sql.exec<{call_id:string;state:string}>("SELECT call_id,state FROM hosted_tool_calls WHERE session_id=? AND source_call_id=?", body.session_id, body.call_id).toArray()[0];
         // Admitted calls are cancelled through their ledger row; an identity
         // not yet admitted is fenced so a late /invoke can never dispatch it.
-        if (row) {
+        if (screen) cancel = screen;
+        else if (row) {
           const delivery = row.state === "dispatched" ? this.#broker.cancelDelivery(row.call_id) : undefined;
           cancel = row.state === "admitted" ? "not_dispatched" : row.state !== "dispatched" ? "terminal"
             : delivery === "sent" ? "requested" : delivery === "queued" ? "queued" : "not_delivered";
         }
-        else { this.#fenceCall(body.session_id, body.call_id); cancel = "fenced"; }
+        else {
+          this.#fenceCall(body.session_id, body.call_id);
+          // Older screen publishers had no durable call ledger. Absence does
+          // not prove an action never ran, even though the fence blocks a late send.
+          cancel = body.route_token?.startsWith("screen:v1:") ? "not_delivered" : "fenced";
+        }
       }
       return Response.json({ cancel }, { headers: { "cache-control": "no-store" } });
     }
     if (request.method === "POST" && url.pathname === "/shared-invoke") {
       const body = await request.json<{owner_id:string;recipient_id:string;invocation:InvocationRequest}>();
       return this.#invokeSharedHand(body.owner_id, body.recipient_id, body.invocation, request.signal);
+    }
+    if (request.method === "POST" && url.pathname === "/shared-receipt") {
+      let body: { owner_id?: unknown; recipient_id?: unknown; invocation?: InvocationRequest; wait_ms?: unknown };
+      try { body = await request.json(); } catch { return Response.json({ error: "invalid_request" }, { status: 400 }); }
+      if (typeof body.owner_id !== "string" || typeof body.recipient_id !== "string" || !body.invocation || typeof body.invocation !== "object"
+        || typeof body.invocation.session_id !== "string" || typeof body.invocation.call_id !== "string" || typeof body.invocation.name !== "string") {
+        return Response.json({ error: "receipt_unauthorized" }, { status: 403 });
+      }
+      return this.#sharedHandReceipt(body.owner_id, body.recipient_id, body.invocation,
+        typeof body.wait_ms === "number" && Number.isFinite(body.wait_ms) ? body.wait_ms : 0);
     }
     if (request.method === "POST" && url.pathname === "/invoke-receipt") {
       let body: InvocationRequest & { wait_ms?: unknown };
@@ -738,10 +818,20 @@ export class AccountHostedTools extends DurableObject<AccountHostedToolsEnv> {
         }
         this.#shares.turnTarget(invocation.session_id, invocation.turn_id, share.owner_id, "account",
           await sharedHandSession(invocation.owner_id, invocation.session_id));
-        return this.env.NANOCODEX_ACCOUNT_TOOLS.getByName(share.owner_id).fetch("https://account-tools.internal/shared-invoke", {
-          method:"POST", signal:request.signal, headers:{"content-type":"application/json"},
-          body:JSON.stringify({owner_id:share.owner_id,recipient_id:invocation.owner_id,invocation}),
-        });
+        // Transport loss on either hop never cancels the owner's call; only
+        // /cancel-invocation does. A dropped inner hop is reported as such so
+        // the caller reconciles the original identity's receipt instead.
+        try {
+          return await this.env.NANOCODEX_ACCOUNT_TOOLS.getByName(share.owner_id).fetch("https://account-tools.internal/shared-invoke", {
+            method:"POST", headers:{"content-type":"application/json"},
+            body:JSON.stringify({owner_id:share.owner_id,recipient_id:invocation.owner_id,invocation}),
+          });
+        } catch (error) {
+          try { console.info({ type: "hand.shared.transport_lost", tool: invocation.name, session_id: invocation.session_id,
+            source_call_id: invocation.call_id, turn_id: invocation.turn_id, error: sanitizedHandError(error) }); }
+          catch { /* Diagnostics never change the outcome. */ }
+          return Response.json({ error: "shared_transport_lost", reconcile: "receipt" }, { status: 502, headers: { "cache-control": "no-store" } });
+        }
       }
       const invocationKey = JSON.stringify([invocation.session_id, invocation.call_id]);
       let tracked = this.#invocations.get(invocationKey);
@@ -757,13 +847,32 @@ export class AccountHostedTools extends DurableObject<AccountHostedToolsEnv> {
       observeHandCall("account.ownership", invocation.name, decodedAt, "ok", invocation.call_id, correlation, ownedAt);
       if (invocation.machine_id === undefined && invocation.route_token.startsWith("screen:v1:")) {
         const key = JSON.stringify([invocation.session_id, invocation.call_id]);
+        const inputDigest = await screenInputDigest(invocation.input);
+        // An admitted screen identity is never sent again: replay its receipt.
+        if (this.#screenCalls.has(invocation.session_id, invocation.call_id)) return this.#screenReplay(invocation, inputDigest);
+        const identity = { sessionId: invocation.session_id, callId: invocation.call_id, name: invocation.name,
+          routeToken: invocation.route_token, inputDigest };
         const controller = new AbortController(); this.#sharedScreens.set(key, controller);
+        let admittedHere = false;
         try {
           const remote = await traceToolInvocation("hand.account.invoke", invocation.thread_id, invocation.name, {
             sessionId: invocation.session_id, callId: invocation.call_id, turnId: invocation.turn_id,
           }, () => this.#remote.invoke(invocation.name, invocation.route_token,
             invocation.input, invocation.session_id, AbortSignal.any([explicitCancel, controller.signal]),
-            { threadId: invocation.thread_id, callId: invocation.call_id, turnId: invocation.turn_id }));
+            { threadId: invocation.thread_id, callId: invocation.call_id, turnId: invocation.turn_id, ledger: {
+              admit: call => {
+                const admission = this.#screenCalls.admit(identity, call, () => this.#callFenced(invocation.session_id, invocation.call_id));
+                admittedHere = admission === "admitted";
+                return admission;
+              },
+              settle: (requestId, result) => this.#screenCalls.settle(requestId, result),
+            } }));
+          if (remote && !admittedHere && this.#screenCalls.has(invocation.session_id, invocation.call_id)) {
+            // A concurrent request admitted this identity first (this one may
+            // have seen it as busy or duplicate): replay that call's receipt.
+            try { await remote.body?.cancel(); } catch { /* Replaced by the retained receipt. */ }
+            return this.#screenReplay(invocation, inputDigest);
+          }
           if (remote) return remote;
         } finally { this.#sharedScreens.delete(key); }
       }
@@ -879,11 +988,19 @@ export class AccountHostedTools extends DurableObject<AccountHostedToolsEnv> {
    */
   async #invocationReceipt(body: InvocationRequest, requestedWaitMs: number): Promise<Response> {
     const headers = { "cache-control": "no-store" };
-    // Shared Hands and screen routes keep their own owner-side ledgers.
-    if (body.route_token.startsWith("shared:") || body.machine_id?.startsWith("shared:") || body.route_token.startsWith("screen:v1:")
-      || parseSharedScreenRoute(body.route_token)) {
-      return Response.json({ error: "receipt_unsupported" }, { status: 409, headers });
+    const sharedScreen = parseSharedScreenRoute(body.route_token);
+    if (sharedScreen) body = { ...body, machine_id: sharedScreen.machineId, route_token: sharedScreen.routeToken };
+    // Shared Hands keep their ledgers on the owner, which rechecks the grant.
+    if (body.route_token.startsWith("shared:") || body.machine_id?.startsWith("shared:")) {
+      const share = this.#shares.received().find(entry => body.machine_id === `shared:${entry.id}`);
+      if (!share || !this.env.NANOCODEX_ACCOUNT_TOOLS) return Response.json({ error: "receipt_unauthorized" }, { status: 403, headers });
+      // A failed hop throws to the caller, which retries the read (bounded).
+      return this.env.NANOCODEX_ACCOUNT_TOOLS.getByName(share.owner_id).fetch("https://account-tools.internal/shared-receipt", {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ owner_id: share.owner_id, recipient_id: body.owner_id, invocation: body, wait_ms: requestedWaitMs }),
+      });
     }
+    if (body.machine_id === undefined && body.route_token.startsWith("screen:v1:")) return this.#screenReceipt(body, requestedWaitMs, true);
     if (body.machine_id !== undefined && !HOSTED_MACHINE_TOOL_NAMES.some(name => name === body.name)) {
       return Response.json({ error: "receipt_unsupported" }, { status: 409, headers });
     }
@@ -914,6 +1031,40 @@ export class AccountHostedTools extends DurableObject<AccountHostedToolsEnv> {
       value: branded.value,
       ...(receipt.processRouteToken === undefined ? {} : { process_route_token: receipt.processRouteToken }),
     } satisfies InvocationResult, { headers });
+  }
+
+  /**
+   * Receipt-only read of one screen action identity from the durable screen
+   * ledger. Never sends input. A missing identity is fenced against a late
+   * send, but remains unknown: a pre-ledger version may already have acted.
+   */
+  async #screenReceipt(body: InvocationRequest, requestedWaitMs: number, matchName: boolean): Promise<Response> {
+    const headers = { "cache-control": "no-store" };
+    const waitUntil = Date.now() + Math.max(0, Math.min(HAND_RECEIPT_MAX_WAIT_MS, requestedWaitMs));
+    const key = JSON.stringify([body.session_id, body.call_id]);
+    // The original /invoke may still be before admission; wait for it to settle here.
+    while (!this.#screenCalls.has(body.session_id, body.call_id) && this.#invocations.has(key) && Date.now() < waitUntil) await abortableDelay(50);
+    if (!this.#screenCalls.has(body.session_id, body.call_id)) {
+      if (this.#invocations.has(key)) return Response.json({ receipt: "running" }, { headers });
+      this.#fenceCall(body.session_id, body.call_id);
+      if (!this.#screenCalls.has(body.session_id, body.call_id)) {
+        return Response.json({ error: "receipt_unresolved", admission: "unknown" }, { status: 409, headers });
+      }
+    }
+    const receipt = await this.#screenCalls.receipt(body.session_id, body.call_id, body.route_token,
+      matchName ? body.name : undefined, Math.max(0, waitUntil - Date.now()));
+    if (receipt.state === "running") return Response.json({ receipt: "running", deadline_at: receipt.deadlineAt }, { headers });
+    if (receipt.state !== "settled") return Response.json({ error: "receipt_unresolved", admission: "retained" }, { status: 409, headers });
+    return Response.json(receipt.result satisfies InvocationResult, { headers });
+  }
+
+  /** A repeated /invoke of an admitted screen identity: its retained receipt, never a second send. */
+  async #screenReplay(invocation: InvocationRequest, inputDigest: string): Promise<Response> {
+    // A conflicting reuse of the identity (other route or input) never sees this result.
+    const receipt = await this.#screenCalls.receipt(invocation.session_id, invocation.call_id, invocation.route_token,
+      invocation.name, HAND_RECEIPT_MAX_WAIT_MS, inputDigest);
+    if (receipt.state === "settled") return Response.json(receipt.result satisfies InvocationResult, { headers: { "cache-control": "no-store" } });
+    return Response.json({ error: "duplicate_call", admission: "retained" }, { status: 409, headers: { "cache-control": "no-store" } });
   }
 
   #localSnapshot(): AccountHostedToolsSnapshot {
@@ -1821,12 +1972,34 @@ export class AccountHostedToolsProvider implements HostedToolsDynamicProvider {
       const preAdmission = response.status === 404 || response.status === 409;
       // Only the target shard's explicit ledger evidence proves non-admission;
       // a bare status, unreadable body or older account worker does not.
-      let neverAdmitted = false;
+      let neverAdmitted = false, retained = false, fenced = false;
       if (preAdmission) {
-        try { neverAdmitted = (await response.json<{ admission?: unknown }>()).admission === "none"; }
+        try {
+          const rejection = await response.json<{ admission?: unknown; error?: unknown }>();
+          neverAdmitted = rejection.admission === "none"; retained = rejection.admission === "retained";
+          fenced = neverAdmitted && rejection.error === "call_fenced";
+        }
         catch { /* Unknown evidence keeps the call pinned and its outcome unknown. */ }
+      } else if (response.status === 502) {
+        // The recipient lost its hop to the sharing owner after possible dispatch.
+        let reconcile = false;
+        try { reconcile = (await response.json<{ reconcile?: unknown }>()).reconcile === "receipt"; }
+        catch { /* An unrecognized gateway failure stays an unknown outcome below. */ }
+        if (reconcile) {
+          return this.#afterLostResponse(target, invocation, routePolicy, context, "transport",
+            new Error("Shared Hand owner connection lost"), failed);
+        }
       } else {
         try { await response.body?.cancel(); } catch { /* Body is irrelevant to a failed status. */ }
+      }
+      if (preAdmission && routePolicy === "screen" && retained) {
+        // The same screen identity was already admitted once; it is never resent.
+        return failed("This screen action identity was already sent and its result is not available. Screen outcome is unknown; the action was not resent. Observe the screen before considering another input action.",
+          "ambiguous");
+      }
+      if (preAdmission && routePolicy === "screen" && fenced) {
+        return failed("This screen action identity is fenced against another send. Its earlier outcome is unknown; the action was not resent. Observe the screen before considering another input action.",
+          "ambiguous");
       }
       if (preAdmission && routePolicy === "screen") {
         // Screen routes fence one exact publication generation. Redirecting a
@@ -1959,11 +2132,11 @@ export class AccountHostedToolsProvider implements HostedToolsDynamicProvider {
       catch { /* Diagnostics never change the reconciled outcome. */ }
     };
     if (context.signal?.aborted) { record("cancel_requested"); return this.#cancelAfterLoss(target, invocation, failed, detail); }
-    const reconcilable = routePolicy !== "screen" && !invocation.route_token.startsWith("shared:")
-      && !invocation.route_token.startsWith("screen:v1:") && !invocation.machine_id?.startsWith("shared:");
-    let recovery: HandReceiptFailure = "receipt_unsupported";
+    // Every route (owned, shared and screen) reconciles through the original
+    // identity's receipt on its owner ledger; nothing is ever re-posted.
+    let recovery: HandReceiptFailure = "receipt_unauthorized";
     let recoveryError: string | undefined;
-    if (reconcilable && this.#allowed(context)) {
+    if (this.#allowed(context)) {
       const reconciled = await this.#reconcileReceipt(target, invocation, context, failed, detail);
       if ("result" in reconciled) { record("recovered", { polls: reconciled.polls }); return reconciled.result; }
       record(reconciled.reason, { polls: reconciled.polls, ...(reconciled.error === undefined ? {} : { recovery_error: reconciled.error }) });
@@ -1976,6 +2149,11 @@ export class AccountHostedToolsProvider implements HostedToolsDynamicProvider {
       }
     }
     this.invalidate();
+    if (routePolicy === "screen") {
+      return failed(`${lost} (${detail}) and automatic receipt recovery could not confirm the result (${recovery}${recoveryError ? `: ${recoveryError}` : ""}). Screen outcome is unknown; the action was not resent. Observe the screen before considering another input action.`,
+        "ambiguous", false, "receipt_unrecoverable",
+        { error: detail, recovery, ...(recoveryError === undefined ? {} : { recovery_error: recoveryError }) });
+    }
     return failed(`${lost} (${detail}) and automatic receipt recovery could not confirm the result (${recovery}${recoveryError ? `: ${recoveryError}` : ""}). Execution outcome is unknown; the command was not resent. Call environment to refresh Hand status, then inspect this Hand's current state read-only (for example, check for the command's expected effects) before deciding whether to retry it on the same Hand. Do not switch to SSH or another Hand for this call.`,
       "ambiguous", false, "receipt_unrecoverable",
       { error: detail, recovery, ...(recoveryError === undefined ? {} : { recovery_error: recoveryError }) });
@@ -2084,6 +2262,8 @@ export class AccountHostedToolsProvider implements HostedToolsDynamicProvider {
         return { result: this.#brandedResult(value, invocation.name, invocation.machine_id), polls: poll + 1 };
       }
       if (reply.status === 404 && value?.receipt === "missing" && value.admission === "none") return { reason: "receipt_missing", polls: poll + 1 };
+      // A revoked or forgotten share withholds the result; the outcome stays unknown.
+      if (reply.status === 403 && value?.error === "receipt_unauthorized") return { reason: "receipt_unauthorized", polls: poll + 1 };
       return { reason: reply.status === 409 && value?.error === "receipt_unsupported" ? "receipt_unsupported" : "receipt_unresolved", polls: poll + 1 };
     }
     return { reason: "receipt_poll_limit", polls: HAND_RECEIPT_MAX_POLLS };
@@ -2188,6 +2368,11 @@ function parseSharedScreenRoute(token: string): { machineId: string; routeToken:
     }
   } catch { /* Malformed routes cannot obtain a grant. */ }
   return undefined;
+}
+
+async function screenInputDigest(input: unknown): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify(input ?? null)));
+  return Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, "0")).join("");
 }
 
 /** Keep recipient sessions disjoint within the publisher's bounded wire identifier. */

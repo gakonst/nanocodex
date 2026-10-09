@@ -1,4 +1,4 @@
-import { recordingAvailable, validRecordingCapability, screenAction, screenResult, screenTool, type AgentScreenResult, type ScreenTarget } from "./hand-remote-agent";
+import { recordingAvailable, validRecordingCapability, screenAction, screenResult, screenResultMatches, screenResultShape, screenTool, type AgentScreenResult, type ScreenResultShape, type ScreenTarget } from "./hand-remote-agent";
 
 /** Native human media/input use WebRTC. Cloudflare sandboxes explicitly use scoped HTTPS frames.
  * Bounded agent screenshots are independent of the human media transport. */
@@ -27,6 +27,8 @@ export type HandRemoteHooks = Readonly<{
   /** Durable, strictly increasing host-socket sequence for claim fencing. */
   nextSequence?: () => number;
   onHostResult?: (result: HandRemoteHostResult) => void;
+  /** Late host result with no local pending call; the ledger decides whether it matches a retained identity. */
+  onLateResult?: (result: HandRemoteLateResult) => void;
   /** Regional brokers prefix connection IDs and generations ("rs.<region>.") so Workers route without an owner hop. */
   idPrefix?: () => string;
 }>;
@@ -52,13 +54,26 @@ type Attachment = {
 };
 type Context = Pick<DurableObjectState, "acceptWebSocket" | "getWebSockets">;
 
-export type HandRemoteCallContext = Readonly<{ threadId?: string; callId?: string; turnId?: string }>;
+/**
+ * Durable receipt ledger for one exact screen call identity. admit() runs
+ * synchronously in the same turn as the busy/stale/fence checks and before the
+ * agent_call frame is sent: only "admitted" permits the send. settle() runs
+ * synchronously inside finish(), before any response is built, so a result can
+ * never escape without first being retained.
+ */
+export type HandRemoteCallLedger = Readonly<{
+  admit(call: Readonly<{ requestId: string; connectionId: string; generation: string; target: ScreenTarget; deadlineAt: number }> & ScreenResultShape): "admitted" | "fenced" | "duplicate";
+  settle(requestId: string, result: AgentScreenResult): void;
+}>;
+export type HandRemoteCallContext = Readonly<{ threadId?: string; callId?: string; turnId?: string; ledger?: HandRemoteCallLedger }>;
+/** A host result for a request this broker instance no longer holds (for example after eviction). */
+export type HandRemoteLateResult = Readonly<{ requestId: string; connectionId: string; generation: string; result: AgentScreenResult }>;
 export type HandRemoteReasonCode = "connection_closed" | "websocket_closed" | "websocket_error"
   | "publisher_revoked" | "host_replaced" | "host_disconnected" | "viewer_closed" | "lease_expired"
   | "invalid_signaling" | "send_failed" | "stale_catalog" | "invalid_input" | "invalid_agent"
   | "host_unavailable" | "busy" | "not_controllable" | "aborted" | "timeout"
   | "result_ok" | "result_busy" | "result_invalid" | "result_unavailable" | "result_cancelled"
-  | "retained_socket" | "claim_rejected";
+  | "retained_socket" | "claim_rejected" | "duplicate_call" | "call_fenced";
 export type HandRemoteObservation = Readonly<{
   stage: "snapshot" | "connection.accepted" | "connection.ready" | "connection.published" | "connection.replaced"
     | "connection.renewed" | "connection.closed" | "connection.lease_expired" | "connection.fenced"
@@ -81,6 +96,7 @@ const REASON_CODES: ReadonlySet<string> = new Set<HandRemoteReasonCode>([
   "host_disconnected", "viewer_closed", "lease_expired", "invalid_signaling", "send_failed", "stale_catalog",
   "invalid_input", "invalid_agent", "host_unavailable", "busy", "not_controllable", "aborted", "timeout",
   "result_ok", "result_busy", "result_invalid", "result_unavailable", "result_cancelled", "retained_socket", "claim_rejected",
+  "duplicate_call", "call_fenced",
 ]);
 
 export class HandRemoteBroker {
@@ -208,12 +224,37 @@ export class HandRemoteBroker {
       this.observe("call.terminal", host.state, { ...observation, reason_code: "not_controllable" });
       return Response.json(screenResult({ status: "unavailable" }, target));
     }
+    const ledger = context?.ledger;
+    const deadlineAt = Date.now() + 9000, shape = screenResultShape(action);
+    if (ledger) {
+      // Synchronous with every check above: a fenced or duplicate identity is never sent.
+      let admission: "admitted" | "fenced" | "duplicate";
+      try { admission = ledger.admit({ requestId: id, connectionId: host.state.id, generation: host.state.generation, target, deadlineAt, ...shape }); }
+      catch { admission = "duplicate"; }
+      if (admission !== "admitted") {
+        this.observe("call.terminal", host.state, { ...observation, reason_code: admission === "fenced" ? "call_fenced" : "duplicate_call" });
+        return Response.json({ error: admission === "fenced" ? "call_fenced" : "duplicate_call",
+          admission: admission === "fenced" ? "none" : "retained" }, { status: 409, headers: noStore });
+      }
+    }
+    // A caller that already cancelled never sends this action. Admission runs
+    // first, so a fenced identity still reads as call_fenced and an admitted one
+    // retains its cancelled receipt.
+    if (signal.aborted) {
+      try { ledger?.settle(id, { status: "cancelled" }); } catch { /* The ledger row stays unresolved. */ }
+      this.observe("call.terminal", host.state, { ...observation, reason_code: "aborted" });
+      return Response.json(screenResult({ status: "cancelled" }, target), { headers: noStore });
+    }
     // Never retry after admission: a lost response must not replay a click.
     const result = await new Promise<AgentScreenResult>(resolve => {
       const finish = (result: AgentScreenResult, reasonCode: HandRemoteReasonCode = resultReason(result.status)) => {
         if (!this.pending.delete(id)) return;
         this.observe("call.terminal", host.state, { ...observation, reason_code: reasonCode });
-        clearTimeout(timer); signal.removeEventListener("abort", abort); resolve(result);
+        clearTimeout(timer); signal.removeEventListener("abort", abort);
+        // Retain before the result can leave this broker. A failed write keeps
+        // the identity running in the ledger, which later reads as unknown.
+        try { ledger?.settle(id, result); } catch { /* The ledger row stays unresolved. */ }
+        resolve(result);
       };
       const cancel = (reasonCode: "aborted" | "timeout") => {
         this.observe(reasonCode === "timeout" ? "call.timeout" : "call.cancel", host.state, { ...observation, reason_code: reasonCode });
@@ -223,15 +264,14 @@ export class HandRemoteBroker {
         finish({ status: "cancelled" }, reasonCode);
       };
       const abort = () => cancel("aborted");
-      const timer = setTimeout(() => cancel("timeout"), 9000);
-      this.pending.set(id, { socket: host.socket, expectsImage: action.action !== "release" && action.action !== "recording", recording: action.action === "recording", observation, finish });
+      const timer = setTimeout(() => cancel("timeout"), Math.max(0, deadlineAt - Date.now()));
+      this.pending.set(id, { socket: host.socket, ...shape, observation, finish });
       this.observe("call.admitted", host.state, observation);
       signal.addEventListener("abort", abort, { once: true });
-      if (signal.aborted) { abort(); return; }
       try {
         this.observe("call.send_started", host.state, observation);
         this.send(host.socket, { type: "agent_call", request_id: id, agent_id: agentId, surface_id: target.id,
-          generation: target.generation, deadline_at: Date.now() + 8000, input: action });
+          generation: target.generation, deadline_at: deadlineAt - 1000, input: action });
         // send() acceptance is not an execution acknowledgment from the host.
         this.observe("call.sent", host.state, observation);
       } catch {
@@ -348,15 +388,14 @@ export class HandRemoteBroker {
           || ![value.width, value.height].every(n => Number.isInteger(n) && n > 0 && n <= 4096))) throw new Error();
         const pending = this.pending.get(value.request_id);
         if (pending?.socket === socket) {
-          if (value.recording !== undefined && (!pending.recording || !value.recording || typeof value.recording !== "object"
-            || Array.isArray(value.recording) || !["ok", "error", "busy", "invalid", "unavailable", "cancelled"].includes(value.recording.status)
-            || (value.status === "ok" && value.recording.status !== "ok")
-            || new TextEncoder().encode(JSON.stringify(value.recording)).length > 740_000
-            || value.jpeg !== undefined || value.observation !== undefined)) throw new Error();
-          if (pending.recording && value.status === "ok" && value.recording === undefined) throw new Error();
-          if (pending.expectsImage && value.status === "ok" && value.jpeg === undefined) throw new Error();
+          if (!screenResultMatches(value, pending)) throw new Error();
           this.observe("call.receipt", state, { ...pending.observation, reason_code: resultReason(value.status) });
           pending.finish(value as AgentScreenResult);
+        } else if (!pending && ID.test(value.request_id) && this.hooks.onLateResult) {
+          // The ledger accepts it only for a retained identity of this exact host
+          // connection whose admitted result shape it matches (screenResultMatches).
+          try { this.hooks.onLateResult({ requestId: value.request_id, connectionId: state.id, generation: state.generation,
+            result: value as AgentScreenResult }); } catch { /* A late receipt never fences the host. */ }
         }
         return;
       }

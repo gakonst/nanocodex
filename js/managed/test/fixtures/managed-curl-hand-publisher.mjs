@@ -24,7 +24,9 @@ console.info = (record, ...rest) => {
 };
 
 const summary = frame => ({ type: frame.type, call_id: frame.call_id, name: frame.name, state: frame.state,
-  call_ids: frame.call_ids, cmd: frame.input?.cmd, status: frame.status ?? frame.result?.status });
+  call_ids: frame.call_ids, cmd: frame.input?.cmd, status: frame.status ?? frame.result?.status,
+  // write_stdin: only the size of its chars (0 = empty poll), never their content.
+  chars_length: typeof frame.input?.chars === 'string' ? frame.input.chars.length : undefined });
 
 // A WebSocket-compatible view of one real ws connection that records frame
 // summaries and can drop one delivered call frame before the attachment sees it.
