@@ -812,6 +812,17 @@ jobs:
           name: private-input-account-admission
           path: output/private-input-tui/admission-trace.json
           if-no-files-found: warn
+      - name: Exercise Hand device keys over public routes
+        # Runs whenever this job is selected (managed, tools or Hand changes), even while broader tests are paused.
+        timeout-minutes: 5
+        run: pnpm --filter nanocodex-managed-service run test:hand-device-keys
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: hand-device-keys-journeys
+          path: |
+            output/hand-device-keys/server-journey/**/*.json
+          if-no-files-found: warn
       - name: Exercise all Vault kinds in private browser fields
         timeout-minutes: 10
         shell: bash
@@ -1033,6 +1044,21 @@ jobs:
             output/services-ui/
             output/browser-vault-totp/
             output/phone-stack/
+          if-no-files-found: warn
+      - name: Exercise SSH host-key trust from Hand device attestations
+        timeout-minutes: 5
+        shell: bash
+        run: |
+          # The journey runs a real sshd; ubuntu runners need the server package.
+          command -v /usr/sbin/sshd >/dev/null || sudo apt-get install -y openssh-server
+          NANOCODEX_EVIDENCE_DIR="$GITHUB_WORKSPACE/output/hand-device-keys/ssh" pnpm --filter nanocodex-egress-service run test:ssh-device-trust
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: hand-device-ssh-trust-journey
+          path: |
+            output/hand-device-keys/ssh/*.json
+            output/hand-device-keys/ssh/*.txt
           if-no-files-found: warn
       - name: Test private Claude connection and model picker
         if: needs.changes.outputs.tests == 'true'

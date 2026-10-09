@@ -4,7 +4,6 @@
 // keys resolve to synthetic account principals, and the live account
 // authorization lookup returns a synthetic organization grant.
 import { createHash } from "node:crypto";
-import { createHash } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
@@ -21,11 +20,15 @@ export const otherApiKey = "ncx_live_" + "c".repeat(12) + "_" + "d".repeat(43);
 const grant = { organizationId: "22222222-2222-4222-8222-222222222222", teamId: "33333333-3333-4333-8333-333333333333",
   role: "owner", authorizationEpoch: 1, capabilities: ["agents:read", "agents:write", "tools:use"] };
 
-const source = keys => [
+const source = (keys, publicOrigin) => [
   "import { DurableObject } from 'cloudflare:workers';",
   "import { AccountHostedToolsProvider } from './src/account-hosted-tools.ts';",
-  "import worker, { AccountHostedTools, DurableAgentSession } from './src/index.ts';",
-  "export { AccountHostedTools, DurableAgentSession };",
+  "import worker, { AccountHostedTools, DurableAgentSession, VmHostPool } from './src/index.ts';",
+  "export { AccountHostedTools, DurableAgentSession, VmHostPool };",
+  "const PUBLIC_ORIGIN = " + JSON.stringify(publicOrigin ?? null) + ";",
+  "// Structured observations as JSON lines so the journey can assert on them.",
+  "const info = console.info.bind(console);",
+  "console.info = (record, ...rest) => info(record && typeof record === 'object' ? JSON.stringify(record) : record, ...rest);",
   "// Test-only driver: the model-facing tool path that invokes a published Hand tool.",
   "export class ToolDriver extends DurableObject {",
   "  async fetch(request) {",
@@ -46,6 +49,8 @@ const source = keys => [
     createHash("sha256").update(key).digest("base64url"), { userId, id: key.slice(9, 21) }]))) + ";",
   "const GRANT = " + JSON.stringify(grant) + ";",
   "export default { async fetch(request, env, ctx) {",
+  "  // Optional stand-in for a TLS-terminating front door: the Worker sees the configured public origin.",
+  "  if (PUBLIC_ORIGIN) { const incoming = new URL(request.url); request = new Request(PUBLIC_ORIGIN + incoming.pathname + incoming.search, request); }",
   "  const url = new URL(request.url);",
   "  if (url.pathname === '/__fixture/tool') return env.DRIVER.getByName('driver').fetch(request);",
   "  // server_hand connect mints this grant during SSH setup; the fixture calls the same owner RPC.",
@@ -67,11 +72,11 @@ const source = keys => [
 ].join("\n");
 
 /** Start the managed Worker. Returns its base URL and captured structured observations. */
-export async function startHandDeviceServer({ output, ttlSeconds = 10 } = {}) {
+export async function startHandDeviceServer({ output, ttlSeconds = 10, publicOrigin } = {}) {
   await mkdir(output, { recursive: true });
   const assets = [];
   let wasmSequence = 0;
-  const bundle = await build({ stdin: { contents: source({ [apiKey]: owner, [otherApiKey]: otherOwner }), resolveDir: root },
+  const bundle = await build({ stdin: { contents: source({ [apiKey]: owner, [otherApiKey]: otherOwner }, publicOrigin), resolveDir: root },
     bundle: true, write: false, metafile: true, format: "esm", platform: "node", conditions: ["workerd"], target: "es2022",
     external: ["cloudflare:*", "node:*"],
     alias: { "nanocodex-tools/hosted": join(repo, "js/nanocodex-tools/src/hosted/index.ts"),
@@ -95,7 +100,8 @@ export async function startHandDeviceServer({ output, ttlSeconds = 10 } = {}) {
     bindings: { NANOCODEX_HAND_DEVICE_CREDENTIAL_TTL_SECONDS: String(ttlSeconds) },
     durableObjects: { DRIVER: { className: "ToolDriver", useSQLite: true },
       NANOCODEX_ACCOUNT_TOOLS: { className: "AccountHostedTools", useSQLite: true },
-      NANOCODEX_SESSIONS: { className: "DurableAgentSession", useSQLite: true } },
+      NANOCODEX_SESSIONS: { className: "DurableAgentSession", useSQLite: true },
+      NANOCODEX_VM_HOST_POOLS: { className: "VmHostPool", useSQLite: true } },
     r2Buckets: ["NANOCODEX_HISTORY", "NANOCODEX_WORKSPACES"],
     serviceBindings: { NANOCODEX: async request => {
       const path = new URL(request.url).pathname;
@@ -115,6 +121,6 @@ export async function startHandDeviceServer({ output, ttlSeconds = 10 } = {}) {
       body: JSON.stringify({ owner: ownerId, machine: machineId, call: callId, cmd }), signal: AbortSignal.timeout(20_000) });
     return { status: response.status, body: await response.json() };
   };
-  return { base, origin: new URL(base).origin, owner, apiKey, otherOwner, otherApiKey, observations, logs, callHandTool,
+  return { base, origin: publicOrigin ?? new URL(base).origin, owner, apiKey, otherOwner, otherApiKey, observations, logs, callHandTool,
     stop: () => mf.dispose() };
 }
