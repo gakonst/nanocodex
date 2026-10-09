@@ -1,0 +1,14 @@
+05:39:24	base-cold-test-norun	469.7	0	load:95.52->56.87	cargo test --no-run --locked -p nanocodex-bin --bin nanocodex --timings
+05:40:32	base-noop1-test-norun	55.9	0	load:57.11->62.12	cargo test --no-run --locked -p nanocodex-bin --bin nanocodex
+05:49:01	base-noop1-check-tests	509.0	0	load:62.12->70.87	cargo check --locked -p nanocodex-bin --bin nanocodex --tests
+05:49:30	base-noop2-check-tests	28.3	0	load:70.87->76.44	cargo check --locked -p nanocodex-bin --bin nanocodex --tests
+05:50:23	sha-first-check-tests	43.4	0	load:75.10->65.80	cargo check --locked -p nanocodex-bin --bin nanocodex --tests
+05:50:34	sha-noop-check-tests	10.6	0	load:65.80->64.75	cargo check --locked -p nanocodex-bin --bin nanocodex --tests
+05:51:55	sha-first-test-norun	81.2	0	load:64.75->68.49	cargo test --no-run --locked -p nanocodex-bin --bin nanocodex
+05:52:00	sha-noop-test-norun	4.0	0	load:68.49->66.61	cargo test --no-run --locked -p nanocodex-bin --bin nanocodex
+05:55:47	fix-first-build	128.5	0	load:63.02->66.80	cargo build --locked -p nanocodex-bin --bin nanocodex
+05:55:54	fix-noop1-build	6.8	0	load:66.80->66.72	cargo build --locked -p nanocodex-bin --bin nanocodex
+06:07:04	xwt-build-from-B	655.7	0	load:76.80->76.71	cargo build --locked -p nanocodex-bin --bin nanocodex
+06:11:14	xwt-build-from-A	250.1	0	load:76.71->76.05	cargo build --locked -p nanocodex-bin --bin nanocodex
+06:11:24	xwt-noop-A	8.9	0	load:76.05->73.74	cargo build --locked -p nanocodex-bin --bin nanocodex
+06:15:54	update-source-e2e	251.3	0	load:75.66->57.11	node bin/nanocodex/tests/update_source_e2e.mjs output/targets/base/debug/nanocodex
