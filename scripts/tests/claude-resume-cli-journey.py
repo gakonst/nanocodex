@@ -1,12 +1,17 @@
 #!/usr/bin/env python3
 """Real native Claude resume across processes, including the terminal picker.
 
-Build separately, then run:
+Build separately, then run (the rich replay phases require tmux):
   python3 scripts/tests/claude-resume-cli-journey.py --binary target/debug/nanocodex
 Only the external Messages HTTP/SSE provider is synthetic. Evidence: ignored output/.
+
+The last phases paste an image into a real \`ncl --claude\` TUI, run Code Mode
+cells with nested and failing tools, then resume in a fresh process and compare
+the replayed prompt row and tool cards with the live screen.
 """
 from claude_code_fixture import normalize_request, wrap_tool
 import argparse
+import base64
 import errno
 import fcntl
 import hashlib
@@ -81,6 +86,12 @@ def main():
                    ("TaskCreate", {"subject": "After picker resume", "description": "Check second restart watermark"}),
                    ("Read", {"file_path": "counter.txt"})],
     }
+    nested_code = ('const a = await tools.exec_command({cmd: "printf nested-one-marker"});\n'
+                   'const b = await tools.exec_command({cmd: "printf nested-two-marker"});\n'
+                   'text("nested-done:" + JSON.stringify(a).includes("nested-one-marker") + JSON.stringify(b).includes("nested-two-marker"));')
+    steps["paste"] = [("exec", {"code": nested_code}),
+                      ("exec", {"code": 'throw new Error("intentional-failure-marker");'})]
+    png = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==")
     progress = Path("output/claude-resume-progress.md")
 
     def milestone(message):
@@ -100,7 +111,34 @@ def main():
                 require(self.headers.get("x-api-key") == "synthetic-resume-key", "wrong provider authentication")
                 require(request["model"] == "claude-sonnet-5-5", f"saved model lost: {request['model']}")
                 history = json.dumps(request["messages"])
-                if name != "initial" and stage == 0:
+                if name == "paste":
+                    require("data:image" not in history and "[Image #" not in history,
+                            "image reached the model as text instead of a native block")
+                if name == "paste" and stage == 0:
+                    prompt = request["messages"][-1]
+                    blocks = prompt["content"] if isinstance(prompt["content"], list) else []
+                    images = [b for b in blocks if b.get("type") == "image"]
+                    texts = "".join(b.get("text", "") for b in blocks if b.get("type") == "text")
+                    require(prompt["role"] == "user" and len(images) == 1, f"pasted prompt lacks one native image: {prompt}")
+                    require(images[0]["source"]["type"] == "base64" and images[0]["source"]["media_type"] == "image/png",
+                            f"unexpected image source {images[0]['source'].get('type')}")
+                    require(base64.b64decode(images[0]["source"]["data"])[:8] == png[:8], "image bytes are not the pasted PNG")
+                    require(blocks.index(images[0]) not in (0, len(blocks) - 1)
+                            and texts.split() == ["before-image-marker", "after-image-marker"],
+                            f"image not between its caption parts: {texts!r}")
+                    checks.append("paste: one user message with a native base64 PNG between its text parts")
+                if name == "paste" and stage:
+                    call_id = f"paste_{stage - 1}"
+                    receipts = [b for m in request["messages"] for b in m.get("content", [])
+                                if isinstance(b, dict) and b.get("type") == "tool_result" and b.get("tool_use_id") == call_id]
+                    require(len(receipts) == 1, f"missing/duplicate receipt {call_id}")
+                    output, failed = text_of(receipts[0]), receipts[0].get("is_error", False)
+                    if stage == 1:
+                        require(not failed and "nested-done:truetrue" in output, f"nested cell failed: {receipts[0]}")
+                    else:
+                        require(failed and "intentional-failure-marker" in output, f"throwing cell not failed: {receipts[0]}")
+                    checks.append(f"paste: actual {'failed' if failed else 'completed'} receipt for {call_id}")
+                elif name != "initial" and stage == 0:
                     for marker in ("original-resume-prompt", "initial-resume-complete", "committed-shell-once"):
                         require(marker in history, f"{name} lost prior transcript marker {marker}")
                     if name == "picker":
@@ -246,6 +284,101 @@ def main():
             require((workspace / "counter.txt").read_text() == "x", "committed shell repeated on resume")
             require(not (launch / "counter.txt").exists(), "resume used launch directory")
             milestone(f"Process {name} passed; saved model/workspace/transcript and task watermark retained; shell not replayed.")
+        # Rich replay: paste an image into the real TUI, run nested and failing
+        # Code Mode cells, then replay the checkpoint in a fresh process.
+        ncl = artifact / "bin" / "ncl"
+        ncl.parent.mkdir()
+        ncl.symlink_to(binary)  # The local command tree is selected by name.
+        image_path = artifact / "pasted.png"
+        image_path.write_bytes(png)
+        frames = {}
+
+        def tmux(*argv):
+            return subprocess.run(["tmux", *argv], capture_output=True, text=True)
+
+        def tui(name, wait_for):
+            session = f"claude-resume-{name}-{uuid4().hex[:8]}"
+            command = [str(ncl), "resume", session_id, *common]
+            record(name, command, resume_env)
+            shell = "env -i " + " ".join(shlex.quote(f"{k}={v}") for k, v in resume_env.items()) + " " + shlex.join(command)
+            tmux("new-session", "-d", "-x", "170", "-y", "60", "-s", session, "-c", str(launch), shell + "; echo EXITED $?",
+                 ";", "set-option", "-t", session, "remain-on-exit", "on")
+            return session, screen_until(name, session, wait_for)
+
+        def screen_until(name, session, predicate, timeout=40):
+            deadline = time.monotonic() + timeout
+            while True:
+                screen = tmux("capture-pane", "-p", "-t", session + ":0.0").stdout
+                frames.setdefault(name, []).append(screen)
+                (artifact / f"{name}.frames.txt").write_text("\n=====FRAME=====\n".join(frames[name]))
+                if errors:
+                    raise AssertionError("; ".join(errors))
+                if predicate(screen):
+                    return screen
+                if time.monotonic() > deadline:
+                    raise AssertionError(f"{name}: timed out; see {name}.frames.txt")
+                time.sleep(0.4)
+
+        def close(name, session):
+            tmux("send-keys", "-t", session + ":0.0", "C-d")
+            screen = screen_until(name, session, lambda screen: "EXITED" in screen, 15)
+            tmux("kill-session", "-t", session)
+            require("EXITED 0" in screen, f"{name} did not exit cleanly")
+
+        def turn_region(screen):
+            lines = screen.splitlines()
+            start = max(i for i, line in enumerate(lines) if "after-image-marker" in line)
+            return lines[start:]
+
+        def tool_rows(region):
+            rows = [re.search(r"([✓×◌◇]) (Batch|Code|Shell)  (\S.*?)(?:\s{2,}|$)", line) for line in region]
+            return [(row[1], row[2], row[3].strip()) for row in rows if row]
+
+        def prompt_row(screen):
+            return re.search(r"before-image-marker\s+\[Image #1\]\s+after-image-marker", screen)
+
+        phase.update(name="paste", start=len(requests))
+        session, _ = tui("paste", lambda screen: "paste-resume-complete" not in screen and "picker-resume-complete" in screen)
+        target = session + ":0.0"
+        tmux("send-keys", "-t", target, "-l", "before-image-marker ")
+        tmux("set-buffer", "-b", "a54-image", str(image_path))
+        tmux("paste-buffer", "-p", "-d", "-b", "a54-image", "-t", target)
+        screen_until("paste", session, lambda screen: "[Image #1]" in screen, 15)
+        tmux("send-keys", "-t", target, "-l", " after-image-marker")
+        tmux("send-keys", "-t", target, "Enter")
+        live = screen_until("paste", session, lambda screen: "paste-resume-complete" in screen)
+        close("paste", session)
+        require(len(requests) - phase["start"] == 3, f"unexpected paste provider count {len(requests) - phase['start']}")
+        live_rows = tool_rows(turn_region(live))
+        require(prompt_row(live), "live prompt row lacks its image placeholder")
+        cards = [row for row in live_rows if row[1] != "Shell"]
+        require([row[:2] for row in cards] == [("✓", "Batch"), ("×", "Code")],
+                f"live cards differ from a 2-call batch and a failed cell: {live_rows}")
+        milestone("Process paste passed; native image block, nested batch and failed cell rendered live.")
+
+        phase.update(name="replay", start=len(requests))
+        session, replay = tui("replay", lambda screen: "paste-resume-complete" in screen)
+        close("replay", session)
+        require(len(requests) == phase["start"], "replay contacted the provider")
+        region = turn_region(replay)
+        rows = tool_rows(region)
+        (artifact / "replay-comparison.json").write_text(json.dumps({"live": live_rows, "replay": rows}, indent=2))
+        require(replay.count("after-image-marker") == 1 and prompt_row(replay),
+                "replayed image prompt is missing its placeholder or split into extra user rows")
+        replay_cards = [row for row in rows if row[1] != "Shell"]
+        require([row[:2] for row in replay_cards] == [row[:2] for row in cards],
+                f"replayed tool outcomes differ: {rows} vs {live_rows}")
+        require(replay_cards[0][2] == cards[0][2] == "2 tools", f"replayed batch lost its nested calls: {rows}")
+        # Nested receipts retain status, not shell output: an exit status that
+        # was never recorded must replay as unknown (◇), never as success.
+        shells, live_shells = [r for r in rows if r[1] == "Shell"], [r for r in live_rows if r[1] == "Shell"]
+        require(len(shells) == len(live_shells) and all(r[0] in (l[0], "◇") for r, l in zip(shells, live_shells)),
+                f"replayed nested shells differ: {shells} vs {live_shells}")
+        for leaked in ("data:image", "base64", "Harness recovery notice", "Continue the current task",
+                       "Historical context", "Host Stop hook"):
+            require(leaked not in replay, f"replay shows internal or private text: {leaked}")
+        checks.append("replay: one image prompt row, actual completed/failed outcomes and 2 nested calls, no internal text")
+        milestone("Process replay passed; resumed prompt, outcomes and nested counts match the live screen.")
         # Public error paths; no journal fabrication or private-state mutation.
         for name, extra, expected in (
             ("missing-session", ["absent-session-id"], "unknown session"),
