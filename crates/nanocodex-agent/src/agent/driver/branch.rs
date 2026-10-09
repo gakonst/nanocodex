@@ -41,11 +41,12 @@ impl AgentOrigin {
         self.lineage.parent_session_id.as_deref()
     }
 
-    /// Parent recorded in rollout metadata; resumed roots never had one.
+    /// Parent recorded in rollout metadata. Roots never have one; a resumed
+    /// session keeps its persisted parent, so a reopened branch is still
+    /// mirrored as a branch of its source.
     pub(in crate::agent) fn recorded_parent(&self) -> Option<&str> {
         match self.start {
-            crate::session::SessionStart::New(crate::Origin::Root)
-            | crate::session::SessionStart::Resume => None,
+            crate::session::SessionStart::New(crate::Origin::Root) => None,
             _ => self.parent_session_id(),
         }
     }

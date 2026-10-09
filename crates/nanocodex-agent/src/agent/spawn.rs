@@ -171,6 +171,7 @@ where
         workspace.as_deref(),
         &spawner.config.system_prompt(),
         origin.start,
+        origin.lineage.origin,
         origin.recorded_parent(),
         origin
             .recorded_parent()

@@ -636,7 +636,7 @@ pub fn decode_checkpoint(checkpoint: Value) -> Result<ClaudeCheckpointView> {
 ///
 /// Request limits that only the live builder knows use the model defaults:
 /// the documented output maximum and context window, with caching and
-/// diagnostics off. [`crate::ClaudeBuilder::restore_runtime`] accepts the
+/// diagnostics off. [`crate::ClaudeBuilder::resume`] accepts the
 /// result, so a stored session resumes through the same portable path as a
 /// live checkpoint.
 ///

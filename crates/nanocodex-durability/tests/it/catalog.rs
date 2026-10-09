@@ -473,3 +473,62 @@ async fn durable_subagents_are_their_own_resumable_sessions() -> Result<()> {
     Ok(())
 }
 
+/// A durable branch reopened for the first time creates its Codex rollout
+/// with the branch's provenance (role, parent and root), not a root resume.
+#[tokio::test]
+async fn reopened_branches_mirror_their_provenance() -> Result<()> {
+    let home = tempfile::tempdir()?;
+    let workspace = home.path().join("workspace");
+    std::fs::create_dir_all(&workspace)?;
+    let generations = Arc::new(AtomicUsize::new(0));
+    let store = SessionStore::open(home.path())?;
+    let rollout = nanocodex_agent::rollout::RolloutConfig::new(home.path().join("codex"));
+    let root_id = SessionId::default().to_string();
+    let (root, _events) = Nanocodex::builder(openai!(&generations)?)
+        .model(Model::Luna)
+        .workspace(&workspace)
+        .rollout(rollout.clone())
+        .durability(
+            store
+                .session(SessionRecord::root(
+                    root_id.clone(),
+                    HarnessModel::Codex(Model::Luna),
+                    Some(workspace.clone()),
+                ))
+                .await?,
+        )
+        .await?
+        .build()?;
+    root.prompt(PromptRequest::new("root task").request_id("root-1"))
+        .await?
+        .result()
+        .await?;
+    root.shutdown().await?;
+
+    let branch = store.branch(&root_id, BranchPoint::Latest, None).await?;
+    let branch_id = branch.record.session_id.clone();
+    let (reopened, _events) = Nanocodex::builder(openai!(&generations)?)
+        .workspace(&workspace)
+        .rollout(rollout.clone())
+        .durability(store.resume(&branch_id).await?)
+        .await?
+        .build()?;
+    assert_eq!(reopened.session_id(), branch_id);
+    assert_eq!(reopened.session().lineage.origin, Origin::Branch);
+    reopened
+        .prompt(PromptRequest::new("branch task").request_id("branch-1"))
+        .await?
+        .result()
+        .await?;
+    reopened.shutdown().await?;
+
+    let mirrored = rollout
+        .list_sessions()?
+        .into_iter()
+        .find(|session| session.thread_id() == branch_id)
+        .ok_or_else(|| eyre!("branch {branch_id} has no Codex rollout"))?;
+    assert_eq!(mirrored.origin(), Origin::Fork, "recorded as a branch role");
+    assert_eq!(mirrored.parent_session_id(), Some(root_id.as_str()));
+    assert_eq!(mirrored.root_session_id(), root_id);
+    Ok(())
+}
