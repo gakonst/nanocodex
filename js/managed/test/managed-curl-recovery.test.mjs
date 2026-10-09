@@ -190,6 +190,18 @@ test('curl recovers managed work across workerd SIGKILL without duplicate effect
     { type: 'message_stop' },
   ].map(event => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`).join('');
   const claudeExec = (id, code) => claudeSse([{ type: 'tool_use', id, name: 'exec', input: { code } }]);
+  // Held Claude turn: one Code Mode cell whose effect response the parent holds.
+  const decideClaudeHold = body => {
+    const results = body.messages.flatMap(message => Array.isArray(message.content) ? message.content : []).filter(block => block.type === 'tool_result');
+    const queued = JSON.stringify(body.messages).includes('CURL_CLAUDE_QUEUED');
+    claudeCalls.push({ process: processNumber, scenario: queued ? 'CURL_CLAUDE_QUEUED' : 'CURL_CLAUDE_HOLD', tool_results: results.length });
+    if (queued) return claudeSse([{ type: 'text', text: 'QUEUED_TURN_RAN' }]);
+    return results.length === 0
+      ? claudeExec('toolu_curl_claude_hold', '// @exec: {"yield_time_ms": 60000}\ntext(await tools.exec_command({cmd:"curl -s -X POST https://effects.example/effect/HOLD"}));')
+      : claudeSse([{ type: 'text', text: 'HOLD_DONE' }]);
+  };
+  let releaseHold, held = new Promise(resolvePromise => { releaseHold = resolvePromise; });
+  const heldEffects = [];
   const decideClaude = body => {
     const results = body.messages.flatMap(message => Array.isArray(message.content) ? message.content : []).filter(block => block.type === 'tool_result');
     const last = results.at(-1), shown = JSON.stringify(last?.content ?? null);
@@ -217,6 +229,7 @@ test('curl recovers managed work across workerd SIGKILL without duplicate effect
     if (url.origin === 'https://api.anthropic.com' && url.pathname === '/v1/messages') {
       const body = JSON.parse(call.body);
       if (body.stream === true && JSON.stringify(body.messages).includes('CURL_CLAUDE_ROOT')) return send(200, decideClaude(body), 'text/event-stream');
+      if (body.stream === true && JSON.stringify(body.messages).includes('CURL_CLAUDE_HOLD')) return send(200, decideClaudeHold(body), 'text/event-stream');
       unexpected.push({ kind: 'claude', model: body.model, stream: body.stream ?? null }); return send(400, { type: 'error', error: { type: 'invalid_request_error', message: 'unexpected synthetic Claude request' } });
     }
     if (/^https:\/\/(platform\.claude\.com|claude\.ai|api\.anthropic\.com)\//.test(call.url)) {
@@ -225,6 +238,10 @@ test('curl recovers managed work across workerd SIGKILL without duplicate effect
     }
     if (url.hostname === 'effects.example') {
       const name = url.pathname.split('/').pop();
+      if (name === 'HOLD') {
+        heldEffects.push({ process: processNumber, method: call.method, at: new Date().toISOString() });
+        await held; return send(200, 'EFFECT_HOLD_APPLIED\n', 'text/plain');
+      }
       effects.push({ process: processNumber, name, method: call.method, at: new Date().toISOString() });
       // B and the child's C reach the external system, then the owner dies
       // before any receipt can return: the outcome is genuinely unknown.
@@ -355,6 +372,32 @@ test('curl recovers managed work across workerd SIGKILL without duplicate effect
     assert.match(claudeCalls[2]?.shown ?? '', /CURL_CLAUDE_WAIT: .*CLAUDE_CHILD_OK/, 'the labeled wait result shows the Codex child output');
     assert.equal(claudeCalls.length, 3, 'one provider request per observed step');
     assert.match(JSON.stringify(claudeRows), /CLAUDE_MIXED_DONE/);
+
+    // 0b. A follow-up queued behind a still-running Claude turn is durably
+    // admitted but cannot begin (production 01a120ef: "blocked by unfinished
+    // operation"). Cancelling it must settle while the earlier turn still runs,
+    // without the follow-up ever reaching the provider.
+    const holdRun = (await curl('claude-hold-admit', '/v1/agent-runs', { method: 'POST', body: { input: 'CURL_CLAUDE_HOLD: run the held synthetic effect once.', settings: claudeSettings }, headers: { 'Idempotency-Key': randomUUID() }, expected: 201 })).value;
+    await waitFor('held Claude effect dispatched', () => heldEffects.length === 1);
+    const queuedTurn = (await curl('claude-queued-admit', '/v1/agents/' + holdRun.agent_id + '/turns', { method: 'POST', body: { input: 'CURL_CLAUDE_QUEUED: follow-up behind the held turn.' }, headers: { 'Idempotency-Key': randomUUID() }, expected: 202 })).value;
+    const queuedBlocked = await waitFor('queued Claude turn blocked', async () => {
+      const value = await turnState('claude-queued-state', holdRun.agent_id, queuedTurn.turn_id);
+      return value.state === 'accepted' && /blocked by unfinished operation/.test(JSON.stringify(value)) ? value : undefined;
+    }, 20_000, 200);
+    const cancelRequested = Date.now();
+    await curl('claude-queued-cancel', '/v1/agents/' + holdRun.agent_id + '/turns/' + queuedTurn.turn_id + '/cancel', { method: 'POST', headers: { 'Idempotency-Key': randomUUID() } });
+    const queuedCancelled = await terminal('claude-queued-cancel-terminal', holdRun.agent_id, queuedTurn.turn_id);
+    const cancelMs = Date.now() - cancelRequested;
+    const holdDuringCancel = await turnState('claude-hold-during-cancel', holdRun.agent_id, holdRun.turn_id);
+    releaseHold();
+    const holdDone = await terminal('claude-hold-terminal', holdRun.agent_id, holdRun.turn_id);
+    summary.claude_queued_cancel = { blocked: queuedBlocked, cancelled: queuedCancelled, cancel_ms: cancelMs, hold_during_cancel: holdDuringCancel.state, hold: holdDone.state,
+      provider_calls: claudeCalls.filter(call => call.scenario === 'CURL_CLAUDE_HOLD' || call.scenario === 'CURL_CLAUDE_QUEUED'), held_effects: heldEffects };
+    assert.equal(queuedCancelled.state, 'cancelled', JSON.stringify(queuedCancelled));
+    assert.ok(!['completed', 'failed', 'cancelled'].includes(holdDuringCancel.state), 'the earlier turn was still running: ' + JSON.stringify(holdDuringCancel));
+    assert.equal(holdDone.state, 'completed', JSON.stringify(holdDone));
+    assert.equal(claudeCalls.filter(call => call.scenario === 'CURL_CLAUDE_QUEUED').length, 0, 'the cancelled follow-up never reached the provider');
+    assert.equal(heldEffects.length, 1, 'the held effect ran once');
 
     // 1. Repeated abrupt loss of the same unfinished model call consumes the
     // persisted budget: three provider invocations, then a durable terminal.
