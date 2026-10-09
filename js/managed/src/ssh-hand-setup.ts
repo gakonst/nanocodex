@@ -3,16 +3,24 @@ import type { NamedTool, ToolContext } from "nanocodex";
 
 const REFERENCE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 const IMAGE = /^[a-z0-9][a-z0-9./:_-]*@sha256:[0-9a-f]{64}$/;
-type Identity = { reference: string; hostname: string; port: number; username: string; host_key_sha256: string; public_key?: string };
+const HOST_KEY_TRUST = /^(?:device|hand:[A-Za-z0-9][A-Za-z0-9._:-]{0,127})$/;
+type Identity = { reference: string; hostname: string; port: number; username: string;
+  host_key_sha256?: string; host_key_trust?: string; public_key?: string };
+/** One-time server Hand enrollment grant minted by the owner's account DO. */
+type GrantSource = {
+  mintServerHandDeviceGrant(ownerId: string, hostId: string, name: string):
+    Promise<{ grant: string; expires_at: number } | { error: string }>;
+};
 type SetupOptions = {
   owner: string;
   subject: string;
   origin: string;
   image?: string;
   egress: Fetcher;
-  hosts: Fetcher;
+  hosts: Fetcher & Partial<GrantSource>;
   authorize(context: ToolContext): void;
 };
+const GRANT = /^ncxhg1\.[A-Za-z0-9._:-]{1,400}$/;
 
 /** SSH is used for enrollment; media/input then use the normal Hand connection. */
 export function serverHandTool(options: SetupOptions): NamedTool {
@@ -37,8 +45,10 @@ export function serverHandTool(options: SetupOptions): NamedTool {
       const body = await status.json<{ ssh?: Identity[] }>();
       const identities = body.ssh ?? [];
       if (value.operation === "list") {
-        return { targets: identities.map(({ reference, hostname, port, username, host_key_sha256, public_key }) => ({
-          reference, hostname, port, username, host_key_sha256,
+        return { targets: identities.map(({ reference, hostname, port, username, host_key_sha256, host_key_trust, public_key }) => ({
+          reference, hostname, port, username,
+          ...(typeof host_key_sha256 === "string" ? { host_key_sha256 } : {}),
+          ...(typeof host_key_trust === "string" && HOST_KEY_TRUST.test(host_key_trust) ? { host_key_trust } : {}),
           ...(typeof public_key === "string" && public_key.length <= 16384
             && /^(?:ssh-rsa|ecdsa-sha2-nistp(?:256|384|521)) [A-Za-z0-9+/]+={0,2}$/.test(public_key) ? { public_key } : {}),
         })), installation_available: Boolean(options.image && IMAGE.test(options.image)) };
@@ -55,8 +65,12 @@ export function serverHandTool(options: SetupOptions): NamedTool {
       const ssh = async (command: string[], stdin?: string, cleanup = false) => {
         const response = await options.egress.fetch("https://ssh.internal/v1/execute", {
           method: "POST", headers: { "content-type": "application/json", "x-nanocodex-subject": options.subject },
+          // Device trust is requested on every setup call: the Vault pin is still
+          // accepted, and egress itself adds only host keys attested by this
+          // server's ACTIVE device. Fingerprints are never sent from here.
           body: JSON.stringify({ identity_ref: identity.reference, hostname: identity.hostname,
-            port: identity.port, username: identity.username, command, ...(stdin === undefined ? {} : { stdin }) }),
+            port: identity.port, username: identity.username, command, host_key_trust: "device",
+            ...(stdin === undefined ? {} : { stdin }) }),
           signal: cleanup ? AbortSignal.timeout(5000) : signal,
         });
         if (!response.ok) { await response.body?.cancel(); throw new Error("The vault SSH connection failed; check its target, host fingerprint, and authorized public key"); }
@@ -86,13 +100,16 @@ export function serverHandTool(options: SetupOptions): NamedTool {
         if (await ssh(["sh", "-c", "test \"$(uname -s)\" = Linux && command -v docker >/dev/null && docker info >/dev/null 2>&1"]) !== 0)
           throw new Error("The selected SSH user needs access to Docker on this Linux server");
         const label = `${identity.username}@${identity.hostname}`.slice(0, 128);
-        const response = await manage("PUT", { name: label });
-        if (!response.ok) { await response.body?.cancel(); throw new Error("Could not enroll the server Hand"); }
+        // The account DO records the host and mints a single-use, short-lived
+        // grant bound to machine server:{id}; no long-lived bearer is issued.
+        // The container generates its own device key and enrolls with it.
+        if (typeof options.hosts.mintServerHandDeviceGrant !== "function") throw new Error("Server Hand device enrollment is unavailable");
+        const minted = await options.hosts.mintServerHandDeviceGrant(options.owner, id, label);
         enrolled = true;
-        const receipt = await response.json<{ credential: string }>();
+        if (!("grant" in minted) || typeof minted.grant !== "string" || !GRANT.test(minted.grant)) throw new Error("Could not enroll the server Hand");
         const endpoint = `${new URL(options.origin).origin}/v1/hand-hosts/${options.owner}/${id}/hands`;
         const exit = await ssh(["sh", "-c", SERVER_HAND_INSTALL, "nanocodex-hand", id, endpoint,
-          label, options.image], receipt.credential + "\n");
+          label, options.image], minted.grant + "\n");
         if (exit !== 0) throw new Error(`Server Hand installation failed (exit ${exit})`);
         const deadline = Date.now() + 20_000;
         do {
@@ -123,8 +140,12 @@ export function serverHandTool(options: SetupOptions): NamedTool {
 
 export { serverHandID } from "./hand-hosts";
 
-// The credential enters via SSH stdin. Arguments, Docker configuration, and
-// logs contain its file path, never the credential itself. No ports are exposed.
+// The one-time enrollment grant enters via SSH stdin into a 0600 state file.
+// Arguments, environment, Docker configuration, and logs contain its file
+// path, never the grant. The container's device key is generated inside its
+// own state volume (/state/hand-device) and never leaves it. Only public sshd
+// host keys are mounted, read-only and per file, so the publisher can attest
+// them; private host keys are never exposed to the container. No ports.
 export const SERVER_HAND_INSTALL = String.raw`set -eu
 umask 077
 id="$1"; endpoint="$2"; label="$3"; image="$4"
@@ -135,28 +156,37 @@ container="nanocodex-hand-$id"
 test ! -L "$state"
 mkdir -p "$state"
 chmod 700 "$state"
-test ! -L "$state/workspace" && test ! -L "$state/credential"
+test ! -L "$state/workspace" && test ! -L "$state/credential" && test ! -L "$state/device-grant"
 mkdir -p "$state/workspace"
-IFS= read -r credential
-test "$(printf '%s' "$credential" | wc -c)" -eq 43
+IFS= read -r grant
+printf '%s' "$grant" | grep -Eqx 'ncxhg1\.[A-Za-z0-9._:-]{1,400}'
 if docker container inspect "$container" >/dev/null 2>&1; then
   test "$(docker inspect --format '{{index .Config.Labels "nanocodex.hand.id"}}' "$container")" = "$id"
 fi
 docker image inspect "$image" >/dev/null 2>&1 || docker pull "$image" >/dev/null
-temporary="$(mktemp "$state/credential.XXXXXX")"
+temporary="$(mktemp "$state/device-grant.XXXXXX")"
 trap 'rm -f "$temporary"' EXIT
-printf '%s\n' "$credential" > "$temporary"
+printf '%s\n' "$grant" > "$temporary"
 chmod 600 "$temporary"
-mv "$temporary" "$state/credential"
+mv "$temporary" "$state/device-grant"
 trap - EXIT
-unset credential
+unset grant
+# A legacy bearer from an earlier install is no longer used.
+rm -f "$state/credential"
+set --
+for key in /etc/ssh/ssh_host_*_key.pub; do
+  if test -f "$key" && test ! -L "$key"; then
+    set -- "$@" --mount "type=bind,src=$key,dst=/ssh-host-keys/$(basename "$key"),readonly"
+  fi
+done
 if docker container inspect "$container" >/dev/null 2>&1; then docker rm -f "$container" >/dev/null; fi
 docker run -d --name "$container" --label "nanocodex.hand.id=$id" --restart unless-stopped --init \
   --cap-drop ALL --security-opt no-new-privileges --pids-limit 256 --memory 2g \
   --user "$(id -u):$(id -g)" --env XDG_CONFIG_HOME=/state/config --env XDG_CACHE_HOME=/state/cache \
-  --mount "type=bind,src=$state,dst=/state" --mount "type=bind,src=$state/workspace,dst=/workspace" \
+  --env XDG_STATE_HOME=/state/state --env NANOCODEX_HAND_SSH_HOST_KEY_DIR=/ssh-host-keys \
+  --mount "type=bind,src=$state,dst=/state" --mount "type=bind,src=$state/workspace,dst=/workspace" "$@" \
   --entrypoint /usr/local/bin/nanocodex-remote "$image" server-host --url "$endpoint" \
-  --credential-file /state/credential --machine-id "server:$id" --name "$label" --workspace /workspace >/dev/null
+  --device-grant-file /state/device-grant --machine-id "server:$id" --name "$label" --workspace /workspace >/dev/null
 `;
 
 const SERVER_HAND_STOP = String.raw`set -eu

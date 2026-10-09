@@ -100,6 +100,14 @@ impl HttpOutcome {
             },
         }
     }
+    /// No request was sent: the dynamic credential source failed.
+    pub(crate) const fn credential_unavailable() -> Self {
+        Self {
+            category: "credential_unavailable",
+            status: None,
+            success: false,
+        }
+    }
 }
 
 pub(crate) fn close_reason(reason: &str) -> &'static str {

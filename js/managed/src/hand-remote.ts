@@ -8,11 +8,12 @@ const LEASE_MS = 30_000;
 const ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const noStore = { "cache-control": "no-store" };
 export const REMOTE_VM_ASSERTION = "x-nanocodex-remote-vm";
-export type RemoteVMPublisher = { machineId: string; machineName?: string; routeId: string; expiresAt: number; surfaceKind?: "desktop" };
+/** anySurface: an enrolled Hand device publishes its native surfaces, bound only to its machine. */
+export type RemoteVMPublisher = { machineId: string; machineName?: string; routeId: string; expiresAt: number; surfaceKind?: "desktop"; anySurface?: true };
 
 type Surface = { id: string; name: string; kind: "desktop" | "window" | "phone" | "vm"; width: number; height: number; controllable: boolean; agent_tools?: boolean; recording?: ScreenTarget["recording"]; recordingCapabilities?: Record<string, unknown>; broadcast?: boolean; playback?: boolean; transport?: "frames-v1"; frame_window?: number };
 /** Authority decision for one complete host catalog, awaited before it becomes visible. */
-export type HandRemoteCatalogClaim = Readonly<{ machineId: string; generation: string; connectionId: string; sequence: number; surfaces: readonly string[] }>;
+export type HandRemoteCatalogClaim = Readonly<{ machineId: string; generation: string; connectionId: string; sequence: number; surfaces: readonly string[]; routeId?: string }>;
 /** Host-originated HLS playback status. Never carries upload URLs or tokens. */
 export type HandRemoteHostResult = Readonly<{ type: "broadcast_result"; target: "hls"; request_id: string; stream_id: string;
   status: "starting" | "live" | "reconnecting" | "stopped" | "failed"; error?: string; machine_id: string; generation: string }>;
@@ -144,10 +145,20 @@ export class HandRemoteBroker {
 
   tools() { return this.list(true).filter(target => target.agent_tools).map(screenTool); }
 
-  revokePublisher(routeId: string): void {
+  revokePublisher(routeId: string): number {
+    let closed = 0;
     for (const socket of this.context.getWebSockets(TAG)) {
-      if (this.attachment(socket)?.vm?.routeId === routeId) this.close(socket, "Hand revoked", "publisher_revoked");
+      if (this.attachment(socket)?.vm?.routeId === routeId) { this.close(socket, "Hand revoked", "publisher_revoked"); closed++; }
     }
+    return closed;
+  }
+
+  /** True while a scoped (server/VM) publisher, not an enrolled device, holds this machine. */
+  scopedPublisher(machineId: string): boolean {
+    return this.context.getWebSockets(TAG).some(socket => {
+      const state = this.attachment(socket);
+      return state?.role === "host" && state.expiresAt > Date.now() && state.vm?.machineId === machineId && !state.vm.anySurface;
+    });
   }
 
   /** Close every host publication of a machine except `keepGeneration`, including
@@ -428,13 +439,13 @@ export class HandRemoteBroker {
         const surfaces = normalizeSurfaces(value.surfaces);
         if (surfaces.some(surface => surface.transport === "frames-v1" && (!cloudflarePublisher(state) || !cloudflareFrames(value.machine_id, surface.kind)))) throw new Error();
         if (state.vm && (value.machine_id !== state.vm.machineId
-          || surfaces.some(surface => surface.kind !== (state.vm!.surfaceKind ?? "vm")))) throw new Error();
+          || (!state.vm.anySurface && surfaces.some(surface => surface.kind !== (state.vm!.surfaceKind ?? "vm"))))) throw new Error();
         let claimed: HandRemoteCatalogClaim | undefined;
         if (this.hooks.claimCatalog) {
           // Owner authority decides cross-region placement before visibility.
           Object.assign(state, { claiming: true, claimMachineId: value.machine_id }); socket.serializeAttachment(state);
           const claim: HandRemoteCatalogClaim = { machineId: value.machine_id, generation: state.generation, connectionId: state.id,
-            sequence: state.sequence ?? 0, surfaces: surfaces.map(surface => surface.id) };
+            sequence: state.sequence ?? 0, surfaces: surfaces.map(surface => surface.id), ...(state.vm ? { routeId: state.vm.routeId } : {}) };
           const decision = this.claims.then(async () => {
             // A fence while queued already decided this publisher; never ask authority for it.
             const queued = this.attachment(socket);

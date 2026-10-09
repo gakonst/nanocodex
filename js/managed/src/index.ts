@@ -87,7 +87,8 @@ import { parseEmailResume, resumeEmailWorkflow, type EmailResumeResult } from ".
 import { phoneControlInput } from "./phone-control";
 import { accountAdmin } from "./account-admin";
 import { adminThreadsTool, boundedAdminEventPage, routeAdminThreads, parseAdminThreadInput, threadProviderPerformance, type AdminThreadInput } from "./admin-threads";
-import { listAdminAccounts, listAdminThreads } from "./account-auth";
+import { listAdminAccounts, listAdminThreads, resolveHandDeviceAccount } from "./account-auth";
+import { routeHandDevices, HAND_DEVICE_ORIGIN_HEADER } from "./hand-device-routes";
 import { accountCommunication } from "./account-communication";
 import { routeTodoRequest } from "./todo-inbox";
 import { phoneAdminConfigured } from "./phone-admin";
@@ -201,6 +202,9 @@ import {
   VM_HOST_POOL_OWNER,
   VM_HOST_POOL_SCOPE,
   VM_HOST_PUBLIC_ORIGIN,
+  setVmHostDevice,
+  vmHostPoolLocator,
+  type VmHostDevice,
 } from "./vm-host-boundary";
 import {
   hostedToolCatalogEntryAllowed,
@@ -417,6 +421,7 @@ import { MemoryScope, MEMORY_INITIALIZE_ASSERTION } from "./memory-scope";
 export { MemoryScope } from "./memory-scope";
 export { UserDataScope } from "./user-data-scope";
 export { AccountHostedTools } from "./account-hosted-tools";
+export { HandDeviceSshHostKeys } from "./ssh-host-attestations";
 export { ScreenPlayback } from "./screen-playback";
 export { VmHostPool } from "./vm-host-pool";
 export { ApiKeyRecord, NonceStorage, Organization, UserAccount } from "./account-auth";
@@ -1880,6 +1885,13 @@ async function managedFetchRoute(
   firstTurn?: Readonly<{ id: string; key: string; input: unknown }>,
 ): Promise<Response> {
     const url = new URL(request.url);
+    // Device credentials are confined to Hand publisher routes before any other route sees them.
+    const handDevice = await routeHandDevices(request, url, { tools: env.NANOCODEX_ACCOUNT_TOOLS,
+      authenticate: () => authenticate(request, env, url),
+      resolveAccount: (ownerId, deviceId) => resolveHandDeviceAccount(env, ownerId, deviceId),
+      vmHost: async (ownerId, device) => vmHostPoolUpgrade(request, env, { scope: "account", owner: ownerId, donor: ownerId,
+        locator: await vmHostPoolLocator("account", ownerId), publicOrigin: url.origin, device }) });
+    if (handDevice) return handDevice;
     const nativeInputDiscovery = await routeNativeInputDiscovery(request, env, url);
     if (nativeInputDiscovery) return nativeInputDiscovery;
     if (url.pathname === "/v1/calendar-push/callback" && !url.search) {
@@ -1940,7 +1952,7 @@ async function managedFetchRoute(
     if (request.method === "GET" && url.pathname === "/health") {
       return json({ service: "nanocodex", runtime: "cloudflare-durable-objects", status: "ok" });
     }
-    const handPublisher = url.pathname.match(/^\/v1\/hand-hosts\/([0-9a-f-]{36})\/([0-9a-f-]{36})\/hands\/(host|ice|renew)$/);
+    const handPublisher = url.pathname.match(/^\/v1\/hand-hosts\/([0-9a-f-]{36})\/([0-9a-f-]{36})\/hands\/(host|ice|renew|device)$/);
     if (handPublisher && isUserId(handPublisher[1])) {
       // Only the per-machine bearer is forwarded. Caller-supplied account and
       // VM assertions cannot widen a server publisher's authority.
@@ -1950,6 +1962,8 @@ async function managedFetchRoute(
         if (value !== null) headers.set(name, value);
       }
       headers.set(SESSION_OWNER_ASSERTION, handPublisher[1]!);
+      // Grant enrollment signs over the public origin the Worker serves.
+      headers.set(HAND_DEVICE_ORIGIN_HEADER, url.origin);
       return env.NANOCODEX_ACCOUNT_TOOLS.getByName(handPublisher[1]!).fetch(
         `https://account-tools.internal/hand-hosts/${handPublisher[2]}/hands/${handPublisher[3]}${url.search}`,
         new Request(request, { headers }),
@@ -3741,9 +3755,13 @@ function vmHostPoolUpgrade(
     donor: string;
     locator: string;
     publicOrigin: string;
+    /** Authenticated Hand device; its factory registration is bound to the device's machine. */
+    device?: VmHostDevice;
   }>,
 ): Promise<Response> {
   const headers = new Headers(request.headers);
+  // Device binding headers come only from authentication, never from the caller.
+  setVmHostDevice(headers, options.device);
   headers.delete("authorization");
   headers.delete("cookie");
   headers.delete("origin");
@@ -3759,16 +3777,6 @@ function vmHostPoolUpgrade(
     "https://vm-host-pool.internal/host",
     new Request(request, { headers }),
   );
-}
-
-async function vmHostPoolLocator(scope: VmHostPoolScope, identity: string): Promise<string> {
-  const digest = new Uint8Array(await crypto.subtle.digest(
-    "SHA-256",
-    encoder.encode(`nanocodex:vm-host-pool:v1\0${scope}\0${identity}`),
-  ));
-  let binary = "";
-  for (const byte of digest) binary += String.fromCharCode(byte);
-  return btoa(binary).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/u, "");
 }
 
 async function authorizedSystemVmHost(request: Request, expected: string | undefined): Promise<boolean> {

@@ -309,10 +309,18 @@ async fn serve(client: &ManagedClient, command: NativeHand) -> Result<(), Manage
     if let Some(provider) = command.vm_provider {
         state.advertise_vm_provider(&provider)?;
     }
-    let target = client.account_attachment_target()?;
+    // Publish only with device credentials once enrolled (see device_identity).
+    let authorization = nanocodex_bin_shared::device_identity::authorize(
+        &client.account_attachment_target()?,
+        &directory,
+        state.machine.id(),
+        state.machine.name(),
+    )
+    .await?;
+    let target = authorization.target.clone();
     // Display readiness must not delay shell/filesystem publication. Keep the
     // NativeState lock until both the attachment and screen have shut down.
-    super::screen_supervisor::while_attached_observed(
+    let result = super::screen_supervisor::while_attached_observed(
         || super::screen_native::NativeScreen::start(&target, &state.machine, &directory),
         run(target.clone(), &state, super::service::shutdown_signal()),
         |error| {
@@ -321,7 +329,11 @@ async fn serve(client: &ManagedClient, command: NativeHand) -> Result<(), Manage
             }
         },
     )
-    .await
+    .await;
+    match result {
+        Err(error) => Err(authorization.explain(error).await),
+        ok => ok,
+    }
 }
 
 pub(super) fn reject_browser_options(

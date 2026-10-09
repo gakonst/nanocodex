@@ -3,7 +3,7 @@ import { serverHandID, serverHandTool, SERVER_HAND_INSTALL } from "../src/ssh-ha
 
 const owner = "11111111-1111-4111-8111-111111111111";
 const identity = { reference: "lab", hostname: "lab.example.com", port: 2222, username: "deploy", host_key_sha256: "SHA256:" + "a".repeat(43), public_key: "ssh-rsa AAAA" };
-const credential = "s".repeat(43);
+const grant = `ncxhg1.${owner}.host.${"s".repeat(43)}`;
 const context = () => ({ callId: "call", parentCallId: "", sessionId: "session", model: "test", signal: new AbortController().signal });
 
 async function fixture(options: { denied?: boolean; installExit?: number; image?: string; revokeFails?: boolean; lockBusy?: boolean } = {}) {
@@ -18,7 +18,7 @@ async function fixture(options: { denied?: boolean; installExit?: number; image?
     if (path === "/v1/execute") {
       sshCount += 1;
       return Response.json({ exit_code: sshCount === 2 ? options.installExit ?? 0 : 0,
-        stdout: credential, stderr: "untrusted server output" });
+        stdout: grant, stderr: "untrusted server output" });
     }
     throw new Error("Unexpected egress");
   } } as unknown as Fetcher;
@@ -28,10 +28,12 @@ async function fixture(options: { denied?: boolean; installExit?: number; image?
     calls.push({ path, method, body });
     if (path.includes("/hand-host-setups/")) return new Response(null, { status: options.lockBusy && method === "POST" ? 409 : 204 });
     if (path === "/hands/screens") return Response.json({ surfaces: [{ machine_id: `server:${id}`, id: "desktop" }] });
-    if (method === "PUT") return Response.json({ credential }, { status: 201 });
     if (method === "DELETE") return new Response(null, { status: options.revokeFails ? 503 : 204 });
     throw new Error("Unexpected management request");
-  } } as unknown as Fetcher;
+  }, async mintServerHandDeviceGrant(ownerId: string, hostId: string, name: string) {
+    calls.push({ path: "rpc:mintServerHandDeviceGrant", method: "RPC", body: { ownerId, hostId, name } });
+    return { grant, expires_at: Date.now() + 600_000 };
+  } } as unknown as Fetcher & { mintServerHandDeviceGrant(ownerId: string, hostId: string, name: string): Promise<{ grant: string; expires_at: number }> };
   const tool = serverHandTool({ owner, subject: "x".repeat(64), origin: "https://managed.example",
     image: options.image ?? "registry.example/hand@sha256:" + "a".repeat(64), egress, hosts,
     authorize() { if (options.denied) throw new Error("forbidden"); } });
@@ -51,10 +53,16 @@ it("keeps installation authority out of argv and results, and waits for publicat
   const result = await f.tool.handler({ operation: "connect", identity_ref: "lab" }, context());
   expect(result).toEqual({ machine_id: `server:${f.id}`, status: "published", workspace_retained: true });
   const install = f.calls.find(call => call.path === "/v1/execute" && call.body.stdin);
-  expect(install?.body).toMatchObject({ identity_ref: "lab", hostname: identity.hostname, port: 2222, username: "deploy", stdin: credential + "\n" });
+  expect(install?.body).toMatchObject({ identity_ref: "lab", hostname: identity.hostname, port: 2222, username: "deploy",
+    host_key_trust: "device", stdin: grant + "\n" });
+  // Setup only opts in; host fingerprints are never sent from the managed side.
+  expect(f.calls.filter(call => call.path === "/v1/execute").every(call => call.body.host_key_trust === "device"
+    && !("device_host_keys" in call.body) && !("host_key_sha256" in call.body))).toBe(true);
+  expect(f.calls.find(call => call.path === "rpc:mintServerHandDeviceGrant")?.body).toEqual({ ownerId: owner, hostId: f.id, name: "deploy@lab.example.com" });
+  expect(f.calls.some(call => call.path.includes("/hand-hosts/") && call.method === "PUT")).toBe(false);
   expect(install?.body.command[2]).toBe(SERVER_HAND_INSTALL);
-  expect(JSON.stringify(install?.body.command)).not.toContain(credential);
-  expect(JSON.stringify(result)).not.toContain(credential);
+  expect(JSON.stringify(install?.body.command)).not.toContain(grant);
+  expect(JSON.stringify(result)).not.toContain(grant);
   expect(f.calls.at(-1)).toMatchObject({ path: `/hand-host-setups/${f.id}`, method: "DELETE" });
   expect(f.calls.some(call => call.path === "/hands/screens")).toBe(true);
 });
@@ -72,7 +80,7 @@ it("refuses concurrent setup or an unpinned image without changing the server", 
     const f = await fixture(options);
     await expect(f.tool.handler({ operation: "connect", identity_ref: "lab" }, context())).rejects.toThrow();
     expect(f.calls.some(call => call.path === "/v1/execute")).toBe(false);
-    expect(f.calls.some(call => call.path.includes("/hand-hosts/") && call.method === "PUT")).toBe(false);
+    expect(f.calls.some(call => call.path === "rpc:mintServerHandDeviceGrant")).toBe(false);
   }
 });
 

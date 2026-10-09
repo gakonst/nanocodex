@@ -5923,17 +5923,21 @@ name = "nanocodex-bin-shared"
 version = "0.6.7"
 dependencies = [
  "async-trait",
+ "base64 0.22.1",
  "chrono",
  "clap",
+ "futures-util",
  "memchr",
  "nanocodex",
  "nanocodex-cli-auth",
  "nanocodex-computer",
  "nanocodex-managed",
+ "nanocodex-oai-tools",
  "nanocodex-observability",
  "nanocodex-remote",
  "nix 0.31.3",
  "reqwest",
+ "ring",
  "rustls",
  "serde",
  "serde_json",
@@ -5944,7 +5948,9 @@ dependencies = [
  "tokio-util",
  "toml",
  "tracing",
+ "url",
  "uuid",
+ "zeroize",
 ]
 
 [[package]]
@@ -6300,6 +6306,7 @@ dependencies = [
  "uuid",
  "webrtc",
  "whoami 1.6.1",
+ "zeroize",
 ]
 
 [[package]]

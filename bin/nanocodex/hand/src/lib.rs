@@ -53,6 +53,7 @@ mod screen_wayland_encoder;
 #[cfg(target_os = "linux")]
 mod screen_wayland_input;
 mod service;
+mod vm_factory_credential;
 #[cfg(any(
     all(target_os = "linux", not(target_env = "musl")),
     all(target_os = "macos", target_arch = "aarch64")

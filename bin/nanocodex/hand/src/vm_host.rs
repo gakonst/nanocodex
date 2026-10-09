@@ -29,7 +29,7 @@ mod supported {
     use fs2::FileExt as _;
     use nanocodex_managed::{
         ManagedClient, ManagedError, VmHostAllocationState, VmHostCommand, VmHostConnection,
-        VmHostScope, VmShape, connect_system_vm_host,
+        VmHostScope, VmShape, connect_account_vm_host_with_bearer, connect_system_vm_host,
     };
     use nanocodex_oai_tools::attachment::{
         Attachment, AttachmentError, AttachmentMetadata, AttachmentTarget,
@@ -2305,6 +2305,12 @@ mod supported {
             origin: String,
             token: String,
         },
+        /// Device-enrolled Hand: the daemon-maintained credential file, read
+        /// again before every connection. No account API key is involved.
+        Device {
+            origin: String,
+            file: PathBuf,
+        },
     }
 
     impl ControlAuth {
@@ -2331,6 +2337,38 @@ mod supported {
                         shape,
                     )
                     .await
+                }
+                Self::Device { origin, file } => {
+                    // Retryable: the daemon replaces the file before expiry.
+                    let credential =
+                        super::super::vm_factory_credential::read(file).map_err(|error| {
+                            ManagedError::VmHost(format!(
+                                "VM factory device credential unavailable: {error}"
+                            ))
+                        })?;
+                    connect_account_vm_host_with_bearer(
+                        origin,
+                        credential.as_str(),
+                        host_id,
+                        factory_name,
+                        max_vms,
+                        shape,
+                    )
+                    .await
+                    .map_err(|error| match error {
+                        // A rejected short-lived credential is retried: the daemon
+                        // replaces the file after expiry or rotation, and stops this
+                        // factory when its device is no longer accepted.
+                        ManagedError::Configuration(message)
+                            if message == "VM host authentication was rejected" =>
+                        {
+                            ManagedError::VmHost(
+                                "the VM factory device credential was rejected; awaiting a refreshed credential"
+                                    .to_owned(),
+                            )
+                        }
+                        error => error,
+                    })
                 }
             }
         }
@@ -2625,7 +2663,20 @@ mod supported {
         let shape = VmShape::new(config.vm_cpus, config.vm_memory_mib)?;
         // Select authority before opening durable state. In particular, system
         // hosts never construct a ManagedClient or read an account API key.
+        let device_file = env::var_os(super::super::vm_factory_credential::CREDENTIAL_FILE_ENV)
+            .filter(|value| !value.is_empty())
+            .map(PathBuf::from);
+        if device_file.is_some() && !matches!(config.scope, HostScope::User) {
+            return Err(ManagedError::Configuration(
+                "a Hand device credential file authorizes only --scope user VM hosts".to_owned(),
+            ));
+        }
         let auth = match config.scope {
+            // A device-enrolled Hand's factory never reads an account API key or saved login.
+            HostScope::User if device_file.is_some() => ControlAuth::Device {
+                origin: managed_url_from_environment(None)?,
+                file: device_file.expect("checked device credential file"),
+            },
             HostScope::User => ControlAuth::Account {
                 client: client_from_environment(None)?,
                 scope: VmHostScope::User,

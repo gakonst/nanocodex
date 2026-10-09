@@ -66,6 +66,7 @@ pub(crate) struct IceCache {
     http: reqwest::Client,
     url: Url,
     token: String,
+    credentials: Option<Arc<dyn crate::target::PublisherCredentials>>,
     pending: Option<Flight>,
     cached: Option<Cached>,
     refresh_attempts: u8,
@@ -78,17 +79,33 @@ impl IceCache {
             http,
             url: base,
             token: token.into(),
+            credentials: None,
             pending: None,
             cached: None,
             refresh_attempts: 0,
             retry_at: None,
         }
     }
+    /// Fetch a fresh credential for every ICE request (enrolled Hand devices).
+    pub(crate) fn with_credentials(
+        mut self,
+        credentials: Option<Arc<dyn crate::target::PublisherCredentials>>,
+    ) -> Self {
+        self.credentials = credentials;
+        self
+    }
     fn start(&mut self) -> Flight {
         let http = self.http.clone();
         let url = self.url.clone();
         let token = self.token.clone();
+        let credentials = self.credentials.clone();
         let flight = async move {
+            // An unavailable dynamic credential sends no bearer; the endpoint
+            // rejects it and the normal bounded retry applies.
+            let token = match credentials {
+                Some(credentials) => credentials.bearer().await.unwrap_or_default(),
+                None => token,
+            };
             let response = async {
                 http.post(url)
                     .bearer_auth(token)

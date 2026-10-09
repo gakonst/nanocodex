@@ -46,9 +46,27 @@ const MAX_REJECTED_BACKOFF: Duration = Duration::from_secs(60);
 #[cfg(test)]
 const MAX_REJECTED_BACKOFF: Duration = Duration::from_millis(500);
 
+pub(crate) enum Authorization {
+    Static(Box<str>),
+    /// Fetched before every connection attempt; never cached here.
+    Dynamic(Arc<dyn super::AttachmentCredentials>),
+}
+
+impl Authorization {
+    async fn header(&self) -> Result<Box<str>, AttachmentError> {
+        match self {
+            Self::Static(value) => Ok(value.clone()),
+            Self::Dynamic(credentials) => credentials
+                .bearer()
+                .await
+                .map(|bearer| format!("Bearer {bearer}").into()),
+        }
+    }
+}
+
 pub(crate) struct Config {
     pub(crate) endpoint: Url,
-    pub(crate) authorization: Box<str>,
+    pub(crate) authorization: Authorization,
     pub(crate) tools: Value,
     pub(crate) metadata: Option<AttachmentMetadata>,
 }
@@ -74,6 +92,10 @@ pub(crate) async fn run(
     let mut backoff = Duration::from_millis(100);
     let mut attempt = 0_u64;
     let mut previous_delay = Duration::ZERO;
+    // A dynamic credential gets one fresh retry after an endpoint rejection
+    // (for example a credential that expired in flight); a second consecutive
+    // rejection is terminal.
+    let mut credential_rejections = 0_u8;
     let terminal = loop {
         attempt = attempt.saturating_add(1);
         let connection_id = uuid::Uuid::new_v4().to_string();
@@ -82,7 +104,28 @@ pub(crate) async fn run(
             attempt, reconnect_delay_ms = previous_delay.as_millis() as u64);
         let _ = status.send(AttachmentStatus::Connecting);
         connection_span.in_scope(|| emit(&events, AttachmentEvent::Connecting));
-        let request = match request(&config, &connection_id, &runtime_id) {
+        let authorization = tokio::select! {
+            command = commands.recv() => match command { Some(Command::Detach) | None => break Ok(()) },
+            authorization = config.authorization.header() => authorization,
+        };
+        let authorization = match authorization {
+            Ok(authorization) => authorization,
+            Err(error @ AttachmentError::Authentication(_)) => {
+                connection_span.in_scope(|| tracing::warn!(target: "nanocodex_oai_tools::attachment", stage = "attachment.credential.rejected", reason_code = "credential_unavailable", pending_calls = active.len(), "attachment credential permanently unavailable"));
+                break Err(error);
+            }
+            Err(_) => {
+                connection_span.in_scope(|| tracing::warn!(target: "nanocodex_oai_tools::attachment", stage = "attachment.credential.failed", reason_code = "credential_failure", reconnect_delay_ms = backoff.as_millis() as u64, pending_calls = active.len(), "attachment credential refresh failed"));
+                let _ = status.send(AttachmentStatus::Disconnected);
+                previous_delay = backoff;
+                if wait_backoff(&mut commands, backoff).await {
+                    break Ok(());
+                }
+                backoff = (backoff * 2).min(MAX_REJECTED_BACKOFF);
+                continue;
+            }
+        };
+        let request = match request(&config, &authorization, &connection_id, &runtime_id) {
             Ok(request) => request,
             Err(error) => break Err(error),
         };
@@ -129,6 +172,7 @@ pub(crate) async fn run(
         };
         let socket = match connected {
             Ok(Ok((socket, response))) => {
+                credential_rejections = 0;
                 tracing::info!(target: "nanocodex_oai_tools::attachment",
                     stage = "attachment.websocket_connected",
                     duration_ms = connect_started.elapsed().as_secs_f64() * 1000.0,
@@ -136,6 +180,23 @@ pub(crate) async fn run(
                     request_id = response.headers().get("x-nanocodex-request-id").and_then(|v| v.to_str().ok()).and_then(safe_uuid).unwrap_or_default(),
                     "attachment WebSocket connected");
                 socket
+            }
+            Ok(Err(tokio_tungstenite::tungstenite::Error::Http(response)))
+                if matches!(response.status().as_u16(), 401 | 403)
+                    && credential_rejections == 0
+                    && matches!(config.authorization, Authorization::Dynamic(_)) =>
+            {
+                credential_rejections += 1;
+                if let Authorization::Dynamic(credentials) = &config.authorization {
+                    credentials.rejected();
+                }
+                connection_span.in_scope(|| tracing::warn!(target: "nanocodex_oai_tools::attachment", stage = "attachment.socket.rejected", reason_code = "credential_rejected_retry", http_status = response.status().as_u16(), pending_calls = active.len(), "attachment credential rejected; retrying with a fresh credential"));
+                let _ = status.send(AttachmentStatus::Disconnected);
+                previous_delay = backoff;
+                if wait_backoff(&mut commands, backoff).await {
+                    break Ok(());
+                }
+                continue;
             }
             Ok(Err(tokio_tungstenite::tungstenite::Error::Http(response)))
                 if matches!(response.status().as_u16(), 401 | 403) =>
@@ -258,6 +319,7 @@ pub(crate) async fn run(
 
 fn request(
     config: &Config,
+    authorization: &str,
     connection_id: &str,
     runtime_id: &str,
 ) -> Result<http::Request<()>, AttachmentError> {
@@ -266,7 +328,7 @@ fn request(
         .as_str()
         .into_client_request()
         .map_err(|error| AttachmentError::Transport(error.to_string().into()))?;
-    let mut authorization = http::HeaderValue::from_str(&config.authorization)
+    let mut authorization = http::HeaderValue::from_str(authorization)
         .map_err(|_| AttachmentError::Authentication("invalid bearer credential".into()))?;
     authorization.set_sensitive(true);
     request

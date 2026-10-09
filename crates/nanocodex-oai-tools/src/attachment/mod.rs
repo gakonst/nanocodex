@@ -224,12 +224,44 @@ fn valid_capability(value: &str) -> bool {
         })
 }
 
+/// Asynchronous source of short-lived bearer credentials.
+///
+/// The attachment asks for a credential before every connection and
+/// reconnection attempt. Return [`AttachmentError::Authentication`] when the
+/// credential can never be obtained again (for example a revoked device); the
+/// attachment then stops instead of reconnecting. Other errors are retried with
+/// the normal reconnect backoff. Implementations must never include the
+/// credential in errors or logs.
+pub trait AttachmentCredentials: Send + Sync + 'static {
+    /// Returns a currently valid bearer credential.
+    fn bearer(&self) -> futures_util::future::BoxFuture<'_, Result<String, AttachmentError>>;
+
+    /// The endpoint rejected the most recent credential; drop any cached copy
+    /// so the next `Self::bearer` call obtains a fresh one.
+    fn rejected(&self) {}
+}
+
 /// Transport-only destination for an attached tool executor.
-#[derive(Clone, Eq, PartialEq)]
+#[derive(Clone)]
 pub struct AttachmentTarget {
     endpoint: Url,
     bearer: Arc<str>,
+    credentials: Option<Arc<dyn AttachmentCredentials>>,
 }
+
+impl PartialEq for AttachmentTarget {
+    fn eq(&self, other: &Self) -> bool {
+        self.endpoint == other.endpoint
+            && self.bearer == other.bearer
+            && match (&self.credentials, &other.credentials) {
+                (None, None) => true,
+                (Some(left), Some(right)) => Arc::ptr_eq(left, right),
+                _ => false,
+            }
+    }
+}
+
+impl Eq for AttachmentTarget {}
 
 impl AttachmentTarget {
     /// # Errors
@@ -268,7 +300,45 @@ impl AttachmentTarget {
         Ok(Self {
             endpoint,
             bearer: bearer.into(),
+            credentials: None,
         })
+    }
+
+    /// Uses `credentials` for every connection attempt instead of a static
+    /// bearer. `initial` is the credential the caller already obtained; it is
+    /// returned by [`Self::bearer`] for adapters that need a synchronous value
+    /// and may expire, so long-lived transports must use [`Self::current_bearer`].
+    ///
+    /// # Errors
+    ///
+    /// Same validation as [`Self::new`].
+    pub fn with_credentials(
+        endpoint: impl AsRef<str>,
+        initial: impl Into<String>,
+        credentials: Arc<dyn AttachmentCredentials>,
+    ) -> Result<Self, AttachmentError> {
+        let mut target = Self::new(endpoint, initial)?;
+        target.credentials = Some(credentials);
+        Ok(target)
+    }
+
+    /// The dynamic credential source, when this target has one.
+    #[must_use]
+    pub fn credentials(&self) -> Option<Arc<dyn AttachmentCredentials>> {
+        self.credentials.clone()
+    }
+
+    /// Returns a currently valid credential: a fresh one from the dynamic
+    /// source, or the static bearer.
+    ///
+    /// # Errors
+    ///
+    /// Propagates the credential source's error.
+    pub async fn current_bearer(&self) -> Result<String, AttachmentError> {
+        match &self.credentials {
+            Some(credentials) => credentials.bearer().await,
+            None => Ok(self.bearer.to_string()),
+        }
     }
 
     /// Returns the final WebSocket endpoint.
@@ -291,6 +361,7 @@ impl fmt::Debug for AttachmentTarget {
             .debug_struct("AttachmentTarget")
             .field("endpoint", &self.endpoint)
             .field("bearer", &"[REDACTED]")
+            .field("dynamic_credentials", &self.credentials.is_some())
             .finish()
     }
 }
@@ -419,7 +490,10 @@ async fn initialize_and_run(
             .map_err(|error| AttachmentError::Catalog(error.to_string().into()))?;
         Ok::<_, AttachmentError>(driver::Config {
             endpoint: target.endpoint,
-            authorization: format!("Bearer {}", target.bearer).into(),
+            authorization: match target.credentials {
+                Some(credentials) => driver::Authorization::Dynamic(credentials),
+                None => driver::Authorization::Static(format!("Bearer {}", target.bearer).into()),
+            },
             tools,
             metadata,
         })

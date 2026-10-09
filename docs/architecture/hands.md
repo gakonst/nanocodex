@@ -53,6 +53,12 @@ authorization, offline retention, and migration rejection of thread-scoped
 native catalogs. Each run writes its request and catalog evidence under ignored
 `output/hand-inventory-journey/`.
 
+Each Hand authenticates publication with its own Ed25519 device key and
+short-lived Hand-only credentials, never the account API key after enrollment.
+[Hand device keys](hand-device-keys.md) describes enrollment, credentials,
+rotation, revocation, the downgrade fence, SSH host-key attestation for SSH
+recovery, and the threat model.
+
 ### One account Hand per computer
 
 Physical computers attach only to the account broker at

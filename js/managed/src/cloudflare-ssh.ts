@@ -60,6 +60,8 @@ async function executeBrokeredSsh(
       port: request.endpoint.port,
       username: request.username,
       command: request.commandArgs,
+      // Opt-in only; egress resolves any device attestation itself.
+      ...(request.hostKeyTrust === "device" ? { host_key_trust: "device" } : {}),
       ...(request.stdin === undefined ? {} : { stdin: request.stdin }),
     }),
     signal,

@@ -83,5 +83,6 @@ pub use vault_management::Item as VaultItemMetadata;
 #[cfg_attr(docsrs, doc(cfg(feature = "tools")))]
 pub use vm_host::{
     VmHostAllocationState, VmHostCommand, VmHostConnection, VmHostFence, VmHostProvision,
-    VmHostRelease, VmHostScope, VmShape, connect_system_vm_host, validate_vm_factory_name,
+    VmHostRelease, VmHostScope, VmShape, connect_account_vm_host_with_bearer,
+    connect_system_vm_host, validate_vm_factory_name,
 };

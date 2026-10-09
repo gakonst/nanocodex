@@ -10,10 +10,21 @@ use std::{
 };
 use url::Url;
 
+/// Asynchronous source of short-lived publisher credentials (for example an
+/// enrolled Hand device). Consulted before every host upgrade, renewal and ICE
+/// request. An `io::ErrorKind::PermissionDenied` error means the credential
+/// can never be obtained again. Errors must never contain the credential.
+pub trait PublisherCredentials: Send + Sync + 'static {
+    fn bearer(&self) -> futures_util::future::BoxFuture<'_, io::Result<String>>;
+    /// The endpoint rejected the most recent credential; drop cached copies.
+    fn rejected(&self) {}
+}
+
 #[derive(Clone)]
 pub struct PublisherTarget {
     endpoint: Url,
     bearer: Arc<str>,
+    credentials: Option<Arc<dyn PublisherCredentials>>,
 }
 
 impl PublisherTarget {
@@ -30,6 +41,24 @@ impl PublisherTarget {
         Ok(Self {
             endpoint,
             bearer: read_credential(path)?.into(),
+            credentials: None,
+        })
+    }
+
+    /// The same destination validation as [`Self::from_credential_file`] with
+    /// an already obtained credential (for example an enrolled Hand device's).
+    pub fn from_endpoint(origin: &str, bearer: &str) -> io::Result<Self> {
+        let mut endpoint = checked_url(origin, false)?;
+        if matches!(endpoint.path(), "" | "/") {
+            endpoint.set_path("/v1/account/hands");
+        } else if !scoped_path(endpoint.path(), "hands") {
+            return Err(invalid("invalid scoped publisher endpoint"));
+        }
+        check_bearer(bearer)?;
+        Ok(Self {
+            endpoint,
+            bearer: bearer.into(),
+            credentials: None,
         })
     }
 
@@ -58,7 +87,33 @@ impl PublisherTarget {
         Ok(Self {
             endpoint,
             bearer: bearer.into(),
+            credentials: None,
         })
+    }
+
+    /// Fetch a fresh credential from `credentials` for every publisher
+    /// request. The static bearer remains only the initial value.
+    #[must_use]
+    pub fn with_credentials(mut self, credentials: Arc<dyn PublisherCredentials>) -> Self {
+        self.credentials = Some(credentials);
+        self
+    }
+
+    pub fn credentials(&self) -> Option<Arc<dyn PublisherCredentials>> {
+        self.credentials.clone()
+    }
+
+    /// A currently valid credential: fresh from the dynamic source, or the
+    /// static bearer.
+    pub async fn current_bearer(&self) -> io::Result<String> {
+        match &self.credentials {
+            Some(credentials) => {
+                let bearer = credentials.bearer().await?;
+                check_bearer(&bearer)?;
+                Ok(bearer)
+            }
+            None => Ok(self.bearer.to_string()),
+        }
     }
 
     pub const fn endpoint(&self) -> &Url {

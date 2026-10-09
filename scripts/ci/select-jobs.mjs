@@ -111,6 +111,8 @@ export function selectJobs(paths, graph) {
     if (/^js\/(?:managed\/(?:src\/(?:browser-|vault-|credentials\.|index\.)|test\/private-input-)|egress\/src\/(?:broker\.|egress\.|vault-|credential-vault\.)|account\/worker\/managedProxy\.)/.test(path)) {
       jobs.hands = true;
     }
+    // The real CLI and server_hand device-key journeys run in the shared Hand job.
+    if (/^js\/(?:managed\/(?:src\/(?:hand-device|ssh-hand-setup\.)|test\/(?:support\/)?(?:hand-device-|server-hand\/))|egress\/src\/ssh\.)/.test(path)) jobs.hands = true;
     const packages = owners(path, graph);
     for (const pkg of packages) changed.add(pkg);
     if (packages.size && !/^(?:js|py|examples)\//.test(path)) continue;

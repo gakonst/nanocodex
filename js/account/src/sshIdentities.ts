@@ -3,7 +3,9 @@ export type SshIdentityMetadata = Readonly<{
   hostname: string;
   port: number;
   username: string;
-  hostKeySha256: string;
+  /** Absent only for targets bound to device host-key trust instead of a pin. */
+  hostKeySha256?: string;
+  hostKeyTrust?: string;
   publicKey?: string;
 }>;
 
@@ -27,22 +29,28 @@ const REFERENCE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 const RESERVED_REFERENCES = new Set(["__proto__", "constructor", "prototype"]);
 const USERNAME = /^[A-Za-z0-9._-]{1,128}$/;
 const HOST_FINGERPRINT = /^SHA256:[A-Za-z0-9+/]{43}=?$/;
+const HOST_KEY_TRUST = /^(?:device|hand:[A-Za-z0-9][A-Za-z0-9._:-]{0,127})$/;
 
 export function decodeSshIdentities(value: unknown): readonly SshIdentityMetadata[] {
   if (!Array.isArray(value)) throw new Error("Invalid SSH identity status response.");
   return value.map((candidate) => {
     if (!isRecord(candidate)) throw new Error("Invalid SSH identity status response.");
-    const { reference, hostname, port, username, host_key_sha256: hostKeySha256, public_key: publicKey } = candidate;
+    const { reference, hostname, port, username, host_key_sha256: hostKeySha256, host_key_trust: hostKeyTrust, public_key: publicKey } = candidate;
     if (typeof reference !== "string" || !validReference(reference)
       || typeof hostname !== "string" || !validLowercaseHostname(hostname)
       || !Number.isInteger(port) || (port as number) < 1 || (port as number) > 65_535
       || typeof username !== "string" || !USERNAME.test(username)
-      || typeof hostKeySha256 !== "string" || !HOST_FINGERPRINT.test(hostKeySha256)) {
+      || (hostKeySha256 !== undefined && (typeof hostKeySha256 !== "string" || !HOST_FINGERPRINT.test(hostKeySha256)))
+      || (hostKeyTrust !== undefined && (typeof hostKeyTrust !== "string" || !HOST_KEY_TRUST.test(hostKeyTrust)))
+      || (hostKeySha256 === undefined && hostKeyTrust === undefined)) {
       throw new Error("Invalid SSH identity status response.");
     }
     if (publicKey !== undefined && (typeof publicKey !== "string" || publicKey.length > 16384
       || !/^(?:ssh-rsa|ecdsa-sha2-nistp(?:256|384|521)) [A-Za-z0-9+/]+={0,2}$/.test(publicKey))) throw new Error("Invalid SSH public key.");
-    return { reference, hostname, port: port as number, username, hostKeySha256, ...(publicKey ? { publicKey } : {}) };
+    return { reference, hostname, port: port as number, username,
+      ...(typeof hostKeySha256 === "string" ? { hostKeySha256 } : {}),
+      ...(typeof hostKeyTrust === "string" ? { hostKeyTrust } : {}),
+      ...(publicKey ? { publicKey } : {}) };
   });
 }
 

@@ -102,6 +102,8 @@ jobs:
     timeout-minutes: 30
     permissions:
       contents: read
+      # The device-key journeys reuse WASM outputs retained by master builds.
+      actions: read
     strategy:
       fail-fast: false
       matrix:
@@ -164,6 +166,75 @@ jobs:
           # The default workspace members are the CLI and the Hand daemon.
           cargo build --locked --bins
           cp target/debug/nanocodex-hand target/debug/nanocodex2
+      # Hand device-key journeys run the shipped binaries against the managed
+      # Worker in Miniflare, which bundles the WASM runtime and nanocodex-tools.
+      # They run whenever this job is selected, even while broader tests are paused.
+      - name: Reuse unchanged WASM outputs for the device-key journeys
+        id: wasm
+        if: runner.os == 'Linux'
+        uses: ./.github/actions/wasm-outputs
+      - name: Prepare the managed Worker for the device-key journeys
+        if: runner.os == 'Linux'
+        run: |
+          ./js/nanocodex-vite/scripts/build-js-package.sh --release
+          pnpm --filter nanocodex-tools --filter nanocodex-connect-protocol run build
+          pnpm --filter nanocodex-managed-service run prepare:code-evaluator
+      - name: Exercise Hand device keys through the real CLI and Hand daemon
+        if: runner.os == 'Linux'
+        timeout-minutes: 10
+        shell: bash
+        run: |
+          NANOCODEX_BIN="$GITHUB_WORKSPACE/target/debug/nanocodex" \
+          NANOCODEX_HAND_EXECUTABLE="$GITHUB_WORKSPACE/target/debug/nanocodex-hand" \
+            pnpm --filter nanocodex-managed-service run test:hand-device-cli
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always() && runner.os == 'Linux'
+        with:
+          name: hand-device-cli-journey
+          path: |
+            output/hand-device-keys/cli-journey/**
+            !output/hand-device-keys/cli-journey/**/sqlite/**
+          if-no-files-found: warn
+      - name: Exercise a device-enrolled Hand's VM factory credential file through the real daemon and factory
+        if: runner.os == 'Linux'
+        timeout-minutes: 10
+        shell: bash
+        run: |
+          # The factory child is the real Linux VM host, which refuses to start
+          # without read/write KVM. Hosted runners expose /dev/kvm root-only.
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-nanocodex-kvm.rules >/dev/null
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          test -r /dev/kvm && test -w /dev/kvm
+          NANOCODEX_BIN="$GITHUB_WORKSPACE/target/debug/nanocodex" \
+          NANOCODEX_HAND_EXECUTABLE="$GITHUB_WORKSPACE/target/debug/nanocodex-hand" \
+            pnpm --filter nanocodex-managed-service run test:hand-device-vm-factory
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always() && runner.os == 'Linux'
+        with:
+          name: hand-device-vm-factory-journey
+          path: |
+            output/hand-device-keys/vm-factory/**
+            !output/hand-device-keys/vm-factory/**/sqlite/**
+          if-no-files-found: warn
+      - name: Exercise server_hand bootstrap through a real sshd and the Hand server publisher
+        if: runner.os == 'Linux'
+        timeout-minutes: 10
+        shell: bash
+        run: |
+          # The journey runs a real sshd; ubuntu runners need the server package.
+          command -v /usr/sbin/sshd >/dev/null || sudo apt-get install -y openssh-server
+          NANOCODEX_HAND_EXECUTABLE="$GITHUB_WORKSPACE/target/debug/nanocodex-hand" \
+            pnpm --filter nanocodex-managed-service run test:hand-device-server-hand
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always() && runner.os == 'Linux'
+        with:
+          name: hand-device-server-hand-journey
+          path: |
+            output/hand-device-keys/server-hand-journey/**
+            !output/hand-device-keys/server-hand-journey/**/sqlite/**
+          if-no-files-found: warn
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 24
@@ -812,6 +883,29 @@ jobs:
           name: private-input-account-admission
           path: output/private-input-tui/admission-trace.json
           if-no-files-found: warn
+      - name: Exercise Hand device keys over public routes
+        # Runs whenever this job is selected (managed, tools or Hand changes), even while broader tests are paused.
+        timeout-minutes: 5
+        run: pnpm --filter nanocodex-managed-service run test:hand-device-keys
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: hand-device-keys-journeys
+          path: |
+            output/hand-device-keys/server-journey/**/*.json
+          if-no-files-found: warn
+      - name: Exercise device-authenticated VM factories over public routes
+        # Runs whenever this job is selected, even while broader tests are paused.
+        timeout-minutes: 5
+        run: pnpm --filter nanocodex-managed-service run test:hand-device-vm-host
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: hand-device-vm-host-journey
+          path: |
+            output/hand-device-keys/vm-host/**
+            !output/hand-device-keys/vm-host/**/sqlite/**
+          if-no-files-found: warn
       - name: Exercise all Vault kinds in private browser fields
         timeout-minutes: 10
         shell: bash
@@ -1033,6 +1127,21 @@ jobs:
             output/services-ui/
             output/browser-vault-totp/
             output/phone-stack/
+          if-no-files-found: warn
+      - name: Exercise SSH host-key trust from Hand device attestations
+        timeout-minutes: 5
+        shell: bash
+        run: |
+          # The journey runs a real sshd; ubuntu runners need the server package.
+          command -v /usr/sbin/sshd >/dev/null || sudo apt-get install -y openssh-server
+          NANOCODEX_EVIDENCE_DIR="$GITHUB_WORKSPACE/output/hand-device-keys/ssh" pnpm --filter nanocodex-egress-service run test:ssh-device-trust
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: hand-device-ssh-trust-journey
+          path: |
+            output/hand-device-keys/ssh/*.json
+            output/hand-device-keys/ssh/*.txt
           if-no-files-found: warn
       - name: Test private Claude connection and model picker
         if: needs.changes.outputs.tests == 'true'

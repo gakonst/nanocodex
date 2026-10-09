@@ -26,9 +26,13 @@ export type HostedToolsBrokerOptions = Readonly<
 
 /** Cloudflare Durable Object adapter for the platform-neutral Hosted Tools broker core. */
 export class HostedToolsBroker extends HostedToolsBrokerCore {
+  /** Extra hibernation-durable tags for the socket currently being accepted. */
+  readonly #acceptTags: { next: readonly string[] };
+
   constructor(context: HostedToolsBrokerContext, options: HostedToolsBrokerOptions = {}) {
+    const acceptTags = { next: [] as readonly string[] };
     const coreContext: HostedToolsBrokerCoreContext = {
-      accept: (socket) => context.acceptWebSocket(socket as WebSocket, ["hosted-tools"]),
+      accept: (socket) => context.acceptWebSocket(socket as WebSocket, ["hosted-tools", ...acceptTags.next]),
       sockets: () => context.getWebSockets("hosted-tools"),
       readAttachment: (socket) => (socket as WebSocket).deserializeAttachment(),
       writeAttachment: (socket, value) => (socket as WebSocket).serializeAttachment(value),
@@ -37,6 +41,7 @@ export class HostedToolsBroker extends HostedToolsBrokerCore {
       ...options,
       persistence: options.persistence ?? new SqlHostedToolsPersistence(context.storage),
     });
+    this.#acceptTags = acceptTags;
   }
 
   upgrade(
@@ -46,18 +51,23 @@ export class HostedToolsBroker extends HostedToolsBrokerCore {
     connectGrantId?: string,
     leasedAttachment?: HostedToolsLeasedAttachmentPolicy,
     publisherIdentity?: { machineId: string; runtimeId: string },
+    tags: readonly string[] = [],
   ): Response {
     const pair = new WebSocketPair();
     const [client, server] = Object.values(pair);
-    this.accept(
-      server,
-      sessionId,
-      allowedMcpIds,
-      appToolCatalogDigest,
-      connectGrantId,
-      leasedAttachment,
-      publisherIdentity,
-    );
+    // Tags (for example the authenticating Hand device) survive hibernation.
+    this.#acceptTags.next = tags;
+    try {
+      this.accept(
+        server,
+        sessionId,
+        allowedMcpIds,
+        appToolCatalogDigest,
+        connectGrantId,
+        leasedAttachment,
+        publisherIdentity,
+      );
+    } finally { this.#acceptTags.next = []; }
     return new Response(null, { status: 101, webSocket: client });
   }
 }

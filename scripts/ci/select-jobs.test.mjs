@@ -86,6 +86,11 @@ test("changed crates select only the jobs in their reverse-dependency closure", 
     assert.deepEqual(push(path).jobs, only("hands", "bindings", "wasm", "policy"), path);
   }
   assert.deepEqual(push("js/account/worker/managedProxy.ts").jobs, only("hands", "apps", "bindings", "wasm", "policy"));
+  // Hand device-key server changes rerun the real CLI and server_hand journeys.
+  for (const path of ["js/managed/src/hand-devices.ts", "js/managed/src/ssh-hand-setup.ts", "js/managed/test/support/hand-device-server.mjs", "js/managed/test/hand-device-cli-journey.test.mjs",
+    "js/managed/test/support/server-hand/docker.cjs", "js/egress/src/ssh.ts"]) {
+    assert.deepEqual(push(path).jobs, only("hands", "bindings", "wasm", "policy"), path);
+  }
   assert.equal(shared.raw.tests, "false", "tests stay paused unless the owner switch is on");
 });
 

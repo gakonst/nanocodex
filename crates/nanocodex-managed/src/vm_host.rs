@@ -361,6 +361,40 @@ pub async fn connect_system_vm_host(
     .await
 }
 
+/// Connects an account-scoped VM host with a short-lived Hand device credential.
+///
+/// Device-enrolled Hands never give their factory the account API key: the
+/// caller supplies the current device credential for each connection. It is
+/// consumed, never parsed as an account API key, and never appears in debug
+/// output or returned errors.
+///
+/// # Errors
+///
+/// Returns origin, credential-header, WebSocket, or strict v1 protocol failures.
+pub async fn connect_account_vm_host_with_bearer(
+    origin: impl AsRef<str>,
+    device_credential: impl Into<String>,
+    host_id: Uuid,
+    factory_name: impl Into<String>,
+    max_vms: u16,
+    vm: VmShape,
+) -> Result<VmHostConnection, ManagedError> {
+    let origin =
+        Url::parse(origin.as_ref()).map_err(|_| configuration("managed origin must be a URL"))?;
+    validate_origin(&origin)?;
+    connect_vm_host(
+        origin,
+        "/v1/account/vm-host".to_owned(),
+        device_credential.into(),
+        VmHostScope::User,
+        host_id,
+        factory_name.into(),
+        max_vms,
+        vm,
+    )
+    .await
+}
+
 impl VmHostConnection {
     /// Returns the current lease identifier.
     #[must_use]

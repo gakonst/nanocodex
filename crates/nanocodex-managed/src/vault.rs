@@ -29,8 +29,14 @@ pub struct VaultSshTarget {
     pub port: u16,
     /// Saved SSH username.
     pub username: String,
-    /// Pinned server host-key SHA-256 fingerprint.
-    pub host_key_sha256: String,
+    /// Pinned server host-key SHA-256 fingerprint. Absent only when the target
+    /// is bound to device host-key trust instead.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host_key_sha256: Option<String>,
+    /// Owner-saved device host-key trust binding: `device` (this reference's
+    /// server Hand) or `hand:MACHINE_ID`; never derived from the hostname.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host_key_trust: Option<String>,
     /// Public key for installation on the server, when available.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub public_key: Option<String>,

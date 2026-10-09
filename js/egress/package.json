@@ -8,7 +8,7 @@
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "test": "npm run prepare:whatsapp && vitest run && node --experimental-strip-types --test test/wallet-link-journey.node.test.mjs test/mercator-payment.node.test.mjs test/chatgpt-failover-journey.test.mjs test/session-model-journey.test.mjs && npm run test:whatsapp && npm run test:vault-requests && npm run test:phone-service",
+    "test": "npm run prepare:whatsapp && vitest run && node --experimental-strip-types --test test/wallet-link-journey.node.test.mjs test/mercator-payment.node.test.mjs test/chatgpt-failover-journey.test.mjs test/session-model-journey.test.mjs && npm run test:whatsapp && npm run test:vault-requests && npm run test:phone-service && npm run test:ssh-device-trust",
     "dry-run:agent": "wrangler deploy --dry-run --config wrangler.agent.jsonc",
     "deploy:agent": "wrangler deploy --config wrangler.agent.jsonc",
     "dry-run:broker": "wrangler deploy --dry-run --config wrangler.broker.jsonc",
@@ -19,7 +19,8 @@
     "test:vault-browser": "node test/vault-browser-journey.mjs",
     "test:vault-requests": "node --test test/vault-signing-journey.node.test.mjs test/vault-totp-journey.node.test.mjs",
     "test:wallet-link": "npm run prepare:whatsapp && node --test test/wallet-link-journey.node.test.mjs",
-    "test:phone-service": "node --test test/phone-service-journey.node.test.mjs"
+    "test:phone-service": "node --test test/phone-service-journey.node.test.mjs",
+    "test:ssh-device-trust": "node --test test/ssh-device-trust-journey.node.test.mjs"
   },
   "dependencies": {
     "@noble/hashes": "2.4.0",
