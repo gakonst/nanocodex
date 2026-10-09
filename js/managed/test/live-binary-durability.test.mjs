@@ -14,7 +14,7 @@ import { transferLongThread } from "./support/live-durability-transfer.mjs";
 test("real nanocodex2 steers and continues a long durable tool turn", {
   timeout: 30 * 60_000,
 }, async (t) => {
-  const binary = resolve(process.env.NANOCODEX_DURABILITY_TEST_BINARY ?? "target/debug/nanocodex2");
+  const binary = resolve(process.env.NANOCODEX_DURABILITY_TEST_BINARY ?? "target/debug/nanocodex");
   const origin = process.env.NANOCODEX_MANAGED_URL;
   const key = process.env.NANOCODEX_DURABILITY_TEST_API_KEY;
   assert.ok(origin && key, "set test origin and API key explicitly");

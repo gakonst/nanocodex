@@ -1684,14 +1684,10 @@ fn nanocodex2_binary() -> Result<PathBuf> {
     let path = env::var_os("NANOCODEX2_TEST_BINARY")
         .filter(|value| !value.is_empty())
         .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("../..")
-                .join("target/debug/nanocodex2")
-        });
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_nanocodex")));
     if !path.is_file() {
         return Err(eyre!(
-            "nanocodex2 test binary does not exist at {}; set NANOCODEX2_TEST_BINARY or prebuild workspace target/debug/nanocodex2",
+            "nanocodex2 test binary does not exist at {}; set NANOCODEX2_TEST_BINARY",
             path.display()
         ));
     }

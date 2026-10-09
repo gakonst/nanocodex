@@ -69,7 +69,7 @@ class TerminalScreen:
 
 def main():
  p=argparse.ArgumentParser(description=__doc__);p.add_argument('--binary',type=Path,required=True);p.add_argument('--output',type=Path,default=Path('output/claude-scheduler-monitor-cli')/uuid4().hex);a=p.parse_args()
- artifact=a.output.resolve();artifact.mkdir(parents=True);workspace=artifact/'workspace';workspace.mkdir();home=artifact/'home';home.mkdir();codex_home=home/'codex';codex_home.mkdir();binary=artifact/'nanocodex-under-test';shutil.copy2(a.binary.resolve(),binary);binary.chmod(0o700);binary_sha256=hashlib.sha256(binary.read_bytes()).hexdigest()
+ artifact=a.output.resolve();artifact.mkdir(parents=True);workspace=artifact/'workspace';workspace.mkdir();home=artifact/'home';home.mkdir();codex_home=home/'codex';codex_home.mkdir();binary=artifact/a.binary.name;shutil.copy2(a.binary.resolve(),binary);binary.chmod(0o700);binary_sha256=hashlib.sha256(binary.read_bytes()).hexdigest()
  env={'HOME':str(home),'CODEX_HOME':str(codex_home),'PATH':'/usr/bin:/bin','TERM':'xterm-256color','NANOCODEX_COMPUTER':'off'}
  requests=[];errors=[];commands=[];processes=[];transcripts={};screens={};checks=[];ids={};events=[];receipts=[]
  state={'phase':'initial','index':0,'pending':None,'steps':[],'done':False}

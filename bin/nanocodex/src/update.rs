@@ -36,6 +36,12 @@ const NANOCODEX2_LINUX_ASSET: &str = "nanocodex2-x86_64-unknown-linux-gnu";
 const NANOCODEX2_MACOS_ASSET: &str = "nanocodex2-aarch64-apple-darwin";
 const NANOCODEX2_WINDOWS_ASSET: &str = "nanocodex2-x86_64-pc-windows-msvc.exe";
 const VM_GUEST_ASSET: &str = "nanocodex-vm-guest-x86_64-unknown-linux-musl";
+/// The Hand keeps this file name in every bundle and service record.
+const HAND_FILE: &str = if cfg!(windows) {
+    "nanocodex2.exe"
+} else {
+    "nanocodex2"
+};
 const DOWNLOAD_ATTEMPTS: usize = 5;
 const DOWNLOAD_RETRY_DELAY: Duration = Duration::from_millis(250);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
@@ -211,12 +217,14 @@ pub(crate) struct Update {
     #[arg(long, conflicts_with_all = ["branch", "pr", "path"])]
     force: bool,
 
-    /// nanocodex2 binary built from the same source revision as the local CLI.
+    /// nanocodex-hand binary built from the same source revision as --path.
+    /// Defaults to a nanocodex-hand beside --path; without one, only the CLI
+    /// changes and the installed Hand is carried forward untouched.
     #[arg(long, requires = "path", value_name = "PATH")]
     hand_binary: Option<PathBuf>,
 
     /// Packaged voice runtime for a complete local CLI and Hand installation.
-    #[arg(long, requires_all = ["path", "hand_binary"], value_name = "ARCHIVE")]
+    #[arg(long, requires = "path", value_name = "ARCHIVE")]
     voice_archive: Option<PathBuf>,
 
     /// Enable, disable, or inspect hourly automatic update downloads.
@@ -900,17 +908,15 @@ async fn activate_coordinated(
     restart_hand: bool,
 ) -> Result<bool> {
     store.validate_activation(key)?;
-    let companion = store.version_dir(key).join(if cfg!(windows) {
-        "nanocodex2.exe"
-    } else {
-        "nanocodex2"
-    });
-    if cfg!(target_os = "macos") && companion.exists() {
-        if !store.is_cached_bundle(key, false)? {
-            bail!("update Hand binary failed checksum verification");
-        }
-        crate::hand_service::validate_candidate(&companion).await?;
+    let companion = store.version_dir(key).join(HAND_FILE);
+    // A bundle without a Hand, or whose Hand bytes equal the Hand already in
+    // use, changes only the CLI: the Hand service is neither switched nor
+    // restarted. Corrupt Hand bytes still fail closed.
+    let hand_present = companion.exists();
+    if hand_present && !store.is_cached_bundle(key, false)? {
+        bail!("update Hand binary failed checksum verification");
     }
+    let hand_unchanged = hand_present && hand_unchanged(store, &companion).await?;
     let installed = if cfg!(target_os = "macos") {
         let state = crate::hand_service::status().await?;
         state.installed || state.loaded
@@ -928,14 +934,22 @@ async fn activate_coordinated(
             false
         }
     };
-    if installed && !store.is_cached_bundle(key, false)? {
-        bail!("update Hand binary failed checksum verification");
+    let switch_hand = installed && hand_present && !hand_unchanged;
+    if installed && !switch_hand {
+        if hand_present {
+            eprintln!("The Hand is unchanged; the running Hand service is left untouched");
+        } else {
+            eprintln!("This update carries no Hand; the running Hand service is left untouched");
+        }
+    }
+    if switch_hand && cfg!(target_os = "macos") {
+        crate::hand_service::validate_candidate(&companion).await?;
     }
     #[cfg(target_os = "linux")]
-    if installed {
+    if switch_hand {
         crate::linux_hand_service::validate_candidate(&companion).await?;
     }
-    if defer_activation(installed, restart_hand) {
+    if defer_activation(switch_hand, restart_hand) {
         return stage_update(store, key);
     }
     if background && store.active()?.as_deref() == Some(key) {
@@ -960,7 +974,7 @@ async fn activate_coordinated(
         bail!("An active CLI version is required before coordinated activation");
     }
     #[cfg(target_os = "linux")]
-    let linux_record = if installed {
+    let linux_record = if switch_hand {
         // Denied administrator authorization cannot have changed the root
         // service and must not strand an otherwise untouched CLI journal.
         crate::linux_hand_service::authorize().await?;
@@ -969,13 +983,15 @@ async fn activate_coordinated(
         None
     };
     let mut journal_value =
-        serde_json::json!({"previous":previous,"candidate":key,"service":installed});
+        serde_json::json!({"previous":previous,"candidate":key,"service":switch_hand});
     #[cfg(target_os = "linux")]
     if let Some(record) = &linux_record {
         journal_value["linuxHand"] = serde_json::to_value(record)?;
     }
     store::atomic_write(&journal, &serde_json::to_vec(&journal_value)?, false)?;
-    let service = if cfg!(target_os = "windows") {
+    let service = if !switch_hand {
+        Ok(None)
+    } else if cfg!(target_os = "windows") {
         crate::windows_hand::prepare_update(&companion, restart_hand)
             .await
             .map(|service| service.map(PlatformServiceUpdate::Windows))
@@ -1009,7 +1025,7 @@ async fn activate_coordinated(
             return Err(error);
         }
     };
-    if installed && service.is_none() {
+    if switch_hand && service.is_none() {
         fs::remove_file(&journal)?;
         bail!(
             "The installed Hand owner disappeared during update preparation; CLI selection is unchanged"
@@ -1040,6 +1056,35 @@ async fn activate_coordinated(
         }
     }
     result
+}
+
+/// True when the candidate Hand has the same bytes as the active bundle's Hand
+/// or as the executable the installed Hand service currently runs.
+async fn hand_unchanged(store: &VersionStore, candidate: &Path) -> Result<bool> {
+    // Byte comparison after a size check; verified bundles already carry
+    // checksums, and hashing here would only add another full pass.
+    let Ok(candidate) = fs::read(candidate) else {
+        return Ok(false);
+    };
+    let same = |path: &Path| {
+        fs::metadata(path).is_ok_and(|metadata| metadata.len() == candidate.len() as u64)
+            && fs::read(path).is_ok_and(|bytes| bytes == candidate)
+    };
+    let mut current = Vec::new();
+    if let Some(active) = store.active()? {
+        current.push(store.version_dir(&active).join(HAND_FILE));
+    }
+    #[cfg(target_os = "linux")]
+    if let Ok(state) = crate::linux_hand_service::status().await {
+        current.extend(state.executable);
+    }
+    #[cfg(not(target_os = "linux"))]
+    if cfg!(target_os = "macos")
+        && let Ok(state) = crate::hand_service::status().await
+    {
+        current.extend(state.executable);
+    }
+    Ok(current.iter().any(|path| same(path)))
 }
 
 #[async_trait::async_trait]
@@ -1200,8 +1245,19 @@ async fn install_local_binary(
     previous: &str,
     restart_hand: bool,
 ) -> Result<()> {
-    if let Some(companion) = companion {
-        local::verify_pair(path, companion).await?;
+    // An explicit Hand wins; otherwise use the nanocodex-hand built beside the
+    // CLI. Either must prove it comes from the CLI's exact source revision.
+    let sibling = path.with_file_name(if cfg!(windows) {
+        "nanocodex-hand.exe"
+    } else {
+        "nanocodex-hand"
+    });
+    let companion = companion
+        .map(Path::to_path_buf)
+        .or_else(|| sibling.is_file().then_some(sibling));
+    match &companion {
+        Some(companion) => local::verify_pair(path, companion).await?,
+        None => local::verify_single(path).await?,
     }
     let contents = fs::read(path).wrap_err_with(|| format!("failed to read {}", path.display()))?;
     let companion = companion
@@ -1225,10 +1281,11 @@ async fn install_local_binary(
         digest.update(item);
     }
     let key = format!("local-{}", &hex::encode(digest.finalize())[..12]);
-    if let Some(companion) = companion {
-        store.install_bundle(&key, &contents, &companion, None, voice.as_deref())?;
-    } else {
-        store.install(&key, &contents)?;
+    match companion {
+        Some(companion) => {
+            store.install_bundle(&key, &contents, &companion, None, voice.as_deref())?;
+        }
+        None => install_cli_carrying_hand(store, &key, &contents, voice.as_deref())?,
     }
     let activated = activate_coordinated(store, &key, false, restart_hand).await?;
     // Preserve the previous selection if validation or the handover fails.
@@ -1245,6 +1302,41 @@ async fn install_local_binary(
             .display()
     );
     Ok(())
+}
+
+/// A CLI-only selection keeps the active bundle's verified Hand. Its bytes are
+/// unchanged, so activation leaves the running Hand service untouched.
+fn install_cli_carrying_hand(
+    store: &VersionStore,
+    key: &str,
+    cli: &[u8],
+    voice: Option<&[u8]>,
+) -> Result<()> {
+    let active = store.active()?;
+    let hand = match active.as_deref() {
+        Some(active) if store.is_cached_bundle(active, false)? => {
+            Some(fs::read(store.version_dir(active).join(HAND_FILE))?)
+        }
+        _ => None,
+    };
+    match hand {
+        Some(hand) => {
+            eprintln!(
+                "No nanocodex-hand given or found beside the CLI; keeping the current Hand (sha256 {})",
+                hex::encode(Sha256::digest(&hand))
+            );
+            store.install_bundle(key, cli, &hand, None, voice)
+        }
+        None if voice.is_some() => {
+            bail!(
+                "--voice-archive needs a Hand: pass --hand-binary or build nanocodex-hand beside --path"
+            )
+        }
+        None => {
+            eprintln!("No nanocodex-hand given or found beside the CLI; installing the CLI only");
+            store.install(key, cli)
+        }
+    }
 }
 
 async fn install_source(

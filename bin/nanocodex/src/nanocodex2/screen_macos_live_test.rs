@@ -1,6 +1,6 @@
 //! Opt-in real desktop capture -> VideoToolbox -> WebRTC -> Chromium verification.
 //! Run from an application granted macOS Screen Recording permission:
-//! `cargo test -p nanocodex2-bin --bin nanocodex2 macos_live_webrtc -- --ignored --nocapture`
+//! `cargo test -p nanocodex-bin --lib macos_live_webrtc -- --ignored --nocapture`
 //! Requires FFmpeg and Chrome; NANOCODEX_TEST_CHROME may select another Chromium binary.
 use super::super::screen_video::Video;
 use axum::{

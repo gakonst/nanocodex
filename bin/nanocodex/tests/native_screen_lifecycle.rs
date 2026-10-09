@@ -1,7 +1,7 @@
 //! Real shipped screen publisher against a loopback broker and isolated X11
 //! desktop. No installed account service, user display, or credentials are used.
 //! Run on Linux with Xvfb, openbox, xterm and fonts installed:
-//! cargo test -p nanocodex2-bin --test nanocodex2_managed \
+//! cargo test -p nanocodex-bin --test nanocodex2_managed \
 //!   standalone_screen_retries_and_exits_on_replacement -- --ignored --nocapture
 use axum::{
     Router,

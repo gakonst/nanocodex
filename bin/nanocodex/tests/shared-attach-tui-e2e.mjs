@@ -13,7 +13,7 @@ import { createRequire } from 'node:module';
 const require = createRequire(new URL('../../../js/managed/package.json', import.meta.url));
 const { Terminal } = require('@xterm/headless');
 
-const binary = resolve(process.env.NANOCODEX2_BIN || 'target/debug/nanocodex2');
+const binary = resolve(process.env.NANOCODEX2_BIN || 'target/debug/nanocodex');
 const bridge = fileURLToPath(new URL('./share-pty-bridge.py', import.meta.url));
 const output = resolve('output/shared-attach');
 mkdirSync(output, { recursive: true });

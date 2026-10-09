@@ -1,7 +1,9 @@
 //! The local agent command tree is selected by the invoked name `ncl`.
 //!
-//! Cargo builds one `nanocodex` executable. Local-tree journeys run it through
-//! an `ncl` alias next to it, exactly as the installed `bin/ncl` symlink does.
+//! Cargo builds the `nanocodex` CLI. Local-tree journeys run it as `ncl`, the
+//! name the installed `bin/ncl` alias provides. The alias is a per-process
+//! hard link (or copy), so journeys that canonicalize the path still see `ncl`
+//! and a rebuilt CLI is never confused with a stale alias.
 
 use std::{path::Path, sync::OnceLock};
 
@@ -10,23 +12,23 @@ pub(crate) fn local_cli() -> &'static str {
     static PATH: OnceLock<String> = OnceLock::new();
     PATH.get_or_init(|| {
         let binary = Path::new(env!("CARGO_BIN_EXE_nanocodex"));
-        let alias = binary.with_file_name(if cfg!(windows) { "ncl.exe" } else { "ncl" });
-        #[cfg(unix)]
-        {
-            let target = binary.file_name().expect("Cargo binary has a file name");
-            match std::os::unix::fs::symlink(target, &alias) {
-                Ok(()) => {}
-                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
-                Err(error) => panic!("create {}: {error}", alias.display()),
-            }
+        let directory = binary
+            .with_file_name("local-cli")
+            .join(std::process::id().to_string());
+        let _ = std::fs::remove_dir_all(&directory);
+        std::fs::create_dir_all(&directory).expect("create the ncl alias directory");
+        let alias = directory.join(if cfg!(windows) { "ncl.exe" } else { "ncl" });
+        if std::fs::hard_link(binary, &alias).is_err() {
+            std::fs::copy(binary, &alias).expect("stage the ncl alias");
         }
-        #[cfg(not(unix))]
-        {
-            // Copies go stale after a rebuild; refresh on every test process.
-            let staged = alias.with_extension(format!("{}.tmp", std::process::id()));
-            std::fs::copy(binary, &staged).expect("stage the ncl alias");
-            let _ = std::fs::rename(&staged, &alias);
-            let _ = std::fs::remove_file(&staged);
+        // The CLI forwards daemon work to the Hand beside it.
+        let hand = binary.with_file_name(if cfg!(windows) {
+            "nanocodex-hand.exe"
+        } else {
+            "nanocodex-hand"
+        });
+        if hand.is_file() {
+            let _ = std::fs::hard_link(&hand, directory.join(hand.file_name().unwrap()));
         }
         alias.to_str().expect("UTF-8 Cargo target path").to_owned()
     })

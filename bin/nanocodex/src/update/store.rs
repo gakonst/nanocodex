@@ -12,6 +12,17 @@ const CHECKSUM_FILE: &str = "nanocodex.sha256";
 const NANOCODEX2_CHECKSUM_FILE: &str = "nanocodex2.sha256";
 const VM_GUEST_BINARY_NAME: &str = "nanocodex-vm-guest";
 const VM_GUEST_CHECKSUM_FILE: &str = "nanocodex-vm-guest.sha256";
+/// Present in every CLI that contains both command trees and selects one from
+/// argv[0]: `nanocodex`/`nc`/`nanocodex2` managed, `ncl` (or `--local`) local.
+/// Older CLIs lack it; their managed tree was the separate nanocodex2 binary.
+/// This is a capability hint for entrypoint links, not an integrity check.
+pub(crate) const UNIFIED_CLI_MARKER: &[u8] = b"NANOCODEX_UNIFIED_CLI_V1";
+
+fn is_unified_cli(contents: &[u8]) -> bool {
+    contents
+        .windows(UNIFIED_CLI_MARKER.len())
+        .any(|window| window == UNIFIED_CLI_MARKER)
+}
 
 #[cfg(windows)]
 const BINARY_NAME: &str = "nanocodex.exe";
@@ -115,6 +126,7 @@ impl VersionStore {
     }
 
     pub(super) fn discover() -> Result<Self> {
+        std::hint::black_box(UNIFIED_CLI_MARKER);
         let root = if let Some(root) = std::env::var_os("NANOCODEX_DIR") {
             PathBuf::from(root)
         } else if let Some(root) = crate::launcher::running_install_root() {
@@ -403,15 +415,42 @@ impl VersionStore {
         if !cfg!(windows) {
             return Ok(());
         }
-        if !self.is_cached_bundle(key, false)? {
+        // A CLI-only version leaves the stable Hand copy alone; a present but
+        // corrupt Hand still refuses publication.
+        let selected = self.version_dir(key);
+        let has_hand = selected.join(NANOCODEX2_BINARY_NAME).exists();
+        if !self.is_cached(key)? || (has_hand && !self.is_cached_bundle(key, false)?) {
             bail!("cannot publish an incomplete Windows Nanocodex bundle");
         }
         let bin = self.root.join("bin");
-        let selected = self.version_dir(key);
         let running = std::env::current_exe()?.canonicalize()?;
         let entrypoint = bin.join(BINARY_NAME);
+        let cli = fs::read(selected.join(BINARY_NAME))?;
         if entrypoint.canonicalize().ok().as_deref() != Some(running.as_path()) {
-            atomic_write(&entrypoint, &fs::read(selected.join(BINARY_NAME))?, true)?;
+            atomic_write(&entrypoint, &cli, true)?;
+        }
+        // Windows has no argv[0] links. A unified CLI selects its local tree
+        // with a leading --local; older CLIs kept the managed tree in the
+        // separate nanocodex2.exe.
+        let shims: [(&str, &str); 2] = if is_unified_cli(&cli) {
+            [
+                ("nc.cmd", "@\"%~dp0nanocodex.exe\" %*\r\n"),
+                ("ncl.cmd", "@\"%~dp0nanocodex.exe\" --local %*\r\n"),
+            ]
+        } else {
+            [
+                ("nc.cmd", "@\"%~dp0nanocodex2.exe\" %*\r\n"),
+                ("ncl.cmd", "@\"%~dp0nanocodex.exe\" %*\r\n"),
+            ]
+        };
+        for (name, contents) in shims {
+            let path = bin.join(name);
+            if fs::read(&path).ok().as_deref() != Some(contents.as_bytes()) {
+                atomic_write(&path, contents.as_bytes(), false)?;
+            }
+        }
+        if !has_hand {
+            return Ok(());
         }
         let companion = fs::read(selected.join(NANOCODEX2_BINARY_NAME))?;
         let stable_companion = bin.join(NANOCODEX2_BINARY_NAME);
@@ -657,9 +696,14 @@ impl VersionStore {
     #[cfg(unix)]
     fn install_launcher(&self) -> Result<()> {
         let path = self.root.join("bin").join(BINARY_NAME);
-        if fs::read(self.root.join("current").join(BINARY_NAME))
-            .is_ok_and(|contents| crate::launcher::supports_native_launcher(&contents))
-        {
+        let (native, unified) = match fs::read(self.root.join("current").join(BINARY_NAME)) {
+            Ok(contents) if crate::launcher::supports_native_launcher(&contents) => {
+                (true, is_unified_cli(&contents))
+            }
+            _ => (false, false),
+        };
+        self.sync_short_aliases(native, unified)?;
+        if native {
             return atomic_symlink(&path, &Path::new("../current").join(BINARY_NAME));
         }
         const LAUNCHER: &str = r#"#!/bin/sh
@@ -689,6 +733,48 @@ exec "$install_root/current/nanocodex" "$@"
             return Ok(());
         }
         atomic_write(&path, LAUNCHER.as_bytes(), true)
+    }
+
+    /// Link `nc`/`ncl` only to binaries that discover their installation
+    /// natively; a shell wrapper would replace the argv[0] that selects the
+    /// tree. A unified CLI serves both (`ncl` selects its local tree). For an
+    /// older pair, `nc` is its managed nanocodex2 and `ncl` its local CLI.
+    /// Remove only our own links when the selected binaries cannot serve them.
+    #[cfg(unix)]
+    fn sync_short_aliases(&self, cli_native: bool, unified: bool) -> Result<()> {
+        let managed = if unified {
+            Some(BINARY_NAME)
+        } else {
+            fs::read(self.root.join("current").join(NANOCODEX2_BINARY_NAME))
+                .is_ok_and(|contents| crate::launcher::supports_native_launcher(&contents))
+                .then_some(NANOCODEX2_BINARY_NAME)
+        };
+        let local = cli_native.then_some(BINARY_NAME);
+        for (alias, executable) in [("nc", managed), ("ncl", local)] {
+            let path = self.root.join("bin").join(alias);
+            if let Some(executable) = executable {
+                atomic_symlink(&path, &Path::new("../current").join(executable))?;
+            } else {
+                self.remove_own_current_link(&path)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Remove a launcher link only if it points into `current` (ours).
+    #[cfg(unix)]
+    fn remove_own_current_link(&self, path: &Path) -> Result<()> {
+        let ours = fs::read_link(path).is_ok_and(|target| {
+            [BINARY_NAME, NANOCODEX2_BINARY_NAME].iter().any(|name| {
+                target == Path::new("../current").join(name)
+                    || target == self.root.join("current").join(name)
+            })
+        });
+        if ours {
+            fs::remove_file(path)
+                .wrap_err_with(|| format!("failed to remove {}", path.display()))?;
+        }
+        Ok(())
     }
 
     #[cfg(unix)]
@@ -754,6 +840,13 @@ exec "$install_root/current/nanocodex2" "$@"
 "#;
 
         let path = self.root.join("bin").join(NANOCODEX2_BINARY_NAME);
+        // A unified CLI is the nanocodex2 command (managed tree by argv[0]);
+        // the Hand file of the same name is for services only.
+        if fs::read(self.version_dir(key).join(BINARY_NAME)).is_ok_and(|contents| {
+            crate::launcher::supports_native_launcher(&contents) && is_unified_cli(&contents)
+        }) {
+            return atomic_symlink(&path, &Path::new("../current").join(BINARY_NAME));
+        }
         if file_matches_checksum(
             &self.version_dir(key).join(NANOCODEX2_BINARY_NAME),
             &self.version_dir(key).join(NANOCODEX2_CHECKSUM_FILE),
@@ -769,15 +862,8 @@ exec "$install_root/current/nanocodex2" "$@"
         }
         // Inspect the link itself, including a dangling link after activating a
         // legacy version without the companion. Never follow/remove custom links.
-        if fs::read_link(&path).is_ok_and(|target| {
-            target == Path::new("../current").join(NANOCODEX2_BINARY_NAME)
-                || target == self.root.join("current").join(NANOCODEX2_BINARY_NAME)
-        }) {
-            return fs::remove_file(&path)
-                .wrap_err_with(|| format!("failed to remove {}", path.display()));
-        }
         if path.is_symlink() {
-            return Ok(());
+            return self.remove_own_current_link(&path);
         }
         match fs::read(&path) {
             Ok(contents)
@@ -893,11 +979,16 @@ mod tests {
             .install_bundle("native", binary, binary, None, None)
             .unwrap();
         store.activate("native").unwrap();
-        for name in [BINARY_NAME, NANOCODEX2_BINARY_NAME] {
+        for (name, target) in [
+            (BINARY_NAME, BINARY_NAME),
+            (NANOCODEX2_BINARY_NAME, NANOCODEX2_BINARY_NAME),
+            ("nc", NANOCODEX2_BINARY_NAME),
+            ("ncl", BINARY_NAME),
+        ] {
             let link = directory.path().join("bin").join(name);
             assert_eq!(
                 fs::read_link(&link).unwrap(),
-                Path::new("../current").join(name)
+                Path::new("../current").join(target)
             );
             assert_eq!(fs::read(&link).unwrap(), binary);
         }
@@ -917,6 +1008,10 @@ mod tests {
         assert_eq!(fs::read(store.binary_path("native")).unwrap(), binary);
         let companion = directory.path().join("bin").join(NANOCODEX2_BINARY_NAME);
         assert!(fs::symlink_metadata(&companion).is_err());
+        // Short aliases need argv[0]; older binaries get no wrapper for them.
+        for alias in ["nc", "ncl"] {
+            assert!(fs::symlink_metadata(directory.path().join("bin").join(alias)).is_err());
+        }
 
         // An older bundle gets its compatible companion wrapper as well.
         store
@@ -932,6 +1027,57 @@ mod tests {
         assert_eq!(
             fs::read_link(&companion).unwrap(),
             Path::new("/custom/missing/companion")
+        );
+    }
+
+    #[test]
+    fn unified_cli_serves_every_entrypoint_while_older_pairs_keep_theirs() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = VersionStore::at(directory.path());
+        let bin = directory.path().join("bin");
+        let cli = [crate::launcher::NATIVE_LAUNCHER_MARKER, UNIFIED_CLI_MARKER].concat();
+        store
+            .install_bundle("unified", &cli, b"hand", None, None)
+            .unwrap();
+        store.activate("unified").unwrap();
+        for name in [BINARY_NAME, NANOCODEX2_BINARY_NAME, "nc", "ncl"] {
+            assert_eq!(
+                fs::read_link(bin.join(name)).unwrap(),
+                Path::new("../current").join(BINARY_NAME),
+                "{name}"
+            );
+        }
+        // The Hand keeps its service file name inside the version directory.
+        assert_eq!(
+            fs::read(
+                directory
+                    .path()
+                    .join("current")
+                    .join(NANOCODEX2_BINARY_NAME)
+            )
+            .unwrap(),
+            b"hand"
+        );
+
+        let old = crate::launcher::NATIVE_LAUNCHER_MARKER;
+        store.install_bundle("older", old, old, None, None).unwrap();
+        store.activate("older").unwrap();
+        for (name, target) in [
+            (BINARY_NAME, BINARY_NAME),
+            (NANOCODEX2_BINARY_NAME, NANOCODEX2_BINARY_NAME),
+            ("nc", NANOCODEX2_BINARY_NAME),
+            ("ncl", BINARY_NAME),
+        ] {
+            assert_eq!(
+                fs::read_link(bin.join(name)).unwrap(),
+                Path::new("../current").join(target),
+                "{name}"
+            );
+        }
+        store.activate("unified").unwrap();
+        assert_eq!(
+            fs::read_link(bin.join("nc")).unwrap(),
+            Path::new("../current").join(BINARY_NAME)
         );
     }
 

@@ -362,7 +362,7 @@ fn digest(value: &str) -> String {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn permission_request_targets_only_the_running_daemon() {
     eprintln!(
-        "Reproduce: cargo test -p nanocodex2-bin --test nanocodex2_background_hand permission_request -- --nocapture"
+        "Reproduce: cargo test -p nanocodex-bin --test nanocodex2_background_hand permission_request -- --nocapture"
     );
     let (calls, receiver) = mpsc::unbounded_channel();
     let state = Cloud {
@@ -479,7 +479,7 @@ async fn permission_request_targets_only_the_running_daemon() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn background_daemon_survives_two_clients_and_routes_native_cwds() {
     eprintln!(
-        "Reproduce: cargo test -p nanocodex2-bin --test nanocodex2_background_hand -- --nocapture"
+        "Reproduce: cargo test -p nanocodex-bin --test nanocodex2_background_hand -- --nocapture"
     );
     let (calls, receiver) = mpsc::unbounded_channel();
     let state = Cloud {

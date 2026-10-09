@@ -6186,7 +6186,7 @@ async fn review_journey_normal_turn(fixture: &mut Fixture, prompt: &str) {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn terminal_review_picker_cancels_and_submits_each_scope() {
     eprintln!(
-        "Reproduce: cargo test --locked -p nanocodex2-bin --test nanocodex2_tui_lifecycle terminal_review_ -- --nocapture"
+        "Reproduce: cargo test --locked -p nanocodex-bin --test nanocodex2_tui_lifecycle terminal_review_ -- --nocapture"
     );
     let mut fixture = Fixture::start().await;
     review_journey_git(&fixture, &["init", "--initial-branch=main"]);
@@ -6545,7 +6545,7 @@ async fn terminal_review_interrupts_and_returns_to_normal_chat() {
 }
 
 // Reproduce with NANOCODEX_INLINE_REVIEW_EVIDENCE=/absolute/output/inline-review
-// cargo test --locked -p nanocodex2-bin --test nanocodex2_tui_lifecycle terminal_inline_review -- --nocapture
+// cargo test --locked -p nanocodex-bin --test nanocodex2_tui_lifecycle terminal_inline_review -- --nocapture
 fn inline_review_evidence(terminal: &Terminal, name: &str, markdown: &str) -> String {
     let screen = terminal.screen.lock().unwrap().screen().contents();
     eprintln!("INLINE REVIEW {name}\ninput Markdown:\n{markdown}\nobserved screen:\n{screen}");

@@ -250,7 +250,10 @@ pub fn cli_main() -> ExitCode {
     let tree = select_tree(&mut arguments);
     if is_daemon_command(&arguments) {
         return match hand_executable::hand_binary() {
-            Ok(hand) => hand_executable::forward(&hand, None, &arguments[1..]),
+            // Keep the invoked name so help and errors read as this command.
+            Ok(hand) => {
+                hand_executable::forward(&hand, arguments.first().cloned(), &arguments[1..])
+            }
             Err(error) => {
                 eprintln!("Error: {error}");
                 ExitCode::FAILURE

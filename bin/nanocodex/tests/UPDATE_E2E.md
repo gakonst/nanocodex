@@ -1,14 +1,25 @@
 # Public CLI updater journeys
 
-Run from the repository root with native executables built from the same checkout:
+Run from the repository root with the CLI and Hand built from the same checkout:
 
 ```sh
-cargo build --locked -p nanocodex-bin --bin nanocodex --features tempo
-cargo build --locked -p nanocodex2-bin --bin nanocodex2
+cargo build --locked -p nanocodex-bin --bins --features tempo
 # --source adds the minimal source-selector journeys on macOS, with a clean env.
 # Linux always checks historical/unsupported-source preflight rejection instead.
-node bin/nanocodex/tests/update_local_e2e.mjs target/debug/nanocodex target/debug/nanocodex2 --source
+# --old-updater PATH also installs the pair with a previously shipped two-binary
+# updater (copied read-only, e.g. ~/.nanocodex/updater/nanocodex).
+node bin/nanocodex/tests/update_local_e2e.mjs target/debug/nanocodex target/debug/nanocodex-hand --source
 ```
+
+Install layout: `versions/<key>/nanocodex` is the CLI and `versions/<key>/nanocodex2`
+is the Hand (release asset `nanocodex2-<triple>`, or a locally built
+`nanocodex-hand`); service records keep the file name `nanocodex2`. For a CLI
+containing both command trees, `bin/{nanocodex,nanocodex2,nc,ncl}` all link
+`../current/nanocodex` and argv[0] selects the tree (`ncl` is local). Older
+pairs keep `bin/nanocodex2` and `nc` on their managed `nanocodex2`. Windows
+writes `nc.cmd`/`ncl.cmd` shims (`ncl.cmd` passes `--local`). An activation whose
+Hand is absent or byte-identical to the active/running Hand switches only the
+CLI and never stages, switches or restarts the Hand service.
 
 `CARGO_TARGET_DIR` may be used for the build; pass the resulting absolute binary
 paths to each runner. Linux distributable source builds also need the pinned
@@ -36,7 +47,7 @@ exercise voice execution or first installation of an OS service.
 
 ## Local-pair runner
 
-The runner copies the **real CLI and Hand binaries** into a disposable directory,
+The runner copies the **real CLI and nanocodex-hand binaries** into a disposable directory,
 uses an isolated HOME/store and a generated invalid synthetic account file, and
 opts out of automatic scheduling. It never reads saved account credentials,
 passes `--restart-hand`, installs a live service, or invokes a privileged command.
@@ -48,8 +59,20 @@ transcript is under `OUTPUT_DIR/mac-source/output/update-source-e2e/`.
 
 Covered public boundaries:
 
-- `update --path CLI --hand-binary HAND`: probes the real binaries, validates
-  matching full revisions and caches their actual bytes.
+- `update --path CLI` finds the sibling `nanocodex-hand`; `--hand-binary HAND`
+  selects the same pair. Both probe the real binaries, validate matching full
+  revisions and cache CLI + Hand (as `nanocodex2`).
+- Hand decoupling: a CLI-only `update --path` (no Hand given or beside it)
+  carries the active Hand bytes forward, and a pair whose Hand equals the active
+  Hand, both activate immediately with an installed owner: nothing is staged,
+  the synthetic plist is unchanged and the live Hand PID (read-only
+  `launchctl print`) is identical before and after the whole run.
+- Entrypoints: after a real activation `bin/{nanocodex,nanocodex2,nc,ncl}` link
+  `../current/nanocodex`, each prints one `Commit SHA:` line, `ncl --help` shows
+  the local tree and the others the managed tree.
+- `--old-updater`: the old two-binary updater installs the pair, its own
+  `bin/nanocodex`/`bin/nanocodex2` run it, and the new CLI then takes over the
+  same cached pair without a Hand switch.
 - macOS: native launchd status/plist inspection stages the pair; `update --apply`
   without explicit restart leaves active CLI and the synthetic login-owner plist
   unchanged after each updater process exits. The fixture is **not bootstrapped**.

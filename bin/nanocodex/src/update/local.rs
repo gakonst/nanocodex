@@ -1,11 +1,31 @@
-//! Verify the source revision of an explicitly supplied local CLI/Hand pair.
+//! Verify explicitly supplied local binaries before installing them.
+//!
+//! A local CLI with a Hand (`--hand-binary` or a sibling `nanocodex-hand`) must
+//! report the same exact source revision. A CLI alone only needs a working probe.
 
 use std::{path::Path, time::Duration};
 
 use eyre::{Context, Result, bail, eyre};
 use tokio::process::Command;
 
-const REBUILD_PAIR: &str = "Rebuild nanocodex-bin and nanocodex2-bin from the same checkout, then pass their binaries with --path and --hand-binary. Use a release update to install historical release bundles.";
+const REBUILD_PAIR: &str = "Rebuild nanocodex-bin (cargo build -p nanocodex-bin --bins) from one checkout and pass target/<profile>/nanocodex with --path; the nanocodex-hand beside it (or --hand-binary) must come from the same checkout. Use a release update to install historical release bundles.";
+
+/// A CLI installed without a Hand only needs to execute its version probe.
+pub(super) async fn verify_single(binary: &Path) -> Result<()> {
+    let binary = binary
+        .canonicalize()
+        .wrap_err_with(|| format!("failed to locate local binary {}", binary.display()))?;
+    let version = version_output(&binary).await?;
+    match source_revision(&version) {
+        Some(revision) => eprintln!(
+            "Verified local binary {} at source revision {}",
+            binary.display(),
+            revision.to_ascii_lowercase()
+        ),
+        None => eprintln!("Verified local binary {}", binary.display()),
+    }
+    Ok(())
+}
 
 pub(super) async fn verify_pair(cli: &Path, companion: &Path) -> Result<()> {
     let cli = cli
@@ -119,7 +139,7 @@ mod tests {
         );
         let error = matching_revision(&cli, &companion).unwrap_err().to_string();
         assert!(error.contains("differs from Hand"));
-        assert!(error.contains("Rebuild nanocodex-bin and nanocodex2-bin"));
+        assert!(error.contains("Rebuild nanocodex-bin (cargo build -p nanocodex-bin --bins)"));
     }
 
     #[test]
