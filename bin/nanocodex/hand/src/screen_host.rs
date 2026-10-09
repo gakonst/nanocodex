@@ -26,8 +26,16 @@ pub(crate) struct HostCommand {
     observability: super::hand_observability::HandObservabilityArgs,
     #[arg(long)]
     url: String,
+    /// Scoped publisher bearer of an already-installed, never-enrolled host.
+    #[arg(long, required_unless_present = "device_grant_file")]
+    credential_file: Option<PathBuf>,
+    /// One-time server Hand device bootstrap grant (0600); deleted after
+    /// enrollment and ignored once this host is enrolled.
     #[arg(long)]
-    credential_file: PathBuf,
+    device_grant_file: Option<PathBuf>,
+    /// Private device key directory (default: hand-device next to the grant or credential file).
+    #[arg(long)]
+    device_state_dir: Option<PathBuf>,
     #[arg(long)]
     machine_id: String,
     #[arg(long, default_value = "Remote Hand")]
@@ -58,6 +66,8 @@ pub(crate) struct HostCommand {
 
 pub(crate) struct Prepared {
     command: HostCommand,
+    /// Device key directory when this server host publishes as an enrolled device.
+    device_state: Option<PathBuf>,
     mode: Mode,
     target: PublisherTarget,
     machine: AttachmentMachine,
@@ -87,8 +97,26 @@ impl HostCommand {
         {
             return Err(error("invalid standalone desktop configuration"));
         }
-        let target = PublisherTarget::from_credential_file(&self.url, &self.credential_file)
-            .map_err(error)?;
+        let state_directory = self.device_state_dir.clone().or_else(|| {
+            self.device_grant_file
+                .as_ref()
+                .or(self.credential_file.as_ref())
+                .and_then(|file| file.parent())
+                .map(|parent| parent.join("hand-device"))
+        });
+        // A server host with a grant or an existing enrollment publishes only
+        // as a device; the scoped bearer remains for never-enrolled hosts.
+        let device_state = state_directory.filter(|directory| {
+            mode == Mode::Server
+                && (self.device_grant_file.is_some() || directory.join("device.json").exists())
+        });
+        let target = match (&device_state, &self.credential_file) {
+            // Validated now; the device credential replaces it before first use.
+            (Some(_), _) => PublisherTarget::from_endpoint(&self.url, "pending-device-credential"),
+            (None, Some(file)) => PublisherTarget::from_credential_file(&self.url, file),
+            (None, None) => return Err(error("a server Hand device grant requires server mode")),
+        }
+        .map_err(error)?;
         let scope = target.endpoint().path();
         if mode == Mode::Desktop && !scope.starts_with("/v1/vm-host-attachments/")
             || mode == Mode::Server && !scope.starts_with("/v1/hand-hosts/")
@@ -162,6 +190,7 @@ impl HostCommand {
         Ok((
             Prepared {
                 command: self,
+                device_state,
                 mode,
                 target,
                 machine,
@@ -362,14 +391,50 @@ pub(crate) async fn serve(mut prepared: Prepared) -> Result<(), ManagedError> {
             .with_file_name("recordings")
             .join(hex::encode(&recording_key[..12]))
     });
-    let mut markers = Markers::new(&prepared.command.credential_file);
+    let marker_base = prepared
+        .command
+        .credential_file
+        .clone()
+        .or_else(|| prepared.command.device_grant_file.clone())
+        .ok_or_else(|| error("publisher marker location is unavailable"))?;
+    let mut markers = Markers::new(&marker_base);
     markers.write(false, b"ready\n")?;
     let signal = super::service::shutdown_signal();
     tokio::pin!(signal);
+    // Enroll (first run, one-time grant) or reuse the device enrollment; the
+    // scoped bearer is never used again once this host is a device.
+    let device = match prepared.device_state.clone() {
+        Some(directory) => {
+            let credentials = tokio::select! {
+                result = &mut signal => { if let Some(desktop) = desktop.take() { desktop.stop().await; } return result; }
+                credentials = super::device_identity::authorize_server_host(
+                    prepared.target.endpoint(),
+                    &directory,
+                    prepared.command.device_grant_file.as_deref(),
+                    &prepared.command.machine_id,
+                    &prepared.command.name,
+                ) => credentials?,
+            };
+            let initial = credentials.current().await?;
+            prepared.target = PublisherTarget::from_endpoint(&prepared.command.url, &initial)
+                .map_err(error)?
+                .with_credentials(credentials.clone());
+            Some(credentials)
+        }
+        None => None,
+    };
     // Compositor readiness is independent of account signaling. Retain it across
     // startup retries; use the same shared publisher lifecycle for every mode.
     let screen = loop {
-        let target = attachment(&prepared.target)?;
+        let target = match &device {
+            Some(credentials) => AttachmentTarget::with_credentials(
+                prepared.target.attachment_endpoint().as_str(),
+                prepared.target.bearer(),
+                credentials.clone(),
+            )
+            .map_err(error)?,
+            None => attachment(&prepared.target)?,
+        };
         let started = tokio::select! {
             result = &mut signal => { if let Some(desktop) = desktop.take() { desktop.stop().await; } return result; }
             result = NativeScreen::start_with_recordings(&target, &prepared.machine, prepared.runtime.path(), recording_root.as_deref()) => result,
@@ -378,11 +443,20 @@ pub(crate) async fn serve(mut prepared: Prepared) -> Result<(), ManagedError> {
             Ok(screen) => break screen,
             Err(_) => {
                 markers.write(true, b"publisher unavailable\n")?;
-                prepared.target = PublisherTarget::from_credential_file(
-                    &prepared.command.url,
-                    &prepared.command.credential_file,
-                )
-                .map_err(error)?;
+                if let Some(credentials) = &device {
+                    if let Err(super::device_identity::DeviceError::Reenroll) =
+                        credentials.current().await
+                    {
+                        if let Some(desktop) = desktop.take() {
+                            desktop.stop().await;
+                        }
+                        return Err(super::device_identity::DeviceError::Reenroll.into());
+                    }
+                } else if let Some(file) = &prepared.command.credential_file {
+                    prepared.target =
+                        PublisherTarget::from_credential_file(&prepared.command.url, file)
+                            .map_err(error)?;
+                }
                 tokio::select! {
                     result = &mut signal => { if let Some(desktop) = desktop.take() { desktop.stop().await; } return result; }
                     _ = tokio::time::sleep(Duration::from_secs(1)) => {}
@@ -392,16 +466,31 @@ pub(crate) async fn serve(mut prepared: Prepared) -> Result<(), ManagedError> {
     };
     markers.write(true, b"published\n")?;
     let mut tick = tokio::time::interval(Duration::from_millis(250));
+    let mut device_check = tokio::time::interval(Duration::from_secs(30));
+    let mut last_attestation = std::time::Instant::now();
     let mut replaced = false;
     let result = loop {
         tokio::select! {
             result = &mut signal => break result,
+            _ = device_check.tick(), if device.is_some() => {
+                let Some(credentials) = &device else { continue };
+                // Revocation stops publication; never fall back to the scoped bearer.
+                if let Err(super::device_identity::DeviceError::Reenroll) = credentials.current().await {
+                    break Err(super::device_identity::DeviceError::Reenroll.into());
+                }
+                if last_attestation.elapsed() >= Duration::from_secs(600) {
+                    last_attestation = std::time::Instant::now();
+                    super::device_identity::attest(credentials, false).await;
+                }
+            }
             _ = tick.tick() => {
                 if screen.is_finished() { replaced = true; break Ok(()); }
                 if let Some(desktop) = &mut desktop {
                     match desktop.compositor.try_wait() { Ok(None) => {}, _ => break Err(error("desktop compositor stopped")) }
                 }
-                let next = match PublisherTarget::from_credential_file(&prepared.command.url, &prepared.command.credential_file) {
+                if device.is_some() { continue; }
+                let Some(credential_file) = &prepared.command.credential_file else { continue };
+                let next = match PublisherTarget::from_credential_file(&prepared.command.url, credential_file) {
                     Ok(next) => next,
                     Err(_) => break Ok(()), // Owner removed or revoked this private grant.
                 };
@@ -444,7 +533,9 @@ mod tests {
             )
             .unwrap(),
             url: origin,
-            credential_file,
+            credential_file: Some(credential_file),
+            device_grant_file: None,
+            device_state_dir: None,
             machine_id: "host:test".into(),
             name: "Test desktop".into(),
             workspace: directory.into(),

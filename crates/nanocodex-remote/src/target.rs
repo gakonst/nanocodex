@@ -45,6 +45,23 @@ impl PublisherTarget {
         })
     }
 
+    /// The same destination validation as [`Self::from_credential_file`] with
+    /// an already obtained credential (for example an enrolled Hand device's).
+    pub fn from_endpoint(origin: &str, bearer: &str) -> io::Result<Self> {
+        let mut endpoint = checked_url(origin, false)?;
+        if matches!(endpoint.path(), "" | "/") {
+            endpoint.set_path("/v1/account/hands");
+        } else if !scoped_path(endpoint.path(), "hands") {
+            return Err(invalid("invalid scoped publisher endpoint"));
+        }
+        check_bearer(bearer)?;
+        Ok(Self {
+            endpoint,
+            bearer: bearer.into(),
+            credentials: None,
+        })
+    }
+
     /// Derive the screen destination from a previously authorized tool host.
     /// This includes server Hands as well as account and VM Hands.
     pub fn from_attachment(endpoint: &str, bearer: &str) -> io::Result<Self> {

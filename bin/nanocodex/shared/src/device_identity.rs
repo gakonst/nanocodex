@@ -817,6 +817,12 @@ impl DeviceIdentity {
                 let reply = self
                     .send(reqwest::Method::POST, enroll, Some(bearer), &body)
                     .await?;
+                if matches!(reply.status, 401 | 403 | 404) {
+                    return Err(fatal(format!(
+                        "The server Hand device grant was rejected or has expired ({}); reconnect this server with server_hand connect",
+                        reply.describe()
+                    )));
+                }
                 (owner_id.clone(), reply)
             }
         };
@@ -1316,6 +1322,63 @@ pub async fn authorize(
             })
         }
     }
+}
+
+/// Server Hand publisher: enroll once with the one-time bootstrap grant (then
+/// delete it), or reuse the existing enrollment, and return its credentials.
+/// The grant is ignored once `device.json` exists.
+pub(crate) async fn authorize_server_host(
+    endpoint: &Url,
+    directory: &Path,
+    grant_file: Option<&Path>,
+    machine_id: &str,
+    name: &str,
+) -> Result<Arc<DeviceCredentials>, ManagedError> {
+    let mut builder = fs::DirBuilder::new();
+    builder.recursive(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt as _;
+        builder.mode(0o700);
+    }
+    builder
+        .create(directory)
+        .map_err(|error| local("Cannot create the Hand device state directory", &error))?;
+    let origin = managed_origin(endpoint)?;
+    let identity = DeviceIdentity::new(directory, &origin)?;
+    if identity.state()?.is_none() {
+        let grant_file = grant_file.ok_or_else(|| {
+            fatal("This server Hand is not enrolled and has no device grant; reconnect it with server_hand connect")
+        })?;
+        let grant = read_private_file(grant_file, 4096)?.ok_or_else(|| {
+            fatal("The server Hand device grant is missing; reconnect it with server_hand connect")
+        })?;
+        let grant = std::str::from_utf8(&grant)
+            .map_err(|_| fatal("The server Hand device grant is invalid"))?;
+        let route = EnrollRoute::grant(&origin, endpoint, grant)?;
+        retrying(|| identity.ensure_enrolled(&route, machine_id, name)).await?;
+    } else if let Some(state) = identity.state()?
+        && state.machine_id != machine_id
+    {
+        return Err(fatal(
+            "device.json belongs to another Hand machine identity; reconnect this server with server_hand connect",
+        )
+        .into());
+    }
+    // A grant is single use; never leave it behind once enrolled.
+    if let Some(grant_file) = grant_file {
+        match fs::remove_file(grant_file) {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => {
+                tracing::warn!(target: "nanocodex2", stage = "hand.device.grant_cleanup_failed", error = %error.kind(), "Cannot remove the used server Hand device grant");
+            }
+        }
+    }
+    let credentials = Arc::new(DeviceCredentials::new(identity));
+    retrying(|| credentials.current()).await?;
+    attest(&credentials, false).await;
+    Ok(credentials)
 }
 
 /// Best-effort host key attestation; failures never stop publication.
