@@ -1274,7 +1274,7 @@ export class UserCredentialBroker extends DurableObject<BrokerEnv> {
             if (!target || body.private_key !== undefined) return jsonError(400, "invalid_ssh_identity");
             // Generating must never silently rotate an already installed key.
             if (this.#credentials.ssh?.[sshIdentity]) return jsonError(409, "ssh_identity_already_exists");
-            identity = { ...target, ...await createSshKeyPair() };
+            identity = { ...target, ...await createSshKeyPair(), savedAt: Date.now() };
           } else {
             const parsed = validateSshIdentity(body);
             if (!parsed) return jsonError(400, "invalid_ssh_identity");
@@ -1285,12 +1285,15 @@ export class UserCredentialBroker extends DurableObject<BrokerEnv> {
               // never rotate to a different key or target through PUT.
               if (retained.privateKey === parsed.privateKey
                 && retained.hostname === parsed.hostname && retained.port === parsed.port
-                && retained.username === parsed.username && retained.hostKeySha256 === parsed.hostKeySha256) {
+                && retained.username === parsed.username && retained.hostKeySha256 === parsed.hostKeySha256
+                && retained.hostKeyTrust === parsed.hostKeyTrust) {
                 return new Response(null, { status: 204, headers: noStoreHeaders() });
               }
               return jsonError(409, "ssh_identity_already_exists");
             }
-            try { identity = { ...parsed, publicKey: await sshPublicKey(parsed.privateKey) }; }
+            // savedAt is broker-stamped: device attestations older than this
+            // target snapshot never authenticate it.
+            try { identity = { ...parsed, publicKey: await sshPublicKey(parsed.privateKey), savedAt: Date.now() }; }
             catch { return jsonError(400, "invalid_ssh_identity"); }
           }
           this.#credentials.ssh = { ...this.#credentials.ssh, [sshIdentity]: identity };
@@ -1316,7 +1319,8 @@ export class UserCredentialBroker extends DurableObject<BrokerEnv> {
                 hostname: identity.hostname,
                 port: identity.port,
                 username: identity.username,
-                host_key_sha256: identity.hostKeySha256,
+                ...sshHostAuthority(identity),
+                ...(identity.savedAt === undefined ? {} : { saved_at: identity.savedAt }),
               }, 200)
             : jsonError(404, "ssh_identity_not_configured");
         }
@@ -1473,7 +1477,7 @@ export class UserCredentialBroker extends DurableObject<BrokerEnv> {
         hostname: identity.hostname,
         port: identity.port,
         username: identity.username,
-        host_key_sha256: identity.hostKeySha256,
+        ...sshHostAuthority(identity),
         // Older stored identities predate public-key metadata. Derive it in
         // the broker; a malformed legacy key must not break the entire vault.
         public_key: identity.publicKey ?? await sshPublicKey(identity.privateKey).catch(() => undefined),
@@ -3291,6 +3295,14 @@ function noStoreHeaders(): Record<string, string> {
 function json(body: unknown, status: number): Response {
   return Response.json(body, { status, headers: noStoreHeaders() });
 }
+/** Public host authority of a saved SSH target; absent fields stay absent. */
+function sshHostAuthority(identity: BrokeredSshIdentity) {
+  return {
+    ...(identity.hostKeySha256 === undefined ? {} : { host_key_sha256: identity.hostKeySha256 }),
+    ...(identity.hostKeyTrust === undefined ? {} : { host_key_trust: identity.hostKeyTrust }),
+  };
+}
+
 function jsonError(status: number, error: string): Response {
   return json({ error }, status);
 }

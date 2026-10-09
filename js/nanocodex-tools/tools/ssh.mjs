@@ -38,6 +38,7 @@ export function createSshCommand(options) {
           endpoint: parsed.endpoint,
           username: parsed.username,
           commandArgs: parsed.commandArgs,
+          ...(parsed.hostKeyTrust ? { hostKeyTrust: parsed.hostKeyTrust } : {}),
           ...(stdin ? { stdin } : {}),
         }, context);
       }
@@ -170,8 +171,9 @@ async function executeSsh(args, options, context) {
     }
     event.authenticationPromise = authenticateHost(
       event.publicKey,
-      args.hostKeySha256,
+      args.hostKeySha256s,
       args.acceptUnknownHost,
+      options.onHostKeyAccepted,
     );
   });
   try {
@@ -303,16 +305,19 @@ function sshLengthPrefixed(value) {
   return Buffer.concat([length, value]);
 }
 
-async function authenticateHost(publicKey, expected, acceptUnknown) {
+// Repeated HostKeySHA256 options are alternatives, like several known_hosts
+// lines for one host: the presented key must match at least one of them.
+async function authenticateHost(publicKey, expected, acceptUnknown, onAccepted) {
   if (acceptUnknown) return {};
   const bytes = await publicKey.getPublicKeyBytes();
-  if (!bytes || !expected) return null;
+  if (!bytes || !expected?.length) return null;
   const keyBytes = new Uint8Array(bytes.byteLength);
   keyBytes.set(bytes);
   const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", keyBytes));
   const actual = Buffer.from(digest).toString("base64").replace(/=+$/u, "");
-  const normalized = expected.replace(/^SHA256:/u, "").replace(/=+$/u, "");
-  return actual === normalized ? {} : null;
+  if (!expected.some(value => value.replace(/^SHA256:/u, "").replace(/=+$/u, "") === actual)) return null;
+  onAccepted?.(`SHA256:${actual}`);
+  return {};
 }
 
 function parseArguments(args, transport, capabilities) {
@@ -321,7 +326,8 @@ function parseArguments(args, transport, capabilities) {
   let identityFile = "";
   let identityReference = "";
   let passwordReference = "";
-  let hostKeySha256;
+  const hostKeySha256s = [];
+  let hostKeyTrust;
   let acceptUnknownHost = false;
   let port = 22;
   let index = 0;
@@ -347,7 +353,18 @@ function parseArguments(args, transport, capabilities) {
         }
       } else if (value === "StrictHostKeyChecking=no") acceptUnknownHost = true;
       else if (value.startsWith("HostKeySHA256=")) {
-        hostKeySha256 = value.slice("HostKeySHA256=".length);
+        const fingerprint = value.slice("HostKeySHA256=".length);
+        if (!fingerprint) return { error: "ssh: HostKeySHA256 cannot be empty" };
+        if (hostKeySha256s.length >= 16) return { error: "ssh: too many HostKeySHA256 options" };
+        hostKeySha256s.push(fingerprint);
+      } else if (value.startsWith("HostKeyTrust=")) {
+        if (!capabilities.identityReference) return { error: "ssh: HostKeyTrust requires brokered identity references" };
+        // Explicit opt-in: the broker may additionally accept host keys that
+        // the account's active enrolled device for the target's bound machine
+        // attested. A saved Vault pin always remains accepted.
+        // The bound machine comes from the saved Vault target, never HOST.
+        if (value !== "HostKeyTrust=device") return { error: "ssh: HostKeyTrust must be device" };
+        hostKeyTrust = "device";
       } else if (value.startsWith("PasswordRef=")) {
         if (!capabilities.passwordReference) return { error: "ssh: password references are unavailable" };
         passwordReference = value.slice("PasswordRef=".length);
@@ -385,10 +402,13 @@ function parseArguments(args, transport, capabilities) {
     return { error: "ssh: provide -i PRIVATE_KEY, -o IdentityRef=REFERENCE, or -o PasswordRef=REFERENCE" };
   }
   if (authentication.length > 1) return { error: "ssh: authentication options are mutually exclusive" };
-  if (identityReference && (hostKeySha256 || acceptUnknownHost)) {
+  if (identityReference && (hostKeySha256s.length || acceptUnknownHost)) {
     return { error: "ssh: IdentityRef uses broker-owned host-key verification" };
   }
-  if (!identityReference && !hostKeySha256 && !acceptUnknownHost) {
+  if (hostKeyTrust && !identityReference) {
+    return { error: "ssh: HostKeyTrust requires -o IdentityRef=REFERENCE" };
+  }
+  if (!identityReference && !hostKeySha256s.length && !acceptUnknownHost) {
     return { error: "ssh: provide -o HostKeySHA256=SHA256:... or explicitly -o StrictHostKeyChecking=no" };
   }
   if (args[index] === "--") index += 1;
@@ -404,7 +424,8 @@ function parseArguments(args, transport, capabilities) {
     passwordReference,
     commandArgs,
     command: commandArgs.map(shellQuote).join(" "),
-    hostKeySha256,
+    hostKeySha256s,
+    ...(hostKeyTrust ? { hostKeyTrust } : {}),
     acceptUnknownHost,
   };
 }
@@ -442,7 +463,7 @@ function usage(transport, capabilities) {
     ...(capabilities.passwordReference ? ["-o PasswordRef=REFERENCE"] : []),
   ].join(" | ");
   const verification = capabilities.identityReference
-    ? "Brokered IdentityRef records own host verification; other authentication requires HostKeySHA256 or an explicit opt-out."
+    ? "Brokered IdentityRef records own host verification; -o HostKeyTrust=device also accepts host keys attested by the active enrolled device bound to that Vault target. Other authentication requires HostKeySHA256 or an explicit opt-out."
     : "Provide HostKeySHA256 or explicitly disable strict host checking.";
   const transportNotice = transport === "websocket"
     ? "browsers cannot open TCP port 22; the endpoint must carry raw SSH over WebSocket."

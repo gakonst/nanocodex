@@ -46,9 +46,14 @@ import {
   executeBrokeredSsh,
   type BrokeredSshIdentity,
   validateBrokeredSshRequest,
+  validateResolvedSshIdentity,
   validateSshIdentity,
   validateSshTarget,
   validSshIdentityReference,
+  deviceTrustRequested,
+  parseDeviceHostKeyAttestation,
+  type DeviceHostKeyAttestation,
+  type SshHostKeyMatch,
 } from "./ssh";
 
 export { AgentSubjectDirectory, UserCredentialBroker } from "./broker";
@@ -234,6 +239,8 @@ export interface EgressEnv extends BrokerEnv, ConnectorBrokerEnv, GmailPushIngre
   USER_CONNECTORS: DurableObjectNamespace<UserConnectorBroker>;
   AGENT_SUBJECTS: DurableObjectNamespace<AgentSubjectDirectory>;
   MANAGED_AGENT_OWNERSHIP?: Fetcher;
+  /** Managed entrypoint returning the owner's ACTIVE device SSH host-key attestations. */
+  HAND_DEVICE_SSH_HOST_KEYS?: Fetcher;
   MCP_CONNECTIONS: DurableObjectNamespace<McpConnectionDirectory>;
   CHATGPT_EGRESS?: DurableObjectNamespace;
   CHATGPT_VOICE_RELAY_RPC?: string;
@@ -1382,14 +1389,30 @@ async function handleSshEgress(
   }
   const parsed = validateBrokeredSshRequest(await readJson(request, MAX_SSH_BODY_BYTES));
   if (!parsed) return auditedError(400, "invalid_ssh_request", request, url, "ssh", started);
+  // Trust mode, matched authority and public host-key fingerprint only;
+  // targets, commands, output and key material stay out of logs.
+  const trust: Record<string, unknown> = { host_key_trust_mode: "vault_pin" };
   let userId: string | undefined;
   try {
     userId = await resolveSubject(env, subject, sessionToolAuthority);
     const identity = await resolveSshIdentity(env, userId, parsed.identityReference);
-    const result = await executeBrokeredSsh(identity, parsed, request.signal);
+    // Attestations come only from the resolved owner's account Durable Object,
+    // for the machine bound to this exact Vault reference, never the caller.
+    let attestation: DeviceHostKeyAttestation | null = null;
+    if (deviceTrustRequested(identity, parsed)) {
+      trust.host_key_trust_mode = "device";
+      attestation = await resolveDeviceHostKeyAttestation(env, userId, parsed.identityReference, identity.hostKeyTrust ?? "device");
+      trust.attested_host_keys = attestation?.hostKeys.length ?? 0;
+    }
+    const result = await executeBrokeredSsh(identity, parsed, request.signal, undefined, attestation,
+      (match: SshHostKeyMatch) => {
+        trust.host_key_source = match.source;
+        trust.host_key_sha256 = match.fingerprint;
+      });
     audit("allow", request, url, "ssh", started, {
       status: 200,
       user_id: userId,
+      ...trust,
       deployment_sha: env.DEPLOYMENT_SHA,
     });
     return json({ stdout: result.stdout, stderr: result.stderr, exit_code: result.exitCode }, 200);
@@ -1399,6 +1422,7 @@ async function handleSshEgress(
       : egressFailure(error);
     return auditedError(problem.status, problem.code, request, url, "ssh", started, {
       ...(userId === undefined ? {} : { user_id: userId }),
+      ...trust,
       deployment_sha: env.DEPLOYMENT_SHA,
     });
   }
@@ -2581,7 +2605,8 @@ async function handleControl(request: Request, url: URL, env: EgressEnv): Promis
         hostname: identity.hostname,
         port: identity.port,
         username: identity.username,
-        host_key_sha256: identity.hostKeySha256,
+        ...(identity.hostKeySha256 === undefined ? {} : { host_key_sha256: identity.hostKeySha256 }),
+        ...(identity.hostKeyTrust === undefined ? {} : { host_key_trust: identity.hostKeyTrust }),
       }),
     });
   }
@@ -3476,9 +3501,36 @@ async function resolveSshIdentity(
       response.status === 404 ? "ssh_identity_unavailable" : "ssh_identity_broker_unavailable",
     );
   }
-  const identity = validateSshIdentity(await response.json<unknown>());
+  const identity = validateResolvedSshIdentity(await response.json<unknown>());
   if (!identity) throw new EgressFailure(503, "invalid_ssh_identity_response");
   return identity;
+}
+
+/** Fails closed: an unavailable or malformed attestation source is an error. */
+async function resolveDeviceHostKeyAttestation(
+  env: EgressEnv,
+  userId: string,
+  reference: string,
+  trust: string,
+): Promise<DeviceHostKeyAttestation | null> {
+  if (!env.HAND_DEVICE_SSH_HOST_KEYS) throw new EgressFailure(503, "ssh_host_key_attestation_unavailable");
+  const response = await env.HAND_DEVICE_SSH_HOST_KEYS.fetch("https://hand-device-ssh.internal/v1/host-keys", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ owner_id: userId, reference, trust }),
+  });
+  if (!response.ok) {
+    await readBoundedText(response, MAX_BROKER_RESPONSE_BYTES);
+    throw new EgressFailure(503, "ssh_host_key_attestation_unavailable");
+  }
+  let body: unknown;
+  try { body = JSON.parse(await readBoundedText(response, MAX_BROKER_RESPONSE_BYTES)); }
+  catch { throw new EgressFailure(503, "ssh_host_key_attestation_unavailable"); }
+  const attestation = typeof body === "object" && body !== null && !Array.isArray(body)
+    && Object.keys(body).length === 1 && "attestation" in body
+    ? parseDeviceHostKeyAttestation((body as { attestation: unknown }).attestation) : undefined;
+  if (attestation === undefined) throw new EgressFailure(503, "ssh_host_key_attestation_unavailable");
+  return attestation;
 }
 
 async function replayableBody(request: Request, operation: ModelOperation, cancel?: AbortSignal): Promise<Uint8Array | null> {

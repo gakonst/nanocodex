@@ -32,6 +32,11 @@
       "binding": "MANAGED_AGENT_OWNERSHIP",
       "service": "nanocodex-durable-agent",
       "entrypoint": "ManagedAgentOwnership"
+    },
+    {
+      "binding": "HAND_DEVICE_SSH_HOST_KEYS",
+      "service": "nanocodex-durable-agent",
+      "entrypoint": "HandDeviceSshHostKeys"
     }
   ],
   "vars": {
@@ -114,6 +119,12 @@
           "binding": "MANAGED_AGENT_OWNERSHIP",
           "service": "nanocodex-durable-agent",
           "entrypoint": "ManagedAgentOwnership",
+          "remote": false
+        },
+        {
+          "binding": "HAND_DEVICE_SSH_HOST_KEYS",
+          "service": "nanocodex-durable-agent",
+          "entrypoint": "HandDeviceSshHostKeys",
           "remote": false
         }
       ],

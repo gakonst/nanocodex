@@ -14,6 +14,9 @@ export type SshIdentityReferenceRequest = Readonly<{
   endpoint: SshEndpoint;
   username: string;
   commandArgs: readonly string[];
+  /** Explicit opt-in: the host may also accept host keys attested by the
+   * active enrolled device bound to the saved target. */
+  hostKeyTrust?: "device";
   stdin?: string;
 }>;
 
@@ -26,6 +29,8 @@ export type SshCommandOptions = Readonly<{
     context: Readonly<{ cwd: string; signal?: AbortSignal }>,
   ): Promise<string>;
   resolvePassword?(reference: string): Promise<string>;
+  /** Observes the verified server host-key fingerprint ("SHA256:..."). */
+  onHostKeyAccepted?(fingerprint: string): void;
   executeWithIdentityReference?(
     request: SshIdentityReferenceRequest,
     context: Readonly<{ signal?: AbortSignal }>,
