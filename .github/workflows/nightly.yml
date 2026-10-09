@@ -70,8 +70,9 @@ jobs:
         run: brew install lld
       # Only the CLI builds are on the release critical path. Cold voice builds
       # (418s Linux, 256s macOS) still finish well before a warm CLI (~540s),
-      # so their ~1GB target archives would only evict the CLI/Windows caches
-      # from the repository's 10GB Actions cache.
+      # so their ~1GB target archives only added churn to the repository's
+      # 10GB Actions cache. This trims ~2GB per run; it does not by itself keep
+      # daily nightly caches warm.
       - uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2
         if: matrix.component == 'cli'
         with:
@@ -356,7 +357,7 @@ jobs:
           ) | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
       - name: Prefer the restored crate registry
         shell: bash
-        run: scripts/release/cargo-offline-probe.sh x86_64-pc-windows-msvc
+        run: bash scripts/release/cargo-offline-probe.sh x86_64-pc-windows-msvc
       - name: Build Windows Hand payload
         shell: pwsh
         env:
@@ -364,6 +365,8 @@ jobs:
           # Both executables report the exact commit they were built from.
           VERGEN_GIT_SHA: ${{ env.BUILD_SHA }}
         run: |
+          # Target rustflags (/Brepro) are silently ignored when either is set.
+          if ($env:RUSTFLAGS -or $env:CARGO_ENCODED_RUSTFLAGS) { throw "RUSTFLAGS would drop /Brepro" }
           $offline = @(if ($env:NANOCODEX_CARGO_OFFLINE -eq 'true') { '--offline' })
           cargo build --locked @offline --profile nightly --timings --package nanocodex-bin --package nanocodex-hand-daemon --features nanocodex-bin/tempo
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
@@ -421,6 +424,8 @@ jobs:
         run: |
           sccache --show-stats | tee sccache-stats.txt
           { echo '### sccache (x86_64-pc-windows-msvc)'; grep -E '^(Compile requests|Cache hits|Cache misses|Non-cacheable)' sccache-stats.txt | grep -v ' by ' | sed 's/^/    /'; } >> "$GITHUB_STEP_SUMMARY"
+          # /Brepro check: identical sources must link an identical proc-macro DLL.
+          { echo '### Workspace proc-macro DLLs'; sha256sum target/nightly/deps/nanocodex_oai_tools_macros-*.dll | sed 's/^/    /'; } >> "$GITHUB_STEP_SUMMARY" || true
 
   build-vm-guest:
     if: >-

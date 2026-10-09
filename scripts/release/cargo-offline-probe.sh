@@ -10,9 +10,10 @@
 set -euo pipefail
 target=${1:?usage: cargo-offline-probe.sh TARGET}
 started=$SECONDS
-if cargo fetch --locked --offline --quiet --target "$target"; then
+if probe_log=$(cargo fetch --locked --offline --target "$target" 2>&1); then
   echo "NANOCODEX_CARGO_OFFLINE=true" >> "${GITHUB_ENV:-/dev/null}"
   echo "Restored registry is complete for $target; building offline ($((SECONDS - started))s probe)"
 else
   echo "Restored registry is incomplete for $target; building online ($((SECONDS - started))s probe)"
+  printf '%s\n' "$probe_log" | tail -n 5
 fi
