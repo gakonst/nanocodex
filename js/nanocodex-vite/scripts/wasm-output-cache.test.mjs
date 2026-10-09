@@ -7,7 +7,7 @@ import { test } from "node:test";
 import { check, fingerprintInputs, save } from "./wasm-output-cache.mjs";
 
 const repository = new URL("../../../", import.meta.url);
-const scripts = ["js/nanocodex-vite/scripts/build-js-package.sh", "js/nanocodex-vite/scripts/wasm-output-cache.mjs", "js/nanocodex-vite/scripts/wasm-memory-views.mjs", "js/nanocodex/scripts/deduplicate-wasm.mjs", "js/nanocodex/scripts/write-package-types.mjs", "js/nanocodex/scripts/write-wasm-attestation.mjs", "js/nanocodex/scripts/check-managed-wasm.mjs"];
+const scripts = ["js/nanocodex-vite/scripts/build-js-package.sh", "js/nanocodex-vite/scripts/wasm-output-cache.mjs", "js/nanocodex-vite/scripts/wasm-memory-views.mjs", "js/nanocodex-vite/scripts/native-binaryen.mjs", "js/nanocodex/scripts/deduplicate-wasm.mjs", "js/nanocodex/scripts/write-package-types.mjs", "js/nanocodex/scripts/write-wasm-attestation.mjs", "js/nanocodex/scripts/check-managed-wasm.mjs"];
 const pkg = (name, extra = "") => `[package]\nname = "${name}"\nversion = "0.0.0"\nedition = "2021"\n${extra}`;
 const turbo = (crates) => JSON.stringify({ tasks: { "nanocodex#build": { inputs: ["$TURBO_DEFAULT$", "$TURBO_ROOT$/Cargo.toml", "$TURBO_ROOT$/Cargo.lock", "$TURBO_ROOT$/.cargo/**", "$TURBO_ROOT$/js/nanocodex-vite/scripts/**", ...crates.map((crate) => `$TURBO_ROOT$/crates/${crate}/**`)] } } });
 
