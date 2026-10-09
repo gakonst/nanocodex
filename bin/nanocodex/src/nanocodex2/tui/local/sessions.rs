@@ -188,6 +188,7 @@ pub(crate) fn search(
                 | RolloutTranscriptItem::Assistant(text)
                 | RolloutTranscriptItem::Reasoning(text) => text.as_str(),
                 RolloutTranscriptItem::Tool { arguments, .. } => arguments.as_str(),
+                RolloutTranscriptItem::ToolResult { output, .. } => output.as_str(),
             };
             let lower = text.to_lowercase();
             terms
@@ -409,6 +410,7 @@ pub(in crate::nanocodex2::tui) fn history_window(
         turns: 0,
         call: 0,
         final_message: String::new(),
+        open_tools: Vec::new(),
     };
     for item in transcript {
         match item {
@@ -452,9 +454,22 @@ pub(in crate::nanocodex2::tui) fn history_window(
                     "tool.call",
                     json!({"call_id": call_id, "tool": name, "arguments": arguments, "model_call_index": replay.call}),
                 );
+                replay.open_tools.push((call_id.clone(), name.clone()));
+            }
+            RolloutTranscriptItem::ToolResult {
+                call_id,
+                output,
+                is_error,
+            } => {
+                let Some(position) = replay.open_tools.iter().position(|(id, _)| id == call_id)
+                else {
+                    continue;
+                };
+                let (call_id, name) = replay.open_tools.remove(position);
+                let result = replayed_result(&name, output, *is_error);
                 replay.agent(
                     "tool.result",
-                    json!({"call_id": call_id, "tool": name, "status": "completed", "duration_ns": 0, "result": null}),
+                    json!({"call_id": call_id, "tool": name, "status": if *is_error { "failed" } else { "completed" }, "duration_ns": 0, "result": result}),
                 );
             }
         }
@@ -467,6 +482,28 @@ pub(in crate::nanocodex2::tui) fn history_window(
     }
 }
 
+/// A replayed outcome in the shape live tools publish. Shell outcomes carry the
+/// exit status their text reports; a receipt without one is the tool's own
+/// success or failure.
+fn replayed_result(name: &str, output: &str, is_error: bool) -> Value {
+    if crate::nanocodex2::tui::transcript::ToolEntry::tool_family(name) != "exec_command" {
+        return json!({ "text": output });
+    }
+    let reported = |prefix: &str| {
+        output
+            .lines()
+            .find_map(|line| line.trim().strip_prefix(prefix)?.trim().parse::<i64>().ok())
+    };
+    let mut result = json!({ "output": output });
+    if let Some(session_id) = reported("Process running with session ID ") {
+        result["session_id"] = json!(session_id);
+    } else {
+        result["exit_code"] =
+            json!(reported("Process exited with code ").unwrap_or(i64::from(is_error)));
+    }
+    result
+}
+
 struct Replay<'a> {
     request_id: &'a str,
     events: Vec<ManagedEvent>,
@@ -474,6 +511,8 @@ struct Replay<'a> {
     turns: usize,
     call: u32,
     final_message: String,
+    /// Calls awaiting their replayed outcome, in call order.
+    open_tools: Vec<(String, String)>,
 }
 
 impl Replay<'_> {
@@ -511,6 +550,13 @@ impl Replay<'_> {
     }
 
     fn finish_turn(&mut self) {
+        // Rollout events such as MCP and web search record only completed calls.
+        for (call_id, name) in std::mem::take(&mut self.open_tools) {
+            self.agent(
+                "tool.result",
+                json!({"call_id": call_id, "tool": name, "status": "completed", "duration_ns": 0, "result": null}),
+            );
+        }
         if let Some(id) = self.turn.clone() {
             let final_message = std::mem::take(&mut self.final_message);
             self.push(ManagedEventData::TurnCompleted {

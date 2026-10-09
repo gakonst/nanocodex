@@ -159,6 +159,38 @@ pub enum RolloutTranscriptItem {
         /// Serialized tool arguments sent by the model.
         arguments: String,
     },
+    /// The settled outcome of an earlier [`Self::Tool`] call.
+    ToolResult {
+        /// Call identifier of the matching [`Self::Tool`].
+        call_id: String,
+        /// Bounded model-visible text; media is represented by placeholders.
+        output: String,
+        /// Whether the tool reported a failed outcome.
+        is_error: bool,
+    },
+}
+
+impl RolloutTranscriptItem {
+    /// Maximum retained bytes of one replayed tool outcome.
+    pub const MAX_TOOL_OUTPUT_BYTES: usize = 16 * 1024;
+
+    /// Creates a tool outcome bounded to [`Self::MAX_TOOL_OUTPUT_BYTES`].
+    #[must_use]
+    pub fn tool_result(call_id: impl Into<String>, output: &str, is_error: bool) -> Self {
+        let mut end = output.len().min(Self::MAX_TOOL_OUTPUT_BYTES);
+        while !output.is_char_boundary(end) {
+            end -= 1;
+        }
+        let mut bounded = output[..end].to_owned();
+        if end < output.len() {
+            bounded.push_str("\n[output truncated]");
+        }
+        Self::ToolResult {
+            call_id: call_id.into(),
+            output: bounded,
+            is_error,
+        }
+    }
 }
 
 pub(super) fn list_sessions(codex_home: &Path) -> io::Result<Vec<RolloutSessionInfo>> {
@@ -471,7 +503,9 @@ fn materialize_rollout(path: &Path, thread_id: &str) -> io::Result<MaterializedR
                 );
             }
             Some("response_item") => {
-                if let Some(item) = visible_tool_call(&value["payload"]) {
+                if let Some(item) = visible_tool_call(&value["payload"])
+                    .or_else(|| visible_tool_output(&value["payload"]))
+                {
                     transcript.push(item);
                 }
                 // Move the parsed payload into the typed history rather than cloning
@@ -605,7 +639,7 @@ pub(in crate::rollout) fn visible_rollout_event(
     payload: &serde_json::Value,
 ) -> Option<RolloutTranscriptItem> {
     match payload.get("type")?.as_str()? {
-        "user_message" => visible_text(payload, "message").map(RolloutTranscriptItem::User),
+        "user_message" => visible_prompt(payload).map(RolloutTranscriptItem::User),
         "agent_reasoning" => visible_text(payload, "text").map(RolloutTranscriptItem::Reasoning),
         "agent_message" => visible_text(payload, "message").map(RolloutTranscriptItem::Assistant),
         "mcp_tool_call_end" => {
@@ -640,6 +674,62 @@ pub(super) fn validate_legacy_history_mode(payload: &serde_json::Value) -> io::R
             "Codex rollout history mode must be a string",
         )),
     }
+}
+
+/// Prompt text with one placeholder per attached image. Image bytes, file IDs
+/// and local paths stay in the rollout; the composer numbers images per prompt.
+fn visible_prompt(payload: &serde_json::Value) -> Option<String> {
+    let mut text = payload
+        .get("message")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default()
+        .to_owned();
+    let images = ["images", "image_file_ids", "local_images"]
+        .into_iter()
+        .filter_map(|key| payload.get(key)?.as_array().map(Vec::len))
+        .sum::<usize>();
+    for index in 1..=images {
+        if !text.is_empty() && !text.ends_with(char::is_whitespace) {
+            text.push(' ');
+        }
+        text.push_str(&format!("[Image #{index}]"));
+    }
+    (!text.is_empty()).then_some(text)
+}
+
+/// Model-visible tool output, bounded; media items become placeholders.
+pub(in crate::rollout) fn visible_tool_output(
+    payload: &serde_json::Value,
+) -> Option<RolloutTranscriptItem> {
+    if !matches!(
+        payload.get("type")?.as_str()?,
+        "function_call_output" | "custom_tool_call_output"
+    ) {
+        return None;
+    }
+    let call_id = payload.get("call_id")?.as_str()?;
+    let (output, success) = match payload.get("output")? {
+        serde_json::Value::Object(fields) => (fields.get("content")?, fields.get("success")),
+        output => (output, None),
+    };
+    let text = match output {
+        serde_json::Value::String(text) => text.clone(),
+        serde_json::Value::Array(items) => items
+            .iter()
+            .filter_map(|item| match item.get("type")?.as_str()? {
+                "input_text" | "output_text" | "text" => {
+                    item.get("text")?.as_str().map(str::to_owned)
+                }
+                "input_image" | "image" => Some("[image]".to_owned()),
+                "input_file" | "file" => Some("[document]".to_owned()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n"),
+        _ => return None,
+    };
+    let is_error = success.and_then(serde_json::Value::as_bool) == Some(false);
+    Some(RolloutTranscriptItem::tool_result(call_id, &text, is_error))
 }
 
 fn visible_text(payload: &serde_json::Value, key: &str) -> Option<String> {

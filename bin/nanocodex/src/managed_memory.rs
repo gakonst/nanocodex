@@ -814,7 +814,9 @@ fn local_session_turns(
                     *current_assistant = bounded_text(assistant, MAX_LOCAL_TEXT_BYTES);
                 }
             }
-            RolloutTranscriptItem::Reasoning(_) | RolloutTranscriptItem::Tool { .. } => {}
+            RolloutTranscriptItem::Reasoning(_)
+            | RolloutTranscriptItem::Tool { .. }
+            | RolloutTranscriptItem::ToolResult { .. } => {}
         }
     }
     if let Some((user, assistant)) = current

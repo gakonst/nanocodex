@@ -6,6 +6,7 @@ use rusqlite::{Connection, OpenFlags, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
+    collections::{HashMap, HashSet},
     fs, io,
     path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
@@ -91,7 +92,8 @@ pub(crate) fn discover(home: &Path) -> Result<Vec<ResumeSession>> {
     }
     let mut sessions = Vec::new();
     for id in ids.into_iter().take(MAX_SESSIONS) {
-        match inspect(&db, home, &id) {
+        // The picker previews only the first prompt.
+        match inspect(&db, home, &id, 1) {
             Ok(session) => sessions.push(session),
             Err(error) => eprintln!("Skipping Claude session {}: {error}", clean(&id)),
         }
@@ -104,10 +106,11 @@ pub(crate) fn load(home: &Path, id: &str) -> Result<ResumeSession> {
     if id.len() > 256 {
         return Err(eyre!("Claude session ID is too long"));
     }
-    inspect(&open(home)?, home, id).wrap_err_with(|| format!("failed to load Claude session {id}"))
+    inspect(&open(home)?, home, id, usize::MAX)
+        .wrap_err_with(|| format!("failed to load Claude session {id}"))
 }
 
-fn inspect(db: &Connection, home: &Path, id: &str) -> Result<ResumeSession> {
+fn inspect(db: &Connection, home: &Path, id: &str, prompt_limit: usize) -> Result<ResumeSession> {
     // The store API only exposes acquiring owners. Use bounded, read-only SQL
     // here so opening/cancelling the picker cannot fence a running process.
     let state: Option<String> = db.query_row(
@@ -164,7 +167,10 @@ fn inspect(db: &Connection, home: &Path, id: &str) -> Result<ResumeSession> {
         id: id.into(),
         workspace,
         model,
-        transcript: transcript(&checkpoint),
+        transcript: transcript(
+            &checkpoint,
+            &admitted_prompts(db, id, retained, prompt_limit),
+        ),
         updated: manifest.map_or(0, |m| m.updated),
     })
 }
@@ -215,39 +221,256 @@ fn read_payload(db: &Connection, id: &str, key: &str) -> Result<String> {
     Ok(value)
 }
 
-fn transcript(checkpoint: &Value) -> Vec<RolloutTranscriptItem> {
+/// One ordered part of a user prompt, compared to recognize the checkpoint
+/// message that an admitted prompt produced. Media bytes are never compared.
+#[derive(Debug, PartialEq, Eq)]
+enum PromptPart {
+    Text(String),
+    Media,
+}
+
+/// Harness-authored user-role messages that are never admitted as prompts.
+/// Exact recovery notices are retained in the checkpoint itself.
+const HARNESS_PREFIXES: &[&str] = &[
+    "Continue the current task from the interrupted response.",
+    "Host Stop hook requests continuation: ",
+    "Harness recovery notice: ",
+];
+
+/// Prompt inputs admitted by this journal, in acceptance order. They are the
+/// authority for real user turns: hook context, harness notices and
+/// continuations share the user role in the checkpoint but are never admitted.
+fn admitted_prompts(
+    db: &Connection,
+    id: &str,
+    retained: &Value,
+    limit: usize,
+) -> Vec<Vec<PromptPart>> {
+    let mut operations = retained["operations"]
+        .as_object()
+        .into_iter()
+        .flatten()
+        .filter_map(|(_, operation)| {
+            Some((
+                operation["accepted_order"].as_u64()?,
+                operation["input"].as_str()?,
+            ))
+        })
+        .collect::<Vec<_>>();
+    operations.sort_unstable_by_key(|(order, _)| *order);
+    // Image prompts retain their media in the input; bound the total read.
+    let mut budget = 4 * MAX_BYTES;
+    let mut prompts = Vec::new();
+    for (_, key) in operations {
+        if prompts.len() >= limit {
+            break;
+        }
+        let Ok(payload) = read_payload(db, id, key) else {
+            continue;
+        };
+        let Some(remaining) = budget.checked_sub(payload.len()) else {
+            break;
+        };
+        budget = remaining;
+        let Ok(input) = serde_json::from_str::<Value>(&payload) else {
+            continue;
+        };
+        if input["provider"] != "claude" || input["kind"] != "prompt" {
+            continue;
+        }
+        prompts.push(match &input["prompt"]["instruction"] {
+            Value::String(text) => vec![PromptPart::Text(text.clone())],
+            Value::Array(items) => items
+                .iter()
+                .map(|item| match item["type"].as_str() {
+                    Some("text") => {
+                        PromptPart::Text(item["text"].as_str().unwrap_or_default().to_owned())
+                    }
+                    _ => PromptPart::Media,
+                })
+                .collect(),
+            _ => continue,
+        });
+    }
+    prompts
+}
+
+fn blocks(message: &Value) -> impl Iterator<Item = &Value> {
+    message["content"].as_array().into_iter().flatten()
+}
+
+fn prompt_parts(message: &Value) -> Vec<PromptPart> {
+    blocks(message)
+        .filter_map(|block| match block["type"].as_str()? {
+            "text" => Some(PromptPart::Text(block["text"].as_str()?.to_owned())),
+            "image" | "document" => Some(PromptPart::Media),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The prompt as the composer displayed it: each image replaced its own
+/// placeholder, numbered per prompt. Media bytes never enter the transcript.
+fn prompt_display(message: &Value) -> String {
+    let (mut text, mut images, mut documents) = (String::new(), 0, 0);
+    for block in blocks(message) {
+        match block["type"].as_str() {
+            Some("text") => text.push_str(block["text"].as_str().unwrap_or_default()),
+            Some("image") => {
+                images += 1;
+                text.push_str(&format!("[Image #{images}]"));
+            }
+            Some("document") => {
+                documents += 1;
+                text.push_str(&format!("[Document #{documents}]"));
+            }
+            _ => {}
+        }
+    }
+    text
+}
+
+fn harness_authored(message: &Value, notices: &[&str]) -> bool {
+    let mut text = String::new();
+    for block in blocks(message) {
+        match block["text"].as_str() {
+            Some(part) if block["type"] == "text" => text.push_str(part),
+            _ => return false,
+        }
+    }
+    notices.contains(&text.as_str()) || HARNESS_PREFIXES.iter().any(|p| text.starts_with(p))
+}
+
+fn tool_output(content: &Value) -> String {
+    match content {
+        Value::String(text) => text.clone(),
+        Value::Array(items) => items
+            .iter()
+            .filter_map(|item| match item["type"].as_str()? {
+                "text" => item["text"].as_str().map(str::to_owned),
+                "image" => Some("[image]".to_owned()),
+                "document" => Some("[document]".to_owned()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n"),
+        _ => String::new(),
+    }
+}
+
+fn transcript(checkpoint: &Value, prompts: &[Vec<PromptPart>]) -> Vec<RolloutTranscriptItem> {
     let mut items = Vec::new();
-    if let Some(summary) = checkpoint["conversation"]["summary"]
-        .as_str()
-        .filter(|s| !s.is_empty())
-    {
+    let conversation = &checkpoint["conversation"];
+    if let Some(summary) = conversation["summary"].as_str().filter(|s| !s.is_empty()) {
         items.push(RolloutTranscriptItem::Assistant(format!(
             "Retained conversation summary:\n{summary}"
         )));
     }
-    for message in checkpoint["conversation"]["messages"]
+    let notices = conversation["recovery_notices"]
         .as_array()
         .into_iter()
         .flatten()
-    {
-        let assistant = message["role"].as_str() == Some("assistant");
-        for block in message["content"].as_array().into_iter().flatten() {
-            match block["type"].as_str() {
-                Some("text") => {
-                    if let Some(text) = block["text"].as_str() {
-                        items.push(if assistant {
-                            RolloutTranscriptItem::Assistant(text.into())
-                        } else {
-                            RolloutTranscriptItem::User(text.into())
-                        });
+        .filter_map(Value::as_str)
+        .collect::<Vec<_>>();
+    let messages = conversation["messages"]
+        .as_array()
+        .map_or(&[][..], Vec::as_slice);
+    let receipt = |message: &Value| blocks(message).any(|block| block["type"] == "tool_result");
+    // Code Mode child calls retained by the engine without their results. A
+    // call started by exec and finished by a later wait keeps its final status.
+    let mut children = HashMap::<&str, Vec<&Value>>::new();
+    let mut outcomes = HashMap::<&str, &str>::new();
+    for round in conversation["code_calls"].as_array().into_iter().flatten() {
+        let Some(parent) = round["tool_use_id"].as_str() else {
+            continue;
+        };
+        for call in round["calls"].as_array().into_iter().flatten() {
+            if let Some(call_id) = call["call_id"].as_str() {
+                outcomes.insert(call_id, call["status"].as_str().unwrap_or("unknown"));
+                children.entry(parent).or_default().push(call);
+            }
+        }
+    }
+    let mut replayed_children = HashSet::new();
+    let mut next_prompt = 0;
+    let mut index = 0;
+    while let Some(message) = messages.get(index) {
+        if message["role"].as_str() == Some("assistant") {
+            for block in blocks(message) {
+                match block["type"].as_str() {
+                    Some("text") => {
+                        if let Some(text) = block["text"].as_str() {
+                            items.push(RolloutTranscriptItem::Assistant(text.into()));
+                        }
                     }
+                    Some("tool_use") => items.push(RolloutTranscriptItem::Tool {
+                        call_id: block["id"].as_str().unwrap_or_default().into(),
+                        name: block["name"].as_str().unwrap_or_default().into(),
+                        arguments: block["input"].to_string(),
+                    }),
+                    _ => {} // Never expose signed thinking or binary payloads in the picker/TUI.
                 }
-                Some("tool_use") => items.push(RolloutTranscriptItem::Tool {
-                    call_id: block["id"].as_str().unwrap_or_default().into(),
-                    name: block["name"].as_str().unwrap_or_default().into(),
-                    arguments: block["input"].to_string(),
-                }),
-                _ => {} // Never expose signed thinking or binary payloads in the picker/TUI.
+            }
+            index += 1;
+            continue;
+        }
+        if receipt(message) {
+            for block in blocks(message).filter(|block| block["type"] == "tool_result") {
+                let parent = block["tool_use_id"].as_str().unwrap_or_default();
+                for call in children.get(parent).into_iter().flatten() {
+                    let call_id = call["call_id"].as_str().unwrap_or_default();
+                    if !replayed_children.insert(call_id) {
+                        continue;
+                    }
+                    items.push(RolloutTranscriptItem::Tool {
+                        call_id: call_id.into(),
+                        name: call["name"].as_str().unwrap_or_default().into(),
+                        arguments: call["input"].to_string(),
+                    });
+                    items.push(match outcomes.get(call_id).copied() {
+                        Some("completed") => RolloutTranscriptItem::tool_result(call_id, "", false),
+                        Some("failed") => RolloutTranscriptItem::tool_result(call_id, "", true),
+                        _ => RolloutTranscriptItem::tool_result(call_id, "Outcome unknown", true),
+                    });
+                }
+                items.push(RolloutTranscriptItem::tool_result(
+                    parent,
+                    &tool_output(&block["content"]),
+                    block["is_error"].as_bool() == Some(true),
+                ));
+            }
+            index += 1;
+            continue;
+        }
+        // One admission writes its hook context, synthetic transcript and
+        // prompt as adjacent user messages; only the admitted prompt is shown.
+        let end = messages[index..]
+            .iter()
+            .position(|message| message["role"].as_str() != Some("user") || receipt(message))
+            .map_or(messages.len(), |offset| index + offset);
+        let run = &messages[index..end];
+        index = end;
+        let admitted = run.iter().find_map(|message| {
+            let parts = prompt_parts(message);
+            prompts
+                .get(next_prompt..)?
+                .iter()
+                .position(|prompt| *prompt == parts)
+                .map(|offset| (message, offset))
+        });
+        if let Some((message, offset)) = admitted {
+            next_prompt += offset + 1;
+            items.push(RolloutTranscriptItem::User(prompt_display(message)));
+            continue;
+        }
+        // Steering input, or a prompt whose journal input was not retained.
+        for message in run
+            .iter()
+            .filter(|message| !harness_authored(message, &notices))
+        {
+            let text = prompt_display(message);
+            if !text.is_empty() {
+                items.push(RolloutTranscriptItem::User(text));
             }
         }
     }
@@ -275,7 +498,7 @@ pub(crate) fn rewind_preview(home: &Path, id: &str) -> Result<Value> {
         return Err(eyre!("unsupported native journal format"));
     }
     // Validate provider and routing metadata using the normal read-only inspector.
-    let _ = inspect(&db, home, id)?;
+    let _ = inspect(&db, home, id, 0)?;
     let mut operations = retained["operations"]
         .as_object()
         .ok_or_else(|| eyre!("invalid operations"))?
