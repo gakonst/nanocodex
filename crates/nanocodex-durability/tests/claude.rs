@@ -3389,3 +3389,125 @@ async fn native_claude_journal_adoption_directory_evidence() {
         server.abort();
     }
 }
+
+#[tokio::test]
+async fn cancelling_a_turn_queued_behind_an_unfinished_operation_settles_immediately() {
+    // Hosted regression (managed session 01a120ef, 2026-10-09): a prompt
+    // dispatched while an earlier turn was still running a long tool was
+    // durably admitted but could not begin, and its cancellation then hit
+    // "blocked by unfinished operation" on every retry until the earlier turn
+    // settled (~14 minutes). No attempt of the queued turn ever began, so its
+    // cancellation must settle at once and must never reach the provider.
+    use std::{
+        sync::atomic::{AtomicUsize, Ordering},
+        time::Duration,
+    };
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("state.sqlite");
+    let (client, requests, server) = server(|index, _| match index {
+        1 => sse(signed_round(), "tool_use", 10),
+        _ => sse(text("first turn finished"), "end_turn", 10),
+    })
+    .await;
+    let effects = Arc::new(AtomicUsize::new(0));
+    let started = Arc::new(tokio::sync::Notify::new());
+    let release = Arc::new(tokio::sync::Notify::new());
+    let (counter, notify, gate) = (effects.clone(), started.clone(), release.clone());
+    let (agent, events) = Nanocodex::builder(Claude::new(client.clone(), "test"))
+        .max_tokens(4096)
+        .tool(tool(), move |_| {
+            counter.fetch_add(1, Ordering::SeqCst);
+            notify.notify_one();
+            let gate = gate.clone();
+            async move {
+                gate.notified().await;
+                Ok::<_, String>("effect done".to_owned())
+            }
+        })
+        .durability(reopen(&path).await)
+        .await
+        .unwrap()
+        .build()
+        .unwrap();
+    let first = agent
+        .prompt(PromptRequest::new("run the long tool").request_id("running-first"))
+        .await
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(5), started.notified())
+        .await
+        .unwrap();
+
+    // The queued turn is accepted durably but cannot begin behind the first.
+    let queued = || PromptRequest::new("queued follow-up").request_id("queued-second");
+    let blocked = match agent.prompt(queued()).await {
+        Ok(turn) => tokio::time::timeout(Duration::from_secs(5), turn.result())
+            .await
+            .unwrap()
+            .err(),
+        Err(error) => Some(error),
+    }
+    .expect("a turn behind an unfinished operation cannot start");
+    assert_eq!(
+        blocked.execution_policy_disposition(),
+        Some(nanocodex_agent::ExecutionPolicyDisposition::Retry),
+        "{blocked}"
+    );
+
+    // Cancelling it must settle now, while the first turn is still running.
+    let cancelled = tokio::time::timeout(Duration::from_secs(5), async {
+        agent
+            .prompt(queued().cancel_on_admission())
+            .await
+            .expect("cancellation of a never-started turn is admitted")
+            .result()
+            .await
+    })
+    .await
+    .expect("cancellation must not wait for the earlier operation");
+    assert!(
+        matches!(
+            cancelled,
+            Err(nanocodex_agent::NanocodexError::TurnCancelled)
+        ),
+        "{cancelled:?}"
+    );
+    assert_eq!(
+        requests.lock().unwrap().len(),
+        1,
+        "queued turn never reached HTTP"
+    );
+
+    // The earlier turn is unaffected and completes normally afterwards.
+    release.notify_one();
+    let result = tokio::time::timeout(Duration::from_secs(5), first.result())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(result.final_message(), "first turn finished");
+    assert_eq!(effects.load(Ordering::SeqCst), 1);
+    agent.shutdown().await.unwrap();
+    drop((agent, events));
+
+    // The cancellation is durable: replaying the queued ID after reopen
+    // returns its cancelled receipt without dispatching any model request.
+    let (agent, events) = Nanocodex::builder(Claude::new(client, "test"))
+        .max_tokens(4096)
+        .tool(tool(), |_| async {
+            Ok::<_, String>("unexpected".to_owned())
+        })
+        .durability(reopen(&path).await)
+        .await
+        .unwrap()
+        .build()
+        .unwrap();
+    let replay = agent.prompt(queued()).await.unwrap().result().await;
+    assert!(
+        matches!(replay, Err(nanocodex_agent::NanocodexError::TurnCancelled)),
+        "{replay:?}"
+    );
+    assert_eq!(requests.lock().unwrap().len(), 2);
+    assert_eq!(effects.load(Ordering::SeqCst), 1);
+    agent.shutdown().await.unwrap();
+    drop((agent, events));
+    server.abort();
+}

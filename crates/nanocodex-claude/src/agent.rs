@@ -4807,7 +4807,7 @@ impl LifecycleBackend for Driver {
                         let (id, admission) = policy.admit(candidate, input, automatic).await?;
                         request.request_id = Some(id.clone());
                         request.events = request.events.with_turn_id(id.clone());
-                        let terminal = match admission {
+                        let mut terminal = match admission {
                             Admission::Completed { output, .. } => {
                                 Some(durable::replay(id.clone(), output))
                             }
@@ -4817,6 +4817,23 @@ impl LifecycleBackend for Driver {
                             Admission::Cancelled => Some(Err(NanocodexError::TurnCancelled)),
                             Admission::Execute | Admission::Resume => None,
                         };
+                        if terminal.is_none()
+                            && let Err(error) = policy.begin_attempt(id.clone()).await
+                        {
+                            // A queued turn admitted behind an unfinished earlier
+                            // operation cannot start until that one settles. Its
+                            // cancellation must not wait for it: no attempt began,
+                            // so the durable state can retire it without a checkpoint.
+                            let cancelled = request.cancel_on_admission
+                                && error.execution_policy_disposition()
+                                    == Some(nanocodex_agent::ExecutionPolicyDisposition::Retry)
+                                && policy.cancel_unstarted(id.clone()).await.unwrap_or(false);
+                            if !cancelled {
+                                let _ = policy.release(id).await;
+                                return Err(error);
+                            }
+                            terminal = Some(Err(NanocodexError::TurnCancelled));
+                        }
                         if let Some(result) = terminal {
                             state.accepted_turns.fetch_add(1, Ordering::SeqCst);
                             let (status, kind) = match &result {
@@ -4845,10 +4862,6 @@ impl LifecycleBackend for Driver {
                                 request_id: Some(id),
                                 result: Box::pin(async move { result }),
                             });
-                        }
-                        if let Err(error) = policy.begin_attempt(id.clone()).await {
-                            let _ = policy.release(id).await;
-                            return Err(error);
                         }
                         request.prompt = match crate::prompt::freeze_admitted(request.prompt, policy.as_ref(), &id).await {
                             Ok(prompt) => prompt,
