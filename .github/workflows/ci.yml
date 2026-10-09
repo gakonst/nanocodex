@@ -102,6 +102,8 @@ jobs:
     timeout-minutes: 30
     permissions:
       contents: read
+      # The device-key journeys reuse WASM outputs retained by master builds.
+      actions: read
     strategy:
       fail-fast: false
       matrix:
@@ -164,6 +166,34 @@ jobs:
           # The default workspace members are the CLI and the Hand daemon.
           cargo build --locked --bins
           cp target/debug/nanocodex-hand target/debug/nanocodex2
+      # Hand device-key journeys run the shipped binaries against the managed
+      # Worker in Miniflare, which bundles the WASM runtime and nanocodex-tools.
+      # They run whenever this job is selected, even while broader tests are paused.
+      - name: Reuse unchanged WASM outputs for the device-key journeys
+        id: wasm
+        if: runner.os == 'Linux'
+        uses: ./.github/actions/wasm-outputs
+      - name: Prepare the managed Worker for the device-key journeys
+        if: runner.os == 'Linux'
+        run: |
+          ./js/nanocodex-vite/scripts/build-js-package.sh --release
+          pnpm --filter nanocodex-tools run build
+      - name: Exercise Hand device keys through the real CLI and Hand daemon
+        if: runner.os == 'Linux'
+        timeout-minutes: 10
+        shell: bash
+        run: |
+          NANOCODEX_BIN="$GITHUB_WORKSPACE/target/debug/nanocodex" \
+          NANOCODEX_HAND_EXECUTABLE="$GITHUB_WORKSPACE/target/debug/nanocodex-hand" \
+            pnpm --filter nanocodex-managed-service run test:hand-device-cli
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always() && runner.os == 'Linux'
+        with:
+          name: hand-device-cli-journey
+          path: |
+            output/hand-device-keys/cli-journey/**
+            !output/hand-device-keys/cli-journey/**/sqlite/**
+          if-no-files-found: warn
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 24
@@ -822,6 +852,18 @@ jobs:
           name: hand-device-keys-journeys
           path: |
             output/hand-device-keys/server-journey/**/*.json
+          if-no-files-found: warn
+      - name: Exercise device-authenticated VM factories over public routes
+        # Runs whenever this job is selected, even while broader tests are paused.
+        timeout-minutes: 5
+        run: pnpm --filter nanocodex-managed-service run test:hand-device-vm-host
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: hand-device-vm-host-journey
+          path: |
+            output/hand-device-keys/vm-host/**
+            !output/hand-device-keys/vm-host/**/sqlite/**
           if-no-files-found: warn
       - name: Exercise all Vault kinds in private browser fields
         timeout-minutes: 10
