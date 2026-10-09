@@ -1,7 +1,9 @@
 // Run with: node bin/nanocodex/tests/update_source_e2e.mjs target/debug/nanocodex
 // Git, Cargo and native build tools are real; GitHub/PR metadata are local and brew is unavailable.
-// Current sources build nanocodex-bin's nanocodex CLI and nanocodex-hand daemon; the
-// Hand is installed as nanocodex2. A historical nanocodex2-bin pair still builds.
+// Current sources build the nanocodex CLI (package nanocodex-bin) and the
+// nanocodex-hand daemon (package nanocodex-hand-daemon); the Hand is installed as
+// nanocodex2. Earlier one-package splits and the historical nanocodex2-bin pair
+// still build.
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -49,7 +51,7 @@ try {
   run('git', ['init', '--bare', remote]);
   run('git', ['init', '-b', 'topic'], { cwd: source });
   const workspace = members => `[workspace]\nresolver = "2"\nmembers = [${members.map(m => `"${m}"`).join(', ')}]\n[profile.nightly]\ninherits = "release"\nlto = false\n`;
-  writeFileSync(join(source, 'Cargo.toml'), workspace(['cli', 'shared']));
+  writeFileSync(join(source, 'Cargo.toml'), workspace(['cli', 'hand', 'shared']));
   const buildScript = () => `
 fn main() {
     use std::io::Write;
@@ -119,7 +121,8 @@ fn main() {
 }
 `);
   };
-  writePackage('cli', 'nanocodex-bin', 'nanocodex', ['cli', 'hand'], ['nanocodex-hand']);
+  writePackage('cli', 'nanocodex-bin', 'nanocodex', ['cli']);
+  writePackage('hand', 'nanocodex-hand-daemon', 'nanocodex-hand', ['hand']);
   writeFileSync(join(source, 'nanocodex-vm.entitlements'), '<?xml version="1.0"?><plist version="1.0"><dict><key>com.apple.security.hypervisor</key><true/></dict></plist>');
   run('cargo', ['generate-lockfile', '--offline'], { cwd: source });
   run('git', ['add', '.'], { cwd: source });
@@ -228,6 +231,24 @@ fn main() {
     : readlinkSync(join(store, 'current')).split('/').at(-1);
   assert.equal(active, `branch-${nextSha}`);
   transcript.push(`expected: branch and PR binaries built at ${sha}, new revision ${nextSha} installed, modified cache recovered; closed, changed, missing and broken heads rejected; previous bundle preserved\nobserved: ${active}\n`);
+
+  // An earlier split revision built both executables from one nanocodex-bin
+  // package; it still installs a revision-matched pair.
+  writeFileSync(join(source, 'Cargo.toml'), workspace(['cli', 'shared']));
+  rmSync(join(source, 'hand'), { recursive: true, force: true });
+  writePackage('cli', 'nanocodex-bin', 'nanocodex', ['cli', 'hand'], ['nanocodex-hand']);
+  run('cargo', ['generate-lockfile', '--offline'], { cwd: source });
+  run('git', ['add', '-A', '.'], { cwd: source });
+  run('git', ['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-m', 'one-package split'], { cwd: source });
+  const onePackageSha = run('git', ['rev-parse', 'HEAD'], { cwd: source }).stdout.trim();
+  run('git', ['push', remote, 'HEAD:refs/heads/one-package-split'], { cwd: source });
+  result = update(['--branch', 'one-package-split']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stderr, /compiling nanocodex and nanocodex-hand at /);
+  splitPair(`branch-${onePackageSha}`);
+  transcript.push(`expected: one-package split revision ${onePackageSha} installs its pair
+observed: nanocodex and nanocodex2 at ${onePackageSha}
+`);
 
   // A historical revision with the separate nanocodex2-bin package keeps its
   // distinct, revision-matched pair (update --branch of an old topic branch).

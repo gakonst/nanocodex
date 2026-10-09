@@ -172,7 +172,7 @@ pub(super) async fn build(
     let helpers = tempfile::tempdir().wrap_err("failed to create helper build directory")?;
     let layout = layout(root).await?;
     let screen_bundle =
-        prepare_screen_bundle(root, helpers.path(), &sha, layout == Layout::Pair).await?;
+        prepare_screen_bundle(root, helpers.path(), &sha, layout).await?;
     // Resolve shared dependency features once and use the optimized profile
     // without release LTO, matching the nightly build's faster feedback.
     let what = match layout {
@@ -345,7 +345,7 @@ async fn prepare_screen_bundle(
     root: &Path,
     work: &Path,
     sha: &str,
-    legacy_pair: bool,
+    layout: Layout,
 ) -> Result<Option<PathBuf>> {
     if !cfg!(target_os = "linux") {
         return Ok(None);
@@ -355,26 +355,47 @@ async fn prepare_screen_bundle(
             "self-contained Linux source updates require x86_64; this architecture has no supported Wayland helper payload"
         );
     }
-    // The unified package's build script embeds the helpers; historical pairs
-    // embedded them from the separate nanocodex2 package build script.
-    let embedding_build_script = if legacy_pair {
-        "bin/nanocodex/nanocodex2/build.rs"
-    } else {
-        "bin/nanocodex/build.rs"
+    // The Hand package embeds the helpers through its embedded-screen-helpers
+    // feature. Earlier split revisions embedded them from nanocodex-bin (by
+    // feature or build script), and historical pairs from the separate
+    // nanocodex2 package build script.
+    let (embedding_manifest, embedding_source) = match layout {
+        Layout::Split { hand_package: true } => (
+            "bin/nanocodex/hand/Cargo.toml",
+            "bin/nanocodex/hand/src/screen_helpers.rs",
+        ),
+        Layout::Pair => (
+            "bin/nanocodex/nanocodex2/build.rs",
+            "bin/nanocodex/src/nanocodex2/screen_helpers.rs",
+        ),
+        Layout::Split { hand_package: false } | Layout::Single => (
+            "bin/nanocodex/build.rs",
+            "bin/nanocodex/src/nanocodex2/screen_helpers.rs",
+        ),
     };
     for file in [
         "scripts/build-linux-screen-helpers.sh",
         "scripts/build-linux-screen-helpers.py",
         "scripts/build-linux-screen-helpers.Dockerfile",
         "scripts/tests/linux-screen-helpers-bundle.py",
-        embedding_build_script,
-        "bin/nanocodex/src/nanocodex2/screen_helpers.rs",
+        embedding_manifest,
+        embedding_source,
     ] {
         if !root.join(file).is_file() {
             bail!(
                 "source revision {sha} predates the self-contained Linux screen-helper packaging contract (missing {file}); refusing to install a Hand without helpers. Use an explicitly selected historical release only if its legacy host-provisioned screen dependencies are acceptable"
             );
         }
+    }
+    if layout == (Layout::Split { hand_package: true })
+        && !tokio::fs::read_to_string(root.join(embedding_manifest))
+            .await
+            .unwrap_or_default()
+            .contains("\nembedded-screen-helpers = ")
+    {
+        bail!(
+            "source revision {sha} has no nanocodex-hand-daemon embedded-screen-helpers feature; refusing to install a Hand without helpers"
+        );
     }
     let bundle = work.join("linux-screen-helpers.tar.gz");
     eprintln!("preparing embedded Linux Waymote/Grim helpers from source revision {sha}...");
