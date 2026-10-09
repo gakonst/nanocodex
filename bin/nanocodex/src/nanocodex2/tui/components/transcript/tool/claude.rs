@@ -19,13 +19,17 @@ use ratatui::{
     text::{Line, Span},
 };
 use serde_json::Value;
-use std::path::Path;
+use std::{borrow::Cow, path::Path};
 
 /// Separator before project guidance appended to file results.
 const WORKSPACE_CONTEXT: &str =
     "\nWorkspace context (guidance only; does not expand tool authority):\n";
 /// Source lines rendered per expanded file body or edit hunk.
 const MAX_SOURCE_LINES: usize = 80;
+/// Bytes scanned for line, match and file counts; larger payloads get lower bounds.
+const COUNT_SCAN_BYTES: usize = 64 * 1024;
+/// Largest result text parsed as task-board or job JSON.
+const MAX_JSON_BYTES: usize = 64 * 1024;
 
 pub(super) fn present(tool: &ToolEntry, width: u16, theme: &Theme, expanded: bool) -> Presentation {
     match tool.family() {
@@ -44,11 +48,11 @@ pub(super) fn present(tool: &ToolEntry, width: u16, theme: &Theme, expanded: boo
 fn read(tool: &ToolEntry, width: u16, theme: &Theme, expanded: bool) -> Presentation {
     let path = display_path(argument(tool, "file_path"));
     let requested = requested_range(tool);
-    let succeeded = !failed(tool) && tool.result.is_some();
+    let succeeded = completed(tool);
     let text = succeeded
         .then(|| result_text(tool.result.as_ref()))
         .flatten();
-    let (media, media_type) = media_blocks(tool.result.as_ref());
+    let (media, media_type, media_bytes) = media_blocks(tool.result.as_ref());
     let mut presentation = Presentation::new("Read", path).truncate_summary();
     let outcome = if succeeded && media > 0 {
         Some(media_type.map_or_else(
@@ -79,16 +83,14 @@ fn read(tool: &ToolEntry, width: u16, theme: &Theme, expanded: bool) -> Presenta
         ));
     }
     if succeeded && media > 0 {
-        let size = tool
-            .result
-            .as_ref()
-            .map_or(0, |result| result.to_string().len());
+        let returned = count_label(media, "attachment", "attachments");
+        let summary = if media_bytes > 0 {
+            format!("{returned} returned · ≈ {}", format_bytes(media_bytes))
+        } else {
+            format!("{returned} returned")
+        };
         presentation = presentation.unselectable_details(super::super::markdown::wrap_plain(
-            &format!(
-                "{} returned · {}",
-                count_label(media, "attachment", "attachments"),
-                format_bytes(size)
-            ),
+            &summary,
             width,
             Style::default().fg(theme.accent()),
         ));
@@ -99,7 +101,12 @@ fn read(tool: &ToolEntry, width: u16, theme: &Theme, expanded: bool) -> Presenta
         return presentation.footer("binary data hidden");
     }
     let Some(text) = text else {
-        return with_error(presentation, tool, width, theme).footer("file read");
+        let footer = if failed(tool) {
+            "read failed"
+        } else {
+            "read pending"
+        };
+        return with_error(presentation, tool, width, theme).footer(footer);
     };
     if !text.is_empty() {
         presentation =
@@ -107,7 +114,7 @@ fn read(tool: &ToolEntry, width: u16, theme: &Theme, expanded: bool) -> Presenta
     }
     presentation.footer(format!(
         "{} · {}",
-        count_label(line_count(text), "line", "lines"),
+        line_count(text).label("line", "lines"),
         format_bytes(text.len())
     ))
 }
@@ -119,7 +126,7 @@ fn write(tool: &ToolEntry, width: u16, theme: &Theme, expanded: bool) -> Present
     if let Some(content) = content {
         subject.push_str(&format!(
             " · {} · {}",
-            count_label(line_count(content), "line", "lines"),
+            line_count(content).label("line", "lines"),
             format_bytes(content.len())
         ));
     }
@@ -131,8 +138,14 @@ fn write(tool: &ToolEntry, width: u16, theme: &Theme, expanded: bool) -> Present
         presentation =
             presentation.unselectable_details(source_lines(content, language(path), width, theme));
     }
-    with_error(presentation, tool, width, theme)
-        .footer("full contents written · previous contents not shown")
+    let footer = match tool.state {
+        ToolState::Succeeded => "full contents written · previous contents not shown",
+        ToolState::Failed => "write failed · previous contents not shown",
+        ToolState::Running | ToolState::Yielded => {
+            "requested contents · previous contents not shown"
+        }
+    };
+    with_error(presentation, tool, width, theme).footer(footer)
 }
 
 fn edit(tool: &ToolEntry, width: u16, theme: &Theme, expanded: bool) -> Presentation {
@@ -146,17 +159,17 @@ fn edit(tool: &ToolEntry, width: u16, theme: &Theme, expanded: bool) -> Presenta
             Style::default().fg(theme.text()),
         ),
         Span::styled(
-            format!("+{}", line_count(new)),
+            format!("+{}", line_count(new).number()),
             Style::default().fg(Color::Green),
         ),
         Span::raw(" "),
         Span::styled(
-            format!("−{}", line_count(old)),
+            format!("−{}", line_count(old).number()),
             Style::default().fg(Color::Red),
         ),
     ];
     let mut presentation = Presentation::styled_subject("Edit", subject).truncate_summary();
-    let replacements = (!failed(tool))
+    let replacements = completed(tool)
         .then(|| result_text(tool.result.as_ref()).and_then(replacement_count))
         .flatten();
     match (replacements, replace_all) {
@@ -173,8 +186,14 @@ fn edit(tool: &ToolEntry, width: u16, theme: &Theme, expanded: bool) -> Presenta
         presentation =
             presentation.unselectable_details(edit_diff(path, old, new, replace_all, width, theme));
     }
-    with_error(presentation, tool, width, theme)
-        .footer("replaced text · surrounding file not shown")
+    let footer = match tool.state {
+        ToolState::Succeeded => "replacement applied · surrounding file not shown",
+        ToolState::Failed => "replacement not applied · surrounding file not shown",
+        ToolState::Running | ToolState::Yielded => {
+            "requested replacement · surrounding file not shown"
+        }
+    };
+    with_error(presentation, tool, width, theme).footer(footer)
 }
 
 fn notebook(tool: &ToolEntry, width: u16, theme: &Theme, expanded: bool) -> Presentation {
@@ -203,7 +222,9 @@ fn notebook(tool: &ToolEntry, width: u16, theme: &Theme, expanded: bool) -> Pres
             presentation.unselectable_details(source_lines(source, language, width, theme));
     }
     let footer = match mode {
-        "delete" => "cell deleted",
+        "delete" if completed(tool) => "cell deleted",
+        "delete" if failed(tool) => "delete failed",
+        "delete" => "delete requested",
         "insert" => "new cell source",
         _ => "new cell source · previous source not shown",
     };
@@ -238,7 +259,7 @@ fn search(tool: &ToolEntry, width: u16, theme: &Theme, expanded: bool) -> Presen
             .is_some_and(|lines| lines > 0)
     });
     let only_matching = tool.arguments.get("-o").and_then(Value::as_bool) == Some(true);
-    let text = (!failed(tool))
+    let text = completed(tool)
         .then(|| result_text(tool.result.as_ref()))
         .flatten();
     let mut presentation =
@@ -262,7 +283,7 @@ fn search(tool: &ToolEntry, width: u16, theme: &Theme, expanded: bool) -> Presen
     }
     presentation.footer(format!(
         "{} · {}",
-        count_label(line_count(text), "line", "lines"),
+        line_count(text).label("line", "lines"),
         format_bytes(text.len())
     ))
 }
@@ -355,7 +376,7 @@ fn web(tool: &ToolEntry, width: u16, theme: &Theme, expanded: bool) -> Presentat
     } else if let Some(prompt) = argument(tool, "prompt") {
         presentation = presentation.unselectable_details(muted(prompt, width, theme));
     }
-    let Some(text) = (!failed(tool))
+    let Some(text) = completed(tool)
         .then(|| result_text(tool.result.as_ref()))
         .flatten()
     else {
@@ -372,7 +393,7 @@ fn skill(tool: &ToolEntry, width: u16, theme: &Theme, expanded: bool) -> Present
     if let Some(arguments) = argument(tool, "args").filter(|args| !args.trim().is_empty()) {
         subject.push_str(&format!(" · {}", arguments.trim()));
     }
-    let text = (!failed(tool))
+    let text = completed(tool)
         .then(|| result_text(tool.result.as_ref()))
         .flatten();
     let mut presentation = Presentation::new("Skill", subject).truncate_summary();
@@ -393,7 +414,7 @@ fn task(tool: &ToolEntry, width: u16, theme: &Theme, expanded: bool) -> Presenta
     let family = tool.family();
     let id = argument(tool, "taskId").or_else(|| argument(tool, "task_id"));
     let task_label = id.map_or_else(|| "<task unavailable>".to_owned(), |id| format!("#{id}"));
-    let value = (!failed(tool))
+    let value = completed(tool)
         .then(|| result_json(tool.result.as_ref()))
         .flatten();
     let field = |pointer: &str| {
@@ -405,10 +426,7 @@ fn task(tool: &ToolEntry, width: u16, theme: &Theme, expanded: bool) -> Presenta
     let (title, subject, outcome) = match family {
         "TaskCreate" => (
             "Task",
-            format!(
-                "create · {}",
-                argument(tool, "subject").unwrap_or_default()
-            ),
+            format!("create · {}", argument(tool, "subject").unwrap_or_default()),
             field("/task/id").map(|id| format!("#{id}")),
         ),
         "TaskGet" => (
@@ -557,6 +575,11 @@ fn failed(tool: &ToolEntry) -> bool {
     tool.state == ToolState::Failed
 }
 
+/// Results are read as outcomes only once the call actually succeeded.
+fn completed(tool: &ToolEntry) -> bool {
+    tool.state == ToolState::Succeeded
+}
+
 fn display_path(path: Option<&str>) -> String {
     path.map_or_else(
         || "<path unavailable>".to_owned(),
@@ -575,8 +598,53 @@ fn muted(text: &str, width: u16, theme: &Theme) -> Vec<Line<'static>> {
     super::super::markdown::wrap_plain(text, width, Style::default().fg(theme.muted()))
 }
 
-fn line_count(text: &str) -> usize {
-    text.lines().count()
+/// A line or item count; inexact counts are lower bounds over a bounded scan.
+#[derive(Clone, Copy)]
+struct Count {
+    count: usize,
+    exact: bool,
+}
+
+impl Count {
+    fn number(self) -> String {
+        if self.exact {
+            self.count.to_string()
+        } else {
+            format!("{}+", self.count)
+        }
+    }
+
+    fn label(self, singular: &str, plural: &str) -> String {
+        if self.exact {
+            count_label(self.count, singular, plural)
+        } else {
+            format!("{}+ {plural}", self.count)
+        }
+    }
+}
+
+/// The scanned prefix of a payload and whether it is the whole payload.
+fn scan_prefix(text: &str) -> (&str, bool) {
+    if text.len() <= COUNT_SCAN_BYTES {
+        return (text, true);
+    }
+    let mut end = COUNT_SCAN_BYTES;
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    (&text[..end], false)
+}
+
+/// Lines in a payload, scanning at most [`COUNT_SCAN_BYTES`].
+fn line_count(text: &str) -> Count {
+    let (scanned, exact) = scan_prefix(text);
+    let newlines = scanned.bytes().filter(|byte| *byte == b'\n').count();
+    // A truncated scan always has at least one more line after its prefix.
+    let trailing = !exact || (!scanned.is_empty() && !scanned.ends_with('\n'));
+    Count {
+        count: newlines + usize::from(trailing),
+        exact,
+    }
 }
 
 fn scalar(value: &Value) -> Option<String> {
@@ -646,13 +714,13 @@ fn envelope_text(value: &Value) -> Option<&str> {
 }
 
 /// Structured JSON of a task-board or job result in any envelope.
-fn result_json(result: Option<&Value>) -> Option<Value> {
+fn result_json(result: Option<&Value>) -> Option<Cow<'_, Value>> {
     let result = result?;
     if let Some(structured) = result
         .get("structuredContent")
         .filter(|value| value.is_object() || value.is_array())
     {
-        return Some(structured.clone());
+        return Some(Cow::Borrowed(structured));
     }
     let envelope = [
         "content",
@@ -664,15 +732,20 @@ fn result_json(result: Option<&Value>) -> Option<Value> {
     .into_iter()
     .any(|key| result.get(key).is_some());
     if result.is_object() && !envelope {
-        return Some(result.clone());
+        return Some(Cow::Borrowed(result));
     }
-    serde_json::from_str(result_text(Some(result))?.trim()).ok()
+    let text = result_text(Some(result))?.trim();
+    if text.len() > MAX_JSON_BYTES {
+        return None;
+    }
+    serde_json::from_str(text).ok().map(Cow::Owned)
 }
 
-/// Count and first media type of image/document blocks; their data is never shown.
-fn media_blocks(result: Option<&Value>) -> (usize, Option<&str>) {
+/// Count, first media type and approximate decoded size of image/document
+/// blocks, from their base64 lengths; their data is never shown or serialized.
+fn media_blocks(result: Option<&Value>) -> (usize, Option<&str>, usize) {
     let Some(fields) = result.and_then(Value::as_object) else {
-        return (0, None);
+        return (0, None, 0);
     };
     let blocks = ["content", "content_blocks"]
         .into_iter()
@@ -692,7 +765,18 @@ fn media_blocks(result: Option<&Value>) -> (usize, Option<&str>) {
             .and_then(Value::as_str)
             .or_else(|| block.get("type").and_then(Value::as_str))
     });
-    (blocks.len(), kind)
+    let bytes = blocks
+        .iter()
+        .filter_map(|block| {
+            block
+                .get("data")
+                .or_else(|| block.pointer("/source/data"))
+                .and_then(Value::as_str)
+        })
+        .fold(0_usize, |total, data| {
+            total.saturating_add(data.len() / 4 * 3)
+        });
+    (blocks.len(), kind, bytes)
 }
 
 fn requested_range(tool: &ToolEntry) -> Option<String> {
@@ -727,7 +811,7 @@ fn returned_range(text: &str) -> String {
     match (first, last) {
         (Some(first), Some(last)) if first == last => format!("line {first}"),
         (Some(first), Some(last)) if first < last => format!("lines {first}–{last}"),
-        _ => count_label(line_count(body), "line", "lines"),
+        _ => line_count(body).label("line", "lines"),
     }
 }
 
@@ -741,29 +825,41 @@ fn replacement_count(text: &str) -> Option<usize> {
 }
 
 fn search_outcome(mode: &str, text: &str, context: bool, only_matching: bool) -> String {
-    let lines = text
-        .lines()
-        .filter(|line| !line.is_empty() && *line != "--")
-        .count();
+    let (scanned, exact) = scan_prefix(text);
+    let lines = Count {
+        count: scanned
+            .lines()
+            .filter(|line| !line.is_empty() && *line != "--")
+            .count(),
+        exact,
+    };
     match mode {
         "count" => {
-            let (files, total) = text
+            let (files, total) = scanned
                 .lines()
                 .filter_map(|line| line.rsplit_once(':')?.1.trim().parse::<usize>().ok())
                 .fold((0_usize, 0_usize), |(files, total), count| {
                     (files + 1, total.saturating_add(count))
                 });
+            let total = Count {
+                count: total,
+                exact,
+            };
+            let files = Count {
+                count: files,
+                exact,
+            };
             format!(
                 "{} in {}",
-                count_label(total, "match", "matches"),
-                count_label(files, "file", "files")
+                total.label("match", "matches"),
+                files.label("file", "files")
             )
         }
-        "content" if only_matching => count_label(lines, "match", "matches"),
-        "content" if context => count_label(lines, "line", "lines"),
-        "content" => count_label(lines, "matching line", "matching lines"),
-        _ if lines == 0 => "no files".to_owned(),
-        _ => count_label(lines, "file", "files"),
+        "content" if only_matching => lines.label("match", "matches"),
+        "content" if context => lines.label("line", "lines"),
+        "content" => lines.label("matching line", "matching lines"),
+        _ if exact && lines.count == 0 => "no files".to_owned(),
+        _ => lines.label("file", "files"),
     }
 }
 
@@ -787,7 +883,7 @@ fn grep_options(arguments: &Value, mode: &str) -> String {
 }
 
 /// Leading lines within the source budget and the count of omitted lines.
-fn leading_lines(text: &str, max_lines: usize) -> (&str, usize) {
+fn leading_lines(text: &str, max_lines: usize) -> (&str, Count) {
     let mut end = 0;
     let mut shown = 0;
     for line in text.split_inclusive('\n') {
@@ -804,15 +900,17 @@ fn leading_lines(text: &str, max_lines: usize) -> (&str, usize) {
         }
         shown = 1;
     }
-    (
-        text[..end].trim_end_matches('\n'),
-        line_count(text).saturating_sub(shown),
-    )
+    let total = line_count(text);
+    let hidden = Count {
+        count: total.count.saturating_sub(shown),
+        exact: total.exact,
+    };
+    (text[..end].trim_end_matches('\n'), hidden)
 }
 
-fn omitted(hidden: usize, noun: &str, theme: &Theme) -> Line<'static> {
+fn omitted(hidden: Count, noun: &str, theme: &Theme) -> Line<'static> {
     Line::from(Span::styled(
-        format!("… {hidden} more {noun} not shown"),
+        format!("… {} more {noun} not shown", hidden.number()),
         Style::default().fg(theme.muted()),
     ))
 }
@@ -833,12 +931,13 @@ fn source_lines(source: &str, language: &str, width: u16, theme: &Theme) -> Vec<
         theme,
     )
     .lines;
-    if hidden > 0 {
-        lines.push(omitted(
-            hidden,
-            if hidden == 1 { "line" } else { "lines" },
-            theme,
-        ));
+    if hidden.count > 0 {
+        let noun = if hidden.exact && hidden.count == 1 {
+            "line"
+        } else {
+            "lines"
+        };
+        lines.push(omitted(hidden, noun, theme));
     }
     lines
 }
@@ -871,10 +970,10 @@ fn edit_diff(
     patch.push_str("*** End Patch");
     let mut lines =
         super::super::markdown::render(&format!("```diff\n{patch}\n```"), width, theme).lines;
-    if old_hidden > 0 {
+    if old_hidden.count > 0 {
         lines.push(omitted(old_hidden, "removed lines", theme));
     }
-    if new_hidden > 0 {
+    if new_hidden.count > 0 {
         lines.push(omitted(new_hidden, "added lines", theme));
     }
     lines
