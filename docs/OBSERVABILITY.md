@@ -1,222 +1,13 @@
-# Visualizing Nanocodex traces
+# Observability
 
-Nanocodex emits OpenTelemetry spans independently from its contractual typed
-events. The quickest local visualization uses Jaeger: OTLP/HTTP spans enter on
-port 4318 and the trace UI is available on port 16686. The checked-in Compose
-service is ephemeral, binds only to localhost, and loses its trace data when it
-is removed.
+Nanocodex emits structured tracing events and bounded OpenTelemetry spans.
+Use any OTLP/HTTP collector with the local CLI or configure the
+`nanocodex-observability` library in an embedding application.
 
-Every model request asks for the model's `auto` API-visible reasoning summary. Its
-streaming deltas remain typed `reasoning.summary.delta` agent events, while the
-completed readable summary and encrypted continuation payload are recorded as
-ordered `reasoning` content on the corresponding `model.call` span.
-
-## Quick start
-
-Start Jaeger:
+## Local CLI
 
 ```sh
-just otel-up
-```
-
-Or start Jaeger and launch the interactive TUI with telemetry in one command:
-
-```sh
-just run-otel
-```
-
-`just run-otel` exports one compact streaming summary on each `tui.turn`. Use
-`just run-otel-detail` when diagnosing a jagged stream; it additionally exports
-every correlated API-delta, TUI-application, and presented-frame timing record.
-The detailed mode is intentionally opt-in because a long response can produce
-thousands of trace records.
-
-`just` loads `OPENAI_API_KEY` from the repository `.env`. Interactive local
-logs are written to `$XDG_STATE_HOME/nanocodex/logs/`, falling back to
-`$HOME/.local/state/nanocodex/logs/` when `XDG_STATE_HOME` is unset, empty,
-or relative. Each TUI launch creates `tui-<pid>-<uuidv7>.log`, so concurrent
-processes and repeated resumes of a conversation get separate files. The
-filename's UUID identifies the launch; startup records include the PID,
-workspace, and conversation `session.id` once initialization succeeds. These
-records use the normal info-level logging filter.
-This location is independent of the launch directory, `--cwd`, and resumed
-workspace.
-Set `--log-file PATH` or `NANOCODEX_LOG_FILE` to override it (the flag takes
-precedence); relative overrides are relative to the process's launch directory.
-Explicit paths keep append behavior, including when shared by several launches.
-Headless `nanocodex run` still logs to stderr unless a log file is specified.
-Exported traces appear in Jaeger at <http://localhost:16686> under the
-`nanocodex` service.
-
-Run one live turn that makes a model call, executes the built-in `exec` tool,
-and makes a follow-up model call:
-
-```sh
-just otel-demo
-```
-
-`OPENAI_API_KEY` must be present in the environment or the repository `.env`.
-The demo writes the two independent diagnostic surfaces to:
-
-- `.nanocodex/otel-demo/events.jsonl`: contractual `AgentEvents` encoded by the
-  headless process adapter.
-- `.nanocodex/otel-demo/tracing.jsonl`: local structured `tracing` output.
-
-Open <http://localhost:16686>, choose the `nanocodex` service, and select **Find
-Traces**. Open the newest trace and expand the waterfall. A successful tool turn
-has this general shape:
-
-```text
-agent.turn
-├── model.call
-│   └── responses.attempt
-│       └── responses.connect
-├── tool.call
-│   └── tool.execute
-└── model.call
-    └── responses.attempt
-```
-
-To inspect every turn in one conversation, enter `/trace` in the TUI. It opens
-Jaeger's search page filtered to the focused main or `/btw` session. The local
-Jaeger configuration also turns `session.id` and `parent.session.id` tags into
-links to the corresponding session search. Jaeger returns the session as an
-ordered search result containing one bounded trace per turn; it does not merge
-the turns into one artificial waterfall. Set `NANOCODEX_JAEGER_UI_URL` when the
-query UI is not available at the default `http://127.0.0.1:16686`.
-
-The structure follows init4tech's
-[`teaching-tracing` guidance](https://github.com/init4tech/teaching-tracing): a
-root is one bounded unit of work, futures are instrumented before they are
-spawned, and long-running task/session lifetimes are not held open as spans.
-When a caller has no active span, `agent.turn` is the root. The TUI wraps each
-interaction in a bounded `tui.turn`, so its agent work is directly expandable
-in the same trace:
-
-```text
-tui.turn
-├── agent.turn
-│   ├── model.call
-│   ├── tool.call
-│   └── model.call
-└── event: tui.stream.completed
-```
-
-`responses.attempt` measures socket-pump queue time, JSON parsing/decoding and
-event-emission time, display-delta bytes, inter-delta gaps, and 50/100/250 ms
-stall counts. The TUI summary continues the same event timestamps through agent
-delivery, state application, frame coalescing, Ratatui changed cells, terminal
-output bytes, and source-to-terminal-flush latency. Main and `/btw` turns keep
-independent aggregates even when both panes are presented by one terminal
-frame. Select `nanocodex_stream_timing=trace` (or use
-`just run-otel-detail`) for the individual correlated records.
-
-Code Mode promise fan-out and attached child agents appear as overlapping
-sibling branches under the active cell/tool operation. A child or follow-up
-prompt made outside an active orchestration is instead a new bounded root and
-remains correlatable through `session.id`, `parent.session.id`,
-`session.lineage_id`, `agent.origin`, and `agent.depth`.
-
-With MCP configured, `mcp.server_start` and `mcp.tool_call` spans appear around
-background discovery and remote dispatch. Useful fields include session and
-model-call identity, response replay mode, connection purpose/generation,
-attempt count, status, duration, input/output tokens, cached input tokens, and
-tool name. `tui.view_state` traces record whether the TUI is main-only or split,
-which pane is focused, the local BTW ID, and the forked session ID once it is
-available. `tui.main.session_id` and `tui.active.session_id` correlate every
-view transition with the controlled agent, while each bounded `tui.turn` trace
-contains its `agent.turn` directly. Diagnostic spans retain structural metadata such as byte and item
-counts, argument kinds and keys, and process exit state as searchable tags.
-Their ordered Logs/Events contain the complete available conversation: prompts,
-model input and output items, readable reasoning content and summaries, opaque
-encrypted reasoning payloads, tool arguments, and tool outputs. Nanocodex does
-not decrypt encrypted reasoning or reconstruct reasoning absent from the API.
-It does not attach API-key configuration or read `.env` for telemetry, but
-captured conversation and tool content is intentionally unredacted; secure and
-expire Jaeger data accordingly.
-
-Each turn is its own root unit of work so a long-lived embedded agent does not
-produce one unbounded trace. Sequential turns remain searchable as a session
-through their shared `session.id` attribute. Local logging and OTLP export have
-independent filters: use `RUST_LOG`/`--log-filter` for the formatter and
-`OTEL_LEVEL`/`--otel-filter` for exported spans.
-
-Stop and remove the ephemeral backend when finished:
-
-```sh
-just otel-down
-```
-
-## Stress the complete path
-
-The manual stress gate uses a deterministic local Responses WebSocket rather
-than spending model tokens. It still drives the real CLI, retained Nanocodex
-session, the session-persistent Code Mode Node host, shell process lifecycle,
-MCP stdio transport, local tracing subscriber, batch OTLP exporter, and Jaeger
-backend:
-
-```sh
-just otel-stress
-```
-
-The default workload runs 32 sequential prompts on one session. Every turn
-first exercises the provider-native MCP `tool_search_call`/`tool_search_output`
-pair, then fans out 16 concurrent calls to the discovered read-only tool. It
-also mixes in a synthetic MCP error, malformed patch, non-zero shell, bounded
-high-volume output, yielded/resumed process, and unknown JavaScript tool. The
-gate verifies event counts, exactly one trace root per accepted prompt, all
-parent references, expected success/error span volume, shared cell-actor
-parentage and complete interval overlap for the delayed `Promise.all` fan-out,
-model and terminal latency, exact token/cache fields, automatic
-the selected GPT-6 model's cost, structural model/tool fields, API-visible reasoning
-summaries, prompt/readable/encrypted reasoning/tool-argument sentinels in
-ordered span events, and absence of the separately configured API key from
-exported trace data.
-
-Scale it up without changing code:
-
-```sh
-just otel-stress 100 128
-```
-
-That maximum profile drives 100 retained turns and 12,800 successful concurrent
-MCP dispatches plus the failure and process cases. The test is ignored during
-the normal workspace suite because it requires the local Jaeger service and is
-intentionally expensive. Its Responses side remains deterministic so failures
-indicate library, tool, exporter, or topology regressions rather than model
-sampling variance.
-
-Run the focused attached-subagent topology gate separately:
-
-```sh
-just otel-subagent-stress
-```
-
-It drives two child agents concurrently from one Code Mode `Promise.all`, then
-queries Jaeger to verify that both child `agent.turn` spans share the parent
-trace, sit below their corresponding `spawn_agent` tool spans, retain their
-independent session identities, and overlap in exported wall-clock intervals.
-
-To measure the cost of span collection/export against the identical workload,
-run the no-OTLP twin with the same arguments:
-
-```sh
-just otel-stress-baseline 100 128
-```
-
-Compare its reported `workload_elapsed` with `just otel-stress 100 128`. This
-keeps model responses, tool inputs, process work, and event validation
-identical; only the OTLP layer and Jaeger export are removed. The separate
-`validation_elapsed` covers querying and checking Jaeger, whose cost grows with
-the in-memory demo backend's retained trace volume and is not agent runtime.
-
-## Run a different prompt
-
-The CLI accepts the same exporter configuration directly:
-
-```sh
-cargo run --quiet -p nanocodex-bin --bin nanocodex -- \
-  run \
+nanocodex --local run \
   --otel-endpoint http://127.0.0.1:4318 \
   --otel-environment local-demo \
   --log-format json \
@@ -224,24 +15,43 @@ cargo run --quiet -p nanocodex-bin --bin nanocodex -- \
   --thinking=low "Inspect the repository and summarize it."
 ```
 
-`--otel-endpoint` is a collector base URL. Nanocodex appends `/v1/traces`
-unless it is already present. Keep the returned `ObservabilityGuard` alive when
-using `nanocodex-observability` as a library; dropping or explicitly shutting
-down the guard flushes its batched exporter.
+`--otel-endpoint` takes a collector base URL; Nanocodex appends `/v1/traces`
+unless it is already present. `--log-filter` (or `RUST_LOG`) controls local
+tracing, and `--otel-filter` (or `OTEL_LEVEL`) independently filters exported
+spans. Interactive local sessions default to persistent logs beneath
+`$XDG_STATE_HOME/nanocodex/logs`, or `~/.local/state/nanocodex/logs`.
 
-## Troubleshooting
+The CLI does not install a collector or launch a tracing UI. Configure
+retention and access in the collector you operate.
 
-Check that the backend is running and the two local ports are reachable:
+## Trace structure
 
-```sh
-docker compose -f docker-compose.otel.yml ps
-curl --fail http://127.0.0.1:16686/
-```
+Each agent turn is a bounded unit of work. Model and tool calls are children
+of that turn; Code Mode fan-out and attached child agents can overlap.
+Follow-up work outside an active orchestration starts another bounded root.
+Correlate these roots using `session.id`, `parent.session.id`,
+`session.lineage_id`, `agent.origin`, and `agent.depth`.
 
-If the service does not appear immediately, wait a moment and refresh after the
-CLI exits. Export is batched and is flushed during observability shutdown. On a
-multithreaded Tokio runtime, OTLP/HTTP export uses Tokio's asynchronous batch
-processor; current-thread runtimes and applications without Tokio use the
-dedicated-thread blocking fallback so synchronous shutdown cannot deadlock the
-runtime. Use `docker compose -f docker-compose.otel.yml logs jaeger` to inspect
-collector errors.
+MCP discovery and calls have `mcp.server_start` and `mcp.tool_call` spans.
+Other diagnostic fields include model and response identity, connection
+generation, retry count, status, duration, token usage, tool name, payload size,
+and process exit state. Local TUI stream timing uses the
+`nanocodex_stream_timing` target. Enable its `trace` level only when
+investigating individual event delivery and rendering.
+
+Captured model and tool content may contain private conversation data. The
+exporter does not decrypt encrypted reasoning or reconstruct content absent
+from the provider response. Protect exported data and set appropriate
+retention.
+
+## Embedded applications and shutdown
+
+Keep the returned `ObservabilityGuard` alive while the application runs.
+Dropping or explicitly shutting down the guard flushes batched exports.
+Multithreaded Tokio applications use the asynchronous batch processor;
+current-thread runtimes and non-Tokio applications use a dedicated-thread
+blocking fallback to avoid shutdown deadlocks.
+
+When spans do not arrive, check the configured collector endpoint and exporter
+logs. Export is batched, so inspect the collector after a turn finishes and the
+application flushes its guard.

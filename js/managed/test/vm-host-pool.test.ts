@@ -58,9 +58,18 @@ describe("VM host pool", () => {
     expect((await stub.fetch("https://pool.internal/release", { method: "POST",
       body: JSON.stringify({ ...allocationIdentity(allocation, MOUNT_A), agent_id: MOUNT_B }) })).status).toBe(202);
     await release;
-    expect((await call(base + "/ice", { method: "POST", headers: auth })).status).toBe(404);
+    // A released allocation is terminal for its own bearer, so VM runtimes stop
+    // reconnecting; another bearer learns nothing beyond not_found.
+    const revoked = await call(base + "/ice", { method: "POST", headers: auth });
+    expect(revoked.status).toBe(410);
+    await expect(revoked.json()).resolves.toEqual({ error: "attachment_revoked" });
     expect((await call(base + "/renew", { method: "POST", headers: auth,
-      body: JSON.stringify({ connection_id: state.connection_id }) })).status).toBe(404);
+      body: JSON.stringify({ connection_id: state.connection_id }) })).status).toBe(410);
+    const toolHost = base.replace(/\/hands$/, "/tool-host");
+    expect((await call(toolHost, { headers: { ...auth, upgrade: "websocket" } })).status).toBe(410);
+    expect((await call(base + "/ice", { method: "POST", headers: { authorization: `Bearer ${"x".repeat(43)}` } })).status).toBe(404);
+    const unknown = `${ORIGIN}/v1/vm-host-attachments/${LOCATOR}/00000000-0000-4000-8000-0000000000ff/tool-host`;
+    expect((await call(unknown, { headers: { ...auth, upgrade: "websocket" } })).status).toBe(410);
     desktop.close(); host.socket.close();
   });
 

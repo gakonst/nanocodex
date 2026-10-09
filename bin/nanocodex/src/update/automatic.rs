@@ -485,7 +485,14 @@ mod linux {
                         );
                     }
                     let output = systemctl(&["is-enabled", TIMER])?;
+                    // Some systemd versions report an absent unit only on
+                    // stderr instead of printing "not-found".
+                    let absent = String::from_utf8_lossy(&output.stderr).lines().any(|line| {
+                        line.starts_with("Failed to get unit file state for ")
+                            && line.ends_with(": No such file or directory")
+                    });
                     if !output.status.success()
+                        && !absent
                         && !matches!(
                             String::from_utf8_lossy(&output.stdout).trim(),
                             "disabled" | "masked" | "not-found"

@@ -121,7 +121,7 @@ pub struct Registry {
     journal_writer: std::sync::atomic::AtomicBool,
     /// Orders background snapshots and the final pre-teardown journal flush.
     journal_write_lock: tokio::sync::Mutex<()>,
-    checkpoints: std::sync::Mutex<HashMap<(String, AgentId), SessionCheckpoint>>,
+    checkpoints: std::sync::Mutex<HashMap<(String, AgentId), durable::JournalCheckpoint>>,
     /// Terminal checkpoints registered before their completed status is visible.
     pending_checkpoints: std::sync::Mutex<HashMap<String, usize>>,
     /// In-flight mid-turn checkpoint captures; `true` requests one more pass.
@@ -151,27 +151,36 @@ struct AgentScope {
     journal_frozen: bool,
 }
 
+/// One root journal value and the checkpoint records (key, JSON) it newly references.
+struct JournalWrite {
+    payload: String,
+    records: Vec<(Arc<str>, Arc<str>)>,
+}
+
 impl AgentScope {
+    /// Encodes this root's journal and the checkpoint records it newly references.
     fn journal_payload(
         &self,
         root_session_id: &str,
-        checkpoints: &HashMap<(String, AgentId), SessionCheckpoint>,
-    ) -> std::io::Result<String> {
+        checkpoints: &HashMap<(String, AgentId), durable::JournalCheckpoint>,
+    ) -> std::io::Result<JournalWrite> {
         let mut ids = self.sessions.keys().copied().collect::<Vec<_>>();
         ids.sort_unstable();
-        let agents = ids
-            .into_iter()
-            .filter_map(|id| {
-                let session = self.sessions.get(&id)?;
-                let checkpoint = checkpoints.get(&(root_session_id.to_owned(), id));
-                Some(durable::persist_agent(session, checkpoint))
-            })
-            .collect();
-        serde_json::to_string(&durable::PersistedScope {
+        let mut records = Vec::new();
+        let mut agents = Vec::with_capacity(ids.len());
+        for id in ids {
+            let Some(session) = self.sessions.get(&id) else {
+                continue;
+            };
+            let checkpoint = checkpoints.get(&(root_session_id.to_owned(), id));
+            agents.push(durable::persist_agent(session, checkpoint, &mut records)?);
+        }
+        let payload = serde_json::to_string(&durable::PersistedScope {
             version: durable::JOURNAL_VERSION,
             agents,
         })
-        .map_err(std::io::Error::other)
+        .map_err(std::io::Error::other)?;
+        Ok(JournalWrite { payload, records })
     }
 }
 
@@ -323,8 +332,8 @@ impl RegistryState {
 
     fn journal(
         &self,
-        checkpoints: &HashMap<(String, AgentId), SessionCheckpoint>,
-    ) -> Vec<(String, String)> {
+        checkpoints: &HashMap<(String, AgentId), durable::JournalCheckpoint>,
+    ) -> Vec<(String, JournalWrite)> {
         let mut payloads = Vec::with_capacity(self.scopes.len());
         for (root_session_id, scope) in self
             .scopes
@@ -1206,8 +1215,8 @@ impl Registry {
         let mut revision = self.revision.subscribe();
         drop(platform::spawn(async move {
             let mut saved = HashMap::<String, String>::new();
-            // Child session ID -> encoded checkpoint last recorded as its own session.
-            let mut recorded = HashMap::<String, String>::new();
+            // Child session ID -> checkpoint record key last recorded as its own session.
+            let mut recorded = HashMap::<String, Arc<str>>::new();
             loop {
                 let Some(live) = registry.upgrade() else {
                     return;
@@ -1220,26 +1229,31 @@ impl Registry {
                     .iter()
                     .map(|(root, _)| live.store_for(root))
                     .collect::<Vec<_>>();
-                for ((root_session_id, payload), store) in payloads.into_iter().zip(stores) {
+                for ((root_session_id, write), store) in payloads.into_iter().zip(stores) {
                     let Some(store) = store else { continue };
+                    let JournalWrite { payload, records } = write;
                     if saved.get(&root_session_id) == Some(&payload) {
+                        // The saved journal already references these records.
+                        live.acknowledge(&root_session_id, &records);
                         continue;
                     }
-                    match store.save(&root_session_id, payload.clone()).await {
+                    let contents = records.iter().map(|(_, json)| Arc::clone(json)).collect();
+                    match store
+                        .save(&root_session_id, payload.clone(), contents)
+                        .await
+                    {
                         Ok(()) => {
+                            live.acknowledge(&root_session_id, &records);
                             // Only boundaries already in a saved journal become
                             // sessions, so a recorded child is always restorable.
-                            for checkpoint in live.child_checkpoints(&root_session_id).await {
-                                let Ok(encoded) = serde_json::to_string(&checkpoint) else {
-                                    continue;
-                                };
+                            for (key, checkpoint) in live.child_checkpoints(&root_session_id).await {
                                 let session_id = checkpoint.session_id().to_owned();
-                                if recorded.get(&session_id) == Some(&encoded) {
+                                if recorded.get(&session_id) == Some(&key) {
                                     continue;
                                 }
                                 match store.record_session(&root_session_id, checkpoint).await {
                                     Ok(()) => {
-                                        recorded.insert(session_id, encoded);
+                                        recorded.insert(session_id, key);
                                     }
                                     Err(error) => tracing::warn!(
                                         %error, %root_session_id, %session_id,
@@ -1263,8 +1277,9 @@ impl Registry {
         }));
     }
 
-    /// Latest committed checkpoint of every child journaled under a root.
-    async fn child_checkpoints(&self, root_session_id: &str) -> Vec<SessionCheckpoint> {
+    /// Latest committed checkpoint (record key, boundary) of every child
+    /// journaled under a root.
+    async fn child_checkpoints(&self, root_session_id: &str) -> Vec<(Arc<str>, SessionCheckpoint)> {
         let state = self.state.lock().await;
         let checkpoints = self
             .checkpoints
@@ -1277,15 +1292,19 @@ impl Registry {
         ids.sort_unstable();
         ids.into_iter()
             .filter_map(|id| {
-                checkpoints
-                    .get(&(root_session_id.to_owned(), id))
-                    .or(scope.sessions.get(&id)?.stored_runtime.as_ref())
-                    .cloned()
+                let checkpoint = match checkpoints.get(&(root_session_id.to_owned(), id)) {
+                    Some(checkpoint) => checkpoint.clone(),
+                    None => durable::JournalCheckpoint::encode(
+                        scope.sessions.get(&id)?.stored_runtime.as_ref()?,
+                    )
+                    .ok()?,
+                };
+                Some((checkpoint.key, checkpoint.checkpoint))
             })
             .collect()
     }
 
-    async fn journal_payloads(&self) -> Vec<(String, String)> {
+    async fn journal_payloads(&self) -> Vec<(String, JournalWrite)> {
         let state = self.state.lock().await;
         let checkpoints = self
             .checkpoints
@@ -1307,10 +1326,42 @@ impl Registry {
     }
 
     fn record_checkpoint(&self, root_session_id: &str, id: AgentId, snapshot: SessionCheckpoint) {
+        // Encode once, outside the lock; journal writes only reference it.
+        match durable::JournalCheckpoint::encode(&snapshot) {
+            Ok(checkpoint) => self.insert_checkpoint(root_session_id, id, checkpoint),
+            Err(error) => tracing::warn!(%error, "could not encode subagent checkpoint"),
+        }
+    }
+
+    fn insert_checkpoint(
+        &self,
+        root_session_id: &str,
+        id: AgentId,
+        checkpoint: durable::JournalCheckpoint,
+    ) {
         self.checkpoints
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert((root_session_id.to_owned(), id), snapshot);
+            .insert((root_session_id.to_owned(), id), checkpoint);
+    }
+
+    /// Releases encoded checkpoints once a saved journal references their records.
+    fn acknowledge(&self, root_session_id: &str, records: &[(Arc<str>, Arc<str>)]) {
+        if records.is_empty() {
+            return;
+        }
+        let mut checkpoints = self
+            .checkpoints
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        for ((root, _), checkpoint) in checkpoints.iter_mut() {
+            if root == root_session_id
+                && checkpoint.pending.is_some()
+                && records.iter().any(|(key, _)| *key == checkpoint.key)
+            {
+                checkpoint.pending = None;
+            }
+        }
     }
 
     /// Captures a child's latest committed boundary for the durable journal.
@@ -1487,7 +1538,7 @@ impl Registry {
         };
         let journal: durable::PersistedScope = serde_json::from_str(&payload)
             .map_err(|error| std::io::Error::other(format!("invalid subagent journal: {error}")))?;
-        // Journals carry whole child conversations; do not hold a second copy.
+        // Embedded (version 1) journals carry whole child conversations.
         drop(payload);
         if !(durable::MIN_JOURNAL_VERSION..=durable::JOURNAL_VERSION).contains(&journal.version) {
             return Err(std::io::Error::other(format!(
@@ -1497,6 +1548,13 @@ impl Registry {
         }
         let mut agents = journal.agents;
         agents.sort_by_key(|agent| agent.descriptor.id);
+        // Load referenced conversations one at a time, before taking the state lock.
+        let mut stored = HashMap::new();
+        for agent in &mut agents {
+            if let Some(checkpoint) = agent.hydrate(store.as_ref(), root_session_id).await? {
+                stored.insert(agent.descriptor.id, checkpoint);
+            }
+        }
         let mut report = RestoreReport::default();
         let mut state = self.state.lock().await;
         if state
@@ -1515,11 +1573,20 @@ impl Registry {
         for (agent, lineage) in agents.into_iter().zip(lineages) {
             let id = agent.descriptor.id;
             let checkpoint = agent.snapshot(&lineage)?;
-            let (session, resume, lost) = durable::restored_session(agent, checkpoint.clone())?;
-            state.insert_restored(root_session_id, session)?;
-            if let Some(checkpoint) = checkpoint {
-                self.record_checkpoint(root_session_id, id, checkpoint);
+            let (session, resume, lost) = durable::restored_session(agent, checkpoint)?;
+            match (stored.remove(&id), &session.stored_runtime) {
+                (Some(checkpoint), _) => self.insert_checkpoint(root_session_id, id, checkpoint),
+                // Embedded and per-family checkpoints become records on the next save.
+                (None, Some(snapshot)) => {
+                    self.insert_checkpoint(
+                        root_session_id,
+                        id,
+                        durable::JournalCheckpoint::encode(snapshot)?,
+                    );
+                }
+                (None, None) => {}
             }
+            state.insert_restored(root_session_id, session)?;
             report.restored += 1;
             if resume {
                 report.interrupted.push(id);
@@ -1569,9 +1636,22 @@ impl Registry {
                 .transpose()?
         };
         match payload {
-            Some(payload) => store.save(root_session_id, payload).await,
+            Some(write) => self.save_write(root_session_id, store, write).await,
             None => Ok(()),
         }
+    }
+
+    async fn save_write(
+        &self,
+        root_session_id: &str,
+        store: &dyn SubagentStore,
+        write: JournalWrite,
+    ) -> std::io::Result<()> {
+        let JournalWrite { payload, records } = write;
+        let contents = records.iter().map(|(_, json)| Arc::clone(json)).collect();
+        store.save(root_session_id, payload, contents).await?;
+        self.acknowledge(root_session_id, &records);
+        Ok(())
     }
 
     /// Continues every child whose turn was interrupted by the restart.
@@ -2604,8 +2684,9 @@ impl Registry {
             harnesses,
             status_updates,
         } = request;
-        let journal_result = if let Some((store, payload)) = final_journal {
-            store.save(&root_session_id, payload).await
+        let journal_result = if let Some((store, write)) = final_journal {
+            self.save_write(&root_session_id, store.as_ref(), write)
+                .await
         } else {
             Ok(())
         };
@@ -3067,7 +3148,7 @@ pub fn channel(
 mod tests {
     use super::{
         AgentDescriptor, AgentId, AgentStatus, ChildSession, OutputContract, Registry,
-        RegistryState, SessionCheckpoint, complete_session, forward_events,
+        JournalWrite, RegistryState, SessionCheckpoint, complete_session, forward_events,
     };
     use crate::platform;
     use crate::{
@@ -3675,7 +3756,7 @@ mod tests {
             loop {
                 if let Some(payload) = crate::SubagentStore::load(&store, "root").await.unwrap()
                     && payload.contains("\"turn_in_flight\":true")
-                    && payload.contains("\"checkpoint\"")
+                    && payload.contains("\"checkpoint_ref\"")
                 {
                     break;
                 }
@@ -3782,6 +3863,23 @@ mod tests {
         assert!(!has_checkpoint());
     }
 
+    /// Embeds each referenced checkpoint record, as version-1 journals did.
+    fn inline_records(write: &JournalWrite) -> String {
+        let mut journal: serde_json::Value = serde_json::from_str(&write.payload).unwrap();
+        for agent in journal["agents"].as_array_mut().unwrap() {
+            let Some(key) = agent.as_object_mut().unwrap().remove("checkpoint_ref") else {
+                continue;
+            };
+            let (_, json) = write
+                .records
+                .iter()
+                .find(|(record, _)| **record == *key.as_str().unwrap())
+                .unwrap();
+            agent["checkpoint"] = serde_json::from_str(json).unwrap();
+        }
+        journal.to_string()
+    }
+
     /// Rewrites a current journal as the version-1 layout, which stored a
     /// Codex child's boundary as an untagged `ChildRuntimeSnapshot`.
     fn legacy_codex_journal(payload: &str) -> String {
@@ -3864,13 +3962,24 @@ mod tests {
                 .unwrap()
                 .status = AgentStatus::Running;
         }
-        let mut payload = source.journal_payloads().await.pop().unwrap().1;
-        if legacy {
-            payload = legacy_codex_journal(&payload);
+        let write = source.journal_payloads().await.pop().unwrap().1;
+        let write = if legacy {
+            let payload = legacy_codex_journal(&inline_records(&write));
             assert!(payload.contains("\"version\":1") && !payload.contains("\"format\""));
-        }
+            JournalWrite {
+                payload,
+                records: Vec::new(),
+            }
+        } else {
+            write
+        };
         let store = crate::MemorySubagentStore::new();
-        crate::SubagentStore::save(&store, root_id, payload)
+        let records = write
+            .records
+            .iter()
+            .map(|(_, json)| Arc::clone(json))
+            .collect();
+        crate::SubagentStore::save(&store, root_id, write.payload, records)
             .await
             .unwrap();
         registry.set_store(Arc::new(store));
@@ -3987,8 +4096,10 @@ mod tests {
         let mut session = test_session(AgentId::new(1), "child", None);
         let original = session.descriptor.task.clone();
         session.descriptor.task = "delegated replacement".to_owned();
-        let encoded =
-            serde_json::to_string(&crate::durable::persist_agent(&session, None)).unwrap();
+        let encoded = serde_json::to_string(
+            &crate::durable::persist_agent(&session, None, &mut Vec::new()).unwrap(),
+        )
+        .unwrap();
         let decoded = serde_json::from_str(&encoded).unwrap();
         let (restored, _, _) = restore_journaled(decoded);
         assert_eq!(restored.descriptor.task, "delegated replacement");
@@ -4027,17 +4138,21 @@ mod tests {
                 .unwrap();
             let encoded = {
                 let state = registry.state.lock().await;
-                serde_json::to_string(&crate::durable::persist_agent(
-                    &state.scopes["main"].sessions[&child],
-                    None,
-                ))
+                serde_json::to_string(
+                    &crate::durable::persist_agent(
+                        &state.scopes["main"].sessions[&child],
+                        None,
+                        &mut Vec::new(),
+                    )
+                    .unwrap(),
+                )
                 .unwrap()
             };
             let (restored, _, _) = restore_journaled(serde_json::from_str(&encoded).unwrap());
             assert_eq!(restored.descriptor.task, task);
             assert_eq!(restored.binding_task, original);
             // A second checkpoint after restoration must retain both identities.
-            let next = crate::durable::persist_agent(&restored, None);
+            let next = crate::durable::persist_agent(&restored, None, &mut Vec::new()).unwrap();
             let (again, _, _) = restore_journaled(next);
             assert_eq!(again.descriptor.task, task);
             assert_eq!(again.binding_task, original);
@@ -4080,7 +4195,13 @@ mod tests {
         assert_eq!(journal.len(), 1);
 
         let store = crate::MemorySubagentStore::new();
-        crate::SubagentStore::save(&store, "root", journal[0].1.clone())
+        let write = &journal[0].1;
+        let records = write
+            .records
+            .iter()
+            .map(|(_, json)| Arc::clone(json))
+            .collect();
+        crate::SubagentStore::save(&store, "root", write.payload.clone(), records)
             .await
             .unwrap();
         let (registry, _control, _updates) = super::channel(4);

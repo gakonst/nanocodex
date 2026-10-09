@@ -9,7 +9,7 @@ use serde::Deserialize;
 
 use super::{profile::default_state_dir, systemd};
 use crate::{
-    RetryableProcessExit, benchmark, config::AgentArgs, observability::ObservabilityArgs, run, tui,
+    RetryableProcessExit, benchmark, config::AgentArgs, observability::ObservabilityArgs, run,
     vm::VmArgs,
 };
 
@@ -108,13 +108,20 @@ impl Benchmark {
             run::run_prompt(prompt, agent, vm).await
         } else {
             let _observability = observability.install(true)?;
-            let display = format!("/benchmark {profile}");
-            tui::run(
-                agent,
+            agent.prefer_codex_for_vm(&vm);
+            crate::nanocodex2::tui::run_local(crate::nanocodex2::tui::local::agent::LocalLaunch {
+                args: agent,
                 vm,
-                Some(tui::InitialPrompt::workflow(display, prompt)),
-            )
+                // The controller instructions are bound to this agent.
+                replaceable: false,
+                // The transcript shows the command, as /benchmark does; the
+                // agent receives the workflow instruction.
+                initial_prompt: Some(format!("/benchmark {profile}")),
+                initial_instruction: Some(prompt),
+                resume: None,
+            })
             .await
+            .map_err(|error| eyre::eyre!("{error}"))
         };
         let board = BoardStatus::load(
             Some(&profile),

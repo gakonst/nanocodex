@@ -1,5 +1,5 @@
 // Native owner-key + PTY revoke journey against a local synthetic managed transport.
-// Repro: cargo build -p nanocodex2-bin --bin nanocodex2 && node bin/nanocodex/tests/thread-share-tui-e2e.mjs
+// Repro: cargo build -p nanocodex-bin --bins && node bin/nanocodex/tests/thread-share-tui-e2e.mjs
 // The service is a fixture, not production authorization; run js/managed/test/thread-share-links.test.ts
 // separately for the real Worker/DO authorization and storage boundary.
 import assert from 'node:assert/strict';
@@ -79,7 +79,7 @@ const ownerFetch = (path, options = {}) => fetch(origin + path, { ...options, he
 const guestFetch = suffix => fetch(`${origin}/v1/shared/${agent}${suffix}`, { headers: { authorization: `Bearer ${token}` } });
 const reference = form === 'id' ? agent : `https://nanocodex.gakonst.workers.dev/agent/${agent}`;
 // NANOCODEX_MANAGED_URL below directs owner traffic to the local fixture in both cases.
-const trace = { reference, form, command: 'cargo build -p nanocodex2-bin --bin nanocodex2 && node bin/nanocodex/tests/thread-share-tui-e2e.mjs',
+const trace = { reference, form, command: 'cargo build -p nanocodex-bin --bins && node bin/nanocodex/tests/thread-share-tui-e2e.mjs',
   expected: 'owner API key creates, guest reads, TUI /share list and /share revoke, guest reads denied', stages: [] };
 let terminal;
 try {
@@ -92,7 +92,7 @@ try {
   const history = await guestFetch('/events/history'); assert.equal(history.status, 200);
   assert.equal((await history.json()).data.at(-1).final_message, 'Synthetic answer');
   trace.stages.push({ action: 'guest metadata/history', statuses: [meta.status, history.status] });
-  terminal = spawn('python3', [new URL('./share-pty-bridge.py', import.meta.url).pathname, resolve('target/debug/nanocodex2'), 'attach', reference], {
+  terminal = spawn('python3', [new URL('./share-pty-bridge.py', import.meta.url).pathname, resolve('target/debug/nanocodex'), 'attach', reference], {
     cwd: workspace, env: { ...process.env, HOME: workspace, NC_API_KEY: '', CODEX_HOME: resolve(workspace, '.codex'), NANOCODEX_RELOAD_DIR: resolve(workspace, '.reload'),
       NANOCODEX_DISABLE_HAND: '1', NANOCODEX_COMPUTER: 'off', NANOCODEX_MANAGED_URL: origin,
       NANOCODEX_API_KEY: key, TERM: 'xterm-256color', SSH_TTY: '/dev/synthetic-pty', TMUX: '', TMUX_PANE: '' },

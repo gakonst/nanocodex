@@ -127,11 +127,15 @@ def main():
             os.write(master, text.encode() + b'\r')
 
         def footer():
-            return screen.text().splitlines()[-1]
+            # The unified composer shows model and effort on its top border and
+            # the status line below it; read the composer block, not one row.
+            lines = screen.text().splitlines()
+            top = max((i for i, line in enumerate(lines) if line.lstrip().startswith('╭─')), default=len(lines) - 1)
+            return ' '.join(lines[top:])
 
         start = len(requests)
         try:
-            wait(lambda: 'Message' in screen.text(), 'initial composer absent')
+            wait(lambda: 'Enter send' in screen.text(), 'initial composer absent')
             if fail_first:
                 if queued_failure:
                     os.write(master, b'/model sonnet\rDo not send this queued prompt to the previous provider\r')
@@ -139,21 +143,38 @@ def main():
                     send('/model sonnet')
                 wait(lambda: 'nanocodex --claude auth login' in screen.text(), 'missing target-auth hint')
                 if queued_failure:
-                    wait(lambda: 'not sent' in screen.text(), 'queued prompt was not rejected after failed selection')
-                    (out / 'rejected-prompt.txt').write_text(screen.text())
+                    # The unauthenticated selection is rejected before any rebuild,
+                    # so the prompt typed behind it stays on the retained Codex
+                    # harness: it is neither dropped nor routed to Claude.
+                    wait(lambda: f'model-selection-reply-{start+1}' in screen.text(), 'prompt after rejected selection absent')
+                    (out / 'rejected-selection.txt').write_text(screen.text())
+                    h.require(len(requests) == start + 1, 'rejected selection duplicated inference')
+                    h.require(requests[-1]['family'] == 'codex', 'rejected selection routed the prompt to Claude')
+                    h.require(requests[-1]['request']['model'] == 'gpt-6.1-sol', 'rejected selection changed the Codex model')
+                    wait(lambda: 'Working' not in footer() and 'Queued' not in footer(), 'turn did not finish')
+                    os.write(master, b'\x03\x03')
+                    wait(lambda: process.poll() is not None, 'CLI did not exit')
+                    h.require(process.returncode == 0, 'CLI failed to exit cleanly')
+                    checks.append({'scenario': name, 'model': 'gpt-6.1-sol', 'requests': 1, 'passed': True})
+                    return
                 h.require(len(requests) == start, 'failed selection dispatched inference')
             send('/model')
-            wait(lambda: 'Select Model' in screen.text(), 'model picker absent')
+            wait(lambda: 'Select model' in screen.text(), 'model picker absent')
             models = ['gpt-6-astra', 'gpt-6.1-sol', 'gpt-6-luna', 'claude-opus-5-5', 'claude-sonnet-5-5', 'claude-haiku-5-5', 'claude-fable-5-1', 'claude-opus-4-6', 'claude-sonnet-4-6', 'claude-haiku-4-5']
             # The slash-command popup can briefly cover the picker's last rows.
+            if not claude_auth:
+                # Claude models are offered only once Claude is signed in.
+                models = [model for model in models if not model.startswith('claude-')]
             wait(lambda: all(model in screen.text() for model in models), 'picker omitted a model')
+            if not claude_auth:
+                h.require('claude-' not in screen.text().split('Select model', 1)[-1], 'picker offered unauthenticated Claude models')
             (out / 'picker.txt').write_text(screen.text())
             if picker:
-                # Default Sol is second; Sonnet is fifth in the public menu.
-                os.write(master, b'jjj\r')
+                # Default Sol is second; Sonnet is fifth in the unified picker.
+                os.write(master, b'\x1b[B\x1b[B\x1b[B\r')
             else:
                 os.write(master, b'\x1b')
-                wait(lambda: 'Select Model' not in screen.text(), 'picker failed to close')
+                wait(lambda: 'Select model' not in screen.text(), 'picker failed to close')
                 send('/model ' + target)
                 if queued:
                     send('First prompt after model selection')
@@ -166,13 +187,17 @@ def main():
             h.require(requests[-1]['request']['model'] == expected, 'wrong first-turn wire model')
             if expected == 'claude-haiku-4-5':
                 h.require('thinking' not in requests[-1]['request'], 'Haiku 4.5 retained adaptive thinking')
-                h.require('default' in footer(), 'Haiku 4.5 effort display is stale')
+                # Haiku 4.5 has no effort setting: the composer border shows no effort.
+                border = next(line for line in reversed(screen.text().splitlines()) if line.lstrip().startswith('╭─'))
+                h.require(not any(f' {effort} ' in border for effort in ('low', 'medium', 'high', 'xhigh', 'max')), 'Haiku 4.5 shows an effort it does not send: ' + border.strip())
             if expected == 'claude-haiku-5-5':
                 wire = requests[-1]['request']
                 effort = wire.get('output_config', {}).get('effort')
                 h.require(wire.get('thinking', {}).get('type') == 'adaptive', 'Haiku 5.5 lost adaptive thinking')
-                h.require(effort is not None and f'· {effort}' in footer(), 'Haiku 5.5 effort display does not match the wire')
-            send('/model sol' if expected.startswith('claude') else '/model sonnet')
+                h.require(effort is not None and f' {effort} ' in footer(), 'Haiku 5.5 effort display does not match the wire')
+            # Without Claude credentials, change to another listed Codex model so
+            # the rejection proves the started-thread rule, not the auth hint.
+            send('/model sol' if expected.startswith('claude') else '/model sonnet' if claude_auth else '/model astra')
             wait(lambda: 'only be changed before the first prompt' in screen.text(), 'started thread allowed model change')
             h.require(expected in footer(), 'rejected change altered displayed model')
             send('Second prompt keeps the selected model')
@@ -180,7 +205,8 @@ def main():
             h.require(len(requests) == start + 2, 'rejected change dispatched a model request')
             h.require(requests[-1]['request']['model'] == expected, 'model changed after thread started')
             wait(lambda: 'Working' not in footer() and 'Queued' not in footer(), 'turn did not finish')
-            os.write(master, b'\x04')
+            # The unified TUI exits on a second Ctrl+C.
+            os.write(master, b'\x03\x03')
             wait(lambda: process.poll() is not None, 'CLI did not exit')
             drain()
             h.require(process.returncode == 0, 'CLI failed to exit cleanly')

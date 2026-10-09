@@ -3,7 +3,7 @@ exclude = ["third_party/codex-voice"]
 members = [
     "bin/nanocodex",
     "bin/nanocodex/tui-control",
-    "bin/nanocodex/nanocodex2",
+    "bin/nanocodex/screen-supervisor",
     "bin/nanocodex/account-auth",
     "bin/nanousd",
     "bin/nanousd-api",
@@ -77,7 +77,6 @@ chromiumoxide = "0.9.1"
 landlock = "0.4.4"
 clap = { version = "4.5.54", features = ["derive", "env"] }
 cpal = "0.16.0"
-crossterm = { version = "0.28.1", features = ["bracketed-paste", "event-stream"] }
 criterion = { version = "0.7.0", default-features = false, features = ["async_tokio", "cargo_bench_support"] }
 csv = "1.4.0"
 dotenvy = "0.15.7"
@@ -145,7 +144,6 @@ pyo3 = "0.29.0"
 proc-macro-crate = "3"
 proc-macro2 = "1.0.106"
 quote = "1.0.46"
-ratatui = { version = "0.29.0", features = ["unstable-rendered-line-info"] }
 ratatex = "0.1.0"
 reqwest = { version = "0.13.4", default-features = false, features = ["json", "rustls-no-provider"] }
 reqwest-middleware = "0.5.2"
@@ -209,17 +207,23 @@ unsafe_code = "forbid"
 
 [workspace.lints.clippy]
 all = { level = "warn", priority = -1 }
-missing-const-for-fn = "warn"
-use-self = "warn"
-redundant-clone = "warn"
-large-enum-variant = "allow"
-result-large-err = "allow"
+missing_const_for_fn = "warn"
+use_self = "warn"
+redundant_clone = "warn"
+large_enum_variant = "allow"
+result_large_err = "allow"
 
 # Match Reth and Solar's fast edit-build cycle: retain useful backtraces and
 # source locations without emitting full local-variable debug information.
 [profile.dev]
 debug = "line-tables-only"
 split-debuginfo = "unpacked"
+
+# Third-party crates carry no debug info in dev builds. Workspace crates keep
+# line tables, so panics and backtraces in Nanocodex code still report file and
+# line, while debug executables and shared targets stay smaller and link faster.
+[profile.dev.package."*"]
+debug = false
 
 # Display math runs during interactive debug builds. Keep the small native
 # parser/layout/raster stack optimized so a cold formula is ready in one frame.

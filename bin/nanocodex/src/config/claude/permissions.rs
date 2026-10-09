@@ -227,9 +227,9 @@ impl<'a> Rule<'a> {
                 bail!("specifier not supported for wildcard/MCP rule {text}");
             }
             match tool {
-                "Bash" => {
+                "Bash" | "exec_command" => {
                     if spec.starts_with("command:") {
-                        bail!("use Bash(command text), not Bash(command:...)");
+                        bail!("use {tool}(command text), not {tool}(command:...)");
                     }
                 }
                 "Read" | "Edit" => {
@@ -257,7 +257,7 @@ impl<'a> Rule<'a> {
             if let Some((key, _)) = spec.split_once(':')
                 && matches!(
                     key.trim(),
-                    "command" | "file_path" | "notebook_path" | "path" | "url"
+                    "command" | "cmd" | "file_path" | "notebook_path" | "path" | "url"
                 )
             {
                 bail!("unsupported primary-parameter permission rule {text}");
@@ -291,14 +291,25 @@ impl<'a> Rule<'a> {
             && name.starts_with(&format!("{}__", self.tool));
         // File-deny rules cannot safely analyze arbitrary subprocess file accesses.
         // Deny shell dispatch conservatively when any file deny/ask policy applies.
-        if (name == "Bash" || (name == "Monitor" && input.get("command").is_some()))
+        if (matches!(name, "Bash" | "exec_command" | "write_stdin")
+            || (name == "Monitor" && input.get("command").is_some()))
             && matches!(self.tool, "Read" | "Edit")
             && !allow
         {
             return true;
         }
-        let shell_alias =
-            self.tool == "Bash" && name == "Monitor" && input.get("command").is_some();
+        // Stdin can execute arbitrary code in a retained shell or interpreter,
+        // including fragments split over calls. Without session-aware admission,
+        // scoped shell restrictions must cover every continuation (even polling).
+        let shell_rule = wild(self.tool, "Bash", false) || wild(self.tool, "exec_command", false);
+        if name == "write_stdin" && shell_rule && !allow {
+            return true;
+        }
+        // Preserve existing Bash policies after migrating to the shared tools.
+        // Apply native exec_command policies to other shell entry points too.
+        let shell_alias = shell_rule
+            && (matches!(name, "Bash" | "exec_command")
+                || (name == "Monitor" && input.get("command").is_some()));
         let web_alias = self.tool == "WebFetch" && name == "Monitor" && input.get("ws").is_some();
         if !file_alias && !shell_alias && !web_alias && !mcp && !wild(self.tool, name, false) {
             return false;
@@ -322,14 +333,18 @@ impl<'a> Rule<'a> {
                     .unwrap_or_else(|| actual.to_string());
                 return wild(value.trim(), &actual, false);
             }
-            if self.tool != "Bash" {
+            if !matches!(self.tool, "Bash" | "exec_command") {
                 return false;
             }
         }
         match self.tool {
-            "Bash" => {
+            "Bash" | "exec_command" => {
                 let command = input
-                    .get("command")
+                    .get(if name == "exec_command" {
+                        "cmd"
+                    } else {
+                        "command"
+                    })
                     .and_then(Value::as_str)
                     .unwrap_or_default();
                 let Some(parts) = simple_commands(command) else {

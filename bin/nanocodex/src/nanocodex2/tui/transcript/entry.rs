@@ -1,7 +1,7 @@
 // Derived from clabby/tact; modified for Nanocodex2.
 // SPDX-License-Identifier: Apache-2.0
 
-use crate::config::ReasoningEffort;
+use crate::nanocodex2::config::ReasoningEffort;
 use nanocodex_subagents::{AgentThread, MessageDeliveryState, MessageId, MessageSender};
 use serde_json::Value;
 

@@ -1,11 +1,15 @@
 //! Actual PTY, wall clock, persistence, and process cleanup; only inference is synthetic.
+#[path = "support/local_cli.rs"]
+mod local_cli;
+use local_cli::local_cli;
+
 #[test]
 fn native_cli_real_clock_schedules_and_monitor_cancellation() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let output = std::process::Command::new("python3")
         .arg(root.join("scripts/tests/claude-scheduler-monitor-cli-journey.py"))
         .arg("--binary")
-        .arg(env!("CARGO_BIN_EXE_nanocodex"))
+        .arg(local_cli())
         .current_dir(&root)
         .output()
         .expect("python3 executes real-clock scheduler and Monitor journey");
@@ -24,7 +28,7 @@ fn native_cli_monitor_websocket_authority_batching_and_lifecycle() {
     let output = std::process::Command::new("python3")
         .arg(root.join("scripts/tests/claude-monitor-ws-cli-journey.py"))
         .arg("--binary")
-        .arg(env!("CARGO_BIN_EXE_nanocodex"))
+        .arg(local_cli())
         .current_dir(root)
         .output()
         .expect("python3 executes real CLI WebSocket journey");
@@ -45,7 +49,7 @@ fn native_cli_loop_frontend_and_single_fallback() {
     let output = std::process::Command::new("python3")
         .arg(root.join("scripts/tests/claude-loop-cli-journey.py"))
         .arg("--binary")
-        .arg(env!("CARGO_BIN_EXE_nanocodex"))
+        .arg(local_cli())
         .current_dir(&root)
         .output()
         .expect("python3 executes /loop PTY journey");

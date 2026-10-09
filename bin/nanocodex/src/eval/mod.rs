@@ -1,4 +1,5 @@
 mod attach;
+mod attach_view;
 mod benchmark;
 mod coordinator;
 mod profile;

@@ -7,6 +7,8 @@ function createValueHelpers() {
   const helpers = {
     stringify(value) {
       if (value === null || ["undefined", "boolean", "number", "bigint", "string"].includes(typeof value)) return String(value);
+      // Caught tool failures are Errors: show their message, not "{}".
+      if (Object.prototype.toString.call(value) === "[object Error]") return String(value);
       return JSON.stringify(value) ?? String(value);
     },
 

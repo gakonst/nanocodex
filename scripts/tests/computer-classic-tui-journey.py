@@ -48,7 +48,7 @@ def main():
     home, workspace = out / 'home', out / 'workspace'
     home.mkdir()
     workspace.mkdir()
-    binary = out / 'nanocodex-under-test'
+    binary = out / args.binary.name
     shutil.copy2(args.binary.resolve(), binary)
     launcher = out / 'provider'
     launcher.write_text('#!/bin/sh\nexec ' + shlex.join([sys.executable, str(Path(__file__).resolve()), '--mcp', str(out / 'mcp.jsonl')]) + '\n')

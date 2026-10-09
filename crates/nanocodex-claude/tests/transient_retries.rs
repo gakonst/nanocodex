@@ -309,6 +309,11 @@ async fn compaction_ends_after_three_attempts() {
 async fn unsafe_or_permanent_failures_are_not_retried() {
     let published = frames([vec![start()], text_delta("published once")].concat())
         + &stream_error("overloaded_error");
+    let progress = frames(vec![
+        start(),
+        json!({"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"","signature":""}}),
+        json!({"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"Checking the retrieved record."}}),
+    ]) + &stream_error("overloaded_error");
     let scenarios = [
         ("permanent HTTP rejection", Reply::Http(400), false),
         (
@@ -317,6 +322,7 @@ async fn unsafe_or_permanent_failures_are_not_retried() {
             false,
         ),
         ("published text", Reply::Stream(published), false),
+        ("published progress", Reply::Stream(progress), false),
         (
             "possible server effect",
             Reply::Stream(stream_error("overloaded_error")),

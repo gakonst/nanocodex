@@ -138,7 +138,7 @@ nanocodex \
   --vm .nanocodex/vm/session-rootfs.ext4 \
   --vm-guest-runtime target/aarch64-unknown-linux-musl/debug/nanocodex-vm-guest \
   --vm-workspace /app
-nanocodex run "make the requested change" \
+ncl run "make the requested change" \
   --vm .nanocodex/vm/session-rootfs.ext4 \
   --vm-guest-runtime target/aarch64-unknown-linux-musl/debug/nanocodex-vm-guest \
   --vm-workspace /app

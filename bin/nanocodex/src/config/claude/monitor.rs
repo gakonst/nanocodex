@@ -174,9 +174,7 @@ impl Monitor {
             private_origins,
         }
     }
-    pub(super) fn scheduler(&self) -> Arc<scheduler::SessionScheduler> {
-        self.scheduler.clone()
-    }
+
     async fn socket(&self, args: &WebSocketInput) -> std::result::Result<Source, String> {
         if !self.public_web {
             return Err("Monitor WebSocket requires explicit host web access".into());

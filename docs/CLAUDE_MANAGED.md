@@ -61,8 +61,11 @@ streams are not silently replayed.
 ## Tools, durability and limits
 
 Managed sessions expose only `exec` and `wait` to the model. Claude's nested
-catalog includes `Bash`, `Read`, `Write`, `Edit` and supported account/Hand
-capabilities. Call them through `tools` inside Code Mode. Discovery uses nested
+catalog includes `exec_command`, `write_stdin`, `Read`, `Write`, `Edit` and
+supported account/Hand capabilities. Execution uses the same schemas and handlers
+as Codex: `exec_command` accepts `cmd`, and `write_stdin` polls or writes to its
+retained `session_id`; both use `yield_time_ms`. Legacy `Bash` and `BashOutput`
+capabilities are unavailable. Call them through `tools` inside Code Mode. Discovery uses nested
 `ToolSearch`/`ToolExecute` and `MCPToolSearch`/`MCPExecute` calls.
 
 Default managed Claude sessions expose the canonical `spawn_agent`, `list_agents`,

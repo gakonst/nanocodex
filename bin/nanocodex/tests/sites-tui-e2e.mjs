@@ -1,5 +1,5 @@
 // Native owner-key + PTY /sites journey against a local synthetic managed transport.
-// Repro: cargo build -p nanocodex2-bin --bin nanocodex2 && node bin/nanocodex/tests/sites-tui-e2e.mjs
+// Repro: cargo build -p nanocodex-bin --bins && node bin/nanocodex/tests/sites-tui-e2e.mjs
 // The service is a fixture, not production authorization or storage; run
 // `pnpm --filter nanocodex-managed-service run test:sites` for the real Worker,
 // Durable Object, R2, and Sites Worker boundary.
@@ -76,11 +76,11 @@ for (const name of ['open', 'xdg-open']) {
   writeFileSync(resolve(bin, name), `#!/bin/sh\nprintf '%s\\n' "$1" >> '${opened}'\n`);
   chmodSync(resolve(bin, name), 0o755);
 }
-const trace = { command: 'cargo build -p nanocodex2-bin --bin nanocodex2 && node bin/nanocodex/tests/sites-tui-e2e.mjs',
+const trace = { command: 'cargo build -p nanocodex-bin --bins && node bin/nanocodex/tests/sites-tui-e2e.mjs',
   expected: 'TUI /sites publish, open, share, list, revoke reach the owner routes; slash commands never become turns', stages: [] };
 let terminal;
 try {
-  terminal = spawn('python3', [new URL('./share-pty-bridge.py', import.meta.url).pathname, resolve('target/debug/nanocodex2'), 'attach', agent], {
+  terminal = spawn('python3', [new URL('./share-pty-bridge.py', import.meta.url).pathname, resolve('target/debug/nanocodex'), 'attach', agent], {
     cwd: workspace, env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, HOME: workspace, NC_API_KEY: '', CODEX_HOME: resolve(workspace, '.codex'), NANOCODEX_RELOAD_DIR: resolve(workspace, '.reload'),
       NANOCODEX_DISABLE_HAND: '1', NANOCODEX_COMPUTER: 'off', NANOCODEX_MANAGED_URL: origin,
       NANOCODEX_API_KEY: key, TERM: 'xterm-256color', SSH_TTY: '/dev/synthetic-pty', TMUX: '', TMUX_PANE: '' },

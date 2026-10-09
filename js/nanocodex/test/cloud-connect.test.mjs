@@ -540,10 +540,14 @@ test("ConnectAgent publishes app tools with only signed hosted MCPs over the tic
     await waitForConnect(() => sockets[0].frames.some(({ type, call_id: callId }) => (
       type === "result" && callId === "call:app-echo"
     )));
+    // Result frames also carry per-call timing telemetry (25760493c).
+    const { timing, ...appResult } = sockets[0].frames.find(({ type, call_id: callId }) => (
+      type === "result" && callId === "call:app-echo"
+    ));
+    assert.ok(Object.values(timing).every((value) => Number.isFinite(value) && value >= 0),
+      "result timing is finite non-negative telemetry");
     assert.deepEqual(
-      sockets[0].frames.find(({ type, call_id: callId }) => (
-        type === "result" && callId === "call:app-echo"
-      )),
+      appResult,
       {
         type: "result",
         call_id: "call:app-echo",

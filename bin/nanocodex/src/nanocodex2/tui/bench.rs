@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Synthetic Criterion coverage for retained-history TUI hot paths.
+//!
+//! Compiled into the library only with the `tui-bench` feature so the cases
+//! drive the production renderer; `benches/nanocodex2_tui.rs` runs them.
 
-#![allow(dead_code, unused_imports)]
 #![allow(
     clippy::missing_const_for_fn,
     clippy::too_many_arguments,
@@ -10,57 +12,18 @@
     reason = "use the same reviewed Tact component ownership as the production binary"
 )]
 
-#[path = "components/mod.rs"]
-mod components;
-#[path = "../config.rs"]
-mod config;
-mod context;
-mod format;
-mod history;
-#[path = "../installation.rs"]
-mod installation;
-mod pane;
-mod private_input;
-mod prompt;
-mod review;
-mod screen;
-#[path = "../screen_ice.rs"]
-mod screen_ice;
-mod secure_input;
-mod session;
-mod share;
-mod sites;
-#[path = "../skill.rs"]
-mod skill;
-mod spinner;
-mod sudo_input;
-mod theme;
-#[path = "transcript/mod.rs"]
-mod transcript;
-mod vault;
-#[path = "../voice_command.rs"]
-mod voice;
-#[path = "../voice_state.rs"]
-mod voice_state;
-
-// Keep production components on their normal module paths in this private target.
-mod tui {
-    pub(crate) use crate::{
-        context, format, pane, private_input, prompt, review, screen, secure_input, session, share,
-        sites, spinner, sudo_input, theme, transcript, vault,
-    };
-}
-
-use components::{AppEffect, AppEvent, AppNode, RenderRequest, RootEffect, RootNode};
-use config::ReasoningEffort;
-use criterion::{BatchSize, BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
-use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
-use history::{
+use super::components::{AppEffect, AppEvent, AppNode, RenderRequest, RootEffect, RootNode};
+use super::history::{
     HistoryPrefetch, HistoryWindow, history_projection, history_projection_with_sequences,
 };
+use super::pane::PaneId;
+use super::theme::Theme;
+use super::transcript::TranscriptRecord;
+use crate::nanocodex2::config::ReasoningEffort;
+use criterion::{BatchSize, BenchmarkId, Criterion, Throughput, criterion_group};
+use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 use nanocodex_agent::events::{AgentEvent, AgentEventKind};
 use nanocodex_managed::{EventHistoryPage, ManagedEvent, ManagedEventData, PromptInput};
-use pane::PaneId;
 use ratatui::{Terminal, backend::TestBackend};
 use serde_json::{json, value::to_raw_value};
 use std::{
@@ -70,8 +33,6 @@ use std::{
     path::Path,
     sync::Arc,
 };
-use theme::Theme;
-use transcript::TranscriptRecord;
 
 const WIDTH: u16 = 120;
 const HEIGHT: u16 = 40;
@@ -834,4 +795,3 @@ criterion_group!(
     user_prompt_payload_benchmarks,
     tool_payload_benchmarks,
 );
-criterion_main!(tui_benches);

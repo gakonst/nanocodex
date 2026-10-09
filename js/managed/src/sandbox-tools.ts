@@ -228,10 +228,26 @@ async function prepareMeasuredCloudflareSandboxHand(
   );
 }
 
+/**
+ * The sandbox SDK rejects IDs longer than 63 characters before any I/O. Mounts
+ * created before per-mount UUID resource IDs stored `<session>-mount-<mount>`;
+ * no container can exist under that name, so destroying it would only throw
+ * SandboxSecurityError and strand session deletion in its retry loop.
+ */
+export function isProvisionableCloudflareSandbox(resourceId: string): boolean {
+  const id = `nanocodex-${resourceId}`;
+  return id.length <= 63 && !id.endsWith("-");
+}
+
 export async function destroyCloudflareSandbox(
   namespace: DurableObjectNamespace<Sandbox>,
   sessionId: string,
 ): Promise<void> {
+  if (!isProvisionableCloudflareSandbox(sessionId)) {
+    clearSandboxPreparations(namespace, sessionId);
+    console.info({ type: "sandbox.destroy_skipped", reason: "unprovisionable_sandbox_id", id_length: sessionId.length });
+    return;
+  }
   const cached = sandboxPreparation(namespace, sessionId);
   const sandbox = cached?.sandbox ?? sandboxHandle(namespace, sessionId);
   if (cached) await cached.promise.catch(() => {});

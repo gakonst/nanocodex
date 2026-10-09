@@ -193,7 +193,7 @@ return `sites_unavailable`.
 ```sh
 pnpm --filter nanocodex-managed-service run prepare:code-evaluator
 pnpm --filter nanocodex-managed-service run test:sites
-cargo build -p nanocodex2-bin --bin nanocodex2 && node bin/nanocodex/tests/sites-tui-e2e.mjs
+cargo build -p nanocodex-bin --bin nanocodex && node bin/nanocodex/tests/sites-tui-e2e.mjs
 ```
 
 The first command runs the real account proxy, managed Worker, thread SQLite,

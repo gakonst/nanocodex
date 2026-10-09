@@ -38,6 +38,13 @@ const STABLE_CONNECTION: Duration = Duration::from_secs(30);
 const STABLE_CONNECTION: Duration = Duration::from_millis(250);
 
 const HEARTBEAT_TIMEOUT_REASON: &str = "attachment heartbeat timed out";
+/// Fenced reason when the endpoint reports the attachment permanently gone (HTTP 410).
+pub(crate) const ATTACHMENT_REVOKED_REASON: &str =
+    "attachment endpoint permanently revoked this attachment";
+#[cfg(not(test))]
+const MAX_REJECTED_BACKOFF: Duration = Duration::from_secs(60);
+#[cfg(test)]
+const MAX_REJECTED_BACKOFF: Duration = Duration::from_millis(500);
 
 pub(crate) struct Config {
     pub(crate) endpoint: Url,
@@ -138,14 +145,32 @@ pub(crate) async fn run(
                     "endpoint rejected the bearer credential".into(),
                 ));
             }
+            Ok(Err(tokio_tungstenite::tungstenite::Error::Http(response)))
+                if response.status().as_u16() == 410 =>
+            {
+                // The attachment's allocation or conversation is permanently
+                // gone. Reconnecting can never succeed; let the owner reap it.
+                connection_span.in_scope(|| tracing::warn!(target: "nanocodex_oai_tools::attachment", stage = "attachment.socket.rejected", reason_code = "attachment_revoked", pending_calls = active.len(), "attachment permanently revoked"));
+                break Err(AttachmentError::Fenced(ATTACHMENT_REVOKED_REASON.into()));
+            }
             other => {
-                connection_span.in_scope(|| tracing::warn!(target: "nanocodex_oai_tools::attachment", stage = "attachment.socket.connect_failed", reason_code = if other.is_err() { "connect_timeout" } else { "connect_failure" }, reconnect_delay_ms = backoff.as_millis() as u64, pending_calls = active.len(), "attachment connection attempt failed"));
+                // An HTTP rejection proves the endpoint is reachable but refusing
+                // this attachment; back off further than for transport loss.
+                let rejected = matches!(
+                    &other,
+                    Ok(Err(tokio_tungstenite::tungstenite::Error::Http(_)))
+                );
+                connection_span.in_scope(|| tracing::warn!(target: "nanocodex_oai_tools::attachment", stage = "attachment.socket.connect_failed", reason_code = if rejected { "http_rejected" } else if other.is_err() { "connect_timeout" } else { "connect_failure" }, reconnect_delay_ms = backoff.as_millis() as u64, pending_calls = active.len(), "attachment connection attempt failed"));
                 let _ = status.send(AttachmentStatus::Disconnected);
                 previous_delay = backoff;
                 if wait_backoff(&mut commands, backoff).await {
                     break Ok(());
                 }
-                backoff = (backoff * 2).min(Duration::from_secs(5));
+                backoff = (backoff * 2).min(if rejected {
+                    MAX_REJECTED_BACKOFF
+                } else {
+                    Duration::from_secs(5)
+                });
                 continue;
             }
         };
@@ -581,13 +606,20 @@ fn start_call(
                     AttachmentCallOutcome::Unavailable,
                 )
             } else {
-                let duration = Duration::from_millis(remaining.min(tool_timeout));
+                // Settle locally just before the hosted deadline so the broker
+                // receives this runtime's own outcome rather than expiring it.
+                let duration = Duration::from_millis(
+                    remaining
+                        .saturating_sub(EXECUTION_DEADLINE_MARGIN_MS)
+                        .max(1)
+                        .min(tool_timeout),
+                );
                 let call = PreparedToolCall::new(
                     task_identity.model.to_string(),
                     task_identity.session_id.to_string(),
                     task_identity.call_id.to_string(),
                     task_identity.name.to_string(),
-                    task_identity.input.clone(),
+                    clamp_shell_yield(&task_identity.name, task_identity.input.clone(), remaining),
                     task_identity.output_token_budget as usize,
                 )
                 .with_turn_id(task_identity.turn_id.as_deref().map(str::to_owned));
@@ -646,6 +678,58 @@ fn start_call(
     let abort = task.abort_handle();
     active.push(InFlight { task });
     abort
+}
+
+/// Time reserved after a local execution timeout for its result to reach the broker.
+const EXECUTION_DEADLINE_MARGIN_MS: u64 = 1_000;
+#[cfg(not(feature = "workspace-runtime"))]
+fn clamp_shell_yield(_name: &str, input: Value, _remaining_ms: u64) -> Value {
+    input
+}
+
+/// Time reserved after a shell yield for result encoding and delivery.
+#[cfg(feature = "workspace-runtime")]
+const SHELL_YIELD_DEADLINE_MARGIN_MS: u64 = 3_000;
+#[cfg(feature = "workspace-runtime")]
+const MIN_SHELL_YIELD_MS: u64 = 250;
+
+/// Shell yields are observation deadlines: a process that outlives the hosted
+/// call deadline must return its live session before that deadline instead of
+/// letting the broker settle the call as ambiguous. Shorter yields and the
+/// tools' own defaults are preserved.
+#[cfg(feature = "workspace-runtime")]
+fn clamp_shell_yield(name: &str, mut input: Value, remaining_ms: u64) -> Value {
+    let exec = name == crate::StandardTool::ExecCommand.name();
+    if !exec && name != crate::StandardTool::WriteStdin.name() {
+        return input;
+    }
+    let Some(object) = input.as_object_mut() else {
+        return input;
+    };
+    let budget = remaining_ms
+        .saturating_sub(SHELL_YIELD_DEADLINE_MARGIN_MS)
+        .max(MIN_SHELL_YIELD_MS);
+    let requested = match object.get("yield_time_ms") {
+        Some(Value::Number(value)) => value.as_u64(),
+        Some(Value::Null) | None => None,
+        // Leave invalid input to the tool's own validation.
+        Some(_) => return input,
+    };
+    let effective = requested.unwrap_or_else(|| {
+        let polling = object
+            .get("chars")
+            .and_then(Value::as_str)
+            .is_none_or(str::is_empty);
+        match (exec, polling) {
+            (true, _) => crate::shell::DEFAULT_EXEC_YIELD_MS,
+            (false, true) => crate::shell::DEFAULT_POLL_YIELD_MS,
+            (false, false) => crate::shell::DEFAULT_WRITE_YIELD_MS,
+        }
+    });
+    if effective > budget {
+        object.insert("yield_time_ms".to_owned(), Value::from(budget));
+    }
+    input
 }
 
 // Diagnostics never wait on the socket; the runtime channel survives disconnects.

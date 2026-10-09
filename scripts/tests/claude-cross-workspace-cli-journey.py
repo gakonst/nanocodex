@@ -100,11 +100,11 @@ def main():
                 return ('EnterWorktree', {'name': 'mixed-propagation'})
             if stage == 2:
                 state['enter_receipt'] = json.loads(prior)
-                return ('Bash', {'command': 'printf entered-marker > marker.txt; pwd'})
+                return ('exec_command', {'cmd': 'printf entered-marker > marker.txt; pwd'})
             if stage == 3:
                 candidates = list((workspace / '.claude/worktrees').iterdir())
                 state['entered_workspace'] = str(next(p for p in candidates if p.is_dir()))
-                require(state['entered_workspace'] in prior, f'parent Bash did not switch: {prior}')
+                require(state['entered_workspace'] in prior, f'parent exec_command did not switch: {prior}')
                 entered.set()
                 return spawn('codex', 'NEW_CODEX')
             if stage == 4:
@@ -120,7 +120,7 @@ def main():
                 state['cleanup_lease_guarded'] = True
                 return ('ExitWorktree', {})
             if stage == 8:
-                return ('Bash', {'command': 'pwd; cat marker.txt'})
+                return ('exec_command', {'cmd': 'pwd; cat marker.txt'})
             if stage == 9:
                 require('original-marker' in prior, f'exit did not restore parent: {prior}')
                 if args.root_family != 'claude':
@@ -132,7 +132,7 @@ def main():
                 require(entered.wait(30), 'parent did not enter worktree before old child ran')
             command = f'pwd > {label}.txt; cat marker.txt >> {label}.txt; cat {label}.txt'
             if family == 'claude':
-                return ('Bash', {'command': command})
+                return ('exec_command', {'cmd': command})
             return ('exec', {'code': 'text(await tools.exec_command(' + json.dumps({'cmd': command, 'max_output_tokens': 1000}) + '));'})
         if stage == 1:
             expected = str(workspace) if label == 'OLD_PIN' else state['entered_workspace']

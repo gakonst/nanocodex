@@ -1,7 +1,7 @@
 //! Real shipped screen publisher against a loopback broker and isolated X11
 //! desktop. No installed account service, user display, or credentials are used.
 //! Run on Linux with Xvfb, openbox, xterm and fonts installed:
-//! cargo test -p nanocodex2-bin --test nanocodex2_managed \
+//! cargo test -p nanocodex-bin --test nanocodex2_managed \
 //!   standalone_screen_retries_and_exits_on_replacement -- --ignored --nocapture
 use axum::{
     Router,
@@ -182,7 +182,7 @@ async fn standalone_screen_retries_and_exits_on_replacement() {
         let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
         let state_dir = fixture.path().join("state");
         let key = format!("ncx_live_{}_{}", "a".repeat(12), "b".repeat(43));
-        let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_nanocodex2"))
+        let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_nanocodex"))
             .env_clear()
             .env("LANG", "C.UTF-8")
             .args(["__hand-screen", "--workspace"])
@@ -378,7 +378,7 @@ async fn standalone_screen_sigterm_during_startup_reaps_desktop() {
     paths.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap()));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let state_dir = fixture.path().join("state");
-    let child = tokio::process::Command::new(env!("CARGO_BIN_EXE_nanocodex2"))
+    let child = tokio::process::Command::new(env!("CARGO_BIN_EXE_nanocodex"))
         .env_clear()
         .env("LANG", "C.UTF-8")
         .args(["__hand-screen", "--workspace"])

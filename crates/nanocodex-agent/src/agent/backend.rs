@@ -63,12 +63,17 @@ pub enum BackendPromptRoute {
 /// Host persistence for one durable root's subagent task-tree journal.
 ///
 /// Durability adapters supply this beside the root's execution state. Values
-/// are opaque, Rust-owned JSON; `save` atomically replaces the previous value.
+/// are opaque, Rust-owned JSON. The journal itself stays small: child
+/// checkpoints are separate immutable records addressed by the lowercase hex
+/// SHA-256 of their exact JSON text.
 pub trait ChildJournalStore: Send + Sync + 'static {
     /// Loads the latest journal value.
     fn load(&self) -> BackendFuture<std::io::Result<Option<String>>>;
-    /// Atomically replaces the journal value.
-    fn save(&self, payload: String) -> BackendFuture<std::io::Result<()>>;
+    /// Atomically stores `records` and replaces the journal value that
+    /// references them. Records already stored may be supplied again.
+    fn save(&self, payload: String, records: Vec<Arc<str>>) -> BackendFuture<std::io::Result<()>>;
+    /// Loads one record referenced by a saved journal.
+    fn load_record(&self, key: String) -> BackendFuture<std::io::Result<String>>;
     /// Records a child's latest committed checkpoint as that child's own
     /// durable session (catalog entry plus resumable state), keyed by its
     /// distinct session ID and carrying its `Origin::Subagent` lineage.

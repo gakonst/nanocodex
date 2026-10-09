@@ -53,12 +53,12 @@ mode = sys.argv[1]
 with open('hooks.jsonl', 'a') as f:
     f.write(json.dumps(dict(p, mode=mode)) + '\\n')
 event = p['hook_event_name']
-command = p['tool_input'].get('command', '')
+command = p['tool_input'].get('cmd', '')
 if mode == 'observer':
     print('{}')
 elif event == 'PreToolUse':
     if 'case-rewrite' in command:
-        print(json.dumps({'hookSpecificOutput': {'hookEventName': event, 'updatedInput': {'command': "printf rewritten > rewritten.txt; printf retained-rewrite"}}}))
+        print(json.dumps({'hookSpecificOutput': {'hookEventName': event, 'updatedInput': {'cmd': "printf rewritten > rewritten.txt; printf retained-rewrite"}}}))
     elif 'case-deny' in command:
         print(json.dumps({'hookSpecificOutput': {'hookEventName': event, 'permissionDecision': 'deny', 'permissionDecisionReason': 'synthetic denial'}}))
     elif 'case-ask' in command:
@@ -85,27 +85,27 @@ else:
     observer = dict(command_hook, command=command_hook['command'].replace(' primary', ' observer'), timeout=2)
     settings = {'hooks': {
         'PreToolUse': [
-            {'matcher': '^Bash$', 'hooks': [command_hook, observer]},
+            {'matcher': '^exec_command$', 'hooks': [command_hook, observer]},
             {'matcher': '^Write$', 'hooks': [{'type': 'command', 'command': 'touch matcher-leak.txt'}]},
         ],
-        'PostToolUse': [{'matcher': '^Bash$', 'hooks': [observer, command_hook]}],
+        'PostToolUse': [{'matcher': '^exec_command$', 'hooks': [observer, command_hook]}],
         'PostToolUseFailure': [{'matcher': '^Read$', 'hooks': [observer]}],
     }}
     settings_path = artifact / 'hooks.json'
     settings_path.write_text(json.dumps(settings, indent=2))
     (workspace / '.claude/settings.json').write_text(json.dumps({'hooks': {'PreToolUse': [{'hooks': [{'type': 'command', 'command': 'touch implicit-leak.txt'}]}]}}))
     steps = [
-        ('Bash', {'command': 'touch original.txt # case-rewrite'}, False, 'retained-rewrite'),
-        ('Bash', {'command': 'touch denied.txt # case-deny'}, True, 'synthetic denial'),
-        ('Bash', {'command': 'touch ask.txt # case-ask'}, True, 'no hook approval UI'),
-        ('Bash', {'command': 'touch timed.txt # case-timeout'}, True, 'timed out'),
-        ('Bash', {'command': 'touch overflow.txt # case-overflow'}, True, 'exceeded 65536'),
-        ('Bash', {'command': 'touch malformed.txt # case-malformed'}, True, 'continue must be a boolean'),
-        ('Bash', {'command': 'touch exit2.txt # case-exit2'}, True, 'synthetic exit-two denial'),
-        ('Bash', {'command': 'printf effect > post-effect.txt; printf retained-post # case-postfail'}, True, 'retained-post'),
+        ('exec_command', {'cmd': 'touch original.txt # case-rewrite'}, False, 'retained-rewrite'),
+        ('exec_command', {'cmd': 'touch denied.txt # case-deny'}, True, 'synthetic denial'),
+        ('exec_command', {'cmd': 'touch ask.txt # case-ask'}, True, 'no hook approval UI'),
+        ('exec_command', {'cmd': 'touch timed.txt # case-timeout'}, True, 'timed out'),
+        ('exec_command', {'cmd': 'touch overflow.txt # case-overflow'}, True, 'exceeded 65536'),
+        ('exec_command', {'cmd': 'touch malformed.txt # case-malformed'}, True, 'continue must be a boolean'),
+        ('exec_command', {'cmd': 'touch exit2.txt # case-exit2'}, True, 'synthetic exit-two denial'),
+        ('exec_command', {'cmd': 'printf effect > post-effect.txt; printf retained-post # case-postfail'}, True, 'retained-post'),
         ('Read', {'file_path': 'missing.txt'}, True, None),
-        ('Bash', {'command': 'touch input-overflow.txt #' + 'x' * 1048576}, True, 'stdin exceeded 1048576'),
-        ('Bash', {'command': 'printf x >> recovered.txt; printf recovered'}, False, 'recovered'),
+        ('exec_command', {'cmd': 'touch input-overflow.txt #' + 'x' * 1048576}, True, 'stdin exceeded 1048576'),
+        ('exec_command', {'cmd': 'printf x >> recovered.txt; printf recovered'}, False, 'recovered'),
     ]
     requests, errors = [], []
     phase = {'name': 'explicit', 'start': 0, 'steps': steps}
@@ -179,9 +179,9 @@ else:
             require(record['cwd'] == str(workspace), 'hook cwd mismatch')
         rewrite = [r for r in records if r['tool_use_id'].split('/code-')[0] == 'explicit_0']
         require(len({(r['session_id'], r['turn_id'], r['tool_use_id']) for r in rewrite}) == 1, 'invocation identity changed across hooks')
-        require(rewrite[0]['tool_input']['command'].endswith('case-rewrite'), 'original input missing')
-        require('rewritten.txt' in rewrite[1]['tool_input']['command'], 'successive pre-hook did not observe updated input')
-        require(all('rewritten.txt' in r['tool_input']['command'] for r in rewrite if r['hook_event_name'] == 'PostToolUse'), 'post-hook received stale input')
+        require(rewrite[0]['tool_input']['cmd'].endswith('case-rewrite'), 'original input missing')
+        require('rewritten.txt' in rewrite[1]['tool_input']['cmd'], 'successive pre-hook did not observe updated input')
+        require(all('rewritten.txt' in r['tool_input']['cmd'] for r in rewrite if r['hook_event_name'] == 'PostToolUse'), 'post-hook received stale input')
         require(not any(r['hook_event_name'] != 'PreToolUse' and r['tool_use_id'].split('/code-')[0] in {f'explicit_{i}' for i in range(1, 7)} for r in records), 'post hook ran after pre-hook denial')
         require(not any(r['tool_use_id'].split('/code-')[0] == 'explicit_9' for r in records), 'oversized hook stdin spawned command')
         require(any(r['hook_event_name'] == 'PostToolUseFailure' and r['tool_name'] == 'Read' and r['is_error'] is True and r['error'] for r in records), 'tool failure hook missing')
@@ -193,7 +193,7 @@ else:
         require(len(requests) == prior, 'durable replay contacted provider')
         require((workspace / 'hooks.jsonl').read_text() == hook_log, 'durable replay re-executed hooks')
         require((workspace / 'recovered.txt').read_text() == 'x', 'durable replay repeated tool effect')
-        phase.update(name='implicit', start=len(requests), steps=[('Bash', {'command': 'printf implicit-optout'}, False, 'implicit-optout')])
+        phase.update(name='implicit', start=len(requests), steps=[('exec_command', {'cmd': 'printf implicit-optout'}, False, 'implicit-optout')])
         run('implicit', command + ['Exercise opt-out.'])
         require((workspace / 'hooks.jsonl').read_text() == hook_log, 'hooks executed without opt-in')
         prior = len(requests)

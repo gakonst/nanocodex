@@ -8,8 +8,8 @@ server tools are discovered dynamically and cannot be enumerated as a fixed list
 | Capability | Codex CLI | Claude CLI |
 | --- | --- | --- |
 | Model-facing orchestration | `exec`, `wait` | `exec`, `wait` |
-| Files, shell and media | `exec_command`, `write_stdin`, `apply_patch`, `view_image` | `Bash`, `Read`, `Write`, `Edit`, `Glob`, `Grep`, `NotebookEdit` |
-| Retained work | Shell session IDs through `write_stdin`; agent IDs through `wait_agent` | `TaskOutput`, `TaskStop` for shell jobs, monitors and workflows; agent IDs through `wait_agent` |
+| Files, shell and media | `exec_command`, `write_stdin`, `apply_patch`, `view_image` | `exec_command`, `write_stdin`, `Read`, `Write`, `Edit`, `Glob`, `Grep`, `NotebookEdit` |
+| Retained work | Shell session IDs through `write_stdin`; agent IDs through `wait_agent` | Shell session IDs through `write_stdin`; `TaskOutput`, `TaskStop` for monitors and workflows; agent IDs through `wait_agent` |
 | Planning and task state | `update_plan` | `TaskCreate`, `TaskGet`, `TaskList`, `TaskUpdate`, `TodoWrite` |
 | Subagents | `spawn_agent`, `send_agent_message`, `list_agents`, `wait_agent`, `interrupt_agent`, `close_agent`, `submit_result` | The exact same seven tools, schemas and shared handlers |
 | Computer and browser use | Discovered `mcp__cua_repl__*` tools | The same discovered `mcp__cua_repl__*` tools and provider |
@@ -30,7 +30,7 @@ MCP discovery. Workspace tools, web, image generation, subagents and memory can
 be disabled or depend on explicit configuration. Computer/browser integrations
 contribute their discovered provider tools.
 
-Claude's nested catalog installs file tools, Bash, retained-task access, task
+Claude's nested catalog installs file tools, shared shell tools, retained-task access, task
 state, project context and worktree tools. MCP requires configured servers; web
 requires web access; agent tools require subagents. `submit_result` is for child
 results. Interactive questions and plan transitions require an interactive UI.
@@ -50,8 +50,8 @@ authorization or message routing.
 
 ## Claude Code Mode
 
-Start the native CLI with `nanocodex --claude` (or pass `--claude` to
-`nanocodex run`). Claude receives only the `exec` and `wait` model
+Start the native CLI with `ncl --claude` (or pass `--claude` to
+`ncl run`). Claude receives only the `exec` and `wait` model
 tools. Send `exec` a JSON object with a `code` string; inside it use the same
 JavaScript helpers and QuickJS runtime as Codex:
 
@@ -63,8 +63,8 @@ const results = await Promise.all([
 results.forEach(text);
 ```
 
-Native callbacks retain their permissions and hooks. Shared subagent tools
-return the same JSON objects as Codex. Other native tool results use
+Native callbacks retain their permissions and hooks. Shared shell and subagent
+tools return the same JSON objects as Codex. Other native tool results use
 `content`, `isError` and `structuredContent`; images can be forwarded with
 `image(result.content[i])`. Shared subagent tools keep their canonical names,
 and CUA remains available through `tools.mcp__cua_repl__js(...)` and the rest of
@@ -91,12 +91,16 @@ application tool list. Roots and children use the shared Code Mode runtime
 regardless of harness. Hosts supply an isolated evaluator; native tool handlers
 remain behind `exec` and `wait`.
 
-The managed Claude adapter supplies `Bash`, `Read`, `Write`, `Edit`, optionally
-`BashOutput`, plus authorized application tools. Configured MCP adds
+The managed Claude adapter supplies `exec_command`, `Read`, `Write`, `Edit`,
+and `write_stdin` when the host supports retained shell sessions, plus authorized
+application tools. Shell definitions and handlers come from the same host
+capabilities used by managed Codex. Configured MCP adds
 `MCPToolSearch` and `MCPExecute`; connector/Hand providers add `ToolSearch` and
 `ToolExecute`. Shared subagent operations are installed by the task-tree runtime.
 This catalog differs from the native CLI: for example, managed file tools work
-under `/brain`, and `BashOutput` uses retained Hand shell sessions.
+under `/brain`; explicit Hand workdirs route native commands, and `write_stdin`
+continues the retained session on the Hand that created it. Neither Claude
+catalog exposes `Bash` or `BashOutput`.
 
 ## Sources
 

@@ -1,7 +1,10 @@
 // Run with: node bin/nanocodex/tests/update_source_e2e.mjs target/debug/nanocodex
 // Git, Cargo and native build tools are real; GitHub/PR metadata are local and brew is unavailable.
+// Current sources build nanocodex-bin's nanocodex CLI and nanocodex-hand daemon; the
+// Hand is installed as nanocodex2. A historical nanocodex2-bin pair still builds.
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { copyFileSync, mkdtempSync, mkdirSync, readFileSync, readlinkSync, rmSync, writeFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { resolve, join } from 'node:path';
@@ -45,7 +48,8 @@ try {
   writeFileSync(join(store, 'automatic-updates-disabled'), '');
   run('git', ['init', '--bare', remote]);
   run('git', ['init', '-b', 'topic'], { cwd: source });
-  writeFileSync(join(source, 'Cargo.toml'), '[workspace]\nresolver = "2"\nmembers = ["cli", "hand", "shared"]\n[profile.nightly]\ninherits = "release"\nlto = false\n');
+  const workspace = members => `[workspace]\nresolver = "2"\nmembers = [${members.map(m => `"${m}"`).join(', ')}]\n[profile.nightly]\ninherits = "release"\nlto = false\n`;
+  writeFileSync(join(source, 'Cargo.toml'), workspace(['cli', 'shared']));
   // Use the shipped identity helper, including its real Git reference watches.
   const identityHelper = readFileSync(new URL('../build_version.rs', import.meta.url), 'utf8');
   const buildScript = (binary = false) => `${binary ? 'mod build_version;' : ''}
@@ -99,26 +103,27 @@ fn main() {
     writeFileSync(join(source, 'guest/src/main.rs'), 'unsafe extern "C" { fn guest_value() -> i32; }\nfn main() { println!("{}", unsafe { guest_value() }); }\n');
     run('cargo', ['generate-lockfile', '--offline', '--manifest-path', 'guest/Cargo.toml'], { cwd: source });
   }
-  for (const [dir, packageName, binaryName] of [
-    ['cli', 'nanocodex-bin', 'nanocodex'],
-    ['hand', 'nanocodex2-bin', 'nanocodex2'],
-  ]) {
+  // features: the shared crate features this package enables. The unified
+  // package enables both roles; a historical pair enabled one role each.
+  // extraBins: further [[bin]] targets sharing src/main.rs (the Hand daemon).
+  const writePackage = (dir, packageName, binaryName, features, extraBins = []) => {
     const path = join(source, dir);
     mkdirSync(join(path, 'src'), { recursive: true });
-    writeFileSync(join(path, 'Cargo.toml'), `[package]\nname = "${packageName}"\nversion = "0.1.0"\nedition = "2024"\n[[bin]]\nname = "${binaryName}"\npath = "src/main.rs"\n[features]\ntempo = []\n[dependencies]\nshared = { path = "../shared", features = ["${dir}"] }\n[build-dependencies]\nchrono = "0.4"\nvergen = { version = "8", default-features = false, features = ["build", "git", "gitcl"] }\n`);
+    writeFileSync(join(path, 'Cargo.toml'), `[package]\nname = "${packageName}"\nversion = "0.1.0"\nedition = "2024"\n${[binaryName, ...extraBins].map(name => `[[bin]]\nname = "${name}"\npath = "src/main.rs"\n`).join('')}[features]\ntempo = []\n[dependencies]\nshared = { path = "../shared", features = [${features.map(f => `"${f}"`).join(', ')}] }\n[build-dependencies]\nchrono = "0.4"\nvergen = { version = "8", default-features = false, features = ["build", "git", "gitcl"] }\n`);
     writeFileSync(join(path, 'build.rs'), buildScript(true));
     writeFileSync(join(path, 'build_version.rs'), identityHelper);
     writeFileSync(join(path, 'src/main.rs'), `fn main() {
     let args: Vec<String> = std::env::args().collect();
     if args.get(1).map(String::as_str) == Some("--version") {
-        println!("${binaryName} Version: 0.1.0-dev\\n{}", env!("NANOCODEX_LONG_VERSION_1"));
+        println!("{} Version: 0.1.0-dev\\n{}", env!("CARGO_BIN_NAME"), env!("NANOCODEX_LONG_VERSION_1"));
         println!("Shared features: {:?}", shared::features());
     } else if args.get(1).map(String::as_str) == Some("__device-hand") {
         println!("{{\\"serviceProtocol\\":1}}");
     }
 }
 `);
-  }
+  };
+  writePackage('cli', 'nanocodex-bin', 'nanocodex', ['cli', 'hand'], ['nanocodex-hand']);
   writeFileSync(join(source, 'nanocodex-vm.entitlements'), '<?xml version="1.0"?><plist version="1.0"><dict><key>com.apple.security.hypervisor</key><true/></dict></plist>');
   run('cargo', ['generate-lockfile', '--offline'], { cwd: source });
   run('git', ['add', '.'], { cwd: source });
@@ -151,7 +156,17 @@ fn main() {
   let result = update(['--branch', 'topic']);
   assert.equal(result.status, 0, result.stderr);
   const firstBuildMs = result.elapsedMs;
-  assert.ok(existsSync(join(store, 'versions', `branch-${sha}`, 'nanocodex2')));
+  const splitPair = key => {
+    const cliVersion = run(join(store, 'versions', key, 'nanocodex'), ['--version']).stdout;
+    const handVersion = run(join(store, 'versions', key, 'nanocodex2'), ['--version']).stdout;
+    assert.match(cliVersion, /^nanocodex Version/m);
+    assert.match(handVersion, /^nanocodex-hand Version/m, 'the Hand is installed under the service name nanocodex2');
+    transcript.push(`observed: versions/${key}/nanocodex is the CLI, nanocodex2 is the nanocodex-hand build`);
+  };
+
+  splitPair(`branch-${sha}`);
+  assert.match(result.stderr, /compiling nanocodex and nanocodex-hand at /);
+  assert.doesNotMatch(result.stderr, /nanocodex2-bin/);
   const installedVersion = run(join(store, 'versions', `branch-${sha}`, 'nanocodex'), ['--version']).stdout;
   assert.match(installedVersion, new RegExp(sha));
   assert.match(installedVersion, /Shared features: \(true, true\)/);
@@ -161,12 +176,12 @@ fn main() {
     transcript.push('expected: with brew unavailable, nested Cargo builds C, archives it and links a static AArch64 musl init using shipped wrappers; observed: static ELF verified');
   }
   const firstBuild = readFileSync(buildLog, 'utf8');
-  assert.equal(firstBuild.trim().split('\n').length, 3, firstBuild);
+  assert.equal(firstBuild.trim().split('\n').length, 2, firstBuild);
 
   result = update(['--branch', 'topic']);
   assert.equal(result.status, 0, result.stderr);
   assert.equal(readFileSync(buildLog, 'utf8'), firstBuild, 'unchanged branch must reuse both binaries and shared dependencies');
-  transcript.push(`expected: one shared dependency build, two binary builds; repeated update compiles nothing\nobserved: first update ${firstBuildMs} ms; repeated update ${result.elapsedMs} ms\nobserved build log:\n${firstBuild}`);
+  transcript.push(`expected: one shared dependency build, one package build for both binaries; repeated update compiles nothing\nobserved: first update ${firstBuildMs} ms; repeated update ${result.elapsedMs} ms\nobserved build log:\n${firstBuild}`);
 
   result = update(['--pr', '42']);
   assert.equal(result.status, 0, result.stderr);
@@ -195,7 +210,8 @@ fn main() {
   for (const executable of ['nanocodex', 'nanocodex2']) {
     assert.match(run(join(store, 'versions', `branch-${nextSha}`, executable), ['--version']).stdout, new RegExp(nextSha));
   }
-  assert.equal(readFileSync(buildLog, 'utf8').trim().split('\n').length, 6);
+  assert.equal(readFileSync(buildLog, 'utf8').trim().split('\n').length, 4);
+  splitPair(`branch-${nextSha}`);
 
   // Recover a modified cached checkout instead of activating altered sources.
   writeFileSync(join(store, 'source-build/checkout/cli/src/main.rs'), 'invalid cached Rust\n');
@@ -216,6 +232,28 @@ fn main() {
     : readlinkSync(join(store, 'current')).split('/').at(-1);
   assert.equal(active, `branch-${nextSha}`);
   transcript.push(`expected: branch and PR binaries built at ${sha}, new revision ${nextSha} installed, modified cache recovered; closed, changed, missing and broken heads rejected; previous bundle preserved\nobserved: ${active}\n`);
+
+  // A historical revision with the separate nanocodex2-bin package keeps its
+  // distinct, revision-matched pair (update --branch of an old topic branch).
+  writeFileSync(join(source, 'Cargo.toml'), workspace(['cli', 'hand', 'shared']));
+  writePackage('cli', 'nanocodex-bin', 'nanocodex', ['cli']);
+  writePackage('hand', 'nanocodex2-bin', 'nanocodex2', ['hand']);
+  run('cargo', ['generate-lockfile', '--offline'], { cwd: source });
+  run('git', ['add', '.'], { cwd: source });
+  run('git', ['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-m', 'historical pair'], { cwd: source });
+  const legacySha = run('git', ['rev-parse', 'HEAD'], { cwd: source }).stdout.trim();
+  run('git', ['push', remote, 'HEAD:refs/heads/legacy-pair'], { cwd: source });
+  result = update(['--branch', 'legacy-pair']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stderr, /compiling nanocodex and nanocodex2 at /);
+  const legacyCli = run(join(store, 'versions', `branch-${legacySha}`, 'nanocodex'), ['--version']).stdout;
+  const legacyHand = run(join(store, 'versions', `branch-${legacySha}`, 'nanocodex2'), ['--version']).stdout;
+  assert.match(legacyCli, /^nanocodex Version/m);
+  assert.match(legacyCli, /Shared features: \(true, true\)/);
+  assert.match(legacyHand, /^nanocodex2 Version/m);
+  assert.match(legacyHand, /Shared features: \(true, true\)/);
+  for (const output of [legacyCli, legacyHand]) assert.match(output, new RegExp(legacySha));
+  transcript.push(`expected: historical two-package revision ${legacySha} builds and installs its distinct pair\nobserved: nanocodex and nanocodex2 report their own packages at ${legacySha}\n`);
   process.stdout.write(`source update journeys passed; transcript: ${join(output, 'transcript.log')}\n`);
 } finally {
   writeFileSync(join(output, 'transcript.log'), transcript.join('\n'));

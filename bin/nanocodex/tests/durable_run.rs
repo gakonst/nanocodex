@@ -1,3 +1,7 @@
+#[path = "support/local_cli.rs"]
+mod local_cli;
+use local_cli::local_cli;
+
 use std::{
     path::Path,
     process::{Output, Stdio},
@@ -363,7 +367,7 @@ fn durable_command_for_request(
     request_id: &str,
     prompt: &str,
 ) -> Command {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_nanocodex"));
+    let mut command = Command::new(local_cli());
     command
         .current_dir(workspace)
         .env_clear()

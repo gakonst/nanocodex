@@ -3,7 +3,7 @@
 
 //! Grapheme-aware soft and hard wrapping for the composer.
 
-use crate::tui::format::terminal_text_width;
+use crate::nanocodex2::tui::format::terminal_text_width;
 use std::ops::Range;
 use unicode_segmentation::UnicodeSegmentation;
 

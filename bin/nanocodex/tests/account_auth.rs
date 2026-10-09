@@ -15,19 +15,9 @@ use serde_json::{Value, json};
 use tokio::{io::AsyncWriteExt, process::Command};
 
 fn cli_binary() -> PathBuf {
-    if let Some(binary) = option_env!("CARGO_BIN_EXE_nanocodex2") {
-        std::env::var_os("NANOCODEX2_TEST_BINARY")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from(binary))
-    } else if let Some(binary) = option_env!("CARGO_BIN_EXE_nanocodex") {
-        std::env::var_os("NANOCODEX_TEST_BINARY")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from(binary))
-    } else {
-        std::env::var_os("NANOCODEX_TEST_BINARY")
-            .map(PathBuf::from)
-            .expect("account_auth requires a Cargo-built CLI binary or NANOCODEX_TEST_BINARY")
-    }
+    std::env::var_os("NANOCODEX_TEST_BINARY")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_nanocodex")))
 }
 
 fn key() -> String {
@@ -156,10 +146,8 @@ impl Fixture {
     }
 
     fn command(&self, args: &[&str]) -> Command {
+        // `nanocodex login|status|logout` are the managed account commands.
         let mut command = Command::new(cli_binary());
-        if option_env!("CARGO_BIN_EXE_nanocodex2").is_none() {
-            command.arg("account");
-        }
         command.args(args);
         // Account fixtures must never enroll or reconfigure the GUI user's Hand.
         if args.first() == Some(&"login") {
@@ -231,9 +219,7 @@ async fn sms_login_retry_status_and_logout_use_the_same_account_contract() {
     let status: Value = serde_json::from_slice(&status.stdout).unwrap();
     assert_eq!(status["source"], "saved");
     assert_eq!(status["account"]["user"], "u_test");
-    if option_env!("CARGO_BIN_EXE_nanocodex2").is_some() {
-        success(&fixture.run(&["list"], "").await);
-    }
+    success(&fixture.run(&["list"], "").await);
     success(&fixture.run(&["logout"], "").await);
     assert!(
         !std::fs::read_to_string(&fixture.path)
@@ -493,9 +479,6 @@ async fn ctrl_c_during_mint_waits_for_the_result_and_revokes_without_saving() {
 #[tokio::test]
 async fn hand_menu_status_observes_real_http_without_mutations_or_secret_output() {
     use std::sync::atomic::{AtomicUsize, Ordering};
-    if option_env!("CARGO_BIN_EXE_nanocodex").is_none() {
-        return;
-    }
     let binary = cli_binary();
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("account.json");

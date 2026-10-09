@@ -92,7 +92,9 @@ impl DynamicToolProvider for Catalog {
             Ok(reply) => {
                 if matches!(
                     name,
-                    "spawn_agent"
+                    "exec_command"
+                        | "write_stdin"
+                        | "spawn_agent"
                         | "list_agents"
                         | "send_agent_message"
                         | "wait_agent"
@@ -116,7 +118,7 @@ impl DynamicToolProvider for Catalog {
                         match serde_json::from_str::<Value>(&text) {
                             Ok(value) => ToolOutput::from_json(value, true),
                             Err(error) => ToolOutput::error(format!(
-                                "invalid canonical subagent result: {error}"
+                                "invalid canonical shared tool result: {error}"
                             )),
                         }
                     };
@@ -205,7 +207,7 @@ pub(super) fn wrap(native: ClaudeTools) -> nanocodex::agent::Result<ClaudeTools>
             } if name.as_ref() == "exec" => (
                 name.to_string(),
                 format!(
-                    "{description}\nSupply JavaScript in the code JSON field. Shared subagent tools return their canonical JSON directly. Other native results use content/isError/structuredContent; failed tools reject the Promise. Forward base64 image blocks with image(result.content[i]). Cells and store are process-local: after restart reconcile prior effects; never replay a cell to recover it."
+                    "{description}\nSupply JavaScript in the code JSON field. Shared shell and subagent tools return their canonical JSON directly. Other native results use content/isError/structuredContent; failed tools reject the Promise. Forward base64 image blocks with image(result.content[i]). Cells and store are process-local: after restart reconcile prior effects; never replay a cell to recover it."
                 ),
                 json!({"type":"object","properties":{"code":{"type":"string"}},"required":["code"],"additionalProperties":false}),
             ),

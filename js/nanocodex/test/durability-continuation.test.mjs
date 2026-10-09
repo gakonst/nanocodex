@@ -37,6 +37,9 @@ test("a long WASM turn resumes its current batch after a lost checkpoint acknowl
   let recordBytesWritten = 0;
   let largestCommit = 0;
   const durability = { ...store, replace(id, request) {
+    // The durable child task-tree journal shares this store as a sibling
+    // state; the bounds below apply to the root conversation state.
+    if (id !== durabilityId) return store.replace(id, request);
     const bytes = request.records.reduce((total, record) => total + Buffer.byteLength(record.value), 0);
     recordBytesWritten += bytes;
     largestCommit = Math.max(largestCommit, bytes);

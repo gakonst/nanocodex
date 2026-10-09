@@ -1,5 +1,5 @@
 //! Screen selection and read-only live video inside the tiled workspace.
-use crate::tui::{
+use crate::nanocodex2::tui::{
     format::sanitize_terminal_text,
     screen::{Command, Snapshot, Surface},
     theme::Theme,
@@ -23,7 +23,7 @@ pub(super) struct ScreenPane {
     index: usize,
     command: Option<String>,
     pub image_area: Rect,
-    presented: Option<Arc<crate::tui::screen::VideoFrame>>,
+    presented: Option<Arc<crate::nanocodex2::tui::screen::VideoFrame>>,
     frame_count: u32,
     measured_at: Instant,
     fps: u32,

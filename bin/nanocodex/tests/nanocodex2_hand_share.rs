@@ -128,7 +128,7 @@ async fn hand_share_cli_journey() {
     server.abort();
 }
 async fn run(home: &tempfile::TempDir, origin: &str, args: &[&str]) -> std::process::Output {
-    tokio::process::Command::new(env!("CARGO_BIN_EXE_nanocodex2"))
+    tokio::process::Command::new(env!("CARGO_BIN_EXE_nanocodex"))
         .env_clear()
         .env("HOME", home.path())
         .env("NANOCODEX_HOME", home.path())

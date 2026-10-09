@@ -6,7 +6,9 @@
 mod capacity;
 mod diagnostics;
 mod durable;
-pub use durable::{MemorySubagentStore, RestoreReport, SubagentStore, SubagentStoreFuture};
+pub use durable::{
+    MemorySubagentStore, RestoreReport, SubagentStore, SubagentStoreFuture, checkpoint_key,
+};
 
 pub use diagnostics::{CompletionError, CompletionErrorCode};
 mod harness;

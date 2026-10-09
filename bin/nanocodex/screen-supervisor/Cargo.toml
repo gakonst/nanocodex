@@ -1,0 +1,20 @@
+[package]
+name = "nanocodex-screen-supervisor"
+description = "Native screen publication supervisor for Nanocodex Hands"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# Kept in its own crate so its paused-clock tests can use tokio's test-util
+# without enabling that feature for every crate in `cargo test -p nanocodex-bin`,
+# which would otherwise rebuild the whole dependency graph a second time.
+[dependencies]
+tokio = { workspace = true, features = ["macros", "sync", "time"] }
+tracing.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt", "test-util"] }
+
+[lints]
+workspace = true

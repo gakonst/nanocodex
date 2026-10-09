@@ -1,5 +1,9 @@
 //! Public API and shipped CLI acceptance with real HTTPS pages and synthetic
 //! Messages/SSE. The production executable has no loopback transport override.
+#[path = "support/local_cli.rs"]
+mod local_cli;
+use local_cli::local_cli;
+
 #[path = "../src/config/claude/web.rs"]
 mod web;
 
@@ -312,7 +316,7 @@ async fn shipped_cli_native_search_fetch_opt_in_and_default_denial() {
     let endpoint = format!("http://{}/v1/messages", listener.local_addr().unwrap());
     let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
     let base = |enabled: &str| {
-        let mut cmd = tokio::process::Command::new(env!("CARGO_BIN_EXE_nanocodex"));
+        let mut cmd = tokio::process::Command::new(local_cli());
         cmd.arg("run")
             .current_dir(&workspace)
             .env_clear()

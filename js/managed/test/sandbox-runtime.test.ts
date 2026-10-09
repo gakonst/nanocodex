@@ -6,7 +6,9 @@ import {
   handleSandboxEgress,
   isCrossBindingR2Copy,
 } from "../src/sandbox-runtime";
-import { cloudflareSandboxPreviewUrl } from "../src/sandbox-tools";
+import { getSandbox } from "@cloudflare/sandbox";
+import { cloudflareSandboxPreviewUrl, destroyCloudflareSandbox, isProvisionableCloudflareSandbox } from "../src/sandbox-tools";
+import { errorDiagnostics } from "../src/safe-error";
 import {
   createManagedNamespaceTools,
   routeSandboxPreviewRequest,
@@ -308,3 +310,33 @@ function toolContext() {
     signal: new AbortController().signal,
   };
 }
+
+describe("sandbox cleanup for legacy mount resources", () => {
+  it("skips legacy mount IDs that the Sandbox SDK rejects before any I/O", async () => {
+    const session = "0190b4b2-2d6f-7a3c-8d1e-1234567890ab";
+    // Before per-mount UUID resources, later Cloudflare mounts stored this ID.
+    const legacy = `${session}-mount-0190b4b2-2d6f-7a3c-8d1e-abcdefabcdef`;
+    const namespace = new Proxy({}, {
+      get() { throw new Error("an unprovisionable sandbox must not reach its namespace"); },
+    }) as unknown as DurableObjectNamespace<Sandbox>;
+    let rejected: unknown;
+    try { getSandbox(namespace, `nanocodex-${legacy}`, { normalizeId: true }); } catch (error) { rejected = error; }
+    // This was the deletion loop's SandboxSecurityError: no container can exist.
+    expect(errorDiagnostics(rejected)).toMatchObject({
+      error_kind: "SandboxSecurityError", reason: "INVALID_SANDBOX_ID_LENGTH",
+    });
+    expect(isProvisionableCloudflareSandbox(legacy)).toBe(false);
+    expect(isProvisionableCloudflareSandbox(session)).toBe(true);
+    await expect(destroyCloudflareSandbox(namespace, legacy)).resolves.toBeUndefined();
+  });
+
+  it("logs bounded content-free failure reasons", () => {
+    const error = Object.assign(new TypeError(
+      "Cannot read 'secret prompt text' at https://example.test/x?token=1 for item 0123456789abcdefghijklmnopqrstuv",
+    ), { code: "ai_search_list_malformed" });
+    const diagnostics = errorDiagnostics(error);
+    expect(diagnostics).toMatchObject({ error_kind: "TypeError", reason: "ai_search_list_malformed" });
+    expect(diagnostics.error_message).not.toMatch(/secret|example\.test|0123456789abcdef/u);
+    expect(errorDiagnostics(Object.assign(new Error("x"), { code: "has spaces and user text" })).reason).toBe("Error");
+  });
+});

@@ -144,14 +144,12 @@ export function destroy(owner) {
         `destroy:${globalThis.crypto.randomUUID()}`,
         fence,
       );
-      storage.sql.exec(
-        "DELETE FROM nanocodex_durable_records WHERE state_id = ?",
-        stateId,
-      );
-      storage.sql.exec(
-        "DELETE FROM nanocodex_durable_states WHERE state_id = ?",
-        stateId,
-      );
+      // The durable child task-tree journal is a sibling state of the root
+      // (see nanocodex-durability child_journal); destroy removes both.
+      for (const id of [stateId, `${stateId}:subagents`]) {
+        storage.sql.exec("DELETE FROM nanocodex_durable_records WHERE state_id = ?", id);
+        storage.sql.exec("DELETE FROM nanocodex_durable_states WHERE state_id = ?", id);
+      }
     }
     storage.sql.exec("DROP TABLE IF EXISTS nanocodex_cloudflare_fork_resume");
     clearCloudflareEventSocket(context);
@@ -623,6 +621,9 @@ async function createOwned(module, resolved, options, hostAgent, lifecycle, prep
   // Latest root-thread socket and an optional reopened idle socket. Children
   // and turn-state reconnects never adopt the speculative connection.
   let rootSocket;
+  // Root sockets still connecting (startup preconnect, turns). Preparation
+  // must not open a second provider socket beside one in flight.
+  let rootConnecting = 0;
   let idlePreparation;
   let released = false;
   const discardIdlePreparation = () => {
@@ -635,6 +636,7 @@ async function createOwned(module, resolved, options, hostAgent, lifecycle, prep
   const prepareIdleTransport = () => {
     if (released || directInference || typeof endpoint.createWebSocket !== "function") return false;
     if (idlePreparation !== undefined) return true;
+    if (rootConnecting > 0) return false;
     if (rootSocket !== undefined && rootSocket.readyState <= WEBSOCKET_OPEN) return false;
     const connection = prepareConnection(endpoint, sessionId);
     const timer = setTimeout(() => {
@@ -730,6 +732,8 @@ async function createOwned(module, resolved, options, hostAgent, lifecycle, prep
           throw new Error("Routed children require full-history HTTP Responses transport");
         }
       }
+      const root = (request.threadId ?? id) === sessionId;
+      if (root) rootConnecting += 1;
       try {
         const preparation = request.authorization === "preconnect" ? preparedConnection : undefined;
         if (preparation !== undefined) preparedConnection = undefined;
@@ -741,6 +745,8 @@ async function createOwned(module, resolved, options, hostAgent, lifecycle, prep
       } catch (error) {
         if (request.authorization === "preconnect") startup.reject(error);
         throw error;
+      } finally {
+        if (root) rootConnecting -= 1;
       }
     },
   });

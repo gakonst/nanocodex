@@ -6,6 +6,9 @@
 //! orchestration and hosted tools; this module owns only presentation, terminal
 //! interaction, and the caller-local shell convenience.
 
+pub(crate) mod backend;
+#[cfg(feature = "tui-bench")]
+pub(crate) mod bench;
 mod btw;
 mod bug;
 mod clipboard;
@@ -13,9 +16,12 @@ mod components;
 mod context;
 mod control;
 mod editor;
+pub(crate) mod features;
 mod format;
 mod history;
 mod links;
+pub(crate) mod local;
+mod notification;
 mod pane;
 mod private_input;
 mod prompt;
@@ -31,12 +37,15 @@ mod shell;
 mod sites;
 mod spinner;
 mod sudo_input;
+mod telemetry;
 mod terminal;
 mod theme;
 mod tmux;
+pub(crate) mod tool_calls;
 mod transcript;
 mod vault;
 mod voice_clone;
+pub(crate) mod voice_keys;
 
 pub(crate) use self::shared::run_shared;
 
@@ -59,7 +68,7 @@ use self::{
     theme::{Theme, detect_system_scheme},
     transcript::{LocalEvent, ShellId, TranscriptRecord, TurnId},
 };
-use crate::{config::ReasoningEffort, config::ReasoningMode, host::HostConfig};
+use crate::nanocodex2::{config::ReasoningEffort, config::ReasoningMode, host::HostConfig};
 use crossterm::event::{Event, EventStream, KeyCode, KeyEventKind, KeyModifiers};
 use futures_util::StreamExt;
 use nanocodex::Model;
@@ -507,6 +516,12 @@ enum ConnectionResult {
         request_id: u64,
         result: Option<Result<AgentList, ManagedError>>,
     },
+    /// Local session discovery, read off the input loop.
+    LocalSessions {
+        pane: PaneId,
+        request_id: u64,
+        result: Option<Result<Vec<SessionSummary>, String>>,
+    },
     RecentPrompts {
         pane: PaneId,
         request_id: u64,
@@ -539,7 +554,7 @@ impl SettingsMutation {
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct PendingVoice {
     pane: PaneId,
-    selection: crate::voice::Selection,
+    selection: crate::nanocodex2::voice::Selection,
     muted: bool,
 }
 
@@ -556,11 +571,23 @@ struct DriverRuntime {
     btw_events: mpsc::UnboundedSender<btw::Event>,
     screen: screen::Controller,
     pending_voice: Option<PendingVoice>,
-    voice_selection: crate::voice::Selection,
+    voice_selection: crate::nanocodex2::voice::Selection,
     clone_panel: Option<voice_clone::Panel>,
     voice_tasks: JoinSet<(PaneId, Result<String, String>)>,
-    voice: Option<crate::voice::Session>,
+    voice: Option<crate::nanocodex2::voice::Session>,
     client: ManagedClient,
+    /// The local backend for ncl; None for managed sessions.
+    local: Option<local::LocalState>,
+    feature_overlay: Option<Box<dyn features::FeatureOverlay>>,
+    // Feature-submitted turns and their receipts.
+    feature_instructions: HashMap<TurnId, String>,
+    feature_completions: HashMap<TurnId, Vec<tokio::sync::oneshot::Sender<bool>>>,
+    feature_turns: HashSet<TurnId>,
+    local_voice_status: Option<crate::nanocodex2::voice_state::Status>,
+    /// A harness relaunch is queued or connecting; prompts wait for it.
+    harness_relaunching: bool,
+    /// The newest harness launch waiting for the connection slot.
+    queued_relaunch: Option<Box<local::agent::LocalLaunch>>,
     agent: Option<Nanocodex>,
     startup_attach: bool,
     pending_resume: Option<(tokio::task::AbortHandle, PaneId)>,
@@ -738,14 +765,16 @@ fn history_replay_matches(
         && runtime_before == Some(requested_before)
 }
 
-fn voice_settings(selection: &crate::voice::Selection) -> nanocodex_voice_protocol::VoiceSettings {
+fn voice_settings(
+    selection: &crate::nanocodex2::voice::Selection,
+) -> nanocodex_voice_protocol::VoiceSettings {
     use nanocodex_voice_protocol::{VoiceOutputProvider, VoiceSettings};
     match selection {
-        crate::voice::Selection::Chatgpt(name) => VoiceSettings {
+        crate::nanocodex2::voice::Selection::Chatgpt(name) => VoiceSettings {
             voice: (*name).into(),
             ..Default::default()
         },
-        crate::voice::Selection::ElevenLabs(id) => VoiceSettings {
+        crate::nanocodex2::voice::Selection::ElevenLabs(id) => VoiceSettings {
             output_provider: VoiceOutputProvider::Elevenlabs,
             eleven_labs_voice_id: Some(id.clone()),
             ..Default::default()
@@ -754,7 +783,8 @@ fn voice_settings(selection: &crate::voice::Selection) -> nanocodex_voice_protoc
 }
 
 async fn list_elevenlabs_voices() -> Result<String, String> {
-    let client = crate::voice::elevenlabs::Client::from_env().map_err(|e| e.to_string())?;
+    let client =
+        crate::nanocodex2::voice::elevenlabs::Client::from_env().map_err(|e| e.to_string())?;
     let voices = client.voices().await.map_err(|e| e.to_string())?;
     let mut lines = vec!["ElevenLabs voices (use /voice elevenlabs VOICE_ID):".to_owned()];
     for voice in voices {
@@ -798,7 +828,7 @@ async fn clone_elevenlabs_voice(name: String, path: PathBuf) -> Result<String, S
     let handle = tokio::runtime::Handle::current();
     tokio::task::spawn_blocking(move || {
         handle.block_on(async move {
-            let client = crate::voice::elevenlabs::Client::from_env().map_err(|e| e.to_string())?;
+            let client = crate::nanocodex2::voice::elevenlabs::Client::from_env().map_err(|e| e.to_string())?;
             let voice = client
                 .clone_voice(&name, &[path], true)
                 .await
@@ -911,9 +941,9 @@ impl DriverRuntime {
         ids
     }
 
-    fn voice_status(&self) -> Option<crate::voice_state::Status> {
+    fn voice_status(&self) -> Option<crate::nanocodex2::voice_state::Status> {
         if let Some(panel) = &self.clone_panel {
-            return Some(crate::voice_state::Status {
+            return Some(crate::nanocodex2::voice_state::Status {
                 text: panel.text(),
                 microphone: panel.microphone_peak(),
                 ..Default::default()
@@ -925,12 +955,14 @@ impl DriverRuntime {
             .or_else(|| {
                 self.pending_voice
                     .as_ref()
-                    .map(|pending| crate::voice_state::Status {
+                    .map(|pending| crate::nanocodex2::voice_state::Status {
                         text: "Voice connecting…".into(),
                         muted: pending.muted,
                         ..Default::default()
                     })
             })
+            // Local Realtime voice status.
+            .or_else(|| self.local_voice_status.clone())
     }
 
     fn take_ready_voice(&mut self) -> Option<PendingVoice> {
@@ -948,9 +980,9 @@ impl DriverRuntime {
     fn voice_command(
         &mut self,
         pane: PaneId,
-        command: crate::voice::Command,
+        command: crate::nanocodex2::voice::Command,
     ) -> Result<Option<String>, String> {
-        use crate::voice::Command;
+        use crate::nanocodex2::voice::Command;
         if self.clone_panel.is_some()
             && matches!(
                 command,
@@ -973,7 +1005,7 @@ impl DriverRuntime {
             Command::Start(None) if self.voice.is_some() => Ok(None),
             Command::Start(name) => {
                 let selection = name
-                    .map(crate::voice::Selection::Chatgpt)
+                    .map(crate::nanocodex2::voice::Selection::Chatgpt)
                     .unwrap_or_else(|| self.voice_selection.clone());
                 self.voice_command(pane, Command::Select(selection))
             }
@@ -1019,12 +1051,15 @@ impl DriverRuntime {
                 }
                 Ok(None)
             }
-            Command::Help => Ok(Some(crate::voice::HELP.into())),
-            Command::ListProvider(crate::voice::Provider::Chatgpt) => Ok(Some(format!(
-                "ChatGPT voices: {}. Use /voice chatgpt NAME.",
-                nanocodex_voice_protocol::CHATGPT_REALTIME_VOICES.join(", ")
-            ))),
-            Command::List | Command::ListProvider(crate::voice::Provider::ElevenLabs) => {
+            Command::Help => Ok(Some(crate::nanocodex2::voice::HELP.into())),
+            Command::ListProvider(crate::nanocodex2::voice::Provider::Chatgpt) => {
+                Ok(Some(format!(
+                    "ChatGPT voices: {}. Use /voice chatgpt NAME.",
+                    nanocodex_voice_protocol::CHATGPT_REALTIME_VOICES.join(", ")
+                )))
+            }
+            Command::List
+            | Command::ListProvider(crate::nanocodex2::voice::Provider::ElevenLabs) => {
                 let all = command == Command::List;
                 self.voice_tasks.spawn(async move {
                     let result = list_elevenlabs_voices().await;
@@ -1101,7 +1136,8 @@ impl DriverRuntime {
                     return Err("Stop and review a local recording before submitting.".into());
                 }
                 // Keep the recording available if local credentials are missing.
-                crate::voice::elevenlabs::Client::from_env().map_err(|error| error.to_string())?;
+                crate::nanocodex2::voice::elevenlabs::Client::from_env()
+                    .map_err(|error| error.to_string())?;
                 let mut panel = self.clone_panel.take().unwrap();
                 let name = panel.name.clone();
                 let voice_clone::State::Review(sample) =
@@ -1156,6 +1192,12 @@ impl DriverRuntime {
         scheduler: &mut RenderScheduler,
         automatic: bool,
     ) {
+        if self.local.is_some() {
+            // A local agent has no durable stream to reattach; its turns
+            // finish through their own results.
+            let _ = (app, scheduler, automatic);
+            return;
+        }
         if let Some((_, pane)) = &self.pending_resume {
             // A failed old stream must not race the explicitly selected session.
             // If resume fails, its completion path will recover this connection.
@@ -1408,6 +1450,9 @@ impl DriverRuntime {
     }
 
     fn start_history_prefetch(&mut self, pane: PaneId) {
+        if self.local.is_some() {
+            return;
+        }
         if (self.history_tree_open && self.history_tree_failed)
             || !self.history_loads.is_empty()
             || !self.history_replays.is_empty()
@@ -1527,6 +1572,7 @@ impl DriverRuntime {
     }
 
     fn local_record(&mut self, event: LocalEvent) -> Result<Arc<TranscriptRecord>, ManagedError> {
+        self.feature_turn_event(&event);
         let record =
             TranscriptRecord::from_local(self.sequence, unix_ms(), event).map_err(|error| {
                 ManagedError::Configuration(format!("TUI transcript error: {error}"))
@@ -1537,8 +1583,35 @@ impl DriverRuntime {
         Ok(record)
     }
 
+    /// Resolves feature receipts and busy state from turn records.
+    fn feature_turn_event(&mut self, event: &LocalEvent) {
+        let Some(local) = self.local.as_mut() else {
+            return;
+        };
+        match event {
+            LocalEvent::WorkerTurnAccepted { .. } => local.set_busy(true),
+            LocalEvent::WorkerTurnFinished { id, error } => {
+                for completion in self.feature_completions.remove(id).into_iter().flatten() {
+                    let _ = completion.send(error.is_none());
+                }
+                self.feature_instructions.remove(id);
+                self.feature_turns.remove(id);
+                local.set_busy(false);
+            }
+            LocalEvent::WorkerTurnsInterrupted { .. } => {
+                for (_, completions) in self.feature_completions.drain() {
+                    for completion in completions {
+                        let _ = completion.send(false);
+                    }
+                }
+                local.set_busy(false);
+            }
+            _ => {}
+        }
+    }
+
     fn start_submission(&mut self, pane: PaneId, id: TurnId, prompt: Submission) {
-        if self.recovery.is_some() {
+        if self.recovery.is_some() || self.harness_relaunching {
             self.pending_submission = Some((pane, id, prompt));
             return;
         }
@@ -1556,17 +1629,64 @@ impl DriverRuntime {
             }
             return;
         };
+        // Private instructions and typed-prompt hooks.
+        let mut agent_prompt = prompt.agent_prompt();
+        let mut rejection = None;
+        if let Some(local) = &mut self.local {
+            if let Some(instruction) = self.feature_instructions.remove(&id) {
+                agent_prompt = Submission::text(instruction).agent_prompt();
+            } else if !self.feature_turns.contains(&id) {
+                let text = prompt.display_text().to_owned();
+                // Typed Claude slash prompts (/loop, user skills) expand at the
+                // user submission boundary, as the legacy local TUI did.
+                match crate::config::expand_session_user_skill(&agent, &text) {
+                    Ok(Some(instruction)) => {
+                        agent_prompt = Submission::text(instruction).agent_prompt();
+                    }
+                    Ok(None) => {}
+                    Err(error) => rejection = Some(error),
+                }
+                match local.with_features(|features, cx| features.user_prompt(&text, cx)) {
+                    Ok(completions) if !completions.is_empty() => {
+                        self.feature_completions
+                            .entry(id)
+                            .or_default()
+                            .extend(completions);
+                    }
+                    Ok(_) => {}
+                    Err(error) => rejection = Some(error),
+                }
+            }
+        }
         let managed_request_id = uuid::Uuid::now_v7().to_string();
+        if let Some(local) = &mut self.local {
+            // The event bridge tags the next local run with this request id.
+            local.submissions.push(managed_request_id.clone());
+            local.prompted = true;
+        }
         self.submitted_turns.insert(managed_request_id.clone());
         self.unacknowledged_inputs
-            .insert(id, (pane, managed_request_id.clone(), prompt.clone()));
+            .insert(id, (pane, managed_request_id.clone(), prompt));
         self.local_managed_turns
             .insert(id, managed_request_id.clone());
         self.admitting.insert(id);
+        let local_submission = self.local.is_some();
         self.admissions.spawn(async move {
-            let turn = agent
-                .prompt(PromptRequest::new(prompt.agent_prompt()).request_id(managed_request_id))
-                .await;
+            let turn = match rejection {
+                Some(error) => Err(nanocodex::NanocodexError::backend(
+                    "loop",
+                    std::io::Error::other(error),
+                )),
+                None => {
+                    let request = PromptRequest::new(agent_prompt);
+                    let request = if local_submission {
+                        request
+                    } else {
+                        request.request_id(managed_request_id)
+                    };
+                    agent.prompt(request).await
+                }
+            };
             (pane, id, turn)
         });
     }
@@ -1611,7 +1731,8 @@ impl DriverRuntime {
     }
 
     fn refresh_routing(&mut self) {
-        if self.agent_id.is_empty()
+        if self.local.is_some()
+            || self.agent_id.is_empty()
             || !self.routing_updates.is_empty()
             || !self.settings_updates.is_empty()
         {
@@ -1652,6 +1773,15 @@ impl DriverRuntime {
         let Some((pane, agent_id, mutation)) = self.settings_queue.pop_front() else {
             return;
         };
+        if self.local.is_some() {
+            let agent = self.agent.clone();
+            let current = self.settings;
+            self.settings_updates.spawn(async move {
+                let result = local::apply_settings(agent, current, mutation).await;
+                (pane, agent_id, mutation, result)
+            });
+            return;
+        }
         let client = self.client.clone();
         let was_routed = self.routing_enabled;
         let model = self.settings.model;
@@ -1697,9 +1827,38 @@ impl DriverRuntime {
         });
     }
 
+    /// Starts the queued harness relaunch once no connection is in flight.
+    fn start_queued_relaunch(&mut self) -> Option<String> {
+        if !self.connection.is_empty() {
+            return None;
+        }
+        let launch = self.queued_relaunch.take()?;
+        match self.local_switch(ConnectionPurpose::Startup, *launch) {
+            Ok(_) => None,
+            Err(error) => {
+                self.harness_relaunching = false;
+                Some(error)
+            }
+        }
+    }
+
     fn spawn_connection(&mut self, purpose: ConnectionPurpose, target: RetryTarget) {
         if matches!(purpose, ConnectionPurpose::Startup) {
             self.retry_target = Some(target.clone());
+        }
+        if let Some(local) = &self.local {
+            let connecting = local.connect();
+            self.connection.spawn(async move {
+                let result = connecting
+                    .await
+                    .map(local::LocalConnection::into_connected)
+                    .map_err(|error| ConnectionFailure {
+                        error: ManagedError::Configuration(error),
+                        retry: target,
+                    });
+                ConnectionResult::Agent { purpose, result }
+            });
+            return;
         }
         let client = self.client.clone();
         let (agent_id, settings) = match target {
@@ -1891,6 +2050,24 @@ impl DriverRuntime {
     }
 
     fn spawn_cancellation(&mut self, pane: PaneId, target: CancelTarget) {
+        if self.local.is_some() {
+            let control = match &target {
+                CancelTarget::Local { id, .. } => self.controls.get(id).cloned(),
+                CancelTarget::Managed { .. } => None,
+            };
+            self.cancellations.spawn(async move {
+                let outcome = match control {
+                    Some(control) => control
+                        .cancel()
+                        .await
+                        .map(|()| CancelDisposition::Accepted)
+                        .map_err(|error| error.to_string()),
+                    None => Ok(CancelDisposition::Terminal),
+                };
+                (pane, target, outcome)
+            });
+            return;
+        }
         let client = self.client.clone();
         self.cancellations.spawn(async move {
             let outcome = {
@@ -2079,51 +2256,150 @@ async fn reconnect_agent(
     Ok(connected)
 }
 
+/// Renderer telemetry and completion notifications shared by every TUI driver.
+pub(crate) struct Presentation {
+    stream: telemetry::StreamTelemetry,
+    view: telemetry::ViewTelemetry,
+    pub(crate) notifier: notification::Notifier,
+}
+
+impl Presentation {
+    pub(crate) fn new() -> Self {
+        Self {
+            stream: telemetry::StreamTelemetry::default(),
+            view: telemetry::ViewTelemetry::default(),
+            notifier: notification::Notifier::from_env(),
+        }
+    }
+
+    /// Record one agent event as it reaches the TUI, before it is applied.
+    pub(crate) fn received(&mut self, session_id: &str, event: telemetry::Received) {
+        if event.kind() == "turn.failed" {
+            self.notifier.turn_failed();
+        }
+        self.stream.received(session_id, event);
+    }
+
+    /// After every presented frame: frame cost, view changes and notifications.
+    pub(crate) fn presented(
+        &mut self,
+        app: &AppNode,
+        terminal: &mut TerminalSession,
+        session_id: &str,
+        render_started: Instant,
+        draw: terminal::DrawMetrics,
+    ) {
+        let main = app.main_pane();
+        let fork = app.fork_pane();
+        let focused = app.focused_pane();
+        let view = telemetry::ViewState {
+            split: fork.is_some(),
+            focus_main: focused.is_some() && focused == main,
+            screen: focused.is_none(),
+        };
+        self.view.observe(session_id, &view);
+        self.stream
+            .presented(session_id, &view, render_started, draw);
+        let busy = |pane: Option<PaneId>| {
+            pane.and_then(|pane| app.root(pane))
+                .is_some_and(RootNode::has_active_turns)
+        };
+        self.notifier.after_frame(terminal, busy(main), busy(fork));
+    }
+}
+
 pub(crate) async fn run(
     client: &ManagedClient,
     agent_id: Option<String>,
 ) -> Result<(), ManagedError> {
-    run_inner(client, Some(agent_id)).await
+    run_inner(client, Some(agent_id), None).await
 }
 
 pub(crate) async fn run_new(client: &ManagedClient) -> Result<(), ManagedError> {
-    run_inner(client, None).await
+    run_inner(client, None, None).await
+}
+
+/// The local, non-durable TUI (`ncl`, `nanocodex --local`). It runs the same
+/// driver as the managed TUI; account-only features are hidden by capability.
+pub(crate) async fn run_local(launch: local::agent::LocalLaunch) -> Result<(), ManagedError> {
+    // Managed-only effects are hidden in local mode; this unroutable client only
+    // backs code paths that capabilities never reach.
+    let api_key = nanocodex_managed::ManagedApiKey::parse(format!(
+        "ncx_live_{}_{}",
+        "0".repeat(12),
+        "0".repeat(43)
+    ))?;
+    let client = ManagedClient::new("http://127.0.0.1:9", api_key)?;
+    run_inner(&client, None, Some(launch)).await
 }
 
 /// `Some(id)` attaches, `Some(None)` opens the in-TUI picker, and `None` creates.
 async fn run_inner(
     client: &ManagedClient,
     attach: Option<Option<String>>,
+    local_launch: Option<local::agent::LocalLaunch>,
 ) -> Result<(), ManagedError> {
-    let first_frame = crate::startup_timing::Stage::new("tui_first_frame");
-    let workspace = HostConfig::load()
-        .map_err(|error| ManagedError::Configuration(error.to_string()))?
-        .workspace()
-        .to_path_buf();
+    let first_frame = crate::nanocodex2::startup_timing::Stage::new("tui_first_frame");
+    let workspace = match &local_launch {
+        Some(launch) => launch.args.cwd().to_path_buf(),
+        None => HostConfig::load()
+            .map_err(|error| ManagedError::Configuration(error.to_string()))?
+            .workspace()
+            .to_path_buf(),
+    };
     // Paint the hosted defaults immediately. New creation uses this same policy;
     // attach hydrates retained settings in connect_agent, where failures already
     // have retry semantics. Optional catalog discovery never gates startup.
-    let initial_settings = AgentSettings::default();
+    let initial_settings = local_launch
+        .as_ref()
+        .map(local::settings_from_launch)
+        .transpose()
+        .map_err(ManagedError::Configuration)?
+        .unwrap_or_default();
     let initial_effort = effort_from_thinking(initial_settings.thinking);
     let initial_reasoning_mode = reasoning_mode_from_managed(initial_settings.reasoning_mode);
     let mut root = RootNode::new(&workspace, initial_effort);
+    root.set_capabilities(if local_launch.is_some() {
+        backend::Capabilities::LOCAL
+    } else {
+        backend::Capabilities::MANAGED
+    });
     root.set_reasoning_modes(initial_reasoning_mode, initial_reasoning_mode);
     root.set_fast_mode(initial_settings.fast_mode);
     root.set_model(initial_settings.model);
+    if let Some(launch) = &local_launch {
+        root.set_model_catalog(local::model_catalog(launch));
+    }
 
     let mut app = AppNode::new(Theme::default(), workspace.clone(), root);
-    let mut reload: Option<crate::reload::Registration> = None;
+    let mut reload: Option<crate::nanocodex2::reload::Registration> = None;
     let mut reload_requested = false;
+    let _observability = if local_launch.is_none() {
+        telemetry::install_observability()
+    } else {
+        // The local command owns its configured logging/OTLP guard.
+        None
+    };
     let mut terminal = TerminalSession::enter().await.map_err(terminal_error)?;
     let mut input = EventStream::new();
     let mut scheduler = RenderScheduler::new(STREAM_FRAME_INTERVAL, Instant::now());
+    let mut presentation = Presentation::new();
     let (btw_events, mut btw_updates) = mpsc::unbounded_channel();
+    let is_local = local_launch.is_some();
     let mut runtime = DriverRuntime {
         control_bridge: None,
         btw: None,
         btw_events,
         screen: screen::Controller::new(None),
         client: client.clone(),
+        local: local_launch.map(local::LocalState::new),
+        feature_overlay: None,
+        feature_instructions: HashMap::new(),
+        feature_completions: HashMap::new(),
+        feature_turns: HashSet::new(),
+        local_voice_status: None,
+        harness_relaunching: false,
+        queued_relaunch: None,
         pending_voice: None,
         voice_selection: Default::default(),
         voice_tasks: JoinSet::new(),
@@ -2236,13 +2512,17 @@ async fn run_inner(
     scheduler.presented(Instant::now());
     drop(first_frame);
     let mut catalog_setup = JoinSet::new();
-    let catalog_client = client.clone();
-    catalog_setup.spawn(async move { catalog_client.models().await });
+    if !is_local {
+        let catalog_client = client.clone();
+        catalog_setup.spawn(async move { catalog_client.models().await });
+    }
     // An updater can hold reload's coordination lock. Keep registration owned,
     // but wait off the input loop so it becomes available after contention clears.
     // Dropping the JoinSet also drops any uncollected registration and its lease.
     let mut reload_setup = JoinSet::new();
-    reload_setup.spawn_blocking(crate::reload::register);
+    if !is_local {
+        reload_setup.spawn_blocking(crate::nanocodex2::reload::register);
+    }
     // Theme and tmux discovery must not delay the first editable frame. These
     // tasks never read stdin; the terminal event stream remains its sole owner.
     let mut presentation_setup = JoinSet::new();
@@ -2251,6 +2531,38 @@ async fn run_inner(
         None
     });
     presentation_setup.spawn_blocking(detect_system_scheme);
+    let mut feature_updates = runtime
+        .local
+        .as_mut()
+        .and_then(|local| local.features.take_updates());
+    let initial_prompt = runtime.local.as_mut().and_then(|local| {
+        let instruction = local.launch.initial_instruction.take();
+        local
+            .launch
+            .initial_prompt
+            .take()
+            .map(|text| (text, instruction))
+    });
+    if let Some((text, instruction)) = initial_prompt {
+        // Shown immediately; held as the pending submission until the agent connects.
+        let prompt = Submission::text(text);
+        let id = TurnId::new(runtime.next_turn);
+        runtime.next_turn = runtime.next_turn.saturating_add(1);
+        if let Some(instruction) = instruction {
+            // A labelled launch prompt is sent like a feature prompt.
+            runtime.feature_turns.insert(id);
+            runtime.feature_instructions.insert(id, instruction);
+        }
+        let record = runtime.record_submission(id, &prompt)?;
+        request_render(
+            app.update(AppEvent::Transcript {
+                pane: PaneId::Main,
+                record,
+            }),
+            &mut scheduler,
+        );
+        runtime.start_submission(PaneId::Main, id, prompt);
+    }
     match attach {
         Some(None) => {
             let update = app.open_resume_selector();
@@ -2278,11 +2590,22 @@ async fn run_inner(
     clone_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut tmux = tmux::Publisher::new();
     let mut tmux_tick = tokio::time::interval(Duration::from_secs(2));
+    // Idle tick (Claude scheduler) while local main is idle.
+    let mut feature_tick = tokio::time::interval(Duration::from_secs(1));
+    feature_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     tmux_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut stopping = false;
     #[cfg(unix)]
     let mut control_server = if nanocodex_tui_control::Server::enabled() {
-        Some(nanocodex_tui_control::Server::start("managed").map_err(terminal_error)?)
+        // The local TUI registers as kind "native".
+        Some(
+            nanocodex_tui_control::Server::start(if runtime.local.is_some() {
+                "native"
+            } else {
+                "managed"
+            })
+            .map_err(terminal_error)?,
+        )
     } else {
         None
     };
@@ -2296,6 +2619,15 @@ async fn run_inner(
     routing_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     while !stopping {
+        if let Some(error) = runtime.start_queued_relaunch() {
+            request_render(
+                app.update(AppEvent::NotifyError {
+                    pane: PaneId::Main,
+                    error,
+                }),
+                &mut scheduler,
+            );
+        }
         runtime.update_tree_history(
             app.root(PaneId::Main)
                 .is_some_and(RootNode::subagent_overlay_open),
@@ -2458,7 +2790,7 @@ async fn run_inner(
             );
         }
         if let Some(pending) = runtime.take_ready_voice() {
-            match crate::voice::Session::start_with_settings(
+            match crate::nanocodex2::voice::Session::start_with_settings(
                 runtime.client.clone(),
                 runtime.agent_id.clone(),
                 voice_settings(&pending.selection),
@@ -2479,14 +2811,19 @@ async fn run_inner(
             );
         }
         if scheduler.is_due(Instant::now()) {
-            terminal
+            let render_started = Instant::now();
+            let draw = terminal
                 .draw(|frame| {
                     app.render(frame);
+                    if let Some(overlay) = &mut runtime.feature_overlay {
+                        overlay.render(frame, frame.area(), app.theme());
+                    }
                     if let Some(flow) = &mut runtime.secure_input {
                         flow.render(frame);
                     }
                 })
                 .map_err(terminal_error)?;
+            presentation.presented(&app, &mut terminal, &runtime.agent_id, render_started, draw);
             runtime.screen.size.send_if_modified(|size| {
                 let current = app.screen_size();
                 if *size == current {
@@ -2507,6 +2844,27 @@ async fn run_inner(
                 (Some(&mut voice.status), Some(&mut voice.transcripts))
             });
         tokio::select! {
+            Some(update) = async {
+                match feature_updates.as_mut() {
+                    Some(updates) => updates.recv().await,
+                    None => pending().await,
+                }
+            } => {
+                stopping |= apply_feature_update(update, &mut app, &mut runtime, &mut terminal, &mut scheduler).await?;
+            }
+            _ = feature_tick.tick(), if runtime.local.is_some() => {
+                let idle = runtime.controls.is_empty()
+                    && runtime.admitting.is_empty()
+                    && runtime.pending_submission.is_none()
+                    && runtime.active_shells == 0
+                    && runtime.feature_overlay.is_none()
+                    && app
+                        .root(PaneId::Main)
+                        .is_some_and(|root| root.composer().draft().trim().is_empty());
+                if idle && let Some(local) = &mut runtime.local {
+                    local.with_features(|features, cx| features.idle_tick(cx));
+                }
+            }
             _ = tmux_tick.tick(), if tmux.is_some() => {
                 if let Some(publisher) = &mut tmux && !(runtime.startup_attach && runtime.agent_id.is_empty()) {
                     let status = if runtime.recovery.is_some() { "reconnecting" }
@@ -2557,7 +2915,17 @@ async fn run_inner(
                 }
                 pending::<Option<nanocodex_tui_control::Command>>().await
             } => {
-                if let Some(command) = command { control::dispatch(command, runtime.control_bridge.as_ref().unwrap(), &runtime, &mut control_tasks); }
+                if let Some(command) = command {
+                    if runtime.local.is_some() {
+                        // Local control: rollout history and the in-process agent.
+                        let bridge = runtime.control_bridge.clone().unwrap();
+                        if let Some(update) = local::control::dispatch(command, &bridge, &mut runtime, &mut app, &mut control_tasks) {
+                            stopping |= apply_update(update, &mut app, &mut runtime, &mut terminal, &mut scheduler).await?;
+                        }
+                    } else {
+                        control::dispatch(command, runtime.control_bridge.as_ref().unwrap(), &runtime, &mut control_tasks);
+                    }
+                }
             }
             Some(result) = control_tasks.join_next(), if !control_tasks.is_empty() => {
                 if let Ok((command, result, settings, session)) = result {
@@ -2601,9 +2969,9 @@ async fn run_inner(
             _ = clone_tick.tick(), if runtime.clone_panel.as_ref().is_some_and(|panel| matches!(panel.state, voice_clone::State::Recording(_))) => {
                 let panel = runtime.clone_panel.as_mut().unwrap();
                 let stop_reason = match &mut panel.state {
-                    voice_clone::State::Recording(recorder) if recorder.elapsed().as_secs() >= crate::voice_recording::MAX_SECONDS => Some("Reached the 2-minute recording limit"),
+                    voice_clone::State::Recording(recorder) if recorder.elapsed().as_secs() >= crate::nanocodex2::voice_recording::MAX_SECONDS => Some("Reached the 2-minute recording limit"),
                     voice_clone::State::Recording(recorder) => match recorder.is_finished() {
-                        Ok(true) if recorder.elapsed().as_secs() >= crate::voice_recording::MAX_SECONDS - 1 => Some("Reached the 2-minute recording limit"),
+                        Ok(true) if recorder.elapsed().as_secs() >= crate::nanocodex2::voice_recording::MAX_SECONDS - 1 => Some("Reached the 2-minute recording limit"),
                         Ok(true) => Some("Microphone recorder ended early; R records a new sample"),
                         Err(_) => Some("Microphone recorder stopped unexpectedly; R retries"),
                         Ok(false) => None,
@@ -2707,7 +3075,7 @@ async fn run_inner(
             Some(transcript) = async { match &mut voice_transcripts { Some(receiver) => receiver.recv().await, None => pending().await } } => {
                 // A stopped/replaced session may still have queued final captions.
                 // Do not present them as speech from the newly selected voice.
-                if runtime.voice.as_ref().is_some_and(crate::voice::Session::accepting_transcripts) {
+                if runtime.voice.as_ref().is_some_and(crate::nanocodex2::voice::Session::accepting_transcripts) {
                     let record = runtime.local_record(LocalEvent::VoiceTranscript(transcript))?;
                     request_render(app.update(AppEvent::Transcript { pane: PaneId::Main, record }), &mut scheduler);
                 }
@@ -2741,6 +3109,7 @@ async fn run_inner(
                     .transpose()
                     .map_err(terminal_error)?
                     .ok_or_else(|| terminal_error(io::Error::new(io::ErrorKind::UnexpectedEof, "terminal input closed")))?;
+                presentation.notifier.observe_event(&event);
                 // SECURITY: intercept BEFORE ordinary AppEvent, clipboard,
                 // screen, composer, shell, debug/control, export or history.
                 if let Some(flow) = &mut runtime.secure_input {
@@ -2751,12 +3120,41 @@ async fn run_inner(
                     scheduler.request_immediate(Instant::now());
                     continue;
                 }
+                // A feature overlay (Claude interaction, branch navigator) is modal.
+                if let Some(overlay) = &mut runtime.feature_overlay {
+                    match &event {
+                        Event::Key(key) if key.kind != KeyEventKind::Release => {
+                            if overlay.key(*key) == features::OverlayOutcome::Close {
+                                runtime.feature_overlay = None;
+                                if let Some(local) = &mut runtime.local {
+                                    local.features.overlay_state(false);
+                                }
+                            }
+                            scheduler.request_immediate(Instant::now());
+                            continue;
+                        }
+                        Event::Paste(text) => {
+                            overlay.paste(text);
+                            scheduler.request_immediate(Instant::now());
+                            continue;
+                        }
+                        _ => {}
+                    }
+                }
+                if let (Some(local), Event::Key(key)) = (&mut runtime.local, &event)
+                    && key.kind == KeyEventKind::Press
+                    && local.with_features(|features, cx| features.key(key, cx))
+                        == features::KeyOutcome::Consumed
+                {
+                    scheduler.request_immediate(Instant::now());
+                    continue;
+                }
                 // Mute remains global while another pane or a modal has focus.
                 if (runtime.voice.is_some() || runtime.pending_voice.is_some())
                     && matches!(&event, Event::Key(key) if key.code == KeyCode::Char('x') && key.modifiers == KeyModifiers::CONTROL)
                 {
                     if matches!(&event, Event::Key(key) if key.kind == KeyEventKind::Press) {
-                        let _ = runtime.voice_command(PaneId::Main, crate::voice::Command::ToggleMute);
+                        let _ = runtime.voice_command(PaneId::Main, crate::nanocodex2::voice::Command::ToggleMute);
                         request_render(app.update(AppEvent::VoiceStatus(runtime.voice_status())), &mut scheduler);
                     }
                     continue;
@@ -2783,6 +3181,7 @@ async fn run_inner(
             }, if runtime.managed_events_open => {
                 match event {
                     Some(event) => {
+                        presentation.received(&runtime.agent_id, telemetry::Received::managed(&event));
                         if let Some(bridge) = &runtime.control_bridge { let mut value=serde_json::to_value(&event).unwrap_or_default(); value["session_id"]=serde_json::json!(runtime.agent_id); bridge.publish("managed.event",value); }
                         runtime.observed_cursor.clone_from(&event.cursor);
                         if let Some(request_id) = event.data.turn_id() {
@@ -2928,11 +3327,14 @@ async fn run_inner(
                 let update = match event {
                     btw::Event::Ready { pane, agent_id, settings } => {
                         if let Some(btw) = &mut runtime.btw { btw.agent_id = Some(agent_id); }
+                        // Ready first: hydration restores idle activity, and the side pane
+                        // must leave its "Opening /btw" state exactly once.
+                        let ready = app.update(AppEvent::ForkReady { pane });
                         let update = app.update(AppEvent::SettingsHydrated { pane,
                             effort: effort_from_thinking(settings.thinking), fast_mode: settings.fast_mode,
                             model: settings.model });
                         request_render(update, &mut scheduler);
-                        app.update(AppEvent::ForkReady { pane })
+                        ready
                     }
                     btw::Event::Record { pane, record } => {
                         if record.source() == "tact" && matches!(record.kind(), "user.submitted" | "user.steered") {
@@ -3101,6 +3503,21 @@ async fn run_inner(
                             let update = app.update(AppEvent::RecentPromptsLoaded { pane, session_id, prompts });
                             stopping |= apply_update(update, &mut app, &mut runtime, &mut terminal, &mut scheduler).await?;
                         }
+                        ConnectionResult::LocalSessions { pane, request_id, result } => {
+                            let cancelled = runtime.session_list_cancellations.remove(&(pane, request_id))
+                                .is_none_or(|token| token.is_cancelled());
+                            if cancelled { continue; }
+                            let Some(result) = result else { continue; };
+                            let update = match result {
+                                Ok(sessions) => app.update(AppEvent::SessionsLoaded { pane, request_id, sessions }),
+                                Err(error) => app.update(AppEvent::SessionListFailed {
+                                    pane,
+                                    request_id,
+                                    error: format!("Could not load local sessions: {error}"),
+                                }),
+                            };
+                            stopping = apply_update(update, &mut app, &mut runtime, &mut terminal, &mut scheduler).await?;
+                        }
                         ConnectionResult::Sessions { pane, request_id, result } => {
                             let cancelled = runtime.session_list_cancellations.remove(&(pane, request_id))
                                 .is_none_or(|token| token.is_cancelled());
@@ -3121,6 +3538,15 @@ async fn run_inner(
                             stopping = apply_update(update, &mut app, &mut runtime, &mut terminal, &mut scheduler).await?;
                         }
                         ConnectionResult::Agent { purpose, result: Ok((agent, managed_events, agent_id, workspace, history, warning, settings, created, active_turns)) } => {
+                            if let Some(local) = &mut runtime.local {
+                                local.adopt();
+                                if let Some(root) = app.root_mut(PaneId::Main) {
+                                    root.set_capabilities(local.capabilities());
+                                }
+                            }
+                            if runtime.queued_relaunch.is_none() {
+                                runtime.harness_relaunching = false;
+                            }
                             if matches!(purpose, ConnectionPurpose::Bug(_)) {
                                 runtime.detach_bug_source();
                             }
@@ -3198,6 +3624,12 @@ async fn run_inner(
                                 runtime.clone_panel = None;
                                 request_render(app.update(AppEvent::VoiceStatus(None)), &mut scheduler);
                             }
+                            tracing::info!(
+                                pid = std::process::id(),
+                                session.id = %agent_id,
+                                workspace = %workspace.display(),
+                                "TUI session connected"
+                            );
                             runtime.agent_id = agent_id;
                             runtime.settings = settings;
                             runtime.workspace = workspace;
@@ -3296,6 +3728,12 @@ async fn run_inner(
                             runtime.start_history_prefetch(pane);
                         }
                         ConnectionResult::Agent { purpose, result: Err(failure) } => {
+                            // A failed relaunch keeps the running agent; a newer
+                            // queued selection still holds its prompts.
+                            let relaunch_queued = runtime.queued_relaunch.is_some();
+                            if !relaunch_queued {
+                                runtime.harness_relaunching = false;
+                            }
                             runtime.pending_voice = None;
                             request_render(app.update(AppEvent::VoiceStatus(runtime.voice_status())), &mut scheduler);
                             let message = format!("Could not connect to the managed agent: {}", failure.error);
@@ -3350,6 +3788,7 @@ async fn run_inner(
                                 .await?;
                             }
                             if matches!(purpose, ConnectionPurpose::Startup)
+                                && !relaunch_queued
                                 && let Some((pane, id, _)) = runtime.pending_submission.take()
                             {
                                 let record = runtime.local_record(LocalEvent::WorkerTurnFinished {
@@ -3486,6 +3925,11 @@ async fn run_inner(
                         match outcome {
                             Ok(settings) => {
                                 runtime.settings = settings;
+                                if let Some(local) = &mut runtime.local
+                                    && let Ok(model) = settings.model.as_str().parse()
+                                {
+                                    local.launch.args.select_tui_model(model, settings.thinking, settings.fast_mode);
+                                }
                                 if matches!(mutation, SettingsMutation::Complete(_)) && let Some(root) = app.root_mut(pane) {
                                     let mode = reasoning_mode_from_managed(settings.reasoning_mode);
                                     root.set_reasoning_modes(mode, mode);
@@ -3514,7 +3958,7 @@ async fn run_inner(
                             Err(error) => {
                                 // Switching from routing to native settings can require two
                                 // requests. Re-read retained settings if only the first applied.
-                                if let Ok(state) = runtime.client.state(&agent_id).await {
+                                if runtime.local.is_none() && let Ok(state) = runtime.client.state(&agent_id).await {
                                     runtime.settings = state.settings;
                                     if let Some(root) = app.root_mut(pane) {
                                         let mode = reasoning_mode_from_managed(state.settings.reasoning_mode);
@@ -3570,7 +4014,7 @@ async fn run_inner(
                             )));
                         }
                     };
-                    if admission.as_ref().is_err_and(connection_failure) {
+                    if runtime.local.is_none() && admission.as_ref().is_err_and(connection_failure) {
                         runtime.begin_recovery(&mut app, &mut scheduler, true);
                         continue;
                     }
@@ -3582,9 +4026,12 @@ async fn run_inner(
                         Ok(turn) => {
                             let control = turn.control();
                             if let Some(managed_turn_id) = turn.request_id() {
-                                debug_assert_eq!(
-                                    runtime.local_managed_turns.get(&id).map(String::as_str),
-                                    Some(managed_turn_id),
+                                // Local harnesses (Claude) assign their own turn id;
+                                // only the managed service echoes the caller's id.
+                                debug_assert!(
+                                    runtime.local.is_some()
+                                        || runtime.local_managed_turns.get(&id).map(String::as_str)
+                                            == Some(managed_turn_id),
                                     "managed prompt must preserve its caller-owned request ID"
                                 );
                                 if runtime.managed_active_turns.remove(managed_turn_id) {
@@ -3613,7 +4060,12 @@ async fn run_inner(
                             }
                         }
                         Err(error) => {
-                            runtime.local_managed_turns.remove(&id);
+                            if let Some(request_id) = runtime.local_managed_turns.remove(&id)
+                                && let Some(local) = &runtime.local
+                            {
+                                local.submissions.remove(&request_id);
+                                runtime.submitted_turns.remove(&request_id);
+                            }
                             runtime.local_terminal_turns.remove(&id);
                             let record = runtime.local_record(LocalEvent::WorkerTurnFinished {
                                 id,
@@ -3657,7 +4109,7 @@ async fn run_inner(
                 }
                 if let Some(result) = result {
                     let (pane, id, outcome) = result.map_err(|error| ManagedError::Configuration(format!("turn task failed: {error}")))?;
-                    if outcome.as_ref().is_err_and(connection_failure) {
+                    if runtime.local.is_none() && outcome.as_ref().is_err_and(connection_failure) {
                         runtime.begin_recovery(&mut app, &mut scheduler, true);
                         continue;
                     }
@@ -3974,6 +4426,14 @@ async fn run_inner(
             .restart(&runtime.agent_id)
             .map_err(ManagedError::Configuration);
     }
+    if let Some(mut local) = runtime.local.take() {
+        // A local agent is not durable: stop it and release VM/browser/MPP.
+        drop(runtime.agent.take());
+        return local
+            .shutdown()
+            .await
+            .map_err(|error| ManagedError::Configuration(format!("{error:#}")));
+    }
     let Some(agent) = runtime.agent.take() else {
         return Ok(());
     };
@@ -4003,6 +4463,168 @@ fn fresh_thread_settings(was_routed: bool, settings: AgentSettings) -> AgentSett
 
 fn new_agent_settings() -> AgentSettings {
     AgentSettings::default()
+}
+
+/// Applies one request from a feature module (see `features`).
+async fn apply_feature_update(
+    update: features::FeatureUpdate,
+    app: &mut AppNode,
+    runtime: &mut DriverRuntime,
+    terminal: &mut TerminalSession,
+    scheduler: &mut RenderScheduler,
+) -> Result<bool, ManagedError> {
+    use features::FeatureUpdate;
+    let main = |pane: Option<PaneId>| pane.unwrap_or(PaneId::Main);
+    let update = match update {
+        FeatureUpdate::Notice { pane, message } => app.update(AppEvent::NotifySuccess {
+            pane: main(pane),
+            message,
+        }),
+        FeatureUpdate::Error { pane, message } => app.update(AppEvent::NotifyError {
+            pane: main(pane),
+            error: message,
+        }),
+        FeatureUpdate::Submit { pane, text } => {
+            let pane = main(pane);
+            let prompt = Submission::text(text);
+            let id = TurnId::new(runtime.next_turn);
+            runtime.next_turn = runtime.next_turn.saturating_add(1);
+            let record = runtime.record_submission(id, &prompt)?;
+            let update = app.update(AppEvent::Transcript { pane, record });
+            if runtime.active_shells == 0 {
+                runtime.start_submission(pane, id, prompt);
+            } else {
+                runtime.pending_submission = Some((pane, id, prompt));
+            }
+            update
+        }
+        FeatureUpdate::Record { pane, event } => {
+            let record = runtime.local_record(event)?;
+            app.update(AppEvent::Transcript {
+                pane: main(pane),
+                record,
+            })
+        }
+        FeatureUpdate::OpenOverlay(overlay) => {
+            if overlay.discards_draft()
+                && let Some(root) = app.root_mut(PaneId::Main)
+            {
+                root.discard_feature_draft();
+            }
+            runtime.feature_overlay = Some(overlay);
+            if let Some(local) = &mut runtime.local {
+                local.features.overlay_state(true);
+            }
+            scheduler.request_immediate(Instant::now());
+            return Ok(false);
+        }
+        FeatureUpdate::CloseOverlay => {
+            if runtime.feature_overlay.take().is_some()
+                && let Some(local) = &mut runtime.local
+            {
+                local.features.overlay_state(false);
+            }
+            scheduler.request_immediate(Instant::now());
+            return Ok(false);
+        }
+        FeatureUpdate::SubmitPrompt(prompt) => {
+            let pane = main(prompt.pane);
+            let submission = Submission::text(prompt.display);
+            let id = TurnId::new(runtime.next_turn);
+            runtime.next_turn = runtime.next_turn.saturating_add(1);
+            runtime.feature_turns.insert(id);
+            if let Some(instruction) = prompt.instruction {
+                runtime.feature_instructions.insert(id, instruction);
+            }
+            if let Some(completion) = prompt.completion {
+                runtime
+                    .feature_completions
+                    .entry(id)
+                    .or_default()
+                    .push(completion);
+            }
+            let record = runtime.record_submission(id, &submission)?;
+            let update = app.update(AppEvent::Transcript { pane, record });
+            if runtime.active_shells == 0 {
+                runtime.start_submission(pane, id, submission);
+            } else {
+                runtime.pending_submission = Some((pane, id, submission));
+            }
+            update
+        }
+        // Branch switch/edit reopens another session in place.
+        FeatureUpdate::Relaunch(launch) if launch.resume.is_some() => {
+            match runtime.local_switch(ConnectionPurpose::Resume(PaneId::Main), *launch) {
+                Ok(task) => runtime.pending_resume = Some((task, PaneId::Main)),
+                Err(error) => {
+                    request_render(
+                        app.update(AppEvent::NotifyError {
+                            pane: PaneId::Main,
+                            error,
+                        }),
+                        scheduler,
+                    );
+                }
+            }
+            scheduler.request_immediate(Instant::now());
+            return Ok(false);
+        }
+        FeatureUpdate::Relaunch(launch) => {
+            let Some(local) = &mut runtime.local else {
+                return Ok(false);
+            };
+            let _ = local;
+            // Prompts typed now belong to the selected harness: hold them until
+            // its agent is adopted. Relaunches run one at a time behind any
+            // connection in flight (they share the local build slot), and the
+            // newest selection replaces an older queued one. The current
+            // launch stays until the rebuilt agent connects (adopt), so a
+            // failed relaunch keeps the running agent.
+            runtime.harness_relaunching = true;
+            runtime.queued_relaunch = Some(launch);
+            if let Some(error) = runtime.start_queued_relaunch() {
+                request_render(
+                    app.update(AppEvent::NotifyError {
+                        pane: PaneId::Main,
+                        error,
+                    }),
+                    scheduler,
+                );
+            }
+            scheduler.request_immediate(Instant::now());
+            return Ok(false);
+        }
+        FeatureUpdate::Subagent(update) => app.update(AppEvent::Subagent {
+            pane: PaneId::Main,
+            update,
+        }),
+        FeatureUpdate::VoiceStatus(status) => {
+            runtime.local_voice_status = status;
+            app.update(AppEvent::VoiceStatus(runtime.voice_status()))
+        }
+        // /collapse and /split close the local side pane.
+        FeatureUpdate::ClosePane(pane) => app.close_fork(pane),
+        // The root queues it and emits its usual RootEffect::Steer.
+        FeatureUpdate::Steer {
+            pane,
+            display,
+            instruction,
+        } => app.update(AppEvent::FeatureSteer {
+            pane: main(pane),
+            prompt: match instruction {
+                Some(instruction) => Submission::labelled(display, instruction),
+                None => Submission::text(display),
+            },
+        }),
+        FeatureUpdate::Capabilities(capabilities) => {
+            if let Some(root) = app.root_mut(PaneId::Main) {
+                root.set_capabilities(capabilities);
+            }
+            scheduler.request_immediate(Instant::now());
+            return Ok(false);
+        }
+    };
+    apply_update(update, app, runtime, terminal, scheduler).await
 }
 
 async fn apply_update(
@@ -4035,6 +4657,36 @@ async fn apply_update(
                     );
                     continue;
                 }
+                if runtime.local.is_some() {
+                    // Local /btw forks the in-process agent.
+                    let Some(main) = runtime.agent.clone() else {
+                        absorb(
+                            app.update(AppEvent::ForkFailed {
+                                pane,
+                                error: "Wait for the local agent before opening /btw".into(),
+                            }),
+                            &mut effects,
+                            scheduler,
+                        );
+                        continue;
+                    };
+                    let (commands, requests) = mpsc::unbounded_channel();
+                    let task = tokio::spawn(features::btw_local::run(
+                        pane,
+                        main,
+                        runtime.settings,
+                        runtime.sequence.saturating_add(1),
+                        requests,
+                        runtime.btw_events.clone(),
+                    ));
+                    runtime.btw = Some(BtwConnection {
+                        pane,
+                        agent_id: None,
+                        commands,
+                        task,
+                    });
+                    continue;
+                }
                 let (commands, requests) = mpsc::unbounded_channel();
                 let task = tokio::spawn(btw::run(
                     pane,
@@ -4060,10 +4712,43 @@ async fn apply_update(
                 if runtime.btw.as_ref().is_some_and(|btw| btw.pane == pane)
                     && let Some(btw) = runtime.btw.take()
                 {
-                    btw.task.abort();
+                    if runtime.local.is_some() {
+                        // Dropping the request channel makes the local
+                        // side task cancel its turn and shut its forked agent down.
+                        drop(btw.commands);
+                    } else {
+                        btw.task.abort();
+                    }
                 }
             }
             AppEffect::Pane { pane, effect } => {
+                if runtime.local.is_some()
+                    && matches!(
+                        &effect,
+                        RootEffect::AutoRoute
+                            | RootEffect::Connectors(_)
+                            | RootEffect::Reload
+                            | RootEffect::SetDone(_)
+                            | RootEffect::Bug(_)
+                            | RootEffect::Vault(_)
+                            | RootEffect::SecureInput(_)
+                            | RootEffect::Share(_)
+                            | RootEffect::Sites(_)
+                            | RootEffect::ApproveVault(_)
+                            | RootEffect::Handoff
+                    )
+                {
+                    absorb(
+                        app.update(AppEvent::NotifyError {
+                            pane,
+                            error: backend::Capabilities::LOCAL.unavailable("This command"),
+                        }),
+                        &mut effects,
+                        scheduler,
+                    );
+                    continue;
+                }
+
                 if let RootEffect::CopyResponse(text) = effect {
                     let event = match clipboard::copy_text(&text) {
                         Ok(()) => AppEvent::NotifySuccess {
@@ -4098,6 +4783,24 @@ async fn apply_update(
                 }
                 if pane != PaneId::Main {
                     match effect {
+                        RootEffect::Feature(command) => {
+                            // /collapse and /split typed in the side pane.
+                            let handled = runtime.local.as_mut().is_some_and(|local| {
+                                local.with_features(|features, cx| {
+                                    features.command(pane, &command, cx)
+                                })
+                            });
+                            if !handled {
+                                absorb(
+                                    app.update(AppEvent::NotifyError {
+                                        pane,
+                                        error: "This command needs a local agent (run ncl)".into(),
+                                    }),
+                                    &mut effects,
+                                    scheduler,
+                                );
+                            }
+                        }
                         RootEffect::Submit(prompt) | RootEffect::ContinueSubagent(prompt) => {
                             if runtime
                                 .btw
@@ -4177,7 +4880,7 @@ async fn apply_update(
                 // Keep the hosted effect boundary visually separate from app-level routing.
                 match effect {
                     RootEffect::Reload => {
-                        let update = match crate::reload::request_all() {
+                        let update = match crate::nanocodex2::reload::request_all() {
                             Ok(count) => app.update(AppEvent::NotifySuccess { pane, message: format!("Reload requested for {count} local terminal(s)…") }),
                             Err(error) => app.update(AppEvent::NotifyError { pane, error }),
                         };
@@ -4185,6 +4888,42 @@ async fn apply_update(
                     }
                     RootEffect::Screen | RootEffect::Zoom | RootEffect::Btw(_) | RootEffect::CloseBtw => {
                         unreachable!("workspace commands are handled by AppNode")
+                    }
+                    RootEffect::Feature(command) => {
+                        // Feature command dispatch.
+                        let handled = runtime.local.as_mut().is_some_and(|local| {
+                            local.with_features(|features, cx| features.command(pane, &command, cx))
+                        });
+                        if !handled {
+                            let error = match &command {
+                                features::FeatureCommand::RealtimeVoice(arguments) => crate::nanocodex2::voice::Command::parse(arguments)
+                                    .err()
+                                    .unwrap_or_else(|| "This /voice command needs a local agent (run ncl)".into()),
+                                _ => "This command needs a local agent (run ncl)".into(),
+                            };
+                            absorb(app.update(AppEvent::NotifyError { pane, error }), &mut effects, scheduler);
+                        }
+                    }
+                    RootEffect::Voice(command) if runtime.local.is_some() => {
+                        // Local Realtime voice.
+                        use crate::nanocodex2::voice::{Command, Provider};
+                        let argument = match command {
+                            Command::Toggle => Some(String::new()),
+                            Command::Start(None) => Some("on".to_owned()),
+                            Command::Start(Some(name)) => Some(name.to_owned()),
+                            Command::Stop => Some("off".to_owned()),
+                            Command::ToggleMute => Some("mute".to_owned()),
+                            Command::List | Command::ListProvider(Provider::Chatgpt) => Some("list".to_owned()),
+                            _ => None,
+                        };
+                        let handled = argument.is_some_and(|argument| {
+                            runtime.local.as_mut().is_some_and(|local| local.with_features(|features, cx| {
+                                features.command(pane, &features::FeatureCommand::RealtimeVoice(argument), cx)
+                            }))
+                        });
+                        if !handled {
+                            absorb(app.update(AppEvent::NotifyError { pane, error: "This /voice command needs a Nanocodex account session (run nanocodex)".into() }), &mut effects, scheduler);
+                        }
                     }
                     RootEffect::Voice(command) => {
                         if matches!(runtime.retry_target, Some(RetryTarget::Default)) {
@@ -4195,7 +4934,7 @@ async fn apply_update(
                             absorb(app.update(AppEvent::NotifyError { pane, error: "Claude currently supports text only; voice input is unavailable".into() }), &mut effects, scheduler);
                             continue;
                         }
-                        let persistent = matches!(command, crate::voice::Command::Help | crate::voice::Command::ListProvider(crate::voice::Provider::Chatgpt));
+                        let persistent = matches!(command, crate::nanocodex2::voice::Command::Help | crate::nanocodex2::voice::Command::ListProvider(crate::nanocodex2::voice::Provider::Chatgpt));
                         let outcome = runtime.voice_command(pane, command);
                         absorb(
                             app.update(AppEvent::VoiceStatus(runtime.voice_status())),
@@ -4350,7 +5089,7 @@ async fn apply_update(
                         let agent_id = runtime.agent_id.clone();
                         let generation = runtime.connection_generation;
                         runtime.vault_tasks.spawn(async move {
-                            let result = match crate::connectors::parse_local(&text) {
+                            let result = match crate::nanocodex2::connectors::parse_local(&text) {
                                 Ok(command) => command.execute(&client).await.map(vault::Outcome::Saved).map_err(|e| e.to_string()),
                                 Err(error) => Err(error.to_string()),
                             };
@@ -4486,17 +5225,21 @@ async fn apply_update(
                             let generation = runtime.connection_generation;
                             let target = SteerTarget::Local(turn_id);
                             let message_id = uuid::Uuid::now_v7().to_string();
-                            runtime.steer_receipts.insert(
-                                (pane, id),
-                                (generation, target.clone(), message_id.clone()),
-                            );
-                            runtime.reconcile_steer_receipt(pane, id, &target, message_id.clone(), prompt.managed_prompt());
+                            let local_steer = runtime.local.is_some();
+                            if !local_steer {
+                                runtime.steer_receipts.insert(
+                                    (pane, id),
+                                    (generation, target.clone(), message_id.clone()),
+                                );
+                                runtime.reconcile_steer_receipt(pane, id, &target, message_id.clone(), prompt.managed_prompt());
+                            }
                             runtime.pending_steer_target = Some((id, target.clone()));
                             runtime.steers.spawn(async move {
-                                let result = control
-                                    .steer_with_id(message_id, prompt.agent_prompt())
-                                    .await
-                                    .map_err(SteerFailure::backend);
+                                let result = if local_steer {
+                                    control.steer(prompt.agent_prompt()).await
+                                } else {
+                                    control.steer_with_id(message_id, prompt.agent_prompt()).await
+                                }.map_err(SteerFailure::backend);
                                 (pane, id, generation, target, result)
                             });
                         } else if !runtime.managed_active_turns.ids.is_empty() {
@@ -4803,7 +5546,26 @@ async fn apply_update(
                         if let Some(task) = runtime.session_search_tasks.remove(&pane) {
                             task.abort();
                         }
-                        if !query.trim().is_empty() {
+                        if !query.trim().is_empty() && runtime.local.is_some() {
+                            let task = runtime.session_searches.spawn(async move {
+                                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                                let search = query.clone();
+                                let result = tokio::task::spawn_blocking(move || {
+                                    local::sessions::search(&search, 20)
+                                })
+                                .await
+                                .map_err(|error| error.to_string())
+                                .and_then(|result| result.map_err(|error| format!("{error:#}")));
+                                SessionSearchCompletion {
+                                    pane,
+                                    picker_id,
+                                    request_id,
+                                    query,
+                                    result,
+                                }
+                            });
+                            runtime.session_search_tasks.insert(pane, task);
+                        } else if !query.trim().is_empty() {
                             let client = runtime.client.clone();
                             let task = runtime.session_searches.spawn(async move {
                                 tokio::time::sleep(std::time::Duration::from_millis(200)).await;
@@ -4830,6 +5592,27 @@ async fn apply_update(
                         if let Some(task) = runtime.session_search_tasks.remove(&pane) {
                             task.abort();
                         }
+                    }
+                    RootEffect::LoadSessions { request_id, .. } if runtime.local.is_some() => {
+                        // Scanning rollouts and journals reads the disk; keep it off the input loop.
+                        let workspace = runtime.workspace.clone();
+                        let cancellation = CancellationToken::new();
+                        runtime
+                            .session_list_cancellations
+                            .insert((pane, request_id), cancellation.clone());
+                        runtime.connection.spawn(async move {
+                            let list = tokio::task::spawn_blocking(move || {
+                                local::sessions::list(&workspace).map_err(|error| format!("{error:#}"))
+                            });
+                            ConnectionResult::LocalSessions {
+                                pane,
+                                request_id,
+                                result: tokio::select! {
+                                    () = cancellation.cancelled() => None,
+                                    result = list => Some(result.map_err(|error| error.to_string()).and_then(|result| result)),
+                                },
+                            }
+                        });
                     }
                     RootEffect::LoadSessions { request_id, .. } => {
                         let client = runtime.client.clone();
@@ -4884,6 +5667,18 @@ async fn apply_update(
                             &mut effects,
                             scheduler,
                         );
+                            continue;
+                        }
+                        if runtime.local.is_some() {
+                            // Local sessions resume from the rollout/journal store.
+                            match runtime.local_relaunch(ConnectionPurpose::Resume(pane), Some(&agent_id)) {
+                                Ok(resume) => runtime.pending_resume = Some((resume, pane)),
+                                Err(error) => absorb(
+                                    app.update(AppEvent::SessionLoadFailed { pane, error }),
+                                    &mut effects,
+                                    scheduler,
+                                ),
+                            }
                             continue;
                         }
                         let client = runtime.client.clone();
@@ -4958,6 +5753,10 @@ async fn apply_update(
                             fast_mode: root.composer().fast_mode(),
                         });
                         request_render(app.update(AppEvent::VoiceStatus(None)), scheduler);
+                        if let Some(local) = &mut runtime.local {
+                            // /clear starts a fresh local agent, not the resumed session.
+                            local.launch = local::sessions::fresh(&local.launch);
+                        }
                         runtime.start_new_session(settings);
                         absorb(
                             app.update(AppEvent::NewSessionReady {
@@ -5071,6 +5870,16 @@ async fn apply_update(
                     );
                     }
                     RootEffect::AutoRoute => runtime.enable_autoroute(pane),
+                    RootEffect::SetModel(model) if runtime.local.is_some() => {
+                        // Local model/harness switch before the first prompt.
+                        let command = features::FeatureCommand::SwitchModel(model.to_string());
+                        let handled = runtime.local.as_mut().is_some_and(|local| {
+                            local.with_features(|features, cx| features.command(pane, &command, cx))
+                        });
+                        if !handled {
+                            absorb(app.update(AppEvent::NotifyError { pane, error: "Model switching is unavailable for this local session".into() }), &mut effects, scheduler);
+                        }
+                    }
                     RootEffect::SetModel(model) => {
                         let root = app.root(pane).expect("model-selection pane must exist");
                         // Recheck availability at the public account boundary. Normalize
@@ -5134,7 +5943,11 @@ async fn apply_update(
                         runtime.queue_settings(pane, SettingsMutation::Thinking(thinking));
                     }
                     RootEffect::SetFastMode(enabled) => {
-                        if enabled && !runtime.settings.model.supports_fast_mode() {
+                        let supports_fast = if runtime.local.is_some() {
+                            runtime.settings.model.as_str().parse::<nanocodex::HarnessModel>()
+                                .is_ok_and(nanocodex::HarnessModel::supports_fast_mode)
+                        } else { runtime.settings.model.supports_fast_mode() };
+                        if enabled && !supports_fast {
                             absorb(app.update(AppEvent::NotifyError { pane, error: "Fast mode is unavailable for this model".into() }), &mut effects, scheduler);
                             continue;
                         }
@@ -5149,6 +5962,30 @@ async fn apply_update(
                             continue;
                         }
                         runtime.queue_settings(pane, SettingsMutation::FastMode(enabled));
+                    }
+                    RootEffect::SetMaxSubagents(limit)
+                        if runtime.local.as_ref().is_some_and(|local| {
+                            local.backend.as_ref().is_some_and(|backend| backend.parts.child_agents.is_some())
+                        }) =>
+                    {
+                        // FEATURE-HOOK: local child-agent concurrency limit (legacy ChildAgents).
+                        if let Some(child_agents) = runtime.local.as_ref()
+                            .and_then(|local| local.backend.as_ref())
+                            .and_then(|backend| backend.parts.child_agents.as_ref())
+                        {
+                            child_agents.set_max_concurrency(limit);
+                        }
+                        if let Some(root) = app.root_mut(pane) {
+                            root.set_max_subagents(limit);
+                        }
+                        absorb(
+                            app.update(AppEvent::NotifySuccess {
+                                pane,
+                                message: format!("Subagent limit set to {limit}"),
+                            }),
+                            &mut effects,
+                            scheduler,
+                        );
                     }
                     RootEffect::SetMaxSubagents(_) => {
                         absorb(
@@ -5488,8 +6325,10 @@ mod tests {
         history_projection_with_sequences, history_replay_matches, live_managed_projection,
         new_agent_settings, prepare_history_replay, session_summaries,
     };
-    use crate::config::ReasoningEffort;
-    use crate::tui::{components::QueueId, pane::PaneId, prompt::Submission, transcript::TurnId};
+    use crate::nanocodex2::config::ReasoningEffort;
+    use crate::nanocodex2::tui::{
+        components::QueueId, pane::PaneId, prompt::Submission, transcript::TurnId,
+    };
     use nanocodex::Model;
     use nanocodex_managed::{
         AgentList, AgentSettings, AgentSummary, EventHistoryPage, ManagedApiKey, ManagedClient,
@@ -5642,7 +6481,7 @@ mod tests {
 
     #[tokio::test]
     async fn voice_requested_during_startup_starts_once_when_connected_with_selected_controls() {
-        use crate::voice::Command;
+        use crate::nanocodex2::voice::Command;
         let mut runtime = history_runtime(HistoryWindow::default());
         runtime.agent_id.clear();
         assert_eq!(
@@ -5652,7 +6491,7 @@ mod tests {
         assert!(runtime.take_ready_voice().is_none());
         assert_eq!(
             runtime.voice_status().unwrap().phase,
-            crate::voice_state::Phase::Connecting
+            crate::nanocodex2::voice_state::Phase::Connecting
         );
         runtime
             .voice_command(PaneId::Main, Command::Start(Some("ember")))
@@ -5668,14 +6507,17 @@ mod tests {
         assert!(runtime.take_ready_voice().is_none());
         runtime.managed_events_open = true;
         let ready = runtime.take_ready_voice().unwrap();
-        assert_eq!(ready.selection, crate::voice::Selection::Chatgpt("ember"));
+        assert_eq!(
+            ready.selection,
+            crate::nanocodex2::voice::Selection::Chatgpt("ember")
+        );
         assert!(ready.muted);
         assert!(runtime.take_ready_voice().is_none());
     }
 
     #[tokio::test]
     async fn clone_panel_never_starts_or_uploads_implicitly() {
-        use crate::voice::Command;
+        use crate::nanocodex2::voice::Command;
         let mut runtime = history_runtime(HistoryWindow::default());
         runtime
             .voice_command(PaneId::Main, Command::CloneOpen("Synthetic voice".into()))
@@ -5735,7 +6577,7 @@ mod tests {
 
     #[test]
     fn voice_provider_settings_keep_valid_realtime_input() {
-        use crate::voice::Selection;
+        use crate::nanocodex2::voice::Selection;
         use nanocodex_voice_protocol::VoiceOutputProvider;
         let eleven = super::voice_settings(&Selection::ElevenLabs("sample_voice".into()));
         assert_eq!(eleven.output_provider, VoiceOutputProvider::Elevenlabs);
@@ -5749,7 +6591,7 @@ mod tests {
 
     #[tokio::test]
     async fn voice_provider_selection_survives_stop_and_replaces_pending_start() {
-        use crate::voice::{Command, Selection};
+        use crate::nanocodex2::voice::{Command, Selection};
         let mut runtime = history_runtime(HistoryWindow::default());
         runtime
             .voice_command(
@@ -5783,7 +6625,7 @@ mod tests {
 
     #[tokio::test]
     async fn queued_voice_can_be_cancelled_and_does_not_leak_to_a_new_session() {
-        use crate::voice::Command;
+        use crate::nanocodex2::voice::Command;
         let mut runtime = history_runtime(HistoryWindow::default());
         for stop in [Command::Stop, Command::Toggle] {
             runtime
@@ -5803,7 +6645,7 @@ mod tests {
 
     #[tokio::test]
     async fn queued_voice_waits_for_recovery_and_session_switch() {
-        use crate::voice::Command;
+        use crate::nanocodex2::voice::Command;
         let mut runtime = history_runtime(HistoryWindow::default());
         runtime
             .voice_command(PaneId::Main, Command::Toggle)
@@ -5843,7 +6685,7 @@ mod tests {
             control_bridge: None,
             btw: None,
             btw_events: tokio::sync::mpsc::unbounded_channel().0,
-            screen: crate::tui::screen::Controller::new(Some(
+            screen: crate::nanocodex2::tui::screen::Controller::new(Some(
                 ratatui_image::picker::Picker::halfblocks(),
             )),
             pending_voice: None,
@@ -5852,6 +6694,14 @@ mod tests {
             clone_panel: None,
             voice: None,
             client: ManagedClient::new("http://127.0.0.1:9", api_key).unwrap(),
+            local: None,
+            feature_overlay: None,
+            feature_instructions: HashMap::new(),
+            feature_completions: HashMap::new(),
+            feature_turns: HashSet::new(),
+            local_voice_status: None,
+            harness_relaunching: false,
+            queued_relaunch: None,
             agent: None,
             startup_attach: false,
             pending_resume: None,
@@ -6588,8 +7438,8 @@ mod tests {
         root.install_session_projection(
             Path::new("/workspace"),
             ReasoningEffort::Medium,
-            crate::config::ReasoningMode::Standard,
-            crate::config::ReasoningMode::Standard,
+            crate::nanocodex2::config::ReasoningMode::Standard,
+            crate::nanocodex2::config::ReasoningMode::Standard,
             false,
             *projection,
         );
@@ -6784,7 +7634,7 @@ mod tests {
 
     #[test]
     fn tool_result_loaded_before_its_call_is_restored_across_page_boundaries() {
-        use crate::tui::transcript::{EntryKind, ToolState, TranscriptModel};
+        use crate::nanocodex2::tui::transcript::{EntryKind, ToolState, TranscriptModel};
         let mut sequences = HashMap::new();
         let mut next_sequence = 1;
         let (records, _) = history_projection_with_sequences(

@@ -451,7 +451,7 @@ export function createCodeRuntime(toolConfiguration = {}, extras = {}) {
               success: receipt.success, metadata: receipt.metadata });
             if (receipt.thrown) throw restoreEffectFailure(receipt.failure);
             const value = receipt.valueUndefined ? undefined : receipt.value;
-            if (!receipt.success) throw value;
+            if (!receipt.success) throw toolFailureError(value, receipt.output);
             return value;
           }
           if (decision?.status !== "execute") interrupt(effectUnknown(new Error("invalid nested effect admission")));
@@ -540,7 +540,7 @@ export function createCodeRuntime(toolConfiguration = {}, extras = {}) {
         await retain(receipt, valueRef, outputJsonRef);
         complete({ output: receipt.output, structured_result: receipt.structured_result,
               success: receipt.success, metadata: receipt.metadata });
-        if (!success) throw toolValue(result);
+        if (!success) throw toolFailureError(toolValue(result), output);
         return toolValue(result);
       }
     }
@@ -1259,6 +1259,27 @@ function deepFreeze(value) {
   if (!value || typeof value !== "object" || Object.isFrozen(value)) return value;
   for (const child of Object.values(value)) deepFreeze(child);
   return Object.freeze(value);
+}
+
+// A failed tool result rejects with a real Error so guest catch blocks can
+// read error.message/error.code. Fields of a structured failure value remain
+// available as own properties; replay rebuilds the same shape from its receipt.
+function toolFailureError(value, output) {
+  if (value instanceof Error) return value;
+  const record = value !== null && typeof value === "object" && !Array.isArray(value) ? value : undefined;
+  const message = typeof value === "string" ? value
+    : typeof record?.message === "string" ? record.message
+    : typeof record?.error === "string" ? record.error
+    : typeof record?.error?.message === "string" ? record.error.message
+    : typeof output === "string" ? output
+    : value === undefined || value === null ? "tool call failed" : stringify(value);
+  const error = new Error(message || "tool call failed");
+  if (record) {
+    for (const [key, field] of Object.entries(record)) {
+      if (key !== "message" && key !== "stack" && key !== "name") error[key] = field;
+    }
+  } else if (value !== undefined && typeof value !== "string") error.value = value;
+  return error;
 }
 
 function errorMessage(error) {

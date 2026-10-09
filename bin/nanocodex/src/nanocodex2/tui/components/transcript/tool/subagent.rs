@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use super::Presentation;
-use crate::tui::{theme::Theme, transcript::ToolEntry};
+use crate::nanocodex2::tui::{theme::Theme, transcript::ToolEntry};
 use ratatui::style::{Modifier, Style};
 use serde_json::Value;
 
@@ -98,7 +98,9 @@ pub(super) fn present(tool: &ToolEntry, width: u16, theme: &Theme, expanded: boo
             }
         }
         // Preserve unexpected error payloads without falling back to protocol JSON.
-        if tool.state == crate::tui::transcript::ToolState::Failed && sections.is_empty() {
+        if tool.state == crate::nanocodex2::tui::transcript::ToolState::Failed
+            && sections.is_empty()
+        {
             sections.push(("Error".into(), result.clone()));
         }
     }

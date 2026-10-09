@@ -69,11 +69,11 @@ export class FixtureModel extends DurableObject {
       const body = JSON.parse(event.data);
       const user = JSON.stringify((body.input ?? []).filter(item => item.role === 'user').at(-1)) ?? '';
       if (user.includes('ACTIVE_THREAD_HISTORY')) await new Promise(resolve => setTimeout(resolve, 1500));
-      const marker = user.match(/ADMIN_TOOL (accounts|read|diagnostics|performance|restricted_read)(?: ([0-9a-f-]{36}))?/);
+      const marker = user.match(/ADMIN_TOOL (accounts|read|diagnostics|performance|restricted_read|bigoutput)(?: ([0-9a-f-]{36}))?/);
       if (marker && marker[0] !== lastUser) { index = 0; lastUser = marker[0]; }
       const operation = marker?.[1] === 'restricted_read' ? 'read' : marker?.[1];
-      const args = {operation, limit: operation === 'accounts' ? 2 : 100, ...(marker?.[2] ? {thread_id:marker[2]} : {})};
-      const input = marker && index++ === 0 ? 'try { text(await tools.admin_threads('+JSON.stringify(args)+')); } catch (error) { text({denied:String(error)}); }' : undefined;
+      const args = {operation, limit: operation === 'accounts' ? 2 : 100, ...(operation === 'diagnostics' ? {after_managed:0} : {}), ...(marker?.[2] ? {thread_id:marker[2]} : {})};
+      const input = marker && index++ === 0 ? operation === 'bigoutput' ? 'text("BIG_OUTPUT_".repeat(40000))' : 'try { text(await tools.admin_threads('+JSON.stringify(args)+')); } catch (error) { text({denied:String(error)}); }' : undefined;
       server.send(JSON.stringify({type:'response.completed',response:{id:'resp_'+crypto.randomUUID(),status:'completed',end_turn:!input,
         output:input ? [{type:'custom_tool_call',name:'exec',call_id:'admin-'+index,input}]
           : [{type:'message',role:'assistant',content:[{type:'output_text',text:'JOURNEY_DONE'}]}],
@@ -399,6 +399,25 @@ for (const configured of [true, false]) test(`admin thread journey (configured=$
     assert.equal(selfResults[0].status, "completed", JSON.stringify(selfResults));
     assert.equal(selfResults[0].structured_result.thread.id, adminThread);
     trace.push({case:"model_exec_active_self_read", expected:"current thread readable during its own tool call"});
+    // A self read is served in-process and returns a bounded page: an oversized
+    // event is a preview with its original size, never a multi-MB tool result.
+    await turn(adminThread, "ADMIN_TOOL bigoutput");
+    const boundedResults = toolResults(await turn(adminThread, `ADMIN_TOOL read ${adminThread}`));
+    assert.equal(boundedResults[0].status, "completed", JSON.stringify(boundedResults).slice(0, 2000));
+    const boundedPage = boundedResults[0].structured_result;
+    const previews = boundedPage.data.filter(event => event.truncated === true);
+    assert.ok(previews.length > 0 && previews.every(event => event.original_bytes > 32 * 1024 && event.preview.length <= 16 * 1024),
+      JSON.stringify(boundedPage).slice(0, 2000));
+    const preview = previews.find(event => /BIG_OUTPUT_BIG_OUTPUT_/.test(event.preview));
+    assert.ok(preview && preview.original_bytes > 400_000, JSON.stringify(previews.map(event => event.original_bytes)));
+    assert.ok(JSON.stringify(boundedPage).length < 600_000, String(JSON.stringify(boundedPage).length));
+    trace.push({case:"model_exec_self_read_bounded", expected:"oversized self events are previews", original_bytes: preview.original_bytes, page_bytes: JSON.stringify(boundedPage).length});
+    for (const operation of ["diagnostics", "performance"]) {
+      const selfInspection = toolResults(await turn(adminThread, `ADMIN_TOOL ${operation} ${adminThread}`));
+      assert.equal(selfInspection[0].status, "completed", JSON.stringify(selfInspection).slice(0, 2000));
+      assert.equal(selfInspection[0].structured_result.thread_id, adminThread);
+      trace.push({case:"model_exec_self_" + operation, expected:"own thread inspected in-process"});
+    }
     const restrictedFrames = await turn(adminThread, `ADMIN_TOOL restricted_read ${aliceThreads[0]}`, restrictedAdminToken);
     const restrictedResults = toolResults(restrictedFrames);
     assert.equal(restrictedResults.length, 1, JSON.stringify(restrictedFrames));

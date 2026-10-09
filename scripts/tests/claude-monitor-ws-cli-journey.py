@@ -91,7 +91,10 @@ def main():
    time.sleep(.02)
   raise AssertionError(message)
  def visible(label,text): return text in screens[label].text()
- def finish(proc,fd,drain): os.write(fd,b'\x03'); proc.wait(timeout=10); drain(); os.close(fd)
+ def finish(proc,fd,drain):
+  os.write(fd,b'\x03')
+  wait(lambda:proc.poll() is not None,drain,'TUI exit stuck',timeout=10)
+  drain(); os.close(fd)
  def monitor(path,**extra): return {'ws':{'url':origin+path},'description':'Synthetic WebSocket',**extra}
  def save(value): ids['monitor']=value['task_id']
  def status(expected): return lambda value: require(value['status']==expected,f'expected {expected}: {value}')
@@ -117,11 +120,6 @@ def main():
   for label,path,extra,expected in [('cancel','/stall',{'persistent':True},'stopped'),('timeout','/timeout',{'timeout_ms':1000},'timed_out'),('oversize','/oversize',{},'output_limit')]:
    steps=[('Monitor',monitor(path,**extra),False,save),('TaskStop' if label=='cancel' else 'TaskOutput',lambda label=label:{'task_id':ids['monitor'],**({} if label=='cancel' else {'block':True,'timeout':10000})},False,status(expected))]
    phase(label,steps); proc,fd,drain=start(label,trusted=True); wait(lambda:visible(label,label+'-complete'),drain,label+' incomplete'); wait(lambda:any(c.get('path')==path and 'closed_at' in c for c in connections),drain,label+' transport still open'); finish(proc,fd,drain); checks.append(label+' ends real WebSocket with retained '+expected+' status')
-  phase('bash-notify',[('Bash',{'command':'printf start; sleep 0.3; printf finish','timeout':25},False,save)])
-  proc,fd,drain=start('bash-notify',web=False); wait(lambda:visible('bash-notify','bash-notify-complete'),drain,'Bash promotion incomplete')
-  wait(lambda:any(e['phase']=='bash-notify' and 'Bash background task finished' in json.dumps(e['message']) for e in events),drain,'Bash completion idle notification absent')
-  phase('bash-result',[('TaskOutput',lambda:{'task_id':ids['monitor'],'block':False},False,lambda r:(status('completed')(r),require(r['output']['stdout']=='startfinish','Bash result unavailable at notification')))])
-  os.write(fd,b'Inspect completed Bash task\r'); wait(lambda:visible('bash-notify','bash-result-complete'),drain,'Bash result incomplete'); finish(proc,fd,drain); checks.append('promoted Bash completion enqueued to owner idle and retained output available immediately')
   outcome={'success':True,'checks':checks,'binary_sha256':hashlib.sha256(binary.read_bytes()).hexdigest()}
  finally:
   stopping.set(); listener.close(); release.set()

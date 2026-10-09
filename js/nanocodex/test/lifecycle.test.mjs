@@ -185,9 +185,12 @@ test("a duplicate durable session rejects without fencing the live Agent", async
   const durabilityId = "lifecycle-session-collision";
   const stored = createMemoryDurabilityStore(durabilityId);
   let authorityAcquisitions = 0;
+  let journalAcquisitions = 0;
   const durability = {
     acquire(stateId, request) {
-      authorityAcquisitions += 1;
+      // The live Agent lazily acquires its sibling child task-tree journal.
+      if (stateId === `${durabilityId}:subagents`) journalAcquisitions += 1;
+      else authorityAcquisitions += 1;
       return stored.acquire(stateId, request);
     },
     replace: (stateId, request) => stored.replace(stateId, request),
@@ -199,26 +202,32 @@ test("a duplicate durable session rejects without fencing the live Agent", async
     durability,
     durabilityId,
   };
-  const first = await Agent.create(options);
-  const firstAuthorityAcquisitions = authorityAcquisitions;
-  assert.ok(firstAuthorityAcquisitions > 0);
-  await assert.rejects(Agent.create(options), /session ID is already active/);
-  assert.equal(authorityAcquisitions, firstAuthorityAcquisitions);
+  let first;
+  let turn;
+  try {
+    first = await Agent.create(options);
+    const firstAuthorityAcquisitions = authorityAcquisitions;
+    assert.ok(firstAuthorityAcquisitions > 0);
+    await assert.rejects(Agent.create(options), /session ID is already active/);
+    assert.equal(authorityAcquisitions, firstAuthorityAcquisitions);
 
-  const scenario = (async () => {
-    const socket = await server.nextConnection();
-    const request = await messageReader(socket).next();
-    assert.match(JSON.stringify(request.input), /live durable owner/);
-    sendFinal(socket, "resp-live-owner", "STILL LIVE");
-  })();
-  const turn = first.turn.prompt({ input: "live durable owner", id: "operation-live" });
-  assert.equal(await turn.accepted(), "operation-live");
-  assert.equal((await turn.result()).finalMessage, "STILL LIVE");
-  await scenario;
-
-  turn.dispose();
-  first.dispose();
-  await server.close();
+    const scenario = (async () => {
+      const socket = await server.nextConnection();
+      const request = await messageReader(socket).next();
+      assert.match(JSON.stringify(request.input), /live durable owner/);
+      sendFinal(socket, "resp-live-owner", "STILL LIVE");
+    })();
+    turn = first.turn.prompt({ input: "live durable owner", id: "operation-live" });
+    assert.equal(await turn.accepted(), "operation-live");
+    assert.equal((await turn.result()).finalMessage, "STILL LIVE");
+    await scenario;
+    assert.equal(authorityAcquisitions, firstAuthorityAcquisitions, "the rejected duplicate never fences the live root");
+    assert.ok(journalAcquisitions <= 1, "only the live Agent acquires its child journal");
+  } finally {
+    turn?.dispose();
+    first?.dispose();
+    await server.close();
+  }
 });
 
 test("durability store failures preserve reopen and retry-safe dispositions", async () => {

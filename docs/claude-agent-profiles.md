@@ -57,7 +57,7 @@ Use `tools.wait_agent(...)` to wait for a skill child and
 `tools.close_agent(...)` to close it.
 Closing releases subtree workspace pins and removes owned unchanged worktrees;
 dirty or committed worktrees remain. This is workspace isolation, not an OS
-sandbox: Bash retains the CLI's configured host permissions.
+sandbox: exec_command retains the CLI's configured host permissions.
 
 ## Forked skills
 

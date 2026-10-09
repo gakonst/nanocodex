@@ -18,7 +18,7 @@ mod web;
 use super::markdown::{
     Layout, SourceSpan, plain_selection_spans_excluding, sanitize, wrap_plain, wrap_spans,
 };
-use crate::tui::{
+use crate::nanocodex2::tui::{
     format::{format_duration, humanize_tool},
     theme::Theme,
     transcript::{ToolEntry, ToolState, is_subagent_tool},
@@ -166,7 +166,7 @@ fn present(tool: &ToolEntry, width: u16, theme: &Theme, expanded: bool) -> Prese
     ) {
         return Presentation::new(
             "Private Vault browser",
-            crate::tui::vault::browser_summary(
+            crate::nanocodex2::tui::vault::browser_summary(
                 tool.family(),
                 tool.result.as_ref(),
                 tool.state == ToolState::Failed,
@@ -177,7 +177,7 @@ fn present(tool: &ToolEntry, width: u16, theme: &Theme, expanded: bool) -> Prese
         let summary = tool
             .result
             .as_ref()
-            .and_then(crate::tui::vault::intake_summary)
+            .and_then(crate::nanocodex2::tui::vault::intake_summary)
             .unwrap_or_else(|| {
                 "Secure Vault request · use /vault open to check your Vault".to_owned()
             });
@@ -366,6 +366,26 @@ fn summary_lines(
     theme: &Theme,
     expanded: bool,
 ) -> Vec<Line<'static>> {
+    summary_lines_with_origin(
+        tool,
+        presentation,
+        live_duration_ns,
+        width,
+        theme,
+        expanded,
+        true,
+    )
+}
+
+fn summary_lines_with_origin(
+    tool: &ToolEntry,
+    presentation: &Presentation,
+    live_duration_ns: Option<u64>,
+    width: u16,
+    theme: &Theme,
+    expanded: bool,
+    show_origin: bool,
+) -> Vec<Line<'static>> {
     if tool.name == "__tool_activity" {
         let counts = tool
             .arguments
@@ -437,11 +457,13 @@ fn summary_lines(
         );
     }
     let mut origin_spans = Vec::new();
-    append_span(
-        &mut origin_spans,
-        &format!(" · {}", tool.execution_qualifier()),
-        Style::default().fg(theme.muted()),
-    );
+    if show_origin {
+        append_span(
+            &mut origin_spans,
+            &format!(" · {}", tool.execution_qualifier()),
+            Style::default().fg(theme.muted()),
+        );
+    }
     let mut error_spans = Vec::new();
     if tool.state == ToolState::Failed
         && !matches!(
@@ -537,6 +559,243 @@ fn summary_lines(
         line.spans.splice(0..0, line_prefix);
     }
     lines
+}
+
+/// One folded batch of consecutive tool calls, rendered like the classic CLI:
+/// a "Tools" header with the call count and duration, then one terse row per
+/// call (parallel calls share a branch). Failures stay visible in their rows.
+pub(super) struct ToolGroup<'a> {
+    /// Semantic calls in order with their live (still running) duration.
+    pub(super) calls: Vec<(&'a ToolEntry, Option<u64>)>,
+    pub(super) state: ToolState,
+    pub(super) duration_ns: u64,
+    pub(super) wrapper_running: bool,
+    pub(super) wrapper_waiting: bool,
+    /// First error line of a failed Code Mode cell.
+    pub(super) wrapper_error: Option<String>,
+    /// First emitted line of the Code Mode cell(s), the batch's own output.
+    pub(super) note: Option<String>,
+}
+
+const MAX_GROUP_ROWS: usize = 6;
+
+pub(super) fn group_lines(group: &ToolGroup<'_>, width: u16, theme: &Theme) -> Vec<Line<'static>> {
+    if width == 0 {
+        return Vec::new();
+    }
+    let muted = Style::default().fg(theme.muted());
+    let border = Style::default().fg(theme.border());
+    let error = Style::default().fg(theme.thinking_xhigh());
+    let count = group.calls.len();
+    let running = group
+        .calls
+        .iter()
+        .filter(|(call, _)| call.state == ToolState::Running)
+        .count();
+    let failed = group
+        .calls
+        .iter()
+        .filter(|(call, _)| call.state == ToolState::Failed)
+        .count();
+    let mut header = vec![
+        Span::raw("  "),
+        Span::styled("▶ ", border),
+        Span::styled(
+            format!("{} ", status_symbol(group.state)),
+            status_style(group.state, theme),
+        ),
+        Span::styled(
+            "Tools",
+            Style::default()
+                .fg(theme.text())
+                .add_modifier(Modifier::BOLD),
+        ),
+    ];
+    let mut details = vec![count_label(count.max(1), "call", "calls")];
+    if running > 0 && running < count {
+        details.push(format!("{running} running"));
+    } else if group.wrapper_running && running == 0 {
+        details.push("still running".to_owned());
+    } else if group.wrapper_waiting {
+        details.push("waiting for execution".to_owned());
+    }
+    if failed > 0 {
+        details.push(format!("{failed} failed"));
+    }
+    if group.duration_ns > 0 {
+        details.push(format_duration(group.duration_ns));
+    }
+    append_span(&mut header, &format!("  {}", details.join(" · ")), muted);
+    if let Some(wrapper_error) = &group.wrapper_error {
+        append_span(&mut header, &format!(" · {wrapper_error}"), error);
+    } else if let Some(note) = &group.note {
+        append_span(&mut header, &format!(" · {note}"), muted);
+    }
+    let mut lines = vec![one_line(header, width, muted)];
+
+    let rows = group_rows(group);
+    let hidden = count - rows.len();
+    let parallel = if hidden == 0 {
+        parallel_groups(&group.calls)
+    } else {
+        // Elided rows would break the shared branch; list survivors plainly.
+        (0..count).map(|index| index..index + 1).collect()
+    };
+    for (position, &index) in rows.iter().enumerate() {
+        let last_row = position + 1 == rows.len() && hidden == 0;
+        let group_index = parallel
+            .iter()
+            .position(|range| range.contains(&index))
+            .unwrap_or(0);
+        let range = &parallel[group_index];
+        let connector = if hidden > 0 {
+            if last_row {
+                "    └── "
+            } else {
+                "    ├── "
+            }
+        } else {
+            activity_connector(
+                group_index + 1 == parallel.len(),
+                range.len() > 1,
+                index - range.start,
+                index + 1 == range.end,
+            )
+        };
+        let (call, live) = group.calls[index];
+        let presentation = present(call, width, theme, false).truncate_summary();
+        let row_width = width
+            .saturating_sub(display_width(connector))
+            .saturating_add(4);
+        // The batch header already belongs to this transcript; rows stay terse.
+        let mut row =
+            summary_lines_with_origin(call, &presentation, live, row_width, theme, false, false)
+                .into_iter()
+                .next()
+                .unwrap_or_default();
+        // Drop the per-call indentation and disclosure marker; the branch replaces them.
+        let spans = row.spans.drain(..).skip(2);
+        let mut spans_with_connector = vec![Span::styled(connector, border)];
+        spans_with_connector.extend(spans);
+        row.spans = spans_with_connector;
+        lines.push(row);
+    }
+    if hidden > 0 {
+        lines.push(Line::from(vec![
+            Span::styled("    └ ", border),
+            Span::styled(format!("{hidden} more · Ctrl+O"), muted),
+        ]));
+    }
+    lines
+}
+
+/// Rows worth showing when a batch is long: every running or failed call,
+/// then subagent coordination, then the most recent calls.
+fn group_rows(group: &ToolGroup<'_>) -> Vec<usize> {
+    let count = group.calls.len();
+    if count <= MAX_GROUP_ROWS {
+        return (0..count).collect();
+    }
+    let budget = MAX_GROUP_ROWS - 1;
+    let mut rows = (0..count)
+        .filter(|&index| {
+            matches!(
+                group.calls[index].0.state,
+                ToolState::Running | ToolState::Failed
+            )
+        })
+        .collect::<Vec<_>>();
+    let coordination = (0..count)
+        .filter(|&index| is_subagent_tool(group.calls[index].0.family()) && !rows.contains(&index))
+        .collect::<Vec<_>>();
+    rows.extend(coordination);
+    rows.truncate(budget);
+    for index in (0..count).rev() {
+        if rows.len() >= budget {
+            break;
+        }
+        if !rows.contains(&index) {
+            rows.push(index);
+        }
+    }
+    rows.sort_unstable();
+    rows
+}
+
+/// Calls whose execution intervals overlap share one parallel branch.
+fn parallel_groups(calls: &[(&ToolEntry, Option<u64>)]) -> Vec<Range<usize>> {
+    let mut groups = Vec::new();
+    let mut start_index = 0;
+    let mut group_end_ms = None::<u64>;
+    for (index, (call, live)) in calls.iter().enumerate() {
+        let start = call.started_at_unix_ms;
+        // A settled call's own duration is authoritative; live ticks may be stale.
+        let duration = if call.state == ToolState::Running {
+            live.or(call.duration_ns)
+        } else {
+            call.duration_ns.or(*live)
+        };
+        let end = duration.map(|duration| start.saturating_add(duration / 1_000_000));
+        // Millisecond timestamps: require a real overlap, not shared rounding.
+        let overlaps = group_end_ms.is_some_and(|group_end| start.saturating_add(1) < group_end)
+            || (call.state == ToolState::Running
+                && index > start_index
+                && calls[index - 1].0.state == ToolState::Running);
+        if index > start_index && !overlaps {
+            groups.push(start_index..index);
+            start_index = index;
+            group_end_ms = None;
+        }
+        if let Some(end) = end {
+            group_end_ms = Some(group_end_ms.map_or(end, |current| current.max(end)));
+        } else if call.state == ToolState::Running {
+            group_end_ms = Some(u64::MAX);
+        }
+    }
+    if start_index < calls.len() {
+        groups.push(start_index..calls.len());
+    }
+    groups
+}
+
+const fn activity_connector(
+    group_is_last: bool,
+    parallel: bool,
+    child_index: usize,
+    child_is_last: bool,
+) -> &'static str {
+    if !parallel {
+        return if group_is_last {
+            "    └── "
+        } else {
+            "    ├── "
+        };
+    }
+    match (child_index, child_is_last, group_is_last) {
+        (0, _, true) => "    └─┬ ",
+        (0, _, false) => "    ├─┬ ",
+        (_, false, true) => "      ├ ",
+        (_, true, true) => "      └ ",
+        (_, false, false) => "    │ ├ ",
+        (_, true, false) => "    │ └ ",
+    }
+}
+
+fn display_width(text: &str) -> u16 {
+    u16::try_from(UnicodeWidthStr::width(text)).unwrap_or(u16::MAX)
+}
+
+fn one_line(spans: Vec<Span<'static>>, width: u16, ellipsis: Style) -> Line<'static> {
+    if spans_need_truncation(&spans, width) {
+        truncate_spans_with_ellipsis(&spans, width, ellipsis)
+    } else {
+        Line::from(spans)
+    }
+}
+
+/// First emitted output line of a Code Mode cell, used as the batch note.
+pub(super) fn first_emitted_line(tool: &ToolEntry) -> Option<String> {
+    code::first_emitted_line(tool)
 }
 
 fn spans_need_truncation(spans: &[Span<'static>], width: u16) -> bool {
@@ -695,7 +954,7 @@ pub(super) fn selectable_result(
     width: u16,
     theme: &Theme,
 ) -> (String, Vec<Line<'static>>) {
-    if let Some(summary) = crate::tui::vault::payload_summary(value, 0) {
+    if let Some(summary) = crate::nanocodex2::tui::vault::payload_summary(value, 0) {
         let details = wrap_plain(&summary, width, Style::default().fg(theme.text()));
         return (summary, details);
     }
@@ -729,6 +988,7 @@ pub(super) fn format_bytes(bytes: usize) -> String {
 
 fn meaningful_subject(arguments: &Value) -> Option<String> {
     [
+        "pattern",
         "path",
         "file_path",
         "query",
@@ -767,6 +1027,11 @@ fn generic_outcome(result: Option<&Value>) -> Option<String> {
             "failed".to_owned()
         }
     })
+}
+
+/// First error line of a failed call, as shown in its summary row.
+pub(super) fn failure_line(tool: &ToolEntry) -> Option<String> {
+    first_error_line(tool.result.as_ref())
 }
 
 fn first_error_line(result: Option<&Value>) -> Option<String> {
@@ -873,11 +1138,13 @@ fn bounded_section(mut details: Vec<Line<'static>>) -> Vec<Line<'static>> {
 // Preserve text, resource names, and download URLs alongside embedded media.
 fn display_value(value: &Value, depth: usize) -> Value {
     if value.get("type").and_then(Value::as_str) == Some("vault_intake") {
-        return Value::String(crate::tui::vault::intake_summary(value).unwrap_or_else(|| {
-            "Secure Vault request could not be verified. Use /vault open.".into()
-        }));
+        return Value::String(
+            crate::nanocodex2::tui::vault::intake_summary(value).unwrap_or_else(|| {
+                "Secure Vault request could not be verified. Use /vault open.".into()
+            }),
+        );
     }
-    if let Some(summary) = crate::tui::vault::receipt_summary(&value.to_string()) {
+    if let Some(summary) = crate::nanocodex2::tui::vault::receipt_summary(&value.to_string()) {
         return Value::String(summary);
     }
     if depth > 10 {
@@ -979,7 +1246,7 @@ mod tests {
         MAX_EXPANDED_DETAIL_LINES, MAX_EXPANDED_TEXT_BYTES, bounded_json, render, render_expanded,
         render_layout, render_live,
     };
-    use crate::tui::{
+    use crate::nanocodex2::tui::{
         theme::Theme,
         transcript::{ToolEntry, ToolState},
     };

@@ -7,7 +7,9 @@ use super::{
     node::{Component, ComponentUpdate, RenderRequest},
     waved_text::WavedText,
 };
-use crate::tui::{format::sanitize_terminal_text_inline, prompt::Submission, theme::Theme};
+use crate::nanocodex2::tui::{
+    format::sanitize_terminal_text_inline, prompt::Submission, theme::Theme,
+};
 use crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers};
 use ratatui::{
     Frame,
@@ -632,7 +634,7 @@ fn truncate(text: &str, width: usize) -> Cow<'_, str> {
 #[cfg(test)]
 mod tests {
     use super::{Component, MessageQueue, QueueEffect, QueueEvent, QueueId, Submission};
-    use crate::tui::theme::Theme;
+    use crate::nanocodex2::tui::theme::Theme;
     use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
     use ratatui::{Terminal, backend::TestBackend};
 

@@ -44,7 +44,7 @@ def main():
         ('Write', {'file_path': 'same.txt', 'content': 'parent changed\n'}, False, None),
         ('EnterWorktree', {'path': str(artifact / 'external')}, True, 'unsupported'),
         ('EnterWorktree', {'name': 'isolation'}, False, str(wt)),
-        ('Bash', {'command': 'pwd'}, False, str(wt)),
+        ('exec_command', {'cmd': 'pwd'}, False, str(wt)),
         ('Read', {'file_path': 'same.txt'}, False, 'base'),
         ('Write', {'file_path': 'same.txt', 'content': 'child changed\n'}, False, None),
         ('Write', {'file_path': '.claude/skills/location/SKILL.md', 'content': 'WORKTREE_SKILL_MARKER\n'}, False, None),
@@ -74,7 +74,7 @@ def main():
                     if stage == 0:
                         if child == 'PINNED_CHILD_EXEC':
                             require(parent_exited.wait(15), 'parent blocked before KEEP exit while child pending')
-                        block = {'type': 'tool_use', 'id': child + '_pwd', 'name': 'Bash', 'input': {'command': 'pwd'}}
+                        block = {'type': 'tool_use', 'id': child + '_pwd', 'name': 'exec_command', 'input': {'cmd': 'pwd'}}
                     elif stage == 1:
                         receipt = request['messages'][-1]['content'][-1]
                         require(not receipt.get('is_error', False) and str(expected_root) in text_of(receipt), f'child workspace not pinned: {receipt}')
@@ -108,8 +108,10 @@ def main():
                     prior = phase['steps'][stage-1]
                     require(bool(receipt.get('is_error', False)) == prior[2], f'wrong error {cid}: {receipt}')
                     if prior[3]: require(prior[3] in text_of(receipt), f'missing expected {prior[3]} in {receipt}')
-                    if prior[0] == 'Bash' and prior[1].get('run_in_background'):
-                        jobs['__job__'] = json.loads(text_of(receipt))['task_id']
+                    if prior[0] == 'exec_command' and prior[1].get('yield_time_ms') == 1:
+                        jobs['__job__'] = json.loads(text_of(receipt))['session_id']
+                    if prior[0] == 'write_stdin':
+                        require(json.loads(text_of(receipt)).get('exit_code') is not None, 'explicit PTY Ctrl-C did not stop process before cleanup')
                 if stage < len(phase['steps']):
                     name, arguments, _, _ = phase['steps'][stage]
                     arguments = {k: jobs.get(v, v) if isinstance(v, str) else v for k, v in arguments.items()}
@@ -152,14 +154,14 @@ def main():
         require(len(requests) == replay_requests, 'terminal replay called provider')
         require(git('worktree', 'list', '--porcelain').count('worktree ') == 2, 'duplicate worktree replay')
         phase.update(name='resume', start=len(requests), steps=[
-            ('Bash', {'command': 'pwd'}, False, str(wt)),
+            ('exec_command', {'cmd': 'pwd'}, False, str(wt)),
             ('Read', {'file_path': 'same.txt'}, False, 'child changed'),
             ('Skill', {'skill': 'location'}, False, 'WORKTREE_SKILL_MARKER'),
             ('ExitWorktree', {'cleanup': True}, True, 'cleanup refused'),
             ('ExitWorktree', {}, False, '"kept":true'),
             ('Read', {'file_path': 'same.txt'}, False, 'parent changed'),
             ('Skill', {'skill': 'location'}, False, 'ORIGINAL_SKILL_MARKER'),
-            ('Bash', {'command': 'pwd'}, False, str(root)),
+            ('exec_command', {'cmd': 'pwd'}, False, str(root)),
         ])
         run('resume', command + ['--request-id', 'resume', '/location'])
         require('WORKTREE_SKILL_MARKER' in json.dumps(requests[phase['start']]['messages'][-1]), 'user slash skill did not resolve saved active workspace')
@@ -173,12 +175,14 @@ def main():
         restore = json.loads(run('restore', rewind + ['--before', first_turn, '--restore']).stdout)
         require(restore['restored'], 'multi-root restore not confirmed')
         require((root / 'same.txt').read_text() == (wt / 'same.txt').read_text() == 'base\n', 'multi-root same-path before-images not restored')
+        # Retained shell sessions pin their worktree until write_stdin observes exit.
+        # Explicit PTY input stops this process. Cancelling a turn/cell retains
+        # shared Codex shell sessions (covered by the Code Mode journey).
         phase.update(name='cleanup', start=len(requests), steps=[
             ('EnterWorktree', {'name': 'clean'}, False, None),
-            ('Bash', {'command': 'sleep 30', 'run_in_background': True}, False, 'task_id'),
+            ('exec_command', {'cmd': 'sleep 30', 'tty': True, 'yield_time_ms': 1}, False, 'session_id'),
             ('ExitWorktree', {'cleanup': True}, True, 'active background or child'),
-            ('TaskStop', {'task_id': '__job__'}, False, None),
-            ('Bash', {'command': 'true'}, False, None),
+            ('write_stdin', {'session_id': '__job__', 'chars': '\u0003', 'yield_time_ms': 1000}, False, None),
             ('ExitWorktree', {'cleanup': True}, False, '"kept":false'),
         ])
         run('cleanup', command + ['--request-id', 'cleanup', 'Exercise explicit clean worktree cleanup'])
@@ -189,7 +193,7 @@ def main():
             ('spawn_agent', {'role': 'Pinned worktree child', 'task': 'PINNED_CHILD_EXEC verify retained workspace', 'output_contract': {'kind':'string'}}, False, 'agent_id'),
             ('ExitWorktree', {'cleanup': True}, True, 'active background or child'),
             ('ExitWorktree', {}, False, '"kept":true'),
-            ('Bash', {'command': 'pwd'}, False, str(root)),
+            ('exec_command', {'cmd': 'pwd'}, False, str(root)),
             ('wait_agent', {'agent_ids': [1], 'timeout_ms': 20000}, False, 'PINNED_CHILD_EXEC complete'),
             ('spawn_agent', {'role': 'Fresh original workspace', 'task': 'FRESH_CHILD_EXEC verify new child workspace', 'output_contract': {'kind':'string'}}, False, 'agent_id'),
             ('wait_agent', {'agent_ids': [2], 'timeout_ms': 20000}, False, 'FRESH_CHILD_EXEC complete'),
@@ -207,7 +211,7 @@ def main():
         require((root / '.claude/worktrees/pinned/PINNED_CHILD_EXEC.txt').read_text() == 'child effect', 'child write escaped pinned workspace')
         require((root / 'FRESH_CHILD_EXEC.txt').read_text() == 'child effect', 'new child did not snapshot current parent workspace')
         require(not (root / 'PINNED_CHILD_EXEC.txt').exists(), 'child retargeted with parent')
-        outcome.update(success=True, cli_processes=len(commands), provider_requests=len(requests), child_provider_requests=len(child_requests), replay_provider_requests=0, multiroot_rewind=True, background_cleanup_refused=True, child_cleanup_refused=True, evidence=str(artifact))
+        outcome.update(success=True, cli_processes=len(commands), provider_requests=len(requests), child_provider_requests=len(child_requests), replay_provider_requests=0, multiroot_rewind=True, retained_shell_cleanup_refused=True, explicit_pty_ctrl_c_before_cleanup=True, child_cleanup_refused=True, evidence=str(artifact))
     finally:
         server.shutdown()
         (artifact / 'child-provider.json').write_text(json.dumps(child_requests, indent=2))

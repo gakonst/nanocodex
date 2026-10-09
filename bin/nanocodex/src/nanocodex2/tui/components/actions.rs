@@ -8,7 +8,7 @@ use super::{
     floating::Floating,
     node::{Component, ComponentUpdate, RenderRequest},
 };
-use crate::tui::theme::Theme;
+use crate::nanocodex2::tui::theme::Theme;
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::{
     Frame,
@@ -20,7 +20,7 @@ use ratatui::{
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
-const ACTIONS: [Action; 22] = [
+const ACTIONS: &[Action] = &[
     Action::Effort,
     Action::FastMode,
     Action::Goal,
@@ -43,6 +43,11 @@ const ACTIONS: [Action; 22] = [
     Action::Screen,
     Action::Zoom,
     Action::Reload,
+    Action::LocalCommand("branches"),
+    Action::LocalCommand("collapse"),
+    Action::LocalCommand("split"),
+    Action::LocalCommand("mcp reload"),
+    Action::LocalCommand("benchmark"),
 ];
 const KEY_BINDINGS: [(&str, &str); 3] = [("↑↓", "move"), ("enter/tab", "open"), ("esc", "close")];
 const SEARCH_LABEL: &str = "Search: ";
@@ -53,6 +58,7 @@ pub(super) enum ActionsEvent {
 }
 
 pub(super) struct ActionAvailability {
+    pub(super) capabilities: crate::nanocodex2::tui::backend::Capabilities,
     pub(super) new_session: bool,
     pub(super) fork: bool,
     pub(super) fast_mode: bool,
@@ -65,6 +71,7 @@ pub(super) struct ActionAvailability {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum Action {
+    LocalCommand(&'static str),
     Goal,
     Share,
     Copy,
@@ -109,16 +116,22 @@ pub(super) struct ActionsMenu {
 
 impl ActionsMenu {
     pub(super) fn new(availability: ActionAvailability) -> Self {
-        Self {
+        let mut menu = Self {
             query: String::new(),
             selected: 0,
-            matches: (0..ACTIONS.len()).collect(),
+            matches: Vec::new(),
             availability,
-        }
+        };
+        menu.refresh_matches();
+        menu
     }
 
     pub(super) fn set_availability(&mut self, availability: ActionAvailability) {
+        let capabilities_changed = self.availability.capabilities != availability.capabilities;
         self.availability = availability;
+        if capabilities_changed {
+            self.refresh_matches();
+        }
     }
 
     fn update_key(&mut self, key: KeyEvent) -> ComponentUpdate<ActionsEffect> {
@@ -183,7 +196,12 @@ impl ActionsMenu {
             ACTIONS
                 .iter()
                 .enumerate()
-                .filter(|(_, action)| action.matches(&self.query))
+                .filter(|(_, action)| {
+                    self.availability
+                        .capabilities
+                        .command_available(action.alias().unwrap_or(""))
+                        && action.matches(&self.query)
+                })
                 .map(|(index, _)| index),
         );
         self.selected = 0;
@@ -204,6 +222,23 @@ impl ActionsMenu {
     }
 
     fn trigger_selected(&self) -> ComponentUpdate<ActionsEffect> {
+        if !self
+            .availability
+            .capabilities
+            .command_available(&self.query)
+        {
+            return ComponentUpdate {
+                effects: vec![ActionsEffect::Settings(SettingsCommand::Invalid(
+                    self.availability.capabilities.unavailable(
+                        self.query
+                            .split_whitespace()
+                            .next()
+                            .unwrap_or("This command"),
+                    ),
+                ))],
+                render: RenderRequest::Immediate,
+            };
+        }
         // Preserve typed arguments for managed goal commands and local share
         // and copy commands. The root classifies these before any agent submission.
         if matches!(
@@ -222,12 +257,28 @@ impl ActionsMenu {
             };
         }
         let Some(action) = self.matches.get(self.selected) else {
-            return ComponentUpdate::none();
+            // A slash command that names no action (Claude /loop, /compact, a
+            // skill, or a command with arguments) is sent to the agent verbatim,
+            // as typing it in the legacy composer did. Search keeps priority:
+            // any matching action is still the Enter target.
+            if self.query.trim().is_empty() {
+                return ComponentUpdate::none();
+            }
+            return ComponentUpdate {
+                effects: vec![ActionsEffect::Submit(format!("/{}", self.query.trim_end()))],
+                render: RenderRequest::Immediate,
+            };
         };
         self.trigger(ACTIONS[*action])
     }
 
     fn trigger(&self, action: Action) -> ComponentUpdate<ActionsEffect> {
+        if let Action::LocalCommand(command) = action {
+            return ComponentUpdate {
+                effects: vec![ActionsEffect::Submit(format!("/{command}"))],
+                render: RenderRequest::Immediate,
+            };
+        }
         if !self.is_enabled(action) {
             return ComponentUpdate::none();
         }
@@ -303,6 +354,7 @@ impl ActionsMenu {
 
     const fn is_enabled(&self, action: Action) -> bool {
         match action {
+            Action::LocalCommand(_) => true,
             Action::Screen | Action::Zoom | Action::AgentId => true,
             Action::Voice => self.availability.voice_input,
             Action::Handoff | Action::Review | Action::Reflection => self.availability.new_session,
@@ -323,7 +375,7 @@ impl ActionsMenu {
         }
     }
 
-    const fn display_label(&self, action: Action) -> &'static str {
+    fn display_label(&self, action: Action) -> &'static str {
         match action {
             Action::NewSession if !self.availability.new_session => {
                 "New session · finish active work first"
@@ -361,8 +413,14 @@ impl ActionsMenu {
 }
 
 impl Action {
-    const fn label(self) -> &'static str {
+    fn label(self) -> &'static str {
         match self {
+            Self::LocalCommand("branches") => "Browse local branches",
+            Self::LocalCommand("collapse") => "Collapse side thread into main",
+            Self::LocalCommand("split") => "Open side thread in a terminal pane",
+            Self::LocalCommand("mcp reload") => "Reload MCP servers",
+            Self::LocalCommand("benchmark") => "Run local benchmark",
+            Self::LocalCommand(command) => command,
             Self::Goal => "Goal",
             Self::Share => "Share thread · view or write link",
             Self::Copy => "Copy response",
@@ -393,6 +451,7 @@ impl Action {
 
     const fn alias(self) -> Option<&'static str> {
         match self {
+            Self::LocalCommand(command) => Some(command),
             Self::Goal => Some("goal"),
             Self::Share => Some("share"),
             Self::Copy => Some("copy"),

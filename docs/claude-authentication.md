@@ -11,11 +11,11 @@ session or discover an installed Claude Code login.
 The shipped CLI owns the subscription host and private credential store:
 
 ```sh
-nanocodex --claude auth login
-nanocodex --claude auth status
-nanocodex --claude --model sonnet
-nanocodex run "inspect the repository" --harness claude --model opus
-nanocodex --claude auth logout
+ncl --claude auth login
+ncl --claude auth status
+ncl --claude --model sonnet
+ncl run "inspect the repository" --harness claude --model opus
+ncl --claude auth logout
 ```
 
 You can also launch `nanocodex` and use `/model` or `/model sonnet` before the
@@ -47,7 +47,7 @@ Messages URL and the pinned OMP compatibility profile described below.
 
 `--claude-api-key` or `ANTHROPIC_API_KEY` explicitly selects Console API-key
 authentication. Subscription login does not modify ChatGPT credentials;
-`nanocodex auth login` continues to select Codex unless `--claude` or
+`ncl auth login` continues to select Codex unless `--claude` or
 `--harness claude` is provided. Missing Claude login fails before provider dispatch
 or child admission and names the login command.
 

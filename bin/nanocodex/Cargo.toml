@@ -6,15 +6,16 @@ edition.workspace = true
 rust-version.workspace = true
 publish = false
 authors.workspace = true
-license.workspace = true
+# The managed tree is Apache-2.0 (Tact-derived); the merged package uses it.
+license = "Apache-2.0"
 homepage.workspace = true
 repository.workspace = true
-description = "Daily-driver TUI and headless JSONL adapter for Nanocodex"
+description = "Nanocodex CLI: managed client and Hand (nanocodex, nc) plus the local agent (ncl)"
 build = "build.rs"
 
 [package.metadata.cargo-machete]
 # cargo-machete does not resolve imports from the package build script.
-ignored = ["chrono", "vergen"]
+ignored = ["chrono", "sha2", "toml", "vergen"]
 
 [features]
 default = []
@@ -24,10 +25,32 @@ tempo = [
     "dep:nanocodex-egress",
     "dep:nanousd",
 ]
+# Criterion cases over the production shared TUI renderer (benches/nanocodex2_tui.rs).
+tui-bench = ["dep:criterion"]
 
 [dependencies]
 aes-gcm = "0.10.3"
+anyhow.workspace = true
+criterion = { workspace = true, optional = true }
+dark-light = "3.0.0"
+nanocodex-agent = { path = "../../crates/nanocodex-agent", version = "0.6.7", default-features = false }
+nanocodex-hand = { path = "../../crates/nanocodex-hand", version = "0.6.7" }
+nanocodex-managed = { path = "../../crates/nanocodex-managed", version = "0.6.7", default-features = false, features = ["tools", "voice"] }
+nanocodex-oai-tools = { workspace = true, features = ["attachment", "workspace-runtime", "mcp"] }
+nanocodex-remote = { path = "../../crates/nanocodex-remote", version = "0.6.7" }
+nanocodex-voice-native.workspace = true
+nanocodex-voice-protocol.workspace = true
+opusic-c.workspace = true
+png = "0.18.1"
+rayon = "1.12.0"
+rustls.workspace = true
+tokio-util.workspace = true
+url.workspace = true
+webrtc.workspace = true
+whoami.workspace = true
+zeroize = "1.8.2"
 nanocodex-tui-control = { path = "tui-control", version = "0.6.7" }
+nanocodex-screen-supervisor = { path = "screen-supervisor", version = "0.6.7" }
 nanocodex-computer.workspace = true
 arboard.workspace = true
 async-trait.workspace = true
@@ -40,7 +63,7 @@ base64.workspace = true
 clap.workspace = true
 chrono.workspace = true
 chrono-tz = "0.10.4"
-crossterm.workspace = true
+crossterm = { version = "0.29.0", features = ["event-stream", "osc52"] }
 dotenvy.workspace = true
 eyre.workspace = true
 flate2.workspace = true
@@ -61,14 +84,18 @@ nanocodex-home.workspace = true
 nanocodex-voice.workspace = true
 nix = { workspace = true, features = ["fs"] }
 nanousd = { workspace = true, optional = true }
-pulldown-cmark.workspace = true
+pulldown-cmark = { version = "0.13.4", default-features = false }
 mpp = { workspace = true, optional = true, features = ["middleware", "sqlite", "tempo", "reqwest-rustls-tls-no-provider"] }
 nanocodex-egress = { workspace = true, optional = true }
 rand.workspace = true
 regex.workspace = true
-ratatui.workspace = true
+# Use the widget's own wrapped line count to clamp preview scrolling.
+ratatui = { version = "0.30.0", features = ["unstable-rendered-line-info"] }
+ratatui-image = { version = "11.0.6", default-features = false, features = ["crossterm"] }
+# ratatex exposes ratatui 0.29 buffers; adapt those into the shared 0.30 renderer.
+ratatex_ratatui = { package = "ratatui", version = "0.29.0", default-features = false }
 ratatex.workspace = true
-reqwest = { workspace = true, features = ["blocking", "stream"] }
+reqwest = { workspace = true, features = ["blocking", "multipart", "query", "stream"] }
 rusqlite.workspace = true
 self-replace.workspace = true
 semver.workspace = true
@@ -99,18 +126,31 @@ nanocodex-eval.workspace = true
 nanocodex-eval-adapters.workspace = true
 nanocodex-vm.workspace = true
 
+[target.'cfg(target_os = "linux")'.dependencies]
+kvm-ioctls = "0.24.0"
+nanocodex-vm = { workspace = true, features = ["desktop"] }
+
 [build-dependencies]
 chrono.workspace = true
+sha2.workspace = true
+toml.workspace = true
 vergen = { workspace = true, features = ["build", "git", "gitcl"] }
 
 [dev-dependencies]
-criterion.workspace = true
+aes-gcm = { version = "0.10.3", default-features = false, features = ["aes", "alloc"] }
+axum = { workspace = true, features = ["ws"] }
+hkdf = "0.12.4"
 nanocodex-oai-tools = { workspace = true, features = ["native"] }
+p256 = { version = "0.13.2", features = ["ecdh"] }
 portable-pty.workspace = true
+sha2-hkdf = { package = "sha2", version = "0.10.9" }
+tokio = { workspace = true, features = ["fs", "io-std", "io-util", "net", "process"] }
+vt100.workspace = true
 
 [[bench]]
-name = "tui_render"
+name = "nanocodex2_tui"
 harness = false
+required-features = ["tui-bench"]
 
 [[test]]
 name = "tui_split"
@@ -148,12 +188,26 @@ path = "tests/tui_control.rs"
 name = "code_mode_teardown"
 path = "tests/code_mode_teardown.rs"
 
+# One crate, two executables split by role: the user-facing CLI and the Hand
+# daemon (installed under the historical file name nanocodex2).
+[lib]
+name = "nanocodex_cli"
+path = "src/lib.rs"
+doc = false
+
 [[bin]]
 name = "nanocodex"
 path = "src/main.rs"
 doc = false
+test = false
 
-# Like nanocodex2, the installed entrypoint initializes its environment before
+[[bin]]
+name = "nanocodex-hand"
+path = "src/hand_main.rs"
+doc = false
+test = false
+
+# The installed entrypoint initializes its environment before
 # starting any threads. Keep that one unsafe boundary locally auditable while
 # retaining every other workspace lint (Cargo cannot override inherited lints).
 [lints.rust]
@@ -220,6 +274,10 @@ name = "claude_scheduler_monitor"
 path = "tests/claude_scheduler_monitor.rs"
 
 [[test]]
+name = "ncl_local_features"
+path = "tests/ncl_local_features.rs"
+
+[[test]]
 name = "claude_cross_workspace"
 path = "tests/claude_cross_workspace.rs"
 
@@ -236,5 +294,41 @@ name = "codex_resume_from"
 path = "tests/codex_resume_from.rs"
 
 [[test]]
+name = "ncl_sessions"
+path = "tests/ncl_sessions.rs"
+
+[[test]]
 name = "tui_log_location"
 path = "tests/tui_log_location.rs"
+
+[[test]]
+name = "ncl_local_subagents"
+path = "tests/ncl_local_subagents.rs"
+
+[[test]]
+name = "nanocodex2_managed"
+path = "tests/nanocodex2_managed.rs"
+
+[[test]]
+name = "nanocodex2_tui_lifecycle"
+path = "tests/nanocodex2_tui_lifecycle.rs"
+
+[[test]]
+name = "nanocodex2_continue"
+path = "tests/nanocodex2_continue.rs"
+
+[[test]]
+name = "nanocodex2_vault"
+path = "tests/nanocodex2_vault.rs"
+
+[[test]]
+name = "nanocodex2_connectors"
+path = "tests/nanocodex2_connectors.rs"
+
+[[test]]
+name = "nanocodex2_background_hand"
+path = "tests/nanocodex2_background_hand.rs"
+
+[[test]]
+name = "nanocodex2_hand_share"
+path = "tests/nanocodex2_hand_share.rs"

@@ -478,7 +478,7 @@ async fn session(
                 .with_interceptor_registry(registry)
                 .build()
                 .new_peer_connection(RTCConfiguration {
-                    ice_servers: crate::screen_ice::ice_servers(&ice)?,
+                    ice_servers: crate::nanocodex2::screen_ice::ice_servers(&ice)?,
                     ..Default::default()
                 })
                 .await?,

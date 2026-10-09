@@ -551,6 +551,7 @@ async fn restored_children_remain_discoverable_before_and_after_failed_resume() 
             .save(
                 &journey.session,
                 json!({"version":1,"agents":agents}).to_string(),
+                Vec::new(),
             )
             .await
             .unwrap();
@@ -637,7 +638,10 @@ async fn restored_children_remain_discoverable_before_and_after_failed_resume() 
         // before any provider call. No replacement children are started.
         let payload = json!({"version":1,"agents":agents}).to_string();
         let store = MemorySubagentStore::new();
-        store.save("unavailable-root", payload).await.unwrap();
+        store
+            .save("unavailable-root", payload, Vec::new())
+            .await
+            .unwrap();
         let (recovered, _, _) = channel(8);
         recovered.set_store(Arc::new(store));
         recovered.restore("unavailable-root").await.unwrap();

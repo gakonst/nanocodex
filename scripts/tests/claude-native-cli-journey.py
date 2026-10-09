@@ -14,7 +14,6 @@ import struct
 import zlib
 import subprocess
 import threading
-import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from uuid import uuid4
 
@@ -65,15 +64,14 @@ def main():
     (workspace / "pixel.png").write_bytes(png)
     (workspace / "notebook.ipynb").write_text(json.dumps({"nbformat":4, "nbformat_minor":5,"metadata":{},"cells":[{"id":"example","cell_type":"code","execution_count":1,"metadata":{},"source":["print('old')"],"outputs":[{"output_type":"stream","name":"stdout","text":["old\n"]}]}]}))
     requests, errors = [], []
-    task_ids = {}
+    session_ids = {}
     steps = [
         ("Read", {"file_path": "editable.txt"}, False, "alpha alpha"),
         ("Edit", {"file_path": "editable.txt", "old_string": "alpha", "new_string": "WRONG"}, True, None),
         ("Edit", {"file_path": "editable.txt", "old_string": "unique", "new_string": "verified"}, False, None),
         ("Write", {"file_path": "created.txt", "content": "native-write-effect\n"}, False, None),
-        ("Bash", {"command": "printf 'native-shell-receipt'; printf x >> counter.txt; exit 7"}, False, "native-shell-receipt"),
+        ("exec_command", {"cmd": "printf 'native-shell-receipt'; printf x >> counter.txt; exit 7"}, False, "native-shell-receipt"),
         ("Read", {"file_path": "../outside.txt"}, True, None),
-        ("Bash", {"command": "sleep 0; (sleep 1; printf leaked > timeout-leak.txt) & wait", "timeout": 100}, True, None),
         ("Read", {"file_path": "editable.txt"}, False, "verified"),
         ("TaskCreate", {"subject": "Durable task", "description": "Restored through the actual CLI"}, False, "Durable task"),
         ("TaskUpdate", {"taskId": "1", "status": "in_progress"}, False, "in_progress"),
@@ -81,15 +79,14 @@ def main():
         ("NotebookEdit", {"notebook_path":"notebook.ipynb","cell_id":"example","new_source":"print('native notebook')"}, False, None),
         ("Read", {"file_path":"notebook.ipynb"}, False, "native notebook"),
         ("Read", {"file_path":"pixel.png","pages":"1"}, True, None),
-        ("Bash", {"command":"sleep 0.1; printf prior-task", "run_in_background":True}, False, None),
-        ("TaskOutput", {"task_id":"__prior__", "block":True,"timeout":10000}, False, "prior-task"),
+        ("exec_command", {"cmd":"sleep 1; printf prior-task", "yield_time_ms":1}, False, None),
+        ("write_stdin", {"session_id":"__prior__", "chars":"", "yield_time_ms":10000}, False, "prior-task"),
     ]
     restore_steps = [
         ("TaskGet", {"taskId": "1"}, False, "Durable task"),
         ("TaskCreate", {"subject": "After reopen", "description": "ID watermark survives"}, False, "After reopen"),
-        ("Bash", {"command":"sleep 0.1; printf fresh-task", "run_in_background":True}, False, None),
-        ("TaskStop", {"task_id":"__prior__"}, True, "unknown Bash task_id"),
-        ("TaskOutput", {"task_id":"__new__", "block":True,"timeout":10000}, False, "fresh-task"),
+        ("exec_command", {"cmd":"sleep 1; printf fresh-task", "yield_time_ms":1}, False, None),
+        ("write_stdin", {"session_id":"__new__", "chars":"", "yield_time_ms":10000}, False, "fresh-task"),
     ]
     phase = {"name": "initial", "start": 0, "steps": steps}
 
@@ -131,14 +128,14 @@ def main():
                     if marker:
                         require(marker in text_of(receipt), f"missing tool output {marker}: {receipt}")
                     if phase["name"] == "initial" and stage == 5:
-                        require(json.loads(text_of(receipt))["exit_code"] == 7, "Bash lost nonzero exit status")
+                        require(json.loads(text_of(receipt))["exit_code"] == 7, "exec_command lost nonzero exit status")
                     if phase["name"] == "initial" and stage == 6:
                         require("synthetic-outside-marker" not in text_of(receipt), "Read escaped workspace")
-                    if prior_name == "Bash" and prior_input.get("run_in_background"):
+                    if prior_name == "exec_command" and prior_input.get("yield_time_ms") == 1:
                         key = "__prior__" if phase["name"] == "initial" else "__new__"
-                        task_ids[key] = json.loads(text_of(receipt))["task_id"]
-                        if key == "__new__":
-                            require(task_ids[key] != task_ids["__prior__"], "Bash task ID reused across process restart")
+                        session_ids[key] = json.loads(text_of(receipt))["session_id"]
+                    if prior_name == "write_stdin":
+                        require(json.loads(text_of(receipt)).get("exit_code") == 0, "polled process did not finish successfully")
                     if prior_name == "Read" and prior_input.get("file_path") == "pixel.png" and not failed:
                         require(any(block.get("type") == "image" and block["source"]["type"] == "base64" and block["source"]["media_type"] == "image/png" for block in receipt["content"]), "Read dropped native image block")
                     if phase["name"] == "reopen" and stage <= 2:
@@ -148,7 +145,7 @@ def main():
                             require(task["status"] == "in_progress", "task update lost across reopen")
                 if stage < len(current_steps):
                     name, arguments, _, _ = current_steps[stage]
-                    arguments = {key: task_ids.get(value,value) if isinstance(value,str) else value for key,value in arguments.items()}
+                    arguments = {key: session_ids.get(value,value) if isinstance(value,str) else value for key,value in arguments.items()}
                     block = {"type": "tool_use", "id": f"{phase['name']}_{stage}", "name": name, "input": arguments}
                 else:
                     require(stage == len(current_steps), "unexpected provider retry")
@@ -168,7 +165,7 @@ def main():
     threading.Thread(target=server.serve_forever, daemon=True).start()
     command = [str(binary), "run", "--claude", "--model", "claude-sonnet-5-5", "--thinking", "medium", "--claude-api-key", "synthetic-claude-key", "--claude-messages-url", f"http://127.0.0.1:{server.server_port}/v1/messages", "--cwd", str(workspace), "--rollouts", "false", "--browser=none", "--mcp-defaults", "false", "--mcp-codex-config", "false", "--web-search", "false", "--image-generation", "false", "--subagents", "false", "--memory", "false", "--local-durability", str(artifact / "session.sqlite"), "--local-durability-state-id", "native-cli-journey", "--request-id", "native-cli-operation", "Exercise synthetic native file, process and durable recovery journey."]
     environment = {"HOME": str(workspace / "home"), "CODEX_HOME": str(workspace / "codex-home"), "PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "NANOCODEX_COMPUTER": "off"}
-    (artifact / "scenario.json").write_text(json.dumps({"command": command, "shell_command": shlex.join(command), "environment": environment, "expected": "real file edits, safe rejection, nonzero exit receipt, descendant timeout cleanup, terminal replay without provider or effect replay", "boundary": "actual native CLI + Messages HTTP/SSE + local processes + SQLite; synthetic model provider only"}, indent=2))
+    (artifact / "scenario.json").write_text(json.dumps({"command": command, "shell_command": shlex.join(command), "environment": environment, "expected": "real file edits, safe rejection, nonzero exit receipt, yielded process polling, terminal replay without provider or effect replay", "boundary": "actual native CLI + Messages HTTP/SSE + local processes + SQLite; synthetic model provider only"}, indent=2))
     outcome = {"success": False}
     try:
         for attempt in ("first", "replay"):
@@ -184,7 +181,7 @@ def main():
                 require(len(requests) == prior, "terminal replay contacted provider")
             require((workspace / "editable.txt").read_text() == "alpha alpha\nverified\n", "ambiguous edit mutated file or exact edit failed")
             require((workspace / "created.txt").read_text() == "native-write-effect\n", "Write had no filesystem effect")
-            require((workspace / "counter.txt").read_text() == "x", "Bash effect repeated")
+            require((workspace / "counter.txt").read_text() == "x", "exec_command effect repeated")
         phase.update(name="reopen", start=len(requests), steps=restore_steps)
         followup = list(command)
         followup[followup.index("--request-id") + 1] = "native-cli-followup"
@@ -197,9 +194,7 @@ def main():
         require(not errors, "; ".join(errors))
         require(b"native-cli-journey-complete" in result.stdout, "reopen final answer absent")
         require(len(requests) - phase["start"] == len(restore_steps) + 1, "reopen request count incorrect")
-        time.sleep(1.2)
-        require(not (workspace / "timeout-leak.txt").exists(), "timed-out descendant survived")
-        outcome = {"success": True, "provider_requests": len(requests), "replay_provider_requests": 0, "shell_effect_count": 1, "timeout_descendant_survived": False, "reopened_task_status": "in_progress", "next_task_id": "2", "stale_bash_id_rejected": True, "native_image_block": True, "notebook_edit": True}
+        outcome = {"success": True, "provider_requests": len(requests), "replay_provider_requests": 0, "shell_effect_count": 1, "yielded_process_output": True, "reopened_task_status": "in_progress", "next_task_id": "2", "native_image_block": True, "notebook_edit": True}
     except Exception as error:
         outcome["error"] = str(error)
         raise

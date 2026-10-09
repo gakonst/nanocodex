@@ -70,12 +70,25 @@ jobs:
           VERGEN_GIT_SHA: ${{ env.RELEASE_SHA }}
           STABLE_GIT_COMMIT: ${{ env.RELEASE_SHA }}
         run: |
-          cargo build --locked --release \
-            --package nanocodex-bin --bin nanocodex --features tempo \
-            --target ${{ matrix.target }}
-          cargo build --locked --release \
-            --package nanocodex2-bin --bin nanocodex2 \
-            --target ${{ matrix.target }}
+          release="target/${{ matrix.target }}/release"
+          # Tags before the crate merge built the Hand from its own package.
+          if cargo metadata --locked --no-deps --format-version 1 \
+            | jq -e '.packages[] | select(.name == "nanocodex2-bin")' >/dev/null; then
+            cargo build --locked --release \
+              --package nanocodex-bin --bin nanocodex --features tempo \
+              --target ${{ matrix.target }}
+            cargo build --locked --release \
+              --package nanocodex2-bin --bin nanocodex2 \
+              --target ${{ matrix.target }}
+            echo "HAND_BINARY=$release/nanocodex2" >> "$GITHUB_ENV"
+            echo "VM_BINARIES=$release/nanocodex2" >> "$GITHUB_ENV"
+          else
+            cargo build --locked --release \
+              --package nanocodex-bin --bin nanocodex --bin nanocodex-hand --features tempo \
+              --target ${{ matrix.target }}
+            echo "HAND_BINARY=$release/nanocodex-hand" >> "$GITHUB_ENV"
+            echo "VM_BINARIES=$release/nanocodex-hand" >> "$GITHUB_ENV"
+          fi
       - name: Verify shipped Linux Hand screen payload
         if: matrix.target == 'x86_64-unknown-linux-gnu'
         shell: bash
@@ -83,7 +96,7 @@ jobs:
           if [[ -n "${NANOCODEX_LINUX_SCREEN_BUNDLE:-}" ]]; then
             # Use the verifier from the same immutable release checkout.
             python3 scripts/tests/linux-screen-helpers-bundle.py \
-              --binary "target/${{ matrix.target }}/release/nanocodex2" \
+              --binary "$HAND_BINARY" \
               "$NANOCODEX_LINUX_SCREEN_BUNDLE"
           else
             echo "Historical release: no embedded screen-helper packaging contract"
@@ -92,16 +105,18 @@ jobs:
         if: runner.os == 'macOS'
         shell: bash
         run: |
-          codesign --force --sign - \
-            --entitlements nanocodex-vm.entitlements \
-            "target/${{ matrix.target }}/release/nanocodex2"
-          codesign --verify --strict "target/${{ matrix.target }}/release/nanocodex2"
+          for binary in $VM_BINARIES; do
+            codesign --force --sign - \
+              --entitlements nanocodex-vm.entitlements \
+              "$binary"
+            codesign --verify --strict "$binary"
+          done
       - name: Stage artifact
         shell: bash
         run: |
           mkdir dist
           cp "target/${{ matrix.target }}/release/nanocodex" "dist/${{ matrix.artifact }}"
-          cp "target/${{ matrix.target }}/release/nanocodex2" "dist/${{ matrix.companion }}"
+          cp "$HAND_BINARY" "dist/${{ matrix.companion }}"
           gzip -n -9 -c "dist/${{ matrix.artifact }}" \
             > "dist/${{ matrix.artifact }}.gz"
           gzip -n -9 -c "dist/${{ matrix.companion }}" \

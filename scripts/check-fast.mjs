@@ -57,5 +57,5 @@ if (restricted.length) {
 // The CLI crate is linted for its binary and benchmark only; it reuses the
 // dependency artifacts built above.
 if (!selected || selected.includes("nanocodex-bin")) {
-  run("cargo", ["clippy", "--locked", "-p", "nanocodex-bin", "--all-features", "--bin", "nanocodex", "--bench", "tui_render", ...lint]);
+  run("cargo", ["clippy", "--locked", "-p", "nanocodex-bin", "--all-features", "--bin", "nanocodex", "--bench", "nanocodex2_tui", ...lint]);
 }

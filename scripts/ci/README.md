@@ -10,8 +10,8 @@ Jobs are selected by the packages they build:
 | --- | --- | --- |
 | `rust` | fmt + Clippy on affected crates (fast lane) | any affected package |
 | `rust_extra` | independent crate checks, docs | any affected package |
-| `hands` | Linux/macOS shared Hand | `nanocodex-bin`/`nanocodex2-bin` closure, `js/desktop-runtime`, CUA bridges |
-| `windows` | Windows Hand and installer | `nanocodex-bin`/`nanocodex2-bin` closure, `windows/`, `install.ps1` |
+| `hands` | Linux/macOS shared Hand | `nanocodex-bin` closure, `js/desktop-runtime`, CUA bridges |
+| `windows` | Windows Hand and installer | `nanocodex-bin` closure, `windows/`, `install.ps1` |
 | `vm` | static guest and Docker Hand | `nanocodex-vm` closure, CUA bridges |
 | `voice` | native voice runtime | `nanocodex-voice-native` closure, `third_party/codex-voice` |
 | `python` | Python wheels | `nanocodex-python` closure, `py/`, `examples/python` |

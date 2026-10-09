@@ -95,31 +95,34 @@ jobs:
           cargo clean --package krun-init-blob --profile nightly --target ${{ matrix.target }}
           VERGEN_GIT_SHA="$BUILD_SHA" \
             cargo build --locked --profile nightly --timings \
-              --package nanocodex-bin --bin nanocodex --features tempo \
-              --target ${{ matrix.target }}
-          VERGEN_GIT_SHA="$BUILD_SHA" \
-            cargo build --locked --profile nightly --timings \
-              --package nanocodex2-bin --bin nanocodex2 \
+              --package nanocodex-bin --bin nanocodex --bin nanocodex-hand --features tempo \
               --target ${{ matrix.target }}
       - name: Verify shipped Linux Hand screen payload
         if: matrix.target == 'x86_64-unknown-linux-gnu' && matrix.component == 'cli'
         shell: bash
         run: |
           python3 scripts/tests/linux-screen-helpers-bundle.py \
-            --binary "target/${{ matrix.target }}/nightly/nanocodex2" \
+            --binary "target/${{ matrix.target }}/nightly/nanocodex-hand" \
             "$NANOCODEX_LINUX_SCREEN_BUNDLE"
       - name: Verify embedded VM init
         if: matrix.component == 'cli'
         shell: bash
         run: python3 scripts/check-vm-init.py "target/${{ matrix.target }}/nightly/build"
-      - name: Sign macOS VM hand host
+      - name: Sign the macOS Hand and Nanocodex.app
         if: runner.os == 'macOS' && matrix.component == 'cli'
         shell: bash
+        env:
+          MACOS_DEVELOPER_ID_P12_BASE64: ${{ secrets.MACOS_DEVELOPER_ID_P12_BASE64 }}
+          MACOS_DEVELOPER_ID_P12_PASSWORD: ${{ secrets.MACOS_DEVELOPER_ID_P12_PASSWORD }}
+          MACOS_DEVELOPER_ID_TEAM_ID: ${{ secrets.MACOS_DEVELOPER_ID_TEAM_ID }}
         run: |
-          codesign --force --sign - \
-            --entitlements nanocodex-vm.entitlements \
-            "target/${{ matrix.target }}/nightly/nanocodex2"
-          codesign --verify --strict "target/${{ matrix.target }}/nightly/nanocodex2"
+          # Only the Hand starts libkrun VMM children and holds macOS privacy
+          # grants; the CLI keeps the default linker signature.
+          version=$(cargo metadata --locked --no-deps --format-version 1 \
+            | jq -er '.packages[] | select(.name == "nanocodex-bin") | .version')
+          scripts/release/macos-sign-hand.sh \
+            "target/${{ matrix.target }}/nightly/nanocodex-hand" "$version" signed-hand
+          echo "macOS Hand signature: $(cat signed-hand/SIGNING)" >> "$GITHUB_STEP_SUMMARY"
       - uses: ./.github/actions/voice-release
         if: matrix.component == 'voice'
         with:
@@ -134,10 +137,19 @@ jobs:
           mkdir -p dist
           case "$COMPONENT" in
             cli)
-              for binary in nanocodex nanocodex2; do
-                "target/$TARGET/nightly/$binary" --help >/dev/null
-                cp "target/$TARGET/nightly/$binary" "dist/$binary-$TARGET"
-              done
+              # nanocodex-* is the CLI; nanocodex2-* keeps the companion name for the Hand.
+              "target/$TARGET/nightly/nanocodex" --help >/dev/null
+              "target/$TARGET/nightly/nanocodex-hand" __device-hand --service-protocol >/dev/null
+              cp "target/$TARGET/nightly/nanocodex" "dist/nanocodex-$TARGET"
+              if [[ -d signed-hand ]]; then
+                cp signed-hand/nanocodex2 "dist/nanocodex2-$TARGET"
+                cp signed-hand/nanocodex-app-aarch64-apple-darwin.tar.gz dist/
+              else
+                cp "target/$TARGET/nightly/nanocodex-hand" "dist/nanocodex2-$TARGET"
+              fi
+              signing=unsigned
+              if [[ -f signed-hand/SIGNING ]]; then signing="$(cat signed-hand/SIGNING)"; fi
+              scripts/release/hand-identity.sh "target/$TARGET/nightly/nanocodex" "$TARGET" "$signing" dist
               ;;
             voice)
               # The composite action verifies initialization and relocation.
@@ -203,9 +215,14 @@ jobs:
             fi
           done
           test -s "nanocodex-voice-$TARGET.tar.gz"
+          app=()
+          if [[ "$TARGET" == aarch64-apple-darwin ]]; then
+            test -s nanocodex-app-aarch64-apple-darwin.tar.gz
+            app=(nanocodex-app-aarch64-apple-darwin.tar.gz)
+          fi
           if [[ -n "$PR_NUMBER" ]]; then
             sha256sum "nanocodex-$TARGET" "nanocodex2-$TARGET" \
-              "nanocodex-voice-$TARGET.tar.gz" \
+              "nanocodex-voice-$TARGET.tar.gz" "${app[@]}" \
               > "nanocodex-$TARGET.sha256"
             printf '{"repository":"%s","pr":%s,"sha":"%s","artifact":"%s","run_id":%s}\n' \
               "$GITHUB_REPOSITORY" "$PR_NUMBER" "$BUILD_SHA" "nanocodex-$TARGET" \
@@ -252,16 +269,14 @@ jobs:
         env:
           TAG_NAME: ${{ inputs.pr && format('pr-{0}', inputs.pr) || 'nightly' }}
         run: |
-          cargo build --locked --profile nightly --timings --package nanocodex-bin --bin nanocodex --features tempo
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          cargo build --locked --profile nightly --timings --package nanocodex2-bin --bin nanocodex2
+          cargo build --locked --profile nightly --timings --package nanocodex-bin --bin nanocodex --bin nanocodex-hand --features tempo
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Sign payload when Authenticode is configured
         shell: pwsh
         run: >-
           ./windows/hand/sign.ps1 -Path @(
             "./target/nightly/nanocodex.exe",
-            "./target/nightly/nanocodex2.exe"
+            "./target/nightly/nanocodex-hand.exe"
           )
       - name: Build and sign one-click installer
         shell: pwsh
@@ -269,7 +284,7 @@ jobs:
           $displayVersion = "nightly-$($env:BUILD_SHA.Substring(0, 10))"
           ./windows/hand/build.ps1 `
             -Nanocodex ./target/nightly/nanocodex.exe `
-            -Nanocodex2 ./target/nightly/nanocodex2.exe `
+            -Nanocodex2 ./target/nightly/nanocodex-hand.exe `
             -Version $displayVersion `
             -NumericVersion 0.0.0.0
           ./windows/hand/sign.ps1 -Path ./dist/windows-hand/nanocodex-hand-setup-x86_64.exe
@@ -279,7 +294,7 @@ jobs:
           PR_NUMBER: ${{ inputs.pr }}
         run: |
           Copy-Item target/nightly/nanocodex.exe dist/windows-hand/nanocodex-x86_64-pc-windows-msvc.exe
-          Copy-Item target/nightly/nanocodex2.exe dist/windows-hand/nanocodex2-x86_64-pc-windows-msvc.exe
+          Copy-Item target/nightly/nanocodex-hand.exe dist/windows-hand/nanocodex2-x86_64-pc-windows-msvc.exe
           if (-not [string]::IsNullOrWhiteSpace($env:PR_NUMBER)) {
             [pscustomobject]@{
               repository = $env:GITHUB_REPOSITORY
@@ -368,6 +383,40 @@ jobs:
           if-no-files-found: error
           retention-days: ${{ inputs.pr && 7 || 1 }}
 
+  hand-reuse-check:
+    if: github.repository == 'gakonst/nanocodex'
+    name: check Hand reuse (read-only)
+    needs: [bundle, build-windows-hand]
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+      - name: Test Hand reuse against a fake release store
+        shell: bash
+        run: scripts/release/test-reuse-unchanged-hand.sh
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: nanocodex-*
+          path: dist
+          merge-multiple: true
+      - name: Compare this build's Hand with the published nightly
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          # Read-only: reports what publish would reuse, uploads nothing.
+          shopt -s nullglob
+          cat dist/nanocodex2-*.identity
+          previous=""
+          if pointer=$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/nightly" --jq .object.sha 2>/dev/null); then
+            previous="nightly-$pointer"
+          fi
+          scripts/release/reuse-unchanged-hand.sh dist "$previous"
+
   publish:
     if: >-
       github.repository == 'gakonst/nanocodex' &&
@@ -379,21 +428,39 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           pattern: nanocodex-*
           path: dist
           merge-multiple: true
+      - name: Republish an unchanged Hand
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          # Compare with the nightly the rolling pointer currently names.
+          previous=""
+          if pointer=$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/nightly" --jq .object.sha 2>/dev/null) \
+            && [[ "$pointer" != "$GITHUB_SHA" ]]; then
+            previous="nightly-$pointer"
+          fi
+          scripts/release/reuse-unchanged-hand.sh dist "$previous"
       - name: Generate checksums
         shell: bash
         run: |
           cd dist
-          sha256sum nanocodex-*.gz nanocodex2-*.gz nanocodex-*.exe nanocodex2-*.exe > SHA256SUMS
+          # Hand reuse keys exist only for CLIs that report a Hand Identity.
+          shopt -s nullglob
+          sha256sum nanocodex-*.gz nanocodex2-*.gz nanocodex-*.exe nanocodex2-*.exe nanocodex2-*.identity > SHA256SUMS
       - name: Publish immutable and rolling releases
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
+          shopt -s nullglob
           immutable_tag="nightly-${GITHUB_SHA}"
           short_sha="${GITHUB_SHA:0:10}"
           release_name="Nanocodex Nightly ($(date -u +%Y-%m-%d), ${short_sha})"
@@ -403,16 +470,38 @@ jobs:
             printf "Install it with \`nanocodex update --nightly\`.\n"
           } > "$notes_file"
 
-          if gh release view "$immutable_tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release edit "$immutable_tag" --repo "$GITHUB_REPOSITORY" \
-              --title "$release_name" --notes-file "$notes_file" --prerelease
+          # Assemble the immutable release as a draft and publish it only once
+          # every asset is attached. A published nightly is never modified: a
+          # rerun of the same commit reuses its exact assets for the rolling
+          # pointer instead of replacing them with a different build.
+          immutable_draft=
+          if immutable_draft=$(gh release view "$immutable_tag" --repo "$GITHUB_REPOSITORY" \
+            --json isDraft --jq .isDraft 2>/dev/null) && [[ "$immutable_draft" != true ]]; then
+            echo "::notice::$immutable_tag is already published; reusing its assets"
+            rm -rf dist
+            mkdir dist
+            gh release download "$immutable_tag" --repo "$GITHUB_REPOSITORY" --dir dist
+            (cd dist && sha256sum --check --strict SHA256SUMS)
+            for compressed in dist/nanocodex-*.gz dist/nanocodex2-*.gz; do
+              case "$compressed" in
+                *.tar.gz) ;;
+                *) gzip -dc "$compressed" > "${compressed%.gz}" ;;
+              esac
+            done
           else
-            gh release create "$immutable_tag" --repo "$GITHUB_REPOSITORY" \
-              --target "$GITHUB_SHA" --title "$release_name" \
-              --notes-file "$notes_file" --prerelease
+            if [[ -z "$immutable_draft" ]]; then
+              gh release create "$immutable_tag" --repo "$GITHUB_REPOSITORY" \
+                --draft --target "$GITHUB_SHA" --title "$release_name" \
+                --notes-file "$notes_file" --prerelease
+            else
+              gh release edit "$immutable_tag" --repo "$GITHUB_REPOSITORY" \
+                --title "$release_name" --notes-file "$notes_file" --prerelease
+            fi
+            gh release upload "$immutable_tag" dist/*.gz dist/*.exe dist/*.identity dist/SHA256SUMS \
+              --repo "$GITHUB_REPOSITORY" --clobber
+            gh release edit "$immutable_tag" --repo "$GITHUB_REPOSITORY" \
+              --draft=false --prerelease
           fi
-          gh release upload "$immutable_tag" dist/*.gz dist/*.exe dist/SHA256SUMS \
-            --repo "$GITHUB_REPOSITORY" --clobber
 
           # Rolling releases retain raw binaries for updaters shipped before
           # gzip support. Their checksum manifest covers both representations.
@@ -439,6 +528,8 @@ jobs:
                 nanocodex2-x86_64-unknown-linux-gnu|nanocodex2-x86_64-unknown-linux-gnu.gz|\
                 nanocodex-x86_64-pc-windows-msvc.exe|nanocodex2-x86_64-pc-windows-msvc.exe|nanocodex-hand-setup-x86_64.exe|\
                 nanocodex-voice-aarch64-apple-darwin.tar.gz|nanocodex-voice-x86_64-unknown-linux-gnu.tar.gz|\
+                nanocodex-app-aarch64-apple-darwin.tar.gz|\
+                nanocodex2-aarch64-apple-darwin.identity|nanocodex2-x86_64-unknown-linux-gnu.identity|\
                 nanocodex-vm-guest-x86_64-unknown-linux-musl|nanocodex-vm-guest-x86_64-unknown-linux-musl.gz)
                   ;;
                 *)

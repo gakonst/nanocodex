@@ -32,7 +32,10 @@ pub(super) fn snapshot(bridge: &Bridge, app: &AppNode, runtime: &DriverRuntime, 
     state["active_turn_ids"] = json!(runtime.active_managed_turn_ids());
     state["managed_cursor"] = json!(runtime.observed_cursor);
     state["local_shells"] = json!(runtime.active_shells);
-    if !runtime.agent_id.is_empty() {
+    if runtime.local.is_some() {
+        // Local conversations expose their rollout for history reads.
+        super::local::control::publish(bridge, runtime);
+    } else if !runtime.agent_id.is_empty() {
         bridge.conversation(Conversation {
             session_id: runtime.agent_id.clone(),
             root_session_id: Some(runtime.agent_id.clone()),

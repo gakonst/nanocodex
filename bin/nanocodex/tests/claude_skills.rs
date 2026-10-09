@@ -1,4 +1,8 @@
 //! Actual CLI + HTTP/SSE journey; all skill and filesystem behavior is real.
+#[path = "support/local_cli.rs"]
+mod local_cli;
+use local_cli::local_cli;
+
 #[test]
 fn cli_skills_and_scoped_context() {
     let script = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -6,7 +10,7 @@ fn cli_skills_and_scoped_context() {
     let output = std::process::Command::new("python3")
         .arg(script)
         .arg("--binary")
-        .arg(env!("CARGO_BIN_EXE_nanocodex"))
+        .arg(local_cli())
         .current_dir(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../.."))
         .output()
         .expect("python3 is required for the CLI HTTP/SSE fixture");
@@ -25,7 +29,7 @@ fn cli_named_profiles_forked_skills_and_child_isolation() {
     let output = std::process::Command::new("python3")
         .arg(script)
         .arg("--binary")
-        .arg(env!("CARGO_BIN_EXE_nanocodex"))
+        .arg(local_cli())
         .current_dir(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../.."))
         .output()
         .expect("python3 is required for the CLI HTTP/SSE fixture");

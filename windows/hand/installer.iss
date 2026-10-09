@@ -44,6 +44,8 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 [Files]
 Source: "payload\nanocodex.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "payload\nanocodex2.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "payload\nc.cmd"; DestDir: "{app}"; Flags: ignoreversion
+Source: "payload\ncl.cmd"; DestDir: "{app}"; Flags: ignoreversion
 Source: "payload\ffmpeg.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "payload\ffmpeg-*.txt"; DestDir: "{app}"; Flags: ignoreversion
 

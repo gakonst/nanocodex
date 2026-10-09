@@ -1,8 +1,10 @@
 # Windows installer
 
-`nanocodex-hand-setup-x86_64.exe` installs the same native `nanocodex` control
-CLI and `nanocodex2` Hand used by the macOS and Linux setup flow on x86-64
-Windows 10 or 11.
+`nanocodex-hand-setup-x86_64.exe` installs the same native `nanocodex` CLI and
+Hand daemon used by the macOS and Linux setup flow on x86-64 Windows 10 or 11:
+`nanocodex.exe` (the CLI), `nanocodex2.exe` (the `nanocodex-hand` daemon under
+its service name), `nc.cmd` (managed commands, same as `nanocodex`), and
+`ncl.cmd` (the local agent tree, `nanocodex --local`).
 
 1. Run `irm https://nanocodex.paradigm.xyz/install.ps1 | iex`, or download and
    double-click the installer. The current per-user install does not need UAC.
@@ -56,12 +58,13 @@ Windows Firewall policy.
 
 ## Build
 
-Build both Rust binaries, then run:
+Build both Rust binaries (`cargo build --release -p nanocodex-bin --bin nanocodex
+--bin nanocodex-hand --features tempo`), then run:
 
 ```powershell
 .\windows\hand\build.ps1 `
   -Nanocodex .\target\release\nanocodex.exe `
-  -Nanocodex2 .\target\release\nanocodex2.exe `
+  -Nanocodex2 .\target\release\nanocodex-hand.exe `
   -Version 0.6.5
 ```
 

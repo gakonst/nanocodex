@@ -494,7 +494,9 @@ impl AgentSettings {
     pub(crate) fn validate(self) -> Result<Self, ManagedError> {
         if !self.model.supports_thinking(self.thinking) {
             return Err(ManagedError::Configuration(
-                (if self.model.oai().is_none() {
+                (if self.model == ManagedModel::ClaudeHaiku45 {
+                    "Claude Haiku 4.5 supports only none reasoning effort"
+                } else if self.model.oai().is_none() {
                     "Claude requires low, medium, or high reasoning effort"
                 } else if self.model == Model::Glm53 {
                     "GLM-5.3 requires low, medium, or high reasoning effort"

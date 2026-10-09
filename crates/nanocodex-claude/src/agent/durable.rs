@@ -306,7 +306,11 @@ impl State {
             lifecycle_turn_id: candidate_id("lifecycle"),
             stop_hook_active: false,
             instruction_revision: None,
-            snapshot: self.snapshot(conversation).await?,
+            snapshot: if self.policy.is_some() && operation.is_some() {
+                self.snapshot(conversation).await?
+            } else {
+                Snapshot::default()
+            },
             template,
             dynamic_tool_names,
             wire_profile: Some(wire_profile),
@@ -340,6 +344,17 @@ impl State {
         self.advance_cursor(&mut cursor, conversation).await?;
         Ok(cursor)
     }
+    /// Whether this cursor is journaled for durable replay.
+    pub(super) fn persists(&self, cursor: &Cursor) -> bool {
+        self.policy.is_some() && cursor.operation.is_some()
+    }
+    /// Records the pending round in a journaled cursor; ephemeral turns keep
+    /// their single working copy.
+    pub(super) fn retain_pending(&self, cursor: &mut Cursor, pending: &[Message]) {
+        if self.persists(cursor) {
+            cursor.pending = pending.to_vec();
+        }
+    }
     pub(super) async fn advance_cursor(
         &self,
         cursor: &mut Cursor,
@@ -353,7 +368,11 @@ impl State {
             self.classify_code_only_tools(cursor);
             cursor.tool_search = false;
         }
-        cursor.snapshot = self.snapshot(conversation).await?;
+        // Only a durable operation persists or replays its cursor. Without one,
+        // another full conversation copy per round would only consume memory.
+        if self.persists(cursor) {
+            cursor.snapshot = self.snapshot(conversation).await?;
+        }
         if let (Some(policy), Some(operation)) = (&self.policy, &cursor.operation) {
             policy
                 .advance(

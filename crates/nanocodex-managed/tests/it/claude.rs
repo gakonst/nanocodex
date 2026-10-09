@@ -220,6 +220,22 @@ async fn private_subscription_connect_catalog_and_disconnect_journey() {
     for entry in catalog.data {
         assert!(entry.id.oai().is_none() && !entry.fast_mode);
     }
+    // Every native Claude identity keeps its own managed wire identity.
+    for native in nanocodex_managed::ClaudeModel::ALL {
+        let model = ManagedModel::from(native);
+        assert_eq!(model.claude(), Some(native));
+        assert_eq!(model.to_string(), native.as_str());
+        assert_eq!(serde_json::to_value(model).unwrap(), json!(native.as_str()));
+        assert_eq!(
+            serde_json::from_value::<ManagedModel>(json!(native.as_str())).unwrap(),
+            model
+        );
+        assert_eq!(
+            nanocodex_managed::HarnessModel::from(model),
+            nanocodex_managed::HarnessModel::Claude(native)
+        );
+        assert!(model.supports_thinking(model.default_thinking()));
+    }
     state.lock().unwrap().partial = true;
     let degraded = client.models().await.unwrap();
     assert!(degraded.partial);

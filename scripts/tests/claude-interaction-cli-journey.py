@@ -25,10 +25,10 @@ def main():
     env={'HOME':str(home),'CODEX_HOME':str(codex_home),'PATH':'/usr/bin:/bin:/usr/sbin:/sbin','TERM':'xterm-256color','NANOCODEX_COMPUTER':'off'}
     question={'questions':[{'question':'Choose a synthetic color','header':'Color','options':[{'label':'Blue','description':'first color'},{'label':'Green','description':'second color'}],'multiSelect':False}]}
     steps=[
-        ('Bash',{'command':'printf prior > prior.txt'},False,None),
+        ('exec_command',{'cmd':'printf prior > prior.txt'},False,None),
         ('EnterPlanMode',{},False,'plan'),
         ('Write',{'file_path':'blocked.txt','content':'unsafe'},True,'plan mode'),
-        ('Bash',{'command':'printf unsafe > blocked-shell.txt'},True,'plan mode'),
+        ('exec_command',{'cmd':'printf unsafe > blocked-shell.txt'},True,'plan mode'),
         ('Read',{'file_path':'read.txt'},True,'configured-read-denial'),
         ('Glob',{'pattern':'*.txt'},False,'read.txt'),
         ('AskUserQuestion',question,False,'Blue'),
@@ -108,9 +108,9 @@ def main():
         plan_dir.unlink(); saved_dir.rename(plan_dir)
         os.write(fd,b'/cancel\r'); wait(lambda:len(requests)==17,drain,'cancel did not return error'); pending(17,drain)
         wait(lambda:visible('tui', b'interaction-journey-complete'),drain,'TUI final answer absent')
-        os.write(fd,b'\x03'); p.wait(timeout=10); drain(); os.close(fd)
+        os.write(fd,b'\x03\x03'); p.wait(timeout=10); drain(); os.close(fd)
         require((workspace/'approved.txt').read_text()=='approved-effect','approved write absent')
-        require((workspace/'prior.txt').read_text()=='prior','plan entry after Bash failed')
+        require((workspace/'prior.txt').read_text()=='prior','plan entry after exec_command failed')
         for name in ['blocked.txt','blocked-shell.txt','denied.txt','persistence-failed.txt','cancelled.txt']: require(not(workspace/name).exists(),f'blocked mutation exists: {name}')
         require((workspace/'hooks.log').read_text()=='postprepostpost','hooks silently skipped in plan')
         # Reopen the same default native journal headlessly: gate is installed even
@@ -134,7 +134,7 @@ def main():
         result=subprocess.run(command,cwd=workspace,env=env,capture_output=True,timeout=30)
         (artifact/'after-interrupt.jsonl').write_bytes(result.stdout); (artifact/'after-interrupt.stderr').write_bytes(result.stderr)
         require(result.returncode==0,f'after interrupt failed {result.stderr!r}'); require(not errors,'; '.join(errors)); require(not(workspace/'after-interrupt.txt').exists(),'pending cancellation lost plan')
-        outcome={'success':True,'tui_question_waited':True,'exact_answer':'Blue','draft_approval_discarded':True,'failed_persistence_preserved_plan':True,'denial_and_cancel_preserved_plan':True,'approved_write':True,'blocked_writes_absent':True,'hooks_preserved_in_plan':True,'plan_after_prior_bash':True,'headless_restart_gate':True,'pending_sigint_cancelled':True,'provider_requests':len(requests)}
+        outcome={'success':True,'tui_question_waited':True,'exact_answer':'Blue','draft_approval_discarded':True,'failed_persistence_preserved_plan':True,'denial_and_cancel_preserved_plan':True,'approved_write':True,'blocked_writes_absent':True,'hooks_preserved_in_plan':True,'plan_after_prior_exec_command':True,'headless_restart_gate':True,'pending_sigint_cancelled':True,'provider_requests':len(requests)}
     finally:
         for p in processes:
             if p.poll() is None: p.kill(); p.wait()

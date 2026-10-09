@@ -469,7 +469,7 @@ workspace.shutdown().await?; // The named volume survives.
 ```
 
 Build the image with `pnpm build:hand-docker`. See the
-[Docker Hand operator guide](../../bin/nanocodex/nanocodex2/README.md#docker-hand-no-kvm)
+[Docker Hand operator guide](../../bin/nanocodex/README.md#docker-hand-no-kvm)
 for image requirements, desktop support, network semantics, and stale-container
 recovery. The launcher never forwards the host environment or account
 credentials into the guest and does not mount host directories or the Docker

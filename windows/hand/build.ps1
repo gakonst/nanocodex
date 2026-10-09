@@ -1,8 +1,10 @@
 [CmdletBinding()]
 param(
+    # The nanocodex CLI; the installer also adds nc/ncl command shims for it.
     [Parameter(Mandatory = $true)]
     [string]$Nanocodex,
 
+    # The nanocodex-hand daemon, installed under its service name nanocodex2.exe.
     [Parameter(Mandatory = $true)]
     [string]$Nanocodex2,
 
@@ -35,6 +37,9 @@ foreach ($path in @($Nanocodex, $Nanocodex2)) {
 New-Item -ItemType Directory -Force -Path $payload, $output | Out-Null
 Copy-Item -LiteralPath $Nanocodex -Destination (Join-Path $payload "nanocodex.exe") -Force
 Copy-Item -LiteralPath $Nanocodex2 -Destination (Join-Path $payload "nanocodex2.exe") -Force
+# nc is the managed name; ncl selects the local agent command tree.
+Set-Content -LiteralPath (Join-Path $payload "nc.cmd") -Value '@"%~dp0nanocodex.exe" %*' -Encoding Ascii
+Set-Content -LiteralPath (Join-Path $payload "ncl.cmd") -Value '@"%~dp0nanocodex.exe" --local %*' -Encoding Ascii
 
 $ffmpegVersion = "9.0.1"
 $ffmpegDigest = "fec81ae03971d9dd4be3ebe02e263bd2ec1d789483f931bdba5f5715e65da2e9"

@@ -42,7 +42,7 @@ The headless CLI can attach the real portable durability engine to a local
 SQLite file for destructive testing:
 
 ```console
-nanocodex run \
+ncl run \
   --local-durability /tmp/nanocodex-durability.sqlite \
   --local-durability-state-id hammer-root \
   --request-id turn-1 \
@@ -55,7 +55,7 @@ receipt for `turn-1` without dispatching its effects again. Reuse the database
 and state ID with a new request ID to submit a follow-on turn. Clean spawned
 agents use the same database but persist under their own UUIDv7 session IDs.
 
-This flag is deliberately limited to `nanocodex run`. It refuses rollouts so
+This flag is deliberately limited to `ncl run`. It refuses rollouts so
 SQLite remains the only restart authority, and one explicit request ID cannot
 be combined with `--repeat` greater than one. Use SIGKILL to test process loss;
 SIGINT and SIGTERM exercise the CLI's graceful cancellation path.

@@ -67,8 +67,8 @@ test("an incomplete Node package cache regenerates bindings", async () => {
       NANOCODEX_WASM_BUILD_DELAY: "0",
       NANOCODEX_WASM_LOCK_HELD: fixture.repository,
     });
-    assert.deepEqual((await readFile(fixture.bindgenEvents, "utf8")).trim().split("\n"),
-      ["nodejs", "web", "bundler"], "memory-view changes must invalidate generated bindings");
+    assert.deepEqual((await readFile(fixture.bindgenEvents, "utf8")).trim().split("\n").sort(),
+      ["bundler", "nodejs", "web"], "memory-view changes must invalidate generated bindings");
 
     for (const artifact of ["pkg-node/nanocodex.d.ts", "pkg-node/package.json"]) {
       await Promise.all([
@@ -81,8 +81,8 @@ test("an incomplete Node package cache regenerates bindings", async () => {
         NANOCODEX_WASM_LOCK_HELD: fixture.repository,
       });
       assert.deepEqual(
-        (await readFile(fixture.bindgenEvents, "utf8")).trim().split("\n"),
-        ["nodejs", "web", "bundler"],
+        (await readFile(fixture.bindgenEvents, "utf8")).trim().split("\n").sort(),
+        ["bundler", "nodejs", "web"],
         `${artifact} must invalidate the generated package cache`,
       );
     }
@@ -107,7 +107,7 @@ test("generator and build policy changes cannot reuse stale bindings", async () 
       await writeFile(path, `${await readFile(path, "utf8")}\n${relative.endsWith(".sh") ? "#" : "//"} changed generation policy\n`);
       await rm(fixture.bindgenEvents);
       await runBuild(fixture, environment);
-      assert.deepEqual((await readFile(fixture.bindgenEvents, "utf8")).trim().split("\n"), ["nodejs", "web", "bundler"], relative);
+      assert.deepEqual((await readFile(fixture.bindgenEvents, "utf8")).trim().split("\n").sort(), ["bundler", "nodejs", "web"], relative);
     }
     const writer = join(fixture.packageRoot, "scripts/write-package-types.mjs");
     await writeFile(writer, `${await readFile(writer, "utf8")}\nawait writeFile(new URL("../pkg-node/package.json", import.meta.url), '{"type":"commonjs","revision":2}');\n`);
@@ -137,7 +137,7 @@ async function createBuildFixture() {
   ]);
   await copyFile(sourceBuildScript, buildScript);
   await copyFile(new URL("../scripts/wasm-memory-views.mjs", import.meta.url), join(scripts, "wasm-memory-views.mjs"));
-  for (const path of ["wasm-output-cache.mjs"]) {
+  for (const path of ["wasm-output-cache.mjs", "native-binaryen.mjs"]) {
     await writeFile(join(scripts, path), "// fixture cache policy\n");
   }
   for (const path of ["deduplicate-wasm.mjs", "write-wasm-attestation.mjs", "check-managed-wasm.mjs"]) {

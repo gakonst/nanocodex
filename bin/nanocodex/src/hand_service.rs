@@ -350,7 +350,7 @@ pub(crate) async fn switch_executable(path: &Path) -> Result<()> {
         .as_array_mut()
         .ok_or_else(|| eyre!("Missing Hand program arguments"))?;
     if args.len() < 2 || args[1] != "hand" {
-        bail!("LaunchAgent does not directly run nanocodex2 hand");
+        bail!("LaunchAgent does not directly run nanocodex hand");
     }
     args[0] = json!(path);
     value["ExitTimeOut"] = json!(90);
@@ -401,8 +401,7 @@ pub(crate) async fn prepare(binary: Option<PathBuf>) -> Result<()> {
     if state.installed || state.loaded {
         return Ok(());
     }
-    let binary =
-        executable(&binary.unwrap_or(std::env::current_exe()?.with_file_name("nanocodex2")))?;
+    let binary = executable(&binary.map_or_else(crate::hand_executable::hand_binary, Ok)?)?;
     validate_candidate(&binary).await?;
     let mut value = service_plist(&binary)?;
     value[PENDING_LOGIN] = json!(true);
@@ -498,8 +497,7 @@ pub(crate) async fn install(binary: Option<PathBuf>, account_file: Option<PathBu
             "Hand LaunchAgent already exists; use hand restart or update to preserve its configuration"
         );
     }
-    let binary =
-        executable(&binary.unwrap_or(std::env::current_exe()?.with_file_name("nanocodex2")))?;
+    let binary = executable(&binary.map_or_else(crate::hand_executable::hand_binary, Ok)?)?;
     validate_candidate(&binary).await?;
     let home = home()?;
     let account = account_file
@@ -535,8 +533,7 @@ pub(crate) async fn install(binary: Option<PathBuf>, account_file: Option<PathBu
 /// Make the user Hand service present, current, running, and connected. This is
 /// deliberately idempotent so first-run setup and later repairs share one path.
 pub(crate) async fn ensure(binary: Option<PathBuf>, account_file: Option<PathBuf>) -> Result<()> {
-    let candidate =
-        executable(&binary.unwrap_or(std::env::current_exe()?.with_file_name("nanocodex2")))?;
+    let candidate = executable(&binary.map_or_else(crate::hand_executable::hand_binary, Ok)?)?;
     let mut state = status().await?;
     if !state.installed && !state.loaded {
         return install(Some(candidate), account_file).await;
@@ -755,12 +752,17 @@ fn legacy_publisher(command: &str, uid: &str, install: &Path) -> bool {
     let Some(binary) = command.trim().strip_suffix(" __device-hand --daemon") else {
         return false;
     };
+    installed_cli(owner, uid, Path::new(binary), install)
+}
+
+/// A CLI executable of this user's installation, under either released name.
+fn installed_cli(owner: &str, uid: &str, binary: &Path, install: &Path) -> bool {
     owner == uid
-        && Path::new(binary)
-            .file_name()
-            .is_some_and(|n| n == "nanocodex2")
-        && (Path::new(binary).starts_with(install.join("versions"))
-            || Path::new(binary) == install.join("current/nanocodex2"))
+        && crate::hand_executable::is_hand_file_name(binary)
+        && (binary.starts_with(install.join("versions"))
+            || crate::hand_executable::current_executables(install)
+                .iter()
+                .any(|current| current == binary))
 }
 
 /// Retire only pre-service lease helpers. Old clients may ignore the launch
@@ -823,13 +825,7 @@ fn legacy_helper_binary(command: &str, uid: &str, install: &Path) -> Option<Path
     let binary = command
         .trim()
         .strip_suffix(" __device-hand --parent-pipe")?;
-    if owner == uid
-        && Path::new(binary)
-            .file_name()
-            .is_some_and(|n| n == "nanocodex2")
-        && (Path::new(binary).starts_with(install.join("versions"))
-            || Path::new(binary) == install.join("current/nanocodex2"))
-    {
+    if installed_cli(owner, uid, Path::new(binary), install) {
         Some(PathBuf::from(binary))
     } else {
         None
@@ -1074,10 +1070,10 @@ fn validate_plist(value: &Value) -> Result<()> {
         || args[1] != "hand"
         || !args[0].as_str().is_some_and(|s| {
             let p = Path::new(s);
-            p.is_absolute() && p.file_name().is_some_and(|n| n == "nanocodex2")
+            p.is_absolute() && crate::hand_executable::is_hand_file_name(p)
         })
     {
-        bail!("LaunchAgent must directly run an absolute nanocodex2 hand executable");
+        bail!("LaunchAgent must directly run an absolute nanocodex or nanocodex2 hand executable");
     }
     Ok(())
 }
@@ -1095,8 +1091,18 @@ mod safety_tests {
     fn refuses_arbitrary_backup_commands() {
         let valid = json!({"Label":LABEL,"ProgramArguments":["/versions/v1/nanocodex2","hand"]});
         assert!(validate_plist(&valid).is_ok());
+        // One binary is installed under both names and may run from a bundle.
+        for program in [
+            "/versions/v1/nanocodex",
+            "/versions/v1/Nanocodex.app/Contents/MacOS/nanocodex2",
+        ] {
+            let mut v = valid.clone();
+            v["ProgramArguments"] = json!([program, "hand"]);
+            assert!(validate_plist(&v).is_ok(), "{program}");
+        }
         for args in [
             json!(["/bin/sh", "hand"]),
+            json!(["/versions/v1/ncl", "hand"]),
             json!(["nanocodex2", "hand"]),
             json!(["/bin/nanocodex2", "other"]),
             json!(["/bin/nanocodex2", "hand", "--other"]),
@@ -1301,6 +1307,13 @@ mod legacy_tests {
     #[test]
     fn legacy_recovery_only_signals_expected_owner_and_publisher_mode() {
         let install = Path::new("/home/test/.nanocodex");
+        for command in [
+            "501 /home/test/.nanocodex/current/nanocodex __device-hand --daemon",
+            "501 /home/test/.nanocodex/versions/v1/nanocodex __device-hand --daemon",
+            "501 /home/test/.nanocodex/versions/v1/Nanocodex.app/Contents/MacOS/nanocodex2 __device-hand --daemon",
+        ] {
+            assert!(legacy_publisher(command, "501", install), "{command}");
+        }
         assert!(legacy_publisher(
             "501 /home/test/.nanocodex/current/nanocodex2 __device-hand --daemon",
             "501",

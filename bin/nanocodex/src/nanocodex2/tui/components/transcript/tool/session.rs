@@ -1,5 +1,5 @@
 use super::{Presentation, count_label, generic};
-use crate::tui::{
+use crate::nanocodex2::tui::{
     theme::Theme,
     transcript::{ToolEntry, ToolState},
 };

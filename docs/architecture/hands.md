@@ -460,7 +460,7 @@ Runtime performs no downloads, package installation or sudo.
 
 ### Local macOS development
 
-1. Build both binaries with `cargo build -p nanocodex-bin -p nanocodex2-bin`.
+1. Build the CLI and Hand with `cargo build -p nanocodex-bin --bins`.
    Run the CLI at `./target/debug/nanocodex` directly. For release builds add
    `--release` and substitute `target/release` in the commands below.
 2. Select a real signing certificate explicitly and sign each rebuilt Hand:
@@ -468,15 +468,15 @@ Runtime performs no downloads, package installation or sudo.
    ```sh
    security find-identity -v -p codesigning
    export NANOCODEX_CODESIGN_IDENTITY='<selected certificate SHA-1>'
-   codesign --force --sign "$NANOCODEX_CODESIGN_IDENTITY" --identifier com.nanocodex.hand --entitlements nanocodex-vm.entitlements ./target/debug/nanocodex2
-   codesign --verify --strict ./target/debug/nanocodex2
-   codesign --display --requirements - ./target/debug/nanocodex2
+   codesign --force --sign "$NANOCODEX_CODESIGN_IDENTITY" --identifier com.nanocodex.hand --entitlements nanocodex-vm.entitlements ./target/debug/nanocodex-hand
+   codesign --verify --strict ./target/debug/nanocodex-hand
+   codesign --display --requirements - ./target/debug/nanocodex-hand
    ```
 
 3. Disable automatic release updates with
    `./target/debug/nanocodex update --auto disable`.
 4. Restart the existing owner with
-   `./target/debug/nanocodex hand restart --executable ./target/debug/nanocodex2`.
+   `./target/debug/nanocodex hand restart --executable ./target/debug/nanocodex-hand`.
 
 The explicit executable preserves service configuration and identity, uses the
 update lock, and verifies a fresh connected publisher. Pending version updates

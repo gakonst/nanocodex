@@ -3,10 +3,10 @@ import type { Workspace } from "nanocodex-tools";
 import type { Tool } from "../../nanocodex/runtime/claude.mjs";
 import { createMcpRuntime } from "../../nanocodex/runtime/mcp-runtime.mjs";
 
-// Codex interfaces are replaced by Claude's native tools. Shared subagents are
+// Execution retains the shared Codex contract. Shared subagents are
 // installed separately by the task-tree runtime, preserving its owned handlers.
 const forbidden = new Set([
-  "exec", "wait", "tool_search", "exec_command", "write_stdin", "apply_patch",
+  "exec", "wait", "tool_search", "exec_command", "write_stdin", "Bash", "BashOutput", "apply_patch",
   "view_image", "update_plan", "web__run", "image_gen__imagegen",
   "spawn_agent", "send_agent_message", "list_agents", "wait_agent",
   "interrupt_agent", "close_agent", "submit_result",
@@ -26,8 +26,8 @@ function path(input: Record<string, unknown>): string {
 export async function createManagedClaudeTools(options: {
   filesystem: Workspace;
   prepareFilesystem?: () => Promise<void>;
-  bash: NamedTool;
-  poll?: NamedTool;
+  execCommand: NamedTool;
+  writeStdin?: NamedTool;
   allowedNames?: readonly string[];
   tools: readonly NamedTool[];
   mcp: McpServers;
@@ -45,12 +45,11 @@ export async function createManagedClaudeTools(options: {
     try { return await operation(); } finally { release(); }
   };
   const tools: Tool[] = [
-    // Parallel safety mirrors the Codex catalog: Bash inherits exec_command's
-    // declaration (Hand commands are independent processes); file mutations,
-    // generic executors and stateful tools keep the serial, ordered default.
-    { name: "Bash", ...(options.bash.supportsParallelToolCalls === true ? { supportsParallelToolCalls: true } : {}), description: "Execute a bounded shell command. /brain uses durable Just Bash; workdir selects an attached Hand for native commands. Check uncertain external effects before any retry.",
-      inputSchema: object({ command: string, workdir: string, timeout: { type: "integer", minimum: 1, maximum: 600000 }, max_output_tokens: { type: "integer", minimum: 1 } }, ["command"]),
-      handler: (raw, context) => { const input = value(raw); if (typeof input.command !== "string") throw new Error("command required"); return options.bash.handler({ cmd: input.command, workdir: input.workdir ?? "/brain", max_output_tokens: input.max_output_tokens, ...(input.timeout === undefined ? {} : { yield_time_ms: input.timeout }) }, context); } },
+    // Preserve the shared schemas, argument semantics and parallel-safety flags.
+    { name: "exec_command", description: options.execCommand.description,
+      inputSchema: options.execCommand.parameters as Record<string, unknown>,
+      handler: options.execCommand.handler,
+      ...(options.execCommand.supportsParallelToolCalls === true ? { supportsParallelToolCalls: true } : {}) },
     { name: "Read", supportsParallelToolCalls: true, description: "Read a UTF-8 text file under /brain with optional line offsets and limits.", inputSchema: object({ file_path: string, offset: { type: "integer", minimum: 1 }, limit: { type: "integer", minimum: 1 } }, ["file_path"]),
       handler: async raw => { const input = value(raw); const bytes = await options.filesystem.readFile(path(input)); const lines = new TextDecoder("utf-8").decode(bytes).split("\n"); const offset = Number(input.offset ?? 1); const limit = Number(input.limit ?? Math.max(1, lines.length)); if (!Number.isSafeInteger(offset) || offset < 1 || !Number.isSafeInteger(limit) || limit < 1) throw new Error("invalid read range"); return text(lines.slice(offset - 1, offset - 1 + limit).map((line, index) => `${offset + index}\t${line}`).join("\n")); } },
     { name: "Write", description: "Write UTF-8 text to a canonical /brain file, creating its parent directories.", inputSchema: object({ file_path: string, content: string }, ["file_path", "content"]),
@@ -58,10 +57,9 @@ export async function createManagedClaudeTools(options: {
     { name: "Edit", description: "Replace an exact string in a /brain UTF-8 file. Without replace_all the old string must occur exactly once. No patch syntax.", inputSchema: object({ file_path: string, old_string: string, new_string: string, replace_all: { type: "boolean" } }, ["file_path", "old_string", "new_string"]),
       handler: raw => fileMutation(async () => { const input = value(raw); const filename = path(input); if (typeof input.old_string !== "string" || !input.old_string || typeof input.new_string !== "string") throw new Error("invalid edit strings"); const bytes = await options.filesystem.readFile(filename); const content = new TextDecoder("utf-8").decode(bytes); const pieces = content.split(input.old_string); if (pieces.length === 1 || (input.replace_all !== true && pieces.length !== 2)) throw new Error("old_string must match uniquely unless replace_all is true"); const next = input.replace_all === true ? pieces.join(input.new_string) : content.replace(input.old_string, input.new_string); await options.filesystem.writeFile(filename, next); return text(`Edited ${filename}`); }) },
   ];
-  if (options.poll) tools.push({ name: "BashOutput", ...(options.poll.supportsParallelToolCalls === true ? { supportsParallelToolCalls: true } : {}), description: "Read output or send ordinary input to a retained native Bash session. session_id is the exact receipt from Bash, bound to its original Hand; never send passwords or verification codes.",
-    inputSchema: object({ session_id: { type: "integer", minimum: 1 }, chars: string, max_output_tokens: { type: "integer", minimum: 1 }, timeout: { type: "integer", minimum: 1, maximum: 600000 } }, ["session_id"]),
-    handler: (raw, context) => { const input=value(raw); return options.poll!.handler({ session_id: input.session_id, chars: input.chars ?? "", max_output_tokens: input.max_output_tokens, ...(input.timeout === undefined ? {} : {yield_time_ms:input.timeout}) },context); }
-  });
+  if (options.writeStdin) tools.push({ name: "write_stdin", description: options.writeStdin.description,
+    inputSchema: options.writeStdin.parameters as Record<string, unknown>, handler: options.writeStdin.handler,
+    ...(options.writeStdin.supportsParallelToolCalls === true ? { supportsParallelToolCalls: true } : {}) });
   // Shared account tools retain their actual permission-checked handlers; only
   // object-schema custom tools are accepted, never Responses builtins/Code Mode.
   for (const tool of options.tools) {

@@ -5,6 +5,9 @@
 terminal replay machinery. It does not route through OpenAI Responses, launch
 Claude Code, or install the Codex native catalog. Both harnesses expose only
 `exec` and `wait`; supplied capabilities are called inside shared Code Mode.
+Explicit host tools may use the shared `exec_command` and `write_stdin` names
+and schemas. Their arguments and results pass through unchanged; the SDK does
+not install shell handlers implicitly.
 
 It returns the same Agent as a Codex session (Node, host, and browser SDKs);
 `Claude.create(options)` is the equivalent constructor on the Claude-only

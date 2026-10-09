@@ -4,6 +4,9 @@
 // SessionModelEgress, broker vault and Rust OAuth state machine are production.
 // Only account bootstrap (synthetic identity) and external provider HTTP are fixtures.
 import assert from 'node:assert/strict';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import { readFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { test } from 'node:test';
 import { mkdir, writeFile, rm } from 'node:fs/promises';
@@ -94,6 +97,8 @@ test('Managed Code Mode Claude and mixed-family public delegation, account gates
   const trace = [], upstream = [], providerErrors = [], mediaRequests = [], deniedCalls = []; let calls=0, summaries=0, writes=0, canonicalWrites=0, codexWrites=0, nestedWrites=0, allowResponses=false, sidebarCalls=0, holds=0, responsesAttempts=0, catalogOutage=false, catalogUnsupportedOnly=false, catalogRequests=0, catalogHold, hostedJourney, releaseHostedChild, mf;
   const framingRequests = {crOnly:0,truncated:0}, activeSteerRequests = [];
   let releaseActiveSteer;
+  let progressAvailable = false;
+  const progressRequests = [];
   const mcpTrace = [], mcpOrigins = new Set(['https://developers.openai.com','https://mcp.tempo.xyz','https://mercator.sh','https://docs.mcp.cloudflare.com','https://viem.sh','https://vocs.dev']);
   let holdMcp = false, releaseMcp;
   let compacting = false;
@@ -264,7 +269,7 @@ test('Managed Code Mode Claude and mixed-family public delegation, account gates
       if (!url.searchParams.has('after_id')) return Response.json({data:[{id:'claude-gated-unverified',display_name:'Not supported'}],has_more:true,last_id:'claude-gated-unverified'});
       assert.equal(url.searchParams.get('after_id'),'claude-gated-unverified');
       return Response.json({data:[{id:'claude-sonnet-4-6',display_name:'Claude Sonnet 4.6'},
-        {id:'claude-opus-4-6',display_name:'Claude Opus 4.6'}, {id:'claude-gated-unverified',display_name:'Not supported'}],has_more:false});
+        {id:'claude-opus-4-6',display_name:'Claude Opus 4.6'}, ...(progressAvailable?[{id:'claude-opus-5-5',display_name:'Claude Opus 5.5'}]:[]), {id:'claude-gated-unverified',display_name:'Not supported'}],has_more:false});
     }
     if (url.origin === 'https://api.anthropic.com' && url.pathname === '/v1/messages') {
       assert.match(request.headers.get('authorization')??'',/^Bearer synthetic-claude-managed-runtime/);
@@ -278,6 +283,36 @@ test('Managed Code Mode Claude and mixed-family public delegation, account gates
       assert.equal(request.headers.get('x-stainless-lang'),'js');
       assert.equal(request.headers.get('x-stainless-package-version'),'0.112.1');
       const wire = await request.text(); const body = JSON.parse(wire); calls++;
+      if (body.model === 'claude-opus-5-5') {
+        assert.deepEqual(body.thinking,{type:'adaptive',display:'updates'});
+        assert.equal(body.output_config.effort,'high');
+        assert.equal((request.headers.get('anthropic-beta')??'').split(',').filter(beta=>beta==='thinking-display-updates-2026-08-18').length,1);
+        progressRequests.push(body);
+        if (progressRequests.length > 1) {
+          const blocks=body.messages.flatMap(message=>Array.isArray(message.content)?message.content:[]);
+          assert.ok(blocks.some(block=>block.signature==='PRIVATE_PROGRESS_SIGNATURE'&&block.thinking==='Checking the saved record.'));
+          assert.ok(blocks.some(block=>block.signature==='PRIVATE_REASONING_SIGNATURE'&&block.thinking===''));
+          return sse({type:'text',text:'CLAUDE_TOOL_DONE_PROGRESS'},'end_turn','progress-final');
+        }
+        const events=[
+          {type:'message_start',message:{id:'progress-live',role:'assistant',model:body.model,content:[],usage:{input_tokens:10,output_tokens:0}}},
+          {type:'content_block_start',index:0,content_block:{type:'thinking',thinking:'',signature:''}},
+          {type:'content_block_delta',index:0,delta:{type:'thinking_delta',thinking:''}},
+          {type:'content_block_delta',index:0,delta:{type:'signature_delta',signature:'PRIVATE_REASONING_SIGNATURE'}},
+          {type:'content_block_stop',index:0},
+          {type:'content_block_start',index:1,content_block:{type:'thinking',thinking:'',signature:''}},
+          {type:'content_block_delta',index:1,delta:{type:'thinking_delta',thinking:'Checking the '}},
+          {type:'content_block_delta',index:1,delta:{type:'thinking_delta',thinking:'saved record.'}},
+          {type:'content_block_delta',index:1,delta:{type:'signature_delta',signature:'PRIVATE_PROGRESS_SIGNATURE'}},
+          {type:'content_block_stop',index:1},
+          {type:'content_block_start',index:2,content_block:{type:'tool_use',id:'progress-tool',name:'_exec',input:{}}},
+          {type:'content_block_delta',index:2,delta:{type:'input_json_delta',partial_json:JSON.stringify({code:'text("record verified");'})}},
+          {type:'content_block_stop',index:2},
+          {type:'message_delta',delta:{stop_reason:'tool_use'},usage:{output_tokens:10}},
+          {type:'message_stop'},
+        ];
+        return new Response(events.map(event=>`data: ${JSON.stringify(event)}\n\n`).join(''),{headers:{'content-type':'text/event-stream'}});
+      }
       assert.ok(['claude-sonnet-4-6','claude-opus-4-6'].includes(body.model)); assert.equal(body.stream,true);
       assert.match(body.system[0].text,/^x-anthropic-billing-header: cc_version=2\.1\.280\.[0-9a-f]{3}; cc_entrypoint=cli; cch=[0-9a-f]{5};$/);
       assert.equal(body.system[1].text,"You are Claude Code, Anthropic's official CLI for Claude.");
@@ -299,7 +334,7 @@ test('Managed Code Mode Claude and mixed-family public delegation, account gates
       assert.deepEqual(wireNames,['_exec','_wait']);
       const catalog=body.tools.find(tool=>tool.name.replace(/^_/,'')==='exec').description;
       const admits=name=>catalog.includes('"name":"'+name+'"');
-      for(const legacy of ['Task','TaskOutput','TaskStop'])assert.equal(admits(legacy),false,'legacy delegation is absent');
+      for(const legacy of ['Task','TaskOutput','TaskStop','Bash','BashOutput'])assert.equal(admits(legacy),false,'legacy capabilities are absent');
       upstream.push({wire,request:calls,model:body.model,tool_names:names,wire_tool_names:wireNames,message_count:body.messages.length,
         tool_uses:body.messages.flatMap(message=>Array.isArray(message.content)?message.content.filter(block=>block.type==='tool_use').map(block=>block.name):[]),
         tool_result_count:body.messages.flatMap(message=>Array.isArray(message.content)?message.content.filter(block=>block.type==='tool_result'):[]).length,
@@ -333,6 +368,27 @@ test('Managed Code Mode Claude and mixed-family public delegation, account gates
       const disabledChild = encodedHistory.includes('Try disabled canonical child');
       const code = source => sse({type:'tool_use',id:`exec-${calls}`,name:'exec',input:{code:source}},'tool_use',`message-${calls}`);
       const use = (name, input) => code(nestedCode(name,input));
+      if (encodedHistory.includes('CANONICAL_COMMAND_PROBE')) {
+        assert.ok(admits('exec_command') && admits('write_stdin'));
+        if (!result) return code(`
+          const result = await tools.exec_command({cmd:"printf CANONICAL_COMMAND_OK",yield_time_ms:1000,max_output_tokens:1000});
+          if (result.exit_code !== 0 || result.output !== "CANONICAL_COMMAND_OK") throw new Error(JSON.stringify(result));
+          let stale = false, staleReceipt;
+          try { staleReceipt = await tools.write_stdin({session_id:987654321,chars:"",yield_time_ms:1000,max_output_tokens:1000}); stale = /unknown or stale/.test(JSON.stringify(staleReceipt)); }
+          catch (error) { staleReceipt = String(error); stale = /unknown or stale/.test(staleReceipt); }
+          if (!stale) throw new Error("unexpected stale receipt: " + JSON.stringify(staleReceipt));
+          for (const name of ["Bash", "BashOutput"]) {
+            let unavailable = false;
+            try { await tools[name]({command:"printf MUST_NOT_RUN"}); }
+            catch (error) { unavailable = /TOOL_NOT_AVAILABLE|not a function|not available|unavailable|unknown tool/.test(String(error)); }
+            if (!unavailable) throw new Error(name + " remains callable");
+          }
+          text("CANONICAL_COMMAND_RECEIPT");
+        `);
+        assert.equal(result.is_error ?? false, false, JSON.stringify(result));
+        assert.match(JSON.stringify(result.content), /CANONICAL_COMMAND_RECEIPT/);
+        return sse({type:'text',text:'CLAUDE_TOOL_DONE_CANONICAL_COMMAND'},'end_turn',`message-${calls}`);
+      }
       if (hostedJourney && encodedHistory.includes(hostedJourney.marker)
         && (body.model===hostedJourney.rootModel || (hostedJourney.childHarness==='claude' && body.model===hostedJourney.childModel))) {
         if (hostedJourney.childHarness==='claude' && body.model===hostedJourney.childModel && body.model!==hostedJourney.rootModel) {
@@ -477,13 +533,13 @@ test('Managed Code Mode Claude and mixed-family public delegation, account gates
           controller.enqueue(new TextEncoder().encode(`event: message_start\ndata: ${JSON.stringify({type:'message_start',message:{id:'cancel-fixture',role:'assistant',model:body.model,content:[],usage:{input_tokens:10,output_tokens:0}}})}\n\n`));
         } }),{headers:{'content-type':'text/event-stream'}});
       }
-      assert.ok(admits('Bash'));assert.ok(admits('Write'));assert.ok(admits('Read'));
+      assert.ok(admits('exec_command'));assert.ok(admits('Write'));assert.ok(admits('Read'));
       if(prompt.includes('Write durable proof')){writes++;return use('Write',{file_path:'/brain/proof.txt',content:'NATIVE_CLAUDE_DURABLE_PROOF'});}
       if(prompt.includes('Read durable proof')){
         assert.ok(JSON.stringify(body.messages).includes(summaries?'NATIVE_SUMMARY':'NATIVE_CLAUDE_DURABLE_PROOF'),'prior native history/summary persisted');
         return use('Read',{file_path:'/brain/proof.txt'});
       }
-      return use('Bash',{command:prompt.includes('Check denied file')?'test ! -e /brain/denied.txt && echo NO_UNAUTHORIZED_FILE':'cat /brain/proof.txt',workdir:'/brain'});
+      return use('exec_command',{cmd:prompt.includes('Check denied file')?'test ! -e /brain/denied.txt && echo NO_UNAUTHORIZED_FILE':'cat /brain/proof.txt',workdir:'/brain',yield_time_ms:1000,max_output_tokens:1000});
     }
     const response = await claudeProvider(request); if(response)return response;
     return new Response('Unexpected external fixture request '+url.origin+url.pathname,{status:502});
@@ -649,6 +705,33 @@ test('Managed Code Mode Claude and mixed-family public delegation, account gates
     const created=await call('/v1/agents','POST',{},201), agent=created.agent_id;
     assert.equal(catalogRequests-beforeClaudeDefault,2,'Claude-only default and admission share one paginated live catalog');
     assert.equal((await call(`/v1/agents/${agent}`)).settings.model,'claude-sonnet-4-6');
+    // Exercise production admission and SSE over HTTP with the rebuilt Rust
+    // WASM. Only the upstream Messages response is synthetic.
+    progressAvailable=true;
+    assert.ok((await call('/v1/models')).data.some(model=>model.id==='claude-opus-5-5'));
+    const progressAgent=(await call('/v1/agents','POST',{settings:{model:'claude-opus-5-5',thinking:'high',reasoning_mode:'standard',fast_mode:false}},201)).agent_id;
+    const progressInput={input:'Check the saved record and report progress.',id:'progress-sse'};
+    await writeFile(resolve(evidence,'progress.input.json'),JSON.stringify(progressInput));
+    const endpoint=new URL(`/v1/agents/${progressAgent}/turns`,await mf.ready);
+    const {stdout:progressStatus}=await promisify(execFile)('curl',['--silent','--show-error','--max-time','60','--request','POST',
+      '--header','authorization: Bearer '+token,'--header','content-type: application/json','--header','accept: text/event-stream',
+      '--data-binary','@'+resolve(evidence,'progress.input.json'),'--dump-header',resolve(evidence,'progress.headers'),
+      '--output',resolve(evidence,'progress.sse'),'--write-out','%{http_code}',endpoint.href]);
+    assert.equal(progressStatus,'202');
+    const progressWire=await readFile(resolve(evidence,'progress.sse'),'utf8');
+    const progressEvents=progressWire.split('\n').filter(line=>line.startsWith('data: ')).map(line=>JSON.parse(line.slice(6)));
+    const progressDeltas=progressEvents.filter(row=>row.event?.type==='reasoning.summary.delta');
+    assert.equal(progressDeltas.map(row=>row.event.payload.text).join(''),'Checking the saved record.');
+    assert.ok(progressDeltas.every(row=>row.event.payload.item_id==='progress-live:thinking:1'));
+    assert.ok(progressWire.indexOf('reasoning.summary.delta')<progressWire.indexOf('tool.call'));
+    assert.match(progressWire,/CLAUDE_TOOL_DONE_PROGRESS/);
+    assert.doesNotMatch(progressWire,/PRIVATE_REASONING_SIGNATURE|PRIVATE_PROGRESS_SIGNATURE/);
+    assert.equal(progressRequests.length,2);
+    const progressHistory=await call(`/v1/agents/${progressAgent}/events/history?after=0&limit=256`);
+    assert.equal(progressHistory.data.filter(row=>row.event?.type==='reasoning.summary.delta').map(row=>row.event.payload.text).join(''),'Checking the saved record.');
+    trace.push({progress:{model:'claude-opus-5-5',effort:'high',display:'updates',public_sse:true,history:true,private_blocks_preserved:true}});
+    progressAvailable=false;
+    await call('/v1/models');
     const platform=(await call('/v1/agents','POST',{},201)).agent_id;
     await turn(platform,'SHARED_PLATFORM_NATIVE_PROBE save and read a synthetic memory','journey-shared-platform');
     const platformHistory=await call(`/v1/agents/${platform}/events/history?after=0&limit=256`);
@@ -678,7 +761,7 @@ test('Managed Code Mode Claude and mixed-family public delegation, account gates
     assert.equal((await call('/v1/agents')).summaries[agent].presentation.done,false);
     await turn(agent,'Read durable proof','journey-read');
     await mf.dispose(); mf=new Miniflare(options);
-    await turn(agent,'Run Bash durable proof','journey-bash');
+    await turn(agent,'Run exec_command durable proof','journey-exec-command');
     {
       // Attachments: images and inline PDFs reach Claude as native blocks.
       const media=(await call('/v1/agents','POST',{settings:{model:'claude-opus-4-6',thinking:'low',reasoning_mode:'standard',fast_mode:false}},201)).agent_id;
@@ -754,7 +837,7 @@ test('Managed Code Mode Claude and mixed-family public delegation, account gates
       assert.doesNotMatch(afterVoice,/Realtime conversation started/,'queued context is consumed exactly once');
       trace.push({claude_media_voice:{blocks:sent.map(block=>block.type),voice_route:delegated.route,stopped:stopped.stopped}});
     }
-    const history=await call(`/v1/agents/${agent}/events/history?after=0&limit=256`);assert.match(JSON.stringify(history),/Write|Read|Bash/);
+    const history=await call(`/v1/agents/${agent}/events/history?after=0&limit=256`);assert.match(JSON.stringify(history),/Write|Read|exec_command/);
     await call(`/v1/agents/${agent}/durability`,'POST',undefined,409);
     await call(`/v1/agents/${agent}/forks`,'POST',undefined,409,{'idempotency-key':'claude-fork-denial'});
     // Script the external model for the requested operation, without coupling
@@ -766,6 +849,14 @@ test('Managed Code Mode Claude and mixed-family public delegation, account gates
     await mf.dispose(); mf=new Miniflare(options);
     await turn(agent,'Read durable proof after summary','journey-after-summary');
     assert.equal(writes,1,'compaction/reopen never repeats prior effect');
+    const commandsOnly=(await call('/v1/agents','POST',{configuration:{tools:['exec_command','write_stdin']}},201)).agent_id;
+    await turn(commandsOnly,'CANONICAL_COMMAND_PROBE','journey-canonical-command');
+    for (const name of ['Bash','BashOutput']) {
+      const legacy=(await call('/v1/agents','POST',{configuration:{tools:[name]}},201)).agent_id;
+      const beforeLegacy=calls;
+      assert.match(JSON.stringify(await turn(legacy,'Legacy shell must fail before inference','journey-removed-'+name,'failed')),/configuration names an unavailable tool/);
+      assert.equal(calls,beforeLegacy);
+    }
     const noTools=(await call('/v1/agents','POST',{configuration:{tools:[]}},201)).agent_id;
     await turn(noTools,'Try forbidden Write','journey-no-tools');
     await turn(agent,'Check denied file','journey-denied-file');
@@ -824,7 +915,7 @@ test('Managed Code Mode Claude and mixed-family public delegation, account gates
     assert.equal((await call(`/v1/agents/${agent}/turns/journey-cancel`)).state,'cancelled');
     await call(`/v1/agents/${canonical}/turns`,'POST',{input:'Delegate canonical Claude child',id:'journey-canonical-child'},200);
     assert.equal(canonicalWrites,1,'completed canonical child not replayed after restart');
-    await turn(agent,'Run Bash durable proof after cancellation','journey-after-cancel');assert.equal(holds,1,'cancelled request not replayed');
+    await turn(agent,'Run exec_command durable proof after cancellation','journey-after-cancel');assert.equal(holds,1,'cancelled request not replayed');
 
     {
       // HTTP + GPT Realtime delegation both steer one active Rust/WASM Claude turn.
@@ -929,7 +1020,7 @@ test('Managed Code Mode Claude and mixed-family public delegation, account gates
     await call('/__fixture/openai','POST',undefined,204);catalogOutage=true;
     const mixed=await call('/v1/models');assert.equal(mixed.partial,true);assert.equal(mixed.availability.claude.error,'claude_models_unavailable');
     assert.deepEqual(mixed.data.map(model=>model.id),['gpt-6-astra','gpt-6.1-sol','gpt-6-luna']);
-    await turn(agent,'Run Bash durable proof in mixed account','journey-mixed-provider-pin');assert.equal(responsesAttempts,0,'Claude inference/sidebar cannot borrow OAI credential');
+    await turn(agent,'Run exec_command durable proof in mixed account','journey-mixed-provider-pin');assert.equal(responsesAttempts,0,'Claude inference/sidebar cannot borrow OAI credential');
     const beforeGptMcp=mcpStarts();
     const gptMcp=(await call('/v1/agents','POST',{settings:{model:'gpt-6.1-sol',thinking:'low',reasoning_mode:'standard',fast_mode:false}},201)).agent_id;
     await turn(gptMcp,'GPT_MCP_DISCOVERY_PROBE','journey-gpt-mcp');
@@ -1032,7 +1123,7 @@ test('Managed Code Mode Claude and mixed-family public delegation, account gates
     assert.ok((await call('/v1/models')).data.some(row=>row.id==='claude-sonnet-4-6'));
     const validationTrace=await (await claudeProvider(new Request('https://claude-fixture.invalid/trace?scenario=profile-uncertain'))).json();assert.equal(validationTrace.exchange,1);assert.equal(validationTrace.profile,2);
     assert.deepEqual(providerErrors,[],"all provider fixtures matched the real public journeys");
-    console.info('CLAUDE_MANAGED_JOURNEY',{calls,summaries,writes,canonicalWrites,codexWrites,nestedWrites,sidebarCalls,holds,responsesAttempts,DOReopens:5,framingRequests,activeSteerRequests:activeSteerRequests.length,modelTools:['exec','wait'],nestedTools:['Write','Read','Bash'],actualModels:catalog.data.map(m=>m.id),staleSelectionDenied:true,gatewayOnlyDefault:gatewayOnly.default_model,unsupportedOnlyAvailable:unsupportedOnly.availability.claude.available,exactToolAllowlist:true});
+    console.info('CLAUDE_MANAGED_JOURNEY',{calls,summaries,writes,canonicalWrites,codexWrites,nestedWrites,sidebarCalls,holds,responsesAttempts,DOReopens:5,framingRequests,activeSteerRequests:activeSteerRequests.length,modelTools:['exec','wait'],nestedTools:['Write','Read','exec_command','write_stdin'],actualModels:catalog.data.map(m=>m.id),staleSelectionDenied:true,gatewayOnlyDefault:gatewayOnly.default_model,unsupportedOnlyAvailable:unsupportedOnly.availability.claude.available,exactToolAllowlist:true});
   } finally {
     releaseActiveSteer?.();
     releaseHostedChild?.();

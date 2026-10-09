@@ -527,7 +527,7 @@ mod tests {
                 .any(|value| value.as_ref() == "vm_factory:linux-computer")
         );
         assert!(
-            crate::Cli::try_parse_from([
+            crate::nanocodex2::Cli::try_parse_from([
                 "nanocodex2",
                 "hand",
                 "--vm",
@@ -553,14 +553,14 @@ mod tests {
                 "/tmp/identity",
             ],
         ] {
-            let cli = crate::Cli::try_parse_from(args).unwrap();
-            let Some(crate::Command::Hand(hand)) = cli.command else {
+            let cli = crate::nanocodex2::Cli::try_parse_from(args).unwrap();
+            let Some(crate::nanocodex2::Command::Hand(hand)) = cli.command else {
                 panic!("expected unified Hand");
             };
             assert!(hand.rootfs.is_none() && hand.docker.is_none());
         }
         assert!(
-            crate::Cli::try_parse_from([
+            crate::nanocodex2::Cli::try_parse_from([
                 "nanocodex2",
                 "hand",
                 "--vm",
@@ -576,11 +576,17 @@ mod tests {
 
     #[test]
     fn hand_parses_legacy_browser_options_and_rejects_removed_command() {
-        assert!(crate::Cli::try_parse_from(["nanocodex2", "native-hand"]).is_err());
+        assert!(crate::nanocodex2::Cli::try_parse_from(["nanocodex2", "native-hand"]).is_err());
         assert!(
-            crate::Cli::try_parse_from(["nanocodex2", "native-hand", "--workspace", "."]).is_err()
+            crate::nanocodex2::Cli::try_parse_from([
+                "nanocodex2",
+                "native-hand",
+                "--workspace",
+                "."
+            ])
+            .is_err()
         );
-        let cli = crate::Cli::try_parse_from([
+        let cli = crate::nanocodex2::Cli::try_parse_from([
             "nanocodex2",
             "hand",
             "--workspace",
@@ -589,9 +595,12 @@ mod tests {
             "Linux server",
         ])
         .unwrap();
-        assert!(matches!(cli.command, Some(crate::Command::Hand(_))));
+        assert!(matches!(
+            cli.command,
+            Some(crate::nanocodex2::Command::Hand(_))
+        ));
         assert!(
-            crate::Cli::try_parse_from([
+            crate::nanocodex2::Cli::try_parse_from([
                 "nanocodex2",
                 "hand",
                 "--workspace",
@@ -601,7 +610,7 @@ mod tests {
             ])
             .is_err()
         );
-        let cli = crate::Cli::try_parse_from([
+        let cli = crate::nanocodex2::Cli::try_parse_from([
             "nanocodex2",
             "hand",
             "--workspace",
@@ -611,7 +620,7 @@ mod tests {
             "/opt/chrome",
         ])
         .unwrap();
-        let Some(crate::Command::Hand(command)) = cli.command else {
+        let Some(crate::nanocodex2::Command::Hand(command)) = cli.command else {
             panic!("expected native Hand");
         };
         assert!(command.browser);

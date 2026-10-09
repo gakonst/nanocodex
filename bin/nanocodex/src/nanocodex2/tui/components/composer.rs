@@ -11,7 +11,7 @@ use super::{
     selection::{TextRange, TextSpan},
     waved_text::WavedText,
 };
-use crate::{
+use crate::nanocodex2::{
     config::{ReasoningEffort, ReasoningMode},
     tui::{
         context::MODEL_WINDOW_TOKENS,
@@ -52,10 +52,10 @@ const DEVELOPMENT_BADGE: &str = " ◉ dev ";
 #[derive(Debug, Eq, PartialEq)]
 pub(crate) enum ComposerEffect {
     ShowAgentId,
-    Share(Result<crate::tui::share::Command, String>),
-    Sites(Result<crate::tui::sites::Command, String>),
-    Vault(crate::tui::vault::Command),
-    SecureInput(crate::tui::secure_input::Command),
+    Share(Result<crate::nanocodex2::tui::share::Command, String>),
+    Sites(Result<crate::nanocodex2::tui::sites::Command, String>),
+    Vault(crate::nanocodex2::tui::vault::Command),
+    SecureInput(crate::nanocodex2::tui::secure_input::Command),
     Submit(Submission),
     Queue(Submission),
     RunShell(String),
@@ -66,7 +66,9 @@ pub(crate) enum ComposerEffect {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum SettingsCommand {
     Bug(String),
-    CodeReview(crate::tui::review::Command),
+    Fast(Option<bool>),
+    Cancel,
+    CodeReview(crate::nanocodex2::tui::review::Command),
     Btw(String),
     CloseBtw,
     Attach,
@@ -75,22 +77,57 @@ pub(crate) enum SettingsCommand {
     SetDone(bool),
     Screen,
     Zoom,
-    Voice(crate::voice::Command),
+    Voice(crate::nanocodex2::voice::Command),
     OpenEffort,
     SetEffort(ReasoningEffort),
     OpenModel,
     SetModel(Model),
+    // Local feature commands (/mcp, /benchmark)
+    Feature(crate::nanocodex2::tui::features::FeatureCommand),
     Invalid(String),
 }
 
 impl SettingsCommand {
+    pub(crate) fn available(&self, caps: crate::nanocodex2::tui::backend::Capabilities) -> bool {
+        use crate::nanocodex2::tui::features::FeatureCommand;
+        match self {
+            Self::Bug(_) => caps.bug,
+            Self::AutoRoute => caps.autoroute,
+            Self::Reload => caps.reload,
+            Self::SetDone(_) => caps.done,
+            Self::Screen => caps.screen,
+            Self::Voice(_) => caps.voice_managed || caps.voice_realtime,
+            Self::Feature(command) => match command {
+                FeatureCommand::McpLogin(_) | FeatureCommand::McpReload(_) => caps.mcp,
+                FeatureCommand::Benchmark(_) => caps.eval,
+                FeatureCommand::Branches => caps.branches,
+                FeatureCommand::Collapse | FeatureCommand::Split => caps.collapse_split,
+                FeatureCommand::Btw(_) | FeatureCommand::CloseBtw => caps.local_btw,
+                FeatureCommand::RealtimeVoice(_) => caps.voice_realtime,
+                FeatureCommand::SwitchModel(_) => caps.local,
+            },
+            _ => true,
+        }
+    }
+
     pub(super) fn parse(input: &str) -> Option<Self> {
-        if let Some(command) = crate::tui::review::parse(input) {
+        if let Some(command) = crate::nanocodex2::tui::review::parse(input) {
             return Some(Self::CodeReview(command));
         }
         let mut parts = input.split_whitespace();
         let command = parts.next()?;
         match command {
+            "/fast" => Some(match (parts.next(), parts.next()) {
+                (None, None) => Self::Fast(None),
+                (Some("on"), None) => Self::Fast(Some(true)),
+                (Some("off"), None) => Self::Fast(Some(false)),
+                _ => Self::Invalid("Usage: /fast [on|off]".into()),
+            }),
+            "/cancel" => Some(if parts.next().is_some() {
+                Self::Invalid("Usage: /cancel".into())
+            } else {
+                Self::Cancel
+            }),
             "/btw" => Some(Self::Btw(
                 input.trim_start()[command.len()..].trim().to_owned(),
             )),
@@ -129,12 +166,48 @@ impl SettingsCommand {
             } else {
                 Self::Zoom
             }),
-            "/voice" => Some(
-                match crate::voice::Command::parse(input.trim_start()[command.len()..].trim()) {
+            // /mcp and /benchmark
+            "/mcp" => Some(match (parts.next(), parts.next(), parts.next()) {
+                (Some("login"), Some(name), None) => Self::Feature(
+                    crate::nanocodex2::tui::features::FeatureCommand::McpLogin(name.to_owned()),
+                ),
+                (Some("reload"), name, None) => {
+                    Self::Feature(crate::nanocodex2::tui::features::FeatureCommand::McpReload(
+                        name.map(str::to_owned),
+                    ))
+                }
+                _ => Self::Invalid("Usage: /mcp login <server> or /mcp reload [server]".into()),
+            }),
+            // Local /btw collapse/split and the branch navigator
+            "/collapse" | "/split" | "/branches" => Some(if parts.next().is_some() {
+                Self::Invalid(format!("Usage: {command}"))
+            } else {
+                Self::Feature(match command {
+                    "/collapse" => crate::nanocodex2::tui::features::FeatureCommand::Collapse,
+                    "/split" => crate::nanocodex2::tui::features::FeatureCommand::Split,
+                    _ => crate::nanocodex2::tui::features::FeatureCommand::Branches,
+                })
+            }),
+            "/benchmark" => Some(Self::Feature(
+                crate::nanocodex2::tui::features::FeatureCommand::Benchmark(
+                    input.trim_start()[command.len()..].trim().to_owned(),
+                ),
+            )),
+            "/voice" => {
+                // Arguments the managed grammar rejects may still be
+                // local Realtime controls (e.g. platform voices); the driver shows the
+                // managed error when no local agent handles them.
+                let arguments = input.trim_start()[command.len()..].trim();
+                Some(match crate::nanocodex2::voice::Command::parse(arguments) {
                     Ok(command) => Self::Voice(command),
-                    Err(error) => Self::Invalid(error),
-                },
-            ),
+                    Err(error) if arguments.split_whitespace().count() != 1 => Self::Invalid(error),
+                    Err(_) => Self::Feature(
+                        crate::nanocodex2::tui::features::FeatureCommand::RealtimeVoice(
+                            arguments.to_owned(),
+                        ),
+                    ),
+                })
+            }
             "/model" => {
                 let Some(argument) = parts.next() else {
                     return Some(Self::OpenModel);
@@ -147,7 +220,15 @@ impl SettingsCommand {
                         argument
                             .parse::<nanocodex::Model>()
                             .map(Model::from)
-                            .map_err(|_| "Unsupported managed model ID")
+                            // Harness aliases (sonnet, haiku, sol, luna) as accepted by --model.
+                            .or_else(|_| {
+                                argument
+                                    .parse::<nanocodex::HarnessModel>()
+                                    .ok()
+                                    .and_then(|model| model.to_string().parse::<Model>().ok())
+                                    .ok_or(())
+                            })
+                            .map_err(|()| "Unsupported managed model ID")
                     }) {
                         Ok(model) => Self::SetModel(model),
                         Err(error) => Self::Invalid(error.to_owned()),
@@ -226,6 +307,7 @@ pub(crate) enum ComposerEvent {
 }
 
 pub(crate) struct Composer {
+    capabilities: crate::nanocodex2::tui::backend::Capabilities,
     draft: String,
     images: Vec<PastedImage>,
     next_image: u64,
@@ -403,6 +485,7 @@ impl Composer {
 
     pub(crate) fn new(workspace: &Path, thinking: ReasoningEffort) -> Self {
         Self {
+            capabilities: Default::default(),
             draft: String::new(),
             images: Vec::new(),
             next_image: 1,
@@ -450,7 +533,16 @@ impl Composer {
             ComposerEvent::Terminal(Event::Key(key)) => self.handle_key(key),
             ComposerEvent::Terminal(Event::Paste(text)) => {
                 self.history.detach();
-                self.insert(&text);
+                // Only resolve image paths after routing to the composer:
+                // pasted paths in search dialogs must remain ordinary text.
+                if let Some((data, caption)) =
+                    crate::nanocodex2::tui::clipboard::pasted_image_data_url(&text)
+                {
+                    self.insert_image(data);
+                    self.insert(caption);
+                } else {
+                    self.insert(&text);
+                }
                 ComposerUpdate::changed()
             }
             ComposerEvent::Terminal(_) => ComposerUpdate::unchanged(),
@@ -855,6 +947,28 @@ impl Composer {
         self.auto_routing
     }
 
+    /// Local harness models without an effort setting (Claude Haiku 4.5)
+    /// send no thinking, so the border shows no effort for them.
+    fn model_has_effort(&self) -> bool {
+        use nanocodex::Thinking;
+        !self.capabilities.local
+            || self
+                .model()
+                .as_str()
+                .parse::<nanocodex::HarnessModel>()
+                .map_or(true, |model| {
+                    [
+                        Thinking::Low,
+                        Thinking::Medium,
+                        Thinking::High,
+                        Thinking::Xhigh,
+                        Thinking::Max,
+                    ]
+                    .into_iter()
+                    .any(|thinking| model.supports_thinking(thinking))
+                })
+    }
+
     fn model_label(&self) -> String {
         let Some(model) = self.routed_model else {
             return if self.auto_routing {
@@ -1125,7 +1239,25 @@ impl Composer {
         ComposerUpdate::effect(ComposerEffect::Queue(prompt), true)
     }
 
+    pub(crate) fn set_capabilities(
+        &mut self,
+        capabilities: crate::nanocodex2::tui::backend::Capabilities,
+    ) {
+        self.capabilities = capabilities;
+    }
+
     fn take_local_command(&mut self) -> Option<ComposerUpdate> {
+        if self.draft.trim_start().starts_with('/')
+            && !self.capabilities.command_available(&self.draft)
+        {
+            let command = self.draft.split_whitespace().next().unwrap_or("");
+            let error = self.capabilities.unavailable(command);
+            self.replace_draft(String::new());
+            return Some(ComposerUpdate::effect(
+                ComposerEffect::Settings(SettingsCommand::Invalid(error)),
+                true,
+            ));
+        }
         if !self.images.is_empty() {
             if self.draft.split_whitespace().next() == Some("/review") {
                 return Some(ComposerUpdate::effect(
@@ -1183,20 +1315,27 @@ impl Composer {
             }
             return None;
         }
-        let effect =
-            if let Some(command) = crate::tui::secure_input::Command::parse(self.draft.trim()) {
-                ComposerEffect::SecureInput(command)
-            } else if let Some(command) = crate::tui::share::Command::parse(self.draft.trim()) {
-                ComposerEffect::Share(command)
-            } else if let Some(command) = crate::tui::sites::Command::parse(self.draft.trim()) {
-                ComposerEffect::Sites(command)
-            } else if let Some(command) = crate::tui::vault::Command::parse(self.draft.trim()) {
-                ComposerEffect::Vault(command)
-            } else if self.draft.trim() == "/id" {
-                ComposerEffect::ShowAgentId
-            } else {
-                ComposerEffect::Settings(SettingsCommand::parse(self.draft.trim())?)
-            };
+        let effect = if let Some(command) =
+            crate::nanocodex2::tui::secure_input::Command::parse(self.draft.trim())
+        {
+            ComposerEffect::SecureInput(command)
+        } else if let Some(command) =
+            crate::nanocodex2::tui::share::Command::parse(self.draft.trim())
+        {
+            ComposerEffect::Share(command)
+        } else if let Some(command) =
+            crate::nanocodex2::tui::sites::Command::parse(self.draft.trim())
+        {
+            ComposerEffect::Sites(command)
+        } else if let Some(command) =
+            crate::nanocodex2::tui::vault::Command::parse(self.draft.trim())
+        {
+            ComposerEffect::Vault(command)
+        } else if self.draft.trim() == "/id" {
+            ComposerEffect::ShowAgentId
+        } else {
+            ComposerEffect::Settings(SettingsCommand::parse(self.draft.trim())?)
+        };
         // Never persist even malformed private-control arguments in composer history.
         if !matches!(&effect, ComposerEffect::SecureInput(_)) {
             self.history.record(self.draft.trim().to_owned());
@@ -1716,12 +1855,14 @@ impl Composer {
             .front()
             .map(|timer| format!(" {} ", timer.label()))
             .unwrap_or_default();
-        let effort =
-            if self.shared_access.is_some() || self.auto_routing && self.routed_effort.is_none() {
-                String::new()
-            } else {
-                format!(" {} ", self.effort().as_str())
-            };
+        let effort = if self.shared_access.is_some()
+            || self.auto_routing && self.routed_effort.is_none()
+            || !self.model_has_effort()
+        {
+            String::new()
+        } else {
+            format!(" {} ", self.effort().as_str())
+        };
         let fast_mode =
             (self.shared_access.is_none() && !self.auto_routing && self.fast_mode).then_some("⚡ ");
         let pro_mode = (self.shared_access.is_none()
@@ -1886,7 +2027,7 @@ impl Composer {
         let directory_width = directory.width().min(content_width);
         let directory_start =
             content_end.saturating_sub(u16::try_from(directory_width).unwrap_or(u16::MAX));
-        let development_width = if crate::installation::current().is_development()
+        let development_width = if crate::nanocodex2::installation::current().is_development()
             && DEVELOPMENT_BADGE.width()
                 <= usize::from(directory_start.saturating_sub(content_start))
         {
@@ -2171,7 +2312,7 @@ mod tests {
         super::selection::{Selection, Surface, TextRange},
         Composer, ComposerEffect, ComposerEvent, SettingsCommand, context_percent,
     };
-    use crate::{
+    use crate::nanocodex2::{
         config::{ReasoningEffort, ReasoningMode},
         tui::theme::Theme,
     };
@@ -3220,7 +3361,7 @@ mod tests {
         assert!(matches!(
             update.effect,
             Some(ComposerEffect::SecureInput(
-                crate::tui::secure_input::Command::Help
+                crate::nanocodex2::tui::secure_input::Command::Help
             ))
         ));
         assert!(composer.draft.is_empty());
@@ -3250,10 +3391,12 @@ mod tests {
             SettingsCommand::parse(
                 "/voice clone \"Sample speaker\" \"audio/my sample.wav\" --consent"
             ),
-            Some(SettingsCommand::Voice(crate::voice::Command::Clone {
-                name: "Sample speaker".into(),
-                path: "audio/my sample.wav".into()
-            }))
+            Some(SettingsCommand::Voice(
+                crate::nanocodex2::voice::Command::Clone {
+                    name: "Sample speaker".into(),
+                    path: "audio/my sample.wav".into()
+                }
+            ))
         );
         assert!(matches!(
             SettingsCommand::parse("/voice clone me audio.wav"),
@@ -3261,9 +3404,11 @@ mod tests {
         ));
         assert!(matches!(
             SettingsCommand::parse("/voice voices elevenlabs"),
-            Some(SettingsCommand::Voice(crate::voice::Command::ListProvider(
-                crate::voice::Provider::ElevenLabs
-            )))
+            Some(SettingsCommand::Voice(
+                crate::nanocodex2::voice::Command::ListProvider(
+                    crate::nanocodex2::voice::Provider::ElevenLabs
+                )
+            ))
         ));
     }
 

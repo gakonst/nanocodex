@@ -11,7 +11,7 @@ test('locked replan retains cache-only receipts and publishes only genuinely mis
  const cwd=mkdtempSync(join(tmpdir(),'recover-images-'));t.after(()=>rmSync(cwd,{recursive:true,force:true}));
  const git=(...args)=>execFileSync('git',args,{cwd,stdio:'pipe'});
  const put=(path,value)=>{mkdirSync(dirname(join(cwd,path)),{recursive:true});writeFileSync(join(cwd,path),value);};
- git('init','-q');put('Cargo.toml','[workspace]');put('crates/phone/Cargo.toml','[package]\nname="nanocodex-phone"');put('crates/hand/Cargo.toml','[package]\nname="nanocodex2-bin"');
+ git('init','-q');put('Cargo.toml','[workspace]');put('crates/phone/Cargo.toml','[package]\nname="nanocodex-phone"');put('crates/hand/Cargo.toml','[package]\nname="nanocodex-bin"');
  git('add','.');git('-c','user.name=Fixture','-c','user.email=fixture@example.invalid','commit','-qm','fixture');
  const account='a'.repeat(32),retained=[],published=[];let configured=0;
  const receipt=image=>({version:1,image,input:fingerprint(image,account,'1',cwd),ref:`registry.cloudflare.com/${account}/nanocodex-ci-${image}@sha256:${'b'.repeat(64)}`});

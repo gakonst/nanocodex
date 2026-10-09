@@ -1110,6 +1110,17 @@ export class AccountHostedTools extends DurableObject<AccountHostedToolsEnv> {
 
 const HAND_RECONNECT_ADMISSION_WAIT_MS = 10_000;
 const SELECTED_LOOKUP_REUSE_MS = 30_000;
+/** Bounded pause before the single fresh retry of a transiently unpublished selected route. */
+const SELECTED_ROUTE_RETRY_MS = 1_500;
+
+function abortableDelay(ms: number, signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted) return Promise.reject(signal.reason);
+  return new Promise((resolve, reject) => {
+    const onAbort = () => { clearTimeout(timer); reject(signal!.reason); };
+    const timer = setTimeout(() => { signal?.removeEventListener("abort", onAbort); resolve(); }, ms);
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
+}
 type HandFailureReason = "route_unavailable_after_recovery" | "route_replaced" | "route_unpublished" | "route_refresh_failed"
   | "process_runtime_replaced" | "transport_failed" | "outcome_unknown";
 
@@ -1317,7 +1328,8 @@ export class AccountHostedToolsProvider implements HostedToolsDynamicProvider {
   }
 
   /** Fresh selected-machine lookup. Never joins a slow full inventory request. */
-  async refreshMachine(machineId: string, context: AuthorizationContext, computer = false, screens = computer): Promise<void> {
+  async refreshMachine(machineId: string, context: AuthorizationContext, computer = false, screens = computer,
+    signal?: AbortSignal): Promise<void> {
     if (!this.#allowed(context)) throw new Error("Hand access revoked");
     const generation = this.#generation;
     // Shell routes do not need a per-call cross-region lookup: a recent
@@ -1328,7 +1340,7 @@ export class AccountHostedToolsProvider implements HostedToolsDynamicProvider {
       && Date.now() - fresh.at < SELECTED_LOOKUP_REUSE_MS && this.#onlineMachineIds.has(machineId)
       && this.#machineTools.has(machineToolKey(machineId, "exec_command"))) return;
     this.#selectedFresh.delete(machineId);
-    const snapshot = await fetchResponseWithDeadline(
+    const lookup = () => fetchResponseWithDeadline(
       this.#namespace.getByName(this.#ownerId), "https://account-tools.internal/snapshot",
       { method: "POST", headers: { "content-type": "application/json" },
         // Shell-only lookups never wait on screen authority in another region.
@@ -1339,11 +1351,20 @@ export class AccountHostedToolsProvider implements HostedToolsDynamicProvider {
       }).catch(error => {
         throw Object.assign(new Error("Selected Hand lookup interrupted", { cause: error }), { code: "host_interrupted" });
       });
+    const routable = (value: unknown): value is AccountHostedToolsSnapshot => validSnapshot(value)
+      && !value.inventory_unknown_ids?.includes(machineId)
+      && !value.machines.some(entry => entry.machine.id !== machineId)
+      && (computer || (value.machines.length === 1 && value.machines[0]?.online === true));
+    let snapshot = await lookup();
     if (generation !== this.#generation || !this.#allowed(context)) throw new Error("Hand authorization changed during lookup");
-    if (!validSnapshot(snapshot) || snapshot.inventory_unknown_ids?.includes(machineId)
-      || snapshot.machines.some(entry => entry.machine.id !== machineId)
-      || (!computer && (snapshot.machines.length !== 1 || snapshot.machines[0]?.online !== true)))
-      throw new Error("Selected Hand route unavailable");
+    if (!routable(snapshot)) {
+      // A Hand socket replacement briefly unpublishes the route. Retry one
+      // fresh lookup after a short bounded wait before failing the call.
+      await abortableDelay(SELECTED_ROUTE_RETRY_MS, signal);
+      snapshot = await lookup();
+      if (generation !== this.#generation || !this.#allowed(context)) throw new Error("Hand authorization changed during lookup");
+      if (!routable(snapshot)) throw new Error("Selected Hand route unavailable");
+    }
     // Replace only this machine's screen routes; unrelated catalogs and cells survive.
     // A lookup that omitted screens keeps this machine's retained screen routes.
     const keepScreens = snapshot.screens_omitted === true;

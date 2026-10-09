@@ -717,6 +717,30 @@ describe("HostedToolsBroker socket-owned protocol", () => {
     expect(replacementB.sent.some((frame) => frame.type === "call")).toBe(false);
   });
 
+  it("expires one overdue call without closing or unpublishing its Hand route", async () => {
+    let now = NOW;
+    const fixture = createFixture(undefined, { now: () => now });
+    const route = fixture.socket();
+    await fixture.broker.message(route.webSocket, JSON.stringify({
+      type: "catalog", capabilities: ["turn_metadata"], attachment_id: "machine-a",
+      tools: [{ ...entry("alpha"), timeout_ms: 20 }],
+      machines: [{ id: "machine-a", name: "Machine A", workspace: "/a", capabilities: ["shell"] }],
+    }));
+    const name = fixture.broker.provider().definitions()[0]!.name;
+    const overdue = fixture.broker.provider().resolve(name)!.handler({}, { sessionId: "session:1", callId: "source:overdue" });
+    now += 25;
+    expect(JSON.stringify(await overdue)).toContain("deadline expired after dispatch");
+    // Only the overdue call is cancelled: the Hand socket and its route survive.
+    expect(route.sent.some((frame) => frame.type === "cancel")).toBe(true);
+    expect(route.closed).toBeUndefined();
+    expect(fixture.broker.machines().map((machine) => machine.id)).toEqual(["machine-a"]);
+    const next = fixture.broker.provider().resolve(name)!.handler({}, { sessionId: "session:1", callId: "source:next" });
+    const call = route.sent.filter((frame) => frame.type === "call").at(-1)!;
+    expect(call.call_id).not.toBe(route.sent.find((frame) => frame.type === "call")!.call_id);
+    await fixture.broker.message(route.webSocket, result(call.call_id as string, "still routed"));
+    await expect(next).resolves.toMatchObject({ success: true, output: "still routed" });
+  });
+
   it("still rejects duplicate unqualified generic tool names", async () => {
     const fixture = createFixture();
     const first = fixture.socket();

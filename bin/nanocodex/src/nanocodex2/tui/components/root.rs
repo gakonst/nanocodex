@@ -31,7 +31,7 @@ use super::{
     theme_selector::{ThemeSelector, ThemeSelectorEffect, ThemeSelectorEvent},
     transcript::{ScrollCommand, Transcript, TranscriptEvent},
 };
-use crate::{
+use crate::nanocodex2::{
     config::{ReasoningEffort, ReasoningMode},
     skill::Skill,
     tui::{
@@ -143,13 +143,13 @@ impl Notification {
 }
 
 pub(crate) enum RootEvent {
-    VoiceStatus(Option<crate::voice_state::Status>),
+    VoiceStatus(Option<crate::nanocodex2::voice_state::Status>),
     ShowAgentId(String),
-    VaultReview(crate::tui::vault::Review),
+    VaultReview(crate::nanocodex2::tui::vault::Review),
     VaultReceipt(String),
     SecureInputReceipt {
         request_id: String,
-        status: crate::tui::secure_input::Status,
+        status: crate::nanocodex2::tui::secure_input::Status,
     },
     Terminal(Event),
     PasteImage(String),
@@ -184,10 +184,12 @@ pub(crate) enum RootEvent {
     ShellFinished,
     TurnsCancelled,
     ForkReady,
+    /// Queue a steer for the running turn as if typed.
+    FeatureSteer(Submission),
     NewSessionFailed(String),
     ReviewBranchesLoaded {
         request_id: uuid::Uuid,
-        result: Result<Vec<crate::tui::review::Branch>, String>,
+        result: Result<Vec<crate::nanocodex2::tui::review::Branch>, String>,
     },
     SessionSearchResults {
         picker_id: u64,
@@ -284,11 +286,11 @@ impl RestoredSessionProjection {
             if observation.completed_tokens.is_some() {
                 self.context_tokens = observation.completed_tokens;
             }
-            if let Some(r) = crate::tui::secure_input::request(&record) {
+            if let Some(r) = crate::nanocodex2::tui::secure_input::request(&record) {
                 self.seen_vault_requests
                     .insert(format!("private:{}:{}", r.agent(), r.id()));
             }
-            if let Some((key, _)) = crate::tui::vault::request(&record) {
+            if let Some((key, _)) = crate::nanocodex2::tui::vault::request(&record) {
                 self.seen_vault_requests.insert(key);
             }
             let _ = self.transcript.update(TranscriptEvent::Record(record));
@@ -321,13 +323,13 @@ pub(crate) enum RootEffect {
     Bug(String),
     Screen,
     Zoom,
-    Voice(crate::voice::Command),
+    Voice(crate::nanocodex2::voice::Command),
     ShowAgentId,
-    Vault(crate::tui::vault::Command),
-    SecureInput(Option<crate::tui::secure_input::Request>),
-    Share(crate::tui::share::Command),
-    Sites(crate::tui::sites::Command),
-    ApproveVault(crate::tui::vault::Review),
+    Vault(crate::nanocodex2::tui::vault::Command),
+    SecureInput(Option<crate::nanocodex2::tui::secure_input::Request>),
+    Share(crate::nanocodex2::tui::share::Command),
+    Sites(crate::nanocodex2::tui::sites::Command),
+    ApproveVault(crate::nanocodex2::tui::vault::Review),
     Submit(Submission),
     Reflect(Submission),
     RunShell(String),
@@ -385,6 +387,8 @@ pub(crate) enum RootEffect {
         reasoning_mode: ReasoningMode,
     },
     SetModel(Model),
+    /// A command owned by a feature module.
+    Feature(crate::nanocodex2::tui::features::FeatureCommand),
     SetFastMode(bool),
     SetMaxSubagents(usize),
     SetTheme(ThemeMode),
@@ -398,7 +402,7 @@ pub(crate) enum RootEffect {
 }
 
 enum Overlay {
-    VaultReview(crate::tui::vault::Review),
+    VaultReview(crate::nanocodex2::tui::vault::Review),
     AgentId(String),
     VoiceOutput {
         text: String,
@@ -462,6 +466,7 @@ pub(crate) enum DraftReset {
 
 /// Owns layout and routing so future screen components do not widen the event loop.
 pub(crate) struct RootNode {
+    capabilities: crate::nanocodex2::tui::backend::Capabilities,
     transcript: Node<Transcript>,
     composer: Node<Composer>,
     model_catalog: Vec<nanocodex_managed::AvailableModel>,
@@ -471,7 +476,7 @@ pub(crate) struct RootNode {
     thread: ThreadState,
     key_confirmation: Option<KeyConfirmation>,
     notification: Option<Notification>,
-    voice_status: Option<crate::voice_state::Status>,
+    voice_status: Option<crate::nanocodex2::voice_state::Status>,
     discarded_draft: Option<ComposerDraft>,
     last_admitted_steer: Option<(QueueId, Submission)>,
     withdrawn_draft: Option<ComposerDraft>,
@@ -554,6 +559,7 @@ impl RootNode {
         let mut subagents = SubagentTree::new(thinking);
         subagents.set_workspace(workspace);
         Self {
+            capabilities: Default::default(),
             transcript: Node::new(transcript),
             model_catalog: Vec::new(),
             composer: Node::new(Composer::new(workspace, thinking)),
@@ -706,6 +712,7 @@ impl RootNode {
         root.set_max_subagents(self.subagents.max_subagents());
         root.thread = ThreadState::Started;
         root.fork_available = false;
+        root.set_capabilities(self.capabilities);
         root.side_pane = true;
         root.set_skills(Arc::clone(&self.skills));
         root.theme_mode = self.theme_mode;
@@ -795,7 +802,9 @@ impl RootNode {
         let max_subagents = self.subagents.max_subagents();
         let next_session_list = self.next_session_list;
         let model_catalog = std::mem::take(&mut self.model_catalog);
+        let capabilities = self.capabilities;
         *self = Self::new(workspace, thinking);
+        self.set_capabilities(capabilities);
         self.model_catalog = model_catalog;
         self.next_session_list = next_session_list;
         self.set_reasoning_modes(reasoning_mode, preferred_reasoning_mode);
@@ -979,6 +988,12 @@ impl RootNode {
         self.composer.component()
     }
 
+    /// A modal Claude request discards the stale composer draft
+    /// so input typed for the previous UI state can never answer it (legacy parity).
+    pub(crate) fn discard_feature_draft(&mut self) {
+        drop(self.composer.component_mut().take_draft());
+    }
+
     pub(crate) fn render_focused(
         &mut self,
         frame: &mut Frame<'_>,
@@ -1110,8 +1125,10 @@ impl RootNode {
                         &[("ctrl+enter", "approve"), ("esc", "cancel")],
                     )
                     .render(frame, area, theme);
-                    let lines =
-                        crate::tui::vault::review_lines(&review.description(), layout.body.width);
+                    let lines = crate::nanocodex2::tui::vault::review_lines(
+                        &review.description(),
+                        layout.body.width,
+                    );
                     review.visible = lines.len() <= usize::from(layout.body.height);
                     if review.visible {
                         frame.render_widget(Paragraph::new(lines.join("\n")), layout.body);
@@ -1309,8 +1326,9 @@ impl RootNode {
             if matches!(&event, Event::Key(key) if key.kind != KeyEventKind::Press) {
                 return ComponentUpdate::none();
             }
-            return self
-                .apply_settings_command(SettingsCommand::Voice(crate::voice::Command::ToggleMute));
+            return self.apply_settings_command(SettingsCommand::Voice(
+                crate::nanocodex2::voice::Command::ToggleMute,
+            ));
         }
         if matches!(event, Event::Resize(_, _)) {
             self.selection.clear();
@@ -1456,9 +1474,9 @@ impl RootNode {
                     let mut update = self
                         .update_composer(ComposerEvent::Terminal(event), RenderRequest::Immediate);
                     if !connecting && update.effects.iter().any(|effect| matches!(effect,
-                        RootEffect::Voice(crate::voice::Command::Start(_))
-                        | RootEffect::Voice(crate::voice::Command::Select(_))
-                        | RootEffect::Voice(crate::voice::Command::Toggle) if self.voice_status.is_none()))
+                        RootEffect::Voice(crate::nanocodex2::voice::Command::Start(_))
+                        | RootEffect::Voice(crate::nanocodex2::voice::Command::Select(_))
+                        | RootEffect::Voice(crate::nanocodex2::voice::Command::Toggle) if self.voice_status.is_none()))
                     {
                         self.reconnecting = Some(true);
                         update.render = update.render.max(self.reconnection_status("Reconnecting…").render);
@@ -1964,16 +1982,18 @@ impl RootNode {
                         if key.kind == KeyEventKind::Press && key.modifiers.is_empty() =>
                     {
                         match key.code {
-                            KeyCode::Esc => Some(crate::voice::Command::CloneCancel),
+                            KeyCode::Esc => Some(crate::nanocodex2::voice::Command::CloneCancel),
                             KeyCode::Char('r' | 'R') => {
-                                Some(crate::voice::Command::CloneRecord(None))
+                                Some(crate::nanocodex2::voice::Command::CloneRecord(None))
                             }
                             KeyCode::Char('s' | 'S' | ' ') => {
-                                Some(crate::voice::Command::CloneStop)
+                                Some(crate::nanocodex2::voice::Command::CloneStop)
                             }
-                            KeyCode::Char('p' | 'P') => Some(crate::voice::Command::ClonePlay),
+                            KeyCode::Char('p' | 'P') => {
+                                Some(crate::nanocodex2::voice::Command::ClonePlay)
+                            }
                             KeyCode::Char('u' | 'U') if consent_visible => {
-                                Some(crate::voice::Command::CloneSubmit)
+                                Some(crate::nanocodex2::voice::Command::CloneSubmit)
                             }
                             _ => None,
                         }
@@ -2199,17 +2219,40 @@ impl RootNode {
             .map(str::to_owned)
     }
 
+    pub(crate) fn set_capabilities(
+        &mut self,
+        capabilities: crate::nanocodex2::tui::backend::Capabilities,
+    ) {
+        self.capabilities = capabilities;
+        self.composer.component_mut().set_capabilities(capabilities);
+        self.refresh_actions();
+    }
+
+    fn supports_fast_mode(&self) -> bool {
+        let model = self.composer.component().model();
+        if self.capabilities.local {
+            model
+                .as_str()
+                .parse::<nanocodex::HarnessModel>()
+                .is_ok_and(nanocodex::HarnessModel::supports_fast_mode)
+        } else {
+            model.supports_fast_mode()
+        }
+    }
+
     fn action_availability(&self) -> ActionAvailability {
         ActionAvailability {
+            capabilities: self.capabilities,
             new_session: !self.has_active_turns()
                 && self.in_flight_shells == 0
                 && self.blocking_task.is_none()
                 && self.queue.component().is_empty(),
             fork: self.can_fork(),
             fast_mode: self.composer.component().fast_mode(),
-            fast_mode_available: self.composer.component().model().supports_fast_mode(),
-            effort: self.thread == ThreadState::New
-                || self.composer.component().model().supports_fast_mode(),
+            fast_mode_available: self.supports_fast_mode(),
+            effort: self.capabilities.local
+                || self.thread == ThreadState::New
+                || self.supports_fast_mode(),
             voice_input: self.composer.component().model().oai().is_some(),
             model: self.thread == ThreadState::New,
             auto_route: self.thread == ThreadState::New
@@ -2252,6 +2295,17 @@ impl RootNode {
                 )) => {}
                 Some(ActionsEffect::Submit(command))
                     if command.split_whitespace().next() == Some("/copy") => {}
+                // FEATURE-HOOK: wp2 the side thread collapses or splits from its own pane.
+                Some(ActionsEffect::Trigger(Action::LocalCommand("collapse" | "split"))) => {}
+                Some(ActionsEffect::Settings(SettingsCommand::Feature(
+                    crate::nanocodex2::tui::features::FeatureCommand::Collapse
+                    | crate::nanocodex2::tui::features::FeatureCommand::Split,
+                ))) => {}
+                Some(ActionsEffect::Submit(command))
+                    if matches!(
+                        command.split_whitespace().next(),
+                        Some("/collapse" | "/split")
+                    ) => {}
                 Some(_) => {
                     self.overlay = None;
                     self.notification = Some(Notification::plain("Use /btw for questions and /close to leave; other controls belong to the main thread".into(), Color::Yellow));
@@ -2263,6 +2317,9 @@ impl RootNode {
         match update.effects.into_iter().next() {
             Some(ActionsEffect::Dismiss) => self.overlay = None,
             Some(ActionsEffect::Submit(command)) => return self.submit_action_command(command),
+            Some(ActionsEffect::Trigger(Action::LocalCommand(command))) => {
+                return self.submit_action_command(format!("/{command}"));
+            }
             Some(ActionsEffect::Trigger(Action::Copy)) => {
                 self.overlay = None;
                 return self.copy_response("");
@@ -2295,8 +2352,9 @@ impl RootNode {
             }
             Some(ActionsEffect::Trigger(Action::Voice)) => {
                 self.overlay = None;
-                return self
-                    .apply_settings_command(SettingsCommand::Voice(crate::voice::Command::Toggle));
+                return self.apply_settings_command(SettingsCommand::Voice(
+                    crate::nanocodex2::voice::Command::Toggle,
+                ));
             }
             Some(ActionsEffect::Trigger(Action::Subagents)) => {
                 self.overlay = Some(Overlay::Subagents(SubagentOverlay::Tree));
@@ -2320,19 +2378,7 @@ impl RootNode {
             }
             Some(ActionsEffect::Trigger(Action::FastMode)) => {
                 self.overlay = None;
-                let enabled = !self.composer.component().fast_mode();
-                if enabled && !self.composer.component().model().supports_fast_mode() {
-                    self.notification = Some(Notification::plain(
-                        "Fast mode is unavailable for this model".into(),
-                        Color::Red,
-                    ));
-                    return ComponentUpdate::render(RenderRequest::Immediate);
-                }
-                self.set_fast_mode(enabled);
-                return ComponentUpdate {
-                    effects: vec![RootEffect::SetFastMode(enabled)],
-                    render: RenderRequest::Immediate,
-                };
+                return self.apply_settings_command(SettingsCommand::Fast(None));
             }
             Some(ActionsEffect::Trigger(Action::Theme)) => {
                 self.overlay = Some(Overlay::Theme(Node::new(ThemeSelector::new(
@@ -2347,7 +2393,9 @@ impl RootNode {
             }
             Some(ActionsEffect::Trigger(Action::Fork)) => return self.open_fork(),
             Some(ActionsEffect::Trigger(Action::Keybindings)) => {
-                self.overlay = Some(Overlay::Keybindings(Node::new(KeybindingsHelp::default())));
+                self.overlay = Some(Overlay::Keybindings(Node::new(KeybindingsHelp::new(
+                    self.capabilities,
+                ))));
             }
             Some(ActionsEffect::Trigger(Action::ReloadConfig)) => {
                 self.overlay = None;
@@ -2380,7 +2428,7 @@ impl RootNode {
             }
             Some(ActionsEffect::Trigger(Action::Review)) => {
                 self.overlay = None;
-                return self.apply_code_review(crate::tui::review::Command::Choose);
+                return self.apply_code_review(crate::nanocodex2::tui::review::Command::Choose);
             }
             Some(ActionsEffect::Trigger(Action::Handoff)) => {
                 self.overlay = None;
@@ -2460,8 +2508,7 @@ impl RootNode {
     }
 
     fn open_effort(&mut self) -> ComponentUpdate<RootEffect> {
-        if self.thread != ThreadState::New
-            && !self.composer.component().model().supports_fast_mode()
+        if !self.capabilities.local && self.thread != ThreadState::New && !self.supports_fast_mode()
         {
             self.notification = Some(Notification::plain(
                 "This model’s effort is fixed after the first prompt; start a new session".into(),
@@ -2832,7 +2879,8 @@ impl RootNode {
             if let Some(command) = command {
                 let starts_voice = matches!(
                     command,
-                    crate::voice::Command::Start(_) | crate::voice::Command::Select(_)
+                    crate::nanocodex2::voice::Command::Start(_)
+                        | crate::nanocodex2::voice::Command::Select(_)
                 );
                 let mut update = self.apply_settings_command(SettingsCommand::Voice(command));
                 if starts_voice && self.reconnecting == Some(false) {
@@ -2936,8 +2984,7 @@ impl RootNode {
     }
 
     fn apply_effort(&mut self, effort: ReasoningEffort, pro: bool) -> ComponentUpdate<RootEffect> {
-        if self.thread != ThreadState::New
-            && !self.composer.component().model().supports_fast_mode()
+        if !self.capabilities.local && self.thread != ThreadState::New && !self.supports_fast_mode()
         {
             self.notification = Some(Notification::plain(
                 "This model’s effort is fixed after the first prompt; start a new session".into(),
@@ -2967,7 +3014,15 @@ impl RootNode {
         } else {
             nanocodex::ReasoningMode::Standard
         };
-        if !model.supports_thinking(thinking) || !model.supports_reasoning_mode(mode) {
+        let supports_thinking = if self.capabilities.local {
+            model
+                .as_str()
+                .parse::<nanocodex::HarnessModel>()
+                .is_ok_and(|native| native.supports_thinking(thinking))
+        } else {
+            model.supports_thinking(thinking)
+        };
+        if !supports_thinking || !model.supports_reasoning_mode(mode) {
             self.notification = Some(Notification::plain(
                 "This model does not support the requested effort or Pro mode".into(),
                 Color::Red,
@@ -3025,8 +3080,18 @@ impl RootNode {
 
     fn apply_model(&mut self, model: Model) -> ComponentUpdate<RootEffect> {
         if !self.model_catalog.iter().any(|entry| entry.id == model) {
+            // Local Claude models are listed only once Claude is signed in.
+            let local_claude = self.capabilities.local
+                && model
+                    .as_str()
+                    .parse::<nanocodex::HarnessModel>()
+                    .is_ok_and(|native| native.family() == nanocodex::HarnessFamily::Claude);
             self.notification = Some(Notification::plain(
-                "Model is not available in the account catalog".into(),
+                if local_claude {
+                    "Claude is not signed in; run `nanocodex --claude auth login`".into()
+                } else {
+                    "Model is not available in the account catalog".into()
+                },
                 Color::Red,
             ));
             return ComponentUpdate::render(RenderRequest::Immediate);
@@ -3041,7 +3106,11 @@ impl RootNode {
         if model == self.composer.component().model() && !self.composer.component().auto_routing() {
             return ComponentUpdate::render(RenderRequest::Immediate);
         }
-        self.interactive = false;
+        // A local harness switch holds typed prompts in the driver until the
+        // selected harness is adopted, so its composer stays usable meanwhile.
+        if !self.capabilities.local {
+            self.interactive = false;
+        }
         let _ = self
             .composer
             .component_mut()
@@ -3277,35 +3346,35 @@ impl RootNode {
             },
             Some(ComposerEffect::SecureInput(command)) => {
                 let request = match &command {
-                    crate::tui::secure_input::Command::Select { agent, request } => {
+                    crate::nanocodex2::tui::secure_input::Command::Select { agent, request } => {
                         nanocodex_managed::NativeSecureInputRequest::selector(
                             request.clone(),
                             agent.clone(),
                         )
                         .ok()
-                        .map(crate::tui::secure_input::Request::Sudo)
+                        .map(crate::nanocodex2::tui::secure_input::Request::Sudo)
                     }
                     _ => self.transcript.component().secure_input_request(&command),
                 };
                 vec![RootEffect::SecureInput(request)]
             }
             Some(ComposerEffect::Vault(command)) => {
-                if command == crate::tui::vault::Command::Latest
-                    && let Some(r @ crate::tui::secure_input::Request::Private(_)) = self
-                        .transcript
-                        .component()
-                        .secure_input_request(&crate::tui::secure_input::Command::Latest)
+                if command == crate::nanocodex2::tui::vault::Command::Latest
+                    && let Some(r @ crate::nanocodex2::tui::secure_input::Request::Private(_)) =
+                        self.transcript.component().secure_input_request(
+                            &crate::nanocodex2::tui::secure_input::Command::Latest,
+                        )
                 {
                     return ComponentUpdate {
                         effects: vec![RootEffect::SecureInput(Some(r))],
                         render: RenderRequest::Immediate,
                     };
                 }
-                let command = if command == crate::tui::vault::Command::Latest {
+                let command = if command == crate::nanocodex2::tui::vault::Command::Latest {
                     self.transcript
                         .component()
                         .latest_vault_command()
-                        .unwrap_or(crate::tui::vault::Command::Help)
+                        .unwrap_or(crate::nanocodex2::tui::vault::Command::Help)
                 } else {
                     command
                 };
@@ -3394,10 +3463,24 @@ impl RootNode {
     }
 
     fn apply_settings_command(&mut self, command: SettingsCommand) -> ComponentUpdate<RootEffect> {
+        if !command.available(self.capabilities) {
+            self.notification = Some(Notification::plain(
+                self.capabilities.unavailable("This command"),
+                Color::Yellow,
+            ));
+            return ComponentUpdate::render(RenderRequest::Immediate);
+        }
         if self.side_pane
             && !matches!(
                 &command,
-                SettingsCommand::CloseBtw | SettingsCommand::Btw(_) | SettingsCommand::Zoom
+                SettingsCommand::CloseBtw
+                    | SettingsCommand::Btw(_)
+                    | SettingsCommand::Zoom
+                    // FEATURE-HOOK: wp2 the side thread collapses or splits from its own pane.
+                    | SettingsCommand::Feature(
+                        crate::nanocodex2::tui::features::FeatureCommand::Collapse
+                            | crate::nanocodex2::tui::features::FeatureCommand::Split
+                    )
             )
         {
             self.notification = Some(Notification::plain(
@@ -3407,6 +3490,25 @@ impl RootNode {
             return ComponentUpdate::render(RenderRequest::Immediate);
         }
         match command {
+            SettingsCommand::Cancel => ComponentUpdate {
+                effects: vec![RootEffect::CancelTurns],
+                render: RenderRequest::Immediate,
+            },
+            SettingsCommand::Fast(enabled) => {
+                let enabled = enabled.unwrap_or(!self.composer.component().fast_mode());
+                if enabled && !self.supports_fast_mode() {
+                    self.notification = Some(Notification::plain(
+                        "Fast mode is unavailable for this model".into(),
+                        Color::Red,
+                    ));
+                    return ComponentUpdate::render(RenderRequest::Immediate);
+                }
+                self.set_fast_mode(enabled);
+                ComponentUpdate {
+                    effects: vec![RootEffect::SetFastMode(enabled)],
+                    render: RenderRequest::Immediate,
+                }
+            }
             SettingsCommand::CodeReview(command) => self.apply_code_review(command),
             SettingsCommand::Btw(question) => {
                 if self.side_pane {
@@ -3486,14 +3588,16 @@ impl RootNode {
                 }],
                 render: RenderRequest::Immediate,
             },
-            SettingsCommand::Voice(crate::voice::Command::Toggle | crate::voice::Command::List) => {
+            SettingsCommand::Voice(
+                crate::nanocodex2::voice::Command::Toggle | crate::nanocodex2::voice::Command::List,
+            ) => {
                 self.overlay = Some(Overlay::VoiceMenu(Node::new(
                     super::voice_menu::VoiceMenu::new(self.voice_status.is_some()),
                 )));
                 ComponentUpdate::render(RenderRequest::Immediate)
             }
-            SettingsCommand::Voice(crate::voice::Command::ListProvider(
-                crate::voice::Provider::Chatgpt,
+            SettingsCommand::Voice(crate::nanocodex2::voice::Command::ListProvider(
+                crate::nanocodex2::voice::Provider::Chatgpt,
             )) => {
                 self.overlay = Some(Overlay::VoiceMenu(Node::new(
                     super::voice_menu::VoiceMenu::chatgpt(),
@@ -3518,6 +3622,10 @@ impl RootNode {
             }
             SettingsCommand::OpenModel => self.open_model(),
             SettingsCommand::SetModel(model) => self.apply_model(model),
+            SettingsCommand::Feature(command) => ComponentUpdate {
+                effects: vec![RootEffect::Feature(command)],
+                render: RenderRequest::Immediate,
+            },
             SettingsCommand::Invalid(message) => {
                 self.notification = Some(Notification::plain(message, Color::Red));
                 ComponentUpdate::render(RenderRequest::Immediate)
@@ -3527,9 +3635,9 @@ impl RootNode {
 
     fn apply_code_review(
         &mut self,
-        command: crate::tui::review::Command,
+        command: crate::nanocodex2::tui::review::Command,
     ) -> ComponentUpdate<RootEffect> {
-        use crate::tui::review::Command;
+        use crate::nanocodex2::tui::review::Command;
         if let Command::Invalid(message) = command {
             self.notification = Some(Notification::plain(message, Color::Red));
             return ComponentUpdate::render(RenderRequest::Immediate);
@@ -3579,7 +3687,7 @@ impl RootNode {
         match update.effects.into_iter().next() {
             Some(CodeReviewEffect::Run(target)) => {
                 self.overlay = None;
-                self.apply_code_review(crate::tui::review::Command::Run(target))
+                self.apply_code_review(crate::nanocodex2::tui::review::Command::Run(target))
             }
             Some(CodeReviewEffect::LoadBranches(request_id)) => ComponentUpdate {
                 effects: vec![RootEffect::LoadReviewBranches {
@@ -4047,7 +4155,7 @@ impl RootNode {
         }
     }
 
-    const fn has_active_turns(&self) -> bool {
+    pub(crate) const fn has_active_turns(&self) -> bool {
         self.in_flight_turns > 0 || self.managed_active_turns > 0
     }
 
@@ -4255,10 +4363,10 @@ impl RootNode {
                 .component_mut()
                 .replace(self.context_diagnostics.clone());
         }
-        let private = crate::tui::secure_input::request(&record);
+        let private = crate::nanocodex2::tui::secure_input::request(&record);
         // A recognized private intake exclusively owns this request, including echoes.
         let vault = if private.is_none() {
-            crate::tui::vault::request(&record)
+            crate::nanocodex2::tui::vault::request(&record)
         } else {
             None
         };
@@ -4504,6 +4612,13 @@ impl Component for RootNode {
             }
             RootEvent::TurnsCancelled => self.turns_cancelled(),
             RootEvent::ForkReady => self.fork_ready(),
+            RootEvent::FeatureSteer(prompt) => {
+                let (id, prompt) = self.queue.component_mut().begin_steer(prompt);
+                ComponentUpdate {
+                    effects: vec![RootEffect::Steer { id, prompt }],
+                    render: RenderRequest::Immediate,
+                }
+            }
             RootEvent::NewSessionFailed(message) => self.new_session_failed(message),
             RootEvent::ReviewBranchesLoaded { request_id, result } => {
                 if let Some(Overlay::CodeReview(selector)) = &mut self.overlay {
@@ -4783,7 +4898,7 @@ fn recent_prompt(record: &TranscriptRecord) -> Option<RecentPromptDraft> {
     }
     let prompt = record.decode_payload::<UserPrompt>().ok()?;
     Some(RecentPromptDraft {
-        text: crate::tui::vault::receipt_summary(&prompt.text).unwrap_or(prompt.text),
+        text: crate::nanocodex2::tui::vault::receipt_summary(&prompt.text).unwrap_or(prompt.text),
         recorded_at_unix_ms: record.recorded_at_unix_ms(),
     })
 }
@@ -5074,8 +5189,8 @@ fn is_plain_key(event: &Event, character: char) -> bool {
 #[cfg(test)]
 mod history_tests {
     use super::{Component, Overlay, RootEffect, RootEvent, RootNode};
-    use crate::config::ReasoningEffort;
-    use crate::tui::{
+    use crate::nanocodex2::config::ReasoningEffort;
+    use crate::nanocodex2::tui::{
         theme::Theme,
         transcript::{LocalEvent, TranscriptRecord, TurnId},
     };
@@ -5086,11 +5201,13 @@ mod history_tests {
     #[test]
     fn voice_clone_upload_requires_visible_consent() {
         let mut root = RootNode::new(std::path::Path::new("/workspace"), ReasoningEffort::Medium);
-        let panel = crate::tui::voice_clone::Panel::new("Synthetic voice".into());
-        root.update(RootEvent::VoiceStatus(Some(crate::voice_state::Status {
-            text: panel.text(),
-            ..Default::default()
-        })));
+        let panel = crate::nanocodex2::tui::voice_clone::Panel::new("Synthetic voice".into());
+        root.update(RootEvent::VoiceStatus(Some(
+            crate::nanocodex2::voice_state::Status {
+                text: panel.text(),
+                ..Default::default()
+            },
+        )));
         for (width, height, allowed) in [(40, 10, false), (80, 24, true), (120, 35, true)] {
             let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
             terminal
@@ -5103,7 +5220,9 @@ mod history_tests {
             assert_eq!(
                 matches!(
                     update.effects.as_slice(),
-                    [RootEffect::Voice(crate::voice::Command::CloneSubmit)]
+                    [RootEffect::Voice(
+                        crate::nanocodex2::voice::Command::CloneSubmit
+                    )]
                 ),
                 allowed
             );
@@ -5113,13 +5232,13 @@ mod history_tests {
     #[test]
     fn clone_script_scroll_survives_ticks_and_escape_cancels() {
         let mut root = RootNode::new(std::path::Path::new("/workspace"), ReasoningEffort::Medium);
-        let panel = crate::tui::voice_clone::Panel::new("Synthetic voice".into());
+        let panel = crate::nanocodex2::tui::voice_clone::Panel::new("Synthetic voice".into());
         let text = format!(
             "{}\n● RECORDING  00:30 / 02:00   mic [▮▮··········]",
             panel.text()
         );
         let tick = |text: String| {
-            RootEvent::VoiceStatus(Some(crate::voice_state::Status {
+            RootEvent::VoiceStatus(Some(crate::nanocodex2::voice_state::Status {
                 text,
                 ..Default::default()
             }))
@@ -5170,7 +5289,9 @@ mod history_tests {
         ))));
         assert!(matches!(
             cancel.effects.as_slice(),
-            [RootEffect::Voice(crate::voice::Command::CloneCancel)]
+            [RootEffect::Voice(
+                crate::nanocodex2::voice::Command::CloneCancel
+            )]
         ));
         root.update(tick(
             "Voice clone: Synthetic voice\nRecording stopped".into(),
@@ -5184,12 +5305,14 @@ mod history_tests {
     #[test]
     fn clone_diagnostics_remain_visible_when_consent_does_not_fit() {
         let mut root = RootNode::new(std::path::Path::new("/workspace"), ReasoningEffort::Medium);
-        let mut panel = crate::tui::voice_clone::Panel::new("Synthetic voice".into());
+        let mut panel = crate::nanocodex2::tui::voice_clone::Panel::new("Synthetic voice".into());
         panel.error = Some(format!("Microphone failed: {}", "diagnostic ".repeat(30)));
-        root.update(RootEvent::VoiceStatus(Some(crate::voice_state::Status {
-            text: panel.text(),
-            ..Default::default()
-        })));
+        root.update(RootEvent::VoiceStatus(Some(
+            crate::nanocodex2::voice_state::Status {
+                text: panel.text(),
+                ..Default::default()
+            },
+        )));
         for (width, height) in [(40, 10), (100, 30)] {
             let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
             terminal
@@ -5261,7 +5384,7 @@ mod history_tests {
 
     #[test]
     fn live_voice_is_inline_and_mute_preserves_the_draft() {
-        use crate::voice_state::{Phase, Status};
+        use crate::nanocodex2::voice_state::{Phase, Status};
         let mut root = RootNode::new(std::path::Path::new("/workspace"), ReasoningEffort::Medium);
         root.composer
             .component_mut()
@@ -5277,7 +5400,7 @@ mod history_tests {
             let record = TranscriptRecord::from_local(
                 sequence,
                 0,
-                LocalEvent::VoiceTranscript(crate::voice_state::Transcript {
+                LocalEvent::VoiceTranscript(crate::nanocodex2::voice_state::Transcript {
                     session: "call".into(),
                     speaker: speaker.into(),
                     id: 0,
@@ -5315,7 +5438,9 @@ mod history_tests {
         let update = root.update(RootEvent::Terminal(Event::Key(key)));
         assert!(matches!(
             update.effects.as_slice(),
-            [RootEffect::Voice(crate::voice::Command::ToggleMute)]
+            [RootEffect::Voice(
+                crate::nanocodex2::voice::Command::ToggleMute
+            )]
         ));
         let mut repeated = key;
         repeated.kind = crossterm::event::KeyEventKind::Repeat;
@@ -5415,8 +5540,8 @@ mod history_tests {
 #[cfg(test)]
 mod live_control_tests {
     use super::{Component, RootEffect, RootEvent, RootNode};
-    use crate::config::{ReasoningEffort, ReasoningMode};
-    use crate::tui::transcript::{LocalEvent, TranscriptRecord, TurnId};
+    use crate::nanocodex2::config::{ReasoningEffort, ReasoningMode};
+    use crate::nanocodex2::tui::transcript::{LocalEvent, TranscriptRecord, TurnId};
     use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
     use nanocodex::agent::events::{AgentEvent, AgentEventKind};
     use nanocodex_managed::ManagedModel as Model;
@@ -5566,8 +5691,8 @@ mod live_control_tests {
         }
     }
 
-    fn vault_review() -> crate::tui::vault::Review {
-        crate::tui::vault::Review {
+    fn vault_review() -> crate::nanocodex2::tui::vault::Review {
+        crate::nanocodex2::tui::vault::Review {
             login: nanocodex_managed::VaultLogin {
                 id: "abcdefghijklmnopqrstuv".into(),
                 name: "Verified login".into(),
@@ -5600,7 +5725,7 @@ mod live_control_tests {
                 root.render_focused(
                     frame,
                     frame.area(),
-                    &crate::tui::theme::Theme::default(),
+                    &crate::nanocodex2::tui::theme::Theme::default(),
                     true,
                 )
             })
@@ -5662,7 +5787,9 @@ mod live_control_tests {
             root.update(RootEvent::Transcript(direct.clone()))
                 .effects
                 .as_slice(),
-            [RootEffect::Vault(crate::tui::vault::Command::Review { .. })]
+            [RootEffect::Vault(
+                crate::nanocodex2::tui::vault::Command::Review { .. }
+            )]
         ));
         assert!(
             root.update(RootEvent::Transcript(echo.clone()))
@@ -5693,7 +5820,7 @@ mod live_control_tests {
                 .effects
                 .as_slice(),
             [RootEffect::SecureInput(Some(
-                crate::tui::secure_input::Request::Private(_)
+                crate::nanocodex2::tui::secure_input::Request::Private(_)
             ))]
         ));
         let private_hint = json!({"type":"browser_login","status":"input_required",
@@ -5710,7 +5837,7 @@ mod live_control_tests {
                 .effects
                 .as_slice(),
             [RootEffect::SecureInput(Some(
-                crate::tui::secure_input::Request::Private(_)
+                crate::nanocodex2::tui::secure_input::Request::Private(_)
             ))]
         ));
         assert!(
@@ -5790,7 +5917,7 @@ mod live_control_tests {
                     root.render_focused(
                         frame,
                         frame.area(),
-                        &crate::tui::theme::Theme::default(),
+                        &crate::nanocodex2::tui::theme::Theme::default(),
                         true,
                     )
                 })
@@ -5884,7 +6011,7 @@ mod live_control_tests {
                 root.render_focused(
                     frame,
                     frame.area(),
-                    &crate::tui::theme::Theme::default(),
+                    &crate::nanocodex2::tui::theme::Theme::default(),
                     true,
                 )
             })
@@ -6394,7 +6521,7 @@ mod live_control_tests {
 
     #[test]
     fn unknown_image_steering_supports_explicit_edit_retry_and_cancellation() {
-        use crate::tui::Submission;
+        use crate::nanocodex2::tui::Submission;
         use nanocodex::agent::input::{PromptInput, UserInput};
         for save in [false, true] {
             let mut root = root_with_draft("preserved draft ");
@@ -6677,7 +6804,7 @@ mod live_control_tests {
 
     #[test]
     fn open_actions_menu_tracks_current_activity() {
-        use crate::tui::theme::Theme;
+        use crate::nanocodex2::tui::theme::Theme;
         use ratatui::{Terminal, backend::TestBackend};
         for starts_active in [false, true] {
             let mut root = root_with_draft("");
@@ -6751,7 +6878,7 @@ mod live_control_tests {
 
     #[test]
     fn resuming_a_session_keeps_input_paused_during_background_updates() {
-        use crate::tui::{session::SessionSummary, theme::Theme};
+        use crate::nanocodex2::tui::{session::SessionSummary, theme::Theme};
         use ratatui::{Terminal, backend::TestBackend};
         for outcome in ["failure", "success", "escape", "control-c"] {
             let mut root = root_with_draft("preserve the old draft");
@@ -6855,7 +6982,7 @@ mod live_control_tests {
 
     #[test]
     fn dragging_below_the_draft_finishes_copy_and_releases_the_composer() {
-        use crate::tui::theme::Theme;
+        use crate::nanocodex2::tui::theme::Theme;
         use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
         use ratatui::{Terminal, backend::TestBackend};
         for (beyond_area, clear) in [(false, false), (true, false), (false, true), (true, true)] {
@@ -7040,7 +7167,7 @@ mod live_control_tests {
 
     #[test]
     fn loading_callbacks_restore_current_activity_without_losing_drafts() {
-        use crate::tui::theme::Theme;
+        use crate::nanocodex2::tui::theme::Theme;
         use ratatui::{Terminal, backend::TestBackend};
 
         // Prompt lookup now has request/cancellation state and is covered by
@@ -7114,7 +7241,7 @@ mod live_control_tests {
 
     #[test]
     fn history_and_settings_updates_preserve_the_connection_status() {
-        use crate::tui::theme::Theme;
+        use crate::nanocodex2::tui::theme::Theme;
         use ratatui::{Terminal, backend::TestBackend};
 
         for failed in [false, true] {

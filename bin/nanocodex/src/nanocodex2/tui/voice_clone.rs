@@ -1,5 +1,5 @@
 //! Local-only recording ownership. Dropping a task or state drops its audio resources.
-use crate::voice_recording::{RecordedSample, Recorder};
+use crate::nanocodex2::voice_recording::{RecordedSample, Recorder};
 use tokio::task::JoinSet;
 
 pub(super) enum State {

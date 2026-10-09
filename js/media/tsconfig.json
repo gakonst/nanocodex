@@ -1,5 +1,7 @@
 {
   "compilerOptions": {
+    "incremental": true,
+    "tsBuildInfoFile": "node_modules/.cache/typecheck.tsbuildinfo",
     "lib": ["ESNext"],
     "module": "ESNext",
     "moduleResolution": "Bundler",

@@ -88,6 +88,7 @@ Messages backend and returns the same Agent as a Codex session: identical
 contract, and the same durability store. `Claude.create` is the equivalent
 constructor for the Claude-only `worker` entry point. Claude sessions take
 explicit host-owned auth and a Claude tool array.
+Host tools can share the `exec_command` and `write_stdin` contracts with Codex.
 It does not silently switch managed providers, install Codex tools, or supply
 a subscription sign-in screen. Managed account connection is documented in the
 [managed Claude guide](../../docs/CLAUDE_MANAGED.md). See the [Claude JavaScript guide](../../docs/CLAUDE_JAVASCRIPT.md)
@@ -1681,3 +1682,21 @@ for ordinary Connections/Vault URLs, or
 OAuth, Cloudflare, MCP, model sign-in, Vault/SSH management, and captured-card
 save/balance methods share the account REST contracts. See the
 [REST, JavaScript and Rust guide](../../docs/STANDALONE_SERVICES.md#account-management-and-browser-links).
+
+## Building the WASM package
+
+The repository build caches the locked Rust inputs and generated bindings. An
+unchanged build verifies its source attestation and reuses those outputs.
+Node, browser, and Web API bindings are generated concurrently.
+
+Release optimization prefers a checksum-pinned native Binaryen 132 download
+on Linux and macOS (x64 and ARM64), cached outside the checkout. If native
+Binaryen is unavailable, the build reports the reason and uses the pinned npm
+optimizer. Set `NANOCODEX_BINARYEN_CACHE` to relocate that cache or
+`NANOCODEX_WASM_OPT` to select a compatible local executable. Native
+optimization defaults to three workers; `BINARYEN_CORES` overrides that
+limit. `CARGO_BUILD_JOBS` controls Rust compilation independently.
+
+Use a separate `CARGO_TARGET_DIR` for concurrently changing worktrees.
+Production deployment still requires a clean checkout and a WASM attestation
+matching the deployed revision; cached outputs do not bypass that check.

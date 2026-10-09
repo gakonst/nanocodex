@@ -1,7 +1,7 @@
 //! Self-contained review snapshots. Never resolve a finding against the live workspace.
 use super::diff::{self, DiffLine, DiffLineKind};
 use super::markdown::{sanitize, wrap_plain};
-use crate::tui::theme::Theme;
+use crate::nanocodex2::tui::theme::Theme;
 use ratatui::{
     style::{Modifier, Style},
     text::{Line, Span},
@@ -118,8 +118,8 @@ pub(super) fn render(source: &str, width: u16, theme: &Theme) -> Option<Vec<Line
                 } else {
                     prose(&mut out, &hunk.label, inner, bordered, theme, false);
                 }
-                let mut old = HighlightLines::new(syntax, &syntax_theme);
-                let mut new = HighlightLines::new(syntax, &syntax_theme);
+                let mut old = HighlightLines::new(syntax, syntax_theme);
+                let mut new = HighlightLines::new(syntax, syntax_theme);
                 for line in hunk.lines {
                     let marked = finding.anchored(&line);
                     let spans =

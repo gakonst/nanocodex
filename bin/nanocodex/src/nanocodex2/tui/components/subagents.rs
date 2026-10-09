@@ -11,7 +11,7 @@ use super::{
     },
     transcript::{Transcript, TranscriptEvent},
 };
-use crate::{
+use crate::nanocodex2::{
     config::DEFAULT_MAX_SUBAGENTS,
     tui::{format::sanitize_terminal_text_inline, theme::Theme, transcript::TranscriptRecord},
 };
@@ -137,14 +137,14 @@ pub(super) struct SubagentTree {
     remembered_children: HashMap<AgentId, AgentId>,
     camera: Camera,
     filter: AgentFilter,
-    effort: crate::config::ReasoningEffort,
+    effort: crate::nanocodex2::config::ReasoningEffort,
     max_subagents: usize,
     workspace: std::path::PathBuf,
     pending_spawns: HashMap<String, (Value, Option<AgentId>)>,
 }
 
 impl SubagentTree {
-    pub(super) fn new(effort: crate::config::ReasoningEffort) -> Self {
+    pub(super) fn new(effort: crate::nanocodex2::config::ReasoningEffort) -> Self {
         Self {
             nodes: Vec::new(),
             focused: None,
@@ -431,7 +431,7 @@ impl SubagentTree {
             .count()
     }
 
-    pub(super) fn set_effort(&mut self, effort: crate::config::ReasoningEffort) {
+    pub(super) fn set_effort(&mut self, effort: crate::nanocodex2::config::ReasoningEffort) {
         self.effort = effort;
         for node in &mut self.nodes {
             node.transcript.component_mut().set_effort(effort);

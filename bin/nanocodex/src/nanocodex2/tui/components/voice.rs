@@ -1,5 +1,5 @@
 //! Composer voice strip, following the original Nanocodex and Codex TUI controls.
-use crate::voice_state::{Phase, Status};
+use crate::nanocodex2::voice_state::{Phase, Status};
 use ratatui::{
     Frame,
     layout::Rect,

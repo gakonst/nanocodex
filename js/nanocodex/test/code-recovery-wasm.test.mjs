@@ -291,7 +291,7 @@ text(settled.map(r => r.status === 'fulfilled' ? {status:r.status,undefined:r.va
  : {status:r.status,undefined:r.reason === undefined,code:r.reason && r.reason.code,name:r.reason && r.reason.name,details:r.reason && r.reason.details}));
 await tools.effect({kind:'poison'});`, expected: [JSON.stringify([{status:'fulfilled',undefined:true},{status:'rejected',undefined:true},
   {status:'rejected',undefined:false,code:'RAW'}, {status:'rejected',undefined:false,code:'TYPED',name:'Error',details:{retry:false}},
-  {status:'rejected',undefined:false,code:'FAILED_RESULT'}])] }));
+  {status:'rejected',undefined:false,code:'FAILED_RESULT',name:'Error'}])] }));
 test('owned SDK: oversized post-effect receipt leaves original intent unknown and never redispatches',
   { timeout: 30000 }, t => journey(t, { label: 'oversized', oversized: true, source: `try { text(await tools.effect({kind:'huge'})); } catch (error) { await tools.effect({kind:'retry'}); }` }));
 

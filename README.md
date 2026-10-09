@@ -119,6 +119,23 @@ curl -fsSL https://nanocodex.paradigm.xyz | bash
 nanocodex
 ```
 
+Nanocodex installs two native binaries by role: the `nanocodex` CLI and the
+`nanocodex-hand` daemon (installed under its service name `nanocodex2`). The CLI
+is exposed as `nanocodex`, `nc`, and `ncl` under `~/.nanocodex/bin`; the name
+selects the command tree. Both trees open the same terminal UI over a different
+backend. `nanocodex`, `nc`, and `nanocodex2` run the managed agent (bare = the
+TUI on a durable managed agent; `run`, `login`, `status`, `logout`, and `auth` are the managed
+account commands). `ncl`, or `nanocodex --local`, runs the local agent: bare =
+the TUI on a local non-durable agent, `ncl run` is the local headless JSONL run (exit code
+75 means retryable), and `ncl auth` signs in to the harness provider
+subscription. Nanocodex Connect is `nanocodex connect login|status|logout`
+(`ncl login|status|logout` also manage Connect). `nanocodex hand` with no
+subcommand serves the Hand by running the installed `nanocodex-hand`; `install`, `connect`, `menu-bar`, `menu-status`,
+`status`, `keep-awake`, `start`, `stop`, `restart`, `recover`, and
+`permissions` manage it. Commands that exist in only one tree, such as
+`update`, `install`, `setup`, `computer`, `cookies`, and `eval`, work under
+every name.
+
 Nix users can run or install the package directly on x86-64 Linux and Apple
 Silicon macOS:
 
@@ -155,15 +172,15 @@ nanocodex
 ```
 
 On macOS and Linux, the installer prepares the persistent Hand before sign-in,
-even without an interactive terminal. Sign in once with `nanocodex account login`
-or `nanocodex2 login`; the Hand connects automatically using that saved login.
+even without an interactive terminal. Sign in once with `nanocodex login`;
+the Hand connects automatically using that saved login.
 There is no separate Hand setup command. An existing service keeps its account
 configuration. Desktop components prepare in the background while you use
 Nanocodex. Linux preparation requires sudo and runs component installation in a
 root-owned systemd oneshot; the Hand itself runs as a non-root user.
 `--no-setup` explicitly opts out of automatic preparation.
 
-`nanocodex2`, `run`, and `attach` use this persistent computer Hand. Opening a
+`nanocodex`, `nanocodex run`, and `nanocodex attach` use this persistent computer Hand. Opening a
 terminal or changing projects does not publish another Hand or reconnect its
 tools. Closing a terminal releases only that client's local lease; the service
 and its processes remain available. The current directory travels as descriptive
@@ -207,7 +224,7 @@ process protocol that applications must adopt. See
 [`bin/nanocodex`](bin/nanocodex), the [examples index](examples/README.md), and
 the [release switcher documentation](bin/nanocodex/src/update.rs).
 
-For local checkout development, build with `cargo build -p nanocodex-bin -p nanocodex2-bin`
+For local checkout development, build with `cargo build -p nanocodex-bin --bins`
 and run `./target/debug/nanocodex`. See [local macOS development](docs/architecture/hands.md#local-macos-development)
 for signing and restarting the existing Hand directly from `target/debug` or
 `target/release`.
@@ -216,7 +233,7 @@ To install a branch or an open pull request from source, run
 `nanocodex update --branch master` or `nanocodex update --pr 123`. Both commands fetch the selected
 revision and compile the CLI and Hand locally with Cargo. PR selection also
 requires `gh`. The updater reuses its checkout and Cargo cache under
-`~/.nanocodex/source-build`, builds both binaries together, and uses the optimized
+`~/.nanocodex/source-build`, builds the CLI and Hand together, and uses the optimized
 `nightly` profile without release LTO. Cargo timing reports are saved under
 `~/.nanocodex/source-build/target/cargo-timings` (or your `CARGO_TARGET_DIR`).
 These source builds do not package the native voice runtime.
@@ -228,12 +245,12 @@ running Hand's permissions, advances through missing permissions, and restarts
 it when both are allowed. Use `nanocodex hand permissions --check --json` for
 read-only status. The menu companion offers **Allow Screen & Input Permissions…**.
 
-For managed agents, `nanocodex2 login` signs in with an SMS code and saves an
-account key; `nanocodex2 status` verifies it, and `nanocodex2 logout` removes the
-local login. `nanocodex account login/status/logout` manages the same saved account. Account
-keys are separate from `nanocodex auth` (ChatGPT provider credentials) and
-`nanocodex login/connect/status/logout` (Connect installation grants). See the
-[CLI account sign-in guide](bin/nanocodex/nanocodex2/README.md#account-sign-in)
+For managed agents, `nanocodex login` signs in with an SMS code and saves an
+account key; `nanocodex status` verifies it, and `nanocodex logout` removes the
+local login. `nanocodex auth` (alias `account`) manages the same saved account. Account
+keys are separate from `ncl auth` (ChatGPT provider credentials) and
+`nanocodex connect login|status|logout` (Connect installation grants). See the
+[CLI account sign-in guide](bin/nanocodex/README.md#account-sign-in)
 for environment overrides, storage, and key revocation.
 
 To use Nanocodex capabilities from Codex, Claude, or another MCP client,
@@ -273,8 +290,8 @@ To test a specific connected account, pin a new session using its `account_id`
 from the connector status (`chatgpt.accounts`):
 
 ```sh
-nanocodex2 new --chatgpt-account <account-id>
-nanocodex2 run --chatgpt-account <account-id> "Reply with hello"
+nanocodex new --chatgpt-account <account-id>
+nanocodex run --chatgpt-account <account-id> "Reply with hello"
 ```
 
 The pin stays with the session across reconnects and resumes. Pinned sessions
@@ -319,7 +336,7 @@ setup can prompt for your administrator password; SSH enrollment uses your
 existing SSH keys/configuration and requires passwordless sudo.
 
 The client verifies the release checksum, uploads only the native Rust
-`nanocodex2` binary, and passes the account credential privately over stdin.
+`nanocodex-hand` daemon (as `nanocodex2`), and passes the account credential privately over stdin.
 The binary installs itself and waits for both Hand registration and its screen
 catalog; no Python, Bash installer, or remote interactive login is involved.
 `nanocodex-hand.service` starts at boot and reconnects independently of SSH.
@@ -348,8 +365,9 @@ now** selected, then enter the account phone number and six-digit SMS code.
 The current per-user installer and subsequent updates do not require
 administrator access.
 
-The installer ships the same `nanocodex` and `nanocodex2` Rust binaries as the
-other platforms. The shared guided setup provisions OpenAI’s official
+The installer ships the same Rust binaries as the other platforms:
+`nanocodex.exe` (the CLI), `nanocodex2.exe` (the Hand daemon), and `nc.cmd` and
+`ncl.cmd` (`nanocodex --local`) shims. The shared guided setup provisions OpenAI’s official
 computer-use runtime, uses the shared per-user account login, and has Rust
 register a hidden interactive startup task with failure recovery. Running in
 the signed-in session is deliberate: capture, UI Automation, and input cannot
@@ -360,14 +378,14 @@ instructions, and the real Notepad control smoke test.
 
 ## Native CLI harnesses
 
-`nanocodex --claude` starts the native Claude Messages agent with OMP-style
+`ncl --claude` starts the native Claude Messages agent with OMP-style
 subscription authentication. Sign in once, then select a model within that family:
 
 ```sh
-nanocodex --claude auth login
-nanocodex --claude --model sonnet
-nanocodex run "inspect the repository" --harness claude --model opus
-nanocodex run "inspect the repository" --harness codex --model sol
+ncl --claude auth login
+ncl --claude --model sonnet
+ncl run "inspect the repository" --harness claude --model opus
+ncl run "inspect the repository" --harness codex --model sol
 ```
 
 In the interactive local CLI, `/model` lists both Codex and Claude models before
@@ -376,7 +394,7 @@ the first prompt. Select one from the picker, or enter `/model sonnet`, `/model 
 native harness with that family's credentials and default reasoning settings.
 The model is fixed once the thread starts; start a new thread to use another model.
 
-Use `nanocodex --claude auth status` or `nanocodex --claude auth logout` to manage
+Use `ncl --claude auth status` or `ncl --claude auth logout` to manage
 that subscription.
 Claude roots and Claude children share its token-refresh manager, including when
 the root uses Codex. `ANTHROPIC_API_KEY` or `--claude-api-key` explicitly selects
@@ -440,7 +458,7 @@ snapshots, see [`examples/lifecycle.rs`](examples/lifecycle.rs),
 [`examples/resume.rs`](examples/resume.rs).
 
 Nanocodex supports OpenAI `gpt-6.1-sol`, `gpt-6-luna`, and
-`gpt-6-astra`. New native CLI and managed `nanocodex2` conversations default to Sol with
+`gpt-6-astra`. New local (`ncl`) and managed (`nanocodex`) conversations default to Sol with
 xhigh reasoning and fast mode enabled. SDK and account-app conversations default to Astra. Sponsored homepage sessions use Luna. Astra
 requires at least low reasoning. Nanocodex owns the typed Responses WebSocket behavior for this closed
 model family. An API-key gateway may prefix the on-wire model identifier with
@@ -583,7 +601,7 @@ Both native runtimes share the canonical subagent tools and discovered CUA
 provider. See the [tool catalogs and Claude Code Mode usage](docs/TOOL_RUNTIMES.md).
 
 MCP is part of the native tools crate rather than a separate agent runtime.
-The `nanocodex` CLI and Cloudflare managed agents (including `nanocodex2`
+The local `ncl` agent and Cloudflare managed agents (including `nanocodex`
 conversations) include [Mercator](https://mercator.sh/setup.md) discovery at
 `https://mercator.sh/mcp` in their default MCP catalog. Discover its tools with
 `tool_search`; free discovery alone does not authorize a paid job. Native
@@ -757,7 +775,7 @@ tools. Read their exact contracts and bounds in
 
 ### Bring any terminal or product interface
 
-To attach to a running `nanocodex` or `nanocodex2` TUI, use
+To attach to a running `nanocodex` or `ncl` TUI, use
 `tui list --json` and `tui connect INSTANCE_UUID --stdio`. The
 [rich terminal protocol](docs/RICH_TERMINAL_INTEGRATION.md) provides authenticated
 local/SSH control, replayable events, draft-preserving commands, and UI state.
@@ -869,7 +887,7 @@ The CLI can exercise the same boundary:
 
 ```sh
 just build-vm-guest
-nanocodex run "inspect the repository" \
+ncl run "inspect the repository" \
   --vm .nanocodex/vm/session-rootfs.ext4 \
   --vm-guest-runtime target/aarch64-unknown-linux-musl/debug/nanocodex-vm-guest \
   --vm-workspace /app
@@ -892,7 +910,7 @@ Realtime boundary reads and writes raw 24 kHz mono PCM16, so other applications
 can own capture, codecs, sockets, or playback:
 
 ```sh
-nanocodex auth login
+ncl auth login
 cargo run -p nanocodex-examples --bin voice
 cargo run -p nanocodex-examples --bin realtime-pipe \
   < microphone.pcm > speaker.pcm

@@ -291,7 +291,9 @@ fn restart_arguments(
 }
 
 fn attach_origin(argument: &str) -> Option<String> {
-    crate::parse_agent_reference(argument).ok()?.managed_origin
+    crate::nanocodex2::parse_agent_reference(argument)
+        .ok()?
+        .managed_origin
 }
 
 fn agent_reference(agent_id: &str, managed_origin: Option<&str>) -> String {

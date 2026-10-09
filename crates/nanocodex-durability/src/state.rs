@@ -98,6 +98,24 @@ impl EncodedPayload {
         })
     }
 
+    /// Addresses caller-encoded JSON by its content, without re-encoding it.
+    pub(crate) fn from_json(json: Arc<str>) -> Self {
+        Self {
+            key: record_key(&json).into(),
+            content: Some(json),
+            pending: Vec::new(),
+        }
+    }
+
+    /// References a stored record whose content is loaded on demand.
+    pub(crate) fn by_key(key: &str) -> Self {
+        Self {
+            key: key.into(),
+            content: None,
+            pending: Vec::new(),
+        }
+    }
+
     /// Decodes a payload loaded by its durable session.
     pub fn decode<T: DeserializeOwned>(&self) -> Result<T> {
         serde_json::from_str(self.json()?).map_err(Error::InvalidPayload)

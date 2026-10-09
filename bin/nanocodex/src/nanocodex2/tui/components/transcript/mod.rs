@@ -8,6 +8,7 @@ mod empty;
 mod highlight;
 pub(crate) mod image;
 mod markdown;
+pub(crate) mod math;
 mod message;
 mod review;
 mod tool;
@@ -16,7 +17,7 @@ use super::{
     node::{Component, ComponentUpdate, RenderRequest},
     selection::{TextRange, TextSpan},
 };
-use crate::{
+use crate::nanocodex2::{
     config::ReasoningEffort,
     tui::{
         format::{
@@ -129,11 +130,18 @@ struct ToolGroups {
 struct LayoutCache {
     tool_groups: std::cell::RefCell<ToolGroups>,
     entries: HashMap<EntryId, CachedEntry>,
+    // A frame walks the same folded group repeatedly while placing its rows.
+    // Aggregate retained calls once, then reuse the exact layout for this frame.
+    validated_activity: std::collections::HashSet<EntryId>,
     live_tool_durations: HashMap<EntryId, u64>,
     expansion_overrides: HashMap<EntryId, bool>,
     expand_all: Option<bool>,
+    /// Ctrl+O's third state: only the conversation, no tool rows.
+    tools_hidden: bool,
     workspace: std::path::PathBuf,
     images: image::Cache,
+    /// Last observed math renderer update; see math::updates.
+    math_updates: u64,
 }
 
 impl Default for LayoutCache {
@@ -141,9 +149,12 @@ impl Default for LayoutCache {
         Self {
             tool_groups: Default::default(),
             entries: HashMap::new(),
+            validated_activity: Default::default(),
             live_tool_durations: HashMap::new(),
+            math_updates: 0,
             expansion_overrides: HashMap::new(),
-            expand_all: None,
+            expand_all: tool_calls_from_env().0,
+            tools_hidden: tool_calls_from_env().1,
             workspace: std::env::current_dir().unwrap_or_default(),
             images: image::Cache::default(),
         }
@@ -260,8 +271,8 @@ impl Transcript {
 
     pub(crate) fn secure_input_request(
         &self,
-        command: &crate::tui::secure_input::Command,
-    ) -> Option<crate::tui::secure_input::Request> {
+        command: &crate::nanocodex2::tui::secure_input::Command,
+    ) -> Option<crate::nanocodex2::tui::secure_input::Request> {
         self.model.entries().iter().rev().find_map(|entry| {
             let EntryKind::Tool(tool) = &entry.kind else {
                 return None;
@@ -282,16 +293,16 @@ impl Transcript {
             }
             let r = self.model.private_input(entry.id)?.clone();
             let matches = match command {
-                crate::tui::secure_input::Command::Latest => true,
-                crate::tui::secure_input::Command::Help => false,
-                crate::tui::secure_input::Command::Select { agent, request } => {
+                crate::nanocodex2::tui::secure_input::Command::Latest => true,
+                crate::nanocodex2::tui::secure_input::Command::Help => false,
+                crate::nanocodex2::tui::secure_input::Command::Select { agent, request } => {
                     r.agent() == agent && r.id() == request
                 }
             };
             (matches && r.is_current()).then_some(r)
         })
     }
-    pub(crate) fn latest_vault_command(&self) -> Option<crate::tui::vault::Command> {
+    pub(crate) fn latest_vault_command(&self) -> Option<crate::nanocodex2::tui::vault::Command> {
         let mut receipts = Vec::new();
         for entry in self.model.entries().iter().rev() {
             match &entry.kind {
@@ -302,9 +313,10 @@ impl Transcript {
                     if let Some(command) = tool
                         .result
                         .as_ref()
-                        .and_then(crate::tui::vault::intake_command)
+                        .and_then(crate::nanocodex2::tui::vault::intake_command)
                     {
-                        if let crate::tui::vault::Command::Review { id, origin } = &command
+                        if let crate::nanocodex2::tui::vault::Command::Review { id, origin } =
+                            &command
                             && receipts.iter().any(|text| {
                                 text.contains(id)
                                     && text.contains(origin)
@@ -330,6 +342,7 @@ impl Transcript {
     }
 
     pub(crate) fn with_effort(effort: ReasoningEffort) -> Self {
+        highlight::prewarm();
         Self {
             model: TranscriptModel::default(),
             cache: LayoutCache::default(),
@@ -464,6 +477,7 @@ impl Transcript {
             .into_iter()
             .chain(self.retry_timer.and_then(|timer| timer.next_frame))
             .chain(self.cache.images.animation_deadline())
+            .chain(math::deadline(Instant::now()))
             .min()
     }
 
@@ -474,6 +488,7 @@ impl Transcript {
         let previous_activity = self.activity();
         let change = self.model.apply(&record);
         self.cache.tool_groups.get_mut().ranges.clear();
+        self.cache.validated_activity.clear();
         let now = Instant::now();
         self.sync_retry_timer(now, unix_milliseconds());
         let activity = self.activity();
@@ -526,6 +541,7 @@ impl Transcript {
     ) -> ComponentUpdate<TranscriptEffect> {
         let change = self.model.apply_message(perspective, update);
         self.cache.tool_groups.get_mut().ranges.clear();
+        self.cache.validated_activity.clear();
         if let Some(id) = change.removed {
             self.forget_entry(id);
         }
@@ -564,6 +580,7 @@ impl Transcript {
 
     fn agent_stream_closed(&mut self) -> ComponentUpdate<TranscriptEffect> {
         self.cache.tool_groups.get_mut().ranges.clear();
+        self.cache.validated_activity.clear();
         let previous_activity = self.activity();
         if !self.model.agent_stream_closed() {
             return ComponentUpdate::none();
@@ -993,6 +1010,7 @@ impl Transcript {
         if width == 0 || height == 0 {
             return RenderPlan::default();
         }
+        self.cache.validated_activity.clear();
         self.viewport_height = height;
         self.apply_pending_expandable_anchor(width, theme);
         self.apply_pending_scroll(width, height, theme);
@@ -1377,7 +1395,7 @@ fn transient_label(status: &TransientStatus) -> String {
 fn is_running_tool(entry: &TranscriptEntry) -> bool {
     matches!(
         &entry.kind,
-        EntryKind::Tool(tool) if tool.state == crate::tui::transcript::ToolState::Running
+        EntryKind::Tool(tool) if tool.state == crate::nanocodex2::tui::transcript::ToolState::Running
     )
 }
 
@@ -1391,6 +1409,36 @@ fn is_expandable(entry: &TranscriptEntry) -> bool {
                 ..
             }
     )
+}
+
+/// Initial tool display from NANOCODEX_TOOL_CALLS, shared with the classic CLI's
+/// --tool-calls: expanded (every detail), folded (summaries, default) or hidden.
+fn tool_calls_from_env() -> (Option<bool>, bool) {
+    match INITIAL_TOOL_CALLS.load(std::sync::atomic::Ordering::Acquire) {
+        1 => return (Some(true), false),
+        2 => return (None, false),
+        3 => return (None, true),
+        _ => {}
+    }
+    match std::env::var("NANOCODEX_TOOL_CALLS").as_deref() {
+        Ok("expanded") => (Some(true), false),
+        Ok("hidden") => (None, true),
+        _ => (None, false),
+    }
+}
+
+static INITIAL_TOOL_CALLS: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
+/// Startup tool display from a driver flag (ncl --tool-calls). Overrides
+/// NANOCODEX_TOOL_CALLS for transcripts created afterwards.
+#[allow(dead_code, reason = "called by the local driver's --tool-calls flag")]
+pub(crate) fn set_initial_tool_calls(mode: crate::tool_calls::ToolCalls) {
+    let value = match mode {
+        crate::tool_calls::ToolCalls::Expanded => 1,
+        crate::tool_calls::ToolCalls::Folded => 2,
+        crate::tool_calls::ToolCalls::Hidden => 3,
+    };
+    INITIAL_TOOL_CALLS.store(value, std::sync::atomic::Ordering::Release);
 }
 
 impl LayoutCache {
@@ -1437,7 +1485,7 @@ impl LayoutCache {
 
     // Hidden wrappers are transparent, but every visible ancestor must be open.
     fn visible_depth(&self, entry: &TranscriptEntry, model: &TranscriptModel) -> Option<u16> {
-        if entry.hidden {
+        if entry.hidden || (self.tools_hidden && matches!(entry.kind, EntryKind::Tool(_))) {
             return None;
         }
         if let Some(head) = self
@@ -1465,6 +1513,7 @@ impl LayoutCache {
     }
 
     fn refresh_terminal_images(&mut self) {
+        math::reupload_all();
         self.images.advance_terminal_generation();
         self.entries
             .retain(|_, entry| entry.image_state != markdown::ImageState::Pending);
@@ -1476,6 +1525,20 @@ impl LayoutCache {
     }
 
     fn poll_images(&mut self, now: Instant) -> bool {
+        let math_updates = math::updates();
+        let math_changed = math_updates != self.math_updates;
+        if math_changed {
+            // A formula finished (or the renderer started): re-layout entries
+            // that showed pending source. Visible ones re-mark pending if needed.
+            self.math_updates = math_updates;
+            math::clear_pending();
+            self.entries
+                .retain(|_, entry| entry.image_state != markdown::ImageState::Pending);
+        }
+        self.poll_terminal_images(now) || math_changed
+    }
+
+    fn poll_terminal_images(&mut self, now: Instant) -> bool {
         let result = self.images.poll(now);
         match result.layout_change {
             image::LayoutChange::Ready => {
@@ -1493,6 +1556,7 @@ impl LayoutCache {
 
     fn forget(&mut self, id: EntryId) {
         self.entries.remove(&id);
+        self.validated_activity.clear();
         self.live_tool_durations.remove(&id);
         self.expansion_overrides.remove(&id);
     }
@@ -1515,6 +1579,13 @@ impl LayoutCache {
                 .find(|entry| !entry.hidden)
                 .is_some_and(|head| head.id == entry.id)
         {
+            if self.validated_activity.contains(&entry.id)
+                && self.entries.get(&entry.id).is_some_and(|cached| {
+                    cached.activity && cached.width == width && cached.depth == depth
+                })
+            {
+                return &self.entries[&entry.id].lines;
+            }
             let EntryKind::Tool(first) = &entry.kind else {
                 unreachable!()
             };
@@ -1526,7 +1597,7 @@ impl LayoutCache {
                 hidden: false,
                 parent: entry.parent,
                 trailing_spacer: true,
-                kind: EntryKind::Tool(crate::tui::transcript::ToolEntry {
+                kind: EntryKind::Tool(crate::nanocodex2::tui::transcript::ToolEntry {
                     name: "__tool_activity".to_owned(),
                     arguments: serde_json::Value::Null,
                     started_at_unix_ms: first.started_at_unix_ms,
@@ -1542,6 +1613,9 @@ impl LayoutCache {
             };
             let mut counts = [0_usize; 4];
             let mut computer_calls = Vec::new();
+            let mut calls = Vec::new();
+            let mut wrapper_error = None;
+            let mut note = None;
             let mut only_computer = true;
             let mut wrapper_duration = 0_u64;
             let mut wrapper_running = false;
@@ -1555,18 +1629,25 @@ impl LayoutCache {
                     continue;
                 };
                 // Code wrappers are orchestration, not additional semantic calls.
-                use crate::tui::transcript::ToolState;
+                use crate::nanocodex2::tui::transcript::ToolState;
                 if call.child_count > 0 {
                     wrapper_duration = wrapper_duration.max(
                         self.live_tool_durations
                             .get(&member.id)
                             .copied()
+                            .filter(|_| call.state == ToolState::Running)
                             .or(call.duration_ns)
                             .unwrap_or(0),
                     );
                     wrapper_running |= call.state == ToolState::Running;
                     wrapper_failed |= call.state == ToolState::Failed;
                     wrapper_waiting |= call.state == ToolState::Yielded;
+                    if call.state == ToolState::Failed && wrapper_error.is_none() {
+                        wrapper_error = tool::failure_line(call);
+                    }
+                    if note.is_none() {
+                        note = tool::first_emitted_line(call);
+                    }
                     continue;
                 }
                 if member.hidden {
@@ -1577,24 +1658,25 @@ impl LayoutCache {
                 } else {
                     only_computer = false;
                 }
+                // Live ticks describe running calls only; settled calls keep their own duration.
+                let live = self
+                    .live_tool_durations
+                    .get(&member.id)
+                    .copied()
+                    .filter(|_| call.state == ToolState::Running);
+                calls.push((call, live));
                 counts[match call.state {
                     ToolState::Running => 0,
                     ToolState::Succeeded => 1,
                     ToolState::Failed => 2,
                     ToolState::Yielded => 3,
                 }] += 1;
-                duration = duration.saturating_add(
-                    self.live_tool_durations
-                        .get(&member.id)
-                        .copied()
-                        .or(call.duration_ns)
-                        .unwrap_or(0),
-                );
+                duration = duration.saturating_add(live.or(call.duration_ns).unwrap_or(0));
             }
             duration = duration.max(wrapper_duration);
             // A wrapper's children may follow an intervening message in another block.
             if counts.iter().all(|count| *count == 0) {
-                use crate::tui::transcript::ToolState;
+                use crate::nanocodex2::tui::transcript::ToolState;
                 counts[match first.state {
                     ToolState::Running => 0,
                     ToolState::Succeeded => 1,
@@ -1614,14 +1696,16 @@ impl LayoutCache {
             call.result = None;
             call.duration_ns = Some(duration);
             call.state = if counts[0] > 0 || wrapper_running {
-                crate::tui::transcript::ToolState::Running
+                crate::nanocodex2::tui::transcript::ToolState::Running
             } else if counts[2] > 0 || wrapper_failed {
-                crate::tui::transcript::ToolState::Failed
+                crate::nanocodex2::tui::transcript::ToolState::Failed
             } else if counts[3] > 0 || wrapper_waiting {
-                crate::tui::transcript::ToolState::Yielded
+                crate::nanocodex2::tui::transcript::ToolState::Yielded
             } else {
-                crate::tui::transcript::ToolState::Succeeded
+                crate::nanocodex2::tui::transcript::ToolState::Succeeded
             };
+            let state = call.state;
+            self.validated_activity.insert(entry.id);
             if self.entries.get(&entry.id).is_some_and(|cached| {
                 cached.activity
                     && cached.revision == summary.revision
@@ -1631,16 +1715,34 @@ impl LayoutCache {
             }) {
                 return &self.entries[&entry.id].lines;
             }
-            let mut cached = CachedEntry::new(
-                &summary,
-                depth,
-                None,
-                width,
-                theme,
-                false,
-                &self.workspace,
-                &mut self.images,
-            );
+            let mut cached = if only_computer && !computer_calls.is_empty() {
+                CachedEntry::new(
+                    &summary,
+                    depth,
+                    None,
+                    width,
+                    theme,
+                    false,
+                    &self.workspace,
+                    &mut self.images,
+                )
+            } else {
+                let group = tool::ToolGroup {
+                    calls,
+                    state,
+                    duration_ns: duration,
+                    wrapper_running,
+                    wrapper_waiting,
+                    wrapper_error,
+                    note,
+                };
+                CachedEntry::from_layout(
+                    render_tool_group(&summary, depth, &group, width, theme),
+                    summary.revision,
+                    width,
+                    depth,
+                )
+            };
             cached.activity = true;
             cached.live_duration_ns = Some(duration);
             self.entries.insert(entry.id, cached);
@@ -1695,6 +1797,7 @@ impl LayoutCache {
         });
         if display_changed {
             self.live_tool_durations.insert(id, duration_ns);
+            self.validated_activity.clear();
         }
         display_changed
     }
@@ -1706,11 +1809,17 @@ impl LayoutCache {
     fn toggle(&mut self, entry: &TranscriptEntry) {
         let expanded = self.expanded(entry);
         self.expansion_overrides.insert(entry.id, !expanded);
+        self.validated_activity.clear();
         self.entries.remove(&entry.id);
     }
 
     fn toggle_all(&mut self) {
-        self.expand_all = Some(!matches!(self.expand_all, Some(true)));
+        // Ctrl+O cycles summaries -> every detail -> hidden tool rows -> summaries.
+        (self.expand_all, self.tools_hidden) = match (self.expand_all, self.tools_hidden) {
+            (_, true) => (None, false),
+            (Some(true), false) => (None, true),
+            _ => (Some(true), false),
+        };
         self.expansion_overrides.clear();
         self.entries.clear();
     }
@@ -1802,6 +1911,25 @@ impl LayoutCache {
 }
 
 impl CachedEntry {
+    fn from_layout(layout: markdown::Layout, revision: u64, width: u16, depth: u16) -> Self {
+        Self {
+            activity: false,
+            revision,
+            width,
+            expanded: false,
+            live_duration_ns: None,
+            tool_summary_lines: 0,
+            depth,
+            lines: layout.lines,
+            images: layout.images,
+            links: layout.links,
+            selections: layout.selections,
+            envelopes: layout.envelopes,
+            selection_source: layout.selection_source,
+            image_state: layout.image_state,
+        }
+    }
+
     fn new(
         entry: &TranscriptEntry,
         depth: u16,
@@ -1984,7 +2112,7 @@ impl Component for Transcript {
                 if matches!(
                     &entry.kind,
                     EntryKind::Tool(tool)
-                        if tool.state == crate::tui::transcript::ToolState::Running
+                        if tool.state == crate::nanocodex2::tui::transcript::ToolState::Running
                 ) && let Some(spinner) = self.tool_spinner
                 {
                     let spinner_x =
@@ -2213,10 +2341,31 @@ fn render_entry(
     layout
 }
 
+// A folded batch: the classic CLI's "Tools" header and per-call rows.
+fn render_tool_group(
+    entry: &TranscriptEntry,
+    depth: u16,
+    group: &tool::ToolGroup<'_>,
+    width: u16,
+    theme: &Theme,
+) -> markdown::Layout {
+    let indent = nested_tool_indent(depth, width);
+    let tool_width = width
+        .saturating_sub(indent)
+        .saturating_sub(tool_agent_label_width(entry));
+    let mut lines = tool::group_lines(group, tool_width, theme);
+    label_tool_agent(entry, &mut lines, theme);
+    indent_nested_tool(indent, &mut lines, theme, false, entry.trailing_spacer);
+    if entry.trailing_spacer {
+        lines.push(Line::default());
+    }
+    layout_without_links(lines)
+}
+
 fn render_live_tool_summary(
     entry: &TranscriptEntry,
     depth: u16,
-    tool: &crate::tui::transcript::ToolEntry,
+    tool: &crate::nanocodex2::tui::transcript::ToolEntry,
     duration_ns: u64,
     width: u16,
     theme: &Theme,
@@ -2322,9 +2471,9 @@ fn layout_without_links(lines: Vec<Line<'static>>) -> markdown::Layout {
 }
 
 fn render_user(text: &str, width: u16, theme: &Theme) -> markdown::Layout {
-    let summary = crate::tui::review::display_prompt(text);
+    let summary = crate::nanocodex2::tui::review::display_prompt(text);
     let text = summary.as_deref().unwrap_or(text);
-    let readable = crate::tui::vault::receipt_summary(text);
+    let readable = crate::nanocodex2::tui::vault::receipt_summary(text);
     let text = normalize_line_endings(readable.as_deref().unwrap_or(text)).into_owned();
     let text: std::borrow::Cow<'_, str> = std::borrow::Cow::Owned(text);
     let color = theme.thinking_medium();
@@ -2378,7 +2527,7 @@ fn line_width(text: &str) -> usize {
 #[cfg(test)]
 mod history_tests {
     use super::{Anchor, Component, ScrollCommand, ScrollState, Transcript, TranscriptEvent};
-    use crate::tui::{
+    use crate::nanocodex2::tui::{
         theme::Theme,
         transcript::{LocalEvent, TranscriptRecord, TurnId},
     };

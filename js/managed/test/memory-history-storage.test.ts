@@ -1,5 +1,5 @@
 import { env, runInDurableObject } from "cloudflare:test";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { MemoryScope } from "../src/memory-scope";
 import { initializeHistoryStorage, readHistoryText, storeHistorySegments } from "../src/memory-history-storage";
 
@@ -145,6 +145,54 @@ describe("segmented history projection", () => {
     });
   });
 
+  it("re-syncs a failed AI item without TypeError hot-looping and retires the upsert after bounded backoff", async () => {
+    await runInDurableObject(bindings.NANOCODEX_MEMORY.getByName(crypto.randomUUID()), async (memory, state) => {
+      await memory.fetch(new Request("https://memory.internal/initialize", { method: "PUT", headers }));
+      const warnings: Record<string, unknown>[] = [];
+      const warn = vi.spyOn(console, "warn").mockImplementation((entry: unknown) => {
+        if (typeof entry === "object" && entry !== null) warnings.push(entry as Record<string, unknown>);
+      });
+      let syncs = 0;
+      // Production AI Search: item.sync() resolves without a disposable value,
+      // and an item whose indexing failed keeps reporting status "error".
+      const items = {
+        async upload(key: string) { return { id: `item-${key}`, key, status: "error" }; },
+        async list() { return { result: [] }; },
+        async delete() {},
+        get(id: string) {
+          return { async info() { return { id, status: "error" }; }, async sync() { syncs += 1; return undefined; } };
+        },
+      };
+      Object.defineProperty(memory, "env", { value: { HISTORY_AI_SEARCH: { items } } });
+      try {
+        expect((await request(memory, "/project", project("failing index prompt", "failing index answer"))).status).toBe(204);
+        await memory.alarm();
+        const outbox = () => state.storage.sql.exec<{ attempt_count: number; retry_at: number }>(
+          "SELECT attempt_count, retry_at FROM memory_ai_outbox WHERE operation = 'upsert'").toArray();
+        expect(outbox()).toHaveLength(2);
+        const delays: number[] = [];
+        for (let pass = 0; pass < 20 && outbox().length > 0; pass++) {
+          delays.push(Math.max(...outbox().map((row) => row.retry_at)) - Date.now());
+          state.storage.sql.exec("UPDATE memory_ai_outbox SET retry_at = 0");
+          await memory.alarm();
+        }
+        expect(syncs).toBeGreaterThan(0);
+        expect(warnings.filter((entry) => entry.type === "memory_scope.ai_outbox_operation_failed")).toEqual([]);
+        // Backoff leaves the fast minute-scale phase instead of polling forever.
+        expect(Math.max(...delays)).toBeGreaterThan(60_000);
+        expect(outbox()).toEqual([]);
+        const abandoned = warnings.filter((entry) => entry.type === "memory_scope.ai_outbox_operation_abandoned");
+        expect(abandoned).toHaveLength(2);
+        expect(abandoned[0]).toMatchObject({ operation: "upsert", attempt: 16, reason: "item_error" });
+        // SQLite remains authoritative for the retired projection.
+        const found = await request(memory, "/search", { query: "failing index", limit: 5 });
+        expect(((await found.json()) as { results: unknown[] }).results).toHaveLength(1);
+      } finally {
+        warn.mockRestore();
+        await state.storage.deleteAlarm();
+      }
+    });
+  });
   it("migrates a thousand 64 KiB legacy turns without hydrating the whole scope", async () => {
     await runInDurableObject(bindings.NANOCODEX_MEMORY.getByName(crypto.randomUUID()), async (_memory, state) => {
       state.storage.sql.exec(`

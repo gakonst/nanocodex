@@ -39,7 +39,7 @@ async fn hand_help_exposes_the_vm_and_machine_contract() {
     assert!(output.status.success());
     let stdout = String::from_utf8(output.stdout).unwrap();
     assert!(
-        stdout.contains("Usage: nanocodex2 hand [OPTIONS]"),
+        stdout.contains("Usage: nanocodex hand [OPTIONS]"),
         "{stdout}"
     );
     assert!(!stdout.contains("AGENT_ID"), "{stdout}");
@@ -144,7 +144,7 @@ async fn host_help_exposes_the_bounded_vm_pool_contract() {
     let stdout = String::from_utf8(output.stdout).unwrap();
     assert!(
         stdout.contains(
-            "Usage: nanocodex2 host [OPTIONS] --factory-name <FACTORY_NAME> --vm-template <ROOTFS> --state-dir <PATH> --vm-guest-runtime <ELF>"
+            "Usage: nanocodex host [OPTIONS] --factory-name <FACTORY_NAME> --vm-template <ROOTFS> --state-dir <PATH> --vm-guest-runtime <ELF>"
         ),
         "{stdout}"
     );
@@ -481,7 +481,7 @@ async fn tui_does_not_discover_an_explicit_missing_computer_provider() {
             pixel_height: 0,
         })
         .unwrap();
-    let mut command = CommandBuilder::new(env!("CARGO_BIN_EXE_nanocodex2"));
+    let mut command = CommandBuilder::new(env!("CARGO_BIN_EXE_nanocodex"));
     command.env_clear();
     command.env("PATH", std::env::var_os("PATH").unwrap_or_default());
     command.env("HOME", home.path());
@@ -1478,7 +1478,7 @@ fn json_response(status: StatusCode, body: serde_json::Value) -> Response<Body> 
 fn fixture_command(home: &std::path::Path) -> tokio::process::Command {
     let mut command = tokio::process::Command::new(
         std::env::var_os("NANOCODEX2_TEST_BINARY")
-            .unwrap_or_else(|| env!("CARGO_BIN_EXE_nanocodex2").into()),
+            .unwrap_or_else(|| env!("CARGO_BIN_EXE_nanocodex").into()),
     );
     command
         .env_clear()
@@ -1900,7 +1900,7 @@ mod docker_hand_live {
             .with_state(service);
         let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
         let config = tempfile::tempdir().unwrap();
-        let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_nanocodex2"))
+        let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_nanocodex"))
             .env("NANOCODEX_DISABLE_HAND", "1")
             .args([
                 "hand",
@@ -2017,7 +2017,7 @@ async fn docker_preflight_errors_are_actionable_before_account_login() {
             std::fs::write(&docker, format!("#!/bin/sh\n{script}\n")).unwrap();
             std::fs::set_permissions(&docker, std::fs::Permissions::from_mode(0o700)).unwrap();
         }
-        let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_nanocodex2"))
+        let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_nanocodex"))
             .args(["hand", "--docker", "image", "--volume", "work"])
             .args(extra)
             .env_clear()

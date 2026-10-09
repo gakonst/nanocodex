@@ -4,7 +4,7 @@ use std::{
     io::Write,
     sync::{
         Arc, Mutex,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
@@ -13,7 +13,9 @@ use eyre::{Result, WrapErr, ensure};
 use futures_util::{SinkExt, StreamExt};
 use nanocodex_oai_tools::{
     Tool, ToolContext, ToolDefinition, ToolInput, ToolResult, Tools, WorkspaceTools,
-    attachment::{AttachmentMachine, AttachmentMetadata, AttachmentStatus, AttachmentTarget},
+    attachment::{
+        AttachmentError, AttachmentMachine, AttachmentMetadata, AttachmentStatus, AttachmentTarget,
+    },
     contract::async_trait,
 };
 use serde_json::{Value, json};
@@ -410,6 +412,26 @@ async fn journey(
     ensure!(
         active.load(Ordering::SeqCst),
         "CUA did not remain active through both shell calls"
+    );
+
+    // A shell yield longer than the hosted call deadline returns the live
+    // session before that deadline rather than letting the broker expire it.
+    let clamped_started = Instant::now();
+    wire.call_before(
+        "clamped",
+        "exec_command",
+        json!({"cmd":"printf 'clamped-start\n'; sleep 30", "shell":"/bin/sh", "login":false, "yield_time_ms":20_000}),
+        now_ms() + 5_000,
+    )
+    .await?;
+    let clamped = wire.result("clamped", Duration::from_secs(5)).await?;
+    let process = successful_process(&clamped)?;
+    ensure!(
+        clamped_started.elapsed() < Duration::from_secs(5)
+            && process["output"] == "clamped-start\n"
+            && process["session_id"].is_i64()
+            && process["exit_code"].is_null(),
+        "shell yield was not clamped before the call deadline: {clamped}"
     );
 
     wire.send(json!({"type":"cancel", "call_id":"cua"})).await?;
@@ -1172,4 +1194,71 @@ async fn regional_hand_upgrade_case(case: &str) -> Result<()> {
         Ok(())
     })
     .await?
+}
+
+async fn rejecting_endpoint(status: &'static str) -> Result<(AttachmentTarget, Arc<AtomicUsize>)> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let listener = TcpListener::bind("127.0.0.1:0").await?;
+    let target = AttachmentTarget::new(
+        format!("ws://{}/tools", listener.local_addr()?),
+        "synthetic-bearer",
+    )?;
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let counted = Arc::clone(&attempts);
+    tokio::spawn(async move {
+        while let Ok((mut stream, _)) = listener.accept().await {
+            counted.fetch_add(1, Ordering::SeqCst);
+            let mut request = Vec::new();
+            let mut buffer = [0_u8; 1024];
+            while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                match stream.read(&mut buffer).await {
+                    Ok(0) | Err(_) => break,
+                    Ok(read) => request.extend_from_slice(&buffer[..read]),
+                }
+            }
+            let response =
+                format!("HTTP/1.1 {status}\r\ncontent-length: 0\r\nconnection: close\r\n\r\n");
+            let _ = stream.write_all(response.as_bytes()).await;
+        }
+    });
+    Ok((target, attempts))
+}
+
+// A revoked attachment (HTTP 410) is terminal, while a refused upgrade that
+// may recover (HTTP 503) keeps reconnecting with backoff.
+#[tokio::test]
+async fn revoked_attachment_stops_reconnecting_while_rejections_back_off() -> Result<()> {
+    let workspace = tempfile::tempdir()?;
+    let tools = Tools::builder()
+        .without_defaults()
+        .add(WorkspaceTools::new(workspace.path()))
+        .build()?;
+
+    let (target, attempts) = rejecting_endpoint("410 Gone").await?;
+    let connected = tokio::time::timeout(
+        Duration::from_secs(5),
+        tools.clone().attach(target).connect(),
+    )
+    .await?;
+    let error = connected.err();
+    ensure!(
+        matches!(error, Some(AttachmentError::Fenced(_))),
+        "HTTP 410 was not terminal: {error:?}"
+    );
+    tokio::time::sleep(Duration::from_millis(700)).await;
+    ensure!(
+        attempts.load(Ordering::SeqCst) == 1,
+        "a revoked attachment reconnected"
+    );
+
+    let (target, attempts) = rejecting_endpoint("503 Service Unavailable").await?;
+    let (attachment, _events) = tools.attach(target).start()?;
+    tokio::time::sleep(Duration::from_millis(1_000)).await;
+    let retried = attempts.load(Ordering::SeqCst);
+    ensure!(
+        retried >= 2 && attachment.status() != AttachmentStatus::Fenced,
+        "a retryable rejection was not retried: {retried}"
+    );
+    attachment.detach().await?;
+    Ok(())
 }

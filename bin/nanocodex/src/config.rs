@@ -162,7 +162,7 @@ pub(crate) struct AgentArgs {
     resume: Option<ResumedSession>,
 
     /// Voice microphone shortcut, or none to use /voice mute only.
-    #[arg(long, env = "NANOCODEX_VOICE_MUTE_KEY", default_value = "ctrl+x", value_parser = crate::tui::voice::validate_key)]
+    #[arg(long, env = "NANOCODEX_VOICE_MUTE_KEY", default_value = "ctrl+x", value_parser = crate::nanocodex2::tui::voice_keys::validate_key)]
     pub(crate) voice_mute_key: String,
 
     /// Animate live voice captions; set false for reduced motion.
@@ -174,7 +174,7 @@ pub(crate) struct AgentArgs {
     /// Ctrl+O cycles through the modes. Hidden keeps only the conversation;
     /// the footer still shows the turn as Working until it ends.
     #[arg(long, env = "NANOCODEX_TOOL_CALLS", value_enum, default_value_t)]
-    pub(crate) tool_calls: crate::tui::ToolCalls,
+    pub(crate) tool_calls: crate::nanocodex2::tui::tool_calls::ToolCalls,
 
     #[command(flatten)]
     auth: AuthArgs,
@@ -374,8 +374,28 @@ impl AgentArgs {
         } else {
             model.default_thinking()
         });
-        self.fast_mode =
-            Some(model.family() == HarnessFamily::Codex && (!same_family || fast_mode));
+        self.fast_mode = Some(model.supports_fast_mode() && fast_mode);
+    }
+
+    /// Arguments for switching a running TUI to another saved session (/attach):
+    /// the resumed session supplies its own workspace and model.
+    pub(crate) fn for_session_switch(mut self) -> Self {
+        self.cwd = None;
+        self.model = None;
+        self.resume = None;
+        self
+    }
+
+    /// The workspace requested with `--cwd`, if any.
+    pub(crate) fn requested_workspace(&self) -> Option<&Path> {
+        self.cwd.as_deref()
+    }
+
+    /// Arguments for a fresh session (/clear): keeps the selected harness,
+    /// model and workspace but continues no stored session.
+    pub(crate) fn fresh_session(mut self) -> Self {
+        self.resume = None;
+        self
     }
 
     /// Continues a stored session in the harness family that recorded it.
@@ -433,6 +453,12 @@ impl AgentArgs {
     /// The stored session this configuration continues, if any.
     pub(crate) const fn resumed(&self) -> Option<&ResumedSession> {
         self.resume.as_ref()
+    }
+
+    pub(crate) fn local_claude_available(&self) -> bool {
+        self.claude_api_key.is_some()
+            || self.claude_auth.has_saved_credentials()
+            || self.selected_harness().ok() == Some(HarnessFamily::Claude)
     }
 
     pub(crate) fn harness_model(&self) -> Result<HarnessModel> {
@@ -577,6 +603,10 @@ impl AgentArgs {
     #[cfg(test)]
     pub(crate) const fn uses_persistent_browser_profile(&self) -> bool {
         self.browser.uses_persistent_profile()
+    }
+
+    pub(crate) const fn tui_reasoning_mode(&self) -> ReasoningMode {
+        self.reasoning_mode
     }
 
     pub(crate) fn thinking(&self) -> Thinking {

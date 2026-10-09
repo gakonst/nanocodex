@@ -8,7 +8,7 @@ use super::{
     queue::QueueId,
     root::{DraftReset, RestoredSessionProjection, RootEffect, RootEvent, RootNode},
 };
-use crate::{
+use crate::nanocodex2::{
     config::{ReasoningEffort, ReasoningMode},
     skill::Skill,
     tui::{
@@ -35,7 +35,7 @@ const SPLIT_HINT: &str = " mouse: focus · Ctrl+C: clear · Ctrl+C×2: close ";
 const MIN_SPLIT_HINT_WIDTH: u16 = 60;
 
 pub(crate) enum AppEvent {
-    Screen(crate::tui::screen::Snapshot),
+    Screen(crate::nanocodex2::tui::screen::Snapshot),
     Terminal(Event),
     PasteImage(String),
     Transcript {
@@ -51,7 +51,7 @@ pub(crate) enum AppEvent {
     RetainPrompt {
         pane: PaneId,
         request_id: String,
-        prompt: crate::tui::prompt::Submission,
+        prompt: crate::nanocodex2::tui::prompt::Submission,
     },
     PromptConfirmed {
         pane: PaneId,
@@ -141,6 +141,11 @@ pub(crate) enum AppEvent {
     ForkReady {
         pane: PaneId,
     },
+    /// A feature steers the pane's running turn.
+    FeatureSteer {
+        pane: PaneId,
+        prompt: crate::nanocodex2::tui::prompt::Submission,
+    },
     ForkFailed {
         pane: PaneId,
         error: String,
@@ -161,7 +166,7 @@ pub(crate) enum AppEvent {
     ReviewBranchesLoaded {
         pane: PaneId,
         request_id: uuid::Uuid,
-        result: Result<Vec<crate::tui::review::Branch>, String>,
+        result: Result<Vec<crate::nanocodex2::tui::review::Branch>, String>,
     },
     SessionSearchResults {
         pane: PaneId,
@@ -224,7 +229,7 @@ pub(crate) enum AppEvent {
     SecureInputReceipt {
         pane: PaneId,
         request_id: String,
-        status: crate::tui::secure_input::Status,
+        status: crate::nanocodex2::tui::secure_input::Status,
     },
     VaultReceipt {
         pane: PaneId,
@@ -232,13 +237,13 @@ pub(crate) enum AppEvent {
     },
     VaultReview {
         pane: PaneId,
-        review: crate::tui::vault::Review,
+        review: crate::nanocodex2::tui::vault::Review,
     },
     ShowAgentId {
         pane: PaneId,
         id: String,
     },
-    VoiceStatus(Option<crate::voice_state::Status>),
+    VoiceStatus(Option<crate::nanocodex2::voice_state::Status>),
     VoiceOutput {
         pane: PaneId,
         text: String,
@@ -278,7 +283,7 @@ pub(crate) enum AppEvent {
 }
 
 pub(crate) enum AppEffect {
-    Screen(crate::tui::screen::Command),
+    Screen(crate::nanocodex2::tui::screen::Command),
     Pane { pane: PaneId, effect: RootEffect },
     OpenFork { pane: PaneId, parent: PaneId },
     ClosePane(PaneId),
@@ -303,6 +308,10 @@ pub(crate) struct AppNode {
 }
 
 impl AppNode {
+    pub(crate) const fn theme(&self) -> &Theme {
+        &self.theme
+    }
+
     pub(crate) fn new(theme: Theme, workspace: PathBuf, mut root: RootNode) -> Self {
         root.set_theme_mode(theme.mode());
         Self {
@@ -458,6 +467,9 @@ impl AppNode {
             }
             AppEvent::SteerFailed { pane, id } => {
                 self.update_root(pane, RootEvent::SteerFailed { id })
+            }
+            AppEvent::FeatureSteer { pane, prompt } => {
+                self.update_root(pane, RootEvent::FeatureSteer(prompt))
             }
             AppEvent::ForkReady { pane } => {
                 let ready = self.update_root(pane, RootEvent::ForkReady);
@@ -919,7 +931,9 @@ impl AppNode {
                             self.screen = None;
                             self.screen_focused = false;
                             self.zoomed = false;
-                            effects.push(AppEffect::Screen(crate::tui::screen::Command::Close));
+                            effects.push(AppEffect::Screen(
+                                crate::nanocodex2::tui::screen::Command::Close,
+                            ));
                         }
                         None => {}
                     }
@@ -1054,7 +1068,9 @@ impl AppNode {
                 RootEffect::Screen => {
                     self.screen = Some(super::screen::ScreenPane::new());
                     self.screen_focused = true;
-                    effects.push(AppEffect::Screen(crate::tui::screen::Command::List));
+                    effects.push(AppEffect::Screen(
+                        crate::nanocodex2::tui::screen::Command::List,
+                    ));
                 }
                 RootEffect::Zoom => {
                     self.zoomed = !self.zoomed;
@@ -1165,6 +1181,18 @@ impl AppNode {
         (pane, *parent)
     }
 
+    /// Closes the side pane on a feature's request (/collapse, /split).
+    pub(crate) fn close_fork(&mut self, pane: PaneId) -> ComponentUpdate<AppEffect> {
+        if self.fork.as_ref().is_some_and(|(id, _)| *id == pane) {
+            self.remove_pane(pane);
+            return ComponentUpdate {
+                effects: vec![AppEffect::ClosePane(pane)],
+                render: RenderRequest::Immediate,
+            };
+        }
+        ComponentUpdate::render(RenderRequest::Immediate)
+    }
+
     fn remove_pane(&mut self, pane: PaneId) {
         if self.pending_btw.as_ref().is_some_and(|(id, _)| *id == pane) {
             self.pending_btw = None;
@@ -1190,6 +1218,10 @@ impl AppNode {
 
     pub(crate) fn main_pane(&self) -> Option<PaneId> {
         self.main.as_ref().map(|(pane, _)| *pane)
+    }
+
+    pub(crate) fn fork_pane(&self) -> Option<PaneId> {
+        self.fork.as_ref().map(|(pane, _)| *pane)
     }
 
     fn pane(&self, pane: PaneId) -> Option<&Node<RootNode>> {
@@ -1253,7 +1285,7 @@ fn is_control_c(event: &Event) -> bool {
 #[cfg(test)]
 mod screen_tests {
     use super::*;
-    use crate::config::ReasoningEffort;
+    use crate::nanocodex2::config::ReasoningEffort;
     use crossterm::event::{KeyEvent, KeyModifiers};
     use ratatui::{Terminal, backend::TestBackend};
     fn app() -> AppNode {

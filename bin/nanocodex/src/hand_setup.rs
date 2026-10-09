@@ -14,8 +14,14 @@ pub(crate) struct Hand {
     command: HandCommand,
 }
 
+impl From<HandCommand> for Hand {
+    fn from(command: HandCommand) -> Self {
+        Self { command }
+    }
+}
+
 #[derive(Subcommand)]
-enum HandCommand {
+pub(crate) enum HandCommand {
     /// Install or repair the Hand on this machine or a remote Linux host.
     Install {
         /// SSH alias, hostname, IP, or user@host. Omit for this machine.
@@ -24,13 +30,13 @@ enum HandCommand {
         /// SSH port for --target; otherwise use normal SSH configuration.
         #[arg(short, long, requires = "target")]
         port: Option<u16>,
-        /// nanocodex2 executable override for local macOS or Windows development.
+        /// Hand executable override for local macOS or Windows development (default: this binary).
         #[arg(long, conflicts_with = "target")]
         executable: Option<PathBuf>,
         /// macOS account file override for local development.
         #[arg(long, conflicts_with = "target")]
         account_file: Option<PathBuf>,
-        /// Directory containing a development Linux nanocodex2 binary.
+        /// Directory containing a development Linux nanocodex (or nanocodex2) binary.
         #[arg(long, value_name = "DIRECTORY", hide = true)]
         artifacts: Option<PathBuf>,
         /// First-launch enrollment only; never replace or restart an owner.
@@ -407,11 +413,26 @@ async fn run_linux_installer(
         destination.label()
     );
     let binary = match artifacts {
-        Some(directory) => fs::read(directory.join("nanocodex2"))
-            .wrap_err_with(|| format!("Missing nanocodex2 in {}", directory.display()))?,
+        // The Hand only: an installed version names it nanocodex2, a build
+        // directory nanocodex-hand. The CLI (nanocodex) is never a Hand.
+        Some(directory) => ["nanocodex2", "nanocodex-hand"]
+            .iter()
+            .map(|name| directory.join(name))
+            .find(|path| path.is_file())
+            .map_or_else(
+                || {
+                    Err(eyre::eyre!(
+                        "Missing the Hand (nanocodex2 or nanocodex-hand) in {}",
+                        directory.display()
+                    ))
+                },
+                |path| fs::read(path).wrap_err("Could not read the Linux Hand binary"),
+            )?,
         None => {
-            let local = executable.unwrap_or(std::env::current_exe()?.with_file_name("nanocodex2"));
-            if matches!(destination, Destination::Local) && local.is_file() {
+            let local = executable.or_else(|| crate::hand_executable::hand_binary().ok());
+            if let Some(local) =
+                local.filter(|local| matches!(destination, Destination::Local) && local.is_file())
+            {
                 fs::read(&local).wrap_err("Could not read the installed Hand binary")?
             } else {
                 crate::update::linux_hand_binary().await?
@@ -840,6 +861,63 @@ async fn request_permissions(open_settings: bool) -> Result<()> {
     Ok(())
 }
 
+async fn keep_awake(setting: Option<&str>) -> Result<()> {
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = setting;
+        bail!("Hand keep-awake is currently available on macOS");
+    }
+    #[cfg(target_os = "macos")]
+    {
+        use crate::hand_keep_awake as preference;
+        let home =
+            PathBuf::from(std::env::var_os("HOME").ok_or_else(|| eyre::eyre!("HOME is unset"))?);
+        if !home.is_absolute() {
+            bail!("HOME must be absolute");
+        }
+        let owner = crate::hand_service::status().await?;
+        let before = preference::snapshot(&home, owner.pid)?;
+        if let Some(setting) = setting {
+            let enabled = setting == "on";
+            if owner.pid.is_some() && before["supported_daemon"] != true {
+                bail!(
+                    "The running Hand has not reported keep-awake support. Update the Hand and retry; no setting was changed."
+                );
+            }
+            if enabled && before["environment_override"] == true {
+                bail!(
+                    "The Hand service has {}=0. Remove that service override and restart it before enabling keep-awake; no setting was changed.",
+                    preference::ENVIRONMENT
+                );
+            }
+            preference::write(
+                &preference::setting_path(&home),
+                &json!({"enabled": enabled}),
+            )?;
+            if owner.pid.is_some() {
+                let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+                loop {
+                    let observed = preference::snapshot(&home, owner.pid)?;
+                    if observed["active"] == enabled && observed["error"].is_null() {
+                        break;
+                    }
+                    if tokio::time::Instant::now() >= deadline {
+                        bail!(
+                            "Keep-awake preference was saved, but the running Hand has not confirmed applying it. Inspect with `nanocodex hand keep-awake`; do not assume its assertion changed."
+                        );
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                }
+            }
+        }
+        // Re-read launchd after a concurrent service change; an old receipt
+        // must never claim the replacement owner's assertion is active.
+        let owner = crate::hand_service::status().await?;
+        println!("{}", preference::snapshot(&home, owner.pid)?);
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -900,62 +978,5 @@ mod tests {
             ])
             .is_err()
         );
-    }
-}
-
-async fn keep_awake(setting: Option<&str>) -> Result<()> {
-    #[cfg(not(target_os = "macos"))]
-    {
-        let _ = setting;
-        bail!("Hand keep-awake is currently available on macOS");
-    }
-    #[cfg(target_os = "macos")]
-    {
-        use crate::hand_keep_awake as preference;
-        let home =
-            PathBuf::from(std::env::var_os("HOME").ok_or_else(|| eyre::eyre!("HOME is unset"))?);
-        if !home.is_absolute() {
-            bail!("HOME must be absolute");
-        }
-        let owner = crate::hand_service::status().await?;
-        let before = preference::snapshot(&home, owner.pid)?;
-        if let Some(setting) = setting {
-            let enabled = setting == "on";
-            if owner.pid.is_some() && before["supported_daemon"] != true {
-                bail!(
-                    "The running Hand has not reported keep-awake support. Update the Hand and retry; no setting was changed."
-                );
-            }
-            if enabled && before["environment_override"] == true {
-                bail!(
-                    "The Hand service has {}=0. Remove that service override and restart it before enabling keep-awake; no setting was changed.",
-                    preference::ENVIRONMENT
-                );
-            }
-            preference::write(
-                &preference::setting_path(&home),
-                &json!({"enabled": enabled}),
-            )?;
-            if owner.pid.is_some() {
-                let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
-                loop {
-                    let observed = preference::snapshot(&home, owner.pid)?;
-                    if observed["active"] == enabled && observed["error"].is_null() {
-                        break;
-                    }
-                    if tokio::time::Instant::now() >= deadline {
-                        bail!(
-                            "Keep-awake preference was saved, but the running Hand has not confirmed applying it. Inspect with `nanocodex hand keep-awake`; do not assume its assertion changed."
-                        );
-                    }
-                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-                }
-            }
-        }
-        // Re-read launchd after a concurrent service change; an old receipt
-        // must never claim the replacement owner's assertion is active.
-        let owner = crate::hand_service::status().await?;
-        println!("{}", preference::snapshot(&home, owner.pid)?);
-        Ok(())
     }
 }

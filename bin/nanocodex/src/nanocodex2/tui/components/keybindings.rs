@@ -7,7 +7,7 @@ use super::{
     floating::Floating,
     node::{Component, ComponentUpdate, RenderRequest},
 };
-use crate::tui::theme::Theme;
+use crate::nanocodex2::tui::theme::Theme;
 use crossterm::event::{Event, KeyCode, KeyEventKind};
 use ratatui::{
     Frame,
@@ -19,7 +19,7 @@ use ratatui::{
 use unicode_width::UnicodeWidthStr;
 
 const FOOTER: [(&str, &str); 2] = [("↑↓", "scroll"), ("esc", "close")];
-const BINDINGS: [(&str, &str); 39] = [
+const BINDINGS: &[(&str, &str)] = &[
     ("ctrl+x", "mute · unmute microphone while voice is active"),
     ("ctrl+s", "change reasoning effort"),
     ("ctrl+d", "select model · before first prompt"),
@@ -71,6 +71,14 @@ const BINDINGS: [(&str, &str); 39] = [
     ("mouse click/drag", "open links/tools · copy text"),
     ("pgup/pgdn · wheel", "scroll transcript"),
     ("ctrl+home/end", "jump to start · follow latest"),
+    ("/fast [on|off]", "toggle priority processing"),
+    ("/cancel", "interrupt the active response"),
+    ("/branches", "browse local history branches"),
+    ("/collapse", "fold side exploration into the main thread"),
+    ("/split", "open side exploration in a terminal pane"),
+    ("/mcp login <server>", "sign in to an MCP server"),
+    ("/mcp reload [server]", "reload MCP configuration"),
+    ("/benchmark", "run a local evaluation"),
 ];
 
 pub(super) enum KeybindingsEvent {
@@ -85,6 +93,16 @@ pub(super) enum KeybindingsEffect {
 #[derive(Default)]
 pub(super) struct KeybindingsHelp {
     scroll: u16,
+    capabilities: crate::nanocodex2::tui::backend::Capabilities,
+}
+
+impl KeybindingsHelp {
+    pub(super) fn new(capabilities: crate::nanocodex2::tui::backend::Capabilities) -> Self {
+        Self {
+            scroll: 0,
+            capabilities,
+        }
+    }
 }
 
 impl Component for KeybindingsHelp {
@@ -114,7 +132,12 @@ impl Component for KeybindingsHelp {
     }
 
     fn render(&mut self, frame: &mut Frame<'_>, area: Rect, theme: &Theme) {
-        let height = u16::try_from(BINDINGS.len())
+        let bindings: Vec<_> = BINDINGS
+            .iter()
+            .filter(|(key, _)| self.capabilities.command_available(key))
+            .copied()
+            .collect();
+        let height = u16::try_from(bindings.len())
             .unwrap_or(u16::MAX)
             .saturating_add(3);
         let layout =
@@ -122,13 +145,13 @@ impl Component for KeybindingsHelp {
         if layout.body.is_empty() {
             return;
         }
-        let max_scroll = BINDINGS
+        let max_scroll = bindings
             .len()
             .saturating_sub(usize::from(layout.body.height));
         self.scroll = self
             .scroll
             .min(u16::try_from(max_scroll).unwrap_or(u16::MAX));
-        let lines = BINDINGS
+        let lines = bindings
             .iter()
             .map(|&(key, description)| binding_line(key, description, layout.body.width, theme))
             .collect::<Vec<_>>();

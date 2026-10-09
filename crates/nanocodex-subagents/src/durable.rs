@@ -2,9 +2,13 @@
 //!
 //! A host that persists its root agent can also persist that root's subagent
 //! tree by installing a [`SubagentStore`]. The registry then journals one
-//! versioned, self-contained value per root session after every lifecycle
-//! change: topology, identities, roles and tasks, output contracts, statuses,
-//! accepted outputs, and each child's latest committed conversation boundary.
+//! versioned value per root session after every lifecycle change: topology,
+//! identities, roles and tasks, output contracts, statuses, accepted outputs,
+//! and a reference to each child's latest committed conversation boundary.
+//!
+//! Child conversations are stored as separate immutable records addressed by
+//! [`checkpoint_key`]. A journal write encodes only the children whose
+//! boundary changed, so its cost does not grow with the number of children.
 //!
 //! After a process restart or Durable Object eviction, the host calls
 //! [`Registry::restore`] for the recovered root session and then
@@ -36,7 +40,8 @@ pub type SubagentStoreFuture<'a, T> = Pin<Box<dyn Future<Output = T> + 'a>>;
 /// Host persistence for one opaque subagent journal value per root session.
 ///
 /// Values are Rust-owned JSON. Hosts store and return them verbatim; a save
-/// must atomically replace the previous value for the same root.
+/// must atomically store its records and replace the previous value for the
+/// same root. Records are immutable JSON texts addressed by [`checkpoint_key`].
 /// On WebAssembly hosts the registry is still shared through `Send + Sync`
 /// tool objects, so JavaScript-backed stores wrap their single-threaded handles.
 pub trait SubagentStore: Send + Sync {
@@ -45,11 +50,13 @@ pub trait SubagentStore: Send + Sync {
         &'a self,
         root_session_id: &'a str,
     ) -> SubagentStoreFuture<'a, std::io::Result<Option<String>>>;
-    /// Atomically replaces the journal for a root session.
+    /// Atomically stores `records` and replaces the journal for a root
+    /// session. Records the store already holds may be supplied again.
     fn save<'a>(
         &'a self,
         root_session_id: &'a str,
         payload: String,
+        records: Vec<Arc<str>>,
     ) -> SubagentStoreFuture<'a, std::io::Result<()>>;
     /// Records one child's latest committed checkpoint as that child's own
     /// durable session, so it is listable, readable and resumable by its
@@ -67,6 +74,12 @@ pub trait SubagentStore: Send + Sync {
     ) -> SubagentStoreFuture<'a, std::io::Result<()>> {
         Box::pin(async { Ok(()) })
     }
+    /// Loads one record referenced by a saved journal.
+    fn load_record<'a>(
+        &'a self,
+        root_session_id: &'a str,
+        key: &'a str,
+    ) -> SubagentStoreFuture<'a, std::io::Result<String>>;
 }
 
 /// In-memory [`SubagentStore`], useful for tests and single-process hosts that
@@ -75,7 +88,11 @@ pub trait SubagentStore: Send + Sync {
 pub struct MemorySubagentStore {
     values: Arc<Mutex<HashMap<String, String>>>,
     sessions: Arc<Mutex<HashMap<String, SessionCheckpoint>>>,
+    records: Arc<Mutex<MemoryRecords>>,
 }
+
+/// Checkpoint records by (root session, key).
+type MemoryRecords = HashMap<(String, String), Arc<str>>;
 
 impl MemorySubagentStore {
     /// Creates an empty store.
@@ -128,8 +145,19 @@ impl SubagentStore for MemorySubagentStore {
         &'a self,
         root_session_id: &'a str,
         payload: String,
+        records: Vec<Arc<str>>,
     ) -> SubagentStoreFuture<'a, std::io::Result<()>> {
         Box::pin(async move {
+            let mut stored = self
+                .records
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            for record in records {
+                stored.insert(
+                    (root_session_id.to_owned(), checkpoint_key(&record)),
+                    record,
+                );
+            }
             self.values
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -151,17 +179,91 @@ impl SubagentStore for MemorySubagentStore {
             Ok(())
         })
     }
+
+    fn load_record<'a>(
+        &'a self,
+        root_session_id: &'a str,
+        key: &'a str,
+    ) -> SubagentStoreFuture<'a, std::io::Result<String>> {
+        Box::pin(async move {
+            self.records
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .get(&(root_session_id.to_owned(), key.to_owned()))
+                .map(|record| record.to_string())
+                .ok_or_else(|| std::io::Error::other(format!("missing subagent checkpoint {key}")))
+
+        })
+    }
 }
 
 /// Journal version written by this runtime.
 ///
-/// Version 1 stored the removed per-family child snapshots: a Codex
+/// Version 1 embedded per-family child snapshots: a Codex
 /// `ChildRuntimeSnapshot` under `checkpoint` and a Claude form under
-/// `native_checkpoint`. Version 2 stores one family-tagged
-/// [`SessionCheckpoint`] under `checkpoint`. Both remain readable.
-pub(super) const JOURNAL_VERSION: u32 = 2;
+/// `native_checkpoint`. Version 2 referenced content-addressed records of the
+/// same per-family snapshots by [`checkpoint_key`]. Version 3 references
+/// records that each hold one family-tagged [`SessionCheckpoint`]. All remain
+/// readable.
+pub(super) const JOURNAL_VERSION: u32 = 3;
 /// Oldest journal version this runtime still restores.
 pub(super) const MIN_JOURNAL_VERSION: u32 = 1;
+
+/// Identity of a journal record: the lowercase hex SHA-256 of its JSON text.
+#[must_use]
+pub fn checkpoint_key(json: &str) -> String {
+    use sha2::{Digest, Sha256};
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut key = String::with_capacity(64);
+    for byte in Sha256::digest(json.as_bytes()) {
+        key.push(HEX[usize::from(byte >> 4)] as char);
+        key.push(HEX[usize::from(byte & 15)] as char);
+    }
+    key
+}
+
+/// A child's latest committed boundary, encoded once when it is captured.
+#[derive(Clone)]
+pub(super) struct JournalCheckpoint {
+    pub(super) key: Arc<str>,
+    /// Encoded record not yet acknowledged by a journal save.
+    pub(super) pending: Option<Arc<str>>,
+    /// The boundary itself, also recorded as the child's own durable session.
+    pub(super) checkpoint: SessionCheckpoint,
+}
+
+impl JournalCheckpoint {
+    pub(super) fn encode(checkpoint: &SessionCheckpoint) -> std::io::Result<Self> {
+        let json: Arc<str> = serde_json::to_string(checkpoint)
+            .map_err(std::io::Error::other)?
+            .into();
+        Ok(Self {
+            key: checkpoint_key(&json).into(),
+            pending: Some(json),
+            checkpoint: checkpoint.clone(),
+        })
+    }
+
+    /// A boundary whose record a previous journal save already stored.
+    pub(super) fn stored(key: String, checkpoint: SessionCheckpoint) -> Self {
+        Self {
+            key: key.into(),
+            pending: None,
+            checkpoint,
+        }
+    }
+}
+
+/// Version-2 record of a per-family child snapshot; read, never written.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LegacyCheckpointRecord {
+    #[serde(default)]
+    checkpoint: Option<Value>,
+    #[serde(default)]
+    native_checkpoint: Option<PersistedNative>,
+}
+
 
 #[derive(Serialize, Deserialize)]
 pub(super) struct PersistedScope {
@@ -194,6 +296,9 @@ pub(super) struct PersistedAgent {
     /// Version-1 boundary of a native (Claude) backend; read, never written.
     #[serde(default, skip_serializing)]
     pub(super) native_checkpoint: Option<PersistedNative>,
+    /// Record key of the latest committed boundary of any backend family.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) checkpoint_ref: Option<String>,
     /// Bounded tool calls observed during the unfinished turn.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(super) in_flight_calls: Vec<InFlightCall>,
@@ -485,8 +590,17 @@ impl SubagentStore for JournalStore {
         &'a self,
         _root_session_id: &'a str,
         payload: String,
+        records: Vec<Arc<str>>,
     ) -> SubagentStoreFuture<'a, std::io::Result<()>> {
-        self.0.save(payload)
+        self.0.save(payload, records)
+    }
+
+    fn load_record<'a>(
+        &'a self,
+        _root_session_id: &'a str,
+        key: &'a str,
+    ) -> SubagentStoreFuture<'a, std::io::Result<String>> {
+        self.0.load_record(key.to_owned())
     }
 
     fn record_session<'a>(
@@ -518,13 +632,22 @@ from where your history ends. Submit a result only once the whole delegated task
 
 pub(super) fn persist_agent(
     session: &ChildSession,
-    checkpoint: Option<&SessionCheckpoint>,
-) -> PersistedAgent {
-    let checkpoint = checkpoint
-        .or(session.stored_runtime.as_ref())
-        .cloned()
-        .map(JournaledCheckpoint::Current);
-    PersistedAgent {
+    checkpoint: Option<&JournalCheckpoint>,
+    records: &mut Vec<(Arc<str>, Arc<str>)>,
+) -> std::io::Result<PersistedAgent> {
+    // A retained runtime is normally captured as a journal checkpoint too;
+    // encode it here only if no capture exists.
+    let fallback = match (checkpoint, &session.stored_runtime) {
+        (None, Some(snapshot)) => Some(JournalCheckpoint::encode(snapshot)?),
+        _ => None,
+    };
+    let checkpoint_ref = checkpoint.or(fallback.as_ref()).map(|checkpoint| {
+        if let Some(json) = &checkpoint.pending {
+            records.push((Arc::clone(&checkpoint.key), Arc::clone(json)));
+        }
+        checkpoint.key.to_string()
+    });
+    Ok(PersistedAgent {
         descriptor: session.descriptor.clone(),
         binding_task: Some(session.binding_task.clone()),
         status: session.status.clone(),
@@ -534,19 +657,57 @@ pub(super) fn persist_agent(
         next_instruction_revision: session.next_instruction_revision,
         turn_in_flight: session.active || matches!(session.status, AgentStatus::Running),
         resume_attempts: session.resume_attempts,
-        checkpoint,
+        checkpoint: None,
         native_checkpoint: None,
+        checkpoint_ref,
         in_flight_calls: session.in_flight_calls.clone(),
         in_flight_omitted: session.in_flight_omitted,
-    }
+    })
 }
 
 impl PersistedAgent {
+    /// Replaces a checkpoint reference with its stored record.
+    ///
+    /// Returns the stored boundary when its record is already a current
+    /// [`SessionCheckpoint`]. A version-2 per-family record is upgraded by
+    /// [`Self::snapshot`] and re-recorded under a new key on the next save.
+    pub(super) async fn hydrate(
+        &mut self,
+        store: &dyn SubagentStore,
+        root_session_id: &str,
+    ) -> std::io::Result<Option<JournalCheckpoint>> {
+        let Some(key) = self.checkpoint_ref.take() else {
+            return Ok(None);
+        };
+        let json = store.load_record(root_session_id, &key).await?;
+        if checkpoint_key(&json) != key {
+            return Err(std::io::Error::other(format!(
+                "subagent checkpoint {key} does not match its record"
+            )));
+        }
+        let invalid = |error: serde_json::Error| {
+            std::io::Error::other(format!("invalid subagent checkpoint {key}: {error}"))
+        };
+        let record: Value = serde_json::from_str(&json).map_err(invalid)?;
+        if record.get("format").is_some() {
+            let checkpoint: SessionCheckpoint = serde_json::from_value(record).map_err(invalid)?;
+            checkpoint.validate().map_err(std::io::Error::other)?;
+            self.checkpoint = Some(JournaledCheckpoint::Current(checkpoint.clone()));
+            return Ok(Some(JournalCheckpoint::stored(key, checkpoint)));
+        }
+        let record: LegacyCheckpointRecord = serde_json::from_value(record).map_err(invalid)?;
+        self.checkpoint = record.checkpoint.map(JournaledCheckpoint::LegacyCodex);
+        self.native_checkpoint = record.native_checkpoint;
+        Ok(None)
+    }
+
     /// The journaled checkpoint for any backend family, upgrading version-1
-    /// entries. `lineage` is assigned to legacy entries, which recorded none.
+    /// and version-2 per-family entries. `lineage` is assigned to legacy
+    /// entries, which recorded none.
     pub(super) fn snapshot(&self, lineage: &Lineage) -> std::io::Result<Option<SessionCheckpoint>> {
         if let Some(checkpoint) = &self.checkpoint {
             return checkpoint.checkpoint(lineage).map(Some);
+
         }
         Ok(self
             .native_checkpoint

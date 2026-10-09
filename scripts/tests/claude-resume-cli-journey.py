@@ -74,7 +74,7 @@ def main():
     steps = {
         "initial": [("TaskCreate", {"subject": "Resume durable task", "description": "Preserve task state between native processes"}),
                     ("TaskUpdate", {"taskId": "1", "status": "in_progress"}),
-                    ("Bash", {"command": "printf x >> counter.txt; printf committed-shell-once"})],
+                    ("exec_command", {"cmd": "printf x >> counter.txt; printf committed-shell-once"})],
         "explicit": [("TaskGet", {"taskId": "1"}),
                      ("TaskCreate", {"subject": "After explicit resume", "description": "Check saved ID watermark"}),
                      ("Read", {"file_path": "workspace-marker.txt"})],
@@ -125,7 +125,7 @@ def main():
                         require(task["id"] == expected, f"wrong task watermark: {task}")
                         if name == "explicit" and stage == 1:
                             require(task["status"] == "in_progress", f"task status not restored: {task}")
-                    if prior_tool == "Bash":
+                    if prior_tool == "exec_command":
                         require("committed-shell-once" in output, "missing committed shell receipt")
                     if prior_tool == "Read":
                         marker = "saved-workspace-visible" if name == "explicit" else "x"

@@ -60,7 +60,7 @@ else:
         ('Write', {'file_path': 'large.txt', 'content': 'bad'}, True),
         ('Write', {'file_path': 'linked.txt', 'content': 'bad'}, True),
         ('Write', {'file_path': 'pipe.txt', 'content': 'bad'}, True),
-        ('Bash', {'command': 'printf unmanaged > bash.txt'}, False),
+        ('exec_command', {'cmd': 'printf unmanaged > process.txt'}, False),
     ]
     steps2 = [
         ('Edit', {'file_path': 'existing.txt', 'old_string': 'first', 'new_string': 'second'}, False),
@@ -131,7 +131,7 @@ else:
         require(len(preview1['checkpoints']) == 1, 'expected single first turn')
         turn1 = preview1['checkpoints'][0]['checkpoint']
         files = preview1['checkpoints'][0]['files']
-        require(len(files) == 4, f'wrong checkpoints (denied/bounded/symlink/Bash must be excluded): {files}')
+        require(len(files) == 4, f'wrong checkpoints (denied/bounded/symlink/exec_command must be excluded): {files}')
         require(not any(f['path'] == 'unapproved.txt' for f in files), 'checkpoint captured original rather than effective input')
         run('missing-selection', rewind + ['--restore'], False)
         run('unknown-checkpoint', rewind + ['--before', 'unknown', '--restore'], False)
@@ -159,7 +159,7 @@ else:
         require((workspace / 'existing.txt').stat().st_mode & 0o777 == 0o640, 'original mode not restored')
         require((workspace / 'demo.ipynb').read_bytes() == notebook, 'notebook before-image not restored byte-for-byte')
         require(not (workspace / 'created.txt').exists(), 'new file not removed')
-        require((workspace / 'bash.txt').read_text() == 'unmanaged', 'rewind incorrectly claims arbitrary Bash effects')
+        require((workspace / 'process.txt').read_text() == 'unmanaged', 'rewind incorrectly claims arbitrary exec_command effects')
         journals = list((workspace / 'codex-home/claude/checkpoints').glob('*.json'))
         require(len(journals) == 1, 'missing persistent journal')
         require(journals[0].stat().st_mode & 0o777 == 0o600, 'private before-images have wrong permissions')

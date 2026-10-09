@@ -30,8 +30,35 @@ pub(super) fn assets() -> &'static Assets {
     })
 }
 
-pub(super) fn theme() -> SyntaxTheme {
-    SyntaxTheme {
+/// Prepare the syntax tables and their common lazy regexes off the input loop.
+/// The first frame and the first Ctrl+O must not pay for loading the grammar set.
+pub(super) fn prewarm() {
+    static START: std::sync::Once = std::sync::Once::new();
+    START.call_once(|| {
+        let _ = std::thread::Builder::new()
+            .name("tui-highlighting".to_owned())
+            .spawn(|| {
+                let assets = assets();
+                for (language, example) in [
+                    (
+                        "javascript",
+                        "const result = await tools.exec_command({cmd: 'ls'});",
+                    ),
+                    ("rust", "pub fn main() { println!(\"ready\"); }"),
+                    ("json", "{\"result\": [true, 42]}"),
+                    ("bash", "echo \"$PATH\" | head -n 1"),
+                ] {
+                    let syntax = syntax_for_token(&assets.syntaxes, language);
+                    let mut highlighter = HighlightLines::new(syntax, theme());
+                    let _ = line(&mut highlighter, example, &assets.syntaxes);
+                }
+            });
+    });
+}
+
+pub(super) fn theme() -> &'static SyntaxTheme {
+    static THEME: OnceLock<SyntaxTheme> = OnceLock::new();
+    THEME.get_or_init(|| SyntaxTheme {
         name: Some("tact".to_owned()),
         settings: ThemeSettings {
             foreground: Some(syntect_color(Color::Reset)),
@@ -57,7 +84,7 @@ pub(super) fn theme() -> SyntaxTheme {
             rule("invalid", Color::Red, Some(FontStyle::UNDERLINE)),
         ],
         ..SyntaxTheme::default()
-    }
+    })
 }
 
 pub(super) fn syntax_for_token<'a>(syntaxes: &'a SyntaxSet, token: &str) -> &'a SyntaxReference {

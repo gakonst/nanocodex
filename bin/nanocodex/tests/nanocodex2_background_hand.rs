@@ -236,7 +236,7 @@ async fn terminal(home: &Path, origin: &str, cwd: &Path) {
             pixel_height: 0,
         })
         .unwrap();
-    let mut command = CommandBuilder::new(env!("CARGO_BIN_EXE_nanocodex2"));
+    let mut command = CommandBuilder::new(env!("CARGO_BIN_EXE_nanocodex"));
     command.env_clear();
     for (key, value) in [
         ("PATH", std::env::var("PATH").unwrap_or_default()),
@@ -337,7 +337,7 @@ async fn terminal(home: &Path, origin: &str, cwd: &Path) {
 }
 
 fn command(home: &Path, origin: &str) -> Command {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_nanocodex2"));
+    let mut command = Command::new(env!("CARGO_BIN_EXE_nanocodex"));
     command
         .env_clear()
         .env("PATH", std::env::var_os("PATH").unwrap_or_default())
@@ -362,7 +362,7 @@ fn digest(value: &str) -> String {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn permission_request_targets_only_the_running_daemon() {
     eprintln!(
-        "Reproduce: cargo test -p nanocodex2-bin --test nanocodex2_background_hand permission_request -- --nocapture"
+        "Reproduce: cargo test -p nanocodex-bin --test nanocodex2_background_hand permission_request -- --nocapture"
     );
     let (calls, receiver) = mpsc::unbounded_channel();
     let state = Cloud {
@@ -419,7 +419,8 @@ async fn permission_request_targets_only_the_running_daemon() {
         )
     });
 
-    let executable = Path::new(env!("CARGO_BIN_EXE_nanocodex2"));
+    // The CLI forwards `hand` to the Hand executable, which owns the daemon.
+    let executable = Path::new(env!("CARGO_BIN_EXE_nanocodex-hand"));
     let request = |pid: u32| {
         let mut command = command(&home, &origin);
         command
@@ -478,7 +479,7 @@ async fn permission_request_targets_only_the_running_daemon() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn background_daemon_survives_two_clients_and_routes_native_cwds() {
     eprintln!(
-        "Reproduce: cargo test -p nanocodex2-bin --test nanocodex2_background_hand -- --nocapture"
+        "Reproduce: cargo test -p nanocodex-bin --test nanocodex2_background_hand -- --nocapture"
     );
     let (calls, receiver) = mpsc::unbounded_channel();
     let state = Cloud {

@@ -1,6 +1,6 @@
 use std::{
     cell::{Cell, RefCell},
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     path::PathBuf,
     rc::Rc,
     sync::{Arc, Mutex, Weak},
@@ -119,6 +119,9 @@ extern "C" {
 
     #[wasm_bindgen(catch, js_namespace = console, js_name = error)]
     fn host_console_error(message: &str, error: &JsValue) -> Result<(), JsValue>;
+
+    #[wasm_bindgen(catch, js_namespace = console, js_name = error)]
+    fn host_console_error_record(record: &JsValue) -> Result<(), JsValue>;
 
     #[wasm_bindgen(catch, js_namespace = ["globalThis", "nanocodexHost"], js_name = emitEvent)]
     fn host_emit_event(
@@ -3807,11 +3810,22 @@ fn forward_subagent_updates(
                         &descriptor,
                         host_context.as_deref(),
                     ) {
-                        report_subagent_host_error("binding a subagent session", &error);
+                        report_subagent_host_error(
+                            "binding a subagent session",
+                            &descriptor.session_id,
+                            &error,
+                        );
                     }
                 }
                 SubagentUpdate::Event { id, event } => {
+                    // Only a child the host accepted has an event observer. A
+                    // failed or released binding would reject every event.
+                    let bound = sessions
+                        .borrow()
+                        .get(&(root_session_id.clone(), id))
+                        .cloned();
                     if event_forwarders.get() > 0
+                        && let Some(session_id) = bound
                         && let Ok(encoded) = serde_json::to_string(&event)
                     {
                         let id = id.to_string();
@@ -3823,7 +3837,11 @@ fn forward_subagent_updates(
                             u32::try_from(encoded.len()).unwrap_or(u32::MAX),
                             Some(&id),
                         ) {
-                            report_subagent_host_error("forwarding a subagent event", &error);
+                            report_subagent_host_error(
+                                "forwarding a subagent event",
+                                &session_id,
+                                &error,
+                            );
                         }
                     }
                 }
@@ -3845,7 +3863,11 @@ fn forward_subagent_updates(
                             &session_id,
                             scoped.detach,
                         ) {
-                            report_subagent_host_error("releasing a subagent session", &error);
+                            report_subagent_host_error(
+                                "releasing a subagent session",
+                                &session_id,
+                                &error,
+                            );
                         }
                     }
                 }
@@ -3858,7 +3880,11 @@ fn forward_subagent_updates(
                         && let Ok(encoded) = serde_json::to_string(&status)
                         && let Err(error) = host_subagent_status(&session_id, &encoded)
                     {
-                        report_subagent_host_error("forwarding a subagent status", &error);
+                        report_subagent_host_error(
+                            "forwarding a subagent status",
+                            &session_id,
+                            &error,
+                        );
                     }
                 }
                 SubagentUpdate::Message(_) => {}
@@ -3882,7 +3908,7 @@ fn forward_subagent_updates(
                 &session_id,
                 true,
             ) {
-                report_subagent_host_error("releasing a subagent session", &error);
+                report_subagent_host_error("releasing a subagent session", &session_id, &error);
             }
         }
     });
@@ -3946,16 +3972,132 @@ fn release_subagent_scope(
             &session_id,
             true,
         ) {
-            report_subagent_host_error("releasing a subagent session", &error);
+            report_subagent_host_error("releasing a subagent session", &session_id, &error);
         }
     }
 }
 
-fn report_subagent_host_error(operation: &str, error: &JsValue) {
-    drop(host_console_error(
-        &format!("Nanocodex failed while {operation}; later subagent updates will continue"),
-        error,
-    ));
+thread_local! {
+    /// Child, operation and reason triples that have already been logged.
+    static REPORTED_SUBAGENT_HOST_ERRORS: RefCell<HashSet<(&'static str, String, String)>> =
+        RefCell::new(HashSet::new());
+}
+
+/// Bounds the suppression memory for long-lived runtimes with many children.
+const REPORTED_SUBAGENT_HOST_ERROR_LIMIT: usize = 512;
+
+/// Logs one structured, content-free line per child, operation and reason.
+/// A persistent host fault would otherwise repeat on every later update for
+/// that child, and console.error(message, error) drops the error message.
+fn report_subagent_host_error(operation: &'static str, session_id: &str, error: &JsValue) {
+    let (error_kind, reason, error_message) = subagent_host_error_diagnostics(error);
+    let first = REPORTED_SUBAGENT_HOST_ERRORS.with(|reported| {
+        let mut reported = reported.borrow_mut();
+        if reported.len() >= REPORTED_SUBAGENT_HOST_ERROR_LIMIT {
+            reported.clear();
+        }
+        reported.insert((operation, session_id.to_owned(), reason.clone()))
+    });
+    if !first {
+        return;
+    }
+    let record = serde_json::json!({
+        "type": "nanocodex.subagent_host_error",
+        "message": format!("Nanocodex failed while {operation}; later subagent updates will continue"),
+        "operation": operation,
+        "session_id": session_id,
+        "error_kind": error_kind,
+        "reason": reason,
+        "error_message": error_message,
+    });
+    match js_sys::JSON::parse(&record.to_string()) {
+        Ok(record) => drop(host_console_error_record(&record)),
+        Err(_) => drop(host_console_error(&record.to_string(), &JsValue::UNDEFINED)),
+    }
+}
+
+/// Error kind, stable reason (an error code when present) and a bounded message.
+fn subagent_host_error_diagnostics(error: &JsValue) -> (String, String, String) {
+    let field = |name: &str| {
+        js_sys::Reflect::get(error, &JsValue::from_str(name))
+            .ok()
+            .and_then(|value| value.as_string())
+    };
+    let is_error = error.is_instance_of::<js_sys::Error>();
+    let kind = if is_error {
+        field("name").unwrap_or_else(|| "Error".to_owned())
+    } else {
+        error.js_typeof().as_string().unwrap_or_default()
+    };
+    let reason = (is_error || error.is_object())
+        .then(|| field("code"))
+        .flatten()
+        .filter(|code| {
+            !code.is_empty()
+                && code.len() <= 64
+                && code
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || b"_.:-".contains(&byte))
+        })
+        .unwrap_or_else(|| kind.clone());
+    let message = if is_error {
+        field("message").unwrap_or_default()
+    } else {
+        error.as_string().unwrap_or_default()
+    };
+    (kind, reason, redact_host_error_message(&message))
+}
+
+/// Removes quoted values, URLs and long identifiers so host errors that echo
+/// payload fragments never place user content in logs.
+fn redact_host_error_message(message: &str) -> String {
+    let mut unquoted = String::with_capacity(message.len());
+    let mut open: Option<char> = None;
+    for character in message.chars() {
+        match open {
+            Some(quote) if character == quote => {
+                unquoted.push('\u{2026}');
+                unquoted.push(character);
+                open = None;
+            }
+            Some(_) => {}
+            None => {
+                unquoted.push(character);
+                if matches!(character, '"' | '\'' | '\u{60}') {
+                    open = Some(character);
+                }
+            }
+        }
+    }
+    // An unterminated quote still hides its tail.
+    if open.is_some() {
+        unquoted.push('\u{2026}');
+    }
+    let mut redacted = String::new();
+    for word in unquoted.split_whitespace() {
+        if !redacted.is_empty() {
+            redacted.push(' ');
+        }
+        if word.contains("://") {
+            redacted.push_str("<url>");
+            continue;
+        }
+        let mut run = String::new();
+        for character in word.chars().map(Some).chain(std::iter::once(None)) {
+            if let Some(character) = character
+                && (character.is_ascii_alphanumeric() || character == '_' || character == '-')
+            {
+                run.push(character);
+                continue;
+            }
+            redacted.push_str(if run.len() >= 24 { "<id>" } else { &run });
+            run.clear();
+            if let Some(character) = character {
+                redacted.push(character);
+            }
+        }
+    }
+    redacted.chars().take(160).collect()
 }
 
 fn remove_subagent_parent(parents: &Arc<Mutex<HashMap<String, AgentHandle>>>, session_id: &str) {

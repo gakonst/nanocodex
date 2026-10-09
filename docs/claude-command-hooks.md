@@ -10,11 +10,11 @@ choose a settings file you trust.
 {
   "hooks": {
     "PreToolUse": [{
-      "matcher": "^(Bash|Write)$",
+      "matcher": "^(exec_command|Write)$",
       "hooks": [{"type": "command", "command": "/absolute/path/check-tool", "timeout": 10}]
     }],
     "PostToolUse": [{
-      "matcher": "Bash",
+      "matcher": "exec_command",
       "hooks": [{"type": "command", "command": "/absolute/path/record-result"}]
     }],
     "PostToolUseFailure": [{
@@ -26,6 +26,8 @@ choose a settings file you trust.
 
 Matchers use Rust regular expressions against the native tool name; empty or
 `*` matches every tool. Matching hooks run sequentially in configuration order.
+For process calls, match `exec_command` or `write_stdin`; command rewrites use
+`tool_input.cmd`. Hook executable configuration still uses `command`.
 Unsupported events, non-command hook types, invalid matchers and invalid timeouts
 reject the configuration before model inference.
 

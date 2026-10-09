@@ -1,5 +1,7 @@
 {
   "compilerOptions": {
+    "incremental": true,
+    "tsBuildInfoFile": "node_modules/.cache/typecheck.tsbuildinfo",
     "exactOptionalPropertyTypes": true,
     "lib": ["ESNext"],
     "module": "ESNext",

@@ -1,22 +1,30 @@
-// Public updater boundary test. Requires real binaries from one source revision.
-// Never starts/stops an OS service. Darwin uses an unregistered synthetic plist.
+// Public updater boundary test. Requires the real nanocodex CLI and nanocodex-hand
+// built from one source revision (cargo build -p nanocodex-bin --bins). The Hand
+// is installed under its service file name nanocodex2. Never starts/stops an OS
+// service: Darwin uses an unregistered synthetic plist and asserts the live Hand
+// PID is unchanged. --old-updater PATH also installs the pair with a previously
+// shipped two-binary updater (a read-only copy) before the new CLI takes over.
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
-import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 assert.ok(['darwin', 'linux'].includes(process.platform),
   'Windows native acceptance needs a disposable interactive Windows user; this runner must not replace a live Windows CLI/task.');
-assert.ok(process.argv[2] && process.argv[3],
-  'usage: node bin/nanocodex/tests/update_local_e2e.mjs CLI HAND [OUTPUT_DIR] [--source]');
-const suppliedCli = resolve(process.argv[2]);
-const suppliedHand = resolve(process.argv[3]);
-const withSource = process.argv.includes('--source');
-const output = resolve(process.argv[4] && process.argv[4] !== '--source'
-  ? process.argv[4] : 'output/update-local-e2e');
+const argv = process.argv.slice(2);
+const oldUpdaterIndex = argv.indexOf('--old-updater');
+const suppliedOldUpdater = oldUpdaterIndex >= 0 ? resolve(argv[oldUpdaterIndex + 1] ?? '') : null;
+if (oldUpdaterIndex >= 0) argv.splice(oldUpdaterIndex, 2);
+const withSource = argv.includes('--source');
+const positional = argv.filter(arg => arg !== '--source');
+assert.ok(positional[0] && positional[1],
+  'usage: node bin/nanocodex/tests/update_local_e2e.mjs CLI HAND [OUTPUT_DIR] [--source] [--old-updater PATH]');
+const suppliedCli = resolve(positional[0]);
+const suppliedHand = resolve(positional[1]);
+const output = resolve(positional[2] ?? 'output/update-local-e2e');
 mkdirSync(output, { recursive: true });
 const fixture = mkdtempSync(join(tmpdir(), 'nanocodex updater & pair '));
 const trace = [];
@@ -25,12 +33,16 @@ const store = join(fixture, 'install');
 const home = join(fixture, 'home');
 const runner = join(fixture, 'runner', 'nanocodex');
 const cli = join(fixture, 'pair', 'nanocodex');
-const hand = join(fixture, 'pair', 'nanocodex2');
+// Built layout: nanocodex-hand beside the CLI is found without --hand-binary.
+const hand = join(fixture, 'pair', 'nanocodex-hand');
+const explicitHand = join(fixture, 'explicit', 'hand-build');
+const cliOnly = join(fixture, 'cli-only', 'nanocodex');
 const account = join(home, 'synthetic-account.json');
-for (const path of [store, home, join(fixture, 'runner'), join(fixture, 'pair')]) {
+for (const path of [store, home, join(fixture, 'runner'), join(fixture, 'pair'), dirname(explicitHand), dirname(cliOnly)]) {
   mkdirSync(path, { recursive: true });
 }
-for (const [source, target] of [[suppliedCli, runner], [suppliedCli, cli], [suppliedHand, hand]]) {
+for (const [source, target] of [[suppliedCli, runner], [suppliedCli, cli], [suppliedHand, hand],
+  [suppliedHand, explicitHand], [suppliedCli, cliOnly]]) {
   copyFileSync(source, target);
   chmodSync(target, 0o755);
 }
@@ -40,15 +52,22 @@ writeFileSync(account, JSON.stringify({ fixture: true, access_token: 'synthetic-
 const accountBefore = readFileSync(account);
 // Drop inherited account, provider, target, and install-path overrides. No GitHub
 // access is needed. Keep only command discovery and OS temp variables.
+// Resolve the real toolchain before isolating HOME. A rustup proxy in PATH
+// would otherwise consult the empty fixture home and reject source metadata
+// before the updater reaches the compatibility checks this journey exercises.
+const cargoPath = spawnSync('rustup', ['which', 'cargo'], { encoding: 'utf8' });
+const fixturePath = cargoPath.status === 0
+  ? `${dirname(cargoPath.stdout.trim())}:${process.env.PATH}`
+  : process.env.PATH;
 const env = {
-  PATH: process.env.PATH, HOME: home, USERPROFILE: home,
+  PATH: fixturePath, HOME: home, USERPROFILE: home,
   LOCALAPPDATA: join(home, 'localappdata'), XDG_CONFIG_HOME: join(home, '.config'),
   NANOCODEX_DIR: store, NANOCODEX_ACCOUNT_FILE: account, NO_COLOR: '1',
   TMPDIR: process.env.TMPDIR ?? tmpdir(), TMP: tmpdir(), TEMP: tmpdir(),
 };
 function run(program, args, expected = 0, options = {}) {
   writeFileSync(join(output, 'transcript.log'), `${trace.join('\n\n')}\n\nrunning: ${program} ${args.join(' ')}\n`);
-  const r = spawnSync(program, args, { cwd: options.cwd ?? fixture, env: { ...env, ...options.env }, encoding: 'utf8', timeout: options.timeout ?? 90_000, maxBuffer: 16 * 1024 * 1024 });
+  const r = spawnSync(program, args, { cwd: options.cwd ?? fixture, env: { ...env, ...options.env }, encoding: 'utf8', timeout: options.timeout ?? 1_800_000, maxBuffer: 16 * 1024 * 1024 });
   trace.push(`$ ${program} ${args.join(' ')}\nexpected: ${expected === 0 ? 'success' : 'failure'}\nobserved exit: ${r.status}; signal: ${r.signal}; error: ${r.error?.message ?? 'none'}\nstdout:\n${r.stdout ?? ''}\nstderr:\n${r.stderr ?? ''}`);
   assert.equal(r.error, undefined, 'child execution error');
   if (expected === 0) assert.equal(r.status, 0, r.stderr);
@@ -60,6 +79,58 @@ const active = () => basename(readlinkSync(join(store, 'current')));
 const pending = () => existsSync(join(store, 'pending-update')) ? readFileSync(join(store, 'pending-update'), 'utf8').trim() : null;
 const versions = () => run('find', [join(store, 'versions'), '-maxdepth', '1', '-type', 'd']).stdout.split('\n').filter(Boolean).sort();
 const digest = bytes => createHash('sha256').update(bytes).digest('hex');
+const oneRevision = (stdout, what) => {
+  const lines = stdout.match(/^Commit SHA: .*$/gm) ?? [];
+  assert.equal(lines.length, 1, `${what} --version must print exactly one Commit SHA line`);
+  return lines[0].match(/^Commit SHA: ([0-9a-f]{40})$/i)?.[1].toLowerCase();
+};
+// Help structure distinguishes the trees: the managed tree takes only a
+// command (no top-level options), while only the local tree has `auth`.
+const managedHelp = /^Usage: \S+ \[COMMAND\]$/m;
+const localHelp = /^\s+auth\s/m;
+function checkAliases(root, revision, label) {
+  for (const alias of ['nanocodex', 'nanocodex2', 'nc', 'ncl']) {
+    const link = join(root, 'bin', alias);
+    assert.equal(readlinkSync(link), join('..', 'current', 'nanocodex'), `${label}: bin/${alias} must link the CLI`);
+    assert.equal(oneRevision(run(link, ['--version']).stdout, `${label} bin/${alias}`), revision);
+  }
+  const ncl = run(join(root, 'bin', 'ncl'), ['--help']).stdout;
+  assert.match(ncl, localHelp, `${label}: ncl --help must show the local tree`);
+  assert.doesNotMatch(ncl, managedHelp, `${label}: ncl --help must not show the managed tree`);
+  for (const alias of ['nanocodex', 'nanocodex2', 'nc']) {
+    const help = run(join(root, 'bin', alias), ['--help']).stdout;
+    assert.match(help, managedHelp, `${label}: ${alias} --help must show the managed tree`);
+    assert.doesNotMatch(help, localHelp, `${label}: ${alias} --help must not show the local tree`);
+  }
+  trace.push(`PASS ${label}: bin/{nanocodex,nanocodex2,nc,ncl} -> ../current/nanocodex; each prints one Commit SHA ${revision}; ncl --help local tree, the others managed tree`);
+}
+function bundleBytes(directory, label, handBytes = suppliedHand) {
+  assert.equal(digest(readFileSync(join(directory, 'nanocodex'))), digest(readFileSync(suppliedCli)), `${label}: CLI bytes`);
+  assert.equal(digest(readFileSync(join(directory, 'nanocodex2'))), digest(readFileSync(handBytes)), `${label}: Hand bytes as nanocodex2`);
+  trace.push(`PASS ${label}: ${directory}/nanocodex = CLI, nanocodex2 = Hand sha256 ${digest(readFileSync(join(directory, 'nanocodex2')))}`);
+}
+function handPid() {
+  if (process.platform !== 'darwin') return null;
+  // Read-only: the user's real login Hand must never be restarted by this test.
+  const r = spawnSync('launchctl', ['print', `gui/${process.getuid()}/com.nanocodex.hand`], { encoding: 'utf8' });
+  return r.status === 0 ? (r.stdout.match(/^\s*pid = (\d+)/m)?.[1] ?? 'not running') : 'not loaded';
+}
+// Model a completed CLI selection without restarting the real Hand.
+function select(root, key) {
+  rmSync(join(root, 'current'));
+  symlinkSync(join('versions', key), join(root, 'current'));
+  rmSync(join(root, 'pending-update'), { force: true });
+}
+function keyOf(paths) {
+  const h = createHash('sha256');
+  for (const p of paths) {
+    const bytes = readFileSync(p);
+    const size = Buffer.alloc(8);
+    size.writeBigUInt64LE(BigInt(bytes.length));
+    h.update(size).update(bytes);
+  }
+  return `local-${h.digest('hex').slice(0, 12)}`;
+}
 function localKey() {
   const h = createHash('sha256');
   for (const p of [cli, hand]) {
@@ -73,6 +144,9 @@ function localKey() {
 let plist;
 let plistBefore;
 let linuxOwner;
+let installedHandPath;
+const livePidBefore = handPid();
+trace.push(`live Hand before (read-only launchctl print): ${livePidBefore}`);
 try {
   const missingPath = run(runner, ['hand', 'restart', '--executable'], 1);
   assert.match(missingPath.stderr, /value/);
@@ -86,11 +160,18 @@ try {
   }
   const cliVersion = run(cli, ['--version']).stdout;
   const handVersion = run(hand, ['--version']).stdout;
-  const revision = cliVersion.match(/^Commit SHA: ([0-9a-f]{40})$/im)?.[1].toLowerCase();
+  const revision = oneRevision(cliVersion, 'CLI');
   assert.ok(revision, 'CLI must expose full source revision');
-  assert.equal(handVersion.match(/^Commit SHA: ([0-9a-f]{40})$/im)?.[1].toLowerCase(), revision,
-    'supply a real CLI + Hand built from the same checkout');
-  trace.push(`real candidate pair revision: ${revision}; platform: ${process.platform}; fixture: ${fixture}`);
+  const identity = version => {
+    const matches = [...version.matchAll(/^Hand Identity: ([0-9a-f]{64})$/gm)];
+    assert.equal(matches.length, 1, 'candidate must expose exactly one Hand content identity');
+    return matches[0][1];
+  };
+  assert.equal(identity(handVersion), identity(cliVersion),
+    'supply a real CLI + Hand with matching Hand source inputs');
+  assert.doesNotMatch(handVersion, /^Commit SHA:|^Build Timestamp:/m,
+    'Hand version must remain independent of CLI-only revisions');
+  trace.push(`real candidate pair revision: ${revision}; Hand identity: ${identity(handVersion)}; platform: ${process.platform}; fixture: ${fixture}`);
 
   if (process.platform === 'darwin') {
     const escape = x => x.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;');
@@ -100,6 +181,7 @@ try {
     // the already-existing GUI owner. All test commands defer rather than restart.
     plistBefore = `<?xml version="1.0"?><plist version="1.0"><dict><key>Label</key><string>com.nanocodex.hand</string><key>ProgramArguments</key><array><string>${escape(hand)}</string><string>hand</string></array><key>RunAtLoad</key><true/><key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict><key>EnvironmentVariables</key><dict><key>HOME</key><string>${escape(home)}</string><key>NANOCODEX_ACCOUNT_FILE</key><string>${escape(account)}</string></dict></dict></plist>`;
     writeFileSync(plist, plistBefore);
+    installedHandPath = hand;
   }
 
   if (process.platform === 'linux') {
@@ -107,15 +189,43 @@ try {
     assert.equal(typeof linuxOwner.installed, 'boolean');
     assert.equal(typeof linuxOwner.loaded, 'boolean');
     trace.push(`read-only native Linux owner: ${JSON.stringify(linuxOwner)}`);
+    if (linuxOwner.installed || linuxOwner.loaded) installedHandPath = linuxOwner.executable;
   }
 
-  // Real pair installation verifies both probes and caches their actual bytes.
-  update(['--path', cli, '--hand-binary', hand]);
+  // (b) Real pair installation: the sibling nanocodex-hand is found without
+  // --hand-binary; both probes run and their actual bytes are cached.
+  update(['--path', cli]);
   const key = localKey();
   const before = active();
-  assert.equal(digest(readFileSync(join(store, 'versions', key, 'nanocodex'))), digest(readFileSync(cli)));
-  assert.equal(digest(readFileSync(join(store, 'versions', key, 'nanocodex2'))), digest(readFileSync(hand)));
+  bundleBytes(join(store, 'versions', key), 'update --path CLI (sibling nanocodex-hand)');
+  // The Hand is stored once per Hand identity and serves the active CLI.
+  const storedHand = realpathSync(join(store, 'versions', key, 'nanocodex2'));
+  assert.equal(basename(dirname(dirname(storedHand))), 'hand-versions', 'Hand stored once per identity');
+  assert.match(run(storedHand, ['--local', '--help']).stdout, localHelp,
+    'a Hand stored under hand-versions forwards user commands to the active CLI');
+  const storedApp = join(store, 'versions', key, 'Nanocodex.app');
   if (process.platform === 'darwin') {
+    // Development pairs run from a signed bundle beside the stored Hand.
+    const app = realpathSync(storedApp);
+    assert.equal(app, join(dirname(storedHand), 'Nanocodex.app'));
+    run('/usr/bin/codesign', ['--verify', '--strict', app]);
+    assert.match(run('/usr/bin/codesign', ['--display', '--verbose=2', app]).stderr,
+      /^Identifier=com\.nanocodex\.hand$/m);
+    run(join(app, 'Contents/MacOS/nanocodex2'), ['__device-hand', '--service-protocol']);
+    trace.push(`PASS signed development bundle ${app}`);
+  } else {
+    assert.ok(!existsSync(storedApp), 'only macOS bundles the Hand');
+  }
+  trace.push(`PASS stored Hand ${storedHand} forwards --local --help to the active CLI`);
+  // An explicit --hand-binary elsewhere selects the same pair and key.
+  const versionsBeforeExplicit = versions();
+  update(['--path', cli, '--hand-binary', explicitHand]);
+  assert.deepEqual(versions(), versionsBeforeExplicit, 'explicit --hand-binary must reuse the identical cached pair');
+  const sameInstalledHand = installedHandPath && digest(readFileSync(installedHandPath)) === digest(readFileSync(hand));
+  if (sameInstalledHand) {
+    assert.equal(active(), key, 'same installed Hand activates CLI immediately');
+    assert.equal(pending(), null);
+  } else if (process.platform === 'darwin') {
     assert.equal(pending(), key, 'installed Hand must stage without explicit restart');
     assert.notEqual(before, key, 'CLI must remain on previous version while Hand is deferred');
     update(['--apply']);
@@ -176,6 +286,77 @@ try {
   else writeFileSync(join(store, 'pending-update'), `${heldPending}\n`);
   background();
   trace.push('PASS: public offline background updates preserve staged and active local selections; newer pending selections supersede the hold; no real Hand or scheduler mutation');
+
+  // (c) Hand decoupling. Select the pair as the CLI (modelled: no Hand restart).
+  // A CLI-only update keeps the installed service Hand even when the selected
+  // CLI bundle contains a different Hand. Without a service it keeps the active Hand and
+  // activates immediately even with an installed owner: nothing is staged and
+  // the service is not touched.
+  const keepActive = active();
+  const keepPending = pending();
+  select(store, key);
+  const cliKey = keyOf([cliOnly, installedHandPath ?? suppliedHand]);
+  const cliOnlyRun = update(['--path', cliOnly]);
+  assert.match(cliOnlyRun.stderr, /keeping the current Hand/);
+  assert.equal(active(), cliKey, 'CLI-only update must activate without a Hand handover');
+  assert.equal(pending(), null, 'CLI-only update must not stage a Hand switch');
+  bundleBytes(join(store, 'versions', cliKey), 'CLI-only update carries the current Hand', installedHandPath ?? suppliedHand);
+  if (process.platform === 'darwin') {
+    assert.match(cliOnlyRun.stderr, /Hand is unchanged/);
+    assert.equal(realpathSync(join(store, 'versions', cliKey, 'Nanocodex.app')),
+      realpathSync(join(store, 'versions', key, 'Nanocodex.app')),
+      'a CLI-only update keeps the one signed Nanocodex.app');
+    assert.equal(readFileSync(plist, 'utf8'), plistBefore, 'Hand owner definition unchanged');
+  }
+  // A full pair switches only the CLI when its Hand matches the installed
+  // owner. A different pair must still stage, even just after a CLI-only update.
+  const samePair = update(['--path', cli]);
+  if (installedHandPath && !sameInstalledHand) {
+    assert.equal(active(), cliKey);
+    assert.equal(pending(), key);
+  } else {
+    assert.equal(active(), key);
+    assert.equal(pending(), null);
+    if (installedHandPath) assert.match(samePair.stderr, /Hand is unchanged/);
+  }
+  assert.equal(handPid(), livePidBefore, 'live Hand untouched by CLI-only activations');
+  trace.push(`PASS (c): CLI-only ${cliKey} and same-Hand pair ${key} activated without staging or service changes; live Hand ${handPid()}`);
+  checkAliases(store, revision, 'new updater activation');
+  rmSync(join(store, 'current'));
+  symlinkSync(join('versions', keepActive), join(store, 'current'));
+  if (keepPending !== null) writeFileSync(join(store, 'pending-update'), `${keepPending}\n`);
+
+  if (suppliedOldUpdater) {
+    // (a) A previously shipped two-binary updater installs CLI + Hand exactly as
+    // it installs a two-asset release. Its bytes are copied read-only.
+    const oldStore = join(fixture, 'old-install');
+    const oldRunner = join(fixture, 'old-runner', 'nanocodex');
+    mkdirSync(oldStore, { recursive: true });
+    mkdirSync(dirname(oldRunner), { recursive: true });
+    copyFileSync(suppliedOldUpdater, oldRunner);
+    chmodSync(oldRunner, 0o755);
+    writeFileSync(join(oldStore, 'automatic-updates-disabled'), '');
+    const oldEnv = { env: { NANOCODEX_DIR: oldStore } };
+    trace.push(`old updater: ${suppliedOldUpdater} sha256 ${digest(readFileSync(oldRunner))}\n${run(oldRunner, ['--version']).stdout}`);
+    run(oldRunner, ['update', '--path', cli, '--hand-binary', hand], 0, oldEnv);
+    const oldKey = localKey();
+    bundleBytes(join(oldStore, 'versions', oldKey), 'old updater two-name install');
+    select(oldStore, oldKey);
+    for (const alias of ['nanocodex', 'nanocodex2']) {
+      assert.equal(oneRevision(run(join(oldStore, 'bin', alias), ['--version'], 0, oldEnv).stdout,
+        `old-updater bin/${alias}`), revision);
+    }
+    trace.push(`PASS (a) old-updater layout: bin/nanocodex -> ${readlinkSync(join(oldStore, 'bin', 'nanocodex'))}, bin/nanocodex2 -> ${readlinkSync(join(oldStore, 'bin', 'nanocodex2'))} both run revision ${revision}`);
+    // The new CLI takes over the same cached pair: the Hand is unchanged, so
+    // it activates directly and publishes the unified entrypoints.
+    const takeover = run(runner, ['update', '--path', join(oldStore, 'versions', oldKey, 'nanocodex'),
+      '--hand-binary', join(oldStore, 'versions', oldKey, 'nanocodex2')], 0, oldEnv);
+    assert.equal(basename(readlinkSync(join(oldStore, 'current'))), oldKey);
+    if (process.platform === 'darwin') assert.match(takeover.stderr, /Hand is unchanged/);
+    checkAliases(oldStore, revision, 'old updater install taken over by the new CLI');
+  } else {
+    trace.push('SKIPPED (a): no --old-updater supplied');
+  }
 
   // Executable rejection fixture, not a fake updater/Hand service. Failure of
   // --version is exercised through the real public local-pair probe.
@@ -301,6 +482,9 @@ try {
     trace.push('Linux source fixture intentionally exercises preflight rejection only; the macOS minimal fixture is not Linux packaging success acceptance');
   }
   assert.deepEqual(readFileSync(account), accountBefore, 'synthetic account must not be rewritten');
+  const livePidAfter = handPid();
+  trace.push(`live Hand after (read-only launchctl print): ${livePidAfter}`);
+  assert.equal(livePidAfter, livePidBefore, 'the real Hand must not be restarted');
   verdict = 'PASSED';
   trace.push('scope: real updater, real candidate probes/bundle bytes, staging, rejection and corruption; synthetic recovery records. NOT coverage: release HTTP downloads, running Hand handover/rollback, Windows execution, post-logout/reboot lifetime.');
   process.stdout.write(`local updater journeys passed; transcript: ${join(output, 'transcript.log')}\n`);

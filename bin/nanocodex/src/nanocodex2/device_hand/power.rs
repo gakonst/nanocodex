@@ -57,7 +57,7 @@ impl Monitor {
         let stop = std::sync::Arc::new((std::sync::Mutex::new(false), std::sync::Condvar::new()));
         let stopping = stop.clone();
         let worker = std::thread::Builder::new().name("hand-power".into()).spawn(move || {
-            use crate::hand_keep_awake as preference;
+            use crate::nanocodex2::hand_keep_awake as preference;
             let overridden = std::env::var_os(preference::ENVIRONMENT).as_deref() == Some(std::ffi::OsStr::new("0"));
             let mut assertion: Option<KeepAwake> = None;
             let mut configured = true;

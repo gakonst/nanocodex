@@ -58,7 +58,7 @@ test('Claude-only catalog maps native inputs, errors, media and stable host iden
       assert.deepEqual(input, { file_path: 'a' }); context = ctx;
       return { output: [{ type: 'input_text', text: 'denied' }, { type: 'input_image', image_url: 'data:image/png;base64,aGVsbG8=', detail: 'auto' }], success: false, structuredResult: { code: 'DENIED' }, metadata: { source: 'host' } };
     } },
-    { name: 'Bash', description: 'actual host execution', handler() { throw new Error('secret'); } },
+    { name: 'exec_command', description: 'actual host execution', handler() { throw new Error('secret'); } },
   ] });
   assert.deepEqual(JSON.parse(host.toolDefinitions()).map((x) => x.name), ['exec', 'wait']);
   const out = await host.invokeTool('Read', '{"file_path":"a"}', SESSION, 'call-1', MODEL, 'turn-1');
@@ -68,7 +68,7 @@ test('Claude-only catalog maps native inputs, errors, media and stable host iden
   assert.equal(out.output[1].image_url, 'data:image/png;base64,aGVsbG8=');
   assert.equal(context.sessionId, SESSION); assert.equal(context.turnId, 'turn-1'); assert.equal(context.callId, 'call-1');
   assert.equal(context.model, MODEL); assert.ok(context.signal instanceof AbortSignal);
-  const error = JSON.parse(await host.executeTool('Bash', '{}', SESSION, 'call-2', MODEL, 'turn-1'));
+  const error = JSON.parse(await host.executeTool('exec_command', '{}', SESSION, 'call-2', MODEL, 'turn-1'));
   assert.equal(error.success, false); assert.match(JSON.stringify(error), /secret/);
   await assert.rejects(host.executeTool('Read', '{}', SESSION, 'call', MODEL, undefined), /identities/);
   host.cancelCodeTurn(SESSION); assert.equal(context.signal.aborted, true);
@@ -200,12 +200,12 @@ test('Claude tool abort signals are scoped to stable turn identities', async () 
 });
 
 
-test('Claude refuses explicit Codex definitions rather than reinterpreting their contract', () => {
-  for (const name of ['exec', 'wait', 'web__run', 'tool_search', 'exec_command', 'write_stdin', 'apply_patch', 'image_gen__imagegen']) {
+test('Claude reserves harness operations and accepts explicit shared execution capabilities', () => {
+  for (const name of ['exec', 'wait', 'web__run', 'tool_search', 'apply_patch', 'image_gen__imagegen']) {
     assert.throws(() => resolveClaudeTools([{ name, description: 'must not leak', handler() {} }]), /Codex tool definitions/);
   }
   assert.throws(() => resolveClaudeTools([{ name: 'spawn_agent', description: 'must not override the platform', handler() {} }]), /shared runtime/);
-  assert.deepEqual(resolveClaudeTools([{ name: 'Bash', description: 'native explicit host', handler() {} }]).definitions.map(tool => tool.name), ['Bash']);
+  assert.deepEqual(resolveClaudeTools(['exec_command', 'write_stdin'].map(name => ({ name, description: 'explicit execution capability', handler() {} }))).definitions.map(tool => tool.name), ['exec_command', 'write_stdin']);
 });
 
 test('Claude snapshots nested configuration before asynchronous loading', async () => {

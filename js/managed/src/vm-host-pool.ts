@@ -547,7 +547,15 @@ export class VmHostPool extends DurableObject<VmHostPoolEnv> {
       && allocation.host_epoch === host.epoch
       && (allocation.state === "provisioning" || allocation.state === "ready")
       && constantTimeEqual(allocation.bearer, bearer);
-    if (!valid || !allocation || !host) return notFound();
+    if (!valid || !allocation || !host) {
+      // An allocation that no longer exists, or whose release has begun, can
+      // never be attached again. Report that terminally so the VM runtime
+      // stops reconnecting; a disconnected or re-leasing host stays retryable.
+      const gone = allocation === undefined
+        || ((allocation.state === "releasing" || allocation.state === "released")
+          && constantTimeEqual(allocation.bearer, bearer));
+      return gone ? Response.json({ error: "allocation_gone" }, { status: 410 }) : notFound();
+    }
     return Response.json({
       valid: true,
       allocation_id: allocation.allocation_id,

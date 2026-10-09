@@ -63,10 +63,25 @@ jobs:
             gzip -dc "$asset" > "bin/$binary"
             chmod 755 "bin/$binary"
             "bin/$binary" --version | tee "$evidence/$binary-version.txt"
-            grep -Fx "Commit SHA: ${RELEASE_TAG#nightly-}" "$evidence/$binary-version.txt"
-            grep -F -- '-nightly' "$evidence/$binary-version.txt"
-            grep -Fx 'Build Profile: nightly' "$evidence/$binary-version.txt"
           done
+          # The CLI tracks the release commit; an unchanged Hand is reused
+          # across releases and is paired by its independent build identity.
+          grep -Fx "Commit SHA: ${RELEASE_TAG#nightly-}" "$evidence/nanocodex-version.txt"
+          grep -F -- '-nightly' "$evidence/nanocodex-version.txt"
+          grep -Fx 'Build Profile: nightly' "$evidence/nanocodex-version.txt"
+          cli_identity="$(sed -n 's/^Hand Identity: //p' "$evidence/nanocodex-version.txt")"
+          hand_identity="$(sed -n 's/^Hand Identity: //p' "$evidence/nanocodex2-version.txt")"
+          if [[ -n "$cli_identity" ]]; then
+            [[ "$cli_identity" =~ ^[0-9a-f]{64}$ ]]
+            [[ "$hand_identity" == "$cli_identity" ]]
+            printf 'verified_hand_identity=%s\n' "$hand_identity" | tee -a "$evidence/provenance.txt"
+          else
+            # Older published nightlies precede independent Hand identities.
+            [[ -z "$hand_identity" ]]
+            grep -Fx "Commit SHA: ${RELEASE_TAG#nightly-}" "$evidence/nanocodex2-version.txt"
+            grep -F -- '-nightly' "$evidence/nanocodex2-version.txt"
+            grep -Fx 'Build Profile: nightly' "$evidence/nanocodex2-version.txt"
+          fi
       - name: Run real installed-Hand login journey
         run: |
           NANOCODEX_HAND_INSTALL_E2E=1 \

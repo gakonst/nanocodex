@@ -28,6 +28,6 @@ impl Attach {
                 state_dir.display()
             )
         })?;
-        crate::tui::attach_evaluation(observer).await
+        super::attach_view::attach_evaluation(observer).await
     }
 }

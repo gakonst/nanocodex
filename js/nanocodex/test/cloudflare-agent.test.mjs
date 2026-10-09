@@ -420,7 +420,9 @@ test("public durable creation still validates credentials before returning", asy
   await assert.rejects(create(module, owner), /EGRESS broker rejected.*HTTP 403/);
 });
 
-test("a failed speculative connection does not authorize a later managed text turn", async () => {
+// The turn retries a rejected WebSocket handshake with the SDK 1/2/4/8 s
+// backoff (93571b344) before its HTTPS fallback surfaces the 403 (~16 s).
+test("a failed speculative connection does not authorize a later managed text turn", { timeout: 30_000 }, async () => {
   const module = await readFile(new URL("../pkg-web/nanocodex_bg.wasm", import.meta.url));
   let requests = 0;
   const owner = durableOwner(new MemoryStorage(), {
@@ -1351,8 +1353,10 @@ test("live child continuation preserves schema, history, routing, and spawning a
     assert.equal((await Subagents.list(agent, { includeCompleted: true })).agents[0].task,
       "Return another object with ok equal to 2.");
     await agent.session.shutdown();
-    assert.equal(routes.size, 0, "shutdown releases child routes");
-    assert.deepEqual(lifecycleEvents.filter(({ type }) => type === "release").map(({ sessionId }) => sessionId), [childSessionId]);
+    // Durable teardown detaches the live binding but keeps the child's
+    // authorization and pinned route for restoration; only close releases.
+    assert.deepEqual([...routes.keys()], [childSessionId], "durable teardown preserves the child route");
+    assert.equal(lifecycleEvents.some(({ type }) => type === "release"), false, "teardown is not a release");
     assert.equal(storage.subagents.size, 0);
     assert.equal(storage.subagentCheckpoints.size, 0);
     const persisted = [...storage.records.values(), ...storage.states.map(({ payload }) => payload)].join("\n");
@@ -1464,7 +1468,8 @@ test("closing one live child preserves sibling history and its pinned route", { 
     assert.equal(classifierCalls, 2, "continuing the sibling reuses its live route");
     assert.equal(modelCalls, 6);
     await agent.session.shutdown();
-    assert.equal(routes.size, 0);
+    // Teardown keeps the retained sibling's pinned route; the closed child stays released.
+    assert.deepEqual([...routes.keys()], [retainedSession]);
     assert.equal(storage.subagents.size, 0);
     assert.equal(storage.subagentCheckpoints.size, 0);
     agent = await create(module, durableOwner(storage), options);
@@ -1977,3 +1982,75 @@ test("idle root transport preparation is adopted by the next turn and never reus
   assert.equal(prepareTransport(agent), false, "a released Agent never prepares");
 });
 
+
+
+test("rejected subagent statuses log one redacted, coded line while the child keeps working", { timeout: 30_000 }, async () => {
+  const module = await readFile(new URL("../pkg-web/nanocodex_bg.wasm", import.meta.url));
+  const storage = new MemoryStorage();
+  const profile = {
+    model: "@cf/zai-org/glm-5.3", thinking: "high",
+    workersAi: { ai: { async run(_model, input) {
+      if (input.messages.at(-1)?.role === "tool") {
+        return { choices: [{ finish_reason: "stop", message: { content: "STATUS_DONE" } }] };
+      }
+      const submit = input.tools.find((tool) => tool.function.description.startsWith("exec\n"));
+      return { choices: [{ finish_reason: "tool_calls", message: { content: null, tool_calls: [{
+        id: `status-submit-${crypto.randomUUID()}`, type: "function", function: {
+          name: submit.function.name, arguments: JSON.stringify({ input: "text(await tools.submit_result({ output: { ok: true } }));" }),
+        },
+      }] } }] };
+    } }, model: "@cf/zai-org/glm-5.3", thinking: "high" },
+  };
+  const rejected = [];
+  const options = {
+    [Symbol.for("nanocodex.cloudflare.internalConfiguration")]: {
+      model: profile.model, thinking: profile.thinking, reasoning_mode: "standard", fast_mode: false,
+    },
+    [Symbol.for("nanocodex.cloudflare.internalRuntime")]: {
+      workersAi: profile.workersAi, subagentsEnabled: true,
+      subagentRouting: {
+        async resolve() { return { model: profile.model, thinking: profile.thinking, routeId: "status-route" }; },
+        bind() {},
+      },
+      // A host that rejects every status, as managed authority does for a child
+      // whose live binding no longer matches.
+      subagentLifecycle(event) {
+        if (event.type !== "status") return;
+        rejected.push(event.status.state);
+        const error = new Error('status for "SECRET-TASK-TEXT" at https://private.example/x was rejected');
+        error.code = "subagent_status_authority_mismatch";
+        throw error;
+      },
+      inferenceForSession() { return profile; },
+    },
+  };
+  const logged = [];
+  const consoleError = console.error;
+  console.error = (...values) => { logged.push(values); };
+  const agent = await create(module, durableOwner(storage), options);
+  try {
+    const child = await Subagents.spawn(agent, {
+      role: "status-worker", task: "Return ok.",
+      outputSchema: { type: "object", properties: { ok: { type: "boolean" } }, required: ["ok"], additionalProperties: false },
+    });
+    for (const message of [undefined, "Return ok again."]) {
+      if (message) await Subagents.send(agent, { agentId: child.agent_id, message });
+      const result = await Subagents.wait(agent, { agentIds: [child.agent_id], timeoutMs: 5_000 });
+      assert.deepEqual(result.agents[0].status, { state: "completed", output: { ok: true } });
+    }
+  } finally {
+    await agent.session.shutdown();
+    console.error = consoleError;
+  }
+  assert.ok(rejected.length >= 3, `every status transition reached the host: ${rejected}`);
+  const records = logged.map(([value]) => value).filter((value) => value?.type === "nanocodex.subagent_host_error");
+  assert.equal(records.length, 1, "a persistent rejection logs once per child, operation and reason");
+  const [record] = records;
+  assert.equal(record.operation, "forwarding a subagent status");
+  assert.equal(record.reason, "subagent_status_authority_mismatch");
+  assert.equal(record.error_kind, "Error");
+  assert.match(record.message, /^Nanocodex failed while forwarding a subagent status/);
+  assert.match(record.error_message, /^status for "…" at <url> was rejected$/);
+  assert.match(record.session_id, /^[0-9a-f-]{36}$/);
+  assert.ok(!JSON.stringify(logged).includes("SECRET-TASK-TEXT"), "quoted content never reaches logs");
+});

@@ -1,4 +1,4 @@
 #![allow(dead_code)]
 
-#[path = "../src/tui/split.rs"]
+#[path = "../src/nanocodex2/tui/features/split_launch.rs"]
 mod split;

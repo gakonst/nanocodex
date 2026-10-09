@@ -69,7 +69,7 @@ class TerminalScreen:
 
 def main():
  p=argparse.ArgumentParser(description=__doc__);p.add_argument('--binary',type=Path,required=True);p.add_argument('--output',type=Path,default=Path('output/claude-scheduler-monitor-cli')/uuid4().hex);a=p.parse_args()
- artifact=a.output.resolve();artifact.mkdir(parents=True);workspace=artifact/'workspace';workspace.mkdir();home=artifact/'home';home.mkdir();codex_home=home/'codex';codex_home.mkdir();binary=artifact/'nanocodex-under-test';shutil.copy2(a.binary.resolve(),binary);binary.chmod(0o700);binary_sha256=hashlib.sha256(binary.read_bytes()).hexdigest()
+ artifact=a.output.resolve();artifact.mkdir(parents=True);workspace=artifact/'workspace';workspace.mkdir();home=artifact/'home';home.mkdir();codex_home=home/'codex';codex_home.mkdir();binary=artifact/a.binary.name;shutil.copy2(a.binary.resolve(),binary);binary.chmod(0o700);binary_sha256=hashlib.sha256(binary.read_bytes()).hexdigest()
  env={'HOME':str(home),'CODEX_HOME':str(codex_home),'PATH':'/usr/bin:/bin','TERM':'xterm-256color','NANOCODEX_COMPUTER':'off'}
  requests=[];errors=[];commands=[];processes=[];transcripts={};screens={};checks=[];ids={};events=[];receipts=[]
  state={'phase':'initial','index':0,'pending':None,'steps':[],'done':False}
@@ -143,7 +143,7 @@ def main():
    time.sleep(.03)
   raise AssertionError(label)
  def visible(label,text):return text in screens[label].text()
- def finish(proc,fd,drain):os.write(fd,b'\x03');wait(lambda:proc.poll() is not None,drain,'CLI did not exit after Ctrl-C',10);drain();os.close(fd)
+ def finish(proc,fd,drain):os.write(fd,b'\x03\x03');wait(lambda:proc.poll() is not None,drain,'CLI did not exit after Ctrl-C',10);drain();os.close(fd)
  outcome={'success':False}
  try:
   phase('initial',steps_initial());started=time.time();proc,fd,drain=start('initial',[str(binary)]+common+['--prompt','Schedule real clock test.'])
@@ -189,11 +189,11 @@ def main():
   require(ids['owner-job'] not in json.loads(jp.read_text())['tasks'],'new owner one-shot not consumed');finish(old_proc,old_fd,old_drain);finish(proc,fd,drain);checks.append('two live CLI processes: resume fences older scheduler before due fixture claim; newer owner fires exactly once')
   # Headless catalogs omit the timer and Monitor tools entirely.
   phase('headless',[('exec',{'code':'''if (ALL_TOOLS.some(tool => ['Monitor','CronCreate','CronList','CronDelete','ScheduleWakeup'].includes(tool.name))) throw Error('headless advertised idle tools'); text('headless-catalog-verified');'''},False,None)]);r=subprocess.run([str(binary),'run']+common+['Inspect headless catalog.'],cwd=workspace,env=env,capture_output=True,timeout=30);require(r.returncode==0 and state['done'] and not errors and 'headless-catalog-verified' in json.dumps(requests[-1]),'headless catalog inspection failed');checks.append('headless omits idle-only tools')
-  rules=artifact/'monitor-deny.json';rules.write_text(json.dumps({'permissions':{'defaultMode':'full-access','allow':['Monitor'],'deny':['Bash(touch *)']}}))
+  rules=artifact/'monitor-deny.json';rules.write_text(json.dumps({'permissions':{'defaultMode':'full-access','allow':['Monitor'],'deny':['exec_command(touch *)']}}))
   for label,flags in [('monitor-plan',['--permission-mode','plan']),('monitor-deny',['--claude-permissions',str(rules)])]:
    phase(label,[('Monitor',{'command':'touch monitor-must-not-exist','description':'Denied effect'},True,None)])
    proc,fd,drain=start(label,[str(binary)]+common+flags+['--prompt','Verify Monitor admission.']);wait(lambda:visible(label,label+'-complete'),drain,'Monitor admission final absent');finish(proc,fd,drain);require(not(workspace/'monitor-must-not-exist').exists(),'Monitor bypassed admission')
-  checks.append('plan blocks Monitor and Bash deny overrides Monitor allow before process spawn')
+  checks.append('plan blocks Monitor and exec_command deny overrides Monitor allow before process spawn')
   outcome={'success':True,'checks':checks,'elapsed_seconds':round(time.time()-started,2),'binary_sha256':binary_sha256}
  finally:
   for proc in processes:

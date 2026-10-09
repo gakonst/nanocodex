@@ -8,7 +8,7 @@ use super::{
     floating::Floating,
     node::{Component, ComponentUpdate, RenderRequest},
 };
-use crate::{skill::Skill, tui::theme::Theme};
+use crate::nanocodex2::{skill::Skill, tui::theme::Theme};
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind};
 use ratatui::{
     Frame,

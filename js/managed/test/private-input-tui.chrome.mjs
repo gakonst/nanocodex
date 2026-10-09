@@ -34,7 +34,7 @@ const output=resolve(process.env.PRIVATE_INPUT_EVIDENCE||'output/private-input-t
 const temp=mkdtempSync(join(output,'run-'));
 const chromePath=process.env.CHROME_PATH||[...(process.platform==='darwin'?['/Applications/Google Chrome.app/Contents/MacOS/Google Chrome']:['/usr/bin/google-chrome','/usr/bin/google-chrome-stable','/usr/bin/chromium','/usr/bin/chromium-browser'])].find(existsSync);
 assert.ok(chromePath,'Set CHROME_PATH to installed Chrome/Chromium');
-const binary=resolve(process.env.NANOCODEX_TEST_BINARY||'target/debug/nanocodex2');
+const binary=resolve(process.env.NANOCODEX_TEST_BINARY||'target/debug/nanocodex');
 const agent='019fc927-b280-79a7-8445-1b9996ad2fb0';
 const key=`ncx_live_${'a'.repeat(12)}_${'b'.repeat(43)}`;
 const route=`/v1/agents/${agent}`;

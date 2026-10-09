@@ -142,7 +142,7 @@ else: print('{}')
         return result
 
     def interrupt_pending_inference():
-        phase.update(name='interrupt', counts={}, child=[], steps=[execute('const p=tools.Bash({command:"printf started > interrupt-started.txt; while [ ! -f interrupt-release.txt ]; do sleep 0.05; done; printf leaked > interrupt-leak.txt"}); await yield_control(); text(await p);', 'Script running with cell ID')])
+        phase.update(name='interrupt', counts={}, child=[], steps=[execute('const r=await tools.exec_command({cmd:"printf started > interrupt-started.txt; while [ ! -f interrupt-release.txt ]; do sleep 0.05; done; printf retained > interrupt-leak.txt",yield_time_ms:250}); store("interruptShell",r.session_id); await yield_control(); text(r);', 'Script running with cell ID')])
         command = [common[0]] + common[2:] + ['--prompt', 'Interrupt pending inference journey']
         commands.append(command)
         master, slave = pty.openpty()
@@ -188,12 +188,16 @@ else: print('{}')
             require(not release_inference.is_set(), 'fixture released inference before cancellation settled')
             release_inference.set()
             (workspace / 'interrupt-release.txt').write_text('release delayed native effect after cancellation settled')
-            phase.update(name='interrupt-recovery', counts={}, child=[], steps=[execute('text(await tools.Bash({command:"sleep 0.5; printf INTERRUPT_RECOVERY_OK"}));', 'INTERRUPT_RECOVERY_OK')])
+            phase.update(name='interrupt-recovery', counts={}, child=[], steps=[execute('const r=await tools.write_stdin({session_id:load("interruptShell"),yield_time_ms:1000}); if(r.exit_code!==0) throw Error("retained shell failed"); text("INTERRUPT_RECOVERY_OK");', 'INTERRUPT_RECOVERY_OK')])
             os.write(master, b'Continue after cancellation\r')
             until(lambda: visible(b'interrupt-recovery-complete'), 'next turn failed after cancellation')
-            require(not (workspace / 'interrupt-leak.txt').exists(), 'cancelled turn left yielded native effect alive')
-            os.write(master, b'\x03')
-            process.wait(timeout=10)
+            require((workspace / 'interrupt-leak.txt').read_text() == 'retained', 'turn cancellation lost retained shell session')
+            os.write(master, b"\x03")
+            deadline = time.monotonic() + 10
+            while process.poll() is None and time.monotonic() < deadline:
+                drain()
+                time.sleep(.02)
+            require(process.poll() is not None, "TUI exit did not settle")
         finally:
             release_inference.set()
             (workspace / 'interrupt-release.txt').write_text('release fixture process if cancellation failed')
@@ -212,9 +216,12 @@ else: print('{}')
         ], extra=['--claude-permissions', str(rules)])
         run('code', [
             ('Write', {'file_path': 'stale-direct.txt', 'content': 'BYPASS'}, True, None),
-            execute('const n=ALL_TOOLS.map(t=>t.name); for(const k of ["Read","Write","Bash","spawn_agent","list_agents","wait_agent","close_agent","interrupt_agent","send_agent_message"]) if(!n.includes(k)) throw Error("missing "+k); if(n.includes("Agent")||n.includes("SubmitResult")) throw Error("legacy catalog"); text("CANONICAL_CATALOG_OK");', 'CANONICAL_CATALOG_OK'),
+            execute('const n=ALL_TOOLS.map(t=>t.name); for(const k of ["Read","Write","exec_command","write_stdin","spawn_agent","list_agents","wait_agent","close_agent","interrupt_agent","send_agent_message"]) if(!n.includes(k)) throw Error("missing "+k); if(n.includes("Bash")||n.includes("BashOutput")||n.includes("Agent")||n.includes("SubmitResult")) throw Error("legacy catalog"); text("CANONICAL_CATALOG_OK");', 'CANONICAL_CATALOG_OK'),
             execute('text(await tools.Read({file_path:"read.txt"}));', 'CODE_READ_MARKER'),
-            execute('text(await tools.Write({file_path:"created.txt",content:"CODE_WRITE_EFFECT"})); text(await tools.Bash({command:"printf CODE_SHELL_MARKER; printf x >> counter.txt"}));', 'CODE_SHELL_MARKER'),
+            execute('text(await tools.Write({file_path:"created.txt",content:"CODE_WRITE_EFFECT"})); text(await tools.exec_command({cmd:"printf CODE_SHELL_MARKER; printf x >> counter.txt"}));', 'CODE_SHELL_MARKER'),
+            execute('const r=await tools.exec_command({cmd:"sleep 0.5; printf RETAINED_SHELL_OK",yield_time_ms:250}); if(!Number.isInteger(r.session_id)||r.content!==undefined) throw Error("expected canonical retained session"); store("shell",r.session_id); text("RETAINED_SESSION_OK");', 'RETAINED_SESSION_OK'),
+            execute('const r=await tools.write_stdin({session_id:load("shell"),yield_time_ms:1000}); if(r.exit_code!==0) throw Error("shell did not exit"); text(r.output);', 'RETAINED_SHELL_OK'),
+            execute('try { await tools.Bash({command:"touch legacy-bypass.txt"}); throw Error("legacy Bash callable"); } catch(e) { if(e.code!=="TOOL_NOT_AVAILABLE") throw e; text("LEGACY_BASH_REJECTED"); }', 'LEGACY_BASH_REJECTED'),
             execute('try { await tools.DoesNotExist({}); } catch(e) { if(e.code!=="TOOL_NOT_AVAILABLE") throw e; text("MISSING_TOOL_CAUGHT"); }', 'MISSING_TOOL_CAUGHT'),
             execute('text(await tools.Read({file_path:"missing.txt"}));', 'No such file', failed=True),
             execute('const = ;', failed=True),
@@ -222,9 +229,9 @@ else: print('{}')
             execute('text("BEFORE_YIELD"); await yield_control(); await new Promise(r=>setTimeout(r,100)); text("AFTER_YIELD");', 'Script running with cell ID'),
             ('wait', lambda: {'cell_id': cell['id'], 'yield_time_ms': 1000}, False, 'AFTER_YIELD'),
             execute('const r=await tools.Read({file_path:"pixel.png"}); for(const b of r.content) if(b.type==="image") image(b);', 'IMAGE_BLOCK'),
-            execute('const p=tools.Bash({command:"sleep 1; printf leaked > cancelled.txt"}); await yield_control(); text(await p);', 'Script running with cell ID'),
+            execute('const r=await tools.exec_command({cmd:"sleep 1; printf retained > cancelled.txt",yield_time_ms:250}); store("cancelShell",r.session_id); await yield_control(); text(r);', 'Script running with cell ID'),
             ('wait', lambda: {'cell_id': cell['id'], 'terminate': True}, False, None),
-            execute('text(await tools.Bash({command:"sleep 1.2; printf CANCEL_RECOVERY"}));', 'CANCEL_RECOVERY'),
+            execute('const r=await tools.write_stdin({session_id:load("cancelShell"),yield_time_ms:2000}); if(r.exit_code!==0) throw Error("retained shell failed"); text("CANCEL_RECOVERY");', 'CANCEL_RECOVERY'),
             execute('text(await tools.TaskCreate({subject:"Code task",description:"real task board"}));', 'Code task'),
             execute('text(await tools.TaskUpdate({taskId:"1",status:"in_progress"}));', 'in_progress'),
             execute('const c=await tools.spawn_agent({role:"fixture",task:"CODE_CHILD_MARKER",harness:null,model:null,thinking:null,output_contract:{kind:"string"}}); if(!Number.isInteger(c.agent_id)||c.content!==undefined) throw Error("canonical spawn must return direct JSON"); store("child",c.agent_id); text(c);'),
@@ -232,23 +239,24 @@ else: print('{}')
             execute('text(await tools.close_agent({agent_id:load("child")}));', 'closed'),
         ], extra=['--local-durability', str(artifact / 'session.sqlite'), '--local-durability-state-id', 'code-session'], child=[execute('text(await tools.submit_result({output:"CHILD_CODE_OK"}));')])
         require((workspace / 'created.txt').read_text() == 'CODE_WRITE_EFFECT', 'nested Write effect absent')
-        require((workspace / 'counter.txt').read_text() == 'x', 'nested Bash effect repeated or absent')
-        require(not (workspace / 'cancelled.txt').exists(), 'terminated cell left shell effect running')
+        require((workspace / 'counter.txt').read_text() == 'x', 'nested exec_command effect repeated or absent')
+        require((workspace / 'cancelled.txt').read_text() == 'retained', 'terminated cell lost retained shell session')
+        require(not (workspace / 'legacy-bypass.txt').exists(), 'legacy Bash effect executed')
         require(not (workspace / 'stale-direct.txt').exists(), 'stale direct tool bypassed Code Mode')
         require(not (workspace / 'denied.txt').exists() and not (workspace / 'rewrite.txt').exists(), 'nested permission bypass')
         require((workspace / 'hook-calls.log').read_text().splitlines() == ['rewrite.txt', 'created.txt'], 'denied Write reached hook or rewrite hook not run')
-        checks += ['only exec/wait exposed; real nested Read/Write/Bash effects', 'nested Write denies before hooks and after hook rewrite', 'missing tool/file and syntax error followed by successful Read', 'explicit yield_control resumes through wait', 'native image forwarded through image() to Messages', 'terminate yielded cell cancels shell effect; next exec recovers', 'canonical spawn/list/wait/submit/close child journey']
+        checks += ['only exec/wait exposed; real nested Read/Write/exec_command effects', 'nested Write denies before hooks and after hook rewrite', 'missing tool/file and syntax error followed by successful Read', 'explicit yield_control resumes through wait', 'native image forwarded through image() to Messages', 'terminate yielded cell preserves shell session for write_stdin', 'canonical spawn/list/wait/submit/close child journey']
         run('reopen', [('wait', lambda: {'cell_id': cell['id']}, True, None), execute('text(await tools.TaskGet({taskId:"1"}));', 'in_progress'), execute('text(await tools.Read({file_path:"created.txt"}));', 'CODE_WRITE_EFFECT')], extra=['--local-durability', str(artifact / 'session.sqlite'), '--local-durability-state-id', 'code-session'])
         checks.append('task board and file effects survive real process restart')
         interrupt_pending_inference()
-        checks.append('real TUI cancel settles during held inference; yielded native process killed; next turn succeeds')
+        checks.append('real TUI cancel settles during held inference; retained native process polled successfully in next turn')
         require(hashlib.sha256(binary.read_bytes()).hexdigest() == binary_sha256, 'binary changed during journey; rerun after build completes')
         outcome = {'success': True, 'checks': checks, 'provider_requests': len(requests), 'binary_sha256': binary_sha256}
     except Exception as error:
         outcome['error'] = str(error)
         raise
     finally:
-        (artifact / 'scenario.json').write_text(json.dumps({'commands': commands, 'environment': environment, 'expected': ['only exec/wait by default, canonical nested shared tools, rejected stale direct Write', 'real Read/Write/Bash effects', 'denial before and after rewrite hook', 'errors recover through later exec', 'yield/wait and image forwarding', 'terminated shell leaves no delayed file', 'canonical child submits structured result and closes', 'new process restores task board and rejects old cell', 'real terminal cancellation during held model request kills yielded process before cancellation settles; next turn succeeds'], 'boundary': 'shipped CLI; real QuickJS, native tools, hooks, shared child runtime, SQLite; synthetic Messages SSE inference only'}, indent=2))
+        (artifact / 'scenario.json').write_text(json.dumps({'commands': commands, 'environment': environment, 'expected': ['only exec/wait by default, canonical nested shared tools, rejected stale direct Write', 'real Read/Write/exec_command effects', 'denial before and after rewrite hook', 'errors recover through later exec', 'yield/wait and image forwarding', 'terminated cell preserves retained shell', 'canonical child submits structured result and closes', 'new process restores task board and rejects old cell', 'real terminal cancellation during held model request preserves retained process for next-turn write_stdin'], 'boundary': 'shipped CLI; real QuickJS, native tools, hooks, shared child runtime, SQLite; synthetic Messages SSE inference only'}, indent=2))
         (artifact / 'outcome.json').write_text(json.dumps(outcome, indent=2))
         server.shutdown()
         print(json.dumps({'artifact': str(artifact), **outcome}))

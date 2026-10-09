@@ -108,7 +108,10 @@ def tui(command, env, cwd, home, turns, transcript_path):
             if not done and files and completed_turns(files[-1]) >= turns:
                 done = True
                 time.sleep(0.5)
-                os.write(master, b"\x04")
+                # The unified TUI exits on a repeated Ctrl+C.
+                os.write(master, b"\x03")
+                time.sleep(0.3)
+                os.write(master, b"\x03")
         child.wait(timeout=5)
         assert done, "the TUI turn never completed; inspect the transcript"
     finally:

@@ -39,9 +39,9 @@ def main():
     requests, errors, commands, checks = [], [], [], []
     phase = {'name': 'first', 'start': 0}
     steps = {
-        'first': [('Write', {'file_path': 'edited.txt', 'content': 'first'}), ('Bash', {'command': 'printf x >> counter.txt'})],
+        'first': [('Write', {'file_path': 'edited.txt', 'content': 'first'}), ('exec_command', {'cmd': 'printf x >> counter.txt'})],
         'second': [],
-        'third': [('Write', {'file_path': 'edited.txt', 'content': 'third'}), ('Bash', {'command': 'printf x >> counter.txt'})],
+        'third': [('Write', {'file_path': 'edited.txt', 'content': 'third'}), ('exec_command', {'cmd': 'printf x >> counter.txt'})],
         'branch': [], 'parent': [], 'pending': [], 'old-id': [], 'empty': [],
         'deny-root': [('Write', {'file_path': 'denied-policy.txt', 'content': 'BAD'})],
         'deny-branch': [('Write', {'file_path': 'denied-policy.txt', 'content': 'BAD'})],
@@ -83,7 +83,7 @@ def main():
                     require(len(receipts) == 1 and bool(receipts[0].get('is_error', False)) == (name.startswith(('deny-', 'plan-')) or (name == 'work-branch' and stage == 2)), f'wrong receipt {call}: {receipts}')
                 if name == 'old-id':
                     # This identity existed only in the discarded third turn.
-                    block = {'type': 'tool_use', 'id': 'third_1', 'name': 'Bash', 'input': {'command': 'printf BAD >> counter.txt'}}
+                    block = {'type': 'tool_use', 'id': 'third_1', 'name': 'exec_command', 'input': {'cmd': 'printf BAD >> counter.txt'}}
                 elif stage < len(steps[name]):
                     tool, inputs = steps[name][stage]
                     block = {'type': 'tool_use', 'id': f'{name}_{stage}', 'name': tool, 'input': inputs}
@@ -226,11 +226,11 @@ def main():
         result = json.loads(rewind('combined', 'files-and-conversation', 'second', True).stdout)
         require(result['files']['restored'] and (workspace / 'edited.txt').read_text() == 'first', 'combined failed to find later file turn')
         require(result['branch_session'] != branch, 'combined reused branch')
-        require((workspace / 'counter.txt').read_text() == 'xx', 'combined replayed or undid Bash')
-        checks.append('combined restored earliest affected later file turn; Bash unchanged')
+        require((workspace / 'counter.txt').read_text() == 'xx', 'combined replayed or undid exec_command')
+        checks.append('combined restored earliest affected later file turn; exec_command unchanged')
         empty = json.loads(rewind('before-first', checkpoint='first', restore=True).stdout)['branch_session']
         turn('empty', empty)
-        require((workspace / 'counter.txt').read_text() == 'xx', 'first-turn rewind replayed Bash')
+        require((workspace / 'counter.txt').read_text() == 'xx', 'first-turn rewind replayed exec_command')
         turn('parent')
         # Branching must retain current host permission/planning restrictions,
         # which are session-keyed state outside the provider transcript.

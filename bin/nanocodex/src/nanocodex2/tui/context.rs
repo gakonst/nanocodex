@@ -3,7 +3,7 @@
 
 //! Content-free context diagnostics projected from transcript telemetry.
 
-use crate::tui::transcript::TranscriptRecord;
+use crate::nanocodex2::tui::transcript::TranscriptRecord;
 use nanocodex::oai::{
     self,
     events::{CompactionStarted, ModelCallCompleted},
@@ -290,7 +290,7 @@ pub(crate) fn outbound_context_snapshot(record: &TranscriptRecord) -> Option<(bo
 #[cfg(test)]
 mod tests {
     use super::{ContextDiagnostics, ContinuationMode};
-    use crate::tui::transcript::TranscriptRecord;
+    use crate::nanocodex2::tui::transcript::TranscriptRecord;
     use nanocodex::agent::events::{AgentEvent, AgentEventKind};
     use serde_json::{Value, json, value::to_raw_value};
     use std::sync::Arc;

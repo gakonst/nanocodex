@@ -1,7 +1,7 @@
 // Derived from clabby/tact; modified for Nanocodex2.
 // SPDX-License-Identifier: Apache-2.0
 
-use crate::tui::{format::sanitize_terminal_text, theme::Theme};
+use crate::nanocodex2::tui::{format::sanitize_terminal_text, theme::Theme};
 use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 use ratatui::{
     style::{Modifier, Style},
@@ -90,6 +90,14 @@ pub(super) fn render_cached(
             image_state: ImageState::None,
         };
     }
+    // TeX delimiters CommonMark ignores become dollar math. Selection then maps
+    // onto this prepared source, so copying keeps the formula text intact.
+    let prepared = super::math::prepare(markdown);
+    let markdown = prepared.as_ref();
+    // TeX delimiters CommonMark ignores become dollar math. Selection then maps
+    // onto this prepared source, so copying keeps the formula text intact.
+    let prepared = super::math::prepare(markdown);
+    let markdown = prepared.as_ref();
     let options = Options::ENABLE_TABLES
         | Options::ENABLE_FOOTNOTES
         | Options::ENABLE_STRIKETHROUGH
@@ -153,6 +161,9 @@ pub(super) fn render_cached(
     );
     layout.selections = selections;
     layout.envelopes = envelopes;
+    if matches!(prepared, std::borrow::Cow::Owned(_)) {
+        layout.selection_source = Some(markdown.to_owned());
+    }
     layout
 }
 
@@ -288,12 +299,19 @@ impl<'a> Renderer<'a> {
                     .fg(self.theme.code_text())
                     .bg(self.theme.code_background()),
             ),
-            Event::InlineMath(math) => self.span(
-                &format!("${}$", sanitize(&math)),
-                Style::default().fg(self.theme.thinking_high()),
-            ),
+            Event::InlineMath(math) => {
+                if !self.inline_formula(&math) {
+                    self.span(
+                        &format!("${}$", sanitize(&math)),
+                        Style::default().fg(self.theme.thinking_high()),
+                    );
+                }
+            }
             Event::DisplayMath(math) => {
                 self.flush();
+                if self.display_formula(&math) {
+                    return;
+                }
                 self.span(
                     &format!("  $${}$$", sanitize(&math)),
                     Style::default().fg(self.theme.thinking_high()),
@@ -604,7 +622,7 @@ impl<'a> Renderer<'a> {
             |language| super::highlight::syntax_for_token(&assets.syntaxes, language),
         );
         let syntax_theme = super::highlight::theme();
-        let mut highlighter = HighlightLines::new(syntax, &syntax_theme);
+        let mut highlighter = HighlightLines::new(syntax, syntax_theme);
         let header = self.lines.len();
         self.lines.push(code_block_header(
             language.as_deref(),
@@ -666,7 +684,7 @@ impl<'a> Renderer<'a> {
             |language| super::highlight::syntax_for_token(&assets.syntaxes, language),
         );
         let syntax_theme = super::highlight::theme();
-        let mut highlighter = HighlightLines::new(syntax, &syntax_theme);
+        let mut highlighter = HighlightLines::new(syntax, syntax_theme);
         let content_width = self.width.saturating_sub(2).max(1);
         for source_line in code.trim_end_matches('\n').split('\n') {
             let highlighted =
@@ -818,6 +836,72 @@ impl<'a> Renderer<'a> {
             );
         }
         self.current.clear();
+    }
+
+    /// Places a rendered single-row formula inline. False keeps the source text.
+    fn inline_formula(&mut self, math: &str) -> bool {
+        if self.image.is_some() {
+            return false;
+        }
+        match super::math::render(
+            math.trim(),
+            self.width.saturating_sub(self.prefix_columns()),
+        ) {
+            super::math::Rendered::Ready { mut rows, .. } if rows.len() == 1 => {
+                self.ensure_prefix();
+                if let Some(row) = rows.pop() {
+                    self.push_current(row);
+                }
+                true
+            }
+            super::math::Rendered::Source { pending: true } => {
+                self.image_state = ImageState::Pending;
+                false
+            }
+            super::math::Rendered::Ready { .. } | super::math::Rendered::Source { .. } => false,
+        }
+    }
+
+    /// Places a rendered display formula on its own rows. False keeps the source text.
+    fn display_formula(&mut self, math: &str) -> bool {
+        if self.image.is_some() {
+            return false;
+        }
+        let indent = 2_u16;
+        let available = self
+            .width
+            .saturating_sub(self.prefix_columns())
+            .saturating_sub(indent);
+        match super::math::render(math.trim(), available) {
+            super::math::Rendered::Ready { rows, .. } => {
+                for row in rows {
+                    self.ensure_prefix();
+                    self.push_unlinked(Span::raw(" ".repeat(usize::from(indent))));
+                    self.push_unlinked(row);
+                    let line = self.lines.len();
+                    self.flush();
+                    // Placeholder cells are image pixels, not copyable text.
+                    self.exclude_from_selection(line, 0..u16::MAX);
+                }
+                self.blank();
+                true
+            }
+            super::math::Rendered::Source { pending } => {
+                if pending {
+                    self.image_state = ImageState::Pending;
+                }
+                false
+            }
+        }
+    }
+
+    fn prefix_columns(&self) -> u16 {
+        u16::try_from(
+            self.quote_depth
+                .saturating_add(self.lists.len())
+                .saturating_mul(2),
+        )
+        .unwrap_or(u16::MAX)
     }
 
     fn blank(&mut self) {
@@ -1580,7 +1664,7 @@ mod tests {
         super::image::{Cache, MAX_IMAGE_HEIGHT},
         ImageState, Layout, render, render_cached,
     };
-    use crate::tui::theme::Theme;
+    use crate::nanocodex2::tui::theme::Theme;
     use ratatui::style::{Color, Modifier};
     use std::{fs::File, path::Path, sync::Arc, time::Instant};
 

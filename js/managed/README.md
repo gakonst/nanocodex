@@ -11,21 +11,37 @@ through `tools.*` inside Code Mode. Tool allowlists and sessions without attache
 providers retain this policy. Recreated sessions select the same policy from
 backend code. Evaluation uses the lazy Workers-compatible QuickJS evaluator.
 
-Claude retains its native `Bash`, `BashOutput`, `Read`, `Write`, and `Edit`
-handlers behind Code Mode. Memories, session recall, canonical subagents,
+Claude uses the shared `exec_command` and `write_stdin` schemas and handlers
+behind Code Mode, alongside its native `Read`, `Write`, and `Edit` handlers. Memories, session recall, canonical subagents,
 connectors, Hands, CUA, and Vault retain their owned handlers and authorization.
 All harnesses use the canonical `spawn_agent`, `list_agents`, `send_agent_message`,
 `wait_agent`, `interrupt_agent`, `close_agent`, and `submit_result` lifecycle.
 Legacy Claude agent `Task`, `TaskOutput`, and `TaskStop` are unavailable. A
 configuration requesting them fails before inference with an explicit removed
 capability error; legacy IDs are never aliased to canonical children.
-`BashOutput` continues to poll retained native shell sessions.
+`write_stdin` polls retained native shell sessions. Legacy `Bash` and
+`BashOutput` capabilities are unavailable.
 
 When a direct subagent completes after its parent turn has ended, the hosted
 thread automatically starts a continuation to inspect and integrate its result.
 This works across harnesses and uses the child's captured permissions. Completion
 while the parent is active (including in `wait_agent`) does not add another turn;
 failed or cancelled parent work is not automatically restarted.
+
+With thinking enabled, Claude Opus 5.5, Sonnet 5.5, and Fable 5.1 request
+`display: "updates"` and its required beta header. Nonempty provider progress
+updates stream as `reasoning.summary.delta` into the existing Thinking rows;
+empty thinking blocks, signatures, and redacted blocks never become display
+text. Signed blocks remain intact in the provider conversation. Other Claude
+models keep their existing thinking display. Progress is model-generated and
+may be skipped, especially at higher effort. Managed Claude instructions also
+ask for concise initial and periodic updates during multi-step work.
+See [Claude thinking display](https://platform.claude.com/docs/en/build-with-claude/thinking#controlling-thinking-display).
+
+`pnpm --filter nanocodex-managed-service run test:claude-managed` covers the
+public curl SSE and history path. The native terminal journey is
+`python3 scripts/tests/claude-progress-cli-journey.py --binary target/debug/nanocodex`.
+Both retain synthetic transcripts under ignored `output/`.
 
 Claude steering accepts identified corrections with the same durable receipt,
 deduplication, and pending-withdrawal contract as Codex. Consumption emits

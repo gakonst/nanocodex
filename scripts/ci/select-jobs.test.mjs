@@ -37,8 +37,7 @@ function workspace(t) {
   crate("crates/nanocodex-claude", "nanocodex-claude", { "nanocodex-claude-tools": "../nanocodex-claude-tools" });
   crate("crates/vm", "nanocodex-vm", { "nanocodex-oai-api": "../oai-api", "nanocodex-oai-tools": "../nanocodex-oai-tools" });
   crate("crates/phone", "nanocodex-phone");
-  crate("bin/nanocodex2", "nanocodex2-bin", { "nanocodex-vm": "../../crates/vm" });
-  crate("bin/nanocodex", "nanocodex-bin");
+  crate("bin/nanocodex", "nanocodex-bin", { "nanocodex-vm": "../../crates/vm" });
   write("README.md");
   execFileSync("cargo", ["generate-lockfile", "--offline"], { cwd, stdio: ["ignore", "pipe", "pipe"] });
   git("init", "-q");
@@ -73,7 +72,7 @@ test("changed crates select only the jobs in their reverse-dependency closure", 
   // A shared library reaches the Hand, Windows, and VM jobs through its dependents.
   const shared = push("crates/oai-api/src/client.rs");
   assert.deepEqual(shared.jobs, only("hands", "windows", "vm", "rust", "rust_extra", "policy"));
-  assert.equal(shared.raw.packages, "nanocodex-oai-api nanocodex-vm nanocodex2-bin");
+  assert.equal(shared.raw.packages, "nanocodex-bin nanocodex-oai-api nanocodex-vm");
   // A leaf crate runs Rust quality for itself and nothing native.
   const leaf = push("crates/phone/src/lib.rs");
   assert.deepEqual(leaf.jobs, only("rust", "rust_extra", "policy"));
@@ -116,7 +115,7 @@ test("provider split retains Rust ownership of the unchanged npm Code Mode asset
   for (const family of ["hands", "windows", "vm", "rust", "rust_extra", "apps", "bindings", "preview", "wasm", "policy"]) {
     assert.equal(asset.jobs[family], true, family);
   }
-  assert.equal(asset.raw.packages, "nanocodex-oai-tools nanocodex-vm nanocodex2-bin");
+  assert.equal(asset.raw.packages, "nanocodex-bin nanocodex-oai-tools nanocodex-vm");
   const before = w.git("rev-parse", "HEAD");
   w.write("crates/nanocodex-claude-tools/src/lib.rs", "// independent Claude adapters\n");
   const claude = w.select("push", { before, after: w.commit() });
@@ -126,7 +125,7 @@ test("provider split retains Rust ownership of the unchanged npm Code Mode asset
   w.write("crates/nanocodex-oai-tools/macros/src/lib.rs", "// renamed procedural macro\n");
   const macro = w.select("push", { before: macroBefore, after: w.commit() });
   assert.deepEqual(macro.jobs, only("hands", "windows", "vm", "rust", "rust_extra", "policy"));
-  assert.equal(macro.raw.packages, "nanocodex-oai-tools nanocodex-oai-tools-macros nanocodex-vm nanocodex2-bin");
+  assert.equal(macro.raw.packages, "nanocodex-bin nanocodex-oai-tools nanocodex-oai-tools-macros nanocodex-vm");
 });
 
 test("workspace-wide inputs, deleted crates, and unknown paths fail open", t => {

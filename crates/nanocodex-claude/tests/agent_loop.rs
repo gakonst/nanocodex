@@ -2653,3 +2653,161 @@ async fn parallel_safe_tools_overlap_only_in_runs_and_unsafe_calls_stay_ordered(
         .collect();
     assert_eq!(ids, [json!("r1"), json!("r2"), json!("w1"), json!("r3")]);
 }
+
+/// Actual Messages SSE -> public agent events, with the provider paused after
+/// progress so a completed-response-only implementation cannot pass.
+#[tokio::test]
+async fn progress_updates_stream_before_tools_and_preserve_private_continuation() {
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    for (model, updates, subscription) in [
+        ("claude-opus-5-5", true, false),
+        ("claude-opus-5-5", true, true),
+        ("claude-fable-5-1", true, false),
+        ("claude-sonnet-5-5", true, false),
+        ("claude-haiku-5-5", false, false),
+        ("claude-sonnet-4-6", false, false),
+    ] {
+        let requests = Arc::new(Mutex::new(Vec::<Value>::new()));
+        let release = Arc::new(tokio::sync::Notify::new());
+        let tool_calls = Arc::new(AtomicUsize::new(0));
+        let app = Router::new().route("/v1/messages", post({
+            let requests = requests.clone();
+            let release = release.clone();
+            move |headers: axum::http::HeaderMap, Json(body): Json<Value>| {
+                let requests = requests.clone();
+                let release = release.clone();
+                async move {
+                    assert_eq!(body["output_config"]["effort"], "high");
+                    assert_eq!(body["thinking"]["display"], if updates { json!("updates") } else { Value::Null });
+                    let betas = headers.get("anthropic-beta").and_then(|v| v.to_str().ok()).unwrap_or("");
+                    assert_eq!(betas.split(',').filter(|beta| *beta == "thinking-display-updates-2026-08-18").count(), usize::from(updates));
+                    let count = { let mut log = requests.lock().unwrap(); log.push(body); log.len() };
+                    if count > 1 {
+                        return ([("content-type", "text/event-stream")], stream(vec![json!({"type":"text","text":"Lookup complete."})], "end_turn")).into_response();
+                    }
+                    let events = [
+                        json!({"type":"message_start","message":{"id":"progress-message","role":"assistant","model":model,"content":[],"usage":{"input_tokens":3,"output_tokens":0}}}),
+                        json!({"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"","signature":""}}),
+                        json!({"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":""}}),
+                        json!({"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"PRIVATE_REASONING_SIGNATURE"}}),
+                        json!({"type":"content_block_stop","index":0}),
+                        json!({"type":"content_block_start","index":1,"content_block":{"type":"redacted_thinking","data":"PRIVATE_REDACTED_BLOCK"}}),
+                        json!({"type":"content_block_stop","index":1}),
+                        json!({"type":"content_block_start","index":2,"content_block":{"type":"thinking","thinking":"","signature":""}}),
+                        json!({"type":"content_block_delta","index":2,"delta":{"type":"thinking_delta","thinking":"Found the record. "}}),
+                        json!({"type":"content_block_delta","index":2,"delta":{"type":"thinking_delta","thinking":"Checking café details."}}),
+                        json!({"type":"content_block_delta","index":2,"delta":{"type":"signature_delta","signature":"PRIVATE_UPDATE_SIGNATURE"}}),
+                        json!({"type":"content_block_stop","index":2}),
+                    ];
+                    let prefix: String = events.iter().map(|e| format!("data: {e}\n\n")).collect();
+                    let tail: String = [
+                        json!({"type":"content_block_start","index":3,"content_block":{"type":"tool_use","id":"lookup-1","name":if subscription {"_lookup"} else {"lookup"},"input":{}}}),
+                        json!({"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"{}"}}),
+                        json!({"type":"content_block_stop","index":3}),
+                        json!({"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":20}}),
+                        json!({"type":"message_stop"}),
+                    ].iter().map(|e| format!("data: {e}\n\n")).collect();
+                    let chunks = futures_util::stream::once(async move { Ok::<_, std::io::Error>(prefix) })
+                        .chain(futures_util::stream::once(async move { release.notified().await; Ok::<_, std::io::Error>(tail) }));
+                    axum::response::Response::builder().header("content-type", "text/event-stream")
+                        .body(axum::body::Body::from_stream(chunks)).unwrap()
+                }
+            }
+        }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = format!("http://{}/v1/messages", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let client = ClaudeClient::new(reqwest::Client::new(), endpoint, "synthetic");
+        let client = if subscription {
+            client.subscription_compatibility()
+        } else {
+            client
+        };
+        let counter = tool_calls.clone();
+        let (agent, mut events) = Nanocodex::builder(Claude::new(client, model))
+            .thinking(nanocodex_agent::Thinking::High)
+            .unwrap()
+            .tool(
+                ToolDefinition {
+                    name: "lookup".into(),
+                    description: "Read a synthetic record".into(),
+                    input_schema: json!({"type":"object"}),
+                    strict: None,
+                    defer_loading: false,
+                },
+                move |_| {
+                    counter.fetch_add(1, Ordering::SeqCst);
+                    async { Ok("record verified".into()) }
+                },
+            )
+            .build()
+            .unwrap();
+        let turn = agent
+            .prompt("Check the record and report progress.")
+            .await
+            .unwrap();
+        let mut visible = String::new();
+        let mut evidence = Vec::new();
+        while visible != "Found the record. Checking café details." {
+            let event = tokio::time::timeout(std::time::Duration::from_secs(5), events.next())
+                .await
+                .unwrap()
+                .unwrap();
+            let payload: Value = serde_json::from_str(event.payload.get()).unwrap();
+            if event.kind == AgentEventKind::ReasoningSummaryDelta {
+                assert_eq!(payload["item_id"], "progress-message:thinking:2");
+                let text = payload["text"].as_str().unwrap();
+                assert!(!text.is_empty());
+                visible.push_str(text);
+            }
+            evidence.push(json!({"kind":format!("{:?}",event.kind),"payload":payload}));
+        }
+        assert_eq!(
+            tool_calls.load(Ordering::SeqCst),
+            0,
+            "progress must be delivered while provider is still streaming"
+        );
+        release.notify_one();
+        assert_eq!(
+            turn.result().await.unwrap().final_message(),
+            "Lookup complete."
+        );
+        loop {
+            let event = tokio::time::timeout(std::time::Duration::from_secs(5), events.next())
+                .await
+                .unwrap()
+                .unwrap();
+            let payload: Value = serde_json::from_str(event.payload.get()).unwrap();
+            evidence.push(json!({"kind":format!("{:?}",event.kind),"payload":payload}));
+            if event.kind == AgentEventKind::RunCompleted {
+                break;
+            }
+        }
+        assert_eq!(tool_calls.load(Ordering::SeqCst), 1);
+        let display: Vec<_> = evidence
+            .iter()
+            .filter(|e| {
+                matches!(
+                    e["kind"].as_str(),
+                    Some("ReasoningSummaryDelta" | "AssistantDelta" | "AssistantMessage")
+                )
+            })
+            .collect();
+        assert!(
+            !serde_json::to_string(&display)
+                .unwrap()
+                .contains("PRIVATE_")
+        );
+        let requests = requests.lock().unwrap();
+        let continuation = &requests[1]["messages"][1]["content"];
+        assert_eq!(continuation[0]["thinking"], "");
+        assert_eq!(continuation[0]["signature"], "PRIVATE_REASONING_SIGNATURE");
+        assert_eq!(continuation[1]["data"], "PRIVATE_REDACTED_BLOCK");
+        assert_eq!(continuation[2]["thinking"], visible);
+        assert_eq!(continuation[2]["signature"], "PRIVATE_UPDATE_SIGNATURE");
+        let dir = std::path::Path::new("../../output/claude-progress");
+        std::fs::create_dir_all(dir).unwrap();
+        std::fs::write(dir.join(format!("{model}-subscription-{subscription}.json")), serde_json::to_vec_pretty(&json!({"model":model,"subscription":subscription,"updates":updates,"progress_before_tool":true,"private_continuation_preserved":true,"events":evidence})).unwrap()).unwrap();
+        server.abort();
+    }
+}

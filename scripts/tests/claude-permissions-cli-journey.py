@@ -12,6 +12,9 @@ spec = importlib.util.spec_from_file_location('journey', Path(__file__).with_nam
 helper = importlib.util.module_from_spec(spec); spec.loader.exec_module(helper)
 require, sse, text_of = helper.require, helper.sse, helper.text_of
 
+import importlib.util as _ilu
+_spec=_ilu.spec_from_file_location('screen_helper', Path(__file__).with_name('claude-scheduler-monitor-cli-journey.py')); screen_helper=_ilu.module_from_spec(_spec); _spec.loader.exec_module(screen_helper)
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--binary', type=Path, required=True)
@@ -33,7 +36,7 @@ else: print('{}')
 ''')
     hooks=artifact/'hooks.json'; hooks.write_text(json.dumps({'hooks':{'PreToolUse':[{'matcher':'Write|Read','hooks':[{'type':'command','command':f'python3 {hook}'}]}]}}))
     env={'HOME':str(home),'CODEX_HOME':str(codex_home),'PATH':'/usr/bin:/bin:/usr/sbin:/sbin','TERM':'xterm-256color','NANOCODEX_COMPUTER':'off'}
-    requests=[]; errors=[]; checks=[]; commands=[]; transcripts={}; processes=[]
+    requests=[]; errors=[]; checks=[]; commands=[]; transcripts={}; screens={}; processes=[]
     phase={'name':'tui','start':0,'steps':[],'children':{},'counts':{}}
     class Provider(BaseHTTPRequestHandler):
         def log_message(self,*_): pass
@@ -61,17 +64,20 @@ else: print('{}')
     def start(command,label):
         master,slave=pty.openpty(); fcntl.ioctl(slave,termios.TIOCSWINSZ,struct.pack('HHHH',45,170,0,0))
         p=subprocess.Popen(command,stdin=slave,stdout=slave,stderr=slave,cwd=workspace,env=env,start_new_session=True); os.close(slave)
-        processes.append(p); commands.append(command); transcripts[label]=bytearray()
+        processes.append(p); commands.append(command); transcripts[label]=bytearray(); screens[label]=screen_helper.TerminalScreen(rows=45, columns=170)
         def drain():
             while select.select([master],[],[],0)[0]:
                 try: chunk=os.read(master,65536)
                 except OSError: break
                 if not chunk: break
-                transcripts[label].extend(chunk)
+                transcripts[label].extend(chunk); screens[label].feed(chunk)
                 if b'\x1b[6n' in chunk: os.write(master,b'\x1b[1;1R')
         return p,master,drain
     def visible(label,text):
-        plain=re.sub(rb'\x1b\[[0-9;?]*[A-Za-z]',b'',transcripts[label]); return re.sub(rb'\s+',b'',text.encode()) in re.sub(rb'\s+',b'',plain)
+        # Observe rendered cells: differential redraws omit unchanged letters from the byte stream.
+        plain=re.sub(rb'\x1b\[[0-9;?]*[A-Za-z]',b'',transcripts[label])
+        if re.sub(rb'\s+',b'',text.encode()) in re.sub(rb'\s+',b'',plain): return True
+        return re.sub(r'\s+','',text) in re.sub(r'\s+','',screens[label].text())
     def wait(check,drain,message,timeout=30):
         end=time.monotonic()+timeout
         while time.monotonic()<end:
@@ -100,7 +106,7 @@ else: print('{}')
         require(visible('tui','Exact input'),'exact input missing'); os.write(fd,b'\r'); pending(3,drain)
         os.write(fd,b'deny\r'); wait(lambda:len(requests)==4 and visible('tui','ask-approve.txt'),drain,'next approval absent'); pending(4,drain)
         os.write(fd,b'approve\r'); wait(lambda:len(requests)==5 and visible('tui','ask-cancel.txt'),drain,'cancel approval absent'); pending(5,drain)
-        os.write(fd,b'/cancel\r'); wait(lambda:visible('tui','tui-permissions-complete'),drain,'TUI final missing'); os.write(fd,b'\x03')
+        os.write(fd,b'/cancel\r'); wait(lambda:visible('tui','tui-permissions-complete'),drain,'TUI final missing'); os.write(fd,b'\x03\x03')
         wait(lambda:p.poll() is not None,drain,'TUI exit stuck',timeout=10); drain(); os.close(fd)
         require((workspace/'ask-approve.txt').read_text()=='approved-ask-approve.txt','approved call not dispatched')
         require((workspace/'allowed.txt').exists(),'allow rule failed')
@@ -113,11 +119,19 @@ else: print('{}')
         # A separate rules file tests simple compound allow and scoped shell deny;
         # redirects/substitutions do not inherit a permissive command prefix.
         shellrules=artifact/'shell.json'; shellrules.write_text(json.dumps({'permissions':{'allow':['Bash(echo *)'],'deny':['Bash(printf blocked *)']}}))
-        run('shell',['--claude-permissions',str(shellrules)],[('Bash',{'command':'echo first && echo second'},False,'second'),('Bash',{'command':'echo safe && touch compound.txt'},True,'interactive terminal unavailable'),('Bash',{'command':'echo safe; printf blocked effect'},True,'permission denied by rule'),('Bash',{'command':'echo $(touch substitution.txt)'},True,'permission denied by rule')])
+        run('shell',['--claude-permissions',str(shellrules)],[('exec_command',{'cmd':'echo first && echo second'},False,'second'),('exec_command',{'cmd':'echo safe && touch compound.txt'},True,'interactive terminal unavailable'),('exec_command',{'cmd':'echo safe; printf blocked effect'},True,'permission denied by rule'),('exec_command',{'cmd':'echo $(touch substitution.txt)'},True,'permission denied by rule')])
         for name in ['compound.txt','substitution.txt']: require(not(workspace/name).exists(),f'compound permission escaped {name}')
-        checks.append('compound Bash needs every command allowed; nested substitution conservatively denied')
+        checks.append('legacy Bash rules govern exec_command cmd; compound allows require every command; nested substitution denied')
+        # Native command rules use the same command matcher. Explicit stdin
+        # allowance must not override restrictions on the retained interpreter.
+        native_rules=artifact/'native-shell.json'; native_rules.write_text(json.dumps({'permissions':{'allow':['exec_command(echo *)','write_stdin'],'deny':['exec_command(printf blocked *)']}}))
+        run('native-shell',['--claude-permissions',str(native_rules)],[('exec_command',{'cmd':'echo native-permission-marker'},False,'native-permission-marker'),('exec_command',{'cmd':'printf blocked effect'},True,'permission denied by rule'),('write_stdin',{'session_id':7,'chars':'printf blocked effect\n'},True,'permission denied by rule'),('write_stdin',{'session_id':7},True,'permission denied by rule')])
+        run('legacy-stdin',['--claude-permissions',str(shellrules)],[('write_stdin',{'session_id':7,'chars':'p'},True,'permission denied by rule')])
+        ask_rules=artifact/'ask-shell.json'; ask_rules.write_text(json.dumps({'permissions':{'allow':['write_stdin'],'ask':['Bash(printf *)']}}))
+        run('ask-stdin',['--claude-permissions',str(ask_rules)],[('write_stdin',{'session_id':7,'chars':'printf effect\n'},True,'interactive terminal unavailable')])
+        checks.append('native exec_command rules admit allowed commands and deny blocked commands; legacy/native shell restrictions cover stdin fragments and polling before session lookup, overriding explicit stdin allow')
         run('manual',['--permission-mode','manual'],[write('manual.txt',True,'interactive terminal unavailable'),('Read',{'file_path':'read.txt'},False,'permission-read-marker')])
-        run('accept-edits',['--permission-mode','acceptEdits'],[write('accept-edits.txt'),('Bash',{'command':'touch accept-shell.txt'},True,'interactive terminal unavailable')])
+        run('accept-edits',['--permission-mode','acceptEdits'],[write('accept-edits.txt'),('exec_command',{'cmd':'touch accept-shell.txt'},True,'interactive terminal unavailable')])
         before=(workspace/'hook-calls.log').read_text()
         run('plan',['--permission-mode','plan'],[write('plan.txt',True,'plan mode'),('Read',{'file_path':'read.txt'},False,'permission-read-marker')])
         require((workspace/'hook-calls.log').read_text()==before+'read.txt\n','plan blocked hooks incorrectly or ran mutation hooks')
@@ -143,7 +157,7 @@ else: print('{}')
         (workspace/'.claude').mkdir(exist_ok=True); (workspace/'.claude/CLAUDE.md').write_text('restricted-context-marker-85293')
         (workspace/'private.ipynb').write_text(json.dumps({'nbformat':4,'nbformat_minor':5,'metadata':{},'cells':[{'cell_type':'markdown','id':'private-cell','metadata':{},'source':['private-notebook-marker']}]}))
         count=len(requests)
-        run('read-restrictions',['--claude-permissions',str(readrules)],[('ProjectContext',{'path':'.'},True,'permission denied by rule'),('Skill',{'skill':'private'},True,'permission denied by rule'),('NotebookEdit',{'notebook_path':'private.ipynb','cell_id':'private-cell','new_source':'changed'},True,'permission denied by rule'),('Read',{'file_path':'read.txt'},False,'permission-read-marker')])
+        run('read-restrictions',['--claude-permissions',str(readrules)],[('exec_command',{'cmd':'echo file-restriction-bypass'},True,'permission denied by rule'),('write_stdin',{'session_id':7,'chars':'echo bypass\n'},True,'permission denied by rule'),('ProjectContext',{'path':'.'},True,'permission denied by rule'),('Skill',{'skill':'private'},True,'permission denied by rule'),('NotebookEdit',{'notebook_path':'private.ipynb','cell_id':'private-cell','new_source':'changed'},True,'permission denied by rule'),('Read',{'file_path':'read.txt'},False,'permission-read-marker')])
         require('restricted-context-marker-85293' not in json.dumps(requests[count:]),'denied imported context leaked into model request')
         require('private-notebook-marker' in (workspace/'private.ipynb').read_text(),'read-denied notebook mutated')
         checks.append('Read deny covers context imports, Skill and NotebookEdit; allowed reads do not leak denied context')
@@ -173,7 +187,7 @@ else: print('{}')
         run('saved-children',[],[child_agent('PERMISSION_CHILD_SAVED'),('wait_agent',{'agent_ids':[1],'timeout_ms':20000},False,'saved child policy preserved'),child_agent('blocked codex after reopen','codex')],session,{'PERMISSION_CHILD_SAVED':[('Write',{'file_path':'denied.txt','content':'saved-policy-bypass'},True,'permission denied by rule'),('submit_result',{'output':'saved child policy preserved'},False,None)]})
         require(not(workspace/'child-denied.txt').exists() and not(workspace/'denied.txt').exists(),'child escaped inherited policy')
         checks.append('Claude child inherits explicit and reopened saved policy; restricted Codex delegation denied')
-        for index,document in enumerate([{'permissions':{'deny':['Bash(']}},{'permissions':{'allow':['Write(src/**)']}},{'permissions':{'defaultMode':'auto'}},{'permissions':{'deny':['Read(!secret)']}},{'permissions':{'defaultMode':'bypassPermissions','deny':['Agent']}},{'permissions':{'defaultMode':'bypassPermissions','deny':['Agent(reviewer)']}},{'permissions':{'defaultMode':'bypassPermissions','deny':['Agent*']}}]):
+        for index,document in enumerate([{'permissions':{'deny':['exec_command(cmd:rm *)']}},{'permissions':{'deny':['Bash(']}},{'permissions':{'allow':['Write(src/**)']}},{'permissions':{'defaultMode':'auto'}},{'permissions':{'deny':['Read(!secret)']}},{'permissions':{'defaultMode':'bypassPermissions','deny':['Agent']}},{'permissions':{'defaultMode':'bypassPermissions','deny':['Agent(reviewer)']}},{'permissions':{'defaultMode':'bypassPermissions','deny':['Agent*']}}]):
             invalid=artifact/f'invalid-{index}.json'; invalid.write_text(json.dumps(document)); count=len(requests)
             command=[str(binary),'run']+common+['--claude-permissions',str(invalid),'Invalid policy must fail.']; commands.append(command)
             r=subprocess.run(command,cwd=workspace,env=env,capture_output=True,timeout=20); (artifact/f'invalid-{index}.stderr').write_bytes(r.stderr)

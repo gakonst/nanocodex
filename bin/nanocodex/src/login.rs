@@ -11,7 +11,7 @@ use std::{
 use alloy_primitives::{Address, U256};
 use alloy_signer_local::PrivateKeySigner;
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
-use clap::{ArgAction, Args};
+use clap::{ArgAction, Args, Subcommand};
 use eyre::{Result, WrapErr, bail, ensure, eyre};
 use futures_util::StreamExt;
 use percent_encoding::{AsciiSet, CONTROLS, percent_decode_str, utf8_percent_encode};
@@ -115,7 +115,11 @@ pub(crate) struct Login {
 }
 
 #[derive(Args, Clone)]
+#[command(args_conflicts_with_subcommands = true, subcommand_negates_reqs = true)]
 pub(crate) struct Connect {
+    /// Manage this installation's Nanocodex Connect login instead of connecting services.
+    #[command(subcommand)]
+    account: Option<ConnectAccount>,
     /// Services: ssh, chatgpt, github, gmail, gdrive, gcalendar, gtasks, gdocs, gsheets,
     /// gslides, gcontacts, slack, x, spotify, soundcloud, link, figma; or a public remote MCP host
     /// (mcp.example.com).
@@ -152,6 +156,18 @@ pub(crate) struct Connect {
     /// Print the verification URL without opening a browser.
     #[arg(long)]
     no_open: bool,
+}
+
+/// Nanocodex Connect sign-in, also available in the local tree as
+/// `ncl login|status|logout`.
+#[derive(Subcommand, Clone)]
+enum ConnectAccount {
+    /// Sign in to Nanocodex Connect and authorize this installation.
+    Login(Login),
+    /// Show the current Nanocodex Connect login without displaying secrets.
+    Status(Status),
+    /// Revoke and remove this installation's Nanocodex Connect login.
+    Logout(Logout),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -329,6 +345,12 @@ impl Login {
 
 impl Connect {
     pub(crate) async fn run(self) -> Result<()> {
+        match self.account.clone() {
+            Some(ConnectAccount::Login(command)) => return command.run().await,
+            Some(ConnectAccount::Status(command)) => return command.run().await,
+            Some(ConnectAccount::Logout(command)) => return command.run().await,
+            None => {}
+        }
         let ssh_credential_import = self.load_ssh_credential_import()?;
         let chatgpt_credential_import = self.load_chatgpt_credential_import()?;
         let imports_ssh = ssh_credential_import.is_some();

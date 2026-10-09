@@ -644,6 +644,15 @@ pub enum AttachmentError {
     Closed,
 }
 
+impl AttachmentError {
+    /// True when the endpoint reported the attachment permanently gone (HTTP
+    /// 410). The executor has stopped and will never reconnect it.
+    #[must_use]
+    pub fn is_revoked(&self) -> bool {
+        matches!(self, Self::Fenced(reason) if &**reason == driver::ATTACHMENT_REVOKED_REASON)
+    }
+}
+
 impl From<PreparedToolError> for AttachmentError {
     fn from(error: PreparedToolError) -> Self {
         Self::Catalog(error.to_string().into())

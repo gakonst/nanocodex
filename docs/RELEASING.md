@@ -9,19 +9,47 @@ Foundry's label-grouped, contributor-attributed GitHub release notes.
 The `Nightly Release` workflow runs daily and may also be dispatched manually.
 Each successful run publishes an immutable `nightly-<full SHA>` prerelease and
 refreshes the rolling `nightly` prerelease with the same gzip-compressed
-binaries and `SHA256SUMS`. The rolling release is a commit pointer; the updater
+binaries and `SHA256SUMS`. The immutable release is assembled as a draft and
+published only after every asset is attached, so updaters never observe a
+partial one. A published immutable nightly is never modified: rerunning the
+same commit reuses its exact, checksum-verified assets to refresh the rolling
+pointer instead of uploading a different build under the same tag. The rolling release is a commit pointer; the updater
 resolves and verifies assets from the corresponding immutable release. Raw
 executables remain only on the rolling release so pre-compression updaters can
 cross the format transition.
 
-Each native nightly contains both `nanocodex` and `nanocodex2`; x86_64 Linux
-also contains the static VM guest. `nanocodex update --nightly` verifies and
-installs that complete platform bundle atomically and exposes both CLI launchers
-under `$NANOCODEX_DIR/bin`. Stable releases publish the same two native CLI
-binaries. The Apple Silicon `nanocodex2` artifact is ad-hoc signed with the
-hypervisor entitlement required by its VM hand VMM child.
+Each native nightly and stable release builds both role binaries per target in
+one invocation (`cargo build -p nanocodex-bin --bin nanocodex --bin nanocodex-hand
+--features tempo`). `nanocodex-<triple>[.gz]` is the CLI and
+`nanocodex2-<triple>[.gz]` is the `nanocodex-hand` daemon, keeping the companion
+name older updaters fetch (`nanocodex-x86_64-pc-windows-msvc.exe` and
+`nanocodex2-x86_64-pc-windows-msvc.exe` on Windows). `SHA256SUMS` lists both.
+x86_64 Linux also contains the static VM guest.
+
+On Apple Silicon, `scripts/release/macos-sign-hand.sh` signs the Hand with the
+identifier `com.nanocodex.hand` and the hypervisor entitlement its libkrun VMM
+children need, both as the standalone `nanocodex2-aarch64-apple-darwin[.gz]`
+companion and inside `Nanocodex.app` (`CFBundleIdentifier` `com.nanocodex.hand`,
+executable `Contents/MacOS/nanocodex2`), published as
+`nanocodex-app-aarch64-apple-darwin.tar.gz` and listed in `SHA256SUMS`. The CLI
+keeps the default linker signature: it never runs daemon code and needs no
+privacy grants. When the `MACOS_DEVELOPER_ID_*` secrets are present the Hand is
+signed with that Developer ID Application certificate (no hardened runtime or
+notarization yet), so its designated requirement names the identifier and team
+rather than one build's code hash. Without them the job signs ad hoc, emits an
+"Unsigned macOS Hand" warning, and records `ad-hoc` in the job summary; macOS
+treats every ad-hoc build as a new identity for Screen Recording and
+Accessibility. The workflow verifies the signature, designated requirement and
+entitlement on the runner; whether macOS keeps an existing grant across Hand
+builds is verified only on a real Mac.
+
+`nanocodex update --nightly` verifies and installs that complete
+platform bundle atomically and exposes the CLI as `nanocodex`, `nc`, and `ncl`
+under `$NANOCODEX_DIR/bin`; the invoked name selects the managed tree
+(`nanocodex`, `nc`) or the local agent tree (`ncl`, or `nanocodex --local`).
 `nanocodex update --branch NAME` and `nanocodex update --pr NUMBER` fetch source into a temporary
-checkout, compile both native binaries locally, and install them together.
+checkout, compile the CLI and Hand locally, and install them together; when the
+built Hand reports the running Hand's identity, only the CLI changes.
 The PR must be open; the updater checks that the fetched head still matches the
 PR metadata. The source build requires Git and a working Rust toolchain, plus
 `gh` for PR selection. Locally compiled source bundles do not include the native
@@ -148,7 +176,9 @@ The tag starts the release workflow. It:
 2. validates all crate packages and archive documentation;
 3. creates a **draft** GitHub Release with grouped PR notes and contributor
    attribution;
-4. builds optimized native CLI binaries for x86_64 Linux and Apple Silicon macOS;
+4. builds the optimized CLI (`nanocodex-*`) and Hand (`nanocodex2-*`) for x86_64
+   Linux, Apple Silicon macOS, and the Windows installer payload, and signs the
+   macOS Hand and `Nanocodex.app`;
 5. publishes the eight crates to crates.io in dependency order;
 6. builds, tests, and publishes the Node/browser WASM package to npm with
    provenance;
@@ -170,6 +200,11 @@ crates.io publishing, but the public GitHub announcement still gets a final
 human editorial check.
 
 ## GitHub configuration
+
+Optional macOS Hand signing uses `MACOS_DEVELOPER_ID_P12_BASE64` (a base64
+PKCS#12 export of the Developer ID Application certificate and private key),
+`MACOS_DEVELOPER_ID_P12_PASSWORD`, and `MACOS_DEVELOPER_ID_TEAM_ID`. The
+certificate is imported into a temporary keychain that is deleted after signing.
 
 The Actions secret `CARGO_REGISTRY_TOKEN` must contain a crates.io token allowed
 to publish all eight `nanocodex*` crates. Configure `nanocodex` on npm with the

@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use super::{Presentation, format_bytes};
-use crate::tui::{theme::Theme, transcript::ToolEntry};
+use crate::nanocodex2::tui::{theme::Theme, transcript::ToolEntry};
 use ratatui::style::Style;
 use serde_json::Value;
 

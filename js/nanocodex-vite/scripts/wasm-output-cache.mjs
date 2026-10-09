@@ -105,6 +105,7 @@ async function inputFiles(repository) {
   }
   for (const name of ["Cargo.toml", "Cargo.lock", "js/nanocodex-vite/scripts/build-js-package.sh",
     "js/nanocodex-vite/scripts/wasm-output-cache.mjs", "js/nanocodex-vite/scripts/wasm-memory-views.mjs",
+    "js/nanocodex-vite/scripts/native-binaryen.mjs",
     "js/nanocodex/scripts/deduplicate-wasm.mjs", "js/nanocodex/scripts/write-package-types.mjs",
     "js/nanocodex/scripts/write-wasm-attestation.mjs", "js/nanocodex/scripts/check-managed-wasm.mjs"]) files.add(resolve(repository, name));
   for (const name of [".cargo", "rust-toolchain", "rust-toolchain.toml"]) {

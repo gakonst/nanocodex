@@ -195,6 +195,9 @@ const __nanocodex_decode = (encoded) => {
       if (typeof failure.stack === "string") error.stack = failure.stack;
       if (Object.hasOwn(failure, "code")) error.code = failure.code;
       if (Object.hasOwn(failure, "details")) error.details = failure.details;
+      for (const key of Object.keys(failure)) {
+        if (!["message", "stack", "name", "code", "details"].includes(key)) error[key] = failure[key];
+      }
     }
     throw error;
   }
@@ -271,6 +274,9 @@ function serializeToolError(error) {
       ...(typeof error.stack === "string" ? { stack: error.stack } : {}),
       ...(Object.hasOwn(error, "code") ? { code: error.code } : {}),
       ...(Object.hasOwn(error, "details") ? { details: error.details } : {}),
+      // Structured tool failures carry their fields as own properties.
+      ...Object.fromEntries(Object.entries(error).filter(([key, value]) =>
+        !["message", "stack", "name", "cause"].includes(key) && typeof value !== "function")),
     };
   }
   return String(error);

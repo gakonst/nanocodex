@@ -1,4 +1,7 @@
 //! A second client controls a running native TUI through its private socket.
+#[path = "support/local_cli.rs"]
+mod local_cli;
+use local_cli::local_cli;
 
 use std::{
     io::Write,
@@ -41,7 +44,7 @@ async fn external_client_prompts_runs_commands_and_filters_events_without_touchi
             pixel_height: 0,
         })
         .map_err(pty)?;
-    let mut command = CommandBuilder::new(env!("CARGO_BIN_EXE_nanocodex"));
+    let mut command = CommandBuilder::new(local_cli());
     command.cwd(workspace.path());
     for argument in [
         "--api-key",

@@ -4,10 +4,10 @@
 
 ## Native CLI instructions and project context
 
-The shipped CLI (`nanocodex --claude` or `--harness claude`) composes original
-coding instructions for its installed Claude-native tools. Files and Bash use
-native names and Messages results; shared process and agent services are private
-host implementations. Optional capabilities must follow the actual catalog.
+The shipped CLI (`ncl --claude` or `--harness claude`) composes original
+coding instructions for its installed tools. The model calls `exec` and `wait`;
+inside Code Mode, file tools retain their native names while shell and agent
+tools use the shared Codex names, schemas and handlers. Optional capabilities must follow the actual catalog.
 Instructions do not make unavailable browser, account, planning or worktree
 capabilities available. See [the capability matrix](CLAUDE_TOOL_MATRIX.md).
 
@@ -240,30 +240,29 @@ journeys do not establish every CLI integration, OAuth flow or MCP feature.
 
 ## Native host operations
 
-The CLI installs a task board, retained Bash jobs and, when enabled, a shared
-child-agent registry. `TaskOutput`/`TaskStop` operate retained process, monitor and workflow jobs; shared agent tools use numeric agent IDs.
-Bash jobs and registry snapshots live in the process; SQLite receipt persistence
-does not reconstruct them after process exit. An eligible foreground Bash
-command reaching its return timeout becomes a retained background job. Commands
-starting with `sleep`, or sessions with `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1`,
-retain timeout cancellation and descendant cleanup; the latter also rejects
-explicit background execution. Foreground commands retain their observed final directory when it stays inside
-the workspace, including nonzero exits; background jobs snapshot it without
-changing the next command's directory. An unavailable or outside final directory
-resets subsequent commands to the workspace root. The command itself is not
-confined by that retention rule. Environment changes do not persist, and cwd is
-process-local. Commands that replace the EXIT trap or use `exec` may leave no cwd
-receipt and therefore reset the next command to the workspace root. Foreground
-return timeouts default to 120 seconds and accept at most 600 seconds. Explicit
-background execution defaults to a 30-minute deadline with a two-hour maximum;
-promoted commands get the configured background default after their foreground
-window. `BASH_DEFAULT_TIMEOUT_MS` and `BASH_MAX_TIMEOUT_MS` can raise background
-limits but cannot lower the defaults; invalid values fail before effects.
-An explicit background call can select a shorter positive execution deadline.
-Completion status can enter the interactive owner's serialized idle queue, with
-retained output immediately available through `TaskOutput`. Capture is bounded
-to 4096 bytes; merged stdout/stderr is reported as stdout. No Bash PTY parameter
-or OS security sandbox is supplied; reference agent-view PTY is a separate surface.
+The CLI installs a task board, the shared `exec_command`/`write_stdin` process
+runtime and, when enabled, a shared child-agent registry. Shell calls return the
+same structured results as Codex directly inside Code Mode. `exec_command`
+accepts `cmd`, optional `workdir`, shell/login settings, `tty`, `yield_time_ms`
+and output limits according to the shared schema. An omitted `workdir` uses the
+current session workspace. Each invocation selects its own working directory;
+a command's `cd` or environment changes do not carry into later invocations.
+
+A command still running after the requested wait returns a numeric `session_id`.
+Use `write_stdin` with that ID to send input or poll with empty `chars`; inspect
+`exit_code` to establish completion. The wait is a return interval, not a process
+execution deadline. PTY sessions support interactive input, including explicit
+Ctrl-C. Cancelling a Code Mode cell or model turn retains the shell session,
+matching Codex; continue it through `write_stdin` rather than starting a duplicate
+command. Output and polling limits follow the shared process runtime.
+
+Retained shell sessions pin their workspace until `write_stdin` observes exit,
+so worktree cleanup is refused while such a lease exists. `TaskOutput` and
+`TaskStop` operate monitor and workflow jobs, not these shell sessions. Shell
+sessions and child registry snapshots live in the process; SQLite receipt
+persistence does not reconstruct them after process exit. The former native
+Bash background flags, timeout promotion, cwd retention, and `BASH_*` timeout
+settings do not apply to the shared shell tools.
 
 The native CLI installs the exact same subagent handlers and input schemas as
 Codex: `spawn_agent`, `send_agent_message`, `list_agents`, `wait_agent`,
@@ -310,7 +309,7 @@ only the literal approval action leaves plan mode. The guard restricts model wor
 inspection and planning support tools.
 It remains installed without a UI when restoring a planning session. Plan state
 is written under `CODEX_HOME/claude/plan-mode` before publishing transitions in
-memory. The guard denies new model calls to workspace mutations, Bash, MCP and
+memory. The guard denies new model calls to workspace mutations, `exec_command`/`write_stdin`, MCP and
 agents before running hooks. Inspection, context/skill loading, task-board updates
 and user interaction remain available and pass through configured hooks. Explicit
 host command hooks may have their own effects; previously admitted work can
@@ -324,9 +323,12 @@ or `full-access`/`bypassPermissions`. With no saved or explicit policy the CLI
 retains full-access compatibility. Selecting a rules file defaults to manual
 admission. Deny rules take precedence over ask, then allow; unsupported syntax
 fails configuration. Rules support tool names, MCP server/tool patterns, bounded
-Read/Edit path patterns, Bash patterns, spawn_agent role/Skill selectors and WebFetch domains.
+Read/Edit path patterns, `exec_command` patterns, legacy `Bash` policy aliases,
+spawn_agent role/Skill selectors and WebFetch domains.
 Shell compounds require every simple command to match an allow rule; complex
-shell syntax requires approval, and file deny/ask rules conservatively cover Bash.
+shell syntax requires approval. File deny/ask rules conservatively cover shell
+calls. Shell deny/ask rules also cover `write_stdin`, including polling, because
+continuation input can execute arbitrary commands.
 `acceptEdits` admits workspace edits except sensitive `.git`/`.claude` paths.
 
 Policy and planning state persist per session. With no explicit flags resume
@@ -340,14 +342,14 @@ Trusted command hooks retain their own authority.
 `EnterWorktree` creates a new owned Git worktree and `claude/NAME` branch under
 `.claude/worktrees` from the exact current repository root. It does not adopt
 existing paths or branches; external paths requiring approval are unsupported.
-Session workspace resolution switches file/notebook tools, foreground shell,
+Session workspace resolution switches file/notebook tools, new shell invocations,
 context/skills, hooks and file checkpoints. New children snapshot the current
-workspace, while existing children and background jobs retain their pinned roots.
+workspace, while existing children and retained shell sessions retain their pinned roots.
 Worktree state persists independently of the conversation journal. An uncertain
 Git transition is fenced and requires inspection before continuation.
 `ExitWorktree` defaults to keeping the worktree and branch. Explicit `cleanup:true`
 requires the exact owned branch and common repository, no dirty/untracked/ignored
-files, no new commits and no pinned background/child contexts. Cleanup uses
+files, no new commits and no pinned shell, monitor or child contexts. Cleanup uses
 nonforced Git removal. This lifecycle does not change the process-wide cwd or
 confine arbitrary shell commands.
 
@@ -470,7 +472,7 @@ Unsupported, missing or oversized journals fail discovery instead of creating
 replacement sessions. Custom `--local-durability` stores remain a separate
 explicit recovery path and are not scanned by the default picker.
 
-Resume restores native conversation and task receipts. Process-local Bash jobs
+Resume restores native conversation and task receipts. Process-local shell sessions
 and child runtimes are not reconstructed. Authentication and currently authorized
 capabilities are reattached by the host.
 
@@ -480,7 +482,7 @@ The CLI records before-images for native `Edit`, `Write`, and `NotebookEdit`
 after permission checks and input-rewriting pre-hooks. The journal lives under
 `CODEX_HOME/claude/checkpoints` and associates each file effect with its session,
 turn, call, and actual workspace. Failed or incomplete captures block unsafe
-restoration. Bash, MCP and hook side effects are outside this file-restoration
+restoration. Shell, MCP and hook side effects are outside this file-restoration
 scope. Conversation branching is selected separately below.
 
 ```sh
@@ -512,7 +514,7 @@ discarded turns and applicable file changes without mutation. Unknown/expired
 history, pending source operations, unsafe boundaries and changed source owners
 are refused. A new UUID journal is returned with its resume command; the original
 history remains recoverable. The branch retains admitted tool identities so
-continuation cannot replay discarded effects under old IDs. Bash, hooks, MCP
+continuation cannot replay discarded effects under old IDs. Shell, hooks, MCP
 and other external effects are neither undone nor replayed.
 
 File restoration and new branch publication are separate operations. A failed
@@ -607,7 +609,7 @@ The native host exposes its capabilities through Code Mode. Conditional product
 tools remain absent:
 Artifact, DesignSync, EndConversation, PowerShell, PushNotification, RemoteTrigger,
 ReportFindings, SendFeedback and ShareOnboardingGuide. Remaining differences include
-complete permission-mode equivalence, named teams, Bash PTY/agent-view support,
+complete permission-mode equivalence, named teams, proprietary agent-view support,
 unlisted hook/plugin features, paged transcript storage and unsupported managed
 operations in the [managed guide](CLAUDE_MANAGED.md). See [the tool matrix](CLAUDE_TOOL_MATRIX.md)
 and [interactive compaction measurements](research/nanoclaude-auto-compaction-measured.md).

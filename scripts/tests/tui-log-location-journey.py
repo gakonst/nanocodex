@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Check legacy TUI log destinations using the real CLI and isolated homes.
+"""Check local TUI log destinations using the real CLI and isolated homes.
 
 python3 scripts/tests/tui-log-location-journey.py --binary target/debug/nanocodex
 Terminal transcripts and log files remain in ignored output/ for inspection.
@@ -60,7 +60,7 @@ def launch(command, env, cwd, registration_dir, transcript_path, barrier=None):
                         if barrier is not None:
                             # Neither TUI exits until both are alive and initialized.
                             barrier.wait(timeout=10)
-                        os.write(master, b"\x04")
+                        os.write(master, b"\x03\x03")
                         break
             if child.poll() is not None:
                 break
@@ -116,7 +116,7 @@ def main():
                    "NANOCODEX_DIR": str(home / ".nanocodex"), "NANOCODEX_COMPUTER": "off",
                    "TERM": "xterm-256color", "NANOCODEX_LOG_FORMAT": "json",
                    "PATH": os.environ.get("PATH", "/usr/bin:/bin")}
-            command = [str(binary), "--cwd", str(workspace), "--api-key", "synthetic-test-key",
+            command = [str(binary), "--local", "--cwd", str(workspace), "--api-key", "synthetic-test-key",
                        "--websocket-url", "ws://127.0.0.1:1", "--api-base-url", "http://127.0.0.1:1", "--browser=none", "--mcp-defaults",
                        "false", "--web-search", "false", "--image-generation", "false"]
             log_dir = home / ".local/state/nanocodex/logs"
@@ -195,7 +195,7 @@ def main():
         env.pop("NANOCODEX_LOG_FILE", None)
         env["XDG_STATE_HOME"] = str(root / "blocked-state")
         (root / "blocked-state").write_text("not a directory")
-        command = [str(binary), "run", "--request-id", "synthetic-request", "--repeat", "2",
+        command = [str(binary), "--local", "run", "--request-id", "synthetic-request", "--repeat", "2",
                    "--api-key", "synthetic-test-key", "--browser=none", "--mcp-defaults", "false",
                    "--web-search", "false", "--image-generation", "false", "never submitted"]
         for case, extra in (("headless", []), ("unwritable-log", ["--log-file", str(home)])):

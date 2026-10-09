@@ -1,5 +1,5 @@
 import { env, runInDurableObject } from "cloudflare:test";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import {
   applyManagedSubagentLifecycle,
@@ -154,7 +154,19 @@ async function withSession(
     NANOCODEX_SESSIONS: DurableObjectNamespace<DurableAgentSession>;
   }).NANOCODEX_SESSIONS;
   const stub = sessions.getByName(crypto.randomUUID());
-  await runInDurableObject(stub, async (_session, state) => run(state, new ManagedSubagentBindings()));
+  await runInDurableObject(stub, async (_session, state) => {
+    // A fresh object initializes managed storage only on create; seed the
+    // tables these authorization paths read.
+    state.storage.sql.exec(`CREATE TABLE IF NOT EXISTS managed_turns (
+      id TEXT PRIMARY KEY, request_key TEXT, request_hash TEXT NOT NULL, input_json TEXT NOT NULL,
+      authorization_json TEXT NOT NULL, state TEXT NOT NULL, accepted_cursor INTEGER NOT NULL,
+      may_have_inner_operation INTEGER NOT NULL DEFAULT 1, attempt_count INTEGER NOT NULL DEFAULT 0,
+      retry_at INTEGER, created_at INTEGER NOT NULL, accepted_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+    )`);
+    state.storage.sql.exec("CREATE TABLE IF NOT EXISTS managed_thread_route (singleton INTEGER PRIMARY KEY CHECK (singleton = 1), route_json TEXT NOT NULL)");
+    initializeManagedSubagentBindings(state.storage);
+    await run(state, new ManagedSubagentBindings());
+  });
 }
 
 function insertTurn(storage: DurableObjectStorage, id: string, authorization: unknown): void {
@@ -239,6 +251,55 @@ describe("durable managed subagent bindings", () => {
       expect(rebuilt.routes.get("child-1")?.claudeModel).toBe("claude-haiku-4-5");
       rebuilt.routes.delete("child-1");
       expect(new ManagedSubagentBindings(state.storage).routes.size).toBe(0);
+    });
+  });
+});
+
+describe("managed subagent status after its live binding changed", () => {
+  it("drops stale statuses with one warning per child and still rejects foreign authority", async () => {
+    await withSession(async (state, bindings) => {
+      insertTurn(state.storage, "account-turn", account);
+      insertTurn(state.storage, "later-turn", account);
+      const warnings: unknown[] = [];
+      const warn = vi.spyOn(console, "warn").mockImplementation((entry) => { warnings.push(entry); });
+      try {
+        const child = descriptor("41", null, ACCOUNT_SESSION, "status child");
+        const status = (state_: string, hostContextRef = "account-turn", root = ROOT_SESSION, child_ = child) =>
+          applyManagedSubagentLifecycle(state.storage, bindings, {
+            type: "status", rootSessionId: root, sessionId: child_.sessionId,
+            descriptor: child_, hostContextRef, status: state_ === "completed" ? { state: state_, output: "done" } : { state: state_ },
+          });
+        bind(state.storage, bindings, child, "account-turn");
+        expect(status("running")).toBeUndefined();
+        expect(status("completed")).toMatchObject({ sessionId: ACCOUNT_SESSION, host_context_ref: "account-turn" });
+        // A status that names a different spawning turn is observational only:
+        // it neither throws nor wakes the root through the retained binding.
+        expect(status("completed", "later-turn")).toBeUndefined();
+        // Genuine authority mismatches are still rejected, with a stable code.
+        expect(() => status("running", "account-turn", CONNECT_SESSION)).toThrow(expect.objectContaining({
+          code: "subagent_status_authority_mismatch",
+          message: "managed subagent status does not match live authorization",
+        }));
+        expect(() => status("running", "account-turn", ROOT_SESSION, descriptor("41", null, ACCOUNT_SESSION, "replaced task")))
+          .toThrow(expect.objectContaining({ code: "subagent_status_authority_mismatch" }));
+        expect(() => status("paused")).toThrow(expect.objectContaining({ code: "invalid_subagent_status" }));
+        release(state.storage, bindings, ACCOUNT_SESSION, "account-turn");
+        // Released children keep reporting until their runtime drops them,
+        // including from a rebuilt runtime that restores the same tree.
+        for (const next of ["running", "interrupted", "failed", "closed"]) expect(status(next)).toBeUndefined();
+        const rebuilt = new ManagedSubagentBindings(state.storage);
+        for (const next of ["running", "completed"]) {
+          expect(applyManagedSubagentLifecycle(state.storage, rebuilt, {
+            type: "status", rootSessionId: ROOT_SESSION, sessionId: child.sessionId, descriptor: child,
+            hostContextRef: "account-turn", status: { state: next, output: "done" },
+          })).toBeUndefined();
+        }
+        expect(warnings).toEqual([
+          { type: "managed.subagent_status_dropped", reason: "host_context_superseded", root_session_id: ROOT_SESSION, session_id: ACCOUNT_SESSION },
+          { type: "managed.subagent_status_dropped", reason: "binding_missing", root_session_id: ROOT_SESSION, session_id: ACCOUNT_SESSION },
+        ]);
+        expect(JSON.stringify(warnings)).not.toContain("status child");
+      } finally { warn.mockRestore(); }
     });
   });
 });

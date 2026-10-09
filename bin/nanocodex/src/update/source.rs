@@ -1,4 +1,9 @@
-//! Build an explicitly selected upstream revision before installing either binary.
+//! Build an explicitly selected upstream revision before installing it.
+//!
+//! Current revisions build the `nanocodex` CLI and the `nanocodex-hand` daemon
+//! from package nanocodex-bin; the Hand is installed under its service file name
+//! `nanocodex2`. Historical revisions build their `nanocodex2-bin` pair, and the
+//! brief single-binary revisions install their one binary under both names.
 
 use std::{
     path::{Path, PathBuf},
@@ -46,6 +51,19 @@ pub(super) struct Build {
     pub(super) sha: String,
     pub(super) cli: Vec<u8>,
     pub(super) hand: Vec<u8>,
+    /// Identity the compiled Hand reports (absent for older source trees).
+    pub(super) hand_identity: Option<String>,
+}
+
+/// How the fetched revision packages its CLI and Hand.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Layout {
+    /// nanocodex-bin's `nanocodex` CLI plus its `nanocodex-hand` daemon.
+    Split,
+    /// Historical `nanocodex2-bin` package beside nanocodex-bin.
+    Pair,
+    /// One `nanocodex` binary serving as both CLI and Hand.
+    Single,
 }
 
 #[derive(Deserialize)]
@@ -150,10 +168,17 @@ pub(super) async fn build(
     // updating CLI's checkout or an arbitrary inherited bundle. Keep them alive
     // until both the build and shipped-payload verification have completed.
     let helpers = tempfile::tempdir().wrap_err("failed to create helper build directory")?;
-    let screen_bundle = prepare_screen_bundle(root, helpers.path(), &sha).await?;
+    let layout = layout(root).await?;
+    let screen_bundle =
+        prepare_screen_bundle(root, helpers.path(), &sha, layout == Layout::Pair).await?;
     // Resolve shared dependency features once and use the optimized profile
     // without release LTO, matching the nightly build's faster feedback.
-    eprintln!("compiling nanocodex and nanocodex2 at {sha}...");
+    let what = match layout {
+        Layout::Split => "nanocodex and nanocodex-hand",
+        Layout::Pair => "nanocodex and nanocodex2",
+        Layout::Single => "nanocodex",
+    };
+    eprintln!("compiling {what} at {sha}...");
     let mut command = Command::new("cargo");
     command
         .current_dir(root)
@@ -171,28 +196,38 @@ pub(super) async fn build(
             "nanocodex-bin",
             "--bin",
             "nanocodex",
-            "--package",
-            "nanocodex2-bin",
-            "--bin",
-            "nanocodex2",
-            "--features",
-            "nanocodex-bin/tempo",
         ]);
+    match layout {
+        Layout::Split => {
+            command.args(["--bin", "nanocodex-hand"]);
+        }
+        Layout::Pair => {
+            command.args(["--package", "nanocodex2-bin", "--bin", "nanocodex2"]);
+        }
+        Layout::Single => {}
+    }
+    command.args(["--features", "nanocodex-bin/tempo"]);
     if let Some(bundle) = &screen_bundle {
         command.env("NANOCODEX_LINUX_SCREEN_BUNDLE", bundle);
     }
     let status = command
         .status()
         .await
-        .wrap_err("failed to start cargo while compiling nanocodex and nanocodex2")?;
+        .wrap_err_with(|| format!("failed to start cargo while compiling {what}"))?;
     if !status.success() {
-        bail!("cargo failed while compiling nanocodex and nanocodex2: {status}");
+        bail!("cargo failed while compiling {what}: {status}");
     }
     let extension = if cfg!(windows) { ".exe" } else { "" };
     let cli_path = target.join("nightly").join(format!("nanocodex{extension}"));
-    let hand_path = target
-        .join("nightly")
-        .join(format!("nanocodex2{extension}"));
+    let hand_path = match layout {
+        Layout::Split => target
+            .join("nightly")
+            .join(format!("nanocodex-hand{extension}")),
+        Layout::Pair => target
+            .join("nightly")
+            .join(format!("nanocodex2{extension}")),
+        Layout::Single => cli_path.clone(),
+    };
     if cfg!(target_os = "macos") {
         let status = Command::new("codesign")
             .args(["--force", "--sign", "-", "--entitlements"])
@@ -205,7 +240,12 @@ pub(super) async fn build(
             bail!("failed to sign the locally compiled Hand: {status}");
         }
     }
-    local::verify_pair(&cli_path, &hand_path).await?;
+    let hand_identity = if layout == Layout::Single {
+        local::verify_single(&cli_path).await?;
+        None
+    } else {
+        local::verify_pair(&cli_path, &hand_path).await?
+    };
     if let Some(bundle) = screen_bundle {
         let status = Command::new("python3")
             .arg(root.join("scripts/tests/linux-screen-helpers-bundle.py"))
@@ -223,14 +263,67 @@ pub(super) async fn build(
             );
         }
     }
+    let cli = std::fs::read(&cli_path).wrap_err("failed to read the compiled CLI")?;
+    let hand = if layout == Layout::Single {
+        cli.clone()
+    } else {
+        std::fs::read(&hand_path).wrap_err("failed to read the compiled Hand")?
+    };
     Ok(Build {
         sha,
-        cli: std::fs::read(&cli_path).wrap_err("failed to read the compiled CLI")?,
-        hand: std::fs::read(&hand_path).wrap_err("failed to read the compiled Hand")?,
+        cli,
+        hand,
+        hand_identity,
     })
 }
 
-async fn prepare_screen_bundle(root: &Path, work: &Path, sha: &str) -> Result<Option<PathBuf>> {
+async fn layout(root: &Path) -> Result<Layout> {
+    if has_legacy_hand_package(root)? {
+        return Ok(Layout::Pair);
+    }
+    let output = Command::new("cargo")
+        .current_dir(root)
+        .args(["metadata", "--no-deps", "--format-version", "1"])
+        .output()
+        .await
+        .wrap_err("failed to start cargo while inspecting the fetched workspace")?;
+    let metadata: serde_json::Value =
+        serde_json::from_slice(&successful(output, "inspect the fetched Cargo workspace")?)
+            .wrap_err("cargo returned invalid workspace metadata")?;
+    let split = metadata["packages"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|package| package["name"] == "nanocodex-bin")
+        .flat_map(|package| package["targets"].as_array().into_iter().flatten())
+        .any(|target| {
+            target["name"] == "nanocodex-hand"
+                && target["kind"]
+                    .as_array()
+                    .is_some_and(|kinds| kinds.iter().any(|kind| kind == "bin"))
+        });
+    Ok(if split { Layout::Split } else { Layout::Single })
+}
+
+/// Historical revisions declare a separate `nanocodex2-bin` workspace package;
+/// every workspace package is recorded in the lockfile used by `--locked`.
+fn has_legacy_hand_package(root: &Path) -> Result<bool> {
+    let lockfile = match std::fs::read_to_string(root.join("Cargo.lock")) {
+        Ok(lockfile) => lockfile,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error).wrap_err("failed to read the fetched Cargo.lock"),
+    };
+    Ok(lockfile
+        .lines()
+        .any(|line| line.trim() == r#"name = "nanocodex2-bin""#))
+}
+
+async fn prepare_screen_bundle(
+    root: &Path,
+    work: &Path,
+    sha: &str,
+    legacy_pair: bool,
+) -> Result<Option<PathBuf>> {
     if !cfg!(target_os = "linux") {
         return Ok(None);
     }
@@ -239,12 +332,19 @@ async fn prepare_screen_bundle(root: &Path, work: &Path, sha: &str) -> Result<Op
             "self-contained Linux source updates require x86_64; this architecture has no supported Wayland helper payload"
         );
     }
+    // The unified package's build script embeds the helpers; historical pairs
+    // embedded them from the separate nanocodex2 package build script.
+    let embedding_build_script = if legacy_pair {
+        "bin/nanocodex/nanocodex2/build.rs"
+    } else {
+        "bin/nanocodex/build.rs"
+    };
     for file in [
         "scripts/build-linux-screen-helpers.sh",
         "scripts/build-linux-screen-helpers.py",
         "scripts/build-linux-screen-helpers.Dockerfile",
         "scripts/tests/linux-screen-helpers-bundle.py",
-        "bin/nanocodex/nanocodex2/build.rs",
+        embedding_build_script,
         "bin/nanocodex/src/nanocodex2/screen_helpers.rs",
     ] {
         if !root.join(file).is_file() {

@@ -3,7 +3,7 @@
 
 //! Structured rendering for unified and `apply_patch` diffs.
 
-use crate::tui::theme::Theme;
+use crate::nanocodex2::tui::theme::Theme;
 use ratatui::{
     style::{Color, Modifier, Style},
     text::{Line, Span},
@@ -24,7 +24,7 @@ pub(super) fn render(source: &str, width: u16, theme: &Theme) -> Vec<Line<'stati
         if !rendered.is_empty() {
             rendered.push(Line::default());
         }
-        render_file(&mut rendered, &file, width, theme, &syntax_theme);
+        render_file(&mut rendered, &file, width, theme, syntax_theme);
     }
     rendered
 }

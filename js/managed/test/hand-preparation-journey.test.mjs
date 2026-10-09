@@ -36,7 +36,7 @@ scripts.MIXED = `
 `;
 scripts.RECONNECT = `
   text(await tools.exec_command({cmd:"printf PINNED_LOCAL",workdir:"/${localMachine}",shell:"/bin/sh",login:false}));
-  text(await tools.exec_command({cmd:"printf DISCOVERED_ACCOUNT",workdir:"/${machine}",shell:"/bin/sh",login:false}));
+  text(await tools.exec_command({cmd:"until [ -e reconnect.go ]; do sleep 0.02; done; printf DISCOVERED_ACCOUNT",workdir:"/${machine}",shell:"/bin/sh",login:false,yield_time_ms:10000}));
   try { const result=await tools.exec_command({cmd:"printf REFRESHED_COMMAND",workdir:"/${localMachine}",shell:"/bin/sh",login:false}); text(result); }
   catch(error) { text({stale_route:error.message}); }
 `;
@@ -77,7 +77,6 @@ export class ObservedAccountHostedTools extends AccountHostedTools {
       const config=await this.ctx.storage.get('fixture')??{},started=Date.now(),selected=(await request.clone().json()).machine_id;
       console.info({type:'fixture.snapshot',stage:'start',at:started,selected:selected??null});
       await new Promise(resolve=>setTimeout(resolve,selected?0:(config.delay_ms??0)));
-      for(let held;(held=await this.ctx.storage.get('fixture'))?.hold||(selected&&held?.hold_selected===selected);) await new Promise(resolve=>setTimeout(resolve,10));
       const response=config.fail?new Response('fixture discovery failure',{status:503}):await super.fetch(request);
       console.info({type:'fixture.snapshot',stage:'end',at:Date.now(),status:response.status}); return response;
     }
@@ -197,13 +196,17 @@ test("fresh shipped Code Mode cells prepare selected routes without changing dis
       const first=records.length,value=await runTurn(scenario),current=records.slice(first),stages=current.filter(row=>row.type==="hand.tool.stage"&&row.parent_call_id===`call_preparation_${scenario}`&&row.stage==="namespace.prepare");
       assert.match(JSON.stringify(value.turn),/PREP_OK/);assert.doesNotMatch(JSON.stringify(value.turn),/UNSAFE_VM/);assert.equal(stages.length,1,"concurrent calls must join one cell preparation");
       assert.equal(current.filter(row=>row.type==="fixture.pool"&&row.stage==="start").length,prepSource?2:0);
-      assert.equal(current.filter(row=>row.type==="fixture.snapshot"&&row.stage==="start").length,1);
-      const snapshot=current.find(row=>row.type==="fixture.snapshot"&&row.stage==="start");
+      const lookups=current.filter(row=>row.type==="fixture.snapshot"&&row.stage==="start");
+      // A shell route reuses a recent selected-Hand lookup in its generation;
+      // a cell never falls back to full inventory and looks up only its Hand.
+      if(prepSource) assert.equal(lookups.length,1);
+      else {assert.ok(lookups.length<=1,"at most one selected lookup per cell");assert.ok(lookups.every(row=>row.selected===machine),"only the selected account Hand is looked up");}
+      const snapshot=lookups[0];
       const selectedLookup=current.find(row=>row.type==="hand.tool.stage"&&row.stage==="namespace.selected_lookup");
-      if(!prepSource) {assert.equal(snapshot.selected,machine);assert.ok(selectedLookup);}
+      if(!prepSource) assert.ok(selectedLookup);
       const readiness=current.find(row=>row.type==="hand.tool.stage"&&row.parent_call_id===`call_preparation_${scenario}`&&row.stage==="namespace.host_readiness");
       const discovery=current.find(row=>row.type==="hand.tool.stage"&&row.parent_call_id===`call_preparation_${scenario}`&&row.stage==="namespace.account_discovery");
-      samples.push({scenario,prepare_ms:stages[0].duration_ms,public_turn_ms:value.elapsed_ms,selected_machine:snapshot.selected, selected_lookup_ms:selectedLookup?.duration_ms, snapshots:current.filter(row=>row.type==="fixture.snapshot"&&row.stage==="start").length, pools:current.filter(row=>row.type==="fixture.pool"&&row.stage==="start").length,
+      samples.push({scenario,prepare_ms:stages[0].duration_ms,public_turn_ms:value.elapsed_ms,selected_machine:snapshot?.selected??machine, selected_lookup_ms:selectedLookup?.duration_ms, snapshots:lookups.length, pools:current.filter(row=>row.type==="fixture.pool"&&row.stage==="start").length,
         ...(readiness?{host_readiness_ms:readiness.duration_ms}:{}),...(discovery?{account_discovery_ms:discovery.duration_ms}:{})});
     }
     const localSamples=[];
@@ -214,9 +217,10 @@ test("fresh shipped Code Mode cells prepare selected routes without changing dis
       assert.ok(stage);
       const snapshots=rows.filter(row=>row.type==="fixture.snapshot"&&row.stage==="start").length;
       const pools=rows.filter(row=>row.type==="fixture.pool"&&row.stage==="start").length;
-      // The second computer is an account Hand. Once discovered, each fresh
-      // cell performs one selected-Hand lookup and never prepares VM pools.
-      assert.equal(snapshots,1);
+      // The second computer is an account Hand. Its first cell looks it up;
+      // later shell cells may reuse that recent lookup. A cell never performs
+      // more than one selected-Hand lookup and never prepares VM pools.
+      if(i===0||prepSource) assert.equal(snapshots,1); else assert.ok(snapshots<=1,"at most one selected lookup per cell");
       if(i>0) {assert.equal(pools,0);
         assert.ok(rows.filter(row=>row.type==="fixture.snapshot"&&row.stage==="start").every(row=>row.selected===localMachine),"only the selected account Hand is looked up");}
       if(i>=2) localSamples.push({scenario,prepare_ms:stage.duration_ms,public_turn_ms:value.elapsed_ms,snapshots,pools});
@@ -224,27 +228,30 @@ test("fresh shipped Code Mode cells prepare selected routes without changing dis
     const processStart=records.length;
     const processTurn=await runTurn("PROCESS");assert.match(JSON.stringify(processTurn.turn),/PROCESS_RESUMED/);
     if(!prepSource) {
-      // Only the starting exec looks up its selected account Hand; retained
-      // process polling resolves its original binding without inventory.
+      // Only the starting exec may look up its selected account Hand (or reuse
+      // a recent lookup); retained process polling resolves its original
+      // binding without inventory.
       const processRows=records.slice(processStart);
       assert.equal(processRows.filter(row=>row.type==="fixture.pool").length,0);
-      assert.deepEqual(processRows.filter(row=>row.type==="fixture.snapshot"&&row.stage==="start").map(row=>row.selected),[localMachine],"retained process polling must resolve its original binding without inventory");
+      const processLookups=processRows.filter(row=>row.type==="fixture.snapshot"&&row.stage==="start").map(row=>row.selected);
+      assert.ok(processLookups.length<=1&&processLookups.every(id=>id===localMachine),"retained process polling must resolve its original binding without inventory: "+JSON.stringify(processLookups));
     }
     const inventory=await runTurn("INVENTORY");
     for(const id of [machine,localMachine]) assert.match(JSON.stringify(inventory.turn),new RegExp(id));
     const mixed=await runTurn("MIXED");
     for(const marker of ["LOCAL_FIRST","ACCOUNT_SECOND","LOCAL_AGAIN","unknown"]) assert.match(JSON.stringify(mixed.turn),new RegExp(marker));
     if(!prepSource) {
-    // Hold only the other Hand's selected lookup, after this cell pinned the
-    // local account Hand's first generation, then reconnect that Hand.
-    assert.equal((await request("/account-tools/__fixture",{method:"POST",body:JSON.stringify({hold_selected:machine})})).status,204);
-    const reconnectStart=records.length;
+    // Hold the other Hand's admitted command, after this cell pinned the local
+    // account Hand's first generation, then reconnect the local Hand. Shell
+    // routes may reuse a recent selected lookup, so the pause is the user's
+    // own running command rather than a held discovery request.
     const reconnectTurn=runTurn("RECONNECT");
     void reconnectTurn.catch(()=>{});
-    const heldLookup=()=>records.slice(reconnectStart).some(row=>row.type==="fixture.snapshot"&&row.stage==="start"&&row.selected===machine);
-    for(let i=0;i<1000&&!heldLookup();i++) await delay(5);
-    assert.ok(heldLookup());
+    const heldCall=()=>wire.some(row=>row.direction==="broker"&&row.frame.type==="call"&&row.frame.input?.cmd?.includes("reconnect.go"));
+    for(let i=0;i<1000&&!heldCall();i++) await delay(5);
+    assert.ok(heldCall(),"the other Hand's command must be admitted before the local Hand reconnects");
     await localAttachment.close();localAttachment=connectLocal();assert.equal((await localAttachment.connect()).connected,true);
+    await writeFile(join(workspace,"reconnect.go"),"");
     assert.equal((await request("/account-tools/__fixture",{method:"POST",body:JSON.stringify({delay_ms:0})})).status,204);
     const reconnected=await reconnectTurn;
     // This later command was never admitted on the old runtime. Recovery may
@@ -288,8 +295,9 @@ test("fresh shipped Code Mode cells prepare selected routes without changing dis
       assert.match(JSON.stringify(offline.turn),/offline/);
       assert.doesNotMatch(JSON.stringify(offline.turn),/MUST_NOT_RUN_OFFLINE/);
       const offlineRows=records.slice(offlineStart);
-      assert.equal(offlineRows.filter(row=>row.type==="fixture.snapshot"&&row.stage==="start").length,1);
-      assert.equal(offlineRows.find(row=>row.type==="fixture.snapshot"&&row.stage==="start").selected,machine);
+      // An unpublished route gets exactly one bounded fresh retry before the
+      // call fails, and both lookups name only the selected Hand.
+      assert.deepEqual(offlineRows.filter(row=>row.type==="fixture.snapshot"&&row.stage==="start").map(row=>row.selected),[machine,machine]);
       assert.equal(offlineRows.filter(row=>row.type==="fixture.pool").length,0);
       assert.equal(wire.filter(row=>row.direction==="broker"&&row.frame.type==="call").length,before);
     }

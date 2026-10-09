@@ -23,9 +23,9 @@ use std::{
 use serde::Serialize;
 use tokio::{sync::Mutex, task::JoinHandle, time::timeout};
 
-const DEFAULT_EXEC_YIELD_MS: u64 = 10_000;
-const DEFAULT_WRITE_YIELD_MS: u64 = 250;
-const DEFAULT_POLL_YIELD_MS: u64 = 5_000;
+pub(crate) const DEFAULT_EXEC_YIELD_MS: u64 = 10_000;
+pub(crate) const DEFAULT_WRITE_YIELD_MS: u64 = 250;
+pub(crate) const DEFAULT_POLL_YIELD_MS: u64 = 5_000;
 pub(crate) const MAX_EXEC_YIELD_MS: u64 = 30_000;
 pub(crate) const MAX_POLL_YIELD_MS: u64 = 300_000;
 const DRAIN_GRACE: Duration = Duration::from_secs(2);

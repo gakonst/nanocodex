@@ -26,17 +26,46 @@ use std::{
     io::{self, IsTerminal, Stdout, Write, stdin, stdout},
     panic,
     sync::{
-        Once,
-        atomic::{AtomicBool, Ordering},
+        Arc, Once,
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
 };
 
-type TuiTerminal = Terminal<StableCursorBackend<CrosstermBackend<Stdout>>>;
+type TuiTerminal = Terminal<StableCursorBackend<CrosstermBackend<CountingWriter>>>;
+
+/// Per-frame cost observed at the terminal boundary, for stream/view telemetry.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct DrawMetrics {
+    pub(crate) changed_cells: u64,
+    pub(crate) output_bytes: u64,
+}
+
+/// Counts bytes actually written to the terminal, including graphics uploads.
+struct CountingWriter {
+    inner: Stdout,
+    written: Arc<AtomicU64>,
+}
+
+impl Write for CountingWriter {
+    fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+        let written = self.inner.write(buffer)?;
+        self.written.fetch_add(
+            u64::try_from(written).unwrap_or(u64::MAX),
+            Ordering::Relaxed,
+        );
+        Ok(written)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.inner.flush()
+    }
+}
 
 /// Avoids restarting the terminal's cursor blink cycle on every rendered frame.
 struct StableCursorBackend<B> {
     inner: B,
     cursor_visibility: CursorVisibility,
+    changed_cells: u64,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -51,6 +80,7 @@ impl<B> StableCursorBackend<B> {
         Self {
             inner,
             cursor_visibility: CursorVisibility::Hidden,
+            changed_cells: 0,
         }
     }
 
@@ -80,7 +110,11 @@ impl<B: Backend> Backend for StableCursorBackend<B> {
     where
         I: Iterator<Item = (u16, u16, &'a Cell)>,
     {
-        self.inner.draw(content)
+        let mut changed_cells = 0_u64;
+        let content = content.inspect(|_| changed_cells = changed_cells.saturating_add(1));
+        let result = self.inner.draw(content);
+        self.changed_cells = self.changed_cells.saturating_add(changed_cells);
+        result
     }
 
     fn append_lines(&mut self, count: u16) -> Result<(), Self::Error> {
@@ -146,6 +180,7 @@ pub(crate) struct MeasuredBackend<B> {
 pub(crate) struct TerminalSession {
     terminal: TuiTerminal,
     active: bool,
+    written: Arc<AtomicU64>,
 }
 
 struct RestoreOnDrop {
@@ -228,20 +263,50 @@ impl TerminalSession {
         let mut output = stdout();
         activate_commands(&mut output)?;
         TERMINAL_ACTIVE.store(true, Ordering::Release);
-        let terminal = Terminal::new(StableCursorBackend::hidden(CrosstermBackend::new(output)))?;
+        let written = Arc::new(AtomicU64::new(0));
+        let terminal = Terminal::new(StableCursorBackend::hidden(CrosstermBackend::new(
+            CountingWriter {
+                inner: output,
+                written: Arc::clone(&written),
+            },
+        )))?;
         restore.armed = false;
+        // Terminal detection and math workers start off the input loop.
+        super::components::math::start();
 
         Ok(Self {
             terminal,
             active: true,
+            written,
         })
     }
 
-    pub(crate) fn draw(&mut self, render: impl FnOnce(&mut Frame<'_>)) -> io::Result<()> {
+    pub(crate) fn draw(&mut self, render: impl FnOnce(&mut Frame<'_>)) -> io::Result<DrawMetrics> {
+        let bytes_before = self.written.load(Ordering::Relaxed);
+        self.terminal.backend_mut().changed_cells = 0;
         begin_synchronized_update(self.terminal.backend_mut())?;
-        let draw = self.terminal.draw(render).map(|_| ());
+        // Math images must reach the terminal before the placeholders that show them.
+        let uploads = {
+            let backend = self.terminal.backend_mut();
+            super::components::math::drain_commands(|command| backend.write_all(command))
+        };
+        let draw = uploads.and_then(|_| self.terminal.draw(render).map(|_| ()));
         let end = end_synchronized_update(self.terminal.backend_mut());
-        draw.and(end)
+        draw.and(end)?;
+        Ok(DrawMetrics {
+            changed_cells: self.terminal.backend().changed_cells,
+            output_bytes: self
+                .written
+                .load(Ordering::Relaxed)
+                .saturating_sub(bytes_before),
+        })
+    }
+
+    /// Writes an out-of-band control sequence (notifications) between frames.
+    pub(crate) fn write_control_sequence(&mut self, bytes: &[u8]) -> io::Result<()> {
+        let backend = self.terminal.backend_mut();
+        backend.write_all(bytes)?;
+        Write::flush(backend)
     }
 
     pub(crate) fn invalidate_cursor_visibility(&mut self) {
@@ -272,6 +337,8 @@ impl TerminalSession {
         reset_after_resume(&mut self.terminal)?;
         restore.armed = false;
         self.active = true;
+        // The alternate screen may have been reset while suspended.
+        super::components::math::reupload_all();
         Ok(())
     }
 }
@@ -283,6 +350,7 @@ fn reset_after_resume<B: Backend>(terminal: &mut Terminal<B>) -> Result<(), B::E
 
 impl Drop for TerminalSession {
     fn drop(&mut self) {
+        super::components::math::shutdown();
         if !self.active {
             return;
         }
@@ -365,7 +433,7 @@ mod tests {
         MeasuredBackend, StableCursorBackend, activate_commands, begin_synchronized_update,
         end_synchronized_update, reset_after_resume, restore_commands,
     };
-    use crate::{
+    use crate::nanocodex2::{
         config::ReasoningEffort,
         tui::{
             components::{AppNode, RootNode},

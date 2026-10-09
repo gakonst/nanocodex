@@ -6,6 +6,7 @@ import { createMarkdownMemoryCompletion, type MarkdownMemoryAi } from "./markdow
 import { scopeMemoryFiles, scopeFileMemories } from "./extension-memory-storage";
 import { PreparedPersonalizationStore } from "./personalization";
 import { DurableObject } from "cloudflare:workers";
+import { errorDiagnostics } from "./safe-error";
 import { performanceScope, performanceStage, performanceState, performanceSyncScope } from "./performance";
 import {
   initializeHistoryStorage, storeHistorySegments, deleteHistorySegments, readHistoryText,
@@ -40,6 +41,13 @@ export const MEMORY_INITIALIZE_ASSERTION = "x-nanocodex-memory-initialize";
 const SESSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[78][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const TURN_ID = /^[A-Za-z0-9._:-]{1,128}$/;
 const MAX_AI_RETRY_DELAY_MS = 60_000;
+// After the fast phase a failing projection is persistent, not transient.
+const FAST_AI_RETRY_ATTEMPTS = 7;
+const MAX_PERSISTENT_AI_RETRY_DELAY_MS = 60 * 60_000;
+// SQLite FTS stays authoritative. An upsert still unindexed after roughly four
+// hours of retries is retired instead of polling AI Search forever; deletes are
+// privacy tombstones and keep retrying at the persistent cadence.
+const MAX_AI_UPSERT_ATTEMPTS = 16;
 const VECTOR_SEARCH_CACHE_MS = 30_000;
 const EMPTY_VECTOR_SEARCH_CACHE_MS = 1_000;
 
@@ -71,8 +79,6 @@ type AiOutboxRow = {
   retry_at: number;
 };
 
-type DisposableAiSearchObject<T extends object> = T & Disposable;
-
 type AiSearchItemState = Pick<AiSearchItemInfo, "id" | "status">;
 
 const copyAiSearchItemState = (item: AiSearchItemInfo): AiSearchItemState => ({
@@ -84,24 +90,33 @@ export async function withAiSearchItems<T>(
   instance: Pick<AiSearchInstance, "items">,
   operation: (items: AiSearchItems) => Promise<T>,
 ): Promise<T> {
-  const items = instance.items as AiSearchItems & Partial<Disposable>;
+  const items = instance.items;
   try {
     return await operation(items);
   } finally {
-    const dispose = items[Symbol.dispose];
-    if (typeof dispose === "function") dispose.call(items);
+    disposeOwned(items);
   }
 }
 
-export async function withAiSearchResult<T extends object, R>(
+// RPC results own a disposer only when they carry stubs. Methods such as
+// item.sync() may resolve to undefined or a plain value; unconditionally
+// calling Symbol.dispose on those threw TypeError after the remote call had
+// already succeeded, so the outbox retried that operation forever.
+function disposeOwned(value: unknown): void {
+  if ((typeof value !== "object" && typeof value !== "function") || value === null) return;
+  const dispose = (value as Partial<Disposable>)[Symbol.dispose];
+  if (typeof dispose === "function") dispose.call(value);
+}
+
+export async function withAiSearchResult<T, R>(
   result: Promise<T>,
   operation: (value: T) => R | Promise<R>,
 ): Promise<R> {
-  const value = await result as DisposableAiSearchObject<T>;
+  const value = await result;
   try {
     return await operation(value);
   } finally {
-    value[Symbol.dispose]();
+    disposeOwned(value);
   }
 }
 
@@ -110,11 +125,11 @@ export async function withAiSearchItem<T>(
   itemId: string,
   operation: (item: AiSearchItem) => Promise<T>,
 ): Promise<T> {
-  const item = items.get(itemId) as DisposableAiSearchObject<AiSearchItem>;
+  const item = items.get(itemId);
   try {
     return await operation(item);
   } finally {
-    item[Symbol.dispose]();
+    disposeOwned(item);
   }
 }
 
@@ -486,7 +501,7 @@ export class MemoryScope extends DurableObject<MemoryScopeEnv> {
         // external index is unavailable.
         console.warn({
           type: "memory_scope.ai_search_query_failed",
-          error_kind: errorKind(error),
+          ...errorDiagnostics(error),
           fallback: "local_fts",
         });
       }
@@ -740,11 +755,13 @@ export class MemoryScope extends DurableObject<MemoryScopeEnv> {
       ).toArray();
       if (rows.length === 0) break;
       for (const row of rows) {
+        // Content-free location of a failure for the warn log below.
+        let stage = row.operation === "delete" ? "delete" : "lookup";
         try {
           if (row.operation === "delete") {
             const deleted = await this.#deleteAiItem(row);
             if (!deleted) {
-              this.#deferAiOperation(row);
+              this.#deferAiOperation(row, "delete_pending");
               continue;
             }
           } else {
@@ -757,12 +774,13 @@ export class MemoryScope extends DurableObject<MemoryScopeEnv> {
             if (!current) {
               const deleted = await this.#deleteAiItem(row, name);
               if (!deleted) {
-                this.#deferAiOperation(row);
+                this.#deferAiOperation(row, "delete_pending");
                 continue;
               }
             } else {
               let item: AiSearchItemState;
               if (current.ai_item_id === null) {
+                stage = "upload";
                 item = await withAiSearchItems(
                   this.env.HISTORY_AI_SEARCH,
                   (items) => withAiSearchResult(
@@ -784,6 +802,7 @@ export class MemoryScope extends DurableObject<MemoryScopeEnv> {
                 );
               } else {
                 try {
+                  stage = "info";
                   item = await withAiSearchItems(
                     this.env.HISTORY_AI_SEARCH,
                     (items) => withAiSearchItem(
@@ -801,12 +820,13 @@ export class MemoryScope extends DurableObject<MemoryScopeEnv> {
                     "UPDATE memory_segments SET ai_item_id = NULL WHERE segment_id = ?",
                     row.segment_id,
                   );
-                  this.#deferAiOperation(row);
+                  this.#deferAiOperation(row, "item_not_found");
                   continue;
                 }
               }
               if (item.status !== "completed") {
                 if (item.status === "error" || item.status === "skipped" || item.status === "outdated") {
+                  stage = "sync";
                   await withAiSearchItems(
                     this.env.HISTORY_AI_SEARCH,
                     (items) => withAiSearchItem(
@@ -819,7 +839,7 @@ export class MemoryScope extends DurableObject<MemoryScopeEnv> {
                     ),
                   );
                 }
-                this.#deferAiOperation(row);
+                this.#deferAiOperation(row, `item_${item.status}`);
                 continue;
               }
             }
@@ -829,8 +849,15 @@ export class MemoryScope extends DurableObject<MemoryScopeEnv> {
             row.operation_id,
           );
         } catch (error) {
-          this.#deferAiOperation(row);
-          console.warn({ type: "memory_scope.ai_outbox_operation_failed", error_kind: errorKind(error) });
+          const diagnostics = errorDiagnostics(error);
+          console.warn({
+            type: "memory_scope.ai_outbox_operation_failed",
+            operation: row.operation,
+            stage,
+            attempt: row.attempt_count + 1,
+            ...diagnostics,
+          });
+          this.#deferAiOperation(row, diagnostics.reason);
         }
       }
     }
@@ -848,9 +875,12 @@ export class MemoryScope extends DurableObject<MemoryScopeEnv> {
           source: "builtin",
           per_page: 50,
         } as AiSearchListItemsParams & { key: string }),
-        (listed) => new Set(
-          listed.result.filter((item) => item.key === key).map((item) => item.id),
-        ),
+        (listed) => {
+          if (!Array.isArray(listed?.result)) {
+            throw Object.assign(new TypeError("AI Search list returned no result array"), { code: "ai_search_list_malformed" });
+          }
+          return new Set(listed.result.filter((item) => item.key === key).map((item) => item.id));
+        },
       ),
     );
     if (row.ai_item_id !== null) ids.add(row.ai_item_id);
@@ -875,8 +905,13 @@ export class MemoryScope extends DurableObject<MemoryScopeEnv> {
     return false;
   }
 
-  #deferAiOperation(row: AiOutboxRow): void {
+  #deferAiOperation(row: AiOutboxRow, reason: string): void {
     const attempt = row.attempt_count + 1;
+    if (row.operation === "upsert" && attempt >= MAX_AI_UPSERT_ATTEMPTS) {
+      this.ctx.storage.sql.exec("DELETE FROM memory_ai_outbox WHERE operation_id = ?", row.operation_id);
+      console.warn({ type: "memory_scope.ai_outbox_operation_abandoned", operation: row.operation, attempt, reason });
+      return;
+    }
     this.ctx.storage.sql.exec(
       `UPDATE memory_ai_outbox SET attempt_count = ?, retry_at = ?
        WHERE operation_id = ?`,
@@ -1020,7 +1055,11 @@ function containsLikelySecret(content: string): boolean {
 }
 
 function retryDelayMs(attempt: number): number {
-  return Math.min(MAX_AI_RETRY_DELAY_MS, 1_000 * (2 ** Math.max(0, attempt - 1)));
+  if (attempt <= FAST_AI_RETRY_ATTEMPTS) {
+    return Math.min(MAX_AI_RETRY_DELAY_MS, 1_000 * (2 ** Math.max(0, attempt - 1)));
+  }
+  return Math.min(MAX_PERSISTENT_AI_RETRY_DELAY_MS,
+    MAX_AI_RETRY_DELAY_MS * (2 ** Math.min(16, attempt - FAST_AI_RETRY_ATTEMPTS)));
 }
 
 async function parseJsonBody<Value>(request: Request): Promise<Value> {

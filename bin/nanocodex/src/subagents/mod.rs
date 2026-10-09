@@ -1,8 +1,6 @@
 //! CLI lifecycle ownership over the reusable subagent extension.
 use nanocodex_subagents::SubagentControl;
-pub(crate) use nanocodex_subagents::{
-    AgentId, AgentStatus, AgentUpdate, DEFAULT_MAX_SUBAGENTS, ScopedAgentUpdate, channel,
-};
+pub(crate) use nanocodex_subagents::{DEFAULT_MAX_SUBAGENTS, ScopedAgentUpdate, channel};
 use std::sync::Arc;
 use tokio::{sync::mpsc, task::JoinHandle};
 
@@ -26,6 +24,11 @@ impl ChildAgents {
             control,
             update_task: tokio::sync::Mutex::new(update_task),
         })
+    }
+
+    /// Changes how many child agents may run at once for this session tree.
+    pub(crate) fn set_max_concurrency(&self, limit: usize) {
+        self.control.set_max_concurrency(limit);
     }
 
     pub(crate) async fn shutdown(&self) {

@@ -33,7 +33,7 @@ def main():
     write('.claude/agents/reviewer.md','---\nname: reviewer\ndescription: Restricted reviewer\nmodel: haiku\ntools: Read, spawn_agent, wait_agent\n---\nPROFILE_INSTRUCTIONS_SENTINEL\n')
     write('.claude/agents/no-read.md','---\nname: no-read\ndescription: No file context\ntools: Grep\n---\nNO_READ_PROFILE_SENTINEL\n')
     write('.claude/agents/planner.md','---\nname: planner\ndescription: Plan-only profile\npermissionMode: plan\n---\nPLAN_PROFILE_SENTINEL\n')
-    write('.claude/agents/isolated.md','---\nname: isolated\ndescription: Isolated work\nisolation: worktree\ntools: Read, Write, Bash\n---\nISOLATED_PROFILE_SENTINEL\n')
+    write('.claude/agents/isolated.md','---\nname: isolated\ndescription: Isolated work\nisolation: worktree\ntools: Read, Write, exec_command\n---\nISOLATED_PROFILE_SENTINEL\n')
     write('.claude/agents/legacy.md','---\nname: legacy\ndescription: Removed deny alias\ndisallowedTools: Agent\n---\nNever run with weakened restrictions.\n')
     write('.claude/skills/fork-review/SKILL.md','---\nname: fork-review\ndescription: Review in a real clean child\ncontext: fork\nagent: reviewer\nmodel: haiku\n---\nSKILL_CHILD_MARKER $ARGUMENTS\n')
     write('.claude/skills/disabled/SKILL.md','---\nname: disabled\ndisable-model-invocation: true\ncontext: fork\n---\nNever run.\n')
@@ -48,7 +48,7 @@ def main():
     def wait(key):return step('wait_agent',lambda:{'agent_ids':[ids[key]],'timeout_ms':20000},check=completed)
     def capture_path(key):
         def check(value):
-            paths[key]=Path(value['stdout'].strip()); require(paths[key]!=workspace,'child did not isolate'); require(paths[key].is_dir(),'missing child worktree')
+            paths[key]=Path(value['output'].strip()); require(paths[key]!=workspace,'child did not isolate'); require(paths[key].is_dir(),'missing child worktree')
         return check
     def clean_closed(value): require(not paths['clean'].exists(),'unchanged child worktree survived close_agent');checks.append('unchanged worktree safely removed')
     def dirty_closed(value): require((paths['dirty']/'isolated.txt').read_text()=='child-only','dirty worktree lost');checks.append('dirty worktree retained')
@@ -71,8 +71,8 @@ def main():
             step('spawn_agent',spawn('ILLEGAL_CROSS_FAMILY',harness='codex'),True),
             step('spawn_agent',spawn('NESTED_CHILD_MARKER'),check=save_agent('nested')),wait('nested'),step('submit_result',{'output':'skill-complete'})],
         'NO_READ_CHILD_MARKER':[step('Grep',{'pattern':'parent-original','path':'tracked.txt'},check=lambda v:require('ROOT_CONTEXT_SECRET' not in json.dumps(v),'Grep leaked blocked project context')),step('submit_result',{'output':'no-read-complete'})],
-        'CLEAN_CHILD_MARKER':[step('Bash',{'command':'pwd'},check=capture_path('clean')),step('submit_result',{'output':'clean-complete'})],
-        'DIRTY_CHILD_MARKER':[step('Bash',{'command':'pwd'},check=capture_path('dirty')),step('Write',{'file_path':'isolated.txt','content':'child-only'}),step('submit_result',{'output':'dirty-complete'})],
+        'CLEAN_CHILD_MARKER':[step('exec_command',{'cmd':'pwd'},check=capture_path('clean')),step('submit_result',{'output':'clean-complete'})],
+        'DIRTY_CHILD_MARKER':[step('exec_command',{'cmd':'pwd'},check=capture_path('dirty')),step('Write',{'file_path':'isolated.txt','content':'child-only'}),step('submit_result',{'output':'dirty-complete'})],
     }
     class Provider(BaseHTTPRequestHandler):
         def log_message(self,*_):pass

@@ -130,3 +130,44 @@ export function threadProviderPerformance(sql: DurableObjectStorage["sql"], limi
       limitation: "Only instrumented provider attempts are present; at most 512 observations are retained. Summaries use a two-hour window. Null timings are unknown; provider completion does not establish client delivery." };
   } catch { return { available: false, scope: "thread", samples: [], groups: [] }; }
 }
+
+// admin_threads read pages are model-visible tool results. Bound each page so
+// a Code Mode cell can page through a large thread without multi-MB nested
+// receipts; oversized events keep identity fields plus a bounded preview.
+export const ADMIN_READ_EVENT_BYTES = 32 * 1024;
+export const ADMIN_READ_PAGE_BYTES = 512 * 1024;
+const utf8 = new TextEncoder();
+function utf8Prefix(text: string, bytes: number): string {
+  let prefix = text.slice(0, bytes);
+  while (utf8.encode(prefix).byteLength > bytes) prefix = prefix.slice(0, Math.floor(prefix.length * 0.9));
+  return prefix;
+}
+function scalarFields(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  return Object.fromEntries(Object.entries(value).filter(([, field]) => field === null || typeof field === "boolean"
+    || typeof field === "number" || (typeof field === "string" && field.length <= 512)));
+}
+function boundedAdminEvent(event: Record<string, unknown>): { event: Record<string, unknown>; bytes: number } {
+  const encoded = JSON.stringify(event);
+  const bytes = utf8.encode(encoded).byteLength;
+  if (bytes <= ADMIN_READ_EVENT_BYTES) return { event, bytes };
+  const inner = event.event && typeof event.event === "object" ? event.event as Record<string, unknown> : undefined;
+  const bounded = { ...scalarFields(event),
+    ...(inner ? { event: { ...scalarFields(inner), payload: scalarFields(inner.payload) } } : {}),
+    truncated: true, original_bytes: bytes, preview: utf8Prefix(encoded, ADMIN_READ_EVENT_BYTES / 2) };
+  return { event: bounded, bytes: utf8.encode(JSON.stringify(bounded)).byteLength };
+}
+/** Keeps the page edge nearest the request cursor so next_before/next_after
+ * continue exactly where this bounded page stops. Never returns an empty page. */
+export function boundedAdminEventPage(events: Record<string, unknown>[], newest: boolean): { data: Record<string, unknown>[]; omitted: number } {
+  const ordered = newest ? [...events].reverse() : events;
+  const kept: Record<string, unknown>[] = [];
+  let total = 0;
+  for (const candidate of ordered) {
+    const { event, bytes } = boundedAdminEvent(candidate);
+    if (kept.length > 0 && total + bytes > ADMIN_READ_PAGE_BYTES) break;
+    kept.push(event); total += bytes;
+  }
+  return { data: newest ? kept.reverse() : kept, omitted: events.length - kept.length };
+}
+

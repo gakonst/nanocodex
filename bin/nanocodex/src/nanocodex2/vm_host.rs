@@ -1705,6 +1705,11 @@ mod supported {
         connect_vm_tools(hand.tools(), hand.machine().clone(), target).await
     }
 
+    /// Signalled when an endpoint permanently revokes a VM attachment (HTTP
+    /// 410). The control loop then reconciles so the pool's authority releases
+    /// allocations it no longer owns, reaping their VMs.
+    static ATTACHMENT_REVOKED: tokio::sync::Notify = tokio::sync::Notify::const_new();
+
     async fn connect_vm_tools(
         tools: nanocodex_oai_tools::Tools,
         machine: nanocodex_oai_tools::attachment::AttachmentMachine,
@@ -1714,7 +1719,19 @@ mod supported {
             .attach(target)
             .metadata(AttachmentMetadata::machine(machine));
         match tokio::time::timeout(ATTACHMENT_CONNECT_TIMEOUT, connector.connect()).await {
-            Ok(Ok((attachment, _events))) => Ok(attachment),
+            Ok(Ok((attachment, _events))) => {
+                let watched = attachment.clone();
+                tokio::spawn(async move {
+                    if watched
+                        .closed()
+                        .await
+                        .is_err_and(|error| error.is_revoked())
+                    {
+                        ATTACHMENT_REVOKED.notify_one();
+                    }
+                });
+                Ok(attachment)
+            }
             Ok(Err(error)) => Err(VmHostError::Resource(format!(
                 "failed to attach provisioned VM: {error}"
             ))),
@@ -2686,12 +2703,8 @@ mod supported {
         }
     }
 
-    async fn serve_connection(
-        host: &mut VmHost,
-        connection: &mut VmHostConnection,
-    ) -> Result<ConnectionOutcome, ManagedError> {
-        let allocations = host
-            .reconcile()
+    fn reported_allocations(host: &VmHost) -> Result<Vec<VmHostAllocationState>, ManagedError> {
+        host.reconcile()
             .into_iter()
             .map(|allocation| {
                 VmHostAllocationState::ready(
@@ -2700,7 +2713,14 @@ mod supported {
                     allocation.machine_id,
                 )
             })
-            .collect::<Result<Vec<_>, _>>()?;
+            .collect::<Result<Vec<_>, _>>()
+    }
+
+    async fn serve_connection(
+        host: &mut VmHost,
+        connection: &mut VmHostConnection,
+    ) -> Result<ConnectionOutcome, ManagedError> {
+        let allocations = reported_allocations(host)?;
         if let Err(error) = connection.reconcile(&allocations).await {
             tracing::warn!(target: "nanocodex2", error = %error, "VM host reconciliation failed");
             return Ok(ConnectionOutcome::Reconnect {
@@ -2739,6 +2759,17 @@ mod supported {
                     _ = heartbeat.tick() => {
                         if let Err(error) = connection.ping(None).await {
                             tracing::warn!(target: "nanocodex2", error = %error, "VM host heartbeat failed");
+                            return Ok(ConnectionOutcome::Reconnect { made_progress });
+                        }
+                        continue;
+                    }
+                    () = ATTACHMENT_REVOKED.notified() => {
+                        // Only reached with no queued command, so the pool's
+                        // redrive of a still-owned allocation cannot duplicate one.
+                        tracing::warn!(target: "nanocodex2", stage = "vm.host.attachment_revoked", "VM attachment revoked; reconciling allocations");
+                        let allocations = reported_allocations(host)?;
+                        if let Err(error) = connection.reconcile(&allocations).await {
+                            tracing::warn!(target: "nanocodex2", error = %error, "VM host reconciliation failed");
                             return Ok(ConnectionOutcome::Reconnect { made_progress });
                         }
                         continue;

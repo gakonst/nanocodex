@@ -20,7 +20,6 @@ fn definition(
 pub(super) fn install(
     mut native: ClaudeTools,
     runtime: Arc<RetainedHost>,
-    shell: Arc<shell::Shell>,
     enabled: bool,
     monitor: Option<Arc<monitor::Monitor>>,
     workspace: Arc<worktree::Workspace>,
@@ -30,13 +29,13 @@ pub(super) fn install(
     let mut definitions = vec![
         definition(
             "TaskOutput",
-            "Read a retained Bash, Monitor, Workflow task result. A nonblocking poll never stops the task. Task IDs are scoped to this session/task tree and do not survive process restart.",
+            "Read a retained Monitor or Workflow task result. A nonblocking poll never stops the task. Task IDs are scoped to this session/task tree and do not survive process restart.",
             json!({"task_id":{"type":"string"},"block":{"type":"boolean","default":true},"timeout":{"type":"integer","minimum":0,"maximum":600000,"default":30000}}),
             &["task_id"],
         ),
         definition(
             "TaskStop",
-            "Stop a retained Bash, Monitor or Workflow process (including descendants). Completed output remains available.",
+            "Stop a retained Monitor or Workflow process (including descendants). Completed output remains available.",
             json!({"task_id":{"type":"string"}}),
             &["task_id"],
         ),
@@ -49,14 +48,12 @@ pub(super) fn install(
     for definition in definitions {
         let name = definition.name.clone();
         let runtime = runtime.clone();
-        let shell = shell.clone();
         let monitor = monitor.clone();
         let workspace = workspace.clone();
         let interaction = interaction.clone();
         let workflow = workflow.clone();
         native = native.tool_with_context(definition, move |input, invocation| {
             let runtime = runtime.clone();
-            let shell = shell.clone();
             let name = name.clone();
             let monitor = monitor.clone();
             let workspace = workspace.clone();
@@ -65,7 +62,6 @@ pub(super) fn install(
             async move {
                 execute(
                     &runtime,
-                    &shell,
                     &name,
                     input,
                     &invocation,
@@ -138,7 +134,6 @@ async fn call(
 #[allow(clippy::too_many_arguments)]
 async fn execute(
     runtime: &RetainedHost,
-    shell: &shell::Shell,
     name: &str,
     input: Value,
     invocation: &ClaudeToolInvocation,
@@ -268,10 +263,11 @@ async fn execute(
                         args.timeout,
                     )
                     .await
-            } else if args.task_id.starts_with("bash-") {
-                shell.output(&args.task_id, args.block, args.timeout).await
             } else {
-                Err("TaskOutput requires a Bash, Monitor or Workflow task ID; use wait_agent for agents".into())
+                Err(
+                    "TaskOutput requires a Monitor or Workflow task ID; use wait_agent for agents"
+                        .into(),
+                )
             }
         }
         "TaskStop" => {
@@ -286,10 +282,8 @@ async fn execute(
                     .ok_or("Monitor is unavailable in this session")?
                     .stop(&invocation.session_id, &args.task_id)
                     .await
-            } else if args.task_id.starts_with("bash-") {
-                shell.stop(&args.task_id).await
             } else {
-                Err("TaskStop requires a Bash, Monitor or Workflow task ID; use interrupt_agent for agents".into())
+                Err("TaskStop requires a Monitor or Workflow task ID; use interrupt_agent for agents".into())
             }
         }
         _ => Err(format!("unknown native host tool: {name}")),

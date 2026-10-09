@@ -50,7 +50,7 @@ pub use model::{
     AvailableModel, CatalogAvailabilityError, CatalogProviderAvailability, ManagedModel,
     ModelCatalog,
 };
-pub use nanocodex_agent::{Model, ReasoningMode, Thinking};
+pub use nanocodex_agent::{ClaudeModel, HarnessModel, Model, ReasoningMode, Thinking};
 pub use native_secure_input::{
     NativeSecureInputDescription, NativeSecureInputEnvelope, NativeSecureInputReceipt,
     NativeSecureInputRequest, NativeSecureInputStatus,
