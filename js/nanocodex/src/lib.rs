@@ -2,7 +2,4 @@
 mod wasm;
 
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-pub use wasm::{
-    WasmBrowserVoice, WasmClaudeSubscription, WasmNanoclaude, WasmNanocodex, WasmTurn,
-    WasmTurnResult,
-};
+pub use wasm::{WasmBrowserVoice, WasmClaudeSubscription, WasmNanocodex, WasmTurn, WasmTurnResult};

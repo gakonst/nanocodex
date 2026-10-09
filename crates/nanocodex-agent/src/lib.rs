@@ -14,6 +14,7 @@ mod agent;
 mod error;
 mod harness;
 mod reasoning;
+#[cfg(feature = "openai")]
 mod service_tier_serde;
 pub use harness::{ClaudeModel, HarnessFamily, HarnessModel};
 #[cfg(feature = "openai")]
@@ -26,11 +27,15 @@ mod prompt_cache;
 pub mod execution {
     pub use crate::agent::execution::*;
 }
-#[cfg(all(feature = "openai", not(target_family = "wasm")))]
-#[cfg_attr(docsrs, doc(cfg(all(feature = "openai", not(target_family = "wasm")))))]
+#[cfg(all(feature = "rollout", not(target_family = "wasm")))]
+#[cfg_attr(
+    docsrs,
+    doc(cfg(all(feature = "rollout", not(target_family = "wasm"))))
+)]
 /// Codex-compatible durable rollout recording and restoration.
 pub mod rollout;
-/// Serializable local session snapshots returned when a backend supports them.
+/// Harness-neutral session identity, lineage, checkpoints, forks, and
+/// capabilities, plus the Codex-native snapshot payload.
 pub mod session;
 /// Per-turn token accounting and USD estimates.
 pub mod usage;
@@ -39,11 +44,12 @@ pub mod usage;
 #[doc(hidden)]
 pub mod backend {
     pub use crate::agent::backend::*;
+    pub use crate::session::TurnBoundary;
 }
 
 pub use agent::{
-    AgentHandle, AgentSessionContext, BuilderBackend, ChildRuntimeSnapshot, ChildSnapshot,
-    Nanocodex, PromptRequest, PromptRoute, SpawnOptions, Turn, TurnControl, TurnResult,
+    AgentHandle, AgentSessionContext, BuilderBackend, Nanocodex, PromptRequest, PromptRoute,
+    SpawnOptions, Turn, TurnControl, TurnResult,
 };
 #[cfg(feature = "openai")]
 #[cfg_attr(docsrs, doc(cfg(feature = "openai")))]
@@ -61,6 +67,10 @@ pub use nanocodex_oai_tools::tool;
 #[cfg(feature = "openai")]
 #[cfg_attr(docsrs, doc(cfg(feature = "openai")))]
 pub use nanocodex_oai_tools::{Tool, Tools};
+pub use session::{
+    Capabilities, ForkPoint, ForkRequest, Lineage, Mutability, Origin, Persistence,
+    SessionCheckpoint, SessionInfo,
+};
 pub use usage::{
     CostStatus, EstimatedUsdCost, ReportedTurnUsage, ServiceTier, TurnUsage, UsdAmount,
 };

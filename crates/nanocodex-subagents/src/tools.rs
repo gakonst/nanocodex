@@ -14,7 +14,9 @@ use super::{
 };
 use async_trait::async_trait;
 use futures_util::future::join_all;
-use nanocodex_agent::{AgentHandle, HarnessFamily, HarnessModel, SpawnOptions, Thinking};
+use nanocodex_agent::{
+    AgentHandle, ForkRequest, HarnessFamily, HarnessModel, SpawnOptions, Thinking,
+};
 use nanocodex_oai_tools::{
     Tool, ToolContext, ToolDefinition, ToolInput, ToolOutput, ToolResult, Tools,
     runtime::ToolsBuildError,
@@ -511,7 +513,7 @@ async fn start_child(
         None
     };
     let (child, events) = if fork {
-        parent.fork().await?
+        parent.fork(ForkRequest::latest()).await?
     } else {
         parent
             .spawn_with_host_context(

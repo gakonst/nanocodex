@@ -25,3 +25,6 @@ mod login;
 
 #[path = "../src/managed_memory.rs"]
 mod managed_memory;
+
+#[path = "../src/sessions.rs"]
+mod sessions;

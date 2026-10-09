@@ -108,6 +108,25 @@ pub struct ExecutionOutput {
 /// without becoming a dependency of `nanocodex-agent`.
 #[cfg(not(target_family = "wasm"))]
 pub trait ExecutionPolicy: Send + Sync {
+    /// Identity of the durable state this policy persists the session to,
+    /// reported by [`crate::Nanocodex::persistence`]. Defaults to none.
+    fn durable_state_id(&self) -> Option<String> {
+        None
+    }
+
+    /// Supplies the policy that persists a fork or side conversation of this
+    /// session as its own resumable state. The default `None` rejects forks of
+    /// policy-owned sessions with
+    /// [`NanocodexError::ExecutionPolicyBranchUnsupported`]. Called before the
+    /// child starts; the child policy is owned by that child alone.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error to reject the fork.
+    fn branch(&self, _child: &crate::SessionInfo) -> Result<Option<Arc<dyn ExecutionPolicy>>> {
+        Ok(None)
+    }
+
     /// Resolves a failed attempt against the authoritative operation state.
     /// A pending operation must return a retry/reopen disposition, even when
     /// its original failure was not a transport or storage error.
@@ -324,6 +343,25 @@ pub trait ExecutionPolicy: Send + Sync {
 /// guarantees on every target.
 #[cfg(target_family = "wasm")]
 pub trait ExecutionPolicy: Send + Sync {
+    /// Identity of the durable state this policy persists the session to,
+    /// reported by [`crate::Nanocodex::persistence`]. Defaults to none.
+    fn durable_state_id(&self) -> Option<String> {
+        None
+    }
+
+    /// Supplies the policy that persists a fork or side conversation of this
+    /// session as its own resumable state. The default `None` rejects forks of
+    /// policy-owned sessions with
+    /// [`NanocodexError::ExecutionPolicyBranchUnsupported`]. Called before the
+    /// child starts; the child policy is owned by that child alone.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error to reject the fork.
+    fn branch(&self, _child: &crate::SessionInfo) -> Result<Option<Arc<dyn ExecutionPolicy>>> {
+        Ok(None)
+    }
+
     /// Resolves a failed attempt against the authoritative operation state.
     /// Pending work must remain recoverable regardless of the original error.
     fn recover_failure<'a>(
@@ -555,15 +593,22 @@ impl ExecutionConfig {
         self.policy = Some(ExecutionPolicyRecipe::PerAgent(factory));
     }
 
-    // Root execution policies never propagate into ephemeral children.
-    #[cfg_attr(target_family = "wasm", allow(clippy::missing_const_for_fn))]
-    pub(crate) fn for_new_thread(&self, operation: &'static str) -> Result<Self> {
-        if self.policy.is_some() && !matches!(operation, "spawn" | "restore") {
+    // Root execution policies never propagate into children: a fork of a
+    // policy-owned session needs its own policy from [`ExecutionPolicy::branch`].
+    pub(crate) fn for_new_thread(
+        &self,
+        operation: &'static str,
+        branch_policy: Option<Arc<dyn ExecutionPolicy>>,
+    ) -> Result<Self> {
+        let fork = operation == "fork";
+        if self.policy.is_some() && fork && branch_policy.is_none() {
             return Err(NanocodexError::ExecutionPolicyBranchUnsupported { operation });
         }
         Ok(Self {
-            platform: self.platform.for_new_thread(),
-            policy: None,
+            platform: self.platform.for_new_thread(fork),
+            policy: branch_policy
+                .filter(|_| fork)
+                .map(ExecutionPolicyRecipe::Shared),
         })
     }
 
@@ -574,8 +619,9 @@ impl ExecutionConfig {
         prompt_cache_key: &str,
         workspace: Option<&str>,
         instructions: &str,
-        origin_kind: &'static str,
+        start: crate::session::SessionStart,
         parent_session_id: Option<&str>,
+        root_session_id: &str,
         resume_history_len: Option<usize>,
     ) -> Result<Execution> {
         Ok(Execution {
@@ -584,8 +630,9 @@ impl ExecutionConfig {
                 prompt_cache_key,
                 workspace,
                 instructions,
-                origin_kind,
+                start,
                 parent_session_id,
+                root_session_id,
                 resume_history_len,
             )?,
             policy: self
@@ -693,6 +740,21 @@ impl Execution {
 
     pub(crate) const fn identifies_prompts(&self) -> bool {
         self.policy.is_some()
+    }
+
+    pub(crate) fn branch_policy(
+        &self,
+        child: &crate::SessionInfo,
+    ) -> Result<Option<Arc<dyn ExecutionPolicy>>> {
+        self.policy
+            .as_ref()
+            .map_or(Ok(None), |policy| policy.branch(child))
+    }
+
+    pub(crate) fn durable_state_id(&self) -> Option<String> {
+        self.policy
+            .as_ref()
+            .and_then(|policy| policy.durable_state_id())
     }
 
     pub(crate) async fn admit<T: Serialize + ?Sized>(

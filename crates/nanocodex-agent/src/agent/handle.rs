@@ -3,20 +3,16 @@ use super::backend::{
 };
 use super::*;
 
-#[cfg(all(feature = "openai", not(target_family = "wasm")))]
-use crate::rollout::RolloutInfo;
-
 /// Cheap, cloneable command handle for an owned agent driver.
 pub struct Nanocodex {
     pub(super) backend: Arc<dyn LifecycleBackend>,
     pub(super) events: nanocodex_oai_api::events::AgentEventPublisher,
     pub(super) next_turn: Arc<AtomicU64>,
     pub(super) agent_id: Arc<str>,
-    pub(super) session_id: Arc<str>,
+    pub(super) session: Arc<SessionInfo>,
+    /// Typed identity of a local OpenAI driver, which owns turn identities.
     #[cfg(feature = "openai")]
     pub(super) local_session_id: Option<SessionId>,
-    #[cfg(all(feature = "openai", not(target_family = "wasm")))]
-    pub(super) rollout: Option<RolloutInfo>,
 }
 
 impl Clone for Nanocodex {
@@ -26,11 +22,9 @@ impl Clone for Nanocodex {
             events: self.events.clone(),
             next_turn: Arc::clone(&self.next_turn),
             agent_id: Arc::clone(&self.agent_id),
-            session_id: Arc::clone(&self.session_id),
+            session: Arc::clone(&self.session),
             #[cfg(feature = "openai")]
             local_session_id: self.local_session_id,
-            #[cfg(all(feature = "openai", not(target_family = "wasm")))]
-            rollout: self.rollout.clone(),
         }
     }
 }
@@ -155,46 +149,45 @@ impl AgentHandle {
         options.validate_harness()?;
         self.native.spawn(self.clone(), options, host_context).await
     }
-    /// Restores an existing Responses child without changing its identity.
-    pub async fn restore_child(
-        &self,
-        snapshot: ChildRuntimeSnapshot,
-        host_context: Option<Arc<str>>,
-    ) -> Result<(Nanocodex, AgentEvents)> {
-        self.restore_runtime(ChildSnapshot::Codex(snapshot), host_context)
-            .await
-    }
-    /// Restores an evicted child through its selected native factory.
+    /// Restores an evicted child from its checkpoint without changing its identity.
+    ///
+    /// A checkpoint of this capability's own family uses the native factory;
+    /// any other family requires a configured spawn factory.
+    ///
+    /// # Errors
+    /// Returns [`NanocodexError::UnsupportedCapability`] when no factory can
+    /// restore the checkpoint's family, or the factory's restore failure.
     pub async fn restore_runtime(
         &self,
-        snapshot: ChildSnapshot,
+        checkpoint: SessionCheckpoint,
         host_context: Option<Arc<str>>,
     ) -> Result<(Nanocodex, AgentEvents)> {
         self.native.ensure_available(self.clone()).await?;
-        if snapshot.model().family() == self.harness_family() {
+        if checkpoint.family() == self.harness_family() {
             self.native
-                .restore(self.clone(), snapshot, host_context)
+                .restore(self.clone(), checkpoint, host_context)
                 .await
         } else {
             self.factory
                 .as_ref()
-                .ok_or_else(|| {
-                    NanocodexError::InvalidRequest(
-                        "checkpoint family requires a configured child factory".into(),
-                    )
+                .ok_or(NanocodexError::UnsupportedCapability {
+                    capability: "cross_family_restore",
                 })?
-                .restore(self.clone(), snapshot, host_context)
+                .restore(self.clone(), checkpoint, host_context)
                 .await
         }
     }
     /// Restores through the native factory, bypassing mixed routing.
+    ///
+    /// # Errors
+    /// Returns the native factory's restore failure, including a family mismatch.
     pub async fn restore_native_runtime(
         &self,
-        snapshot: ChildSnapshot,
+        checkpoint: SessionCheckpoint,
         host_context: Option<Arc<str>>,
     ) -> Result<(Nanocodex, AgentEvents)> {
         self.native
-            .restore(self.clone(), snapshot, host_context)
+            .restore(self.clone(), checkpoint, host_context)
             .await
     }
     /// Starts an ordered batch, closing created children if construction fails.
@@ -219,16 +212,37 @@ impl AgentHandle {
         host_context: Option<Arc<str>>,
     ) -> Result<Vec<(Nanocodex, AgentEvents)>> {
         self.native.ensure_available(self.clone()).await?;
-        // No family override exists on this batch API: use the native batch
-        // boundary, preserving Responses atomic admission and cancellation cleanup.
+        // A configured factory routes batches with the same family resolution
+        // as single spawns; it reaches the native atomic batch through
+        // `Self::spawn_many_native_with_host_context`.
+        self.factory
+            .as_ref()
+            .unwrap_or(&self.native)
+            .spawn_many(self.clone(), count, Arc::new(observer), host_context)
+            .await
+    }
+    /// Invokes the parent's native batch directly, bypassing mixed routing and
+    /// preserving Responses atomic admission and cancellation cleanup.
+    pub async fn spawn_many_native_with_host_context(
+        &self,
+        count: usize,
+        observer: impl Fn(&str) + Send + Sync + 'static,
+        host_context: Option<Arc<str>>,
+    ) -> Result<Vec<(Nanocodex, AgentEvents)>> {
+        self.native.ensure_available(self.clone()).await?;
         self.native
             .spawn_many(self.clone(), count, Arc::new(observer), host_context)
             .await
     }
-    /// Forking is deliberately a native lifecycle operation rather than mixed routing.
-    pub async fn fork(&self) -> Result<(Nanocodex, AgentEvents)> {
+    /// Forks the owning conversation. Forking is deliberately a native
+    /// lifecycle operation rather than mixed routing.
+    ///
+    /// # Errors
+    /// Returns an error after the owning runtime stops, before its first safe
+    /// boundary, or when the request's boundary belongs to another conversation.
+    pub async fn fork(&self, request: ForkRequest) -> Result<(Nanocodex, AgentEvents)> {
         self.native.ensure_available(self.clone()).await?;
-        self.native.fork(self.clone()).await
+        self.native.fork(self.clone(), request).await
     }
 }
 
@@ -236,6 +250,7 @@ impl AgentHandle {
 pub(super) struct OpenAiAgentFactory {
     pub(super) commands: mpsc::WeakSender<Command>,
     pub(super) shutdown: DriverShutdown,
+    pub(super) conversation_id: Arc<str>,
 }
 
 #[cfg(feature = "openai")]
@@ -314,17 +329,13 @@ impl super::backend::AgentFactory for OpenAiAgentFactory {
     fn restore(
         &self,
         _parent: AgentHandle,
-        snapshot: ChildSnapshot,
+        checkpoint: SessionCheckpoint,
         host_context: Option<Arc<str>>,
     ) -> super::backend::BackendFuture<Result<(Nanocodex, AgentEvents)>> {
         let commands = self.commands.upgrade();
         let shutdown = self.shutdown.clone();
         Box::pin(async move {
-            let ChildSnapshot::Codex(snapshot) = snapshot else {
-                return Err(NanocodexError::InvalidRequest(
-                    "native Codex factory cannot restore Claude checkpoint".into(),
-                ));
-            };
+            let snapshot = ChildState::from_checkpoint(checkpoint)?;
             let commands = commands.ok_or(NanocodexError::AgentStopped)?;
             request_command(&commands, &shutdown, |result| Command::Spawn {
                 options: SpawnOptions::new()
@@ -340,17 +351,16 @@ impl super::backend::AgentFactory for OpenAiAgentFactory {
     fn fork(
         &self,
         _parent: AgentHandle,
+        request: ForkRequest,
     ) -> super::backend::BackendFuture<Result<(Nanocodex, AgentEvents)>> {
         let commands = self.commands.upgrade();
         let shutdown = self.shutdown.clone();
+        let conversation_id = Arc::clone(&self.conversation_id);
         Box::pin(async move {
-            request_fork(
-                &commands.ok_or(NanocodexError::AgentStopped)?,
-                &shutdown,
-                None,
-                false,
-            )
-            .await
+            let commands = commands.ok_or(NanocodexError::AgentStopped)?;
+            let (point, origin) = request.into_parts();
+            let point = super::backend::resolve_fork_point(point, &conversation_id)?;
+            request_fork(&commands, &shutdown, point, origin, SessionId::new(), None).await
         })
     }
 }
@@ -366,11 +376,42 @@ impl Nanocodex {
     }
 
     /// Returns the immutable native agent-loop family.
+    #[must_use]
     pub fn harness_family(&self) -> crate::HarnessFamily {
-        self.backend.harness_family()
+        self.session.family
     }
 
-    /// Changes the selected model within this backend's family before first use.
+    /// Returns this session's identity, family, and lineage.
+    #[must_use]
+    pub fn session(&self) -> &SessionInfo {
+        &self.session
+    }
+
+    /// Returns the lifecycle operations this session's backend supports.
+    ///
+    /// Unsupported operations fail with [`NanocodexError::UnsupportedCapability`].
+    #[must_use]
+    pub fn capabilities(&self) -> Capabilities {
+        self.backend.capabilities()
+    }
+
+    /// Returns where this session is persisted, or `None` when it lives only
+    /// in memory.
+    #[must_use]
+    pub fn persistence(&self) -> Option<Persistence> {
+        self.backend.persistence()
+    }
+
+    /// Changes the selected model within this backend's family.
+    ///
+    /// [`Capabilities::model`] states when the model may change; Codex accepts
+    /// a change only before the first prompt.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a model of another family, after conversation
+    /// activity begins when the backend locks its model, when the model is
+    /// incompatible with the current thinking level, or if the backend stopped.
     pub async fn set_harness_model(&self, model: crate::HarnessModel) -> Result<()> {
         if model.family() != self.harness_family() {
             return Err(NanocodexError::InvalidRequest(
@@ -378,11 +419,6 @@ impl Nanocodex {
             ));
         }
         self.backend.set_harness_model(model).await
-    }
-
-    /// Captures a provider-native in-memory residency checkpoint.
-    pub async fn runtime_snapshot(&self) -> Result<ChildSnapshot> {
-        self.backend.runtime_snapshot().await
     }
 
     /// Returns the stable agent identity used to reopen durable backends.
@@ -394,38 +430,21 @@ impl Nanocodex {
     /// Returns the stable identity used by events, transport metadata, and any rollout.
     #[must_use]
     pub fn session_id(&self) -> &str {
-        &self.session_id
+        &self.session.session_id
     }
 
-    /// Returns the typed local OpenAI identity when this handle owns that backend.
-    #[cfg(feature = "openai")]
-    #[cfg_attr(docsrs, doc(cfg(feature = "openai")))]
-    #[must_use]
-    pub const fn local_session_id(&self) -> Option<SessionId> {
-        self.local_session_id
-    }
-
-    /// Returns the Codex-compatible rollout identity and path when recording is enabled.
-    #[cfg(all(feature = "openai", not(target_family = "wasm")))]
-    #[cfg_attr(docsrs, doc(cfg(all(feature = "openai", not(target_family = "wasm")))))]
-    #[must_use]
-    pub const fn rollout(&self) -> Option<&RolloutInfo> {
-        self.rollout.as_ref()
-    }
-
-    /// Retries any pending rollout write and waits for a durable file flush.
+    /// Retries any pending backend-owned persistence write and waits for it to
+    /// become durable.
     ///
-    /// This is a no-op when rollout recording is disabled. CLI consumers call
+    /// This is a no-op when the session is not persisted. CLI consumers call
     /// it at completed turn boundaries so persistence failures are user-visible.
-    /// Flushing does not stop the live writer; call [`Self::shutdown`] at an
+    /// Flushing does not stop the session; call [`Self::shutdown`] at an
     /// explicit application or session boundary.
     ///
     /// # Errors
     ///
-    /// Returns an error when the configured rollout cannot be written.
-    #[cfg(all(feature = "openai", not(target_family = "wasm")))]
-    #[cfg_attr(docsrs, doc(cfg(all(feature = "openai", not(target_family = "wasm")))))]
-    pub async fn flush_rollout(&self) -> Result<()> {
+    /// Returns an error when the configured persistence cannot be written.
+    pub async fn flush(&self) -> Result<()> {
         self.backend.flush().await
     }
 
@@ -496,7 +515,7 @@ impl Nanocodex {
         #[cfg(feature = "openai")]
         let turn_id = uuid::Uuid::now_v7().to_string();
         #[cfg(not(feature = "openai"))]
-        let turn_id = format!("{}:{}", self.session_id, key.0);
+        let turn_id = format!("{}:{}", self.session_id(), key.0);
         let events = events.with_turn_id(turn_id.clone());
         let BackendTurn { request_id, result } = self
             .backend
@@ -508,16 +527,25 @@ impl Nanocodex {
                 events,
             })
             .await?;
+        let turn_id = self.canonical_turn_id(turn_id, request_id.as_deref());
         Ok(Turn {
-            turn_id: self.canonical_turn_id(turn_id, request_id.as_deref()),
+            result: Self::turn_result(&turn_id, result),
+            turn_id,
             control: TurnControl {
                 key,
                 backend: Arc::clone(&self.backend),
             },
             request_id,
             events: event_stream,
-            result,
         })
+    }
+
+    fn turn_result(
+        turn_id: &str,
+        result: super::backend::BackendFuture<Result<TurnResult>>,
+    ) -> super::backend::BackendFuture<Result<TurnResult>> {
+        let turn_id = turn_id.to_owned();
+        Box::pin(async move { result.await.map(|result| result.with_turn_id(turn_id)) })
     }
 
     fn canonical_turn_id(&self, generated: String, request_id: Option<&str>) -> String {
@@ -552,7 +580,7 @@ impl Nanocodex {
         #[cfg(feature = "openai")]
         let turn_id = uuid::Uuid::now_v7().to_string();
         #[cfg(not(feature = "openai"))]
-        let turn_id = format!("{}:{}", self.session_id, key.0);
+        let turn_id = format!("{}:{}", self.session_id(), key.0);
         let events = events.with_turn_id(turn_id.clone());
         match self
             .backend
@@ -566,15 +594,16 @@ impl Nanocodex {
             .await
         {
             Ok(BackendPromptRoute::Started(BackendTurn { request_id, result })) => {
+                let turn_id = self.canonical_turn_id(turn_id, request_id.as_deref());
                 Ok(PromptRoute::Started(Turn {
-                    turn_id: self.canonical_turn_id(turn_id, request_id.as_deref()),
+                    result: Self::turn_result(&turn_id, result),
+                    turn_id,
                     control: TurnControl {
                         key,
                         backend: Arc::clone(&self.backend),
                     },
                     request_id,
                     events: event_stream,
-                    result,
                 }))
             }
             Ok(BackendPromptRoute::Steered) => Ok(PromptRoute::Steered),
@@ -592,17 +621,6 @@ impl Nanocodex {
     /// Returns an error if the agent driver has stopped.
     pub async fn set_thinking(&self, thinking: Thinking) -> Result<()> {
         self.backend.set_thinking(thinking).await
-    }
-
-    /// Changes the model before the first turn is accepted.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error after conversation activity begins, when the selected
-    /// model is incompatible with the current thinking level, or if the
-    /// backend has stopped.
-    pub async fn set_model(&self, model: Model) -> Result<()> {
-        self.backend.set_model(model).await
     }
 
     /// Enables or disables priority processing for subsequently accepted turns.
@@ -659,8 +677,8 @@ impl Nanocodex {
     ///
     /// # Errors
     ///
-    /// Returns a model or driver-stopped error. Rollout writes follow the same
-    /// retry-on-[`Self::flush_rollout`] contract as prompt turns.
+    /// Returns a model or driver-stopped error. Persistence writes follow the
+    /// same retry-on-[`Self::flush`] contract as prompt turns.
     pub async fn compact(&self) -> Result<()> {
         self.backend.compact().await
     }
@@ -701,28 +719,21 @@ impl Nanocodex {
         self.backend.context().await
     }
 
-    /// Copies the latest committed model boundary without changing this agent.
+    /// Captures this session's identity, settings, and latest committed
+    /// boundary as a portable checkpoint without changing this agent.
     ///
-    /// The caller owns its unredacted model-visible history. This fails before
-    /// the first safe boundary or after the driver stops, even during a turn.
-    pub async fn snapshot(&self) -> Result<SessionSnapshot> {
-        self.backend.snapshot().await
-    }
-
-    /// Rehydrates a child driver from this runtime's in-memory identity and history.
-    #[doc(hidden)]
-    pub async fn restore_child(
-        &self,
-        snapshot: ChildRuntimeSnapshot,
-        host_context: Option<Arc<str>>,
-    ) -> Result<(Self, AgentEvents)> {
-        self.backend.restore_child(snapshot, host_context).await
-    }
-
-    /// Captures an in-memory idle child boundary without exposing host credentials.
-    #[doc(hidden)]
-    pub async fn child_snapshot(&self) -> Result<ChildRuntimeSnapshot> {
-        self.backend.child_snapshot().await
+    /// This never waits for an active turn: it copies the latest committed
+    /// safe boundary. Before the first boundary the checkpoint carries no
+    /// conversation ([`SessionCheckpoint::has_conversation`] is false) but can
+    /// still restore the session's identity and settings. The caller owns the
+    /// unredacted model-visible history it contains.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NanocodexError::UnsupportedCapability`] when the backend cannot
+    /// checkpoint, or an error after the backend stops.
+    pub async fn checkpoint(&self) -> Result<SessionCheckpoint> {
+        self.backend.checkpoint().await
     }
 
     /// Starts a clean sibling agent with the same private configuration,
@@ -750,35 +761,29 @@ impl Nanocodex {
         self.backend.spawn(options).await
     }
 
-    /// Forks from the latest safe model boundary into an independently driven
-    /// agent.
+    /// Forks this conversation into an independently driven agent.
     ///
-    /// The child receives a fresh WebSocket and tool runtime while sharing the
-    /// immutable transcript, inherited incremental delta, and prompt-cache
-    /// lineage. Partial model output and unmatched tool calls are excluded.
+    /// [`ForkRequest::latest`] forks from the latest safe boundary without
+    /// waiting for an active turn; [`ForkRequest::at_turn`] forks from the
+    /// boundary a completed turn retained; [`ForkRequest::at`] forks from a
+    /// portable checkpoint of this conversation tree. Mark ephemeral
+    /// explorations with [`ForkRequest::side_conversation`]. The child's
+    /// [`SessionInfo::lineage`] records this session as its parent.
     ///
-    /// # Errors
-    ///
-    /// Returns an error before the first prompt reaches a safe boundary, or
-    /// when the driver has stopped.
-    pub async fn fork(&self) -> Result<(Self, AgentEvents)> {
-        self.backend.fork(None).await
-    }
-
-    /// Forks a separately identified side conversation from the latest safe boundary.
+    /// The child receives a fresh transport and tool runtime while sharing the
+    /// immutable transcript and prompt-cache lineage. Partial model output and
+    /// unmatched tool calls are excluded.
     ///
     /// # Errors
-    /// Returns an error when the backend cannot fork a side conversation.
-    pub async fn fork_side_conversation(&self) -> Result<(Self, AgentEvents)> {
-        self.backend.fork_side_conversation().await
-    }
-
-    /// Forks from an exact historical completed turn.
     ///
-    /// # Errors
-    /// Returns an error if the checkpoint belongs to another conversation.
-    pub async fn fork_from(&self, completed: &TurnResult) -> Result<(Self, AgentEvents)> {
-        self.backend.fork(Some(completed.clone())).await
+    /// Returns [`NanocodexError::ForkBeforeCompletedTurn`] before the first
+    /// safe boundary, [`NanocodexError::CheckpointLineageMismatch`] for a
+    /// boundary of another conversation, [`NanocodexError::CheckpointFamilyMismatch`]
+    /// for another family's checkpoint,
+    /// [`NanocodexError::ReplayedCheckpointUnavailable`] for a turn without a
+    /// live boundary, or an error when the backend has stopped.
+    pub async fn fork(&self, request: ForkRequest) -> Result<(Self, AgentEvents)> {
+        self.backend.fork(request).await
     }
 }
 
@@ -786,12 +791,24 @@ impl Nanocodex {
 pub(super) async fn request_fork(
     commands: &mpsc::Sender<Command>,
     shutdown: &DriverShutdown,
-    checkpoint: Option<Arc<CommittedSession>>,
-    side_conversation: bool,
+    point: ForkFrom,
+    origin: crate::Origin,
+    session_id: SessionId,
+    policy: Option<Arc<dyn execution::ExecutionPolicy>>,
 ) -> Result<(Nanocodex, AgentEvents)> {
+    if !matches!(
+        origin,
+        crate::Origin::Fork | crate::Origin::SideConversation
+    ) {
+        return Err(NanocodexError::InvalidRequest(
+            "a fork must be a fork or a side conversation".into(),
+        ));
+    }
     request_command(commands, shutdown, |result| Command::Fork {
-        side_conversation,
-        checkpoint,
+        origin,
+        point,
+        session_id,
+        policy,
         result,
     })
     .await

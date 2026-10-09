@@ -1,4 +1,5 @@
 use super::*;
+use nanocodex::agent::session::Origin;
 use nanocodex_tui_control::{Command, Conversation, accepted, rejected, unknown};
 use serde_json::{Value, json};
 
@@ -90,33 +91,36 @@ fn run_command(
     }
 }
 
-fn descriptor(agent: &Nanocodex, root: &str, parent: Option<&str>, role: &str) -> Conversation {
-    let metadata = agent
-        .rollout()
-        .and_then(|rollout| {
-            use std::io::BufRead;
-            let file = std::fs::File::open(rollout.path()).ok()?;
-            let line = std::io::BufReader::new(file).lines().next()?.ok()?;
-            serde_json::from_str::<Value>(&line)
-                .ok()
-                .map(|v| v["payload"].clone())
-        })
-        .unwrap_or_default();
-    let root = metadata["root_session_id"].as_str().unwrap_or(root);
-    let parent = metadata["parent_thread_id"].as_str().or(parent);
-    let role = metadata["conversation_role"].as_str().unwrap_or(role);
+/// Rollout mirror of one session, when it records one.
+pub(super) fn rollout(agent: &Nanocodex) -> Option<nanocodex::agent::rollout::RolloutInfo> {
+    agent
+        .persistence()
+        .and_then(|persistence| persistence.rollout)
+}
+
+/// Whether another process can resume this session, for /split and /collapse.
+pub(super) fn resumable(agent: &Nanocodex) -> bool {
+    agent
+        .persistence()
+        .is_some_and(|persistence| persistence.resumable())
+}
+
+fn descriptor(agent: &Nanocodex) -> Conversation {
+    let session = agent.session();
+    let lineage = &session.lineage;
+    let (origin, role) = match lineage.origin {
+        Origin::Root => ("root", "root"),
+        Origin::Fork | Origin::Branch => ("fork", "branch"),
+        Origin::SideConversation => ("fork", "side_conversation"),
+        Origin::Subagent => ("spawn", "subagent"),
+    };
     Conversation {
-        session_id: agent.session_id().into(),
-        root_session_id: Some(root.into()),
-        parent_session_id: parent.map(str::to_owned),
-        origin: match role {
-            "branch" | "side_conversation" => "fork",
-            "subagent" => "spawn",
-            _ => "root",
-        }
-        .into(),
+        session_id: session.session_id.clone(),
+        root_session_id: Some(lineage.root_session_id.clone()),
+        parent_session_id: lineage.parent_session_id.clone(),
+        origin: origin.into(),
         role: role.into(),
-        rollout_path: agent.rollout().map(|r| r.path().to_path_buf()),
+        rollout_path: rollout(agent).map(|rollout| rollout.path().to_path_buf()),
     }
 }
 
@@ -131,34 +135,15 @@ impl AgentWorker {
         let Some(bridge) = &self.control else {
             return;
         };
-        let root = self
-            .archived_main
-            .iter()
-            .find(|b| b.id == 0)
-            .unwrap_or(&self.main)
-            .agent
-            .session_id();
-        for branch in std::iter::once(&self.main).chain(&self.archived_main) {
-            if let Some(rollout) = branch.agent.rollout() {
-                bridge.committed(branch.agent.session_id(), rollout.committed_bytes());
+        let agents = std::iter::once(&self.main)
+            .chain(&self.archived_main)
+            .map(|branch| &branch.agent)
+            .chain(self.btw.iter().map(|btw| &btw.agent));
+        for agent in agents {
+            if let Some(rollout) = rollout(agent) {
+                bridge.committed(agent.session_id(), rollout.committed_bytes());
             }
-            bridge.conversation(descriptor(
-                &branch.agent,
-                root,
-                None,
-                if branch.id == 0 { "root" } else { "branch" },
-            ));
-        }
-        if let Some(btw) = &self.btw {
-            if let Some(rollout) = btw.agent.rollout() {
-                bridge.committed(btw.agent.session_id(), rollout.committed_bytes());
-            }
-            bridge.conversation(descriptor(
-                &btw.agent,
-                root,
-                Some(self.main.agent.session_id()),
-                "side_conversation",
-            ));
+            bridge.conversation(descriptor(agent));
         }
     }
 
@@ -195,7 +180,7 @@ impl AgentWorker {
                 .chain(self.archived_main.iter().map(|b| &b.agent))
                 .chain(self.btw.iter().map(|b| &b.agent))
                 .find(|a| a.session_id() == expected);
-            let Some(rollout) = agent.and_then(|a| a.rollout()) else {
+            let Some(rollout) = agent.and_then(rollout) else {
                 command.reject("history_unavailable");
                 return;
             };

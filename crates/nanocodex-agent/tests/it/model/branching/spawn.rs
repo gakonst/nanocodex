@@ -68,13 +68,13 @@ async fn per_agent_tool_factory_binds_recursive_forks_to_the_invoking_driver() -
         .await?
         .result()
         .await?;
-    let (child, child_events) = root_handle.fork().await?;
+    let (child, child_events) = root_handle.fork(ForkRequest::latest()).await?;
     let child_handle = received_handles
         .recv()
         .await
         .ok_or_else(|| eyre!("child tool factory did not receive a fork handle"))?;
     child.prompt("child turn").await?.result().await?;
-    let (grandchild, grandchild_events) = child_handle.fork().await?;
+    let (grandchild, grandchild_events) = child_handle.fork(ForkRequest::latest()).await?;
     received_handles
         .recv()
         .await

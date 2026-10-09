@@ -207,7 +207,7 @@ async fn assert_schema_recovery(lose_checkpoint: bool) -> Result<()> {
     let (agent, events) = Nanocodex::builder(openai()?)
         .thinking(Thinking::Low)
         .session_id(thread_id.parse()?)
-        .resume(snapshot)
+        .resume_native_snapshot(snapshot)
         .tools(tools()?)
         .rollout(rollout)
         .build()?;

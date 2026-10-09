@@ -76,22 +76,27 @@ test('Claude-only catalog maps native inputs, errors, media and stable host iden
 });
 
 function mockWasm(capture) {
-  return { async create(encoded) {
+  return { async createClaude(encoded) {
     const config = JSON.parse(encoded); capture.config = config;
     await globalThis.nanocodexHost.claudeAuth(config.authHostId);
     let freed = 0;
-    return capture.raw = {
-      sessionId: config.sessionId, agentId: config.sessionId,
-      setEventForwarding(enabled) { capture.forwarding = enabled; },
+    const handle = (sessionId, parentSessionId) => ({
+      sessionId, agentId: sessionId,
+      setEventForwarding(enabled) { if (!parentSessionId) capture.forwarding = enabled; },
+      session: () => JSON.stringify({ sessionId, harness: 'claude', lineage: {
+        rootSessionId: config.sessionId, parentSessionId: parentSessionId ?? null,
+        origin: parentSessionId ? 'fork' : 'root', depth: parentSessionId ? 1 : 0 } }),
       prompt(input, id) {
         capture.prompt = { input, id };
         return { accepted: async () => id, cancel: async () => {}, free() {}, result: async () => ({
-          finalMessage: 'ok', snapshot: () => '{}', usage: () => '{}', free() {},
+          finalMessage: 'ok', checkpoint: () => '{}', usage: () => '{}', free() {},
         }) };
       },
+      fork: async (origin) => { capture.forkOrigin = origin; return handle(`${sessionId}-fork`, sessionId); },
       compact: async () => {}, cancel: async () => {}, shutdown: async () => { capture.shutdown = true; },
-      free() { capture.freed = ++freed; },
-    };
+      free() { if (parentSessionId) capture.childFreed = true; else capture.freed = ++freed; },
+    });
+    return capture.raw = handle(config.sessionId);
   } };
 }
 
@@ -125,10 +130,29 @@ test('Claude reuses shared prompt/replay, event, durability and graceful cleanup
   next.dispose();
 });
 
+test('Claude forks are shared Agents that keep host routes until the last handle releases', async () => {
+  const capture = {};
+  const agent = await createClaude({ auth: { apiKey: 'synthetic' }, model: MODEL, sessionId: SESSION }, () => mockWasm(capture), 'test');
+  assert.deepEqual(agent.session.info().lineage, { rootSessionId: SESSION, parentSessionId: null, origin: 'root', depth: 0 });
+  const side = await agent.session.fork({ origin: 'side_conversation' });
+  assert.equal(capture.forkOrigin, 'side_conversation');
+  assert.equal(side.session.info().harness, 'claude');
+  assert.equal(side.session.info().lineage.parentSessionId, SESSION);
+  assert.equal((await side.turn.prompt({ input: 'side question' }).result()).finalMessage, 'ok');
+  await assert.rejects(agent.session.fork({ origin: 'subagent' }), TypeError);
+  const bridge = globalThis.nanocodexHost;
+  agent.dispose();
+  // The fork still owns the shared Claude host and its authentication route.
+  assert.equal(JSON.parse(await bridge.claudeAuth(capture.config.authHostId))['x-api-key'], 'synthetic');
+  side.dispose();
+  assert.equal(capture.childFreed, true);
+  assert.throws(() => bridge.claudeAuth(capture.config.authHostId), /definition host/);
+});
+
 test('Claude failed construction unregisters auth, durability and session routes', async () => {
   let config;
   await assert.rejects(createClaude({ auth: { apiKey: 'x' }, model: MODEL, sessionId: SESSION,
-    durability: createMemoryDurabilityStore(SESSION), durabilityId: SESSION }, () => ({ create(encoded) { config = JSON.parse(encoded); throw new Error('fixture'); } }), 'test'), /fixture/);
+    durability: createMemoryDurabilityStore(SESSION), durabilityId: SESSION }, () => ({ createClaude(encoded) { config = JSON.parse(encoded); throw new Error('fixture'); } }), 'test'), /fixture/);
   assert.throws(() => globalThis.nanocodexHost.claudeAuth(config.authHostId), /definition host/);
   await assert.rejects(globalThis.nanocodexHost.durabilityAcquire(config.durabilityHostId, SESSION, 'owner'));
   const agent = await createClaude({ auth: { apiKey: 'x' }, model: MODEL, sessionId: SESSION }, () => mockWasm({}), 'test');
@@ -228,8 +252,8 @@ for (const outcome of ['success', 'failure']) {
     const loaded = mockWasm(capture);
     const agent = await createClaude({ auth: { apiKey: 'synthetic' }, model: MODEL, sessionId: SESSION,
       durability: store, durabilityId: SESSION }, async () => {
-      const create = loaded.create;
-      return { create: async encoded => {
+      const create = loaded.createClaude;
+      return { createClaude: async encoded => {
         const raw = await create(encoded);
         raw.prompt = () => ({ hostTurnId: async () => 'ephemeral-host-id', accepted: async () => undefined,
           result: () => completion.promise, cancel: async () => {}, free() {} });
@@ -243,7 +267,7 @@ for (const outcome of ['success', 'failure']) {
     assert.equal(JSON.parse(await bridge.claudeAuth(capture.config.authHostId))['x-api-key'], 'synthetic');
     await bridge.durabilityAcquire(capture.config.durabilityHostId, SESSION, 'owner');
     if (outcome === 'failure') completion.reject(new Error('synthetic turn failure'));
-    else completion.resolve({ finalMessage: 'ok', snapshot: () => '{}', usage: () => '{}', free() {} });
+    else completion.resolve({ finalMessage: 'ok', checkpoint: () => '{}', usage: () => '{}', free() {} });
     await new Promise(resolve => setImmediate(resolve));
     assert.equal(capture.freed, 1);
     assert.throws(() => bridge.claudeAuth(capture.config.authHostId), /definition host/);

@@ -109,7 +109,7 @@ lines.on("line", (line) => {
             type: "text",
             text,
           }],
-          structuredContent: { echoed: message, text, ...(message === "__metadata__" ? { request_meta: request.params._meta ?? {} } : {}) },
+          structuredContent: { echoed: message, text, ...(message === "__metadata__" ? { request_meta: request.params._meta ?? {} } : {}), ...(message === "__environment__" ? { environment: { CODEX_THREAD_ID: process.env.CODEX_THREAD_ID ?? null, NANOCODEX_ROOT_SESSION_ID: process.env.NANOCODEX_ROOT_SESSION_ID ?? null } } : {}) },
           isError: failed,
         },
       });

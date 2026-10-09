@@ -989,29 +989,45 @@ Cloudflare requires the QuickJS `.wasm` file to be statically imported and
 passed with `newVariant(..., { wasmModule })`; the complete deployment is in
 `examples/cloudflare-fetch-mcp`.
 
-Completed results can be persisted and resumed by a fresh Node or browser
-agent:
+Every session, Codex or Claude, exposes the same harness-neutral contract.
+A `SessionCheckpoint` is the one portable, family-tagged boundary used to
+resume, fork, and restore. It is JSON-safe; its contents are opaque and only
+the harness that produced it decodes them:
 
 ```js
-const snapshot = await result.snapshot();
+const checkpoint = await result.checkpoint(); // or agent.session.checkpoint()
+await store.put("session", JSON.stringify(checkpoint));
 result.dispose();
 await agent.session.shutdown();
 
 const resumed = await Agent.create({
   transport: Transport.openAi({ apiKey: process.env.OPENAI_API_KEY }),
-  resume: snapshot,
+  resume: JSON.parse(await store.get("session")),
   tools,
 });
 await resumed.session.shutdown();
 ```
 
-The snapshot contains authoritative typed history but no provider response ID,
-so the first resumed request safely replays the committed conversation. Resume
-with the same instructions and tool definitions, and release the original
-agent before handing its snapshot to another writer.
+The checkpoint contains the complete unredacted model-visible conversation but
+no provider response ID, so the first resumed request safely replays the
+committed conversation. Resume with the same instructions and tool definitions,
+and release the original agent before handing its checkpoint to another writer.
+`Agent.create({ harness: "claude", ..., resume })` resumes a Claude checkpoint
+the same way; a checkpoint of another family rejects with
+`code: "checkpoint_family_mismatch"`.
+
+`agent.session.info()` returns `{ sessionId, harness, lineage: { rootSessionId,
+parentSessionId, origin, depth } }`. `agent.session.capabilities()` states which
+lifecycle operations the backend supports and when model, thinking, and service
+tier may change; an unsupported operation rejects with
+`code: "unsupported_capability"` and a `capability` name.
+`agent.session.persistence()` reports the durable state backing the session, or
+`null`. `agent.session.fork({ at, origin })` forks the latest boundary, a
+completed `TurnResult`, or a `SessionCheckpoint` of the same conversation;
+`origin: "side_conversation"` records an ephemeral side exploration.
 
 For crash recovery inside a turn, provide the generic durability host instead
-of manually persisting snapshots. The host stores one opaque Rust state value;
+of manually persisting checkpoints. The host stores one opaque Rust state value;
 model replay, tool ambiguity, operation deduplication, and checkpoint recovery
 remain in Rust/WASM:
 
@@ -1164,21 +1180,21 @@ const module = await WebAssembly.compile(await readFile(wasmAssetPath));
 const agent = await Agent.create({ transport: Transport.openAi({ apiKey }), module });
 ```
 
-A Codex-compatible rollout can also be resumed by materializing its committed
-`response_item` history into a snapshot with no `request_prefix`. Nanocodex
-rebuilds the current prefix from the supplied instructions and JavaScript tools
-while preserving the rollout's workspace, lineage, cache key, canonical user
-context, and typed history.
-
 `Agent` and `Actions` are module namespaces, not classes. `Agent.create` returns
 an owned client decorated with matching domain actions:
 
 - `agent.turn.prompt(...)` / `Actions.turn.prompt(agent, ...)`
 - `turn.accepted()` / `Actions.turn.accepted(turn)`
 - `turn.result()` / `Actions.turn.getResult(turn)`
-- `result.snapshot()` / `Actions.turn.getSnapshot(result)`
+- `result.checkpoint()` / `Actions.turn.getCheckpoint(result)`
 - `result.usage()` / `Actions.turn.getUsage(result)`
+- `agent.session.info()` / `Actions.session.info(agent)`
+- `agent.session.capabilities()` / `Actions.session.capabilities(agent)`
+- `agent.session.persistence()` / `Actions.session.persistence(agent)`
+- `agent.session.checkpoint()` / `Actions.session.checkpoint(agent)`
 - `agent.session.fork(...)` / `Actions.session.fork(agent, ...)`
+- `agent.session.setModel(...)` / `Actions.session.setModel(agent, ...)`
+- `agent.session.cancel()` / `Actions.session.cancel(agent)`
 - `agent.session.compact()` / `Actions.session.compact(agent)`
 - `agent.session.setThinking(...)` / `Actions.session.setThinking(agent, ...)`
 - `agent.session.setFastMode(...)` / `Actions.session.setFastMode(agent, ...)`
@@ -1193,17 +1209,17 @@ acknowledging a request without waiting for model execution or materializing a
 result.
 
 `turn.result()` resolves to a frozen, opaque completed `TurnResult` handle. Its
-`finalMessage` is eager. The async `usage()` and `snapshot()` actions materialize
+`finalMessage` is eager. The async `usage()` and `checkpoint()` actions materialize
 immutable values once and cache their promises. A package Worker completes a
-turn with only the message and hidden result identity; Rust-produced snapshot
+turn with only the message and hidden result identity; Rust-produced checkpoint
 JSON crosses the Worker boundary only on first demand and is parsed once in the
-calling isolate. Historical `fork({ at })` consumes the hidden identity directly,
-never an unfinished turn, clone, snapshot, or provider response ID.
+calling isolate. `fork({ at: result })` consumes the hidden identity directly,
+never an unfinished turn, clone, or provider response ID.
 
 The completed result owns its identity independently from the `Turn`, so
 `turn.dispose()` does not invalidate a successful result. Call `result.dispose()`
 after its last fork/materialization; this releases the retained Worker/native
-checkpoint and invalidates future `snapshot()`, `usage()`, and historical forks.
+checkpoint and invalidates future `checkpoint()`, `usage()`, and turn forks.
 An undisposed result intentionally keeps its package Worker alive after the last
 Agent shuts down so its lazy values remain available. Garbage collection is only
 a fallback for forgotten handles, not deterministic cleanup.

@@ -57,6 +57,7 @@ nanocodex-durability = { workspace = true, features = ["sqlite"] }
 nanocodex-browser.workspace = true
 nanocodex-observability = { workspace = true, features = ["cli"] }
 nanocodex-subagents = { workspace = true, features = ["claude"] }
+nanocodex-home.workspace = true
 nanocodex-voice.workspace = true
 nix = { workspace = true, features = ["fs"] }
 nanousd = { workspace = true, optional = true }

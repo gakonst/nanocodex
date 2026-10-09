@@ -208,6 +208,33 @@ The logical host contract has three operations:
 Hosts do not deserialize state, snapshots, model outputs, or tool results.
 Rust owns those types and all recovery decisions.
 
+Stores may also implement the non-fencing reads `peek(state_id)` and
+`list_states(limit)`. SQLite, Postgres, and the in-memory store do. Catalog
+reads use only these, so listing or inspecting sessions never fences a live
+owner.
+
+## Local sessions for every harness
+
+The durable store is the single source of truth for local Codex and Claude
+sessions. Each session's head carries a `SessionRecord` (model, family,
+workspace, title, lineage, timestamps), so no sidecar files are needed.
+`SessionStore::open(codex_home)` opens `CODEX_HOME/sessions.sqlite`:
+
+- `session(record)` creates or reopens a session, and `resume(id)` reopens one.
+  Both return a `DurableSession` for `DurableAgentExt::durability`, which
+  attaches identically to `NanocodexBuilder` and `ClaudeBuilder`.
+- `list()`, `summary(id)`, `load(id)` and `turns(id)` read metadata, the
+  shared `TranscriptItem` projection, and retained turns without acquiring an
+  owner.
+- `branch(id, BranchPoint::{Latest, Through(turn), Before(turn)}, workspace)`
+  publishes a new resumable session with `Origin::Branch` lineage. It never
+  modifies or fences the source. `branch_with` lets the caller transform the
+  provider-native checkpoint before publication.
+
+Forks and side conversations of a durable Codex root get their own durable state
+in the same store through `ExecutionPolicy::branch`. That state records the
+child's lineage, so the child is listable and resumable by its own ID.
+
 Only a definite `NotCommitted` replacement may be retried on the same owner.
 `Fenced`, revision `Conflict`, and unconfirmed `Backend` failures require a fresh
 owner acquisition and loading the complete current state before deciding what

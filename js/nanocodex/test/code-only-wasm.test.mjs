@@ -115,7 +115,7 @@ test('code-only resume removes historical discovery schemas and preserves the tr
         const searches = body.input.filter(item => item.type === 'tool_search_output');
         assert.equal(searches.length, 1, 'historical discovery receipt remains paired');
         assert.equal(searches[0].tools.length, 0, 'only strict resume removes historical discovery schemas');
-        assert.deepEqual(body.input.find(item => item.type === 'function_call_output' && item.call_id === 'legacy-direct'), snapshot.history.find(item => item.type === 'function_call_output' && item.call_id === 'legacy-direct'), 'old tool result survives unchanged');
+        assert.deepEqual(body.input.find(item => item.type === 'function_call_output' && item.call_id === 'legacy-direct'), checkpoint.payload.conversation.history.find(item => item.type === 'function_call_output' && item.call_id === 'legacy-direct'), 'old tool result survives unchanged');
         assert.match(JSON.stringify(body.input), /KEEP_USER_HISTORY/);
         assert.match(JSON.stringify(body.input), /LEGACY_HISTORY_OK/);
         assert.equal(body.previous_response_id, undefined);
@@ -135,31 +135,33 @@ test('code-only resume removes historical discovery schemas and preserves the tr
     })]),
     transport: Transport.openAi({ apiKey: 'synthetic', apiBaseUrl: `http://127.0.0.1:${server.address().port}/v1`, stateless: true }),
   });
-  let original, resumed, failure, snapshot;
+  let original, resumed, failure, checkpoint;
   try {
     original = await Agent.create(options('code-only'));
     const result = await original.turn.prompt({ input: 'KEEP_USER_HISTORY' }).result();
-    snapshot = JSON.parse(JSON.stringify(await result.snapshot()));
-    // Intentional archived protocol items: public creation no longer supports
-    // direct sessions, but existing caller-owned snapshots remain resumable.
-    snapshot.history.push(
+    checkpoint = JSON.parse(JSON.stringify(await result.checkpoint()));
+    // Intentional archived protocol fixture: the Codex payload of a stored
+    // checkpoint may contain direct-session items from older archives, which
+    // must remain resumable. Only this fixture reaches into the native payload.
+    const history = checkpoint.payload.conversation.history;
+    history.push(
       { type: 'tool_search_call', execution: 'client', call_id: 'legacy-search', arguments: { query: 'remote_echo' } },
       { type: 'tool_search_output', call_id: 'legacy-search', execution: 'client', status: 'completed', tools: [deferred] },
       { type: 'function_call', name: 'remote_echo', call_id: 'legacy-direct', arguments: '{}' },
       { type: 'function_call_output', id: 'fco_legacy_fixture', call_id: 'legacy-direct', output: 'REMOTE_OK' },
     );
     await original.dispose(); original = undefined;
-    // Public snapshots can contain capability items from older archived sessions.
-    snapshot.history.push({ type: 'additional_tools', id: 'at_legacy_fixture', role: 'developer', tools: [{ ...deferred, name: 'archived_tool' }] });
+    // Stored checkpoints can contain capability items from older archived sessions.
+    history.push({ type: 'additional_tools', id: 'at_legacy_fixture', role: 'developer', tools: [{ ...deferred, name: 'archived_tool' }] });
     for (restoreMode of ['code-only']) {
-      resumed = await Agent.create({ ...options(restoreMode), resume: snapshot });
+      resumed = await Agent.create({ ...options(restoreMode), resume: checkpoint });
       const restored = await resumed.turn.prompt({ input: 'Resume the archived session.' }).result();
       assert.equal(restored.finalMessage, 'STRICT_RESUME_OK');
-      const saved = await restored.snapshot();
-      assert.equal(saved.history.find(item => item.type === 'tool_search_output').tools.length, 0);
+      const saved = await restored.checkpoint();
+      assert.equal(saved.payload.conversation.history.find(item => item.type === 'tool_search_output').tools.length, 0);
       await resumed.dispose(); resumed = undefined;
     }
-    assert.equal(snapshot.history.find(item => item.type === 'tool_search_output').tools.length, 1, 'resume does not mutate the supplied snapshot');
+    assert.equal(history.find(item => item.type === 'tool_search_output').tools.length, 1, 'resume does not mutate the supplied checkpoint');
     assert.deepEqual(effects, []);
     assert.equal(step, 2);
     assert.deepEqual(errors, []);
@@ -169,7 +171,7 @@ test('code-only resume removes historical discovery schemas and preserves the tr
     server.closeAllConnections(); await new Promise(resolve => server.close(resolve));
     const output = new URL('../../../output/sdk-code-only/', import.meta.url);
     await mkdir(output, { recursive: true });
-    await writeFile(new URL('resume.json', output), JSON.stringify({ status: failure ? 'failed' : 'passed', error: failure?.stack, errors, effects, snapshot, trace }, null, 2));
+    await writeFile(new URL('resume.json', output), JSON.stringify({ status: failure ? 'failed' : 'passed', error: failure?.stack, errors, effects, checkpoint, trace }, null, 2));
   }
 });
 

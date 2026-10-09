@@ -897,7 +897,9 @@ fn session_binding_overrides_only_its_process_environment_clone() {
         ])
         .build()
         .unwrap();
-    let bound = tools.clone().for_session("session-1");
+    let bound = tools
+        .clone()
+        .for_session(&crate::SessionEnvironment::new("session-1", "root-1"));
 
     assert_eq!(
         tools.process_environment().as_slice(),
@@ -922,6 +924,10 @@ fn session_binding_overrides_only_its_process_environment_clone() {
             (
                 OsString::from("CODEX_THREAD_ID"),
                 OsString::from("session-1")
+            ),
+            (
+                OsString::from("NANOCODEX_ROOT_SESSION_ID"),
+                OsString::from("root-1")
             ),
         ]
     );

@@ -47,6 +47,7 @@ async fn claude_durable_receipt_replays_through_facade() {
             .await
             .unwrap();
         let (agent, _events) = Nanocodex::builder(Claude::new(client.clone(), "synthetic-claude"))
+            .max_tokens(1024)
             .durability(state)
             .await
             .unwrap()

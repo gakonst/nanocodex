@@ -85,7 +85,7 @@ export function bindAgent(module, hostAgent = HostAgent) {
   });
 }
 
-/** Copies the latest safe committed boundary as a resumable SessionSnapshot. */
+/** Copies the latest safe committed boundary as a portable SessionCheckpoint. */
 export function checkpoint(agent) {
   return checkpointAgent(agent);
 }
@@ -206,7 +206,8 @@ export async function importDurabilityState(owner, archive, module) {
       }
       throw new Error("Cloudflare Agent durability import requires a pristine Durable Object");
     }
-    const sessionId = uuidV7();
+    // A session-shaped state ID is the imported session's durable identity.
+    const sessionId = SESSION_ID_PATTERN.test(archive.stateId) ? archive.stateId : uuidV7();
     // Publish identity and the imported head together. Records staged by a
     // bounded host transfer survive rollback and can be reused on retry.
     return storage.transactionSync(() => {
@@ -326,7 +327,7 @@ async function createPrepared(module, resolved, options, hostAgent, lifecycle, p
   let initialForkDigest;
   if (initialForkResume !== undefined) {
     if (!initialForkResume || typeof initialForkResume !== "object" || Array.isArray(initialForkResume))
-      throw new TypeError("Cloudflare Agent fork resume must be a SessionSnapshot");
+      throw new TypeError("Cloudflare Agent fork resume must be a SessionCheckpoint");
     const bytes = new Uint8Array(await crypto.subtle.digest("SHA-256",
       new TextEncoder().encode(JSON.stringify(initialForkResume))));
     initialForkDigest = [...bytes].map(byte => byte.toString(16).padStart(2, "0")).join("");
@@ -463,7 +464,7 @@ async function createOwned(module, resolved, options, hostAgent, lifecycle, prep
   let resumeDigest;
   if (forkResume !== undefined) {
     if (!forkResume || typeof forkResume !== "object" || Array.isArray(forkResume)) {
-      throw new TypeError("Cloudflare Agent fork resume must be a SessionSnapshot");
+      throw new TypeError("Cloudflare Agent fork resume must be a SessionCheckpoint");
     }
     initializeAgentStorage(context.storage);
     context.storage.sql.exec(`CREATE TABLE IF NOT EXISTS nanocodex_cloudflare_fork_resume (
@@ -504,8 +505,8 @@ async function createOwned(module, resolved, options, hostAgent, lifecycle, prep
   }
   const { sessionId, stateId } = durableIdentity(context.storage, durabilityId);
   if (internalConfiguration?.model?.startsWith("claude-")) {
-    if (forkResume !== undefined || internalRuntime?.workersAi || internalRuntime?.gateway) {
-      throw new Error("Claude requires its native checkpoint and subscription transport");
+    if (internalRuntime?.workersAi || internalRuntime?.gateway) {
+      throw new Error("Claude requires its subscription transport");
     }
     if (typeof internalRuntime?.claude?.create !== "function") {
       throw new Error("Claude subscription transport is unavailable; refusing Responses fallback");
@@ -548,6 +549,7 @@ async function createOwned(module, resolved, options, hostAgent, lifecycle, prep
         instructions: agentOptions.instructions ?? agentOptions.additionalInstructions,
         tools: agentOptions.tools, module, durability, durabilityId: stateId,
         terminalReceiptRetention: agentOptions.terminalReceiptRetention,
+        ...(forkResume === undefined ? {} : { resume: forkResume }),
       });
       if (eventSocket) {
         const watcher = claude.events.watch();
@@ -947,6 +949,8 @@ function ephemeralApplicationOptions(options) {
   return options;
 }
 
+const SESSION_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 function durableIdentity(storage, configuredStateId) {
   initializeAgentStorage(storage);
   if (configuredStateId !== undefined
@@ -960,7 +964,11 @@ function durableIdentity(storage, configuredStateId) {
     && previousStateId !== configuredStateId) {
     throw new Error("Cloudflare Agent durabilityId does not match the retained state identity");
   }
-  const generated = previousSessionId ?? uuidV7();
+  // A durable session is identified by its state: an imported or configured
+  // session-shaped state ID is also the runtime session ID, as Rust reports it.
+  const knownStateId = previousStateId ?? configuredStateId;
+  const generated = previousSessionId
+    ?? (SESSION_ID_PATTERN.test(knownStateId ?? "") ? knownStateId : uuidV7());
   const generatedStateId = previousStateId
     ?? configuredStateId
     ?? (previousSessionId === undefined ? generated : `cloudflare:${previousSessionId}`);

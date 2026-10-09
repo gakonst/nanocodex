@@ -14,6 +14,7 @@ pub struct NanocodexBuilder<F = StandardServiceFactory> {
     pub(super) prompt_cache: PromptCacheConfig,
     pub(super) codex: CodexCompatibility,
     pub(super) resume: Option<SessionSnapshot>,
+    pub(super) lineage: Option<Lineage>,
     pub(super) factory: F,
 }
 
@@ -33,6 +34,7 @@ where
             prompt_cache: PromptCacheConfig::default(),
             codex: CodexCompatibility::default(),
             resume: None,
+            lineage: None,
             factory,
         }
     }
@@ -75,14 +77,17 @@ impl<F> NanocodexBuilder<F> {
         self
     }
 
-    /// Restores a native residency checkpoint through this approved Responses recipe.
-    pub fn restore_runtime(mut self, snapshot: ChildSnapshot) -> Result<Self> {
-        let ChildSnapshot::Codex(snapshot) = snapshot else {
-            return Err(NanocodexError::InvalidRequest(
-                "Codex builder requires a Responses checkpoint".into(),
-            ));
-        };
-        snapshot.validate()?;
+    /// Restores a session from its checkpoint through this approved Responses
+    /// recipe, keeping its session identity, lineage, model, thinking,
+    /// processing tier, and transport policy.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NanocodexError::CheckpointFamilyMismatch`] for a non-Codex
+    /// checkpoint and [`NanocodexError::InvalidSessionSnapshot`] for an
+    /// invalid one.
+    pub fn restore_runtime(mut self, checkpoint: SessionCheckpoint) -> Result<Self> {
+        let snapshot = ChildState::from_checkpoint(checkpoint)?;
         self = self
             .model(snapshot.model)
             .thinking(snapshot.thinking)
@@ -91,6 +96,7 @@ impl<F> NanocodexBuilder<F> {
             NanocodexError::InvalidSessionSnapshot(format!("invalid child session: {error}"))
         })?);
         self.resume = snapshot.conversation;
+        self.lineage = Some(snapshot.lineage);
         if snapshot.stateless_http {
             self.config.responses_transport = ResponsesTransport::Https;
             self.config.responses_history = ResponsesHistory::FullReplay;
@@ -248,7 +254,7 @@ impl<F> NanocodexBuilder<F> {
     ///
     /// The root identity also seeds its checkpoint lineage. Spawned siblings
     /// and forks receive fresh session IDs; forks retain the root's opaque
-    /// lineage so [`Nanocodex::fork_from`] can reject unrelated results.
+    /// lineage so [`Nanocodex::fork`] can reject unrelated boundaries.
     #[must_use]
     pub const fn session_id(mut self, session_id: SessionId) -> Self {
         self.session_id = Some(session_id);
@@ -304,6 +310,17 @@ impl<F> NanocodexBuilder<F> {
         self
     }
 
+    /// Also loads the global `CLAUDE.md` from the supplied Claude Code
+    /// configuration directory, after the Codex home's instructions and only
+    /// when it is a distinct document. Unset by default.
+    #[cfg(not(target_family = "wasm"))]
+    #[cfg_attr(docsrs, doc(cfg(not(target_family = "wasm"))))]
+    #[must_use]
+    pub fn claude_home(mut self, claude_home: impl Into<PathBuf>) -> Self {
+        self.codex.context.set_claude_home(claude_home.into());
+        self
+    }
+
     /// Records committed history in Codex's resumable JSONL rollout layout.
     #[cfg(not(target_family = "wasm"))]
     #[cfg_attr(docsrs, doc(cfg(not(target_family = "wasm"))))]
@@ -318,21 +335,58 @@ impl<F> NanocodexBuilder<F> {
         self
     }
 
-    /// Restores a completed session boundary into a fresh driver, WebSocket,
-    /// and tool runtime while retaining its typed history and cache lineage.
+    /// Resumes a checkpointed conversation in a fresh root driver, transport,
+    /// and tool runtime while retaining its typed history, model, and cache
+    /// lineage.
     ///
-    /// An explicitly configured session ID names the new runtime/event stream;
-    /// it does not replace the snapshot's prompt-cache lineage. The new runtime
-    /// supplies the instructions, tool definitions, and handlers used for
-    /// subsequent turns. Previously committed typed history remains
-    /// authoritative and is replayed on the first resumed request.
+    /// The resumed root receives a new session identity unless one is
+    /// configured explicitly; that identity names the new runtime/event stream
+    /// and does not replace the checkpoint's prompt-cache lineage. The
+    /// checkpoint's thinking level applies unless one was configured
+    /// explicitly. The new runtime supplies the instructions, tool definitions,
+    /// and handlers used for subsequent turns. Previously committed typed
+    /// history remains authoritative and is replayed on the first resumed
+    /// request. Use [`Self::restore_runtime`] to keep the checkpoint's identity.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NanocodexError::CheckpointFamilyMismatch`] for a non-Codex
+    /// checkpoint and [`NanocodexError::InvalidSessionSnapshot`] for an
+    /// invalid checkpoint or one without a committed conversation.
+    pub fn resume(mut self, checkpoint: SessionCheckpoint) -> Result<Self> {
+        let state = ChildState::from_checkpoint(checkpoint)?;
+        let conversation = state.conversation.ok_or_else(|| {
+            NanocodexError::InvalidSessionSnapshot(
+                "checkpoint has no committed conversation to resume".into(),
+            )
+        })?;
+        if !self.config.thinking_explicit {
+            self.config.thinking = state.thinking;
+        }
+        self.resume = Some(conversation);
+        Ok(self)
+    }
+
+    /// Resumes from a Codex-native session snapshot, such as one loaded from a
+    /// rollout or a durable store.
+    #[doc(hidden)]
     #[must_use]
-    pub fn resume(mut self, snapshot: SessionSnapshot) -> Self {
+    pub fn resume_native_snapshot(mut self, snapshot: SessionSnapshot) -> Self {
         self.resume = Some(snapshot);
         self
     }
 
-    /// Returns the explicitly configured resume boundary, if any.
+    /// Records the provenance of a reopened stored session, such as a durable
+    /// fork, instead of reporting a fresh root. Telemetry and
+    /// [`Nanocodex::session`] report it; rollout metadata is unaffected.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn lineage(mut self, lineage: Lineage) -> Self {
+        self.lineage = Some(lineage);
+        self
+    }
+
+    /// Returns the explicitly configured native resume boundary, if any.
     #[doc(hidden)]
     #[must_use]
     pub const fn resume_snapshot(&self) -> Option<&SessionSnapshot> {
@@ -434,6 +488,7 @@ where
         builder.prompt_cache,
         builder.codex,
         builder.resume,
+        builder.lineage,
         service_factory,
     )
 }
@@ -594,7 +649,7 @@ mod tests {
         }))
         .expect("snapshot envelope should decode before model validation");
         let result = Nanocodex::builder(OpenAi::builder("test-key").build().unwrap())
-            .resume(obsolete)
+            .resume_native_snapshot(obsolete)
             .build();
         let error = match result {
             Ok(_) => panic!("an obsolete snapshot model must not continue as another model"),
@@ -631,6 +686,7 @@ mod tests {
             prompt_cache: PromptCacheConfig::default(),
             codex: CodexCompatibility::default(),
             resume: Some(snapshot),
+            lineage: None,
             factory: ObservingFactory {
                 model: Arc::clone(&observed_model),
             },

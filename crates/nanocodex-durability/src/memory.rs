@@ -27,6 +27,14 @@ enum Command {
         records: Vec<crate::StoreRecord>,
         result: oneshot::Sender<Result<u64, StoreError>>,
     },
+    Peek {
+        state_id: String,
+        result: oneshot::Sender<Result<StoredState, StoreError>>,
+    },
+    ListStates {
+        limit: usize,
+        result: oneshot::Sender<Result<Vec<String>, StoreError>>,
+    },
 }
 
 /// Process-local store useful for tests and ephemeral native or WASM sessions.
@@ -47,6 +55,7 @@ impl MemoryStore {
             let mut records = HashMap::<(String, String), String>::new();
             let mut states = HashMap::<String, StoredState>::new();
             let mut owners = HashMap::<String, OwnerToken>::new();
+            let mut created = Vec::<String>::new();
             while let Some(command) = receiver.recv().await {
                 match command {
                     Command::ReadRecord {
@@ -106,6 +115,9 @@ impl MemoryStore {
                                                 .entry((state_id.clone(), record.key))
                                                 .or_insert(record.value);
                                         }
+                                        if state.payload.is_none() {
+                                            created.push(state_id.clone());
+                                        }
                                         state.payload = Some(payload);
                                         state.revision = revision;
                                         Ok(revision)
@@ -117,6 +129,12 @@ impl MemoryStore {
                             }
                         };
                         drop(result.send(outcome));
+                    }
+                    Command::Peek { state_id, result } => {
+                        drop(result.send(Ok(states.get(&state_id).cloned().unwrap_or_default())));
+                    }
+                    Command::ListStates { limit, result } => {
+                        drop(result.send(Ok(created.iter().rev().take(limit).cloned().collect())));
                     }
                 }
             }
@@ -184,6 +202,37 @@ impl StateStore for MemoryStore {
                     records: records.to_vec(),
                     result,
                 })
+                .await
+                .map_err(|_| stopped())?;
+            receiver.await.map_err(|_| stopped())?
+        })
+    }
+
+    fn peek<'a>(
+        &'a mut self,
+        state_id: &'a str,
+    ) -> StoreFuture<'a, Result<StoredState, StoreError>> {
+        Box::pin(async move {
+            let (result, receiver) = oneshot::channel();
+            self.commands
+                .send(Command::Peek {
+                    state_id: state_id.to_owned(),
+                    result,
+                })
+                .await
+                .map_err(|_| stopped())?;
+            receiver.await.map_err(|_| stopped())?
+        })
+    }
+
+    fn list_states<'a>(
+        &'a mut self,
+        limit: usize,
+    ) -> StoreFuture<'a, Result<Vec<String>, StoreError>> {
+        Box::pin(async move {
+            let (result, receiver) = oneshot::channel();
+            self.commands
+                .send(Command::ListStates { limit, result })
                 .await
                 .map_err(|_| stopped())?;
             receiver.await.map_err(|_| stopped())?

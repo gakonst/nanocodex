@@ -1,6 +1,7 @@
 //! Retained Bash jobs. Each job owns a workspace runtime so stopping one cannot
 //! cancel another. The existing foreground executor supplies capture/deadlines.
 use super::*;
+use nanocodex::{claude::ClaudeToolInvocation, tools::SessionEnvironment};
 use std::collections::BTreeMap;
 use tokio::sync::{Mutex, watch};
 
@@ -105,11 +106,16 @@ impl Shell {
             .expect("captured Bash input schema");
         serde_json::from_value(schema).expect("Bash definition")
     }
+    /// Runs one Bash call for the invoking session. Every process it starts
+    /// receives that session's `SessionEnvironment` (`CODEX_THREAD_ID` and
+    /// `NANOCODEX_ROOT_SESSION_ID`).
     pub(super) async fn execute(
         &self,
         mut input: Value,
-        session: String,
+        invocation: ClaudeToolInvocation,
     ) -> std::result::Result<ClaudeToolReply, String> {
+        let identity = SessionEnvironment::new(&invocation.session_id, &invocation.root_session_id);
+        let session = invocation.session_id;
         let disabled = std::env::var("CLAUDE_CODE_DISABLE_BACKGROUND_TASKS").as_deref() == Ok("1");
         let background = input
             .get("run_in_background")
@@ -195,7 +201,7 @@ impl Shell {
                 .unwrap_or_else(|| workspace.clone());
             (start, cwd.started)
         };
-        let runtime = Arc::new(WorkspaceToolRuntime::new(start.clone()));
+        let runtime = Arc::new(WorkspaceToolRuntime::new(start.clone(), &identity));
         let retained = RetainedBash {
             runtime: runtime.clone(),
             gate: Arc::new(Mutex::new(())),

@@ -1,7 +1,6 @@
 use std::{borrow::Cow, io, time::SystemTime};
 
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
-use nanocodex::agent::rollout::RolloutSessionInfo;
 use ratatui::{
     Frame,
     layout::{Constraint, Layout},
@@ -11,8 +10,10 @@ use ratatui::{
 };
 
 use super::terminal::TerminalSession;
+use crate::sessions::SessionSummary;
 
-pub(crate) fn select_resume_session(sessions: &[RolloutSessionInfo]) -> io::Result<Option<String>> {
+/// Picks one session from the merged catalog of every harness.
+pub(crate) fn select_resume_session(sessions: &[SessionSummary]) -> io::Result<Option<String>> {
     let mut terminal = TerminalSession::enter()?;
     let mut picker = ResumePicker::new(sessions.len());
     loop {
@@ -28,7 +29,7 @@ pub(crate) fn select_resume_session(sessions: &[RolloutSessionInfo]) -> io::Resu
             PickerAction::Select => {
                 return Ok(sessions
                     .get(picker.selected)
-                    .map(|session| session.thread_id().to_owned()));
+                    .map(|session| session.id().to_owned()));
             }
             PickerAction::Cancel => return Ok(None),
         }
@@ -95,13 +96,13 @@ enum PickerAction {
 
 fn render(
     frame: &mut Frame<'_>,
-    sessions: &[RolloutSessionInfo],
+    sessions: &[SessionSummary],
     picker: &mut ResumePicker,
     now: SystemTime,
 ) {
     let area = frame.area();
     let block = Block::default()
-        .title(" Resume a thread ")
+        .title(" Resume a session ")
         .borders(Borders::ALL);
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -114,7 +115,7 @@ fn render(
     frame.render_widget(
         Paragraph::new(vec![
             Line::styled(
-                format!("  {} resumable threads", sessions.len()),
+                format!("  {} resumable sessions", sessions.len()),
                 Style::default().add_modifier(Modifier::BOLD),
             ),
             Line::styled(
@@ -144,11 +145,7 @@ fn render(
     );
 }
 
-fn session_item(
-    session: &RolloutSessionInfo,
-    selected: bool,
-    now: SystemTime,
-) -> ListItem<'static> {
+fn session_item(session: &SessionSummary, selected: bool, now: SystemTime) -> ListItem<'static> {
     let marker = if selected { "›" } else { " " };
     let style = if selected {
         Style::default().fg(Color::Cyan)
@@ -172,7 +169,13 @@ fn session_item(
             style,
         ),
         Line::styled(
-            format!("  {workspace} · {location} · {}", session.thread_id()),
+            format!(
+                "  {workspace} · {} · {location} · {}",
+                session
+                    .model()
+                    .map_or_else(|| session.family().to_string(), |model| model.to_string()),
+                session.id()
+            ),
             if selected {
                 style
             } else {

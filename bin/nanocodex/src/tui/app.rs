@@ -13,7 +13,7 @@ use nanocodex::{
             RunStatus,
         },
         input::{Prompt, UserInput},
-        rollout::RolloutTranscriptItem,
+        session::TranscriptItem as SessionTranscriptItem,
     },
 };
 use ratatex::Ratatex;
@@ -1509,15 +1509,15 @@ impl App {
 
     pub(super) fn restore_transcript(
         &mut self,
-        transcript: impl IntoIterator<Item = RolloutTranscriptItem>,
+        transcript: impl IntoIterator<Item = SessionTranscriptItem>,
     ) {
         self.restored_thread = true;
         for activity in transcript {
             let item = match activity {
-                RolloutTranscriptItem::User(message) => TranscriptItem::User(message),
-                RolloutTranscriptItem::Reasoning(message) => TranscriptItem::Reasoning(message),
-                RolloutTranscriptItem::Assistant(message) => TranscriptItem::Assistant(message),
-                RolloutTranscriptItem::Tool {
+                SessionTranscriptItem::User(message) => TranscriptItem::User(message),
+                SessionTranscriptItem::Reasoning(message) => TranscriptItem::Reasoning(message),
+                SessionTranscriptItem::Assistant(message) => TranscriptItem::Assistant(message),
+                SessionTranscriptItem::Tool {
                     call_id,
                     name,
                     arguments,
@@ -4044,7 +4044,7 @@ mod tests {
     use nanocodex::agent::{
         events::{AgentEvent, AgentEventKind},
         input::{PromptInput, UserInput},
-        rollout::RolloutTranscriptItem,
+        session::TranscriptItem as SessionTranscriptItem,
     };
     use ratatex::{PixelSize, Ratatex, TerminalProfile};
     use ratatui::{buffer::Buffer, layout::Rect, widgets::Widget};
@@ -4169,14 +4169,14 @@ mod tests {
     fn restored_rollout_activity_seeds_the_visible_transcript() {
         let mut app = App::new(std::path::PathBuf::from("/worktree"));
         app.restore_transcript([
-            RolloutTranscriptItem::User("visible prompt".to_owned()),
-            RolloutTranscriptItem::Reasoning("thinking".to_owned()),
-            RolloutTranscriptItem::Tool {
+            SessionTranscriptItem::User("visible prompt".to_owned()),
+            SessionTranscriptItem::Reasoning("thinking".to_owned()),
+            SessionTranscriptItem::Tool {
                 call_id: "call-1".to_owned(),
                 name: "exec".to_owned(),
                 arguments: "pwd".to_owned(),
             },
-            RolloutTranscriptItem::Assistant("visible answer".to_owned()),
+            SessionTranscriptItem::Assistant("visible answer".to_owned()),
         ]);
 
         assert_eq!(app.main.transcript.len(), 4);

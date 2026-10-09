@@ -120,7 +120,7 @@ async fn invalid_image_value_is_removed_before_durable_followup() -> Result<()> 
     let (agent, events) = Nanocodex::builder(openai()?)
         .thinking(Thinking::Low)
         .session_id(thread_id.parse()?)
-        .resume(snapshot)
+        .resume_native_snapshot(snapshot)
         .rollout(rollout)
         .build()?;
     drop(events);
@@ -264,7 +264,7 @@ async fn stored_image_is_prepared(
     let (agent, events) = Nanocodex::builder(openai()?)
         .thinking(Thinking::Low)
         .session_id(thread_id.parse()?)
-        .resume(snapshot)
+        .resume_native_snapshot(snapshot)
         .rollout(rollout)
         .build()?;
     drop(events);

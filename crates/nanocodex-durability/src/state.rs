@@ -542,6 +542,7 @@ pub struct DurableState {
     revision: u64,
     operations: BTreeMap<String, OperationState>,
     latest_checkpoint: Option<(u64, EncodedPayload)>,
+    session: Option<crate::catalog::SessionRecord>,
 }
 
 #[derive(serde::Deserialize, serde::Serialize)]
@@ -556,6 +557,9 @@ pub(crate) struct DurableCheckpoint {
 #[serde(deny_unknown_fields)]
 pub(crate) struct RetainedCheckpoint {
     pub(crate) nanocodex_durable_state: DurableCheckpoint,
+    /// Family-neutral catalog metadata; absent in journals written before it existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) nanocodex_session: Option<crate::catalog::SessionRecord>,
 }
 
 #[derive(serde::Serialize)]
@@ -568,6 +572,8 @@ struct DurableCheckpointRef<'a> {
 #[derive(serde::Serialize)]
 struct RetainedCheckpointRef<'a> {
     nanocodex_durable_state: DurableCheckpointRef<'a>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    nanocodex_session: Option<&'a crate::catalog::SessionRecord>,
 }
 
 impl DurableState {
@@ -653,6 +659,20 @@ impl DurableState {
             .map(|(id, operation)| (id.as_str(), operation))
     }
 
+    /// Family-neutral catalog metadata recorded for this session, if any.
+    #[must_use]
+    pub const fn session(&self) -> Option<&crate::catalog::SessionRecord> {
+        self.session.as_ref()
+    }
+
+    pub(crate) fn set_session(&mut self, session: Option<crate::catalog::SessionRecord>) {
+        self.session = session;
+    }
+
+    pub(crate) const fn session_mut(&mut self) -> Option<&mut crate::catalog::SessionRecord> {
+        self.session.as_mut()
+    }
+
     /// Returns the latest terminal checkpoint in operation order.
     #[must_use]
     pub fn latest_checkpoint(&self) -> Option<&EncodedPayload> {
@@ -668,6 +688,7 @@ impl DurableState {
                 operations: &self.operations,
                 latest_checkpoint: self.latest_checkpoint(),
             },
+            nanocodex_session: self.session.as_ref(),
         })
         .map_err(Error::InvalidPayload)
     }
@@ -676,6 +697,11 @@ impl DurableState {
         let before = self.operations.len();
         Self::retain_terminal_operations(&mut self.operations, limit);
         let mut changed = self.operations.len() != before;
+        if changed && let Some(session) = &mut self.session {
+            // Branching before the oldest retained turn can no longer prove
+            // that it was the conversation's first turn.
+            session.history_pruned = true;
+        }
         for operation in self
             .operations
             .values_mut()
@@ -820,6 +846,7 @@ impl DurableState {
             revision,
             operations: checkpoint.operations,
             latest_checkpoint,
+            session: None,
         };
         for (operation_id, operation) in &state.operations {
             if matches!(

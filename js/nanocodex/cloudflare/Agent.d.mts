@@ -5,7 +5,7 @@ import type {
   AgentEvent,
   DefaultAgent,
   ToolConfiguration,
-  SessionSnapshot,
+  SessionCheckpoint,
 } from "../types.mjs";
 import type { CloudflareDurableObjectStorage } from "../runtime/cloudflare-durability-store.mjs";
 import type { Tool as SubagentTool } from "../runtime/subagents.mjs";
@@ -54,7 +54,7 @@ export type Agent<extended extends object = {}> =
   }>;
 
 /** Copies the exact latest committed model boundary; rejects before the first safe boundary. */
-export function checkpoint(agent: Agent): Promise<SessionSnapshot>;
+export function checkpoint(agent: Agent): Promise<SessionCheckpoint>;
 
 /** Removes the package-owned durable history for one Cloudflare Agent. */
 export function destroy(owner: DurableObjectOwner): void;

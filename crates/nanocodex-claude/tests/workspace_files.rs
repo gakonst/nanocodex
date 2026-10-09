@@ -344,3 +344,103 @@ async fn native_workspace_read_media_and_scoped_context_reach_messages_transport
     );
     server.abort();
 }
+
+#[cfg(unix)]
+#[tokio::test]
+async fn sandbox_bash_subprocesses_see_their_own_session_identity_after_fork() {
+    use nanocodex_agent::ForkRequest;
+    use nanocodex_claude_tools::{
+        SessionEnvironment,
+        bash::{BashRequest, BashResult, ClaudeBash, SandboxBashExecutor},
+    };
+    /// A host sandbox that runs a real bash subprocess. Its configured
+    /// environment carries spoofed identities, which the session must override.
+    struct RealBash;
+    impl SandboxBashExecutor for RealBash {
+        async fn execute(&self, request: BashRequest) -> Result<BashResult, String> {
+            let mut command = std::process::Command::new("bash");
+            command
+                .arg("-c")
+                .arg(&request.command)
+                .env(SessionEnvironment::SESSION_ID_VAR, "spoofed-session")
+                .env(SessionEnvironment::ROOT_SESSION_ID_VAR, "spoofed-root");
+            request.apply_session(&mut command);
+            let output = command.output().map_err(|error| error.to_string())?;
+            Ok(BashResult {
+                stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+                stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+                exit_code: output.status.code().unwrap_or(-1),
+                truncated: false,
+            })
+        }
+    }
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    let command = r#"printf '%s|%s' "$CODEX_THREAD_ID" "$NANOCODEX_ROOT_SESSION_ID""#;
+    let requests = Arc::new(Mutex::new(Vec::<Value>::new()));
+    let log = requests.clone();
+    let app = Router::new().route(
+        "/v1/messages",
+        post(move |Json(body): Json<Value>| {
+            let log = log.clone();
+            async move {
+                let mut log = log.lock().unwrap();
+                log.push(body);
+                let (block, stop) = if log.len() % 2 == 1 {
+                    let id = format!("b{}", log.len());
+                    (
+                        json!({"type":"tool_use","id":id,"name":"Bash","input":{"command":command}}),
+                        "tool_use",
+                    )
+                } else {
+                    (json!({"type":"text","text":"done"}), "end_turn")
+                };
+                ([("content-type", "text/event-stream")], sse(block, stop))
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let client = ClaudeClient::new(
+        reqwest::Client::new(),
+        format!("http://{address}/v1/messages"),
+        "synthetic",
+    );
+    let (parent, _) = Nanocodex::builder(Claude::new(client, "test"))
+        .max_tokens(128_000)
+        .sandbox_bash(Arc::new(ClaudeBash::new(RealBash)))
+        .build()
+        .unwrap();
+    let stdout_of_last_tool_result = |request: &Value| {
+        let messages = request["messages"].as_array().unwrap();
+        let result = &messages.last().unwrap()["content"][0];
+        assert_eq!(result["type"], "tool_result");
+        serde_json::from_str::<Value>(result["content"].as_str().unwrap()).unwrap()["stdout"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+    };
+
+    parent.prompt("ids").await.unwrap().result().await.unwrap();
+    let root_id = parent.session_id().to_owned();
+    assert_eq!(
+        stdout_of_last_tool_result(&requests.lock().unwrap()[1]),
+        format!("{root_id}|{root_id}")
+    );
+
+    let (child, _) = parent.fork(ForkRequest::latest()).await.unwrap();
+    let child_id = child.session_id().to_owned();
+    assert_ne!(child_id, root_id);
+    child
+        .prompt("ids again")
+        .await
+        .unwrap()
+        .result()
+        .await
+        .unwrap();
+    assert_eq!(
+        stdout_of_last_tool_result(&requests.lock().unwrap()[3]),
+        format!("{child_id}|{root_id}")
+    );
+    server.abort();
+}

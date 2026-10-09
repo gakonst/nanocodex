@@ -1,5 +1,10 @@
 import {
   appendDeveloperMessage as appendAgentDeveloperMessage,
+  cancelAll as cancelAgent,
+  capabilities as agentCapabilities,
+  checkpoint as checkpointAgent,
+  persistence as agentPersistence,
+  sessionInfo,
   compact as compactAgent,
   context as agentContext,
   fork as forkAgent,
@@ -16,6 +21,26 @@ export {
   realtimeTailDelegation,
   startRealtimeConversation,
 } from "../internal.mjs";
+
+export function info(agent) {
+  return sessionInfo(agent);
+}
+
+export function capabilities(agent) {
+  return agentCapabilities(agent);
+}
+
+export function persistence(agent) {
+  return agentPersistence(agent);
+}
+
+export function checkpoint(agent) {
+  return checkpointAgent(agent);
+}
+
+export function cancel(agent) {
+  return cancelAgent(agent);
+}
 
 export function appendDeveloperMessage(agent, text) {
   return appendAgentDeveloperMessage(agent, text);

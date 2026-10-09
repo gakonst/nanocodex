@@ -11,7 +11,7 @@ use super::{
 };
 use nanocodex_agent::input::Prompt;
 use nanocodex_agent::{
-    ChildSnapshot, Nanocodex, NanocodexError, Result as AgentResult, TurnControl, TurnResult,
+    Nanocodex, NanocodexError, Result as AgentResult, SessionCheckpoint, TurnControl, TurnResult,
 };
 use std::{collections::VecDeque, sync::Weak};
 use tokio::sync::{mpsc, oneshot, watch};
@@ -59,7 +59,7 @@ impl EnqueuedDelivery {
 
 enum HarnessCommand {
     Snapshot {
-        response: oneshot::Sender<std::io::Result<ChildSnapshot>>,
+        response: oneshot::Sender<std::io::Result<SessionCheckpoint>>,
     },
     Start {
         prompt: String,
@@ -106,7 +106,7 @@ enum HarnessEvent {
 }
 
 impl HarnessHandle {
-    pub(super) async fn snapshot(&self) -> std::io::Result<ChildSnapshot> {
+    pub(super) async fn snapshot(&self) -> std::io::Result<SessionCheckpoint> {
         let (response, result) = oneshot::channel();
         self.commands
             .send(HarnessCommand::Snapshot { response })
@@ -281,10 +281,7 @@ impl Harness {
         match command {
             HarnessCommand::Snapshot { response } => {
                 let result = match &self.agent {
-                    Some(agent) => agent
-                        .runtime_snapshot()
-                        .await
-                        .map_err(std::io::Error::other),
+                    Some(agent) => agent.checkpoint().await.map_err(std::io::Error::other),
                     None => Err(std::io::Error::other("subagent runtime is unloaded")),
                 };
                 let _ = response.send(result);

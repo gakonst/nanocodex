@@ -1,4 +1,4 @@
-import type { Agent as BaseAgent, EventWatcher, TurnUsage, WatchEventsOptions, DurabilityStore, ToolContext } from '../types.mjs';
+import type { DefaultAgent, DurabilityStore, SessionCheckpoint, ToolContext } from '../types.mjs';
 
 /** Explicit, caller-approved credentials. The callback is resolved independently for each request. */
 export type Auth = Readonly<
@@ -83,29 +83,13 @@ export type Options = Readonly<{
   /** Disabling automatic compaction is not supported. */
   autoCompact?: true;
   terminalReceiptRetention?: number;
+  /** Starts a new session continuing this Claude checkpoint's committed conversation. */
+  resume?: SessionCheckpoint;
   /** Compiled browser WASM module for this exact package. */
   module?: unknown;
 }> & (
   | { durability?: never; durabilityId?: never }
   | { durability: DurabilityStore; durabilityId: string }
 );
-/** Shared output/event contract, with canonical subagents available through Subagents when enabled. */
-export type Agent = BaseAgent<{
-  events: { watch(options?: WatchEventsOptions): EventWatcher };
-  session: { compact(): Promise<void>; cancel(): Promise<void>; shutdown(): Promise<void> };
-  turn: { prompt(options: { input: string; id?: string }): Turn };
-}>;
-export type Turn = Readonly<{
-  readonly agent: Agent;
-  accepted(): Promise<string | undefined>;
-  result(): Promise<Result>;
-  cancel(): Promise<void>;
-  dispose(): void;
-}>;
-export type Result = Readonly<{
-  finalMessage: string;
-  /** Unsupported for Claude: native checkpoints are owned by durability. Always rejects. */
-  snapshot(): Promise<never>;
-  usage(): Promise<TurnUsage>;
-  dispose(): void;
-}>;
+/** The one harness-neutral Agent; canonical subagents are available through Subagents when enabled. */
+export type Agent = DefaultAgent;

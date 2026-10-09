@@ -1,4 +1,5 @@
-//! The same discovered Computer Use handlers and schemas used by Codex.
+//! The same discovered Computer Use and managed-memory handlers and schemas
+//! used by Codex, bridged into Claude's native tool catalog.
 use super::*;
 use nanocodex::tools::ToolDefinition as RuntimeDefinition;
 
@@ -34,7 +35,7 @@ pub(super) fn install(mut native: ClaudeTools, runtime: Arc<RetainedHost>) -> Cl
         else {
             continue;
         };
-        if !name.starts_with("mcp__cua_repl__") {
+        if !name.starts_with("mcp__cua_repl__") && !crate::managed_memory::is_memory_tool(&name) {
             continue;
         }
         let name = name.to_string();

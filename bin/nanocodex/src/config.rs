@@ -14,27 +14,25 @@ use nanocodex::NanocodexBuilder;
 use nanocodex::{
     AgentEvents, DurableAgentExt as _, HarnessFamily, HarnessModel, Model, Nanocodex, OpenAi,
     ReasoningMode, Thinking, Tools,
-    agent::{
-        rollout::{DurableSession, RolloutConfig},
-        session::{SessionId, SessionSnapshot},
-    },
+    agent::{rollout::RolloutConfig, session::SessionId},
     oai::{
         auth::{OpenAiAuth, OpenAiAuthMode},
         transport::ResponsesTransport,
     },
     tools::mcp::McpHandle,
 };
-use nanocodex_durability::{DurableSession as PortableDurableSession, SqliteStore};
 
 use crate::browser::{BrowserArgs, ConfiguredBrowser};
 use crate::login::load_managed_mcp_credential;
 use crate::managed_memory::{ConfiguredManagedMemory, MEMORY_INSTRUCTIONS};
 use crate::mcp::{ConfiguredMcp, McpArgs};
 use crate::mpp::{MppAdapter, MppArgs};
+use crate::sessions::{Persistence, ResumedSession};
 use crate::subagents::{self, ChildAgents, DEFAULT_MAX_SUBAGENTS};
 use crate::vm::{ConfiguredVm, VmArgs};
 
 mod claude;
+mod codex;
 pub(crate) use claude::frontend as claude_frontend;
 pub(crate) use claude::interaction::{
     InteractionReceiver, PendingInteraction, serve_terminal as serve_claude_terminal,
@@ -42,11 +40,18 @@ pub(crate) use claude::interaction::{
 pub(crate) use claude::scheduler::SessionScheduler;
 pub(crate) use claude::{prepare_rewind_branch, rewind_files};
 mod instructions;
-pub(crate) use instructions::{expand_session_user_skill, expand_user_skill};
+pub(crate) use instructions::expand_session_user_skill;
+
+/// Host-serviced channels shared by every harness family: user questions,
+/// plan-mode and permission prompts, and scheduled or monitored prompts.
+#[derive(Default)]
+pub(crate) struct HostChannels {
+    pub(crate) interactions: Option<InteractionReceiver>,
+    pub(crate) scheduler: Option<Arc<SessionScheduler>>,
+}
 
 pub(crate) struct ConfiguredAgent {
-    pub(crate) claude_scheduler: Option<Arc<SessionScheduler>>,
-    pub(crate) claude_interactions: Option<InteractionReceiver>,
+    pub(crate) host: HostChannels,
     pub(crate) handle: Nanocodex,
     pub(crate) events: AgentEvents,
     pub(crate) realtime: Option<OpenAi>,
@@ -60,11 +65,13 @@ pub(crate) struct ConfiguredAgent {
     pub(crate) model: HarnessModel,
 }
 
-struct SessionBuild {
+/// Identity, workspace and persistence of the root session, resolved once for
+/// either family before credentials are acquired or tools start.
+struct RootSession {
     workspace: PathBuf,
-    session_id: Option<SessionId>,
-    snapshot: Option<SessionSnapshot>,
-    rollout: Option<RolloutConfig>,
+    session_id: String,
+    resumed: Option<ResumedSession>,
+    persistence: Option<Persistence>,
 }
 
 /// Authentication flags shared by every direct-OpenAI CLI consumer.
@@ -149,9 +156,10 @@ pub(crate) struct EvalAgentArgs {
     reason = "independent CLI feature toggles are not one state machine"
 )]
 pub(crate) struct AgentArgs {
-    /// Internal native resume identity; never accepted from arbitrary CLI flags.
+    /// Stored session to continue, of either family; set only by `nanocodex
+    /// resume`, never from arbitrary CLI flags.
     #[arg(skip)]
-    pub(crate) claude_resume: Option<crate::native_sessions::ResumeSession>,
+    resume: Option<ResumedSession>,
 
     /// Voice microphone shortcut, or none to use /voice mute only.
     #[arg(long, env = "NANOCODEX_VOICE_MUTE_KEY", default_value = "ctrl+x", value_parser = crate::tui::voice::validate_key)]
@@ -282,7 +290,8 @@ pub(crate) struct AgentArgs {
     )]
     max_subagents: usize,
 
-    /// Record provider-native resumable sessions beneath `CODEX_HOME`.
+    /// Persist resumable sessions beneath `CODEX_HOME` for every harness: the
+    /// durable session store plus a Codex-compatible JSONL rollout mirror.
     #[arg(
         long,
         env = "NANOCODEX_ROLLOUTS",
@@ -290,6 +299,16 @@ pub(crate) struct AgentArgs {
         action = ArgAction::Set
     )]
     rollouts: bool,
+
+    /// Link Claude's natural instruction and skill paths to the canonical
+    /// `CODEX_HOME` files before a session starts.
+    #[arg(
+        long,
+        env = "NANOCODEX_LINK_HOMES",
+        default_value_t = true,
+        action = ArgAction::Set
+    )]
+    link_homes: bool,
 
     /// Enable hosted Nanocodex session search and durable organization memory.
     #[arg(
@@ -359,18 +378,33 @@ impl AgentArgs {
             Some(model.family() == HarnessFamily::Codex && (!same_family || fast_mode));
     }
 
-    pub(crate) fn resume_claude(
-        mut self,
-        session: crate::native_sessions::ResumeSession,
-    ) -> Result<Self> {
+    /// Continues a stored session in the harness family that recorded it.
+    pub(crate) fn resume(mut self, session: ResumedSession) -> Result<Self> {
         if !self.rollouts {
             return Err(eyre!(
-                "Claude resume requires native persistence; remove --rollouts false"
+                "resume requires session persistence; remove --rollouts false"
             ));
         }
-        let workspace = session.workspace.as_ref().or(self.cwd.as_ref())
-            .ok_or_else(|| eyre!("legacy Claude session has no saved workspace; pass --cwd explicitly to resume it"))?
-            .canonicalize().wrap_err("failed to resolve the resumed Claude workspace")?;
+        let family = session.family();
+        let explicit = match (self.claude, self.harness.as_deref()) {
+            (true, _) | (false, Some("claude")) => Some(HarnessFamily::Claude),
+            (false, Some(_)) => Some(HarnessFamily::Codex),
+            (false, None) => None,
+        };
+        if let Some(explicit) = explicit.filter(|explicit| *explicit != family) {
+            return Err(eyre!(
+                "session {} was recorded by the {family} harness; --harness {explicit} cannot resume it",
+                session.id()
+            ));
+        }
+        let workspace = session
+            .workspace()
+            .or(self.cwd.as_deref())
+            .ok_or_else(|| {
+                eyre!("session has no saved workspace; pass --cwd explicitly to resume it")
+            })?
+            .canonicalize()
+            .wrap_err("failed to resolve the resumed workspace")?;
         if let Some(requested) = &self.cwd
             && requested
                 .canonicalize()
@@ -378,20 +412,27 @@ impl AgentArgs {
                 != workspace
         {
             return Err(eyre!(
-                "resumed Claude workspace is {}; --cwd requested {}",
+                "resumed session workspace is {}; --cwd requested {}",
                 workspace.display(),
                 requested.display()
             ));
         }
+        self.harness = Some(family.to_string());
+        self.claude = family == HarnessFamily::Claude;
         // An environment default must never silently switch a resumed model.
         // An explicit --model remains a deliberate, family-validated override.
         if self.model.is_none() {
-            self.model = Some(session.model.ok_or_else(|| eyre!("legacy Claude session has no saved model; pass --model explicitly to resume it"))?.to_string());
+            self.model = Some(session.model().to_string());
         }
-        self.requested_model(HarnessFamily::Claude)?;
+        self.requested_model(family)?;
         self.cwd = Some(workspace);
-        self.claude_resume = Some(session);
+        self.resume = Some(session);
         Ok(self)
+    }
+
+    /// The stored session this configuration continues, if any.
+    pub(crate) const fn resumed(&self) -> Option<&ResumedSession> {
+        self.resume.as_ref()
     }
 
     pub(crate) fn harness_model(&self) -> Result<HarnessModel> {
@@ -430,8 +471,7 @@ impl AgentArgs {
         if std::env::var_os("ANTHROPIC_MODEL").is_some() {
             return HarnessFamily::Claude;
         }
-        let responses_only = self.memory
-            || self.mpp.is_enabled()
+        let responses_only = self.mpp.is_enabled()
             || self.model_id_prefix.is_some()
             || self.websocket_url.is_some()
             || self.api_base_url.is_some()
@@ -455,18 +495,6 @@ impl AgentArgs {
             || self.model.is_some()
             || std::env::var_os("OPENAI_MODEL").is_some()
             || std::env::var_os("ANTHROPIC_MODEL").is_some()
-    }
-
-    /// The workspace requested with `--cwd`, if any.
-    pub(crate) fn requested_workspace(&self) -> Option<&std::path::Path> {
-        self.cwd.as_deref()
-    }
-
-    /// Resume uses the store owning the thread unless the family was chosen explicitly.
-    pub(crate) fn resume_with_harness(&mut self, family: HarnessFamily) {
-        if !self.has_explicit_harness() {
-            self.harness = Some(family.to_string());
-        }
     }
 
     /// The local Claude harness has no VM support; keep a defaulted session on Codex.
@@ -508,6 +536,7 @@ impl AgentArgs {
         self.claude_workflows = false;
         self.claude_monitor_ws_origin.clear();
         self.rollouts = false;
+        self.link_homes = false;
         self.instructions = Some(instructions.into());
     }
 
@@ -587,30 +616,24 @@ impl AgentArgs {
         vm: VmArgs,
         local_durability: Option<LocalDurability>,
     ) -> Result<ConfiguredAgent> {
-        Box::pin(self.build_inner(None, vm, false, local_durability)).await
+        Box::pin(self.build_inner(vm, false, local_durability)).await
     }
 
     pub(crate) async fn build_tui(self, vm: VmArgs) -> Result<ConfiguredAgent> {
-        Box::pin(self.build_inner(None, vm, true, None)).await
-    }
-
-    pub(crate) async fn build_resumed_tui(
-        self,
-        session: DurableSession,
-        vm: VmArgs,
-    ) -> Result<ConfiguredAgent> {
-        Box::pin(self.build_inner(Some(session), vm, true, None)).await
+        Box::pin(self.build_inner(vm, true, None)).await
     }
 
     async fn build_inner(
         mut self,
-        durable: Option<DurableSession>,
         vm: VmArgs,
         tui: bool,
         local_durability: Option<LocalDurability>,
     ) -> Result<ConfiguredAgent> {
         self.prefer_codex_for_vm(&vm);
         let harness = self.selected_harness()?;
+        if self.link_homes {
+            crate::homes::link_at_startup();
+        }
         if self.claude_workflows && (harness != HarnessFamily::Claude || !self.subagents) {
             return Err(eyre!(
                 "--claude-workflows requires the Claude harness and enabled subagents"
@@ -622,38 +645,19 @@ impl AgentArgs {
             ));
         }
         let requested_model = self.requested_model(harness)?;
+        let codex_home = default_codex_home()?;
+        let root = self.root_session(harness, &codex_home, local_durability)?;
         if harness == HarnessFamily::Claude {
             return self
-                .build_claude(durable, vm, tui, local_durability, requested_model)
+                .build_claude(root, codex_home, vm, tui, requested_model)
                 .await;
         }
         let thinking = self
             .model_policy
             .requested_thinking(harness)?
             .unwrap_or(Thinking::Xhigh);
-        let web_search = self.web_search();
-        if local_durability.is_some() && self.rollouts {
-            return Err(eyre!(
-                "local durability testing requires `--rollouts false`; portable durability and Codex-compatible rollouts cannot both own restart state"
-            ));
-        }
-        let codex_home = default_codex_home()?;
         let responses_transport = self.responses_transport();
-        let mut session = prepare_session_build(self.cwd, self.rollouts, &codex_home, durable)?;
-        if self.memory && session.session_id.is_none() {
-            session.session_id = Some(SessionId::new());
-        }
-        let managed_memory = if self.memory {
-            let _timing = crate::startup_timing::Stage::new("managed_memory");
-            let root_session_id = session.session_id.ok_or_else(|| {
-                eyre!("memory-enabled sessions require an explicit session identity")
-            })?;
-            Some(ConfiguredManagedMemory::connect(&codex_home, root_session_id).await?)
-        } else {
-            None
-        };
-        // Browser interaction is supplied by CUA, including for the direct CLI.
-        let configured_browser = None;
+        let managed_memory = self.managed_memory(&codex_home, &root.session_id).await?;
         let mpp_enabled = self.mpp.is_enabled();
         if mpp_enabled && !matches!(responses_transport, ResponsesTransport::Https) {
             return Err(eyre!(
@@ -663,7 +667,7 @@ impl AgentArgs {
         let auth = if mpp_enabled {
             OpenAiAuth::api_key("tempo-proxy")
         } else {
-            self.auth.resolve()?.nanocodex()?
+            self.auth.clone().resolve()?.nanocodex()?
         };
         let model = match requested_model {
             Some(HarnessModel::Codex(model)) => model,
@@ -672,34 +676,10 @@ impl AgentArgs {
             }
             None => connected_account_default_model(auth.mode()),
         };
-        let direct_websocket_url = direct_websocket_url(self.websocket_url, auth.mode());
-        let mpp_adapter = self.mpp.start().await?;
-        let mut openai = OpenAi::builder(auth)
-            .transport(responses_transport)
-            .websocket_url(direct_websocket_url)
-            .websocket_warmup(self.websocket_warmup);
-        if let Some(prefix) = self.model_id_prefix.as_deref() {
-            openai = openai.model_id_prefix(prefix);
-        }
-        if mpp_enabled {
-            openai = openai.max_attempts(NonZeroU32::MIN);
-        }
-        if let Some(store) = self.store_responses {
-            openai = openai.store(store);
-        }
-        let api_base_url = selected_api_base_url(
-            self.api_base_url,
-            mpp_adapter.as_ref().map(MppAdapter::api_base_url),
-        );
-        if let Some(api_base_url) = api_base_url {
-            openai = openai.api_base_url(api_base_url);
-        }
-        if matches!(responses_transport, ResponsesTransport::Https)
-            && let Some(mpp_adapter) = &mpp_adapter
-        {
-            openai = openai.http_client(mpp_adapter.responses_http_client()?);
-        }
-        let openai = openai.build()?;
+        let mpp_adapter = self.mpp.clone().start().await?;
+        let openai = self
+            .responses_settings()
+            .client(auth, mpp_adapter.as_ref())?;
         let realtime = (!mpp_enabled).then(|| openai.clone());
         let vm_egress = if vm.is_enabled() {
             mpp_adapter
@@ -710,27 +690,186 @@ impl AgentArgs {
             None
         };
         let configured_vm = vm.start(vm_egress).await?;
-        let mut tools = match configured_vm.as_ref() {
+        let (tools, mcp_handle) = self
+            .host_tools(
+                &codex_home,
+                configured_vm.as_ref(),
+                mpp_adapter.as_ref(),
+                managed_memory.as_ref(),
+            )
+            .await?;
+        let subagent_runtime = self.subagents.then(|| subagents::channel(self.max_subagents));
+        let registry = subagent_runtime
+            .as_ref()
+            .map(|(registry, _, _)| Arc::clone(registry));
+        let workspaces = Arc::new(claude::WorkspaceRegistry::new(
+            root.workspace.clone(),
+            codex_home.clone(),
+        ));
+        let recipe = self.codex_recipe(
+            codex::CodexConnection::ready(openai.clone()),
+            tools.clone(),
+            &codex_home,
+            &root.workspace,
+            &workspaces,
+            registry.clone(),
+            managed_memory.is_some(),
+        );
+        let harness = self
+            .harness(
+                recipe.clone(),
+                self.claude_connection()?,
+                &tools,
+                &root.workspace,
+                registry,
+                mcp_handle.clone(),
+                &workspaces,
+            )?
+            .build();
+        let session_id = root
+            .session_id
+            .parse::<SessionId>()
+            .wrap_err("Codex session IDs must be UUIDv7")?;
+        let mut builder = recipe
+            .builder(openai, session_id, root.workspace.clone())
+            .model(model)
+            .thinking(thinking)
+            .spawn_factory(harness.spawn_factory());
+        // A rollout-only thread has no durable state yet; its rollout boundary
+        // seeds the new durable state once.
+        let fallback = root.resumed.as_ref().and_then(ResumedSession::fallback);
+        if let Some(persistence) = &root.persistence {
+            if let Some(mirror) = persistence.mirror() {
+                builder = builder.rollout(mirror);
+            }
+            let state = persistence.open(model.into(), &root.workspace).await?;
+            if let Some(snapshot) = fallback
+                && state
+                    .latest_checkpoint()
+                    .await
+                    .wrap_err("failed to inspect the durable session")?
+                    .is_none()
+            {
+                builder = builder.resume(snapshot.clone())?;
+            }
+            builder = builder
+                .durability(state)
+                .await
+                .wrap_err("failed to attach session durability")?;
+        } else if let Some(snapshot) = fallback {
+            builder = builder.resume(snapshot.clone())?;
+        }
+        let (handle, events) = {
+            let _timing = crate::startup_timing::Stage::new("native_agent");
+            builder.build()?
+        };
+        let (child_agents, subagent_updates) = child_agents(&handle, subagent_runtime, tui);
+        Ok(ConfiguredAgent {
+            host: HostChannels::default(),
+            handle,
+            events,
+            realtime,
+            child_agents,
+            subagent_updates,
+            mpp_adapter,
+            mcp: mcp_handle,
+            // Browser interaction is supplied by CUA, including for the direct CLI.
+            browser: None,
+            vm: configured_vm,
+            model: model.into(),
+        })
+    }
+
+    /// Resolves the root identity, workspace and persistence for either family.
+    fn root_session(
+        &mut self,
+        family: HarnessFamily,
+        codex_home: &Path,
+        local_durability: Option<LocalDurability>,
+    ) -> Result<RootSession> {
+        let resumed = self.resume.take();
+        let workspace = self
+            .cwd
+            .clone()
+            .unwrap_or_else(|| PathBuf::from("."))
+            .canonicalize()
+            .wrap_err("failed to resolve the workspace")?;
+        let mirror = self.rollouts.then(|| RolloutConfig::new(codex_home));
+        let session_id = match (&resumed, &local_durability) {
+            (Some(session), _) => session.id().to_owned(),
+            // A test store keeps its explicit state ID. Claude sessions use it
+            // as their identity; Codex identities must remain UUIDv7.
+            (None, Some(local))
+                if family == HarnessFamily::Claude
+                    || local.state_id.parse::<SessionId>().is_ok() =>
+            {
+                local.state_id.clone()
+            }
+            (None, _) => SessionId::new().to_string(),
+        };
+        let persistence = match (local_durability, &resumed) {
+            (Some(local), _) => Some(Persistence::new(local.path, local.state_id, mirror)),
+            (None, Some(session)) => self
+                .rollouts
+                .then(|| Persistence::resumed(session, codex_home, true)),
+            (None, None) => self
+                .rollouts
+                .then(|| Persistence::shared(codex_home, &session_id, mirror)),
+        };
+        Ok(RootSession {
+            workspace,
+            session_id,
+            resumed,
+            persistence,
+        })
+    }
+
+    /// Managed memory is a host capability installed for either family.
+    async fn managed_memory(
+        &self,
+        codex_home: &Path,
+        root_session_id: &str,
+    ) -> Result<Option<ConfiguredManagedMemory>> {
+        if !self.memory {
+            return Ok(None);
+        }
+        let _timing = crate::startup_timing::Stage::new("managed_memory");
+        Ok(Some(
+            ConfiguredManagedMemory::connect(codex_home, root_session_id).await?,
+        ))
+    }
+
+    /// One host tool catalog for every family: MCP, Computer Use, managed
+    /// memory, Tempo routing and the VM workspace, plus Codex's built-ins.
+    async fn host_tools(
+        &self,
+        codex_home: &Path,
+        configured_vm: Option<&ConfiguredVm>,
+        mpp_adapter: Option<&MppAdapter>,
+        managed_memory: Option<&ConfiguredManagedMemory>,
+    ) -> Result<(Tools, Option<McpHandle>)> {
+        let mut tools = match configured_vm {
             Some(vm) => vm.tools_builder().await?,
             None => Tools::builder().workspace(self.workspace_tools),
         }
         .exposure(nanocodex::tools::ToolExposure::CodeModeOnly)
-        .web_search(web_search)
+        .web_search(self.web_search())
         .image_generation(self.image_generation.unwrap_or(true));
         let managed_mcp = if self.mcp.loads_managed() {
             let _timing = crate::startup_timing::Stage::new("managed_mcp_credentials");
-            load_managed_mcp_credential(&codex_home).await?
+            load_managed_mcp_credential(codex_home).await?
         } else {
             None
         };
         let mcp = self
             .mcp
-            .build(&codex_home, mpp_adapter.as_ref(), managed_mcp.as_ref())?;
+            .clone()
+            .build(codex_home, mpp_adapter, managed_mcp.as_ref())?;
         let mcp_handle = mcp.as_ref().map(|mcp| mcp.handle.clone());
         if let Some(ConfiguredMcp { provider, .. }) = mcp {
             tools = tools.provider(provider);
         }
-        if let Some(mpp_adapter) = &mpp_adapter {
+        if let Some(mpp_adapter) = mpp_adapter {
             if configured_vm.is_none() {
                 tools = tools.process_environment(mpp_adapter.tool_environment());
             }
@@ -747,229 +886,165 @@ impl AgentArgs {
                 }
             }
         }
-        if let Some(managed_memory) = &managed_memory {
+        if let Some(managed_memory) = managed_memory {
             tools = managed_memory.install(tools);
         }
-        let tools = tools.build()?;
-        let generic_subagents = self.subagents;
-        let subagent_runtime = generic_subagents.then(|| subagents::channel(self.max_subagents));
-        let claude_tools = tools
-            .clone()
-            .into_builder()
-            .workspace(false)
-            .web_search(false)
-            .image_generation(false)
-            .build()?;
-        let workspaces = Arc::new(claude::WorkspaceRegistry::new(
-            session.workspace.clone(),
-            codex_home.clone(),
-        ));
-        let root_workspace = session.workspace.clone();
-        let codex_workspaces = Arc::clone(&workspaces);
-        let codex_workspace = session.workspace.clone();
-        let codex_registry = subagent_runtime
-            .as_ref()
-            .map(|(registry, _, _)| Arc::clone(registry));
-        let codex_tools = tools.clone();
-        let mut codex_recipe = Nanocodex::builder(openai.clone())
-            .reasoning_mode(self.reasoning_mode)
-            .fast_mode(self.fast_mode.unwrap_or(true))
-            .workspace(session.workspace.clone())
-            .codex_home(codex_home.clone());
-        if let Some(instructions) = self.instructions.clone() {
-            codex_recipe = codex_recipe.instructions(instructions);
-        }
-        if let Some(instructions) = session_instructions(
-            self.instructions.as_deref(),
-            generic_subagents,
-            managed_memory.is_some(),
-        ) {
-            codex_recipe = codex_recipe.additional_instructions(instructions);
-        }
-        let harness_builder =
-            nanocodex::Harness::builder().register(HarnessFamily::Codex, move |request| {
-                let mut builder = codex_recipe.clone();
-                let tools = codex_tools.clone();
-                let registry = codex_registry.clone();
-                let workspace = codex_workspace.clone();
-                let workspaces = Arc::clone(&codex_workspaces);
-                async move {
-                    let HarnessModel::Codex(model) = request.model else {
-                        return Err(nanocodex::NanocodexError::InvalidRequest(
-                            "Codex recipe received a Claude model".into(),
-                        ));
-                    };
-                    workspaces
-                        .authorize_cross_family(request.parent.as_ref())
-                        .map_err(nanocodex::NanocodexError::InvalidRequest)?;
-                    let session_id = match &request.snapshot {
-                        Some(nanocodex::agent::ChildSnapshot::Codex(snapshot)) => {
-                            snapshot.session_id.parse::<SessionId>().map_err(|error| {
-                                nanocodex::NanocodexError::InvalidRequest(error.to_string())
-                            })?
-                        }
-                        _ => SessionId::new(),
-                    };
-                    let session_key = session_id.to_string();
-                    if let Some(parent) = &request.parent {
-                        workspaces.initialize(parent.session_id(), &session_key)
-                    } else {
-                        workspaces.seed(&session_key, workspace)
-                    }
-                    .map_err(nanocodex::NanocodexError::InvalidRequest)?;
-                    let workspace = workspaces
-                        .current(&session_key)
-                        .map_err(nanocodex::NanocodexError::InvalidRequest)?;
-                    let tool_workspace = workspace.clone();
-                    builder = builder
-                        .session_id(session_id)
-                        .workspace(workspace)
-                        .tools_factory(move |parent| {
-                            workspaces
-                                .seed(parent.session_id(), tool_workspace.clone())
-                                .map_err(
-                                    nanocodex::tools::runtime::ToolsBuildError::HostInitialization,
-                                )?;
-                            if let Some(registry) = &registry {
-                                nanocodex_subagents::install_tools(
-                                    tools.clone(),
-                                    parent,
-                                    Arc::clone(registry),
-                                )
-                            } else {
-                                Ok(tools.clone())
-                            }
-                        })
-                        .model(model)
-                        .thinking(request.thinking)
-                        .host_context(request.host_context)
-                        .spawn_factory(request.spawn_factory);
-                    if let Some(snapshot) = request.snapshot {
-                        builder = builder.restore_runtime(snapshot)?;
-                    }
-                    builder.build()
-                }
-            });
-        let harness = claude::register_claude_recipe(
-            harness_builder,
-            claude::ClaudeConnection::new(
-                self.claude_auth,
-                self.claude_api_key,
-                self.claude_messages_url,
-            )
-            .with_hooks(self.claude_hooks)
-            .with_permission_config(
-                self.claude_permissions.as_deref(),
-                self.permission_mode.as_deref(),
-            )?,
-            session.workspace.clone(),
-            self.instructions.clone(),
-            claude_tools,
-            web_search,
-            subagent_runtime
-                .as_ref()
-                .map(|(registry, _, _)| Arc::clone(registry)),
-            mcp_handle.clone(),
-            Arc::clone(&workspaces),
-        )
-        .build();
-        let mut builder = Nanocodex::builder(openai)
-            .model(model)
-            .reasoning_mode(self.reasoning_mode)
-            .thinking(thinking)
-            .fast_mode(self.fast_mode.unwrap_or(true))
-            .spawn_factory(harness.spawn_factory())
-            .workspace(session.workspace)
-            .codex_home(codex_home);
-        if let Some(session_id) = session.session_id {
-            builder = builder.session_id(session_id);
-        }
-        if let Some(snapshot) = session.snapshot {
-            builder = builder.resume(snapshot);
-        }
-        if let Some(rollout) = session.rollout {
-            builder = builder.rollout(rollout);
-        }
-        let root_registry = subagent_runtime
-            .as_ref()
-            .map(|(registry, _, _)| Arc::clone(registry));
-        let builder = builder.tools_factory(move |agent| {
-            workspaces
-                .seed(agent.session_id(), root_workspace.clone())
-                .map_err(nanocodex::tools::runtime::ToolsBuildError::HostInitialization)?;
-            if let Some(registry) = &root_registry {
-                nanocodex_subagents::install_tools(tools.clone(), agent, Arc::clone(registry))
-            } else {
-                Ok(tools.clone())
-            }
-        });
-        let additional_instructions = session_instructions(
-            self.instructions.as_deref(),
-            generic_subagents,
-            managed_memory.is_some(),
-        );
-        let builder = if let Some(instructions) = self.instructions {
-            builder.instructions(instructions)
-        } else {
-            builder
-        };
-        let builder = if let Some(instructions) = additional_instructions {
-            builder.additional_instructions(instructions)
-        } else {
-            builder
-        };
-        let builder = if let Some(local_durability) = local_durability {
-            let store = SqliteStore::open(&local_durability.path).wrap_err_with(|| {
-                format!(
-                    "failed to open local durability database {}",
-                    local_durability.path.display()
-                )
-            })?;
-            let state = PortableDurableSession::open(store, local_durability.state_id)
-                .await
-                .wrap_err("failed to open local durability state")?;
-            builder
-                .durability(state)
-                .await
-                .wrap_err("failed to attach local durability")?
-        } else {
-            builder
-        };
-        let (handle, events) = {
-            let _timing = crate::startup_timing::Stage::new("native_agent");
-            builder.build()?
-        };
-        let (child_agents, subagent_updates) =
-            subagent_runtime.map_or((None, None), |(_, control, updates)| {
-                let (drain_updates, subagent_updates) = if tui {
-                    (None, Some(updates))
-                } else {
-                    (Some(updates), None)
-                };
-                (
-                    Some(ChildAgents::new(
-                        handle.session_id().to_string(),
-                        control,
-                        drain_updates,
-                    )),
-                    subagent_updates,
-                )
-            });
-        Ok(ConfiguredAgent {
-            claude_interactions: None,
-            claude_scheduler: None,
-            handle,
-            events,
-            realtime,
-            child_agents,
-            subagent_updates,
-            mpp_adapter,
-            mcp: mcp_handle,
-            browser: configured_browser,
-            vm: configured_vm,
-            model: model.into(),
-        })
+        Ok((tools.build()?, mcp_handle))
     }
+
+    /// Responses client settings shared by Codex roots and children.
+    fn responses_settings(&self) -> ResponsesSettings {
+        ResponsesSettings {
+            transport: self.responses_transport(),
+            websocket_url: self.websocket_url.clone(),
+            websocket_warmup: self.websocket_warmup,
+            model_id_prefix: self.model_id_prefix.clone(),
+            store_responses: self.store_responses,
+            api_base_url: self.api_base_url.clone(),
+        }
+    }
+
+    /// The single Codex recipe input set, identical under either root family.
+    #[allow(clippy::too_many_arguments)]
+    fn codex_recipe(
+        &self,
+        connection: codex::CodexConnection,
+        tools: Tools,
+        codex_home: &Path,
+        workspace: &Path,
+        workspaces: &Arc<claude::WorkspaceRegistry>,
+        registry: Option<Arc<nanocodex_subagents::Registry>>,
+        memory: bool,
+    ) -> codex::CodexRecipe {
+        codex::CodexRecipe {
+            connection,
+            tools,
+            instructions: self.instructions.clone(),
+            additional_instructions: session_instructions(
+                self.instructions.as_deref(),
+                registry.is_some(),
+                memory,
+            ),
+            reasoning_mode: self.reasoning_mode,
+            fast_mode: self.fast_mode.unwrap_or(true),
+            codex_home: codex_home.to_path_buf(),
+            workspace: workspace.to_path_buf(),
+            workspaces: Arc::clone(workspaces),
+            registry,
+        }
+    }
+
+    /// Registers every family's recipe over the same host inputs, so children of
+    /// either family are built identically under either root.
+    #[allow(clippy::too_many_arguments)]
+    fn harness(
+        &self,
+        codex: codex::CodexRecipe,
+        claude: claude::ClaudeConnection,
+        tools: &Tools,
+        workspace: &Path,
+        registry: Option<Arc<nanocodex_subagents::Registry>>,
+        mcp_handle: Option<McpHandle>,
+        workspaces: &Arc<claude::WorkspaceRegistry>,
+    ) -> Result<nanocodex::HarnessBuilder> {
+        let harness = codex::register_codex_recipe(nanocodex::Harness::builder(), codex);
+        Ok(claude::register_claude_recipe(
+            harness,
+            claude,
+            workspace.to_path_buf(),
+            self.instructions.clone(),
+            claude::host_tools(tools)?,
+            self.web_search(),
+            registry,
+            mcp_handle,
+            Arc::clone(workspaces),
+        ))
+    }
+
+    fn claude_connection(&self) -> Result<claude::ClaudeConnection> {
+        claude::ClaudeConnection::new(
+            self.claude_auth.clone(),
+            self.claude_api_key.clone(),
+            self.claude_messages_url.clone(),
+        )
+        .with_hooks(self.claude_hooks.clone())
+        .with_permission_config(
+            self.claude_permissions.as_deref(),
+            self.permission_mode.as_deref(),
+        )
+    }
+}
+
+/// Responses transport policy for every Codex session in one task tree.
+#[derive(Clone)]
+struct ResponsesSettings {
+    transport: ResponsesTransport,
+    websocket_url: Option<String>,
+    websocket_warmup: bool,
+    model_id_prefix: Option<String>,
+    store_responses: Option<bool>,
+    api_base_url: Option<String>,
+}
+
+impl ResponsesSettings {
+    fn client(&self, auth: OpenAiAuth, mpp_adapter: Option<&MppAdapter>) -> Result<OpenAi> {
+        let websocket_url = direct_websocket_url(self.websocket_url.clone(), auth.mode());
+        let mut openai = OpenAi::builder(auth)
+            .transport(self.transport)
+            .websocket_url(websocket_url)
+            .websocket_warmup(self.websocket_warmup);
+        if let Some(prefix) = self.model_id_prefix.as_deref() {
+            openai = openai.model_id_prefix(prefix);
+        }
+        if mpp_adapter.is_some() {
+            openai = openai.max_attempts(NonZeroU32::MIN);
+        }
+        if let Some(store) = self.store_responses {
+            openai = openai.store(store);
+        }
+        if let Some(api_base_url) = selected_api_base_url(
+            self.api_base_url.clone(),
+            mpp_adapter.map(MppAdapter::api_base_url),
+        ) {
+            openai = openai.api_base_url(api_base_url);
+        }
+        if matches!(self.transport, ResponsesTransport::Https)
+            && let Some(mpp_adapter) = mpp_adapter
+        {
+            openai = openai.http_client(mpp_adapter.responses_http_client()?);
+        }
+        Ok(openai.build()?)
+    }
+}
+
+type SubagentRuntime = (
+    Arc<nanocodex_subagents::Registry>,
+    nanocodex_subagents::SubagentControl,
+    tokio::sync::mpsc::UnboundedReceiver<nanocodex_subagents::ScopedAgentUpdate>,
+);
+
+type SubagentHandles = (
+    Option<Arc<ChildAgents>>,
+    Option<tokio::sync::mpsc::UnboundedReceiver<nanocodex_subagents::ScopedAgentUpdate>>,
+);
+
+/// Subagent control for a built root; the TUI services updates itself.
+fn child_agents(handle: &Nanocodex, runtime: Option<SubagentRuntime>, tui: bool) -> SubagentHandles {
+    runtime.map_or((None, None), |(_, control, updates)| {
+        let (drain_updates, subagent_updates) = if tui {
+            (None, Some(updates))
+        } else {
+            (Some(updates), None)
+        };
+        (
+            Some(ChildAgents::new(
+                handle.session_id().to_string(),
+                control,
+                drain_updates,
+            )),
+            subagent_updates,
+        )
+    })
 }
 
 pub(crate) struct LocalDurability {
@@ -1073,48 +1148,6 @@ fn eval_builder_with_auth(
         .model(model)
         .thinking(thinking)
         .tools(tools))
-}
-
-fn prepare_session_build(
-    requested_workspace: Option<PathBuf>,
-    rollouts: bool,
-    codex_home: &Path,
-    durable: Option<DurableSession>,
-) -> Result<SessionBuild> {
-    let Some(session) = durable else {
-        return Ok(SessionBuild {
-            workspace: requested_workspace.unwrap_or_else(|| PathBuf::from(".")),
-            session_id: None,
-            snapshot: None,
-            rollout: rollouts.then(|| RolloutConfig::new(codex_home)),
-        });
-    };
-    let restored = Path::new(session.workspace())
-        .canonicalize()
-        .wrap_err("failed to resolve the resumed workspace")?;
-    if let Some(requested) = requested_workspace {
-        let requested = requested
-            .canonicalize()
-            .wrap_err("failed to resolve the requested workspace")?;
-        if requested != restored {
-            return Err(eyre!(
-                "resumed thread workspace is {}; --cwd requested {}",
-                restored.display(),
-                requested.display()
-            ));
-        }
-    }
-    let (session_id, snapshot, rollout) = session.into_parts();
-    Ok(SessionBuild {
-        workspace: restored,
-        session_id: Some(
-            session_id
-                .parse()
-                .wrap_err("resumed Codex thread ID is not UUIDv7")?,
-        ),
-        snapshot: Some(snapshot),
-        rollout: rollouts.then_some(rollout),
-    })
 }
 
 fn direct_websocket_url(explicit: Option<String>, auth_mode: OpenAiAuthMode) -> String {

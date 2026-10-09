@@ -1,13 +1,11 @@
 use std::{collections::HashSet, fmt, path::Path, sync::Arc, time::Duration};
 
 use crate::login::{ScopedManagedCredential, load_managed_credential};
+use crate::sessions::{ResumedSession, SessionSummary};
 use eyre::{Result, WrapErr, eyre};
 use futures_util::StreamExt;
 use nanocodex::{
-    agent::{
-        rollout::{RolloutConfig, RolloutSessionInfo, RolloutTranscriptItem},
-        session::SessionId,
-    },
+    agent::session::{SessionId, TranscriptItem},
     tools::{Tool, ToolContext, ToolDefinition, ToolInput, ToolOutput, ToolResult, ToolsBuilder},
 };
 use reqwest::{
@@ -37,7 +35,7 @@ pub(crate) struct ConfiguredManagedMemory {
 }
 
 impl ConfiguredManagedMemory {
-    pub(crate) async fn connect(codex_home: &Path, root_session_id: SessionId) -> Result<Self> {
+    pub(crate) async fn connect(codex_home: &Path, root_session_id: &str) -> Result<Self> {
         let http = managed_http_client()?;
         let credential = match managed_api_key_from_environment()? {
             Some(api_key) => ManagedCredential::ApiKey(api_key),
@@ -48,7 +46,7 @@ impl ConfiguredManagedMemory {
         Ok(Self {
             client: ManagedClient::new(http, credential)?,
             local_history: LocalHistory::new(codex_home),
-            root_session_id: root_session_id.to_string().into(),
+            root_session_id: root_session_id.into(),
         })
     }
 
@@ -71,6 +69,12 @@ impl ConfiguredManagedMemory {
         }
         tools
     }
+}
+
+/// Whether a host runtime tool belongs to managed memory, so harnesses without
+/// Responses tools can bridge it with its canonical schema.
+pub(crate) fn is_memory_tool(name: &str) -> bool {
+    matches!(name, "find_sessions" | "read_session") || name.starts_with("memories__")
 }
 
 struct CanonicalMemory {
@@ -297,8 +301,8 @@ enum ManagedError {
     Http { status: StatusCode, detail: String },
     #[error("invalid {0}")]
     InvalidInput(&'static str),
-    #[error("local rollout history request failed: {0}")]
-    LocalHistory(#[from] std::io::Error),
+    #[error("local session history request failed: {0}")]
+    LocalHistory(String),
 }
 
 async fn response_json(response: Response) -> Result<Value, ManagedError> {
@@ -353,15 +357,16 @@ struct FindSessions {
     local_history: LocalHistory,
 }
 
+/// Local history over the shared session catalog: every harness family.
 #[derive(Clone)]
 struct LocalHistory {
-    rollouts: RolloutConfig,
+    codex_home: Arc<Path>,
 }
 
 impl LocalHistory {
     fn new(codex_home: &Path) -> Self {
         Self {
-            rollouts: RolloutConfig::new(codex_home),
+            codex_home: Arc::from(codex_home),
         }
     }
 
@@ -370,10 +375,16 @@ impl LocalHistory {
         query: String,
         limit: u8,
     ) -> Result<Vec<SessionCandidate>, ManagedError> {
-        let rollouts = self.rollouts.clone();
-        tokio::task::spawn_blocking(move || search_local_sessions(&rollouts, &query, limit))
+        let listed = crate::sessions::list(&self.codex_home)
             .await
-            .map_err(|_| ManagedError::InvalidResponse("local history search task failed"))?
+            .map_err(local_error)?;
+        let mut sessions = Vec::new();
+        for summary in listed.into_iter().take(MAX_LOCAL_SESSIONS) {
+            if let Ok(session) = crate::sessions::load(&self.codex_home, summary.id()).await {
+                sessions.push((summary, session));
+            }
+        }
+        Ok(search_local_sessions(&sessions, &query, limit))
     }
 
     async fn read_session(
@@ -381,13 +392,15 @@ impl LocalHistory {
         session_id: String,
         turn_ids: Option<Vec<String>>,
     ) -> Result<Vec<SessionTurnCandidate>, ManagedError> {
-        let rollouts = self.rollouts.clone();
-        tokio::task::spawn_blocking(move || {
-            read_local_session(&rollouts, &session_id, turn_ids.as_deref())
-        })
-        .await
-        .map_err(|_| ManagedError::InvalidResponse("local history read task failed"))?
+        let session = crate::sessions::load(&self.codex_home, &session_id)
+            .await
+            .map_err(local_error)?;
+        Ok(read_local_session(&session, turn_ids.as_deref()))
     }
+}
+
+fn local_error(error: eyre::Report) -> ManagedError {
+    ManagedError::LocalHistory(format!("{error:#}"))
 }
 
 #[derive(Deserialize, Serialize)]
@@ -450,7 +463,7 @@ impl Tool for FindSessions {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition::function(
             "find_sessions",
-            "Find bounded candidate completed sessions concurrently across local rollout history and the active team's hosted Nanocodex history. Results identify their source; use read_session with that source to verify relevant candidates before answering.",
+            "Find bounded candidate completed sessions concurrently across local session history and the active team's hosted Nanocodex history. Results identify their source; use read_session with that source to verify relevant candidates before answering.",
             json!({
                 "type": "object",
                 "properties": {
@@ -519,23 +532,16 @@ fn merge_session_candidates(
 }
 
 fn search_local_sessions(
-    rollouts: &RolloutConfig,
+    sessions: &[(SessionSummary, ResumedSession)],
     query: &str,
     limit: u8,
-) -> Result<Vec<SessionCandidate>, ManagedError> {
+) -> Vec<SessionCandidate> {
     let query = normalize_search_text(query);
     let terms = search_terms(&query);
     let mut candidates = Vec::new();
-    for info in rollouts
-        .list_sessions()?
-        .into_iter()
-        .take(MAX_LOCAL_SESSIONS)
-    {
-        let Ok(session) = rollouts.load_session(info.thread_id()) else {
-            continue;
-        };
-        let title = local_session_title(&info);
-        for turn in local_session_turns(session.thread_id(), &title, session.transcript())
+    for (info, session) in sessions {
+        let title = local_session_title(info);
+        for turn in local_session_turns(session.id(), &title, session.transcript())
             .into_iter()
             .rev()
             .take(MAX_LOCAL_TURNS_PER_SESSION)
@@ -563,7 +569,7 @@ fn search_local_sessions(
             .then_with(|| left.turn_id.cmp(&right.turn_id))
     });
     candidates.truncate(usize::from(limit));
-    Ok(candidates)
+    candidates
 }
 
 fn normalize_search_text(value: &str) -> String {
@@ -599,14 +605,14 @@ fn local_match_score(query: &str, terms: &[&str], searchable: &str) -> Option<f6
     (matched >= minimum).then(|| matched as f64 / terms.len() as f64)
 }
 
-fn local_session_title(info: &RolloutSessionInfo) -> String {
+fn local_session_title(info: &SessionSummary) -> String {
     let title = info
         .preview()
         .or_else(|| {
             info.workspace()
                 .and_then(|workspace| Path::new(workspace).file_name()?.to_str())
         })
-        .unwrap_or("Local rollout");
+        .unwrap_or("Local session");
     bounded_text(title, MAX_LOCAL_PREVIEW_BYTES)
 }
 
@@ -762,20 +768,19 @@ impl Tool for ReadSession {
 }
 
 fn read_local_session(
-    rollouts: &RolloutConfig,
-    session_id: &str,
+    session: &ResumedSession,
     turn_ids: Option<&[String]>,
-) -> Result<Vec<SessionTurnCandidate>, ManagedError> {
-    let session = rollouts.load_session(session_id)?;
+) -> Vec<SessionTurnCandidate> {
+    let session_id = session.id();
     let title = bounded_text(
         session
             .transcript()
             .iter()
             .find_map(|item| match item {
-                RolloutTranscriptItem::User(user) => Some(user.as_str()),
+                TranscriptItem::User(user) => Some(user.as_str()),
                 _ => None,
             })
-            .unwrap_or("Local rollout"),
+            .unwrap_or("Local session"),
         MAX_LOCAL_PREVIEW_BYTES,
     );
     let mut turns = local_session_turns(session_id, &title, session.transcript());
@@ -789,19 +794,19 @@ fn read_local_session(
         }
         None => {}
     }
-    Ok(turns)
+    turns
 }
 
 fn local_session_turns(
     session_id: &str,
     title: &str,
-    transcript: &[RolloutTranscriptItem],
+    transcript: &[TranscriptItem],
 ) -> Vec<SessionTurnCandidate> {
     let mut completed = Vec::<(String, String)>::new();
     let mut current: Option<(String, String)> = None;
     for item in transcript {
         match item {
-            RolloutTranscriptItem::User(user) => {
+            TranscriptItem::User(user) => {
                 if let Some((user, assistant)) = current.take()
                     && !assistant.is_empty()
                 {
@@ -809,12 +814,12 @@ fn local_session_turns(
                 }
                 current = Some((bounded_text(user, MAX_LOCAL_TEXT_BYTES), String::new()));
             }
-            RolloutTranscriptItem::Assistant(assistant) => {
+            TranscriptItem::Assistant(assistant) => {
                 if let Some((_, current_assistant)) = &mut current {
                     *current_assistant = bounded_text(assistant, MAX_LOCAL_TEXT_BYTES);
                 }
             }
-            RolloutTranscriptItem::Reasoning(_) | RolloutTranscriptItem::Tool { .. } => {}
+            TranscriptItem::Reasoning(_) | TranscriptItem::Tool { .. } => {}
         }
     }
     if let Some((user, assistant)) = current

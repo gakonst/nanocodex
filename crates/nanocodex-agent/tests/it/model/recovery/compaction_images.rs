@@ -168,7 +168,7 @@ async fn rejected_compaction_image(manual: bool) -> Result<()> {
     let (agent, events) = Nanocodex::builder(openai()?)
         .thinking(Thinking::Low)
         .session_id(thread_id.parse()?)
-        .resume(snapshot)
+        .resume_native_snapshot(snapshot)
         .rollout(rollout)
         .build()?;
     drop(events);

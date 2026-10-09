@@ -289,9 +289,6 @@ pub(super) async fn begin_shutdown(
                 drop(route_result.send(Err(NanocodexError::AgentStopped)));
                 drop(turn_result);
             }
-            Command::Snapshot { result } => {
-                drop(result.send(Err(NanocodexError::AgentStopped)));
-            }
             Command::ChildSnapshot { result } => {
                 drop(result.send(Err(NanocodexError::AgentStopped)));
             }
@@ -348,50 +345,37 @@ pub(super) fn handle_idle_command<S>(
     S::Future: AgentSend,
 {
     match command {
-        Command::Snapshot { result } => {
-            drop(
-                result.send(
-                    latest
-                        .ok_or(NanocodexError::ForkBeforeCompletedTurn)
-                        .map(|checkpoint| checkpoint.snapshot()),
-                ),
-            );
-        }
         Command::ChildSnapshot { result } => {
-            drop(result.send(Ok(ChildRuntimeSnapshot {
+            drop(result.send(Ok(ChildState {
                 session_id: session_id.to_owned(),
                 model: defaults.model,
                 thinking: defaults.thinking,
                 service_tier: defaults.service_tier,
-                stateless_http: matches!(
-                    spawner.config.responses_transport,
-                    ResponsesTransport::Https
-                ) && matches!(
-                    spawner.config.responses_history,
-                    ResponsesHistory::FullReplay
-                ) && !spawner.config.store_responses,
+                stateless_http: is_stateless_http(&spawner.config),
                 conversation: latest.map(|checkpoint| checkpoint.snapshot()),
+                lineage: spawner.lineage.clone(),
+                conversation_id: Arc::clone(&spawner.lineage_id),
             })));
         }
         Command::Fork {
-            checkpoint,
+            origin,
+            point,
+            session_id: child_session_id,
+            policy,
             result,
-            side_conversation,
         } => {
-            let checkpoint = checkpoint.or_else(|| latest.cloned());
-            let outcome = checkpoint
-                .ok_or(NanocodexError::ForkBeforeCompletedTurn)
-                .and_then(|checkpoint| {
-                    spawner.spawn_fork(
-                        &checkpoint,
-                        session_id,
-                        defaults.model,
-                        defaults.thinking,
-                        defaults.service_tier,
-                        spawner.host_context.as_ref().map(Arc::clone),
-                        side_conversation,
-                    )
-                });
+            let outcome = spawner.spawn_fork(
+                point,
+                latest,
+                session_id,
+                defaults.model,
+                defaults.thinking,
+                defaults.service_tier,
+                spawner.host_context.as_ref().map(Arc::clone),
+                origin,
+                child_session_id,
+                policy,
+            );
             drop(result.send(outcome));
         }
         Command::Spawn {
