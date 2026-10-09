@@ -17,6 +17,8 @@ export const owner = "11111111-1111-4111-8111-111111111111";
 export const otherOwner = "44444444-4444-4444-8444-444444444444";
 export const apiKey = "ncx_live_" + "a".repeat(12) + "_" + "b".repeat(43);
 export const otherApiKey = "ncx_live_" + "c".repeat(12) + "_" + "d".repeat(43);
+/** Synthetic signed-in browser session for the owner (the account service's session store is substituted). */
+export const sessionCookie = "nanocodex_account=s_" + "e".repeat(43);
 const grant = { organizationId: "22222222-2222-4222-8222-222222222222", teamId: "33333333-3333-4333-8333-333333333333",
   role: "owner", authorizationEpoch: 1, capabilities: ["agents:read", "agents:write", "tools:use"] };
 
@@ -48,6 +50,7 @@ const source = (keys, publicOrigin) => [
   "const DIGESTS = " + JSON.stringify(Object.fromEntries(Object.entries(keys).map(([key, userId]) => [
     createHash("sha256").update(key).digest("base64url"), { userId, id: key.slice(9, 21) }]))) + ";",
   "const GRANT = " + JSON.stringify(grant) + ";",
+  "const SESSIONS = " + JSON.stringify({ [sessionCookie.split("=")[1]]: owner }) + ";",
   "export default { async fetch(request, env, ctx) {",
   "  // Optional stand-in for a TLS-terminating front door: the Worker sees the configured public origin.",
   "  if (PUBLIC_ORIGIN) { const incoming = new URL(request.url); request = new Request(PUBLIC_ORIGIN + incoming.pathname + incoming.search, request); }",
@@ -67,7 +70,9 @@ const source = (keys, publicOrigin) => [
   "  // API-key records resolved by the shipped authenticate() (account hand-device routes never trust an injected principal).",
   "  const apiKeys = { getByName: digest => ({ id: { toString: () => '' }, resolveAuthorizedKey: async () => DIGESTS[digest] ? Object.assign({",
   "    id: DIGESTS[digest].id, label: 'synthetic', prefix: 'ncx_live_' + DIGESTS[digest].id, createdAt: 1, digest, userId: DIGESTS[digest].userId }, GRANT) : undefined }) };",
-  "  return worker.fetch(request, Object.assign({}, env, { NANOCODEX_USERS: users, NANOCODEX_API_KEYS: apiKeys }), ctx, actor);",
+  "  // Browser sessions resolved by the shipped authenticate() cookie path; only the session store is substituted.",
+  "  const auth = { idFromName: name => name, get: () => ({ readAccountSession: async token => SESSIONS[token] ? { userId: SESSIONS[token], expiresAt: Date.now() / 1000 + 3600 } : undefined }) };",
+  "  return worker.fetch(request, Object.assign({}, env, { NANOCODEX_USERS: users, NANOCODEX_API_KEYS: apiKeys, NANOCODEX_AUTH: auth }), ctx, actor);",
   "} };",
 ].join("\n");
 
@@ -121,6 +126,6 @@ export async function startHandDeviceServer({ output, ttlSeconds = 10, publicOri
       body: JSON.stringify({ owner: ownerId, machine: machineId, call: callId, cmd, workdir }), signal: AbortSignal.timeout(20_000) });
     return { status: response.status, body: await response.json() };
   };
-  return { base, origin: publicOrigin ?? new URL(base).origin, owner, apiKey, otherOwner, otherApiKey, observations, logs, callHandTool,
+  return { base, origin: publicOrigin ?? new URL(base).origin, owner, apiKey, otherOwner, otherApiKey, sessionCookie, observations, logs, callHandTool,
     stop: () => mf.dispose() };
 }

@@ -303,6 +303,23 @@ test("Hand device keys: enrollment, credentials, fences, rotation, revocation an
     check("require_device_keys rejects account-key publishers", legacyUnderPolicy.status === 403 && legacyUnderPolicy.value.error === "hand_device_required", legacyUnderPolicy.value);
     const policyOff = await call("relax policy with API key", "PUT", "/v1/account/hand-devices/policy", { auth: apiKey, body: { require_device_keys: false } });
     check("an API key cannot relax the policy", policyOff.status === 403, policyOff.value);
+    // A signed-in browser session (cookie resolved by the shipped authenticate()) may relax it, same-origin only.
+    const session = { cookie: server.sessionCookie };
+    const sessionCrossOrigin = await call("relax policy with a session from another origin", "PUT", "/v1/account/hand-devices/policy",
+      { body: { require_device_keys: false }, headers: { ...session, origin: "https://other.example" } });
+    check("a session cannot relax the policy cross-origin", sessionCrossOrigin.status === 403 && sessionCrossOrigin.value.error === "forbidden_origin", sessionCrossOrigin.value);
+    const stillOn = await call("policy after cross-origin attempt", "GET", "/v1/account/hand-devices", { auth: apiKey });
+    check("rejected relax attempts leave the policy on", stillOn.value.policy?.require_device_keys === true, stillOn.value.policy);
+    const sessionOff = await call("relax policy with a same-origin session", "PUT", "/v1/account/hand-devices/policy",
+      { body: { require_device_keys: false }, headers: { ...session, origin } });
+    check("a same-origin session principal relaxes the policy", sessionOff.status === 200 && sessionOff.value.policy?.require_device_keys === false, sessionOff.value);
+    const relaxed = await call("policy after session relax", "GET", "/v1/account/hand-devices", { auth: apiKey });
+    check("listing reports the relaxed policy", relaxed.value.policy?.require_device_keys === false, relaxed.value.policy);
+    const legacyAfterRelax = await toolHost("never-enrolled account-key Hand after relax", apiKey, "legacy-hand-2", { identityHeaders: false });
+    check("a relaxed policy readmits never-enrolled account-key Hands", legacyAfterRelax.first?.frame?.type === "ready", legacyAfterRelax.first ?? legacyAfterRelax.value);
+    legacyAfterRelax.socket?.close();
+    const fencedAfterRelax = await toolHost("device-bound machine after relax", apiKey, machine);
+    check("relaxing the policy never clears a device-bound machine's fence", fencedAfterRelax.status === 403 && fencedAfterRelax.value.error === "hand_device_required", fencedAfterRelax.value);
 
     // 10. Server bootstrap grant: single use, publishes with device credentials, fences the server bearer.
     const host = "55555555-5555-4555-8555-555555555555";
