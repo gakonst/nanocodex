@@ -37,6 +37,7 @@ mod managed_server;
 mod mcp;
 #[cfg_attr(not(feature = "tempo"), path = "mpp_disabled.rs")]
 mod mpp;
+mod nanocodex2;
 mod native_sessions;
 mod observability;
 mod rewind;
@@ -61,9 +62,13 @@ mod vm;
 mod vm;
 mod windows_hand;
 
-use std::{path::PathBuf, process::ExitCode};
+use std::{
+    ffi::{OsStr, OsString},
+    path::{Path, PathBuf},
+    process::ExitCode,
+};
 
-use clap::{Args, Parser, Subcommand, builder::NonEmptyStringValueParser};
+use clap::{Args, CommandFactory, Parser, Subcommand, builder::NonEmptyStringValueParser};
 use eyre::{Result, WrapErr, eyre};
 use nanocodex::agent::rollout::RolloutConfig;
 
@@ -88,6 +93,7 @@ impl RetryableProcessExit {
 
 #[derive(Parser)]
 #[command(
+    name = "ncl",
     version = version::SHORT_VERSION,
     long_version = version::LONG_VERSION,
     about = "An interactive coding agent and headless JSONL runner",
@@ -221,9 +227,118 @@ struct ResumeCommand {
     prompt: Option<String>,
 }
 
+/// The command tree a process runs.
+///
+/// One executable serves every installed name. `nanocodex`, `nc`, and
+/// `nanocodex2` select the managed tree; `ncl`, or a leading `--local`,
+/// selects the local agent tree. Commands that only one tree defines, including
+/// every hidden service entrypoint, run under every name.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Tree {
+    Managed,
+    Local,
+}
+
 fn main() -> ExitCode {
+    let mut arguments: Vec<OsString> = std::env::args_os().collect();
+    match select_tree(&mut arguments) {
+        Tree::Managed => nanocodex2::main(arguments),
+        Tree::Local => local_main(arguments),
+    }
+}
+
+/// Mode selected by the invoked name. Use argv[0], not `current_exe`, which
+/// resolves the installed alias symlinks to one file.
+fn invoked_tree(argv0: &OsStr) -> Tree {
+    let name = Path::new(argv0)
+        .file_name()
+        .map(OsStr::to_string_lossy)
+        .unwrap_or_default();
+    let stem = name
+        .len()
+        .checked_sub(4)
+        .filter(|split| {
+            name.is_char_boundary(*split) && name[*split..].eq_ignore_ascii_case(".exe")
+        })
+        .map_or(&*name, |split| &name[..split]);
+    if stem.eq_ignore_ascii_case("ncl") {
+        Tree::Local
+    } else {
+        Tree::Managed
+    }
+}
+
+/// Choose the tree before clap parses, stripping a leading `--local`.
+fn select_tree(arguments: &mut Vec<OsString>) -> Tree {
+    if nanocodex2::is_helper_process() {
+        return Tree::Managed;
+    }
+    let mut tree = arguments
+        .first()
+        .map_or(Tree::Managed, |argv0| invoked_tree(argv0));
+    if arguments
+        .get(1)
+        .is_some_and(|argument| argument == "--local")
+    {
+        arguments.remove(1);
+        tree = Tree::Local;
+    }
+    let Some(first) = arguments.get(1).and_then(|argument| argument.to_str()) else {
+        return tree;
+    };
+    let local = Cli::command();
+    if first == "hand" {
+        // `hand` alone serves this computer (managed flags); its management
+        // subcommands keep the local service and update implementation.
+        let management = arguments
+            .get(2)
+            .and_then(|argument| argument.to_str())
+            .is_some_and(|name| {
+                local
+                    .find_subcommand("hand")
+                    .is_some_and(|hand| hand.find_subcommand(name).is_some())
+            });
+        return if management {
+            Tree::Local
+        } else {
+            Tree::Managed
+        };
+    }
+    let managed = nanocodex2::command();
+    match (
+        tree,
+        managed.find_subcommand(first).is_some(),
+        local.find_subcommand(first).is_some(),
+    ) {
+        (Tree::Managed, false, true) => Tree::Local,
+        (Tree::Local, true, false) => Tree::Managed,
+        (tree, _, _) => tree,
+    }
+}
+
+/// Add the other tree's visible, unambiguous commands to this tree's help so
+/// every command reachable under this name is listed. Dispatch is by
+/// [`select_tree`]; these copies only document it.
+fn with_foreign_commands(mut command: clap::Command, foreign: &clap::Command) -> clap::Command {
+    let additions: Vec<clap::Command> = foreign
+        .get_subcommands()
+        .filter(|subcommand| !subcommand.is_hide_set())
+        .filter(|subcommand| {
+            std::iter::once(subcommand.get_name())
+                .chain(subcommand.get_all_aliases())
+                .all(|name| command.find_subcommand(name).is_none())
+        })
+        .cloned()
+        .collect();
+    for subcommand in additions {
+        command = command.subcommand(subcommand);
+    }
+    command
+}
+
+fn local_main(arguments: Vec<OsString>) -> ExitCode {
     let _startup = startup_timing::Stage::new("process");
-    match try_main() {
+    match try_main(arguments) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("Error: {error:?}");
@@ -232,38 +347,36 @@ fn main() -> ExitCode {
     }
 }
 
-fn try_main() -> Result<()> {
+fn try_main(arguments: Vec<OsString>) -> Result<()> {
     launcher::initialize_install_root();
-    launcher::dispatch_update()?;
+    launcher::dispatch_update(&arguments)?;
     nanocodex::oai::transport::install_default_rustls_crypto_provider();
     // A menu observation must not select credentials from whichever project
     // directory happened to launch it. Other CLI commands retain their normal
     // development dotenv behavior.
-    let mut arguments = std::env::args_os().skip(1);
-    let hand_observation = arguments.next().as_deref() == Some(std::ffi::OsStr::new("hand"))
+    let hand_observation = arguments.get(1).is_some_and(|argument| argument == "hand")
         && matches!(
-            arguments
-                .next()
-                .as_deref()
-                .and_then(std::ffi::OsStr::to_str),
+            arguments.get(2).and_then(|argument| argument.to_str()),
             Some("menu-status" | "status")
         );
     if !hand_observation {
         let _ = dotenvy::dotenv();
     }
 
-    let cli = parse_cli();
+    let cli = parse_cli(arguments);
     if let Some(Command::VmRunConfig(command)) = &cli.command {
         return command.run();
     }
     run_with_runtime(run(cli))
 }
 
-fn parse_cli() -> Cli {
-    use clap::{CommandFactory, FromArgMatches, error::ErrorKind, parser::ValueSource};
+fn parse_cli(arguments: Vec<OsString>) -> Cli {
+    use clap::{FromArgMatches, error::ErrorKind, parser::ValueSource};
 
-    let mut command = Cli::command();
-    let matches = command.get_matches_mut();
+    let mut command = with_foreign_commands(Cli::command(), &nanocodex2::command());
+    let matches = command
+        .try_get_matches_from_mut(arguments)
+        .unwrap_or_else(|error| error.exit());
     // Global harness/auth flags apply on either side of a subcommand. Local
     // interactive flags must not be silently ignored by a subcommand's config.
     let misplaced = matches.subcommand_name().and_then(|_| {

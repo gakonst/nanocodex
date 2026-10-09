@@ -7,7 +7,7 @@ use super::{
     floating::Floating,
     node::{Component, ComponentUpdate, RenderRequest},
 };
-use crate::tui::theme::{Theme, ThemeMode};
+use crate::nanocodex2::tui::theme::{Theme, ThemeMode};
 use crossterm::event::{Event, KeyCode, KeyEventKind};
 use ratatui::{
     Frame,

@@ -8,7 +8,7 @@ use super::{
     floating::Floating,
     node::{Component, ComponentUpdate, RenderRequest},
 };
-use crate::tui::{
+use crate::nanocodex2::tui::{
     session::{SessionSummary, format_age},
     theme::Theme,
 };
@@ -591,7 +591,7 @@ mod tests {
     use super::{
         Component, SessionPicker, SessionPickerEffect, SessionPickerEvent, SessionPickerMode,
     };
-    use crate::{
+    use crate::nanocodex2::{
         config::{ReasoningEffort, ReasoningMode},
         tui::session::SessionSummary,
     };
@@ -627,7 +627,7 @@ mod tests {
 
     #[test]
     fn content_only_matches_are_selectable_deduplicated_and_render_excerpts() {
-        use crate::tui::theme::Theme;
+        use crate::nanocodex2::tui::theme::Theme;
         use ratatui::{Terminal, backend::TestBackend};
         let mut picker = SessionPicker::new(
             vec![summary("one", "A different title")],
@@ -676,7 +676,13 @@ mod tests {
         let mut terminal =
             ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, height)).unwrap();
         terminal
-            .draw(|frame| picker.render(frame, frame.area(), &crate::tui::theme::Theme::default()))
+            .draw(|frame| {
+                picker.render(
+                    frame,
+                    frame.area(),
+                    &crate::nanocodex2::tui::theme::Theme::default(),
+                )
+            })
             .unwrap();
         terminal.backend().buffer().clone()
     }
@@ -759,8 +765,11 @@ mod tests {
     fn excerpt_highlights_case_insensitive_unicode_terms_without_changing_text() {
         use ratatui::style::Modifier;
         let text = "A CAFÉ database 👩‍💻 passage";
-        let line =
-            super::highlighted_excerpt(text, "café database", &crate::tui::theme::Theme::default());
+        let line = super::highlighted_excerpt(
+            text,
+            "café database",
+            &crate::nanocodex2::tui::theme::Theme::default(),
+        );
         assert_eq!(
             line.spans
                 .iter()
@@ -912,7 +921,7 @@ mod tests {
 
     #[test]
     fn renders_titles_before_ids_and_survives_small_terminals() {
-        use crate::tui::theme::Theme;
+        use crate::nanocodex2::tui::theme::Theme;
         use ratatui::{Terminal, backend::TestBackend};
         let mut picker = SessionPicker::new(
             vec![summary("thread-id", "Fix parser docs")],

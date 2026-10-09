@@ -1,5 +1,9 @@
 //! Shipped-CLI journeys against synthetic Messages/SSE. No live inference or
 //! credentials. Artifacts retain every provider request and CLI stdout/stderr.
+#[path = "support/local_cli.rs"]
+mod local_cli;
+use local_cli::local_cli;
+
 #[path = "support/claude_code_fixture.rs"]
 mod code_fixture;
 use axum::{Json, Router, routing::post};
@@ -56,7 +60,7 @@ fn parsed_result(body: &Value) -> Value {
     serde_json::from_str(&text).unwrap_or(json!(text))
 }
 fn command(workspace: &Path, endpoint: &str) -> Command {
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_nanocodex"));
+    let mut cmd = Command::new(local_cli());
     cmd.arg("run")
         .current_dir(workspace)
         .env_clear()
@@ -321,7 +325,7 @@ fn native_cli_durable_files_media_and_stale_background_tasks() {
     let repository = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
     let output = std::process::Command::new("python3")
         .arg(repository.join("scripts/tests/claude-native-cli-journey.py"))
-        .args(["--binary", env!("CARGO_BIN_EXE_nanocodex")])
+        .args(["--binary", local_cli()])
         .current_dir(&repository)
         .output()
         .expect("run native CLI durability journey");

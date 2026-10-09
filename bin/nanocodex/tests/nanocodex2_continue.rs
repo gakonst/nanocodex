@@ -59,7 +59,7 @@ fn stable_executable() -> Arc<StableExecutable> {
     }
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("nanocodex2");
-    std::fs::copy(env!("CARGO_BIN_EXE_nanocodex2"), &path).unwrap();
+    std::fs::copy(env!("CARGO_BIN_EXE_nanocodex"), &path).unwrap();
     let executable = Arc::new(StableExecutable {
         _directory: directory,
         path,

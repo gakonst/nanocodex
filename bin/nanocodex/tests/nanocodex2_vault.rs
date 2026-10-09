@@ -21,7 +21,7 @@ const ID: &str = "abcdefghijklmnopqrstuv";
 const PRIVATE: &str = "synthetic-secret-must-not-be-reflected";
 
 fn command(home: &std::path::Path, origin: &str) -> tokio::process::Command {
-    let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_nanocodex2"));
+    let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_nanocodex"));
     command
         .env_clear()
         .current_dir(home)

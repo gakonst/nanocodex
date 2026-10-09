@@ -49,7 +49,7 @@ half-block images.
 plus older sessions still running, into named tmux windows. Existing windows
 are reused by session ID. `/done` (or swipe left → Done on mobile) hides a
 session from future restores without deleting history or cancelling work;
-`/undone` restores it. See [session continuation](../../../docs/session-continue.md)
+`/undone` restores it. See [session continuation](../../docs/session-continue.md)
 for preview, lookback, detached operation, and headless commands.
 
 ## Managed2 preview (explicit opt-in)

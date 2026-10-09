@@ -59,7 +59,7 @@ use self::{
     theme::{Theme, detect_system_scheme},
     transcript::{LocalEvent, ShellId, TranscriptRecord, TurnId},
 };
-use crate::{config::ReasoningEffort, config::ReasoningMode, host::HostConfig};
+use crate::nanocodex2::{config::ReasoningEffort, config::ReasoningMode, host::HostConfig};
 use crossterm::event::{Event, EventStream, KeyCode, KeyEventKind, KeyModifiers};
 use futures_util::StreamExt;
 use nanocodex::Model;
@@ -539,7 +539,7 @@ impl SettingsMutation {
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct PendingVoice {
     pane: PaneId,
-    selection: crate::voice::Selection,
+    selection: crate::nanocodex2::voice::Selection,
     muted: bool,
 }
 
@@ -556,10 +556,10 @@ struct DriverRuntime {
     btw_events: mpsc::UnboundedSender<btw::Event>,
     screen: screen::Controller,
     pending_voice: Option<PendingVoice>,
-    voice_selection: crate::voice::Selection,
+    voice_selection: crate::nanocodex2::voice::Selection,
     clone_panel: Option<voice_clone::Panel>,
     voice_tasks: JoinSet<(PaneId, Result<String, String>)>,
-    voice: Option<crate::voice::Session>,
+    voice: Option<crate::nanocodex2::voice::Session>,
     client: ManagedClient,
     agent: Option<Nanocodex>,
     startup_attach: bool,
@@ -738,14 +738,16 @@ fn history_replay_matches(
         && runtime_before == Some(requested_before)
 }
 
-fn voice_settings(selection: &crate::voice::Selection) -> nanocodex_voice_protocol::VoiceSettings {
+fn voice_settings(
+    selection: &crate::nanocodex2::voice::Selection,
+) -> nanocodex_voice_protocol::VoiceSettings {
     use nanocodex_voice_protocol::{VoiceOutputProvider, VoiceSettings};
     match selection {
-        crate::voice::Selection::Chatgpt(name) => VoiceSettings {
+        crate::nanocodex2::voice::Selection::Chatgpt(name) => VoiceSettings {
             voice: (*name).into(),
             ..Default::default()
         },
-        crate::voice::Selection::ElevenLabs(id) => VoiceSettings {
+        crate::nanocodex2::voice::Selection::ElevenLabs(id) => VoiceSettings {
             output_provider: VoiceOutputProvider::Elevenlabs,
             eleven_labs_voice_id: Some(id.clone()),
             ..Default::default()
@@ -754,7 +756,8 @@ fn voice_settings(selection: &crate::voice::Selection) -> nanocodex_voice_protoc
 }
 
 async fn list_elevenlabs_voices() -> Result<String, String> {
-    let client = crate::voice::elevenlabs::Client::from_env().map_err(|e| e.to_string())?;
+    let client =
+        crate::nanocodex2::voice::elevenlabs::Client::from_env().map_err(|e| e.to_string())?;
     let voices = client.voices().await.map_err(|e| e.to_string())?;
     let mut lines = vec!["ElevenLabs voices (use /voice elevenlabs VOICE_ID):".to_owned()];
     for voice in voices {
@@ -798,7 +801,7 @@ async fn clone_elevenlabs_voice(name: String, path: PathBuf) -> Result<String, S
     let handle = tokio::runtime::Handle::current();
     tokio::task::spawn_blocking(move || {
         handle.block_on(async move {
-            let client = crate::voice::elevenlabs::Client::from_env().map_err(|e| e.to_string())?;
+            let client = crate::nanocodex2::voice::elevenlabs::Client::from_env().map_err(|e| e.to_string())?;
             let voice = client
                 .clone_voice(&name, &[path], true)
                 .await
@@ -911,9 +914,9 @@ impl DriverRuntime {
         ids
     }
 
-    fn voice_status(&self) -> Option<crate::voice_state::Status> {
+    fn voice_status(&self) -> Option<crate::nanocodex2::voice_state::Status> {
         if let Some(panel) = &self.clone_panel {
-            return Some(crate::voice_state::Status {
+            return Some(crate::nanocodex2::voice_state::Status {
                 text: panel.text(),
                 microphone: panel.microphone_peak(),
                 ..Default::default()
@@ -925,7 +928,7 @@ impl DriverRuntime {
             .or_else(|| {
                 self.pending_voice
                     .as_ref()
-                    .map(|pending| crate::voice_state::Status {
+                    .map(|pending| crate::nanocodex2::voice_state::Status {
                         text: "Voice connecting…".into(),
                         muted: pending.muted,
                         ..Default::default()
@@ -948,9 +951,9 @@ impl DriverRuntime {
     fn voice_command(
         &mut self,
         pane: PaneId,
-        command: crate::voice::Command,
+        command: crate::nanocodex2::voice::Command,
     ) -> Result<Option<String>, String> {
-        use crate::voice::Command;
+        use crate::nanocodex2::voice::Command;
         if self.clone_panel.is_some()
             && matches!(
                 command,
@@ -973,7 +976,7 @@ impl DriverRuntime {
             Command::Start(None) if self.voice.is_some() => Ok(None),
             Command::Start(name) => {
                 let selection = name
-                    .map(crate::voice::Selection::Chatgpt)
+                    .map(crate::nanocodex2::voice::Selection::Chatgpt)
                     .unwrap_or_else(|| self.voice_selection.clone());
                 self.voice_command(pane, Command::Select(selection))
             }
@@ -1019,12 +1022,15 @@ impl DriverRuntime {
                 }
                 Ok(None)
             }
-            Command::Help => Ok(Some(crate::voice::HELP.into())),
-            Command::ListProvider(crate::voice::Provider::Chatgpt) => Ok(Some(format!(
-                "ChatGPT voices: {}. Use /voice chatgpt NAME.",
-                nanocodex_voice_protocol::CHATGPT_REALTIME_VOICES.join(", ")
-            ))),
-            Command::List | Command::ListProvider(crate::voice::Provider::ElevenLabs) => {
+            Command::Help => Ok(Some(crate::nanocodex2::voice::HELP.into())),
+            Command::ListProvider(crate::nanocodex2::voice::Provider::Chatgpt) => {
+                Ok(Some(format!(
+                    "ChatGPT voices: {}. Use /voice chatgpt NAME.",
+                    nanocodex_voice_protocol::CHATGPT_REALTIME_VOICES.join(", ")
+                )))
+            }
+            Command::List
+            | Command::ListProvider(crate::nanocodex2::voice::Provider::ElevenLabs) => {
                 let all = command == Command::List;
                 self.voice_tasks.spawn(async move {
                     let result = list_elevenlabs_voices().await;
@@ -1101,7 +1107,8 @@ impl DriverRuntime {
                     return Err("Stop and review a local recording before submitting.".into());
                 }
                 // Keep the recording available if local credentials are missing.
-                crate::voice::elevenlabs::Client::from_env().map_err(|error| error.to_string())?;
+                crate::nanocodex2::voice::elevenlabs::Client::from_env()
+                    .map_err(|error| error.to_string())?;
                 let mut panel = self.clone_panel.take().unwrap();
                 let name = panel.name.clone();
                 let voice_clone::State::Review(sample) =
@@ -2095,7 +2102,7 @@ async fn run_inner(
     client: &ManagedClient,
     attach: Option<Option<String>>,
 ) -> Result<(), ManagedError> {
-    let first_frame = crate::startup_timing::Stage::new("tui_first_frame");
+    let first_frame = crate::nanocodex2::startup_timing::Stage::new("tui_first_frame");
     let workspace = HostConfig::load()
         .map_err(|error| ManagedError::Configuration(error.to_string()))?
         .workspace()
@@ -2112,7 +2119,7 @@ async fn run_inner(
     root.set_model(initial_settings.model);
 
     let mut app = AppNode::new(Theme::default(), workspace.clone(), root);
-    let mut reload: Option<crate::reload::Registration> = None;
+    let mut reload: Option<crate::nanocodex2::reload::Registration> = None;
     let mut reload_requested = false;
     let mut terminal = TerminalSession::enter().await.map_err(terminal_error)?;
     let mut input = EventStream::new();
@@ -2242,7 +2249,7 @@ async fn run_inner(
     // but wait off the input loop so it becomes available after contention clears.
     // Dropping the JoinSet also drops any uncollected registration and its lease.
     let mut reload_setup = JoinSet::new();
-    reload_setup.spawn_blocking(crate::reload::register);
+    reload_setup.spawn_blocking(crate::nanocodex2::reload::register);
     // Theme and tmux discovery must not delay the first editable frame. These
     // tasks never read stdin; the terminal event stream remains its sole owner.
     let mut presentation_setup = JoinSet::new();
@@ -2458,7 +2465,7 @@ async fn run_inner(
             );
         }
         if let Some(pending) = runtime.take_ready_voice() {
-            match crate::voice::Session::start_with_settings(
+            match crate::nanocodex2::voice::Session::start_with_settings(
                 runtime.client.clone(),
                 runtime.agent_id.clone(),
                 voice_settings(&pending.selection),
@@ -2601,9 +2608,9 @@ async fn run_inner(
             _ = clone_tick.tick(), if runtime.clone_panel.as_ref().is_some_and(|panel| matches!(panel.state, voice_clone::State::Recording(_))) => {
                 let panel = runtime.clone_panel.as_mut().unwrap();
                 let stop_reason = match &mut panel.state {
-                    voice_clone::State::Recording(recorder) if recorder.elapsed().as_secs() >= crate::voice_recording::MAX_SECONDS => Some("Reached the 2-minute recording limit"),
+                    voice_clone::State::Recording(recorder) if recorder.elapsed().as_secs() >= crate::nanocodex2::voice_recording::MAX_SECONDS => Some("Reached the 2-minute recording limit"),
                     voice_clone::State::Recording(recorder) => match recorder.is_finished() {
-                        Ok(true) if recorder.elapsed().as_secs() >= crate::voice_recording::MAX_SECONDS - 1 => Some("Reached the 2-minute recording limit"),
+                        Ok(true) if recorder.elapsed().as_secs() >= crate::nanocodex2::voice_recording::MAX_SECONDS - 1 => Some("Reached the 2-minute recording limit"),
                         Ok(true) => Some("Microphone recorder ended early; R records a new sample"),
                         Err(_) => Some("Microphone recorder stopped unexpectedly; R retries"),
                         Ok(false) => None,
@@ -2707,7 +2714,7 @@ async fn run_inner(
             Some(transcript) = async { match &mut voice_transcripts { Some(receiver) => receiver.recv().await, None => pending().await } } => {
                 // A stopped/replaced session may still have queued final captions.
                 // Do not present them as speech from the newly selected voice.
-                if runtime.voice.as_ref().is_some_and(crate::voice::Session::accepting_transcripts) {
+                if runtime.voice.as_ref().is_some_and(crate::nanocodex2::voice::Session::accepting_transcripts) {
                     let record = runtime.local_record(LocalEvent::VoiceTranscript(transcript))?;
                     request_render(app.update(AppEvent::Transcript { pane: PaneId::Main, record }), &mut scheduler);
                 }
@@ -2756,7 +2763,7 @@ async fn run_inner(
                     && matches!(&event, Event::Key(key) if key.code == KeyCode::Char('x') && key.modifiers == KeyModifiers::CONTROL)
                 {
                     if matches!(&event, Event::Key(key) if key.kind == KeyEventKind::Press) {
-                        let _ = runtime.voice_command(PaneId::Main, crate::voice::Command::ToggleMute);
+                        let _ = runtime.voice_command(PaneId::Main, crate::nanocodex2::voice::Command::ToggleMute);
                         request_render(app.update(AppEvent::VoiceStatus(runtime.voice_status())), &mut scheduler);
                     }
                     continue;
@@ -4177,7 +4184,7 @@ async fn apply_update(
                 // Keep the hosted effect boundary visually separate from app-level routing.
                 match effect {
                     RootEffect::Reload => {
-                        let update = match crate::reload::request_all() {
+                        let update = match crate::nanocodex2::reload::request_all() {
                             Ok(count) => app.update(AppEvent::NotifySuccess { pane, message: format!("Reload requested for {count} local terminal(s)…") }),
                             Err(error) => app.update(AppEvent::NotifyError { pane, error }),
                         };
@@ -4195,7 +4202,7 @@ async fn apply_update(
                             absorb(app.update(AppEvent::NotifyError { pane, error: "Claude currently supports text only; voice input is unavailable".into() }), &mut effects, scheduler);
                             continue;
                         }
-                        let persistent = matches!(command, crate::voice::Command::Help | crate::voice::Command::ListProvider(crate::voice::Provider::Chatgpt));
+                        let persistent = matches!(command, crate::nanocodex2::voice::Command::Help | crate::nanocodex2::voice::Command::ListProvider(crate::nanocodex2::voice::Provider::Chatgpt));
                         let outcome = runtime.voice_command(pane, command);
                         absorb(
                             app.update(AppEvent::VoiceStatus(runtime.voice_status())),
@@ -4350,7 +4357,7 @@ async fn apply_update(
                         let agent_id = runtime.agent_id.clone();
                         let generation = runtime.connection_generation;
                         runtime.vault_tasks.spawn(async move {
-                            let result = match crate::connectors::parse_local(&text) {
+                            let result = match crate::nanocodex2::connectors::parse_local(&text) {
                                 Ok(command) => command.execute(&client).await.map(vault::Outcome::Saved).map_err(|e| e.to_string()),
                                 Err(error) => Err(error.to_string()),
                             };
@@ -5488,8 +5495,10 @@ mod tests {
         history_projection_with_sequences, history_replay_matches, live_managed_projection,
         new_agent_settings, prepare_history_replay, session_summaries,
     };
-    use crate::config::ReasoningEffort;
-    use crate::tui::{components::QueueId, pane::PaneId, prompt::Submission, transcript::TurnId};
+    use crate::nanocodex2::config::ReasoningEffort;
+    use crate::nanocodex2::tui::{
+        components::QueueId, pane::PaneId, prompt::Submission, transcript::TurnId,
+    };
     use nanocodex::Model;
     use nanocodex_managed::{
         AgentList, AgentSettings, AgentSummary, EventHistoryPage, ManagedApiKey, ManagedClient,
@@ -5642,7 +5651,7 @@ mod tests {
 
     #[tokio::test]
     async fn voice_requested_during_startup_starts_once_when_connected_with_selected_controls() {
-        use crate::voice::Command;
+        use crate::nanocodex2::voice::Command;
         let mut runtime = history_runtime(HistoryWindow::default());
         runtime.agent_id.clear();
         assert_eq!(
@@ -5652,7 +5661,7 @@ mod tests {
         assert!(runtime.take_ready_voice().is_none());
         assert_eq!(
             runtime.voice_status().unwrap().phase,
-            crate::voice_state::Phase::Connecting
+            crate::nanocodex2::voice_state::Phase::Connecting
         );
         runtime
             .voice_command(PaneId::Main, Command::Start(Some("ember")))
@@ -5668,14 +5677,17 @@ mod tests {
         assert!(runtime.take_ready_voice().is_none());
         runtime.managed_events_open = true;
         let ready = runtime.take_ready_voice().unwrap();
-        assert_eq!(ready.selection, crate::voice::Selection::Chatgpt("ember"));
+        assert_eq!(
+            ready.selection,
+            crate::nanocodex2::voice::Selection::Chatgpt("ember")
+        );
         assert!(ready.muted);
         assert!(runtime.take_ready_voice().is_none());
     }
 
     #[tokio::test]
     async fn clone_panel_never_starts_or_uploads_implicitly() {
-        use crate::voice::Command;
+        use crate::nanocodex2::voice::Command;
         let mut runtime = history_runtime(HistoryWindow::default());
         runtime
             .voice_command(PaneId::Main, Command::CloneOpen("Synthetic voice".into()))
@@ -5735,7 +5747,7 @@ mod tests {
 
     #[test]
     fn voice_provider_settings_keep_valid_realtime_input() {
-        use crate::voice::Selection;
+        use crate::nanocodex2::voice::Selection;
         use nanocodex_voice_protocol::VoiceOutputProvider;
         let eleven = super::voice_settings(&Selection::ElevenLabs("sample_voice".into()));
         assert_eq!(eleven.output_provider, VoiceOutputProvider::Elevenlabs);
@@ -5749,7 +5761,7 @@ mod tests {
 
     #[tokio::test]
     async fn voice_provider_selection_survives_stop_and_replaces_pending_start() {
-        use crate::voice::{Command, Selection};
+        use crate::nanocodex2::voice::{Command, Selection};
         let mut runtime = history_runtime(HistoryWindow::default());
         runtime
             .voice_command(
@@ -5783,7 +5795,7 @@ mod tests {
 
     #[tokio::test]
     async fn queued_voice_can_be_cancelled_and_does_not_leak_to_a_new_session() {
-        use crate::voice::Command;
+        use crate::nanocodex2::voice::Command;
         let mut runtime = history_runtime(HistoryWindow::default());
         for stop in [Command::Stop, Command::Toggle] {
             runtime
@@ -5803,7 +5815,7 @@ mod tests {
 
     #[tokio::test]
     async fn queued_voice_waits_for_recovery_and_session_switch() {
-        use crate::voice::Command;
+        use crate::nanocodex2::voice::Command;
         let mut runtime = history_runtime(HistoryWindow::default());
         runtime
             .voice_command(PaneId::Main, Command::Toggle)
@@ -5843,7 +5855,7 @@ mod tests {
             control_bridge: None,
             btw: None,
             btw_events: tokio::sync::mpsc::unbounded_channel().0,
-            screen: crate::tui::screen::Controller::new(Some(
+            screen: crate::nanocodex2::tui::screen::Controller::new(Some(
                 ratatui_image::picker::Picker::halfblocks(),
             )),
             pending_voice: None,
@@ -6588,8 +6600,8 @@ mod tests {
         root.install_session_projection(
             Path::new("/workspace"),
             ReasoningEffort::Medium,
-            crate::config::ReasoningMode::Standard,
-            crate::config::ReasoningMode::Standard,
+            crate::nanocodex2::config::ReasoningMode::Standard,
+            crate::nanocodex2::config::ReasoningMode::Standard,
             false,
             *projection,
         );
@@ -6784,7 +6796,7 @@ mod tests {
 
     #[test]
     fn tool_result_loaded_before_its_call_is_restored_across_page_boundaries() {
-        use crate::tui::transcript::{EntryKind, ToolState, TranscriptModel};
+        use crate::nanocodex2::tui::transcript::{EntryKind, ToolState, TranscriptModel};
         let mut sequences = HashMap::new();
         let mut next_sequence = 1;
         let (records, _) = history_projection_with_sequences(

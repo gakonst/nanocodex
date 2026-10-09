@@ -1,6 +1,10 @@
 //! Real CLI journeys; only the external model providers are synthetic.
 //! Evidence: output/harness-routing/<journey>-<uuid>/ includes scenario, outcome,
 //! provider requests, and CLI output or the raw terminal transcript.
+#[path = "support/local_cli.rs"]
+mod local_cli;
+use local_cli::local_cli;
+
 use std::{
     collections::HashMap,
     io::{Read as _, Write as _},
@@ -957,7 +961,7 @@ fn command(
     with_claude_auth: bool,
     root_prompt: bool,
 ) -> Command {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_nanocodex"));
+    let mut command = Command::new(local_cli());
     if !root_prompt {
         command.arg("run");
     }
@@ -1571,7 +1575,7 @@ async fn root_selection_and_missing_auth_fail_before_provider_dispatch() -> Resu
 }
 
 fn subscription_auth_command(workspace: &Path, config: &Path, action: &str) -> Command {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_nanocodex"));
+    let mut command = Command::new(local_cli());
     command
         .current_dir(workspace)
         .env_clear()
@@ -1975,7 +1979,7 @@ async fn claude_subscription_login_refresh_restart_and_logout() -> Result<()> {
             "authorize_url":format!("{base}/oauth/authorize"),"token_url":format!("{base}/oauth/token"),"profile_url":format!("{base}/oauth/profile"),"manual_redirect_uri":format!("{base}/oauth/callback"),"client_id":"synthetic-cli-client","scopes":["user:profile","user:inference","user:sessions:claude_code"],"refresh_margin_millis":300000,"login_ttl_millis":600000,"allow_loopback_http":true
         }))?,
     )?;
-    let mut invalid = Command::new(env!("CARGO_BIN_EXE_nanocodex"));
+    let mut invalid = Command::new(local_cli());
     invalid
         .current_dir(&workspace)
         .env_clear()

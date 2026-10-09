@@ -33,11 +33,11 @@ use std::{
     time::Instant,
 };
 
-use crossterm::event::{
-    Event, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind,
-};
 use eyre::{Result, WrapErr};
 use futures_util::{FutureExt, StreamExt};
+use legacy_crossterm::event::{
+    Event, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind,
+};
 use nanocodex::{
     AgentEvents, HarnessModel, Nanocodex, NanocodexError, OpenAi, Thinking, TurnControl,
     TurnResult,
@@ -4484,8 +4484,10 @@ mod tests {
         time::{Duration, Instant},
     };
 
-    use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind};
     use futures_util::{SinkExt, StreamExt};
+    use legacy_crossterm::event::{
+        Event, KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind,
+    };
     use nanocodex::{
         HarnessModel, Model, Nanocodex, OpenAi, Thinking,
         agent::events::AgentEventKind,
@@ -5229,7 +5231,8 @@ mod tests {
         let mut ui = UiModel::new(app, Arc::from("main-session"));
         let (events, mut agent_events) = EventSink::channel("test".to_owned());
         let mut terminal =
-            ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 24)).unwrap();
+            legacy_ratatui::Terminal::new(legacy_ratatui::backend::TestBackend::new(100, 24))
+                .unwrap();
 
         for (text, expected) in [
             ("A", RedrawPriority::Immediate),

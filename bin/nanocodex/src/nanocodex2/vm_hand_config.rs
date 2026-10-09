@@ -85,7 +85,7 @@ pub(crate) struct DockerHandConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Cli, Command};
+    use crate::nanocodex2::{Cli, Command};
     use clap::Parser as _;
 
     fn config(args: &[&str]) -> VmHandConfig {
@@ -182,7 +182,7 @@ mod tests {
             Some(PathBuf::from("/opt/chrome"))
         );
         assert!(
-            crate::Cli::try_parse_from([
+            crate::nanocodex2::Cli::try_parse_from([
                 "nanocodex2",
                 "hand",
                 "--docker",

@@ -3,7 +3,7 @@
 
 //! Stateful component ownership and update results.
 
-use crate::tui::theme::Theme;
+use crate::nanocodex2::tui::theme::Theme;
 use ratatui::{Frame, layout::Rect};
 
 #[derive(Clone, Copy, Debug, Default, Eq, Ord, PartialEq, PartialOrd)]

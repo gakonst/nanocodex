@@ -1,4 +1,4 @@
-use ratatui::{
+use legacy_ratatui::{
     style::{Color, Modifier, Style},
     text::{Line, Span},
 };

@@ -365,7 +365,7 @@ mod tests {
         MeasuredBackend, StableCursorBackend, activate_commands, begin_synchronized_update,
         end_synchronized_update, reset_after_resume, restore_commands,
     };
-    use crate::{
+    use crate::nanocodex2::{
         config::ReasoningEffort,
         tui::{
             components::{AppNode, RootNode},

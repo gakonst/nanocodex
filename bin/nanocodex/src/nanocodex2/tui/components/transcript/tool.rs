@@ -18,7 +18,7 @@ mod web;
 use super::markdown::{
     Layout, SourceSpan, plain_selection_spans_excluding, sanitize, wrap_plain, wrap_spans,
 };
-use crate::tui::{
+use crate::nanocodex2::tui::{
     format::{format_duration, humanize_tool},
     theme::Theme,
     transcript::{ToolEntry, ToolState, is_subagent_tool},
@@ -166,7 +166,7 @@ fn present(tool: &ToolEntry, width: u16, theme: &Theme, expanded: bool) -> Prese
     ) {
         return Presentation::new(
             "Private Vault browser",
-            crate::tui::vault::browser_summary(
+            crate::nanocodex2::tui::vault::browser_summary(
                 tool.family(),
                 tool.result.as_ref(),
                 tool.state == ToolState::Failed,
@@ -177,7 +177,7 @@ fn present(tool: &ToolEntry, width: u16, theme: &Theme, expanded: bool) -> Prese
         let summary = tool
             .result
             .as_ref()
-            .and_then(crate::tui::vault::intake_summary)
+            .and_then(crate::nanocodex2::tui::vault::intake_summary)
             .unwrap_or_else(|| {
                 "Secure Vault request · use /vault open to check your Vault".to_owned()
             });
@@ -695,7 +695,7 @@ pub(super) fn selectable_result(
     width: u16,
     theme: &Theme,
 ) -> (String, Vec<Line<'static>>) {
-    if let Some(summary) = crate::tui::vault::payload_summary(value, 0) {
+    if let Some(summary) = crate::nanocodex2::tui::vault::payload_summary(value, 0) {
         let details = wrap_plain(&summary, width, Style::default().fg(theme.text()));
         return (summary, details);
     }
@@ -873,11 +873,13 @@ fn bounded_section(mut details: Vec<Line<'static>>) -> Vec<Line<'static>> {
 // Preserve text, resource names, and download URLs alongside embedded media.
 fn display_value(value: &Value, depth: usize) -> Value {
     if value.get("type").and_then(Value::as_str) == Some("vault_intake") {
-        return Value::String(crate::tui::vault::intake_summary(value).unwrap_or_else(|| {
-            "Secure Vault request could not be verified. Use /vault open.".into()
-        }));
+        return Value::String(
+            crate::nanocodex2::tui::vault::intake_summary(value).unwrap_or_else(|| {
+                "Secure Vault request could not be verified. Use /vault open.".into()
+            }),
+        );
     }
-    if let Some(summary) = crate::tui::vault::receipt_summary(&value.to_string()) {
+    if let Some(summary) = crate::nanocodex2::tui::vault::receipt_summary(&value.to_string()) {
         return Value::String(summary);
     }
     if depth > 10 {
@@ -979,7 +981,7 @@ mod tests {
         MAX_EXPANDED_DETAIL_LINES, MAX_EXPANDED_TEXT_BYTES, bounded_json, render, render_expanded,
         render_layout, render_live,
     };
-    use crate::tui::{
+    use crate::nanocodex2::tui::{
         theme::Theme,
         transcript::{ToolEntry, ToolState},
     };

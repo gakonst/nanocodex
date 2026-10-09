@@ -3,7 +3,7 @@
 
 //! Configurable terminal colors and light/dark mode selection.
 
-use crate::config::ReasoningEffort;
+use crate::nanocodex2::config::ReasoningEffort;
 use nanocodex_managed::ManagedModel as Model;
 use ratatui::style::Color;
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};

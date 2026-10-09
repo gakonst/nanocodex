@@ -16,7 +16,7 @@ async fn connectors_cli_projects_receipts_and_never_retries_failed_writes() {
             axum::serve(listener, app).await.unwrap();
         });
         let home = tempfile::tempdir().unwrap();
-        let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_nanocodex2"))
+        let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_nanocodex"))
             .env_clear()
             .env("HOME", home.path())
             .env("PATH", std::env::var_os("PATH").unwrap_or_default())
@@ -60,7 +60,7 @@ async fn whatsapp_cli_preserves_the_real_start_shape_but_never_pairing_material(
         axum::serve(listener, app).await.unwrap();
     });
     let home = tempfile::tempdir().unwrap();
-    let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_nanocodex2"))
+    let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_nanocodex"))
         .env_clear()
         .env("HOME", home.path())
         .env("NANOCODEX_HOME", home.path())

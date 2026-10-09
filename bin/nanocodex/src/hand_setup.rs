@@ -14,8 +14,14 @@ pub(crate) struct Hand {
     command: HandCommand,
 }
 
+impl From<HandCommand> for Hand {
+    fn from(command: HandCommand) -> Self {
+        Self { command }
+    }
+}
+
 #[derive(Subcommand)]
-enum HandCommand {
+pub(crate) enum HandCommand {
     /// Install or repair the Hand on this machine or a remote Linux host.
     Install {
         /// SSH alias, hostname, IP, or user@host. Omit for this machine.

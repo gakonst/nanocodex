@@ -3,7 +3,7 @@
 
 //! Managed-agent projections consumed by Tact's session pickers.
 
-use crate::config::{ReasoningEffort, ReasoningMode};
+use crate::nanocodex2::config::{ReasoningEffort, ReasoningMode};
 use serde::{Deserialize, Serialize};
 use std::{path::PathBuf, time::Duration};
 

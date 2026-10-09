@@ -7,7 +7,7 @@ use super::{
     floating::Floating,
     node::{Component, ComponentUpdate, RenderRequest},
 };
-use crate::tui::{
+use crate::nanocodex2::tui::{
     context::{CompactionDiagnostics, CompactionTrigger, ContextDiagnostics, ContinuationMode},
     theme::Theme,
 };

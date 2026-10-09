@@ -174,7 +174,7 @@ fn read_login_code() -> Result<String> {
     const MAX_CODE: usize = 8192;
     let mut value = String::new();
     if std::io::stdin().is_terminal() {
-        use crossterm::{
+        use legacy_crossterm::{
             event::{self, Event, KeyCode, KeyModifiers},
             terminal,
         };

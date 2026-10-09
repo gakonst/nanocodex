@@ -1,9 +1,9 @@
-use pulldown_cmark::{CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
-use ratatex::{Formula, FormulaState, Ratatex};
-use ratatui::{
+use legacy_pulldown_cmark::{CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
+use legacy_ratatui::{
     style::{Color, Modifier, Style},
     text::{Line, Span, Text},
 };
+use ratatex::{Formula, FormulaState, Ratatex};
 use std::{
     borrow::Cow,
     fmt::Write as _,
@@ -1692,8 +1692,8 @@ fn strip_html(html: &str) -> String {
 mod tests {
     use std::{collections::HashSet, sync::mpsc, time::Duration};
 
+    use legacy_ratatui::{Terminal, backend::TestBackend, widgets::Paragraph};
     use ratatex::{PixelSize, Ratatex, TerminalProfile};
-    use ratatui::{Terminal, backend::TestBackend, widgets::Paragraph};
 
     use super::{
         code_line_count, heal_streaming_markdown, highlighted_code_lines, render_agent_markdown,
@@ -2164,7 +2164,7 @@ After";
         assert_eq!(fallback[0].spans[0].content, "opaque code");
         assert_eq!(
             fallback[0].spans[0].style.fg,
-            Some(ratatui::style::Color::Yellow)
+            Some(legacy_ratatui::style::Color::Yellow)
         );
     }
 
@@ -2178,7 +2178,7 @@ After";
         assert_eq!(highlighted[0].spans[0].content, source);
         assert_eq!(
             highlighted[0].spans[0].style.fg,
-            Some(ratatui::style::Color::Yellow)
+            Some(legacy_ratatui::style::Color::Yellow)
         );
     }
 

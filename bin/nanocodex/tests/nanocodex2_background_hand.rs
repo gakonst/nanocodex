@@ -236,7 +236,7 @@ async fn terminal(home: &Path, origin: &str, cwd: &Path) {
             pixel_height: 0,
         })
         .unwrap();
-    let mut command = CommandBuilder::new(env!("CARGO_BIN_EXE_nanocodex2"));
+    let mut command = CommandBuilder::new(env!("CARGO_BIN_EXE_nanocodex"));
     command.env_clear();
     for (key, value) in [
         ("PATH", std::env::var("PATH").unwrap_or_default()),
@@ -337,7 +337,7 @@ async fn terminal(home: &Path, origin: &str, cwd: &Path) {
 }
 
 fn command(home: &Path, origin: &str) -> Command {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_nanocodex2"));
+    let mut command = Command::new(env!("CARGO_BIN_EXE_nanocodex"));
     command
         .env_clear()
         .env("PATH", std::env::var_os("PATH").unwrap_or_default())
@@ -419,7 +419,7 @@ async fn permission_request_targets_only_the_running_daemon() {
         )
     });
 
-    let executable = Path::new(env!("CARGO_BIN_EXE_nanocodex2"));
+    let executable = Path::new(env!("CARGO_BIN_EXE_nanocodex"));
     let request = |pid: u32| {
         let mut command = command(&home, &origin);
         command

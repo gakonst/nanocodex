@@ -4,7 +4,7 @@
 //! Collapsible presentation for one directed-message thread.
 
 use super::markdown::{sanitize, wrap_plain, wrap_spans};
-use crate::tui::{theme::Theme, transcript::DirectedMessageEntry};
+use crate::nanocodex2::tui::{theme::Theme, transcript::DirectedMessageEntry};
 use nanocodex_subagents::{
     AgentId, AgentMessage, MessageDeliveryState, MessageDisposition, MessagePriority,
     MessagePurpose, MessageSender,

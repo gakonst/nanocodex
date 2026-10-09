@@ -3,7 +3,7 @@ use super::{
     floating::Floating,
     node::{Component, ComponentUpdate, RenderRequest},
 };
-use crate::{
+use crate::nanocodex2::{
     tui::theme::Theme,
     voice::{Command, Provider, Selection},
 };

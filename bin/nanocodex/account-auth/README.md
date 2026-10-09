@@ -10,7 +10,7 @@ selects the exact managed origin and its environment or saved API key.
 `managed_url_from_environment` selects only an origin, allowing system VM hosts
 to keep their separate token-based authorization without reading account keys.
 
-See the [user guide](../nanocodex2/README.md#account-sign-in) for command usage.
+See the [user guide](../README.md#account-sign-in) for command usage.
 The account protocol follows `js/desktop-runtime/src/auth.mjs` and
 `js/managed/src/account-auth.ts`. Local Axum fixtures exercise both executable
 entrypoints without sending SMS or modifying real accounts:

@@ -1,14 +1,14 @@
 use std::{borrow::Cow, io, time::SystemTime};
 
-use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
-use nanocodex::agent::rollout::RolloutSessionInfo;
-use ratatui::{
+use legacy_crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use legacy_ratatui::{
     Frame,
     layout::{Constraint, Layout},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, List, ListItem, Paragraph},
 };
+use nanocodex::agent::rollout::RolloutSessionInfo;
 
 use super::terminal::TerminalSession;
 
@@ -215,7 +215,7 @@ fn saturating_isize(value: usize) -> isize {
 mod tests {
     use std::time::Duration;
 
-    use crossterm::event::KeyEvent;
+    use legacy_crossterm::event::KeyEvent;
 
     use super::*;
 

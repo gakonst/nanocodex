@@ -3,7 +3,7 @@
 
 //! Bounded local shell execution and model-context formatting.
 
-use crate::tui::transcript::ShellId;
+use crate::nanocodex2::tui::transcript::ShellId;
 use std::{
     env, io,
     path::{Path, PathBuf},
@@ -258,7 +258,7 @@ fn configure(command: &mut Command, workspace: &Path) {
 #[cfg(test)]
 mod tests {
     use super::{MAX_CAPTURE_BYTES, execute, read_bounded, take_output};
-    use crate::tui::transcript::ShellId;
+    use crate::nanocodex2::tui::transcript::ShellId;
     use std::sync::{
         Arc, Mutex,
         atomic::{AtomicBool, AtomicUsize, Ordering},

@@ -6,7 +6,7 @@ use super::{
     ShellId, ToolEntry, ToolState, TranscriptEntry, TranscriptRecord, TransientStatus,
     code_mode_output_text,
 };
-use crate::{config::ReasoningEffort, tui::format::humanize_tool};
+use crate::nanocodex2::{config::ReasoningEffort, tui::format::humanize_tool};
 use nanocodex::{
     agent::events::{
         AssistantDelta, AssistantMessage, CompactionCompleted, CompactionFailed,
@@ -61,7 +61,7 @@ pub(crate) struct TranscriptModel {
     managed_answer_entries: HashMap<Arc<str>, HashSet<EntryId>>,
     reasoning: HashMap<ReasoningKey, EntryId>,
     tools: HashMap<String, EntryId>,
-    private_inputs: HashMap<EntryId, crate::tui::secure_input::Request>,
+    private_inputs: HashMap<EntryId, crate::nanocodex2::tui::secure_input::Request>,
     settled_calls: HashSet<String>,
     shell_sessions: HashMap<ShellSessionKey, EntryId>,
     shell_followups: HashMap<String, EntryId>,
@@ -243,7 +243,10 @@ impl TranscriptModel {
         &self.entries
     }
 
-    pub(crate) fn private_input(&self, id: EntryId) -> Option<&crate::tui::secure_input::Request> {
+    pub(crate) fn private_input(
+        &self,
+        id: EntryId,
+    ) -> Option<&crate::nanocodex2::tui::secure_input::Request> {
         self.private_inputs.get(&id)
     }
 
@@ -779,7 +782,7 @@ impl TranscriptModel {
     }
 
     fn voice_transcript(&mut self, record: &TranscriptRecord) -> Result<(), serde_json::Error> {
-        let caption = record.decode_payload::<crate::voice_state::Transcript>()?;
+        let caption = record.decode_payload::<crate::nanocodex2::voice_state::Transcript>()?;
         if !matches!(caption.speaker.as_str(), "user" | "assistant") || caption.text.is_empty() {
             return Ok(());
         }
@@ -1145,7 +1148,7 @@ impl TranscriptModel {
                 self.tools.insert(payload.call_id.clone(), id);
                 id
             });
-        if let Some(request) = crate::tui::secure_input::request(record) {
+        if let Some(request) = crate::nanocodex2::tui::secure_input::request(record) {
             self.private_inputs.insert(id, request);
         }
         let shell_session = shell_session_id.map(|session_id| {
@@ -2221,7 +2224,7 @@ mod tests {
 
     #[test]
     fn voice_snapshots_remain_inline_complete_and_distinct_across_speakers_and_calls() {
-        use crate::{tui::transcript::LocalEvent, voice_state::Transcript};
+        use crate::nanocodex2::{tui::transcript::LocalEvent, voice_state::Transcript};
         let mut model = TranscriptModel::default();
         let long = "A long spoken answer. ".repeat(200);
         for (seq, session, speaker, id, text, partial) in [
@@ -2313,7 +2316,7 @@ mod tests {
         TranscriptRecord::from_local(
             sequence,
             sequence,
-            crate::tui::transcript::LocalEvent::ManagedFinalMessage {
+            crate::nanocodex2::tui::transcript::LocalEvent::ManagedFinalMessage {
                 turn_id: turn.to_owned(),
                 text: text.to_owned(),
             },
@@ -2493,7 +2496,7 @@ mod tests {
     #[test]
     fn compaction_phase_is_cleared_by_run_and_stream_terminals() {
         use super::TransientStatus;
-        use crate::tui::transcript::LocalEvent;
+        use crate::nanocodex2::tui::transcript::LocalEvent;
         for terminal in ["completed", "failed", "answer", "stopped", "stream"] {
             let mut model = TranscriptModel::default();
             for (seq, kind) in [
@@ -2623,7 +2626,7 @@ mod tests {
     #[test]
     fn durable_terminals_fence_lifecycle_but_keep_background_results_and_child_activity() {
         use super::TransientStatus;
-        use crate::tui::transcript::LocalEvent;
+        use crate::nanocodex2::tui::transcript::LocalEvent;
         for outcome in ["completed", "empty", "failed", "cancelled"] {
             for replay in [false, true] {
                 let apply = |model: &mut TranscriptModel, record: TranscriptRecord| {
@@ -2834,7 +2837,7 @@ mod tests {
                 TranscriptRecord::from_local(
                     7,
                     70,
-                    crate::tui::transcript::LocalEvent::ManagedTurnStopped {
+                    crate::nanocodex2::tui::transcript::LocalEvent::ManagedTurnStopped {
                         turn_id: "root".to_owned(),
                         error: Some("authoritative failure".to_owned()),
                     },
@@ -2927,7 +2930,7 @@ mod tests {
                 &TranscriptRecord::from_local(
                     7,
                     70,
-                    crate::tui::transcript::LocalEvent::ManagedTurnStopped {
+                    crate::nanocodex2::tui::transcript::LocalEvent::ManagedTurnStopped {
                         turn_id: "turn".to_owned(),
                         error: Some("final attempt failure".to_owned()),
                     },
@@ -3012,7 +3015,7 @@ mod tests {
                         &TranscriptRecord::from_local(
                             2,
                             20,
-                            crate::tui::transcript::LocalEvent::ManagedTurnStopped {
+                            crate::nanocodex2::tui::transcript::LocalEvent::ManagedTurnStopped {
                                 turn_id: "turn".to_owned(),
                                 error: (terminal == 3).then(|| "root failed".to_owned()),
                             },
@@ -3091,8 +3094,8 @@ mod tests {
             &TranscriptRecord::from_local(
                 1,
                 10,
-                crate::tui::transcript::LocalEvent::WorkerTurnFinished {
-                    id: crate::tui::transcript::TurnId::new(1),
+                crate::nanocodex2::tui::transcript::LocalEvent::WorkerTurnFinished {
+                    id: crate::nanocodex2::tui::transcript::TurnId::new(1),
                     error: Some("late worker failure".to_owned()),
                 },
             )
@@ -3135,8 +3138,8 @@ mod tests {
             &TranscriptRecord::from_local(
                 7,
                 70,
-                crate::tui::transcript::LocalEvent::ShellStarted {
-                    id: crate::tui::transcript::ShellId::new(1),
+                crate::nanocodex2::tui::transcript::LocalEvent::ShellStarted {
+                    id: crate::nanocodex2::tui::transcript::ShellId::new(1),
                     command: "local command".to_owned(),
                     workspace: std::path::PathBuf::from("/tmp"),
                 },
@@ -3349,7 +3352,7 @@ mod tests {
         let record = TranscriptRecord::from_local(
             3,
             30,
-            crate::tui::transcript::LocalEvent::DisplayError {
+            crate::nanocodex2::tui::transcript::LocalEvent::DisplayError {
                 message: "Could not display session update 7".to_owned(),
             },
         )

@@ -1,4 +1,8 @@
 //! Actual CLI process crash, Messages HTTP, and SQLite media recovery journey.
+#[path = "support/local_cli.rs"]
+mod local_cli;
+use local_cli::local_cli;
+
 #[test]
 fn cli_frozen_image_survives_crash_and_deleted_source() {
     let script = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -6,7 +10,7 @@ fn cli_frozen_image_survives_crash_and_deleted_source() {
     let output = std::process::Command::new("python3")
         .arg(script)
         .arg("--binary")
-        .arg(env!("CARGO_BIN_EXE_nanocodex"))
+        .arg(local_cli())
         .current_dir(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../.."))
         .output()
         .expect("python3 is required for the CLI HTTP/SSE fixture");

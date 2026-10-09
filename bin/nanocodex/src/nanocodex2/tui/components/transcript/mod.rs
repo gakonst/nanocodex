@@ -16,7 +16,7 @@ use super::{
     node::{Component, ComponentUpdate, RenderRequest},
     selection::{TextRange, TextSpan},
 };
-use crate::{
+use crate::nanocodex2::{
     config::ReasoningEffort,
     tui::{
         format::{
@@ -260,8 +260,8 @@ impl Transcript {
 
     pub(crate) fn secure_input_request(
         &self,
-        command: &crate::tui::secure_input::Command,
-    ) -> Option<crate::tui::secure_input::Request> {
+        command: &crate::nanocodex2::tui::secure_input::Command,
+    ) -> Option<crate::nanocodex2::tui::secure_input::Request> {
         self.model.entries().iter().rev().find_map(|entry| {
             let EntryKind::Tool(tool) = &entry.kind else {
                 return None;
@@ -282,16 +282,16 @@ impl Transcript {
             }
             let r = self.model.private_input(entry.id)?.clone();
             let matches = match command {
-                crate::tui::secure_input::Command::Latest => true,
-                crate::tui::secure_input::Command::Help => false,
-                crate::tui::secure_input::Command::Select { agent, request } => {
+                crate::nanocodex2::tui::secure_input::Command::Latest => true,
+                crate::nanocodex2::tui::secure_input::Command::Help => false,
+                crate::nanocodex2::tui::secure_input::Command::Select { agent, request } => {
                     r.agent() == agent && r.id() == request
                 }
             };
             (matches && r.is_current()).then_some(r)
         })
     }
-    pub(crate) fn latest_vault_command(&self) -> Option<crate::tui::vault::Command> {
+    pub(crate) fn latest_vault_command(&self) -> Option<crate::nanocodex2::tui::vault::Command> {
         let mut receipts = Vec::new();
         for entry in self.model.entries().iter().rev() {
             match &entry.kind {
@@ -302,9 +302,10 @@ impl Transcript {
                     if let Some(command) = tool
                         .result
                         .as_ref()
-                        .and_then(crate::tui::vault::intake_command)
+                        .and_then(crate::nanocodex2::tui::vault::intake_command)
                     {
-                        if let crate::tui::vault::Command::Review { id, origin } = &command
+                        if let crate::nanocodex2::tui::vault::Command::Review { id, origin } =
+                            &command
                             && receipts.iter().any(|text| {
                                 text.contains(id)
                                     && text.contains(origin)
@@ -1377,7 +1378,7 @@ fn transient_label(status: &TransientStatus) -> String {
 fn is_running_tool(entry: &TranscriptEntry) -> bool {
     matches!(
         &entry.kind,
-        EntryKind::Tool(tool) if tool.state == crate::tui::transcript::ToolState::Running
+        EntryKind::Tool(tool) if tool.state == crate::nanocodex2::tui::transcript::ToolState::Running
     )
 }
 
@@ -1526,7 +1527,7 @@ impl LayoutCache {
                 hidden: false,
                 parent: entry.parent,
                 trailing_spacer: true,
-                kind: EntryKind::Tool(crate::tui::transcript::ToolEntry {
+                kind: EntryKind::Tool(crate::nanocodex2::tui::transcript::ToolEntry {
                     name: "__tool_activity".to_owned(),
                     arguments: serde_json::Value::Null,
                     started_at_unix_ms: first.started_at_unix_ms,
@@ -1555,7 +1556,7 @@ impl LayoutCache {
                     continue;
                 };
                 // Code wrappers are orchestration, not additional semantic calls.
-                use crate::tui::transcript::ToolState;
+                use crate::nanocodex2::tui::transcript::ToolState;
                 if call.child_count > 0 {
                     wrapper_duration = wrapper_duration.max(
                         self.live_tool_durations
@@ -1594,7 +1595,7 @@ impl LayoutCache {
             duration = duration.max(wrapper_duration);
             // A wrapper's children may follow an intervening message in another block.
             if counts.iter().all(|count| *count == 0) {
-                use crate::tui::transcript::ToolState;
+                use crate::nanocodex2::tui::transcript::ToolState;
                 counts[match first.state {
                     ToolState::Running => 0,
                     ToolState::Succeeded => 1,
@@ -1614,13 +1615,13 @@ impl LayoutCache {
             call.result = None;
             call.duration_ns = Some(duration);
             call.state = if counts[0] > 0 || wrapper_running {
-                crate::tui::transcript::ToolState::Running
+                crate::nanocodex2::tui::transcript::ToolState::Running
             } else if counts[2] > 0 || wrapper_failed {
-                crate::tui::transcript::ToolState::Failed
+                crate::nanocodex2::tui::transcript::ToolState::Failed
             } else if counts[3] > 0 || wrapper_waiting {
-                crate::tui::transcript::ToolState::Yielded
+                crate::nanocodex2::tui::transcript::ToolState::Yielded
             } else {
-                crate::tui::transcript::ToolState::Succeeded
+                crate::nanocodex2::tui::transcript::ToolState::Succeeded
             };
             if self.entries.get(&entry.id).is_some_and(|cached| {
                 cached.activity
@@ -1984,7 +1985,7 @@ impl Component for Transcript {
                 if matches!(
                     &entry.kind,
                     EntryKind::Tool(tool)
-                        if tool.state == crate::tui::transcript::ToolState::Running
+                        if tool.state == crate::nanocodex2::tui::transcript::ToolState::Running
                 ) && let Some(spinner) = self.tool_spinner
                 {
                     let spinner_x =
@@ -2216,7 +2217,7 @@ fn render_entry(
 fn render_live_tool_summary(
     entry: &TranscriptEntry,
     depth: u16,
-    tool: &crate::tui::transcript::ToolEntry,
+    tool: &crate::nanocodex2::tui::transcript::ToolEntry,
     duration_ns: u64,
     width: u16,
     theme: &Theme,
@@ -2322,9 +2323,9 @@ fn layout_without_links(lines: Vec<Line<'static>>) -> markdown::Layout {
 }
 
 fn render_user(text: &str, width: u16, theme: &Theme) -> markdown::Layout {
-    let summary = crate::tui::review::display_prompt(text);
+    let summary = crate::nanocodex2::tui::review::display_prompt(text);
     let text = summary.as_deref().unwrap_or(text);
-    let readable = crate::tui::vault::receipt_summary(text);
+    let readable = crate::nanocodex2::tui::vault::receipt_summary(text);
     let text = normalize_line_endings(readable.as_deref().unwrap_or(text)).into_owned();
     let text: std::borrow::Cow<'_, str> = std::borrow::Cow::Owned(text);
     let color = theme.thinking_medium();
@@ -2378,7 +2379,7 @@ fn line_width(text: &str) -> usize {
 #[cfg(test)]
 mod history_tests {
     use super::{Anchor, Component, ScrollCommand, ScrollState, Transcript, TranscriptEvent};
-    use crate::tui::{
+    use crate::nanocodex2::tui::{
         theme::Theme,
         transcript::{LocalEvent, TranscriptRecord, TurnId},
     };

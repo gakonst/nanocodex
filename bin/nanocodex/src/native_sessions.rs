@@ -257,7 +257,7 @@ fn clean(value: &str) -> String {
 }
 
 pub(crate) fn select(sessions: &[ResumeSession]) -> Result<Option<String>> {
-    use crossterm::{
+    use legacy_crossterm::{
         cursor,
         event::{self, Event, KeyCode, KeyModifiers},
         execute,
@@ -266,12 +266,12 @@ pub(crate) fn select(sessions: &[ResumeSession]) -> Result<Option<String>> {
     struct Terminal;
     impl Drop for Terminal {
         fn drop(&mut self) {
-            let _ = crossterm::execute!(
+            let _ = legacy_crossterm::execute!(
                 io::stdout(),
-                crossterm::terminal::LeaveAlternateScreen,
-                crossterm::cursor::Show
+                legacy_crossterm::terminal::LeaveAlternateScreen,
+                legacy_crossterm::cursor::Show
             );
-            let _ = crossterm::terminal::disable_raw_mode();
+            let _ = legacy_crossterm::terminal::disable_raw_mode();
         }
     }
     terminal::enable_raw_mode()?;

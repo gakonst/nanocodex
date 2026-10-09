@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use super::{Presentation, format_bytes};
-use crate::tui::{
+use crate::nanocodex2::tui::{
     theme::Theme,
     transcript::{ToolEntry, code_mode_output_text},
 };
@@ -143,7 +143,7 @@ fn wait(tool: &ToolEntry, width: u16, theme: &Theme, expanded: bool) -> Presenta
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tui::transcript::ToolState;
+    use crate::nanocodex2::tui::transcript::ToolState;
     use serde_json::json;
 
     #[test]

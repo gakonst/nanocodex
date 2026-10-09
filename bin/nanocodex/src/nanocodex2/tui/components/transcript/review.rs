@@ -1,7 +1,7 @@
 //! Self-contained review snapshots. Never resolve a finding against the live workspace.
 use super::diff::{self, DiffLine, DiffLineKind};
 use super::markdown::{sanitize, wrap_plain};
-use crate::tui::theme::Theme;
+use crate::nanocodex2::tui::theme::Theme;
 use ratatui::{
     style::{Modifier, Style},
     text::{Line, Span},

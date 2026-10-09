@@ -1,4 +1,8 @@
 //! Real CLI + QuickJS + Registry journey; only inference is synthetic.
+#[path = "support/local_cli.rs"]
+mod local_cli;
+use local_cli::local_cli;
+
 #[path = "support/claude_code_fixture.rs"]
 mod code_fixture;
 use axum::{Json, Router, routing::post};
@@ -55,7 +59,7 @@ fn parsed(body: &Value) -> Value {
     serde_json::from_str(&text).unwrap_or(json!(text))
 }
 fn command(workspace: &Path, endpoint: &str, opt_in: bool) -> Command {
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_nanocodex"));
+    let mut cmd = Command::new(local_cli());
     cmd.arg("run")
         .current_dir(workspace)
         .env_clear()

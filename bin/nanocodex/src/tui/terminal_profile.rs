@@ -12,7 +12,7 @@ pub(super) async fn detect() -> TerminalProfile {
         .as_ref()
         .and_then(|client| client.cell)
         .or_else(|| {
-            crossterm::terminal::window_size()
+            legacy_crossterm::terminal::window_size()
                 .ok()
                 .and_then(window_cell)
         })
@@ -50,7 +50,7 @@ fn kitty_hint(terminal: &str) -> bool {
     )
 }
 
-fn window_cell(size: crossterm::terminal::WindowSize) -> Option<PixelSize> {
+fn window_cell(size: legacy_crossterm::terminal::WindowSize) -> Option<PixelSize> {
     let width = size.width.checked_div(size.columns)?;
     let height = size.height.checked_div(size.rows)?;
     (width > 0 && height > 0).then(|| PixelSize::new(width, height))
@@ -112,7 +112,7 @@ mod tests {
 
     #[test]
     fn cell_geometry_ignores_missing_pixel_dimensions() {
-        let size = || crossterm::terminal::WindowSize {
+        let size = || legacy_crossterm::terminal::WindowSize {
             columns: 110,
             rows: 32,
             width: 1100,
@@ -120,11 +120,11 @@ mod tests {
         };
         assert_eq!(window_cell(size()), Some(PixelSize::new(10, 20)));
         assert_eq!(
-            window_cell(crossterm::terminal::WindowSize { width: 0, ..size() }),
+            window_cell(legacy_crossterm::terminal::WindowSize { width: 0, ..size() }),
             None
         );
         assert_eq!(
-            window_cell(crossterm::terminal::WindowSize { rows: 0, ..size() }),
+            window_cell(legacy_crossterm::terminal::WindowSize { rows: 0, ..size() }),
             None
         );
     }

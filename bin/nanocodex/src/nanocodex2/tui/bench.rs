@@ -43,6 +43,11 @@ mod voice;
 #[path = "../voice_state.rs"]
 mod voice_state;
 
+// Production components address the managed tree as `crate::nanocodex2`.
+mod nanocodex2 {
+    pub(crate) use crate::*;
+}
+
 // Keep production components on their normal module paths in this private target.
 mod tui {
     pub(crate) use crate::{

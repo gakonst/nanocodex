@@ -8,14 +8,14 @@ use std::{
     },
 };
 
-use ratatex::{Formula, FormulaWidget, Ratatex, SignedPosition};
-use ratatui::{
+use legacy_ratatui::{
     buffer::Buffer,
     layout::{Alignment, Position, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span, Text},
     widgets::{Block, Borders, Paragraph, Widget, Wrap},
 };
+use ratatex::{Formula, FormulaWidget, Ratatex, SignedPosition};
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
@@ -3269,7 +3269,7 @@ fn wrap_line(content: &str, width: u16) -> Vec<String> {
 fn wrap_styled_line(
     line: &Line<'static>,
     base_style: Style,
-    default_alignment: Option<ratatui::layout::Alignment>,
+    default_alignment: Option<legacy_ratatui::layout::Alignment>,
     width: u16,
 ) -> Vec<Line<'static>> {
     let alignment = line.alignment.or(default_alignment);
@@ -3412,8 +3412,7 @@ mod tests {
         time::Duration,
     };
 
-    use ratatex::{PixelSize, Ratatex, TerminalProfile};
-    use ratatui::{
+    use legacy_ratatui::{
         Terminal,
         backend::TestBackend,
         buffer::Buffer,
@@ -3422,6 +3421,7 @@ mod tests {
         text::Line,
         widgets::{Paragraph, Widget, Wrap},
     };
+    use ratatex::{PixelSize, Ratatex, TerminalProfile};
 
     use super::{
         EntryContent, InlineEdit, MarkdownContent, SharedToolCalls, StreamingLine, ToolActivity,
@@ -3641,7 +3641,7 @@ with $\mathbf{u}$ denoting velocity."
             .unwrap();
         let row = terminal.backend().buffer().content[formula_row * 80..(formula_row + 1) * 80]
             .iter()
-            .map(ratatui::buffer::Cell::symbol)
+            .map(legacy_ratatui::buffer::Cell::symbol)
             .collect::<String>();
         assert!(row.contains("The bound "));
         assert!(row.contains(" controls boundary obstructions."));
@@ -4024,7 +4024,7 @@ R_{\mu\nu}-\frac12R\,g_{\mu\nu}+\Lambda g_{\mu\nu}
             .chunks(usize::from(area.width))
             .map(|row| {
                 row.iter()
-                    .map(ratatui::buffer::Cell::symbol)
+                    .map(legacy_ratatui::buffer::Cell::symbol)
                     .collect::<String>()
             })
             .collect::<Vec<_>>()
@@ -4419,14 +4419,14 @@ R_{\mu\nu}-\frac12R\,g_{\mu\nu}+\Lambda g_{\mu\nu}
                 .cell((0, 2))
                 .unwrap()
                 .modifier
-                .contains(ratatui::style::Modifier::DIM)
+                .contains(legacy_ratatui::style::Modifier::DIM)
         );
         assert!(
             buffer
                 .cell((2, 2))
                 .unwrap()
                 .modifier
-                .contains(ratatui::style::Modifier::BOLD)
+                .contains(legacy_ratatui::style::Modifier::BOLD)
         );
         let rendered = (0..area.width)
             .map(|column| buffer.cell((column, 2)).unwrap().symbol())
@@ -4438,7 +4438,7 @@ R_{\mu\nu}-\frac12R\,g_{\mu\nu}+\Lambda g_{\mu\nu}
                 .cell((request_column, 2))
                 .unwrap()
                 .modifier
-                .contains(ratatui::style::Modifier::ITALIC)
+                .contains(legacy_ratatui::style::Modifier::ITALIC)
         );
     }
 
@@ -4500,7 +4500,7 @@ R_{\mu\nu}-\frac12R\,g_{\mu\nu}+\Lambda g_{\mu\nu}
         for index in 0..100 {
             transcript.push(TranscriptItem::User(format!("message {index}")));
         }
-        let mut buffer = ratatui::buffer::Buffer::empty(Rect::new(0, 0, 20, 4));
+        let mut buffer = legacy_ratatui::buffer::Buffer::empty(Rect::new(0, 0, 20, 4));
 
         transcript
             .widget(0, None, None, "empty")
@@ -4511,7 +4511,7 @@ R_{\mu\nu}-\frac12R\,g_{\mu\nu}+\Lambda g_{\mu\nu}
             .chunks(20)
             .map(|row| {
                 row.iter()
-                    .map(ratatui::buffer::Cell::symbol)
+                    .map(legacy_ratatui::buffer::Cell::symbol)
                     .collect::<String>()
             })
             .collect::<Vec<_>>();
@@ -4539,7 +4539,7 @@ R_{\mu\nu}-\frac12R\,g_{\mu\nu}+\Lambda g_{\mu\nu}
         assert_eq!(buffer.cell((0, 3)).unwrap().bg, Color::Reset);
         let header = buffer.content[..20]
             .iter()
-            .map(ratatui::buffer::Cell::symbol)
+            .map(legacy_ratatui::buffer::Cell::symbol)
             .collect::<String>();
         assert!(header.contains("e to edit"));
     }
@@ -4587,7 +4587,7 @@ R_{\mu\nu}-\frac12R\,g_{\mu\nu}+\Lambda g_{\mu\nu}
             .chunks(usize::from(area.width))
             .map(|row| {
                 row.iter()
-                    .map(ratatui::buffer::Cell::symbol)
+                    .map(legacy_ratatui::buffer::Cell::symbol)
                     .collect::<String>()
             })
             .collect::<Vec<_>>()
@@ -4610,7 +4610,7 @@ R_{\mu\nu}-\frac12R\,g_{\mu\nu}+\Lambda g_{\mu\nu}
         for index in 0..100 {
             transcript.push(TranscriptItem::User(format!("message {index}")));
         }
-        let mut buffer = ratatui::buffer::Buffer::empty(Rect::new(0, 0, 20, 4));
+        let mut buffer = legacy_ratatui::buffer::Buffer::empty(Rect::new(0, 0, 20, 4));
 
         transcript
             .widget(3, None, None, "empty")
@@ -4621,7 +4621,7 @@ R_{\mu\nu}-\frac12R\,g_{\mu\nu}+\Lambda g_{\mu\nu}
             .chunks(20)
             .map(|row| {
                 row.iter()
-                    .map(ratatui::buffer::Cell::symbol)
+                    .map(legacy_ratatui::buffer::Cell::symbol)
                     .collect::<String>()
             })
             .collect::<Vec<_>>();
@@ -4637,7 +4637,7 @@ R_{\mu\nu}-\frac12R\,g_{\mu\nu}+\Lambda g_{\mu\nu}
         for index in 0..100 {
             transcript.push(TranscriptItem::User(format!("message {index}")));
         }
-        let mut buffer = ratatui::buffer::Buffer::empty(Rect::new(0, 0, 20, 4));
+        let mut buffer = legacy_ratatui::buffer::Buffer::empty(Rect::new(0, 0, 20, 4));
 
         transcript
             .widget(usize::MAX, None, None, "empty")
@@ -4648,7 +4648,7 @@ R_{\mu\nu}-\frac12R\,g_{\mu\nu}+\Lambda g_{\mu\nu}
             .chunks(20)
             .map(|row| {
                 row.iter()
-                    .map(ratatui::buffer::Cell::symbol)
+                    .map(legacy_ratatui::buffer::Cell::symbol)
                     .collect::<String>()
             })
             .collect::<Vec<_>>();

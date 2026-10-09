@@ -63,7 +63,7 @@ async fn terminal_discovery_omits_sigkill_orphans_even_with_a_recycled_pid() {
 
     async fn cli(home: &Path, args: &[&str], input: &[u8]) -> std::process::Output {
         let started = std::time::Instant::now();
-        let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_nanocodex2"))
+        let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_nanocodex"))
             .args(args)
             .env("CODEX_HOME", home)
             .stdin(Stdio::piped())
@@ -715,7 +715,7 @@ impl Terminal {
             .unwrap();
         let mut command = CommandBuilder::new(
             std::env::var_os("NANOCODEX2_TEST_BINARY")
-                .unwrap_or_else(|| env!("CARGO_BIN_EXE_nanocodex2").into()),
+                .unwrap_or_else(|| env!("CARGO_BIN_EXE_nanocodex").into()),
         );
         command.env_clear();
         command.env("PATH", std::env::var_os("PATH").unwrap_or_default());

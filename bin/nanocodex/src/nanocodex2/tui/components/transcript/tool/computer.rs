@@ -1,7 +1,7 @@
 //! Compact computer activity; provider observations remain in disclosed details.
 use super::super::markdown::wrap_plain_preserving_whitespace;
 use super::{Presentation, sanitize, status_style, truncate, wrap_plain};
-use crate::tui::{
+use crate::nanocodex2::tui::{
     theme::Theme,
     transcript::{ToolEntry, ToolState},
 };

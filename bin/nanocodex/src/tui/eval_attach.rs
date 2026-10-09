@@ -1,16 +1,16 @@
 use std::{io, path::Path, time::Duration};
 
-use crossterm::event::{Event, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use eyre::{Result, WrapErr as _};
 use futures_util::StreamExt as _;
-use nanocodex_eval::{EvaluationFamilyStatus, EvaluationObserver, EvaluationStatus};
-use ratatui::{
+use legacy_crossterm::event::{Event, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use legacy_ratatui::{
     Frame,
     layout::{Constraint, Layout},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Cell, Gauge, Paragraph, Row, Table},
 };
+use nanocodex_eval::{EvaluationFamilyStatus, EvaluationObserver, EvaluationStatus};
 use tokio::time::{MissedTickBehavior, interval};
 
 use super::terminal::TerminalSession;
@@ -279,10 +279,10 @@ fn model_label(family: &EvaluationFamilyStatus) -> String {
 
 #[cfg(test)]
 mod tests {
-    use crossterm::event::{KeyEvent, KeyModifiers};
+    use legacy_crossterm::event::{KeyEvent, KeyModifiers};
+    use legacy_ratatui::{Terminal, backend::TestBackend};
     use nanocodex::{Model, Thinking};
     use nanocodex_eval::{EvaluationCounts, EvaluationTreatment};
-    use ratatui::{Terminal, backend::TestBackend};
 
     use super::*;
 
@@ -296,7 +296,7 @@ mod tests {
             .buffer()
             .content()
             .iter()
-            .map(ratatui::buffer::Cell::symbol)
+            .map(legacy_ratatui::buffer::Cell::symbol)
             .collect::<String>();
 
         assert!(rendered.contains("terminal-bench"));

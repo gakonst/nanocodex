@@ -11,7 +11,7 @@ use super::{
     selection::{TextRange, TextSpan},
     waved_text::WavedText,
 };
-use crate::{
+use crate::nanocodex2::{
     config::{ReasoningEffort, ReasoningMode},
     tui::{
         context::MODEL_WINDOW_TOKENS,
@@ -52,10 +52,10 @@ const DEVELOPMENT_BADGE: &str = " ◉ dev ";
 #[derive(Debug, Eq, PartialEq)]
 pub(crate) enum ComposerEffect {
     ShowAgentId,
-    Share(Result<crate::tui::share::Command, String>),
-    Sites(Result<crate::tui::sites::Command, String>),
-    Vault(crate::tui::vault::Command),
-    SecureInput(crate::tui::secure_input::Command),
+    Share(Result<crate::nanocodex2::tui::share::Command, String>),
+    Sites(Result<crate::nanocodex2::tui::sites::Command, String>),
+    Vault(crate::nanocodex2::tui::vault::Command),
+    SecureInput(crate::nanocodex2::tui::secure_input::Command),
     Submit(Submission),
     Queue(Submission),
     RunShell(String),
@@ -66,7 +66,7 @@ pub(crate) enum ComposerEffect {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum SettingsCommand {
     Bug(String),
-    CodeReview(crate::tui::review::Command),
+    CodeReview(crate::nanocodex2::tui::review::Command),
     Btw(String),
     CloseBtw,
     Attach,
@@ -75,7 +75,7 @@ pub(crate) enum SettingsCommand {
     SetDone(bool),
     Screen,
     Zoom,
-    Voice(crate::voice::Command),
+    Voice(crate::nanocodex2::voice::Command),
     OpenEffort,
     SetEffort(ReasoningEffort),
     OpenModel,
@@ -85,7 +85,7 @@ pub(crate) enum SettingsCommand {
 
 impl SettingsCommand {
     pub(super) fn parse(input: &str) -> Option<Self> {
-        if let Some(command) = crate::tui::review::parse(input) {
+        if let Some(command) = crate::nanocodex2::tui::review::parse(input) {
             return Some(Self::CodeReview(command));
         }
         let mut parts = input.split_whitespace();
@@ -130,7 +130,9 @@ impl SettingsCommand {
                 Self::Zoom
             }),
             "/voice" => Some(
-                match crate::voice::Command::parse(input.trim_start()[command.len()..].trim()) {
+                match crate::nanocodex2::voice::Command::parse(
+                    input.trim_start()[command.len()..].trim(),
+                ) {
                     Ok(command) => Self::Voice(command),
                     Err(error) => Self::Invalid(error),
                 },
@@ -1183,20 +1185,27 @@ impl Composer {
             }
             return None;
         }
-        let effect =
-            if let Some(command) = crate::tui::secure_input::Command::parse(self.draft.trim()) {
-                ComposerEffect::SecureInput(command)
-            } else if let Some(command) = crate::tui::share::Command::parse(self.draft.trim()) {
-                ComposerEffect::Share(command)
-            } else if let Some(command) = crate::tui::sites::Command::parse(self.draft.trim()) {
-                ComposerEffect::Sites(command)
-            } else if let Some(command) = crate::tui::vault::Command::parse(self.draft.trim()) {
-                ComposerEffect::Vault(command)
-            } else if self.draft.trim() == "/id" {
-                ComposerEffect::ShowAgentId
-            } else {
-                ComposerEffect::Settings(SettingsCommand::parse(self.draft.trim())?)
-            };
+        let effect = if let Some(command) =
+            crate::nanocodex2::tui::secure_input::Command::parse(self.draft.trim())
+        {
+            ComposerEffect::SecureInput(command)
+        } else if let Some(command) =
+            crate::nanocodex2::tui::share::Command::parse(self.draft.trim())
+        {
+            ComposerEffect::Share(command)
+        } else if let Some(command) =
+            crate::nanocodex2::tui::sites::Command::parse(self.draft.trim())
+        {
+            ComposerEffect::Sites(command)
+        } else if let Some(command) =
+            crate::nanocodex2::tui::vault::Command::parse(self.draft.trim())
+        {
+            ComposerEffect::Vault(command)
+        } else if self.draft.trim() == "/id" {
+            ComposerEffect::ShowAgentId
+        } else {
+            ComposerEffect::Settings(SettingsCommand::parse(self.draft.trim())?)
+        };
         // Never persist even malformed private-control arguments in composer history.
         if !matches!(&effect, ComposerEffect::SecureInput(_)) {
             self.history.record(self.draft.trim().to_owned());
@@ -1886,7 +1895,7 @@ impl Composer {
         let directory_width = directory.width().min(content_width);
         let directory_start =
             content_end.saturating_sub(u16::try_from(directory_width).unwrap_or(u16::MAX));
-        let development_width = if crate::installation::current().is_development()
+        let development_width = if crate::nanocodex2::installation::current().is_development()
             && DEVELOPMENT_BADGE.width()
                 <= usize::from(directory_start.saturating_sub(content_start))
         {
@@ -2171,7 +2180,7 @@ mod tests {
         super::selection::{Selection, Surface, TextRange},
         Composer, ComposerEffect, ComposerEvent, SettingsCommand, context_percent,
     };
-    use crate::{
+    use crate::nanocodex2::{
         config::{ReasoningEffort, ReasoningMode},
         tui::theme::Theme,
     };
@@ -3220,7 +3229,7 @@ mod tests {
         assert!(matches!(
             update.effect,
             Some(ComposerEffect::SecureInput(
-                crate::tui::secure_input::Command::Help
+                crate::nanocodex2::tui::secure_input::Command::Help
             ))
         ));
         assert!(composer.draft.is_empty());
@@ -3250,10 +3259,12 @@ mod tests {
             SettingsCommand::parse(
                 "/voice clone \"Sample speaker\" \"audio/my sample.wav\" --consent"
             ),
-            Some(SettingsCommand::Voice(crate::voice::Command::Clone {
-                name: "Sample speaker".into(),
-                path: "audio/my sample.wav".into()
-            }))
+            Some(SettingsCommand::Voice(
+                crate::nanocodex2::voice::Command::Clone {
+                    name: "Sample speaker".into(),
+                    path: "audio/my sample.wav".into()
+                }
+            ))
         );
         assert!(matches!(
             SettingsCommand::parse("/voice clone me audio.wav"),
@@ -3261,9 +3272,11 @@ mod tests {
         ));
         assert!(matches!(
             SettingsCommand::parse("/voice voices elevenlabs"),
-            Some(SettingsCommand::Voice(crate::voice::Command::ListProvider(
-                crate::voice::Provider::ElevenLabs
-            )))
+            Some(SettingsCommand::Voice(
+                crate::nanocodex2::voice::Command::ListProvider(
+                    crate::nanocodex2::voice::Provider::ElevenLabs
+                )
+            ))
         ));
     }
 

@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use super::Presentation;
-use crate::tui::{theme::Theme, transcript::ToolEntry};
+use crate::nanocodex2::tui::{theme::Theme, transcript::ToolEntry};
 use serde_json::Value;
 
 pub(super) fn present(tool: &ToolEntry, width: u16, theme: &Theme, expanded: bool) -> Presentation {

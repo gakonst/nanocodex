@@ -565,7 +565,9 @@ mod tests {
 
     #[test]
     fn durable_stop_projection_preserves_other_work_and_keeps_retries_active() {
-        use crate::tui::transcript::{EntryKind, ToolState, TranscriptModel, TranscriptRecord};
+        use crate::nanocodex2::tui::transcript::{
+            EntryKind, ToolState, TranscriptModel, TranscriptRecord,
+        };
         for kind in ["turn_failed", "turn_cancelled", "turn_retryable"] {
             for retained in [false, true] {
                 let nested = |cursor: u64,

@@ -388,7 +388,8 @@ mod tests {
         }
         assert_eq!(ui.app.input, "h!i");
         assert_eq!(ui.app.cursor, 2);
-        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 24))?;
+        let mut terminal =
+            legacy_ratatui::Terminal::new(legacy_ratatui::backend::TestBackend::new(80, 24))?;
         terminal.draw(|frame| view::render(frame, &mut ui.app))?;
         assert!(!backend.task.as_ref().unwrap().is_finished());
         assert_eq!(

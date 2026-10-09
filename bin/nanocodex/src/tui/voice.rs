@@ -1,13 +1,13 @@
 //! Bounded live captions and independently sampled audio meters for the composer strip.
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use nanocodex_voice::VoiceSpeaker;
-use ratatui::{
+use legacy_crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use legacy_ratatui::{
     Frame,
     layout::Rect,
     style::{Color, Style},
     text::{Line, Span},
     widgets::Paragraph,
 };
+use nanocodex_voice::VoiceSpeaker;
 use std::{
     collections::VecDeque,
     hash::{Hash, Hasher},

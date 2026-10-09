@@ -3,7 +3,7 @@
 
 //! Structured rendering for unified and `apply_patch` diffs.
 
-use crate::tui::theme::Theme;
+use crate::nanocodex2::tui::theme::Theme;
 use ratatui::{
     style::{Color, Modifier, Style},
     text::{Line, Span},

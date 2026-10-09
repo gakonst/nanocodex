@@ -16,14 +16,14 @@ mod tui {
     };
 
     use criterion::{BatchSize, BenchmarkId, Criterion, Throughput};
-    use nanocodex::agent::events::{AgentEvent, AgentEventKind, AgentEventTiming, TimedAgentEvent};
-    use ratatex::{PixelSize, Ratatex, TerminalProfile};
-    use ratatui::{
+    use legacy_ratatui::{
         Terminal, TerminalOptions, Viewport,
         backend::{CrosstermBackend, TestBackend},
         buffer::Buffer,
         layout::Rect,
     };
+    use nanocodex::agent::events::{AgentEvent, AgentEventKind, AgentEventTiming, TimedAgentEvent};
+    use ratatex::{PixelSize, Ratatex, TerminalProfile};
 
     #[allow(dead_code, unused_imports)]
     mod markdown {

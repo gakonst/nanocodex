@@ -1,4 +1,4 @@
-//! Native setup shared by the two installed Unix entrypoints.
+//! Native setup for every installed Unix entrypoint name.
 //!
 //! Call initialization before starting threads or loading a workspace `.env`.
 //! Relative bin -> current links pin the selected executable at exec time; setup
@@ -56,7 +56,12 @@ fn installed_root_for(executable: &Path) -> Option<PathBuf> {
     ) {
         return None;
     }
-    let directory = executable.parent()?;
+    let mut directory = executable.parent()?;
+    // A macOS version may hold its executable inside an app bundle:
+    // versions/<key>/Nanocodex.app/Contents/MacOS/nanocodex2.
+    if directory.ends_with("Nanocodex.app/Contents/MacOS") {
+        directory = directory.parent()?.parent()?.parent()?;
+    }
     let root = if directory.file_name()? == "updater" {
         directory.parent()?
     } else {
@@ -76,25 +81,27 @@ fn installed_root_for(executable: &Path) -> Option<PathBuf> {
 
 /// Keep `nanocodex update ...` on the separate update manager, even when the
 /// active application is version-pinned. Other commands never spawn a process.
-#[allow(dead_code)] // nanocodex2 has no update command.
-pub(crate) fn dispatch_update() -> std::io::Result<()> {
+/// `arguments` is the full argv after mode selection removed `--local`.
+pub(crate) fn dispatch_update(arguments: &[std::ffi::OsString]) -> std::io::Result<()> {
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
 
-        let mut args = std::env::args_os();
-        let argv0 = args.next().unwrap_or_default();
-        if args.next().as_deref() != Some(std::ffi::OsStr::new("update")) {
+        if arguments.get(1).map(std::ffi::OsString::as_os_str)
+            != Some(std::ffi::OsStr::new("update"))
+        {
             return Ok(());
         }
         let executable = std::env::current_exe()?;
         if let Some(updater) = updater_for(&executable)? {
             return Err(std::process::Command::new(updater)
-                .arg0(argv0)
-                .args(std::env::args_os().skip(1))
+                .arg0(arguments.first().cloned().unwrap_or_default())
+                .args(&arguments[1..])
                 .exec());
         }
     }
+    #[cfg(not(unix))]
+    let _ = arguments;
     Ok(())
 }
 

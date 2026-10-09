@@ -1,7 +1,7 @@
 // Derived from clabby/tact; modified for Nanocodex2.
 // SPDX-License-Identifier: Apache-2.0
 
-use crate::config::{ReasoningEffort, ReasoningMode};
+use crate::nanocodex2::config::{ReasoningEffort, ReasoningMode};
 use nanocodex::agent::events::{AgentEvent, AgentEventKind};
 use serde::{Deserialize, Serialize};
 use serde_json::value::{RawValue, to_raw_value};
@@ -63,7 +63,7 @@ pub(crate) struct SessionEnded {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum LocalEvent {
-    VoiceTranscript(crate::voice_state::Transcript),
+    VoiceTranscript(crate::nanocodex2::voice_state::Transcript),
     SessionStarted(SessionStarted),
     UserSubmitted {
         id: TurnId,

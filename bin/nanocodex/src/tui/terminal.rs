@@ -9,7 +9,7 @@ use std::{
     },
 };
 
-use crossterm::{
+use legacy_crossterm::{
     cursor::{Hide, Show},
     event::{
         DisableBracketedPaste, DisableFocusChange, DisableMouseCapture, EnableBracketedPaste,
@@ -23,7 +23,7 @@ use crossterm::{
         disable_raw_mode, enable_raw_mode,
     },
 };
-use ratatui::{
+use legacy_ratatui::{
     Frame, Terminal,
     backend::{Backend, ClearType, CrosstermBackend, WindowSize},
     buffer::{Buffer, Cell},
@@ -408,8 +408,8 @@ fn install_panic_hook() {
 mod tests {
     use std::{cell::Cell, io::Write, rc::Rc};
 
-    use crossterm::style::{Color, SetForegroundColor, force_color_output};
-    use ratatui::{Terminal, backend::TestBackend, text::Text, widgets::Paragraph};
+    use legacy_crossterm::style::{Color, SetForegroundColor, force_color_output};
+    use legacy_ratatui::{Terminal, backend::TestBackend, text::Text, widgets::Paragraph};
 
     use super::{
         ByteCountingWriter, MeasuredBackend, begin_synchronized_update, enable_tui_colors,

@@ -1,4 +1,7 @@
 #![cfg(unix)]
+#[path = "support/local_cli.rs"]
+mod local_cli;
+use local_cli::local_cli;
 
 use std::{
     env,
@@ -1613,7 +1616,7 @@ fn spawn_managed_server_with_faults(
     terminal_delay_ms: u64,
     tool_ready_delay_ms: u64,
 ) -> Result<Child> {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_nanocodex"));
+    let mut command = Command::new(local_cli());
     command
         .arg("managed-server")
         .arg("--bind")

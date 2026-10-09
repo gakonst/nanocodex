@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use super::{Presentation, format_bytes};
-use crate::tui::{format::shorten_home, theme::Theme, transcript::ToolEntry};
+use crate::nanocodex2::tui::{format::shorten_home, theme::Theme, transcript::ToolEntry};
 use ratatui::{
     style::{Color, Style},
     text::Span,

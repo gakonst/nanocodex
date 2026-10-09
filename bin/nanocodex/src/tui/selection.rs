@@ -1,11 +1,11 @@
 use std::time::{Duration, Instant};
 
-use ratatex::is_formula_placeholder;
-use ratatui::{
+use legacy_ratatui::{
     buffer::Buffer,
     layout::{Position, Rect},
     style::{Color, Modifier, Style},
 };
+use ratatex::is_formula_placeholder;
 use unicode_width::UnicodeWidthStr;
 
 const MULTI_CLICK_INTERVAL: Duration = Duration::from_millis(500);
@@ -695,7 +695,7 @@ const fn row_bounds(start: Position, end: Position, y: u16, last_x: u16) -> (u16
 mod tests {
     use std::time::{Duration, Instant};
 
-    use ratatui::{buffer::Buffer, layout::Rect, style::Modifier};
+    use legacy_ratatui::{buffer::Buffer, layout::Rect, style::Modifier};
 
     use super::{ScreenSelection, SelectionScrollDirection};
 
@@ -723,15 +723,15 @@ mod tests {
         );
         assert_eq!(
             buffer.cell((2, 1)).unwrap().bg,
-            ratatui::style::Color::Indexed(8)
+            legacy_ratatui::style::Color::Indexed(8)
         );
         assert_ne!(
             buffer.cell((0, 0)).unwrap().bg,
-            ratatui::style::Color::Indexed(8)
+            legacy_ratatui::style::Color::Indexed(8)
         );
         assert_ne!(
             buffer.cell((13, 1)).unwrap().bg,
-            ratatui::style::Color::Indexed(8)
+            legacy_ratatui::style::Color::Indexed(8)
         );
     }
 
@@ -752,11 +752,11 @@ mod tests {
         );
         assert_eq!(
             buffer.cell((4, 1)).unwrap().bg,
-            ratatui::style::Color::Indexed(8)
+            legacy_ratatui::style::Color::Indexed(8)
         );
         assert_ne!(
             buffer.cell((5, 1)).unwrap().bg,
-            ratatui::style::Color::Indexed(8)
+            legacy_ratatui::style::Color::Indexed(8)
         );
     }
 
@@ -781,7 +781,7 @@ mod tests {
         let mut feedback = Buffer::with_lines(["styled text"]);
         selection.render(&mut feedback, &[area]);
         let cell = feedback.cell((0, 0)).unwrap();
-        assert_eq!(cell.fg, ratatui::style::Color::Yellow);
+        assert_eq!(cell.fg, legacy_ratatui::style::Color::Yellow);
         assert!(cell.modifier.contains(Modifier::REVERSED));
 
         assert!(!selection.advance(copied_at + Duration::from_millis(299)));
@@ -896,7 +896,7 @@ mod tests {
         assert_eq!(selection.take_pending_copy().as_deref(), Some("left"));
         assert_ne!(
             buffer.cell((8, 0)).unwrap().bg,
-            ratatui::style::Color::Indexed(8)
+            legacy_ratatui::style::Color::Indexed(8)
         );
     }
 
@@ -904,7 +904,7 @@ mod tests {
     fn wide_graphemes_do_not_add_continuation_spaces() {
         let area = Rect::new(0, 0, 8, 1);
         let mut buffer = Buffer::empty(area);
-        buffer.set_string(0, 0, "界abc", ratatui::style::Style::default());
+        buffer.set_string(0, 0, "界abc", legacy_ratatui::style::Style::default());
         let mut selection = ScreenSelection::default();
         selection.render(&mut buffer, &[area]);
         assert!(selection.begin((0, 0).into()));

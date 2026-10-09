@@ -1,4 +1,4 @@
-use ratatui::{
+use legacy_ratatui::{
     Frame,
     layout::{Alignment, Constraint, Layout, Position, Rect},
     style::{Color, Modifier, Style},

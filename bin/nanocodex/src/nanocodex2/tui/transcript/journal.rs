@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use super::{TranscriptError, TranscriptRecord};
-use crate::tui::{
+use crate::nanocodex2::tui::{
     context::outbound_context_snapshot,
     storage::{SessionStorage, database_path},
     transcript::{LocalEvent, SessionStarted},
@@ -134,7 +134,7 @@ impl TranscriptJournal {
         Ok(record)
     }
 
-    pub(crate) fn set_initial_effort(&mut self, effort: crate::config::ReasoningEffort) {
+    pub(crate) fn set_initial_effort(&mut self, effort: crate::nanocodex2::config::ReasoningEffort) {
         if let Some(started) = &mut self.pending_start {
             started.effort = effort;
         }
@@ -341,7 +341,7 @@ fn unix_milliseconds() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::TranscriptJournal;
-    use crate::{
+    use crate::nanocodex2::{
         config::{ReasoningEffort, ReasoningMode},
         tui::{
             session,

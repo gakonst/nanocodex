@@ -5,6 +5,10 @@ use std::{
     time::{Duration, Instant},
 };
 
+use legacy_ratatui::{
+    buffer::Buffer,
+    layout::{Position, Rect},
+};
 use nanocodex::{
     HarnessFamily, HarnessModel, Model, Thinking,
     agent::{
@@ -17,10 +21,6 @@ use nanocodex::{
     },
 };
 use ratatex::Ratatex;
-use ratatui::{
-    buffer::Buffer,
-    layout::{Position, Rect},
-};
 use serde::Deserialize;
 use serde_json::Value;
 
@@ -4041,13 +4041,13 @@ mod tests {
         time::{Duration, Instant},
     };
 
+    use legacy_ratatui::{buffer::Buffer, layout::Rect, widgets::Widget};
     use nanocodex::agent::{
         events::{AgentEvent, AgentEventKind},
         input::{PromptInput, UserInput},
         rollout::RolloutTranscriptItem,
     };
     use ratatex::{PixelSize, Ratatex, TerminalProfile};
-    use ratatui::{buffer::Buffer, layout::Rect, widgets::Widget};
     use serde_json::{Value, json};
 
     use super::{
@@ -4101,7 +4101,7 @@ mod tests {
         let rendered = buffer
             .content
             .iter()
-            .map(ratatui::buffer::Cell::symbol)
+            .map(legacy_ratatui::buffer::Cell::symbol)
             .collect::<String>();
         assert!(rendered.contains("Report ready"), "{rendered}");
     }
@@ -4140,7 +4140,7 @@ mod tests {
         let rendered = buffer
             .content
             .iter()
-            .map(ratatui::buffer::Cell::symbol)
+            .map(legacy_ratatui::buffer::Cell::symbol)
             .collect::<String>();
         for expected in ["✗", "exit 101", "Compiling", "build failed"] {
             assert!(rendered.contains(expected), "{rendered}");
@@ -4357,7 +4357,7 @@ mod tests {
             .chunks(usize::from(area.width))
             .map(|row| {
                 row.iter()
-                    .map(ratatui::buffer::Cell::symbol)
+                    .map(legacy_ratatui::buffer::Cell::symbol)
                     .collect::<String>()
             })
             .collect::<Vec<_>>()
@@ -5414,7 +5414,7 @@ mod tests {
             .chunks(usize::from(area.width))
             .map(|row| {
                 row.iter()
-                    .map(ratatui::buffer::Cell::symbol)
+                    .map(legacy_ratatui::buffer::Cell::symbol)
                     .collect::<String>()
             })
             .collect::<Vec<_>>()
@@ -5460,7 +5460,7 @@ mod tests {
             .chunks(usize::from(area.width))
             .map(|row| {
                 row.iter()
-                    .map(ratatui::buffer::Cell::symbol)
+                    .map(legacy_ratatui::buffer::Cell::symbol)
                     .collect::<String>()
             })
             .collect::<Vec<_>>()
@@ -5595,7 +5595,7 @@ mod tests {
             .chunks(usize::from(area.width))
             .map(|row| {
                 row.iter()
-                    .map(ratatui::buffer::Cell::symbol)
+                    .map(legacy_ratatui::buffer::Cell::symbol)
                     .collect::<String>()
             })
             .collect::<Vec<_>>()
@@ -5654,7 +5654,7 @@ mod tests {
         let rendered = buffer
             .content
             .iter()
-            .map(ratatui::buffer::Cell::symbol)
+            .map(legacy_ratatui::buffer::Cell::symbol)
             .collect::<String>();
         assert!(rendered.contains("done"));
         assert!(!rendered.contains("await work()"));
@@ -5700,7 +5700,7 @@ mod tests {
             .chunks(usize::from(area.width))
             .map(|row| {
                 row.iter()
-                    .map(ratatui::buffer::Cell::symbol)
+                    .map(legacy_ratatui::buffer::Cell::symbol)
                     .collect::<String>()
             })
             .collect::<Vec<_>>()

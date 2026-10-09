@@ -6,8 +6,6 @@
     reason = "preserve the reviewed Tact component ownership while adapting its engine boundary"
 )]
 
-#[path = "../computer.rs"]
-mod computer;
 #[allow(dead_code)]
 mod config;
 mod connectors;
@@ -15,17 +13,9 @@ mod continue_auth;
 mod continue_sessions;
 mod control;
 mod device_hand;
-#[cfg(target_os = "macos")]
-#[path = "../hand_keep_awake.rs"]
-#[allow(dead_code)]
-mod hand_keep_awake;
-#[path = "../hand_login.rs"]
-mod hand_login;
 mod hand_observability;
 mod hand_recording;
 mod hand_recording_control;
-#[path = "../hand_registry.rs"]
-mod hand_registry;
 mod hand_share;
 #[cfg(any(
     all(target_os = "linux", not(target_env = "musl")),
@@ -35,8 +25,6 @@ mod hand_workspace;
 mod host;
 #[allow(dead_code)]
 mod installation;
-#[path = "../launcher.rs"]
-mod launcher;
 #[cfg(any(target_os = "linux", test))]
 mod linux_hand_install;
 #[cfg(any(target_os = "linux", target_os = "macos", test))]
@@ -73,14 +61,9 @@ mod screen_wayland_input;
 mod service;
 #[allow(dead_code)]
 mod skill;
-#[path = "../startup_timing.rs"]
-mod startup_timing;
 #[allow(dead_code, unused_imports)]
 mod tui;
 mod vault;
-#[allow(dead_code)]
-#[path = "../version.rs"]
-mod version;
 #[cfg(any(
     all(target_os = "linux", not(target_env = "musl")),
     all(target_os = "macos", target_arch = "aarch64")
@@ -98,14 +81,24 @@ mod voice;
 mod voice_recording;
 mod voice_state;
 
+// Modules shared with the local (`ncl`) command tree are compiled once at the
+// crate root; keep their historical paths inside this managed tree.
+#[cfg(target_os = "macos")]
+pub(crate) use crate::hand_keep_awake;
+pub(crate) use crate::{computer, hand_login, launcher, startup_timing, version};
+
 use std::{
+    ffi::OsString,
     io::{self, Write},
     path::PathBuf,
     process::ExitCode,
     time::Instant,
 };
 
-use clap::{Args, Parser, Subcommand, ValueEnum, builder::NonEmptyStringValueParser};
+use clap::{
+    Args, CommandFactory, FromArgMatches, Parser, Subcommand, ValueEnum,
+    builder::NonEmptyStringValueParser,
+};
 use hand_observability::HandObservabilityArgs;
 use host::HostConfig;
 use nanocodex_agent::{AgentEvents, Nanocodex, NanocodexError, PromptRequest, Turn, TurnResult};
@@ -123,7 +116,7 @@ const SYSTEM_HOST_TOKEN_ENV: &str = "NANOCODEX_SYSTEM_HOST_TOKEN";
 
 #[derive(Parser)]
 #[command(
-    name = "nanocodex2",
+    name = "nanocodex",
     version = version::SHORT_VERSION,
     long_version = version::LONG_VERSION,
     about = "Nanocodex terminal client connected to the background machine Hand"
@@ -257,12 +250,14 @@ enum HandNetwork {
 
 #[derive(Args)]
 #[command(
+    args_conflicts_with_subcommands = true,
     group(clap::ArgGroup::new("backend").args(["rootfs", "docker"])),
-    after_help = "Without a backend, connect this computer. Use --vm or --docker for an isolated Hand.\n\nExamples:\n  nanocodex2 hand --docker nanocodex-hand:local --volume my-workspace\n  nanocodex2 hand --vm root.ext4 --guest-runtime /path/to/nanocodex-vm-guest\n\nUse --network internet to give a Docker Hand internet access."
+    after_help = "Without a subcommand, serve this computer as a Hand. Use --vm or --docker for an isolated Hand.\n\nExamples:\n  nanocodex hand --docker nanocodex-hand:local --volume my-workspace\n  nanocodex hand --vm root.ext4 --guest-runtime /path/to/nanocodex-vm-guest\n\nUse --network internet to give a Docker Hand internet access."
 )]
 struct Hand {
+    /// Manage the installed Hand service; omit to serve this computer.
     #[command(subcommand)]
-    registry: Option<hand_registry::Command>,
+    management: Option<crate::hand_setup::HandCommand>,
     /// Private identity directory for an explicitly selected native workspace.
     #[arg(long, conflicts_with_all = ["rootfs", "docker"])]
     state_dir: Option<PathBuf>,
@@ -598,8 +593,31 @@ struct Steer {
     prompt: String,
 }
 
-fn main() -> ExitCode {
-    match try_main() {
+/// The managed command tree, with the local tree's unique commands listed for help.
+pub(crate) fn command() -> clap::Command {
+    Cli::command()
+}
+
+/// Whether this process is an internal helper selected by environment rather
+/// than by its command line; it bypasses command-tree selection.
+pub(crate) fn is_helper_process() -> bool {
+    #[cfg(target_os = "linux")]
+    if std::env::var(screen_wayland_encoder::HELPER_ENV).as_deref() == Ok("1") {
+        return true;
+    }
+    false
+}
+
+fn parse(arguments: Vec<OsString>) -> Cli {
+    let mut command = crate::with_foreign_commands(Cli::command(), &crate::Cli::command());
+    let matches = command
+        .try_get_matches_from_mut(arguments)
+        .unwrap_or_else(|error| error.exit());
+    Cli::from_arg_matches(&matches).unwrap_or_else(|error| error.exit())
+}
+
+pub(crate) fn main(arguments: Vec<OsString>) -> ExitCode {
+    match try_main(arguments) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             if matches!(&error, ManagedError::Configuration(message) if message == "local recording control failed")
@@ -616,7 +634,7 @@ fn main() -> ExitCode {
     }
 }
 
-fn try_main() -> Result<(), ManagedError> {
+fn try_main(arguments: Vec<OsString>) -> Result<(), ManagedError> {
     let _startup = startup_timing::Stage::new("process");
     launcher::initialize_install_root();
     let _ = dotenvy::dotenv();
@@ -628,7 +646,7 @@ fn try_main() -> Result<(), ManagedError> {
                 .map_err(|error| ManagedError::Configuration(error.to_string()))
         });
     }
-    let cli = Cli::parse();
+    let cli = parse(arguments);
     #[cfg(target_os = "linux")]
     let (cli, prepared) = {
         let mut cli = cli;
@@ -752,13 +770,16 @@ async fn run(cli: Cli) -> Result<(), ManagedError> {
         Some(Command::InstallHand) => return linux_hand_install::run().await,
         #[cfg(any(target_os = "linux", target_os = "macos", test))]
         Some(Command::UpdateHand) => return linux_hand_update::run().await,
-        Some(Command::Hand(command)) if command.registry.is_some() => {
-            return command
-                .registry
-                .unwrap()
+        Some(Command::Hand(Hand {
+            management: Some(management),
+            ..
+        })) => {
+            // Mode selection sends management subcommands to the local tree;
+            // keep any other route to them working identically.
+            return crate::hand_setup::Hand::from(management)
                 .run()
                 .await
-                .map_err(|error| ManagedError::Configuration(error.to_string()));
+                .map_err(|error| ManagedError::Configuration(format!("{error:#}")));
         }
         Some(Command::Hand(command)) if command.rootfs.is_none() && command.docker.is_none() => {
             return native_hand::serve_hand(command).await;

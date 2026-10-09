@@ -5,7 +5,7 @@ use super::{
     floating::Floating,
     node::{Component, ComponentUpdate, RenderRequest},
 };
-use crate::tui::{
+use crate::nanocodex2::tui::{
     review::{Branch, Target},
     theme::Theme,
 };
