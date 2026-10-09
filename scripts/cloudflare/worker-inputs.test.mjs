@@ -34,7 +34,7 @@ test('Worker inputs isolate services and follow dependencies, assets, config and
   await put('js/email/build.mjs', 'const asset = new URL("../../assets/", import.meta.url);');
   await put('assets/template.html', 'hello');
   let previous = await fingerprintWorkers(root);
-  assert.equal(Object.keys(previous).length, 11);
+  assert.equal(Object.keys(previous).length, 12);
   assert.deepEqual(await fingerprintWorkers(root), previous);
   const change = async (path, text, expected) => {
     await put(path, text);

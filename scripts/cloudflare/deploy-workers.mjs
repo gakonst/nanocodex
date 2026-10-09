@@ -9,6 +9,7 @@ export const phases = {
   infrastructure: [
     ['x', 'js/x-api', ['npx', 'wrangler', 'deploy', '--env=']],
     ['media', 'js/media', ['npx', 'wrangler', 'deploy', '--config', 'wrangler.jsonc']],
+    ['sites', 'js/sites', ['npx', 'wrangler', 'deploy', '--config', 'wrangler.jsonc']],
   ],
   // Deploy after managed publishes the private PhoneProvider entry point.
   broker: [

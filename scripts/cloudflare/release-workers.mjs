@@ -18,7 +18,7 @@ const commands=Object.fromEntries([...Object.values(phases).flat(),
   ['account','js/account',['npx','wrangler','deploy','--config','dist/nanocodex/wrangler.ci.json']],
 ].map(([name,directory,command])=>[name,{directory,command}]));
 // Publish named managed entry points before the broker binds to them.
-export const releasePhases=[['x','media'],['managed'],['egress'],['email','dialog','connect-api','astra','chief-of-staff','playground'],['account']];
+export const releasePhases=[['x','media','sites'],['managed'],['egress'],['email','dialog','connect-api','astra','chief-of-staff','playground'],['account']];
 
 export async function guardedCommand(command, {cwd=process.cwd(),directory='.',env=process.env,input,launch=spawn}={}) {
   const temporary=mkdtempSync(join(tmpdir(),'nanocodex-release-'));

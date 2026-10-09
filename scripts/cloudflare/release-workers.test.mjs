@@ -23,7 +23,7 @@ function fixture(selected, overrides = {}) {
 test('all selected Workers preserve dependency barriers, literal arguments and account-last health', async () => {
   const f = fixture(releasePhases.flat());
   const results = await f.release();
-  assert.equal(results.length, 11); assert.ok(results.every(row => row.state === 'success'));
+  assert.equal(results.length, 12); assert.ok(results.every(row => row.state === 'success'));
   for (let i = 1; i < releasePhases.length; i++) {
     const previous = releasePhases[i - 1].map(name => f.events.findIndex(row => row[0] === 'success' && row[1] === name));
     const next = releasePhases[i].map(name => f.events.findIndex(row => row[0] === 'start' && row[1] === name));

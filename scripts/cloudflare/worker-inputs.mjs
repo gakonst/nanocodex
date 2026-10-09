@@ -9,6 +9,7 @@ export const workerSpecs = Object.fromEntries([
   ['egress', 'js/egress', 'nanocodex-egress-service', true],
   ['x', 'js/x-api', '@nanocodex/x-api', false],
   ['media', 'js/media', 'nanocodex-media-service', false],
+  ['sites', 'js/sites', '@nanocodex/sites', false],
   ['managed', 'js/managed', 'nanocodex-managed-service', true],
   ['email', 'js/email', 'nanocodex-email-service', false],
   ['dialog', 'js/connect-dialog', '@nanocodex/connect-dialog', false],
@@ -20,7 +21,7 @@ export const workerSpecs = Object.fromEntries([
 ].map(([name, directory, pkg, needsWasm]) => [name, { directory, package: pkg, needsWasm }]));
 
 const buildTargets = {
-  egress: ['nanocodex-tools', 'nanocodex'], x: ['nanocodex-tools'], media: ['nanocodex-tools'],
+  egress: ['nanocodex-tools', 'nanocodex'], x: ['nanocodex-tools'], media: ['nanocodex-tools'], sites: [],
   managed: ['nanocodex-tools', 'nanocodex-connect-protocol', 'nanocodex'], email: [],
   dialog: ['nanocodex-connect-protocol', 'nanocodex-connect-ui', '@nanocodex/connect-dialog'],
   'connect-api': ['nanocodex-tools', 'nanocodex-connect-protocol', '@nanocodex/connect-api'],

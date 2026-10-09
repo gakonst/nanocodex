@@ -25,7 +25,7 @@ export async function releaseFingerprints({cwd=process.cwd(),account=process.env
 // Every deployed Wrangler config: bindings, service entrypoints, Durable Object
 // classes and migrations. Cross-Worker deployment order only matters when one
 // of these changes; otherwise every selected Worker uploads in parallel.
-export const topologyFiles = ['js/egress/wrangler.broker.jsonc','js/x-api/wrangler.jsonc','js/media/wrangler.jsonc',
+export const topologyFiles = ['js/egress/wrangler.broker.jsonc','js/x-api/wrangler.jsonc','js/media/wrangler.jsonc','js/sites/wrangler.jsonc',
   'js/managed/wrangler.jsonc','js/email/wrangler.jsonc','js/connect-dialog/wrangler.jsonc','js/connect-api/wrangler.jsonc',
   'examples/astra-mpp-trial/wrangler.jsonc','js/chief-of-staff/wrangler.jsonc','js/connect-playground/wrangler.jsonc',
   'js/account/wrangler.jsonc','scripts/cloudflare/release-workers.mjs'];
