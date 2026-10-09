@@ -88,7 +88,33 @@ fn validate_video_transport(transport: Option<&str>, has_video: bool) -> Result<
     Ok(())
 }
 fn publisher_target(target: &AttachmentTarget) -> Result<PublisherTarget, ManagedError> {
-    PublisherTarget::from_attachment(target.endpoint().as_str(), target.bearer()).map_err(error)
+    let publisher = PublisherTarget::from_attachment(target.endpoint().as_str(), target.bearer())
+        .map_err(error)?;
+    // Dynamic (device) credentials are fetched fresh for every publisher request.
+    Ok(match target.credentials() {
+        Some(credentials) => {
+            publisher.with_credentials(Arc::new(AttachmentPublisherCredentials(credentials)))
+        }
+        None => publisher,
+    })
+}
+struct AttachmentPublisherCredentials(
+    Arc<dyn nanocodex_oai_tools::attachment::AttachmentCredentials>,
+);
+impl nanocodex_remote::target::PublisherCredentials for AttachmentPublisherCredentials {
+    fn bearer(&self) -> BoxFuture<'_, std::io::Result<String>> {
+        Box::pin(async move {
+            self.0.bearer().await.map_err(|failure| match failure {
+                nanocodex_oai_tools::attachment::AttachmentError::Authentication(message) => {
+                    std::io::Error::new(std::io::ErrorKind::PermissionDenied, message.to_string())
+                }
+                other => std::io::Error::other(other.to_string()),
+            })
+        })
+    }
+    fn rejected(&self) {
+        self.0.rejected();
+    }
 }
 fn error(value: impl std::fmt::Display) -> ManagedError {
     ManagedError::Configuration(value.to_string())

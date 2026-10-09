@@ -397,7 +397,55 @@ async fn share(
             // Share the native Hand's capture supervision: keep the shell ready
             // while capture starts, repair helpers in place, and retain replacement
             // fences instead of leaving a failed screen idle until daemon restart.
-            let screen_target = client.account_attachment_target()?;
+            // Enroll on first run and publish only with device credentials.
+            // The account key remains solely for never-enrolled Hands on a
+            // service without enrollment (logged as legacy).
+            let account = client.account_attachment_target()?;
+            let authorization = tokio::select! {
+                () = cancel.cancelled() => None,
+                authorization = nanocodex_bin_shared::device_identity::authorize(
+                    &account,
+                    directory,
+                    state.machine.id(),
+                    state.machine.name(),
+                ) => Some(authorization),
+            };
+            drop(account);
+            let authorization = match authorization {
+                None => {
+                    cancel.cancel();
+                    let _ = leases.await;
+                    if let Some(factory) = factory {
+                        let _ = factory.await;
+                    }
+                    let _ = fs::remove_file(directory.join("status.json"));
+                    return Ok(());
+                }
+                Some(Err(error)) => {
+                    cancel.cancel();
+                    let _ = leases.await;
+                    if let Some(factory) = factory {
+                        let _ = factory.await;
+                    }
+                    let _ = fs::remove_file(directory.join("status.json"));
+                    return Err(error);
+                }
+                Some(Ok(authorization)) => authorization,
+            };
+            let attestation = authorization.device.clone().map(|device| {
+                let cancel = cancel.clone();
+                tokio::spawn(async move {
+                    loop {
+                        tokio::select! {
+                            () = cancel.cancelled() => break,
+                            () = tokio::time::sleep(Duration::from_secs(600)) => {
+                                nanocodex_bin_shared::device_identity::attest(&device, false).await;
+                            }
+                        }
+                    }
+                })
+            });
+            let screen_target = authorization.target.clone();
             let result = super::screen_supervisor::while_attached_observed(
                 || {
                     super::screen_native::NativeScreen::start(
@@ -407,7 +455,7 @@ async fn share(
                     )
                 },
                 super::native_hand::run_observed(
-                    client.account_attachment_target()?,
+                    authorization.target.clone(),
                     &state,
                     async {
                         cancel.cancelled().await;
@@ -432,7 +480,14 @@ async fn share(
                 },
             )
             .await;
+            let result = match result {
+                Err(error) => Err(authorization.explain(error).await),
+                ok => ok,
+            };
             cancel.cancel();
+            if let Some(attestation) = attestation {
+                let _ = attestation.await;
+            }
             let _ = leases.await;
             if let Some(factory) = factory {
                 let _ = factory.await;

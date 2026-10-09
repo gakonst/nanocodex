@@ -235,6 +235,10 @@ fn valid_capability(value: &str) -> bool {
 pub trait AttachmentCredentials: Send + Sync + 'static {
     /// Returns a currently valid bearer credential.
     fn bearer(&self) -> futures_util::future::BoxFuture<'_, Result<String, AttachmentError>>;
+
+    /// The endpoint rejected the most recent credential; drop any cached copy
+    /// so the next `Self::bearer` call obtains a fresh one.
+    fn rejected(&self) {}
 }
 
 /// Transport-only destination for an attached tool executor.

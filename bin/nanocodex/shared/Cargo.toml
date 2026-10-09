@@ -12,6 +12,8 @@ publish = false
 # implementation never recompiles the other.
 [dependencies]
 async-trait.workspace = true
+base64.workspace = true
+futures-util.workspace = true
 chrono.workspace = true
 clap.workspace = true
 # Executable capability markers are found in 100+ MB binaries on every update.
@@ -20,10 +22,13 @@ nanocodex = { workspace = true }
 nanocodex-cli-auth.workspace = true
 nanocodex-computer.workspace = true
 nanocodex-managed = { path = "../../../crates/nanocodex-managed", version = "0.6.7", default-features = false, features = ["tools"] }
+nanocodex-oai-tools = { workspace = true, features = ["attachment"] }
 nanocodex-observability = { workspace = true, features = ["cli"] }
 nanocodex-remote = { path = "../../../crates/nanocodex-remote", version = "0.6.7" }
 nix = { workspace = true, features = ["fs"] }
 reqwest = { workspace = true }
+# Hand device identity keys (Ed25519 PKCS#8).
+ring = "0.17"
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
@@ -33,7 +38,9 @@ tokio = { workspace = true, features = ["fs", "io-util", "macros", "net", "proce
 tokio-util.workspace = true
 toml.workspace = true
 tracing.workspace = true
+url.workspace = true
 uuid.workspace = true
+zeroize = "1.8.2"
 
 # The launcher and executable-role entrypoints set process environment before
 # any thread starts. Keep that unsafe boundary locally auditable while

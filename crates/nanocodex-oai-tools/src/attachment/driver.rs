@@ -92,6 +92,10 @@ pub(crate) async fn run(
     let mut backoff = Duration::from_millis(100);
     let mut attempt = 0_u64;
     let mut previous_delay = Duration::ZERO;
+    // A dynamic credential gets one fresh retry after an endpoint rejection
+    // (for example a credential that expired in flight); a second consecutive
+    // rejection is terminal.
+    let mut credential_rejections = 0_u8;
     let terminal = loop {
         attempt = attempt.saturating_add(1);
         let connection_id = uuid::Uuid::new_v4().to_string();
@@ -168,6 +172,7 @@ pub(crate) async fn run(
         };
         let socket = match connected {
             Ok(Ok((socket, response))) => {
+                credential_rejections = 0;
                 tracing::info!(target: "nanocodex_oai_tools::attachment",
                     stage = "attachment.websocket_connected",
                     duration_ms = connect_started.elapsed().as_secs_f64() * 1000.0,
@@ -175,6 +180,23 @@ pub(crate) async fn run(
                     request_id = response.headers().get("x-nanocodex-request-id").and_then(|v| v.to_str().ok()).and_then(safe_uuid).unwrap_or_default(),
                     "attachment WebSocket connected");
                 socket
+            }
+            Ok(Err(tokio_tungstenite::tungstenite::Error::Http(response)))
+                if matches!(response.status().as_u16(), 401 | 403)
+                    && credential_rejections == 0
+                    && matches!(config.authorization, Authorization::Dynamic(_)) =>
+            {
+                credential_rejections += 1;
+                if let Authorization::Dynamic(credentials) = &config.authorization {
+                    credentials.rejected();
+                }
+                connection_span.in_scope(|| tracing::warn!(target: "nanocodex_oai_tools::attachment", stage = "attachment.socket.rejected", reason_code = "credential_rejected_retry", http_status = response.status().as_u16(), pending_calls = active.len(), "attachment credential rejected; retrying with a fresh credential"));
+                let _ = status.send(AttachmentStatus::Disconnected);
+                previous_delay = backoff;
+                if wait_backoff(&mut commands, backoff).await {
+                    break Ok(());
+                }
+                continue;
             }
             Ok(Err(tokio_tungstenite::tungstenite::Error::Http(response)))
                 if matches!(response.status().as_u16(), 401 | 403) =>

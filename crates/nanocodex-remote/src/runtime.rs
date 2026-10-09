@@ -607,7 +607,15 @@ async fn session(
                 Some(tokio_tungstenite::Connector::Rustls(crate::tls::native_client_config().await.map_err(|_| SessionError::Closed)?))
             } else { None };
             tracing::info!(target: "nanocodex2", stage = "screen.socket.trust", machine_id = machine.id(), elapsed_ms = started.elapsed().as_secs_f64() * 1000.0);
-            tokio_tungstenite::client_async_tls_with_config(request, stream, Some(config), connector).await.map_err(|_| SessionError::Closed)
+            tokio_tungstenite::client_async_tls_with_config(request, stream, Some(config), connector).await.map_err(|error| {
+                if let tokio_tungstenite::tungstenite::Error::Http(response) = &error
+                    && matches!(response.status().as_u16(), 401 | 403)
+                    && let Some(credentials) = target.credentials()
+                {
+                    credentials.rejected();
+                }
+                SessionError::Closed
+            })
         },
     )
     .await
@@ -727,7 +735,10 @@ async fn session_loop(
                     tracing::info!(target: "nanocodex2", stage = "screen.renewal", outcome = outcome.category, http_status = outcome.status, elapsed_ms = last_renewal.elapsed().as_millis() as u64);
                     renewal_reported = true;
                 }
-                if !outcome.success { return Err(SessionError::Renewal(outcome)); } *last_authorized=Instant::now();
+                if !outcome.success {
+                    if matches!(outcome.status, Some(401 | 403)) && let Some(credentials) = target.credentials() { credentials.rejected(); }
+                    return Err(SessionError::Renewal(outcome));
+                } *last_authorized=Instant::now();
             },
             _ = ice.next() => {},
             (viewer, deadline, response) = preparations.next() => {

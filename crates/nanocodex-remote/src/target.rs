@@ -16,6 +16,8 @@ use url::Url;
 /// can never be obtained again. Errors must never contain the credential.
 pub trait PublisherCredentials: Send + Sync + 'static {
     fn bearer(&self) -> futures_util::future::BoxFuture<'_, io::Result<String>>;
+    /// The endpoint rejected the most recent credential; drop cached copies.
+    fn rejected(&self) {}
 }
 
 #[derive(Clone)]

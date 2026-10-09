@@ -30,6 +30,11 @@ pub(crate) enum Command {
     Prune,
     /// Create or revoke a portable, view-only screen playback link.
     Stream(playback::Playback),
+    /// List, revoke, rotate, or re-enroll Hand device keys.
+    Devices {
+        #[command(subcommand)]
+        command: Option<nanocodex_bin_shared::device_identity::DevicesCommand>,
+    },
 }
 
 impl Command {
@@ -39,6 +44,11 @@ impl Command {
             Self::Forget { id, force } => forget(&id, force).await,
             Self::Prune => prune().await,
             Self::Stream(command) => command.run().await,
+            Self::Devices { command } => command
+                .unwrap_or(nanocodex_bin_shared::device_identity::DevicesCommand::List { json: false })
+                .run()
+                .await
+                .map_err(|error| eyre!(error.to_string())),
         }
     }
 }
