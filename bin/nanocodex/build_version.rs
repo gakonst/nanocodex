@@ -85,9 +85,18 @@ fn emit_linked_worktree_ref_reruns() {
                 "--git-path",
                 &reference,
             ],
-        ) && PathBuf::from(&path).is_file()
-        {
-            println!("cargo:rerun-if-changed={path}");
+        ) {
+            let path = PathBuf::from(path);
+            if path.is_file() {
+                println!("cargo:rerun-if-changed={}", path.display());
+            } else if reference.starts_with("refs/") {
+                // A packed branch has no loose ref until its next update, which
+                // creates the file. Watch its nearest existing directory so that
+                // commit reruns this script; a missing path would rerun always.
+                if let Some(directory) = path.ancestors().skip(1).find(|path| path.is_dir()) {
+                    println!("cargo:rerun-if-changed={}", directory.display());
+                }
+            }
         }
     }
 }
