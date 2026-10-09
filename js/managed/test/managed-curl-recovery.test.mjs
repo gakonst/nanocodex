@@ -116,7 +116,7 @@ test('curl recovers managed work across workerd SIGKILL without duplicate effect
   const say = text => respond([{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text }] }], true);
   const exec = (callId, source) => respond([{ type: 'custom_tool_call', name: 'exec', call_id: callId, input: source }], false);
   // Most specific first: a follow-up turn's history still contains its predecessor's marker.
-  const markers = ['CURL_CLAUDE_CHILD', 'CURL_WIDE_TASK', 'CURL_ROOT_WIDE', 'CURL_FOLLOWUP_TASK', 'CURL_CHILD_FOLLOWUP', 'CURL_CHILD_TASK', 'CURL_LOOP_TASK', 'CURL_BUDGET_NEXT', 'CURL_LOOP_NEXT', 'CURL_BUDGET', 'CURL_EFFECTS', 'CURL_ROOT_SPAWN', 'CURL_ROOT_LOOP'];
+  const markers = ['CURL_CODEX_QUEUED', 'CURL_CODEX_HOLD', 'CURL_CLAUDE_CHILD', 'CURL_WIDE_TASK', 'CURL_ROOT_WIDE', 'CURL_FOLLOWUP_TASK', 'CURL_CHILD_FOLLOWUP', 'CURL_CHILD_TASK', 'CURL_LOOP_TASK', 'CURL_BUDGET_NEXT', 'CURL_LOOP_NEXT', 'CURL_BUDGET', 'CURL_EFFECTS', 'CURL_ROOT_SPAWN', 'CURL_ROOT_LOOP'];
   const baselines = {};
   const delegate = (task, marker) => [
     () => exec(marker + '-spawn', 'text(await tools.spawn_agent(' + JSON.stringify({ role: 'Curl child', task, model: 'sol', thinking: 'low', output_contract: { kind: 'string' } }) + '));'),
@@ -142,6 +142,9 @@ test('curl recovers managed work across workerd SIGKILL without duplicate effect
     const since = history.findLastIndex(item => (item.role === 'user' || item.role === 'developer') && JSON.stringify(item.content).includes(scenario));
     const fresh = history.slice(since + 1).filter(item => /_call_output$/.test(item.type ?? '')).length;
     switch (scenario) {
+      case 'CURL_CODEX_HOLD': return outputs.length === 0 ? exec('curl-codex-hold',
+        '// @exec: {"yield_time_ms": 60000}\ntext(await tools.exec_command({cmd:"curl -s -X POST https://effects.example/effect/HOLD"}));') : say('CODEX_HOLD_DONE');
+      case 'CURL_CODEX_QUEUED': return say('CODEX_QUEUED_RAN');
       case 'CURL_BUDGET': return 'kill'; // the model call is in flight; no durable progress
       case 'CURL_BUDGET_NEXT': return say('BUDGET_NEXT_OK');
       case 'CURL_EFFECTS': return outputs.length === 0 ? exec('curl-effects-cell',
@@ -373,31 +376,84 @@ test('curl recovers managed work across workerd SIGKILL without duplicate effect
     assert.equal(claudeCalls.length, 3, 'one provider request per observed step');
     assert.match(JSON.stringify(claudeRows), /CLAUDE_MIXED_DONE/);
 
-    // 0b. A follow-up queued behind a still-running Claude turn is durably
-    // admitted but cannot begin (production 01a120ef: "blocked by unfinished
-    // operation"). Cancelling it must settle while the earlier turn still runs,
-    // without the follow-up ever reaching the provider.
-    const holdRun = (await curl('claude-hold-admit', '/v1/agent-runs', { method: 'POST', body: { input: 'CURL_CLAUDE_HOLD: run the held synthetic effect once.', settings: claudeSettings }, headers: { 'Idempotency-Key': randomUUID() }, expected: 201 })).value;
-    await waitFor('held Claude effect dispatched', () => heldEffects.length === 1);
-    const queuedTurn = (await curl('claude-queued-admit', '/v1/agents/' + holdRun.agent_id + '/turns', { method: 'POST', body: { input: 'CURL_CLAUDE_QUEUED: follow-up behind the held turn.' }, headers: { 'Idempotency-Key': randomUUID() }, expected: 202 })).value;
-    const queuedBlocked = await waitFor('queued Claude turn blocked', async () => {
-      const value = await turnState('claude-queued-state', holdRun.agent_id, queuedTurn.turn_id);
-      return value.state === 'accepted' && /blocked by unfinished operation/.test(JSON.stringify(value)) ? value : undefined;
-    }, 20_000, 200);
-    const cancelRequested = Date.now();
-    await curl('claude-queued-cancel', '/v1/agents/' + holdRun.agent_id + '/turns/' + queuedTurn.turn_id + '/cancel', { method: 'POST', headers: { 'Idempotency-Key': randomUUID() } });
-    const queuedCancelled = await terminal('claude-queued-cancel-terminal', holdRun.agent_id, queuedTurn.turn_id);
-    const cancelMs = Date.now() - cancelRequested;
-    const holdDuringCancel = await turnState('claude-hold-during-cancel', holdRun.agent_id, holdRun.turn_id);
-    releaseHold();
-    const holdDone = await terminal('claude-hold-terminal', holdRun.agent_id, holdRun.turn_id);
-    summary.claude_queued_cancel = { blocked: queuedBlocked, cancelled: queuedCancelled, cancel_ms: cancelMs, hold_during_cancel: holdDuringCancel.state, hold: holdDone.state,
-      provider_calls: claudeCalls.filter(call => call.scenario === 'CURL_CLAUDE_HOLD' || call.scenario === 'CURL_CLAUDE_QUEUED'), held_effects: heldEffects };
-    assert.equal(queuedCancelled.state, 'cancelled', JSON.stringify(queuedCancelled));
-    assert.ok(!['completed', 'failed', 'cancelled'].includes(holdDuringCancel.state), 'the earlier turn was still running: ' + JSON.stringify(holdDuringCancel));
-    assert.equal(holdDone.state, 'completed', JSON.stringify(holdDone));
-    assert.equal(claudeCalls.filter(call => call.scenario === 'CURL_CLAUDE_QUEUED').length, 0, 'the cancelled follow-up never reached the provider');
-    assert.equal(heldEffects.length, 1, 'the held effect ran once');
+    // 0b. Follow-ups queued behind a still-running turn (production 01a120ef).
+    // Claude rejects their attempt as "blocked by unfinished operation" and the
+    // Session parks them on retry backoff. A cancelled follow-up must settle
+    // while the earlier turn still runs, without reaching the provider; an
+    // uncancelled one must start as soon as the earlier turn settles rather
+    // than after its remaining backoff. Codex queues follow-ups in its driver.
+    const providerCalls = scenario => [...claudeCalls, ...modelCalls].filter(call => call.scenario === scenario).length;
+    const queuedBehindHold = async (label, harnessSettings, hold, queued, cancel) => {
+      held = new Promise(resolvePromise => { releaseHold = resolvePromise; });
+      const heldBefore = heldEffects.length, queuedBefore = providerCalls(queued);
+      const holdRun = (await curl(label + '-hold-admit', '/v1/agent-runs', { method: 'POST', body: { input: hold + ': run the held synthetic effect once.', settings: harnessSettings }, headers: { 'Idempotency-Key': randomUUID() }, expected: 201 })).value;
+      await waitFor(label + ' held effect dispatched', () => heldEffects.length === heldBefore + 1);
+      const queuedTurn = (await curl(label + '-queued-admit', '/v1/agents/' + holdRun.agent_id + '/turns', { method: 'POST', body: { input: queued + ': follow-up behind the held turn.' }, headers: { 'Idempotency-Key': randomUUID() }, expected: 202 })).value;
+      const queuedState = () => turnState(label + '-queued-state', holdRun.agent_id, queuedTurn.turn_id);
+      let parked;
+      if (harnessSettings === claudeSettings) {
+        parked = await waitFor(label + ' queued turn parked', async () => {
+          const value = await queuedState();
+          return value.state === 'accepted' && /blocked by unfinished operation/.test(value.error ?? '')
+            && (cancel || value.retry_at - Date.now() >= 6_000) ? value : undefined;
+        }, 25_000, 200);
+      } else {
+        await delay(1_500);
+        parked = await queuedState();
+      }
+      let cancelled, cancelMs = null;
+      if (cancel) {
+        const requested = Date.now();
+        await curl(label + '-queued-cancel', '/v1/agents/' + holdRun.agent_id + '/turns/' + queuedTurn.turn_id + '/cancel', { method: 'POST', headers: { 'Idempotency-Key': randomUUID() } });
+        cancelled = await terminal(label + '-queued-cancel-terminal', holdRun.agent_id, queuedTurn.turn_id);
+        cancelMs = Date.now() - requested;
+      }
+      const holdDuring = await turnState(label + '-hold-during', holdRun.agent_id, holdRun.turn_id);
+      releaseHold();
+      const holdDone = await terminal(label + '-hold-terminal', holdRun.agent_id, holdRun.turn_id);
+      const holdSettledAt = Date.now();
+      const queuedDone = cancel ? cancelled : await terminal(label + '-queued-terminal', holdRun.agent_id, queuedTurn.turn_id);
+      const result = { parked, cancel_ms: cancelMs, hold_during: holdDuring.state, hold: holdDone.state, queued: queuedDone,
+        queued_after_hold_ms: cancel ? null : Date.now() - holdSettledAt,
+        backoff_left_at_hold_ms: parked.retry_at ? parked.retry_at - holdSettledAt : null,
+        held_effects: heldEffects.length - heldBefore, queued_provider_calls: providerCalls(queued) - queuedBefore };
+      summary[label] = result;
+      assert.equal(holdDone.state, 'completed', JSON.stringify(holdDone));
+      assert.equal(result.held_effects, 1, 'the held effect ran once');
+      if (cancel) {
+        assert.equal(queuedDone.state, 'cancelled', JSON.stringify(queuedDone));
+        assert.ok(!['completed', 'failed', 'cancelled'].includes(holdDuring.state), 'the earlier turn was still running: ' + JSON.stringify(holdDuring));
+        assert.equal(result.queued_provider_calls, 0, 'the cancelled follow-up never reached the provider');
+      } else {
+        assert.equal(queuedDone.state, 'completed', JSON.stringify(queuedDone));
+        assert.equal(result.queued_provider_calls, 1);
+        assert.ok(result.queued_after_hold_ms < 2_500, 'the follow-up starts once the earlier turn settles: ' + JSON.stringify(result));
+      }
+    };
+    await queuedBehindHold('claude-queued-cancel', claudeSettings, 'CURL_CLAUDE_HOLD', 'CURL_CLAUDE_QUEUED', true);
+    await queuedBehindHold('claude-queued-wake', claudeSettings, 'CURL_CLAUDE_HOLD', 'CURL_CLAUDE_QUEUED', false);
+    assert.ok(summary['claude-queued-wake'].backoff_left_at_hold_ms > 2_500, 'backoff outlasted the earlier turn: ' + JSON.stringify(summary['claude-queued-wake']));
+    await queuedBehindHold('codex-queued-cancel', settings, 'CURL_CODEX_HOLD', 'CURL_CODEX_QUEUED', true);
+    await queuedBehindHold('codex-queued-wake', settings, 'CURL_CODEX_HOLD', 'CURL_CODEX_QUEUED', false);
+
+    // A turn cancelled while its Code Mode cell waits on a long effect
+    // settles promptly (the 16-minute report); the effect outcome stays unknown.
+    const activeCancel = async (label, harnessSettings, hold) => {
+      held = new Promise(resolvePromise => { releaseHold = resolvePromise; });
+      const heldBefore = heldEffects.length;
+      const run = (await curl(label + '-admit', '/v1/agent-runs', { method: 'POST', body: { input: hold + ': run the held synthetic effect once.', settings: harnessSettings }, headers: { 'Idempotency-Key': randomUUID() }, expected: 201 })).value;
+      await waitFor(label + ' held effect dispatched', () => heldEffects.length === heldBefore + 1);
+      const requested = Date.now();
+      await curl(label + '-cancel', '/v1/agents/' + run.agent_id + '/turns/' + run.turn_id + '/cancel', { method: 'POST', headers: { 'Idempotency-Key': randomUUID() } });
+      const done = await terminal(label + '-terminal', run.agent_id, run.turn_id);
+      const cancelMs = Date.now() - requested;
+      releaseHold();
+      summary[label] = { terminal: done, cancel_ms: cancelMs };
+      assert.equal(done.state, 'cancelled', JSON.stringify(done));
+      assert.ok(cancelMs < 5_000, label + ' cancellation settles while the effect is still held: ' + cancelMs);
+    };
+    await activeCancel('claude-active-cancel', claudeSettings, 'CURL_CLAUDE_HOLD');
+    await activeCancel('codex-active-cancel', settings, 'CURL_CODEX_HOLD');
 
     // 1. Repeated abrupt loss of the same unfinished model call consumes the
     // persisted budget: three provider invocations, then a durable terminal.

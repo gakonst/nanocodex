@@ -9250,6 +9250,14 @@ export class DurableAgentSession extends DurableComputerObject {
       return;
     }
     const admission = this.#admissionTasks.get(id);
+    if (admission && row.state === "cancelling" && row.dispatch_input_chunks === null) {
+      // Admission can wait behind a running turn (e.g. its startup context
+      // commits only between turns). Nothing was submitted to the Agent until
+      // the dispatch input is frozen, so no operation can run: settle now. The
+      // pending admission observes the terminal row and exits before freezing.
+      this.#commitManagedTurnTerminal(id, { type: "turn_cancelled", id });
+      return;
+    }
     if (admission) await admission;
     row = this.#managedTurn(id);
     if (!row || isTerminalState(row.state)) return;
@@ -13083,10 +13091,28 @@ A direct subagent completed after the previous turn ended. Continue the current 
       this.#disposeManagedTurn(id, turn);
       if (!this.#deleting) {
         if (reopenAgent) await this.#reopenAgent(id);
+        this.#wakeBlockedSuccessors(id);
         this.#scheduleRecovery();
         await this.#scheduleNextAlarm();
       }
     }
+  }
+
+  /**
+   * Successors dispatched while this turn ran were rejected by Rust as
+   * blocked by its unfinished operation and parked on retry backoff (up to a
+   * minute). Once it is terminal they can begin, so retry them now.
+   */
+  #wakeBlockedSuccessors(id: string): void {
+    const row = this.#managedTurn(id);
+    if (!row || !isTerminalState(row.state)) return;
+    this.ctx.storage.sql.exec(
+      `UPDATE managed_turns SET retry_at = NULL, updated_at = ?
+       WHERE state IN ('accepted', 'cancelling') AND retry_at IS NOT NULL
+         AND instr(error, ?) > 0`,
+      Date.now(),
+      "is blocked by unfinished operation `" + id + "`",
+    );
   }
 
   #disposeManagedTurn(id: string, turn: Turn): void {
