@@ -4,7 +4,7 @@
 
 ## Native CLI instructions and project context
 
-The shipped CLI (`nanocodex --claude` or `--harness claude`) composes original
+The shipped CLI (`ncl --claude` or `--harness claude`) composes original
 coding instructions for its installed Claude-native tools. Files and Bash use
 native names and Messages results; shared process and agent services are private
 host implementations. Optional capabilities must follow the actual catalog.

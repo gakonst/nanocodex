@@ -77,7 +77,7 @@ transport, chat/history and operational logs.
 Run from the repository root after building the CLI and JavaScript dependencies:
 
 ```sh
-cargo build --locked -p nanocodex2-bin --bin nanocodex2 --jobs 3
+cargo build --locked -p nanocodex-bin --bin nanocodex --jobs 3
 node --experimental-transform-types js/managed/test/private-input-tui.chrome.mjs
 node js/managed/test/private-input-admission-journey.mjs
 node --experimental-transform-types js/managed/test/browser-injection.chrome.mjs

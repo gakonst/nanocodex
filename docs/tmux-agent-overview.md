@@ -16,5 +16,5 @@ Checks:
 
 ```sh
 cargo test -p nanocodex-managed presentation_contract_tests
-cargo check -p nanocodex2-bin --bin nanocodex2
+cargo check -p nanocodex-bin --bin nanocodex
 ```

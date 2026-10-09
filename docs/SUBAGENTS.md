@@ -11,7 +11,7 @@ Subagents are enabled by default for TUI and one-shot runs:
 
 ```sh
 nanocodex --max-subagents 32
-nanocodex run --max-subagents 32 "implement the change"
+ncl run --max-subagents 32 "implement the change"
 ```
 
 Pass `--subagents false` or set `NANOCODEX_SUBAGENTS=false` to disable the

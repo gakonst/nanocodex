@@ -128,7 +128,7 @@ The real CLI/native desktop journey uses synthetic data and preserves its trace
 in ignored `output/hand-recording-e2e`:
 
 ```sh
-cargo build -p nanocodex2-bin --bin nanocodex2
+cargo build -p nanocodex-bin --bin nanocodex
 python3 scripts/tests/hand-recording-e2e.py /absolute/path/to/nanocodex2
 ```
 

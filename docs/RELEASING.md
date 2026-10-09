@@ -14,14 +14,21 @@ resolves and verifies assets from the corresponding immutable release. Raw
 executables remain only on the rolling release so pre-compression updaters can
 cross the format transition.
 
-Each native nightly contains both `nanocodex` and `nanocodex2`; x86_64 Linux
-also contains the static VM guest. `nanocodex update --nightly` verifies and
-installs that complete platform bundle atomically and exposes both CLI launchers
-under `$NANOCODEX_DIR/bin`. Stable releases publish the same two native CLI
-binaries. The Apple Silicon `nanocodex2` artifact is ad-hoc signed with the
-hypervisor entitlement required by its VM hand VMM child.
+Each native nightly and stable release builds one `nanocodex` binary per target
+(`cargo build -p nanocodex-bin --bin nanocodex --features tempo`), signs it once,
+and publishes the identical bytes as both `nanocodex-<triple>[.gz]` and
+`nanocodex2-<triple>[.gz]` (`nanocodex-x86_64-pc-windows-msvc.exe` and
+`nanocodex2-x86_64-pc-windows-msvc.exe` on Windows), so older updaters that
+fetch either name keep working. `SHA256SUMS` lists both names with equal
+digests. x86_64 Linux also contains the static VM guest. On Apple Silicon the
+binary is ad-hoc signed with the hypervisor entitlement required by its VM hand
+VMM child. `nanocodex update --nightly` verifies and installs that complete
+platform bundle atomically and exposes `nanocodex`, `nc`, `nanocodex2`, and
+`ncl` under `$NANOCODEX_DIR/bin`; the invoked name selects the managed tree
+(`nanocodex`, `nc`, `nanocodex2`) or the local agent tree (`ncl`, or
+`nanocodex --local`).
 `nanocodex update --branch NAME` and `nanocodex update --pr NUMBER` fetch source into a temporary
-checkout, compile both native binaries locally, and install them together.
+checkout, compile the binary locally, and install it.
 The PR must be open; the updater checks that the fetched head still matches the
 PR metadata. The source build requires Git and a working Rust toolchain, plus
 `gh` for PR selection. Locally compiled source bundles do not include the native
@@ -148,7 +155,9 @@ The tag starts the release workflow. It:
 2. validates all crate packages and archive documentation;
 3. creates a **draft** GitHub Release with grouped PR notes and contributor
    attribution;
-4. builds optimized native CLI binaries for x86_64 Linux and Apple Silicon macOS;
+4. builds and signs one optimized native binary per target (x86_64 Linux, Apple
+   Silicon macOS, and the Windows installer payload), staged under both the
+   `nanocodex-*` and `nanocodex2-*` asset names;
 5. publishes the eight crates to crates.io in dependency order;
 6. builds, tests, and publishes the Node/browser WASM package to npm with
    provenance;
@@ -161,7 +170,8 @@ compatibility executable only when that is the artifact named by
 `SHA256SUMS`, as on `v0.5.0`.
 
 Open the draft at <https://github.com/gakonst/nanocodex/releases>, inspect the
-notes, verify `SHA256SUMS`, and smoke-test a downloaded platform binary. Then
+notes, verify `SHA256SUMS` (each `nanocodex-*` digest equals its `nanocodex2-*`
+digest), and smoke-test a downloaded platform binary. Then
 click **Publish release** and immediately smoke the public curl installer and
 `nanocodex update`. Draft assets are not exposed through GitHub's public
 `releases/latest` URL, so that final installer smoke necessarily follows

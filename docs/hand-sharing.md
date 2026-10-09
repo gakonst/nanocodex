@@ -75,11 +75,11 @@ ownership, account access, and revocation.
 
 Prepare the generated assets with `pnpm --filter nanocodex build` and
 `pnpm --filter nanocodex-managed-service prepare:code-evaluator`. Run
-`cargo test -p nanocodex2-bin --test nanocodex2_hand_share -- --nocapture`.
+`cargo test -p nanocodex-bin --test nanocodex2_hand_share -- --nocapture`.
 Then run the CLI against the Worker journeys:
 
 ```sh
-NANOCODEX_TEST_CLI="$PWD/target/debug/nanocodex2" \
+NANOCODEX_TEST_CLI="$PWD/target/debug/nanocodex" \
   pnpm --filter nanocodex-managed-service test:hand-sharing
 ```
 

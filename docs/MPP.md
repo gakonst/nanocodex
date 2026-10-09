@@ -67,7 +67,7 @@ cargo build -p nanocodex-bin --bin nanocodex --features tempo
 Enable paid Responses and paid HTTP tool egress with:
 
 ```text
-nanocodex run "say hello" --provider.tempo
+ncl run "say hello" --provider.tempo
 nanocodex --provider.tempo --prompt "say hello"
 ```
 
@@ -158,14 +158,14 @@ calling the proxy on its own. The model fetches the live public catalog at
 cap, and fans curl subprocesses out from one `Promise.all` cell:
 
 ```sh
-nanocodex run --provider.tempo \
+ncl run --provider.tempo \
   "Use one Code Mode cell. Fetch https://mpp.dev/api/services, select eight safe HTTP service smoke requests with low advertised charges, then use Promise.all over exec_command calls that each run curl -fsS. Verify every exit code and report the endpoint/status matrix."
 ```
 
 Run the same model turn with every workspace command inside the retained VM:
 
 ```sh
-nanocodex run --provider.tempo \
+ncl run --provider.tempo \
   --vm .nanocodex/vm/session-rootfs.ext4 \
   --vm-guest-runtime target/aarch64-unknown-linux-musl/debug/nanocodex-vm-guest \
   "Use one Code Mode cell. Fetch https://mpp.dev/api/services, select eight safe HTTP service smoke requests with low advertised charges, then use Promise.all over exec_command calls that each run curl -fsS. Verify every exit code and report the endpoint/status matrix."

@@ -50,8 +50,8 @@ authorization or message routing.
 
 ## Claude Code Mode
 
-Start the native CLI with `nanocodex --claude` (or pass `--claude` to
-`nanocodex run`). Claude receives only the `exec` and `wait` model
+Start the native CLI with `ncl --claude` (or pass `--claude` to
+`ncl run`). Claude receives only the `exec` and `wait` model
 tools. Send `exec` a JSON object with a `code` string; inside it use the same
 JavaScript helpers and QuickJS runtime as Codex:
 
