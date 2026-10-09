@@ -6,7 +6,9 @@
   "scripts": {
     "dev": "portless",
     "dev:app": "vite",
-    "build": "tsc --noEmit && vite build",
+    "build": "pnpm run \"/^build:(types|bundle)$/\"",
+    "build:types": "tsc --noEmit",
+    "build:bundle": "vite build",
     "deploy": "wrangler deploy --env=\"\" --config wrangler.jsonc",
     "preview": "vite preview --host 127.0.0.1"
   },

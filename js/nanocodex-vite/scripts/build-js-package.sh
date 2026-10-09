@@ -66,9 +66,10 @@ cleanup() {
 trap cleanup EXIT
 
 cache_helper="js/nanocodex-vite/scripts/wasm-output-cache.mjs"
-# Downstream Turbo caches key on nanocodex#build inputs, which must cover every WASM source.
-node "$cache_helper" check-turbo
-# Exit 1 is a cache miss; any other failure means the input set is unresolvable.
+# The check also proves turbo.json hashes every WASM input into nanocodex#build,
+# so cached downstream Worker bundles cannot replay stale WASM after a Rust edit.
+# Exit 1 is a cache miss; any other failure means the input set is unresolvable
+# or not covered by Turbo.
 cache_status=0
 node "$cache_helper" check "$build_mode" || cache_status=$?
 if [[ "$cache_status" -eq 0 ]]; then
@@ -106,9 +107,18 @@ if [[ "$build_mode" == release ]]; then
   if [[ -n "$native_binaryen" && -x "$native_binaryen" ]] \
     && [[ "$("$native_binaryen" --version 2>/dev/null)" == "$binaryen_version" ]]; then
     binaryen="$native_binaryen"
-    # Leave CPU for concurrent Rust/JS builds and interactive use. Callers can
-    # explicitly choose a different positive native Binaryen worker count.
-    export BINARYEN_CORES="${BINARYEN_CORES:-3}"
+    # wasm-opt runs after Cargo, while dependent JS tasks wait on it. Use half
+    # the online CPUs (3..8) to leave room for concurrent builds and interactive
+    # use; output is identical for any worker count. Callers can explicitly
+    # choose a different positive native Binaryen worker count.
+    if [[ -z "${BINARYEN_CORES:-}" ]]; then
+      online_cpus="$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 6)"
+      [[ "$online_cpus" =~ ^[1-9][0-9]*$ ]] || online_cpus=6
+      BINARYEN_CORES=$((online_cpus / 2))
+      if ((BINARYEN_CORES < 3)); then BINARYEN_CORES=3; fi
+      if ((BINARYEN_CORES > 8)); then BINARYEN_CORES=8; fi
+    fi
+    export BINARYEN_CORES
     if [[ ! "$BINARYEN_CORES" =~ ^[1-9][0-9]*$ ]]; then
       echo "BINARYEN_CORES must be a positive integer" >&2
       exit 1
