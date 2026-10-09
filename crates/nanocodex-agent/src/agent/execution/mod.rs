@@ -731,6 +731,16 @@ impl Execution {
         }
     }
 
+    /// Retires an operation whose attempt never began, without a checkpoint.
+    /// The durable state refuses once an attempt ran or recorded progress;
+    /// false then leaves the caller on its ordered reconciliation path.
+    pub(crate) async fn cancel_unstarted(&self, operation_id: &str) -> bool {
+        match &self.policy {
+            Some(policy) => policy.cancel(operation_id.to_owned(), None).await.is_ok(),
+            None => false,
+        }
+    }
+
     pub(crate) async fn cancel_operation<T: Serialize + ?Sized>(
         &self,
         operation_id: &str,

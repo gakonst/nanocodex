@@ -3107,6 +3107,177 @@ async fn queued_cancel_reclaims_a_definitely_uncommitted_terminal_before_follow_
 }
 
 #[tokio::test]
+async fn cancelling_a_queued_turn_settles_while_its_predecessor_still_runs() -> Result<()> {
+    // Hosted regression: a follow-up admitted while a durable turn ran was
+    // durably cancelled at once, but its result waited until the running
+    // predecessor (here gated, in production a long tool) finished.
+    let generations = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let started = Arc::new(tokio::sync::Notify::new());
+    let release = Arc::new(tokio::sync::Notify::new());
+    let openai = OpenAi::builder("test-key")
+        .service({
+            let generations = Arc::clone(&generations);
+            let started = Arc::clone(&started);
+            let release = Arc::clone(&release);
+            move || GatedGenerationService {
+                generations: Arc::clone(&generations),
+                started: Arc::clone(&started),
+                release: Arc::clone(&release),
+            }
+        })
+        .build()?;
+    let workspace = temporary_workspace("queued-cancel-settles-early")?;
+    let state = DurableSession::open(MemoryStore::new()?, "queued-cancel-settles-early").await?;
+    let (agent, events) = Nanocodex::builder(openai)
+        .workspace(&workspace)
+        .durability(state)
+        .await?
+        .build()?;
+    let active = agent
+        .prompt(PromptRequest::new("held predecessor").request_id("held-predecessor"))
+        .await?;
+    started.notified().await;
+    let queued = || PromptRequest::new("queued follow-up").request_id("queued-cancelled");
+    let cancelled = agent.prompt(queued()).await?;
+    cancelled.cancel().await?;
+    let settled = tokio::time::timeout(Duration::from_secs(2), cancelled.result())
+        .await
+        .map_err(|_| eyre!("cancellation must not wait for the running predecessor"))?;
+    assert!(matches!(settled, Err(NanocodexError::TurnCancelled)));
+    assert_eq!(
+        generations.load(Ordering::SeqCst),
+        1,
+        "only the held predecessor reached the model"
+    );
+
+    release.notify_one();
+    active.result().await?;
+    // The durable cancellation replays without dispatching the follow-up.
+    let replayed = agent.prompt(queued()).await?.result().await;
+    assert!(matches!(replayed, Err(NanocodexError::TurnCancelled)));
+    assert_eq!(generations.load(Ordering::SeqCst), 1);
+
+    agent.shutdown().await?;
+    drop((agent, events));
+    std::fs::remove_dir_all(workspace)?;
+    Ok(())
+}
+
+/// Holds every generation until released, so a takeover can recover a
+/// predecessor that is still running.
+#[derive(Clone)]
+struct HeldGenerationService {
+    generations: Arc<std::sync::atomic::AtomicUsize>,
+    started: Arc<tokio::sync::Notify>,
+    release: Arc<tokio::sync::Notify>,
+}
+
+impl tower::Service<nanocodex_oai_api::tower::ResponsesAttempt> for HeldGenerationService {
+    type Response = nanocodex_oai_api::tower::ResponsesServiceResponse;
+    type Error = ResponseError;
+    type Future =
+        Pin<Box<dyn Future<Output = std::result::Result<Self::Response, Self::Error>> + Send>>;
+
+    fn poll_ready(
+        &mut self,
+        _context: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::result::Result<(), Self::Error>> {
+        std::task::Poll::Ready(Ok(()))
+    }
+
+    fn call(&mut self, request: nanocodex_oai_api::tower::ResponsesAttempt) -> Self::Future {
+        use nanocodex_oai_api::tower::ResponsesAttemptKind;
+        let kind = request.kind();
+        match kind {
+            ResponsesAttemptKind::Generation => {
+                self.generations.fetch_add(1, Ordering::SeqCst);
+                let started = Arc::clone(&self.started);
+                let release = Arc::clone(&self.release);
+                Box::pin(async move {
+                    let released = release.notified();
+                    started.notify_one();
+                    released.await;
+                    Ok(successful_attempt(ResponsesAttemptKind::Generation))
+                })
+            }
+            kind => Box::pin(async move { Ok(successful_attempt(kind)) }),
+        }
+    }
+}
+
+#[tokio::test]
+async fn recovered_queued_turn_cancels_while_its_recovered_predecessor_runs() -> Result<()> {
+    // After a runtime restart both turns are recovered in order; cancelling
+    // the never-started follow-up must not wait for the running predecessor.
+    let state = DurableSession::open(MemoryStore::new()?, "recovered-queued-cancel").await?;
+    let generations = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let started = Arc::new(tokio::sync::Notify::new());
+    let release = Arc::new(tokio::sync::Notify::new());
+    let openai = || {
+        let generations = Arc::clone(&generations);
+        let started = Arc::clone(&started);
+        let release = Arc::clone(&release);
+        OpenAi::builder("test-key")
+            .service(move || HeldGenerationService {
+                generations: Arc::clone(&generations),
+                started: Arc::clone(&started),
+                release: Arc::clone(&release),
+            })
+            .build()
+    };
+    let workspace = temporary_workspace("recovered-queued-cancel")?;
+    let predecessor = || PromptRequest::new("held predecessor").request_id("recovered-predecessor");
+    let queued = || PromptRequest::new("queued follow-up").request_id("recovered-queued");
+
+    let (older, older_events) = Nanocodex::builder(openai()?)
+        .workspace(&workspace)
+        .durability(state.clone())
+        .await?
+        .build()?;
+    let older_active = older.prompt(predecessor()).await?;
+    started.notified().await;
+    let older_queued = older.prompt(queued()).await?;
+
+    // A new owner takes over, as a reconstructed runtime does.
+    let (newer, newer_events) = Nanocodex::builder(openai()?)
+        .workspace(&workspace)
+        .durability(state.clone())
+        .await?
+        .build()?;
+    let active = newer.prompt(predecessor()).await?;
+    started.notified().await;
+    let cancelled = newer.prompt(queued()).await?;
+    cancelled.cancel().await?;
+    let settled = tokio::time::timeout(Duration::from_secs(2), cancelled.result())
+        .await
+        .map_err(|_| eyre!("recovered cancellation must not wait for the predecessor"))?;
+    assert!(matches!(settled, Err(NanocodexError::TurnCancelled)));
+    assert!(matches!(
+        &state
+            .state()
+            .await?
+            .operation("recovered-queued")
+            .expect("cancelled operation remains retained")
+            .status,
+        OperationStatus::Cancelled { checkpoint: None }
+    ));
+    assert_eq!(
+        generations.load(Ordering::SeqCst),
+        2,
+        "only the predecessor's two attempts reached the model"
+    );
+
+    release.notify_waiters();
+    active.result().await?;
+    drop((older_active, older_queued));
+    older.shutdown().await.ok();
+    newer.shutdown().await?;
+    drop((older, older_events, newer, newer_events));
+    std::fs::remove_dir_all(workspace)?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn automatic_compaction_replays_a_after_terminal_not_committed_instead_of_running_b()
 -> Result<()> {
     let store = MemoryStore::new()?;
