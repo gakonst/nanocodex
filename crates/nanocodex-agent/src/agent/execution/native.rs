@@ -36,6 +36,7 @@ impl Config {
         workspace: Option<&str>,
         instructions: &str,
         start: crate::session::SessionStart,
+        lineage_origin: crate::Origin,
         parent_session_id: Option<&str>,
         root_session_id: &str,
         resume_history_len: Option<usize>,
@@ -80,7 +81,7 @@ impl Config {
                 cwd: &cwd,
                 instructions,
                 origin: RolloutOrigin {
-                    start,
+                    start: start.for_new_mirror(lineage_origin),
                     parent_thread_id: parent_session_id,
                     root_session_id: Some(root_session_id),
                 },

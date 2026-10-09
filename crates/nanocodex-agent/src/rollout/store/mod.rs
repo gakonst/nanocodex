@@ -61,6 +61,18 @@ pub(crate) struct RolloutOrigin<'a> {
     pub(crate) root_session_id: Option<&'a str>,
 }
 
+impl SessionStart {
+    /// Start recorded when this session's mirror file is created now. A
+    /// reopened session that was never mirrored, such as a durable branch,
+    /// records its persisted provenance rather than a root resume.
+    pub(crate) const fn for_new_mirror(self, origin: Origin) -> Self {
+        match (self, origin) {
+            (Self::Resume | Self::Restore, Origin::Root) | (Self::New(_), _) => self,
+            (Self::Resume | Self::Restore, origin) => Self::New(origin),
+        }
+    }
+}
+
 impl RolloutOrigin<'_> {
     /// Persisted `origin_kind`; side conversations are recorded as forks.
     const fn kind(self) -> &'static str {

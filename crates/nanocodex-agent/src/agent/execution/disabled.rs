@@ -16,6 +16,7 @@ impl Config {
         _workspace: Option<&str>,
         _instructions: &str,
         _start: crate::session::SessionStart,
+        _lineage_origin: crate::Origin,
         _parent_session_id: Option<&str>,
         _root_session_id: &str,
         _resume_history_len: Option<usize>,

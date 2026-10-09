@@ -626,6 +626,15 @@ impl ClaudeBuilder {
         self.session_id = Some(session_id);
         self
     }
+    /// Records the provenance of a reopened stored session, such as a durable
+    /// branch, instead of the lineage retained by its checkpoint. Durability
+    /// adapters call this; telemetry, checkpoints and rollout mirrors report it.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn lineage(mut self, lineage: Lineage) -> Self {
+        self.lineage = Some(lineage);
+        self
+    }
     /// Sets the Messages output-token limit.
     pub const fn max_tokens(mut self, max_tokens: u32) -> Self {
         self.max_tokens = Some(max_tokens);

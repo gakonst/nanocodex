@@ -120,7 +120,7 @@ impl RolloutWriter {
     ) -> io::Result<Self> {
         let runtime = Handle::try_current().map_err(io::Error::other)?;
         let start = if resume_history_len.is_some() {
-            SessionStart::Resume
+            SessionStart::Resume.for_new_mirror(session.lineage.origin)
         } else {
             SessionStart::New(session.lineage.origin)
         };

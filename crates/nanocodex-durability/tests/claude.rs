@@ -3881,3 +3881,85 @@ async fn durable_claude_subagents_are_their_own_resumable_sessions() {
     assert_eq!(mirrored(&child_id), 1, "resuming appends to the subagent's own rollout");
 }
 
+
+/// A durable Claude session resumed from the catalog keeps its recorded fast
+/// mode and thinking level: the host does not configure them again, and the
+/// resumed turn's outbound request still asks for fast speed and high effort.
+#[tokio::test]
+async fn durable_claude_resume_keeps_recorded_fast_mode_and_thinking() {
+    use nanocodex_agent::{ClaudeModel, HarnessModel, Thinking};
+    use nanocodex_durability::{SessionRecord, SessionStore};
+    let home = tempfile::tempdir().unwrap();
+    let (client, requests, server) =
+        server(|index, _| sse(text(&format!("claude reply {index}")), "end_turn", 12)).await;
+    let model = ClaudeModel::Opus55;
+    let store = SessionStore::open(home.path()).unwrap();
+    let session_id = uuid::Uuid::now_v7().to_string();
+    let (root, _events) = Nanocodex::builder(Claude::new(client.clone(), model.as_str()))
+        .max_tokens(4096)
+        .thinking(Thinking::High)
+        .unwrap()
+        .fast_mode(true)
+        .durability(
+            store
+                .session(SessionRecord::root(
+                    session_id.clone(),
+                    HarnessModel::Claude(model),
+                    Some(home.path().to_path_buf()),
+                ))
+                .await
+                .unwrap(),
+        )
+        .await
+        .unwrap()
+        .build()
+        .unwrap();
+    root.prompt(PromptRequest::new("fast question").request_id("turn-1"))
+        .await
+        .unwrap()
+        .result()
+        .await
+        .unwrap();
+    root.shutdown().await.unwrap();
+    let first = requests.lock().unwrap().last().cloned().unwrap();
+    assert_eq!(first["speed"], "fast", "{first}");
+    assert_eq!(first["output_config"]["effort"], "high", "{first}");
+
+    // Resume with a plain builder: no thinking or fast-mode configuration.
+    let (resumed, _events) = Nanocodex::builder(Claude::new(client.clone(), model.as_str()))
+        .max_tokens(4096)
+        .durability(store.resume(&session_id).await.unwrap())
+        .await
+        .unwrap()
+        .build()
+        .unwrap();
+    assert_eq!(resumed.session_id(), session_id);
+    resumed
+        .prompt(PromptRequest::new("resumed question").request_id("turn-2"))
+        .await
+        .unwrap()
+        .result()
+        .await
+        .unwrap();
+    resumed.shutdown().await.unwrap();
+    let log = requests.lock().unwrap().clone();
+    assert_eq!(log.len(), 2, "one provider call per turn");
+    let continued = &log[1];
+    assert_eq!(
+        continued["speed"], "fast",
+        "the resumed turn keeps the recorded fast mode: {continued}"
+    );
+    assert_eq!(
+        continued["output_config"]["effort"], "high",
+        "the resumed turn keeps the recorded thinking level: {continued}"
+    );
+    let checkpoint = store
+        .load(&session_id)
+        .await
+        .unwrap()
+        .session_checkpoint()
+        .unwrap();
+    assert_eq!(checkpoint.thinking(), Thinking::High);
+    server.abort();
+}
+

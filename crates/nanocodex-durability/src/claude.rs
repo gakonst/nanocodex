@@ -26,11 +26,17 @@ impl DurableAgentExt for ClaudeBuilder {
             store: state.shared_store(),
             record: state.record().await.map_err(agent_error)?,
         };
+        // The catalog record owns provenance: a branch's copied checkpoint
+        // still carries its source's lineage.
+        let builder = match &branches.record {
+            Some(record) => self.lineage(record.lineage.clone()),
+            None => self,
+        };
         let (owner, checkpoint) = state.acquire_agent().await.map_err(agent_error)?;
         let checkpoint = checkpoint
             .map(|value| value.decode::<Value>().map_err(agent_error))
             .transpose()?;
-        self.child_journal(journal).execution_policy(
+        builder.child_journal(journal).execution_policy(
             Arc::new(ClaudeExecution {
                 state_id,
                 owner,
