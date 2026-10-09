@@ -3,7 +3,7 @@
 use axum::{Json, Router, routing::post};
 use nanocodex::{
     Claude, ClaudeModel, Harness, HarnessFamily, HarnessModel, Model, Mutability, Nanocodex,
-    NanocodexError, OpenAi, ReasoningMode, Thinking,
+    NanocodexError, OpenAi, ReasoningMode, SessionCheckpoint, Thinking,
     agent::{AgentHandle, SpawnOptions},
     claude::{ClaudeClient, ClaudeToolReply, ClaudeTools, ToolResultContent},
     oai::transport::ResponsesTransport,
@@ -640,6 +640,68 @@ async fn journey() {
     println!(
         "INVALID_SELECTION family/model mismatch and unsupported effort rejected before recipes"
     );
+
+    // A host reopens a serialized root checkpoint of either family through the
+    // same router: identity, model and committed history survive.
+    for model in [
+        HarnessModel::Codex(Model::Sol),
+        HarnessModel::Claude(ClaudeModel::Sonnet55),
+    ] {
+        let (root, _events) = harness.start(model).await.unwrap();
+        let first = root
+            .prompt("Remember cobalt-resume for the resumed session.")
+            .await
+            .unwrap()
+            .result()
+            .await
+            .unwrap();
+        let saved = first.checkpoint().unwrap().to_json().unwrap();
+        let session_id = root.session_id().to_owned();
+        root.shutdown().await.unwrap();
+        let checkpoint = SessionCheckpoint::from_json(&saved).unwrap();
+        assert_eq!(checkpoint.turn_id(), first.turn_id());
+        assert_eq!(checkpoint.model(), model);
+        let (resumed, _events) = harness.resume(checkpoint).await.unwrap();
+        assert_eq!(resumed.session_id(), session_id);
+        assert_eq!(resumed.harness_family(), model.family());
+        resumed
+            .prompt("Recall cobalt-resume after resuming.")
+            .await
+            .unwrap()
+            .result()
+            .await
+            .unwrap();
+        let recall = transcript
+            .lock()
+            .unwrap()
+            .iter()
+            .rev()
+            .find(|frame| {
+                frame["request"]
+                    .to_string()
+                    .contains("Recall cobalt-resume after resuming.")
+            })
+            .unwrap()
+            .clone();
+        assert!(
+            recall["request"]
+                .to_string()
+                .contains("Remember cobalt-resume"),
+            "{model} resume must replay committed history"
+        );
+        resumed.shutdown().await.unwrap();
+    }
+    let mut foreign = serde_json::to_value(
+        SessionCheckpoint::from_json(&parent.checkpoint().await.unwrap().to_json().unwrap())
+            .unwrap(),
+    )
+    .unwrap();
+    foreign["format"] = json!("nanocodex-session-checkpoint/0");
+    assert!(matches!(
+        SessionCheckpoint::from_json(&foreign.to_string()),
+        Err(NanocodexError::InvalidCheckpoint(_))
+    ));
+    println!("ROOT_RESUME Codex and Claude roots resumed from JSON checkpoints with history");
 
     let snapshot = {
         let (agent, _events) = owner.spawn_with(options).await.unwrap();

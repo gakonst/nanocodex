@@ -217,3 +217,108 @@ async fn root_and_side_conversation_write_resumable_codex_rollouts() {
     restored.shutdown().await.unwrap();
     server.abort();
 }
+
+
+/// Visible thinking and provider server tools reach the mirror as a reasoning
+/// summary and paired function call/output; signatures, redacted thinking and
+/// encrypted search content never do.
+#[tokio::test]
+async fn reasoning_and_server_tools_are_mirrored_without_opaque_payloads() {
+    use nanocodex_claude::ServerToolDefinition;
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    let blocks = vec![
+        json!({"type":"thinking","thinking":"weigh the sources","signature":"opaque-signature"}),
+        json!({"type":"redacted_thinking","data":"opaque-redacted"}),
+        json!({"type":"server_tool_use","id":"srv-1","name":"web_search","input":{"query":"nanocodex"}}),
+        json!({"type":"web_search_tool_result","tool_use_id":"srv-1","content":[{"type":"web_search_result","title":"Nanocodex","url":"https://example.com/n","encrypted_content":"opaque-search"}]}),
+        json!({"type":"text","text":"searched-answer"}),
+    ];
+    let mut frames = vec![
+        json!({"type":"message_start","message":{"id":"msg","role":"assistant","model":"claude-sonnet-5-5","content":[],"usage":{"input_tokens":3,"output_tokens":0}}}),
+    ];
+    for (index, block) in blocks.into_iter().enumerate() {
+        frames.push(json!({"type":"content_block_start","index":index,"content_block":block}));
+        frames.push(json!({"type":"content_block_stop","index":index}));
+    }
+    frames.push(json!({"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":5}}));
+    frames.push(json!({"type":"message_stop"}));
+    let wire: String = frames
+        .into_iter()
+        .map(|frame| format!("data: {frame}\n\n"))
+        .collect();
+    let app = Router::new().route(
+        "/v1/messages",
+        post(move || {
+            let wire = wire.clone();
+            async move { ([("content-type", "text/event-stream")], wire) }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let home = tempfile::tempdir().unwrap();
+    let (agent, _) = Nanocodex::builder(Claude::new(
+        ClaudeClient::new(
+            reqwest::Client::new(),
+            format!("http://{address}/v1/messages"),
+            "synthetic",
+        ),
+        "claude-sonnet-5-5",
+    ))
+    .workspace(home.path().to_str().unwrap())
+    .rollout(RolloutConfig::new(home.path()))
+    .server_tool(ServerToolDefinition::web_search_basic(3))
+    .build()
+    .unwrap();
+    let result = agent
+        .prompt("search for nanocodex")
+        .await
+        .unwrap()
+        .result()
+        .await
+        .unwrap();
+    assert_eq!(result.final_message(), "searched-answer");
+    agent.flush().await.unwrap();
+    let path = agent.persistence().and_then(|p| p.rollout).unwrap();
+    let file = std::fs::read_to_string(path.path()).unwrap();
+    let items = file
+        .lines()
+        .map(|line| serde_json::from_str::<Value>(line).unwrap())
+        .filter(|row| row["type"] == "response_item")
+        .map(|row| row["payload"].clone())
+        .collect::<Vec<_>>();
+    let of = |kind: &str| {
+        items
+            .iter()
+            .filter(|item| item["type"] == kind)
+            .cloned()
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(of("reasoning").len(), 1, "{items:?}");
+    assert_eq!(of("reasoning")[0]["summary"][0]["text"], "weigh the sources");
+    assert_eq!(of("function_call")[0]["call_id"], "srv-1");
+    assert_eq!(of("function_call")[0]["name"], "web_search");
+    assert!(
+        of("function_call")[0]["arguments"]
+            .as_str()
+            .unwrap()
+            .contains("nanocodex")
+    );
+    assert_eq!(of("function_call_output")[0]["call_id"], "srv-1");
+    assert_eq!(
+        of("function_call_output")[0]["output"],
+        "Nanocodex <https://example.com/n>"
+    );
+    assert!(!file.contains("opaque"), "opaque provider payloads leaked");
+    let loaded = RolloutConfig::new(home.path())
+        .load_session(agent.session_id())
+        .expect("the shared loader reads reasoning and server-tool items");
+    assert!(!loaded.transcript().is_empty());
+    let evidence =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../output/claude-rollout-mirror");
+    std::fs::create_dir_all(&evidence).unwrap();
+    std::fs::write(evidence.join("server-tools.jsonl"), &file).unwrap();
+    agent.shutdown().await.unwrap();
+    server.abort();
+}
+

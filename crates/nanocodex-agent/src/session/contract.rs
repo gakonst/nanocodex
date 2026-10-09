@@ -127,13 +127,24 @@ impl SessionCheckpoint {
 
     /// Parses and validates a serialized checkpoint.
     ///
+    /// ```
+    /// # use nanocodex_agent::{Nanocodex, Result, SessionCheckpoint};
+    /// # async fn save_and_reload(agent: &Nanocodex) -> Result<()> {
+    /// let json = agent.checkpoint().await?.to_json()?;
+    /// // Persist `json` as a secret: it holds the unredacted conversation.
+    /// let checkpoint = SessionCheckpoint::from_json(&json)?;
+    /// assert_eq!(checkpoint.session_id(), agent.session_id());
+    /// # Ok(())
+    /// # }
+    /// ```
+    ///
     /// # Errors
     ///
-    /// Returns [`NanocodexError::InvalidSessionSnapshot`] for malformed JSON
-    /// or an unsupported checkpoint format.
+    /// Returns [`NanocodexError::InvalidCheckpoint`] for malformed JSON or
+    /// when [`Self::validate`] rejects the decoded checkpoint.
     pub fn from_json(json: &str) -> Result<Self> {
         let checkpoint: Self = serde_json::from_str(json)
-            .map_err(|error| NanocodexError::InvalidSessionSnapshot(error.to_string()))?;
+            .map_err(|error| NanocodexError::InvalidCheckpoint(error.to_string()))?;
         checkpoint.validate()?;
         Ok(checkpoint)
     }
@@ -142,27 +153,65 @@ impl SessionCheckpoint {
     ///
     /// # Errors
     ///
-    /// Returns an error only if the native payload cannot be encoded.
+    /// Returns [`NanocodexError::InvalidCheckpoint`] only if the native
+    /// payload cannot be encoded.
     pub fn to_json(&self) -> Result<String> {
         serde_json::to_string(self)
-            .map_err(|error| NanocodexError::InvalidSessionSnapshot(error.to_string()))
+            .map_err(|error| NanocodexError::InvalidCheckpoint(error.to_string()))
     }
 
-    /// Rejects an unsupported format or a family/model mismatch.
+    /// Checks the harness-neutral invariants every backend relies on.
+    ///
+    /// A valid checkpoint has the supported format, non-empty session and
+    /// conversation identities, a thinking level its pinned model supports,
+    /// a non-empty turn identity when one is recorded, and self-consistent
+    /// lineage (a root has no parent and depth 0; a derived session has a
+    /// parent and depth of at least 1).
+    ///
+    /// The opaque payload is decoded, and its family checked, only by the
+    /// receiving backend: restoring another family's checkpoint fails with
+    /// [`NanocodexError::CheckpointFamilyMismatch`] (see
+    /// [`Self::require_family`]), and a malformed payload with
+    /// [`NanocodexError::InvalidCheckpoint`].
     ///
     /// # Errors
     ///
-    /// Returns [`NanocodexError::InvalidSessionSnapshot`] when invalid.
+    /// Returns [`NanocodexError::InvalidCheckpoint`] naming the first
+    /// violated invariant.
     pub fn validate(&self) -> Result<()> {
+        let invalid = |reason: String| Err(NanocodexError::InvalidCheckpoint(reason));
         if self.format != CHECKPOINT_FORMAT {
-            return Err(NanocodexError::InvalidSessionSnapshot(format!(
-                "unsupported session checkpoint format {:?}",
+            return invalid(format!(
+                "unsupported session checkpoint format {:?}; expected {CHECKPOINT_FORMAT:?}",
                 self.format
-            )));
+            ));
         }
         if self.session_id.trim().is_empty() || self.conversation_id.trim().is_empty() {
-            return Err(NanocodexError::InvalidSessionSnapshot(
-                "session checkpoint identity must not be empty".into(),
+            return invalid("session and conversation identities must not be empty".into());
+        }
+        if self
+            .turn_id
+            .as_deref()
+            .is_some_and(|turn| turn.trim().is_empty())
+        {
+            return invalid("recorded turn identity must not be empty".into());
+        }
+        if !self.model.supports_thinking(self.thinking) {
+            return invalid(format!(
+                "model {} does not support {} thinking",
+                self.model,
+                self.thinking.as_str()
+            ));
+        }
+        let lineage = &self.lineage;
+        if lineage.root_session_id.trim().is_empty() {
+            return invalid("lineage root session identity must not be empty".into());
+        }
+        let derived = lineage.parent_session_id.is_some();
+        if (lineage.origin == Origin::Root) == derived || derived != (lineage.depth > 0) {
+            return invalid(format!(
+                "inconsistent {:?} lineage: parent {:?} at depth {}",
+                lineage.origin, lineage.parent_session_id, lineage.depth
             ));
         }
         Ok(())
@@ -198,7 +247,12 @@ impl SessionCheckpoint {
     pub fn conversation_id(&self) -> &str {
         &self.conversation_id
     }
-    /// Completed turn this boundary follows, when captured from a turn result.
+    /// Completed turn this boundary follows.
+    ///
+    /// Set for checkpoints materialized from [`TurnResult::checkpoint`] by
+    /// every backend. `None` for [`crate::Nanocodex::checkpoint`], which
+    /// copies the latest committed boundary without naming a turn, and for
+    /// checkpoints taken before the first completed turn.
     #[must_use]
     pub fn turn_id(&self) -> Option<&str> {
         self.turn_id.as_deref()

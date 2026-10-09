@@ -607,6 +607,7 @@ async function dispatch(message, state) {
   if (method === "agent.setModel") return agent.session.setModel(args[1]);
   if (method === "agent.setThinking") return agent.session.setThinking(args[1]);
   if (method === "agent.setFastMode") return agent.session.setFastMode(args[1]);
+  if (method === "agent.setServiceTier") return agent.session.setServiceTier(args[1]);
   if (method === "agent.appendDeveloperMessage") return agent.session.appendDeveloperMessage(args[1]);
   if (method === "agent.realtime.start") return agent.session.realtime.start();
   if (method === "agent.realtime.end") return agent.session.realtime.end();
@@ -803,6 +804,7 @@ class WorkerConnection {
       setModel: (value) => connection.rpc("agent.setModel", [handleId, value]),
       setThinking: (value) => connection.rpc("agent.setThinking", [handleId, value]),
       setFastMode: (value) => connection.rpc("agent.setFastMode", [handleId, value]),
+      setServiceTier: (value) => connection.rpc("agent.setServiceTier", [handleId, value]),
       appendDeveloperMessage: async (text) => JSON.stringify(await connection.rpc("agent.appendDeveloperMessage", [handleId, text])),
       startRealtimeConversation: async () => JSON.stringify(await connection.rpc("agent.realtime.start", [handleId])),
       endRealtimeConversation: async () => JSON.stringify(await connection.rpc("agent.realtime.end", [handleId])),

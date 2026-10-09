@@ -126,7 +126,7 @@ where
                     .context_source
                     .resolve_workspace(Some(&resume.workspace))?;
                 if resolved != resume.workspace {
-                    return Err(NanocodexError::InvalidSessionSnapshot(
+                    return Err(NanocodexError::InvalidCheckpoint(
                         "fork workspace no longer resolves to the stored location".into(),
                     ));
                 }
@@ -224,7 +224,7 @@ where
     ) -> Result<(Nanocodex, AgentEvents)> {
         snapshot.validate()?;
         let session_id = snapshot.session_id.parse::<SessionId>().map_err(|error| {
-            NanocodexError::InvalidSessionSnapshot(format!("invalid child session ID: {error}"))
+            NanocodexError::InvalidCheckpoint(format!("invalid child session ID: {error}"))
         })?;
         // Rehydrate an in-memory idle child without inheriting the parent's policy.
         let mut spawner = self.with_execution(self.execution.for_new_thread("restore", None)?);
@@ -262,7 +262,7 @@ where
         if let Some(workspace) = &workspace {
             let resolved = spawner.context_source.resolve_workspace(Some(workspace))?;
             if resolved != workspace.as_ref() {
-                return Err(NanocodexError::InvalidSessionSnapshot(
+                return Err(NanocodexError::InvalidCheckpoint(
                     "child workspace no longer resolves to the stored location".into(),
                 ));
             }

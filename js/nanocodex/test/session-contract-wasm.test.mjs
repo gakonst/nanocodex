@@ -79,6 +79,14 @@ for (const harness of ["codex", "claude"]) {
     assert.equal(capabilities.fork, true);
     assert.equal(root.session.persistence(), null, "an in-memory session reports no persistence");
     await assert.rejects(root.session.setModel(otherFamilyModel), /another harness family/);
+    // Service tier changes follow capabilities; an unselectable tier is an explicit capability gap.
+    assert.notEqual(capabilities.serviceTier, "fixed");
+    await root.session.setServiceTier("standard");
+    await assert.rejects(root.session.setServiceTier("turbo"), /service tier must be/);
+    await root.session.setServiceTier("ultrafast").then(
+      () => root.session.setServiceTier("standard"),
+      (error) => assert.equal(error.code, "unsupported_capability"),
+    );
 
     const first = await root.turn.prompt({ input: "remember cobalt" }).result();
     assert.equal(first.finalMessage, "REPLY_1");

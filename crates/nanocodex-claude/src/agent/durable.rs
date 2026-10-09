@@ -44,7 +44,7 @@ impl Snapshot {
     }
     pub(super) fn validated(self) -> Result<Self> {
         if self.provider != "claude" || self.version != 1 {
-            return Err(NanocodexError::InvalidSessionSnapshot(
+            return Err(NanocodexError::InvalidCheckpoint(
                 "unsupported Claude checkpoint version/provider".into(),
             ));
         }
@@ -609,11 +609,11 @@ pub struct ClaudeCheckpointView {
 ///
 /// # Errors
 ///
-/// Returns [`NanocodexError::InvalidSessionSnapshot`] when the value is not a
+/// Returns [`NanocodexError::InvalidCheckpoint`] when the value is not a
 /// supported Claude checkpoint or records a non-Claude model.
 pub fn decode_checkpoint(checkpoint: Value) -> Result<ClaudeCheckpointView> {
     let snapshot: Snapshot = serde_json::from_value::<Snapshot>(checkpoint)
-        .map_err(|error| NanocodexError::InvalidSessionSnapshot(error.to_string()))?
+        .map_err(|error| NanocodexError::InvalidCheckpoint(error.to_string()))?
         .validated()?;
     snapshot.view()
 }
@@ -623,12 +623,12 @@ pub fn decode_checkpoint(checkpoint: Value) -> Result<ClaudeCheckpointView> {
 /// # Errors
 ///
 /// Returns [`NanocodexError::CheckpointFamilyMismatch`] for another family's
-/// checkpoint and [`NanocodexError::InvalidSessionSnapshot`] for an invalid one.
+/// checkpoint and [`NanocodexError::InvalidCheckpoint`] for an invalid one.
 pub fn decode_session_checkpoint(checkpoint: &SessionCheckpoint) -> Result<ClaudeCheckpointView> {
     checkpoint.validate()?;
     checkpoint.require_family(HarnessFamily::Claude)?;
     let stored: NativeChildState = serde_json::from_value(checkpoint.payload().clone())
-        .map_err(|error| NanocodexError::InvalidSessionSnapshot(error.to_string()))?;
+        .map_err(|error| NanocodexError::InvalidCheckpoint(error.to_string()))?;
     let mut view = stored.snapshot.validated()?.view()?;
     view.model = Some(checkpoint.model());
     view.lineage = Some(checkpoint.lineage().clone());
@@ -646,7 +646,7 @@ impl Snapshot {
                     .ok()
                     .filter(|model| model.family() == HarnessFamily::Claude)
                     .ok_or_else(|| {
-                        NanocodexError::InvalidSessionSnapshot(
+                        NanocodexError::InvalidCheckpoint(
                             "checkpoint model is not a Claude model".into(),
                         )
                     })

@@ -17,6 +17,7 @@ mod fs_util;
 mod instructions;
 mod link;
 mod project;
+mod session_environment;
 mod skills;
 
 use std::{
@@ -35,6 +36,7 @@ pub use instructions::{
 };
 pub use link::{LinkAction, LinkMode, LinkOutcome, LinkReport, SharedItem};
 pub use project::{InstructionFile, ProjectHome, ProjectInstructions};
+pub use session_environment::SessionEnvironment;
 pub use skills::{SkillEntry, SkillRoot, SkillSet, resolve_skills};
 
 /// Environment variable selecting the canonical Nanocodex/Codex home.

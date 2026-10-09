@@ -1,8 +1,8 @@
 //! Codex-compatible JSONL mirror of a Claude session.
 //!
 //! Durable state remains the source of truth; this mirror records every
-//! committed turn as Responses-shaped items (user and assistant text, tool
-//! calls and their outputs) beneath `CODEX_HOME/sessions`, with session
+//! committed turn as Responses-shaped items (user and assistant text,
+//! reasoning summaries, client and server tool calls and their outputs) beneath `CODEX_HOME/sessions`, with session
 //! metadata carrying the session's origin, parent and root.
 use super::*;
 use nanocodex_agent::rollout::{
@@ -82,8 +82,14 @@ impl Mirror {
     }
 }
 
-/// Model-visible Claude history as Responses-shaped rollout items. Signed
-/// thinking, server-tool payloads and binary media are not mirrored.
+/// Model-visible Claude history as Responses-shaped rollout items.
+///
+/// Visible thinking becomes a reasoning summary; provider server tools
+/// (web search/fetch, code execution, tool search, MCP connector) become
+/// function calls paired with a textual output, so Codex-compatible readers
+/// see the same call/result structure as for client tools. Thinking
+/// signatures, redacted thinking, encrypted provider payloads and binary
+/// media are model-bound and never mirrored.
 fn history(conversation: &Conversation) -> Vec<ResponseItem> {
     let mut items = Vec::new();
     if !conversation.summary.is_empty() {
@@ -96,24 +102,74 @@ fn history(conversation: &Conversation) -> Vec<ResponseItem> {
         for block in &entry.content {
             match block {
                 ContentBlock::Text { text, .. } => items.push(message(entry.role, text)),
+                ContentBlock::Thinking { thinking, .. } if !thinking.trim().is_empty() => {
+                    items.push(json!({
+                        "type": "reasoning",
+                        "summary": [{"type": "summary_text", "text": thinking}],
+                    }));
+                }
                 ContentBlock::ToolUse {
                     id, name, input, ..
-                } => items.push(json!({
-                    "type": "function_call",
-                    "call_id": id,
-                    "name": name,
-                    "arguments": input.to_string(),
-                })),
+                }
+                | ContentBlock::ServerToolUse {
+                    id, name, input, ..
+                } => items.push(function_call(id, name, input)),
+                ContentBlock::McpToolUse {
+                    id,
+                    name,
+                    server_name,
+                    input,
+                    ..
+                } => items.push(function_call(
+                    id,
+                    &format!("mcp__{server_name}__{name}"),
+                    input,
+                )),
                 ContentBlock::ToolResult {
                     tool_use_id,
                     content,
                     ..
-                } => items.push(json!({
-                    "type": "function_call_output",
-                    "call_id": tool_use_id,
-                    "output": tool_output(content),
-                })),
-                _ => {}
+                } => items.push(function_output(tool_use_id, &tool_output(content))),
+                ContentBlock::WebSearchToolResult {
+                    tool_use_id,
+                    content,
+                    ..
+                }
+                | ContentBlock::WebFetchToolResult {
+                    tool_use_id,
+                    content,
+                    ..
+                }
+                | ContentBlock::ToolSearchToolResult {
+                    tool_use_id,
+                    content,
+                    ..
+                }
+                | ContentBlock::CodeExecutionToolResult {
+                    tool_use_id,
+                    content,
+                    ..
+                }
+                | ContentBlock::BashCodeExecutionToolResult {
+                    tool_use_id,
+                    content,
+                    ..
+                }
+                | ContentBlock::TextEditorCodeExecutionToolResult {
+                    tool_use_id,
+                    content,
+                    ..
+                }
+                | ContentBlock::McpToolResult {
+                    tool_use_id,
+                    content,
+                    ..
+                } => items.push(function_output(tool_use_id, &server_output(content))),
+                ContentBlock::Thinking { .. }
+                | ContentBlock::RedactedThinking { .. }
+                | ContentBlock::McpToolListing { .. }
+                | ContentBlock::Image { .. }
+                | ContentBlock::Document { .. } => {}
             }
         }
     }
@@ -121,6 +177,74 @@ fn history(conversation: &Conversation) -> Vec<ResponseItem> {
         .into_iter()
         .filter_map(|item| serde_json::from_value(item).ok())
         .collect()
+}
+
+fn function_call(id: &str, name: &str, input: &Value) -> Value {
+    json!({
+        "type": "function_call",
+        "call_id": id,
+        "name": name,
+        "arguments": input.to_string(),
+    })
+}
+
+fn function_output(call_id: &str, output: &str) -> Value {
+    json!({"type": "function_call_output", "call_id": call_id, "output": output})
+}
+
+/// Readable text of a server-tool result. Encrypted search content, fetched
+/// document bodies and other opaque payloads are summarized, not copied.
+fn server_output(content: &Value) -> String {
+    match content {
+        Value::String(text) => text.clone(),
+        Value::Array(parts) => parts
+            .iter()
+            .map(server_output)
+            .filter(|part| !part.is_empty())
+            .collect::<Vec<_>>()
+            .join("\n"),
+        Value::Object(part) => {
+            let field = |key: &str| part.get(key).and_then(Value::as_str).unwrap_or_default();
+            if let Some(text) = part.get("text").and_then(Value::as_str) {
+                return text.to_owned();
+            }
+            let kind = field("type");
+            if kind == "web_search_result" {
+                return format!("{} <{}>", field("title"), field("url"));
+            }
+            if kind.ends_with("_error") {
+                return format!("[{kind}: {}]", field("error_code"));
+            }
+            let mut lines = Vec::new();
+            for key in ["url", "title", "stdout", "stderr"] {
+                if !field(key).is_empty() {
+                    lines.push(field(key).to_owned());
+                }
+            }
+            if let Some(code) = part.get("return_code").and_then(Value::as_i64) {
+                lines.push(format!("exit code {code}"));
+            }
+            if let Some(references) = part.get("tool_references").and_then(Value::as_array) {
+                let names = references
+                    .iter()
+                    .filter_map(|reference| reference.get("tool_name").and_then(Value::as_str))
+                    .collect::<Vec<_>>();
+                lines.push(format!("tools: {}", names.join(", ")));
+            }
+            if let Some(inner) = part.get("content").filter(|_| kind != "document") {
+                let inner = server_output(inner);
+                if !inner.is_empty() {
+                    lines.push(inner);
+                }
+            }
+            if lines.is_empty() && !kind.is_empty() {
+                lines.push(format!("[{kind}]"));
+            }
+            lines.join("\n")
+        }
+        Value::Null => String::new(),
+        other => other.to_string(),
+    }
 }
 
 fn message(role: Role, text: &str) -> Value {

@@ -37,6 +37,9 @@ export type SessionInfo = Readonly<{
   lineage: SessionLineage;
 }>;
 
+/** Processing tier for model requests. */
+export type ServiceTier = "standard" | "priority" | "fast" | "ultrafast";
+
 /** When a session setting may change. */
 export type Mutability = "fixed" | "before_first_prompt" | "anytime";
 
@@ -119,7 +122,7 @@ export type CompactionReceipt = Readonly<{
 }>;
 
 export type AgentOptions = {
-  /** Native agent-loop family. Claude options are documented by `Claude.create`. */
+  /** Native agent-loop family. Pass `harness: "claude"` with Claude options (auth, model) for the Messages harness; both return the same Agent. */
   harness?: "codex" | undefined;
   /** Explicit alternate-family credentials and native tools; children remain in the shared task tree. */
   harnesses?: Readonly<{ claude?: ClaudeOptions }> | undefined;
@@ -389,7 +392,7 @@ export type EstimatedUsdCost = Readonly<{
   cached_input_usd: string;
   cache_write_input_usd: string;
   output_usd: string;
-  service_tier: "standard" | "priority" | "fast" | "ultrafast";
+  service_tier: ServiceTier;
 }>;
 
 export type CostStatus =
@@ -454,7 +457,10 @@ export type AgentActions = {
     fork(options?: ForkOptions): Promise<DefaultAgent>;
     /** Changes the model to another model id of this session's harness family. */
     setModel(model: HarnessModel): Promise<void>;
+    /** Shorthand for `setServiceTier(enabled ? "priority" : "standard")`. */
     setFastMode(enabled: boolean): Promise<void>;
+    /** Selects the processing tier; governed by `capabilities().serviceTier`. */
+    setServiceTier(serviceTier: ServiceTier): Promise<void>;
     setThinking(thinking: Thinking): Promise<void>;
     shutdown(): Promise<void>;
     spawn(): Promise<DefaultAgent>;

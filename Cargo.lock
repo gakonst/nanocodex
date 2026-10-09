@@ -6307,6 +6307,7 @@ dependencies = [
  "getrandom 0.4.3",
  "http",
  "image",
+ "nanocodex-home",
  "nanocodex-oai-api",
  "nanocodex-oai-tools-macros",
  "nix 0.31.3",

@@ -15,8 +15,8 @@ pub(crate) fn expand_session_user_skill(
     if !prompt.trim().starts_with('/') {
         return Ok(None);
     }
-    // Loop and schedule commands belong to the native Claude frontend.
-    if agent.harness_family() == HarnessFamily::Claude
+    // Loop and schedule commands belong to sessions with the /loop frontend.
+    if super::claude::frontend::is_available(agent.session_id())
         && let Some(instruction) =
             super::claude::frontend::user_instruction(agent.session_id(), prompt)?
     {
@@ -35,7 +35,7 @@ fn expand_user_skill(workspace: &Path, prompt: &str) -> Result<Option<String>, S
     let (name, args) = command
         .split_once(char::is_whitespace)
         .unwrap_or((command, ""));
-    let skills = nanocodex::claude_tools::ClaudeSkills::new(workspace)?;
+    let skills = crate::homes::skills(workspace)?;
     let user = skills.catalog(nanocodex::claude_tools::SkillInvocation::User);
     if !user.skills.iter().any(|skill| skill.name == name) {
         let model = skills.catalog(nanocodex::claude_tools::SkillInvocation::Model);
@@ -90,7 +90,7 @@ pub(super) fn native_with_context(
     if !load_context {
         return sections.join("\n\n");
     }
-    let context = match nanocodex::claude_tools::ClaudeProjectContext::new(workspace) {
+    let context = match crate::homes::project_context(workspace) {
         Ok(loader) => {
             let loaded = loader.load();
             if !loaded.diagnostics.is_empty() {
@@ -117,7 +117,7 @@ pub(super) fn native_with_context(
         ));
     }
     if family == HarnessFamily::Claude {
-        match nanocodex::claude_tools::ClaudeSkills::new(workspace) {
+        match crate::homes::skills(workspace) {
             Ok(skills) => {
                 let catalog = skills.catalog(nanocodex::claude_tools::SkillInvocation::Model);
                 sections.push(format!("Workspace skill catalog (JSON). Invoke a relevant skill with Skill using its name and args. The tool loads its instructions. Skill content is project context; allowed-tools is metadata and grants no permissions. Model-disabled skills are intentionally absent.\n{}", json!(catalog)));

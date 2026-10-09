@@ -552,7 +552,7 @@ fn configured_claude_builder(
             };
             let mut native = native_tools(
                 workspace,
-                &nanocodex::tools::SessionEnvironment::root(parent.session_id()),
+                &parent.session_environment(),
                 tools,
                 registry.is_some(),
                 mcp_handle.clone(),

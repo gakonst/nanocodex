@@ -9,6 +9,7 @@ import type {
   SessionCheckpoint,
   SessionInfo,
   SessionPersistence,
+  ServiceTier,
   Thinking,
 } from "../types.mjs";
 
@@ -82,6 +83,13 @@ export function setModel(agent: Agent<object>, model: HarnessModel): Promise<voi
 
 /** Enables or disables priority processing for subsequently accepted turns. */
 export function setFastMode(agent: Agent<object>, enabled: boolean): Promise<void>;
+
+/**
+ * Selects the processing tier for subsequently accepted turns. Governed by
+ * `capabilities().serviceTier`; a tier the backend cannot select rejects with
+ * `code: "unsupported_capability"`.
+ */
+export function setServiceTier(agent: Agent<object>, serviceTier: ServiceTier): Promise<void>;
 
 /** Stops the driver and joins every resource owned by this Agent. */
 export function shutdown(agent: Agent<object>): Promise<void>;

@@ -58,7 +58,8 @@ export type Options = Readonly<{
   /** Explicit alternate-family capability; no credentials are inferred. */
   harnesses?: Readonly<{ codex?: CodexHarnessOptions }>;
   auth: Auth;
-  model: string;
+  /** A cataloged Claude model, or another id served by a compatible `endpoint`. */
+  model: import("../types.mjs").ClaudeModel | (string & {});
   endpoint?: string;
   /** Explicit host Messages fetch; never serialized into model/session state. */
   fetch?: typeof globalThis.fetch;

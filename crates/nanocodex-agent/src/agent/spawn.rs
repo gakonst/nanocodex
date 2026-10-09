@@ -39,7 +39,7 @@ where
             .as_deref()
             .is_some_and(|key| key != restored_cache_key.as_ref())
         {
-            return Err(NanocodexError::InvalidSessionSnapshot(
+            return Err(NanocodexError::InvalidCheckpoint(
                 "configured prompt cache key does not match the resumed session".to_owned(),
             ));
         }
@@ -65,7 +65,7 @@ where
     let workspace = if let Some(initial) = initial_resume.as_ref() {
         let restored = context_source.resolve_workspace(Some(initial.workspace()))?;
         if restored != initial.workspace() {
-            return Err(NanocodexError::InvalidSessionSnapshot(
+            return Err(NanocodexError::InvalidCheckpoint(
                 "workspace no longer resolves to the stored location".to_owned(),
             ));
         }
@@ -146,7 +146,8 @@ where
             shutdown: shutdown.clone(),
             conversation_id: Arc::clone(&spawner.lineage_id),
         }),
-    );
+    )
+    .with_root_session_id(origin.lineage.root_session_id.as_str());
     if let Some(factory) = &spawner.spawn_factory {
         child_handle = child_handle.with_spawn_factory(factory.clone());
     }
@@ -154,10 +155,7 @@ where
     let tools = spawner
         .tools
         .materialize(child_handle.clone())?
-        .for_session(&nanocodex_oai_tools::SessionEnvironment::new(
-            &session_id_text,
-            &origin.lineage.root_session_id,
-        ));
+        .for_session(&child_handle.session_environment());
     if tools.exposure() != nanocodex_oai_tools::ToolExposure::CodeModeOnly {
         return Err(NanocodexError::InvalidRequest(
             "Nanocodex agents require CodeModeOnly tool exposure; direct exposure is only available to standalone tool runtimes".to_owned(),

@@ -80,10 +80,14 @@ Worker, Durable Object, or application proxy that owns rotating credentials.
 Authentication modes are constructors rather than a union of mutually
 exclusive fields on `Agent.create`.
 
-### Explicit Claude runtime
+### Claude harness
 
-`Claude.create` is an additive Messages backend with explicit host-owned auth
-and a Claude-only tool array, using the existing durability store contract.
+`Agent.create({ harness: "claude", model, auth, tools })` runs the native Rust
+Messages backend and returns the same Agent as a Codex session: identical
+`session`, `turn`, and `events` actions, the same `SessionCheckpoint`/fork/resume
+contract, and the same durability store. `Claude.create` is the equivalent
+constructor for the Claude-only `worker` entry point. Claude sessions take
+explicit host-owned auth and a Claude tool array.
 It does not silently switch managed providers, install Codex tools, or supply
 a subscription sign-in screen. Managed account connection is documented in the
 [managed Claude guide](../../docs/CLAUDE_MANAGED.md). See the [Claude JavaScript guide](../../docs/CLAUDE_JAVASCRIPT.md)
@@ -1019,7 +1023,8 @@ the same way; a checkpoint of another family rejects with
 `agent.session.info()` returns `{ sessionId, harness, lineage: { rootSessionId,
 parentSessionId, origin, depth } }`. `agent.session.capabilities()` states which
 lifecycle operations the backend supports and when model, thinking, and service
-tier may change; an unsupported operation rejects with
+tier may change (`setModel`, `setThinking`, `setServiceTier`/`setFastMode`); an
+unsupported operation rejects with
 `code: "unsupported_capability"` and a `capability` name.
 `agent.session.persistence()` reports the durable state backing the session, or
 `null`. `agent.session.fork({ at, origin })` forks the latest boundary, a
@@ -1198,6 +1203,7 @@ an owned client decorated with matching domain actions:
 - `agent.session.compact()` / `Actions.session.compact(agent)`
 - `agent.session.setThinking(...)` / `Actions.session.setThinking(agent, ...)`
 - `agent.session.setFastMode(...)` / `Actions.session.setFastMode(agent, ...)`
+- `agent.session.setServiceTier(...)` / `Actions.session.setServiceTier(agent, ...)`
 - `agent.session.shutdown()` / `Actions.session.shutdown(agent)`
 - `agent.session.spawn()` / `Actions.session.spawn(agent)`
 - `agent.events.watch(...)` / `Actions.events.watch(agent, ...)`

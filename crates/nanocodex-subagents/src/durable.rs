@@ -51,6 +51,22 @@ pub trait SubagentStore: Send + Sync {
         root_session_id: &'a str,
         payload: String,
     ) -> SubagentStoreFuture<'a, std::io::Result<()>>;
+    /// Records one child's latest committed checkpoint as that child's own
+    /// durable session, so it is listable, readable and resumable by its
+    /// session ID like any other session.
+    ///
+    /// The checkpoint carries the child's distinct identity and its
+    /// [`nanocodex_agent::Origin::Subagent`] lineage under `root_session_id`.
+    /// It is called after the journal containing the same boundary was saved,
+    /// and again for every later boundary. Stores without a session catalog
+    /// keep only the journal.
+    fn record_session<'a>(
+        &'a self,
+        _root_session_id: &'a str,
+        _checkpoint: SessionCheckpoint,
+    ) -> SubagentStoreFuture<'a, std::io::Result<()>> {
+        Box::pin(async { Ok(()) })
+    }
 }
 
 /// In-memory [`SubagentStore`], useful for tests and single-process hosts that
@@ -58,6 +74,7 @@ pub trait SubagentStore: Send + Sync {
 #[derive(Clone, Default)]
 pub struct MemorySubagentStore {
     values: Arc<Mutex<HashMap<String, String>>>,
+    sessions: Arc<Mutex<HashMap<String, SessionCheckpoint>>>,
 }
 
 impl MemorySubagentStore {
@@ -65,6 +82,30 @@ impl MemorySubagentStore {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// The latest checkpoint recorded for a child session.
+    #[must_use]
+    pub fn session(&self, session_id: &str) -> Option<SessionCheckpoint> {
+        self.sessions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(session_id)
+            .cloned()
+    }
+
+    /// Every recorded child session ID, sorted.
+    #[must_use]
+    pub fn sessions(&self) -> Vec<String> {
+        let mut ids = self
+            .sessions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
+        ids.sort();
+        ids
     }
 }
 
@@ -93,6 +134,20 @@ impl SubagentStore for MemorySubagentStore {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .insert(root_session_id.to_owned(), payload);
+            Ok(())
+        })
+    }
+
+    fn record_session<'a>(
+        &'a self,
+        _root_session_id: &'a str,
+        checkpoint: SessionCheckpoint,
+    ) -> SubagentStoreFuture<'a, std::io::Result<()>> {
+        Box::pin(async move {
+            self.sessions
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .insert(checkpoint.session_id().to_owned(), checkpoint);
             Ok(())
         })
     }
@@ -432,6 +487,14 @@ impl SubagentStore for JournalStore {
         payload: String,
     ) -> SubagentStoreFuture<'a, std::io::Result<()>> {
         self.0.save(payload)
+    }
+
+    fn record_session<'a>(
+        &'a self,
+        _root_session_id: &'a str,
+        checkpoint: SessionCheckpoint,
+    ) -> SubagentStoreFuture<'a, std::io::Result<()>> {
+        self.0.record_child(checkpoint)
     }
 }
 

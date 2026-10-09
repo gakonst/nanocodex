@@ -9,6 +9,7 @@ import {
   context as agentContext,
   fork as forkAgent,
   setFastMode as setAgentFastMode,
+  setServiceTier as setAgentServiceTier,
   setModel as setAgentModel,
   setThinking as setAgentThinking,
   shutdown as shutdownAgent,
@@ -72,6 +73,10 @@ export function setModel(agent, model) {
 
 export function setFastMode(agent, enabled) {
   return setAgentFastMode(agent, enabled);
+}
+
+export function setServiceTier(agent, serviceTier) {
+  return setAgentServiceTier(agent, serviceTier);
 }
 
 export function shutdown(agent) {

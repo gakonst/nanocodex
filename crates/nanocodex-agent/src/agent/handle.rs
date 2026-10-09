@@ -34,6 +34,7 @@ impl Clone for Nanocodex {
 #[derive(Clone)]
 pub struct AgentHandle {
     pub(super) session_id: Arc<str>,
+    root_session_id: Arc<str>,
     pub(super) model: crate::HarnessModel,
     native_model_id: Arc<str>,
     pub(super) native: Arc<dyn super::backend::AgentFactory>,
@@ -49,8 +50,10 @@ impl AgentHandle {
         model: crate::HarnessModel,
         native: Arc<dyn super::backend::AgentFactory>,
     ) -> Self {
+        let session_id: Arc<str> = session_id.into();
         Self {
-            session_id: session_id.into(),
+            root_session_id: Arc::clone(&session_id),
+            session_id,
             model,
             native_model_id: Arc::from(model.as_str()),
             native,
@@ -84,6 +87,28 @@ impl AgentHandle {
     pub fn session_id(&self) -> &str {
         &self.session_id
     }
+
+    /// Records the root of the owning session's conversation tree. Defaults
+    /// to the owning session itself, which is correct only for roots.
+    #[must_use]
+    pub fn with_root_session_id(mut self, root_session_id: impl Into<Arc<str>>) -> Self {
+        self.root_session_id = root_session_id.into();
+        self
+    }
+
+    /// Returns the root session of the owning session's conversation tree.
+    pub fn root_session_id(&self) -> &str {
+        &self.root_session_id
+    }
+
+    /// Identity exported to every subprocess launched by tools this
+    /// capability constructs (`CODEX_THREAD_ID` and
+    /// `NANOCODEX_ROOT_SESSION_ID`).
+    #[must_use]
+    pub fn session_environment(&self) -> nanocodex_oai_tools::SessionEnvironment {
+        nanocodex_oai_tools::SessionEnvironment::new(&self.session_id, &self.root_session_id)
+    }
+
     /// Retains an unrestricted native identifier for concrete backend recipes.
     #[must_use]
     pub fn with_native_model_id(mut self, model: impl Into<Arc<str>>) -> Self {

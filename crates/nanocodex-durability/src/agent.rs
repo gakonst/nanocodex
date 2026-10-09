@@ -53,12 +53,11 @@ impl<F> DurableAgentExt for NanocodexBuilder<F> {
             .map_err(agent_error)?;
             if let Some(configured) = builder.resume_snapshot()
                 && serde_json::to_string(configured)
-                    .map_err(|error| NanocodexError::InvalidSessionSnapshot(error.to_string()))?
-                    != serde_json::to_string(&restored).map_err(|error| {
-                        NanocodexError::InvalidSessionSnapshot(error.to_string())
-                    })?
+                    .map_err(|error| NanocodexError::InvalidCheckpoint(error.to_string()))?
+                    != serde_json::to_string(&restored)
+                        .map_err(|error| NanocodexError::InvalidCheckpoint(error.to_string()))?
             {
-                return Err(NanocodexError::InvalidSessionSnapshot(
+                return Err(NanocodexError::InvalidCheckpoint(
                     "configured resume snapshot does not match the durability state".to_owned(),
                 ));
             }

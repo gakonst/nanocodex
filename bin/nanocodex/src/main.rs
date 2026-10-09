@@ -153,6 +153,8 @@ enum Command {
     Resume(Box<ResumeCommand>),
     /// Branch a saved session at an earlier turn, or restore its file checkpoints.
     Rewind(rewind::Rewind),
+    /// Show the Codex and Claude homes and preview or create their shared links.
+    Homes(homes::Homes),
     /// Install, cache, or switch CLI builds.
     Update(update::Update),
 }
@@ -287,7 +289,12 @@ fn process_exit_code(error: &eyre::Report) -> u8 {
 async fn run(cli: Cli) -> Result<()> {
     // Interactive startup owns maintenance after its first editable frame.
     let observation = matches!(&cli.command, Some(Command::Hand(hand)) if hand.is_observation());
-    if !observation && !matches!(&cli.command, None | Some(Command::Resume(_))) {
+    if !observation
+        && !matches!(
+            &cli.command,
+            None | Some(Command::Resume(_) | Command::Homes(_))
+        )
+    {
         if let Err(error) = update::prepare_legacy_nightly_bootstrap() {
             eprintln!("warning: failed to prepare the Nanocodex updater bootstrap: {error:#}");
         }
@@ -334,6 +341,7 @@ async fn run(cli: Cli) -> Result<()> {
         }
         Some(Command::ManagedServer(command)) => command.run().await,
         Some(Command::Rewind(command)) => command.run().await,
+        Some(Command::Homes(command)) => command.run(),
         Some(Command::Resume(command)) => {
             let codex_home = config::default_codex_home()?;
             let id = match command.session {

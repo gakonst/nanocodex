@@ -84,7 +84,7 @@ impl<F> NanocodexBuilder<F> {
     /// # Errors
     ///
     /// Returns [`NanocodexError::CheckpointFamilyMismatch`] for a non-Codex
-    /// checkpoint and [`NanocodexError::InvalidSessionSnapshot`] for an
+    /// checkpoint and [`NanocodexError::InvalidCheckpoint`] for an
     /// invalid one.
     pub fn restore_runtime(mut self, checkpoint: SessionCheckpoint) -> Result<Self> {
         let snapshot = ChildState::from_checkpoint(checkpoint)?;
@@ -93,7 +93,7 @@ impl<F> NanocodexBuilder<F> {
             .thinking(snapshot.thinking)
             .service_tier(snapshot.service_tier);
         self.session_id = Some(snapshot.session_id.parse().map_err(|error| {
-            NanocodexError::InvalidSessionSnapshot(format!("invalid child session: {error}"))
+            NanocodexError::InvalidCheckpoint(format!("invalid child session: {error}"))
         })?);
         self.resume = snapshot.conversation;
         self.lineage = Some(snapshot.lineage);
@@ -351,12 +351,12 @@ impl<F> NanocodexBuilder<F> {
     /// # Errors
     ///
     /// Returns [`NanocodexError::CheckpointFamilyMismatch`] for a non-Codex
-    /// checkpoint and [`NanocodexError::InvalidSessionSnapshot`] for an
+    /// checkpoint and [`NanocodexError::InvalidCheckpoint`] for an
     /// invalid checkpoint or one without a committed conversation.
     pub fn resume(mut self, checkpoint: SessionCheckpoint) -> Result<Self> {
         let state = ChildState::from_checkpoint(checkpoint)?;
         let conversation = state.conversation.ok_or_else(|| {
-            NanocodexError::InvalidSessionSnapshot(
+            NanocodexError::InvalidCheckpoint(
                 "checkpoint has no committed conversation to resume".into(),
             )
         })?;

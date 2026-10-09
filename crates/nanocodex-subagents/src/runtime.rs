@@ -1206,6 +1206,8 @@ impl Registry {
         let mut revision = self.revision.subscribe();
         drop(platform::spawn(async move {
             let mut saved = HashMap::<String, String>::new();
+            // Child session ID -> encoded checkpoint last recorded as its own session.
+            let mut recorded = HashMap::<String, String>::new();
             loop {
                 let Some(live) = registry.upgrade() else {
                     return;
@@ -1225,6 +1227,26 @@ impl Registry {
                     }
                     match store.save(&root_session_id, payload.clone()).await {
                         Ok(()) => {
+                            // Only boundaries already in a saved journal become
+                            // sessions, so a recorded child is always restorable.
+                            for checkpoint in live.child_checkpoints(&root_session_id).await {
+                                let Ok(encoded) = serde_json::to_string(&checkpoint) else {
+                                    continue;
+                                };
+                                let session_id = checkpoint.session_id().to_owned();
+                                if recorded.get(&session_id) == Some(&encoded) {
+                                    continue;
+                                }
+                                match store.record_session(&root_session_id, checkpoint).await {
+                                    Ok(()) => {
+                                        recorded.insert(session_id, encoded);
+                                    }
+                                    Err(error) => tracing::warn!(
+                                        %error, %root_session_id, %session_id,
+                                        "could not record subagent session"
+                                    ),
+                                }
+                            }
                             saved.insert(root_session_id, payload);
                         }
                         Err(error) => {
@@ -1239,6 +1261,28 @@ impl Registry {
                 }
             }
         }));
+    }
+
+    /// Latest committed checkpoint of every child journaled under a root.
+    async fn child_checkpoints(&self, root_session_id: &str) -> Vec<SessionCheckpoint> {
+        let state = self.state.lock().await;
+        let checkpoints = self
+            .checkpoints
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(scope) = state.scopes.get(root_session_id) else {
+            return Vec::new();
+        };
+        let mut ids = scope.sessions.keys().copied().collect::<Vec<_>>();
+        ids.sort_unstable();
+        ids.into_iter()
+            .filter_map(|id| {
+                checkpoints
+                    .get(&(root_session_id.to_owned(), id))
+                    .or(scope.sessions.get(&id)?.stored_runtime.as_ref())
+                    .cloned()
+            })
+            .collect()
     }
 
     async fn journal_payloads(&self) -> Vec<(String, String)> {

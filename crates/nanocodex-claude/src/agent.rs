@@ -524,7 +524,7 @@ impl ClaudeBuilder {
     /// # Errors
     ///
     /// Returns [`NanocodexError::CheckpointFamilyMismatch`] for a non-Claude
-    /// checkpoint and [`NanocodexError::InvalidSessionSnapshot`] for an
+    /// checkpoint and [`NanocodexError::InvalidCheckpoint`] for an
     /// invalid one.
     pub fn restore_runtime(mut self, checkpoint: SessionCheckpoint) -> Result<Self> {
         checkpoint.validate()?;
@@ -535,14 +535,14 @@ impl ClaudeBuilder {
         let lineage = checkpoint.lineage().clone();
         let conversation_id = checkpoint.conversation_id().to_owned();
         let stored: NativeChildState = serde_json::from_value(checkpoint.into_payload())
-            .map_err(|error| NanocodexError::InvalidSessionSnapshot(error.to_string()))?;
+            .map_err(|error| NanocodexError::InvalidCheckpoint(error.to_string()))?;
         if stored.version != 1
             || stored.model.parse::<HarnessModel>().ok() != Some(model)
             || !model.supports_thinking(thinking)
             || stored.max_tokens == Some(0)
             || stored.context_window_tokens == 0
         {
-            return Err(NanocodexError::InvalidSessionSnapshot(
+            return Err(NanocodexError::InvalidCheckpoint(
                 "invalid Claude native checkpoint policy".into(),
             ));
         }
@@ -577,11 +577,11 @@ impl ClaudeBuilder {
     /// # Errors
     ///
     /// Returns [`NanocodexError::CheckpointFamilyMismatch`] for a non-Claude
-    /// checkpoint and [`NanocodexError::InvalidSessionSnapshot`] for an
+    /// checkpoint and [`NanocodexError::InvalidCheckpoint`] for an
     /// invalid checkpoint or one without a committed conversation.
     pub fn resume(self, checkpoint: SessionCheckpoint) -> Result<Self> {
         if !checkpoint.has_conversation() {
-            return Err(NanocodexError::InvalidSessionSnapshot(
+            return Err(NanocodexError::InvalidCheckpoint(
                 "checkpoint has no committed conversation to resume".into(),
             ));
         }
@@ -1054,6 +1054,11 @@ impl ClaudeBuilder {
             selected_model,
             native_factory.clone(),
         )
+        .with_root_session_id(
+            self.lineage
+                .as_ref()
+                .map_or(session_id.as_str(), |lineage| lineage.root_session_id.as_str()),
+        )
         .with_native_model_id(self.claude.model.as_str())
         .with_child_journal(self.child_journal.clone());
         if let Some(factory) = &self.spawn_factory {
@@ -1403,6 +1408,7 @@ impl ClaudeBuilder {
             task_board: self.task_board,
             cancellations: Mutex::new(HashMap::new()),
             stopped: AtomicBool::new(false),
+            released: AtomicBool::new(false),
             sequence: AtomicU64::new(1),
             accepted_turns: AtomicU64::new(accepted_turns),
             steering: Mutex::new(HashMap::new()),
@@ -2365,6 +2371,9 @@ struct State {
     task_board: Option<Arc<nanocodex_claude_tools::tasks::ClaudeTasks>>,
     cancellations: Mutex<HashMap<BackendTurnKey, Arc<Cancellation>>>,
     stopped: AtomicBool,
+    // Local persistence handles (rollout writer, durable owner) are closed once,
+    // by shutdown or by the background release after disconnect.
+    released: AtomicBool,
     sequence: AtomicU64,
     accepted_turns: AtomicU64,
     steering: Mutex<HashMap<BackendTurnKey, TurnSteering>>,
@@ -2448,9 +2457,8 @@ struct ClaudeBoundary {
 }
 impl ClaudeBoundary {
     fn checkpoint(&self) -> Result<SessionCheckpoint> {
-        let invalid_checkpoint = |error: &dyn std::fmt::Display| {
-            NanocodexError::InvalidSessionSnapshot(error.to_string())
-        };
+        let invalid_checkpoint =
+            |error: &dyn std::fmt::Display| NanocodexError::InvalidCheckpoint(error.to_string());
         let model: HarnessModel = self
             .policy
             .model
@@ -2597,7 +2605,7 @@ impl State {
             return Err(NanocodexError::CheckpointLineageMismatch);
         }
         let stored: NativeChildState = serde_json::from_value(checkpoint.into_payload())
-            .map_err(|error| NanocodexError::InvalidSessionSnapshot(error.to_string()))?;
+            .map_err(|error| NanocodexError::InvalidCheckpoint(error.to_string()))?;
         stored.snapshot.validated()
     }
     /// Rebinds a durable replayed result to the checkpoint its operation settled.
@@ -5336,12 +5344,38 @@ impl LifecycleBackend for Driver {
             Ok(())
         })
     }
+    /// A durable session detaches without cancelling accepted turns: new
+    /// admissions are refused through every clone, accepted turns run to
+    /// their committed settlement, and the rollout mirror and durable owner
+    /// are then closed in the background so another process can reopen the
+    /// session. Sessions without durable state shut down.
     fn disconnect(&self) -> BackendFuture<Result<()>> {
-        if self.state.policy.is_some() {
-            Box::pin(async { Ok(()) })
-        } else {
-            self.shutdown()
+        if self.state.policy.is_none() {
+            return self.shutdown();
         }
+        let state = self.state.clone();
+        Box::pin(async move {
+            {
+                // Admission is held for a whole manual compaction, so no
+                // compaction is running once it is acquired.
+                let _admission = state.admission.lock().await;
+                if state.stopped.swap(true, Ordering::SeqCst) {
+                    return Ok(());
+                }
+            }
+            let release = async move {
+                state.wait_idle().await;
+                // Nothing observes this future. Settled turns already reported
+                // their own rollout errors; a later shutdown() reports an owner
+                // release failure.
+                let _ = state.release_local().await;
+            };
+            #[cfg(not(target_family = "wasm"))]
+            tokio::spawn(release);
+            #[cfg(target_family = "wasm")]
+            wasm_bindgen_futures::spawn_local(release);
+            Ok(())
+        })
     }
     fn shutdown(&self) -> BackendFuture<Result<()>> {
         let state = self.state.clone();
@@ -5429,21 +5463,45 @@ impl LifecycleBackend for Driver {
                     }
                 }
             }
-            #[cfg(not(target_family = "wasm"))]
-            if first_shutdown && let Some(mirror) = &state.rollout {
-                mirror
-                    .shutdown()
-                    .await
-                    .map_err(|source| NanocodexError::PersistRollout {
-                        path: mirror.info().path().to_owned(),
-                        source,
-                    })?;
-            }
-            if let Some(policy) = &state.policy {
-                policy.shutdown().await?;
-            }
-            Ok(())
+            state.release_local().await
         })
+    }
+}
+
+impl State {
+    /// Waits until every accepted turn has settled, without cancelling any.
+    async fn wait_idle(&self) {
+        loop {
+            let notified = self.idle.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            if self.cancellations.lock().await.is_empty() {
+                break;
+            }
+            notified.await;
+        }
+    }
+
+    /// Closes the rollout mirror once and releases the durable owner. Owner
+    /// release is idempotent and joins a release already in progress.
+    async fn release_local(&self) -> Result<()> {
+        let first = !self.released.swap(true, Ordering::SeqCst);
+        #[cfg(not(target_family = "wasm"))]
+        if first && let Some(mirror) = &self.rollout {
+            mirror
+                .shutdown()
+                .await
+                .map_err(|source| NanocodexError::PersistRollout {
+                    path: mirror.info().path().to_owned(),
+                    source,
+                })?;
+        }
+        #[cfg(target_family = "wasm")]
+        let _ = first;
+        if let Some(policy) = &self.policy {
+            policy.shutdown().await?;
+        }
+        Ok(())
     }
 }
 

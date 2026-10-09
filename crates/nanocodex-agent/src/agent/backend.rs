@@ -69,6 +69,15 @@ pub trait ChildJournalStore: Send + Sync + 'static {
     fn load(&self) -> BackendFuture<std::io::Result<Option<String>>>;
     /// Atomically replaces the journal value.
     fn save(&self, payload: String) -> BackendFuture<std::io::Result<()>>;
+    /// Records a child's latest committed checkpoint as that child's own
+    /// durable session (catalog entry plus resumable state), keyed by its
+    /// distinct session ID and carrying its `Origin::Subagent` lineage.
+    ///
+    /// Called after the journal containing the same boundary was saved.
+    /// Hosts without a session catalog keep only the journal.
+    fn record_child(&self, _checkpoint: SessionCheckpoint) -> BackendFuture<std::io::Result<()>> {
+        Box::pin(async { Ok(()) })
+    }
 }
 
 /// A durable root's task-tree journal, exposed on its [`AgentHandle`].

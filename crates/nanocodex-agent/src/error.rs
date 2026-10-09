@@ -148,9 +148,10 @@ pub enum NanocodexError {
     #[error("the completed turn belongs to a different conversation lineage")]
     CheckpointLineageMismatch,
 
-    /// A serialized session snapshot failed structural or policy validation.
-    #[error("invalid session snapshot: {0}")]
-    InvalidSessionSnapshot(String),
+    /// A session checkpoint, or the backend-native conversation it carries,
+    /// failed structural or policy validation.
+    #[error("invalid session checkpoint: {0}")]
+    InvalidCheckpoint(String),
 
     /// A higher-layer execution policy or its host store failed.
     #[error("{layer} execution policy failed: {source}")]

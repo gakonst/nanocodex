@@ -1,13 +1,14 @@
 # Explicit Claude JavaScript runtime
 
-The additive `Claude.create` constructor runs the Rust Messages backend with the
+`Agent.create({ harness: "claude", ...options })` runs the Rust Messages backend with the
 **same** `nanocodex-durability` store, fencing, admission, effect receipts and
 terminal replay machinery. It does not route through OpenAI Responses, launch
 Claude Code, or install the Codex native catalog. Both harnesses expose only
 `exec` and `wait`; supplied capabilities are called inside shared Code Mode.
 
-`Agent.create({ harness: "claude", ...options })` also selects this native
-backend in the Node, host, and browser SDKs. Browser mixed-family sessions run
+It returns the same Agent as a Codex session (Node, host, and browser SDKs);
+`Claude.create(options)` is the equivalent constructor on the Claude-only
+`nanocodex/worker` entry point. Browser mixed-family sessions run
 in the calling isolate so their explicit tool handlers remain callable.
 
 Enable the canonical task tree with `subagents: { maxConcurrency: 6 }` on a
@@ -58,12 +59,13 @@ Hosted managed threads use the same canonical task tree and Code Mode contract;
 the explicit SDK recipes above do not configure hosted account routing.
 
 ```js
-import { Claude } from "nanocodex/node";
+import { Agent } from "nanocodex/node";
 import { createMemoryDurabilityStore } from "nanocodex/durability";
 
 const durabilityId = "claude-example";
 const options = {
-  model: "claude-sonnet-5",
+  harness: "claude",
+  model: "claude-sonnet-5-5",
   auth: { apiKey: process.env.ANTHROPIC_API_KEY },
   instructions: "Use the explicitly supplied tools. Preserve the result.",
   durability: createMemoryDurabilityStore(durabilityId),
@@ -83,7 +85,7 @@ const options = {
     },
   }],
 };
-const agent = await Claude.create(options);
+const agent = await Agent.create(options);
 const turn = agent.turn.prompt({ input: "Add 19 and 23.", id: "sum-request" });
 await turn.accepted();
 const result = await turn.result();
@@ -94,7 +96,7 @@ await agent.session.compact();
 await agent.session.shutdown();
 
 // Reattach auth and handlers, which are not serialized in checkpoints.
-const reopened = await Claude.create(options);
+const reopened = await Agent.create(options);
 const replay = reopened.turn.prompt({ input: "Add 19 and 23.", id: "sum-request" });
 const replayResult = await replay.result();
 console.log(replayResult.finalMessage);

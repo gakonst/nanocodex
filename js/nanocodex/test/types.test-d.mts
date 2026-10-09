@@ -450,6 +450,9 @@ async function check() {
   void realtimeDelegation;
   void realtimeTail;
   await agent.session.setFastMode(true);
+  await agent.session.setServiceTier("ultrafast");
+  // @ts-expect-error service tiers are a closed set
+  await agent.session.setServiceTier("turbo");
   await agent.session.setModel("gpt-6-astra");
   const info: SessionInfo = agent.session.info();
   const harness: "codex" | "claude" = info.harness;

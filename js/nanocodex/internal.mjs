@@ -289,6 +289,10 @@ export function setFastMode(agent, enabled) {
   return agentState(agent).raw.setFastMode(enabled);
 }
 
+export function setServiceTier(agent, serviceTier) {
+  return agentState(agent).raw.setServiceTier(serviceTier);
+}
+
 export function compact(agent) {
   return agentState(agent).raw.compact();
 }

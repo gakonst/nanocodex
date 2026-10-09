@@ -1,11 +1,15 @@
 //! Session identity exported to every tool subprocess.
 //!
-//! Mirrors `nanocodex_oai_tools::SessionEnvironment`: Claude Bash executors,
-//! PDF helpers, and any other process a Claude tool launches receive the same
-//! two variables as Codex tools, so a subprocess observes its launching
-//! session independent of the agent harness that owns it.
+//! Shell commands, `exec_command` sessions, Code Mode commands, MCP stdio
+//! servers, hooks, Claude Bash executors, and PDF helpers all receive the
+//! identity of the session that launched them through the same two
+//! variables, independent of the agent harness (Codex or Claude) that owns
+//! the session. Both tool crates re-export this one type.
 
-use std::sync::Arc;
+use std::{
+    ffi::{OsStr, OsString},
+    sync::Arc,
+};
 
 /// Identity of the agent session that launches a tool subprocess.
 ///
@@ -14,7 +18,12 @@ use std::sync::Arc;
 /// session and [`Self::ROOT_SESSION_ID_VAR`] set to the root of its
 /// conversation tree. Roots export their own id for both. Forks, side
 /// conversations, and subagents export their own session id and the shared
-/// root id. Values bound here override same-named caller or ambient values.
+/// root id.
+///
+/// Override rules: values bound here always replace same-named values from
+/// the caller, the tool input, or the launching process's environment. A
+/// subprocess launched outside any session has both variables removed, so it
+/// never observes the launching process's own identity.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct SessionEnvironment {
     session_id: Arc<str>,
@@ -69,13 +78,23 @@ impl SessionEnvironment {
         ]
     }
 
+    /// Variable assignments as owned OS strings.
+    #[must_use]
+    pub fn os_variables(&self) -> Vec<(OsString, OsString)> {
+        self.variables()
+            .into_iter()
+            .map(|(name, value)| (OsString::from(name), OsString::from(value)))
+            .collect()
+    }
+
     /// Returns whether `name` is controlled by this type.
     #[must_use]
-    pub fn controls(name: &std::ffi::OsStr) -> bool {
+    pub fn controls(name: &OsStr) -> bool {
         Self::VARIABLES.iter().any(|candidate| name == *candidate)
     }
 
-    /// Applies this identity to a command, overriding caller or inherited values.
+    /// Applies this identity to a command, overriding caller or inherited
+    /// values. Call it after any other environment configuration.
     #[cfg(not(target_family = "wasm"))]
     pub fn apply(&self, command: &mut std::process::Command) {
         command.envs(self.variables());

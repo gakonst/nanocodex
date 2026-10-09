@@ -26,9 +26,12 @@ pub struct HarnessRequest {
     pub parent: Option<AgentHandle>,
     /// Private host context inherited at this boundary, never model arguments.
     pub host_context: Option<Arc<str>>,
-    /// Portable boundary to restore with the recipe's current host capabilities,
-    /// keeping the checkpoint's session identity. Its unredacted transcript stays
-    /// in memory and must not enter model arguments.
+    /// Session to reopen, keeping the checkpoint's session identity, lineage,
+    /// model policy and conversation, with the recipe's current host
+    /// capabilities. Present for [`Harness::resume`] (with no parent) and for
+    /// a parent restoring an evicted child; recipes pass it to their native
+    /// builder's `restore_runtime`. Its unredacted transcript stays in memory
+    /// and must not enter model arguments.
     pub checkpoint: Option<SessionCheckpoint>,
     /// Shared router to install on every per-agent weak handle.
     pub spawn_factory: Arc<dyn AgentFactory>,
@@ -111,6 +114,52 @@ impl Harness {
         self.inner
             .clone()
             .construct(None, options, None, None)
+            .await
+    }
+
+    /// Reopens a checkpointed session through the recipe registered for its
+    /// family, so hosts resume Codex and Claude sessions the same way.
+    ///
+    /// The resumed session keeps the checkpoint's session identity, lineage,
+    /// model, thinking level, conversation tree and committed history; it uses
+    /// the recipe's current credentials, tools and instructions. A checkpoint
+    /// taken before the first completed turn reopens the session with its
+    /// settings and no history. Use [`Nanocodex::fork`] instead to continue a
+    /// conversation under a new identity.
+    ///
+    /// ```
+    /// # use nanocodex::{Harness, HarnessModel, Model, SessionCheckpoint};
+    /// # async fn example(harness: Harness) -> nanocodex::agent::Result<()> {
+    /// let (agent, _events) = harness.start(HarnessModel::Codex(Model::Sol)).await?;
+    /// agent.prompt("Summarize the open issues.").await?.result().await?;
+    /// let saved = agent.checkpoint().await?.to_json()?;
+    /// agent.shutdown().await?;
+    ///
+    /// // Later, possibly in another process with the same recipes:
+    /// let checkpoint = SessionCheckpoint::from_json(&saved)?;
+    /// let (resumed, _events) = harness.resume(checkpoint).await?;
+    /// assert_eq!(resumed.session_id(), agent.session_id());
+    /// # Ok(())
+    /// # }
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NanocodexError::InvalidCheckpoint`] when the checkpoint fails
+    /// [`SessionCheckpoint::validate`] or its native payload is malformed,
+    /// [`NanocodexError::InvalidRequest`] when no recipe is registered for
+    /// the checkpoint's family, or the recipe's construction error.
+    pub async fn resume(&self, checkpoint: SessionCheckpoint) -> AgentResult {
+        checkpoint.validate()?;
+        let model = checkpoint.model();
+        let options = SpawnOptions::new()
+            .harness(model.family())
+            .harness_model(model)
+            .thinking(checkpoint.thinking());
+        options.validate_harness()?;
+        self.inner
+            .clone()
+            .construct(None, options, None, Some(checkpoint))
             .await
     }
 

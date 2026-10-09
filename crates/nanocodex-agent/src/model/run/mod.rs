@@ -438,7 +438,7 @@ impl<S> ModelRun<S> {
             self.session = Some(self.empty_session(requested_workspace)?);
         }
         let session = self.session.as_mut().ok_or_else(|| {
-            NanocodexError::InvalidSessionSnapshot(
+            NanocodexError::InvalidCheckpoint(
                 "developer context did not establish a model session".to_owned(),
             )
         })?;

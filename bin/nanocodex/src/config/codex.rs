@@ -82,6 +82,10 @@ impl CodexRecipe {
                     Ok(tools.clone())
                 }
             });
+        // User instructions come from both homes, like Claude sessions.
+        if let Some(home) = crate::homes::resolve() {
+            builder = builder.claude_home(home.claude_home());
+        }
         if let Some(instructions) = self.instructions.clone() {
             builder = builder.instructions(instructions);
         }

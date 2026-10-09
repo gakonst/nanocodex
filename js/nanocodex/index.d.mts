@@ -58,6 +58,7 @@ export type {
   SessionLineage,
   SessionOrigin,
   SessionPersistence,
+  ServiceTier,
   SubscriptionCommitRequest,
   SubscriptionCommitResult,
   SubscriptionRevision,

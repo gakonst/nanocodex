@@ -341,7 +341,7 @@ async fn serialized_session_and_codex_rollout_share_committed_history() -> Resul
         .build();
     assert!(matches!(
         unsupported,
-        Err(NanocodexError::InvalidSessionSnapshot(message))
+        Err(NanocodexError::InvalidCheckpoint(message))
             if message.contains("unsupported format version")
     ));
 
@@ -406,7 +406,7 @@ async fn serialized_session_and_codex_rollout_share_committed_history() -> Resul
         .build();
     assert!(matches!(
         incompatible,
-        Err(NanocodexError::InvalidSessionSnapshot(message))
+        Err(NanocodexError::InvalidCheckpoint(message))
             if message.contains("prompt cache key")
     ));
 

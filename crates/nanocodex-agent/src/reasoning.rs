@@ -45,8 +45,7 @@ impl ReasoningState {
         history: &[nanocodex_oai_api::responses::ResponseItem],
     ) -> crate::Result<()> {
         use nanocodex_oai_api::{Model, responses::ResponseItem};
-        let invalid =
-            |detail: &str| crate::NanocodexError::InvalidSessionSnapshot(detail.to_owned());
+        let invalid = |detail: &str| crate::NanocodexError::InvalidCheckpoint(detail.to_owned());
         let ReasoningPin::Active { model, effort } = &self.pin else {
             return if self.latest_override.is_none() {
                 Ok(())

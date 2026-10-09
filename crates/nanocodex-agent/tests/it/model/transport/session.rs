@@ -672,7 +672,7 @@ async fn supported_reasoning_resume_preserves_pin(durable_resume: bool) -> Resul
         Nanocodex::builder(openai.clone())
             .resume_native_snapshot(invalid)
             .build(),
-        Err(NanocodexError::InvalidSessionSnapshot(_))
+        Err(NanocodexError::InvalidCheckpoint(_))
     ));
     let saved = if durable_resume {
         let durable = RolloutConfig::new(&rollout_home).load_session(TEST_SESSION_ID)?;

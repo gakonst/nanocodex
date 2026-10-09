@@ -39,7 +39,7 @@ use nanocodex::{
 };
 use nanocodex_agent::{
     Capabilities, ForkRequest, HarnessFamily, HarnessModel, Mutability, Origin, Persistence,
-    SessionCheckpoint, SessionInfo,
+    ServiceTier, SessionCheckpoint, SessionInfo,
     backend::{AgentFactory, BackendFuture},
 };
 use serde::{Deserialize, Serialize};
@@ -2264,6 +2264,27 @@ impl WasmNanocodex {
             .map_err(js_agent_error)
     }
 
+    /// Selects the processing tier for subsequently accepted turns:
+    /// `"standard"`, `"priority"`, `"fast"`, or `"ultrafast"`.
+    ///
+    /// # Errors
+    ///
+    /// Rejects an unknown tier, a stopped driver, or with
+    /// `code: "unsupported_capability"` when the backend cannot select it.
+    #[wasm_bindgen(js_name = setServiceTier)]
+    pub async fn set_service_tier(&self, service_tier: &str) -> Result<(), JsValue> {
+        let service_tier = serde_json::from_value::<ServiceTier>(serde_json::Value::String(
+            service_tier.to_owned(),
+        ))
+        .map_err(|_| {
+            js_error("service tier must be \"standard\", \"priority\", \"fast\", or \"ultrafast\"")
+        })?;
+        self.inner
+            .set_service_tier(service_tier)
+            .await
+            .map_err(js_agent_error)
+    }
+
     /// Compacts retained history immediately without fabricating a user prompt.
     ///
     /// # Errors
@@ -3590,7 +3611,7 @@ fn turn_failure(error: &NanocodexError) -> TurnFailure {
         NanocodexError::Shutdown(source) => return turn_failure(source),
         NanocodexError::UnsupportedCapability { .. } => "unsupported_capability",
         NanocodexError::CheckpointFamilyMismatch { .. } => "checkpoint_family_mismatch",
-        NanocodexError::InvalidSessionSnapshot(_) => "invalid_checkpoint",
+        NanocodexError::InvalidCheckpoint(_) => "invalid_checkpoint",
         _ => "failed",
     };
     let capability = match error {

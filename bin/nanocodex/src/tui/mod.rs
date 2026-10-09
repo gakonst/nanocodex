@@ -2501,7 +2501,7 @@ impl AgentWorker {
                 } else if !branch.has_durable_turn {
                     Some("BTW needs one completed turn before /collapse")
                 } else if !inline && !control::resumable(&branch.agent) {
-                    Some("/collapse needs a resumable BTW session; restart without `--rollouts false`")
+                    Some("/collapse needs this BTW saved so main can read it, but session persistence is off (`--rollouts false`)")
                 } else {
                     None
                 }
@@ -3043,7 +3043,7 @@ async fn start_turn(
             }
         }
     }
-    if user_submission && agent.harness_family() == nanocodex::HarnessFamily::Claude {
+    if user_submission && crate::config::claude_frontend::is_available(agent.session_id()) {
         match crate::config::claude_frontend::begin_user_iteration(
             agent.session_id(),
             prompt.display(),

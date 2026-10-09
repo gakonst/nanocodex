@@ -290,7 +290,7 @@ impl SessionSnapshot {
             .find(|item| item.is_user_message())
             .cloned()
             .ok_or_else(|| {
-                NanocodexError::InvalidSessionSnapshot(
+                NanocodexError::InvalidCheckpoint(
                     "rollout does not contain a user message".to_owned(),
                 )
             })?;
@@ -333,37 +333,33 @@ impl SessionSnapshot {
     #[cfg(feature = "openai")]
     pub(crate) fn model(&self) -> Result<Model> {
         self.model.parse::<Model>().map_err(|error| {
-            NanocodexError::InvalidSessionSnapshot(format!(
-                "snapshot model is unsupported: {error}"
-            ))
+            NanocodexError::InvalidCheckpoint(format!("snapshot model is unsupported: {error}"))
         })
     }
 
     #[cfg(feature = "openai")]
     pub(crate) fn into_resume(self) -> Result<SessionResume> {
         if self.version != SESSION_SNAPSHOT_VERSION {
-            return Err(NanocodexError::InvalidSessionSnapshot(format!(
+            return Err(NanocodexError::InvalidCheckpoint(format!(
                 "unsupported format version {}; expected {SESSION_SNAPSHOT_VERSION}",
                 self.version
             )));
         }
         let model = self.model.parse::<Model>().map_err(|error| {
-            NanocodexError::InvalidSessionSnapshot(format!(
-                "snapshot model is unsupported: {error}"
-            ))
+            NanocodexError::InvalidCheckpoint(format!("snapshot model is unsupported: {error}"))
         })?;
         if self.lineage_id.trim().is_empty() {
-            return Err(NanocodexError::InvalidSessionSnapshot(
+            return Err(NanocodexError::InvalidCheckpoint(
                 "cache lineage must not be empty".to_owned(),
             ));
         }
         if self.prompt_cache_key.trim().is_empty() {
-            return Err(NanocodexError::InvalidSessionSnapshot(
+            return Err(NanocodexError::InvalidCheckpoint(
                 "prompt cache key must not be empty".to_owned(),
             ));
         }
         if self.workspace.trim().is_empty() {
-            return Err(NanocodexError::InvalidSessionSnapshot(
+            return Err(NanocodexError::InvalidCheckpoint(
                 "workspace must not be empty".to_owned(),
             ));
         }
@@ -382,7 +378,7 @@ impl SessionSnapshot {
                 ]
             )
         {
-            return Err(NanocodexError::InvalidSessionSnapshot(
+            return Err(NanocodexError::InvalidCheckpoint(
                 "request prefix does not match the supported model contract".to_owned(),
             ));
         }

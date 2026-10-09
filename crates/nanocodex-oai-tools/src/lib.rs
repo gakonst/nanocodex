@@ -54,7 +54,6 @@ mod runtime_config;
 ))]
 #[path = "runtime/selection.rs"]
 mod selection;
-mod session_environment;
 #[cfg(all(not(target_family = "wasm"), feature = "workspace-runtime"))]
 mod shell;
 #[cfg(feature = "workspace-runtime")]
@@ -139,7 +138,7 @@ pub use selection::Tools;
     all(not(target_family = "wasm"), feature = "attachment")
 ))]
 pub use selection::{ToolSource, ToolsBuildError, ToolsBuilder};
-pub use session_environment::SessionEnvironment;
+pub use nanocodex_home::SessionEnvironment;
 #[cfg(all(not(target_family = "wasm"), feature = "code-mode"))]
 #[cfg_attr(
     docsrs,

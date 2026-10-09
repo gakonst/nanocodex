@@ -46,9 +46,9 @@ impl ChildState {
         let conversation_id = Arc::<str>::from(checkpoint.conversation_id());
         let has_conversation = checkpoint.has_conversation();
         let payload: CodexPayload = serde_json::from_value(checkpoint.into_payload())
-            .map_err(|error| NanocodexError::InvalidSessionSnapshot(error.to_string()))?;
+            .map_err(|error| NanocodexError::InvalidCheckpoint(error.to_string()))?;
         if payload.conversation.is_some() != has_conversation {
-            return Err(NanocodexError::InvalidSessionSnapshot(
+            return Err(NanocodexError::InvalidCheckpoint(
                 "checkpoint conversation flag does not match its payload".into(),
             ));
         }
@@ -57,7 +57,7 @@ impl ChildState {
             .as_ref()
             .is_some_and(|conversation| conversation.lineage_id() != conversation_id.as_ref())
         {
-            return Err(NanocodexError::InvalidSessionSnapshot(
+            return Err(NanocodexError::InvalidCheckpoint(
                 "checkpoint conversation belongs to another cache lineage".into(),
             ));
         }
@@ -78,7 +78,7 @@ impl ChildState {
     /// Validates stored identity, model policy, and the versioned conversation.
     pub(super) fn validate(&self) -> Result<()> {
         self.session_id.parse::<SessionId>().map_err(|error| {
-            NanocodexError::InvalidSessionSnapshot(format!("invalid session ID: {error}"))
+            NanocodexError::InvalidCheckpoint(format!("invalid session ID: {error}"))
         })?;
         super::spawn::validate_model_thinking(self.model, self.thinking)?;
         if let Some(conversation) = &self.conversation {
@@ -95,7 +95,7 @@ impl ChildState {
             stateless_http: self.stateless_http,
             conversation: self.conversation,
         })
-        .map_err(|error| NanocodexError::InvalidSessionSnapshot(error.to_string()))?;
+        .map_err(|error| NanocodexError::InvalidCheckpoint(error.to_string()))?;
         Ok(SessionCheckpoint::native(
             self.session_id,
             HarnessModel::Codex(self.model),
@@ -115,7 +115,7 @@ impl SessionCheckpoint {
     ///
     /// # Errors
     ///
-    /// Returns [`NanocodexError::InvalidSessionSnapshot`] for an invalid
+    /// Returns [`NanocodexError::InvalidCheckpoint`] for an invalid
     /// session ID, model, or snapshot.
     #[doc(hidden)]
     pub fn codex(
@@ -144,7 +144,7 @@ impl SessionCheckpoint {
     ///
     /// # Errors
     ///
-    /// Returns [`NanocodexError::InvalidSessionSnapshot`] when it is malformed.
+    /// Returns [`NanocodexError::InvalidCheckpoint`] when it is malformed.
     #[doc(hidden)]
     pub fn from_legacy_codex_child(value: serde_json::Value, lineage: Lineage) -> Result<Self> {
         #[derive(serde::Deserialize)]
@@ -156,7 +156,7 @@ impl SessionCheckpoint {
             payload: serde_json::Value,
         }
         let invalid =
-            |error: serde_json::Error| NanocodexError::InvalidSessionSnapshot(error.to_string());
+            |error: serde_json::Error| NanocodexError::InvalidCheckpoint(error.to_string());
         let legacy: Legacy = serde_json::from_value(value).map_err(invalid)?;
         let payload: CodexPayload = serde_json::from_value(legacy.payload).map_err(invalid)?;
         let conversation_id = payload.conversation.as_ref().map_or_else(
@@ -182,7 +182,7 @@ impl SessionCheckpoint {
     /// # Errors
     ///
     /// Returns [`NanocodexError::CheckpointFamilyMismatch`] for another
-    /// family's checkpoint, or [`NanocodexError::InvalidSessionSnapshot`]
+    /// family's checkpoint, or [`NanocodexError::InvalidCheckpoint`]
     /// when the payload is malformed.
     #[doc(hidden)]
     pub fn codex_snapshot(&self) -> Result<Option<SessionSnapshot>> {

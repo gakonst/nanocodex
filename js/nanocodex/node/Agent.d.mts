@@ -45,7 +45,7 @@ export declare namespace create {
     | {
       durability: DurabilityStore;
       durabilityId: string;
-      /** The root remains durable; all subagent children are ephemeral. */
+      /** The root remains durable; canonical subagent children are ephemeral. Forks report their own `session.persistence()`. */
       tools?: ToolConfiguration<SubagentTool> | undefined;
     }
   );

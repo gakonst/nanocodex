@@ -3511,3 +3511,84 @@ async fn claude_sessions_share_the_family_neutral_catalog() {
     );
     server.abort();
 }
+
+
+/// Disconnecting a durable Claude client leaves its accepted turn running to a
+/// committed result, refuses new work through every clone, and releases the
+/// local owner so a reopened session replays the settled receipt.
+#[tokio::test]
+async fn disconnect_keeps_accepted_turn_and_releases_local_owner() {
+    use std::{sync::atomic::{AtomicUsize, Ordering}, time::Duration};
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("state.sqlite");
+    let (client, requests, server) = server(|index, _| match index {
+        1 => sse(signed_round(), "tool_use", 10),
+        _ => sse(text("settled after disconnect"), "end_turn", 10),
+    })
+    .await;
+    let effects = Arc::new(AtomicUsize::new(0));
+    let started = Arc::new(tokio::sync::Notify::new());
+    let release = Arc::new(tokio::sync::Notify::new());
+    let (counter, notify, gate) = (effects.clone(), started.clone(), release.clone());
+    let (agent, events) = Nanocodex::builder(Claude::new(client.clone(), "test"))
+        .max_tokens(4096)
+        .tool(tool(), move |_| {
+            counter.fetch_add(1, Ordering::SeqCst);
+            notify.notify_one();
+            let gate = gate.clone();
+            async move {
+                gate.notified().await;
+                Ok("effect committed".into())
+            }
+        })
+        .durability(reopen(&path).await)
+        .await
+        .unwrap()
+        .build()
+        .unwrap();
+    let turn = agent
+        .prompt(PromptRequest::new("perform effect once").request_id("detached"))
+        .await
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(5), started.notified())
+        .await
+        .unwrap();
+    let clone = agent.clone();
+    tokio::time::timeout(Duration::from_secs(5), agent.disconnect())
+        .await
+        .expect("disconnect does not wait for the accepted turn")
+        .unwrap();
+    assert!(
+        clone.prompt("new work after disconnect").await.is_err(),
+        "a disconnected durable session admits no new work"
+    );
+    release.notify_one();
+    let result = tokio::time::timeout(Duration::from_secs(5), turn.result())
+        .await
+        .unwrap()
+        .expect("the accepted turn is not cancelled by disconnect");
+    assert_eq!(result.final_message(), "settled after disconnect");
+    drop((agent, clone, events));
+    let (reopened, events) = Nanocodex::builder(Claude::new(client, "test"))
+        .max_tokens(4096)
+        .tool(tool(), |_| async { Ok("must not repeat".into()) })
+        .durability(reopen(&path).await)
+        .await
+        .unwrap()
+        .build()
+        .unwrap();
+    let replayed = reopened
+        .prompt(PromptRequest::new("perform effect once").request_id("detached"))
+        .await
+        .unwrap()
+        .result()
+        .await
+        .unwrap();
+    assert_eq!(replayed.final_message(), "settled after disconnect");
+    assert_eq!(effects.load(Ordering::SeqCst), 1);
+    assert_eq!(requests.lock().unwrap().len(), 2, "replay makes no provider call");
+    reopened.shutdown().await.unwrap();
+    drop((reopened, events));
+    server.abort();
+}
+

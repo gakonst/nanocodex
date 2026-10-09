@@ -183,7 +183,7 @@ impl DurableSession {
             "stateless_http": false,
             "conversation": &self.snapshot,
         }))
-        .map_err(|error| crate::NanocodexError::InvalidSessionSnapshot(error.to_string()))?;
+        .map_err(|error| crate::NanocodexError::InvalidCheckpoint(error.to_string()))?;
         Ok(crate::SessionCheckpoint::native(
             self.thread_id.clone(),
             crate::HarnessModel::Codex(self.model),

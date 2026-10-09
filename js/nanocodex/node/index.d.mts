@@ -36,6 +36,7 @@ export type {
   SessionLineage,
   SessionOrigin,
   SessionPersistence,
+  ServiceTier,
   Thinking,
   Tool,
   NamedTool,

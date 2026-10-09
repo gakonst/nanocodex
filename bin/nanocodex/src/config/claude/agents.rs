@@ -4,7 +4,7 @@ use nanocodex::claude::ClaudeToolInvocation;
 use serde::Deserialize;
 #[path = "profiles.rs"]
 pub(super) mod profiles;
-use nanocodex::claude_tools::{ClaudeAgentProfiles, ClaudeSkills, SkillInvocation};
+use nanocodex::claude_tools::{ClaudeSkills, SkillInvocation};
 
 fn definition(
     name: &str,
@@ -164,7 +164,7 @@ async fn execute(
                 return Err("unsupported Skill option".into());
             }
             let args: SkillInput = serde_json::from_value(input).map_err(|e| e.to_string())?;
-            let expansion = ClaudeSkills::new(workspace.current())?.invoke(
+            let expansion = crate::homes::skills(&workspace.current())?.invoke(
                 &args.skill,
                 &args.args,
                 SkillInvocation::Model,
@@ -182,7 +182,7 @@ async fn execute(
                 .agent
                 .as_deref()
                 .filter(|name| *name != "general-purpose")
-                .map(|name| ClaudeAgentProfiles::new(workspace.current())?.get(name))
+                .map(|name| crate::homes::agent_profiles(&workspace.current())?.get(name))
                 .transpose()?;
             if let Some(required) = profile.as_ref().and_then(|p| p.model.as_deref())
                 && expansion
