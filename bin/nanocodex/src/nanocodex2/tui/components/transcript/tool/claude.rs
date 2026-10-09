@@ -101,10 +101,10 @@ fn read(tool: &ToolEntry, width: u16, theme: &Theme, expanded: bool) -> Presenta
         return presentation.footer("binary data hidden");
     }
     let Some(text) = text else {
-        let footer = if failed(tool) {
-            "read failed"
-        } else {
-            "read pending"
+        let footer = match tool.state {
+            ToolState::Failed => "read failed",
+            ToolState::Unknown => "read outcome unknown",
+            _ => "read pending",
         };
         return with_error(presentation, tool, width, theme).footer(footer);
     };
@@ -141,6 +141,7 @@ fn write(tool: &ToolEntry, width: u16, theme: &Theme, expanded: bool) -> Present
     let footer = match tool.state {
         ToolState::Succeeded => "full contents written · previous contents not shown",
         ToolState::Failed => "write failed · previous contents not shown",
+        ToolState::Unknown => "write outcome unknown · previous contents not shown",
         ToolState::Running | ToolState::Yielded => {
             "requested contents · previous contents not shown"
         }
@@ -189,6 +190,7 @@ fn edit(tool: &ToolEntry, width: u16, theme: &Theme, expanded: bool) -> Presenta
     let footer = match tool.state {
         ToolState::Succeeded => "replacement applied · surrounding file not shown",
         ToolState::Failed => "replacement not applied · surrounding file not shown",
+        ToolState::Unknown => "replacement outcome unknown · surrounding file not shown",
         ToolState::Running | ToolState::Yielded => {
             "requested replacement · surrounding file not shown"
         }
@@ -224,6 +226,7 @@ fn notebook(tool: &ToolEntry, width: u16, theme: &Theme, expanded: bool) -> Pres
     let footer = match mode {
         "delete" if completed(tool) => "cell deleted",
         "delete" if failed(tool) => "delete failed",
+        "delete" if tool.state == ToolState::Unknown => "delete outcome unknown",
         "delete" => "delete requested",
         "insert" => "new cell source",
         _ => "new cell source · previous source not shown",
@@ -656,14 +659,14 @@ fn scalar(value: &Value) -> Option<String> {
         .or_else(|| value.as_bool().map(|value| value.to_string()))
 }
 
-/// Failed results stay visible in full when a card is expanded.
+/// Failed or unknown results stay visible in full when a card is expanded.
 fn with_error(
     presentation: Presentation,
     tool: &ToolEntry,
     width: u16,
     theme: &Theme,
 ) -> Presentation {
-    if !failed(tool) {
+    if !matches!(tool.state, ToolState::Failed | ToolState::Unknown) {
         return presentation;
     }
     match result_text(tool.result.as_ref()).filter(|text| !text.trim().is_empty()) {

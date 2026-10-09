@@ -463,4 +463,7 @@ pub(crate) enum ToolState {
     Yielded,
     Succeeded,
     Failed,
+    // Observation was lost: the call may or may not have taken effect. A later
+    // actual result for the same call replaces this state.
+    Unknown,
 }

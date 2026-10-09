@@ -413,9 +413,10 @@ fn summary_lines_with_origin(
             status_symbol(tool.state),
             count_label(total as usize, "tool", "tools")
         );
-        for (count, label) in counts
-            .iter()
-            .zip(["running", "completed", "failed", "waiting"])
+        for (count, label) in
+            counts
+                .iter()
+                .zip(["running", "completed", "failed", "waiting", "unknown"])
         {
             let count = count.as_u64().unwrap_or(0);
             if count > 0 {
@@ -466,6 +467,18 @@ fn summary_lines_with_origin(
             &mut origin_spans,
             &format!(" · {}", tool.execution_qualifier()),
             Style::default().fg(theme.muted()),
+        );
+    }
+    if tool.state == ToolState::Unknown
+        && !presentation
+            .outcome
+            .as_deref()
+            .is_some_and(|outcome| outcome.contains("unknown"))
+    {
+        append_span(
+            &mut outcome_spans,
+            " · outcome unknown",
+            Style::default().fg(Color::Yellow),
         );
     }
     let mut error_spans = Vec::new();
@@ -601,6 +614,11 @@ pub(super) fn group_lines(group: &ToolGroup<'_>, width: u16, theme: &Theme) -> V
         .iter()
         .filter(|(call, _)| call.state == ToolState::Failed)
         .count();
+    let unknown = group
+        .calls
+        .iter()
+        .filter(|(call, _)| call.state == ToolState::Unknown)
+        .count();
     let mut header = vec![
         Span::raw("  "),
         Span::styled("▶ ", border),
@@ -625,6 +643,9 @@ pub(super) fn group_lines(group: &ToolGroup<'_>, width: u16, theme: &Theme) -> V
     }
     if failed > 0 {
         details.push(format!("{failed} failed"));
+    }
+    if unknown > 0 {
+        details.push(format!("{unknown} outcome unknown"));
     }
     if group.duration_ns > 0 {
         details.push(format_duration(group.duration_ns));
@@ -705,7 +726,7 @@ fn group_rows(group: &ToolGroup<'_>) -> Vec<usize> {
         .filter(|&index| {
             matches!(
                 group.calls[index].0.state,
-                ToolState::Running | ToolState::Failed
+                ToolState::Running | ToolState::Failed | ToolState::Unknown
             )
         })
         .collect::<Vec<_>>();
@@ -1231,6 +1252,7 @@ fn status_symbol(state: ToolState) -> &'static str {
         ToolState::Yielded => "◇",
         ToolState::Succeeded => "✓",
         ToolState::Failed => "×",
+        ToolState::Unknown => "?",
     }
 }
 
@@ -1240,6 +1262,7 @@ fn status_style(state: ToolState, theme: &Theme) -> Style {
         ToolState::Yielded => theme.muted(),
         ToolState::Succeeded => Color::Green,
         ToolState::Failed => theme.thinking_xhigh(),
+        ToolState::Unknown => Color::Yellow,
     };
     Style::default().fg(color).add_modifier(Modifier::BOLD)
 }

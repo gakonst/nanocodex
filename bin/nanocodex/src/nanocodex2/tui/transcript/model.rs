@@ -1107,6 +1107,10 @@ impl TranscriptModel {
         let resumed_result = resumed_shell.map(|_| result.clone());
         let nested_shell_followup = resumed_shell.is_some();
         let state = tool_result_state(family, &payload.status, &result);
+        // An unknown outcome stays open to the call's later actual result.
+        if state == ToolState::Unknown {
+            self.settled_calls.remove(&payload.call_id);
+        }
         let entry_state = if resumed_shell.is_some() && state == ToolState::Yielded {
             ToolState::Succeeded
         } else {
@@ -1963,6 +1967,9 @@ fn text_may_encode_value(text: &str, value: &Value) -> bool {
 }
 
 fn tool_result_state(tool: &str, status: &str, result: &Value) -> ToolState {
+    if matches!(status, "unknown" | "outcome_unknown") || result_reports_unknown(result) {
+        return ToolState::Unknown;
+    }
     if !matches!(status, "success" | "completed") {
         return ToolState::Failed;
     }
@@ -1985,6 +1992,15 @@ fn tool_result_state(tool: &str, status: &str, result: &Value) -> ToolState {
         return ToolState::Yielded;
     }
     ToolState::Failed
+}
+
+/// A result that reports an unobserved outcome rather than a failure.
+fn result_reports_unknown(result: &Value) -> bool {
+    let Some(fields) = result.as_object() else {
+        return false;
+    };
+    fields.get("outcome").and_then(Value::as_str) == Some("unknown")
+        || fields.get("status").and_then(Value::as_str) == Some("outcome_unknown")
 }
 
 fn result_reports_failure(result: &Value) -> bool {
