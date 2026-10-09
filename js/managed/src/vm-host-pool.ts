@@ -338,6 +338,13 @@ export class VmHostPool extends DurableObject<VmHostPoolEnv> {
       }
       const host = this.#requireLease(socket, attachment, command.lease_id, command.epoch);
       if (command.type === "ping") {
+        if (attachment.device) {
+          if (this.#deviceFenced(attachment.device)) {
+            this.#rejectFactory(socket, attachment, host.factory_name, "hand_reenroll_required");
+          }
+          // Defense in depth for a missed owner close: re-validate the device.
+          this.ctx.waitUntil(this.#revalidateDevice(socket, attachment, host.factory_name));
+        }
         this.#renewLease(socket, host, command);
       } else if (command.type === "reconcile") {
         this.#reconcile(socket, host, command);
@@ -1091,6 +1098,16 @@ export class VmHostPool extends DurableObject<VmHostPoolEnv> {
       "SELECT min_key_version FROM vm_device_fences WHERE device_id = ?", device.id,
     ).toArray()[0];
     return fence !== undefined && device.keyVersion < fence.min_key_version;
+  }
+
+  /** Closes a device factory whose device the owner no longer accepts. */
+  async #revalidateDevice(socket: WebSocket, attachment: HostAttachment, factoryName: string): Promise<void> {
+    const admission = await this.#admitFactory(attachment.device, factoryName);
+    if (admission !== "hand_reenroll_required" || socket.readyState !== WebSocket.OPEN) return;
+    console.info({ type: "vm.pool.factory_revalidation_closed", factory_name: factoryName,
+      device_id: attachment.device?.id, reason_code: admission });
+    closeSocket(socket, 1008, admission);
+    this.#retireSocket(socket);
   }
 
   /** Refuses a factory registration with a fixed code and closes its socket. */

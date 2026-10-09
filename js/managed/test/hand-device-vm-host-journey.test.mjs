@@ -161,6 +161,7 @@ test("VM factory on device credentials: machine-bound registration, downgrade fe
     // 5. Revocation closes the live vm-host socket and fences reconnects.
     const revoked = await call("revoke device A", "DELETE", "/v1/account/hand-devices/" + deviceA, { auth: apiKey });
     check("revoke succeeds and counts the factory socket", revoked.status === 200 && revoked.value.closed_connections >= 2, revoked.value);
+    check("revoke reports no VM factory close failure", revoked.value.warnings === undefined, revoked.value);
     check("revoke closes the live vm-host socket", await closed(factoryA.socket) && factoryA.record.close?.code === 1008
       && factoryA.record.close.reason === "hand_device_revoked", factoryA.record.close);
     const afterRevoke = await factory("revoked device reconnects", credA, "garage-a", hostIdA);

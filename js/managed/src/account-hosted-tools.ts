@@ -276,6 +276,7 @@ export class AccountHostedTools extends DurableObject<AccountHostedToolsEnv> {
   #closeDeviceSockets(deviceId: string, reason: string, code: 1008 | 1012 = 1008, minKeyVersion: number | null = null): number {
     const vmClose = this.#closeVmHostDevice(deviceId, minKeyVersion, reason);
     this.#vmHostCloses.add(vmClose);
+    this.ctx.waitUntil(vmClose);
     void vmClose.finally(() => this.#vmHostCloses.delete(vmClose));
     let closed = 0;
     for (const socket of this.ctx.getWebSockets(`hand-device:${deviceId}`)) {
@@ -286,25 +287,35 @@ export class AccountHostedTools extends DurableObject<AccountHostedToolsEnv> {
     return closed + this.#remote.revokePublisher(`hand-device:${deviceId}`);
   }
 
-  readonly #vmHostCloses = new Set<Promise<number>>();
+  readonly #vmHostCloses = new Set<Promise<{ closed: number; failed: boolean }>>();
 
   /**
    * Closes the device's VM factory sockets in the owner's account pool and fences
    * the device there (revoked, or key versions older than minKeyVersion).
    */
-  async #closeVmHostDevice(deviceId: string, minKeyVersion: number | null, reason: string): Promise<number> {
+  async #closeVmHostDevice(deviceId: string, minKeyVersion: number | null, reason: string): Promise<{ closed: number; failed: boolean }> {
     const pools = this.env.NANOCODEX_VM_HOST_POOLS, owner = this.#ownerId;
-    if (!pools || !owner) return 0;
-    const close = pools.getByName(await vmHostPoolLocator("account", owner)).closeHandDevice(deviceId, minKeyVersion, reason)
-      .catch(() => { console.warn({ type: "vm.pool.device_close_failed", device_id: deviceId }); return 0; });
-    this.ctx.waitUntil(close);
-    return close;
+    if (!pools || !owner) return { closed: 0, failed: false };
+    const locator = await vmHostPoolLocator("account", owner);
+    let errorKind = "unknown";
+    // One retry with a fresh stub: a cross-object call can fail transiently. A
+    // persistent failure is reported; the pool also re-validates device factories
+    // on every lease ping, so a missed close stays bounded.
+    for (let attempt = 1; attempt <= 2; attempt += 1) {
+      try {
+        return { closed: await pools.getByName(locator).closeHandDevice(deviceId, minKeyVersion, reason), failed: false };
+      } catch (error) {
+        errorKind = error instanceof Error ? error.name : "unknown";
+      }
+    }
+    console.warn({ type: "hand.device.vm_host_close_failed", device_id: deviceId, reason, attempts: 2, error_kind: errorKind });
+    return { closed: 0, failed: true };
   }
 
   /** Waits for VM factory closes started by #closeDeviceSockets; returns how many sockets closed. */
-  async #settleVmHostCloses(): Promise<number> {
-    const pending = [...this.#vmHostCloses];
-    return (await Promise.all(pending)).reduce((sum, value) => sum + value, 0);
+  async #settleVmHostCloses(): Promise<{ closed: number; failed: boolean }> {
+    const settled = await Promise.all([...this.#vmHostCloses]);
+    return { closed: settled.reduce((sum, value) => sum + value.closed, 0), failed: settled.some(value => value.failed) };
   }
 
   /**
@@ -389,8 +400,10 @@ export class AccountHostedTools extends DurableObject<AccountHostedToolsEnv> {
         if (!revoked) return { status: 404, body: { error: "not_found" } };
         let closed = this.#closeDeviceSockets(request.device_id, "hand_device_revoked");
         closed += this.#remote.fenceMachine(revoked.record.machine_id, undefined, "publisher_revoked").length;
-        closed += await this.#settleVmHostCloses();
-        return { status: 200, body: { id: revoked.record.id, status: "revoked", revoked_at: revoked.record.revoked_at, closed_connections: closed } };
+        const vmHosts = await this.#settleVmHostCloses();
+        closed += vmHosts.closed;
+        return { status: 200, body: { id: revoked.record.id, status: "revoked", revoked_at: revoked.record.revoked_at, closed_connections: closed,
+          ...(vmHosts.failed ? { warnings: ["vm_host_close_failed"] } : {}) } };
       }
     }
     return { status: 400, body: { error: "invalid_hand_device_request" } };
