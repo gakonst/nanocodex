@@ -20,6 +20,8 @@ features = importlib.util.module_from_spec(spec); spec.loader.exec_module(featur
 Session, require, sse = features.Session, features.require, features.sse
 
 PROMPT = 'exercise claude tool cards'
+# A second user turn keeps each batch within the six visible rows.
+PLAN_PROMPT = 'review the plan card batch'
 FILES_CODE = '''await tools.Write({file_path: "notes/cards.txt", content: "alpha\\nbeta\\ngamma\\n"});
 await tools.Edit({file_path: "notes/cards.txt", old_string: "beta", new_string: "BETA_EDITED"});
 await tools.Read({file_path: "notes/cards.txt", offset: 2, limit: 2});
@@ -60,9 +62,11 @@ def main():
                 if 'PLAN_CELL_DONE' in last:
                     block, role = {'type': 'text', 'text': 'CARDS_TURN_DONE'}, 'final'
                 elif 'FILES_CELL_DONE' in last:
-                    block, role = {'type': 'tool_use', 'id': 'plan-cell', 'name': 'exec', 'input': {'code': PLAN_CODE}}, 'plan-cell'
+                    block, role = {'type': 'text', 'text': 'FILES_TURN_DONE'}, 'files-final'
                 elif 'tool_result' in last:
                     raise AssertionError(f'unexpected tool result: {last[:400]}')
+                elif PLAN_PROMPT in last:
+                    block, role = {'type': 'tool_use', 'id': 'plan-cell', 'name': 'exec', 'input': {'code': PLAN_CODE}}, 'plan-cell'
                 else:
                     require(PROMPT in last, 'unexpected request')
                     block, role = {'type': 'tool_use', 'id': 'files-cell', 'name': 'exec', 'input': {'code': FILES_CODE}}, 'files-cell'
@@ -75,7 +79,10 @@ def main():
             self.send_response(200); self.send_header('Content-Type', 'text/event-stream'); self.send_header('Content-Length', str(len(response))); self.end_headers(); self.wfile.write(response)
 
     server = ThreadingHTTPServer(('127.0.0.1', 0), Provider); threading.Thread(target=server.serve_forever, daemon=True).start()
-    command = [str(args.binary.resolve()), '--claude', '--model', 'claude-sonnet-5-5', '--claude-api-key', 'synthetic-key',
+    binary = args.binary.resolve()
+    # The local TUI is the ncl entry point; the shipped nanocodex binary selects it with a leading --local.
+    entry = [] if binary.stem.lower() == 'ncl' else ['--local']
+    command = [str(binary), *entry, '--claude', '--model', 'claude-sonnet-5-5', '--claude-api-key', 'synthetic-key',
                '--claude-messages-url', f'http://127.0.0.1:{server.server_port}/v1/messages', '--cwd', str(workspace), '--browser=none',
                '--mcp-defaults', 'false', '--mcp-codex-config', 'false', '--web-search', 'false', '--image-generation', 'false',
                '--subagents', 'false', '--memory', 'false']
@@ -84,7 +91,9 @@ def main():
         session = Session('ncl', command, workspace, env, artifact)
         session.wait(lambda: 'claude-sonnet-5-5' in session.screen.text() and '0%/' in session.screen.text(), 'composer absent', 60); time.sleep(1.5)
         session.enter(PROMPT)
-        session.wait(lambda: session.shown('CARDS_TURN_DONE'), 'turn did not finish', 60)
+        session.wait(lambda: session.shown('FILES_TURN_DONE'), 'files turn did not finish', 60); time.sleep(1)
+        session.enter(PLAN_PROMPT)
+        session.wait(lambda: session.shown('CARDS_TURN_DONE'), 'plan turn did not finish', 60)
         require(not errors, f'fixture errors: {errors}')
         require((workspace / 'notes/cards.txt').read_text() == 'alpha\nBETA_EDITED\ngamma\n', 'real Write/Edit effect missing')
         require((workspace / 'notes/large.txt').read_text().count('LARGE_LINE_') == 400, 'large Write effect missing')
@@ -116,9 +125,9 @@ def main():
         expected_expanded = {
             'Edit hunk header with path and counts': 'notes/cards.txt · +1 −1',
             'Edit hunk relative-line label': 'relative lines',
-            'Edit removed text': 'beta',
-            'Edit added text': 'BETA_EDITED',
-            'Edit footer': 'replaced text · surrounding file not shown',
+            'Edit removed line': '- beta',
+            'Edit added line': '+ BETA_EDITED',
+            'Edit footer': 'replacement applied · surrounding file not shown',
             'Write footer: full contents, not a diff': 'full contents written · previous contents not shown',
             'bounded large body': 'LARGE_LINE_79',
             'large body omission note': '320 more lines not shown',
@@ -138,7 +147,7 @@ def main():
         raise
     finally:
         if session: session.close()
-        (artifact / 'scenario.json').write_text(json.dumps({'command': command, 'environment': env, 'prompt': PROMPT,
+        (artifact / 'scenario.json').write_text(json.dumps({'command': command, 'environment': env, 'prompts': [PROMPT, PLAN_PROMPT],
             'cells': [FILES_CODE, PLAN_CODE], 'boundary': 'actual ncl TUI via PTY, real Code Mode and native Claude tools; synthetic Messages HTTP only'}, indent=2))
         (artifact / 'outcome.json').write_text(json.dumps(outcome, indent=2)); server.shutdown(); print(json.dumps({'artifact': str(artifact), **outcome}))
 
