@@ -1122,12 +1122,127 @@ async fn image_receipt_stays_original_while_replayed_history_is_bounded() {
     let prepared = image::load_from_memory(&prepared).unwrap();
     assert_eq!(
         (prepared.width(), prepared.height()),
-        (3000, 1),
-        "replayed provider history carries the bounded image"
+        (1568, 1),
+        "replayed provider history carries the image at the model's native size"
     );
     agent.shutdown().await.unwrap();
     drop((agent, events));
     server.abort();
+}
+
+/// Interrupts an image prompt's first driver at durability write `fail_at`,
+/// then resumes it on an agent reopened with another model. Every provider
+/// request carries the image at the native size of the model it names.
+/// Returns the uninterrupted journey's write count.
+async fn reopened_image_prompt(fail_at: Option<usize>, local: bool) -> usize {
+    use nanocodex_agent::input::{Prompt, UserInput};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("state.sqlite");
+    // Anthropic's example size: kept by the high-resolution tier and reduced
+    // to 1456x819 by the standard tier.
+    let image = png_block(1920, 1080);
+    let data = image["source"]["data"].as_str().unwrap();
+    let input = if local {
+        let file = directory.path().join("screenshot.png");
+        std::fs::write(&file, STANDARD.decode(data).unwrap()).unwrap();
+        UserInput::LocalImage {
+            path: file,
+            detail: None,
+        }
+    } else {
+        UserInput::Image {
+            image_url: format!("data:image/png;base64,{data}"),
+            detail: None,
+        }
+    };
+    let request =
+        || PromptRequest::new(Prompt::content([input.clone()])).request_id("image-prompt");
+    let (client, requests, server) =
+        server(|_, _| sse(text("image received"), "end_turn", 10)).await;
+    let writes = Arc::new(AtomicUsize::new(0));
+    let state = DurableSession::open(
+        FaultStore {
+            inner: SqliteStore::open(&path).unwrap(),
+            writes: writes.clone(),
+            fail_at,
+            after_commit: false,
+            fail_when_armed: None,
+        },
+        "claude-synthetic",
+    )
+    .await
+    .unwrap();
+    let (agent, events) = Nanocodex::builder(Claude::new(client.clone(), "claude-opus-5-5"))
+        .max_tokens(4096)
+        .durability(state)
+        .await
+        .unwrap()
+        .build()
+        .unwrap();
+    let first = match agent.prompt(request()).await {
+        Ok(turn) => turn.result().await,
+        Err(error) => Err(error),
+    };
+    assert_eq!(
+        first.is_err(),
+        fail_at.is_some(),
+        "injected write {fail_at:?} must interrupt the first driver"
+    );
+    let operation_writes = writes.load(Ordering::SeqCst);
+    let _ = agent.shutdown().await;
+    drop((agent, events));
+
+    let (agent, events) = Nanocodex::builder(Claude::new(client, "claude-haiku-4-5"))
+        .max_tokens(4096)
+        .durability(reopen(&path).await)
+        .await
+        .unwrap()
+        .build()
+        .unwrap();
+    let resumed = match agent.prompt(request()).await {
+        Ok(turn) => turn.result().await,
+        Err(error) => Err(error),
+    };
+    resumed.unwrap_or_else(|error| panic!("recovery after write {fail_at:?}: {error}"));
+    for request in requests.lock().unwrap().iter() {
+        let native = match request["model"].as_str() {
+            Some("claude-opus-5-5") => (1920, 1080),
+            Some("claude-haiku-4-5") => (1456, 819),
+            model => panic!("unexpected model {model:?}"),
+        };
+        let image = request["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|message| message["content"].as_array().unwrap())
+            .find(|block| block["type"] == "image")
+            .expect("the prompt image reaches the provider");
+        let bytes = STANDARD
+            .decode(image["source"]["data"].as_str().unwrap())
+            .unwrap();
+        let sent = image::load_from_memory(&bytes).unwrap();
+        assert_eq!(
+            (sent.width(), sent.height()),
+            native,
+            "{} request after write {fail_at:?} (local image: {local})",
+            request["model"]
+        );
+    }
+    agent.shutdown().await.unwrap();
+    drop((agent, events));
+    server.abort();
+    operation_writes
+}
+
+#[tokio::test]
+async fn prompt_images_fit_the_receiving_model_after_every_interrupted_write() {
+    for local in [false, true] {
+        let count = reopened_image_prompt(None, local).await;
+        for ordinal in 0..count {
+            reopened_image_prompt(Some(ordinal), local).await;
+        }
+    }
 }
 
 #[tokio::test]

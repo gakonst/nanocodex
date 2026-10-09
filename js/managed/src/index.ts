@@ -14875,7 +14875,7 @@ function assertModelAcceptsInput(model: string, input: PromptInput): void {
       throw new ManagedRequestError(400, "unsupported_claude_input", "Claude does not accept audio input");
     }
     if (claude && item.type === "image" && item.file_id !== undefined) {
-      throw new ManagedRequestError(400, "unsupported_claude_input", "Claude images require an HTTPS or data image_url; OpenAI file IDs are unsupported");
+      throw new ManagedRequestError(400, "unsupported_claude_input", "Claude images require a data image_url; OpenAI file IDs are unsupported");
     }
   }
 }

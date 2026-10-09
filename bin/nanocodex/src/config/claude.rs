@@ -1007,12 +1007,8 @@ fn output_reply(
                                 }
                                 json!({"type":"base64","media_type":media_type,"data":data})
                             }
-                            ImageSource::Url { url } => {
-                                if !url.starts_with("https://") {
-                                    return Err("host image URL must be HTTPS".into());
-                                }
-                                json!({"type":"url","url":url})
-                            }
+                            // The Claude driver replaces a remote image with a note.
+                            ImageSource::Url { url } => json!({"type":"url","url":url}),
                         };
                         json!({"type":"image","source":source})
                     }

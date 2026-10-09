@@ -474,8 +474,9 @@ impl WasmNanoclaude {
         Ok(turn)
     }
 
-    /// Accepts ordered multimodal JSON content: text, image URLs or data URLs,
-    /// and inline `file` documents (PDF or plain text). Local paths are rejected.
+    /// Accepts ordered multimodal JSON content: text, image data URLs, and
+    /// inline `file` documents (PDF or plain text). A remote image URL is
+    /// replaced by a note to the model. Local paths are rejected.
     #[wasm_bindgen(js_name = promptContent)]
     pub fn prompt_content(
         &self,

@@ -87,33 +87,52 @@ prompt differences are research context, not evidence of improved model performa
 ## Prompt images and documents
 
 The shared `Prompt` API preserves ordered text and image inputs as native Messages
-blocks. HTTPS image URLs and base64 PNG/JPEG/GIF/WebP data URLs are supported;
-native `LocalImage` inputs are read with a bounded regular-file check and frozen
-into bytes before execution. Local-image receipts survive durable reopen and do
-not reread a changed or deleted file after commit. Opaque OpenAI file IDs and
-audio prompts fail explicitly before HTTP. WASM callers use URLs or data URLs;
-local filesystem images require a native host. Image detail hints are not sent
-as a Claude field. Limits are 100 content items, 20 images, 5 MiB per inline/local
-image, and 20 MiB of combined media per prompt. Inline `UserInput::File`
-documents become native `document` blocks: base64 `application/pdf` (requiring
-`%PDF-` magic bytes) or UTF-8 `text/plain`. Each document is bounded to 10 MiB,
-with at most five documents; optional filenames are validated and used as titles.
+blocks. Base64 data URLs are supported; native `LocalImage` inputs are read with
+a bounded regular-file check and frozen into bytes before execution. Local-image
+receipts survive durable reopen and do not reread a changed or deleted file
+after commit. WASM callers use data URLs; local filesystem images require a
+native host. Image detail hints are not sent as a Claude field. Inline and local
+images are prepared before acceptance like tool-result images: decoded,
+converted to PNG unless they are PNG, JPEG, or WebP, labelled by their bytes,
+and reduced to the model's native resolution, the size the Messages API would
+otherwise reduce them to: a 2576 px long edge
+and 4,784 visual tokens of 28×28 px on Claude 4.7 and later models, and 1568 px
+and 1,568 tokens on other models. A prepared image must fit 5 MiB, so a larger
+encoding is shrunk further; originals of up to 64 MiB are read. As in the OpenAI
+driver, an image Claude cannot use is replaced in place by a short note that
+tells the model why, and the rest of the prompt is sent: an opaque OpenAI file
+ID, an unreadable or undecodable image, one that cannot fit 5 MiB, a remote
+image URL, or a local image on WASM. Audio prompts fail explicitly before HTTP.
+Limits are 100 content items, 20 images, and 20 MiB of combined prepared media
+per prompt. Durable steers are journaled in this prepared form.
+A resumed durable operation prepares its prompt and steers for the model its
+continuation names, even when the agent reopens with another model; an
+operation that has no continuation yet runs on the reopened agent's model.
+Inline `UserInput::File` documents become native `document` blocks: base64
+`application/pdf` (requiring `%PDF-` magic bytes) or UTF-8 `text/plain`. Each
+document is bounded to 10 MiB, with at most five documents; optional filenames
+are validated and used as titles.
 The managed Rust HTTP client preserves these inline files for Claude prompts and
 steering, while retaining the explicit GPT document-input rejection.
 
 Reproduce the public API and SQLite media journeys with
 `cargo test -p nanocodex-durability --features claude,sqlite --test claude_prompt_media -- --nocapture`.
-They exercise native request ordering, invalid-input rejection, queued image
-freezing and replay after local file changes. These are transport/storage checks,
-not a measurement of model vision quality.
+They exercise native request ordering, notes for unusable images, audio and
+limit rejection, queued image freezing and replay after local file changes, and
+steers of a turn resumed by an agent reopened with another model. These are
+transport/storage checks, not a measurement of model vision quality.
 
-Base64 images in client tool results are decoded with bounded memory and scaled
-so neither edge exceeds 3000 pixels before the result joins request history. The
-direct Messages API applies that limit once a request carries more than twenty
-images; preparing each image when it first arrives keeps earlier request bytes
-stable as the conversation grows. An image that cannot be decoded becomes a text
-omission inside the same result, which keeps its success status. URL and file
-sources pass through unchanged. Durable tool receipts keep the handler's original
+Base64 images in client tool results are decoded with bounded memory and
+prepared the same way, for the native resolution of the model the turn's
+requests name and within 5 MiB, before the result joins request history. Native
+sizes stay within the 3000 px long edge the direct Messages API enforces once a
+request carries more than twenty images, and preparing each image when it first
+arrives keeps earlier request bytes stable as the conversation grows. An image
+that cannot be decoded or reduced becomes a text omission inside the same
+result, which keeps its success status. Host tool images are validated first, so
+an invalid host image, or one over 5 MiB, fails the call instead. A URL source
+becomes the same note as a remote prompt image, and file sources pass through
+unchanged. Durable tool receipts keep the handler's original
 output, and a replayed receipt is prepared the same way. The low-level
 `ClaudeClient` sends caller-supplied images as given. Reproduce these journeys
 with `cargo test -p nanocodex-claude --test agent_loop tool_images` and
@@ -176,9 +195,13 @@ latency.
 `ModelCallCompleted` publishes response usage before client tools finish, including
 cache-read/write details. Compaction calls are excluded from active-response
 events; their usage still participates in the turn totals described below.
-Steering is acknowledged with `RunSteered` when the runtime consumes the queued
-instruction at a tool or terminal response boundary, rather than when it is
-submitted. Multiple instructions retain their order as separate native messages.
+Each admitted steer is reported by an `InputAccepted` event of kind `steer`, as
+in the OpenAI driver. Like the prompt's event, it carries the prepared input the
+model receives, with a note in place of each unusable image, where the OpenAI
+driver reports the submitted input. Steering is acknowledged
+with `RunSteered` when the runtime consumes the queued instruction at a tool or
+terminal response boundary, rather than when it is submitted. Multiple
+instructions retain their order as separate native messages.
 Cancelling a queued ephemeral turn retires that turn without cancelling the
 currently active model call or tool effect.
 
