@@ -42,7 +42,7 @@ test('input receipts survive unrelated commits and invalidate every relevant sou
     git('init', '-q');
     put('Cargo.toml', '[workspace]');
     put('crates/nanocodex-phone/Cargo.toml', '[package]\nname = "nanocodex-phone"');
-    put('crates/nanocodex-remote/Cargo.toml', '[package]\nname = "nanocodex2-bin"'); put('js/managed/Dockerfile', 'FROM scratch');
+    put('crates/nanocodex-remote/Cargo.toml', '[package]\nname = "nanocodex-bin"'); put('js/managed/Dockerfile', 'FROM scratch');
     put('hands/remote/image/labwc/config', 'desktop'); commit();
     const firstPhone = fingerprint('phone', account, '1', dir);
     const firstSandbox = fingerprint('sandbox', account, '1', dir);
@@ -85,7 +85,7 @@ test('Rust inputs follow local Cargo packages and external binary sources', () =
   for (const path of ['examples/phone_voice.rs', 'examples/phone_audio.rs', 'examples/phone_capture.rs']) assert.ok(covers(phone, path), path);
   assert.ok(!covers(phone, 'crates/nanocodex-remote/src/lib.rs'));
   // Sandboxes are not Hands: no Rust source enters the sandbox image.
-  for (const path of ['Cargo.lock', 'bin/nanocodex/src/nanocodex2/main.rs', 'crates/nanocodex-managed/src/lib.rs']) assert.ok(!covers(sandbox, path), path);
+  for (const path of ['Cargo.lock', 'bin/nanocodex/src/nanocodex2/mod.rs', 'crates/nanocodex-managed/src/lib.rs']) assert.ok(!covers(sandbox, path), path);
   for (const path of ['js/managed/Dockerfile', 'js/managed/scripts/check-dev-stack.sh', 'crates/nanocodex-vm/image/toolkit/python.txt']) assert.ok(covers(sandbox, path), path);
   // Static image: desktop config and build/publish tooling never rebuild it.
   for (const path of ['hands/remote/image/labwc/rc.xml', 'scripts/cloudflare/managed-images.mjs', 'scripts/cloudflare/wrangler-docker.mjs', 'js/managed/scripts/prepare-hand-image.mjs']) assert.ok(!covers(sandbox, path), path);

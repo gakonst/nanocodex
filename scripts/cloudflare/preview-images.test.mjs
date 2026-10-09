@@ -12,7 +12,7 @@ test('preview image selection uses committed image inputs, not Worker or SDK Jav
  const put=(path,content)=>{mkdirSync(dirname(join(cwd,path)),{recursive:true});writeFileSync(join(cwd,path),content);};
  const commit=()=>{git('add','.');git('-c','user.name=Fixture','-c','user.email=fixture@example.invalid','commit','-qm','fixture');return git('rev-parse','HEAD');};
  git('init','-q');put('Cargo.toml','[workspace]');
- put('crates/phone/Cargo.toml','[package]\nname="nanocodex-phone"');put('crates/hand/Cargo.toml','[package]\nname="nanocodex2-bin"');
+ put('crates/phone/Cargo.toml','[package]\nname="nanocodex-phone"');put('crates/hand/Cargo.toml','[package]\nname="nanocodex-bin"');
  put('js/managed/Dockerfile','FROM scratch\n');
  const base=commit(),account='a'.repeat(32);
  put('js/managed/src/index.ts','export {};');put('js/nanocodex/cloudflare/provider.mjs','export {};');commit();

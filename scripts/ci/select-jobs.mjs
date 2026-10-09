@@ -13,8 +13,8 @@ const heavyFamilies = ["hands", "windows", "vm", "voice", "python", "rust_extra"
 // Workspace packages whose build a job exercises. A change to any package in
 // their dependency closure (normal, build, or dev) selects the job.
 const jobRoots = {
-  hands: ["nanocodex-bin", "nanocodex2-bin"],
-  windows: ["nanocodex-bin", "nanocodex2-bin"],
+  hands: ["nanocodex-bin"],
+  windows: ["nanocodex-bin"],
   vm: ["nanocodex-vm"],
   voice: ["nanocodex-voice-native"],
   python: ["nanocodex-python"],
@@ -36,7 +36,6 @@ const binaryAsset = /\.(?:png|jpe?g|gif|webp|ico|mp4|wav|woff2?)$/;
 const rustInput = /(?:\.rs|\/Cargo\.toml)$/;
 // Files read by a package outside its own directory.
 const crossPackageInputs = {
-  "bin/nanocodex/build_version.rs": "nanocodex2-bin", // nanocodex2/build.rs
   "js/nanocodex-tools/runtime/code-tools.mjs": "nanocodex-oai-tools", // Rust embedded copy; npm name is unchanged
 };
 // Workflow definitions and actions that ci.yml runs. Any change runs everything.
@@ -59,7 +58,7 @@ export function loadGraph(cwd = process.cwd()) {
     const dir = relative(root, dirname(pkg.manifest_path));
     dirs.push([dir, pkg.name]);
     // Out-of-directory targets own their sibling modules under crates/ and
-    // bin/ (nanocodex2's ../src/nanocodex2/main.rs); elsewhere only the file.
+    // bin/; elsewhere only the file.
     for (const target of pkg.targets) {
       const src = relative(root, target.src_path);
       if (src.startsWith(dir + "/")) continue;

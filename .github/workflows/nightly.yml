@@ -97,16 +97,12 @@ jobs:
             cargo build --locked --profile nightly --timings \
               --package nanocodex-bin --bin nanocodex --features tempo \
               --target ${{ matrix.target }}
-          VERGEN_GIT_SHA="$BUILD_SHA" \
-            cargo build --locked --profile nightly --timings \
-              --package nanocodex2-bin --bin nanocodex2 \
-              --target ${{ matrix.target }}
       - name: Verify shipped Linux Hand screen payload
         if: matrix.target == 'x86_64-unknown-linux-gnu' && matrix.component == 'cli'
         shell: bash
         run: |
           python3 scripts/tests/linux-screen-helpers-bundle.py \
-            --binary "target/${{ matrix.target }}/nightly/nanocodex2" \
+            --binary "target/${{ matrix.target }}/nightly/nanocodex" \
             "$NANOCODEX_LINUX_SCREEN_BUNDLE"
       - name: Verify embedded VM init
         if: matrix.component == 'cli'
@@ -118,8 +114,8 @@ jobs:
         run: |
           codesign --force --sign - \
             --entitlements nanocodex-vm.entitlements \
-            "target/${{ matrix.target }}/nightly/nanocodex2"
-          codesign --verify --strict "target/${{ matrix.target }}/nightly/nanocodex2"
+            "target/${{ matrix.target }}/nightly/nanocodex"
+          codesign --verify --strict "target/${{ matrix.target }}/nightly/nanocodex"
       - uses: ./.github/actions/voice-release
         if: matrix.component == 'voice'
         with:
@@ -134,10 +130,12 @@ jobs:
           mkdir -p dist
           case "$COMPONENT" in
             cli)
+              # One signed binary ships under both names for older updaters.
               for binary in nanocodex nanocodex2; do
-                "target/$TARGET/nightly/$binary" --help >/dev/null
-                cp "target/$TARGET/nightly/$binary" "dist/$binary-$TARGET"
+                cp "target/$TARGET/nightly/nanocodex" "dist/$binary-$TARGET"
+                "dist/$binary-$TARGET" --help >/dev/null
               done
+              cmp "dist/nanocodex-$TARGET" "dist/nanocodex2-$TARGET"
               ;;
             voice)
               # The composite action verifies initialization and relocation.
@@ -254,22 +252,15 @@ jobs:
         run: |
           cargo build --locked --profile nightly --timings --package nanocodex-bin --bin nanocodex --features tempo
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          cargo build --locked --profile nightly --timings --package nanocodex2-bin --bin nanocodex2
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Sign payload when Authenticode is configured
         shell: pwsh
-        run: >-
-          ./windows/hand/sign.ps1 -Path @(
-            "./target/nightly/nanocodex.exe",
-            "./target/nightly/nanocodex2.exe"
-          )
+        run: ./windows/hand/sign.ps1 -Path ./target/nightly/nanocodex.exe
       - name: Build and sign one-click installer
         shell: pwsh
         run: |
           $displayVersion = "nightly-$($env:BUILD_SHA.Substring(0, 10))"
           ./windows/hand/build.ps1 `
             -Nanocodex ./target/nightly/nanocodex.exe `
-            -Nanocodex2 ./target/nightly/nanocodex2.exe `
             -Version $displayVersion `
             -NumericVersion 0.0.0.0
           ./windows/hand/sign.ps1 -Path ./dist/windows-hand/nanocodex-hand-setup-x86_64.exe
@@ -279,7 +270,7 @@ jobs:
           PR_NUMBER: ${{ inputs.pr }}
         run: |
           Copy-Item target/nightly/nanocodex.exe dist/windows-hand/nanocodex-x86_64-pc-windows-msvc.exe
-          Copy-Item target/nightly/nanocodex2.exe dist/windows-hand/nanocodex2-x86_64-pc-windows-msvc.exe
+          Copy-Item target/nightly/nanocodex.exe dist/windows-hand/nanocodex2-x86_64-pc-windows-msvc.exe
           if (-not [string]::IsNullOrWhiteSpace($env:PR_NUMBER)) {
             [pscustomobject]@{
               repository = $env:GITHUB_REPOSITORY

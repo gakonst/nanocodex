@@ -1,8 +1,10 @@
 # Windows installer
 
-`nanocodex-hand-setup-x86_64.exe` installs the same native `nanocodex` control
-CLI and `nanocodex2` Hand used by the macOS and Linux setup flow on x86-64
-Windows 10 or 11.
+`nanocodex-hand-setup-x86_64.exe` installs the same native `nanocodex` binary
+used by the macOS and Linux setup flow on x86-64 Windows 10 or 11. The one
+executable is installed as `nanocodex.exe` and `nanocodex2.exe` (identical
+bytes), plus `nc.cmd` (managed commands, same as `nanocodex`) and `ncl.cmd`
+(the local agent tree, `nanocodex --local`).
 
 1. Run `irm https://nanocodex.paradigm.xyz/install.ps1 | iex`, or download and
    double-click the installer. The current per-user install does not need UAC.
@@ -56,19 +58,19 @@ Windows Firewall policy.
 
 ## Build
 
-Build both Rust binaries, then run:
+Build the one Rust binary (`cargo build --release -p nanocodex-bin --bin nanocodex
+--features tempo`), then run:
 
 ```powershell
 .\windows\hand\build.ps1 `
   -Nanocodex .\target\release\nanocodex.exe `
-  -Nanocodex2 .\target\release\nanocodex2.exe `
   -Version 0.6.5
 ```
 
 Inno Setup 6 produces `dist\windows-hand\nanocodex-hand-setup-x86_64.exe`.
 The build downloads a pinned, checksum-verified FFmpeg archive;
 `-FfmpegArchive` accepts an existing copy for offline builds. Release automation
-Authenticode-signs both Rust binaries and the installer when signing secrets are
+Authenticode-signs the Rust binary and the installer when signing secrets are
 configured.
 
 The retired PowerShell/C# release installed a machine-wide service. Windows
