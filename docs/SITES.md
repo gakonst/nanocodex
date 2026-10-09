@@ -9,6 +9,11 @@ Publishing is private. A version becomes reachable only through a link the owner
 creates, and each link serves exactly the version it was created for. Later
 publishes never change what an existing link shows.
 
+- A **preview** is owner-only. The signed-in owner opens it from the app. It
+  works only in that browser and for one hour.
+- A **public link** is opt-in. Anyone with the URL can open it until the owner
+  turns it off or it expires.
+
 ## Architecture
 
 ```
@@ -34,12 +39,46 @@ anyone with link ──<label>.<zone>──▶ nanocodex-sites Worker ──read
 
 The format both sides share lives in `@nanocodex/sites/format`.
 
+## Owner-only previews
+
+`POST .../open` runs behind the owner's account authentication. It returns a
+view URL carrying a single-use grant (`?__nanocodex_grant=…`). The host record
+stores only the grant's SHA-256. On the first request, the Sites Worker:
+
+1. checks the grant against the record;
+2. writes a session hash into the record with a conditional (ETag) put, so
+   exactly one browser can redeem the grant;
+3. sets an `HttpOnly; SameSite=Lax` cookie scoped to that site (`Path=/<label>/`
+   for path links) and redirects to the clean URL.
+
+Every later request for the view, assets included, must present that cookie.
+Without it, a view returns the same 404 as a missing link, so a copied URL, a
+replayed grant, or a guessed cookie shows nothing. Opening the preview again
+mints a new view.
+
 ## Isolation and response policy
 
-Sites are served only from first-level subdomains of a dedicated registrable
-zone, never the app's origin. Each site therefore has its own origin, can't read
-the app's cookies, and can't read another site's storage. The zone should be on
-the Public Suffix List.
+Sites are never served from the app's origin. A deployment chooses one of two
+link shapes:
+
+- **Host links** (`SITES_DOMAIN` set): every site is a first-level subdomain
+  of a dedicated registrable zone, so each has its own origin. The zone should
+  be on the Public Suffix List.
+- **Path links** (`SITES_DOMAIN` empty): every site is served from one host,
+  such as `https://nanocodex-sites.<subdomain>.workers.dev/<label>/`.
+  - Public pages get a CSP `sandbox` without `allow-same-origin`, so each
+    runs in an opaque origin: it has no cookies or storage and can't read
+    other sites, including the visitor's own previews. Responses send
+    `access-control-allow-origin: *`, so sandboxed pages can still load their
+    own module scripts and fetch their own files.
+  - Previews aren't sandboxed. Their session cookie has to reach every
+    subresource, and browsers never send SameSite cookies from an opaque
+    origin. Only the owner's own content runs in them.
+  - In both cases, CSP sources name the site's own path prefix instead of
+    `'self'`.
+  - Pages must reference their files with relative URLs (`app.js` or
+    `./app.js`, Vite `base: './'`). Root-absolute URLs such as `/app.js`
+    resolve outside the site.
 
 Every site response carries:
 
@@ -50,7 +89,8 @@ Every site response carries:
 - `referrer-policy: no-referrer`, `x-robots-tag: noindex, nofollow`, and a
   restrictive `permissions-policy`.
 
-The Sites Worker never sets cookies. Missing, revoked, and expired links return
+The Sites Worker sets a cookie only when it redeems a preview grant. Missing,
+revoked, and expired links, and previews requested without their session, return
 the same 404 page.
 
 ## What is published
@@ -92,7 +132,7 @@ same-origin.
 | --- | --- | --- |
 | `GET` | `/v1/agents/:id/sites` | List sites with their versions and active links. |
 | `POST` | `/v1/agents/:id/sites` | Publish `{ path, id?, title?, entry?, spa? }`. Returns `201` for a new version, `200` for an identical one. |
-| `POST` | `/v1/agents/:id/sites/:site/open` | Mint a private host for `{ version? }` that works for one hour. |
+| `POST` | `/v1/agents/:id/sites/:site/open` | Mint an owner-only preview of `{ version? }`. Its URL is single-use and works in the browser that opens it, for one hour. |
 | `GET` | `/v1/agents/:id/sites/:site/shares` | List active links. |
 | `POST` | `/v1/agents/:id/sites/:site/shares` | Create a link for `{ version?, expires_at? }`. `version` defaults to the latest. |
 | `DELETE` | `/v1/agents/:id/sites/:site/shares/:share` | Revoke a link. |
@@ -133,15 +173,20 @@ resolving before slower cleanup, and then deletes its objects.
 ## Operations
 
 1. Create the R2 bucket `nanocodex-sites` before deploying managed.
-2. Choose a dedicated zone. Add a proxied wildcard DNS record and attach
-   `*.<zone>/*` to `nanocodex-sites` (see `js/sites/wrangler.jsonc`), then set
-   its `SITES_DOMAIN` to the zone.
-3. Set managed's `NANOCODEX_SITES_ORIGIN` to `https://*.<zone>`.
+2. Choose a link shape (see `js/sites/wrangler.jsonc`):
+   - **Path links**, the current production setup: leave `SITES_DOMAIN`
+     empty, keep `workers_dev` on, and set managed's `NANOCODEX_SITES_ORIGIN`
+     to `https://nanocodex-sites.<subdomain>.workers.dev/*`.
+   - **Host links:** add a proxied wildcard DNS record for a dedicated zone,
+     attach `*.<zone>/*` to `nanocodex-sites`, set its `SITES_DOMAIN` to the
+     zone, and set managed's `NANOCODEX_SITES_ORIGIN` to `https://*.<zone>`.
+3. Make sure the sites Worker can write host records. Redeeming a preview grant
+   updates the record.
 4. Deploy with `pnpm deploy:sites`. CI releases it in the first phase, with
    the X and media Workers.
 
-Without steps 2 and 3, publishing works, but opening and sharing return
-`sites_unavailable`.
+Without `NANOCODEX_SITES_ORIGIN`, publishing works, but opening and sharing
+return `sites_unavailable`.
 
 ## Verification
 
@@ -152,6 +197,7 @@ cargo build -p nanocodex2-bin --bin nanocodex2 && node bin/nanocodex/tests/sites
 ```
 
 The first command runs the real account proxy, managed Worker, thread SQLite,
-R2, and Sites Worker in Miniflare, and requests every site URL with `curl`. It
-writes `output/sites-journey.json`. The TUI journey drives `/sites` in a PTY
+R2, and Sites Worker in Miniflare, and requests every site URL with `curl`. It runs
+once with host links and once with path links, writing
+`output/sites-journey-host.json` and `output/sites-journey-path.json`. The TUI journey drives `/sites` in a PTY
 against a fixture transport and writes `output/sites-tui/trace.json`.

@@ -730,7 +730,7 @@ jobs:
         if: always() && steps.managed_sites.outcome != 'skipped'
         with:
           name: managed-sites-journey
-          path: output/sites-journey.json
+          path: output/sites-journey-*.json
           if-no-files-found: error
       - name: Exercise managed durability through curl
         id: managed_curl

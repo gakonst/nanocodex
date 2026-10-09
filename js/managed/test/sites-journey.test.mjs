@@ -70,7 +70,10 @@ const freePort = () => new Promise((resolve, reject) => {
   server.on("error", reject);
 });
 
-test("published static sites are private until shared, immutable per version, and stop resolving when revoked or deleted", { timeout: 180_000 }, async () => {
+// Host links give every site its own subdomain; path links serve every site
+// from one host (workers.dev), with public pages sandboxed into opaque origins.
+for (const mode of ["host", "path"]) test(`published static sites are owner-only until shared, immutable per version, and stop resolving when revoked or deleted (${mode} links)`, { timeout: 180_000 }, async () => {
+  const hostMode = mode === "host";
   const root = fileURLToPath(new URL("..", import.meta.url));
   const output = fileURLToPath(new URL("../../../output", import.meta.url));
   const persistence = output + "/sites-journey-store-" + crypto.randomUUID();
@@ -90,13 +93,14 @@ test("published static sites are private until shared, immutable per version, an
   const options = { port, host: "127.0.0.1", durableObjectsPersist: persistence, r2Persist: persistence + "/r2", workers: [
     { name: "edge", modules, compatibilityDate: "2026-07-29", compatibilityFlags: ["nodejs_compat"], bindings: { EDGE: true }, serviceBindings: { NANOCODEX_BACKEND: "managed" } },
     { name: "managed", modules, compatibilityDate: "2026-07-29", compatibilityFlags: ["nodejs_compat", "enable_request_signal"],
-      bindings: { NANOCODEX_SITES_ORIGIN: `http://*.sites.test:${port}` },
+      bindings: { NANOCODEX_SITES_ORIGIN: hostMode ? `http://*.sites.test:${port}` : `http://sites.test:${port}/*` },
       r2Buckets: { NANOCODEX_WORKSPACES: "nanocodex-sandbox-workspaces", NANOCODEX_SITES: "nanocodex-sites" },
       durableObjects: {
         NANOCODEX_SESSIONS: { className: "FixtureSession", useSQLite: true }, NANOCODEX_USERS: { className: "UserAccount", useSQLite: true }, NANOCODEX_ORGANIZATIONS: { className: "Organization", useSQLite: true }, NANOCODEX_API_KEYS: { className: "ApiKeyRecord", useSQLite: true }, NANOCODEX_AUTH: { className: "NonceStorage", useSQLite: true },
       } },
     { name: "sites", modules: [{ type: "ESModule", path: "sites.mjs", contents: sites.outputFiles[0].text }], compatibilityDate: "2026-07-29",
-      routes: ["*.sites.test/*"], bindings: { SITES_DOMAIN: "sites.test" }, r2Buckets: { SITES: "nanocodex-sites" } },
+      ...(hostMode ? { routes: ["*.sites.test/*"], bindings: { SITES_DOMAIN: "sites.test" } } : { routes: ["sites.test/*"], bindings: { SITES_DOMAIN: "" } }),
+      r2Buckets: { SITES: "nanocodex-sites" } },
   ] };
   let mf = new Miniflare(options);
   const trace = [];
@@ -163,21 +167,49 @@ test("published static sites are private until shared, immutable per version, an
     assert.equal(keys.filter(key => key.includes("/blobs/")).length, 4, "the secret and dependency are never uploaded");
     assert.equal((await (await backend.fetch("https://fixture.test/__r2?prefix=hosts/")).json()).length, 0, "publishing alone exposes nothing");
 
-    // The owner's private view is a short-lived host minted by the authenticated API.
+    // The owner's private view is a short-lived host minted by the authenticated API. Its URL
+    // carries a single-use grant that the first browser exchanges for a cookie scoped to the site.
     const view = await call(`${sitesPath}/launch/open`, "POST", {});
     assert.equal(view.version, 1);
     assert.ok(view.expires_at > Date.now() && view.expires_at <= Date.now() + 3_600_000);
-    const viewed = await site(view.url, { expected: 200 });
+    assert.match(view.url, /\?__nanocodex_grant=[a-z2-7]{26}$/);
+    const viewBase = view.url.slice(0, view.url.indexOf("?"));
+    const viewPath = new URL(viewBase).pathname;
+    await site(viewBase, { expected: 404 });
+    const exchanged = await site(view.url, { expected: 303 });
+    assert.equal(new URL(exchanged.headers.location, viewBase).href, viewBase);
+    assert.match(exchanged.headers["set-cookie"], new RegExp(`^nanocodex_site=[a-z2-7]{52}; Path=${viewPath}; HttpOnly; SameSite=Lax; Max-Age=\\d+$`));
+    const session = `Cookie: ${exchanged.headers["set-cookie"].split(";")[0]}`;
+    const viewed = await site(viewBase, { headers: [session], expected: 200 });
     assert.match(viewed.body, /Version one/);
+    assert.equal(viewed.headers["cache-control"], "private, no-cache");
+    assert.doesNotMatch(viewed.headers["content-security-policy"], /sandbox/);
+    assert.equal((await site(viewBase + "assets/app.js", { headers: [session], expected: 200 })).headers["access-control-allow-origin"], undefined);
+    // Without the session, nothing in the view resolves: not a replayed grant, a guessed cookie, or assets.
+    await site(viewBase + "assets/app.js", { expected: 404 });
+    await site(view.url, { expected: 404 });
+    await site(viewBase, { headers: [`Cookie: nanocodex_site=${"a".repeat(52)}`], expected: 404 });
 
     // Share: anyone with the link gets the pinned version with the response policy.
     const share = await call(`${sitesPath}/launch/shares`, "POST", {}, token, 201);
     assert.equal(share.version, 1);
-    assert.match(share.url, new RegExp(`^http://[a-z2-7]{26}\\.sites\\.test:${port}/$`));
+    assert.match(share.url, hostMode ? new RegExp(`^http://[a-z2-7]{26}\\.sites\\.test:${port}/$`) : new RegExp(`^http://sites\\.test:${port}/[a-z2-7]{26}/$`));
+    const sharePath = new URL(share.url).pathname;
     const home = await site(share.url, { expected: 200 });
     assert.match(home.body, /Version one/);
     assert.equal(home.headers["content-type"], "text/html; charset=utf-8");
-    assert.match(home.headers["content-security-policy"], /connect-src 'self'/);
+    if (hostMode) {
+      assert.match(home.headers["content-security-policy"], /connect-src 'self'/);
+      assert.doesNotMatch(home.headers["content-security-policy"], /sandbox/);
+    } else {
+      // Public path links share an origin, so pages are sandboxed and limited to their own prefix.
+      assert.match(home.headers["content-security-policy"], /^sandbox allow-scripts /);
+      assert.doesNotMatch(home.headers["content-security-policy"], /allow-same-origin/);
+      assert.match(home.headers["content-security-policy"], new RegExp(`connect-src http://sites\\.test:${port}${sharePath};`));
+      assert.equal(home.headers["access-control-allow-origin"], "*");
+      assert.equal((await site(share.url.slice(0, -1), { expected: 308 })).headers.location, sharePath);
+      await site(`http://sites.test:${port}/`, { expected: 404 });
+    }
     assert.equal(home.headers["x-content-type-options"], "nosniff");
     assert.equal(home.headers["x-robots-tag"], "noindex, nofollow");
     assert.equal(home.headers["referrer-policy"], "no-referrer");
@@ -186,12 +218,12 @@ test("published static sites are private until shared, immutable per version, an
     assert.equal((await site(share.url + "assets/logo.svg", { expected: 200 })).headers["content-type"], "image/svg+xml");
     await site(share.url + ".env", { expected: 404 });
     await site(share.url + "node_modules/left-pad/index.js", { expected: 404 });
-    assert.equal((await site(share.url + "docs", { expected: 308 })).headers.location, "/docs/");
+    assert.equal((await site(share.url + "docs", { expected: 308 })).headers.location, `${sharePath}docs/`);
     assert.match((await site(share.url + "docs/", { expected: 200 })).body, /Docs/);
     await site(share.url + "missing", { expected: 404 });
     await site(share.url, { headers: [`If-None-Match: ${home.headers.etag}`], expected: 304 });
     await site(share.url, { method: "POST", expected: 405 });
-    await site(`http://${"a".repeat(26)}.sites.test:${port}/`, { expected: 404 });
+    await site(hostMode ? `http://${"a".repeat(26)}.sites.test:${port}/` : `http://sites.test:${port}/${"a".repeat(26)}/`, { expected: 404 });
 
     // A new version never changes what an existing link serves.
     await seed("/__workspace", { files: { [`${prefix}index.html`]: "<!doctype html><title>Launch</title><h1>Version two</h1>" } });
@@ -237,7 +269,7 @@ test("published static sites are private until shared, immutable per version, an
     assert.deepEqual(await (await backend.fetch("https://fixture.test/__r2?prefix=hosts/")).json(), []);
   } finally {
     await mkdir(output, { recursive: true });
-    await writeFile(output + "/sites-journey.json", JSON.stringify({ trace }, null, 2));
+    await writeFile(output + `/sites-journey-${mode}.json`, JSON.stringify({ trace }, null, 2));
     await mf.dispose();
     await rm(persistence, { recursive: true, force: true });
   }

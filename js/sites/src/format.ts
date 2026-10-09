@@ -35,7 +35,25 @@ export type SiteHostRecord = Readonly<{
   manifest: string;
   /** Unix milliseconds, or null for a share without an expiry. */
   expires_at: number | null;
+  /**
+   * Views only: SHA-256 (hex) of the single-use grant the owner's
+   * authenticated open request received. Shares are public and carry none.
+   */
+  grant?: string;
+  /** Views only: SHA-256 (hex) of the browser session the grant was exchanged for. */
+  session?: string;
 }>;
+
+/** Query parameter that carries a view grant on the owner's first request. */
+export const SITE_GRANT_PARAM = "__nanocodex_grant";
+/** HttpOnly cookie, scoped to one site, holding the session a grant was exchanged for. */
+export const SITE_SESSION_COOKIE = "nanocodex_site";
+
+/** Lowercase hex SHA-256 of a UTF-8 string. */
+export async function sha256Hex(value: string): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
+  return Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, "0")).join("");
+}
 
 export const hostKey = (label: string): string => {
   if (!SITE_HOST_LABEL.test(label)) throw new TypeError("invalid site host label");
@@ -113,7 +131,16 @@ export function parseManifest(encoded: string): SiteManifest {
 }
 
 export function parseHostRecord(encoded: string): SiteHostRecord {
-  const record = exact(JSON.parse(encoded), ["format", "kind", "thread_id", "site_id", "version", "manifest", "expires_at"]);
+  const record = exact(JSON.parse(encoded), ["format", "kind", "thread_id", "site_id", "version", "manifest", "expires_at"], ["grant", "session"]);
+  // A view is reachable only by the browser its grant was exchanged in, so
+  // a view without a grant is malformed rather than public.
+  if (record.kind === "view" ? typeof record.grant !== "string" || !SHA256.test(record.grant)
+    : Object.hasOwn(record, "grant") || Object.hasOwn(record, "session")) {
+    throw new TypeError("invalid site host grant");
+  }
+  if (Object.hasOwn(record, "session") && (typeof record.session !== "string" || !SHA256.test(record.session))) {
+    throw new TypeError("invalid site host session");
+  }
   if (record.format !== 1 || (record.kind !== "share" && record.kind !== "view")
     || typeof record.thread_id !== "string" || !THREAD_ID.test(record.thread_id)
     || typeof record.site_id !== "string" || !SITE_ID.test(record.site_id)
@@ -125,13 +152,15 @@ export function parseHostRecord(encoded: string): SiteHostRecord {
   return {
     format: 1, kind: record.kind, thread_id: record.thread_id, site_id: record.site_id,
     version: record.version as number, manifest: record.manifest, expires_at: record.expires_at as number | null,
+    ...(record.kind === "view" ? { grant: record.grant as string } : {}),
+    ...(typeof record.session === "string" ? { session: record.session } : {}),
   };
 }
 
-function exact(value: unknown, keys: readonly string[]): Record<string, unknown> {
+function exact(value: unknown, keys: readonly string[], optional: readonly string[] = []): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new TypeError("expected an object");
   const record = value as Record<string, unknown>;
-  if (Object.keys(record).some(key => !keys.includes(key)) || keys.some(key => !Object.hasOwn(record, key))) {
+  if (Object.keys(record).some(key => !keys.includes(key) && !optional.includes(key)) || keys.some(key => !Object.hasOwn(record, key))) {
     throw new TypeError("unexpected site record shape");
   }
   return record;

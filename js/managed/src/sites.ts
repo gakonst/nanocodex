@@ -1,10 +1,12 @@
 import {
+  SITE_GRANT_PARAM,
   SITE_ID,
   blobKey,
   hostKey,
   isSitePath,
   manifestKey,
   newHostLabel,
+  sha256Hex,
   siteContentType,
   threadPrefix,
   type SiteFile,
@@ -158,14 +160,19 @@ export class ThreadSites {
     });
   }
 
-  /** A private, short-lived host for the owner to look at one version. */
+  /**
+   * A private, short-lived host for the owner to look at one version. The URL
+   * carries a single-use grant that the first browser to load it exchanges for
+   * a session cookie; nobody else can open the view, even with its address.
+   */
   async open(siteId: string, version?: number) {
     this.#origin();
     const target = this.#version(siteId, version);
     await this.#sweepExpiredViews();
     const expiresAt = Date.now() + SITE_VIEW_TTL_MS;
-    const host = await this.#grant("view", target, expiresAt);
-    return { site_id: siteId, version: target.version, url: this.#url(host.host), expires_at: expiresAt };
+    const grant = newHostLabel();
+    const host = await this.#grant("view", target, expiresAt, await sha256Hex(grant));
+    return { site_id: siteId, version: target.version, url: `${this.#url(host.host)}?${SITE_GRANT_PARAM}=${grant}`, expires_at: expiresAt };
   }
 
   listShares(siteId: string) {
@@ -220,14 +227,14 @@ export class ThreadSites {
     this.storage.sql.exec("DELETE FROM managed_sites");
   }
 
-  async #grant(kind: SiteHostKind, target: VersionRow, expiresAt: number | null) {
+  async #grant(kind: SiteHostKind, target: VersionRow, expiresAt: number | null, grant?: string) {
     const row = { host: newHostLabel(), id: crypto.randomUUID(), created_at: Date.now() };
     // Record the grant before it becomes reachable, so a lost write can only
     // leave an unreachable row that revocation and deletion still clean up.
     this.storage.sql.exec("INSERT INTO managed_site_hosts(host,kind,id,site_id,version,created_at,expires_at) VALUES(?,?,?,?,?,?,?)",
       row.host, kind, row.id, target.site_id, target.version, row.created_at, expiresAt);
     const record: SiteHostRecord = { format: 1, kind, thread_id: this.threadId, site_id: target.site_id,
-      version: target.version, manifest: target.manifest_key, expires_at: expiresAt };
+      version: target.version, manifest: target.manifest_key, expires_at: expiresAt, ...(grant ? { grant } : {}) };
     try {
       await this.#bucket().put(hostKey(row.host), JSON.stringify(record), { httpMetadata: { contentType: "application/json" } });
     } catch (error) {
@@ -264,7 +271,8 @@ export class ThreadSites {
   }
 
   #origin(): string {
-    if (!this.originPattern || !/^https?:\/\/\*\.[a-z0-9.-]+(?::\d{1,5})?$/.test(this.originPattern)) {
+    // Host links (`https://*.zone`) or path links on one host (`https://host/*`).
+    if (!this.originPattern || !/^https?:\/\/(?:\*\.[a-z0-9.-]+(?::\d{1,5})?|[a-z0-9.-]+(?::\d{1,5})?\/\*)$/.test(this.originPattern)) {
       throw new SiteError(503, "sites_unavailable", "Site links are not configured");
     }
     return this.originPattern;
