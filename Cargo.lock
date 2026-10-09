@@ -5871,6 +5871,7 @@ dependencies = [
  "nanocodex-oai-tools",
  "nanocodex-observability",
  "nanocodex-remote",
+ "nanocodex-screen-supervisor",
  "nanocodex-subagents",
  "nanocodex-tui-control",
  "nanocodex-vm",
@@ -6419,6 +6420,14 @@ dependencies = [
  "url",
  "uuid",
  "webrtc",
+]
+
+[[package]]
+name = "nanocodex-screen-supervisor"
+version = "0.6.7"
+dependencies = [
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

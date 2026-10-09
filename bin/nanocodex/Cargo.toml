@@ -47,6 +47,7 @@ webrtc.workspace = true
 whoami.workspace = true
 zeroize = "1.8.2"
 nanocodex-tui-control = { path = "tui-control", version = "0.6.7" }
+nanocodex-screen-supervisor = { path = "screen-supervisor", version = "0.6.7" }
 nanocodex-computer.workspace = true
 arboard.workspace = true
 async-trait.workspace = true
@@ -141,7 +142,7 @@ nanocodex-oai-tools = { workspace = true, features = ["native"] }
 p256 = { version = "0.13.2", features = ["ecdh"] }
 portable-pty.workspace = true
 sha2-hkdf = { package = "sha2", version = "0.10.9" }
-tokio = { workspace = true, features = ["fs", "io-std", "io-util", "net", "process", "test-util"] }
+tokio = { workspace = true, features = ["fs", "io-std", "io-util", "net", "process"] }
 vt100.workspace = true
 
 [[bench]]

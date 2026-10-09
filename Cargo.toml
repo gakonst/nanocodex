@@ -3,6 +3,7 @@ exclude = ["third_party/codex-voice"]
 members = [
     "bin/nanocodex",
     "bin/nanocodex/tui-control",
+    "bin/nanocodex/screen-supervisor",
     "bin/nanocodex/account-auth",
     "bin/nanousd",
     "bin/nanousd-api",
