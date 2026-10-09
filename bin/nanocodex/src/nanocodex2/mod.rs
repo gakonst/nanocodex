@@ -12,6 +12,7 @@ mod connectors;
 mod continue_auth;
 mod continue_sessions;
 mod control;
+pub(crate) mod daemon;
 mod device_hand;
 mod hand_observability;
 mod hand_recording;
@@ -785,25 +786,7 @@ async fn run(cli: Cli) -> Result<(), ManagedError> {
             return native_hand::serve_hand(command).await;
         }
         Some(Command::DeviceHand(command)) => return device_hand::serve(command).await,
-        Some(Command::Hand(command)) => {
-            let _observability = command
-                .observability
-                .install()
-                .map_err(|error| ManagedError::Configuration(error.to_string()))?;
-            tracing::info!(target: "nanocodex2", stage = "hand.preflight",
-                machine.id = command.machine_id(),
-                hand.backend = if command.docker.is_some() { "docker" } else { "vm" },
-                vm.cpu.count = command.vm_cpus,
-                vm.memory.limit_mib = command.vm_memory_mib,
-                vm.root.kind = command.rootfs.as_ref().map_or("container", |root| if root.exists() { "existing" } else { "missing" }),
-                "checking Hand backend support");
-            if let Err(error) = vm_hand::VmHand::preflight(&command).await {
-                tracing::error!(target: "nanocodex2", stage = "hand.preflight.failed", "Hand backend preflight failed");
-                return Err(error);
-            }
-            let client = client_from_environment(None)?;
-            return serve_vm_hand(&client, command).await;
-        }
+        Some(Command::Hand(command)) => return serve_isolated_hand(command).await,
         Some(Command::Host(command)) => {
             let _observability = command
                 .observability
@@ -924,6 +907,27 @@ async fn run(cli: Cli) -> Result<(), ManagedError> {
         device.stop().await;
     }
     result
+}
+
+/// Serve a VM or Docker Hand: the Hand daemon and the managed tree share this path.
+async fn serve_isolated_hand(command: Hand) -> Result<(), ManagedError> {
+    let _observability = command
+        .observability
+        .install()
+        .map_err(|error| ManagedError::Configuration(error.to_string()))?;
+    tracing::info!(target: "nanocodex2", stage = "hand.preflight",
+        machine.id = command.machine_id(),
+        hand.backend = if command.docker.is_some() { "docker" } else { "vm" },
+        vm.cpu.count = command.vm_cpus,
+        vm.memory.limit_mib = command.vm_memory_mib,
+        vm.root.kind = command.rootfs.as_ref().map_or("container", |root| if root.exists() { "existing" } else { "missing" }),
+        "checking Hand backend support");
+    if let Err(error) = vm_hand::VmHand::preflight(&command).await {
+        tracing::error!(target: "nanocodex2", stage = "hand.preflight.failed", "Hand backend preflight failed");
+        return Err(error);
+    }
+    let client = client_from_environment(None)?;
+    serve_vm_hand(&client, command).await
 }
 
 async fn launch_vm_hand(command: &Hand) -> Result<vm_hand::VmHand, ManagedError> {
