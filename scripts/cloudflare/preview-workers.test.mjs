@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
-import { failureClassifier, previewConfig, runWrangler } from './preview-workers.mjs';
+import { failureClassifier, previewConfig, providerClient, runWrangler } from './preview-workers.mjs';
 
 const revision = 'a'.repeat(40);
 // Shape of the built js/account/dist/nanocodex/wrangler.json (synthetic identifiers).
@@ -80,4 +80,38 @@ test('the classifier keeps a bounded window and caps codes', () => {
   for (let i = 0; i < 1000; i++) classifier.push('filler '.repeat(100));
   classifier.push('[code: 3] [code: 1] [code: 2]');
   assert.deepEqual(classifier.summary(), { codes: [1, 3], categories: [] });
+});
+
+test('provider metadata reads survive a transient timeout; mutations are sent once', async () => {
+  const account = '0'.repeat(32);
+  const replies = [];
+  const calls = [];
+  const request = async (url, init) => {
+    calls.push(init.method);
+    const next = replies.shift();
+    if (next instanceof Error) throw next;
+    return { status: next, ok: next < 400, json: async () => ({ success: true, result: { ok: next } }) };
+  };
+  const get = providerClient({ account, token: 't', request, retryDelay: async () => {} });
+  const timeout = Object.assign(new Error('timed out'), { name: 'TimeoutError' });
+
+  replies.push(timeout, 503, 200);
+  assert.deepEqual(await get('workers/workers/w'), { ok: 200 });
+  assert.deepEqual(calls.splice(0), ['GET', 'GET', 'GET']);
+
+  replies.push(timeout, timeout, timeout);
+  await assert.rejects(get('workers/workers/w'), /lookup failed \(HTTP unavailable\)/);
+  assert.equal(calls.splice(0).length, 3);
+
+  replies.push(403);
+  await assert.rejects(get('workers/workers/w'), /lookup failed \(HTTP 403\)/);
+  assert.equal(calls.splice(0).length, 1);
+
+  replies.push(404);
+  assert.equal(await get('workers/workers/w/previews/p', { optional: true }), null);
+  calls.splice(0);
+
+  replies.push(503);
+  await assert.rejects(get('workers/workers/w', { method: 'DELETE' }), /lookup failed \(HTTP 503\)/);
+  assert.deepEqual(calls.splice(0), ['DELETE']);
 });
