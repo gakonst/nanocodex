@@ -150,14 +150,14 @@ jobs:
         # Temporarily disabled: CI tests are paused.
         if: needs.changes.outputs.tests == 'true'
         # The ci profile serializes and retries these host IPC tests.
-        run: cargo nextest run --locked --profile ci -p nanocodex-bin --bin nanocodex -E 'test(/^nanocodex2::/) & test(hand)'
-      - name: Build the public CLI journey executable
-        # Journeys that launch the managed Hand by its installed nanocodex2 name
-        # get an identical copy of the one binary.
+        run: cargo nextest run --locked --profile ci -p nanocodex-bin --bins -E '(test(/^nanocodex2::/) | binary(nanocodex-hand)) & test(hand)'
+      - name: Build the CLI and Hand journey executables
+        # Journeys that start the Hand by its installed nanocodex2 name get the
+        # nanocodex-hand binary there; it forwards CLI commands to nanocodex.
         shell: bash
         run: |
           cargo build --locked -p nanocodex-bin --bins
-          cp target/debug/nanocodex target/debug/nanocodex2
+          cp target/debug/nanocodex-hand target/debug/nanocodex2
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 24
@@ -195,7 +195,7 @@ jobs:
         if: needs.changes.outputs.tests == 'true'
         shell: bash
         run: |
-          NANOCODEX_DEVICE_TEST_BINARY="$(node -p 'require("node:path").resolve("target/debug/nanocodex" + (process.platform === "win32" ? ".exe" : ""))')"
+          NANOCODEX_DEVICE_TEST_BINARY="$(node -p 'require("node:path").resolve("target/debug/nanocodex-hand" + (process.platform === "win32" ? ".exe" : ""))')"
           export NANOCODEX_DEVICE_TEST_BINARY
           node --test js/desktop-runtime/test/device-hand.integration.test.mjs js/desktop-runtime/test/device-hand-shutdown.test.mjs
 
@@ -309,13 +309,13 @@ jobs:
         shell: pwsh
         env:
           NANOCODEX_COMPUTER: "off"
-        run: cargo nextest run --locked --profile ci --package nanocodex-bin --bin nanocodex -E 'test(/^nanocodex2::/)'
+        run: cargo nextest run --locked --profile ci --package nanocodex-bin --bins -E 'test(/^nanocodex2::/) | binary(nanocodex-hand)'
       - name: Build the native controller and account Hand
         shell: pwsh
         env:
           NANOCODEX_COMPUTER: "off"
         run: |
-          cargo build --locked --package nanocodex-bin --bin nanocodex --features tempo
+          cargo build --locked --package nanocodex-bin --bin nanocodex --bin nanocodex-hand --features tempo
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Test native Windows Hand task policy
         shell: pwsh
@@ -327,7 +327,7 @@ jobs:
         if: needs.changes.outputs.tests == 'true'
         shell: bash
         run: |
-          NANOCODEX_DEVICE_TEST_BINARY="$(node -p 'require("node:path").resolve("target/debug/nanocodex" + (process.platform === "win32" ? ".exe" : ""))')"
+          NANOCODEX_DEVICE_TEST_BINARY="$(node -p 'require("node:path").resolve("target/debug/nanocodex-hand" + (process.platform === "win32" ? ".exe" : ""))')"
           export NANOCODEX_DEVICE_TEST_BINARY
           node --test js/desktop-runtime/test/device-hand.integration.test.mjs js/desktop-runtime/test/device-hand-shutdown.test.mjs
       - name: Build the one-click installer
@@ -335,6 +335,7 @@ jobs:
         run: >-
           ./windows/hand/build.ps1
           -Nanocodex ./target/debug/nanocodex.exe
+          -Nanocodex2 ./target/debug/nanocodex-hand.exe
           -Version 0.0.0-ci
           -NumericVersion 0.0.0.0
 

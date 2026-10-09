@@ -1,9 +1,12 @@
 [CmdletBinding()]
 param(
-    # The one Nanocodex executable; the installer ships it as both
-    # nanocodex.exe and nanocodex2.exe plus the nc/ncl command shims.
+    # The nanocodex CLI; the installer also adds nc/ncl command shims for it.
     [Parameter(Mandatory = $true)]
     [string]$Nanocodex,
+
+    # The nanocodex-hand daemon, installed under its service name nanocodex2.exe.
+    [Parameter(Mandatory = $true)]
+    [string]$Nanocodex2,
 
     [string]$Version = "dev",
 
@@ -25,13 +28,15 @@ $compiler = @(
     (Join-Path ${env:ProgramFiles(x86)} "Inno Setup 6\ISCC.exe")
 ) | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } | Select-Object -First 1
 if (-not $compiler) { throw "Inno Setup 6 is required to build the Windows installer" }
-if (-not (Test-Path -LiteralPath $Nanocodex -PathType Leaf)) {
-    throw "Missing Windows Hand payload: $Nanocodex"
+foreach ($path in @($Nanocodex, $Nanocodex2)) {
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+        throw "Missing Windows Hand payload: $path"
+    }
 }
 
 New-Item -ItemType Directory -Force -Path $payload, $output | Out-Null
 Copy-Item -LiteralPath $Nanocodex -Destination (Join-Path $payload "nanocodex.exe") -Force
-Copy-Item -LiteralPath $Nanocodex -Destination (Join-Path $payload "nanocodex2.exe") -Force
+Copy-Item -LiteralPath $Nanocodex2 -Destination (Join-Path $payload "nanocodex2.exe") -Force
 # nc is the managed name; ncl selects the local agent command tree.
 Set-Content -LiteralPath (Join-Path $payload "nc.cmd") -Value '@"%~dp0nanocodex.exe" %*' -Encoding Ascii
 Set-Content -LiteralPath (Join-Path $payload "ncl.cmd") -Value '@"%~dp0nanocodex.exe" --local %*' -Encoding Ascii

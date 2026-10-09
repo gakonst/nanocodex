@@ -95,14 +95,14 @@ jobs:
           cargo clean --package krun-init-blob --profile nightly --target ${{ matrix.target }}
           VERGEN_GIT_SHA="$BUILD_SHA" \
             cargo build --locked --profile nightly --timings \
-              --package nanocodex-bin --bin nanocodex --features tempo \
+              --package nanocodex-bin --bin nanocodex --bin nanocodex-hand --features tempo \
               --target ${{ matrix.target }}
       - name: Verify shipped Linux Hand screen payload
         if: matrix.target == 'x86_64-unknown-linux-gnu' && matrix.component == 'cli'
         shell: bash
         run: |
           python3 scripts/tests/linux-screen-helpers-bundle.py \
-            --binary "target/${{ matrix.target }}/nightly/nanocodex" \
+            --binary "target/${{ matrix.target }}/nightly/nanocodex-hand" \
             "$NANOCODEX_LINUX_SCREEN_BUNDLE"
       - name: Verify embedded VM init
         if: matrix.component == 'cli'
@@ -112,10 +112,13 @@ jobs:
         if: runner.os == 'macOS' && matrix.component == 'cli'
         shell: bash
         run: |
-          codesign --force --sign - \
-            --entitlements nanocodex-vm.entitlements \
-            "target/${{ matrix.target }}/nightly/nanocodex"
-          codesign --verify --strict "target/${{ matrix.target }}/nightly/nanocodex"
+          # The Hand and the CLI's local --vm agent both start libkrun VMM children.
+          for binary in nanocodex-hand nanocodex; do
+            codesign --force --sign - \
+              --entitlements nanocodex-vm.entitlements \
+              "target/${{ matrix.target }}/nightly/$binary"
+            codesign --verify --strict "target/${{ matrix.target }}/nightly/$binary"
+          done
       - uses: ./.github/actions/voice-release
         if: matrix.component == 'voice'
         with:
@@ -130,12 +133,11 @@ jobs:
           mkdir -p dist
           case "$COMPONENT" in
             cli)
-              # One signed binary ships under both names for older updaters.
-              for binary in nanocodex nanocodex2; do
-                cp "target/$TARGET/nightly/nanocodex" "dist/$binary-$TARGET"
-                "dist/$binary-$TARGET" --help >/dev/null
-              done
-              cmp "dist/nanocodex-$TARGET" "dist/nanocodex2-$TARGET"
+              # nanocodex-* is the CLI; nanocodex2-* keeps the companion name for the Hand.
+              "target/$TARGET/nightly/nanocodex" --help >/dev/null
+              "target/$TARGET/nightly/nanocodex-hand" __device-hand --service-protocol >/dev/null
+              cp "target/$TARGET/nightly/nanocodex" "dist/nanocodex-$TARGET"
+              cp "target/$TARGET/nightly/nanocodex-hand" "dist/nanocodex2-$TARGET"
               ;;
             voice)
               # The composite action verifies initialization and relocation.
@@ -250,17 +252,22 @@ jobs:
         env:
           TAG_NAME: ${{ inputs.pr && format('pr-{0}', inputs.pr) || 'nightly' }}
         run: |
-          cargo build --locked --profile nightly --timings --package nanocodex-bin --bin nanocodex --features tempo
+          cargo build --locked --profile nightly --timings --package nanocodex-bin --bin nanocodex --bin nanocodex-hand --features tempo
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Sign payload when Authenticode is configured
         shell: pwsh
-        run: ./windows/hand/sign.ps1 -Path ./target/nightly/nanocodex.exe
+        run: >-
+          ./windows/hand/sign.ps1 -Path @(
+            "./target/nightly/nanocodex.exe",
+            "./target/nightly/nanocodex-hand.exe"
+          )
       - name: Build and sign one-click installer
         shell: pwsh
         run: |
           $displayVersion = "nightly-$($env:BUILD_SHA.Substring(0, 10))"
           ./windows/hand/build.ps1 `
             -Nanocodex ./target/nightly/nanocodex.exe `
+            -Nanocodex2 ./target/nightly/nanocodex-hand.exe `
             -Version $displayVersion `
             -NumericVersion 0.0.0.0
           ./windows/hand/sign.ps1 -Path ./dist/windows-hand/nanocodex-hand-setup-x86_64.exe
@@ -270,7 +277,7 @@ jobs:
           PR_NUMBER: ${{ inputs.pr }}
         run: |
           Copy-Item target/nightly/nanocodex.exe dist/windows-hand/nanocodex-x86_64-pc-windows-msvc.exe
-          Copy-Item target/nightly/nanocodex.exe dist/windows-hand/nanocodex2-x86_64-pc-windows-msvc.exe
+          Copy-Item target/nightly/nanocodex-hand.exe dist/windows-hand/nanocodex2-x86_64-pc-windows-msvc.exe
           if (-not [string]::IsNullOrWhiteSpace($env:PR_NUMBER)) {
             [pscustomobject]@{
               repository = $env:GITHUB_REPOSITORY

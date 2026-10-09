@@ -157,7 +157,7 @@ jobs:
         run: |
           ./scripts/build-linux-screen-helpers.sh --container "$RUNNER_TEMP/linux-screen-helpers.tar.gz"
           echo "NANOCODEX_LINUX_SCREEN_BUNDLE=$RUNNER_TEMP/linux-screen-helpers.tar.gz" >> "$GITHUB_ENV"
-      - name: Build release binary
+      - name: Build release binaries
         shell: bash
         env:
           TAG_NAME: ${{ github.ref_name }}
@@ -165,23 +165,26 @@ jobs:
           STABLE_GIT_COMMIT: ${{ github.sha }}
         run: |
           cargo build --locked --release \
-            --package nanocodex-bin --bin nanocodex --features tempo \
+            --package nanocodex-bin --bin nanocodex --bin nanocodex-hand --features tempo \
             --target ${{ matrix.target }}
       - name: Verify shipped Linux Hand screen payload
         if: matrix.target == 'x86_64-unknown-linux-gnu'
         shell: bash
         run: |
           python3 scripts/tests/linux-screen-helpers-bundle.py \
-            --binary "target/${{ matrix.target }}/release/nanocodex" \
+            --binary "target/${{ matrix.target }}/release/nanocodex-hand" \
             "$NANOCODEX_LINUX_SCREEN_BUNDLE"
       - name: Sign macOS VM hand host
         if: matrix.target == 'aarch64-apple-darwin'
         shell: bash
         run: |
-          codesign --force --sign - \
-            --entitlements nanocodex-vm.entitlements \
-            "target/${{ matrix.target }}/release/nanocodex"
-          codesign --verify --strict "target/${{ matrix.target }}/release/nanocodex"
+          # The Hand and the CLI's local --vm agent both start libkrun VMM children.
+          for binary in nanocodex-hand nanocodex; do
+            codesign --force --sign - \
+              --entitlements nanocodex-vm.entitlements \
+              "target/${{ matrix.target }}/release/$binary"
+            codesign --verify --strict "target/${{ matrix.target }}/release/$binary"
+          done
       - uses: ./.github/actions/voice-release
         env:
           STABLE_GIT_COMMIT: ${{ github.sha }}
@@ -193,10 +196,9 @@ jobs:
         run: |
           mkdir dist
           cp "voice-dist/nanocodex-voice-${{ matrix.target }}.tar.gz" dist/
-          # One signed binary ships under both names for older updaters.
+          # nanocodex-* is the CLI; nanocodex2-* keeps the companion name for the Hand.
           cp "target/${{ matrix.target }}/release/nanocodex" "dist/${{ matrix.artifact }}"
-          cp "target/${{ matrix.target }}/release/nanocodex" "dist/${{ matrix.companion }}"
-          cmp "dist/${{ matrix.artifact }}" "dist/${{ matrix.companion }}"
+          cp "target/${{ matrix.target }}/release/nanocodex-hand" "dist/${{ matrix.companion }}"
           gzip -n -9 -c "dist/${{ matrix.artifact }}" \
             > "dist/${{ matrix.artifact }}.gz"
           gzip -n -9 -c "dist/${{ matrix.companion }}" \
@@ -234,11 +236,15 @@ jobs:
           VERGEN_GIT_SHA: ${{ github.sha }}
           STABLE_GIT_COMMIT: ${{ github.sha }}
         run: |
-          cargo build --locked --release --package nanocodex-bin --bin nanocodex --features tempo
+          cargo build --locked --release --package nanocodex-bin --bin nanocodex --bin nanocodex-hand --features tempo
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Sign payload when Authenticode is configured
         shell: pwsh
-        run: ./windows/hand/sign.ps1 -Path ./target/release/nanocodex.exe
+        run: >-
+          ./windows/hand/sign.ps1 -Path @(
+            "./target/release/nanocodex.exe",
+            "./target/release/nanocodex-hand.exe"
+          )
       - name: Build and sign one-click installer
         shell: pwsh
         env:
@@ -247,6 +253,7 @@ jobs:
           $version = $env:RELEASE_VERSION.TrimStart("v")
           ./windows/hand/build.ps1 `
             -Nanocodex ./target/release/nanocodex.exe `
+            -Nanocodex2 ./target/release/nanocodex-hand.exe `
             -Version $version `
             -NumericVersion $version
           ./windows/hand/sign.ps1 -Path ./dist/windows-hand/nanocodex-hand-setup-x86_64.exe
@@ -254,7 +261,7 @@ jobs:
         shell: pwsh
         run: |
           Copy-Item target/release/nanocodex.exe dist/windows-hand/nanocodex-x86_64-pc-windows-msvc.exe
-          Copy-Item target/release/nanocodex.exe dist/windows-hand/nanocodex2-x86_64-pc-windows-msvc.exe
+          Copy-Item target/release/nanocodex-hand.exe dist/windows-hand/nanocodex2-x86_64-pc-windows-msvc.exe
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: nanocodex-hand-x86_64-pc-windows-msvc
