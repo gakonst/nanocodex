@@ -139,7 +139,14 @@ and closes their sockets, but never clears the mark. Re-enrollment through the
 account route is allowed; legacy publication is not. The account policy
 `PUT /v1/account/hand-devices/policy {require_device_keys}` rejects every
 account-key publisher when true. Any `agents:write` + `tools:use` principal
-may enable it. Disabling it requires a signed-in browser session.
+may enable it. Disabling it requires a signed-in browser session. The policy
+covers account-key publishers only: tool hosts, hands remote claims and VM
+factories authenticated with an account key. Platform-scoped publishers
+(server `hand-host` bearers, `cf:` sandbox publishers and leased-VM
+publishers) do not authenticate with an account key and cannot enroll a
+device (their machine prefixes are reserved), so `require_device_keys` does
+not apply to them. A server's `hand-host` bearer is refused only once that
+server itself has an enrolled device.
 
 Legacy account-key publication remains only for an install that never
 enrolled, against a service whose enrollment route is absent (the route marker
@@ -172,11 +179,14 @@ An enrolled Hand attests its sshd host public keys with
 `{challenge, signature, fingerprints}` (at most eight
 `SHA256:` + 43 base64 characters). It reads
 `$NANOCODEX_HAND_SSH_HOST_KEY_DIR/ssh_host_{ed25519,ecdsa,rsa}_key.pub`
-(default `/etc/ssh`) at start, after rotation and every 10 minutes, and sends
-the set when it changed. A server container receives only the host's public
-key files, bind-mounted read-only one file at a time at `/ssh-host-keys`;
-private host keys are never visible to it. The attestation is stored with the
-device, with its time, and describes only that device's own machine.
+(default `/etc/ssh`) at every start, after rotation and every 10 minutes while
+publishing, and sends the set when it changed. A server Hand therefore
+re-attests a rotated sshd host key when its container restarts, or within 10
+minutes while its screen is published. A server container receives only the
+host's public key files, bind-mounted read-only one file at a time at
+`/ssh-host-keys`; private host keys are never visible to it. The attestation
+is stored with the device, with its time, and describes only that device's own
+machine.
 
 A Vault SSH target has a host authority: a pinned `host_key_sha256`, an
 owner-saved `host_key_trust` binding, or both. A binding is `device` (the
@@ -220,10 +230,15 @@ cleared by rotation are never accepted. The egress audit record carries only
 keys, the matched `host_key_source` (`vault_pin` or `device:{id}`) and the
 public `host_key_sha256`.
 
-A new server is always bootstrapped through its Vault pin. After its device
-has enrolled and attested, rotating the server's sshd host key keeps
-`server_hand` and `ssh -o IdentityRef=REF -o HostKeyTrust=device` working
-without editing the Vault.
+The first bootstrap of a server still requires a Vault-pinned host key. A
+`device` binding accepts only a device enrolled after the target's
+`saved_at`, and before `server_hand connect` no such device exists, so an
+unpinned device-trust target fails with 403 `ssh_host_key_unattested`: there
+is no trust on first use. `server_hand connect` therefore delivers the grant
+over the pinned connection. After the server's device has enrolled and
+attested, rotating the server's sshd host key keeps `server_hand` and
+`ssh -o IdentityRef=REF -o HostKeyTrust=device` working without editing the
+Vault; the pin stays accepted alongside the attestation.
 
 ## Threat model
 
@@ -257,3 +272,16 @@ without editing the Vault.
   without attestation. Only the target's DNS answer and the account DO's
   `deviceSshHostKeys` answers are fixtures. It writes
   `ssh-device-trust-trace.json` and the SSH audit log.
+- `NANOCODEX_HAND_EXECUTABLE=target/debug/nanocodex-hand pnpm --filter
+  nanocodex-managed-service run test:hand-device-server-hand` chains the
+  whole server path without fixtures for the account DO: the managed and
+  egress Workers run together in workerd against a real OpenSSH sshd. An
+  unpinned target cannot bootstrap; the owner DO mints the grant; the shipped
+  `SERVER_HAND_INSTALL` script receives it over Vault-pinned SSH; the shipped
+  `nanocodex-hand server-host` publisher enrolls, deletes the grant and
+  attests the host key; a replayed grant is 401; after the sshd host key
+  rotates and the container restarts, recovery succeeds through
+  `device:{id}` without editing the Vault; after revocation it fails closed
+  and the publisher stops. Docker and the desktop compositor are stand-ins
+  (`js/managed/test/support/server-hand/`), so the screen itself is not
+  published. Evidence goes to `output/hand-device-keys/server-hand-journey/`.
