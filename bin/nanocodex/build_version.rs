@@ -7,9 +7,14 @@ pub fn emit() -> Result<(), Box<dyn Error>> {
     // Cargo can reuse this package's build-script output across worktrees that
     // share a target directory. Its cached absolute Git paths then still refer
     // to the previous worktree, and CARGO_MANIFEST_DIR is not a tracked input.
-    // Without a caller-supplied SHA, this absent file regenerates provenance
-    // for each invocation. Release builds already supply a tracked SHA.
-    if std::env::var_os("VERGEN_GIT_SHA").is_none() {
+    // The repository's .cargo/config.toml sets NANOCODEX_BUILD_CHECKOUT to the
+    // checkout root, so a build from another checkout reruns this script while
+    // repeated builds in one checkout keep nanocodex-bin's artifacts fresh
+    // instead of recompiling the crate for a new timestamp on every command.
+    // Without that identity or a caller-supplied SHA (release builds), this
+    // absent file regenerates provenance for each invocation.
+    let checkout = try_env_var("NANOCODEX_BUILD_CHECKOUT");
+    if checkout.is_none() && std::env::var_os("VERGEN_GIT_SHA").is_none() {
         println!("cargo:rerun-if-changed=nanocodex-version-always-rerun");
     }
     println!("cargo:rerun-if-changed=build.rs");

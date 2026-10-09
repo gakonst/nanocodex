@@ -150,14 +150,9 @@ jobs:
         # Temporarily disabled: CI tests are paused.
         if: needs.changes.outputs.tests == 'true'
         # The ci profile serializes and retries these host IPC tests.
-        run: cargo nextest run --locked --profile ci -p nanocodex-bin --lib -E 'test(/^nanocodex2::/) & test(hand)'
-      - name: Build the CLI and Hand journey executables
-        # Journeys that start the Hand by its installed nanocodex2 name get the
-        # nanocodex-hand binary there; it forwards CLI commands to nanocodex.
-        shell: bash
-        run: |
-          cargo build --locked -p nanocodex-bin --bins
-          cp target/debug/nanocodex-hand target/debug/nanocodex2
+        run: cargo nextest run --locked --profile ci -p nanocodex2-bin --bin nanocodex2 -E 'test(hand)'
+      - name: Build both public CLI journey executables
+        run: cargo build --locked -p nanocodex2-bin -p nanocodex-bin --bins
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 24
@@ -165,8 +160,8 @@ jobs:
         run: |
           cargo test --locked -p nanocodex-managed --lib account_services
           cargo test --locked -p nanocodex-managed --lib phone_services
-          cargo test --locked -p nanocodex-bin --test nanocodex2_connectors --test nanocodex2_vault
-          cargo test --locked -p nanocodex-bin --lib account_management_journeys
+          cargo test --locked -p nanocodex2-bin --test nanocodex2_connectors --test nanocodex2_vault
+          cargo test --locked -p nanocodex2-bin --bin nanocodex2 account_management_journeys
       - name: Resolve the trusted loopback origin on macOS
         if: runner.os == 'macOS'
         run: printf '\n::1 nanocodex.localhost\n' | sudo tee -a /etc/hosts > /dev/null
@@ -195,7 +190,7 @@ jobs:
         if: needs.changes.outputs.tests == 'true'
         shell: bash
         run: |
-          NANOCODEX_DEVICE_TEST_BINARY="$(node -p 'require("node:path").resolve("target/debug/nanocodex-hand" + (process.platform === "win32" ? ".exe" : ""))')"
+          NANOCODEX_DEVICE_TEST_BINARY="$(node -p 'require("node:path").resolve("target/debug/nanocodex2" + (process.platform === "win32" ? ".exe" : ""))')"
           export NANOCODEX_DEVICE_TEST_BINARY
           node --test js/desktop-runtime/test/device-hand.integration.test.mjs js/desktop-runtime/test/device-hand-shutdown.test.mjs
 
@@ -309,25 +304,27 @@ jobs:
         shell: pwsh
         env:
           NANOCODEX_COMPUTER: "off"
-        run: cargo nextest run --locked --profile ci --package nanocodex-bin --lib -E 'test(/^nanocodex2::/)'
+        run: cargo nextest run --locked --profile ci --package nanocodex2-bin --bin nanocodex2
       - name: Build the native controller and account Hand
         shell: pwsh
         env:
           NANOCODEX_COMPUTER: "off"
         run: |
-          cargo build --locked --package nanocodex-bin --bin nanocodex --bin nanocodex-hand --features tempo
+          cargo build --locked --package nanocodex-bin --bin nanocodex --features tempo
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo build --locked --package nanocodex2-bin --bin nanocodex2
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Test native Windows Hand task policy
         shell: pwsh
         run: >-
-          cargo nextest run --locked --profile ci --package nanocodex-bin --lib
+          cargo nextest run --locked --profile ci --package nanocodex-bin --bin nanocodex
           -E 'test(windows_hand) | test(update::automatic::tests::windows_schedule)'
       - name: Run real CLI/app sharing against a local account server
         # Temporarily disabled: CI tests are paused.
         if: needs.changes.outputs.tests == 'true'
         shell: bash
         run: |
-          NANOCODEX_DEVICE_TEST_BINARY="$(node -p 'require("node:path").resolve("target/debug/nanocodex-hand" + (process.platform === "win32" ? ".exe" : ""))')"
+          NANOCODEX_DEVICE_TEST_BINARY="$(node -p 'require("node:path").resolve("target/debug/nanocodex2" + (process.platform === "win32" ? ".exe" : ""))')"
           export NANOCODEX_DEVICE_TEST_BINARY
           node --test js/desktop-runtime/test/device-hand.integration.test.mjs js/desktop-runtime/test/device-hand-shutdown.test.mjs
       - name: Build the one-click installer
@@ -335,7 +332,7 @@ jobs:
         run: >-
           ./windows/hand/build.ps1
           -Nanocodex ./target/debug/nanocodex.exe
-          -Nanocodex2 ./target/debug/nanocodex-hand.exe
+          -Nanocodex2 ./target/debug/nanocodex2.exe
           -Version 0.0.0-ci
           -NumericVersion 0.0.0.0
 
@@ -400,7 +397,7 @@ jobs:
 
   vm-guest:
     needs: changes
-    # Add "hands" here when re-enabling the paused Docker Hand tests.
+    # Add "hands" here when re-enabling the paused Docker Hand tests (nanocodex2).
     if: needs.changes.outputs.vm == 'true'
     name: static Linux guest and Docker Hand (${{ matrix.arch }})
     strategy:
@@ -505,7 +502,7 @@ jobs:
         if: needs.changes.outputs.tests == 'true'
         run: |
           cargo test --locked -p nanocodex-vm --test docker_live -- --ignored --nocapture
-          cargo test --locked -p nanocodex-bin --test nanocodex2_managed docker_hand_live -- --ignored --nocapture
+          cargo test --locked -p nanocodex2-bin --test nanocodex2_managed docker_hand_live -- --ignored --nocapture
         env:
           NANOCODEX_DOCKER_TEST_IMAGE: nanocodex-hand:ci
           NANOCODEX_DOCKER_HOST_SENTINEL: must-not-enter-the-container
@@ -515,7 +512,7 @@ jobs:
         run: |
           sudo unshare --mount --propagation private sh -eu -c '
             if test -e /dev/kvm; then mount --bind /dev/null /dev/kvm; fi
-            if target/debug/nanocodex hand --vm /nonexistent-root.ext4 > /tmp/hand-kvm-error 2>&1; then
+            if target/debug/nanocodex2 hand --vm /nonexistent-root.ext4 > /tmp/hand-kvm-error 2>&1; then
               cat /tmp/hand-kvm-error
               exit 1
             fi
@@ -733,7 +730,7 @@ jobs:
         if: always() && steps.managed_sites.outcome != 'skipped'
         with:
           name: managed-sites-journey
-          path: output/sites-journey.json
+          path: output/sites-journey-*.json
           if-no-files-found: error
       - name: Exercise managed durability through curl
         id: managed_curl
