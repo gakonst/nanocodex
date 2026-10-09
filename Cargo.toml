@@ -206,17 +206,23 @@ unsafe_code = "forbid"
 
 [workspace.lints.clippy]
 all = { level = "warn", priority = -1 }
-missing-const-for-fn = "warn"
-use-self = "warn"
-redundant-clone = "warn"
-large-enum-variant = "allow"
-result-large-err = "allow"
+missing_const_for_fn = "warn"
+use_self = "warn"
+redundant_clone = "warn"
+large_enum_variant = "allow"
+result_large_err = "allow"
 
 # Match Reth and Solar's fast edit-build cycle: retain useful backtraces and
 # source locations without emitting full local-variable debug information.
 [profile.dev]
 debug = "line-tables-only"
 split-debuginfo = "unpacked"
+
+# Third-party crates carry no debug info in dev builds. Workspace crates keep
+# line tables, so panics and backtraces in Nanocodex code still report file and
+# line, while debug executables and shared targets stay smaller and link faster.
+[profile.dev.package."*"]
+debug = false
 
 # Display math runs during interactive debug builds. Keep the small native
 # parser/layout/raster stack optimized so a cold formula is ready in one frame.
