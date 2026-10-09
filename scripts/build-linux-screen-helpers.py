@@ -15,8 +15,10 @@ import re
 import shlex
 import shutil
 import subprocess
+import sys
 import tarfile
 import tempfile
+import time
 import urllib.request
 
 WAYMOTE_URL = 'https://github.com/rockorager/waymote.git'
@@ -51,12 +53,32 @@ def capture(cmd):
     return subprocess.check_output(list(map(str, cmd)), text=True)
 
 
+# Upstream forges (notably gitlab.freedesktop.org) intermittently answer 5xx.
+# Only transport is retried: every fetched source is still verified against its
+# pinned commit or SHA256, and a mismatch fails immediately without a retry.
+FETCH_ATTEMPTS = 5
+
+
+def with_network_retries(description, operation):
+    for attempt in range(1, FETCH_ATTEMPTS + 1):
+        try:
+            return operation()
+        except (subprocess.CalledProcessError, OSError) as error:
+            if attempt == FETCH_ATTEMPTS:
+                raise
+            delay = 5 * 2 ** (attempt - 1)
+            print(f'{description} failed (attempt {attempt}/{FETCH_ATTEMPTS}: {error}); retrying in {delay}s',
+                  file=sys.stderr, flush=True)
+            time.sleep(delay)
+
+
 def checkout(root, name, url, revision, tag=None):
     dest = root / name
     if not dest.exists():
         run(['git', 'init', dest])
         run(['git', '-C', dest, 'remote', 'add', 'origin', url])
-        run(['git', '-C', dest, 'fetch', '--depth=1', 'origin', tag or revision])
+        with_network_retries(f'{name}: fetching {tag or revision} from {url}',
+                             lambda: run(['git', '-C', dest, 'fetch', '--depth=1', 'origin', tag or revision]))
         run(['git', '-C', dest, 'checkout', '--detach', 'FETCH_HEAD'])
     actual = capture(['git', '-C', dest, 'rev-parse', 'HEAD']).strip()
     if actual != revision:
@@ -72,7 +94,12 @@ def zig_compiler(root, provided, architecture):
         if not binary.exists():
             archive = root / 'zig.tar.xz'
             if not archive.exists():
-                urllib.request.urlretrieve(f'https://ziglang.org/download/{ZIG_VERSION}/zig-{architecture}-linux-{ZIG_VERSION}.tar.xz', archive)
+                url = f'https://ziglang.org/download/{ZIG_VERSION}/zig-{architecture}-linux-{ZIG_VERSION}.tar.xz'
+                partial = archive.with_suffix('.partial')
+                # Publish the archive only after a complete download; a short
+                # read raises and is retried instead of leaving a torn file.
+                with_network_retries(f'downloading {url}', lambda: urllib.request.urlretrieve(url, partial))
+                partial.rename(archive)
             if hashlib.sha256(archive.read_bytes()).hexdigest() != ARCHITECTURES[architecture]['zig_sha256']:
                 raise RuntimeError('Zig archive SHA256 mismatch')
             with tarfile.open(archive) as tar:
