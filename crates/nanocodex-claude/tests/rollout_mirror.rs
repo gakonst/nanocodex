@@ -184,7 +184,7 @@ async fn root_and_side_conversation_write_resumable_codex_rollouts() {
     ))
     .workspace(home.path().to_str().unwrap())
     .rollout(RolloutConfig::new(home.path()))
-    .restore_runtime(checkpoint)
+    .resume(checkpoint)
     .unwrap()
     .build()
     .unwrap();

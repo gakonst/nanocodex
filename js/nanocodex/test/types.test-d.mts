@@ -459,6 +459,7 @@ async function check() {
   const parentSessionId: string | null = info.lineage.parentSessionId;
   const capabilities: SessionCapabilities = agent.session.capabilities();
   const forkAt: boolean = capabilities.forkAt;
+  const resumable: boolean = capabilities.resume && capabilities.ultrafastServiceTier;
   const modelMutability: "fixed" | "before_first_prompt" | "anytime" = capabilities.model;
   const persistence: SessionPersistence | null = agent.session.persistence();
   const latest: SessionCheckpoint = await agent.session.checkpoint();
@@ -466,6 +467,7 @@ async function check() {
   void harness;
   void parentSessionId;
   void forkAt;
+  void resumable;
   void modelMutability;
   void persistence;
   // @ts-expect-error checkpoints are opaque; their payload is decoded only by Rust.

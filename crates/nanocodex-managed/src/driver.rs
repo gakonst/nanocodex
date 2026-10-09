@@ -8,7 +8,7 @@ use std::{
 
 use futures_util::{StreamExt, stream::FuturesUnordered};
 use nanocodex_agent::{
-    AgentSessionContext, Capabilities, ForkRequest, HarnessFamily, HarnessModel, Mutability,
+    AgentSessionContext, Capabilities, ForkRequest, Persistence, HarnessFamily, HarnessModel, Mutability,
     NanocodexError, SessionCheckpoint, Thinking, TurnResult, TurnUsage,
     backend::{
         BackendFuture, BackendPrompt, BackendPromptRoute, BackendTurn, BackendTurnKey,
@@ -121,6 +121,8 @@ impl Shutdown {
 pub struct ManagedAgent {
     commands: mpsc::Sender<Command>,
     shutdown: Shutdown,
+    /// Server-side session that owns this conversation.
+    server_session_id: String,
     /// Family of the model the session was created with.
     family: HarnessFamily,
 }
@@ -128,21 +130,18 @@ pub struct ManagedAgent {
 /// Lifecycle operations of an account-managed session.
 ///
 /// The managed control plane owns conversation state, so local checkpoints,
-/// forks, and spawned children are not available through this lifecycle.
-const MANAGED_CAPABILITIES: Capabilities = Capabilities {
-    checkpoint: false,
-    fork: false,
-    fork_at: false,
-    side_conversation: false,
-    spawn: false,
-    steering: true,
-    identified_steering: true,
-    compaction: true,
-    developer_messages: false,
-    context: false,
-    model: Mutability::BeforeFirstPrompt,
-    thinking: Mutability::Anytime,
-    service_tier: Mutability::Anytime,
+/// forks, and spawned children are not available through this lifecycle; the
+/// session is durable on the server ([`Persistence::server_session_id`]).
+/// The control plane accepts only a priority switch, so Ultrafast is refused.
+const MANAGED_CAPABILITIES: Capabilities = {
+    let mut capabilities = Capabilities::NONE;
+    capabilities.steering = true;
+    capabilities.identified_steering = true;
+    capabilities.compaction = true;
+    capabilities.model = Mutability::BeforeFirstPrompt;
+    capabilities.thinking = Mutability::Anytime;
+    capabilities.service_tier = Mutability::Anytime;
+    capabilities
 };
 
 impl std::fmt::Debug for ManagedAgent {
@@ -154,13 +153,17 @@ impl std::fmt::Debug for ManagedAgent {
 }
 
 impl ManagedAgent {
-    pub(crate) fn new(model: ManagedModel) -> (Self, mpsc::Receiver<Command>, Shutdown) {
+    pub(crate) fn new(
+        model: ManagedModel,
+        server_session_id: String,
+    ) -> (Self, mpsc::Receiver<Command>, Shutdown) {
         let (commands, receiver) = mpsc::channel(COMMAND_CAPACITY);
         let shutdown = Shutdown::new();
         (
             Self {
                 commands,
                 shutdown: shutdown.clone(),
+                server_session_id,
                 family: model.family(),
             },
             receiver,
@@ -188,6 +191,10 @@ impl LifecycleBackend for ManagedAgent {
 
     fn capabilities(&self) -> Capabilities {
         MANAGED_CAPABILITIES
+    }
+
+    fn persistence(&self) -> Option<Persistence> {
+        Some(Persistence::server(self.server_session_id.clone()))
     }
 
     fn submit(&self, prompt: BackendPrompt) -> BackendFuture<nanocodex_agent::Result<BackendTurn>> {
@@ -313,7 +320,7 @@ impl LifecycleBackend for ManagedAgent {
         &self,
         _text: String,
     ) -> BackendFuture<nanocodex_agent::Result<AgentSessionContext>> {
-        unsupported("append_developer_message")
+        unsupported("developer_messages")
     }
 
     fn context(&self) -> BackendFuture<nanocodex_agent::Result<AgentSessionContext>> {

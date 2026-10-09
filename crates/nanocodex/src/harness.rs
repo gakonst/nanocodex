@@ -30,9 +30,15 @@ pub struct HarnessRequest {
     /// model policy and conversation, with the recipe's current host
     /// capabilities. Present for [`Harness::resume`] (with no parent) and for
     /// a parent restoring an evicted child; recipes pass it to their native
-    /// builder's `restore_runtime`. Its unredacted transcript stays in memory
+    /// builder's `resume`. Its unredacted transcript stays in memory
     /// and must not enter model arguments.
     pub checkpoint: Option<SessionCheckpoint>,
+    /// Durable catalog state to own, present for [`Harness::open`] (with no
+    /// parent and no checkpoint). Recipes attach it with
+    /// [`crate::DurableAgentExt::durability`], which restores the state's
+    /// latest boundary, identity and lineage and records every later turn.
+    #[cfg(all(feature = "durability", not(target_family = "wasm")))]
+    pub durable_state: Option<crate::durability::DurableSession>,
     /// Shared router to install on every per-agent weak handle.
     pub spawn_factory: Arc<dyn AgentFactory>,
 }
@@ -113,7 +119,7 @@ impl Harness {
         let options = options.resolve(model, model.default_thinking())?;
         self.inner
             .clone()
-            .construct(None, options, None, None)
+            .construct(None, options, None, Reopen::default())
             .await
     }
 
@@ -159,7 +165,66 @@ impl Harness {
         options.validate_harness()?;
         self.inner
             .clone()
-            .construct(None, options, None, Some(checkpoint))
+            .construct(None, options, None, Reopen::checkpoint(checkpoint))
+            .await
+    }
+
+    /// Reopens a session stored in a durable catalog by its ID, through the
+    /// recipe registered for its recorded family, so hosts reopen Codex and
+    /// Claude sessions the same way.
+    ///
+    /// The reopened session owns its durable state: it keeps the stored
+    /// session identity, lineage, model, thinking level and committed history,
+    /// and records every later turn in the same catalog entry. Use
+    /// [`SessionStore::branch`](crate::durability::SessionStore::branch) and
+    /// open the branch to continue from an earlier boundary under a new
+    /// identity, or [`Self::resume`] for a portable checkpoint.
+    ///
+    /// ```
+    /// # use nanocodex::{Harness, durability::SessionStore};
+    /// # async fn example(harness: Harness, store: SessionStore) -> nanocodex::agent::Result<()> {
+    /// // `store` is the host's catalog, such as `SessionStore::open(codex_home)`.
+    /// let (agent, _events) = harness.open(&store, "0190f5d4-7f8e-7c4a-9b1e-2d3c4b5a6978").await?;
+    /// agent.prompt("Where were we?").await?.result().await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NanocodexError::InvalidRequest`] for an unknown session or
+    /// when no recipe is registered for its family,
+    /// [`NanocodexError::Backend`] for a catalog failure, an error when
+    /// another live agent owns the state, or the recipe's construction error.
+    #[cfg(all(feature = "durability", not(target_family = "wasm")))]
+    pub async fn open(
+        &self,
+        store: &crate::durability::SessionStore,
+        session_id: &str,
+    ) -> AgentResult {
+        let stored = store.load(session_id).await.map_err(catalog_error)?;
+        let model = stored.summary.record.model;
+        let thinking = stored
+            .session_checkpoint()
+            .map_err(catalog_error)?
+            .map_or_else(|| model.default_thinking(), |checkpoint| checkpoint.thinking());
+        let options = SpawnOptions::new()
+            .harness(model.family())
+            .harness_model(model)
+            .thinking(thinking);
+        options.validate_harness()?;
+        let durable_state = store.resume(session_id).await.map_err(catalog_error)?;
+        self.inner
+            .clone()
+            .construct(
+                None,
+                options,
+                None,
+                Reopen {
+                    checkpoint: None,
+                    durable_state: Some(durable_state),
+                },
+            )
             .await
     }
 
@@ -168,6 +233,22 @@ impl Harness {
         Arc::new(RoutedFactory {
             inner: Arc::clone(&self.inner),
         })
+    }
+}
+
+/// What a recipe reopens instead of starting a new session.
+#[derive(Default)]
+struct Reopen {
+    checkpoint: Option<SessionCheckpoint>,
+    #[cfg(all(feature = "durability", not(target_family = "wasm")))]
+    durable_state: Option<crate::durability::DurableSession>,
+}
+impl Reopen {
+    fn checkpoint(checkpoint: SessionCheckpoint) -> Self {
+        Self {
+            checkpoint: Some(checkpoint),
+            ..Self::default()
+        }
     }
 }
 
@@ -180,7 +261,7 @@ impl Router {
         parent: Option<AgentHandle>,
         options: SpawnOptions,
         host_context: Option<Arc<str>>,
-        checkpoint: Option<SessionCheckpoint>,
+        reopen: Reopen,
     ) -> AgentResult {
         let model = options.selected_harness_model().ok_or_else(|| {
             NanocodexError::InvalidRequest("harness construction requires a resolved model".into())
@@ -205,7 +286,9 @@ impl Router {
             options,
             parent,
             host_context,
-            checkpoint,
+            checkpoint: reopen.checkpoint,
+            #[cfg(all(feature = "durability", not(target_family = "wasm")))]
+            durable_state: reopen.durable_state,
             spawn_factory,
         })
         .await
@@ -252,7 +335,7 @@ impl AgentFactory for RoutedFactory {
             let parent_model = parent.harness_model();
             let options = options.resolve(parent_model, parent_model.default_thinking())?;
             inner
-                .construct(Some(parent), options, host_context, None)
+                .construct(Some(parent), options, host_context, Reopen::default())
                 .await
         })
     }
@@ -301,9 +384,22 @@ impl AgentFactory for RoutedFactory {
                 .thinking(checkpoint.thinking());
             options.validate_harness()?;
             inner
-                .construct(Some(parent), options, host_context, Some(checkpoint))
+                .construct(Some(parent), options, host_context, Reopen::checkpoint(checkpoint))
                 .await
         })
+    }
+}
+
+#[cfg(all(feature = "durability", not(target_family = "wasm")))]
+fn catalog_error(error: crate::durability::Error) -> NanocodexError {
+    match error {
+        crate::durability::Error::SessionNotFound { .. } => {
+            NanocodexError::InvalidRequest(error.to_string())
+        }
+        error => NanocodexError::Backend {
+            backend: "durability",
+            source: Arc::new(error),
+        },
     }
 }
 

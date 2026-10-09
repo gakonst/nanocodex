@@ -2,14 +2,14 @@
 #![cfg(feature = "sqlite")]
 
 use std::sync::{
-    Arc,
+    Arc, Mutex,
     atomic::{AtomicUsize, Ordering},
 };
 
 use eyre::{Result, eyre};
 use nanocodex_agent::{
     ForkRequest, HarnessFamily, HarnessModel, Model, Nanocodex, OpenAi, Origin, PromptRequest,
-    ResponseError, session::SessionId,
+    ResponseError, ServiceTier, Thinking, session::SessionId,
 };
 use nanocodex_durability::{
     BranchPoint, DurableAgentExt, SessionRecord, SessionStore, TranscriptItem, TurnStatus,
@@ -18,6 +18,8 @@ use nanocodex_durability::{
 #[derive(Clone)]
 struct ScriptedResponses {
     generations: Arc<AtomicUsize>,
+    /// Thinking and processing tier of every outbound generation request.
+    policies: Arc<Mutex<Vec<(Thinking, ServiceTier)>>>,
 }
 
 impl tower::Service<nanocodex_oai_api::tower::ResponsesAttempt> for ScriptedResponses {
@@ -46,6 +48,10 @@ impl tower::Service<nanocodex_oai_api::tower::ResponsesAttempt> for ScriptedResp
                 usage: None,
             }),
             ResponsesAttemptKind::Generation => {
+                self.policies
+                    .lock()
+                    .unwrap()
+                    .push((request.thinking(), request.service_tier()));
                 let reply = format!(
                     "reply {}",
                     self.generations.fetch_add(1, Ordering::SeqCst) + 1
@@ -75,11 +81,16 @@ impl tower::Service<nanocodex_oai_api::tower::ResponsesAttempt> for ScriptedResp
 
 /// A Responses client whose generations are scripted and counted.
 macro_rules! openai {
-    ($generations:expr) => {{
+    ($generations:expr) => {
+        openai!($generations, &Arc::new(Mutex::new(Vec::new())))
+    };
+    ($generations:expr, $policies:expr) => {{
         let generations = Arc::clone($generations);
+        let policies = Arc::clone($policies);
         OpenAi::builder("test-key")
             .service(move || ScriptedResponses {
                 generations: Arc::clone(&generations),
+                policies: Arc::clone(&policies),
             })
             .build()
     }};
@@ -96,13 +107,16 @@ fn user_prompts(transcript: &[TranscriptItem]) -> Vec<&str> {
 }
 
 /// A Codex session recorded through the shared store is listable, readable,
-/// branchable before a turn, and the branch resumes in a fresh process.
+/// branchable before a turn, and the branch resumes in a fresh process with the
+/// session's own (non-default) thinking level and processing tier.
 #[tokio::test]
 async fn codex_session_lists_loads_branches_and_resumes_from_one_store() -> Result<()> {
     let home = tempfile::tempdir()?;
     let workspace = home.path().join("workspace");
     std::fs::create_dir_all(&workspace)?;
     let generations = Arc::new(AtomicUsize::new(0));
+    let policies = Arc::new(Mutex::new(Vec::new()));
+    assert_ne!(Model::Luna.default_thinking(), Thinking::High);
     let store = SessionStore::open(home.path())?;
     assert!(SessionStore::path(home.path()).is_file());
     assert!(
@@ -116,8 +130,10 @@ async fn codex_session_lists_loads_branches_and_resumes_from_one_store() -> Resu
         HarnessModel::Codex(Model::Luna),
         Some(workspace.clone()),
     );
-    let (agent, _events) = Nanocodex::builder(openai!(&generations)?)
+    let (agent, _events) = Nanocodex::builder(openai!(&generations, &policies)?)
         .model(Model::Luna)
+        .thinking(Thinking::High)
+        .service_tier(ServiceTier::Fast)
         .workspace(&workspace)
         .durability(store.session(record).await?)
         .await?
@@ -180,6 +196,15 @@ async fn codex_session_lists_loads_branches_and_resumes_from_one_store() -> Resu
     assert_eq!(portable.session_id(), session_id);
     assert_eq!(portable.family(), HarnessFamily::Codex);
     assert!(portable.has_conversation());
+    // The stored session's actual settings, not the model's defaults.
+    let live = *policies.lock().unwrap().first().expect("live requests");
+    assert_eq!(live.0, Thinking::High);
+    assert_ne!(live.1, ServiceTier::Standard);
+    assert_eq!(portable.thinking(), Thinking::High);
+    assert_eq!(
+        portable.payload()["service_tier"],
+        serde_json::to_value(live.1)?
+    );
     let turns = reader.turns(&session_id).await?;
     assert_eq!(
         turns
@@ -235,7 +260,10 @@ async fn codex_session_lists_loads_branches_and_resumes_from_one_store() -> Resu
     ));
 
     // The branch resumes as its own durable session and keeps its lineage.
-    let (resumed, _events) = Nanocodex::builder(openai!(&generations)?)
+    // The resuming host configures no thinking or tier: the stored ones apply.
+    policies.lock().unwrap().clear();
+    let (resumed, _events) = Nanocodex::builder(openai!(&generations, &policies)?)
+        .model(Model::Luna)
         .workspace(&workspace)
         .durability(reader.resume(&before.record.session_id).await?)
         .await?
@@ -247,6 +275,11 @@ async fn codex_session_lists_loads_branches_and_resumes_from_one_store() -> Resu
         .result()
         .await?;
     resumed.shutdown().await?;
+    assert_eq!(
+        *policies.lock().unwrap(),
+        [live],
+        "the resumed request uses the session's recorded thinking and tier"
+    );
     let continued = reader.load(&before.record.session_id).await?;
     assert_eq!(
         user_prompts(&continued.transcript),
@@ -335,3 +368,108 @@ async fn durable_fork_is_its_own_resumable_session() -> Result<()> {
     assert_eq!(store.turns(&fork_id).await?.len(), 2);
     Ok(())
 }
+
+/// A subagent of a durable root is its own listed, readable and resumable
+/// session with its own Codex rollout, exactly like a fork.
+#[tokio::test]
+async fn durable_subagents_are_their_own_resumable_sessions() -> Result<()> {
+    let home = tempfile::tempdir()?;
+    let workspace = home.path().join("workspace");
+    std::fs::create_dir_all(&workspace)?;
+    let generations = Arc::new(AtomicUsize::new(0));
+    let store = SessionStore::open(home.path())?;
+    let rollout = nanocodex_agent::rollout::RolloutConfig::new(home.path().join("codex"));
+    let root_id = SessionId::default().to_string();
+    let (root, _events) = Nanocodex::builder(openai!(&generations)?)
+        .model(Model::Luna)
+        .workspace(&workspace)
+        .rollout(rollout.clone())
+        .durability(
+            store
+                .session(SessionRecord::root(
+                    root_id.clone(),
+                    HarnessModel::Codex(Model::Luna),
+                    Some(workspace.clone()),
+                ))
+                .await?,
+        )
+        .await?
+        .build()?;
+    root.prompt(PromptRequest::new("root task").request_id("root-1"))
+        .await?
+        .result()
+        .await?;
+    let (child, _child_events) = root.spawn().await?;
+    let (grandchild, _grandchild_events) = child.spawn().await?;
+    let child_id = child.session_id().to_owned();
+    let grandchild_id = grandchild.session_id().to_owned();
+    assert_ne!(child_id, root_id);
+    assert_ne!(grandchild_id, child_id);
+    let tree = [(&child_id, &root_id), (&grandchild_id, &child_id)];
+    for (agent, (id, parent)) in [&child, &grandchild].into_iter().zip(tree) {
+        assert_eq!(agent.session().lineage.origin, Origin::Subagent);
+        assert_eq!(
+            agent.session().lineage.parent_session_id.as_deref(),
+            Some(parent.as_str())
+        );
+        let persistence = agent.persistence().expect("a durable root's subagent persists");
+        assert_eq!(persistence.durable_state_id.as_deref(), Some(id.as_str()));
+        assert!(persistence.rollout.is_some(), "every subagent mirrors a Codex rollout");
+        agent
+            .prompt(PromptRequest::new("subagent task").request_id("task-1"))
+            .await?
+            .result()
+            .await?;
+    }
+    grandchild.shutdown().await?;
+    child.shutdown().await?;
+    root.shutdown().await?;
+
+    let listed = store.list().await?;
+    for (id, parent) in tree {
+        let summary = listed
+            .iter()
+            .find(|summary| summary.record.session_id == *id)
+            .ok_or_else(|| eyre!("subagent {id} is not listed"))?;
+        assert_eq!(summary.record.lineage.origin, Origin::Subagent);
+        assert_eq!(
+            summary.record.lineage.parent_session_id.as_deref(),
+            Some(parent.as_str())
+        );
+        assert_eq!(summary.record.lineage.root_session_id, root_id);
+        let stored = store.load(id).await?;
+        assert_eq!(user_prompts(&stored.transcript), ["subagent task"]);
+    }
+    let mirrored = |id: &str| -> Result<usize> {
+        Ok(rollout
+            .list_sessions()?
+            .iter()
+            .filter(|session| session.thread_id() == id)
+            .count())
+    };
+    for id in [&root_id, &child_id, &grandchild_id] {
+        assert_eq!(mirrored(id)?, 1, "{id} has exactly one Codex rollout");
+    }
+
+    let (resumed, _events) = Nanocodex::builder(openai!(&generations)?)
+        .workspace(&workspace)
+        .rollout(rollout.clone())
+        .durability(store.resume(&child_id).await?)
+        .await?
+        .build()?;
+    assert_eq!(resumed.session_id(), child_id);
+    resumed
+        .prompt(PromptRequest::new("resumed subagent").request_id("task-2"))
+        .await?
+        .result()
+        .await
+        .map_err(|error| eyre!("resumed subagent prompt failed: {error}"))?;
+    resumed.shutdown().await?;
+    assert_eq!(store.turns(&child_id).await?.len(), 2);
+    assert_eq!(
+        user_prompts(&store.load(&child_id).await?.transcript),
+        ["subagent task", "resumed subagent"]
+    );
+    Ok(())
+}
+

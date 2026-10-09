@@ -397,14 +397,18 @@ impl AgentArgs {
                 session.id()
             ));
         }
-        let workspace = session
-            .workspace()
-            .or(self.cwd.as_deref())
-            .ok_or_else(|| {
-                eyre!("session has no saved workspace; pass --cwd explicitly to resume it")
-            })?
-            .canonicalize()
-            .wrap_err("failed to resolve the resumed workspace")?;
+        let saved = session.workspace().or(self.cwd.as_deref()).ok_or_else(|| {
+            eyre!("session has no saved workspace; pass --cwd explicitly to resume it")
+        })?;
+        // Listing and reading history never need the workspace; continuing does.
+        let workspace = saved.canonicalize().wrap_err_with(|| {
+            format!(
+                "failed to resolve the resumed workspace {}; restore that directory to resume session {}. Its history stays readable with `nanocodex rewind {}`",
+                saved.display(),
+                session.id(),
+                session.id()
+            )
+        })?;
         if let Some(requested) = &self.cwd
             && requested
                 .canonicalize()
@@ -751,14 +755,15 @@ impl AgentArgs {
                     .wrap_err("failed to inspect the durable session")?
                     .is_none()
             {
-                builder = builder.resume(snapshot.clone())?;
+                // The resolved root model and effort stay authoritative.
+                builder = builder.resume(snapshot.clone())?.model(model).thinking(thinking);
             }
             builder = builder
                 .durability(state)
                 .await
                 .wrap_err("failed to attach session durability")?;
         } else if let Some(snapshot) = fallback {
-            builder = builder.resume(snapshot.clone())?;
+            builder = builder.resume(snapshot.clone())?.model(model).thinking(thinking);
         }
         let (handle, events) = {
             let _timing = crate::startup_timing::Stage::new("native_agent");

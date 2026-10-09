@@ -4,7 +4,7 @@ use crate::{Result, session::CommittedSession};
 pub(super) struct Config;
 
 impl Config {
-    pub(super) const fn for_new_thread(&self, _branch: bool) -> Self {
+    pub(super) const fn for_new_thread(&self) -> Self {
         Self
     }
 

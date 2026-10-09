@@ -20,13 +20,11 @@ impl Config {
         self.rollout = Some(rollout);
     }
 
-    pub(super) fn for_new_thread(&self, branch: bool) -> Self {
-        // A fork or side conversation is its own resumable conversation and records
-        // beside its parent; a subagent's history belongs to the running parent.
+    pub(super) fn for_new_thread(&self) -> Self {
+        // Every fork, side conversation and subagent is its own resumable
+        // conversation and records its own rollout beside its parent.
         Self {
-            rollout: branch
-                .then(|| self.rollout.as_ref().map(RolloutConfig::for_branch))
-                .flatten(),
+            rollout: self.rollout.as_ref().map(RolloutConfig::for_branch),
         }
     }
 
@@ -45,6 +43,27 @@ impl Config {
         let Some(config) = &self.rollout else {
             return Ok(Execution::default());
         };
+        // A restored child or a session resumed from durable state continues
+        // the rollout it already recorded; the recorder appends only history
+        // newer than the file, so the mirror never duplicates a turn.
+        let reopened = if matches!(
+            start,
+            crate::session::SessionStart::Restore | crate::session::SessionStart::Resume
+        ) {
+            config
+                .reopening(session_id)
+                .map_err(|source| NanocodexError::InitializeRollout {
+                    codex_home: config.codex_home().to_path_buf(),
+                    source,
+                })?
+        } else {
+            None
+        };
+        let resume_history_len = match &reopened {
+            Some(_) => Some(resume_history_len.unwrap_or(0)),
+            None => resume_history_len,
+        };
+        let config = reopened.as_ref().unwrap_or(config);
         let runtime = tokio::runtime::Handle::try_current()
             .map_err(|_| NanocodexError::TokioRuntimeUnavailable)?;
         let cwd =

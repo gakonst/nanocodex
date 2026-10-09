@@ -26,6 +26,7 @@ mod rollout;
 use crate::execution::{Admission, ClaudeExecutionPolicy, Step};
 pub use durable::{
     ClaudeCheckpointView, decode_checkpoint, decode_session_checkpoint, rewind_checkpoint,
+    session_checkpoint,
 };
 use durable::{Cursor, Effect, Snapshot};
 use std::{
@@ -335,6 +336,15 @@ fn model_max_tokens(model: &str) -> Option<u32> {
     }
 }
 
+/// Documented context window of a model; conservative for unknown models.
+fn default_context_window_tokens(model: &str) -> u64 {
+    match model {
+        "claude-opus-5-5" | "claude-fable-5-1" | "claude-sonnet-5-5" | "claude-haiku-5-5"
+        | "claude-sonnet-5" => 1_000_000,
+        _ => 200_000, // Conservative fallback; override for other models.
+    }
+}
+
 type WorkspaceResolver = Arc<dyn Fn(&str) -> String + Send + Sync>;
 type SubagentTypeResolver = Arc<dyn Fn(&str) -> Option<String> + Send + Sync>;
 type ChildWorkspaceInit = Arc<dyn Fn(&str, &str) -> Result<()> + Send + Sync>;
@@ -386,11 +396,7 @@ pub struct ClaudeBuilder {
 }
 impl ClaudeBuilder {
     fn new(claude: Claude) -> Self {
-        let context_window_tokens = match claude.model.as_str() {
-            "claude-opus-5-5" | "claude-fable-5-1" | "claude-sonnet-5-5" | "claude-haiku-5-5"
-            | "claude-sonnet-5" => 1_000_000,
-            _ => 200_000, // Conservative fallback; override for other models.
-        };
+        let context_window_tokens = default_context_window_tokens(&claude.model);
         Self {
             subagent_type: None,
             subagent_type_resolver: None,
@@ -517,16 +523,37 @@ impl ClaudeBuilder {
         };
         Ok(self)
     }
-    /// Restores a session from its checkpoint using newly approved host
-    /// capabilities, keeping its session identity, lineage, model policy,
-    /// and conversation tree.
+    /// Resumes a checkpointed session in a fresh runtime built from this
+    /// recipe.
+    ///
+    /// The resumed session *is* the checkpointed session: it keeps the
+    /// checkpoint's session identity, lineage, conversation tree, transcript,
+    /// model, thinking and processing policy. This recipe supplies the
+    /// credentials, instructions, tools and handlers for later turns; prompt
+    /// caching it enables stays enabled. Settings called after `resume`
+    /// override the checkpoint's. A checkpoint taken before the first
+    /// completed turn reopens the session with its settings and no history.
+    /// Use [`Nanocodex::fork`] to continue a conversation under a new
+    /// identity.
+    ///
+    /// ```no_run
+    /// # use nanocodex_agent::{Nanocodex, SessionCheckpoint};
+    /// # use nanocodex_claude::Claude;
+    /// # fn example(claude: Claude, saved: &str) -> nanocodex_agent::Result<()> {
+    /// let checkpoint = SessionCheckpoint::from_json(saved)?;
+    /// let session_id = checkpoint.session_id().to_owned();
+    /// let (agent, _events) = Nanocodex::builder(claude).resume(checkpoint)?.build()?;
+    /// assert_eq!(agent.session_id().to_string(), session_id);
+    /// # Ok(())
+    /// # }
+    /// ```
     ///
     /// # Errors
     ///
     /// Returns [`NanocodexError::CheckpointFamilyMismatch`] for a non-Claude
     /// checkpoint and [`NanocodexError::InvalidCheckpoint`] for an
     /// invalid one.
-    pub fn restore_runtime(mut self, checkpoint: SessionCheckpoint) -> Result<Self> {
+    pub fn resume(mut self, checkpoint: SessionCheckpoint) -> Result<Self> {
         checkpoint.validate()?;
         checkpoint.require_family(HarnessFamily::Claude)?;
         let model = checkpoint.model();
@@ -567,33 +594,6 @@ impl ClaudeBuilder {
         Ok(self)
     }
 
-    /// Resumes a checkpointed conversation as a fresh root session.
-    ///
-    /// The resumed root receives a new session identity (unless one is
-    /// configured afterwards) and a root lineage, while keeping the
-    /// checkpoint's transcript, model policy, and conversation tree, so
-    /// checkpoints of the original session remain valid fork points.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`NanocodexError::CheckpointFamilyMismatch`] for a non-Claude
-    /// checkpoint and [`NanocodexError::InvalidCheckpoint`] for an
-    /// invalid checkpoint or one without a committed conversation.
-    pub fn resume(self, checkpoint: SessionCheckpoint) -> Result<Self> {
-        if !checkpoint.has_conversation() {
-            return Err(NanocodexError::InvalidCheckpoint(
-                "checkpoint has no committed conversation to resume".into(),
-            ));
-        }
-        let mut builder = self.restore_runtime(checkpoint)?;
-        builder.session_id = None;
-        builder.lineage = None;
-        if let Some(restored) = &mut builder.restored {
-            restored.lineage = None;
-        }
-        Ok(builder)
-    }
-
     /// Mirrors this session, and every fork, side conversation and subagent
     /// it creates, as Codex-compatible JSONL rollouts beneath
     /// `<codex_home>/sessions`, so Codex-compatible tooling can list, read
@@ -607,8 +607,23 @@ impl ClaudeBuilder {
 
     /// Sets an embedding-owned stable session identity. For durable sessions it
     /// must equal the policy state ID; reopened tool identities cannot drift.
+    ///
+    /// Replacing the identity of a [`resume`](Self::resume)d session starts
+    /// a new root that continues the checkpoint's conversation tree, which is
+    /// how a host seeds a separately stored copy of a conversation.
     pub fn session_id(mut self, session_id: impl Into<String>) -> Self {
-        self.session_id = Some(session_id.into());
+        let session_id = session_id.into();
+        if self
+            .session_id
+            .as_ref()
+            .is_some_and(|current| *current != session_id)
+        {
+            self.lineage = None;
+            if let Some(restored) = &mut self.restored {
+                restored.lineage = None;
+            }
+        }
+        self.session_id = Some(session_id);
         self
     }
     /// Sets the Messages output-token limit.
@@ -2142,12 +2157,17 @@ impl AgentFactory for ClaudeNativeFactory {
             // the inherited transcript as its first checkpoint, so the fork is
             // listable and resumable independently of the parent.
             if let Some(parent) = &state.policy {
-                let child = nanocodex_agent::SessionInfo {
-                    session_id: child_id.clone(),
-                    family: HarnessFamily::Claude,
-                    lineage: lineage.clone(),
-                };
-                if let Some(policy) = parent.branch(&child)? {
+                let child = nanocodex_agent::SessionInfo::new(
+                    child_id.clone(),
+                    HarnessFamily::Claude,
+                    lineage.clone(),
+                );
+                // As for Codex, a durable session cannot silently create an
+                // ephemeral fork: its children must be durable too.
+                let policy = parent.branch(&child)?.ok_or(
+                    NanocodexError::ExecutionPolicyBranchUnsupported { operation: "fork" },
+                )?;
+                {
                     if policy.state_id() != child_id {
                         return Err(NanocodexError::InvalidRequest(
                             "durable branch state ID must equal the child session ID".into(),
@@ -2197,11 +2217,11 @@ impl AgentFactory for ClaudeNativeFactory {
             let native_model = state.model();
             let host_context = host_context.or_else(|| state.host_context.clone());
             let mut recipe = recipe;
-            recipe.lineage = Some(Lineage::child_of(
-                &state.lineage,
-                state.session_id.as_str(),
-                Origin::Subagent,
-            ));
+            let lineage = Lineage::child_of(&state.lineage, state.session_id.as_str(), Origin::Subagent);
+            let child_id = uuid::Uuid::now_v7().to_string();
+            state.durable_child(&mut recipe, &child_id, &lineage)?;
+            recipe.session_id = Some(child_id);
+            recipe.lineage = Some(lineage);
             if options.selected_harness_model().is_none()
                 && options
                     .selected_harness()
@@ -2251,7 +2271,12 @@ impl AgentFactory for ClaudeNativeFactory {
         let recipe = self.recipe();
         Box::pin(async move {
             let state = available?;
-            let mut recipe = recipe.restore_runtime(checkpoint)?;
+            let mut recipe = recipe.resume(checkpoint)?;
+            // An evicted subagent reopens the durable state it recorded under
+            // its own session ID, exactly like a resumed fork.
+            if let (Some(child_id), Some(lineage)) = (recipe.session_id.clone(), recipe.lineage.clone()) {
+                state.durable_child(&mut recipe, &child_id, &lineage)?;
+            }
             state.initialize_child_workspace(&mut recipe)?;
             recipe.host_context(host_context).build()
         })
@@ -2413,20 +2438,21 @@ fn provider_error(error: impl std::fmt::Display) -> NanocodexError {
 }
 
 /// Lifecycle operations supported by the native Claude driver.
-const CLAUDE_CAPABILITIES: Capabilities = Capabilities {
-    checkpoint: true,
-    fork: true,
-    fork_at: true,
-    side_conversation: true,
-    spawn: true,
-    steering: true,
-    identified_steering: true,
-    compaction: true,
-    developer_messages: false,
-    context: false,
-    model: Mutability::BeforeFirstPrompt,
-    thinking: Mutability::Anytime,
-    service_tier: Mutability::Anytime,
+const CLAUDE_CAPABILITIES: Capabilities = {
+    let mut capabilities = Capabilities::NONE;
+    capabilities.checkpoint = true;
+    capabilities.resume = true;
+    capabilities.fork = true;
+    capabilities.fork_at = true;
+    capabilities.side_conversation = true;
+    capabilities.spawn = true;
+    capabilities.steering = true;
+    capabilities.identified_steering = true;
+    capabilities.compaction = true;
+    capabilities.model = Mutability::BeforeFirstPrompt;
+    capabilities.thinking = Mutability::Anytime;
+    capabilities.service_tier = Mutability::Anytime;
+    capabilities
 };
 
 /// Model policy retained beside a Claude transcript in a portable checkpoint.
@@ -2698,6 +2724,31 @@ impl State {
             || self.workspace.clone(),
             |resolve| resolve(&self.session_id),
         )
+    }
+    /// Gives a subagent of a durable session its own durable state under its
+    /// session ID, exactly as for a fork, so it is listed and resumable on its
+    /// own. Restoring reopens the state recorded under the same ID.
+    fn durable_child(
+        &self,
+        recipe: &mut ClaudeBuilder,
+        child_id: &str,
+        lineage: &Lineage,
+    ) -> Result<()> {
+        let Some(parent) = &self.policy else {
+            return Ok(());
+        };
+        let child = nanocodex_agent::SessionInfo::new(child_id, HarnessFamily::Claude, lineage.clone());
+        // A durable parent never silently creates an unsaved child.
+        let policy = parent
+            .branch(&child)?
+            .ok_or(NanocodexError::ExecutionPolicyBranchUnsupported { operation: "spawn" })?;
+        if policy.state_id() != child_id {
+            return Err(NanocodexError::InvalidRequest(
+                "durable branch state ID must equal the child session ID".into(),
+            ));
+        }
+        recipe.policy = Some(policy);
+        Ok(())
     }
     fn initialize_child_workspace(&self, recipe: &mut ClaudeBuilder) -> Result<()> {
         if let Some(initialize) = &self.child_workspace_init {
@@ -5301,18 +5352,10 @@ impl LifecycleBackend for Driver {
         })
     }
     fn context(&self) -> BackendFuture<Result<AgentSessionContext>> {
-        let state = self.state.clone();
-        Box::pin(async move {
-            let history = state.conversation.lock().await;
-            if !history.messages.is_empty() || !history.summary.is_empty() {
-                return Err(NanocodexError::UnsupportedCapability {
-                    capability: "context",
-                });
-            }
-            Ok(AgentSessionContext::from_backend(
-                state.workspace.clone(),
-                vec![],
-            ))
+        Box::pin(async {
+            Err(NanocodexError::UnsupportedCapability {
+                capability: "context",
+            })
         })
     }
     fn spawn(&self, options: SpawnOptions) -> BackendFuture<Result<(Nanocodex, AgentEvents)>> {

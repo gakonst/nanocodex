@@ -152,10 +152,7 @@ pub trait AgentFactory: Send + Sync + 'static {
             let mut children: Vec<(Nanocodex, AgentEvents)> = Vec::with_capacity(count);
             for child in pending {
                 match child.await {
-                    Ok((child, events)) => {
-                        observer(child.session_id());
-                        children.push((child, events));
-                    }
+                    Ok(child) => children.push(child),
                     Err(error) => {
                         for (child, _) in &children {
                             let _ = child.shutdown().await;
@@ -163,6 +160,10 @@ pub trait AgentFactory: Send + Sync + 'static {
                         return Err(error);
                     }
                 }
+            }
+            // All or nothing: observers see only a batch that started completely.
+            for (child, _) in &children {
+                observer(child.session_id());
             }
             Ok(children)
         })
@@ -437,20 +438,24 @@ pub(super) struct LocalLifecycle {
 
 /// Lifecycle operations supported by the local Codex driver.
 #[cfg(feature = "openai")]
-const CODEX_CAPABILITIES: Capabilities = Capabilities {
-    checkpoint: true,
-    fork: true,
-    fork_at: true,
-    side_conversation: true,
-    spawn: true,
-    steering: true,
-    identified_steering: true,
-    compaction: true,
-    developer_messages: true,
-    context: true,
-    model: crate::session::Mutability::BeforeFirstPrompt,
-    thinking: crate::session::Mutability::Anytime,
-    service_tier: crate::session::Mutability::Anytime,
+const CODEX_CAPABILITIES: Capabilities = {
+    let mut capabilities = Capabilities::NONE;
+    capabilities.checkpoint = true;
+    capabilities.resume = true;
+    capabilities.fork = true;
+    capabilities.fork_at = true;
+    capabilities.side_conversation = true;
+    capabilities.spawn = true;
+    capabilities.steering = true;
+    capabilities.identified_steering = true;
+    capabilities.compaction = true;
+    capabilities.developer_messages = true;
+    capabilities.context = true;
+    capabilities.model = crate::session::Mutability::BeforeFirstPrompt;
+    capabilities.thinking = crate::session::Mutability::Anytime;
+    capabilities.service_tier = crate::session::Mutability::Anytime;
+    capabilities.ultrafast_service_tier = true;
+    capabilities
 };
 
 #[cfg(feature = "openai")]
@@ -464,17 +469,12 @@ impl LifecycleBackend for LocalLifecycle {
     }
 
     fn persistence(&self) -> Option<Persistence> {
+        let durable = self.execution.durable_state_id().map(Persistence::durable);
         #[cfg(not(target_family = "wasm"))]
-        let rollout = self.execution.info().cloned();
-        #[cfg(not(target_family = "wasm"))]
-        let recorded = rollout.is_some();
-        #[cfg(target_family = "wasm")]
-        let recorded = false;
-        (recorded || self.execution.identifies_prompts()).then(|| Persistence {
-            durable_state_id: self.execution.durable_state_id(),
-            #[cfg(not(target_family = "wasm"))]
-            rollout,
-        })
+        if let Some(rollout) = self.execution.info().cloned() {
+            return Some(durable.unwrap_or_default().with_rollout(rollout));
+        }
+        durable
     }
 
     fn submit(&self, request: BackendPrompt) -> BackendFuture<Result<BackendTurn>> {

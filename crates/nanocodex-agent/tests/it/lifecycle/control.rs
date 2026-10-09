@@ -424,24 +424,25 @@ async fn sessions_report_identity_lineage_capabilities_and_persistence() {
     assert_eq!(session.lineage.parent_session_id, None);
     assert_eq!(session.lineage.origin, Origin::Root);
     assert_eq!(session.lineage.depth, 0);
-    assert_eq!(
-        agent.capabilities(),
-        Capabilities {
-            checkpoint: true,
-            fork: true,
-            fork_at: true,
-            side_conversation: true,
-            spawn: true,
-            steering: true,
-            identified_steering: true,
-            compaction: true,
-            developer_messages: true,
-            context: true,
-            model: Mutability::BeforeFirstPrompt,
-            thinking: Mutability::Anytime,
-            service_tier: Mutability::Anytime,
-        }
+    let capabilities: Capabilities = agent.capabilities();
+    assert!(
+        capabilities.checkpoint
+            && capabilities.resume
+            && capabilities.fork
+            && capabilities.fork_at
+            && capabilities.side_conversation
+            && capabilities.spawn
+            && capabilities.steering
+            && capabilities.identified_steering
+            && capabilities.compaction
+            && capabilities.developer_messages
+            && capabilities.context
+            && capabilities.ultrafast_service_tier,
+        "a local Codex session supports every lifecycle operation: {capabilities:?}"
     );
+    assert_eq!(capabilities.model, Mutability::BeforeFirstPrompt);
+    assert_eq!(capabilities.thinking, Mutability::Anytime);
+    assert_eq!(capabilities.service_tier, Mutability::Anytime);
     assert!(
         agent.persistence().is_none(),
         "no rollout or durable policy"
@@ -518,17 +519,20 @@ async fn portable_checkpoints_resume_and_fork_only_within_their_conversation() {
     );
     let (from_turn, from_turn_events) = agent.fork(ForkRequest::at_turn(&first)).await.unwrap();
 
-    // Resume starts a fresh root with the retained conversation.
+    // Resume reopens the same session (identity, lineage, model, thinking)
+    // in a fresh runtime with the retained conversation.
     let (resumed, resumed_events) = Nanocodex::builder(openai.clone())
         .tools(Tools::builder().without_defaults().build().unwrap())
         .resume(checkpoint.clone())
         .unwrap()
         .build()
         .unwrap();
-    assert_ne!(resumed.session_id(), agent.session_id());
-    assert_eq!(resumed.session().lineage.parent_session_id, None);
+    assert_eq!(resumed.session_id(), agent.session_id());
+    assert_eq!(resumed.session().lineage, agent.session().lineage);
     let resumed_checkpoint = resumed.checkpoint().await.unwrap();
     assert!(resumed_checkpoint.has_conversation());
+    assert_eq!(resumed_checkpoint.model(), checkpoint.model());
+    assert_eq!(resumed_checkpoint.thinking(), checkpoint.thinking());
     assert_eq!(
         resumed_checkpoint.conversation_id(),
         checkpoint.conversation_id()

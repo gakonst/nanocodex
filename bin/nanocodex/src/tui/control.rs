@@ -113,6 +113,8 @@ fn descriptor(agent: &Nanocodex) -> Conversation {
         Origin::Fork | Origin::Branch => ("fork", "branch"),
         Origin::SideConversation => ("fork", "side_conversation"),
         Origin::Subagent => ("spawn", "subagent"),
+        // Later provenance kinds are branches of the same conversation tree.
+        _ => ("fork", "branch"),
     };
     Conversation {
         session_id: session.session_id.clone(),

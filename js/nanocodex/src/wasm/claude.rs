@@ -470,8 +470,9 @@ pub(super) async fn build_claude(
     let mut builder = RustNanocodex::builder(Claude::new(client, config.model))
         .parallel_tools(config.parallel_tools)
         .parallel_safe_tools(config.parallel_safe_tools);
-    // Resuming starts a fresh root continuing the checkpoint's conversation;
-    // the configured identity and host policy below then apply to it.
+    // Resuming reopens the checkpointed session; an explicit, different
+    // session ID below makes it a new root continuing that conversation, and
+    // the configured host policy below then applies to it.
     if let Some(resume) = config.resume {
         builder = builder.resume(resume).map_err(js_agent_error)?;
     }
@@ -591,7 +592,7 @@ pub(super) async fn build_claude(
     builder = builder.host_context(host_context);
     if let Some(checkpoint) = checkpoint {
         builder = builder
-            .restore_runtime(checkpoint)
+            .resume(checkpoint)
             .map_err(js_agent_error)?;
     }
     builder.build().map_err(js_error)

@@ -163,7 +163,8 @@ mod native {
     /// One visible conversation entry, shared by every harness.
     pub use nanocodex_agent::session::TranscriptItem;
 
-    /// Maximum sessions returned by [`SessionStore::list`].
+    /// Maximum sessions returned by [`SessionStore::list`], most recently
+    /// updated first.
     pub const LIST_LIMIT: usize = 1000;
 
     /// A listed session.
@@ -227,8 +228,8 @@ mod native {
         /// # Errors
         ///
         /// Returns [`Error::InvalidState`] when the checkpoint cannot be
-        /// decoded, or for a Claude session until its backend exposes a
-        /// portable encoding of durable checkpoints.
+        /// decoded, or for a Claude session when this crate is built without
+        /// its `claude` feature.
         pub fn session_checkpoint(&self) -> Result<Option<nanocodex_agent::SessionCheckpoint>> {
             let Some(checkpoint) = &self.checkpoint else {
                 return Ok(None);
@@ -248,8 +249,17 @@ mod native {
                     .map(Some)
                     .map_err(|error| Error::InvalidState(error.to_string()))
                 }
+                #[cfg(feature = "claude")]
+                HarnessFamily::Claude => nanocodex_claude::session_checkpoint(
+                    &record.session_id,
+                    record.lineage.clone(),
+                    checkpoint.clone(),
+                )
+                .map(Some)
+                .map_err(|error| Error::InvalidState(error.to_string())),
+                #[cfg(not(feature = "claude"))]
                 HarnessFamily::Claude => Err(Error::InvalidState(
-                    "portable Claude checkpoints are produced by the Claude backend; resume durable Claude sessions through DurableAgentExt".into(),
+                    "portable Claude checkpoints require the claude feature of nanocodex-durability".into(),
                 )),
             }
         }
@@ -330,14 +340,21 @@ mod native {
         ///
         /// Returns a store error when the identities cannot be listed.
         pub async fn list(&self) -> Result<Vec<SessionSummary>> {
-            let ids = self.store.clone().list_states(LIST_LIMIT).await?;
+            // Every state is considered: a creation-order window would hide an
+            // old session that is still in use behind newer subagent journals
+            // and other non-session states. Only the result is bounded.
+            let ids = self.store.clone().list_states(usize::MAX).await?;
             let mut sessions = Vec::new();
             for id in ids {
+                if is_child_journal(&id) {
+                    continue;
+                }
                 if let Ok(Some(summary)) = self.summary(&id).await {
                     sessions.push(summary);
                 }
             }
             sessions.sort_by_key(|session| std::cmp::Reverse(session.record.updated_at_ms));
+            sessions.truncate(LIST_LIMIT);
             Ok(sessions)
         }
 
@@ -715,6 +732,11 @@ mod native {
         }
     }
 
+    /// Durable task trees stored beside their root session, never sessions.
+    fn is_child_journal(id: &str) -> bool {
+        id.ends_with(":subagents")
+    }
+
     fn is_claude(value: &Value) -> bool {
         value.get("provider").and_then(Value::as_str) == Some("claude")
     }
@@ -809,9 +831,27 @@ mod native {
                             });
                         }
                     }
-                    Some("tool_use") => items.push(TranscriptItem::Tool {
+                    // Visible thinking only; signatures and redacted thinking
+                    // stay model-bound, like Codex encrypted reasoning.
+                    Some("thinking") => {
+                        if let Some(text) =
+                            block["thinking"].as_str().filter(|text| !text.trim().is_empty())
+                        {
+                            items.push(TranscriptItem::Reasoning(text.into()));
+                        }
+                    }
+                    Some("tool_use" | "server_tool_use") => items.push(TranscriptItem::Tool {
                         call_id: block["id"].as_str().unwrap_or_default().into(),
                         name: block["name"].as_str().unwrap_or_default().into(),
+                        arguments: block["input"].to_string(),
+                    }),
+                    Some("mcp_tool_use") => items.push(TranscriptItem::Tool {
+                        call_id: block["id"].as_str().unwrap_or_default().into(),
+                        name: format!(
+                            "mcp__{}__{}",
+                            block["server_name"].as_str().unwrap_or_default(),
+                            block["name"].as_str().unwrap_or_default()
+                        ),
                         arguments: block["input"].to_string(),
                     }),
                     _ => {}

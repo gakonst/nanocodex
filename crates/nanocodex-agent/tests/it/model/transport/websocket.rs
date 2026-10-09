@@ -574,7 +574,7 @@ async fn queued_prompts_retain_tier_and_effort_captured_when_accepted() -> Resul
     // A legacy priority switch restores as the Fast tier.
     let legacy = SessionCheckpoint::from_json(&encoded.to_string())?;
     let (restored, restored_events) = Nanocodex::builder(OpenAi::new("test")?)
-        .restore_runtime(legacy)?
+        .resume(legacy)?
         .build()?;
     assert_eq!(restored.session_id(), agent.session_id());
     assert_eq!(
@@ -587,7 +587,7 @@ async fn queued_prompts_retain_tier_and_effort_captured_when_accepted() -> Resul
     let conflicting = SessionCheckpoint::from_json(&encoded.to_string())?;
     assert!(
         Nanocodex::builder(OpenAi::new("test")?)
-            .restore_runtime(conflicting)
+            .resume(conflicting)
             .is_err(),
         "conflicting tier fields must be rejected"
     );

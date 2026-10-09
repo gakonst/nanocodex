@@ -83,10 +83,18 @@ for (const harness of ["codex", "claude"]) {
     assert.notEqual(capabilities.serviceTier, "fixed");
     await root.session.setServiceTier("standard");
     await assert.rejects(root.session.setServiceTier("turbo"), /service tier must be/);
-    await root.session.setServiceTier("ultrafast").then(
-      () => root.session.setServiceTier("standard"),
-      (error) => assert.equal(error.code, "unsupported_capability"),
-    );
+    assert.equal(capabilities.resume, true);
+    // Ultrafast acceptance matches the advertised capability exactly.
+    if (capabilities.ultrafastServiceTier) {
+      await root.session.setServiceTier("ultrafast");
+      await root.session.setServiceTier("standard");
+    } else {
+      await assert.rejects(root.session.setServiceTier("ultrafast"), (error) => {
+        assert.equal(error.code, "unsupported_capability");
+        assert.equal(error.capability, "ultrafast_service_tier");
+        return true;
+      });
+    }
 
     const first = await root.turn.prompt({ input: "remember cobalt" }).result();
     assert.equal(first.finalMessage, "REPLY_1");

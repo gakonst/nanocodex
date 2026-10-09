@@ -4024,7 +4024,7 @@ async fn model_recovery_uses_current_conversation_across_runtime_changes() -> Re
 }
 
 #[tokio::test]
-async fn durable_parent_keeps_children_and_grandchildren_ephemeral() -> Result<()> {
+async fn durable_parent_without_catalog_rejects_unsaved_subagents() -> Result<()> {
     let store = MemoryStore::new()?;
     let acquisitions = Arc::new(std::sync::Mutex::new(Vec::new()));
     let state = DurableSession::open(
@@ -4075,73 +4075,26 @@ async fn durable_parent_keeps_children_and_grandchildren_ephemeral() -> Result<(
         1,
         "parent receipts must still replay"
     );
-    let (child, child_events) = parent.spawn().await?;
-    let (grandchild, grandchild_events) = child.spawn().await?;
-    for agent in [&child, &grandchild] {
-        assert!(
-            agent.persistence().is_none(),
-            "spawned children must not create resumable state"
-        );
-        assert!(matches!(
-            agent
-                .prompt(PromptRequest::new("identified").request_id("child-turn"))
-                .await,
-            Err(NanocodexError::ExecutionPolicyNotConfigured)
-        ));
-        for _ in 0..2 {
-            assert_eq!(
-                agent
-                    .prompt("child work")
-                    .await?
-                    .result()
-                    .await?
-                    .final_message(),
-                "durably replayed"
-            );
-        }
-    }
-    assert_eq!(
-        generations.load(Ordering::SeqCst),
-        5,
-        "each ephemeral prompt must execute normally"
-    );
+    // Without a session catalog the parent has nowhere to record a child, so a
+    // spawn must fail explicitly instead of creating an unsaved subagent.
+    assert!(matches!(
+        parent.spawn().await,
+        Err(NanocodexError::ExecutionPolicyBranchUnsupported { operation: "spawn" })
+    ));
     assert_eq!(
         *acquisitions.lock().unwrap(),
         ["ephemeral-parent", "ephemeral-parent"],
-        "descendants must never acquire a durable owner"
+        "a rejected spawn never acquires a durable owner"
     );
-    assert!(state.agent_snapshot().await?.is_some());
-    assert!(matches!(
-        state
-            .state()
-            .await?
-            .operation("parent-turn")
-            .unwrap()
-            .status,
-        OperationStatus::Completed { .. }
-    ));
-    for agent in [&grandchild, &child] {
-        agent.shutdown().await?;
-    }
+    parent
+        .prompt(PromptRequest::new("parent work").request_id("parent-turn"))
+        .await?
+        .result()
+        .await?;
+    assert_eq!(generations.load(Ordering::SeqCst), 1, "the parent stays usable");
     parent.shutdown().await?;
-    assert_eq!(
-        rollout.list_sessions()?.len(),
-        1,
-        "only the parent has a disk session"
-    );
-    for id in [child.session_id(), grandchild.session_id()] {
-        let empty = DurableSession::open(store.clone(), id).await?;
-        assert!(empty.agent_snapshot().await?.is_none());
-        assert!(empty.state().await?.operations().is_empty());
-    }
-    drop((
-        grandchild,
-        grandchild_events,
-        child,
-        child_events,
-        parent,
-        parent_events,
-    ));
+    assert_eq!(rollout.list_sessions()?.len(), 1, "only the parent has a disk session");
+    drop((parent, parent_events));
     std::fs::remove_dir_all(workspace)?;
     Ok(())
 }
@@ -4476,61 +4429,6 @@ async fn exhausted_compaction_receipt_replays_after_terminal_write_failure_and_c
 #[tokio::test]
 async fn compaction_misalignment_receipt_stops_session_after_cold_reopen() -> Result<()> {
     assert_exhausted_compaction_cold_reopen(true, true).await
-}
-
-#[tokio::test]
-async fn in_memory_child_rehydration_does_not_reattach_parent_durability() -> Result<()> {
-    let acquisitions = Arc::new(std::sync::Mutex::new(Vec::new()));
-    let state = DurableSession::open(
-        CountingAcquires {
-            inner: MemoryStore::new()?,
-            acquisitions: Arc::clone(&acquisitions),
-        },
-        "ephemeral-rehydrate-parent",
-    )
-    .await?;
-    let generations = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let openai = OpenAi::builder("test-key")
-        .service({
-            let generations = Arc::clone(&generations);
-            move || DurableReplayService {
-                generations: Arc::clone(&generations),
-            }
-        })
-        .build()?;
-    let workspace = temporary_workspace("ephemeral-rehydrate")?;
-    let (parent, _events) = Nanocodex::builder(openai.clone())
-        .workspace(&workspace)
-        .durability(state)
-        .await?
-        .build()?;
-    let (child, _events) = parent.spawn().await?;
-    child.prompt("retained in memory").await?.result().await?;
-    let checkpoint = child.checkpoint().await?;
-    let expected = checkpoint.clone();
-    child.shutdown().await?;
-    let (restored, _events) = Nanocodex::builder(openai)
-        .workspace(&workspace)
-        .restore_runtime(checkpoint)?
-        .build()?;
-    let actual = restored.checkpoint().await?;
-    assert_eq!(restored.session_id(), expected.session_id());
-    assert_eq!(actual.lineage(), expected.lineage());
-    assert_eq!(actual.model(), expected.model());
-    assert_eq!(
-        actual.payload()["conversation"]["history"],
-        expected.payload()["conversation"]["history"]
-    );
-    restored.prompt("continue").await?.result().await?;
-    assert_eq!(generations.load(Ordering::SeqCst), 2);
-    assert_eq!(
-        *acquisitions.lock().unwrap(),
-        ["ephemeral-rehydrate-parent", "ephemeral-rehydrate-parent"]
-    );
-    restored.shutdown().await?;
-    parent.shutdown().await?;
-    std::fs::remove_dir_all(workspace)?;
-    Ok(())
 }
 
 #[derive(Clone)]

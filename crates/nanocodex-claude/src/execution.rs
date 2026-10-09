@@ -109,12 +109,15 @@ pub trait ClaudeExecutionPolicy: Send + Sync {
     fn release(&self, id: String) -> PolicyFuture<'_, ()>;
     fn shutdown(&self) -> PolicyFuture<'_, ()>;
     fn checkpoint(&self, state: Value) -> PolicyFuture<'_, ()>;
-    /// Opens independent durable state for a fork or side conversation of this
-    /// session before it starts, so the child is resumable on its own.
+    /// Opens independent durable state for a fork, side conversation or
+    /// subagent of this session before it starts (or reopens it for a restored
+    /// subagent), so the child is resumable on its own.
     ///
-    /// The returned policy's `state_id` must equal `child.session_id`; the
-    /// child's inherited transcript is committed as its first checkpoint.
-    /// `None` (the default) keeps the child ephemeral.
+    /// The returned policy's `state_id` must equal `child.session_id`; a
+    /// fork's inherited transcript is committed as its first checkpoint.
+    /// `None` (the default) means the policy cannot persist children; the
+    /// spawn or fork then fails with `NanocodexError::ExecutionPolicyBranchUnsupported`,
+    /// exactly as for Codex, instead of silently creating an ephemeral child.
     fn branch(&self, _child: &SessionInfo) -> Result<Option<Arc<dyn ClaudeExecutionPolicy>>> {
         Ok(None)
     }

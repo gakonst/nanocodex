@@ -99,15 +99,26 @@ export function prompt(agent, options) {
   return createTurn(raw, agent);
 }
 
-/** Internal live-input seam: atomically steers the active turn or starts one. */
+/**
+ * Internal host seam: atomically steers the active turn or starts one, for
+ * live frontends (realtime voice) that cannot race steer() against prompt().
+ * A started turn passes through the runtime's turn owner, if registered.
+ */
 export async function routePrompt(agent, options) {
   const state = agentState(agent);
   const input = actionInput(options);
-  if (typeof input !== "string") {
-    throw new TypeError("live routed input must be text");
+  if (typeof input !== "string" || !input.trim()) {
+    throw new TypeError("live routed input must be non-empty text");
   }
   const raw = await state.raw.routePrompt(input);
-  return raw === undefined ? undefined : createTurn(raw, agent);
+  if (raw === undefined) return undefined;
+  const turn = createTurn(raw, agent);
+  return state.ownRoutedTurn ? state.ownRoutedTurn(turn) : turn;
+}
+
+/** Internal runtime seam: lets a harness runtime own turns started by routePrompt. */
+export function ownRoutedTurns(agent, own) {
+  agentState(agent).ownRoutedTurn = own;
 }
 
 /** Internal host lifecycle identity; accepted() retains its public durable-only contract. */

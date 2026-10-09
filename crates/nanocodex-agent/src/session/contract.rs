@@ -12,6 +12,7 @@ use crate::{HarnessFamily, HarnessModel, NanocodexError, Result, Thinking, TurnR
 
 /// Stable identity and provenance of one session.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct SessionInfo {
     /// Stable session identity used by events, persistence, and resume.
     pub session_id: String,
@@ -21,8 +22,21 @@ pub struct SessionInfo {
     pub lineage: Lineage,
 }
 
+impl SessionInfo {
+    /// Identity of a session of the given family and provenance.
+    #[must_use]
+    pub fn new(session_id: impl Into<String>, family: HarnessFamily, lineage: Lineage) -> Self {
+        Self {
+            session_id: session_id.into(),
+            family,
+            lineage,
+        }
+    }
+}
+
 /// How a session relates to the conversation tree it belongs to.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct Lineage {
     /// Root session of this conversation tree; equal to the session for a root.
     pub root_session_id: String,
@@ -46,6 +60,22 @@ impl Lineage {
         }
     }
 
+    /// Lineage with explicit fields, such as one decoded from a store.
+    #[must_use]
+    pub fn new(
+        root_session_id: impl Into<String>,
+        parent_session_id: Option<String>,
+        origin: Origin,
+        depth: u32,
+    ) -> Self {
+        Self {
+            root_session_id: root_session_id.into(),
+            parent_session_id,
+            origin,
+            depth,
+        }
+    }
+
     /// Lineage of a session derived from `parent` with the given origin.
     #[must_use]
     pub fn child_of(parent: &Self, parent_session_id: impl Into<String>, origin: Origin) -> Self {
@@ -61,12 +91,15 @@ impl Lineage {
 /// How a session was created.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum Origin {
     /// A session started directly by a host.
     Root,
     /// A conversation copy that continues independently.
     Fork,
-    /// An ephemeral side exploration such as `/btw`.
+    /// A side exploration such as `/btw` that records its parent. Like every
+    /// other child of a durable root it is durable, listable, readable and
+    /// resumable; hosts may group it under its parent but must not hide it.
     SideConversation,
     /// A clean child started by a parent agent.
     Subagent,
@@ -431,7 +464,8 @@ impl ForkRequest {
         }
     }
 
-    /// Marks the child as an ephemeral side conversation.
+    /// Records the child as a side conversation ([`Origin::SideConversation`]).
+    /// It is persisted exactly like any other fork of its parent.
     #[must_use]
     pub const fn side_conversation(mut self) -> Self {
         self.origin = Origin::SideConversation;
@@ -477,13 +511,42 @@ pub enum Mutability {
     Anytime,
 }
 
-/// Lifecycle operations a backend supports, so hosts can gate commands up front.
+/// Lifecycle operations a session supports, so hosts can gate commands up front.
 ///
-/// Unsupported operations fail with [`NanocodexError::UnsupportedCapability`].
+/// Each flag is named after the `capability` reported by
+/// [`NanocodexError::UnsupportedCapability`] when the operation is refused, so
+/// a host can map a refusal back to the flag it should have checked. The set
+/// is non-exhaustive: new operations arrive as new fields that are `false`
+/// for backends that do not support them. Backends start from
+/// [`Capabilities::NONE`] and enable what they implement.
+///
+/// Where a session is stored is reported separately by
+/// [`crate::Nanocodex::persistence`]. Durable history branches and rewinds
+/// are catalog operations (`nanocodex_durability::SessionStore::branch`),
+/// available for every session whose [`Persistence::durable_state_id`] is
+/// set, whatever its family.
+///
+/// # Examples
+///
+/// ```
+/// use nanocodex_agent::{Capabilities, Mutability};
+///
+/// let mut capabilities = Capabilities::NONE;
+/// capabilities.fork = true;
+/// capabilities.thinking = Mutability::Anytime;
+/// assert!(capabilities.fork && !capabilities.fork_at);
+/// assert!(!capabilities.ultrafast_service_tier);
+/// ```
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
+#[allow(clippy::struct_excessive_bools)]
 pub struct Capabilities {
     /// [`crate::Nanocodex::checkpoint`] and [`TurnResult::checkpoint`].
     pub checkpoint: bool,
+    /// Checkpoints of this session can be resumed in a new runtime, keeping
+    /// the session's identity (`nanocodex::Harness::resume` or the family
+    /// builder's `resume`).
+    pub resume: bool,
     /// Forking from the latest boundary.
     pub fork: bool,
     /// Forking from a completed turn or a portable checkpoint.
@@ -506,16 +569,43 @@ pub struct Capabilities {
     pub model: Mutability,
     /// When reasoning effort may change.
     pub thinking: Mutability,
-    /// When the processing tier may change.
+    /// When the processing tier may change between Standard and Priority.
     pub service_tier: Mutability,
+    /// Whether [`crate::ServiceTier::Ultrafast`] is accepted, subject to
+    /// [`Self::service_tier`].
+    pub ultrafast_service_tier: bool,
+}
+
+impl Capabilities {
+    /// A session that supports none of the optional lifecycle operations.
+    pub const NONE: Self = Self {
+        checkpoint: false,
+        resume: false,
+        fork: false,
+        fork_at: false,
+        side_conversation: false,
+        spawn: false,
+        steering: false,
+        identified_steering: false,
+        compaction: false,
+        developer_messages: false,
+        context: false,
+        model: Mutability::Fixed,
+        thinking: Mutability::Fixed,
+        service_tier: Mutability::Fixed,
+        ultrafast_service_tier: false,
+    };
 }
 
 /// Where and how a session is persisted.
 #[derive(Clone, Debug, Default)]
 #[non_exhaustive]
 pub struct Persistence {
-    /// Durable store state that is the session's source of truth, when any.
+    /// Local durable store state that is the session's source of truth, when any.
     pub durable_state_id: Option<String>,
+    /// Server-side session that durably owns the conversation, for sessions
+    /// hosted by a managed control plane.
+    pub server_session_id: Option<String>,
     /// Codex-compatible JSONL rollout mirror, when recording.
     #[cfg(all(feature = "rollout", not(target_family = "wasm")))]
     pub rollout: Option<crate::rollout::RolloutInfo>,
@@ -527,6 +617,15 @@ impl Persistence {
     pub fn durable(state_id: impl Into<String>) -> Self {
         Self {
             durable_state_id: Some(state_id.into()),
+            ..Self::default()
+        }
+    }
+
+    /// A session whose conversation is owned by a server-side session.
+    #[must_use]
+    pub fn server(session_id: impl Into<String>) -> Self {
+        Self {
+            server_session_id: Some(session_id.into()),
             ..Self::default()
         }
     }
@@ -553,6 +652,6 @@ impl Persistence {
         if self.rollout.is_some() {
             return true;
         }
-        self.durable_state_id.is_some()
+        self.durable_state_id.is_some() || self.server_session_id.is_some()
     }
 }

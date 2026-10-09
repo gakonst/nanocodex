@@ -339,6 +339,7 @@ pub(super) fn handle_idle_command<S>(
     defaults: TurnDefaults,
     session_id: &str,
     workspace: Option<Arc<str>>,
+    execution: &Execution,
 ) where
     S: Service<ResponsesAttempt, Response = ResponsesServiceResponse> + AgentSend + 'static,
     S::Error: Into<ResponseError> + AgentSend + 'static,
@@ -415,6 +416,7 @@ pub(super) fn handle_idle_command<S>(
                             workspace,
                             session_id,
                             host_context,
+                            execution,
                         );
                     }
                     spawner.spawn_clean(
@@ -425,6 +427,7 @@ pub(super) fn handle_idle_command<S>(
                         defaults.service_tier,
                         options.stateless_http,
                         host_context.or_else(|| spawner.host_context.as_ref().map(Arc::clone)),
+                        execution,
                     )
                 });
             drop(result.send(outcome));
@@ -442,6 +445,7 @@ pub(super) fn handle_idle_command<S>(
                 count,
                 observer.as_deref(),
                 host_context,
+                execution,
             );
             drop(result.send(outcome));
         }

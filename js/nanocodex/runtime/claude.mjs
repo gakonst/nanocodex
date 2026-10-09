@@ -1,7 +1,7 @@
 import {
   CLOUDFLARE_SESSION_RESERVATION, activateCloudflareAgentSession, activateHost, bindHostSession, createAgentClient, createEventChannel, createSessionId,
   defineRuntime, loadDurabilityRuntime, registerDefinitionHost, releaseDefinitionHost,
-  releaseHostSession, prompt, routePrompt, compact, shutdown, getTurnHostId,
+  releaseHostSession, prompt, ownRoutedTurns, compact, shutdown, getTurnHostId,
 } from '../internal.mjs';
 import { agentActions } from '../actions/index.mjs';
 import { prepareHarnesses } from './harnesses.mjs';
@@ -214,6 +214,8 @@ export async function createClaude(options, load, type, harnessDefaults) {
           },
         });
       };
+      // Turns started by the internal live-input route own host routes too.
+      ownRoutedTurns(agent, own);
       // The shared Agent actions; Claude only adds host-route ownership of turns.
       return agent.extend(agentActions()).extend(() => ({
         session: { compact: () => track(compact(agent)), cancel: () => { host.cancelCodeTurn(raw.sessionId); return raw.cancel(); }, shutdown: () => shutdown(agent) },
@@ -224,13 +226,6 @@ export async function createClaude(options, load, type, harnessDefaults) {
               throw new TypeError('Claude prompt requires non-empty text or content');
             }
             return own(prompt(agent, options));
-          },
-          // Live frontends (realtime voice) steer the active turn or start one.
-          // Steered input joins a turn that already owns its host routes.
-          route: async (options) => {
-            if (typeof options?.input !== 'string' || !options.input.trim()) throw new TypeError('Claude live input requires non-empty text');
-            const turn = await routePrompt(agent, options);
-            return turn === undefined ? undefined : own(turn);
           },
         },
       }));

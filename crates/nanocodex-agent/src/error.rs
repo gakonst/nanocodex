@@ -189,8 +189,8 @@ pub enum NanocodexError {
         capability: &'static str,
     },
 
-    /// A context-inheriting branch was requested from an execution-policy-owned session.
-    #[cfg(feature = "openai")]
+    /// A context-inheriting branch was requested from an execution-policy-owned
+    /// session whose policy cannot persist the branch. Shared by every family.
     #[error(
         "cannot {operation} from an agent with an attached execution policy; build the branch with its own execution policy"
     )]

@@ -112,12 +112,17 @@ pub(super) fn register_codex_recipe(
                 .workspaces
                 .authorize_cross_family(request.parent.as_ref())
                 .map_err(invalid)?;
-            let session_id = match &request.checkpoint {
-                Some(checkpoint) => checkpoint
+            // Reopened sessions keep their checkpointed or durable identity.
+            let session_id = match (&request.checkpoint, &request.durable_state) {
+                (Some(checkpoint), _) => checkpoint
                     .session_id()
                     .parse::<SessionId>()
                     .map_err(|error| invalid(error.to_string()))?,
-                None => SessionId::new(),
+                (None, Some(state)) => state
+                    .state_id()
+                    .parse::<SessionId>()
+                    .map_err(|error| invalid(error.to_string()))?,
+                (None, None) => SessionId::new(),
             };
             let session_key = session_id.to_string();
             if let Some(parent) = &request.parent {
@@ -139,7 +144,10 @@ pub(super) fn register_codex_recipe(
                 .host_context(request.host_context)
                 .spawn_factory(request.spawn_factory);
             if let Some(checkpoint) = request.checkpoint {
-                builder = builder.restore_runtime(checkpoint)?;
+                builder = builder.resume(checkpoint)?;
+            }
+            if let Some(state) = request.durable_state {
+                builder = nanocodex::DurableAgentExt::durability(builder, state).await?;
             }
             builder.build()
         }

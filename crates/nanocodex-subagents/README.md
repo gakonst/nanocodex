@@ -12,12 +12,17 @@ depend on orchestration policy:
 - `interrupt_agent`
 - `close_agent`
 
-Subagents are ephemeral and exist only within the running parent runtime. Completed
-or interrupted children can receive more work while that runtime remains alive.
-Idle child drivers may be evicted and rehydrated from in-memory snapshots to
-limit resident resources; those snapshots are never persisted. Restarting the
-parent runtime drops the task tree, child history, messages, and results. A fresh
-registry starts empty. Historical agent IDs do not identify recovered children;
+Each subagent of a durable session is itself durable, exactly like a fork: it
+records its own catalog session (listed with lineage origin `subagent` and its
+parent's session ID), its own Codex-format rollout and its own resumable state,
+so it can be read and resumed by session ID. A durable parent that cannot record
+children rejects the spawn instead of starting an unsaved child, and a batch
+spawn starts every requested child or none. Children of an ephemeral parent are
+ephemeral. Completed or interrupted children can receive more work while the
+parent runtime remains alive. Idle child drivers may be evicted and rehydrated
+under the same session ID to limit resident resources. For an ephemeral parent,
+restarting the runtime drops the task tree, child history, messages, and
+results, and a fresh registry starts empty. Historical agent IDs do not identify recovered children;
 use `list_agents` to discover the current live registry before addressing agents.
 
 `send_agent_message` keeps message intent (`purpose`) separate from thread
