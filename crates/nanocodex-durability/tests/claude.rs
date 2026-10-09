@@ -3200,9 +3200,9 @@ async fn native_claude_journal_adoption_directory_evidence() {
         })
         .await
         .unwrap();
-        let captured = requests.lock().unwrap();
+        let last_request = requests.lock().unwrap().last().unwrap().clone();
         let result = |id: &str| -> Value {
-            for message in captured.last().unwrap()["messages"].as_array().unwrap() {
+            for message in last_request["messages"].as_array().unwrap() {
                 for block in message["content"].as_array().unwrap() {
                     if block["type"] == "tool_result" && block["tool_use_id"] == id {
                         let content = &block["content"];
@@ -3246,23 +3246,17 @@ async fn native_claude_journal_adoption_directory_evidence() {
             }
             assert_eq!(default["error"], all["error"]);
             assert_eq!(default["error"], mutation["error"]);
-            let direct = registry
-                .directory(root, true, false)
-                .await
-                .err()
-                .expect("restoration must fail");
+            let Err(direct) = registry.directory(root, true, false).await else {
+                panic!("restoration must fail");
+            };
             assert!(direct.to_string().contains(expected));
-            let close = registry
-                .close(root, "1".parse().unwrap())
-                .await
-                .err()
-                .expect("restoration must fail");
+            let Err(close) = registry.close(root, "1".parse().unwrap()).await else {
+                panic!("restoration must fail");
+            };
             assert_eq!(direct.to_string(), close.to_string());
-            let close_all = control
-                .close_all(root)
-                .await
-                .err()
-                .expect("restoration must fail");
+            let Err(close_all) = control.close_all(root).await else {
+                panic!("restoration must fail");
+            };
             assert_eq!(direct.to_string(), close_all.to_string());
             control.cancel_all(root).await;
             eprintln!(
@@ -3287,7 +3281,6 @@ async fn native_claude_journal_adoption_directory_evidence() {
                 assert_eq!(default["agents"][0]["status"]["state"], "interrupted");
             }
         }
-        drop(captured);
         if matches!(
             case,
             "invalid-json"

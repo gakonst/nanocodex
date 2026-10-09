@@ -861,7 +861,9 @@ pub(crate) async fn restart_hand_with_executable(path: &Path) -> Result<()> {
         bail!("No installed Hand owner; run nanocodex hand install first");
     }
     if crate::hand_service::is_pending().await? {
-        bail!("Hand enrollment is pending; connect the existing owner before restarting a development executable");
+        bail!(
+            "Hand enrollment is pending; connect the existing owner before restarting a development executable"
+        );
     }
     let mut service = crate::hand_service::prepare_update(path, true)
         .await?

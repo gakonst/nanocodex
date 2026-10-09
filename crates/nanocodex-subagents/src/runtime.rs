@@ -94,6 +94,9 @@ pub(super) enum SubmissionOutcome {
     Superseded,
 }
 
+/// A root's journal restoration outcome; `None` while restoration is pending.
+type RestorationGate = tokio::sync::watch::Receiver<Option<Result<(), String>>>;
+
 pub struct Registry {
     session_handles: std::sync::RwLock<HashMap<String, AgentHandle>>,
     spawn_router: std::sync::RwLock<Option<Arc<dyn crate::SpawnRouter>>>,
@@ -109,8 +112,7 @@ pub struct Registry {
     /// Per-root journals adopted from durable root handles.
     journals: std::sync::RwLock<HashMap<String, Arc<dyn SubagentStore>>>,
     /// Per-root restoration outcome. Pending and failed roots must never be saved.
-    restored:
-        std::sync::Mutex<HashMap<String, tokio::sync::watch::Receiver<Option<Result<(), String>>>>>,
+    restored: std::sync::Mutex<HashMap<String, RestorationGate>>,
     journal_writer: std::sync::atomic::AtomicBool,
     checkpoints: std::sync::Mutex<HashMap<(String, AgentId), ChildSnapshot>>,
     /// In-flight mid-turn checkpoint captures; `true` requests one more pass.
@@ -3315,7 +3317,12 @@ mod tests {
         registry.capture_progress("root", id);
         registry.capture_progress("root", id);
         timeout(Duration::from_secs(5), async {
-            while !has_checkpoint() || registry.progress_captures.lock().unwrap().contains_key(&key)
+            while !has_checkpoint()
+                || registry
+                    .progress_captures
+                    .lock()
+                    .unwrap()
+                    .contains_key(&key)
             {
                 tokio::time::sleep(Duration::from_millis(5)).await;
             }
@@ -3331,7 +3338,12 @@ mod tests {
         registry.checkpoints.lock().unwrap().remove(&key);
         registry.capture_progress("root", id);
         timeout(Duration::from_secs(5), async {
-            while registry.progress_captures.lock().unwrap().contains_key(&key) {
+            while registry
+                .progress_captures
+                .lock()
+                .unwrap()
+                .contains_key(&key)
+            {
                 tokio::time::sleep(Duration::from_millis(5)).await;
             }
         })

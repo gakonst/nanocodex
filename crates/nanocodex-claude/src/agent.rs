@@ -4375,8 +4375,8 @@ impl LifecycleBackend for Driver {
                         if state.stopped.load(Ordering::SeqCst) {
                             return Err(NanocodexError::AgentStopped);
                         }
-                        let has_conversation = !conversation.messages.is_empty()
-                            || !conversation.summary.is_empty();
+                        let has_conversation =
+                            !conversation.messages.is_empty() || !conversation.summary.is_empty();
                         (state.snapshot(&conversation).await?, has_conversation)
                     }
                 }
