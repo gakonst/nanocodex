@@ -4536,7 +4536,13 @@ async fn apply_feature_update(
             let _ = local;
             // The current launch stays until the rebuilt agent connects (adopt).
             if let Err(error) = runtime.local_switch(ConnectionPurpose::Startup, *launch) {
-                request_render(app.update(AppEvent::NotifyError { pane: PaneId::Main, error }), scheduler);
+                request_render(
+                    app.update(AppEvent::NotifyError {
+                        pane: PaneId::Main,
+                        error,
+                    }),
+                    scheduler,
+                );
             }
             scheduler.request_immediate(Instant::now());
             return Ok(false);
