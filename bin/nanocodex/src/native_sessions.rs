@@ -470,6 +470,15 @@ fn transcript(checkpoint: &Value, prompts: &[AdmittedPrompt]) -> Vec<RolloutTran
                     },
                 ));
             }
+            // User content sharing the receipt message has unknown provenance.
+            let content = blocks(message)
+                .filter(|block| block["type"] != "tool_result")
+                .cloned()
+                .collect::<Vec<_>>();
+            if !content.is_empty() {
+                let shared = serde_json::json!({ "content": content });
+                user_rows(&[&shared], &notices, &mut items);
+            }
             index += 1;
             continue;
         }

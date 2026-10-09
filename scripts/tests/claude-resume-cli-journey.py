@@ -92,6 +92,40 @@ def main():
     steps["paste"] = [("exec", {"code": nested_code}),
                       ("exec", {"code": 'throw new Error("intentional-failure-marker");'})]
     png = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==")
+    legacy_prompt = "Continue the current task from the interrupted response. legacy-prefix-marker"
+
+    def user_texts(messages):
+        texts = []
+        for index, message in enumerate(messages):
+            content = message["content"]
+            if message["role"] == "user":
+                texts.append((index, content if isinstance(content, str) else
+                              "".join(b.get("text", "") for b in content if b.get("type") == "text")))
+        return texts
+
+    def steer_block(request, stage):
+        """Repeated prompts, a steer typed while a cell runs, and legacy text."""
+        messages = request["messages"]
+        if stage == 0:
+            require(user_texts(messages)[-1][1] == "repeat-marker-prompt", "first repeated prompt missing")
+            code = 'const r = await tools.exec_command({cmd: "sleep 4; printf slept-marker"}); text(JSON.stringify(r));'
+            return {"type": "tool_use", "id": "steer_0", "name": "exec", "input": {"code": code}}
+        if stage == 1:
+            receipt_at = next(i for i, m in enumerate(messages) if isinstance(m["content"], list)
+                              and any(b.get("tool_use_id") == "steer_0" for b in m["content"]))
+            steer_at = [i for i, text in user_texts(messages) if "steer-marker-text" in text]
+            require(len(steer_at) == 1 and steer_at[0] >= receipt_at, f"steer not delivered once after the receipt: {steer_at}")
+            checks.append("steer: typed while the cell ran, delivered once after its receipt")
+            return {"type": "text", "text": "steer-first-complete"}
+        if stage == 2:
+            repeated = [i for i, text in user_texts(messages) if text == "repeat-marker-prompt"]
+            require(len(repeated) == 2, f"repeated prompt not admitted twice: {repeated}")
+            return {"type": "text", "text": "steer-repeat-complete"}
+        if stage == 3:
+            require(user_texts(messages)[-1][1] == legacy_prompt, "legacy-prefixed user prompt altered")
+            return {"type": "text", "text": "steer-legacy-complete"}
+        raise AssertionError("unexpected steer provider retry")
+
     progress = Path("output/claude-resume-progress.md")
 
     def milestone(message):
@@ -138,13 +172,13 @@ def main():
                     else:
                         require(failed and "intentional-failure-marker" in output, f"throwing cell not failed: {receipts[0]}")
                     checks.append(f"paste: actual {'failed' if failed else 'completed'} receipt for {call_id}")
-                elif name != "initial" and stage == 0:
+                elif name not in ("initial", "steer") and stage == 0:
                     for marker in ("original-resume-prompt", "initial-resume-complete", "committed-shell-once"):
                         require(marker in history, f"{name} lost prior transcript marker {marker}")
                     if name == "picker":
                         require("explicit-resume-complete" in history, "picker lost explicit resume transcript")
                     checks.append(name + ": prior transcript and saved model restored")
-                if stage:
+                if stage and name not in ("paste", "steer"):
                     call_id = f"{name}_{stage - 1}"
                     receipts = [b for m in request["messages"] for b in m.get("content", [])
                                 if isinstance(b, dict) and b.get("type") == "tool_result" and b.get("tool_use_id") == call_id]
@@ -167,7 +201,9 @@ def main():
                     if prior_tool == "Read":
                         marker = "saved-workspace-visible" if name == "explicit" else "x"
                         require(marker in output, f"saved workspace Read failed: {output}")
-                if stage < len(steps[name]):
+                if name == "steer":
+                    block = steer_block(request, stage)
+                elif stage < len(steps[name]):
                     tool, arguments = steps[name][stage]
                     block = {"type": "tool_use", "id": f"{name}_{stage}", "name": tool, "input": arguments}
                 else:
@@ -301,7 +337,7 @@ def main():
             command = [str(ncl), "resume", session_id, *common]
             record(name, command, resume_env)
             shell = "env -i " + " ".join(shlex.quote(f"{k}={v}") for k, v in resume_env.items()) + " " + shlex.join(command)
-            tmux("new-session", "-d", "-x", "170", "-y", "60", "-s", session, "-c", str(launch), shell + "; echo EXITED $?",
+            tmux("new-session", "-d", "-x", "170", "-y", "80", "-s", session, "-c", str(launch), shell + "; echo EXITED $?",
                  ";", "set-option", "-t", session, "remain-on-exit", "on")
             return session, screen_until(name, session, wait_for)
 
@@ -337,8 +373,30 @@ def main():
         def prompt_row(screen):
             return re.search(r"before-image-marker\s+\[Image #1\]\s+after-image-marker", screen)
 
+        def submit(target, text):
+            tmux("send-keys", "-t", target, "-l", text)
+            tmux("send-keys", "-t", target, "Enter")
+
+        phase.update(name="steer", start=len(requests))
+        session, _ = tui("steer", lambda screen: "picker-resume-complete" in screen)
+        target = session + ":0.0"
+        submit(target, "repeat-marker-prompt")
+        deadline = time.monotonic() + 20
+        while len(requests) - phase["start"] < 1 and time.monotonic() < deadline:
+            time.sleep(0.2)
+        time.sleep(1.5)  # The cell's nested shell is now sleeping.
+        submit(target, "steer-marker-text")
+        screen_until("steer", session, lambda screen: "steer-first-complete" in screen)
+        submit(target, "repeat-marker-prompt")
+        screen_until("steer", session, lambda screen: "steer-repeat-complete" in screen)
+        submit(target, legacy_prompt)
+        steer_live = screen_until("steer", session, lambda screen: "steer-legacy-complete" in screen)
+        close("steer", session)
+        require(len(requests) - phase["start"] == 4, f"unexpected steer provider count {len(requests) - phase['start']}")
+        milestone("Process steer passed; repeated prompts, a mid-cell steer and legacy-prefixed text admitted.")
+
         phase.update(name="paste", start=len(requests))
-        session, _ = tui("paste", lambda screen: "paste-resume-complete" not in screen and "picker-resume-complete" in screen)
+        session, _ = tui("paste", lambda screen: "steer-legacy-complete" in screen)
         target = session + ":0.0"
         tmux("send-keys", "-t", target, "-l", "before-image-marker ")
         tmux("set-buffer", "-b", "a54-image", str(image_path))
@@ -374,9 +432,18 @@ def main():
         shells, live_shells = [r for r in rows if r[1] == "Shell"], [r for r in live_rows if r[1] == "Shell"]
         require(len(shells) == len(live_shells) and all(r[0] in (l[0], "?") for r, l in zip(shells, live_shells)),
                 f"replayed nested shells differ: {shells} vs {live_shells}")
-        for leaked in ("data:image", "base64", "Harness recovery notice", "Continue the current task",
-                       "Historical context", "Host Stop hook"):
+        for leaked in ("data:image", "base64", "Harness recovery notice", "Historical context"):
             require(leaked not in replay, f"replay shows internal or private text: {leaked}")
+        # User rows: each admitted prompt once, the steer once and in order, and
+        # user text that resembles an old harness instruction is kept.
+        for screen, label in ((steer_live, "live"), (replay, "replay")):
+            first = screen.find("repeat-marker-prompt")
+            require(screen.count("repeat-marker-prompt") == 2 and screen.count("steer-marker-text") == 1
+                    and first < screen.find("steer-marker-text") < screen.rfind("repeat-marker-prompt"),
+                    f"{label}: repeated prompts/steer rows wrong; see frames")
+            require(screen.count("legacy-prefix-marker") == 1
+                    and "Continue the current task from the interrupted response." in screen,
+                    f"{label}: legacy-prefixed user prompt missing")
         checks.append("replay: one image prompt row, actual completed/failed outcomes and 2 nested calls, no internal text")
         milestone("Process replay passed; resumed prompt, outcomes and nested counts match the live screen.")
         # Public error paths; no journal fabrication or private-state mutation.
