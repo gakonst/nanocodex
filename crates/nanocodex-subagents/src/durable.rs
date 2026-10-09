@@ -228,8 +228,9 @@ pub(super) struct JournalCheckpoint {
     pub(super) key: Arc<str>,
     /// Encoded record not yet acknowledged by a journal save.
     pub(super) pending: Option<Arc<str>>,
-    /// The boundary itself, also recorded as the child's own durable session.
-    pub(super) checkpoint: SessionCheckpoint,
+    /// The boundary itself, held only until it is recorded as the child's own
+    /// durable session; idle children then reload from the journal record.
+    pub(super) checkpoint: Option<SessionCheckpoint>,
 }
 
 impl JournalCheckpoint {
@@ -240,18 +241,32 @@ impl JournalCheckpoint {
         Ok(Self {
             key: checkpoint_key(&json).into(),
             pending: Some(json),
-            checkpoint: checkpoint.clone(),
+            checkpoint: Some(checkpoint.clone()),
         })
     }
 
     /// A boundary whose record a previous journal save already stored.
-    pub(super) fn stored(key: String, checkpoint: SessionCheckpoint) -> Self {
+    pub(super) fn stored(key: String, checkpoint: Option<SessionCheckpoint>) -> Self {
         Self {
             key: key.into(),
             pending: None,
             checkpoint,
         }
     }
+}
+
+/// Decodes a version-3 checkpoint record loaded on demand, verifying its identity.
+pub(super) fn decode_checkpoint(json: &str, key: &str) -> std::io::Result<SessionCheckpoint> {
+    if checkpoint_key(json) != key {
+        return Err(std::io::Error::other(format!(
+            "subagent checkpoint {key} does not match its record"
+        )));
+    }
+    let checkpoint: SessionCheckpoint = serde_json::from_str(json).map_err(|error| {
+        std::io::Error::other(format!("invalid subagent checkpoint {key}: {error}"))
+    })?;
+    checkpoint.validate().map_err(std::io::Error::other)?;
+    Ok(checkpoint)
 }
 
 /// Version-2 record of a per-family child snapshot; read, never written.
@@ -693,7 +708,7 @@ impl PersistedAgent {
             let checkpoint: SessionCheckpoint = serde_json::from_value(record).map_err(invalid)?;
             checkpoint.validate().map_err(std::io::Error::other)?;
             self.checkpoint = Some(JournaledCheckpoint::Current(checkpoint.clone()));
-            return Ok(Some(JournalCheckpoint::stored(key, checkpoint)));
+            return Ok(Some(JournalCheckpoint::stored(key, Some(checkpoint))));
         }
         let record: LegacyCheckpointRecord = serde_json::from_value(record).map_err(invalid)?;
         self.checkpoint = record.checkpoint.map(JournaledCheckpoint::LegacyCodex);
@@ -764,7 +779,10 @@ pub(super) fn restored_session(
     snapshot: Option<SessionCheckpoint>,
 ) -> std::io::Result<(ChildSession, bool, bool)> {
     let contract = OutputContract::compile(&agent.output_schema)?;
-    let recoverable = snapshot.is_some();
+    // A referenced record is loaded only when the child next runs, so a
+    // restored task tree does not decode every idle conversation at once.
+    let journaled = snapshot.is_none() && agent.checkpoint_ref.is_some();
+    let recoverable = snapshot.is_some() || journaled;
     let terminal = matches!(agent.status, AgentStatus::Closing | AgentStatus::Closed);
     let in_flight = !terminal
         && (agent.turn_in_flight
@@ -815,6 +833,7 @@ pub(super) fn restored_session(
         session.binding_task = task;
     }
     session.resume_attempts = resume_attempts;
+    session.journaled_runtime = journaled;
     // Retain until the turn settles: a second loss before then is still unknown.
     if in_flight {
         session.in_flight_calls = agent.in_flight_calls;

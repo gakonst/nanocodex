@@ -13919,10 +13919,13 @@ A direct subagent completed after the previous turn ended. Continue the current 
     // directory is authoritative, including reusable interrupted children.
     try {
       const { agents } = await Subagents.list(agent);
-      return agents.some(({ status }) => status.state === "pending"
-        || status.state === "running" || status.state === "closing"
-        // Default listing excludes interrupted children without recovery state.
-        || status.state === "interrupted");
+      // Interrupted children are resting: their conversations are journaled and
+      // they resume on a later message after reconstruction. Keeping the runtime
+      // resident for them would hold its WASM memory and a 60 s alarm forever.
+      // A restored child still awaiting its automatic resume is marked resuming.
+      return agents.some((child) => child.status.state === "pending"
+        || child.status.state === "running" || child.status.state === "closing"
+        || (child as { resuming?: boolean }).resuming === true);
     } catch {
       // A transient directory failure must not destroy work owned by this runtime.
       return this.#agent === agent;

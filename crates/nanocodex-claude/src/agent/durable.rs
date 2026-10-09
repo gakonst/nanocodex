@@ -154,6 +154,25 @@ impl Effect<'_> {
             )
             .await
     }
+    pub(super) async fn begin_encoded(
+        &self,
+        kind: &str,
+        input: Box<serde_json::value::RawValue>,
+    ) -> Result<Step> {
+        self.policy
+            .begin_step_encoded(
+                self.operation.to_owned(),
+                self.step.clone(),
+                if kind == "model" && self.model_call {
+                    "model_call"
+                } else {
+                    kind
+                }
+                .to_owned(),
+                input,
+            )
+            .await
+    }
     pub(super) async fn complete(&self, output: Value) -> Result<()> {
         self.policy
             .complete_step(self.operation.to_owned(), self.step.clone(), output)
@@ -287,7 +306,9 @@ impl State {
             {
                 return Err(recovery_error("invalid Claude execution continuation"));
             }
-            self.restore_snapshot(conversation, cursor.snapshot.clone())
+            // The live conversation now owns the restored boundary; the cursor
+            // copy is only rebuilt while it is being persisted.
+            self.restore_snapshot(conversation, std::mem::take(&mut cursor.snapshot))
                 .await
                 .map_err(recovery_error)?;
             return Ok(cursor);
@@ -380,16 +401,13 @@ impl State {
         }
         // Only a durable operation persists or replays its cursor. Without one,
         // another full conversation copy per round would only consume memory.
-        if self.persists(cursor) {
-            cursor.snapshot = self.snapshot(conversation).await?;
-        }
         if let (Some(policy), Some(operation)) = (&self.policy, &cursor.operation) {
-            policy
-                .advance(
-                    operation.clone(),
-                    serde_json::to_value(&*cursor).map_err(provider_error)?,
-                )
-                .await?;
+            // Encode straight to JSON text, then release the snapshot copy: the
+            // live conversation is authoritative between persisted boundaries.
+            cursor.snapshot = self.snapshot(conversation).await?;
+            let encoded = serde_json::value::to_raw_value(&*cursor).map_err(provider_error);
+            cursor.snapshot = Snapshot::default();
+            policy.advance_encoded(operation.clone(), encoded?).await?;
         }
         Ok(())
     }

@@ -25,7 +25,7 @@ function fixture() {
     const env=new URL('https://example.invalid/'+call.path).searchParams.get('environment');
     return records.filter(record=>record.environment===env).slice(0,1);
   };
-  return {ledger:createDeploymentLedger({repository:'fixture/repo',ref,account,request,live}),records,statuses,calls,liveCalls,liveState,request,live};
+  return {ledger:createDeploymentLedger({wait:async()=>{},repository:'fixture/repo',ref,account,request,live}),records,statuses,calls,liveCalls,liveState,request,live};
 }
 
 test('only latest successful deployment with matching live identity is reusable', async()=>{
@@ -66,7 +66,7 @@ test('manual deployment, old-version rollback, missing receipt and changed tag f
 
 test('account separation is required for stored and live receipts',async()=>{
   const f=fixture();const record=await f.ledger.start('managed',fingerprint);await f.ledger.finish(record,'success');
-  const other=createDeploymentLedger({repository:'fixture/repo',ref,account:'2'.repeat(32),request:f.request,live:f.live});
+  const other=createDeploymentLedger({wait:async()=>{},repository:'fixture/repo',ref,account:'2'.repeat(32),request:f.request,live:f.live});
   const count=f.liveCalls.length;
   assert.equal(await other.lastSuccessfulFingerprint('managed'),null);assert.equal(f.liveCalls.length,count);
   f.liveState.account='2'.repeat(32);assert.equal(await f.ledger.lastSuccessfulFingerprint('managed'),null);
@@ -83,7 +83,7 @@ test('success requires expected tag; unavailable provider state cannot skip or c
   assert.equal(f.statuses.get(record.id)[0].state,'in_progress');
   await f.ledger.finish(record,'failure');
   const g=fixture();const ready=await g.ledger.start('managed',fingerprint);await g.ledger.finish(ready,'success');
-  const unavailable=createDeploymentLedger({repository:'fixture/repo',ref,account,request:g.request,live:async()=>{throw Error('synthetic-private-token');}});
+  const unavailable=createDeploymentLedger({wait:async()=>{},repository:'fixture/repo',ref,account,request:g.request,live:async()=>{throw Error('synthetic-private-token');}});
   assert.equal(await unavailable.lastSuccessfulFingerprint('managed'),null);
   const pending=await unavailable.start('managed',fingerprint);
   await assert.rejects(unavailable.finish(pending,'success'),error=>!error.message.includes('private-token')&&!error.cause);
@@ -101,12 +101,12 @@ test('components track partial success independently; skipped commands cannot be
 });
 
 test('unknown state never skips; uncertain ledger writes are not retried',async()=>{
-  const ledger=createDeploymentLedger({repository:'fixture/repo',ref,account,request:async()=>{throw new Error('private token should not escape');}});
+  const ledger=createDeploymentLedger({wait:async()=>{},repository:'fixture/repo',ref,account,request:async()=>{throw new Error('private token should not escape');}});
   assert.equal(await ledger.lastSuccessfulFingerprint('managed'),null);
   await assert.rejects(ledger.start('managed',fingerprint),error=>!error.message.includes('private token'));
   assert.throws(()=>deploymentEnvironment('managed\n'),/Invalid/);
   const f=fixture();let attempted=0;
-  const uncertain=createDeploymentLedger({repository:'fixture/repo',ref,account,live:f.live,request:async call=>{
+  const uncertain=createDeploymentLedger({wait:async()=>{},repository:'fixture/repo',ref,account,live:f.live,request:async call=>{
     if(call.body?.state==='success'){attempted++;throw Error('uncertain write');}return f.request(call);
   }});
   const record=await uncertain.start('managed',fingerprint);
@@ -117,4 +117,38 @@ test('unknown state never skips; uncertain ledger writes are not retried',async(
 
 test('every released Worker has a live script, so the ledger can admit it', () => {
   assert.deepEqual(Object.keys(workerScripts).sort(), Object.keys(workerSpecs).sort());
+});
+
+test('success certification waits for an eventually consistent Cloudflare deployment listing',async()=>{
+  const f=fixture();
+  const waits=[];
+  let lagging=3;
+  const live=async(worker,options)=>{
+    if(lagging-->0)return {script:workerScripts[worker],...f.liveState,deploymentId:'55555555-5555-4555-8555-555555555555',tag:releaseTag('e'.repeat(64))};
+    return f.live(worker,options);
+  };
+  const ledger=createDeploymentLedger({repository:'fixture/repo',ref,account,request:f.request,live,wait:async ms=>{waits.push(ms);}});
+  const record=await ledger.start('managed',fingerprint);
+  await ledger.finish(record,'success');
+  assert.equal(f.statuses.get(record.id)[0].state,'success');
+  assert.equal(f.statuses.get(record.id)[0].description,`cf:v1:${deploymentId}:${versionId}`);
+  assert.equal(waits.length,3);
+  // A listing that never converges is still uncertain, after a bounded wait.
+  const never=createDeploymentLedger({repository:'fixture/repo',ref,account,request:f.request,wait:async()=>{},
+    live:async worker=>({script:workerScripts[worker],...f.liveState,tag:'manual'})});
+  const stale=await never.start('managed',fingerprint);
+  await assert.rejects(never.finish(stale,'success'),/uncertain/);
+});
+
+test('admission retries a failed GitHub request before any Cloudflare mutation',async()=>{
+  const f=fixture();
+  let failures=1;
+  const request=async call=>{
+    if(call.method==='POST'&&call.path.endsWith('/deployments')&&failures-->0)throw new Error('synthetic transient');
+    return f.request(call);
+  };
+  const ledger=createDeploymentLedger({repository:'fixture/repo',ref,account,request,live:f.live,wait:async()=>{}});
+  const record=await ledger.start('managed',fingerprint);
+  await ledger.finish(record,'success');
+  assert.equal(await ledger.lastSuccessfulFingerprint('managed'),fingerprint);
 });

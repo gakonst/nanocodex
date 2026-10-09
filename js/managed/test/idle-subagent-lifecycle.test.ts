@@ -159,28 +159,32 @@ it.each(["interrupted", "completed", "failed", "closed", "unrecoverable", "expli
           ? { state: "failed", error: expect.stringContaining("subagent recovery exhausted") } : status })]));
       expect((await realList(restored)).agents.map(a => a.agent_id))
         .toEqual(kind === "interrupted" ? [73] : []);
+      if (scenario === "explicit-shutdown") {
+        const headers = new Headers(); forwardPrincipalAssertions(headers, principal);
+        const changed = await f.instance.fetch(new Request("https://session.internal/settings", {
+          method: "PATCH", headers, body: JSON.stringify({ model: "gpt-6-luna" }),
+        }));
+        expect(changed.status).toBe(200);
+        await f.prepare();
+        expect(runtime).not.toBe(restored);
+        await expect(realList(restored, { includeCompleted: true })).rejects.toThrow("disposed");
+        return;
+      }
+      // A resting child (interrupted, completed, failed...) never pins the root:
+      // the idle alarm retires the runtime and installs no further wakeup.
       clock.mockReturnValue(Date.now() + 36_000);
       await f.instance.alarm();
-      expect(await f.snapshot()).toMatchObject({ agent_loaded: kind === "interrupted" });
+      expect(await f.snapshot()).toMatchObject({ agent_loaded: false });
+      expect(await f.state.storage.getAlarm()).toBeNull();
       if (kind === "interrupted") {
-        expect((await realList(restored)).agents).toEqual([
-          expect.objectContaining({ agent_id: 73, status: { state: "interrupted" } }),
+        // The journal keeps the resting child; a later request restores it.
+        runtime = undefined;
+        await f.prepare();
+        await vi.waitFor(() => expect(runtime).toBeDefined());
+        expect(runtime).not.toBe(restored);
+        expect((await realList(runtime!)).agents).toEqual([
+          expect.objectContaining({ agent_id: 73, status: { state: "interrupted" }, can_message: true }),
         ]);
-        if (scenario === "explicit-shutdown") {
-          const headers = new Headers(); forwardPrincipalAssertions(headers, principal);
-          const changed = await f.instance.fetch(new Request("https://session.internal/settings", {
-            method: "PATCH", headers, body: JSON.stringify({ model: "gpt-6-luna" }),
-          }));
-          expect(changed.status).toBe(200);
-          await f.prepare();
-          expect(runtime).not.toBe(restored);
-          await expect(realList(restored, { includeCompleted: true })).rejects.toThrow("disposed");
-          return;
-        }
-        await Subagents.close(restored, 73);
-        expect((await realList(restored)).agents).toEqual([]);
-        await f.instance.alarm();
-        expect(await f.snapshot()).toMatchObject({ agent_loaded: false });
       }
     } finally { directory.mockRestore(); clock.mockRestore(); }
   }), 30_000,
