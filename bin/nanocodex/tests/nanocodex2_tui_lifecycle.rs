@@ -7181,13 +7181,13 @@ async fn perf_cycle(
         let (tool, arguments, result) = if call % 3 == 2 {
             (
                 "Bash",
-                json!({"command": format!("rg -n step_{step}_{call} src"), "description": "Search sources"}),
+                json!({"command": format!("rg -n {label}_{step:04}_{call:03} src"), "description": "Search sources"}),
                 json!({"stdout": format!("src/lib.rs:{call}: step_{step}_{call}\n").repeat(4), "exit_code": 0}),
             )
         } else {
             (
                 "Read",
-                json!({"file_path": format!("/ws/src/module_{step}_{call}.rs")}),
+                json!({"file_path": format!("/ws/src/{label}_{step:04}_{call:03}.rs")}),
                 json!({"content": format!("fn module_{step}_{call}() {{}}\n").repeat(20)}),
             )
         };
@@ -7244,17 +7244,30 @@ fn perf_wait(
     })
 }
 
-/// Preloaded transcript markers visible on screen (live rows never contain them).
-fn perf_markers(contents: &str) -> Vec<String> {
+/// Ordered transcript position markers visible on screen: commentary
+/// "HIST_0007"/"LIVE_0003" and tool rows "HIST_0007_012" (label, step, call+1).
+/// Sorted ascending, so first()/last() are the oldest/newest visible rows.
+fn perf_markers(contents: &str) -> Vec<(u8, u32, u32)> {
     let mut found = Vec::new();
-    let mut rest = contents;
-    while let Some(index) = rest.find("HIST_") {
-        let tail = &rest[index..];
-        if tail.len() >= 9 && tail.as_bytes()[5..9].iter().all(u8::is_ascii_digit) {
-            found.push(tail[..9].to_owned());
+    for (label, rank) in [("HIST_", 0u8), ("LIVE_", 1u8)] {
+        let mut rest = contents;
+        while let Some(index) = rest.find(label) {
+            let tail = &rest[index + 5..];
+            let digits = |text: &str, count: usize| {
+                (text.len() >= count && text.as_bytes()[..count].iter().all(u8::is_ascii_digit))
+                    .then(|| text[..count].parse::<u32>().unwrap())
+            };
+            if let Some(step) = digits(tail, 4) {
+                let call = tail[4..]
+                    .strip_prefix('_')
+                    .and_then(|call| digits(call, 3))
+                    .map_or(0, |call| call + 1);
+                found.push((rank, step, call));
+            }
+            rest = tail;
         }
-        rest = &rest[index + 5..];
     }
+    found.sort_unstable();
     found
 }
 
@@ -7418,12 +7431,21 @@ async fn terminal_perf_input_stays_responsive_while_an_agent_streams_large_tool_
         let before = perf_markers(&perf_screen(&screen));
         let start = std::time::Instant::now();
         fixture.terminal.input("\x1b[5~");
+        // Older transcript content must enter the viewport; live appends never
+        // satisfy this, and timers/spinners carry no markers.
         match perf_wait(&screen, start, Duration::from_secs(3), |contents| {
             let now = perf_markers(contents);
-            !now.is_empty() && now != before
+            match (now.first(), before.first()) {
+                (Some(now), Some(before)) => now < before,
+                (Some(_), None) => true,
+                _ => false,
+            }
         }) {
             Some(elapsed) => scroll_up.push(elapsed),
-            None => scroll_misses += 1,
+            None => {
+                scroll_misses += 1;
+                eprintln!("PageUp miss, before={before:?}:\n{}", perf_screen(&screen));
+            }
         }
         tokio::time::sleep(Duration::from_millis(30)).await;
     }
@@ -7443,13 +7465,24 @@ async fn terminal_perf_input_stays_responsive_while_an_agent_streams_large_tool_
         }
         tokio::time::sleep(Duration::from_millis(60)).await;
     }
-    for _ in 0..8 {
+    // Fewer PageDowns than PageUps so every step still has newer content below.
+    for _ in 0..6 {
         let before = perf_markers(&perf_screen(&screen));
         let start = std::time::Instant::now();
         fixture.terminal.input("\x1b[6~");
-        match perf_wait(&screen, start, Duration::from_secs(3), |contents| perf_markers(contents) != before) {
+        match perf_wait(&screen, start, Duration::from_secs(3), |contents| {
+            let now = perf_markers(contents);
+            match (now.last(), before.last()) {
+                (Some(now), Some(before)) => now > before,
+                (Some(_), None) => true,
+                _ => false,
+            }
+        }) {
             Some(elapsed) => scroll_down.push(elapsed),
-            None => scroll_misses += 1,
+            None => {
+                scroll_misses += 1;
+                eprintln!("PageDown miss, before={before:?}:\n{}", perf_screen(&screen));
+            }
         }
         tokio::time::sleep(Duration::from_millis(30)).await;
     }
@@ -7545,6 +7578,8 @@ async fn terminal_perf_input_stays_responsive_while_an_agent_streams_large_tool_
     }
     assert!(!typing.is_empty() && !steer_receipt.is_empty());
     assert!(cancelled.is_some(), "cancel never reached the service under load");
+    let scroll = &report["streaming_scroll"];
+    assert_eq!(scroll["scroll_misses"], 0, "scroll steps never moved the viewport under load: {scroll}");
     // Meaningful but non-flaky ceilings: a frame budget miss is tolerated, a
     // visibly stuck composer or steer is not. Override for slow debug builds.
     let typing_p95 = perf_env("NANOCODEX_TUI_PERF_TYPING_P95_MS", 150) as f64;
