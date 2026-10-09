@@ -20,8 +20,9 @@ use zeroize::Zeroizing;
 pub(crate) const CREDENTIAL_FILE_ENV: &str = "NANOCODEX_VM_HOST_CREDENTIAL_FILE";
 const FILE_NAME: &str = "vm-host-credential";
 const MAX_BYTES: u64 = 1024;
-/// Well inside the credential source's refresh margin before expiry.
-const REFRESH_INTERVAL: Duration = Duration::from_secs(20);
+/// Well inside the credential source's refresh margin before expiry; a cached
+/// credential makes each check a local state read.
+const REFRESH_INTERVAL: Duration = Duration::from_secs(5);
 
 /// `ncxhd1.{owner}.{device}.{secret}` with UUID ids and a 32-byte base64url secret.
 fn valid(value: &str) -> bool {

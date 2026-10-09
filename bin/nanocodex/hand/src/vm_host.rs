@@ -2355,6 +2355,20 @@ mod supported {
                         shape,
                     )
                     .await
+                    .map_err(|error| match error {
+                        // A rejected short-lived credential is retried: the daemon
+                        // replaces the file after expiry or rotation, and stops this
+                        // factory when its device is no longer accepted.
+                        ManagedError::Configuration(message)
+                            if message == "VM host authentication was rejected" =>
+                        {
+                            ManagedError::VmHost(
+                                "the VM factory device credential was rejected; awaiting a refreshed credential"
+                                    .to_owned(),
+                            )
+                        }
+                        error => error,
+                    })
                 }
             }
         }
