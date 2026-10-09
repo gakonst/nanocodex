@@ -1,5 +1,7 @@
 {
   "compilerOptions": {
+    "incremental": true,
+    "tsBuildInfoFile": "node_modules/.cache/typecheck.tsbuildinfo",
     "allowImportingTsExtensions": true,
     "lib": ["ES2024"],
     "module": "ESNext",
