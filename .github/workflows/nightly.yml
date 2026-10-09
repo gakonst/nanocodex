@@ -523,7 +523,9 @@ jobs:
       github.repository == 'gakonst/nanocodex' &&
       (github.event_name != 'workflow_dispatch' || inputs.pr == '')
     name: publish immutable and rolling nightlies
-    needs: [bundle, build-windows-hand, build-vm-guest]
+    # Publication waits for the read-only Hand reuse test and comparison, so a
+    # broken reuse path fails before any release is created or modified.
+    needs: [bundle, build-windows-hand, build-vm-guest, hand-reuse-check]
     runs-on: ubuntu-22.04
     timeout-minutes: 10
     permissions:
