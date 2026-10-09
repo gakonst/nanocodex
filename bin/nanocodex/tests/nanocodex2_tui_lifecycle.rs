@@ -4366,6 +4366,9 @@ async fn terminal_settles_tools_when_only_the_durable_completion_arrives() {
         .terminal
         .wait_text("tool call ended without a terminal result")
         .await;
+    // A missing receipt is an unknown outcome, never a failure.
+    fixture.terminal.wait_text("outcome unknown").await;
+    wait_line(&fixture.terminal, &["?", "MISSING_TOOL_RESULT.txt"]).await;
     fixture.terminal.wait_text("Enter send").await;
     fixture
         .terminal
@@ -4373,6 +4376,64 @@ async fn terminal_settles_tools_when_only_the_durable_completion_arrives() {
     let next = fixture.submission("NEXT_TURN_AFTER_MISSING_TERMINAL").await;
     fixture.complete(&next);
     fixture.terminal.wait_text("Enter send").await;
+}
+
+#[tokio::test]
+async fn terminal_marks_receiptless_tools_unknown_and_accepts_their_late_result() {
+    let mut fixture = Fixture::start().await;
+    // This journey inspects tool details; explicitly open them.
+    fixture.terminal.input("\x0f");
+    fixture
+        .terminal
+        .prompt("terminate a cell before its nested read settles", "\r");
+    let turn = fixture
+        .submission("terminate a cell before its nested read settles")
+        .await;
+    fixture.nested(&turn, "run.started", json!({}));
+    fixture.nested(&turn, "tool.call", json!({"call_id": "cell", "tool": "exec", "arguments": {"code": "await tools.read_file({})"}}));
+    fixture.nested(&turn, "tool.call", json!({"call_id": "cell/code-0", "tool": "read_file", "arguments": {"path": "ACTUALLY_FAILED_READ.txt"}}));
+    fixture.nested(&turn, "tool.result", json!({"call_id": "cell/code-0", "tool": "read_file", "status": "failed", "duration_ns": 1, "result": {"error": "ACTUAL_READ_FAILURE"}}));
+    fixture.nested(&turn, "tool.call", json!({"call_id": "cell/code-1", "tool": "read_file", "arguments": {"path": "RECEIPTLESS_READ.txt"}}));
+    fixture.nested(&turn, "tool.result", json!({"call_id": "cell", "tool": "exec", "status": "completed", "duration_ns": 1, "result": "Script running with cell ID cell-1\nOutput:\n"}));
+    fixture.nested(&turn, "tool.call", json!({"call_id": "stop", "tool": "wait", "arguments": {"cell_id": "cell-1", "terminate": true}}));
+    fixture.nested(&turn, "tool.result", json!({"call_id": "stop", "tool": "wait", "status": "completed", "duration_ns": 1, "result": "Script terminated\nOutput:\n"}));
+    // The terminated cell's receiptless read is unknown; the real failure stays failed.
+    fixture.terminal.wait_text("outcome unknown").await;
+    wait_line(&fixture.terminal, &["?", "RECEIPTLESS_READ.txt"]).await;
+    wait_line(&fixture.terminal, &["×", "ACTUALLY_FAILED_READ.txt"]).await;
+    fixture.terminal.wait_text("ACTUAL_READ_FAILURE").await;
+    // The call's later actual receipt settles the same card.
+    fixture.nested(&turn, "tool.result", json!({"call_id": "cell/code-1", "tool": "read_file", "status": "completed", "duration_ns": 1, "result": {"text": "LATE_ACTUAL_READ_RESULT"}}));
+    fixture.terminal.wait_text("LATE_ACTUAL_READ_RESULT").await;
+    wait_line(&fixture.terminal, &["✓", "RECEIPTLESS_READ.txt"]).await;
+    fixture
+        .terminal
+        .wait_no_text("tool call ended without a terminal result")
+        .await;
+    wait_line(&fixture.terminal, &["×", "ACTUALLY_FAILED_READ.txt"]).await;
+    fixture.complete(&turn);
+    fixture.terminal.wait_text("Enter send").await;
+}
+
+/// Waits until one rendered row contains every needle.
+async fn wait_line(terminal: &Terminal, needles: &[&str]) {
+    let found = tokio::time::timeout(TIMEOUT, async {
+        loop {
+            let screen = terminal.screen.lock().unwrap().screen().contents();
+            if screen
+                .lines()
+                .any(|line| needles.iter().all(|needle| line.contains(needle)))
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+    if found.is_err() {
+        let screen = terminal.screen.lock().unwrap().screen().contents();
+        panic!("no row contains {needles:?}:\n{screen}");
+    }
 }
 
 #[tokio::test]
@@ -5082,6 +5143,7 @@ async fn assert_terminal_durable_stop(cancelled: bool) {
         .terminal
         .wait_text("tool call ended without a terminal result")
         .await;
+    wait_line(&fixture.terminal, &["?", "UNFINISHED_STOP_READ.txt"]).await;
     if !cancelled {
         fixture.terminal.wait_text("DURABLE_FAILURE_REASON").await;
     }

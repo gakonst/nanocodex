@@ -637,7 +637,7 @@ mod tests {
                         if kind == "turn_retryable" {
                             ToolState::Running
                         } else {
-                            ToolState::Failed
+                            ToolState::Unknown
                         },
                         ToolState::Running,
                         ToolState::Running

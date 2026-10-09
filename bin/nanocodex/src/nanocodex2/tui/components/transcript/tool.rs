@@ -469,17 +469,26 @@ fn summary_lines_with_origin(
             Style::default().fg(theme.muted()),
         );
     }
-    if tool.state == ToolState::Unknown
-        && !presentation
+    if tool.state == ToolState::Unknown {
+        let reason = unknown_reason(tool.result.as_ref());
+        let stated = presentation
             .outcome
             .as_deref()
-            .is_some_and(|outcome| outcome.contains("unknown"))
-    {
-        append_span(
-            &mut outcome_spans,
-            " · outcome unknown",
-            Style::default().fg(Color::Yellow),
-        );
+            .is_some_and(|outcome| outcome.contains("unknown"));
+        let text = match reason {
+            Some(reason) if reason.to_lowercase().contains("unknown") => {
+                Some(format!(" · {reason}"))
+            }
+            Some(reason) => Some(format!(" · outcome unknown · {reason}")),
+            None => (!stated).then(|| " · outcome unknown".to_owned()),
+        };
+        if let Some(text) = text {
+            append_span(
+                &mut outcome_spans,
+                &text,
+                Style::default().fg(Color::Yellow),
+            );
+        }
     }
     let mut error_spans = Vec::new();
     if tool.state == ToolState::Failed
@@ -1052,6 +1061,16 @@ fn generic_outcome(result: Option<&Value>) -> Option<String> {
             "failed".to_owned()
         }
     })
+}
+
+/// First line of an explicit unknown-outcome explanation; never command output.
+fn unknown_reason(result: Option<&Value>) -> Option<String> {
+    let fields = result?.as_object()?;
+    ["message", "error", "text"]
+        .into_iter()
+        .find_map(|key| fields.get(key).and_then(Value::as_str))
+        .and_then(|text| text.lines().map(str::trim).find(|line| !line.is_empty()))
+        .map(sanitize)
 }
 
 /// First error line of a failed call, as shown in its summary row.
