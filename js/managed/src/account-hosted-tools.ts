@@ -245,7 +245,12 @@ export class AccountHostedTools extends DurableObject<AccountHostedToolsEnv> {
       handDeviceCredentialTtlMs(env.NANOCODEX_HAND_DEVICE_CREDENTIAL_TTL_SECONDS));
   }
 
-  /** Downgrade fence for screen publishers: account-key hosts never publish a device-bound machine. */
+  /**
+   * Downgrade fence for screen publishers: account-key hosts never publish a device-bound machine.
+   * Platform-scoped publishers (hand-host server bearers, cf: sandboxes, leased VMs) are not account
+   * keys and cannot enroll (reserved prefixes), so require_device_keys does not apply to them; a
+   * hand-host bearer is fenced only once its own server machine has an enrolled device.
+   */
   #admitRemoteClaim(claim: { machineId: string; routeId?: string }): boolean {
     if (claim.routeId?.startsWith("hand-device:")) {
       return this.#devices.activeDevice(claim.machineId)?.id === claim.routeId.slice("hand-device:".length);
@@ -359,10 +364,11 @@ export class AccountHostedTools extends DurableObject<AccountHostedToolsEnv> {
   }
 
   /** Device-credential scope for publisher-only surfaces outside this object (VM factory). */
-  async authorizeHandDevice(ownerId: string, authorization: string): Promise<{ device_id: string; machine_id: string; expires_at: number } | undefined> {
+  async authorizeHandDevice(ownerId: string, authorization: string): Promise<{ device_id: string; machine_id: string; key_version: number; expires_at: number } | undefined> {
     if (!isUserId(ownerId) || !this.#owns(ownerId)) return undefined;
     const authorized = await this.#devices.authorize(ownerId, authorization);
-    return authorized ? { device_id: authorized.device.id, machine_id: authorized.device.machine_id, expires_at: authorized.expiresAt } : undefined;
+    return authorized ? { device_id: authorized.device.id, machine_id: authorized.device.machine_id,
+      key_version: authorized.device.key_version, expires_at: authorized.expiresAt } : undefined;
   }
 
   /** Device-credential publisher routes: tool-host, hands/host, hands/ice and hands/renew. */
@@ -388,14 +394,18 @@ export class AccountHostedTools extends DurableObject<AccountHostedToolsEnv> {
     if (!authorized) return deviceFailure(401, "unauthorized");
     const device = authorized.device;
     if (hostMachine !== undefined && device.machine_id !== hostMachine) return deviceFailure(403, "hand_device_machine_mismatch");
+    const observe = (surface: string) => console.info({ type: "hand.connection", auth_mode: "device_key", device_id: device.id,
+      key_version: device.key_version, machine_id: device.machine_id, surface });
     if (endpoint === "tool-host") {
       if (!identity || identity.machineId !== device.machine_id) return deviceFailure(403, "hand_device_machine_mismatch");
       if (this.#directory.retired(identity.machineId, identity.runtimeId)) return Response.json({ error: "hand_runtime_superseded" }, { status: 409 });
+      observe("tool_host");
       return this.#broker.upgrade(ownerId, undefined, undefined, undefined, undefined, identity, [`hand-device:${device.id}`]);
     }
     if (endpoint === "hands/ice") return remoteICE(this.env, ownerId);
     const scope: RemoteVMPublisher = { machineId: device.machine_id, routeId: `hand-device:${device.id}`, expiresAt: authorized.expiresAt, anySurface: true };
-    if (endpoint === "hands/renew") return this.#remote.renew(renewal!, true, scope);
+    if (endpoint === "hands/renew") { observe("remote_renew"); return this.#remote.renew(renewal!, true, scope); }
+    observe("remote");
     return this.#remote.fetch(new Request("https://account-tools.internal/hands/host", request), scope);
   }
 
@@ -685,7 +695,9 @@ export class AccountHostedTools extends DurableObject<AccountHostedToolsEnv> {
         if (!machineId) return deviceFailure(401, "unauthorized");
         let body: unknown;
         try { body = await boundedJSON(request); } catch { return deviceFailure(400, "invalid_hand_device_request"); }
-        const origin = request.headers.get(HAND_DEVICE_ORIGIN) ?? "";
+        const origin = request.headers.get(HAND_DEVICE_ORIGIN);
+        // Never verify a signature over an absent origin.
+        if (!origin) return deviceFailure(400, "invalid_hand_device_request");
         const enrolled = await this.#devices.enrollWithGrant(ownerId, origin, enrollment[1]!, request.headers.get("authorization"), body, machineId);
         // Owner-authorized re-bootstrap atomically revoked the prior device; fence its live sockets.
         if (enrolled.replaced) {

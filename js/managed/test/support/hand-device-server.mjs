@@ -1,0 +1,120 @@
+// Shared Miniflare fixture for Hand device-key journeys. Builds the shipped
+// managed Worker from source and serves its public routes over real HTTP and
+// WebSocket. Only external identity is substituted: synthetic ncx_live_ API
+// keys resolve to synthetic account principals, and the live account
+// authorization lookup returns a synthetic organization grant.
+import { createHash } from "node:crypto";
+import { createHash } from "node:crypto";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+import { createInterface } from "node:readline";
+import { fileURLToPath } from "node:url";
+import { build } from "esbuild";
+import { Miniflare } from "miniflare";
+
+const root = fileURLToPath(new URL("../..", import.meta.url));
+const repo = fileURLToPath(new URL("../../../../", import.meta.url));
+export const owner = "11111111-1111-4111-8111-111111111111";
+export const otherOwner = "44444444-4444-4444-8444-444444444444";
+export const apiKey = "ncx_live_" + "a".repeat(12) + "_" + "b".repeat(43);
+export const otherApiKey = "ncx_live_" + "c".repeat(12) + "_" + "d".repeat(43);
+const grant = { organizationId: "22222222-2222-4222-8222-222222222222", teamId: "33333333-3333-4333-8333-333333333333",
+  role: "owner", authorizationEpoch: 1, capabilities: ["agents:read", "agents:write", "tools:use"] };
+
+const source = keys => [
+  "import { DurableObject } from 'cloudflare:workers';",
+  "import { AccountHostedToolsProvider } from './src/account-hosted-tools.ts';",
+  "import worker, { AccountHostedTools, DurableAgentSession } from './src/index.ts';",
+  "export { AccountHostedTools, DurableAgentSession };",
+  "// Test-only driver: the model-facing tool path that invokes a published Hand tool.",
+  "export class ToolDriver extends DurableObject {",
+  "  async fetch(request) {",
+  "    const { owner, machine, call, cmd } = await request.json();",
+  "    const provider = new AccountHostedToolsProvider(this.env.NANOCODEX_ACCOUNT_TOOLS, owner, () => true, undefined);",
+  "    await provider.refresh();",
+  "    const tool = provider.machineTool(machine, 'exec_command');",
+  "    if (!tool) return Response.json({ error: 'tool_unavailable' }, { status: 404 });",
+  "    try {",
+  "      const result = await tool.handler({ cmd, workdir: '/synthetic/workspace' },",
+  "        { sessionId: 'device-journey', turnId: 'device-turn', callId: call, model: 'synthetic', signal: request.signal });",
+  "      return Response.json(result);",
+  "    } catch (error) { return Response.json({ error: String(error && error.message || error) }, { status: 502 }); }",
+  "  }",
+  "}",
+  "const KEYS = " + JSON.stringify(keys) + ";",
+  "const DIGESTS = " + JSON.stringify(Object.fromEntries(Object.entries(keys).map(([key, userId]) => [
+    createHash("sha256").update(key).digest("base64url"), { userId, id: key.slice(9, 21) }]))) + ";",
+  "const GRANT = " + JSON.stringify(grant) + ";",
+  "export default { async fetch(request, env, ctx) {",
+  "  const url = new URL(request.url);",
+  "  if (url.pathname === '/__fixture/tool') return env.DRIVER.getByName('driver').fetch(request);",
+  "  // server_hand connect mints this grant during SSH setup; the fixture calls the same owner RPC.",
+  "  if (url.pathname === '/__fixture/grant') {",
+  "    const { owner, host, name } = await request.json();",
+  "    return Response.json(await env.NANOCODEX_ACCOUNT_TOOLS.getByName(owner).mintServerHandDeviceGrant(owner, host, name));",
+  "  }",
+  "  const authorization = request.headers.get('authorization');",
+  "  const entry = Object.entries(KEYS).find(([key]) => authorization === 'Bearer ' + key);",
+  "  const actor = entry ? Object.assign({ kind: 'api_key', userId: entry[1], subjectId: 'user:' + entry[1], credentialId: 'synthetic-' + entry[1] }, GRANT) : undefined;",
+  "  // Identity lookup used by the CLI to locate its state; substitutes the account service.",
+  "  if (url.pathname === '/v1/me' && request.method === 'GET') return actor ? Response.json({ user: { id: actor.userId } }) : Response.json({ error: 'unauthorized' }, { status: 401 });",
+  "  const users = { getByName: id => ({ resolveAuthorization: async () => ({ userId: id, grant: GRANT }) }) };",
+  "  // API-key records resolved by the shipped authenticate() (account hand-device routes never trust an injected principal).",
+  "  const apiKeys = { getByName: digest => ({ id: { toString: () => '' }, resolveAuthorizedKey: async () => DIGESTS[digest] ? Object.assign({",
+  "    id: DIGESTS[digest].id, label: 'synthetic', prefix: 'ncx_live_' + DIGESTS[digest].id, createdAt: 1, digest, userId: DIGESTS[digest].userId }, GRANT) : undefined }) };",
+  "  return worker.fetch(request, Object.assign({}, env, { NANOCODEX_USERS: users, NANOCODEX_API_KEYS: apiKeys }), ctx, actor);",
+  "} };",
+].join("\n");
+
+/** Start the managed Worker. Returns its base URL and captured structured observations. */
+export async function startHandDeviceServer({ output, ttlSeconds = 10 } = {}) {
+  await mkdir(output, { recursive: true });
+  const assets = [];
+  let wasmSequence = 0;
+  const bundle = await build({ stdin: { contents: source({ [apiKey]: owner, [otherApiKey]: otherOwner }), resolveDir: root },
+    bundle: true, write: false, metafile: true, format: "esm", platform: "node", conditions: ["workerd"], target: "es2022",
+    external: ["cloudflare:*", "node:*"],
+    alias: { "nanocodex-tools/hosted": join(repo, "js/nanocodex-tools/src/hosted/index.ts"),
+      "node-rsa": join(repo, "js/nanocodex/tools/browser/unsupportedNodeRsa.mjs") },
+    plugins: [{ name: "wasm", setup(builder) { builder.onResolve({ filter: /\.wasm$/ }, async args => {
+      const path = join(args.resolveDir, args.path), name = "fixture-" + wasmSequence++ + ".wasm";
+      assets.push({ type: "CompiledWasm", path: name, contents: await readFile(path) });
+      return { path: "./" + name, external: true };
+    }); } }], logLevel: "silent" });
+  await writeFile(join(output, "worker-inputs.json"),
+    JSON.stringify(Object.keys(bundle.metafile.inputs).filter(path => path.includes("src/hand")), null, 2));
+  const observations = [], logs = [];
+  const capture = line => {
+    logs.push(line);
+    const start = line.indexOf("{");
+    if (start >= 0 && line.includes('"type"')) { try { observations.push(JSON.parse(line.slice(start))); } catch { /* unstructured */ } }
+  };
+  const mf = new Miniflare({ port: 0, host: "127.0.0.1", durableObjectsPersist: join(output, "sqlite"),
+    compatibilityDate: "2026-07-30", compatibilityFlags: ["nodejs_compat", "enable_request_signal"],
+    modules: [{ type: "ESModule", path: "worker.mjs", contents: bundle.outputFiles[0].text }, ...assets],
+    bindings: { NANOCODEX_HAND_DEVICE_CREDENTIAL_TTL_SECONDS: String(ttlSeconds) },
+    durableObjects: { DRIVER: { className: "ToolDriver", useSQLite: true },
+      NANOCODEX_ACCOUNT_TOOLS: { className: "AccountHostedTools", useSQLite: true },
+      NANOCODEX_SESSIONS: { className: "DurableAgentSession", useSQLite: true } },
+    r2Buckets: ["NANOCODEX_HISTORY", "NANOCODEX_WORKSPACES"],
+    serviceBindings: { NANOCODEX: async request => {
+      const path = new URL(request.url).pathname;
+      if (path.startsWith("/subjects/")) return new Response(null, { status: 204 });
+      if (path.endsWith("/catalog")) return Response.json({ connectors: {}, mcp_connections: [] });
+      if (path.endsWith("/credentials/vault")) return Response.json({ vault: [] });
+      return Response.json({ tools: [], machines: [], connections: [] });
+    } },
+    handleRuntimeStdio(stdout, stderr) {
+      createInterface({ input: stdout }).on("line", capture);
+      createInterface({ input: stderr }).on("line", capture);
+    } });
+  const base = (await mf.ready).href.replace(/\/$/, "");
+  /** Invoke exec_command on an attached account machine through the model-facing provider path. */
+  const callHandTool = async ({ ownerId = owner, machineId, cmd, callId = crypto.randomUUID() }) => {
+    const response = await fetch(base + "/__fixture/tool", { method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ owner: ownerId, machine: machineId, call: callId, cmd }), signal: AbortSignal.timeout(20_000) });
+    return { status: response.status, body: await response.json() };
+  };
+  return { base, origin: new URL(base).origin, owner, apiKey, otherOwner, otherApiKey, observations, logs, callHandTool,
+    stop: () => mf.dispose() };
+}

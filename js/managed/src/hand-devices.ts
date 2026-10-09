@@ -24,7 +24,7 @@ const GRANT_MS = 10 * 60_000;
 const MAX_CREDENTIALS = 4;
 const RATE_WINDOW_MS = 60_000;
 const ENROLL_RATE = 30;
-const DEVICE_RATE = 30;
+const DEVICE_RATE = 600;
 const MAX_HOST_KEYS = 8;
 export const DEFAULT_HAND_DEVICE_CREDENTIAL_TTL_SECONDS = 900;
 
@@ -35,7 +35,7 @@ const K = {
   recordPrefix: "hdev:rec:",
   machine: (machineId: string) => "hdev:mach:" + machineId,
   key: (publicKey: string) => "hdev:key:" + publicKey,
-  used: (nonce: string) => "hdev:used:" + nonce,
+  used: (expiresAt: number, nonce: string) => "hdev:used:" + String(expiresAt).padStart(16, "0") + ":" + nonce,
   usedPrefix: "hdev:used:",
   credential: (deviceId: string, digest: string) => "hdev:cred:" + deviceId + ":" + digest,
   credentialPrefix: (deviceId: string) => "hdev:cred:" + deviceId + ":",
@@ -60,8 +60,9 @@ export type HandDeviceRecord = {
 type LegacyRecord = { machine_id: string; runtime_id: string | null; auth: "account_api_key"; connected_at: number };
 export type HandDeviceResult = { status: number; body: unknown };
 export type HandDeviceAuthorization = Readonly<{ device: HandDeviceRecord; expiresAt: number }>;
-export type HandDeviceAccount = Readonly<{ organization_id?: string }>;
+export type HandDeviceAccount = Readonly<{ organization_id?: string; team_id?: string }>;
 type ParsedCredential = { ownerId: string; deviceId: string; secret: string };
+type Nonce = { key: string; expiresAt: number };
 
 type Kv = Pick<SyncKvStorage, "get" | "put" | "delete" | "list">;
 
@@ -224,32 +225,29 @@ export class HandDevices {
     return { challenge: base64url(packed), expiresAt };
   }
 
-  /**
-   * Authenticity check, then a synchronous check-and-insert into the used set
-   * before any signature verification: a presented challenge is burned even
-   * when the signature later fails.
-   */
-  async #consume(binding: string, challenge: unknown): Promise<boolean> {
-    if (typeof challenge !== "string" || !CHALLENGE.test(challenge)) return false;
+  /** Authenticity and expiry of a MAC'd challenge. No state is written for an unauthenticated presentation. */
+  async #check(binding: string, challenge: unknown): Promise<Nonce | undefined> {
+    if (typeof challenge !== "string" || !CHALLENGE.test(challenge)) return undefined;
     const packed = decode(challenge, 40);
-    if (!packed) return false;
+    if (!packed) return undefined;
     const nonce = packed.slice(0, 16);
     const expiresAt = Number(new DataView(packed.buffer).getBigUint64(16));
-    if (!Number.isSafeInteger(expiresAt) || expiresAt <= this.now()) return false;
-    if (!timingSafeEqual(packed.slice(24), await this.#tag(binding, nonce, expiresAt))) return false;
+    if (!Number.isSafeInteger(expiresAt) || expiresAt <= this.now()) return undefined;
+    if (!timingSafeEqual(packed.slice(24), await this.#tag(binding, nonce, expiresAt))) return undefined;
+    return { key: K.used(expiresAt, base64url(nonce)), expiresAt };
+  }
+
+  /**
+   * Single use, inside the caller's transaction and only after the signature
+   * verified: exactly one concurrent presentation wins. Used entries are keyed
+   * by expiry so pruning walks only expired keys.
+   */
+  #claim(nonce: Nonce): boolean {
     const now = this.now();
-    return this.transaction(() => {
-      if (expiresAt <= now) return false;
-      const key = K.used(base64url(nonce));
-      if (this.kv.get(key) !== undefined) return false;
-      this.kv.put(key, expiresAt);
-      let pruned = 0;
-      for (const [used, until] of this.kv.list<number>({ prefix: K.usedPrefix, limit: 64 })) {
-        if (until <= now) { this.kv.delete(used); pruned++; }
-      }
-      void pruned;
-      return true;
-    });
+    if (nonce.expiresAt <= now || this.kv.get(nonce.key) !== undefined) return false;
+    this.kv.put(nonce.key, 1);
+    for (const [key] of this.kv.list({ prefix: K.usedPrefix, end: K.used(now, ""), limit: 64 })) this.kv.delete(key);
+    return true;
   }
 
   async enrollChallenge(ownerId: string): Promise<HandDeviceResult> {
@@ -292,11 +290,13 @@ export class HandDevices {
     if (reservedHandDeviceMachine(body.machine_id)) return failure(400, "hand_device_machine_reserved");
     if (!validHandDevicePublicKey(body.public_key)) return failure(400, "invalid_hand_device_key");
     const machineId = body.machine_id, publicKey = body.public_key, name = body.name.trim();
-    if (!await this.#consume(["enroll", ownerId].join("\n"), body.challenge)) return failure(401, "challenge_invalid");
+    const nonce = await this.#check(["enroll", ownerId].join("\n"), body.challenge);
+    if (!nonce) return failure(401, "challenge_invalid");
     const message = handDeviceMessage(["enroll", origin, ownerId, body.challenge, machineId, publicKey]);
     if (!await verify(publicKey, body.signature, message)) return failure(401, "signature_invalid");
     const fingerprint = await handDeviceFingerprint(publicKey);
-    return this.transaction(() => this.#install(machineId, publicKey, name, fingerprint, enrolledBy, false));
+    return this.transaction(() => this.#claim(nonce)
+      ? this.#install(machineId, publicKey, name, fingerprint, enrolledBy, false) : failure(401, "challenge_invalid"));
   }
 
   /** One-time server bootstrap grant bound to a HandHosts record's machine. */
@@ -381,7 +381,8 @@ export class HandDevices {
     }
     const device = this.get(deviceId);
     if (!device || device.status !== "active") return failure(401, "hand_reenroll_required");
-    if (!this.#allow(deviceId, DEVICE_RATE)) return failure(429, "rate_limited");
+    // Coarse per-owner ceiling only: a per-device limit would let anyone who knows a device ID starve it.
+    if (!this.#allow("device-challenges", DEVICE_RATE)) return failure(429, "rate_limited");
     const { challenge, expiresAt } = await this.#newChallenge(
       [body.purpose as string, ownerId, deviceId, device.key_version].join("\n"), DEVICE_CHALLENGE_MS);
     return result(201, { challenge, key_version: device.key_version, fingerprint: device.fingerprint, expires_at: expiresAt });
@@ -389,25 +390,25 @@ export class HandDevices {
 
   async #prove(ownerId: string, origin: string, deviceId: string, purpose: HandDevicePurpose, challenge: unknown,
     signature: unknown, extra: readonly string[], additional?: { publicKey: string; signature: string },
-  ): Promise<{ failure: HandDeviceResult } | { device: HandDeviceRecord }> {
+  ): Promise<{ failure: HandDeviceResult } | { device: HandDeviceRecord; nonce: Nonce }> {
     if (typeof challenge !== "string" || !CHALLENGE.test(challenge) || typeof signature !== "string" || !SIGNATURE.test(signature)) {
       return { failure: failure(400, "invalid_hand_device_request") } as const;
     }
     const device = this.get(deviceId);
     if (!device || device.status !== "active") return { failure: failure(401, "hand_reenroll_required") } as const;
-    if (!await this.#consume([purpose, ownerId, deviceId, device.key_version].join("\n"), challenge)) {
-      return { failure: failure(401, "challenge_invalid") } as const;
-    }
+    const nonce = await this.#check([purpose, ownerId, deviceId, device.key_version].join("\n"), challenge);
+    if (!nonce) return { failure: failure(401, "challenge_invalid") };
     const message = handDeviceMessage([purpose, origin, ownerId, deviceId, device.key_version, challenge, ...extra]);
     if (!await verify(device.public_key, signature, message)) return { failure: failure(401, "signature_invalid") } as const;
     if (additional && !await verify(additional.publicKey, additional.signature, message)) {
       return { failure: failure(401, "signature_invalid") } as const;
     }
-    return { device } as const;
+    return { device, nonce };
   }
 
   /** Revocation or rotation may have committed while a signature was checked. */
-  #current(proved: HandDeviceRecord): { current: HandDeviceRecord } | { failure: HandDeviceResult } {
+  #current(proved: HandDeviceRecord, nonce: Nonce): { current: HandDeviceRecord } | { failure: HandDeviceResult } {
+    if (!this.#claim(nonce)) return { failure: failure(401, "challenge_invalid") };
     const current = this.kv.get<HandDeviceRecord>(K.record(proved.id));
     if (!current || current.status !== "active") return { failure: failure(401, "hand_reenroll_required") };
     if (current.key_version !== proved.key_version || current.public_key !== proved.public_key) return { failure: failure(401, "signature_invalid") };
@@ -418,14 +419,19 @@ export class HandDevices {
     if (!exactObject(body, ["challenge", "signature"])) return failure(400, "invalid_hand_device_request");
     const proof = await this.#prove(ownerId, origin, deviceId, "credential", body.challenge, body.signature, []);
     if ("failure" in proof) return proof.failure;
-    if (proof.device.enrolled_by.organization_id !== undefined && account.organization_id !== proof.device.enrolled_by.organization_id) {
+    // Live authorization must still place the account in the enrolling organization and team.
+    // authorization_epoch is intentionally not compared: epochs advance on unrelated grant edits,
+    // and loss of authority is covered by explicit revocation plus the live capability check.
+    const enrolled = proof.device.enrolled_by;
+    if ((enrolled.organization_id !== undefined && account.organization_id !== enrolled.organization_id)
+      || (enrolled.team_id !== undefined && account.team_id !== enrolled.team_id)) {
       return failure(403, "hand_device_account_unauthorized");
     }
     const secret = base64url(crypto.getRandomValues(new Uint8Array(32)));
     const digest = base64url(await sha256(secret));
     const now = this.now(), expiresAt = now + this.credentialTtlMs;
     return this.transaction(() => {
-      const checked = this.#current(proof.device);
+      const checked = this.#current(proof.device, proof.nonce);
       if ("failure" in checked) return checked.failure;
       const current = checked.current;
       const live: [string, CredentialRecord][] = [];
@@ -452,7 +458,7 @@ export class HandDevices {
     const fingerprint = await handDeviceFingerprint(newKey);
     const now = this.now();
     return this.transaction(() => {
-      const checked = this.#current(proof.device);
+      const checked = this.#current(proof.device, proof.nonce);
       if ("failure" in checked) return checked.failure;
       const current = checked.current;
       if (this.kv.get<KeyRecord>(K.key(newKey))) return failure(409, "hand_device_key_in_use");
@@ -476,7 +482,7 @@ export class HandDevices {
     if ("failure" in proof) return proof.failure;
     const now = this.now();
     return this.transaction(() => {
-      const checked = this.#current(proof.device);
+      const checked = this.#current(proof.device, proof.nonce);
       if ("failure" in checked) return checked.failure;
       const current = checked.current;
       const updated: HandDeviceRecord = { ...current, ssh_host_keys: fingerprints.map(fingerprint => ({ fingerprint, attested_at: now })) };

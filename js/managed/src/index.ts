@@ -1883,10 +1883,10 @@ async function managedFetchRoute(
 ): Promise<Response> {
     const url = new URL(request.url);
     // Device credentials are confined to Hand publisher routes before any other route sees them.
-    const handDevice = await routeHandDevices(request, url, { tools: env.NANOCODEX_ACCOUNT_TOOLS, trustedPrincipal: trustedAgentPrincipal,
+    const handDevice = await routeHandDevices(request, url, { tools: env.NANOCODEX_ACCOUNT_TOOLS,
       authenticate: () => authenticate(request, env, url),
       resolveAccount: (ownerId, deviceId) => resolveHandDeviceAccount(env, ownerId, deviceId),
-      vmHost: async ownerId => vmHostPoolUpgrade(request, env, { scope: "account", owner: ownerId, donor: ownerId,
+      vmHost: async (ownerId, _device) => vmHostPoolUpgrade(request, env, { scope: "account", owner: ownerId, donor: ownerId,
         locator: await vmHostPoolLocator("account", ownerId), publicOrigin: url.origin }) });
     if (handDevice) return handDevice;
     const nativeInputDiscovery = await routeNativeInputDiscovery(request, env, url);
