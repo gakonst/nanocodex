@@ -5,7 +5,7 @@ Build separately, then run (the rich replay phases require tmux):
   python3 scripts/tests/claude-resume-cli-journey.py --binary target/debug/nanocodex
 Only the external Messages HTTP/SSE provider is synthetic. Evidence: ignored output/.
 
-The last phases paste an image into a real \`ncl --claude\` TUI, run Code Mode
+The last phases paste an image into a real `ncl --claude` TUI, run Code Mode
 cells with nested and failing tools, then resume in a fresh process and compare
 the replayed prompt row and tool cards with the live screen.
 """
