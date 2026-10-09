@@ -121,7 +121,9 @@ def main():
         return None
 
     def slow(payload):
-        return 'live-release.txt' in json.dumps(payload.get('arguments', ''))
+        # Only the nested exec_command, never the parent exec whose source names it.
+        return (payload.get('call_id', '').startswith(EXEC_ID + '/code-')
+                and 'live-release.txt' in json.dumps(payload.get('arguments', '')))
 
     try:
         deadline = time.monotonic() + 15
