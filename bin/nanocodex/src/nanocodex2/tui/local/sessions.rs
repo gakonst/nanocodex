@@ -104,7 +104,12 @@ impl From<&crate::sessions::SessionSummary> for LocalSession {
             id: session.id().to_owned(),
             harness: session.family().into(),
             workspace: session.workspace().map(str::to_owned),
-            preview: session.preview().map(single_line),
+            // Claude previews are raw first prompts; catalog previews of Codex
+            // threads are shown as recorded.
+            preview: session.preview().map(|preview| match session.family() {
+                HarnessFamily::Claude => single_line(preview),
+                _ => preview.to_owned(),
+            }),
             model: session.model().map(|model| model.to_string()),
             updated: session.modified_at(),
             archived: session.is_archived(),

@@ -298,6 +298,14 @@ name = "ncl_sessions"
 path = "tests/ncl_sessions.rs"
 
 [[test]]
+name = "unified_resume_picker"
+path = "tests/unified_resume_picker.rs"
+
+[[test]]
+name = "homes_cli"
+path = "tests/homes_cli.rs"
+
+[[test]]
 name = "tui_log_location"
 path = "tests/tui_log_location.rs"
 
