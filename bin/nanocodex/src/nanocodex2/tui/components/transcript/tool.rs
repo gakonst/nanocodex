@@ -3,6 +3,7 @@
 
 mod account;
 mod browser;
+mod claude;
 mod code;
 pub(super) mod computer;
 mod mcp;
@@ -206,6 +207,9 @@ fn present(tool: &ToolEntry, width: u16, theme: &Theme, expanded: bool) -> Prese
             session::present(tool, width, theme, expanded)
         }
         "exec" | "wait" => code::present(tool, width, theme, expanded),
+        "Read" | "Write" | "Edit" | "NotebookEdit" | "Glob" | "Grep" | "TodoWrite" | "TaskCreate"
+        | "TaskGet" | "TaskList" | "TaskUpdate" | "TaskOutput" | "TaskStop" | "WebFetch"
+        | "WebSearch" | "Skill" => claude::present(tool, width, theme, expanded),
         _ => generic(tool, width, theme, expanded),
     }
 }

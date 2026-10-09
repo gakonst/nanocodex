@@ -82,7 +82,6 @@ impl LocalBackend {
         } = agent;
         let mut capabilities = Capabilities::LOCAL;
         capabilities.voice_realtime = realtime.is_some();
-        capabilities.claude_host = matches!(model.family(), nanocodex::HarnessFamily::Claude);
         let backend = Self {
             capabilities,
             launch,

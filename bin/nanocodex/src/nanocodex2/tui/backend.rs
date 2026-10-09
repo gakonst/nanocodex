@@ -35,7 +35,6 @@ pub(crate) struct Capabilities {
     pub(crate) mcp: bool,
     pub(crate) branches: bool,
     pub(crate) collapse_split: bool,
-    pub(crate) claude_host: bool,
     pub(crate) eval: bool,
     pub(crate) local_sessions: bool,
 }
@@ -66,7 +65,6 @@ impl Capabilities {
         mcp: false,
         branches: false,
         collapse_split: false,
-        claude_host: false,
         eval: false,
         local_sessions: false,
     };
@@ -95,7 +93,6 @@ impl Capabilities {
         mcp: true,
         branches: true,
         collapse_split: true,
-        claude_host: true,
         eval: cfg!(any(
             all(target_os = "linux", not(target_env = "musl")),
             all(target_os = "macos", target_arch = "aarch64")
