@@ -9,6 +9,8 @@ All language consumers live at this repository boundary:
   `nanocodex-examples` package.
 - Python: `python/` uses the native PyO3 binding (`follow_on.py`, `events.py`,
   `lifecycle.py`).
+- Parallel search: [`parallel-search/`](parallel-search/README.md) is a standalone
+  Node agent with free, keyless web search and page fetching over HTTP MCP.
 - Node.js: `node/` uses the shared Rust/WASM package with a Node WebSocket host
   and demonstrates the Rust-owned task-tree extension compiled into WASM.
 - Browser: `react-vite/` runs that WASM agent in a module Worker and renders its

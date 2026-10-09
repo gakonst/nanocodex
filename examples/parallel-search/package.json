@@ -1,0 +1,15 @@
+{
+  "name": "nanocodex-parallel-search-example",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "start": "node index.mjs"
+  },
+  "dependencies": {
+    "nanocodex": "0.6.7"
+  },
+  "engines": {
+    "node": ">=22.13.0"
+  }
+}
